@@ -1,11 +1,3 @@
-struct Foo {
-    x: i32,
-}
-
-struct Foo {
-    x: i32,
-}
-
 struct Bar {
     x: i32,
 }
