@@ -1,5 +1,5 @@
 [package]
-name = "helloworld"
+name = "gui"
 version = "0.1.0"
 edition = "2021"
 
