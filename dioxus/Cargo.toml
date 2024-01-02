@@ -1,0 +1,11 @@
+[package]
+name = "dioxus"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+dioxus-web = "0.4.3"
+rust-analyzer = "0.0.1"
+clippy = "0.0.302"
