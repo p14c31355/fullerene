@@ -136,51 +136,32 @@ fn main() {
       noise: String::from("blub"),
   };
   println!("{}", creature.get_sound());
-}
 
-
-fn main() {
   let creature = SeaCreature {
       name: String::from("Ferris"),
       noise: String::from("blub"),
   };
   creature.make_noise();
-}
 
-
-
-fn main() {
   let creature = SeaCreature {
       name: String::from("Ferris"),
       noise: String::from("blub"),
   };
   creature.make_alot_of_noise();
-}
 
-
-
-
-fn main() {
   let creature = SeaCreature {
       name: String::from("Ferris"),
       noise: String::from("blub"),
   };
   creature.make_alot_of_noise();
-}
 
-
-fn main() {
   let creature = SeaCreature {
       name: String::from("Ferris"),
       noise: String::from("blub"),
   };
   static_make_noise(&creature);
   dynamic_make_noise(&creature);
-}
 
-
-
-fn main() {
   let creature = SeaCreature {
       name: String::from("Ferris"),
       noise: String::from("blub"),
