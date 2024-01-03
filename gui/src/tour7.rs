@@ -1,10 +1,3 @@
-
-impl SeaCreature {
-  pub fn get_sound(&self) -> &str {
-      &self.noise
-  }
-}
-
 struct SeaCreature {
   pub name: String,
   noise: String,
@@ -50,8 +43,11 @@ trait LoudNoiseMaker: NoiseMaker {
   }
 }
 
-impl LoudNoiseMaker for SeaCreature {}
-
+impl LoudNoiseMaker for SeaCreature {
+  pub fn get_sound(&self) -> &str {
+    &self.noise
+  }
+}
 trait NoiseMaker {
   fn make_noise(&self);
   
