@@ -42,17 +42,6 @@ fn main() {
   creature.make_noise();
 }
 
-struct SeaCreature {
-  pub name: String,
-  noise: String,
-}
-
-impl SeaCreature {
-  pub fn get_sound(&self) -> &str {
-      &self.noise
-  }
-}
-
 trait NoiseMaker {
   fn make_noise(&self);
   
@@ -77,10 +66,6 @@ fn main() {
   creature.make_alot_of_noise();
 }
 
-struct SeaCreature {
-  pub name: String,
-  noise: String,
-}
 
 impl SeaCreature {
   pub fn get_sound(&self) -> &str {
@@ -115,27 +100,10 @@ fn main() {
   };
   creature.make_alot_of_noise();
 }
-
-struct SeaCreature {
-  pub name: String,
-  noise: String,
-}
-
-impl SeaCreature {
-  pub fn get_sound(&self) -> &str {
-      &self.noise
-  }
-}
-
 trait NoiseMaker {
   fn make_noise(&self);
 }
 
-impl NoiseMaker for SeaCreature {
-  fn make_noise(&self) {
-      println!("{}", &self.get_sound());
-  }
-}
 
 fn static_make_noise(creature: &SeaCreature) {
   // we know the real type
@@ -154,17 +122,6 @@ fn main() {
   };
   static_make_noise(&creature);
   dynamic_make_noise(&creature);
-}
-
-struct SeaCreature {
-  pub name: String,
-  noise: String,
-}
-
-impl SeaCreature {
-  pub fn get_sound(&self) -> &str {
-      &self.noise
-  }
 }
 
 trait NoiseMaker {
@@ -193,11 +150,6 @@ fn main() {
   generic_make_noise(&creature);
 }
 
-struct SeaCreature {
-  pub name: String,
-  noise: String,
-}
-
 impl SeaCreature {
   pub fn get_sound(&self) -> &str {
       &self.noise
@@ -218,14 +170,6 @@ fn generic_make_noise(creature: &impl NoiseMaker)
 {
   // we know the real type at compile-time
   creature.make_noise();
-}
-
-fn main() {
-  let creature = SeaCreature {
-      name: String::from("Ferris"),
-      noise: String::from("blub"),
-  };
-  generic_make_noise(&creature);
 }
 
 struct SeaCreature {
