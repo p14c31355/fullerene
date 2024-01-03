@@ -132,40 +132,16 @@ where
 
 fn main() {
   let creature = SeaCreature {
-      name: String::from("Ferris"),
-      noise: String::from("blub"),
+    name: String::from("Ferris"),
+    noise: String::from("blub"),
   };
+  
   println!("{}", creature.get_sound());
-
-  let creature = SeaCreature {
-      name: String::from("Ferris"),
-      noise: String::from("blub"),
-  };
   creature.make_noise();
-
-  let creature = SeaCreature {
-      name: String::from("Ferris"),
-      noise: String::from("blub"),
-  };
   creature.make_alot_of_noise();
-
-  let creature = SeaCreature {
-      name: String::from("Ferris"),
-      noise: String::from("blub"),
-  };
   creature.make_alot_of_noise();
-
-  let creature = SeaCreature {
-      name: String::from("Ferris"),
-      noise: String::from("blub"),
-  };
   static_make_noise(&creature);
   dynamic_make_noise(&creature);
-
-  let creature = SeaCreature {
-      name: String::from("Ferris"),
-      noise: String::from("blub"),
-  };
   generic_make_noise(&creature);
 }
 
