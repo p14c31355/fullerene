@@ -25,7 +25,7 @@ trait LoudNoiseMaker: NoiseMaker {
   fn make_noise(&self);
   
 }
-impl LoudNoiseMaker for NoiseMaker for SeaCreature {
+impl LoudNoiseMaker as NoiseMaker for SeaCreature {
   fn make_noise(&self) {
       println!("{}", &self.get_sound());
   }
