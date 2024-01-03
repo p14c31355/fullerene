@@ -1,5 +1,5 @@
 mod tour7;
-use crate::tour7::{main::}
+use crate::tour7::*;
 
 fn main() {
     println!("Hello, world!");
