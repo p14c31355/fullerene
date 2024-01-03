@@ -1,4 +1,3 @@
-#[warn(unused_imports)]
 mod tour7;
 use crate::tour7::*;
 

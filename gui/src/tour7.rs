@@ -8,11 +8,6 @@ trait LoudNoiseMaker: NoiseMaker {
       self.make_noise();
       self.make_noise();
   }
-
-  fn static_make_noise(creature: &SeaCreature) {
-    // we know the real type
-    creature.make_noise();
-  }
   
   fn dynamic_make_noise(noise_maker: &dyn NoiseMaker) {
     // we don't know the real type
@@ -27,19 +22,8 @@ trait LoudNoiseMaker: NoiseMaker {
     creature.make_noise();
   }
 
-  fn generic_make_noise(creature: impl NoiseMaker)
-  {
-    // we know the real type at compile-time
-  creature.make_noise();
-  }
-
   fn make_noise(&self);
   
-  fn make_alot_of_noise(&self){
-      self.make_noise();
-      self.make_noise();
-      self.make_noise();
-  }
 }
 impl LoudNoiseMaker for NoiseMaker for SeaCreature {
   fn make_noise(&self) {
