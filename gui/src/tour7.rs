@@ -16,11 +16,7 @@ impl NoiseMaker for SeaCreature {
   }
 }
 
-fn generic_make_noise(creature: &impl NoiseMaker)
-{
-  // we know the real type at compile-time
-  creature.make_noise();
-}
+
 
 trait LoudNoiseMaker: NoiseMaker {
   fn make_alot_of_noise(&self) {
@@ -45,6 +41,12 @@ trait LoudNoiseMaker: NoiseMaker {
   {
     // we know the real type at compile-time
     creature.make_noise();
+  }
+
+  fn generic_make_noise(creature: &impl NoiseMaker)
+  {
+    // we know the real type at compile-time
+  creature.make_noise();
   }
 }
 
@@ -82,9 +84,9 @@ fn main() {
   println!("{}", creature.get_sound());
   creature.make_noise();
   creature.make_alot_of_noise();
-  static_make_noise(&creature);
-  dynamic_make_noise(&creature);
-  generic_make_noise(&creature);
+  static_make_noise(creature);
+  dynamic_make_noise(creature);
+  generic_make_noise(creature);
 
   for a in ocean.animals.iter() {
     a.make_noise();
