@@ -22,15 +22,29 @@ fn generic_make_noise(creature: &impl NoiseMaker)
   creature.make_noise();
 }
 
-trait NoiseMaker {
-  fn make_noise(&self);
-}
-
 trait LoudNoiseMaker: NoiseMaker {
   fn make_alot_of_noise(&self) {
       self.make_noise();
       self.make_noise();
       self.make_noise();
+  }
+
+  fn static_make_noise(creature: &SeaCreature) {
+    // we know the real type
+    creature.make_noise();
+  }
+  
+  fn dynamic_make_noise(noise_maker: &dyn NoiseMaker) {
+    // we don't know the real type
+    noise_maker.make_noise();
+  }
+  
+  fn generic_make_noise<T>(creature: &T)
+  where
+    T: NoiseMaker,
+  {
+    // we know the real type at compile-time
+    creature.make_noise();
   }
 }
 
@@ -48,24 +62,6 @@ trait NoiseMaker {
 
 struct Ocean {
   animals: Vec<Box<dyn NoiseMaker>>,
-}
-
-fn static_make_noise(creature: &SeaCreature) {
-  // we know the real type
-  creature.make_noise();
-}
-
-fn dynamic_make_noise(noise_maker: &dyn NoiseMaker) {
-  // we don't know the real type
-  noise_maker.make_noise();
-}
-
-fn generic_make_noise<T>(creature: &T)
-where
-  T: NoiseMaker,
-{
-  // we know the real type at compile-time
-  creature.make_noise();
 }
 
 fn main() {
