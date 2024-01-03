@@ -75,9 +75,18 @@ where
 }
 
 fn main() {
-  let creature = SeaCreature {
+  let ferris = SeaCreature {
     name: String::from("Ferris"),
     noise: String::from("blub"),
+  };
+
+  let sarah = SeaCreature {
+    name: String::from("Sarah"),
+    noise: String::from("swish"),
+  };
+
+  let ocean = Ocean {
+    animals: vec![Box::new(ferris), Box::new(sarah)],
   };
 
   println!("{}", creature.get_sound());
@@ -86,21 +95,9 @@ fn main() {
   static_make_noise(&creature);
   dynamic_make_noise(&creature);
   generic_make_noise(&creature);
-}
 
-fn main() {
-  let ferris = SeaCreature {
-      name: String::from("Ferris"),
-      noise: String::from("blub"),
-  };
-  let sarah = SeaCreature {
-      name: String::from("Sarah"),
-      noise: String::from("swish"),
-  };
-  let ocean = Ocean {
-      animals: vec![Box::new(ferris), Box::new(sarah)],
-  };
   for a in ocean.animals.iter() {
-      a.make_noise();
-  }
+    a.make_noise();
+
+  };
 }
