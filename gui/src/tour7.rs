@@ -21,13 +21,13 @@ trait LoudNoiseMaker: NoiseMaker {
   
   fn generic_make_noise<T>(creature: &T)
   where
-    T: NoiseMaker,
+    T: NoiseMaker
   {
     // we know the real type at compile-time
     creature.make_noise();
   }
 
-  fn generic_make_noise(creature: &impl NoiseMaker)
+  fn generic_make_noise(creature: impl NoiseMaker)
   {
     // we know the real type at compile-time
   creature.make_noise();
