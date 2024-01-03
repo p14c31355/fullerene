@@ -2,19 +2,6 @@ struct SeaCreature {
   pub name: String,
   noise: String,
 }
-
-impl NoiseMaker for SeaCreature {
-  fn make_noise(&self) {
-      println!("{}", &self.get_sound());
-  }
-
-  pub fn get_sound(&self) -> &str {
-    &self.noise
-  }
-}
-
-
-
 trait LoudNoiseMaker: NoiseMaker {
   fn make_alot_of_noise(&self) {
       self.make_noise();
@@ -54,10 +41,16 @@ trait LoudNoiseMaker: NoiseMaker {
       self.make_noise();
   }
 }
+impl LoudNoiseMaker for NoiseMaker for SeaCreature {
+  fn make_noise(&self) {
+      println!("{}", &self.get_sound());
+  }
 
-impl LoudNoiseMaker for SeaCreature {
-  
+  pub fn get_sound(&self) -> &str {
+    &self.noise
+  }
 }
+
 struct Ocean {
   animals: Vec<Box<dyn NoiseMaker>>,
 }
@@ -80,9 +73,9 @@ fn main() {
   println!("{}", creature.get_sound());
   creature.make_noise();
   creature.make_alot_of_noise();
-  static_make_noise(*creature);
-  dynamic_make_noise(*creature);
-  generic_make_noise(*creature);
+  static_make_noise(&creature);
+  dynamic_make_noise(&creature);
+  generic_make_noise(&creature);
 
   for a in ocean.animals.iter() {
     a.make_noise();
