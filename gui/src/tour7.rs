@@ -46,12 +46,6 @@ trait NoiseMaker {
   }
 }
 
-impl NoiseMaker for SeaCreature {
-  fn make_noise(&self) {
-      println!("{}", &self.get_sound());
-  }
-}
-
 struct Ocean {
   animals: Vec<Box<dyn NoiseMaker>>,
 }
