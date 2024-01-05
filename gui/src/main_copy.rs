@@ -1,3 +1,3 @@
-pub const fn hello() {
+pub fn hello() {
     println!("Hello, world!");
 }

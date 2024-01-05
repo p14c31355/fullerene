@@ -1,3 +1,3 @@
 fn main() {
-    pub const fn hello(){}
+    pub fn hello(){}
 }
