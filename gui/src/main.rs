@@ -3,7 +3,7 @@ mod main_copy;
 mod rotate;
 
 use crate::rotate::*;
-use crate::main_copy::*;
+use crate::main_copy::hello;
 fn main() {
-    r#rotate2dim;
+    pub const fn hello();
 }
