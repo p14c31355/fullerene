@@ -1,3 +1,5 @@
 fn main() {
-    fn hello();
+    fn hello(){
+        use crate::main_copy::*;
+    }
 }
