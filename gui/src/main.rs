@@ -1,6 +1,6 @@
 use crate::main_copy::*;
 fn main() {
-    fn hello(){
+    fn main_copy(){
        
     }
 }
