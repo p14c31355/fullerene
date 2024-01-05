@@ -22,7 +22,7 @@ const RAD: f64 = DEG / 180. * PI;
 
 #[allow(dead_code)] // constant `` is never used の解消
 fn main() { // main fn の中にないと異名関数は動作しない
-    fn rotate2dim() {
+    pub const fn rotate2dim() {
         let x: f64 = X * RAD.cos() - Y * RAD.sin();
         let y: f64 = X * RAD.sin() + Y * RAD.cos();
 
