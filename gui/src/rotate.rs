@@ -14,9 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-mod sample_constant; // 別ファイル参照
-
-use crate::sample_constant::{DEG, X, Y, Z}; // 別ファイルからの値の引用
+use crate::sample_constant::*; // 別ファイルからの値の引用
 const  PI: f64 = 3.14;
 const RAD: f64 = DEG / 180. * PI;
 
