@@ -5,5 +5,5 @@ mod rotate;
 use crate::rotate::*;
 use crate::main_copy::hello;
 fn main() {
-    pub const fn hello();
+    pub const fn hello(){};
 }
