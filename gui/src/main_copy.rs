@@ -1,4 +1,3 @@
-#[warn(dead_code)]
-fn hello() {
+fn main_copy() {
     println!("Hello, world!");
 }
