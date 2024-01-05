@@ -38,8 +38,7 @@ impl LoudNoiseMaker as NoiseMaker for SeaCreature {
 struct Ocean {
   animals: Vec<Box<dyn NoiseMaker>>,
 }
-
-fn main() {
+const fn main() {
   let ferris = SeaCreature {
     name: String::from("Ferris"),
     noise: String::from("blub"),

@@ -1,3 +1,3 @@
-fn main() {
+const fn hello() {
     println!("Hello, world!");
 }
