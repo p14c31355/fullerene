@@ -29,3 +29,22 @@
     </a>
   </body>
 </html>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bevy on the Web</title>
+</head>
+<body>
+    <script type="module">
+        import init from './path/to/bevy-wasm-file.js';
+
+        init().then(() => {
+            // Bevyアプリケーションが初期化された後の処理をここに追加
+        });
+    </script>
+</body>
+</html>
+
