@@ -118,7 +118,3 @@ jobs:
         with:
           command: upload
           args: --non-interactive --skip-existing *
-
-          name: Rust lint & test
-
-          on: push
