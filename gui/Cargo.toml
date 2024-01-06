@@ -7,10 +7,10 @@ edition = "2021"
 
 [lib]
 name = "I_will_Rust"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-bevy = "0.12.1"
+bevy = { version = "0.12.1", features = ["bevy_winit", "bevy_render", "bevy_wgpu", "bevy_wgpu_backend"] }
 build-deps = "0.1.4"
 clippy = "0.0.302"
 rust-analyzer = "0.0.1"
@@ -19,6 +19,7 @@ rayon = "1.8.0"
 serde = { version = "1.0.195", features = ["derive"] }
 serde_json = "1.0.111"
 pyo3 = "0.20.2"
+nalgebra = "0.32"
 
 # Enable a small amount of optimization in debug mode
 [profile.dev]
@@ -27,9 +28,3 @@ opt-level = 1
 # Enable high optimizations for dependencies (incl. Bevy), but not for our code:
 [profile.dev.package."*"]
 opt-level = 3
-
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[dependencies]
-bevy = { version = "0.5", features = ["bevy_winit", "bevy_render", "bevy_wgpu", "bevy_wgpu_backend"] }
