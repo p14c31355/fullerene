@@ -113,7 +113,7 @@ fn main() {
     println!("{}", nums[1]);
 
 
-    const PI = 3.14159f32;
+    pub(crate) const PI = 3.14159f32;
 
     fn applepi() {
         println!(
