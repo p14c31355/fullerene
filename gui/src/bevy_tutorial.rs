@@ -11,11 +11,7 @@ struct Name(String);
 /// Rust の通常の関数が System として使用できる
 /// App の開始時に一度だけ呼ばれる
 /// Commands を使い、Person と Name を持った Entity を生成する
-fn add_people(mut commands: Commands) {
-    commands.spawn().insert(Person).insert(Name("Rust".to_string()));
-    commands.spawn().insert(Person).insert(Name("Bevy".to_string()));
-    commands.spawn().insert(Person).insert(Name("Ferris".to_string()));
-}
+
 
 /// System
 /// Rust の通常の関数が System として使用できる

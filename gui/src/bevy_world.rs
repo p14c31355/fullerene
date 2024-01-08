@@ -18,6 +18,7 @@ fn main() {
         .add_system(cube_movement.system())
         .add_system(cube_rotation.system())
         .add_system(input_system.system())
+        .add_system(add_people.system())
         .add_startup_system(move |world| setup.system().label("setup"))
         .add_startup_stage_after(stage::SETUP, "load_assets", SystemStage::single(load_assets.system()))
         .add_startup_system_to_stage("load_assets", move |world| setup_assets.system().label("setup_assets"))
@@ -127,4 +128,10 @@ pub fn main() {
 
 fn setup(commands: &mut Commands) {
     // 初期化ロジックを追加
+}
+
+fn add_people(mut commands: Commands) {
+    commands.spawn().insert(Person).insert(Name("Rust".to_string()));
+    commands.spawn().insert(Person).insert(Name("Bevy".to_string()));
+    commands.spawn().insert(Person).insert(Name("Ferris".to_string()));
 }
