@@ -19,7 +19,7 @@ rayon = "1.8.0"
 serde = { version = "1.0.195", features = ["derive"] }
 serde_json = "1.0.111"
 pyo3 = "0.20.2"
-nalgebra = "0.32"
+nalgebra = "0.32.3"
 
 # Enable a small amount of optimization in debug mode
 [profile.dev]
