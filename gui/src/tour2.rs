@@ -1,3 +1,76 @@
+#![allow(dead_code)] // この行でコンパイラのwaringsメッセージを止めます。
+
+enum Species { Crab, Octopus, Fish, Clam }
+enum PoisonType { Acidic, Painful, Lethal }
+enum Size { Big, Small }
+enum Weapon {
+    Claw(i32, Size),
+    Poison(PoisonType),
+    None
+}
+
+enum Species {
+    Crab,
+    Octopus,
+    Fish,
+    Clam
+}
+
+struct SeaCreature {
+    species: Species,
+    name: String,
+    arms: i32,
+    legs: i32,
+    weapon: Weapon,
+}
+
+struct SeaCreature {
+    animal_type: String,
+    name: String,
+    arms: i32,
+    legs: i32,
+    weapon: String,
+}
+
+struct Location(i32, i32);
+struct Marker;
+
+struct BagOfHolding<T> {
+    item: T,
+}
+
+enum Item {
+    Inventory(String),
+    // None は項目がないことを表す
+    None,
+}
+
+struct BagOfHolding {
+    item: Item,
+}
+
+// 部分的に定義された構造体型
+struct BagOfHolding<T> {
+    // パラメータ T を渡すことが可能
+    item: Option<T>,
+}
+
+fn do_something_that_might_fail(i:i32) -> Result<f32,String> {
+    if i == 42 {
+        Ok(13.0)
+    } else {
+        Err(String::from("正しい値ではありません"))
+    }
+}
+
+fn do_something_that_might_fail(i: i32) -> Result<f32, String> {
+    if i == 42 {
+        Ok(13.0)
+    } else {
+        Err(String::from("正しい値ではありません"))
+    }
+}
+
 fn main() {
 
     let x = 13; // x の型を推論
@@ -190,5 +263,221 @@ fn main() {
     fn print_example() {
         println!("関数より: {}", example());
     }
+
+    struct SeaCreature {
+        // String は構造体である。
+        animal_type: String,
+        name: String,
+        arms: i32,
+        legs: i32,
+        weapon: String,
+    }
+
+    // スタティックメソッドでStringインスタンスを作成する。
+    let s = String::from("Hello world!");
+    // インスタンスを使ってメソッド呼び出す。
+    println!("{} is {} characters long.", s, s.len());
+
+    // SeaCreatureのデータはスタックに入ります。
+    let ferris = SeaCreature {
+        // String構造体もスタックに入りますが、
+        // ヒープに入るデータの参照アドレスが一つ入ります。
+        animal_type: String::from("crab"),
+        name: String::from("Ferris"),
+        arms: 2,
+        legs: 4,
+        weapon: String::from("claw"),
+    };
+
+    let sarah = SeaCreature {
+        animal_type: String::from("octopus"),
+        name: String::from("Sarah"),
+        arms: 8,
+        legs: 0,
+        weapon: String::from("none"),
+    };
+    
+    println!(
+        "{} is a {}. They have {} arms, {} legs, and a {} weapon",
+        ferris.name, ferris.animal_type, ferris.arms, ferris.legs, ferris.weapon
+    );
+    println!(
+        "{} is a {}. They have {} arms, and {} legs. They have no weapon..",
+        sarah.name, sarah.animal_type, sarah.arms, sarah.legs
+    );
+
+    // これもスタックに入れられる構造体です。
+    let loc = Location(42, 32);
+    println!("{}, {}", loc.0, loc.1);
+
+    let _m = Marker;
+
+    let ferris = SeaCreature {
+        species: Species::Crab,
+        name: String::from("Ferris"),
+        arms: 2,
+        legs: 4,
+        weapon: String::from("claw"),
+    };
+
+    match ferris.species {
+        Species::Crab => println!("{} is a crab",ferris.name),
+        Species::Octopus => println!("{} is a octopus",ferris.name),
+        Species::Fish => println!("{} is a fish",ferris.name),
+        Species::Clam => println!("{} is a clam",ferris.name),
+    }
+
+     // SeaCreatureのデータはスタックに入ります。
+     let ferris = SeaCreature {
+        // String構造体もスタックに入りますが、
+        // ヒープに入るデータの参照アドレスが一つ入ります。
+        species: Species::Crab,
+        name: String::from("Ferris"),
+        arms: 2,
+        legs: 4,
+        weapon: Weapon::Claw(2, Size::Small),
+    };
+
+    match ferris.species {
+        Species::Crab => {
+            match ferris.weapon {
+                Weapon::Claw(num_claws,size) => {
+                    let size_description = match size {
+                        Size::Big => "big",
+                        Size::Small => "small"
+                    };
+                    println!("ferris is a crab with {} {} claws", num_claws, size_description)
+                },
+                _ => println!("ferris is a crab with some other weapon")
+            }
+        },
+        _ => println!("ferris is some other animal"),
+    }
+
+    // 注意: ジェネリック型を使用すると、型はコンパイル時に作成される。
+    // ::<> (turbofish) で明示的に型を指定
+    let i32_bag = BagOfHolding::<i32> { item: 42 };
+    let bool_bag = BagOfHolding::<bool> { item: true };
+    
+    // ジェネリック型でも型推論可能
+    let float_bag = BagOfHolding { item: 3.14 };
+    
+    // 注意: 実生活では手提げ袋を手提げ袋に入れないように
+    let bag_in_bag = BagOfHolding {
+        item: BagOfHolding { item: "boom!" },
+    };
+
+    println!(
+        "{} {} {} {}",
+        i32_bag.item, bool_bag.item, float_bag.item, bag_in_bag.item.item
+    );
+
+    // 注意: i32 が入るバッグに、何も入っていません！
+    // None からは型が決められないため、型を指定する必要があります。
+    let i32_bag = BagOfHolding::<i32> { item: None };
+
+    if i32_bag.item.is_none() {
+        println!("バッグには何もない！")
+    } else {
+        println!("バッグには何かある！")
+    }
+
+    let i32_bag = BagOfHolding::<i32> { item: Some(42) };
+
+    if i32_bag.item.is_some() {
+        println!("バッグには何かある！")
+    } else {
+        println!("バッグには何もない！")
+    }
+
+    // match は Option をエレガントに分解して、
+    // すべてのケースが処理されることを保証できます！
+    match i32_bag.item {
+        Some(v) => println!("バッグに {} を発見！", v),
+        None => println!("何も見付からなかった"),
+    }
+
+    let result = do_something_that_might_fail(12);
+
+    // match は Result をエレガントに分解して、
+    // すべてのケースが処理されることを保証できます！
+    match result {
+        Ok(v) => println!("発見 {}", v),
+        Err(e) => println!("Error: {}",e),
+    }
+
+    // 型を明示的に指定
+    let mut i32_vec = Vec::<i32>::new(); // turbofish <3
+    i32_vec.push(1);
+    i32_vec.push(2);
+    i32_vec.push(3);
+
+    // もっと賢く、型を自動的に推論
+    let mut float_vec = Vec::new();
+    float_vec.push(1.3);
+    float_vec.push(2.3);
+    float_vec.push(3.4);
+
+    // きれいなマクロ！
+    let string_vec = vec![String::from("Hello"), String::from("World")];
+
+    for word in string_vec.iter() {
+        println!("{}", word);
+    }
+}
+
+// main は値を返しませんが、エラーを返すことがあります！
+fn main() -> Result<(), String> {
+    let result = do_something_that_might_fail(12);
+
+    match result {
+        Ok(v) => println!("発見 {}", v),
+        Err(_e) => {
+            // エラーをうまく処理
+            
+            // 何が起きたのかを説明する新しい Err を main から返します！
+            return Err(String::from("main で何か問題が起きました！"));
+        }
+    }
+
+    // Result の Ok の中にある unit 値によって、
+    // すべてが正常であることを表現していることに注意してください。
+    Ok(())
+}
+
+fn do_something_that_might_fail(i: i32) -> Result<f32, String> {
+    if i == 42 {
+        Ok(13.0)
+    } else {
+        Err(String::from("正しい値ではありません"))
+    }
+}
+
+fn main() -> Result<(), String> {
+    // コードが簡潔なのに注目！
+    let v = do_something_that_might_fail(42)?;
+    println!("発見 {}", v);
+    Ok(())
+}
+
+fn do_something_that_might_fail(i: i32) -> Result<f32, String> {
+    if i == 42 {
+        Ok(13.0)
+    } else {
+        Err(String::from("正しい値ではありません"))
+    }
+}
+
+fn main() -> Result<(), String> {
+    // 簡潔ですが、値が存在することを仮定しており、
+    // すぐにダメになる可能性があります。
+    let v = do_something_that_might_fail(42).unwrap();
+    println!("発見 {}", v);
+    
+    // パニックするでしょう！
+    let v = do_something_that_might_fail(1).unwrap();
+    println!("発見 {}", v);
+    
+    Ok(())
 
 }
