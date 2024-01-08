@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 use crate::tour2::*;
-use crate::*; // 別ファイルからの値の引用
+use crate::crate1::*; // 別ファイルからの値の引用
 const RAD: f64 = DEG / 180. * PI;
 
 #[allow(dead_code)] // constant `` is never used の解消
