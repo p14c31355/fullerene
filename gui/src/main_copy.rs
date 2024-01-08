@@ -1,3 +1,3 @@
-const fn main_copy() {
+pub(crate) fn main_copy() {
     println("Hello, world!");
 }
