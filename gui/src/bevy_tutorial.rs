@@ -7,15 +7,12 @@ use bevy::core::FixedTimestep; // 要 import
 // 要 import
 use bevy::app::{ScheduleRunnerPlugin, ScheduleRunnerSettings};
 
-
 // Components
 // Component を derive した struct や enum が Component として使用できる
 #[derive(Component)]
 struct Person;
 #[derive(Component)]
 struct Name(String);
-
-
 
 #[derive(Default, Bundle)] // Bundle を定義するには derive(Bundle) が必要
 struct PlayerStatus { // Component を Bundle としてまとめて定義する
@@ -404,8 +401,6 @@ fn main() {
         .run();
 }
 
-
-
 // 自作の Plugin
 struct FooPlugin;
 struct BarPlugin;
@@ -522,8 +517,6 @@ fn esc_to_menu(
       keys.reset(KeyCode::Escape);  // you should clear input by yourself
   }
 }
-
-
 
 // count が 100 より大きくなったときのみ ShouldRun::Yes を返す Run Criteria
 fn my_run_criteria(mut count: Local<usize>) -> ShouldRun {
@@ -769,8 +762,6 @@ fn main() {
         .run();
 }
 
-
-
 fn main() {
     App::new()
         // 1 秒ごとに System が実行されるように設定し、Plugin　を導入
@@ -837,4 +828,3 @@ fn has_counted_up() {
     let count = world.get::<Counter>(entity).unwrap();
     assert_eq!(count.0, 1);
 }
-
