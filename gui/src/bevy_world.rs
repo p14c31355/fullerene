@@ -14,17 +14,18 @@ struct Cube;
 fn main() {
     App::build()
     let asset_config: Vec<AssetConfig> = load_asset_config("assets.json"); // JSONファイルからアセットの設定を読み込む
-        .add_startup_system(setup.system()) //各異名関数を main に投入している
+        .add_startup_system(setup.system()) //各異名関数を main に投入している // 初期化時に一度だけ呼ばれる System
         .add_system(camera.system())
         .add_system(cube_movement.system())
         .add_system(cube_rotation.system())
         .add_system(input_system.system())
         .add_system(add_people.system())
+        .add_system(greet_people())
         .add_startup_system(move |world| setup.system().label("setup"))
         .add_startup_stage_after(stage::SETUP, "load_assets", SystemStage::single(load_assets.system()))
         .add_startup_system_to_stage("load_assets", move |world| setup_assets.system().label("setup_assets"))
         .add_startup_stage_after("load_assets", "spawn_cube", SystemStage::single(spawn_cube.system()))
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins) // 標準的な Bevy の機能を追加
         .run();
 }
 
@@ -166,4 +167,10 @@ fn add_people(mut commands: Commands) {
     commands.spawn().insert(Person).insert(Name("Rust".to_string()));
     commands.spawn().insert(Person).insert(Name("Bevy".to_string()));
     commands.spawn().insert(Person).insert(Name("Ferris".to_string()));
+}
+
+fn greet_people(query: Query<&Name, With<Person>>) {
+    for name in query.iter() {
+        println!("hello {}!", name.0);
+    }
 }

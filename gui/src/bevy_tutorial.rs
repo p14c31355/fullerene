@@ -7,22 +7,17 @@ struct Person;
 #[derive(Component)]
 struct Name(String);
 
-/// Startup System
-/// Rust の通常の関数が System として使用できる
-/// App の開始時に一度だけ呼ばれる
-/// Commands を使い、Person と Name を持った Entity を生成する
+// Startup System
+// Rust の通常の関数が System として使用できる
+// App の開始時に一度だけ呼ばれる
+// Commands を使い、Person と Name を持った Entity を生成する
 
 
-/// System
-/// Rust の通常の関数が System として使用できる
-/// Query を使って Component を取得し、それに対して処理を行う
-fn greet_people(query: Query<&Name, With<Person>>) {
-    for name in query.iter() {
-        println!("hello {}!", name.0);
-    }
-}
+// System
+// Rust の通常の関数が System として使用できる
+// Query を使って Component を取得し、それに対して処理を行う
 
-/// App に System を登録し、Bevy の App を構築して Run する
+// App に System を登録し、Bevy の App を構築して Run する
 fn main() {
     App::new()
         .add_startup_system(add_people)
@@ -32,10 +27,10 @@ fn main() {
 
 fn main() {
   App::new()
-      .add_plugins(DefaultPlugins)  // 標準的な Bevy の機能を追加
+      .add_plugins(DefaultPlugins)  
       .insert_resource(MyResource)  // Global で唯一な Resource を追加
       .add_event::<MyEvent>()       // Event を追加
-      .add_startup_system(setup)    // 初期化時に一度だけ呼ばれる System
+      .add_startup_system(setup)    
       .add_system(my_system)        // System を追加
       .run();
 }
@@ -81,8 +76,8 @@ fn add_entities(mut commands: Commands) {
       .insert(Position::default()); // Position Component を追加
 }
 
-/// Component を Bundle としてまとめて定義する
-/// Bundle を定義するには derive(Bundle) が必要
+// Component を Bundle としてまとめて定義する
+// Bundle を定義するには derive(Bundle) が必要
 #[derive(Default, Bundle)]
 struct PlayerStatus {
     hp: PlayerHp,
@@ -90,7 +85,7 @@ struct PlayerStatus {
     xp: PlayerXp,
 }
 
-/// Bundle は入れ子にすることもできる
+// Bundle は入れ子にすることもできる
 #[derive(Default, Bundle)]
 struct PlayerBundle {
     name: PlayerName,
@@ -167,13 +162,13 @@ App::new()
     use anyhow::Result;
     use bevy::prelude::*;
     
-    /// 処理の結果を後段の System へ転送する
+    // 処理の結果を後段の System へ転送する
     fn parse_number() -> Result<()> {
         let s = "number".parse::<i32>()?; // Err
         Ok(())
     }
     
-    /// 前段の System から送られてきた Result が Err だったら処理する
+    // 前段の System から送られてきた Result が Err だったら処理する
     fn handle_error(In(result): In<Result<()>>) {
         if let Err(e) = result {
             println!("parse error: {:?}", e);
@@ -190,7 +185,7 @@ App::new()
 
     use bevy::ecs::system::SystemParam; // 要インポート
 
-    /// SystemParam は System の引数にできるものは何でも持つことができる
+    // SystemParam は System の引数にできるものは何でも持つことができる
     #[derive(SystemParam)]
     struct MySystemParam<'w, 's> {
         query: Query<'w, 's, (Entity, &'static MyComponent)>,
@@ -206,7 +201,7 @@ App::new()
         _secret: PhantomData<&'s ()>,
     }
     
-    /// SystemParam は直接 System の引数にすることができる
+    // SystemParam は直接 System の引数にすることができる
     fn query_system_param(mut my_system_param: MySystemParam) {
         // ..
     }
@@ -231,7 +226,8 @@ App::new()
     mut q_b: Query<&mut CompB>,            // B を持つ Entity (Mutable)
     q_ac: Query<(&CompA, &CompC)>,         // A と C を両方持つ Entity
     q_ad: Query<(&CompA, Option<&CompD>)>, // A と持っていれば D
-    q_ae: Query<(&CompA, Entity)>,         // A とその Entity ID)
+    q_ae: Query<(&CompA, Entity)>,
+)         // A とその Entity ID)
 {
     for a in q_a.iter() {
         println!("{:?}", a);
@@ -264,7 +260,7 @@ fn my_system(
   // ...
 }
 
-/// NG: ミュータブルな A の Query が複数存在する
+// NG: ミュータブルな A の Query が複数存在する
 fn my_system(
   mut q_a_wb: Query<&mut CompA, With<CompB>>, // A with B (Mutable)
   mut q_a_wc: Query<&mut CompA, With<CompC>>, // A with C (Mutable)
@@ -272,7 +268,7 @@ fn my_system(
   // ...
 }
 
-/// OK
+// OK
 fn my_system(
   mut q: QuerySet<(
       QueryState<&mut CompA, With<CompB>>, // A with B (Mutable)
@@ -297,7 +293,7 @@ fn add_two_comp(query: Query<&MyComp>) {
 
 use bevy::tasks::ComputeTaskPool; // 要 import
 
-/// parallel_iterator を使用するには、ComputeTaskPool が必要
+// parallel_iterator を使用するには、ComputeTaskPool が必要
 fn add_one(pool: Res<ComputeTaskPool>, mut query: Query<&mut MyComp>) {
     const BATCH_SIZE: usize = 100;
     query.par_for_each_mut(&pool, BATCH_SIZE, |mut my_comp| {
@@ -319,11 +315,11 @@ fn my_system(mut commands: Commands) {
   commands.remove_resource::<MyResource>();
 }
 
-/// Default で初期化される Resource
+// Default で初期化される Resource
 #[derive(Default)]
 struct MyFirstCounter(usize);
 
-/// FromWorld で初期化される Resource
+// FromWorld で初期化される Resource
 struct MySecondCounter(usize);
 
 impl FromWorld for MySecondCounter {
@@ -334,10 +330,10 @@ impl FromWorld for MySecondCounter {
     }
 }
 
-/// 初期化できない Resource
+// 初期化できない Resource
 struct MyThreshold(usize);
 
-/// System
+// System
 fn count_up(
   thresh: Res<MyThreshold>,                        // イミュータブルに参照
   mut first_counter: ResMut<MyFirstCounter>,       // ミュータブルに参照
@@ -347,8 +343,6 @@ fn count_up(
       // MySecondCounter が存在したら何かする
   }
 }
-
-use bevy::prelude::*;
 
 #[derive(Component)]
 struct MyTimer(Timer);
@@ -374,9 +368,7 @@ fn main() {
         .run();
 }
 
-use bevy::prelude::*;
-
-/// Local<T> には Default の実装が必要
+// Local<T> には Default の実装が必要
 #[derive(Default)]
 struct MyCounter(usize);
 
@@ -433,10 +425,8 @@ fn setup(mut commands: Commands) {
   commands.remove_resource::<MyResource>();
 }
 
-use bevy::prelude::*;
-
-/// 送受信する Event
-/// 内部に送受信したい様々なデータをもたせる
+// 送受信する Event
+// 内部に送受信したい様々なデータをもたせる
 struct MyEvent(String);
 
 /// Event を送信する System
@@ -462,17 +452,15 @@ fn main() {
         .run();
 }
 
-use bevy::prelude::*;
-
-/// Plugin にまとめたい様々な要素
+// Plugin にまとめたい様々な要素
 struct MyResource;
 struct MyEvent;
 
-/// 自作の Plugin
+// 自作の Plugin
 struct MyPlugin;
 
-/// 自作の Plugin に Plugin トレイトを実装すれば、Plugin として使用できる
-/// Plugin トレイトでは App Builder に必要な要素を追加するだけで良い
+// 自作の Plugin に Plugin トレイトを実装すれば、Plugin として使用できる
+// Plugin トレイトでは App Builder に必要な要素を追加するだけで良い
 impl Plugin for MyPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(MyResource)
@@ -482,12 +470,12 @@ impl Plugin for MyPlugin {
     }
 }
 
-/// Plugin にまとめたい startup_system
+// Plugin にまとめたい startup_system
 fn plugin_setup() {
     println!("MyPlugin's setup");
 }
 
-/// Plugin にまとめたい system
+// Plugin にまとめたい system
 fn plugin_system() {
     println!("MyPlugin's system");
 }
@@ -499,15 +487,14 @@ fn main() {
 }
 
 use bevy::app::PluginGroupBuilder; // PluginGroup トレイトを実装するには追加が必要
-use bevy::prelude::*;
 
-/// 自作の Plugin
+// 自作の Plugin
 struct FooPlugin;
 struct BarPlugin;
 impl Plugin for FooPlugin {}
 impl Plugin for BarPlugin {}
 
-/// 自作の Plugin Group
+// 自作の Plugin Group
 struct MyPluginGroup;
 
 impl PluginGroup for MyPluginGroup {
@@ -530,7 +517,7 @@ App::new()
     })
     .run();
 
-/// State は enum として定義する (Debug, Clone, PartialEq, Eq, Hash が必要)
+// State は enum として定義する (Debug, Clone, PartialEq, Eq, Hash が必要)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum AppState { Menu, Game, End }
 
@@ -556,7 +543,7 @@ fn main() {
         .run();
 }
 
-/// System 内で State にアクセスするためには `State<T>` Resource を使う
+// System 内で State にアクセスするためには `State<T>` Resource を使う
 fn count_frame(app_state: Res<State<AppState>>) {
   // current() で現在の State が取得できる
   match app_state.current() {
@@ -564,7 +551,7 @@ fn count_frame(app_state: Res<State<AppState>>) {
   }
 }
 
-/// System 内で State にアクセスするためには `State<T>` Resource を使う
+// System 内で State にアクセスするためには `State<T>` Resource を使う
 fn menu_on_enter(mut app_state: ResMut<State<AppState>>) {
   app_state.set(AppState::Game).unwrap(); // Menu から Game へ Statを を変更
 }
@@ -579,7 +566,6 @@ fn pop_from_state_stack(mut app_state: ResMut<State<AppState>>) {
   app_state.pop().unwrap();
 }
 
-// ...
 
 fn main() {
   App::new()
@@ -606,7 +592,6 @@ fn main() {
           SystemSet::on_resume(AppState::Game)
             .with_system(game_on_resume)
       )
-      // ...
       .run();
 }
 
@@ -621,9 +606,8 @@ fn esc_to_menu(
 }
 
 use bevy::ecs::schedule::ShouldRun; // Run Criteria を使用するには追加が必要
-use bevy::prelude::*;
 
-/// count が 100 より大きくなったときのみ ShouldRun::Yes を返す Run Criteria
+// count が 100 より大きくなったときのみ ShouldRun::Yes を返す Run Criteria
 fn my_run_criteria(mut count: Local<usize>) -> ShouldRun {
     if *count > 100 {
         *count = 0;
@@ -634,7 +618,7 @@ fn my_run_criteria(mut count: Local<usize>) -> ShouldRun {
     }
 }
 
-/// my_run_criteria を適用する System
+// my_run_criteria を適用する System
 fn my_system() {
     println!("Hello, run criteria!");
 }
@@ -664,11 +648,9 @@ fn main() {
       .run();
 }
 
-/// 独自の Label 型を定義する
+// 独自の Label 型を定義する
 #[derive(Debug, Clone, PartialEq, Eq, Hash, SystemLabel)]
 struct MySecondSystemLabel;
-
-// ...
 
 fn main() {
     App::new()
@@ -679,13 +661,9 @@ fn main() {
         .run();
 }
 
-use bevy::prelude::*;
-
-/// 独自の Stage Label を定義する
+// 独自の Stage Label を定義する
 #[derive(Debug, Clone, PartialEq, Eq, Hash, StageLabel)]
 struct MyStage;
-
-// ...
 
 fn main() {
     App::new()
@@ -699,21 +677,21 @@ fn main() {
         .run();
 }
 
-/// Added<T> を Query Filter として、追加された Component を Query
+// Added<T> を Query Filter として、追加された Component を Query
 fn print_added(query: Query<(Entity, &Counter), Added<Counter>>) {
   for (entity, counter) in query.iter() {
       println!("Added counter {}, count =  {}", entity.id(), counter.0);
   }
 }
 
-/// Changed<T> を Query Filter として、変更された Component を Query
+// Changed<T> を Query Filter として、変更された Component を Query
 fn print_changed(query: Query<(Entity, &Counter), Changed<Counter>>) {
   for (entity, counter) in query.iter() {
       println!("Changed counter entity {} to {}", entity.id(), counter.0);
   }
 }
 
-/// ChangeTrackers<T> を Query すれば、フィルタリングせずに追加･変更を検知できる
+// ChangeTrackers<T> を Query すれば、フィルタリングせずに追加･変更を検知できる
 fn print_tracker(query: Query<(Entity, &Counter, ChangeTrackers<Counter>)>) {
   for (entity, counter, trackers) in query.iter() {
       if trackers.is_added() {
@@ -725,7 +703,7 @@ fn print_tracker(query: Query<(Entity, &Counter, ChangeTrackers<Counter>)>) {
   }
 }
 
-/// 存在するかわからない Resource の追加と変更を検知する
+// 存在するかわからない Resource の追加と変更を検知する
 fn print_added_changed(counter: Option<Res<Counter>>) {
   if let Some(counter) = counter {
       // Counter が追加されたときに実行される
@@ -741,8 +719,8 @@ fn print_added_changed(counter: Option<Res<Counter>>) {
   }
 }
 
-/// CoreStage::PostUpdate で MyComponent の削除を検知する
-/// RemovedComponents<T> でこれまでに削除された Component を検出できる
+// CoreStage::PostUpdate で MyComponent の削除を検知する
+// RemovedComponents<T> でこれまでに削除された Component を検出できる
 fn detect_removals(removals: RemovedComponents<MyComponent>) {
   for entity in removals.iter() {
       println!("MyComponent Entity {} has removed", entity.id());
@@ -761,7 +739,7 @@ fn main() {
       .run();
 }
 
-/// 前フレームで Resource が存在したかを保存することで、次のフレームで削除を検知する
+// 前フレームで Resource が存在したかを保存することで、次のフレームで削除を検知する
 fn detect_removals(
   my_resource: Option<Res<MyResource>>,  // 存在するかわからないので Option
   mut my_resource_existed: Local<bool>,  // 前フレームでの有無をローカルに保存
@@ -800,7 +778,7 @@ fn setup(mut commands: Commands) {
     commands.entity(parent).push_children(&[child]);
 }
 
-/// Child Entity の Query から、それぞれの Parent Entity を取得する
+// Child Entity の Query から、それぞれの Parent Entity を取得する
 fn find_parent_from_children(
   q_child: Query<&Parent>,       // Parent Component を持つ Child Entity を Query
   q_my_parent: Query<&MyParent>, // MyParent を Query
@@ -814,7 +792,7 @@ fn find_parent_from_children(
   }
 }
 
-/// Parent Entity の Query から、Children Entity を取得する
+// Parent Entity の Query から、Children Entity を取得する
 fn find_children_from_parent(
   q_parent: Query<&Children>,  // Children Component を持つ Parent を Query
   q_my_child: Query<&MyChild>, // MyChild を Query
@@ -830,16 +808,14 @@ fn find_children_from_parent(
   }
 }
 
-/// MyParent の Entity ID を Query し、それで MyParent を MyChild 含めて再帰的に破棄する
-/// MyParent は Children を持っているので、それを Query Filter として使う
+// MyParent の Entity ID を Query し、それで MyParent を MyChild 含めて再帰的に破棄する
+// MyParent は Children を持っているので、それを Query Filter として使う
 fn clean_up(mut commands: Commands, query: Query<Entity, With<Children>>) {
   let e = query.single().unwrap();        // MyParent は唯一のはず
   commands.entity(e).despawn_recursive(); // MyParent を MyChild 含めて再帰的に破棄
 }
 
-use bevy::prelude::*;
-
-/// App を手動で Update する Runner をカスタマイズできる
+// App を手動で Update する Runner をカスタマイズできる
 fn my_runner(mut app: App) {
     println!("my_runner!");
     app.update();
@@ -858,7 +834,6 @@ fn main() {
 }
 
 use bevy::core::FixedTimestep; // 要 import
-use bevy::prelude::*;
 
 fn hello_world() {
     println!("hello world");
@@ -877,7 +852,7 @@ fn main() {
         .run();
 }
 
-/// 要 import
+// 要 import
 use bevy::app::{ScheduleRunnerPlugin, ScheduleRunnerSettings};
 
 fn main() {
@@ -891,8 +866,8 @@ fn main() {
         .run();
 }
 
-/// Exclusive System を使うことで、App 内の World のすべての要素にアクセスできる
-/// https://docs.rs/bevy/latest/bevy/ecs/world/struct.World.html
+// Exclusive System を使うことで、App 内の World のすべての要素にアクセスできる
+// https://docs.rs/bevy/latest/bevy/ecs/world/struct.World.html
 fn my_exclusive_system(world: &mut World) {
   println!("Here is my exclusive system");
   world.insert_resource(MyResource);
@@ -905,7 +880,7 @@ fn main() {
       .run();
 }
 
-/// スレッドプールの数を指定することができる
+// スレッドプールの数を指定することができる
 fn main() {
   App::new()
       .insert_resource(DefaultTaskPoolOptions::with_num_threads(4))
@@ -919,14 +894,12 @@ App.new()
     .insert_resource(ReportExecutionOrderAmbiguities)
     .run();
 
-//! cargo test を使って、System のテストを実行することが可能
-//! cargo test --test test_system
-
-use bevy::prelude::*;
+// cargo test を使って、System のテストを実行することが可能
+// cargo test --test test_system
 
 struct Counter(usize);
 
-/// テストされる System
+// テストされる System
 fn count_up(mut query: Query<&mut Counter>) {
     for mut counter in query.iter_mut() {
         counter.0 += 1;
