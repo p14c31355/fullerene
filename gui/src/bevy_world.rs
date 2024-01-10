@@ -244,9 +244,3 @@ fn my_runner(mut app: App) {
 fn hello_world() {
     println!("Hello, world!");
 }
-
-fn main() {
-    App::new()
-        
-        .run();
-}
