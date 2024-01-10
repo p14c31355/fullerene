@@ -16,27 +16,14 @@ System
 Rust の通常の関数が System として使用できる
 Query を使って Component を取得し、それに対して処理を行う
 */
- 
 
-// 
-// 
-// 
 
-// App に System を登録し、Bevy の App を構築して Run する
-fn main() {
-    App::new()
-        .add_startup_system(add_people)
-        .add_system(greet_people)
-        .run();
-}
 
 fn main() {
   App::new()
       .add_plugins(DefaultPlugins)  
-      .insert_resource(MyResource)  // Global で唯一な Resource を追加
-      .add_event::<MyEvent>()       // Event を追加
-      .add_startup_system(setup)    
-      .add_system(my_system)        // System を追加
+      
+      
       .run();
 }
 

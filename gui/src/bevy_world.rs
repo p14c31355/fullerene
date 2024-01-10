@@ -11,6 +11,7 @@ struct AssetConfig {
 
 struct Cube;
 
+// App に System を登録し、Bevy の App を構築して Run する
 fn main() {
     App::build()
     let asset_config: Vec<AssetConfig> = load_asset_config("assets.json"); // JSONファイルからアセットの設定を読み込む
@@ -20,12 +21,16 @@ fn main() {
         .add_system(cube_rotation.system())
         .add_system(input_system.system())
         .add_system(add_people.system())
-        .add_system(greet_people())
+        .add_system(greet_people.system())
         .add_startup_system(move |world| setup.system().label("setup"))
         .add_startup_stage_after(stage::SETUP, "load_assets", SystemStage::single(load_assets.system()))
         .add_startup_system_to_stage("load_assets", move |world| setup_assets.system().label("setup_assets"))
         .add_startup_stage_after("load_assets", "spawn_cube", SystemStage::single(spawn_cube.system()))
         .add_plugins(DefaultPlugins) // 標準的な Bevy の機能を追加
+        .insert_resource(MyResource)  // Global で唯一な Resource を追加
+        .add_event::<MyEvent>()       // Event を追加
+        .add_startup_system(setup)    
+        .add_system(my_system)        // System を追加
         .run();
 }
 
