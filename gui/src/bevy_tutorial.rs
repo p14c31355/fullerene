@@ -4,8 +4,8 @@ use bevy::tasks::ComputeTaskPool; // 要 import
 use bevy::app::PluginGroupBuilder; // PluginGroup トレイトを実装するには追加が必要
 use bevy::ecs::schedule::ShouldRun; // Run Criteria を使用するには追加が必要
 use bevy::core::FixedTimestep; // 要 import
-// 要 import
-use bevy::app::{ScheduleRunnerPlugin, ScheduleRunnerSettings};
+
+use bevy::app::{ScheduleRunnerPlugin, ScheduleRunnerSettings}; // 要 import
 
 // Components
 // Component を derive した struct や enum が Component として使用できる
@@ -59,21 +59,14 @@ App::new()
     .run();
 
     App::new()
-    
     .add_system_set( // second と third をまとめて SystemSet にする
         SystemSet::new()
-            
             .label("second and third") // label をつけておく
-            
             .after("first") // first よりも後に second と third を実行する
-            
             .with_system(second.label("second")) // ここにも label をつけておく
-            
             .with_system(third.after("second")), // third は second より後に
     )
-    
     .add_system(first.label("first").before("second and third")) // first は second and third より前に
-    
     .add_system(fourth.after("second and third")) // fourth は second and third より後に
     .run();
 
@@ -94,13 +87,10 @@ App::new()
     
     fn main() {
         App::new().add_system(
-                
                 parse_number.chain(handle_error), // chain() で後段の System を登録する
             )
             .run();
     }
-
-    
 
     // SystemParam は System の引数にできるものは何でも持つことができる
     #[derive(SystemParam)]
@@ -118,9 +108,8 @@ App::new()
         _secret: PhantomData<&'s ()>,
     }
     
-    // SystemParam は直接 System の引数にすることができる
-    fn query_system_param(mut my_system_param: MySystemParam) {
-        // ..
+    
+    fn query_system_param(mut my_system_param: MySystemParam) { // SystemParam は直接 System の引数にすることができる
     }
 
     fn my_system(mut q: Query<&mut MyComponent>) {
@@ -445,11 +434,9 @@ fn main() {
         .add_system_set(
             SystemSet::on_enter(AppState::Menu).with_system(menu_on_enter) // AppState::Menu に入ったときのみ動作する System Set
         )
-        
         .add_system_set(
             SystemSet::on_update(AppState::Game).with_system(game_on_update) // AppState::Game で毎フレーム動作する System Set
         )
-        
         .add_system_set(
             SystemSet::on_exit(AppState::End).with_system(end_on_exit) // AppState::End を終了するときのみ動作する System Set
         )
@@ -677,14 +664,11 @@ fn setup(mut commands: Commands) {
             parent.spawn().insert(MyChild("MyChild1".to_string()));
         })
         .id();
-
     
     let child = commands
         .spawn()
         .insert(MyChild("MyChild2".to_string())) // 別途 MyChild Entity を生成し
         .id();
-
-    
     commands.entity(parent).push_children(&[child]); // MyParent の Entity ID を使って MyChild を Child として追加
 }
 
