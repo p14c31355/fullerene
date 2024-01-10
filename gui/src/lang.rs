@@ -31,11 +31,9 @@ let a: &'static str = r#"
     // let half_crab = &a[3..5]; は失敗します。
     // Rust は無効な unicode 文字のスライスを受け付けません。
     println!("{} {}", first_word, second_word);
-     // 文字をcharのベクトルとして集める
-     let chars = "hi 🦀".chars().collect::<Vec<char>>();
+     let chars = "hi 🦀".chars().collect::<Vec<char>>(); // 文字をcharのベクトルとして集める
      println!("{}", chars.len()); // should be 4
-     // chars は 4 バイトなので、u32 に変換することができる
-     println!("{}", chars[3] as u32);
+     println!("{}", chars[3] as u32); // chars は 4 バイトなので、u32 に変換することができる
      let mut helloworld = String::from("hello");
      helloworld.push_str(" world");
      helloworld = helloworld + "!";

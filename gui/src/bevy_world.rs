@@ -23,6 +23,7 @@ fn main() {
         .add_system(input_system.system())
         .add_system(add_people.system())
         .add_system(greet_people.system())
+        .add_system(add_entities.system())
         .add_startup_system(move |world| setup.system().label("setup"))
         .add_startup_stage_after(stage::SETUP, "load_assets", SystemStage::single(load_assets.system()))
         .add_startup_system_to_stage("load_assets", move |world| setup_assets.system().label("setup_assets"))
@@ -189,4 +190,33 @@ fn greet_people(query: Query<&Name, With<Person>>) {
     for name in query.iter() {
         println!("hello {}!", name.0);
     }
+}
+
+// `Component` を実装した struct や enum が Component として使用可能
+#[derive(Component)]
+struct Position { x: f32, y: f32 }
+
+// New Type を使って単純な String を Component として使える
+#[derive(Component)]
+struct PlayerName(String);
+
+// 空の struct は Marker Component としても使える
+#[derive(Component)]
+struct Player;
+#[derive(Component)]
+struct Enemy;
+
+fn add_entities(mut commands: Commands) {
+  // Player Entity を生成する
+  commands
+      .spawn()                                   // Entity を生成
+      .insert(Player)                            // Player の Marker を追加
+      .insert(Position::default())               // Position Component を追加
+      .insert(PlayerName("Ferris".to_string())); // PlayerName を追加
+
+  // Enemy Entity を生成する
+  commands
+      .spawn()                      // Entity を生成
+      .insert(Enemy)                // Enemy の Marker を追加
+      .insert(Position::default()); // Position Component を追加
 }
