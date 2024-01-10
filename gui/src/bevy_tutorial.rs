@@ -1,11 +1,10 @@
 use bevy::prelude::*;
-use bevy::ecs::system::SystemParam; // 要インポート
-use bevy::tasks::ComputeTaskPool; // 要 import
+use bevy::ecs::system::SystemParam;
+use bevy::tasks::ComputeTaskPool;
 use bevy::app::PluginGroupBuilder; // PluginGroup トレイトを実装するには追加が必要
 use bevy::ecs::schedule::ShouldRun; // Run Criteria を使用するには追加が必要
-use bevy::core::FixedTimestep; // 要 import
-
-use bevy::app::{ScheduleRunnerPlugin, ScheduleRunnerSettings}; // 要 import
+use bevy::core::FixedTimestep;
+use bevy::app::{ScheduleRunnerPlugin, ScheduleRunnerSettings};
 
 // Components
 // Component を derive した struct や enum が Component として使用できる
@@ -664,7 +663,7 @@ fn setup(mut commands: Commands) {
             parent.spawn().insert(MyChild("MyChild1".to_string()));
         })
         .id();
-    
+
     let child = commands
         .spawn()
         .insert(MyChild("MyChild2".to_string())) // 別途 MyChild Entity を生成し
@@ -746,7 +745,6 @@ fn main() {
       .add_system(my_exclusive_system.exclusive_system())
       .run();
 }
-
 
 fn main() {
   App::new()
