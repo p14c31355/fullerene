@@ -1,6 +1,12 @@
 use bevy::prelude::*;
 use bevy::ecs::system::SystemParam; // 要インポート
 use bevy::tasks::ComputeTaskPool; // 要 import
+use bevy::app::PluginGroupBuilder; // PluginGroup トレイトを実装するには追加が必要
+use bevy::ecs::schedule::ShouldRun; // Run Criteria を使用するには追加が必要
+use bevy::core::FixedTimestep; // 要 import
+// 要 import
+use bevy::app::{ScheduleRunnerPlugin, ScheduleRunnerSettings};
+
 
 // Components
 // Component を derive した struct や enum が Component として使用できる
@@ -9,10 +15,10 @@ struct Person;
 #[derive(Component)]
 struct Name(String);
 
-// Component を Bundle としてまとめて定義する
-// Bundle を定義するには derive(Bundle) が必要
-#[derive(Default, Bundle)]
-struct PlayerStatus {
+
+
+#[derive(Default, Bundle)] // Bundle を定義するには derive(Bundle) が必要
+struct PlayerStatus { // Component を Bundle としてまとめて定義する
     hp: PlayerHp,
     mp: PlayerMp,
     xp: PlayerXp,
@@ -24,8 +30,8 @@ struct PlayerBundle {
     name: PlayerName,
     position: Position,
     _marker: Player,
-    // Bundle を入れ子にするには #[bundle] が必要
-    #[bundle]
+    
+    #[bundle] // Bundle を入れ子にするには #[bundle] が必要
     status: PlayerStatus,
 }
 
@@ -260,8 +266,8 @@ fn count_up(
 struct MyTimer(Timer);
 
 fn setup(mut commands: Commands) {
-    // MyTimer を 2.0 秒ごとに繰り返すように設定
-    commands.spawn().insert(MyTimer(Timer::from_seconds(2.0, true)));
+   
+    commands.spawn().insert(MyTimer(Timer::from_seconds(2.0, true))); // MyTimer を 2.0 秒ごとに繰り返すように設定
 }
 
 // MyTimer に経過時間を Time Resource を使って適用し、指定時間が経過したかをチェックする
@@ -295,8 +301,8 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_system(count_up_1)
-        // .config() を使って手動で Local<MyCounter> を初期化する
-        .add_system(count_up_2.config(|params| {
+        
+        .add_system(count_up_2.config(|params| { // .config() を使って手動で Local<MyCounter> を初期化する
             params.0 = Some(MyCounter(0)); // 0 番目の引数を初期化したいので params.0
         }))
         .run();
@@ -324,8 +330,8 @@ fn setup(mut commands: Commands) {
       (CompA, CompB, CompC),
   ]);
 
-  // Entity の Component を削除
-  commands.entity(abc).remove::<CompB>();
+  
+  commands.entity(abc).remove::<CompB>(); // Entity の Component を削除
 
   // Entity の削除
   commands.entity(a).despawn();
@@ -398,7 +404,7 @@ fn main() {
         .run();
 }
 
-use bevy::app::PluginGroupBuilder; // PluginGroup トレイトを実装するには追加が必要
+
 
 // 自作の Plugin
 struct FooPlugin;
@@ -517,7 +523,7 @@ fn esc_to_menu(
   }
 }
 
-use bevy::ecs::schedule::ShouldRun; // Run Criteria を使用するには追加が必要
+
 
 // count が 100 より大きくなったときのみ ShouldRun::Yes を返す Run Criteria
 fn my_run_criteria(mut count: Local<usize>) -> ShouldRun {
@@ -745,7 +751,6 @@ fn main() {
         .run();
 }
 
-use bevy::core::FixedTimestep; // 要 import
 
 fn hello_world() {
     println!("hello world");
@@ -764,8 +769,7 @@ fn main() {
         .run();
 }
 
-// 要 import
-use bevy::app::{ScheduleRunnerPlugin, ScheduleRunnerSettings};
+
 
 fn main() {
     App::new()
