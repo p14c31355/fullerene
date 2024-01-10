@@ -122,7 +122,6 @@ App::new()
           // 指定した Entity が見つかれば処理
       }
   
-      
       let c = q.single(); // Entity がひとつだけなのであれば、直接取得できる
   }
 
@@ -173,7 +172,7 @@ fn my_system(
   // ...
 }
 
-// OK
+// OK クエリセットで括る
 fn my_system(
   mut q: QuerySet<(
       QueryState<&mut CompA, With<CompB>>, // A with B (Mutable)
@@ -206,10 +205,8 @@ fn add_one(pool: Res<ComputeTaskPool>, mut query: Query<&mut MyComp>) {
 
 fn main() {
   App::new()
-      // ...
       .init_resource::<MyResourceA>()   // Default or FromWorld で初期化されて追加
       .insert_resource(MyResourceB(5))  // 手動で初期化して追加
-      // ...
       .run();
 }
 
@@ -286,7 +283,6 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_system(count_up_1)
-        
         .add_system(count_up_2.config(|params| { // .config() を使って手動で Local<MyCounter> を初期化する
             params.0 = Some(MyCounter(0)); // 0 番目の引数を初期化したいので params.0
         }))
@@ -314,7 +310,6 @@ fn setup(mut commands: Commands) {
       (CompA, CompB, CompC),
       (CompA, CompB, CompC),
   ]);
-
   
   commands.entity(abc).remove::<CompB>(); // Entity の Component を削除
 
