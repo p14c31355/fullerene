@@ -134,8 +134,8 @@ App::new()
           // 指定した Entity が見つかれば処理
       }
   
-      // Entity がひとつだけなのであれば、直接取得できる
-      let c = q.single();
+      
+      let c = q.single(); // Entity がひとつだけなのであれば、直接取得できる
   }
 
   fn my_system(
@@ -245,8 +245,8 @@ impl FromWorld for MySecondCounter {
     }
 }
 
-// 初期化できない Resource
-struct MyThreshold(usize);
+
+struct MyThreshold(usize); // 初期化できない Resource
 
 // System
 fn count_up(
@@ -344,14 +344,14 @@ fn setup(mut commands: Commands) {
 // 内部に送受信したい様々なデータをもたせる
 struct MyEvent(String);
 
-/// Event を送信する System
-/// EventWriter を使って MyEvent を送信する
+// Event を送信する System
+// EventWriter を使って MyEvent を送信する
 fn event_write(mut event_writer: EventWriter<MyEvent>) {
     event_writer.send(MyEvent("Hello, event!".to_string()))
 }
 
-/// Event を受信する System
-/// EventReader のイテレータを使って受信 Event を処理する
+// Event を受信する System
+// EventReader のイテレータを使って受信 Event を処理する
 fn event_read(mut event_reader: EventReader<MyEvent>) {
     for e in event_reader.iter() {
         let msg = &e.0;
@@ -371,12 +371,12 @@ fn main() {
 struct MyResource;
 struct MyEvent;
 
-// 自作の Plugin
-struct MyPlugin;
 
-// 自作の Plugin に Plugin トレイトを実装すれば、Plugin として使用できる
+struct MyPlugin; // 自作の Plugin
+
+
 // Plugin トレイトでは App Builder に必要な要素を追加するだけで良い
-impl Plugin for MyPlugin {
+impl Plugin for MyPlugin { // 自作の Plugin に Plugin トレイトを実装すれば、Plugin として使用できる
     fn build(&self, app: &mut App) {
         app.insert_resource(MyResource)
             .add_event::<MyEvent>()
@@ -437,21 +437,21 @@ enum AppState { Menu, Game, End }
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        // State の初期値を登録して State を有効化する
-        .add_state(AppState::Menu)
-        // State に関係なく動作する System
-        .add_system(count_frame)
-        // AppState::Menu に入ったときのみ動作する System Set
+        
+        .add_state(AppState::Menu) // State の初期値を登録して State を有効化する
+        
+        .add_system(count_frame) // State に関係なく動作する System
+        
         .add_system_set(
-            SystemSet::on_enter(AppState::Menu).with_system(menu_on_enter)
+            SystemSet::on_enter(AppState::Menu).with_system(menu_on_enter) // AppState::Menu に入ったときのみ動作する System Set
         )
-        // AppState::Game で毎フレーム動作する System Set
+        
         .add_system_set(
-            SystemSet::on_update(AppState::Game).with_system(game_on_update)
+            SystemSet::on_update(AppState::Game).with_system(game_on_update) // AppState::Game で毎フレーム動作する System Set
         )
-        // AppState::End を終了するときのみ動作する System Set
+        
         .add_system_set(
-            SystemSet::on_exit(AppState::End).with_system(end_on_exit)
+            SystemSet::on_exit(AppState::End).with_system(end_on_exit) // AppState::End を終了するときのみ動作する System Set
         )
         .run();
 }
@@ -470,22 +470,21 @@ fn menu_on_enter(mut app_state: ResMut<State<AppState>>) {
 }
 
 fn push_to_state_stack(mut app_state: ResMut<State<AppState>>) {
-  // push() で State Stack に State を積む
-  app_state.push(AppState::Paused).unwrap();
+  
+  app_state.push(AppState::Paused).unwrap(); // push() で State Stack に State を積む
 }
 
 fn pop_from_state_stack(mut app_state: ResMut<State<AppState>>) {
-  // pop() で State Stack から以前の状態に戻す
-  app_state.pop().unwrap();
+  
+  app_state.pop().unwrap(); // pop() で State Stack から以前の状態に戻す
 }
 
 
 fn main() {
   App::new()
-      // ...
-      // AppState::Game が Inactive になる際に一度だけ呼ばれる
+      
       .add_system_set(
-          SystemSet::on_pause(AppState::Game)
+          SystemSet::on_pause(AppState::Game) // AppState::Game が Inactive になる際に一度だけ呼ばれる
               .with_system(game_on_pause)
       )
       // AppState::Game が Inactive でも Active でも毎フレーム呼ばれる
@@ -679,14 +678,14 @@ fn setup(mut commands: Commands) {
         })
         .id();
 
-    // 別途 MyChild Entity を生成し
+    
     let child = commands
         .spawn()
-        .insert(MyChild("MyChild2".to_string()))
+        .insert(MyChild("MyChild2".to_string())) // 別途 MyChild Entity を生成し
         .id();
 
-    // MyParent の Entity ID を使って MyChild を Child として追加
-    commands.entity(parent).push_children(&[child]);
+    
+    commands.entity(parent).push_children(&[child]); // MyParent の Entity ID を使って MyChild を Child として追加
 }
 
 // Child Entity の Query から、それぞれの Parent Entity を取得する
@@ -764,10 +763,10 @@ fn main() {
       .run();
 }
 
-// スレッドプールの数を指定することができる
+
 fn main() {
   App::new()
-      .insert_resource(DefaultTaskPoolOptions::with_num_threads(4))
+      .insert_resource(DefaultTaskPoolOptions::with_num_threads(4)) // スレッドプールの数を指定することができる
       .add_plugins(DefaultPlugins)
       .run();
 }
