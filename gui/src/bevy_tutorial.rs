@@ -726,10 +726,10 @@ fn clean_up(mut commands: Commands, query: Query<Entity, With<Children>>) {
   commands.entity(e).despawn_recursive(); // MyParent を MyChild 含めて再帰的に破棄
 }
 
-// App を手動で Update する Runner をカスタマイズできる
+
 fn my_runner(mut app: App) {
     println!("my_runner!");
-    app.update();
+    app.update(); // App を手動で Update する Runner をカスタマイズできる
 }
 
 fn hello_world() {
@@ -742,11 +742,6 @@ fn main() {
         .set_runner(my_runner)
         .add_system(hello_world)
         .run();
-}
-
-
-fn hello_world() {
-    println!("hello world");
 }
 
 fn main() {
