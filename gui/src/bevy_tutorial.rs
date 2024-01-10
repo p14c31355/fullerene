@@ -1,4 +1,6 @@
 use bevy::prelude::*;
+use bevy::ecs::system::SystemParam; // 要インポート
+use bevy::tasks::ComputeTaskPool; // 要 import
 
 // Components
 // Component を derive した struct や enum が Component として使用できる
@@ -6,10 +8,6 @@ use bevy::prelude::*;
 struct Person;
 #[derive(Component)]
 struct Name(String);
-
-
-
-
 
 // Component を Bundle としてまとめて定義する
 // Bundle を定義するには derive(Bundle) が必要
@@ -52,11 +50,8 @@ fn my_system(
 App::new()
     
     .add_system(second.label("second")) // second という label をつける
-    
     .add_system(first.before("second")) // first は second より前に
-    
     .add_system(fourth.label("fourth").after("second")) // fourth は second より後に
-    
     .add_system(third.after("second").before("fourth")) // third は second より後 fourth より前に
     .run();
 
@@ -96,13 +91,13 @@ App::new()
     
     fn main() {
         App::new().add_system(
-                // chain() で後段の System を登録する
-                parse_number.chain(handle_error),
+                
+                parse_number.chain(handle_error), // chain() で後段の System を登録する
             )
             .run();
     }
 
-    use bevy::ecs::system::SystemParam; // 要インポート
+    
 
     // SystemParam は System の引数にできるものは何でも持つことができる
     #[derive(SystemParam)]
@@ -209,8 +204,6 @@ fn add_two_comp(query: Query<&MyComp>) {
       println!("{} + {} = {}", c1, c2, c1 + c2);
   }
 }
-
-use bevy::tasks::ComputeTaskPool; // 要 import
 
 // parallel_iterator を使用するには、ComputeTaskPool が必要
 fn add_one(pool: Res<ComputeTaskPool>, mut query: Query<&mut MyComp>) {
