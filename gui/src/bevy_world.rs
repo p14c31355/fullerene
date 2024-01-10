@@ -9,6 +9,20 @@ struct AssetConfig {
     color: [f32; 3],
 }
 
+// `Component` を実装した struct や enum が Component として使用可能
+#[derive(Component)]
+struct Position { x: f32, y: f32 }
+
+// New Type を使って単純な String を Component として使える
+#[derive(Component)]
+struct PlayerName(String);
+
+// 空の struct は Marker Component としても使える
+#[derive(Component)]
+struct Player;
+#[derive(Component)]
+struct Enemy;
+
 struct Cube;
 struct Entity(u64);
 
@@ -191,20 +205,6 @@ fn greet_people(query: Query<&Name, With<Person>>) {
         println!("hello {}!", name.0);
     }
 }
-
-// `Component` を実装した struct や enum が Component として使用可能
-#[derive(Component)]
-struct Position { x: f32, y: f32 }
-
-// New Type を使って単純な String を Component として使える
-#[derive(Component)]
-struct PlayerName(String);
-
-// 空の struct は Marker Component としても使える
-#[derive(Component)]
-struct Player;
-#[derive(Component)]
-struct Enemy;
 
 fn add_entities(mut commands: Commands) {
   // Player Entity を生成する
