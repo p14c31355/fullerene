@@ -10,6 +10,7 @@ struct AssetConfig {
 }
 
 struct Cube;
+struct Entity(u64);
 
 // App に System を登録し、Bevy の App を構築して Run する
 fn main() {
@@ -32,6 +33,16 @@ fn main() {
         .add_startup_system(setup)    
         .add_system(my_system)        // System を追加
         .run();
+}
+
+fn add_entity(mut commands: Commands) {
+    let entity = commands
+        .spawn()                           // Entity の生成
+        .insert(Person)                    // Person Component の追加
+        .insert(Name("Bevy".to_string()))  // Name Component の追加
+        .id();                             // Entity を取得
+  
+    println!("Entity ID is {}", entity.id());
 }
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut materials: ResMut<Assets<ColorMaterial>>) {

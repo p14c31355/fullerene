@@ -17,28 +17,6 @@ Rust の通常の関数が System として使用できる
 Query を使って Component を取得し、それに対して処理を行う
 */
 
-
-
-fn main() {
-  App::new()
-      .add_plugins(DefaultPlugins)  
-      
-      
-      .run();
-}
-
-struct Entity(u64);
-
-fn add_entity(mut commands: Commands) {
-  let entity = commands
-      .spawn()                           // Entity の生成
-      .insert(Person)                    // Person Component の追加
-      .insert(Name("Bevy".to_string()))  // Name Component の追加
-      .id();                             // Entity を取得
-
-  println!("Entity ID is {}", entity.id());
-}
-
 // `Component` を実装した struct や enum が Component として使用可能
 #[derive(Component)]
 struct Position { x: f32, y: f32 }
