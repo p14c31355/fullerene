@@ -50,37 +50,36 @@ fn my_system(
 }
 
 App::new()
-    // second という label をつける
-    .add_system(second.label("second"))
-    // first は second より前に
-    .add_system(first.before("second"))
-    // fourth は second より後に
-    .add_system(fourth.label("fourth").after("second"))
-    // third は second より後 fourth より前に
-    .add_system(third.after("second").before("fourth"))
+    
+    .add_system(second.label("second")) // second という label をつける
+    
+    .add_system(first.before("second")) // first は second より前に
+    
+    .add_system(fourth.label("fourth").after("second")) // fourth は second より後に
+    
+    .add_system(third.after("second").before("fourth")) // third は second より後 fourth より前に
     .run();
 
     App::new()
-    // second と third をまとめて SystemSet にする
-    .add_system_set(
+    
+    .add_system_set( // second と third をまとめて SystemSet にする
         SystemSet::new()
-            // label をつけておく
-            .label("second and third")
-            // first よりも後に second と third を実行する
-            .after("first")
-            // ここにも label をつけておく
-            .with_system(second.label("second"))
-            // third は second より後に
-            .with_system(third.after("second")),
+            
+            .label("second and third") // label をつけておく
+            
+            .after("first") // first よりも後に second と third を実行する
+            
+            .with_system(second.label("second")) // ここにも label をつけておく
+            
+            .with_system(third.after("second")), // third は second より後に
     )
-    // first は second and third より前に
-    .add_system(first.label("first").before("second and third"))
-    // fourth は second and third より後に
-    .add_system(fourth.after("second and third"))
+    
+    .add_system(first.label("first").before("second and third")) // first は second and third より前に
+    
+    .add_system(fourth.after("second and third")) // fourth は second and third より後に
     .run();
 
     use anyhow::Result;
-    use bevy::prelude::*;
     
     // 処理の結果を後段の System へ転送する
     fn parse_number() -> Result<()> {
