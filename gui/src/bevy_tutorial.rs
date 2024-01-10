@@ -7,15 +7,20 @@ struct Person;
 #[derive(Component)]
 struct Name(String);
 
-// Startup System
-// Rust の通常の関数が System として使用できる
-// App の開始時に一度だけ呼ばれる
-// Commands を使い、Person と Name を持った Entity を生成する
+/*
+Startup System
+Rust の通常の関数が System として使用できる
+App の開始時に一度だけ呼ばれる
+Commands を使い、Person と Name を持った Entity を生成する
+System
+Rust の通常の関数が System として使用できる
+Query を使って Component を取得し、それに対して処理を行う
+*/
+ 
 
-
-// System
-// Rust の通常の関数が System として使用できる
-// Query を使って Component を取得し、それに対して処理を行う
+// 
+// 
+// 
 
 // App に System を登録し、Bevy の App を構築して Run する
 fn main() {
