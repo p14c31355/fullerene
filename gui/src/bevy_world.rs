@@ -12,17 +12,9 @@ struct AssetConfig {
 // `Component` を実装した struct や enum が Component として使用可能
 #[derive(Component)]
 struct Position { x: f32, y: f32 }
-
-// New Type を使って単純な String を Component として使える
-#[derive(Component)]
-struct PlayerName(String);
-
-// 空の struct は Marker Component としても使える
-#[derive(Component)]
-struct Player;
-#[derive(Component)]
+struct PlayerName(String); // New Type を使って単純な String を Component として使える
+struct Player; // 空の struct は Marker Component としても使える
 struct Enemy;
-
 struct Cube;
 struct Entity(u64);
 
