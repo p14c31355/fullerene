@@ -18,6 +18,16 @@ struct Enemy;
 struct Cube;
 struct Entity(u64);
 
+/*
+Startup System
+Rust の通常の関数が System として使用できる
+App の開始時に一度だけ呼ばれる
+Commands を使い、Person と Name を持った Entity を生成する
+System
+Rust の通常の関数が System として使用できる
+Query を使って Component を取得し、それに対して処理を行う
+*/
+
 // App に System を登録し、Bevy の App を構築して Run する
 fn main() {
     App::build()
@@ -30,6 +40,8 @@ fn main() {
         .add_system(add_people.system())
         .add_system(greet_people.system())
         .add_system(add_entities.system())
+        .add_startup_system(setup) // 起動時に一度だけ呼ばれる
+        .add_system(hello_world) // 毎フレームよばれる
         .add_startup_system(move |world| setup.system().label("setup"))
         .add_startup_stage_after(stage::SETUP, "load_assets", SystemStage::single(load_assets.system()))
         .add_startup_system_to_stage("load_assets", move |world| setup_assets.system().label("setup_assets"))
@@ -212,3 +224,11 @@ fn add_entities(mut commands: Commands) {
       .insert(Enemy)                // Enemy の Marker を追加
       .insert(Position::default()); // Position Component を追加
 }
+
+fn setup () {
+    println!("Hello from setup");
+}
+  
+fn hello_world () {
+    println!("Hello from system");
+}  

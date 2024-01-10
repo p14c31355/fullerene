@@ -1,21 +1,13 @@
 use bevy::prelude::*;
 
-/// Components
-/// Component を derive した struct や enum が Component として使用できる
+// Components
+// Component を derive した struct や enum が Component として使用できる
 #[derive(Component)]
 struct Person;
 #[derive(Component)]
 struct Name(String);
 
-/*
-Startup System
-Rust の通常の関数が System として使用できる
-App の開始時に一度だけ呼ばれる
-Commands を使い、Person と Name を持った Entity を生成する
-System
-Rust の通常の関数が System として使用できる
-Query を使って Component を取得し、それに対して処理を行う
-*/
+
 
 
 
@@ -45,21 +37,6 @@ fn add_entities(mut commands: Commands) {
   // Enemy の Entity を生成する
   // タプルで Component をまとめると Bundle と解釈される
   commands.spawn_bundle((Enemy, Position { x: -1.0, y: -2.0 }));
-}
-
-fn setup () {
-  println!("Hello from setup");
-}
-
-fn hello_world () {
-  println!("Hello from system");
-}
-
-fn main() {
-  App::new()
-      .add_startup_system(setup) // 起動時に一度だけ呼ばれる
-      .add_system(hello_world) // 毎フレームよばれる
-      .run();
 }
 
 fn my_system(
