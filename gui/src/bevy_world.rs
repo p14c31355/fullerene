@@ -51,6 +51,9 @@ fn main() {
         .add_event::<MyEvent>()       // Event を追加
         .add_startup_system(setup)    
         .add_system(my_system)        // System を追加
+        // Custom Runner を適用する
+        .set_runner(my_runner)
+        .add_system(hello_world)
         .run();
 }
 
@@ -244,8 +247,6 @@ fn hello_world() {
 
 fn main() {
     App::new()
-        // Custom Runner を適用する
-        .set_runner(my_runner)
-        .add_system(hello_world)
+        
         .run();
 }
