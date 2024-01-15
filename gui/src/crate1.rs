@@ -19,3 +19,8 @@ pub(crate) const Y: f64 = 5.0;
 pub(crate) const Z: f64 = 5.0;
 
 pub(crate) const DEG: f64 = 5.0;
+
+pub(crate) fn main_copy() {
+      println("Hello, world!");
+  }
+  
