@@ -41,8 +41,8 @@ struct BagOfHolding<T> {
 
 enum Item {
     Inventory(String),
-    // None は項目がないことを表す
-    None,
+    
+    None, // None は項目がないことを表す
 }
 
 struct BagOfHolding {
