@@ -32,11 +32,10 @@ struct PlayerBundle {
 }
 
 fn add_entities(mut commands: Commands) {
-  // Player Bundle を持った Entity を生成する
-  commands.spawn_bundle(PlayerBundle::default());
-  // Enemy の Entity を生成する
+  commands.spawn_bundle(PlayerBundle::default()); // Player Bundle を持った Entity を生成する
+  
   // タプルで Component をまとめると Bundle と解釈される
-  commands.spawn_bundle((Enemy, Position { x: -1.0, y: -2.0 }));
+  commands.spawn_bundle((Enemy, Position { x: -1.0, y: -2.0 })); // Enemy の Entity を生成する
 }
 
 fn my_system(
@@ -102,9 +101,9 @@ App::new()
     #[derive(SystemParam)]
     struct MySystemParam2<'w, 's> {
         resource: ResMut<'w, MyResource>,
-        // 's を満たすために PhantomData が必要
+        
         #[system_param(ignore)]
-        _secret: PhantomData<&'s ()>,
+        _secret: PhantomData<&'s ()>, // 's を満たすために PhantomData が必要
     }
     
     
@@ -112,13 +111,13 @@ App::new()
     }
 
     fn my_system(mut q: Query<&mut MyComponent>) {
-      // iter() iter_mut() でイテレートして処理
-      for c in q.iter_mut() {
+      
+      for c in q.iter_mut() { // iter() iter_mut() でイテレートして処理
           // すべての MyComponent をミュータブルにイテレートして処理
       }
   
-      // get() get_mut() で Entity を指定して取得
-      if let Ok(c) = q.get_mut(entity) {
+      
+      if let Ok(c) = q.get_mut(entity) { // get() get_mut() で Entity を指定して取得
           // 指定した Entity が見つかれば処理
       }
   
@@ -268,8 +267,8 @@ fn main() {
         .run();
 }
 
-// Local<T> には Default の実装が必要
-#[derive(Default)]
+
+#[derive(Default)] // Local<T> には Default の実装が必要
 struct MyCounter(usize);
 
 fn count_up_1(mut counter: Local<MyCounter>) {
