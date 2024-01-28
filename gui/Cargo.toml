@@ -21,10 +21,8 @@ serde_json = "1.0.111"
 pyo3 = "0.20.2"
 nalgebra = "0.32.3"
 
-avr-hal = "0.6"
-avr-device = "0.7"
-panic-halt = "0.2"
-servo-sg90 = "0.1"
+avr-hal = "0.7"
+atmega328p-hal = "0.16.0"
 
 # Enable a small amount of optimization in debug mode
 [profile.dev]
