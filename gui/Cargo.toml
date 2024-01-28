@@ -21,7 +21,7 @@ serde_json = "1.0.111"
 pyo3 = "0.20.2"
 nalgebra = "0.32.3"
 
-arduino-hal = "0.18.0"
+ruduino = "0.3.2"
 
 # Enable a small amount of optimization in debug mode
 [profile.dev]
