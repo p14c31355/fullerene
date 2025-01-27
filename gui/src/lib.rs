@@ -1,44 +1,54 @@
+ // 共通箇所の列挙
+trait FooTrait {
+  fn process(&self) -> String;
+  fn increment(&mut self);
+}
+
+// trait で実装した共通箇所にさまざまな動作を付与していく
+impl FooTrait for Foo {
+    fn process(&self) -> String {
+        format!("{}",self.x)
+    }
+
+    fn increment(&mut self) {
+        self.x +=1;
+    }
+}
+
+// 最終的に関数で実行するのだが，その関数は trait と impl により簡略化することが可能
+fn do_something<T: FooTrait>(f: &mut T) {
+    println!("{}", f.process());
+    f.increment();
+}
+
 struct Bar {
     x: i32,
 }
 
 struct Foo {
     bar: Bar,
-}
-
-struct Foo {
     x: i32,
 }
+// ここまで構造体ネストの練習
 
 fn do_something(f: Foo) {
     println!("{}", f.x);
     // f はここでドロップ
-}
-
-struct Foo {
-    x: i32,
 }
 
 fn do_something() -> Foo {
     Foo { x: 42 }
     // 所有権は外に移動
 }
-
+/*
 struct Foo {
     x: i32,
 }
-
-struct Foo {
-    x: i32,
-}
+*/
 
 fn do_something(f: Foo) {
     println!("{}", f.x);
     // f はここでドロップ
-}
-
-struct Foo {
-    x: i32,
 }
 
 fn do_something(f: &mut Foo) {
@@ -46,25 +56,13 @@ fn do_something(f: &mut Foo) {
     // f への可変な参照はここでドロップ
 }
 
-struct Foo {
-    x: i32,
-}
-
 fn do_something(a: &Foo) -> &i32 {
     return &a.x;
-}
-
-struct Foo {
-    x: i32,
 }
 
 // 引数 foo と戻り値はライフタイムを共有
 fn do_something<'a>(foo: &'a Foo) -> &'a i32 {
     return &foo.x;
-}
-
-struct Foo {
-    x: i32,
 }
 
 // foo_b と戻り値はライフタイムを共有
