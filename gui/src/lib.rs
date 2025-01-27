@@ -21,40 +21,6 @@ fn do_something<T: FooTrait>(f: &mut T) {
     f.increment();
 }
 
-struct Bar {
-    x: i32,
-}
-
-struct Foo {
-    bar: Bar,
-    x: i32,
-}
-// ここまで構造体ネストの練習
-
-fn do_something(f: Foo) {
-    println!("{}", f.x);
-    // f はここでドロップ
-}
-
-fn do_something() -> Foo {
-    Foo { x: 42 }
-    // 所有権は外に移動
-}
-/*
-struct Foo {
-    x: i32,
-}
-*/
-
-fn do_something(f: Foo) {
-    println!("{}", f.x);
-    // f はここでドロップ
-}
-
-fn do_something(f: &mut Foo) {
-    f.x += 1;
-    // f への可変な参照はここでドロップ
-}
 
 fn do_something(a: &Foo) -> &i32 {
     return &a.x;
