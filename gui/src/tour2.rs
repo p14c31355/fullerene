@@ -1,6 +1,6 @@
 #![allow(dead_code)] // この行でコンパイラのwaringsメッセージを止めます。
 
-enum Species { Crab, Octopus, Fish, Clam }
+enum Species { Crab, Octopus, Fish, Clam } // enum(列挙型)は1行でも改行もOK
 enum PoisonType { Acidic, Painful, Lethal }
 enum Size { Big, Small }
 enum Weapon {
@@ -9,30 +9,15 @@ enum Weapon {
     None
 }
 
-enum Species {
-    Crab,
-    Octopus,
-    Fish,
-    Clam
+trait SeaCreatureTrait {
+    fn species(&Species) -> String;
+    fn name(&self) -> &str;
+    fn arms(&self) -> i32;
+    fn legs(&self) -> i32;
+    fn weapon(&self) -> String;
 }
 
-struct SeaCreature {
-    species: Species,
-    name: String,
-    arms: i32,
-    legs: i32,
-    weapon: Weapon,
-}
-
-struct SeaCreature {
-    animal_type: String,
-    name: String,
-    arms: i32,
-    legs: i32,
-    weapon: String,
-}
-
-struct Location(i32, i32);
+struct Location(i32, i32); // 座標
 struct Marker;
 
 struct BagOfHolding<T> {
@@ -41,7 +26,6 @@ struct BagOfHolding<T> {
 
 enum Item {
     Inventory(String),
-    
     None, // None は項目がないことを表す
 }
 
@@ -55,21 +39,6 @@ struct BagOfHolding<T> {
     item: Option<T>,
 }
 
-fn do_something_that_might_fail(i:i32) -> Result<f32,String> {
-    if i == 42 {
-        Ok(13.0)
-    } else {
-        Err(String::from("正しい値ではありません"))
-    }
-}
-
-fn do_something_that_might_fail(i: i32) -> Result<f32, String> {
-    if i == 42 {
-        Ok(13.0)
-    } else {
-        Err(String::from("正しい値ではありません"))
-    }
-}
 
 fn main() {
 
@@ -460,13 +429,6 @@ fn main() -> Result<(), String> {
     Ok(())
 }
 
-fn do_something_that_might_fail(i: i32) -> Result<f32, String> {
-    if i == 42 {
-        Ok(13.0)
-    } else {
-        Err(String::from("正しい値ではありません"))
-    }
-}
 
 fn main() -> Result<(), String> {
     // 簡潔ですが、値が存在することを仮定しており、
