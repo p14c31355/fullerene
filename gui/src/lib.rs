@@ -2,6 +2,8 @@
 trait FooTrait {
   fn process(&self) -> String;
   fn increment(&mut self);
+  fn ret(a: &Foo) -> &i32;
+  fn retlife<'a>(foo: &'a Foo) -> &'a i32;
 }
 
 // trait で実装した共通箇所にさまざまな動作を付与していく
@@ -13,23 +15,25 @@ impl FooTrait for Foo {
     fn increment(&mut self) {
         self.x +=1;
     }
+
+    fn ret(a: &Foo) -> &i32 {
+      return &a.x;
+    }
+
+    // 引数 foo と戻り値はライフタイムを共有
+    fn retlife<'a>(foo: &'a Foo) -> &'a i32 {
+      return &foo.x;
+    }
 }
 
 // 最終的に関数で実行するのだが，その関数は trait と impl により簡略化することが可能
 fn do_something<T: FooTrait>(f: &mut T) {
     println!("{}", f.process());
     f.increment();
+    f.ret();
+    f.retlife();
 }
 
-
-fn do_something(a: &Foo) -> &i32 {
-    return &a.x;
-}
-
-// 引数 foo と戻り値はライフタイムを共有
-fn do_something<'a>(foo: &'a Foo) -> &'a i32 {
-    return &foo.x;
-}
 
 // foo_b と戻り値はライフタイムを共有
 // foo_a のライフタイムは別
