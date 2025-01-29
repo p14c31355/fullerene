@@ -146,7 +146,7 @@ fn main() {
         }
         println!("{}", x);
     }
-
+        // while : なるまでやる
     fn whiloop() {
         let mut x = 0;
         while x != 42 {
@@ -429,7 +429,9 @@ fn main() -> Result<(), String> {
     Ok(())
 }
 
+// unwrap(); は想定していない結果が出力されたときプログラムを panic させて強制的に終了させるため良い手段とはいえない
 
+/*
 fn main() -> Result<(), String> {
     // 簡潔ですが、値が存在することを仮定しており、
     // すぐにダメになる可能性があります。
@@ -443,3 +445,4 @@ fn main() -> Result<(), String> {
     Ok(())
 
 }
+*/
