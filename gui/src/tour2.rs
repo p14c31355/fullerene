@@ -424,7 +424,7 @@ fn do_something_that_might_fail(i: i32) -> Result<f32, String> {
 
 fn main() -> Result<(), String> {
     // コードが簡潔なのに注目！
-    let v = do_something_that_might_fail(42)?;
+    let v = do_something_that_might_fail(42)?; // ? はエラー伝播
     println!("発見 {}", v);
     Ok(())
 }
