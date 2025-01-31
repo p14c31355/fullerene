@@ -781,7 +781,6 @@ fn has_counted_up() {
     assert_eq!(count.0, 1);
 }
 
-use bevy::prelude::*;
 use nalgebra::Vector2;
 
 struct Player;

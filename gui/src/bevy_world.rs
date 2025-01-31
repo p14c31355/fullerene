@@ -184,8 +184,6 @@ fn spawn_cube(mut commands: Commands, material: Res<Assets<ColorMaterial>>) {
     .insert(Cube);
 }
 
-use bevy::prelude::*;
-
 #[wasm_bindgen]
 pub fn main() {
     App::build()
