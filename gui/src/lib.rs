@@ -1,4 +1,4 @@
- // 共通箇所の列挙
+// 共通箇所の列挙
 trait FooTrait {
   fn process(&self) -> String;
   fn increment(&mut self);
@@ -50,8 +50,8 @@ struct Foo<'a> {
 struct SeaCreature {
     pub name: String,
     noise: String,
-  }
-  trait LoudNoiseMaker: NoiseMaker {
+}
+trait LoudNoiseMaker: NoiseMaker {
     fn make_alot_of_noise(&self) {
         self.make_noise();
         self.make_noise();
@@ -73,9 +73,9 @@ struct SeaCreature {
   
     fn make_noise(&self);
     
-  }
+}
   
-  impl LoudNoiseMaker as NoiseMaker for SeaCreature {
+impl LoudNoiseMaker as NoiseMaker for SeaCreature {
     fn make_noise(&self) {
         println!("{}", &self.get_sound());
     }
@@ -83,10 +83,10 @@ struct SeaCreature {
     pub fn get_sound(&self) -> &str {
       &self.noise
     }
-  }
-  struct Ocean {
+}
+struct Ocean {
     animals: Vec<Box<dyn NoiseMaker>>,
-  }
+}
 
 fn main() {
     // 構造体をインスタンス化し、変数に束縛してメモリリソースを作成
