@@ -1,5 +1,7 @@
-# Cargo.toml
-# このファイルは、ワークスペースのルート (例: C:\dev\I-will-Rust\) に配置します。
+[package]
+name = "dioxus"
+version = "0.1.0"
+edition = "2021"
 
 [workspace]
 members = [
