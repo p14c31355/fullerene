@@ -1,5 +1,5 @@
 [package]
-name = "dioxus"
+name = "I-will-Rust"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,17 +7,4 @@ edition = "2021"
 members = [
     "gui",
     "dioxus",
-    # もし他にもクレートがあれば、ここに追加します
-    # "another_crate",
 ]
-
-# [package] セクションは、この親Cargo.toml自体が
-# 何らかのバイナリやライブラリとしてビルドされる必要がない限り、通常は不要です。
-# ただし、ワークスペース全体の設定（例えば、ビルド時のプロファイルなど）を
-# 定義したい場合は、[profile] セクションなどを追加できます。
-#
-# 例: リリースビルドの最適化設定
-# [profile.release]
-# opt-level = 3
-# debug = false
-# panic = 'abort'
