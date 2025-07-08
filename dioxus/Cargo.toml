@@ -6,6 +6,6 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dioxus-web = "0.5.1"
+dioxus-web = "0.6.3"
 rust-analyzer = "0.0.1"
 clippy = "0.0.302"
