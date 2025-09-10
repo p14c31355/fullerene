@@ -5,4 +5,5 @@
 ## Workspace naming
 
 - `bellows` bootloader
+- `fullerene-kernel` kernel
 - `toluene` userland
