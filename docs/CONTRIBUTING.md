@@ -37,7 +37,7 @@ If possible, please attach **reproducible code** and **I2C logs**.
 
 ## ✨ Feature proposal
 
-Please use the [Feature Request Template](.github/ISSUE_TEMPLATE/feature_request.md) to submit your proposal as an issue.
+Please use the [Feature Request Template](../.github/ISSUE_TEMPLATE/feature_request.md) to submit your proposal as an issue.
 
 * Please note the compatibility and limitations with existing drivers.
 * Please clearly indicate support for `no_std`.
