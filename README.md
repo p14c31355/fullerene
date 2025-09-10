@@ -7,3 +7,16 @@
 - `bellows` bootloader
 - `fullerene-kernel` kernel
 - `toluene` userland
+
+---
+
+## Contributing
+
+Bug reports, feature suggestions, and pull requests are welcome!
+See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for guidelines.
+
+---
+
+## License
+
+[MIT](docs/LICENSE-MIT) OR [Apache-2.0](docs/LICENSE-APACHE)
