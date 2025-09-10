@@ -7,6 +7,6 @@
 
 [workspace]
 members = [
-  "bellows", "fullerene-kernel",
+  "bellows", "flasks", "fullerene-kernel",
   "toluene",
 ]

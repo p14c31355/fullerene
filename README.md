@@ -7,6 +7,7 @@
 - `bellows` bootloader
 - `fullerene-kernel` kernel
 - `toluene` userland
+- `flasks` taskrunner
 
 ---
 

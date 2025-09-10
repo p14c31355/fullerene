@@ -131,6 +131,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "flasks"
+version = "0.1.0"
+
+[[package]]
 name = "fullerene-kernel"
 version = "0.1.0"
 dependencies = [
