@@ -30,7 +30,7 @@ cargo check
 
 ## 🐛 Bug report
 
-Please create an issue following the [Bug Report Template](.github/ISSUE_TEMPLATE/bug_report.md).
+Please create an issue following the [Bug Report Template](../.github/ISSUE_TEMPLATE/bug_report.md).
 If possible, please attach **reproducible code** and **I2C logs**.
 
 ---
