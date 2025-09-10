@@ -1,0 +1,52 @@
+name: Rust Auto-Fix on Push
+
+on:
+  push:
+    branches:
+      - '*' # Run on all branches
+
+jobs:
+  clippy_and_fmt:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0 # Get the full history for committing
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Run clippy and fix issues
+        run: cargo clippy --all-features --fix --allow-dirty --allow-staged
+
+      - name: Run rustfmt
+        run: cargo fmt
+
+      - name: Check for changes
+        id: git_status
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changes=false" >> "$GITHUB_OUTPUT"
+          fi
+          
+      - name: Configure Git
+        if: steps.git_status.outputs.changes == 'true'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+      - name: Commit and push changes
+        if: steps.git_status.outputs.changes == 'true'
+        run: |
+          git add .
+          git commit -m "clippy and rustfmt fixes"
+          git push

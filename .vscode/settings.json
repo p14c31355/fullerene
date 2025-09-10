@@ -1,0 +1,7 @@
+{
+  "rust-analyzer.linkedProjects": [
+    "bellows/Cargo.toml",
+    "fullerene-kernel/Cargo.toml",
+    "toluene/Cargo.toml"
+  ]
+}

@@ -1,0 +1,6 @@
+# .github/ISSUE_TEMPLATE/config.yml
+blank_issues_enabled: false
+contact_links:
+  - name: Discussions
+    url: https://github.com/p14c31355/fullereneOS/discussions
+    about: Click here for casual conversation.
