@@ -4,4 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bootloader = "0.11.12"
+bootloader = { version = "0.11.12", default-features = false, features = ["uefi"] }
+spin = "0.10.0"
+
+[build-dependencies]
+bootloader = { version = "0.11.12", default-features = false, features = ["uefi"] }
