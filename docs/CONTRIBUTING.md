@@ -13,7 +13,6 @@ Please follow the guidelines below when reporting bugs, adding features, or maki
 
 - Rust (Latest version recommended)
 - `cargo` / `rustup` already installed
-- For embedded targets, a target-specific toolchain is also required (e.g., `avr-hal`, `esp-idf`, `thumbv7em`).
 
 ```sh
 # If you need Rust nightly
