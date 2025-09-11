@@ -19,8 +19,11 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 #[uefi::entry]
 fn main() -> Status {
-    // Initialize UEFI and retrieve SystemTable
-    let st = uefi::helpers::init().unwrap();
+    // Initialize UEFI environment
+    uefi::helpers::init();
+
+    // Get SystemTable<Boot> from global state
+    let st = unsafe { uefi::table::system_table() };
 
     const HEAP_SIZE: usize = 128 * 1024; // 128 KiB heap
 
@@ -41,7 +44,7 @@ fn main() -> Status {
 
     let boot_services = st.boot_services();
 
-    // Locate the SimpleFileSystem protocol
+    // Locate the SimpleFileSystem protocol on the loaded image's device handle
     let sfs = match boot_services.open_protocol::<SimpleFileSystem>(boot_services.image_handle()) {
         Ok(proto) => proto,
         Err(_) => {
@@ -59,7 +62,7 @@ fn main() -> Status {
         }
     };
 
-    // Open the kernel.efi file
+    // Open "kernel.efi" from root
     let file_name = cstr16!("kernel.efi");
     let file_handle = match volume.open(file_name, FileMode::Read, FileAttribute::READ_ONLY) {
         Ok(f) => f,
@@ -70,7 +73,7 @@ fn main() -> Status {
     };
     writeln!(stdout, "bellows: found kernel.efi").ok();
 
-    // Convert to a regular file
+    // Convert to regular file
     let mut regular = match file_handle.into_regular_file() {
         Ok(r) => r,
         Err(_) => {
@@ -110,7 +113,7 @@ fn main() -> Status {
         }
     };
 
-    // Load the kernel image
+    // Load the kernel image into memory
     let image = match boot_services.load_image(false, boot_services.image_handle(), None, slice) {
         Ok(img) => img,
         Err(_) => {
