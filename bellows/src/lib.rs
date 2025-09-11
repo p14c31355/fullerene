@@ -21,15 +21,12 @@ fn vga_print(s: &[u8]) {
     }
 }
 
-// Helper function to convert integer to hex string for VGA debug
+// Helper: integer to hex
 fn int_to_hex(mut n: usize) -> [u8; 16] {
     const HEX_CHARS: &[u8] = b"0123456789abcdef";
-    let mut buf = [0u8; 16];
+    let mut buf = [b'0'; 16];
     let mut i = 15;
-    if n == 0 {
-        buf[i] = HEX_CHARS[0];
-        return buf;
-    }
+    if n == 0 { buf[i] = HEX_CHARS[0]; return buf; }
     while n > 0 && i > 0 {
         buf[i] = HEX_CHARS[n % 16];
         n /= 16;
@@ -46,7 +43,7 @@ struct ElfHeader {
     entry: u64,
 }
 
-// get entry from ELF
+// Load kernel ELF
 fn load_kernel(kernel: &[u8]) -> Option<extern "C" fn() -> !> {
     if &kernel[0..4] != b"\x7FELF" {
         vga_print(b"Not an ELF file!\n");
@@ -58,10 +55,6 @@ fn load_kernel(kernel: &[u8]) -> Option<extern "C" fn() -> !> {
 }
 
 // Minimal UEFI structs
-#[repr(C)]
-#[allow(dead_code)] // EfiHandle is currently unused
-struct EfiHandle(*mut u8);
-
 #[repr(C)]
 struct EfiSystemTable {
     _hdr: [u8; 24],
@@ -110,7 +103,7 @@ unsafe extern "C" {
 // Read kernel.efi from FAT32
 #[allow(static_mut_refs)]
 unsafe fn read_kernel() -> &'static [u8] {
-    let bs = unsafe { &*EFI_SYSTEM_TABLE.boot_services };
+    let bs = &*EFI_SYSTEM_TABLE.boot_services;
 
     // Locate SimpleFileSystem protocol
     let mut fs_ptr: *mut core::ffi::c_void = ptr::null_mut();
@@ -118,65 +111,43 @@ unsafe fn read_kernel() -> &'static [u8] {
         0x10,0x32,0x11,0x3e,0x9e,0x23,0x11,0xd4,0x9a,0x5b,0x00,0x90,0x27,0x3d,0x49,0x38
     ];
     let status = (bs.locate_protocol)(sfsp_guid.as_ptr(), ptr::null_mut(), &mut fs_ptr);
-    vga_print(b"locate_protocol status: ");
-    let hex_status = int_to_hex(status);
-    vga_print(&hex_status);
-    vga_print(b"\n");
-    if status != 0 {
-        vga_print(b"Error: locate_protocol failed!\n");
-        loop {}
-    }
+    vga_print(b"locate_protocol: "); vga_print(&int_to_hex(status)); vga_print(b"\n");
+    if status != 0 { vga_print(b"Error: locate_protocol failed\n"); loop {} }
 
     let fs = fs_ptr as *mut EfiSimpleFileSystem;
 
     // Open root volume
     let mut root: *mut EfiFile = ptr::null_mut();
-    let status = unsafe { ((*fs).open_volume)(fs, &mut root) };
-    vga_print(b"open_volume status: ");
-    let hex_status = int_to_hex(status);
-    vga_print(&hex_status);
-    vga_print(b"\n");
-    if status != 0 {
-        vga_print(b"Error: open_volume failed!\n");
-        loop {}
-    }
+    let status = ((*fs).open_volume)(fs, &mut root);
+    vga_print(b"open_volume: "); vga_print(&int_to_hex(status)); vga_print(b"\n");
+    if status != 0 { vga_print(b"Error: open_volume failed\n"); loop {} }
 
     // Open kernel.efi
     let kernel_name: [u16; 11] = [
-        'k' as u16,'e' as u16,'r' as u16,'n' as u16,'e' as u16,'l' as u16,'.' as u16,'e' as u16,'f' as u16,'i' as u16,0
+        'k' as u16,'e' as u16,'r' as u16,'n' as u16,'e' as u16,'l' as u16,
+        '.' as u16,'e' as u16,'f' as u16,'i' as u16,0
     ];
     let mut kernel_file: *mut EfiFile = ptr::null_mut();
-    let status = unsafe { ((*root).open)(root, &mut kernel_file, kernel_name.as_ptr(), 0x0000000000000001, 0) };
-    vga_print(b"open kernel.efi status: ");
-    let hex_status = int_to_hex(status);
-    vga_print(&hex_status);
-    vga_print(b"\n");
-    if status != 0 {
-        vga_print(b"Error: open kernel.efi failed!\n");
-        loop {}
-    }
+    let status = ((*root).open)(root, &mut kernel_file, kernel_name.as_ptr(), 0x0000000000000001, 0);
+    vga_print(b"open kernel.efi: "); vga_print(&int_to_hex(status)); vga_print(b"\n");
+    if status != 0 { vga_print(b"Error: open kernel.efi failed\n"); loop {} }
 
     // Allocate buffer
     static mut KERNEL_BUF: [u8; 1024*1024] = [0; 1024*1024]; // 1MB
-    let mut size: u64 = unsafe { KERNEL_BUF.len() as u64 };
+    let mut size: u64 = KERNEL_BUF.len() as u64;
 
     // Read file
-    let status = unsafe { ((*kernel_file).read)(kernel_file, &mut size, KERNEL_BUF.as_mut_ptr()) };
-    vga_print(b"read kernel.efi status: ");
-    let hex_status = int_to_hex(status);
-    vga_print(&hex_status);
-    vga_print(b"\n");
-    if status != 0 {
-        vga_print(b"Error: read kernel.efi failed!\n");
-        loop {}
-    }
+    let status = ((*kernel_file).read)(kernel_file, &mut size, KERNEL_BUF.as_mut_ptr());
+    vga_print(b"read kernel.efi: "); vga_print(&int_to_hex(status)); vga_print(b"\n");
+    if status != 0 { vga_print(b"Error: read kernel.efi failed\n"); loop {} }
 
     // Close file
-    unsafe { ((*kernel_file).close)(kernel_file) };
+    ((*kernel_file).close)(kernel_file);
 
-    unsafe { slice::from_raw_parts(KERNEL_BUF.as_ptr(), size as usize) }
+    slice::from_raw_parts(KERNEL_BUF.as_ptr(), size as usize)
 }
 
+// Entry point
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     vga_print(b"bellows: bootloader started\n");

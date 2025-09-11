@@ -34,10 +34,13 @@ fn main() -> std::io::Result<()> {
 
     // 3. Create FAT32 image
     let esp_path = Path::new("esp.img");
-    if esp_path.exists() { fs::remove_file(esp_path)?; }
+    if esp_path.exists() {
+        fs::remove_file(esp_path)?;
+    }
 
     let mut f = File::create(esp_path)?;
     f.set_len(64 * 1024 * 1024)?; // 64 MB
+
     let opts = FormatVolumeOptions::new().volume_label(*b" FULLERENE ");
     fatfs::format_volume(&mut f, opts)?;
 
@@ -65,7 +68,7 @@ fn main() -> std::io::Result<()> {
 
     drop(fs); // flush filesystem
 
-    // 6. Run QEMU
+    // 6. Run QEMU with OVMF
     let ovmf_path = "/usr/share/OVMF/OVMF_CODE_4M.fd";
     if !Path::new(ovmf_path).exists() {
         panic!("OVMF firmware not found at {}", ovmf_path);
@@ -73,10 +76,12 @@ fn main() -> std::io::Result<()> {
 
     let qemu_args = [
         "-drive", &format!("if=pflash,format=raw,readonly=on,file={}", ovmf_path),
-        "-drive", &format!("format=raw,file={},if=ide,boot=on", "esp.img"), // Add if=ide and boot=on
+        "-drive", &format!("format=raw,file={},if=ide,boot=on", "esp.img"),
+        "-m", "512M",
         "-serial", "stdio",
+        "-cpu", "qemu64",
     ];
-    println!("Running QEMU with args: {:?}", qemu_args); // Debug print QEMU arguments
+    println!("Running QEMU with args: {:?}", qemu_args);
 
     let qemu_status = Command::new("qemu-system-x86_64")
         .args(qemu_args)
