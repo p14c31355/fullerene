@@ -1,17 +1,93 @@
 // fullerene/flasks/src/main.rs
 use std::{
     fs,
-    io::Write,
+    io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
     process::Command,
 };
 use fatfs::{FileSystem, FormatVolumeOptions, FsOptions};
-use std::fs::File;
+use gpt::{
+    disk::{LogicalBlockSize},
+    header::Header,
+    partition::Partition,
+    partition_types,
+    GptConfig,GptDisk,
+};
+use uuid::Uuid;
+
+/// A wrapper around a File that limits I/O to a specific partition offset and size.
+struct PartitionIo<'a> {
+    file: &'a mut fs::File,
+    offset: u64,
+    size: u64,
+    current_pos: u64,
+}
+
+impl<'a> PartitionIo<'a> {
+    fn new(file: &'a mut fs::File, offset: u64, size: u64) -> io::Result<Self> {
+        Ok(PartitionIo {
+            file,
+            offset,
+            size,
+            current_pos: 0,
+        })
+    }
+}
+
+impl<'a> Read for PartitionIo<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let remaining = self.size - self.current_pos;
+        let bytes_to_read = std::cmp::min(buf.len() as u64, remaining) as usize;
+        if bytes_to_read == 0 {
+            return Ok(0);
+        }
+
+        self.file.seek(SeekFrom::Start(self.offset + self.current_pos))?;
+        let bytes_read = self.file.read(&mut buf[..bytes_to_read])?;
+        self.current_pos += bytes_read as u64;
+        Ok(bytes_read)
+    }
+}
+
+impl<'a> Write for PartitionIo<'a> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let remaining = self.size - self.current_pos;
+        let bytes_to_write = std::cmp::min(buf.len() as u64, remaining) as usize;
+        if bytes_to_write == 0 {
+            return Ok(0);
+        }
+
+        self.file.seek(SeekFrom::Start(self.offset + self.current_pos))?;
+        let bytes_written = self.file.write(&buf[..bytes_to_write])?;
+        self.current_pos += bytes_written as u64;
+        Ok(bytes_written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+impl<'a> Seek for PartitionIo<'a> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        let new_pos = match pos {
+            SeekFrom::Start(p) => p,
+            SeekFrom::End(p) => (self.size as i64 + p) as u64,
+            SeekFrom::Current(p) => (self.current_pos as i64 + p) as u64,
+        };
+
+        if new_pos > self.size {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek beyond end of partition"));
+        }
+        self.current_pos = new_pos;
+        Ok(self.current_pos)
+    }
+}
 
 /// Copy a file into the FAT filesystem, creating directories as needed
-fn copy_to_fat<P: AsRef<Path>>(
-    fs: &FileSystem<File>,
-    src: P,
+fn copy_to_fat<T: Read + Write + Seek>(
+    fs: &FileSystem<T>,
+    src: &Path,
     dest: &str,
 ) -> std::io::Result<()> {
     let dest_path = Path::new(dest);
@@ -56,7 +132,7 @@ fn main() -> std::io::Result<()> {
         ])
         .status()?;
     if !status.success() {
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, "fullerene-kernel build failed"));
+        return Err(io::Error::new(io::ErrorKind::Other, "fullerene-kernel build failed"));
     }
 
     // 2. Build bellows (UEFI bootloader)
@@ -73,35 +149,74 @@ fn main() -> std::io::Result<()> {
         ])
         .status()?;
     if !status.success() {
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, "bellows build failed"));
+        return Err(io::Error::new(io::ErrorKind::Other, "bellows build failed"));
     }
 
-    // 3. Create FAT32 image entirely in Rust
-    let esp_path = Path::new("esp.img");
-    if esp_path.exists() {
-        fs::remove_file(esp_path)?;
+    // 3. Create disk image with GPT partition table and EFI System Partition
+    let disk_img_path = Path::new("esp.img");
+    if disk_img_path.exists() {
+        fs::remove_file(disk_img_path)?;
     }
 
-    {
-        let mut f = File::create(esp_path)?;
-        f.set_len(64 * 1024 * 1024)?; // 64 MB
-        let opts = FormatVolumeOptions::new().volume_label(*b" FULLERENE ");
-        fatfs::format_volume(&mut f, opts)?;
-    }
+    let disk_size_bytes = 64 * 1024 * 1024; // 64 MB
+    let mut disk_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(disk_img_path)?;
+    disk_file.set_len(disk_size_bytes)?;
 
-    // 4. Open FAT filesystem
-    let f = File::options().read(true).write(true).open(esp_path)?;
-    let fs = FileSystem::new(f, FsOptions::new())?;
+    // Create GPT partition table
+    // Create GPT partition table
+    let mut gpt_disk = GptConfig::new()
+        .writable(true)
+        .logical_block_size(LogicalBlockSize::Lb512)
+        .create_from_device(disk_file.try_clone()?, None) // Pass a clone for initial creation
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create GPT disk: {}", e)))?;
+
+    // Add EFI System Partition (ESP)
+    let esp_size_lba = (50 * 1024 * 1024) / 512; // 50 MB
+    let esp_guid = Uuid::new_v4();
+
+    gpt_disk.add_partition(
+        "EFI System Partition",
+        34, // first_lba (u64) - Assuming 34 LBA is the first usable LBA after GPT header and partition table
+        partition_types::EFI, // part_type
+        esp_size_lba, // size_in_lba (u64)
+        Some(0), // attributes (Option<u64>)
+    ).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to add ESP: {}", e)))?;
+
+    // Get partition info before writing, as write consumes gpt_disk
+    let esp_partition_info = gpt_disk.partitions().iter().find(|(_, p)| p.part_type_guid == partition_types::EFI)
+        .map(|(_, p)| p.clone()) // Clone the partition info
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "ESP not found after creation"))?;
+
+    // Write GPT changes to disk
+    let mut disk_file = gpt_disk.write()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to write GPT to disk: {}", e)))?;
+
+    // Format the EFI System Partition (ESP)
+    let esp_offset_bytes = esp_partition_info.first_lba * LogicalBlockSize::Lb512 as u64;
+    let esp_size_bytes = (esp_partition_info.last_lba - esp_partition_info.first_lba + 1) * LogicalBlockSize::Lb512 as u64;
+
+    let mut esp_io = PartitionIo::new(&mut disk_file, esp_offset_bytes, esp_size_bytes)?;
+    let opts = FormatVolumeOptions::new().volume_label(*b"FULLERENEOS");
+    fatfs::format_volume(&mut esp_io, opts)?;
+
+    // 4. Open FAT filesystem (the EFI System Partition within esp.img)
+    // Re-create PartitionIo for FileSystem::new as it consumes the reader/writer
+    let mut esp_io_for_fs = PartitionIo::new(&mut disk_file, esp_offset_bytes, esp_size_bytes)?;
+    let fs = FileSystem::new(esp_io_for_fs, FsOptions::new())?;
 
     // 5. Copy EFI files into FAT32
-    let bellows_efi = "target/x86_64-uefi/release/bellows";
-    let kernel_efi = "target/x86_64-uefi/release/fullerene-kernel";
+    let bellows_efi = Path::new("target/x86_64-uefi/release/bellows");
+    let kernel_efi = Path::new("target/x86_64-uefi/release/fullerene-kernel");
 
-    if !Path::new(bellows_efi).exists() {
-        panic!("bellows EFI not found: {}", bellows_efi);
+    if !bellows_efi.exists() {
+        panic!("bellows EFI not found: {}", bellows_efi.display());
     }
-    if !Path::new(kernel_efi).exists() {
-        panic!("fullerene-kernel EFI not found: {}", kernel_efi);
+    if !kernel_efi.exists() {
+        panic!("fullerene-kernel EFI not found: {}", kernel_efi.display());
     }
 
     copy_to_fat(&fs, bellows_efi, "EFI/BOOT/BOOTX64.EFI")?;
