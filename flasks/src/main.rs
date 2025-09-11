@@ -2,7 +2,7 @@
 use std::{
     fs,
     io::Write,
-    path::{Path, PathBuf},
+    path::Path,
     process::Command,
 };
 use fatfs::{FileSystem, FormatVolumeOptions, FsOptions};
