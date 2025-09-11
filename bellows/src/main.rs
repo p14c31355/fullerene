@@ -1,24 +1,14 @@
 #![no_std]
 #![no_main]
 
-use core::{ptr, slice};
+use core::{slice, ptr};
+use core::ffi::c_void;
 
 // panic handler
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
-}
-
-// VGA debug
-fn vga_print(s: &[u8]) {
-    let vga_buffer = 0xb8000 as *mut u8;
-    for (i, &b) in s.iter().enumerate() {
-        unsafe {
-            *vga_buffer.offset(i as isize * 2) = b;
-            *vga_buffer.offset(i as isize * 2 + 1) = 0x0f;
-        }
-    }
 }
 
 // Helper: integer to hex
@@ -35,46 +25,30 @@ fn int_to_hex(mut n: usize) -> [u8; 16] {
     buf
 }
 
-// ELF header
-#[repr(C)]
-struct ElfHeader {
-    magic: [u8; 4],
-    _rest: [u8; 12],
-    entry: u64,
-}
-
-// Load kernel ELF
-fn load_kernel(kernel: &[u8]) -> Option<extern "C" fn() -> !> {
-    if &kernel[0..4] != b"\x7FELF" {
-        vga_print(b"Not an ELF file!\n");
-        return None;
-    }
-    let header = unsafe { &*(kernel.as_ptr() as *const ElfHeader) };
-    let entry: extern "C" fn() -> ! = unsafe { core::mem::transmute(header.entry) };
-    Some(entry)
-}
-
 // Minimal UEFI structs
 #[repr(C)]
-struct EfiSystemTable {
+pub struct EfiSystemTable {
     _hdr: [u8; 24],
-    _con_in: *mut (),
-    con_out: *mut (),
+    con_out: *mut EfiSimpleTextOutput,
+    _con_in: *mut c_void,
     boot_services: *mut EfiBootServices,
 }
 
 #[repr(C)]
-struct EfiBootServices {
-    _pad: [u8; 24],
+pub struct EfiBootServices {
+    _pad: [usize; 24],
     locate_protocol: extern "efiapi" fn(
         *const u8,
-        *mut core::ffi::c_void,
-        *mut *mut core::ffi::c_void,
+        *mut c_void,
+        *mut *mut c_void,
     ) -> usize,
 }
 
 #[repr(C)]
-struct EfiSimpleFileSystem {
+pub struct EfiSimpleTextOutput;
+
+#[repr(C)]
+pub struct EfiSimpleFileSystem {
     _revision: u64,
     open_volume: extern "efiapi" fn(
         *mut EfiSimpleFileSystem,
@@ -83,7 +57,7 @@ struct EfiSimpleFileSystem {
 }
 
 #[repr(C)]
-struct EfiFile {
+pub struct EfiFile {
     read: extern "efiapi" fn(*mut EfiFile, *mut u64, *mut u8) -> usize,
     open: extern "efiapi" fn(
         *mut EfiFile,
@@ -96,31 +70,55 @@ struct EfiFile {
     _reserved: [usize; 13],
 }
 
-unsafe extern "C" {
-    unsafe static EFI_SYSTEM_TABLE: EfiSystemTable;
+// Simple debug output using VGA fallback
+fn debug_print(s: &[u8]) {
+    let vga_buffer = 0xb8000 as *mut u8;
+    for (i, &b) in s.iter().enumerate() {
+        unsafe {
+            *vga_buffer.offset(i as isize * 2) = b;
+            *vga_buffer.offset(i as isize * 2 + 1) = 0x0f;
+        }
+    }
+}
+
+// ELF header
+#[repr(C)]
+struct ElfHeader {
+    magic: [u8; 4],
+    _rest: [u8; 12],
+    entry: u64,
+}
+
+// Load kernel ELF
+fn load_kernel(kernel: &[u8]) -> Option<extern "C" fn() -> !> {
+    if &kernel[0..4] != b"\x7FELF" {
+        debug_print(b"Not an ELF file!\n");
+        return None;
+    }
+    let header = unsafe { &*(kernel.as_ptr() as *const ElfHeader) };
+    let entry: extern "C" fn() -> ! = unsafe { core::mem::transmute(header.entry) };
+    Some(entry)
 }
 
 // Read kernel.efi from FAT32
 #[allow(static_mut_refs)]
-unsafe fn read_kernel() -> &'static [u8] {
-    let bs = &*EFI_SYSTEM_TABLE.boot_services;
-
+unsafe fn read_kernel(bs: &EfiBootServices) -> &'static [u8] {
     // Locate SimpleFileSystem protocol
-    let mut fs_ptr: *mut core::ffi::c_void = ptr::null_mut();
+    let mut fs_ptr: *mut c_void = ptr::null_mut();
     let sfsp_guid: [u8; 16] = [
         0x10,0x32,0x11,0x3e,0x9e,0x23,0x11,0xd4,0x9a,0x5b,0x00,0x90,0x27,0x3d,0x49,0x38
     ];
     let status = (bs.locate_protocol)(sfsp_guid.as_ptr(), ptr::null_mut(), &mut fs_ptr);
-    vga_print(b"locate_protocol: "); vga_print(&int_to_hex(status)); vga_print(b"\n");
-    if status != 0 { vga_print(b"Error: locate_protocol failed\n"); loop {} }
+    debug_print(b"locate_protocol: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
+    if status != 0 { loop {} }
 
     let fs = fs_ptr as *mut EfiSimpleFileSystem;
 
     // Open root volume
     let mut root: *mut EfiFile = ptr::null_mut();
     let status = ((*fs).open_volume)(fs, &mut root);
-    vga_print(b"open_volume: "); vga_print(&int_to_hex(status)); vga_print(b"\n");
-    if status != 0 { vga_print(b"Error: open_volume failed\n"); loop {} }
+    debug_print(b"open_volume: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
+    if status != 0 { loop {} }
 
     // Open kernel.efi
     let kernel_name: [u16; 11] = [
@@ -129,8 +127,8 @@ unsafe fn read_kernel() -> &'static [u8] {
     ];
     let mut kernel_file: *mut EfiFile = ptr::null_mut();
     let status = ((*root).open)(root, &mut kernel_file, kernel_name.as_ptr(), 0x0000000000000001, 0);
-    vga_print(b"open kernel.efi: "); vga_print(&int_to_hex(status)); vga_print(b"\n");
-    if status != 0 { vga_print(b"Error: open kernel.efi failed\n"); loop {} }
+    debug_print(b"open kernel.efi: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
+    if status != 0 { loop {} }
 
     // Allocate buffer
     static mut KERNEL_BUF: [u8; 1024*1024] = [0; 1024*1024]; // 1MB
@@ -138,8 +136,8 @@ unsafe fn read_kernel() -> &'static [u8] {
 
     // Read file
     let status = ((*kernel_file).read)(kernel_file, &mut size, KERNEL_BUF.as_mut_ptr());
-    vga_print(b"read kernel.efi: "); vga_print(&int_to_hex(status)); vga_print(b"\n");
-    if status != 0 { vga_print(b"Error: read kernel.efi failed\n"); loop {} }
+    debug_print(b"read kernel.efi: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
+    if status != 0 { loop {} }
 
     // Close file
     ((*kernel_file).close)(kernel_file);
@@ -149,16 +147,19 @@ unsafe fn read_kernel() -> &'static [u8] {
 
 // Entry point
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
-    vga_print(b"bellows: bootloader started\n");
+pub extern "efiapi" fn efi_main(_image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
+    let st = unsafe { &*system_table };
+    let bs = unsafe { &*st.boot_services };
 
-    let kernel_image = unsafe { read_kernel() };
+    debug_print(b"bellows: bootloader started\n");
+
+    let kernel_image = unsafe { read_kernel(bs) };
 
     if let Some(kernel_entry) = load_kernel(kernel_image) {
-        vga_print(b"Jumping to kernel...\n");
+        debug_print(b"Jumping to kernel...\n");
         kernel_entry();
     } else {
-        vga_print(b"Failed to load kernel\n");
+        debug_print(b"Failed to load kernel\n");
     }
 
     loop {}

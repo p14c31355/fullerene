@@ -15,5 +15,8 @@
   "disable-redzone": true,
   "features": "+sse2,+fxsr,-soft-float,-mmx",
   "relocation-model": "static",
-  "code-model": "kernel"
+  "code-model": "kernel",
+  "pre-link-args": {
+  "ld.lld": ["-nostdlib"]
+}
 }
