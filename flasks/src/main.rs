@@ -167,13 +167,16 @@ fn main() -> std::io::Result<()> {
     disk_file.set_len(disk_size_bytes)?;
 
     // Create GPT partition table
-    // Create GPT partition table
+    // GptConfig::new().initialized(false) is the correct way to specify
+    // we want a brand new, unformatted disk.
     let mut gpt_disk = GptConfig::new()
         .writable(true)
+        .initialized(false)
         .logical_block_size(LogicalBlockSize::Lb512)
-        .create_from_device(disk_file.try_clone()?, None) // Pass a clone for initial creation
+        .create_from_device(disk_file.try_clone()?, Some(disk_size_bytes))
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create GPT disk: {}", e)))?;
-
+// Initialize a new, blank partition table
+gpt_disk.initialize(disk_size_bytes)?;
     // Add EFI System Partition (ESP)
     let esp_size_lba = (50 * 1024 * 1024) / 512; // 50 MB
     let esp_guid = Uuid::new_v4();
