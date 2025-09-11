@@ -55,7 +55,9 @@ fn main() -> std::io::Result<()> {
             "build-std=core,alloc,compiler_builtins",
         ])
         .status()?;
-    assert!(status.success());
+    if !status.success() {
+        return Err(std::io::Error::new(std::io::ErrorKind::Other, "fullerene-kernel build failed"));
+    }
 
     // 2. Build bellows (UEFI bootloader)
     let status = Command::new("cargo")
