@@ -3,8 +3,9 @@
 
 use core::fmt::Write;
 use uefi::prelude::*;
-use uefi::proto::media::file::{File, FileMode, FileAttribute};
+use uefi::proto::media::file::{File, FileMode, FileAttribute, FileInfo};
 use uefi::proto::media::fs::SimpleFileSystem;
+use uefi::table::system::system_table;
 use uefi::boot::{AllocateType, MemoryType};
 use linked_list_allocator::LockedHeap;
 
@@ -17,15 +18,12 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
-#[uefi::entry]
+#[entry] // use uefi-services
 fn main() -> Status {
-    // Initialize UEFI environment
-    uefi::helpers::init();
+    let st = system_table();
+    uefi_services::init(&st).unwrap();
 
-    // Get SystemTable<Boot> from global state
-    let st = unsafe { uefi::table::system_table() };
-
-    const HEAP_SIZE: usize = 128 * 1024; // 128 KiB heap
+    const HEAP_SIZE: usize = 128 * 1024;
 
     // Allocate heap memory
     let heap_ptr = match st.boot_services().allocate_pool(MemoryType::LOADER_DATA, HEAP_SIZE) {
@@ -42,10 +40,11 @@ fn main() -> Status {
     stdout.reset(false).ok();
     writeln!(stdout, "bellows: UEFI bootloader started").ok();
 
-    let boot_services = st.boot_services();
+    let bs = st.boot_services();
+    let handle = uefi_services::image_handle(); // use uefi-services
 
     // Locate the SimpleFileSystem protocol on the loaded image's device handle
-    let sfs = match boot_services.open_protocol::<SimpleFileSystem>(boot_services.image_handle()) {
+    let sfs = match bs.open_protocol::<SimpleFileSystem>(handle) {
         Ok(proto) => proto,
         Err(_) => {
             writeln!(stdout, "bellows: failed to open SimpleFileSystem").ok();
@@ -73,7 +72,6 @@ fn main() -> Status {
     };
     writeln!(stdout, "bellows: found kernel.efi").ok();
 
-    // Convert to regular file
     let mut regular = match file_handle.into_regular_file() {
         Ok(r) => r,
         Err(_) => {
@@ -84,7 +82,7 @@ fn main() -> Status {
 
     // Retrieve file size
     let mut info_buf = [0u8; 128];
-    let info = match regular.get_info::<uefi::proto::media::file::FileInfo>(&mut info_buf) {
+    let info = match regular.get_info::<FileInfo>(&mut info_buf) {
         Ok(info) => info,
         Err(e) => {
             writeln!(stdout, "bellows: failed to get file info: {:?}", e.status()).ok();
@@ -95,7 +93,7 @@ fn main() -> Status {
 
     // Allocate pages for the kernel image
     let pages = (size + 0xFFF) / 0x1000;
-    let buf_ptr = match boot_services.allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, pages) {
+    let buf_ptr = match bs.allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, pages) {
         Ok(p) => p,
         Err(_) => {
             writeln!(stdout, "bellows: allocate_pages failed").ok();
@@ -114,7 +112,7 @@ fn main() -> Status {
     };
 
     // Load the kernel image into memory
-    let image = match boot_services.load_image(false, boot_services.image_handle(), None, slice) {
+    let image = match bs.load_image(false, handle, None, slice) {
         Ok(img) => img,
         Err(_) => {
             writeln!(stdout, "bellows: LoadImage failed").ok();
@@ -123,7 +121,7 @@ fn main() -> Status {
     };
 
     // Start the kernel image
-    let status = match boot_services.start_image(image) {
+    let status = match bs.start_image(image) {
         Ok(s) => s,
         Err(_) => {
             writeln!(stdout, "bellows: StartImage failed").ok();
