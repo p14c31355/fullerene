@@ -1,135 +1,52 @@
 #![no_std]
 #![no_main]
 
-use core::fmt::Write;
-use uefi::prelude::*;
-use uefi::proto::media::file::{File, FileMode, FileAttribute, FileInfo};
-use uefi::proto::media::fs::SimpleFileSystem;
-use uefi::table::system::system_table;
-use uefi::boot::{AllocateType, MemoryType};
-use linked_list_allocator::LockedHeap;
-
-#[global_allocator]
-static ALLOCATOR: LockedHeap = LockedHeap::empty();
-
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
-#[entry] // use uefi-services
-fn main() -> Status {
-    let st = system_table();
-    uefi_services::init(&st).unwrap();
-
-    const HEAP_SIZE: usize = 128 * 1024;
-
-    // Allocate heap memory
-    let heap_ptr = match st.boot_services().allocate_pool(MemoryType::LOADER_DATA, HEAP_SIZE) {
-        Ok(ptr) => ptr,
-        Err(e) => {
-            writeln!(st.stdout(), "bellows: failed to allocate heap: {:?}", e.status()).ok();
-            return Status::OUT_OF_RESOURCES;
+fn vga_print(s: &str) {
+    let vga_buffer = 0xb8000 as *mut u8;
+    for (i, &b) in s.as_bytes().iter().enumerate() {
+        unsafe {
+            *vga_buffer.offset(i as isize * 2) = b;
+            *vga_buffer.offset(i as isize * 2 + 1) = 0x0f;
         }
-    };
-    unsafe { ALLOCATOR.lock().init(heap_ptr, HEAP_SIZE); }
+    }
+}
 
-    // Initialize stdout
-    let stdout = st.stdout();
-    stdout.reset(false).ok();
-    writeln!(stdout, "bellows: UEFI bootloader started").ok();
+#[repr(C)]
+struct ElfHeader {
+    magic: [u8; 4],
+    _rest: [u8; 12],
+    entry: u64,
+}
 
-    let bs = st.boot_services();
-    let handle = uefi_services::image_handle(); // use uefi-services
+fn load_kernel(kernel: &[u8]) -> Option<extern "C" fn() -> !> {
+    if &kernel[0..4] != b"\x7FELF" {
+        vga_print("Not an ELF file!");
+        return None;
+    }
 
-    // Locate the SimpleFileSystem protocol on the loaded image's device handle
-    let sfs = match bs.open_protocol::<SimpleFileSystem>(handle) {
-        Ok(proto) => proto,
-        Err(_) => {
-            writeln!(stdout, "bellows: failed to open SimpleFileSystem").ok();
-            return Status::LOAD_ERROR;
-        }
-    };
+    let header = unsafe { &*(kernel.as_ptr() as *const ElfHeader) };
+    let entry: extern "C" fn() -> ! = unsafe { core::mem::transmute(header.entry) };
+    Some(entry)
+}
 
-    // Open the root volume
-    let mut volume = match unsafe { (&*sfs.get()).open_volume() } {
-        Ok(v) => v,
-        Err(e) => {
-            writeln!(stdout, "bellows: open_volume failed: {:?}", e.status()).ok();
-            return Status::LOAD_ERROR;
-        }
-    };
+#[unsafe(no_mangle)]
+pub extern "C" fn _start() -> ! {
+    vga_print("bellows: bootloader started");
 
-    // Open "kernel.efi" from root
-    let file_name = cstr16!("kernel.efi");
-    let file_handle = match volume.open(file_name, FileMode::Read, FileAttribute::READ_ONLY) {
-        Ok(f) => f,
-        Err(_) => {
-            writeln!(stdout, "bellows: kernel.efi not found").ok();
-            return Status::NOT_FOUND;
-        }
-    };
-    writeln!(stdout, "bellows: found kernel.efi").ok();
+    let kernel_image: &[u8] = include_bytes!("../../target/x86_64-uefi/debug/fullerene-kernel");
 
-    let mut regular = match file_handle.into_regular_file() {
-        Ok(r) => r,
-        Err(_) => {
-            writeln!(stdout, "bellows: kernel not a regular file").ok();
-            return Status::LOAD_ERROR;
-        }
-    };
+    if let Some(kernel_entry) = load_kernel(kernel_image) {
+        vga_print("Jumping to kernel...");
+        kernel_entry();
+    } else {
+        vga_print("Failed to load kernel");
+    }
 
-    // Retrieve file size
-    let mut info_buf = [0u8; 128];
-    let info = match regular.get_info::<FileInfo>(&mut info_buf) {
-        Ok(info) => info,
-        Err(e) => {
-            writeln!(stdout, "bellows: failed to get file info: {:?}", e.status()).ok();
-            return Status::LOAD_ERROR;
-        }
-    };
-    let size = info.file_size() as usize;
-
-    // Allocate pages for the kernel image
-    let pages = (size + 0xFFF) / 0x1000;
-    let buf_ptr = match bs.allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, pages) {
-        Ok(p) => p,
-        Err(_) => {
-            writeln!(stdout, "bellows: allocate_pages failed").ok();
-            return Status::OUT_OF_RESOURCES;
-        }
-    };
-    let slice = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, pages * 0x1000) };
-
-    // Read the kernel file into memory
-    match regular.read(slice) {
-        Ok(_) => writeln!(stdout, "bellows: read {} bytes", size).ok(),
-        Err(e) => {
-            writeln!(stdout, "bellows: read error: {:?}", e.status()).ok();
-            return Status::LOAD_ERROR;
-        }
-    };
-
-    // Load the kernel image into memory
-    let image = match bs.load_image(false, handle, None, slice) {
-        Ok(img) => img,
-        Err(_) => {
-            writeln!(stdout, "bellows: LoadImage failed").ok();
-            return Status::LOAD_ERROR;
-        }
-    };
-
-    // Start the kernel image
-    let status = match bs.start_image(image) {
-        Ok(s) => s,
-        Err(_) => {
-            writeln!(stdout, "bellows: StartImage failed").ok();
-            return Status::LOAD_ERROR;
-        }
-    };
-
-    writeln!(stdout, "bellows: started kernel image: {:?}", status).ok();
-
-    Status::SUCCESS
+    loop {}
 }

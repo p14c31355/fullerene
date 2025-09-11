@@ -3,5 +3,5 @@ target = "x86_64-uefi.json"
 
 [target.x86_64-uefi]
 rustflags = [
-    "-C", "link-arg=-nostartfiles",
+    "-C", "link-arg=",
 ]
