@@ -34,10 +34,7 @@ fn main() -> std::io::Result<()> {
 
     // 3. Create FAT32 image
     let esp_path = Path::new("esp.img");
-    if esp_path.exists() {
-        fs::remove_file(esp_path)?;
-    }
-
+    if esp_path.exists() { fs::remove_file(esp_path)?; }
     let mut f = File::create(esp_path)?;
     f.set_len(64 * 1024 * 1024)?; // 64 MB
 
@@ -75,12 +72,12 @@ fn main() -> std::io::Result<()> {
     }
 
     let qemu_args = [
-    "-drive", &format!("if=pflash,format=raw,readonly=on,file={}", ovmf_path),
-    "-drive", &format!("format=raw,file={},if=ide,boot=on", "esp.img"),
-    "-m", "512M",
-    "-cpu", "qemu64",
-    "-serial", "stdio",
-];
+        "-drive", &format!("if=pflash,format=raw,readonly=on,file={}", ovmf_path),
+        "-drive", &format!("format=raw,file={},if=ide,boot=on", "esp.img"),
+        "-m", "512M",
+        "-cpu", "qemu64",
+        "-serial", "stdio",
+    ];
 
     println!("Running QEMU with args: {:?}", qemu_args);
 
