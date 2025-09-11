@@ -17,9 +17,21 @@ static ALLOCATOR: LockedHeap = LockedHeap::empty();
 fn main() -> Status {
     // UEFI helper init
     uefi::helpers::init().unwrap();
-
+    
     let mut st = SystemTable::<Boot>::new();
+const HEAP_SIZE: usize = 128 * 1024; // 128 KiB
 
+let heap_ptr = match st.boot_services().allocate_pool(MemoryType::LOADER_DATA, HEAP_SIZE) {
+    Ok(ptr) => ptr.unwrap(),
+    Err(e) => {
+        writeln!(st.stdout(), "bellows: failed to allocate heap: {:?}", e.status()).ok();
+        return Status::OUT_OF_RESOURCES;
+    }
+};
+
+unsafe {
+    ALLOCATOR.lock().init(heap_ptr, HEAP_SIZE);
+}
     let stdout = st.stdout();
     stdout.reset(false).ok();
     writeln!(stdout, "bellows: UEFI bootloader started").ok();
