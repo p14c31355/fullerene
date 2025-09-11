@@ -1,18 +1,20 @@
+// fullerene/flasks/src/main.rs
 use std::process::Command;
 
 fn main() {
     // 1. Build the kernel and create the bootable disk image using cargo bootimage
     let status = Command::new("cargo")
-        .args([
-            "bootimage",
-            "--package",
-            "fullerene-kernel",
-            "--target",
-            "x86_64-unknown-none",
-        ])
-        .status()
-        .expect("Failed to execute cargo bootimage");
-    
+    .args([
+        "bootimage",
+        "--package",
+        "fullerene-kernel",
+        "--target",
+        "x86_64-unknown-none",
+        "-Z",
+        "build-std=core,compiler_builtins", // !
+    ])
+    .status()
+    .expect("Failed to execute cargo bootimage");
     // Check if the command was successful
     assert!(status.success(), "Failed to build the bootable image.");
 

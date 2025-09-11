@@ -6,7 +6,12 @@ edition = "2024"
 [dependencies]
 spin = { version = "0.10.0", default-features = false, features = ["once"] }
 # The bootloader should be a regular dependency, not a build-dependency.
-bootloader = { version = "0.11.12", features = ["bios"], default-features = false }
+# bootloader = { version = "0.11.12", features = ["uefi"], default-features = false }
+# byteorder = { version = "1.5.0", default-features = false }
+# once_cell = { version = "1.21.3", default-features = false }
+# serde = { version = "1.0.219", default-features = false, features = ["derive"] }
+# bitvec = { version = "1.0.1", default-features = false }
+# getrandom = { version = "0.3.3", default-features = false }
 
 [profile.dev]
 panic = "abort"
