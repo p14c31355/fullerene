@@ -11,11 +11,31 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
-// Minimal UEFI structs
+// Minimal UEFI structs and enums
+#[repr(usize)]
+pub enum EfiMemoryType {
+    EfiReservedMemoryType = 0,
+    EfiLoaderCode = 1,
+    EfiLoaderData = 2,
+    EfiBootServicesCode = 3,
+    EfiBootServicesData = 4,
+    EfiRuntimeServicesCode = 5,
+    EfiRuntimeServicesData = 6,
+    EfiConventionalMemory = 7,
+    EfiUnusableMemory = 8,
+    EfiACPIReclaimMemory = 9,
+    EfiACPIMemoryNVS = 10,
+    EfiMemoryMappedIO = 11,
+    EfiMemoryMappedIOPortSpace = 12,
+    EfiPalCode = 13,
+    EfiPersistentMemory = 14,
+    EfiMaxMemoryType = 15,
+}
+
 #[repr(C)]
 pub struct EfiSystemTable {
     _hdr: [u8; 24],
-    con_out: *mut EfiSimpleTextOutput,
+    _con_out: *mut EfiSimpleTextOutput,
     _con_in: *mut c_void,
     boot_services: *mut EfiBootServices,
 }
@@ -23,6 +43,8 @@ pub struct EfiSystemTable {
 #[repr(C)]
 pub struct EfiBootServices {
     _pad: [usize; 24],
+    allocate_pages: extern "efiapi" fn(usize, EfiMemoryType, usize, *mut usize) -> usize,
+    _pad_2: [usize; 5],
     locate_protocol: extern "efiapi" fn(
         *const u8,
         *mut c_void,
@@ -97,45 +119,79 @@ const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: [u8; 16] = [
 ];
 
 // Read kernel.efi from FAT32
-#[allow(static_mut_refs)]
 unsafe fn read_kernel(bs: &EfiBootServices) -> &'static [u8] {
     // Locate SimpleFileSystem protocol
     let mut fs_ptr: *mut c_void = ptr::null_mut();
-    let status = (bs.locate_protocol)(EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID.as_ptr(), ptr::null_mut(), &mut fs_ptr);
-    debug_print(b"locate_protocol status: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
-    if status != 0 { loop {} }
+    let status = (bs.locate_protocol)(
+        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID.as_ptr(),
+        ptr::null_mut(),
+        &mut fs_ptr,
+    );
+    debug_print(b"locate_protocol status: ");
+    debug_print(&int_to_hex(status));
+    debug_print(b"\n");
+    if status != 0 {
+        loop {}
+    }
 
     let fs = fs_ptr as *mut EfiSimpleFileSystem;
 
     // Open root volume
     let mut root: *mut EfiFile = ptr::null_mut();
     let status = ((*fs).open_volume)(fs, &mut root);
-    debug_print(b"open_volume status: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
-    if status != 0 { loop {} }
+    debug_print(b"open_volume status: ");
+    debug_print(&int_to_hex(status));
+    debug_print(b"\n");
+    if status != 0 {
+        loop {}
+    }
 
     // Open KERNEL.EFI
     let kernel_name: [u16; 12] = [
-        'K' as u16,'E' as u16,'R' as u16,'N' as u16,'E' as u16,'L' as u16,
-        '.' as u16,'E' as u16,'F' as u16,'I' as u16,0,0
+        'K' as u16, 'E' as u16, 'R' as u16, 'N' as u16, 'E' as u16, 'L' as u16,
+        '.' as u16, 'E' as u16, 'F' as u16, 'I' as u16, 0, 0
     ];
     let mut kernel_file: *mut EfiFile = ptr::null_mut();
     let status = ((*root).open)(root, &mut kernel_file, kernel_name.as_ptr(), 0x1, 0);
-    debug_print(b"open KERNEL.EFI status: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
-    if status != 0 { loop {} }
+    debug_print(b"open KERNEL.EFI status: ");
+    debug_print(&int_to_hex(status));
+    debug_print(b"\n");
+    if status != 0 {
+        loop {}
+    }
+
+    // Allocate buffer for the kernel
+    let mut kernel_pages: usize = 0;
+    let size_in_pages = 2 * 1024 * 1024 / 4096; // 2MB in 4KB pages
+    let status = (bs.allocate_pages)(
+        0, // AllocateAnyPages
+        EfiMemoryType::EfiLoaderData,
+        size_in_pages,
+        &mut kernel_pages,
+    );
+    debug_print(b"allocate_pages status: ");
+    debug_print(&int_to_hex(status));
+    debug_print(b"\n");
+    if status != 0 {
+        loop {}
+    }
+
+    let kernel_buf = kernel_pages as *mut u8;
+    let mut size: u64 = (size_in_pages * 4096) as u64;
 
     // Read file
-    static mut KERNEL_BUF: [u8; 2*1024*1024] = [0; 2*1024*1024]; // 2MB buffer
-    let mut size: u64 = KERNEL_BUF.len() as u64;
-
-    // Read file
-    let status = ((*kernel_file).read)(kernel_file, &mut size, KERNEL_BUF.as_mut_ptr());
-    debug_print(b"read KERNEL.EFI status: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
-    if status != 0 { loop {} }
+    let status = ((*kernel_file).read)(kernel_file, &mut size, kernel_buf);
+    debug_print(b"read KERNEL.EFI status: ");
+    debug_print(&int_to_hex(status));
+    debug_print(b"\n");
+    if status != 0 {
+        loop {}
+    }
 
     // Close file
     ((*kernel_file).close)(kernel_file);
 
-    slice::from_raw_parts(KERNEL_BUF.as_ptr(), size as usize)
+    slice::from_raw_parts(kernel_buf, size as usize)
 }
 
 // Helper: integer to hex
