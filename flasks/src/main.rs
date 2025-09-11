@@ -9,12 +9,17 @@ fn copy_to_fat<P: AsRef<Path>>(fs: &FileSystem<File>, src: P, dest: &str) -> std
     let mut dir = fs.root_dir();
 
     // Create intermediate directories
-    for component in dest_path.parent().into_iter().flat_map(|p| p.iter()) {
-        let name = component.to_str().unwrap();
-        if dir.iter().filter_map(|e| e.ok()).find(|e| e.file_name() == name).is_none() {
-            dir = dir.create_dir(name)?;
-        } else {
-            dir = dir.open_dir(name)?;
+    if let Some(parent) = dest_path.parent() {
+        for component in parent.iter() {
+            let name = component.to_str().unwrap();
+            // Check if directory exists
+            let found = dir.iter().filter_map(|e| e.ok())
+                .any(|e| e.file_name().eq_ignore_ascii_case(name));
+            dir = if found {
+                dir.open_dir(name)?
+            } else {
+                dir.create_dir(name)?
+            };
         }
     }
 
@@ -22,6 +27,7 @@ fn copy_to_fat<P: AsRef<Path>>(fs: &FileSystem<File>, src: P, dest: &str) -> std
     let mut f = dir.create_file(dest_path.file_name().unwrap().to_str().unwrap())?;
     let data = fs::read(src)?;
     f.write_all(&data)?;
+    f.flush()?; // Add flush here
     Ok(())
 }
 
@@ -67,11 +73,7 @@ fn main() -> std::io::Result<()> {
     let f = File::options().read(true).write(true).open(esp_path)?;
     let fs = FileSystem::new(f, FsOptions::new())?;
 
-    // 5. Create EFI directories
-    fs.root_dir().create_dir("EFI")?;
-    fs.root_dir().open_dir("EFI")?.create_dir("BOOT")?;
-
-    // 6. Copy EFI files
+    // 5. Copy EFI files into FAT32
     let bellows_efi = "target/x86_64-uefi/release/bellows";
     let kernel_efi = "target/x86_64-uefi/release/fullerene-kernel";
 
@@ -85,22 +87,22 @@ fn main() -> std::io::Result<()> {
     copy_to_fat(&fs, bellows_efi, "EFI/BOOT/BOOTX64.EFI")?;
     copy_to_fat(&fs, kernel_efi, "kernel.efi")?;
 
-    drop(fs); // flush filesystem
+    // Flush filesystem
+    drop(fs); // fs.flush() is not needed as individual files are flushed
 
-    // 7. Run QEMU with OVMF
+    // 6. Run QEMU with OVMF
     let ovmf_path = "/usr/share/OVMF/OVMF_CODE_4M.fd";
     if !Path::new(ovmf_path).exists() {
         panic!("OVMF firmware not found at {}", ovmf_path);
     }
 
     let qemu_args = [
-    "-drive", &format!("if=pflash,format=raw,readonly=on,file={}", ovmf_path),
-    "-drive", &format!("format=raw,file={},if=ide", "esp.img"),
-    "-m", "512M",
-    "-cpu", "qemu64",
-    "-serial", "stdio",
-];
-
+        "-drive", &format!("if=pflash,format=raw,readonly=on,file={}", ovmf_path),
+        "-drive", &format!("format=raw,file={},if=ide", "esp.img"),
+        "-m", "512M",
+        "-cpu", "qemu64",
+        "-serial", "stdio",
+    ];
 
     println!("Running QEMU with args: {:?}", qemu_args);
 
