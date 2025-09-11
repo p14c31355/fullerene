@@ -5,13 +5,6 @@ edition = "2024"
 
 [dependencies]
 spin = { version = "0.10.0", default-features = false, features = ["once"] }
-# The bootloader should be a regular dependency, not a build-dependency.
-# bootloader = { version = "0.11.12", features = ["uefi"], default-features = false }
-# byteorder = { version = "1.5.0", default-features = false }
-# once_cell = { version = "1.21.3", default-features = false }
-# serde = { version = "1.0.219", default-features = false, features = ["derive"] }
-# bitvec = { version = "1.0.1", default-features = false }
-# getrandom = { version = "0.3.3", default-features = false }
 
 [profile.dev]
 panic = "abort"
@@ -21,6 +14,3 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
-
-# The `[package.metadata.bootloader.target]` section is not used in modern bootloader versions.
-# The `bootloader` crate automatically determines the target based on the build command.

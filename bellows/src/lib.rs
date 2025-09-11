@@ -14,11 +14,10 @@ use linked_list_allocator::LockedHeap;
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
 #[uefi::entry]
-fn main(image_handle: Handle, mut st: SystemTable<Boot>) -> Status {
+fn main() -> Status {
     // UEFI helper init
-    uefi::helpers::init(&mut st).unwrap();
-    
-    let mut st = SystemTable::<Boot>::new();
+    uefi::helpers::init().unwrap();
+    let mut st = uefi::system_table();
 const HEAP_SIZE: usize = 128 * 1024; // 128 KiB
 
 let heap_ptr = match st.boot_services().allocate_pool(MemoryType::LOADER_DATA, HEAP_SIZE) {
@@ -69,10 +68,7 @@ unsafe {
     writeln!(stdout, "bellows: found kernel.efi").ok();
 
     // get file size by seeking to end
-    let mut regular = match file_handle.into_type().and_then(|t| match t {
-        uefi::proto::media::file::FileType::Regular(r) => Ok(r),
-        _ => Err(()),
-    }) {
+    let mut regular = match file_handle.into_regular_file() {
         Ok(r) => r,
         Err(_) => {
             writeln!(stdout, "bellows: kernel not a regular file").ok();
@@ -91,7 +87,7 @@ unsafe {
     // allocate pages for the image
     let pages = (size + 0xFFF) / 0x1000;
     let buf_ptr = match boot_services.allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, pages) {
-        Ok(p) => p.unwrap(),
+        Ok(p) => p,
         Err(_) => {
             writeln!(stdout, "bellows: allocate_pages failed").ok();
             return Status::OUT_OF_RESOURCES;
@@ -111,7 +107,7 @@ unsafe {
 
     // LoadImage + StartImage
     let image = match boot_services.load_image(false, boot_services.image_handle(), None, slice) {
-        Ok(img) => img.unwrap(),
+        Ok(img) => img,
         Err(_) => {
             writeln!(stdout, "bellows: LoadImage failed").ok();
             return Status::LOAD_ERROR;
