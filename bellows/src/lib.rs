@@ -25,7 +25,7 @@ fn main() -> Status {
     const HEAP_SIZE: usize = 128 * 1024; // 128 KiB
 
     let heap_ptr = match st.boot_services().allocate_pool(MemoryType::LOADER_DATA, HEAP_SIZE) {
-        Ok(ptr) => ptr.unwrap(),
+        Ok(ptr) => ptr,
         Err(e) => {
             writeln!(st.stdout(), "bellows: failed to allocate heap: {:?}", e.status()).ok();
             return Status::OUT_OF_RESOURCES;
