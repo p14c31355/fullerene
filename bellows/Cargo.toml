@@ -3,4 +3,14 @@ name = "bellows"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["staticlib"]  # Notes: PE/COFF (EFI)
+
 [dependencies]
+uefi = { version = "0.35.0", default-features = false, features = ["alloc"] }
+
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
