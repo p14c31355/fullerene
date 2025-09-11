@@ -4,7 +4,7 @@
 
 use core::fmt::Write;
 use uefi::prelude::*;
-use uefi::proto::media::file::{File, FileMode, FileAttribute, RegularFile};
+use uefi::proto::media::file::{File, FileMode, FileAttribute};
 use uefi::proto::media::fs::SimpleFileSystem;
 use uefi::boot::{AllocateType, MemoryType};
 
@@ -107,4 +107,10 @@ fn efi_main() -> Status {
             return Status::NOT_FOUND;
         }
     }
+}
+
+#[cfg(not(test))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
 }
