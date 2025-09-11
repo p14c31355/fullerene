@@ -71,13 +71,15 @@ fn main() -> std::io::Result<()> {
         panic!("OVMF firmware not found at {}", ovmf_path);
     }
 
-    let esp_path = std::fs::canonicalize("esp.img")?;
+    let qemu_args = [
+        "-drive", &format!("if=pflash,format=raw,readonly=on,file={}", ovmf_path),
+        "-drive", &format!("format=raw,file={},if=ide,boot=on", "esp.img"), // Add if=ide and boot=on
+        "-serial", "stdio",
+    ];
+    println!("Running QEMU with args: {:?}", qemu_args); // Debug print QEMU arguments
+
     let qemu_status = Command::new("qemu-system-x86_64")
-        .args([
-            "-drive", &format!("if=pflash,format=raw,readonly=on,file={}", ovmf_path),
-            "-drive", &format!("format=raw,file={}", esp_path.display()),
-            "-serial", "stdio",
-        ])
+        .args(qemu_args)
         .status()?;
 
     assert!(qemu_status.success());
