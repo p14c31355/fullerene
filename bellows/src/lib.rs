@@ -7,8 +7,6 @@ use uefi::proto::media::file::{File, FileMode, FileAttribute};
 use uefi::proto::media::fs::SimpleFileSystem;
 use uefi::boot::{AllocateType, MemoryType};
 use linked_list_allocator::LockedHeap;
-use uefi::data_types::Handle;
-use uefi_raw::table::system::SystemTable;
 
 #[global_allocator]
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
@@ -19,35 +17,30 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
-#[unsafe(no_mangle)]
-pub extern "efiapi" fn efi_main(
-    image_handle: Handle,
-    system_table: *mut SystemTable,
-) -> Status {
-    // Safety: system_table is guaranteed valid by UEFI
-    let st: &mut SystemTable = unsafe { &mut *system_table };
-
-    const HEAP_SIZE: usize = 128 * 1024; // 128 KiB
+#[uefi::entry]
+fn main() -> Status {
+    let st = uefi::helpers::init().unwrap();
+    const HEAP_SIZE: usize = 128 * 1024;
 
     // Allocate heap
-    let heap_ptr = match st.boot_services().allocate_pool(MemoryType::LOADER_DATA, HEAP_SIZE) {
+    let heap_ptr = match st.boot_services.allocate_pool(MemoryType::LOADER_DATA, HEAP_SIZE) {
         Ok(ptr) => ptr,
         Err(e) => {
-            writeln!(st.stdout(), "bellows: failed to allocate heap: {:?}", e.status()).ok();
+            writeln!(st.stdout, "bellows: failed to allocate heap: {:?}", e.status()).ok();
             return Status::OUT_OF_RESOURCES;
         }
     };
 
     unsafe { ALLOCATOR.lock().init(heap_ptr, HEAP_SIZE); }
 
-    let stdout = st.stdout();
+    let stdout = &st.stdout;
     stdout.reset(false).ok();
     writeln!(stdout, "bellows: UEFI bootloader started").ok();
 
-    let boot_services = st.boot_services();
+    let boot_services = &st.boot_services;
 
     // Locate SimpleFileSystem protocol
-    let sfs = match boot_services.open_protocol_by_handle::<SimpleFileSystem>(image_handle) {
+    let sfs = match boot_services.open_protocol_by_handle::<SimpleFileSystem>(boot_services.image_handle()) {
         Ok(proto) => proto,
         Err(_) => {
             writeln!(stdout, "bellows: failed to open SimpleFileSystem").ok();
@@ -116,7 +109,7 @@ pub extern "efiapi" fn efi_main(
     };
 
     // LoadImage + StartImage
-    let image = match boot_services.load_image(false, image_handle, None, slice) {
+    let image = match boot_services.load_image(false, boot_services.image_handle(), None, slice) {
         Ok(img) => img,
         Err(_) => {
             writeln!(stdout, "bellows: LoadImage failed").ok();
