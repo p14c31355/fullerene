@@ -4,8 +4,18 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bootloader = { version = "0.11.12", default-features = false, features = ["uefi"] }
-spin = "0.10.0"
+spin = { version = "0.10.0", default-features = false, features = ["once"] }
+# The bootloader should be a regular dependency, not a build-dependency.
+bootloader = { version = "0.11.12", features = ["bios"], default-features = false }
 
-[build-dependencies]
-bootloader = { version = "0.11.12", default-features = false, features = ["uefi"] }
+[profile.dev]
+panic = "abort"
+# Omit the build-std flags in the Cargo.toml file.
+# They are typically passed as command-line arguments.
+# For example: cargo build -Z build-std=core,compiler_builtins
+
+[profile.release]
+panic = "abort"
+
+# The `[package.metadata.bootloader.target]` section is not used in modern bootloader versions.
+# The `bootloader` crate automatically determines the target based on the build command.
