@@ -8,7 +8,9 @@ crate-type = ["staticlib"]  # Notes: PE/COFF (EFI)
 
 [dependencies]
 linked_list_allocator = "0.10.5"
-uefi = { version = "0.35.0", default-features = false, features = ["alloc"] }
+uefi = "0.35.0"
+uefi-raw = "0.11.0"
+uefi-macros = "0.18.1"
 
 [profile.release]
 panic = "abort"

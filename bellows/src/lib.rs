@@ -1,29 +1,35 @@
-// bellows/src/lib.rs
 #![no_std]
 #![no_main]
 
 use core::fmt::Write;
-use core::ptr;
 use uefi::prelude::*;
-// Removed: use uefi::table::{Boot, SystemTable}; // This line caused the initial import error
 use uefi::proto::media::file::{File, FileMode, FileAttribute};
 use uefi::proto::media::fs::SimpleFileSystem;
 use uefi::boot::{AllocateType, MemoryType};
 use linked_list_allocator::LockedHeap;
+use uefi::data_types::Handle;
+use uefi_raw::table::system::SystemTable;
 
 #[global_allocator]
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
-#[uefi::entry]
-// Reverted function signature
-fn main() -> Status {
-    // UEFI helper init - this is correct for #[uefi::entry]
-    uefi::helpers::init().unwrap();
-    // Correctly access the SystemTable after initialization
-    let mut st = uefi::table::set_system_table(ptr: *const SystemTable).unwrap(); // This is the correct line based on uefi 0.35.0 docs
+#[cfg(not(test))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
+}
+
+#[unsafe(no_mangle)]
+pub extern "efiapi" fn efi_main(
+    image_handle: Handle,
+    system_table: *mut SystemTable,
+) -> Status {
+    // Safety: system_table is guaranteed valid by UEFI
+    let st: &mut SystemTable = unsafe { &mut *system_table };
 
     const HEAP_SIZE: usize = 128 * 1024; // 128 KiB
 
+    // Allocate heap
     let heap_ptr = match st.boot_services().allocate_pool(MemoryType::LOADER_DATA, HEAP_SIZE) {
         Ok(ptr) => ptr,
         Err(e) => {
@@ -32,17 +38,16 @@ fn main() -> Status {
         }
     };
 
-    unsafe {
-        ALLOCATOR.lock().init(heap_ptr, HEAP_SIZE);
-    }
+    unsafe { ALLOCATOR.lock().init(heap_ptr, HEAP_SIZE); }
+
     let stdout = st.stdout();
     stdout.reset(false).ok();
     writeln!(stdout, "bellows: UEFI bootloader started").ok();
 
     let boot_services = st.boot_services();
 
-    // Locate SimpleFileSystem protocol on loaded image's device handle
-    let sfs = match boot_services.open_protocol::<SimpleFileSystem>(boot_services.image_handle()) {
+    // Locate SimpleFileSystem protocol
+    let sfs = match boot_services.open_protocol_by_handle::<SimpleFileSystem>(image_handle) {
         Ok(proto) => proto,
         Err(_) => {
             writeln!(stdout, "bellows: failed to open SimpleFileSystem").ok();
@@ -50,8 +55,8 @@ fn main() -> Status {
         }
     };
 
-    // open root volume
-    let mut volume = match unsafe { (&*sfs.get()).open_volume() } {
+    // Open root volume
+    let mut volume = match unsafe { sfs.get().open_volume() } {
         Ok(v) => v,
         Err(e) => {
             writeln!(stdout, "bellows: open_volume failed: {:?}", e.status()).ok();
@@ -59,7 +64,7 @@ fn main() -> Status {
         }
     };
 
-    // Try to open "kernel.efi" in the root of the ESP
+    // Open "kernel.efi"
     let file_name = cstr16!("kernel.efi");
     let file_handle = match volume.open(file_name, FileMode::Read, FileAttribute::READ_ONLY) {
         Ok(f) => f,
@@ -68,10 +73,9 @@ fn main() -> Status {
             return Status::NOT_FOUND;
         }
     };
-
     writeln!(stdout, "bellows: found kernel.efi").ok();
 
-    // get file size by seeking to end
+    // Convert to regular file
     let mut regular = match file_handle.into_regular_file() {
         Ok(r) => r,
         Err(_) => {
@@ -90,7 +94,7 @@ fn main() -> Status {
     };
     let size = info.file_size() as usize;
 
-    // allocate pages for the image
+    // Allocate pages for image
     let pages = (size + 0xFFF) / 0x1000;
     let buf_ptr = match boot_services.allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, pages) {
         Ok(p) => p,
@@ -112,7 +116,7 @@ fn main() -> Status {
     };
 
     // LoadImage + StartImage
-    let image = match boot_services.load_image(false, boot_services.image_handle(), None, slice) {
+    let image = match boot_services.load_image(false, image_handle, None, slice) {
         Ok(img) => img,
         Err(_) => {
             writeln!(stdout, "bellows: LoadImage failed").ok();
@@ -131,10 +135,4 @@ fn main() -> Status {
     writeln!(stdout, "bellows: started kernel image: {:?}", status).ok();
 
     Status::SUCCESS
-}
-
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
 }
