@@ -4,7 +4,7 @@ use fatfs::{FileSystem, FormatVolumeOptions, FsOptions};
 use std::fs::File;
 use std::process::Command;
 
-fn copy_to_fat<P: AsRef<Path>>(fs: &fatfs::FileSystem<File>, src: P, dest: &str) -> std::io::Result<()> {
+fn copy_to_fat<P: AsRef<Path>>(fs: &FileSystem<File>, src: P, dest: &str) -> std::io::Result<()> {
     let mut f = fs.root_dir().create_file(dest)?;
     let data = fs::read(src)?;
     f.write_all(&data)?;
@@ -12,17 +12,7 @@ fn copy_to_fat<P: AsRef<Path>>(fs: &fatfs::FileSystem<File>, src: P, dest: &str)
 }
 
 fn main() -> std::io::Result<()> {
-    // 1. Build bellows
-    let status = Command::new("cargo").args([
-        "build",
-        "--package", "bellows",
-        "--release",
-        "--target", "x86_64-uefi.json",
-        "-Z", "build-std=core,alloc,compiler_builtins",
-    ]).status()?;
-    assert!(status.success());
-
-    // 2. Build kernel
+    // 1. Build fullerene-kernel
     let status = Command::new("cargo").args([
         "build",
         "--package", "fullerene-kernel",
@@ -32,12 +22,22 @@ fn main() -> std::io::Result<()> {
     ]).status()?;
     assert!(status.success());
 
+    // 2. Build bellows (UEFI bootloader)
+    let status = Command::new("cargo").args([
+        "build",
+        "--package", "bellows",
+        "--release",
+        "--target", "x86_64-uefi.json",
+        "-Z", "build-std=core,alloc,compiler_builtins",
+    ]).status()?;
+    assert!(status.success());
+
     // 3. Create FAT32 image
     let esp_path = Path::new("esp.img");
     if esp_path.exists() { fs::remove_file(esp_path)?; }
+
     let mut f = File::create(esp_path)?;
     f.set_len(64 * 1024 * 1024)?; // 64 MB
-
     let opts = FormatVolumeOptions::new().volume_label(*b" FULLERENE ");
     fatfs::format_volume(&mut f, opts)?;
 
@@ -45,16 +45,25 @@ fn main() -> std::io::Result<()> {
     f.seek(std::io::SeekFrom::Start(0))?;
     let fs = FileSystem::new(f, FsOptions::new())?;
 
-    // 4. Create directories
+    // 4. Create EFI directories
     fs.root_dir().create_dir("EFI")?;
     fs.root_dir().open_dir("EFI")?.create_dir("BOOT")?;
 
     // 5. Copy EFI files
-    copy_to_fat(&fs, "target/x86_64-uefi/release/bellows", "EFI/BOOT/BOOTX64.EFI")?;
-    copy_to_fat(&fs, "target/x86_64-uefi/release/fullerene-kernel", "kernel.efi")?;
+    let bellows_efi = "target/x86_64-uefi/release/bellows";
+    let kernel_efi = "target/x86_64-uefi/release/fullerene-kernel";
 
-    // Drop the filesystem to flush and release file handle
-    drop(fs);
+    if !Path::new(bellows_efi).exists() {
+        panic!("bellows EFI not found: {}", bellows_efi);
+    }
+    if !Path::new(kernel_efi).exists() {
+        panic!("fullerene-kernel EFI not found: {}", kernel_efi);
+    }
+
+    copy_to_fat(&fs, bellows_efi, "EFI/BOOT/BOOTX64.EFI")?;
+    copy_to_fat(&fs, kernel_efi, "kernel.efi")?;
+
+    drop(fs); // flush filesystem
 
     // 6. Run QEMU
     let ovmf_path = "/usr/share/OVMF/OVMF_CODE_4M.fd";
@@ -63,7 +72,7 @@ fn main() -> std::io::Result<()> {
     }
 
     let esp_path = std::fs::canonicalize("esp.img")?;
-    Command::new("qemu-system-x86_64")
+    let qemu_status = Command::new("qemu-system-x86_64")
         .args([
             "-drive", &format!("if=pflash,format=raw,readonly=on,file={}", ovmf_path),
             "-drive", &format!("format=raw,file={}", esp_path.display()),
@@ -71,5 +80,6 @@ fn main() -> std::io::Result<()> {
         ])
         .status()?;
 
+    assert!(qemu_status.success());
     Ok(())
 }
