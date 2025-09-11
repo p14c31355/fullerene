@@ -2,6 +2,7 @@
 #![no_std]
 #![no_main]
 
+mod vga;
 use spin::once::Once;
 use x86_64::instructions::port::{PortRead, PortWrite}; // Import these
 
@@ -65,17 +66,8 @@ static SERIAL: Once<SerialPort> = Once::new();
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
+    vga::vga_init(); // Call vga_init to initialize VGA and print messages
     SERIAL.call_once(|| SerialPort::new());
     SERIAL.get().unwrap().write_string("Hello QEMU by fullerene!\n");
-    loop {}
-}
-
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    // Try to print panic info to serial if initialized
-    if let Some(serial) = SERIAL.get() {
-        serial.write_string("Kernel panicked!\n");
-    }
     loop {}
 }
