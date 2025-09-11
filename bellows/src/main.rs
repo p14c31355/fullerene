@@ -144,9 +144,10 @@ fn int_to_hex(mut n: usize) -> [u8; 16] {
     let mut buf = [b'0'; 16];
     let mut i = 15;
     if n == 0 { buf[i] = HEX_CHARS[0]; return buf; }
-    while n > 0 && i > 0 {
+    while n > 0 {
         buf[i] = HEX_CHARS[n % 16];
         n /= 16;
+        if i == 0 { break; }
         i -= 1;
     }
     buf
