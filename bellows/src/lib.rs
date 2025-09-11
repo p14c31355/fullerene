@@ -80,13 +80,15 @@ fn main() -> Status {
         }
     };
 
-    let size = match regular.get_boxed().get_length() {
-        Ok(s) => s as usize,
-        Err(_) => {
-            writeln!(stdout, "bellows: cannot get size").ok();
+    let mut info_buf = [0; 128];
+    let info = match regular.get_info::<uefi::proto::media::file::FileInfo>(&mut info_buf) {
+        Ok(info) => info,
+        Err(e) => {
+            writeln!(stdout, "bellows: failed to get file info: {:?}", e.status()).ok();
             return Status::LOAD_ERROR;
         }
     };
+    let size = info.file_size() as usize;
 
     // allocate pages for the image
     let pages = (size + 0xFFF) / 0x1000;
