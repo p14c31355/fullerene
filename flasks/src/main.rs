@@ -75,12 +75,13 @@ fn main() -> std::io::Result<()> {
     }
 
     let qemu_args = [
-        "-drive", &format!("if=pflash,format=raw,readonly=on,file={}", ovmf_path),
-        "-drive", &format!("format=raw,file={},if=ide,boot=on", "esp.img"),
-        "-m", "512M",
-        "-serial", "stdio",
-        "-cpu", "qemu64",
-    ];
+    "-drive", &format!("if=pflash,format=raw,readonly=on,file={}", ovmf_path),
+    "-drive", &format!("format=raw,file={},if=ide,boot=on", "esp.img"),
+    "-m", "512M",
+    "-cpu", "qemu64",
+    "-serial", "stdio",
+];
+
     println!("Running QEMU with args: {:?}", qemu_args);
 
     let qemu_status = Command::new("qemu-system-x86_64")
