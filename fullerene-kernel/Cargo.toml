@@ -3,10 +3,10 @@ name = "fullerene-kernel"
 version = "0.1.0"
 edition = "2024"
 
+# fullerene-kernel/Cargo.toml
 [dependencies]
 spin = { version = "0.10.0", default-features = false, features = ["once"] }
-
+x86_64 = { version = "0.15.2", default-features = false, features = ["instructions"] }
 # Omit the build-std flags in the Cargo.toml file.
 # They are typically passed as command-line arguments.
 # For example: cargo build -Z build-std=core,compiler_builtins
-

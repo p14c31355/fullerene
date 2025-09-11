@@ -72,7 +72,9 @@ fn main() -> std::io::Result<()> {
             "build-std=core,alloc,compiler_builtins",
         ])
         .status()?;
-    assert!(status.success());
+    if !status.success() {
+        return Err(std::io::Error::new(std::io::ErrorKind::Other, "bellows build failed"));
+    }
 
     // 3. Create FAT32 image entirely in Rust
     let esp_path = Path::new("esp.img");
