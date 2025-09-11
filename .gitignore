@@ -10,3 +10,4 @@ target/
 *.pdb
 
 esp.img
+OVMF_VARS.fd

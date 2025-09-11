@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::{slice, ptr};
+use core::{ptr, slice};
 use core::ffi::c_void;
 
 // panic handler
@@ -9,20 +9,6 @@ use core::ffi::c_void;
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
-}
-
-// Helper: integer to hex
-fn int_to_hex(mut n: usize) -> [u8; 16] {
-    const HEX_CHARS: &[u8] = b"0123456789abcdef";
-    let mut buf = [b'0'; 16];
-    let mut i = 15;
-    if n == 0 { buf[i] = HEX_CHARS[0]; return buf; }
-    while n > 0 && i > 0 {
-        buf[i] = HEX_CHARS[n % 16];
-        n /= 16;
-        i -= 1;
-    }
-    buf
 }
 
 // Minimal UEFI structs
@@ -45,7 +31,9 @@ pub struct EfiBootServices {
 }
 
 #[repr(C)]
-pub struct EfiSimpleTextOutput;
+pub struct EfiSimpleTextOutput {
+    _pad: [usize; 4],
+}
 
 #[repr(C)]
 pub struct EfiSimpleFileSystem {
@@ -70,20 +58,15 @@ pub struct EfiFile {
     _reserved: [usize; 13],
 }
 
-// Simple debug output with basic bounds checking
+// Debug print via VGA fallback
 fn debug_print(s: &[u8]) {
     let vga_buffer = 0xb8000 as *mut u8;
     // Limit the output to prevent writing past the buffer end
     let len = core::cmp::min(s.len(), 80 * 25);
     for (i, &b) in s[..len].iter().enumerate() {
         unsafe {
-            let offset = i as isize * 2;
-            if offset < (80 * 25) as isize * 2 {
-                *vga_buffer.offset(offset) = b;
-                *vga_buffer.offset(offset + 1) = 0x0f;
-            } else {
-                break; // Stop if we reach the end
-            }
+            *vga_buffer.offset((i * 2) as isize) = b;
+            *vga_buffer.offset((i * 2 + 1) as isize) = 0x0f;
         }
     }
 }
@@ -107,15 +90,18 @@ fn load_kernel(kernel: &[u8]) -> Option<extern "C" fn() -> !> {
     Some(entry)
 }
 
+// SimpleFileSystem GUID
+const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: [u8; 16] = [
+    0x95, 0x76, 0x6e, 0x91, 0x3f, 0x6d, 0xd2, 0x11,
+    0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b
+];
+
 // Read kernel.efi from FAT32
 #[allow(static_mut_refs)]
 unsafe fn read_kernel(bs: &EfiBootServices) -> &'static [u8] {
     // Locate SimpleFileSystem protocol
     let mut fs_ptr: *mut c_void = ptr::null_mut();
-    let sfsp_guid: [u8; 16] = [
-        0x10,0x32,0x11,0x3e,0x9e,0x23,0x11,0xd4,0x9a,0x5b,0x00,0x90,0x27,0x3d,0x49,0x38
-    ];
-    let status = (bs.locate_protocol)(sfsp_guid.as_ptr(), ptr::null_mut(), &mut fs_ptr);
+    let status = (bs.locate_protocol)(EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID.as_ptr(), ptr::null_mut(), &mut fs_ptr);
     debug_print(b"locate_protocol status: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
     if status != 0 { loop {} }
 
@@ -127,29 +113,43 @@ unsafe fn read_kernel(bs: &EfiBootServices) -> &'static [u8] {
     debug_print(b"open_volume status: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
     if status != 0 { loop {} }
 
-    // Open kernel.efi
-    let kernel_name: [u16; 11] = [
-        'k' as u16,'e' as u16,'r' as u16,'n' as u16,'e' as u16,'l' as u16,
-        '.' as u16,'e' as u16,'f' as u16,'i' as u16,0
+    // Open KERNEL.EFI
+    let kernel_name: [u16; 12] = [
+        'K' as u16,'E' as u16,'R' as u16,'N' as u16,'E' as u16,'L' as u16,
+        '.' as u16,'E' as u16,'F' as u16,'I' as u16,0,0
     ];
     let mut kernel_file: *mut EfiFile = ptr::null_mut();
-    let status = ((*root).open)(root, &mut kernel_file, kernel_name.as_ptr(), 0x0000000000000001, 0);
-    debug_print(b"open kernel.efi status: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
+    let status = ((*root).open)(root, &mut kernel_file, kernel_name.as_ptr(), 0x1, 0);
+    debug_print(b"open KERNEL.EFI status: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
     if status != 0 { loop {} }
 
-    // Allocate buffer
-    static mut KERNEL_BUF: [u8; 1024*1024] = [0; 1024*1024]; // 1MB
+    // Read file
+    static mut KERNEL_BUF: [u8; 2*1024*1024] = [0; 2*1024*1024]; // 2MB buffer
     let mut size: u64 = KERNEL_BUF.len() as u64;
 
     // Read file
     let status = ((*kernel_file).read)(kernel_file, &mut size, KERNEL_BUF.as_mut_ptr());
-    debug_print(b"read kernel.efi status: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
+    debug_print(b"read KERNEL.EFI status: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
     if status != 0 { loop {} }
 
     // Close file
     ((*kernel_file).close)(kernel_file);
 
     slice::from_raw_parts(KERNEL_BUF.as_ptr(), size as usize)
+}
+
+// Helper: integer to hex
+fn int_to_hex(mut n: usize) -> [u8; 16] {
+    const HEX_CHARS: &[u8] = b"0123456789abcdef";
+    let mut buf = [b'0'; 16];
+    let mut i = 15;
+    if n == 0 { buf[i] = HEX_CHARS[0]; return buf; }
+    while n > 0 && i > 0 {
+        buf[i] = HEX_CHARS[n % 16];
+        n /= 16;
+        i -= 1;
+    }
+    buf
 }
 
 // Entry point
@@ -171,5 +171,3 @@ pub extern "efiapi" fn efi_main(_image_handle: usize, system_table: *mut EfiSyst
 
     loop {}
 }
-
-
