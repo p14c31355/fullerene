@@ -14,9 +14,9 @@ use linked_list_allocator::LockedHeap;
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
 #[uefi::entry]
-fn main() -> Status {
+fn main(image_handle: Handle, mut st: SystemTable<Boot>) -> Status {
     // UEFI helper init
-    uefi::helpers::init().unwrap();
+    uefi::helpers::init(&mut st).unwrap();
     
     let mut st = SystemTable::<Boot>::new();
 const HEAP_SIZE: usize = 128 * 1024; // 128 KiB
