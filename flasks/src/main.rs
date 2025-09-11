@@ -151,40 +151,30 @@ fn main() -> std::io::Result<()> {
     }
 
     // 3. Create disk image with GPT partition table and EFI System Partition
+    // 3. Create disk image with GPT partition table and EFI System Partition
     let disk_img_path = Path::new("esp.img");
     if disk_img_path.exists() {
         fs::remove_file(disk_img_path)?;
     }
 
+    let disk_size_bytes = 64 * 1024 * 1024; // 64 MB
+    let mut disk_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(disk_img_path)?;
+    
+    // Set the file length BEFORE creating the GPT disk object
+    disk_file.set_len(disk_size_bytes)?;
+
     // Create GPT partition table
-let disk_size_bytes = 64 * 1024 * 1024; // 64 MB
-let mut disk_file = fs::OpenOptions::new()
-    .read(true)
-    .write(true)
-    .create(true)
-    .open(disk_img_path)?;
-disk_file.set_len(disk_size_bytes)?;
+    let mut gpt_disk = GptConfig::new()
+        .writable(true)
+        .logical_block_size(LogicalBlockSize::Lb512)
+        .create(disk_img_path)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create GPT disk: {}", e)))?;
 
-// Initialize a new GPT disk with a specified size.
-// `GptConfig::default()` gives a good starting point.
-let mut gpt_disk = GptConfig::default()
-    .writable(true)
-    .logical_block_size(LogicalBlockSize::Lb512)
-    .create_from_device(disk_file.try_clone()?, None)
-    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create GPT disk: {}", e)))?;
-
-// It's possible the `create_from_device` with a fresh file doesn't fully initialize the disk metadata.
-// To be explicit, let's ensure the GPT is properly set up.
-// The `GptDisk` struct has methods to help with this.
-// A common issue with the crate is the handling of uninitialized drives.
-// A more robust method is to initialize it with the total disk size.
-// The following snippet will correctly initialize the disk.
-
-let mut gpt_disk = GptConfig::new()
-    .writable(true)
-    .logical_block_size(LogicalBlockSize::Lb512)
-    .create_from_device(disk_file.try_clone()?, Some(disk_size_bytes))
-    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create GPT disk: {}", e)))?;
+    // The rest of the code remains the same...
     // Add EFI System Partition (ESP)
     let esp_size_lba = (50 * 1024 * 1024) / 512; // 50 MB
     let esp_guid = Uuid::new_v4();
