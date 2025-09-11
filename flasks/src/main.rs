@@ -37,6 +37,7 @@ fn copy_to_fat<P: AsRef<Path>>(
     let mut f = dir.create_file(dest_path.file_name().unwrap().to_str().unwrap())?;
     let data = fs::read(src)?;
     f.write_all(&data)?;
+    f.flush()?;
     Ok(())
 }
 
@@ -71,53 +72,47 @@ fn main() -> std::io::Result<()> {
         .status()?;
     assert!(status.success());
 
-    // 3. Create a blank 64MB disk image
+    // 3. Create FAT32 image entirely in Rust
     let esp_path = Path::new("esp.img");
     if esp_path.exists() {
         fs::remove_file(esp_path)?;
     }
-    Command::new("qemu-img")
-        .args(["create", "esp.img", "64M"])
-        .status()?
-        .success();
 
-    // 4. Partition with GPT and create EFI System Partition (ef00)
-    Command::new("sgdisk")
-        .args(["-n", "1:2048:", "-t", "1:ef00", "esp.img"])
-        .status()?
-        .success();
+    {
+        let mut f = File::create(esp_path)?;
+        f.set_len(64 * 1024 * 1024)?; // 64 MB
+        let opts = FormatVolumeOptions::new().volume_label(*b" FULLERENE ");
+        fatfs::format_volume(&mut f, opts)?;
+    }
 
-    // 5. Setup loop device and format as FAT32
-    Command::new("sudo")
-        .args(["losetup", "-Pf", "esp.img"])
-        .status()?;
-    let loop_dev = "/dev/loop0p1"; // FIXME: detect dynamically
-    Command::new("sudo")
-        .args(["mkfs.fat", "-F32", loop_dev])
-        .status()?;
+    // 4. Open FAT filesystem
+    let f = File::options().read(true).write(true).open(esp_path)?;
+    let fs = FileSystem::new(f, FsOptions::new())?;
 
-    // 6. Mount partition and copy files
-    Command::new("sudo")
-        .args(["mount", loop_dev, "/mnt"])
-        .status()?;
-
+    // 5. Copy EFI files into FAT32
     let bellows_efi = "target/x86_64-uefi/release/bellows";
     let kernel_efi = "target/x86_64-uefi/release/fullerene-kernel";
 
-    fs::create_dir_all("/mnt/EFI/BOOT")?;
-    fs::copy(bellows_efi, "/mnt/EFI/BOOT/BOOTX64.EFI")?;
-    fs::copy(kernel_efi, "/mnt/kernel.efi")?;
+    if !Path::new(bellows_efi).exists() {
+        panic!("bellows EFI not found: {}", bellows_efi);
+    }
+    if !Path::new(kernel_efi).exists() {
+        panic!("fullerene-kernel EFI not found: {}", kernel_efi);
+    }
 
-    Command::new("sudo").args(["umount", "/mnt"]).status()?;
-    Command::new("sudo").args(["losetup", "-d", "/dev/loop0"]).status()?;
+    copy_to_fat(&fs, bellows_efi, "EFI/BOOT/BOOTX64.EFI")?;
+    copy_to_fat(&fs, kernel_efi, "kernel.efi")?;
 
-    // 7. Run QEMU with OVMF
+    drop(fs); // flush filesystem
+
+    // 6. Copy OVMF_VARS.fd if missing
     let ovmf_code = "/usr/share/OVMF/OVMF_CODE_4M.fd";
     let ovmf_vars = "./OVMF_VARS.fd";
     if !Path::new(ovmf_vars).exists() {
         fs::copy("/usr/share/OVMF/OVMF_VARS_4M.fd", ovmf_vars)?;
     }
 
+    // 7. Run QEMU
     let qemu_args = [
         "-drive",
         &format!("if=pflash,format=raw,readonly=on,file={}", ovmf_code),
