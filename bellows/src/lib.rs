@@ -3,8 +3,9 @@
 #![no_main]
 
 use core::fmt::Write;
+use core::ptr;
 use uefi::prelude::*;
-use uefi::table::{Boot, SystemTable};
+// Removed: use uefi::table::{Boot, SystemTable}; // This line caused the initial import error
 use uefi::proto::media::file::{File, FileMode, FileAttribute};
 use uefi::proto::media::fs::SimpleFileSystem;
 use uefi::boot::{AllocateType, MemoryType};
@@ -14,23 +15,26 @@ use linked_list_allocator::LockedHeap;
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
 #[uefi::entry]
+// Reverted function signature
 fn main() -> Status {
-    // UEFI helper init
+    // UEFI helper init - this is correct for #[uefi::entry]
     uefi::helpers::init().unwrap();
-    let mut st = uefi::system_table();
-const HEAP_SIZE: usize = 128 * 1024; // 128 KiB
+    // Correctly access the SystemTable after initialization
+    let mut st = uefi::table::set_system_table(ptr: *const SystemTable).unwrap(); // This is the correct line based on uefi 0.35.0 docs
 
-let heap_ptr = match st.boot_services().allocate_pool(MemoryType::LOADER_DATA, HEAP_SIZE) {
-    Ok(ptr) => ptr.unwrap(),
-    Err(e) => {
-        writeln!(st.stdout(), "bellows: failed to allocate heap: {:?}", e.status()).ok();
-        return Status::OUT_OF_RESOURCES;
+    const HEAP_SIZE: usize = 128 * 1024; // 128 KiB
+
+    let heap_ptr = match st.boot_services().allocate_pool(MemoryType::LOADER_DATA, HEAP_SIZE) {
+        Ok(ptr) => ptr.unwrap(),
+        Err(e) => {
+            writeln!(st.stdout(), "bellows: failed to allocate heap: {:?}", e.status()).ok();
+            return Status::OUT_OF_RESOURCES;
+        }
+    };
+
+    unsafe {
+        ALLOCATOR.lock().init(heap_ptr, HEAP_SIZE);
     }
-};
-
-unsafe {
-    ALLOCATOR.lock().init(heap_ptr, HEAP_SIZE);
-}
     let stdout = st.stdout();
     stdout.reset(false).ok();
     writeln!(stdout, "bellows: UEFI bootloader started").ok();
