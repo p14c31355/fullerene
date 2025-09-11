@@ -70,13 +70,20 @@ pub struct EfiFile {
     _reserved: [usize; 13],
 }
 
-// Simple debug output using VGA fallback
+// Simple debug output with basic bounds checking
 fn debug_print(s: &[u8]) {
     let vga_buffer = 0xb8000 as *mut u8;
-    for (i, &b) in s.iter().enumerate() {
+    // Limit the output to prevent writing past the buffer end
+    let len = core::cmp::min(s.len(), 80 * 25);
+    for (i, &b) in s[..len].iter().enumerate() {
         unsafe {
-            *vga_buffer.offset(i as isize * 2) = b;
-            *vga_buffer.offset(i as isize * 2 + 1) = 0x0f;
+            let offset = i as isize * 2;
+            if offset < (80 * 25) as isize * 2 {
+                *vga_buffer.offset(offset) = b;
+                *vga_buffer.offset(offset + 1) = 0x0f;
+            } else {
+                break; // Stop if we reach the end
+            }
         }
     }
 }
@@ -109,7 +116,7 @@ unsafe fn read_kernel(bs: &EfiBootServices) -> &'static [u8] {
         0x10,0x32,0x11,0x3e,0x9e,0x23,0x11,0xd4,0x9a,0x5b,0x00,0x90,0x27,0x3d,0x49,0x38
     ];
     let status = (bs.locate_protocol)(sfsp_guid.as_ptr(), ptr::null_mut(), &mut fs_ptr);
-    debug_print(b"locate_protocol: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
+    debug_print(b"locate_protocol status: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
     if status != 0 { loop {} }
 
     let fs = fs_ptr as *mut EfiSimpleFileSystem;
@@ -117,7 +124,7 @@ unsafe fn read_kernel(bs: &EfiBootServices) -> &'static [u8] {
     // Open root volume
     let mut root: *mut EfiFile = ptr::null_mut();
     let status = ((*fs).open_volume)(fs, &mut root);
-    debug_print(b"open_volume: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
+    debug_print(b"open_volume status: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
     if status != 0 { loop {} }
 
     // Open kernel.efi
@@ -127,7 +134,7 @@ unsafe fn read_kernel(bs: &EfiBootServices) -> &'static [u8] {
     ];
     let mut kernel_file: *mut EfiFile = ptr::null_mut();
     let status = ((*root).open)(root, &mut kernel_file, kernel_name.as_ptr(), 0x0000000000000001, 0);
-    debug_print(b"open kernel.efi: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
+    debug_print(b"open kernel.efi status: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
     if status != 0 { loop {} }
 
     // Allocate buffer
@@ -136,7 +143,7 @@ unsafe fn read_kernel(bs: &EfiBootServices) -> &'static [u8] {
 
     // Read file
     let status = ((*kernel_file).read)(kernel_file, &mut size, KERNEL_BUF.as_mut_ptr());
-    debug_print(b"read kernel.efi: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
+    debug_print(b"read kernel.efi status: "); debug_print(&int_to_hex(status)); debug_print(b"\n");
     if status != 0 { loop {} }
 
     // Close file
@@ -164,3 +171,5 @@ pub extern "efiapi" fn efi_main(_image_handle: usize, system_table: *mut EfiSyst
 
     loop {}
 }
+
+
