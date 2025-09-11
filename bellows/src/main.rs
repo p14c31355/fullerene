@@ -9,6 +9,9 @@ use alloc::vec::Vec; // Add this line to bring Vec into scope
 
 use linked_list_allocator::LockedHeap;
 
+// Define a heap size at the top of your file
+const HEAP_SIZE: usize = 128 * 1024; // 128 KiB
+
 #[global_allocator]
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
@@ -228,5 +231,19 @@ pub extern "efiapi" fn efi_main(_image_handle: usize, system_table: *mut EfiSyst
         uefi_print(st, "Failed to load kernel\n");
     }
 
+    let mut heap_start = 0;
+let status = (bs.allocate_pages)(
+    0, // AllocateAnyPages
+    EfiMemoryType::EfiLoaderData,
+    HEAP_SIZE / 4096, // size in pages
+    &mut heap_start,
+);
+if status != 0 {
+    // Can't allocate, so we can't print an error. Halt.
+    loop {}
+}
+unsafe {
+    ALLOCATOR.lock().init(heap_start, HEAP_SIZE);
+}
     loop {}
 }
