@@ -11,3 +11,5 @@ target/
 
 esp.img
 OVMF_VARS.fd
+fullerene.iso
+/temp_iso_stage
