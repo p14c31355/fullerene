@@ -5,9 +5,9 @@ use std::{
     path::Path,
     process::Command,
 };
-use fatfs::{FileSystem, FormatVolumeOptions, FsOptions};
+use fatfs::{FileSystem, FormatVolumeOptions, FsOptions, FatType};
 use gpt::{
-    disk::{LogicalBlockSize},
+    disk::LogicalBlockSize,
     partition_types,
     GptConfig,
 };
@@ -34,7 +34,7 @@ impl<'a> PartitionIo<'a> {
 
 impl<'a> Read for PartitionIo<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let remaining = self.size - self.current_pos;
+        let remaining = self.size.saturating_sub(self.current_pos);
         let bytes_to_read = std::cmp::min(buf.len() as u64, remaining) as usize;
         if bytes_to_read == 0 {
             return Ok(0);
@@ -49,7 +49,7 @@ impl<'a> Read for PartitionIo<'a> {
 
 impl<'a> Write for PartitionIo<'a> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let remaining = self.size - self.current_pos;
+        let remaining = self.size.saturating_sub(self.current_pos);
         let bytes_to_write = std::cmp::min(buf.len() as u64, remaining) as usize;
         if bytes_to_write == 0 {
             return Ok(0);
@@ -109,7 +109,9 @@ fn copy_to_fat<T: Read + Write + Seek>(
 
     // Create and write file
     let mut f = dir.create_file(dest_path.file_name().unwrap().to_str().unwrap())?;
-    let data = fs::read(src)?;
+    let mut data = Vec::new();
+    let mut src_f = fs::File::open(src)?;
+    src_f.read_to_end(&mut data)?;
     f.write_all(&data)?;
     f.flush()?;
     Ok(())
@@ -156,8 +158,14 @@ fn main() -> std::io::Result<()> {
         fs::remove_file(disk_img_path)?;
     }
 
-    let disk_size_bytes = 64 * 1024 * 1024; // 64 MB
-    let mut disk_file = fs::OpenOptions::new()
+    // NOTE:
+    // The fatfs formatter requires sizes in ranges where FAT type selection is possible.
+    // Some "unfortunate" disk sizes can't be auto-selected. To avoid that, we choose a
+    // safe image size and explicitly request FAT32 formatting.
+    //
+    // Use 128 MiB to ensure FAT32 is selectable comfortably.
+    let disk_size_bytes = 128 * 1024 * 1024; // 128 MB (increased from 64MB)
+    let disk_file = fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
@@ -216,19 +224,25 @@ fn main() -> std::io::Result<()> {
     // The volume size in bytes must be a multiple of the logical block size.
     let esp_size_bytes = (esp_partition_info.last_lba - esp_partition_info.first_lba + 1) * LogicalBlockSize::Lb512 as u64;
 
-// Format the partition as FAT32.
-// The `cluster_size` field is no longer a valid option.
-// Use `FormatVolumeOptions::new()` to create a new options struct.
-let fmt_options = fatfs::FormatVolumeOptions::new().fat_type(fatfs::FatType::Fat32);
-let mut esp_io_for_fs = PartitionIo::new(&mut disk_file_after_gpt, esp_offset_bytes, esp_size_bytes)?;
-fatfs::format_volume(&mut esp_io_for_fs, fmt_options)?;
-    // Use the retrieved disk_file_after_gpt for PartitionIo
-    let _esp_io = PartitionIo::new(&mut disk_file_after_gpt, esp_offset_bytes, esp_size_bytes)?;
+    // Ensure ESP is large enough for FAT32 (choose a safe lower bound: 8 MiB)
+    // (fatfs internals are happier with reasonable sizes; using 8MiB+ avoids "unfortunate disk size")
+    if esp_size_bytes < 8 * 1024 * 1024 {
+        return Err(io::Error::new(io::ErrorKind::Other, format!("ESP too small for FAT32: {} bytes", esp_size_bytes)));
+    }
 
-    // 4. Open FAT filesystem (the EFI System Partition within esp.img)
-    // Re-create PartitionIo for FileSystem::new as it consumes the reader/writer
+    // Force FAT32 to avoid auto-selection failure
+    let fmt_options = FormatVolumeOptions::new().volume_label(*b" FULLERENE ").fat_type(FatType::Fat32);
+
+    // Create PartitionIo which limits format to the partition region
+    let mut esp_io_for_format = PartitionIo::new(&mut disk_file_after_gpt, esp_offset_bytes, esp_size_bytes)?;
+    fatfs::format_volume(&mut esp_io_for_format, fmt_options)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("FAT format failed: {}", e)))?;
+
+    // Use the retrieved disk_file_after_gpt for PartitionIo
+    // Recreate a fresh PartitionIo because format consumed the previous writer's cursor.
     let esp_io_for_fs = PartitionIo::new(&mut disk_file_after_gpt, esp_offset_bytes, esp_size_bytes)?;
-    let fs = FileSystem::new(esp_io_for_fs, FsOptions::new())?;
+    let fs = FileSystem::new(esp_io_for_fs, FsOptions::new())
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to open FAT filesystem: {}", e)))?;
 
     // 5. Copy EFI files into FAT32
     let bellows_efi = Path::new("target/x86_64-uefi/release/bellows");

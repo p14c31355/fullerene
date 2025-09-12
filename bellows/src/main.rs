@@ -1,28 +1,37 @@
 // bellows/src/main.rs
 #![no_std]
 #![no_main]
-extern crate alloc; // Add this line to import the alloc crate
+#![feature(alloc_error_handler)]
+
+extern crate alloc;
 
 use core::{ptr, slice};
 use core::ffi::c_void;
-use alloc::vec::Vec; // Add this line to bring Vec into scope
-
+use core::alloc::Layout;
+use alloc::vec::Vec;
 use linked_list_allocator::LockedHeap;
 
-// Define a heap size at the top of your file
+/// Size of the heap we will allocate for `alloc` usage (bytes).
 const HEAP_SIZE: usize = 128 * 1024; // 128 KiB
 
+/// Global allocator (linked-list allocator)
 #[global_allocator]
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
-// panic handler
+/// Alloc error handler required when using `alloc` in no_std.
+#[alloc_error_handler]
+fn alloc_error(_layout: Layout) -> ! {
+    loop {}
+}
+
+/// Panic handler
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
-// Minimal UEFI structs and enums
+/// Minimal subset of UEFI memory types (only those we need)
 #[repr(usize)]
 pub enum EfiMemoryType {
     EfiReservedMemoryType = 0,
@@ -43,39 +52,40 @@ pub enum EfiMemoryType {
     EfiMaxMemoryType = 15,
 }
 
+/// Minimal UEFI System Table and protocols used by this loader
 #[repr(C)]
 pub struct EfiSystemTable {
     _hdr: [u8; 24],
-    pub con_out: *mut EfiSimpleTextOutput, // Made public
+    pub con_out: *mut EfiSimpleTextOutput,
     _con_in: *mut c_void,
-    pub boot_services: *mut EfiBootServices, // Made public
+    pub boot_services: *mut EfiBootServices,
 }
 
+/// Very small subset of Boot Services we call
 #[repr(C)]
 pub struct EfiBootServices {
     _pad: [usize; 24],
-    pub allocate_pages: extern "efiapi" fn(usize, EfiMemoryType, usize, *mut usize) -> usize, // Made public
+    /// allocate_pages(AllocateType, MemoryType, Pages, *mut PhysicalAddress) -> EFI_STATUS
+    pub allocate_pages:
+        extern "efiapi" fn(usize, EfiMemoryType, usize, *mut usize) -> usize,
     _pad_2: [usize; 5],
-    pub locate_protocol: extern "efiapi" fn(
-        *const u8,
-        *mut c_void,
-        *mut *mut c_void,
-    ) -> usize, // Made public
+    /// locate_protocol(ProtocolGUID, Registration, *mut *Interface) -> EFI_STATUS
+    pub locate_protocol:
+        extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize,
 }
 
+/// SimpleTextOutput protocol (we only use OutputString)
 #[repr(C)]
 pub struct EfiSimpleTextOutput {
-    _pad: [usize; 4], // Skip the header and QueryMode, SetMode, SetAttribute
+    _pad: [usize; 4], // skip many fields; we only use output_string
     pub output_string: extern "efiapi" fn(*mut EfiSimpleTextOutput, *const u16) -> usize,
 }
 
+/// Simple FileSystem and File prototypes (very small subset)
 #[repr(C)]
 pub struct EfiSimpleFileSystem {
     _revision: u64,
-    open_volume: extern "efiapi" fn(
-        *mut EfiSimpleFileSystem,
-        *mut *mut EfiFile,
-    ) -> usize,
+    open_volume: extern "efiapi" fn(*mut EfiSimpleFileSystem, *mut *mut EfiFile) -> usize,
 }
 
 #[repr(C)]
@@ -92,24 +102,19 @@ pub struct EfiFile {
     _reserved: [usize; 13],
 }
 
-// NEW: Function to print to UEFI console via SimpleTextOutputProtocol
+/// Print a &str to the UEFI console via SimpleTextOutput (OutputString)
 fn uefi_print(st: &EfiSystemTable, s: &str) {
-    // Convert Rust string to UEFI's UCS-2 (UTF-16) null-terminated string
-    let mut ucs2_str: Vec<u16> = s.encode_utf16().collect();
-    ucs2_str.push(0); // Null terminator
-
+    // Convert to UTF-16 (UCS-2) with NUL terminator
+    let mut ucs2: Vec<u16> = s.encode_utf16().collect();
+    ucs2.push(0);
     unsafe {
-        // Ensure con_out is not null before dereferencing
         if !st.con_out.is_null() {
-            ((*st.con_out).output_string)(st.con_out, ucs2_str.as_ptr());
+            ((*st.con_out).output_string)(st.con_out, ucs2.as_ptr());
         }
     }
 }
 
-// OLD: Removed debug_print that wrote to VGA
-// fn debug_print(s: &[u8]) { ... }
-
-// ELF header
+/// ELF header (very small subset)
 #[repr(C)]
 struct ElfHeader {
     magic: [u8; 4],
@@ -117,11 +122,10 @@ struct ElfHeader {
     entry: u64,
 }
 
-// Load kernel ELF
+/// Load kernel ELF and return an entry point function pointer (very naive)
 fn load_kernel(kernel: &[u8]) -> Option<extern "C" fn() -> !> {
+    if kernel.len() < 24 { return None; }
     if &kernel[0..4] != b"\x7FELF" {
-        // Use uefi_print here if you had access to st, or just loop for now
-        // uefi_print(st, "Not an ELF file!\n");
         return None;
     }
     let header = unsafe { &*(kernel.as_ptr() as *const ElfHeader) };
@@ -129,80 +133,64 @@ fn load_kernel(kernel: &[u8]) -> Option<extern "C" fn() -> !> {
     Some(entry)
 }
 
-// SimpleFileSystem GUID
+/// SimpleFileSystem GUID (EFI_SIMPLE_FILE_SYSTEM_PROTOCOL)
 const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: [u8; 16] = [
     0x95, 0x76, 0x6e, 0x91, 0x3f, 0x6d, 0xd2, 0x11,
-    0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b
+    0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
 ];
 
-// Read kernel.efi from FAT32
-unsafe fn read_kernel(bs: &EfiBootServices) -> &'static [u8] {
-    // Locate SimpleFileSystem protocol
+/// Read `KERNEL.EFI` from the volume using UEFI SimpleFileSystem protocol.
+/// Allocates pages for the kernel buffer via BootServices.allocate_pages.
+unsafe fn read_kernel(bs: &EfiBootServices) -> Option<&'static [u8]> {
+    // locate SimpleFileSystem protocol
     let mut fs_ptr: *mut c_void = ptr::null_mut();
     let status = (bs.locate_protocol)(
         EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID.as_ptr(),
         ptr::null_mut(),
         &mut fs_ptr,
     );
-    // Removed debug_print calls here, as they won't have `st`
-    // You might want to add error handling or a way to print here if needed
-    if status != 0 {
-        loop {} // Or return an error
-    }
-
+    if status != 0 { return None; }
     let fs = fs_ptr as *mut EfiSimpleFileSystem;
 
-    // Open root volume
+    // open volume (root)
     let mut root: *mut EfiFile = ptr::null_mut();
-    let status = unsafe { ((*fs).open_volume)(fs, &mut root) };
-    if status != 0 {
-        loop {}
-    }
+    let status = ((*fs).open_volume)(fs, &mut root);
+    if status != 0 { return None; }
 
-    // Open KERNEL.EFI
+    // File name must be UCS-2 (UTF-16) and often expected uppercase for many firmwares
     let kernel_name: [u16; 12] = [
         'K' as u16, 'E' as u16, 'R' as u16, 'N' as u16, 'E' as u16, 'L' as u16,
         '.' as u16, 'E' as u16, 'F' as u16, 'I' as u16, 0, 0
     ];
     let mut kernel_file: *mut EfiFile = ptr::null_mut();
-    let status = unsafe { ((*root).open)(root, &mut kernel_file, kernel_name.as_ptr(), 0x1, 0) };
-    if status != 0 {
-        loop {}
-    }
+    let status = ((*root).open)(root, &mut kernel_file, kernel_name.as_ptr(), 0x1 /* READ */, 0);
+    if status != 0 { return None; }
 
-    // Allocate buffer for the kernel
-    let mut kernel_pages: usize = 0;
-    let size_in_pages = 2 * 1024 * 1024 / 4096; // 2MB in 4KB pages
-    let status = (bs.allocate_pages)(
-        0, // AllocateAnyPages
-        EfiMemoryType::EfiLoaderData,
-        size_in_pages,
-        &mut kernel_pages,
-    );
-    if status != 0 {
-        loop {}
-    }
+    // Allocate pages for kernel. Use AllocateAnyPages = 0
+    // We'll allocate 2 MiB for kernel (adjust if needed)
+    let pages = (2 * 1024 * 1024) / 4096;
+    let mut phys_addr: usize = 0;
+    let status = (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, pages, &mut phys_addr);
+    if status != 0 { return None; }
 
-    let kernel_buf = kernel_pages as *mut u8;
-    let mut size: u64 = (size_in_pages * 4096) as u64;
+    let buf_ptr = phys_addr as *mut u8;
+    let mut size: u64 = (pages * 4096) as u64;
 
-    // Read file
-    let status = unsafe { ((*kernel_file).read)(kernel_file, &mut size, kernel_buf) };
-    if status != 0 {
-        loop {}
-    }
+    // Read file into allocated buffer
+    let status = ((*kernel_file).read)(kernel_file, &mut size, buf_ptr);
+    if status != 0 { return None; }
 
-    // Close file
-    unsafe { ((*kernel_file).close)(kernel_file) };
+    // Close the file
+    ((*kernel_file).close)(kernel_file);
 
-    unsafe { slice::from_raw_parts(kernel_buf, size as usize) }
+    Some(slice::from_raw_parts(buf_ptr, size as usize))
 }
 
-// Helper: integer to hex (kept for potential future use, not used in this print fix)
+/// Helper: convert integer to 16-byte ASCII hex buffer (for potential debug)
 fn int_to_hex(mut n: usize) -> [u8; 16] {
     const HEX_CHARS: &[u8] = b"0123456789abcdef";
     let mut buf = [b'0'; 16];
-    let mut i = 15;
+    let mut i = 15usize;
     if n == 0 { buf[i] = HEX_CHARS[0]; return buf; }
     while n > 0 {
         buf[i] = HEX_CHARS[n % 16];
@@ -213,41 +201,47 @@ fn int_to_hex(mut n: usize) -> [u8; 16] {
     buf
 }
 
-// Entry point
+/// Entry point for UEFI. Note: name and calling convention are critical.
 #[unsafe(no_mangle)]
 pub extern "efiapi" fn efi_main(_image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
+    // SAFETY: UEFI provides a valid pointer for system_table when called by firmware.
     let st = unsafe { &*system_table };
     let bs = unsafe { &*st.boot_services };
 
-    // 1. Initialize the heap allocator first.
-    let mut heap_start = 0;
-    let status = (bs.allocate_pages)(
-        0, // AllocateAnyPages
-        EfiMemoryType::EfiLoaderData,
-        HEAP_SIZE / 4096, // size in pages
-        &mut heap_start,
-    );
+    // 1) Allocate heap pages and initialize the global allocator.
+    //    AllocateAnyPages = 0
+    let heap_pages = (HEAP_SIZE + 4095) / 4096;
+    let mut heap_phys: usize = 0;
+    let status = (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, heap_pages, &mut heap_phys);
     if status != 0 {
-        // We can't even allocate memory for the heap, so we can't use the allocator
-        // to print an error. The best we can do is halt.
+        // Allocation failed: we cannot continue safely
         loop {}
     }
+
     unsafe {
-        ALLOCATOR.lock().init(heap_start as *mut u8, HEAP_SIZE);
+        // init allocator with pointer and size in bytes
+        ALLOCATOR.lock().init(heap_phys as *mut u8, HEAP_SIZE);
     }
 
-    // 2. Now it's safe to use functions that allocate.
-    uefi_print(st, "bellows: bootloader started\n");
+    // Now we can use alloc-based data structures and printing via uefi_print
+    uefi_print(&st, "bellows: bootloader started\n");
 
-    let kernel_image = unsafe { read_kernel(bs) };
+    // 2) Read kernel from filesystem
+    let kernel_opt = unsafe { read_kernel(bs) };
+    let kernel_image = match kernel_opt {
+        Some(k) => k,
+        None => {
+            uefi_print(&st, "bellows: failed to read kernel.efi\n");
+            loop {}
+        }
+    };
 
-    if let Some(kernel_entry) = load_kernel(kernel_image) {
-        uefi_print(st, "Jumping to kernel...\n");
-        kernel_entry(); // This function should not return.
+    // 3) Parse ELF and jump to entry
+    if let Some(entry) = load_kernel(kernel_image) {
+        uefi_print(&st, "bellows: jumping to kernel...\n");
+        entry(); // should not return
     } else {
-        uefi_print(st, "Failed to load kernel\n");
+        uefi_print(&st, "bellows: kernel is not a valid ELF\n");
+        loop {}
     }
-
-    // 3. If we get here, it means kernel loading failed. Halt the system.
-    loop {}
 }
