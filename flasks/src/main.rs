@@ -172,24 +172,30 @@ fn main() -> std::io::Result<()> {
     let mut gpt_disk = GptConfig::new()
         .writable(true)
         .logical_block_size(LogicalBlockSize::Lb512)
-        .create_from_device(disk_file, None) // <--- CRITICAL CHANGE: Use create_from_device and pass None for GUID
+        .create_from_device(disk_file, None)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create GPT disk: {}", e)))?;
 
     // Add EFI System Partition (ESP)
-    let _esp_guid = Uuid::new_v4(); // Fixed unused variable warning
+    let _esp_guid = Uuid::new_v4();
 
-    let esp_size_lba = (50 * 1024 * 1024) / 512; // 50 MB
+    let available_lbas = gpt_disk.total_logical_blocks() - gpt_disk.get_next_lba().unwrap();
+    let esp_size_lba = available_lbas;
+
+    if esp_size_lba == 0 {
+        return Err(io::Error::new(io::ErrorKind::Other, "Not enough space for ESP partition"));
+    }
+
     gpt_disk.add_partition(
         "EFI System Partition",
-        34, // first_lba (u64) - Assuming 34 LBA is the first usable LBA after GPT header and partition table
-        partition_types::EFI, // part_type
-        esp_size_lba, // size_in_lba (u64)
-        Some(0), // attributes (Option<u64>)
+        gpt_disk.get_next_lba().unwrap(),
+        partition_types::EFI,
+        esp_size_lba,
+        Some(0),
     ).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to add ESP: {}", e)))?;
 
     // Get partition info before writing, as write consumes gpt_disk
     let esp_partition_info = gpt_disk.partitions().iter().find(|(_, p)| p.part_type_guid == partition_types::EFI)
-        .map(|(_, p)| p.clone()) // Clone the partition info
+        .map(|(_, p)| p.clone())
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "ESP not found after creation"))?;
 
     // Write GPT changes to disk and retrieve the underlying File
