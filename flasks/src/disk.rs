@@ -94,7 +94,7 @@ pub fn create_disk_and_iso(
     };
 
     let options = FormatOptions::new()
-        .with_files(FileInput::from_fs(temp_iso_dir.to_path_buf()).unwrap())
+        .with_files(FileInput::from_fs(temp_iso_dir.to_path_buf())?)
         .with_volume_name("FULLERENE".to_string())
         .with_strictness(Strictness::Default)
         .with_boot_options(boot_options);
