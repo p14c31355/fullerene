@@ -128,6 +128,8 @@ fn main() -> io::Result<()> {
             "x86_64-uefi.json",
             "-Z",
             "build-std=core,alloc,compiler_builtins",
+            "-Z",
+            "build-std-features=no-asm",
         ])
         .status()?;
     if !status.success() {
@@ -189,7 +191,11 @@ fn main() -> io::Result<()> {
 
     let first_lba = gpt_disk.primary_header().unwrap().first_usable;
     let last_lba = gpt_disk.primary_header().unwrap().last_usable;
-    let esp_size_lba = last_lba - first_lba + 1;
+    let block_size = gpt_disk.logical_block_size().as_u64();
+    let required_esp_bytes = 8 * 1024 * 1024;
+let required_esp_lba = required_esp_bytes / block_size;
+
+    let esp_size_lba = std::cmp::min(required_esp_lba, last_lba - first_lba + 1);
     dbg!(first_lba, last_lba, esp_size_lba);
 
     // Add ESP
@@ -226,10 +232,9 @@ fn main() -> io::Result<()> {
 
     // Format the EFI System Partition (ESP)
     let block_size = gpt_disk.logical_block_size().as_u64();
-    let esp_offset_bytes = esp_partition_info.first_lba * block_size;
+let esp_offset_bytes = esp_partition_info.first_lba * block_size;
     // The volume size in bytes must be a multiple of the logical block size.
-    let esp_size_bytes =
-        (esp_partition_info.last_lba - esp_partition_info.first_lba + 1) * block_size;
+    let esp_size_bytes = esp_size_lba * block_size;
     dbg!(esp_offset_bytes, esp_size_bytes);
     // Ensure ESP is large enough for FAT32 (choose a safe lower bound: 8 MiB)
     // (fatfs internals are happier with reasonable sizes; using 8MiB+ avoids "unfortunate disk size")
