@@ -1,6 +1,6 @@
 // fullerene/fullerene-kernel/src/vga.rs
-use spin::once::Once;
 use spin::Mutex;
+use spin::once::Once;
 // Removed: use x86_64::instructions::port::{PortRead, PortWrite};
 
 // NEW: VgaBuffer struct for direct VGA text mode communication

@@ -68,6 +68,9 @@ static SERIAL: Once<SerialPort> = Once::new();
 pub extern "C" fn _start() -> ! {
     vga::vga_init(); // Call vga_init to initialize VGA and print messages
     SERIAL.call_once(|| SerialPort::new());
-    SERIAL.get().unwrap().write_string("Hello QEMU by fullerene!\n");
+    SERIAL
+        .get()
+        .unwrap()
+        .write_string("Hello QEMU by fullerene!\n");
     loop {}
 }

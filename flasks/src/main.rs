@@ -1,15 +1,11 @@
 // fullerene/flasks/src/main.rs
+use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions};
+use gpt::{GptConfig, disk::LogicalBlockSize, partition_types};
 use std::{
     fs,
     io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
     process::Command,
-};
-use fatfs::{FileSystem, FormatVolumeOptions, FsOptions, FatType};
-use gpt::{
-    disk::LogicalBlockSize,
-    partition_types,
-    GptConfig,
 };
 use uuid::Uuid;
 
@@ -40,7 +36,8 @@ impl<'a> Read for PartitionIo<'a> {
             return Ok(0);
         }
 
-        self.file.seek(SeekFrom::Start(self.offset + self.current_pos))?;
+        self.file
+            .seek(SeekFrom::Start(self.offset + self.current_pos))?;
         let bytes_read = self.file.read(&mut buf[..bytes_to_read])?;
         self.current_pos += bytes_read as u64;
         Ok(bytes_read)
@@ -55,7 +52,8 @@ impl<'a> Write for PartitionIo<'a> {
             return Ok(0);
         }
 
-        self.file.seek(SeekFrom::Start(self.offset + self.current_pos))?;
+        self.file
+            .seek(SeekFrom::Start(self.offset + self.current_pos))?;
         let bytes_written = self.file.write(&buf[..bytes_to_write])?;
         self.current_pos += bytes_written as u64;
         Ok(bytes_written)
@@ -75,7 +73,10 @@ impl<'a> Seek for PartitionIo<'a> {
         };
 
         if new_pos > self.size {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek beyond end of partition"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seek beyond end of partition",
+            ));
         }
         self.current_pos = new_pos;
         Ok(self.current_pos)
@@ -94,7 +95,9 @@ fn copy_to_fat<T: Read + Write + Seek>(
     // Create intermediate directories
     if let Some(parent) = dest_path.parent() {
         for component in parent.iter() {
-            let name = component.to_str().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Non-UTF8 path component"))?;
+            let name = component.to_str().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "Non-UTF8 path component")
+            })?;
             let found = dir
                 .iter()
                 .filter_map(|e| e.ok())
@@ -132,7 +135,10 @@ fn main() -> std::io::Result<()> {
         ])
         .status()?;
     if !status.success() {
-        return Err(io::Error::new(io::ErrorKind::Other, "fullerene-kernel build failed"));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "fullerene-kernel build failed",
+        ));
     }
 
     // 2. Build bellows (UEFI bootloader)
@@ -170,7 +176,7 @@ fn main() -> std::io::Result<()> {
         .write(true)
         .create(true)
         .open(disk_img_path)?;
-    
+
     // Set the file length BEFORE creating the GPT disk object
     disk_file.set_len(disk_size_bytes)?;
     // It's good practice to sync the file to ensure length is committed
@@ -182,9 +188,15 @@ fn main() -> std::io::Result<()> {
         .logical_block_size(LogicalBlockSize::Lb512);
 
     // Create the disk object from the configured GptConfig
-    let mut gpt_disk = gpt_config.create_from_device(disk_file, None)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create GPT disk: {}", e)))?;
-        
+    let mut gpt_disk = gpt_config
+        .create_from_device(disk_file, None)
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("Failed to create GPT disk: {}", e),
+            )
+        })?;
+
     let first_lba = gpt_disk.primary_header().unwrap().first_usable;
     let last_lba = gpt_disk.primary_header().unwrap().last_usable;
     let esp_size_lba = if last_lba >= first_lba {
@@ -196,53 +208,80 @@ fn main() -> std::io::Result<()> {
     dbg!(esp_size_lba);
 
     if esp_size_lba == 0 {
-        return Err(io::Error::new(io::ErrorKind::Other, "Calculated ESP partition size is 0, cannot create partition."));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Calculated ESP partition size is 0, cannot create partition.",
+        ));
     }
 
     // Add EFI System Partition (ESP)
     let _esp_guid = Uuid::new_v4();
 
-    gpt_disk.add_partition(
-        "EFI System Partition",
-        first_lba,
-        partition_types::EFI,
-        esp_size_lba,
-        None,
-    ).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to add ESP: {}", e)))?;
+    gpt_disk
+        .add_partition(
+            "EFI System Partition",
+            first_lba,
+            partition_types::EFI,
+            esp_size_lba,
+            None,
+        )
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to add ESP: {}", e)))?;
 
     // Get partition info before writing, as write consumes gpt_disk
-    let esp_partition_info = gpt_disk.partitions().iter().find(|(_, p)| p.part_type_guid == partition_types::EFI)
+    let esp_partition_info = gpt_disk
+        .partitions()
+        .iter()
+        .find(|(_, p)| p.part_type_guid == partition_types::EFI)
         .map(|(_, p)| p.clone())
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "ESP not found after creation"))?;
 
-    // Write GPT changes to disk and retrieve the underlying File
-    let mut disk_file_after_gpt = gpt_disk.write()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to write GPT to disk: {}", e)))?;
-
     // Format the EFI System Partition (ESP)
-    let esp_offset_bytes = esp_partition_info.first_lba * LogicalBlockSize::Lb512 as u64;
-    // The volume size in bytes must be a multiple of the logical block size.
-    let esp_size_bytes = (esp_partition_info.last_lba - esp_partition_info.first_lba + 1) * LogicalBlockSize::Lb512 as u64;
+    let block_size = gpt_disk.logical_block_size().as_u64();
 
+    // Write GPT changes to disk and retrieve the underlying File
+    let mut disk_file_after_gpt = gpt_disk.write().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("Failed to write GPT to disk: {}", e),
+        )
+    })?;
+
+    let esp_offset_bytes = esp_partition_info.first_lba * block_size;
+    // The volume size in bytes must be a multiple of the logical block size.
+    let esp_size_bytes =
+        (esp_partition_info.last_lba - esp_partition_info.first_lba + 1) * block_size;
+
+    dbg!(esp_size_bytes);
     // Ensure ESP is large enough for FAT32 (choose a safe lower bound: 8 MiB)
     // (fatfs internals are happier with reasonable sizes; using 8MiB+ avoids "unfortunate disk size")
     if esp_size_bytes < 8 * 1024 * 1024 {
-        return Err(io::Error::new(io::ErrorKind::Other, format!("ESP too small for FAT32: {} bytes", esp_size_bytes)));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("ESP too small for FAT32: {} bytes", esp_size_bytes),
+        ));
     }
 
     // Force FAT32 to avoid auto-selection failure
-    let fmt_options = FormatVolumeOptions::new().volume_label(*b" FULLERENE ").fat_type(FatType::Fat32);
+    let fmt_options = FormatVolumeOptions::new()
+        .volume_label(*b" FULLERENE ")
+        .fat_type(FatType::Fat32);
 
     // Create PartitionIo which limits format to the partition region
-    let mut esp_io_for_format = PartitionIo::new(&mut disk_file_after_gpt, esp_offset_bytes, esp_size_bytes)?;
+    let mut esp_io_for_format =
+        PartitionIo::new(&mut disk_file_after_gpt, esp_offset_bytes, esp_size_bytes)?;
     fatfs::format_volume(&mut esp_io_for_format, fmt_options)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("FAT format failed: {}", e)))?;
 
     // Use the retrieved disk_file_after_gpt for PartitionIo
     // Recreate a fresh PartitionIo because format consumed the previous writer's cursor.
-    let esp_io_for_fs = PartitionIo::new(&mut disk_file_after_gpt, esp_offset_bytes, esp_size_bytes)?;
-    let fs = FileSystem::new(esp_io_for_fs, FsOptions::new())
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to open FAT filesystem: {}", e)))?;
+    let esp_io_for_fs =
+        PartitionIo::new(&mut disk_file_after_gpt, esp_offset_bytes, esp_size_bytes)?;
+    let fs = FileSystem::new(esp_io_for_fs, FsOptions::new()).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("Failed to open FAT filesystem: {}", e),
+        )
+    })?;
 
     // 5. Copy EFI files into FAT32
     let bellows_efi = Path::new("target/x86_64-uefi/release/bellows");

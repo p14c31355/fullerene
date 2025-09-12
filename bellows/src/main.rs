@@ -5,10 +5,10 @@
 
 extern crate alloc;
 
-use core::{ptr, slice};
-use core::ffi::c_void;
-use core::alloc::Layout;
 use alloc::vec::Vec;
+use core::alloc::Layout;
+use core::ffi::c_void;
+use core::{ptr, slice};
 use linked_list_allocator::LockedHeap;
 
 /// Size of the heap we will allocate for `alloc` usage (bytes).
@@ -66,12 +66,10 @@ pub struct EfiSystemTable {
 pub struct EfiBootServices {
     _pad: [usize; 24],
     /// allocate_pages(AllocateType, MemoryType, Pages, *mut PhysicalAddress) -> EFI_STATUS
-    pub allocate_pages:
-        extern "efiapi" fn(usize, EfiMemoryType, usize, *mut usize) -> usize,
+    pub allocate_pages: extern "efiapi" fn(usize, EfiMemoryType, usize, *mut usize) -> usize,
     _pad_2: [usize; 5],
     /// locate_protocol(ProtocolGUID, Registration, *mut *Interface) -> EFI_STATUS
-    pub locate_protocol:
-        extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize,
+    pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize,
 }
 
 /// SimpleTextOutput protocol (we only use OutputString)
@@ -91,13 +89,7 @@ pub struct EfiSimpleFileSystem {
 #[repr(C)]
 pub struct EfiFile {
     read: extern "efiapi" fn(*mut EfiFile, *mut u64, *mut u8) -> usize,
-    open: extern "efiapi" fn(
-        *mut EfiFile,
-        *mut *mut EfiFile,
-        *const u16,
-        u64,
-        u64,
-    ) -> usize,
+    open: extern "efiapi" fn(*mut EfiFile, *mut *mut EfiFile, *const u16, u64, u64) -> usize,
     close: extern "efiapi" fn(*mut EfiFile) -> usize,
     _reserved: [usize; 13],
 }
@@ -124,7 +116,9 @@ struct ElfHeader {
 
 /// Load kernel ELF and return an entry point function pointer (very naive)
 fn load_kernel(kernel: &[u8]) -> Option<extern "C" fn() -> !> {
-    if kernel.len() < 24 { return None; }
+    if kernel.len() < 24 {
+        return None;
+    }
     if &kernel[0..4] != b"\x7FELF" {
         return None;
     }
@@ -135,8 +129,7 @@ fn load_kernel(kernel: &[u8]) -> Option<extern "C" fn() -> !> {
 
 /// SimpleFileSystem GUID (EFI_SIMPLE_FILE_SYSTEM_PROTOCOL)
 const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: [u8; 16] = [
-    0x95, 0x76, 0x6e, 0x91, 0x3f, 0x6d, 0xd2, 0x11,
-    0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
+    0x95, 0x76, 0x6e, 0x91, 0x3f, 0x6d, 0xd2, 0x11, 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
 ];
 
 /// Read `KERNEL.EFI` from the volume using UEFI SimpleFileSystem protocol.
@@ -149,36 +142,52 @@ unsafe fn read_kernel(bs: &EfiBootServices) -> Option<&'static [u8]> {
         ptr::null_mut(),
         &mut fs_ptr,
     );
-    if status != 0 { return None; }
+    if status != 0 {
+        return None;
+    }
     let fs = fs_ptr as *mut EfiSimpleFileSystem;
 
     // open volume (root)
     let mut root: *mut EfiFile = ptr::null_mut();
     let status = ((*fs).open_volume)(fs, &mut root);
-    if status != 0 { return None; }
+    if status != 0 {
+        return None;
+    }
 
     // File name must be UCS-2 (UTF-16) and often expected uppercase for many firmwares
     let kernel_name: [u16; 12] = [
-        'K' as u16, 'E' as u16, 'R' as u16, 'N' as u16, 'E' as u16, 'L' as u16,
-        '.' as u16, 'E' as u16, 'F' as u16, 'I' as u16, 0, 0
+        'K' as u16, 'E' as u16, 'R' as u16, 'N' as u16, 'E' as u16, 'L' as u16, '.' as u16,
+        'E' as u16, 'F' as u16, 'I' as u16, 0, 0,
     ];
     let mut kernel_file: *mut EfiFile = ptr::null_mut();
-    let status = ((*root).open)(root, &mut kernel_file, kernel_name.as_ptr(), 0x1 /* READ */, 0);
-    if status != 0 { return None; }
+    let status = ((*root).open)(
+        root,
+        &mut kernel_file,
+        kernel_name.as_ptr(),
+        0x1, /* READ */
+        0,
+    );
+    if status != 0 {
+        return None;
+    }
 
     // Allocate pages for kernel. Use AllocateAnyPages = 0
     // We'll allocate 2 MiB for kernel (adjust if needed)
     let pages = (2 * 1024 * 1024) / 4096;
     let mut phys_addr: usize = 0;
     let status = (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, pages, &mut phys_addr);
-    if status != 0 { return None; }
+    if status != 0 {
+        return None;
+    }
 
     let buf_ptr = phys_addr as *mut u8;
     let mut size: u64 = (pages * 4096) as u64;
 
     // Read file into allocated buffer
     let status = ((*kernel_file).read)(kernel_file, &mut size, buf_ptr);
-    if status != 0 { return None; }
+    if status != 0 {
+        return None;
+    }
 
     // Close the file
     ((*kernel_file).close)(kernel_file);
@@ -191,11 +200,16 @@ fn int_to_hex(mut n: usize) -> [u8; 16] {
     const HEX_CHARS: &[u8] = b"0123456789abcdef";
     let mut buf = [b'0'; 16];
     let mut i = 15usize;
-    if n == 0 { buf[i] = HEX_CHARS[0]; return buf; }
+    if n == 0 {
+        buf[i] = HEX_CHARS[0];
+        return buf;
+    }
     while n > 0 {
         buf[i] = HEX_CHARS[n % 16];
         n /= 16;
-        if i == 0 { break; }
+        if i == 0 {
+            break;
+        }
         i -= 1;
     }
     buf
@@ -212,7 +226,12 @@ pub extern "efiapi" fn efi_main(_image_handle: usize, system_table: *mut EfiSyst
     //    AllocateAnyPages = 0
     let heap_pages = (HEAP_SIZE + 4095) / 4096;
     let mut heap_phys: usize = 0;
-    let status = (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, heap_pages, &mut heap_phys);
+    let status = (bs.allocate_pages)(
+        0usize,
+        EfiMemoryType::EfiLoaderData,
+        heap_pages,
+        &mut heap_phys,
+    );
     if status != 0 {
         // Allocation failed: we cannot continue safely
         loop {}
