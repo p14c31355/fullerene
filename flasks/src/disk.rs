@@ -18,12 +18,14 @@ pub fn create_disk_and_iso(
 ) -> io::Result<()> {
     // 1. Create raw disk image and get the file handle
     let mut disk_file = create_disk_image(disk_image_path, bellows_efi_src, kernel_efi_src)?;
+    let efi = "EFI/BOOT/BOOTX64.EFI".to_string();
+    let iso = "temp_iso_stage".to_string();
 
     // 2. Create UEFI ISO from disk image using hadris-iso
-    let efi_boot_path = Path::new("EFI/BOOT/BOOTX64.EFI");
+    let efi_boot_path = Path::new(&efi);
     
     // Create a temporary directory to stage the ISO contents
-    let temp_iso_dir = Path::new("temp_iso_stage");
+    let temp_iso_dir = Path::new(&iso);
     if temp_iso_dir.exists() {
         fs::remove_dir_all(temp_iso_dir)?;
     }
@@ -165,8 +167,8 @@ fn create_disk_image(
     let _boot_dir = efi_dir.open_dir("BOOT").or_else(|_| efi_dir.create_dir("BOOT"))?;
 
     // Copy EFI files into EFI/BOOT
-    copy_to_fat(&fs, bellows_efi_src, "EFI/BOOT/BOOTX64.EFI")?;
-    copy_to_fat(&fs, kernel_efi_src, "EFI/BOOT/kernel.efi")?;
+    copy_to_fat(&fs, bellows_efi_src, Path::new("EFI/BOOT/BOOTX64.EFI"))?;
+    copy_to_fat(&fs, kernel_efi_src, Path::new("EFI/BOOT/kernel.efi"))?;
 }
     // Get back the file handle
     let file = part_io.into_inner()?;
