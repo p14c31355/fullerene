@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 fatfs = "0.3.6"
 gpt = "4.1.0"
+uuid = "1.18.1"

@@ -104,11 +104,15 @@ pub fn copy_to_fat<T: Read + Write + Seek>(
     }
 
     // Create and write file
-    let mut f = dir.create_file(dest_path.file_name().unwrap().to_str().unwrap())?;
-    let mut data = Vec::new();
-    let mut src_f = File::open(src)?;
-    src_f.read_to_end(&mut data)?;
-    f.write_all(&data)?;
-    f.flush()?;
+    let mut f = dir.create_file(
+        dest_path
+            .file_name()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid destination path"))?
+            .to_str()
+            .unwrap(),
+    )?;
+    let mut src_file = File::open(src)?;
+    io::copy(&mut src_file, &mut f)?;
+
     Ok(())
 }
