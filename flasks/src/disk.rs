@@ -5,12 +5,74 @@ use std::{
     fs::{self, OpenOptions},
     io,
     path::Path,
+    process::Command,
 };
 use crate::part_io::{PartitionIo, copy_to_fat};
 
-/// Creates and initializes the disk image with GPT, FAT32 filesystem,
+/// Creates both a raw disk image and a UEFI-bootable ISO
+pub fn create_disk_and_iso(
+    disk_image_path: &Path,
+    iso_path: &Path,
+    bellows_efi_src: &Path,
+    kernel_efi_src: &Path,
+) -> io::Result<()> {
+    // 1. Create raw disk image
+    create_disk_image(disk_image_path, bellows_efi_src, kernel_efi_src)?;
+
+    // 2. Mount the disk image (Linux loop mount)
+    let mount_dir = "/tmp/esp_mount";
+    if !Path::new(mount_dir).exists() {
+        fs::create_dir(mount_dir)?;
+    }
+
+    // Get partition offset (16 MiB EFI partition starts at 1 MiB LBA=2048)
+    let offset_bytes = 2048 * 512;
+
+    let status = Command::new("sudo")
+        .args(&[
+            "mount",
+            "-o",
+            &format!("loop,offset={}", offset_bytes),
+            disk_image_path.to_str().unwrap(),
+            mount_dir,
+        ])
+        .status()?;
+    if !status.success() {
+        return Err(io::Error::new(io::ErrorKind::Other, "Failed to mount disk image"));
+    }
+
+    // 3. Create UEFI ISO from mounted EFI partition
+    let iso_status = Command::new("xorriso")
+        .args(&[
+            "-as", "mkisofs",
+            "-o", iso_path.to_str().unwrap(),
+            "-V", "FULLERENE",
+            "-J", "-r",
+            "-efi-boot", "EFI/BOOT/BOOTX64.EFI",
+            "-no-emul-boot",
+            "-boot-load-size", "4",
+            "-boot-info-table",
+            mount_dir,
+        ])
+        .status()?;
+    if !iso_status.success() {
+        return Err(io::Error::new(io::ErrorKind::Other, "Failed to create ISO"));
+    }
+
+    // 4. Unmount disk image
+    let umount_status = Command::new("sudo")
+        .args(&["umount", mount_dir])
+        .status()?;
+    if !umount_status.success() {
+        return Err(io::Error::new(io::ErrorKind::Other, "Failed to unmount disk image"));
+    }
+
+    Ok(())
+}
+
+/// Creates and initializes the raw disk image with GPT, FAT32 filesystem,
 /// ensures EFI/BOOT directories, and copies EFI files.
-pub fn create_disk_image(
+fn create_disk_image(
     disk_image_path: &Path,
     bellows_efi_src: &Path,
     kernel_efi_src: &Path,

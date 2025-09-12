@@ -8,7 +8,7 @@ use std::{
     path::Path,
     process::Command,
 };
-use crate::disk::create_disk_image;
+use crate::disk::create_disk_and_iso;
 
 fn main() -> io::Result<()> {
     // 1. Build fullerene-kernel
@@ -56,7 +56,7 @@ fn main() -> io::Result<()> {
     let bellows_efi_src = Path::new("target/x86_64-uefi/release/bellows");
     let kernel_efi_src = Path::new("target/x86_64-uefi/release/fullerene-kernel");
 
-    create_disk_image(disk_image_path, bellows_efi_src, kernel_efi_src)?;
+    create_disk_and_iso(disk_image_path, bellows_efi_src, kernel_efi_src)?;
 
     // 4. Copy OVMF_VARS.fd if missing and check for OVMF_CODE.fd
     let ovmf_code = Path::new("/usr/share/OVMF/OVMF_CODE_4M.fd");
