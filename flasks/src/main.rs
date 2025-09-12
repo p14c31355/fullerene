@@ -156,13 +156,13 @@ fn main() -> std::io::Result<()> {
         fs::remove_file(disk_img_path)?;
     }
 
+    let disk_size_bytes = 64 * 1024 * 1024; // 64 MB
     let mut disk_file = fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .open(disk_img_path)?;
     
-    let disk_size_bytes = 64 * 1024 * 1024; // 64 MB
     // Set the file length BEFORE creating the GPT disk object
     disk_file.set_len(disk_size_bytes)?;
     // It's good practice to sync the file to ensure length is committed
@@ -172,7 +172,7 @@ fn main() -> std::io::Result<()> {
     let mut gpt_disk = GptConfig::new()
         .writable(true)
         .logical_block_size(LogicalBlockSize::Lb512)
-        .create_from_disk(disk_file) // <--- CRITICAL CHANGE: Pass the opened file handle directly
+        .create_from_device(disk_file, None) // <--- CRITICAL CHANGE: Use create_from_device and pass None for GUID
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create GPT disk: {}", e)))?;
 
     // Add EFI System Partition (ESP)
