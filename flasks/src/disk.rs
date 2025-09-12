@@ -5,8 +5,9 @@ use std::{
     fs::{self, OpenOptions},
     io,
     path::Path,
-    process::Command,
 };
+use hadris_iso::{IsoImage, FileInput, FormatOptions, Strictness, BootOptions, BootEntryOptions, boot::EmulationType};
+use path_absolutize::Absolutize;
 use crate::part_io::{PartitionIo, copy_to_fat};
 
 /// Creates both a raw disk image and a UEFI-bootable ISO
@@ -19,53 +20,48 @@ pub fn create_disk_and_iso(
     // 1. Create raw disk image
     create_disk_image(disk_image_path, bellows_efi_src, kernel_efi_src)?;
 
-    // 2. Mount the disk image (Linux loop mount)
-    let mount_dir = "/tmp/esp_mount";
-    if !Path::new(mount_dir).exists() {
-        fs::create_dir(mount_dir)?;
-    }
-
+    // 2. Create UEFI ISO from disk image using hadris-iso
     // Get partition offset (16 MiB EFI partition starts at 1 MiB LBA=2048)
     let offset_bytes = 2048 * 512;
 
-    let status = Command::new("sudo")
-        .args(&[
-            "mount",
-            "-o",
-            &format!("loop,offset={}", offset_bytes),
-            disk_image_path.to_str().unwrap(),
-            mount_dir,
-        ])
-        .status()?;
-    if !status.success() {
-        return Err(io::Error::new(io::ErrorKind::Other, "Failed to mount disk image"));
+    let efi_boot_path = Path::new("EFI/BOOT/BOOTX64.EFI").absolutize()?;
+    
+    // Create a temporary directory to stage the ISO contents
+    let temp_iso_dir = Path::new("temp_iso_stage");
+    if temp_iso_dir.exists() {
+        fs::remove_dir_all(temp_iso_dir)?;
     }
+    fs::create_dir(temp_iso_dir)?;
 
-    // 3. Create UEFI ISO from mounted EFI partition
-    let iso_status = Command::new("xorriso")
-        .args(&[
-            "-as", "mkisofs",
-            "-o", iso_path.to_str().unwrap(),
-            "-V", "FULLERENE",
-            "-J", "-r",
-            "-efi-boot", "EFI/BOOT/BOOTX64.EFI",
-            "-no-emul-boot",
-            "-boot-load-size", "4",
-            "-boot-info-table",
-            mount_dir,
-        ])
-        .status()?;
-    if !iso_status.success() {
-        return Err(io::Error::new(io::ErrorKind::Other, "Failed to create ISO"));
-    }
+    // Copy the disk image to the temporary directory
+    let staged_disk_image_path = temp_iso_dir.join(disk_image_path.file_name().unwrap());
+    fs::copy(disk_image_path, &staged_disk_image_path)?;
 
-    // 4. Unmount disk image
-    let umount_status = Command::new("sudo")
-        .args(&["umount", mount_dir])
-        .status()?;
-    if !umount_status.success() {
-        return Err(io::Error::new(io::ErrorKind::Other, "Failed to unmount disk image"));
-    }
+    let boot_entry_options = BootEntryOptions {
+        load_size: 0, // UEFI doesn't need load_size
+        boot_image_path: efi_boot_path.to_string_lossy().into_owned(),
+        boot_info_table: false,
+        grub2_boot_info: false,
+        emulation: EmulationType::NoEmulation,
+    };
+
+    let boot_options = BootOptions {
+        write_boot_catalogue: true,
+        default: boot_entry_options,
+        entries: Vec::new(),
+    };
+
+    let options = FormatOptions::new()
+        .with_files(FileInput::from_fs(temp_iso_dir.to_path_buf()).unwrap())
+        .with_volume_name("FULLERENE".to_string())
+        .with_strictness(Strictness::Default) // Use default strictness
+        .with_boot_options(boot_options);
+
+    IsoImage::format_file(iso_path.to_path_buf(), options)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create ISO: {}", e)))?;
+
+    // Clean up the temporary directory
+    fs::remove_dir_all(temp_iso_dir)?;
 
     Ok(())
 }

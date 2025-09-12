@@ -53,10 +53,11 @@ fn main() -> io::Result<()> {
 
     // 3. Create a 64MiB disk image file
     let disk_image_path = Path::new("esp.img");
+    let iso_path = Path::new("fullerene.iso"); // ISOファイルのパスを追加
     let bellows_efi_src = Path::new("target/x86_64-uefi/release/bellows");
     let kernel_efi_src = Path::new("target/x86_64-uefi/release/fullerene-kernel");
 
-    create_disk_and_iso(disk_image_path, bellows_efi_src, kernel_efi_src)?;
+    create_disk_and_iso(disk_image_path, iso_path, bellows_efi_src, kernel_efi_src)?;
 
     // 4. Copy OVMF_VARS.fd if missing and check for OVMF_CODE.fd
     let ovmf_code = Path::new("/usr/share/OVMF/OVMF_CODE_4M.fd");

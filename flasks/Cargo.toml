@@ -6,4 +6,6 @@ edition = "2024"
 [dependencies]
 fatfs = "0.3.6"
 gpt = "4.1.0"
+hadris-iso = "0.0.2"
+path-absolutize = "3.1.1"
 uuid = "1.18.1"
