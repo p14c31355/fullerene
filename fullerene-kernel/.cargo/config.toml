@@ -1,7 +1,16 @@
 [build]
 target = "x86_64-uefi.json"
 
-[target.x86_64-uefi]
+[unstable]
+build-std = ["core", "alloc", "compiler_builtins"]
+build-std-features = ["compiler-builtins-mem"]
+
+[target.'cfg(target_os = "none")']
 rustflags = [
-    "-C target-feature=-crt-static"
+  "-C", "link-arg=-nostdlib",
+  "-C", "link-arg=-Ttext=0x10000",
+  "-C", "link-arg=--no-relax",
+  "-C", "link-arg=--image-base=0x10000",
+  "--cfg=compiler_builtins_no_asm_on_unsupported_arch",
+  "-C", "link-args=-Wl,--nxcompat",
 ]
