@@ -219,31 +219,35 @@ pub extern "efiapi" fn efi_main(_image_handle: usize, system_table: *mut EfiSyst
     let st = unsafe { &*system_table };
     let bs = unsafe { &*st.boot_services };
 
-    // Use the new uefi_print function for bootloader messages
+    // 1. Initialize the heap allocator first.
+    let mut heap_start = 0;
+    let status = (bs.allocate_pages)(
+        0, // AllocateAnyPages
+        EfiMemoryType::EfiLoaderData,
+        HEAP_SIZE / 4096, // size in pages
+        &mut heap_start,
+    );
+    if status != 0 {
+        // We can't even allocate memory for the heap, so we can't use the allocator
+        // to print an error. The best we can do is halt.
+        loop {}
+    }
+    unsafe {
+        ALLOCATOR.lock().init(heap_start as *mut u8, HEAP_SIZE);
+    }
+
+    // 2. Now it's safe to use functions that allocate.
     uefi_print(st, "bellows: bootloader started\n");
 
     let kernel_image = unsafe { read_kernel(bs) };
 
     if let Some(kernel_entry) = load_kernel(kernel_image) {
         uefi_print(st, "Jumping to kernel...\n");
-        kernel_entry();
+        kernel_entry(); // This function should not return.
     } else {
         uefi_print(st, "Failed to load kernel\n");
     }
 
-    let mut heap_start = 0;
-let status = (bs.allocate_pages)(
-    0, // AllocateAnyPages
-    EfiMemoryType::EfiLoaderData,
-    HEAP_SIZE / 4096, // size in pages
-    &mut heap_start,
-);
-if status != 0 {
-    // Can't allocate, so we can't print an error. Halt.
-    loop {}
-}
-unsafe {
-    ALLOCATOR.lock().init(heap_start as *mut u8, HEAP_SIZE);
-}
+    // 3. If we get here, it means kernel loading failed. Halt the system.
     loop {}
 }
