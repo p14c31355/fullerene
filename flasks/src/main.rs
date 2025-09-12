@@ -94,7 +94,7 @@ fn copy_to_fat<T: Read + Write + Seek>(
     // Create intermediate directories
     if let Some(parent) = dest_path.parent() {
         for component in parent.iter() {
-            let name = component.to_str().unwrap();
+            let name = component.to_str().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Non-UTF8 path component"))?;
             let found = dir
                 .iter()
                 .filter_map(|e| e.ok())
