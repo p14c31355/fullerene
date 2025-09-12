@@ -3,7 +3,7 @@ use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions};
 use gpt::{GptConfig, disk::LogicalBlockSize, partition_types};
 use std::{
     fs::{self, OpenOptions, File},
-    io::{self, Read, Seek, SeekFrom},
+    io::{self, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
 use hadris_iso::{IsoImage, FileInput, FormatOptions, Strictness, BootOptions, BootEntryOptions, boot::EmulationType};
@@ -33,7 +33,7 @@ pub fn create_disk_and_iso(
     disk_file.seek(SeekFrom::Start(0))?;
     let gpt = GptConfig::default()
         .logical_block_size(LogicalBlockSize::Lb512)
-        .initialized_device(&mut disk_file, None)
+        .open_from_device(&mut disk_file)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to read GPT: {}", e)))?;
 
     let efi_partition = gpt.partitions().iter()
@@ -155,11 +155,9 @@ fn create_disk_image(
         FormatVolumeOptions::new().fat_type(FatType::Fat32),
     )?;
     
-    // Get back the file handle
-    let mut file = part_io.into_inner()?;
-
+{
     // Mount filesystem
-    let fs = FileSystem::new(&mut file, FsOptions::new())?;
+    let fs = FileSystem::new(&mut part_io, FsOptions::new())?;
 
     // Ensure EFI/BOOT directories exist
     let root_dir = fs.root_dir();
@@ -169,7 +167,9 @@ fn create_disk_image(
     // Copy EFI files into EFI/BOOT
     copy_to_fat(&fs, bellows_efi_src, "EFI/BOOT/BOOTX64.EFI")?;
     copy_to_fat(&fs, kernel_efi_src, "EFI/BOOT/kernel.efi")?;
-
+}
+    // Get back the file handle
+    let file = part_io.into_inner()?;
     Ok(file)
 }
 
