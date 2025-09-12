@@ -164,8 +164,8 @@ fn create_disk_image(
         let fs = FileSystem::new(&mut part_io, FsOptions::new())?;
 
         // Ensure EFI/BOOT directories exist
-        let root_dir = fs.root_dir();
-        let efi_dir = root_dir.open_dir("EFI").or_else(|_| root_dir.create_dir("EFI"))?;
+        let root_dir = fs.root_dir(); // This is a Dir<'_, &mut PartitionIo>
+        let efi_dir = root_dir.open_dir("EFI").or_else(|_| root_dir.create_dir("EFI"))?; // This is also a Dir<'_, &mut PartitionIo>
         let boot_dir = efi_dir.open_dir("BOOT").or_else(|_| efi_dir.create_dir("BOOT"))?;
 
         // Copy EFI files into EFI/BOOT

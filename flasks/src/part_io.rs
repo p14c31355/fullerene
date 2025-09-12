@@ -1,5 +1,4 @@
 // fullerene/flasks/src/part_io.rs
-use fatfs::FileSystem;
 use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom, Write},
@@ -90,12 +89,12 @@ impl Seek for PartitionIo {
 
 /// Copy a file into the FAT filesystem, creating directories as needed
 pub fn copy_to_fat<T: Read + Write + Seek>(
-    fs: &FileSystem<T>,
+    start_dir: &fatfs::Dir<T>,
     src: &Path,
     dest: &str,
 ) -> io::Result<()> {
     let dest_path = Path::new(dest);
-    let mut dir = fs.root_dir();
+    let mut dir = start_dir.clone();
 
     // Create intermediate directories
     if let Some(parent) = dest_path.parent() {
@@ -103,11 +102,7 @@ pub fn copy_to_fat<T: Read + Write + Seek>(
             let name = component
                 .to_str()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Non-UTF8 path"))?;
-            dir = if dir.iter().filter_map(|e| e.ok()).any(|e| e.file_name().eq_ignore_ascii_case(name)) {
-                dir.open_dir(name)?
-            } else {
-                dir.create_dir(name)?
-            };
+            dir = dir.open_dir(name).or_else(|_| dir.create_dir(name))?;
         }
     }
 
