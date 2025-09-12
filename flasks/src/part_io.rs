@@ -7,15 +7,16 @@ use std::{
 };
 
 /// A wrapper around a File that limits I/O to a specific partition offset and size.
-pub struct PartitionIo<'a> {
-    file: &'a mut File,
+pub struct PartitionIo {
+    file: File,
     offset: u64,
     size: u64,
     current_pos: u64,
 }
 
-impl<'a> PartitionIo<'a> {
-    pub fn new(file: &'a mut File, offset: u64, size: u64) -> io::Result<Self> {
+impl PartitionIo {
+    pub fn new(mut file: File, offset: u64, size: u64) -> io::Result<Self> {
+        file.seek(SeekFrom::Start(offset))?;
         Ok(Self {
             file,
             offset,
@@ -23,9 +24,13 @@ impl<'a> PartitionIo<'a> {
             current_pos: 0,
         })
     }
+
+    pub fn take_file(self) -> File {
+        self.file
+    }
 }
 
-impl<'a> Read for PartitionIo<'a> {
+impl Read for PartitionIo {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let remaining = self.size.saturating_sub(self.current_pos);
         let bytes_to_read = std::cmp::min(buf.len() as u64, remaining) as usize;
@@ -40,7 +45,7 @@ impl<'a> Read for PartitionIo<'a> {
     }
 }
 
-impl<'a> Write for PartitionIo<'a> {
+impl Write for PartitionIo {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let remaining = self.size.saturating_sub(self.current_pos);
         let bytes_to_write = std::cmp::min(buf.len() as u64, remaining) as usize;
@@ -58,7 +63,7 @@ impl<'a> Write for PartitionIo<'a> {
     }
 }
 
-impl<'a> Seek for PartitionIo<'a> {
+impl Seek for PartitionIo {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         let new_pos = match pos {
             SeekFrom::Start(p) => p,
