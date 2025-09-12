@@ -3,13 +3,12 @@ mod part_io;
 use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions};
 use gpt::{GptConfig, disk::LogicalBlockSize, partition_types};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{self, Write},
     path::Path,
     process::Command,
 };
 use part_io::{PartitionIo, copy_to_fat};
-use uuid::Uuid;
 
 fn main() -> io::Result<()> {
     // 1. Build fullerene-kernel
@@ -104,7 +103,7 @@ fn main() -> io::Result<()> {
         .write()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to write GPT: {}", e)))?;
 
-    let mut gpt_disk = GptConfig::new()
+    let gpt_disk = GptConfig::new()
         .writable(true)
         .logical_block_size(LogicalBlockSize::Lb512)
         .open_from_device(&mut disk_file_after_gpt)

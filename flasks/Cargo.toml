@@ -6,4 +6,3 @@ edition = "2024"
 [dependencies]
 fatfs = "0.3.6"
 gpt = "4.1.0"
-uuid = { version = "1.18.1", default-features = false }
