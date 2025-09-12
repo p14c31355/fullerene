@@ -37,7 +37,7 @@ pub fn create_disk_and_iso(
     let gpt = GptConfig::default()
         .logical_block_size(LogicalBlockSize::Lb512)
         .open_from_device(&mut disk_file)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to read GPT: {}", e)))?;
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
     let efi_partition = gpt.partitions().iter()
         .find(|&(_, p)| p.part_type_guid == partition_types::EFI)
