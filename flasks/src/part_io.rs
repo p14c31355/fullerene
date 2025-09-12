@@ -25,7 +25,7 @@ impl PartitionIo {
         })
     }
 
-    pub fn take_file(self) -> File {
+    pub fn _take_file(self) -> File {
         self.file
     }
 }
