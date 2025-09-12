@@ -5,8 +5,8 @@
 use core::fmt::Write;
 
 use uefi::prelude::*;
-use uefi::table::boot::{AllocateType, MemoryType};
 use uefi::proto::console::text::Output;
+use uefi::table::boot::{AllocateType, MemoryType};
 
 mod vga;
 use spin::once::Once;

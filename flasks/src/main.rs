@@ -129,7 +129,8 @@ fn main() -> io::Result<()> {
             "-Z",
             "build-std=core,alloc,compiler_builtins",
             "--no-default-features",
-            "--features", "",
+            "--features",
+            "",
         ])
         .status()?;
     if !status.success() {
@@ -193,7 +194,7 @@ fn main() -> io::Result<()> {
     let last_lba = gpt_disk.primary_header().unwrap().last_usable;
     let block_size = gpt_disk.logical_block_size().as_u64();
     let required_esp_bytes = 8 * 1024 * 1024;
-let required_esp_lba = required_esp_bytes / block_size;
+    let required_esp_lba = required_esp_bytes / block_size;
 
     let esp_size_lba = std::cmp::min(required_esp_lba, last_lba - first_lba + 1);
     dbg!(first_lba, last_lba, esp_size_lba);
@@ -202,9 +203,9 @@ let required_esp_lba = required_esp_bytes / block_size;
     gpt_disk
         .add_partition(
             "EFI System Partition",
-            first_lba,
+            esp_size_lba * block_size,
             partition_types::EFI,
-            esp_size_lba,
+            0,
             None,
         )
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to add ESP: {}", e)))?;
@@ -231,10 +232,12 @@ let required_esp_lba = required_esp_bytes / block_size;
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "ESP not found"))?;
 
     // Format the EFI System Partition (ESP)
-    let block_size = gpt_disk.logical_block_size().as_u64();
-let esp_offset_bytes = esp_partition_info.first_lba * block_size;
     // The volume size in bytes must be a multiple of the logical block size.
-    let esp_size_bytes = esp_size_lba * block_size;
+    let block_size = gpt_disk.logical_block_size().as_u64();
+    let esp_offset_bytes = esp_partition_info.first_lba * block_size;
+    let esp_size_bytes =
+        (esp_partition_info.last_lba - esp_partition_info.first_lba + 1) * block_size;
+
     dbg!(esp_offset_bytes, esp_size_bytes);
     // Ensure ESP is large enough for FAT32 (choose a safe lower bound: 8 MiB)
     // (fatfs internals are happier with reasonable sizes; using 8MiB+ avoids "unfortunate disk size")
@@ -266,6 +269,13 @@ let esp_offset_bytes = esp_partition_info.first_lba * block_size;
             format!("Failed to open FAT filesystem: {}", e),
         )
     })?;
+    fs.root_dir().create_dir("EFI")?;
+    fs.root_dir().create_dir("EFI/BOOT")?;
+    let boot_dir = fs.root_dir().open_dir("EFI/BOOT")?;
+
+    let mut file = boot_dir.create_file("BOOTX64.EFI")?;
+    let efi_binary = std::fs::read("target/x86_64-uefi/release/bellows")?;
+    file.write_all(&efi_binary)?;
 
     // 5. Copy EFI files into FAT32
     let bellows_efi = Path::new("target/x86_64-uefi/release/bellows");
@@ -280,7 +290,6 @@ let esp_offset_bytes = esp_partition_info.first_lba * block_size;
 
     copy_to_fat(&fs, bellows_efi, "EFI/BOOT/BOOTX64.EFI")?;
     copy_to_fat(&fs, kernel_efi, "kernel.efi")?;
-    drop(fs);
 
     // Copy OVMF_VARS.fd if missing
     let ovmf_code = "/usr/share/OVMF/OVMF_CODE_4M.fd";
