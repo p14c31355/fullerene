@@ -50,12 +50,15 @@ impl SerialPort {
     }
 
     fn write_byte(&self, byte: u8) {
-        unsafe {
-            // Wait until the transmit buffer is empty (Line Status Register bit 5)
-            while <u8 as PortRead>::read_from_port(self.line_status_port) & 0x20 == 0 {}
-            PortWrite::write_to_port(self.data_port, byte);
+    unsafe {
+        let mut lsr: u8;
+        loop {
+            lsr = PortRead::read_from_port(self.line_status_port);
+            if lsr & 0x20 != 0 { break; }
         }
+        PortWrite::write_to_port(self.data_port, byte);
     }
+}
 
     fn write_string(&self, s: &str) {
         for byte in s.bytes() {
@@ -88,5 +91,5 @@ fn main(image_handle: uefi::Handle, mut system_table: SystemTable<Boot>) -> Stat
 
     uefi_services::println!("Hello UEFI from fullerene-kernel!");
 
-    loop {}
+    Status::SUCCESS
 }

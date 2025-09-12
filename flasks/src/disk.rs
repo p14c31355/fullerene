@@ -8,13 +8,14 @@ use std::{
 };
 use crate::part_io::{PartitionIo, copy_to_fat};
 
-/// Creates and initializes the disk image with GPT, FAT32 filesystem, and copies the boot files.
+/// Creates and initializes the disk image with GPT, FAT32 filesystem,
+/// ensures EFI/BOOT directories, and copies EFI files.
 pub fn create_disk_image(
     disk_image_path: &Path,
     bellows_efi_src: &Path,
     kernel_efi_src: &Path,
 ) -> io::Result<()> {
-    // Ensure EFI files exist
+    // Check EFI files exist
     if !bellows_efi_src.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -28,7 +29,7 @@ pub fn create_disk_image(
         ));
     }
 
-    // Create or truncate disk image to 64MiB
+    // Create or truncate disk image (128 MiB)
     if disk_image_path.exists() {
         fs::remove_file(disk_image_path)?;
     }
@@ -37,7 +38,7 @@ pub fn create_disk_image(
         .write(true)
         .create(true)
         .open(disk_image_path)?;
-    file.set_len(64 * 1024 * 1024)?; // 64 MiB
+    file.set_len(128 * 1024 * 1024)?; // 128 MiB
 
     let logical_block_size = LogicalBlockSize::Lb512;
     let sector_size = logical_block_size.as_u64();
@@ -45,7 +46,7 @@ pub fn create_disk_image(
     // Create GPT and EFI partition
     let partition_info = create_gpt_partition(&file, logical_block_size)?;
 
-    // Initialize PartitionIo for FAT32 formatting
+    // Initialize PartitionIo for FAT32
     let mut part_io = PartitionIo::new(
         file,
         partition_info.first_lba * sector_size,
@@ -61,19 +62,23 @@ pub fn create_disk_image(
     // Mount filesystem
     let fs = FileSystem::new(&mut part_io, FsOptions::new())?;
 
-    // Ensure EFI/BOOT directory exists inside FAT
-    fs.root_dir().create_dir("EFI")?;
-    fs.root_dir().open_dir("EFI")?.create_dir("BOOT")?;
+    // Ensure EFI/BOOT directories exist
+    let root_dir = fs.root_dir();
+    let efi_dir = root_dir.open_dir("EFI").or_else(|_| root_dir.create_dir("EFI"))?;
+    let _boot_dir = efi_dir.open_dir("BOOT").or_else(|_| efi_dir.create_dir("BOOT"))?;
 
-    // Copy EFI files
+    // Copy EFI files into EFI/BOOT
     copy_to_fat(&fs, bellows_efi_src, "EFI/BOOT/BOOTX64.EFI")?;
-    copy_to_fat(&fs, kernel_efi_src, "kernel.efi")?;
+    copy_to_fat(&fs, kernel_efi_src, "EFI/BOOT/kernel.efi")?;
 
     Ok(())
 }
 
 /// Creates a GPT partition table with a single EFI System Partition (16 MiB)
-fn create_gpt_partition(file: &std::fs::File, logical_block_size: LogicalBlockSize) -> io::Result<gpt::partition::Partition> {
+fn create_gpt_partition(
+    file: &std::fs::File,
+    logical_block_size: LogicalBlockSize,
+) -> io::Result<gpt::partition::Partition> {
     let mut gpt = GptConfig::default()
         .writable(true)
         .logical_block_size(logical_block_size)
@@ -85,10 +90,10 @@ fn create_gpt_partition(file: &std::fs::File, logical_block_size: LogicalBlockSi
     let first_usable = header.first_usable;
     let last_usable = header.last_usable;
 
-    // Set FAT32 ESP to 16 MiB
+    // Calculate 16 MiB partition size in LBAs
     let sector_size = logical_block_size.as_u64();
-    let fat32_size_bytes = 16 * 1024 * 1024; // 16 MiB
-    let fat32_size_lba = (fat32_size_bytes + sector_size - 1) / sector_size;
+    let fat32_size_bytes: u64 = 16 * 1024 * 1024;
+    let fat32_size_lba: u64 = (fat32_size_bytes + sector_size - 1) / sector_size;
 
     if first_usable + fat32_size_lba > last_usable {
         return Err(io::Error::new(
@@ -97,7 +102,8 @@ fn create_gpt_partition(file: &std::fs::File, logical_block_size: LogicalBlockSi
         ));
     }
 
-    let part_id = gpt.add_partition(
+    // Add EFI partition (LBA in u64)
+    let temp_part_id: u32 = gpt.add_partition(
         "EFI System Partition",
         fat32_size_lba,
         partition_types::EFI,
@@ -105,10 +111,11 @@ fn create_gpt_partition(file: &std::fs::File, logical_block_size: LogicalBlockSi
         None,
     ).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-    let partition = gpt.partitions().get(&part_id).unwrap().clone();
+    let partition = gpt.partitions().get(&temp_part_id)
+        .expect("Added partition not found")
+        .clone();
 
-    gpt.write()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    gpt.write().map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
     Ok(partition)
 }
