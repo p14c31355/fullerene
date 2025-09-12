@@ -151,34 +151,34 @@ fn main() -> std::io::Result<()> {
     }
 
     // 3. Create disk image with GPT partition table and EFI System Partition
-    // 3. Create disk image with GPT partition table and EFI System Partition
     let disk_img_path = Path::new("esp.img");
     if disk_img_path.exists() {
         fs::remove_file(disk_img_path)?;
     }
 
-    let disk_size_bytes = 64 * 1024 * 1024; // 64 MB
     let mut disk_file = fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .open(disk_img_path)?;
     
+    let disk_size_bytes = 64 * 1024 * 1024; // 64 MB
     // Set the file length BEFORE creating the GPT disk object
     disk_file.set_len(disk_size_bytes)?;
+    // It's good practice to sync the file to ensure length is committed
+    disk_file.sync_all()?;
 
-    // Create GPT partition table
+    // Create GPT partition table using the *same* disk_file handle
     let mut gpt_disk = GptConfig::new()
         .writable(true)
         .logical_block_size(LogicalBlockSize::Lb512)
-        .create(disk_img_path)
+        .create_from_disk(disk_file) // <--- CRITICAL CHANGE: Pass the opened file handle directly
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create GPT disk: {}", e)))?;
 
-    // The rest of the code remains the same...
     // Add EFI System Partition (ESP)
-    let esp_size_lba = (50 * 1024 * 1024) / 512; // 50 MB
-    let esp_guid = Uuid::new_v4();
+    let _esp_guid = Uuid::new_v4(); // Fixed unused variable warning
 
+    let esp_size_lba = (50 * 1024 * 1024) / 512; // 50 MB
     gpt_disk.add_partition(
         "EFI System Partition",
         34, // first_lba (u64) - Assuming 34 LBA is the first usable LBA after GPT header and partition table
@@ -192,21 +192,22 @@ fn main() -> std::io::Result<()> {
         .map(|(_, p)| p.clone()) // Clone the partition info
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "ESP not found after creation"))?;
 
-    // Write GPT changes to disk
-    let mut disk_file = gpt_disk.write()
+    // Write GPT changes to disk and retrieve the underlying File
+    let mut disk_file_after_gpt = gpt_disk.write()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to write GPT to disk: {}", e)))?;
 
     // Format the EFI System Partition (ESP)
     let esp_offset_bytes = esp_partition_info.first_lba * LogicalBlockSize::Lb512 as u64;
     let esp_size_bytes = (esp_partition_info.last_lba - esp_partition_info.first_lba + 1) * LogicalBlockSize::Lb512 as u64;
 
-    let mut esp_io = PartitionIo::new(&mut disk_file, esp_offset_bytes, esp_size_bytes)?;
+    // Use the retrieved disk_file_after_gpt for PartitionIo
+    let mut esp_io = PartitionIo::new(&mut disk_file_after_gpt, esp_offset_bytes, esp_size_bytes)?;
     let opts = FormatVolumeOptions::new().volume_label(*b"FULLERENEOS");
     fatfs::format_volume(&mut esp_io, opts)?;
 
     // 4. Open FAT filesystem (the EFI System Partition within esp.img)
     // Re-create PartitionIo for FileSystem::new as it consumes the reader/writer
-    let mut esp_io_for_fs = PartitionIo::new(&mut disk_file, esp_offset_bytes, esp_size_bytes)?;
+    let mut esp_io_for_fs = PartitionIo::new(&mut disk_file_after_gpt, esp_offset_bytes, esp_size_bytes)?;
     let fs = FileSystem::new(esp_io_for_fs, FsOptions::new())?;
 
     // 5. Copy EFI files into FAT32

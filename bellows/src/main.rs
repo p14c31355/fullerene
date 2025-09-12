@@ -243,7 +243,7 @@ if status != 0 {
     loop {}
 }
 unsafe {
-    ALLOCATOR.lock().init(heap_start, HEAP_SIZE);
+    ALLOCATOR.lock().init(heap_start as *mut u8, HEAP_SIZE);
 }
     loop {}
 }
