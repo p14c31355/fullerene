@@ -157,7 +157,7 @@ fn main() -> std::io::Result<()> {
     }
 
     let disk_size_bytes = 64 * 1024 * 1024; // 64 MB
-    let disk_file = fs::OpenOptions::new()
+    let mut disk_file = fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
@@ -213,12 +213,17 @@ fn main() -> std::io::Result<()> {
 
     // Format the EFI System Partition (ESP)
     let esp_offset_bytes = esp_partition_info.first_lba * LogicalBlockSize::Lb512 as u64;
+    // The volume size in bytes must be a multiple of the logical block size.
     let esp_size_bytes = (esp_partition_info.last_lba - esp_partition_info.first_lba + 1) * LogicalBlockSize::Lb512 as u64;
 
+// Format the partition as FAT32.
+// The `cluster_size` field is no longer a valid option.
+// Use `FormatVolumeOptions::new()` to create a new options struct.
+let fmt_options = fatfs::FormatVolumeOptions::new().fat_type(fatfs::FatType::Fat32);
+let mut esp_io_for_fs = PartitionIo::new(&mut disk_file_after_gpt, esp_offset_bytes, esp_size_bytes)?;
+fatfs::format_volume(&mut esp_io_for_fs, fmt_options)?;
     // Use the retrieved disk_file_after_gpt for PartitionIo
-    let mut esp_io = PartitionIo::new(&mut disk_file_after_gpt, esp_offset_bytes, esp_size_bytes)?;
-
-    fatfs::format_volume(&mut esp_io, FormatVolumeOptions::new().bytes_per_cluster(4096))?;
+    let _esp_io = PartitionIo::new(&mut disk_file_after_gpt, esp_offset_bytes, esp_size_bytes)?;
 
     // 4. Open FAT filesystem (the EFI System Partition within esp.img)
     // Re-create PartitionIo for FileSystem::new as it consumes the reader/writer
