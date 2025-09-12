@@ -169,8 +169,8 @@ fn create_disk_image(
         let boot_dir = efi_dir.open_dir("BOOT").or_else(|_| efi_dir.create_dir("BOOT"))?;
 
         // Copy EFI files into EFI/BOOT
-        copy_to_fat(&boot_dir, bellows_efi_src, "BOOTX64.EFI")?;
-        copy_to_fat(&boot_dir, kernel_efi_src, "kernel.efi")?;
+        copy_to_fat(&fs, bellows_efi_src, "EFI/BOOT/BOOTX64.EFI")?;
+        copy_to_fat(&fs, kernel_efi_src, "EFI/BOOT/kernel.efi")?;
     }
 
     // Get back the file handle
