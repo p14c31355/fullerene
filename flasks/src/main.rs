@@ -199,7 +199,7 @@ fn main() -> std::io::Result<()> {
         first_lba,
         partition_types::EFI,
         esp_size_lba,
-        None, // ここを None に修正
+        None,
     ).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to add ESP: {}", e)))?;
 
     // Get partition info before writing, as write consumes gpt_disk
@@ -217,8 +217,8 @@ fn main() -> std::io::Result<()> {
 
     // Use the retrieved disk_file_after_gpt for PartitionIo
     let mut esp_io = PartitionIo::new(&mut disk_file_after_gpt, esp_offset_bytes, esp_size_bytes)?;
-    let opts = FormatVolumeOptions::new().volume_label(*b"FULLERENEOS");
-    fatfs::format_volume(&mut esp_io, opts)?;
+
+    fatfs::format_volume(&mut esp_io, FormatVolumeOptions::new().bytes_per_cluster(4096))?;
 
     // 4. Open FAT filesystem (the EFI System Partition within esp.img)
     // Re-create PartitionIo for FileSystem::new as it consumes the reader/writer
