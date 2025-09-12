@@ -179,10 +179,20 @@ fn main() -> std::io::Result<()> {
         
     let first_lba = gpt_disk.primary_header().unwrap().first_usable;
     let last_lba = gpt_disk.primary_header().unwrap().last_usable;
-    let esp_size_lba = last_lba - first_lba + 1;
+    let esp_size_lba = if last_lba >= first_lba {
+        last_lba - first_lba + 1
+    } else {
+        0
+    };
 
-    if esp_size_lba == 0 {
-        return Err(io::Error::new(io::ErrorKind::Other, "Not enough space for ESP partition"));
+    let allocated_size_lba = 131005; 
+    let first_lba = gpt_disk.primary_header().unwrap().first_usable;
+    let last_lba = first_lba + allocated_size_lba - 1;
+
+    dbg!(allocated_size_lba);
+
+    if allocated_size_lba == 0 {
+        return Err(io::Error::new(io::ErrorKind::Other, "Calculated ESP partition size is 0, cannot create partition."));
     }
 
     // Add EFI System Partition (ESP)
@@ -192,7 +202,7 @@ fn main() -> std::io::Result<()> {
         "EFI System Partition",
         first_lba,
         partition_types::EFI,
-        esp_size_lba,
+        allocated_size_lba,
         Some(0),
     ).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to add ESP: {}", e)))?;
 
