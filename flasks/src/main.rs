@@ -168,26 +168,29 @@ fn main() -> std::io::Result<()> {
     // It's good practice to sync the file to ensure length is committed
     disk_file.sync_all()?;
 
-    // Create GPT partition table using the *same* disk_file handle
-    let mut gpt_disk = GptConfig::new()
+    // Create GptConfig first to get usable LBA ranges
+    let gpt_config = GptConfig::new()
         .writable(true)
-        .logical_block_size(LogicalBlockSize::Lb512)
-        .create_from_device(disk_file, None)
+        .logical_block_size(LogicalBlockSize::Lb512);
+
+    // Create the disk object from the configured GptConfig
+    let mut gpt_disk = gpt_config.create_from_device(disk_file, None)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create GPT disk: {}", e)))?;
-
-    // Add EFI System Partition (ESP)
-    let _esp_guid = Uuid::new_v4();
-
-    let available_lbas = gpt_disk.total_logical_blocks() - gpt_disk.get_next_lba().unwrap();
-    let esp_size_lba = available_lbas;
+        
+    let first_lba = gpt_disk.primary_header().unwrap().first_usable;
+    let last_lba = gpt_disk.primary_header().unwrap().last_usable;
+    let esp_size_lba = last_lba - first_lba + 1;
 
     if esp_size_lba == 0 {
         return Err(io::Error::new(io::ErrorKind::Other, "Not enough space for ESP partition"));
     }
 
+    // Add EFI System Partition (ESP)
+    let _esp_guid = Uuid::new_v4();
+
     gpt_disk.add_partition(
         "EFI System Partition",
-        gpt_disk.get_next_lba().unwrap(),
+        first_lba,
         partition_types::EFI,
         esp_size_lba,
         Some(0),
