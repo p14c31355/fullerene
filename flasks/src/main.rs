@@ -2,12 +2,14 @@
 use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions};
 use gpt::{GptConfig, disk::LogicalBlockSize, partition_types};
 use std::{
-    fs,
+    fs::{self, File},
     io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
     process::Command,
 };
 use uuid::Uuid;
+
+use std::fs::OpenOptions;
 
 /// A wrapper around a File that limits I/O to a specific partition offset and size.
 struct PartitionIo<'a> {
@@ -205,7 +207,7 @@ fn main() -> std::io::Result<()> {
         0
     };
 
-    dbg!(esp_size_lba);
+    dbg!(first_lba, last_lba, esp_size_lba);
 
     if esp_size_lba == 0 {
         return Err(io::Error::new(
@@ -217,6 +219,7 @@ fn main() -> std::io::Result<()> {
     // Add EFI System Partition (ESP)
     let _esp_guid = Uuid::new_v4();
 
+    // 1. add_partition
     gpt_disk
         .add_partition(
             "EFI System Partition",
@@ -227,6 +230,29 @@ fn main() -> std::io::Result<()> {
         )
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to add ESP: {}", e)))?;
 
+    // Write GPT changes to disk and retrieve the underlying File
+    let mut disk_file_after_gpt = gpt_disk.write().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("Failed to write GPT to disk: {}", e),
+        )
+    })?;
+
+    drop(disk_file_after_gpt);
+
+    let mut disk_file_after_gpt = File::options().read(true).write(true).open("esp.img")?;
+
+    let mut disk_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(disk_img_path)?;
+    let gpt_disk = GptConfig::new()
+        .writable(true)
+        .logical_block_size(LogicalBlockSize::Lb512)
+        .open_from_device(&mut disk_file)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+    println!("GPT loaded successfully: {:?}", gpt_disk);
     // Get partition info before writing, as write consumes gpt_disk
     let esp_partition_info = gpt_disk
         .partitions()
@@ -238,20 +264,11 @@ fn main() -> std::io::Result<()> {
     // Format the EFI System Partition (ESP)
     let block_size = gpt_disk.logical_block_size().as_u64();
 
-    // Write GPT changes to disk and retrieve the underlying File
-    let mut disk_file_after_gpt = gpt_disk.write().map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("Failed to write GPT to disk: {}", e),
-        )
-    })?;
-
     let esp_offset_bytes = esp_partition_info.first_lba * block_size;
     // The volume size in bytes must be a multiple of the logical block size.
     let esp_size_bytes =
         (esp_partition_info.last_lba - esp_partition_info.first_lba + 1) * block_size;
-
-    dbg!(esp_size_bytes);
+    dbg!(esp_offset_bytes, esp_size_bytes);
     // Ensure ESP is large enough for FAT32 (choose a safe lower bound: 8 MiB)
     // (fatfs internals are happier with reasonable sizes; using 8MiB+ avoids "unfortunate disk size")
     if esp_size_bytes < 8 * 1024 * 1024 {
