@@ -51,13 +51,30 @@ fn main() -> io::Result<()> {
         return Err(io::Error::new(io::ErrorKind::Other, "bellows build failed"));
     }
 
-    // 3. Create a 64MiB disk image file
+    // 3. Create a temporary directory for EFI files
+    let temp_efi_dir = Path::new("temp_efi");
+    if temp_efi_dir.exists() {
+        fs::remove_dir_all(temp_efi_dir)?;
+    }
+    fs::create_dir(temp_efi_dir)?;
+    
+    // Copy the compiled EFI binaries to the temporary directory
+    fs::copy(
+        Path::new("target/x86_64-uefi/release/bellows"),
+        temp_efi_dir.join("bellows"),
+    )?;
+    fs::copy(
+        Path::new("target/x86_64-uefi/release/fullerene-kernel"),
+        temp_efi_dir.join("fullerene-kernel"),
+    )?;
+
+    // Use the short paths from the temporary directory
     let disk_image_path = Path::new("esp.img");
     let iso_path = Path::new("fullerene.iso");
-    let bellows_efi_src = Path::new("target/x86_64-uefi/release/bellows");
-    let kernel_efi_src = Path::new("target/x86_64-uefi/release/fullerene-kernel");
+    let bellows_efi_src = temp_efi_dir.join("bellows");
+    let kernel_efi_src = temp_efi_dir.join("fullerene-kernel");
 
-    create_disk_and_iso(disk_image_path, iso_path, bellows_efi_src, kernel_efi_src)?;
+    create_disk_and_iso(disk_image_path, iso_path, &bellows_efi_src, &kernel_efi_src)?;
 
     // 4. Copy OVMF_VARS.fd if missing and check for OVMF_CODE.fd
     let ovmf_code = Path::new("/usr/share/OVMF/OVMF_CODE_4M.fd");
