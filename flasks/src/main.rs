@@ -9,7 +9,7 @@ use fatfs::{FileSystem, FormatVolumeOptions, FsOptions};
 use gpt::{
     disk::{LogicalBlockSize},
     partition_types,
-    GptConfig,GptDisk,
+    GptConfig,
 };
 use uuid::Uuid;
 
@@ -157,7 +157,7 @@ fn main() -> std::io::Result<()> {
     }
 
     let disk_size_bytes = 64 * 1024 * 1024; // 64 MB
-    let mut disk_file = fs::OpenOptions::new()
+    let disk_file = fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
@@ -185,13 +185,9 @@ fn main() -> std::io::Result<()> {
         0
     };
 
-    let allocated_size_lba = 131005; 
-    let first_lba = gpt_disk.primary_header().unwrap().first_usable;
-    let last_lba = first_lba + allocated_size_lba - 1;
+    dbg!(esp_size_lba);
 
-    dbg!(allocated_size_lba);
-
-    if allocated_size_lba == 0 {
+    if esp_size_lba == 0 {
         return Err(io::Error::new(io::ErrorKind::Other, "Calculated ESP partition size is 0, cannot create partition."));
     }
 
@@ -202,8 +198,8 @@ fn main() -> std::io::Result<()> {
         "EFI System Partition",
         first_lba,
         partition_types::EFI,
-        allocated_size_lba,
-        Some(0),
+        esp_size_lba,
+        None, // ここを None に修正
     ).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to add ESP: {}", e)))?;
 
     // Get partition info before writing, as write consumes gpt_disk
@@ -226,7 +222,7 @@ fn main() -> std::io::Result<()> {
 
     // 4. Open FAT filesystem (the EFI System Partition within esp.img)
     // Re-create PartitionIo for FileSystem::new as it consumes the reader/writer
-    let mut esp_io_for_fs = PartitionIo::new(&mut disk_file_after_gpt, esp_offset_bytes, esp_size_bytes)?;
+    let esp_io_for_fs = PartitionIo::new(&mut disk_file_after_gpt, esp_offset_bytes, esp_size_bytes)?;
     let fs = FileSystem::new(esp_io_for_fs, FsOptions::new())?;
 
     // 5. Copy EFI files into FAT32
