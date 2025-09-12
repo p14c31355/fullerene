@@ -1,10 +1,10 @@
 // fullerene/flasks/src/main.rs
 mod part_io;
 use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions};
-use gpt::{GptConfig, disk::LogicalBlockSize, partition_types, partition_types::Type};
+use gpt::{GptConfig, disk::LogicalBlockSize, partition_types};
 use std::{
     fs::{self, OpenOptions},
-    io::{self, Seek, SeekFrom},
+    io::{self, Seek, SeekFrom, Write},
     path::Path,
     process::Command,
 };
@@ -66,8 +66,7 @@ fn main() -> io::Result<()> {
 
     // 4. Create GPT partition table
     let logical_block_size = LogicalBlockSize::Lb512;
-    let part_id;
-    let sector_size;
+    let sector_size = logical_block_size.as_u64();
     let partition_info;
 
     {
@@ -81,7 +80,7 @@ fn main() -> io::Result<()> {
         let last_usable_lba = gpt.primary_header().map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?.last_usable;
         let part_size_lba = last_usable_lba - first_usable_lba + 1;
 
-        part_id = gpt.add_partition(
+        let part_id = gpt.add_partition(
             "EFI System Partition",
             part_size_lba * logical_block_size.as_u64(), // size per bytes
             partition_types::EFI,
@@ -90,7 +89,8 @@ fn main() -> io::Result<()> {
         )
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        
+        partition_info = gpt.partitions().get(&part_id).unwrap().clone();
+
         gpt.update_guid(Some(Uuid::new_v4()));
 
         // gpt reload
@@ -99,14 +99,7 @@ fn main() -> io::Result<()> {
 
         // gpt reload
         file.seek(io::SeekFrom::Start(0))?;
-        let gpt_reloaded = GptConfig::default()
-            .logical_block_size(logical_block_size)
-            .create_from_device(&mut file, None)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-
-        sector_size = logical_block_size.as_u64();
-        partition_info = gpt_reloaded.partitions().get(&part_id).unwrap().clone();
-    } 
+    }
 
     // 5. Format the partition with FAT32
     let mut part_io_temp = PartitionIo::new(
