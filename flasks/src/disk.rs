@@ -45,7 +45,7 @@ pub fn create_disk_image(
     // Create GPT and EFI partition
     let partition_info = create_gpt_partition(&file, logical_block_size)?;
 
-    // Initialize PartitionIo
+    // Initialize PartitionIo for FAT32 formatting
     let mut part_io = PartitionIo::new(
         file,
         partition_info.first_lba * sector_size,
@@ -72,7 +72,7 @@ pub fn create_disk_image(
     Ok(())
 }
 
-/// Creates a GPT partition table with a single EFI System Partition
+/// Creates a GPT partition table with a single EFI System Partition (16 MiB)
 fn create_gpt_partition(file: &std::fs::File, logical_block_size: LogicalBlockSize) -> io::Result<gpt::partition::Partition> {
     let mut gpt = GptConfig::default()
         .writable(true)
@@ -84,11 +84,22 @@ fn create_gpt_partition(file: &std::fs::File, logical_block_size: LogicalBlockSi
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
     let first_usable = header.first_usable;
     let last_usable = header.last_usable;
-    let part_size = last_usable - first_usable + 1;
+
+    // Set FAT32 ESP to 16 MiB
+    let sector_size = logical_block_size.as_u64();
+    let fat32_size_bytes = 16 * 1024 * 1024; // 16 MiB
+    let fat32_size_lba = (fat32_size_bytes + sector_size - 1) / sector_size;
+
+    if first_usable + fat32_size_lba > last_usable {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Disk too small for 16 MiB EFI partition",
+        ));
+    }
 
     let part_id = gpt.add_partition(
         "EFI System Partition",
-        part_size,
+        fat32_size_lba,
         partition_types::EFI,
         0,
         None,
