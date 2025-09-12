@@ -1,17 +1,13 @@
+# fullerene-kernel/Cargo.toml
 [package]
 name = "fullerene-kernel"
 version = "0.1.0"
 edition = "2024"
 
-# fullerene-kernel/Cargo.toml
 [dependencies]
 spin = { version = "0.10.0", default-features = false, features = ["once", "mutex", "spin_mutex"] }
 x86_64 = { version = "0.15.2", default-features = false, features = ["instructions"] }
-uefi = { version = "0.27.0", default-features = false }
-uefi-services = { version = "0.24.0", default-features = false }
-# Omit the build-std flags in the Cargo.toml file.
-# They are typically passed as command-line arguments.
-# For example: cargo build -Z build-std=core,compiler_builtins
+# Removed uefi and uefi-services dependencies as per your request for bare-metal VGA output
 
 [dependencies.compiler_builtins]
 version = "0.1.160"

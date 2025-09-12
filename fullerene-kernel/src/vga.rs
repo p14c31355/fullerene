@@ -1,9 +1,7 @@
 // fullerene/fullerene-kernel/src/vga.rs
 use spin::Mutex;
 use spin::once::Once;
-// Removed: use x86_64::instructions::port::{PortRead, PortWrite};
 
-// NEW: VgaBuffer struct for direct VGA text mode communication
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
@@ -46,7 +44,7 @@ struct ScreenChar {
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
 
-struct VgaBuffer {
+pub struct VgaBuffer {
     buffer: &'static mut [[ScreenChar; BUFFER_WIDTH]; BUFFER_HEIGHT],
     column_position: usize,
     row_position: usize,
@@ -54,7 +52,7 @@ struct VgaBuffer {
 }
 
 impl VgaBuffer {
-    fn new() -> VgaBuffer {
+    pub fn new() -> VgaBuffer {
         VgaBuffer {
             buffer: unsafe { &mut *(0xb8000 as *mut _) },
             column_position: 0,
@@ -63,7 +61,7 @@ impl VgaBuffer {
         }
     }
 
-    fn write_byte(&mut self, byte: u8) {
+    pub fn write_byte(&mut self, byte: u8) {
         match byte {
             b'\n' => self.new_line(),
             byte => {
@@ -83,7 +81,7 @@ impl VgaBuffer {
         }
     }
 
-    fn write_string(&mut self, s: &str) {
+    pub fn write_string(&mut self, s: &str) {
         for byte in s.bytes() {
             match byte {
                 // printable ASCII byte or newline
@@ -94,7 +92,7 @@ impl VgaBuffer {
         }
     }
 
-    fn new_line(&mut self) {
+    pub fn new_line(&mut self) {
         self.column_position = 0;
         if self.row_position < BUFFER_HEIGHT - 1 {
             self.row_position += 1;
@@ -120,7 +118,7 @@ impl VgaBuffer {
         }
     }
 
-    fn clear_screen(&mut self) {
+    pub fn clear_screen(&mut self) {
         for row in 0..BUFFER_HEIGHT {
             self.clear_row(row);
         }
@@ -153,4 +151,3 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     }
     loop {}
 }
-
