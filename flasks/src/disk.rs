@@ -6,7 +6,10 @@ use std::{
     io::{self, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
-use hadris_iso::{IsoImage, FileInput, FormatOptions, Strictness, BootOptions, BootEntryOptions, boot::EmulationType};
+use hadris_iso::{
+    IsoImage, FileInput, FormatOptions, Strictness,
+    BootOptions, BootEntryOptions, boot::EmulationType,
+};
 use crate::part_io::{PartitionIo, copy_to_fat};
 
 /// Creates both a raw disk image and a UEFI-bootable ISO
@@ -56,7 +59,8 @@ pub fn create_disk_and_iso(
     let efi_fs = FileSystem::new(&mut efi_part_io, FsOptions::new())?;
 
     // Copy contents of the EFI partition to the temporary staging directory
-    let mut stack: Vec<(fatfs::Dir<'_, &mut PartitionIo>, PathBuf)> = vec![(efi_fs.root_dir(), PathBuf::new())];
+    let mut stack: Vec<(fatfs::Dir<'_, &mut PartitionIo>, PathBuf)> =
+        vec![(efi_fs.root_dir(), PathBuf::new())];
 
     while let Some((current_dir, current_path)) = stack.pop() {
         for entry in current_dir.iter().filter_map(|e| e.ok()) {
@@ -92,7 +96,7 @@ pub fn create_disk_and_iso(
     let options = FormatOptions::new()
         .with_files(FileInput::from_fs(temp_iso_dir.to_path_buf()).unwrap())
         .with_volume_name("FULLERENE".to_string())
-        .with_strictness(Strictness::Default) // Use default strictness
+        .with_strictness(Strictness::Default)
         .with_boot_options(boot_options);
 
     IsoImage::format_file(iso_path.to_path_buf(), options)
@@ -156,22 +160,21 @@ fn create_disk_image(
     )?;
     
     {
-    // Mount filesystem
-    let fs = FileSystem::new(&mut part_io, FsOptions::new())?;
+        // Mount filesystem
+        let fs = FileSystem::new(&mut part_io, FsOptions::new())?;
 
-    // Ensure EFI/BOOT directories exist
-    let root_dir = fs.root_dir();
-    let efi_dir = root_dir.open_dir("EFI").or_else(|_| root_dir.create_dir("EFI"))?;
-    let _boot_dir = efi_dir.open_dir("BOOT").or_else(|_| efi_dir.create_dir("BOOT"))?;
+        // Ensure EFI/BOOT directories exist
+        let root_dir = fs.root_dir();
+        let efi_dir = root_dir.open_dir("EFI").or_else(|_| root_dir.create_dir("EFI"))?;
+        let boot_dir = efi_dir.open_dir("BOOT").or_else(|_| efi_dir.create_dir("BOOT"))?;
 
-    // Copy EFI files into EFI/BOOT
-    copy_to_fat(&fs, bellows_efi_src, "EFI/BOOT/BOOTX64.EFI")?;
-    copy_to_fat(&fs, kernel_efi_src, "EFI/BOOT/kernel.efi")?;
-
+        // Copy EFI files into EFI/BOOT
+        copy_to_fat(&boot_dir, bellows_efi_src, "BOOTX64.EFI")?;
+        copy_to_fat(&boot_dir, kernel_efi_src, "kernel.efi")?;
     }
+
     // Get back the file handle
     let file = part_io.into_inner()?;
-
     Ok(file)
 }
 
@@ -203,7 +206,7 @@ fn create_gpt_partition(
         ));
     }
 
-    // Add EFI partition (LBA in u64)
+    // Add EFI partition
     let temp_part_id: u32 = gpt.add_partition(
         "EFI System Partition",
         fat32_size_lba,
