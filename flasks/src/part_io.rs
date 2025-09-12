@@ -11,7 +11,6 @@ pub struct PartitionIo {
     file: File,
     offset: u64,
     size: u64,
-    current_pos: u64,
 }
 
 impl PartitionIo {
@@ -21,42 +20,37 @@ impl PartitionIo {
             file,
             offset,
             size,
-            current_pos: 0,
         })
     }
-
-    pub fn _take_file(self) -> File {
-        self.file
+    
+    pub fn into_inner(self) -> io::Result<File> {
+        Ok(self.file)
     }
 }
 
 impl Read for PartitionIo {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let remaining = self.size.saturating_sub(self.current_pos);
+        let current_pos = self.file.stream_position()?;
+        let partition_pos = current_pos - self.offset;
+        let remaining = self.size.saturating_sub(partition_pos);
         if remaining == 0 {
             return Ok(0);
         }
         let bytes_to_read = std::cmp::min(buf.len() as u64, remaining);
-        let bytes_to_read = bytes_to_read.try_into().unwrap_or(buf.len());
-        self.file.seek(SeekFrom::Start(self.offset + self.current_pos))?;
-        let read = self.file.read(&mut buf[..bytes_to_read])?;
-        self.current_pos += read as u64;
-        Ok(read)
+        self.file.read(&mut buf[..bytes_to_read as usize])
     }
 }
 
 impl Write for PartitionIo {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let remaining = self.size.saturating_sub(self.current_pos);
+        let current_pos = self.file.stream_position()?;
+        let partition_pos = current_pos - self.offset;
+        let remaining = self.size.saturating_sub(partition_pos);
         if remaining == 0 {
             return Ok(0);
         }
         let bytes_to_write = std::cmp::min(buf.len() as u64, remaining);
-        let bytes_to_write = bytes_to_write.try_into().unwrap_or(buf.len());
-        self.file.seek(SeekFrom::Start(self.offset + self.current_pos))?;
-        let written = self.file.write(&buf[..bytes_to_write])?;
-        self.current_pos += written as u64;
-        Ok(written)
+        self.file.write(&buf[..bytes_to_write as usize])
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -66,32 +60,31 @@ impl Write for PartitionIo {
 
 impl Seek for PartitionIo {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let new_pos = match pos {
+        let new_pos_on_partition = match pos {
             SeekFrom::Start(p) => p,
             SeekFrom::End(p) => {
-                let p_i64 = p;
-                if p_i64 < 0 && p_i64.unsigned_abs() > self.size {
-                    return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek beyond start"));
-                }
-                if p_i64 >= 0 && (self.size + p_i64 as u64) > self.size {
-                    self.size // saturate at end
-                } else {
-                    (self.size as i64 + p_i64) as u64
-                }
-            }
-            SeekFrom::Current(p) => {
-                let new = self.current_pos as i64 + p;
+                let new = self.size as i64 + p;
                 if new < 0 {
                     return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek beyond start"));
                 }
-                if new as u64 > self.size {
-                    return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek beyond end"));
+                new as u64
+            }
+            SeekFrom::Current(p) => {
+                let current_pos_on_partition = self.file.stream_position()? - self.offset;
+                let new = current_pos_on_partition as i64 + p;
+                if new < 0 {
+                    return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek beyond start"));
                 }
                 new as u64
             }
         };
-        self.current_pos = new_pos;
-        Ok(self.current_pos)
+
+        if new_pos_on_partition > self.size {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek beyond end"));
+        }
+
+        self.file.seek(SeekFrom::Start(self.offset + new_pos_on_partition))?;
+        Ok(new_pos_on_partition)
     }
 }
 

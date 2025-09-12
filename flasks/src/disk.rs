@@ -2,12 +2,11 @@
 use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions};
 use gpt::{GptConfig, disk::LogicalBlockSize, partition_types};
 use std::{
-    fs::{self, OpenOptions},
-    io,
-    path::{Path, PathBuf}, // PathBuf を追加
+    fs::{self, OpenOptions, File},
+    io::{self, Read, Seek, SeekFrom},
+    path::{Path, PathBuf},
 };
 use hadris_iso::{IsoImage, FileInput, FormatOptions, Strictness, BootOptions, BootEntryOptions, boot::EmulationType};
-use path_absolutize::Absolutize;
 use crate::part_io::{PartitionIo, copy_to_fat};
 
 /// Creates both a raw disk image and a UEFI-bootable ISO
@@ -17,33 +16,28 @@ pub fn create_disk_and_iso(
     bellows_efi_src: &Path,
     kernel_efi_src: &Path,
 ) -> io::Result<()> {
-    // 1. Create raw disk image
-    create_disk_image(disk_image_path, bellows_efi_src, kernel_efi_src)?;
+    // 1. Create raw disk image and get the file handle
+    let mut disk_file = create_disk_image(disk_image_path, bellows_efi_src, kernel_efi_src)?;
 
     // 2. Create UEFI ISO from disk image using hadris-iso
-    let efi_boot_path = Path::new("EFI/BOOT/BOOTX64.EFI").absolutize()?;
+    let efi_boot_path = Path::new("EFI/BOOT/BOOTX64.EFI");
     
     // Create a temporary directory to stage the ISO contents
     let temp_iso_dir = Path::new("temp_iso_stage");
     if temp_iso_dir.exists() {
         fs::remove_dir_all(temp_iso_dir)?;
     }
-    fs::create_dir(temp_iso_dir)?;
-
-    // Open the disk image to read its contents
-    let mut disk_file = OpenOptions::new()
-        .read(true)
-        .write(false) // Read-only for extracting
-        .open(disk_image_path)?;
+    fs::create_dir_all(temp_iso_dir)?;
 
     // Read GPT and find the EFI partition
+    disk_file.seek(SeekFrom::Start(0))?;
     let gpt = GptConfig::default()
         .logical_block_size(LogicalBlockSize::Lb512)
-        .create_from_device(&mut disk_file, None) // initialized_device を create_from_device に変更
+        .initialized_device(&mut disk_file, None)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to read GPT: {}", e)))?;
 
     let efi_partition = gpt.partitions().iter()
-        .find(|&(_, p)| p.part_type_guid == partition_types::EFI) // type_guid を part_type_guid に変更
+        .find(|&(_, p)| p.part_type_guid == partition_types::EFI)
         .map(|(_, p)| p)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "EFI partition not found in disk image"))?;
 
@@ -62,11 +56,10 @@ pub fn create_disk_and_iso(
     let efi_fs = FileSystem::new(&mut efi_part_io, FsOptions::new())?;
 
     // Copy contents of the EFI partition to the temporary staging directory
-    let mut files_to_copy: Vec<(PathBuf, PathBuf)> = Vec::new();
-    let mut stack: Vec<(fatfs::Dir<'_, &mut PartitionIo>, PathBuf)> = vec![(efi_fs.root_dir(), PathBuf::new())]; // ジェネリック引数を修正
+    let mut stack: Vec<(fatfs::Dir<'_, &mut PartitionIo>, PathBuf)> = vec![(efi_fs.root_dir(), PathBuf::new())];
 
     while let Some((current_dir, current_path)) = stack.pop() {
-        for entry in current_dir.iter().map(|e| e.unwrap()) {
+        for entry in current_dir.iter().filter_map(|e| e.ok()) {
             let entry_name = entry.file_name();
             let entry_path = current_path.join(&entry_name);
             let dest_path = temp_iso_dir.join(&entry_path);
@@ -75,15 +68,11 @@ pub fn create_disk_and_iso(
                 fs::create_dir_all(&dest_path)?;
                 stack.push((entry.to_dir(), entry_path));
             } else {
-                files_to_copy.push((entry_path, dest_path));
+                let mut src_file = entry.to_file();
+                let mut dest_file = fs::File::create(&dest_path)?;
+                io::copy(&mut src_file, &mut dest_file)?;
             }
         }
-    }
-
-    for (src_relative_path, dest_absolute_path) in files_to_copy {
-        let mut src_file = efi_fs.root_dir().open_file(&src_relative_path.to_string_lossy())?; // &Path から &str に変更
-        let mut dest_file = fs::File::create(&dest_absolute_path)?;
-        io::copy(&mut src_file, &mut dest_file)?;
     }
 
     let boot_entry_options = BootEntryOptions {
@@ -121,7 +110,7 @@ fn create_disk_image(
     disk_image_path: &Path,
     bellows_efi_src: &Path,
     kernel_efi_src: &Path,
-) -> io::Result<()> {
+) -> io::Result<File> {
     // Check EFI files exist
     if !bellows_efi_src.exists() {
         return Err(io::Error::new(
@@ -140,7 +129,7 @@ fn create_disk_image(
     if disk_image_path.exists() {
         fs::remove_file(disk_image_path)?;
     }
-    let file = OpenOptions::new()
+    let mut file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
@@ -151,7 +140,7 @@ fn create_disk_image(
     let sector_size = logical_block_size.as_u64();
 
     // Create GPT and EFI partition
-    let partition_info = create_gpt_partition(&file, logical_block_size)?;
+    let partition_info = create_gpt_partition(&mut file, logical_block_size)?;
 
     // Initialize PartitionIo for FAT32
     let mut part_io = PartitionIo::new(
@@ -165,9 +154,12 @@ fn create_disk_image(
         &mut part_io,
         FormatVolumeOptions::new().fat_type(FatType::Fat32),
     )?;
+    
+    // Get back the file handle
+    let mut file = part_io.into_inner()?;
 
     // Mount filesystem
-    let fs = FileSystem::new(&mut part_io, FsOptions::new())?;
+    let fs = FileSystem::new(&mut file, FsOptions::new())?;
 
     // Ensure EFI/BOOT directories exist
     let root_dir = fs.root_dir();
@@ -178,12 +170,12 @@ fn create_disk_image(
     copy_to_fat(&fs, bellows_efi_src, "EFI/BOOT/BOOTX64.EFI")?;
     copy_to_fat(&fs, kernel_efi_src, "EFI/BOOT/kernel.efi")?;
 
-    Ok(())
+    Ok(file)
 }
 
 /// Creates a GPT partition table with a single EFI System Partition (16 MiB)
 fn create_gpt_partition(
-    file: &std::fs::File,
+    file: &mut std::fs::File,
     logical_block_size: LogicalBlockSize,
 ) -> io::Result<gpt::partition::Partition> {
     let mut gpt = GptConfig::default()

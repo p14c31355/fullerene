@@ -53,7 +53,7 @@ fn main() -> io::Result<()> {
 
     // 3. Create a 64MiB disk image file
     let disk_image_path = Path::new("esp.img");
-    let iso_path = Path::new("fullerene.iso"); // ISOファイルのパスを追加
+    let iso_path = Path::new("fullerene.iso");
     let bellows_efi_src = Path::new("target/x86_64-uefi/release/bellows");
     let kernel_efi_src = Path::new("target/x86_64-uefi/release/fullerene-kernel");
 
@@ -89,7 +89,7 @@ fn main() -> io::Result<()> {
         "-drive",
         &format!("if=pflash,format=raw,file={}", ovmf_vars.display()),
         "-drive",
-        "file=esp.img,format=raw,if=ide",
+        &format!("file={},format=raw,if=ide", iso_path.display()),
         "-m",
         "512M",
         "-cpu",
@@ -97,7 +97,7 @@ fn main() -> io::Result<()> {
         "-serial",
         "stdio",
         "-boot",
-        "order=c",
+        "order=d",
     ];
     println!("Running QEMU with args: {:?}", qemu_args);
     let qemu_status = Command::new("qemu-system-x86_64")
