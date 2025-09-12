@@ -1,39 +1,24 @@
 {
-  "llvm-target": "x86_64-unknown-uefi",
-  "data-layout": "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
-  "target-endian": "little",
-  "target-pointer-width": 64,
-  "arch": "x86_64",
-  "os": "uefi",
-  "env": "",
-  "vendor": "pc",
-
-  "linker-flavor": "ld.lld",
-  "linker": "rust-lld",
-  "binary-format": "coff",
-  "is-like-windows": true,
-  "executables": true,
-
-  "panic-strategy": "abort",
-  "disable-redzone": true,
-  "features": "+sse2,+fxsr,-soft-float,-mmx",
-  "relocation-model": "static",
-  "code-model": "kernel",
-  "stack-probes": {
-    "kind": "none" 
-  },
-
-  "pre-link-args": {
-    "ld.lld": [
-      "-nostdlib",
-      "-Ttext=0x10000",
-      "--no-relax"
-    ]
-  },
-  
-  "post-link-args": {
-    "ld.lld": [
-      "-m", "pep-i386-x86_64"
-    ]
-  }
+    "llvm-target": "x86_64-unknown-none",
+    "target-endian": "little",
+    "target-pointer-width": 64,
+    "target-c-int-width": 32,
+    "data-layout": "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
+    "arch": "x86_64",
+    "os": "none",
+    "env": "",
+    "vendor": "unknown",
+    "linker": "rust-lld",
+    "linker-flavor": "gnu-lld",
+    "features": "-mmx,-sse,+sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-avx,-avx2,-soft-float",
+    "dynamic-linking": false,
+    "executables": true,
+    "relocation-model": "static",
+    "code-model": "kernel",
+    "disable-redzone": true,
+    "frame-pointer": "always",
+    "exe-suffix": "",
+    "has-rpath": false,
+    "no-default-libraries": true,
+    "position-independent-executables": false
 }

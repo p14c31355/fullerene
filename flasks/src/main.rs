@@ -128,8 +128,8 @@ fn main() -> io::Result<()> {
             "x86_64-uefi.json",
             "-Z",
             "build-std=core,alloc,compiler_builtins",
-            "-Z",
-            "build-std-features=no-asm",
+            "--no-default-features",
+            "--features", "",
         ])
         .status()?;
     if !status.success() {

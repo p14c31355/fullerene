@@ -2,9 +2,15 @@
 #![no_std]
 #![no_main]
 
+use core::fmt::Write;
+
+use uefi::prelude::*;
+use uefi::table::boot::{AllocateType, MemoryType};
+use uefi::proto::console::text::Output;
+
 mod vga;
 use spin::once::Once;
-use x86_64::instructions::port::{PortRead, PortWrite}; // Import these
+use x86_64::instructions::port::{PortRead, PortWrite};
 
 // OLD: Removed VgaBuffer struct and its implementation
 // struct VgaBuffer { ... }
@@ -64,13 +70,23 @@ unsafe impl Sync for SerialPort {}
 // Replace VGA static with SERIAL static
 static SERIAL: Once<SerialPort> = Once::new();
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
-    vga::vga_init(); // Call vga_init to initialize VGA and print messages
+#[entry]
+fn main(image_handle: uefi::Handle, mut system_table: SystemTable<Boot>) -> Status {
+    uefi_services::init(&mut system_table).expect("Failed to initialize UEFI services.");
+
+    // Clear screen and enable cursor are not directly available without TextOutput trait in scope.
+    // Using uefi_services::println! for output.
+    // stdout.clear_screen().expect("Failed to clear screen");
+    // stdout.enable_cursor(true).expect("Failed to enable cursor");
+
+    vga::vga_init();
     SERIAL.call_once(|| SerialPort::new());
     SERIAL
         .get()
         .unwrap()
         .write_string("Hello QEMU by fullerene!\n");
+
+    uefi_services::println!("Hello UEFI from fullerene-kernel!");
+
     loop {}
 }
