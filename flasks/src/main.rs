@@ -2,26 +2,24 @@
 use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions};
 use gpt::{GptConfig, disk::LogicalBlockSize, partition_types};
 use std::{
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
     process::Command,
 };
 use uuid::Uuid;
 
-use std::fs::OpenOptions;
-
 /// A wrapper around a File that limits I/O to a specific partition offset and size.
 struct PartitionIo<'a> {
-    file: &'a mut fs::File,
+    file: &'a mut File,
     offset: u64,
     size: u64,
     current_pos: u64,
 }
 
 impl<'a> PartitionIo<'a> {
-    fn new(file: &'a mut fs::File, offset: u64, size: u64) -> io::Result<Self> {
-        Ok(PartitionIo {
+    fn new(file: &'a mut File, offset: u64, size: u64) -> io::Result<Self> {
+        Ok(Self {
             file,
             offset,
             size,
@@ -37,12 +35,11 @@ impl<'a> Read for PartitionIo<'a> {
         if bytes_to_read == 0 {
             return Ok(0);
         }
-
         self.file
             .seek(SeekFrom::Start(self.offset + self.current_pos))?;
-        let bytes_read = self.file.read(&mut buf[..bytes_to_read])?;
-        self.current_pos += bytes_read as u64;
-        Ok(bytes_read)
+        let read = self.file.read(&mut buf[..bytes_to_read])?;
+        self.current_pos += read as u64;
+        Ok(read)
     }
 }
 
@@ -53,14 +50,12 @@ impl<'a> Write for PartitionIo<'a> {
         if bytes_to_write == 0 {
             return Ok(0);
         }
-
         self.file
             .seek(SeekFrom::Start(self.offset + self.current_pos))?;
-        let bytes_written = self.file.write(&buf[..bytes_to_write])?;
-        self.current_pos += bytes_written as u64;
-        Ok(bytes_written)
+        let written = self.file.write(&buf[..bytes_to_write])?;
+        self.current_pos += written as u64;
+        Ok(written)
     }
-
     fn flush(&mut self) -> io::Result<()> {
         self.file.flush()
     }
@@ -73,7 +68,6 @@ impl<'a> Seek for PartitionIo<'a> {
             SeekFrom::End(p) => (self.size as i64 + p) as u64,
             SeekFrom::Current(p) => (self.current_pos as i64 + p) as u64,
         };
-
         if new_pos > self.size {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -90,16 +84,16 @@ fn copy_to_fat<T: Read + Write + Seek>(
     fs: &FileSystem<T>,
     src: &Path,
     dest: &str,
-) -> std::io::Result<()> {
+) -> io::Result<()> {
     let dest_path = Path::new(dest);
     let mut dir = fs.root_dir();
 
     // Create intermediate directories
     if let Some(parent) = dest_path.parent() {
         for component in parent.iter() {
-            let name = component.to_str().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "Non-UTF8 path component")
-            })?;
+            let name = component
+                .to_str()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Non-UTF8 path"))?;
             let found = dir
                 .iter()
                 .filter_map(|e| e.ok())
@@ -115,14 +109,14 @@ fn copy_to_fat<T: Read + Write + Seek>(
     // Create and write file
     let mut f = dir.create_file(dest_path.file_name().unwrap().to_str().unwrap())?;
     let mut data = Vec::new();
-    let mut src_f = fs::File::open(src)?;
+    let mut src_f = File::open(src)?;
     src_f.read_to_end(&mut data)?;
     f.write_all(&data)?;
     f.flush()?;
     Ok(())
 }
 
-fn main() -> std::io::Result<()> {
+fn main() -> io::Result<()> {
     // 1. Build fullerene-kernel
     let status = Command::new("cargo")
         .args([
@@ -143,7 +137,7 @@ fn main() -> std::io::Result<()> {
         ));
     }
 
-    // 2. Build bellows (UEFI bootloader)
+    // 2. Build bellows
     let status = Command::new("cargo")
         .args([
             "build",
@@ -160,20 +154,14 @@ fn main() -> std::io::Result<()> {
         return Err(io::Error::new(io::ErrorKind::Other, "bellows build failed"));
     }
 
-    // 3. Create disk image with GPT partition table and EFI System Partition
+    // 3. Create disk image
     let disk_img_path = Path::new("esp.img");
     if disk_img_path.exists() {
         fs::remove_file(disk_img_path)?;
     }
 
-    // NOTE:
-    // The fatfs formatter requires sizes in ranges where FAT type selection is possible.
-    // Some "unfortunate" disk sizes can't be auto-selected. To avoid that, we choose a
-    // safe image size and explicitly request FAT32 formatting.
-    //
-    // Use 128 MiB to ensure FAT32 is selectable comfortably.
-    let disk_size_bytes = 128 * 1024 * 1024; // 128 MB (increased from 64MB)
-    let disk_file = fs::OpenOptions::new()
+    let disk_size_bytes = 128 * 1024 * 1024; // 128 MiB
+    let disk_file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
@@ -201,25 +189,10 @@ fn main() -> std::io::Result<()> {
 
     let first_lba = gpt_disk.primary_header().unwrap().first_usable;
     let last_lba = gpt_disk.primary_header().unwrap().last_usable;
-    let esp_size_lba = if last_lba >= first_lba {
-        last_lba - first_lba + 1
-    } else {
-        0
-    };
-
+    let esp_size_lba = last_lba - first_lba + 1;
     dbg!(first_lba, last_lba, esp_size_lba);
 
-    if esp_size_lba == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "Calculated ESP partition size is 0, cannot create partition.",
-        ));
-    }
-
-    // Add EFI System Partition (ESP)
-    let _esp_guid = Uuid::new_v4();
-
-    // 1. add_partition
+    // Add ESP
     gpt_disk
         .add_partition(
             "EFI System Partition",
@@ -230,40 +203,29 @@ fn main() -> std::io::Result<()> {
         )
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to add ESP: {}", e)))?;
 
-    // Write GPT changes to disk and retrieve the underlying File
-    let mut disk_file_after_gpt = gpt_disk.write().map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("Failed to write GPT to disk: {}", e),
-        )
-    })?;
+    // Write GPT and retrieve File
+    let mut disk_file_after_gpt = gpt_disk
+        .write()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to write GPT: {}", e)))?;
 
-    drop(disk_file_after_gpt);
-
-    let mut disk_file_after_gpt = File::options().read(true).write(true).open("esp.img")?;
-
-    let mut disk_file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(disk_img_path)?;
-    let gpt_disk = GptConfig::new()
+    // Re-open GPT to get correct partition info
+    let mut gpt_disk = GptConfig::new()
         .writable(true)
         .logical_block_size(LogicalBlockSize::Lb512)
-        .open_from_device(&mut disk_file)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .open_from_device(&mut disk_file_after_gpt)
+        .map_err(|e| {
+            io::Error::new(io::ErrorKind::Other, format!("Failed to reload GPT: {}", e))
+        })?;
 
-    println!("GPT loaded successfully: {:?}", gpt_disk);
-    // Get partition info before writing, as write consumes gpt_disk
     let esp_partition_info = gpt_disk
         .partitions()
         .iter()
         .find(|(_, p)| p.part_type_guid == partition_types::EFI)
         .map(|(_, p)| p.clone())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "ESP not found after creation"))?;
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "ESP not found"))?;
 
     // Format the EFI System Partition (ESP)
     let block_size = gpt_disk.logical_block_size().as_u64();
-
     let esp_offset_bytes = esp_partition_info.first_lba * block_size;
     // The volume size in bytes must be a multiple of the logical block size.
     let esp_size_bytes =
@@ -313,17 +275,16 @@ fn main() -> std::io::Result<()> {
 
     copy_to_fat(&fs, bellows_efi, "EFI/BOOT/BOOTX64.EFI")?;
     copy_to_fat(&fs, kernel_efi, "kernel.efi")?;
+    drop(fs);
 
-    drop(fs); // flush filesystem
-
-    // 6. Copy OVMF_VARS.fd if missing
+    // Copy OVMF_VARS.fd if missing
     let ovmf_code = "/usr/share/OVMF/OVMF_CODE_4M.fd";
     let ovmf_vars = "./OVMF_VARS.fd";
     if !Path::new(ovmf_vars).exists() {
         fs::copy("/usr/share/OVMF/OVMF_VARS_4M.fd", ovmf_vars)?;
     }
 
-    // 7. Run QEMU
+    // Run QEMU
     let qemu_args = [
         "-drive",
         &format!("if=pflash,format=raw,readonly=on,file={}", ovmf_code),
@@ -340,9 +301,7 @@ fn main() -> std::io::Result<()> {
         "-boot",
         "order=c",
     ];
-
     println!("Running QEMU with args: {:?}", qemu_args);
-
     let qemu_status = Command::new("qemu-system-x86_64")
         .args(&qemu_args)
         .status()?;
