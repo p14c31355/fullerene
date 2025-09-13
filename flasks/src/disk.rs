@@ -11,14 +11,13 @@ use hadris_iso::{
     BootOptions, BootEntryOptions, boot::EmulationType,
 };
 use crate::part_io::{PartitionIo, copy_to_fat};
-// Removed: use tempfile::tempdir; // No longer needed
 
 /// Creates both a raw disk image and a UEFI-bootable ISO
 pub fn create_disk_and_iso(
     disk_image_path: &Path,
     iso_path: &Path,
-    bellows_efi_src: &Path, // These are now direct paths to the compiled binaries
-    kernel_efi_src: &Path,  // These are now direct paths to the compiled binaries
+    bellows_efi_src: &Path,
+    kernel_efi_src: &Path,
 ) -> io::Result<()> {
     // 1. Create raw disk image and populate it with EFI files
     // This function now handles creating the esp.img, partitioning, formatting,
@@ -49,7 +48,7 @@ pub fn create_disk_and_iso(
     ];
 
     let options = FormatOptions::new()
-        .with_files(FileInput::Files(files_for_iso)) // Use FileInput::Files with direct paths
+        .with_files(FileInput::FromPaths(files_for_iso)) // <--- CRITICAL CHANGE: Use FromPaths
         .with_volume_name("FULLERENE".to_string())
         .with_strictness(Strictness::Default)
         .with_boot_options(boot_options);
@@ -115,9 +114,11 @@ fn create_disk_image(
         // Mount filesystem
         let fs = FileSystem::new(&mut part_io, FsOptions::new())?;
 
+        // Ensure EFI/BOOT directories exist
+        let root_dir = fs.root_dir();
         // Copy EFI files into EFI/BOOT
-        copy_to_fat(&fs.root_dir(), bellows_efi_src, "EFI/BOOT/BOOTX64.EFI")?;
-        copy_to_fat(&fs.root_dir(), kernel_efi_src, "EFI/BOOT/kernel.efi")?;
+        copy_to_fat(&root_dir, bellows_efi_src, "EFI/BOOT/BOOTX64.EFI")?;
+        copy_to_fat(&root_dir, kernel_efi_src, "EFI/BOOT/kernel.efi")?;
     }
 
     // Get back the file handle
