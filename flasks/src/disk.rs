@@ -38,16 +38,16 @@ pub fn create_disk_and_iso(
         entries: Vec::new(),
     };
 
-    // No need for a temporary staging directory for ISO creation anymore,
-    // as we are adding files individually.
+    // CRITICAL CHANGE: Create a temporary directory and copy files into it to use `FileInput::from_fs`
+    let temp_dir = tempfile::tempdir()?;
+    let iso_root = temp_dir.path().to_path_buf();
+    let efi_dir = iso_root.join("EFI").join("BOOT");
+    fs::create_dir_all(&efi_dir)?;
+    fs::copy(bellows_efi_src, efi_dir.join("BOOTX64.EFI"))?;
+    fs::copy(kernel_efi_src, efi_dir.join("KERNEL.EFI"))?;
 
     let options = FormatOptions::new()
-        // CRITICAL CHANGE: Explicitly add files with their ISO 9660 compliant names
-        .with_files(
-            FileInput::new()
-                .add_file(bellows_efi_src.to_path_buf(), PathBuf::from("EFI/BOOT/BOOTX64.EFI"))?
-                .add_file(kernel_efi_src.to_path_buf(), PathBuf::from("EFI/BOOT/KERNEL.EFI"))?
-        )
+        .with_files(FileInput::from_fs(iso_root)?)
         .with_volume_name("FULLERENE".to_string())
         .with_strictness(Strictness::Default) // Can revert to Default, as names are now compliant
         .with_boot_options(boot_options);

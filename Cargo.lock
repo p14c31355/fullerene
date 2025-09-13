@@ -175,6 +175,7 @@ dependencies = [
  "gpt",
  "hadris-iso",
  "path-absolutize",
+ "tempfile",
  "uuid",
 ]
 
