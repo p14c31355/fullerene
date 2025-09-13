@@ -51,10 +51,11 @@ pub fn create_disk_and_iso(
     fs::create_dir_all(&efi_boot_dest_dir)?;
 
     fs::copy(bellows_efi_src, efi_boot_dest_dir.join("BOOTX64.EFI"))?;
-    fs::copy(kernel_efi_src, efi_boot_dest_dir.join("kernel.efi"))?;
+    // CRITICAL CHANGE: Ensure kernel.efi is copied as KERNEL.EFI for ISO 9660 compliance
+    fs::copy(kernel_efi_src, efi_boot_dest_dir.join("KERNEL.EFI"))?;
 
     let options = FormatOptions::new()
-        .with_files(FileInput::from_fs(iso_stage_path.clone())?) // CRITICAL CHANGE: Use from_fs with the temporary path
+        .with_files(FileInput::from_fs(iso_stage_path.clone())?) // Use from_fs with the temporary path
         .with_volume_name("FULLERENE".to_string())
         .with_strictness(Strictness::Default)
         .with_boot_options(boot_options);
@@ -127,7 +128,8 @@ fn create_disk_image(
         let root_dir = fs.root_dir();
         // Copy EFI files into EFI/BOOT
         copy_to_fat(&root_dir, bellows_efi_src, "EFI/BOOT/BOOTX64.EFI")?;
-        copy_to_fat(&root_dir, kernel_efi_src, "EFI/BOOT/kernel.efi")?;
+        // CRITICAL CHANGE: Ensure kernel.efi is copied as KERNEL.EFI for FAT32 compliance
+        copy_to_fat(&root_dir, kernel_efi_src, "EFI/BOOT/KERNEL.EFI")?;
     }
 
     // Get back the file handle
