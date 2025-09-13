@@ -8,7 +8,6 @@ use std::{
 };
 use hadris_iso::{IsoImage, FileInput, FormatOptions, Strictness, BootOptions, BootEntryOptions, boot::EmulationType};
 use crate::part_io::{PartitionIo, copy_to_fat};
-// Removed: use tempfile::tempdir; // No longer using tempfile::tempdir() directly here
 
 /// Creates both a raw disk image and a UEFI-bootable ISO
 pub fn create_disk_and_iso(
@@ -40,7 +39,7 @@ pub fn create_disk_and_iso(
     };
 
     // Create a local temporary directory for ISO staging with a short name
-    let iso_stage_path = PathBuf::from("./_iso_stage_temp"); // Use a simple, known path
+    let iso_stage_path = PathBuf::from("iso_stage_temp"); // Use a simple, known path
     if iso_stage_path.exists() {
         fs::remove_dir_all(&iso_stage_path)?;
     }
@@ -54,10 +53,32 @@ pub fn create_disk_and_iso(
     // CRITICAL CHANGE: Ensure kernel.efi is copied as KERNEL.EFI for ISO 9660 compliance
     fs::copy(kernel_efi_src, efi_boot_dest_dir.join("KERNEL.EFI"))?;
 
+    // --- NEW DEBUGGING STEP --- 
+    println!("Contents of ISO staging directory ({}):
+----------------------------------------", iso_stage_path.display());
+    for entry in fs::read_dir(&iso_stage_path)? {
+        let entry = entry?;
+        println!("  {}", entry.path().display());
+        if entry.file_type()?.is_dir() {
+            for sub_entry in fs::read_dir(entry.path())? {
+                let sub_entry = sub_entry?;
+                println!("    {}", sub_entry.path().display());
+                if sub_entry.file_type()?.is_dir() {
+                    for sub_sub_entry in fs::read_dir(sub_entry.path())? {
+                        let sub_sub_entry = sub_sub_entry?;
+                        println!("      {}", sub_sub_entry.path().display());
+                    }
+                }
+            }
+        }
+    }
+    println!("----------------------------------------");
+    // --- END NEW DEBUGGING STEP ---
+
     let options = FormatOptions::new()
         .with_files(FileInput::from_fs(iso_stage_path.clone())?) // Use from_fs with the temporary path
         .with_volume_name("FULLERENE".to_string())
-        .with_strictness(Strictness::Default)
+        .with_strictness(Strictness::Relaxed) // <--- CRITICAL CHANGE: Try Relaxed strictness
         .with_boot_options(boot_options);
 
     IsoImage::format_file(iso_path.to_path_buf(), options)
