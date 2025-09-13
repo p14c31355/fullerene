@@ -7,6 +7,13 @@
 
 [workspace]
 members = [
-  "bellows", "fullerene-kernel",
+  "bellows", "flasks", "fullerene-kernel",
   "toluene",
 ]
+resolver = "2"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

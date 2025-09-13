@@ -1,6 +1,15 @@
+# fullerene-kernel/Cargo.toml
 [package]
 name = "fullerene-kernel"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+spin = { version = "0.10.0", default-features = false, features = ["once", "mutex", "spin_mutex"] }
+x86_64 = { version = "0.15.2", default-features = false, features = ["instructions"] }
+# Removed uefi and uefi-services dependencies as per your request for bare-metal VGA output
+
+[dependencies.compiler_builtins]
+version = "0.1.160"
+default-features = false
+features = ["mem", "no-asm"]
