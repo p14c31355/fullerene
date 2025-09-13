@@ -101,16 +101,17 @@ fn main() -> io::Result<()> {
         &format!("if=pflash,format=raw,readonly=on,file={}", ovmf_code.display()),
         "-drive",
         &format!("if=pflash,format=raw,file={}", ovmf_vars.display()),
-        "-drive",
-        &format!("file={},format=raw,if=ide", iso_path.display()), // Boot from ISO
+        "-cdrom",
+        iso_path.to_str().unwrap(), // Boot from ISO as CD-ROM
         "-m",
         "512M",
         "-cpu",
         "qemu64,+smap",
         "-serial",
         "stdio",
-        "-boot",
-        "order=d", // Try to boot from CD-ROM (ISO) first
+        "-vga",
+        "std", // Explicitly set standard VGA for display
+        // Removed -boot order=d to allow manual boot from UEFI shell
     ];
     println!("Running QEMU with args: {:?}", qemu_args);
     let qemu_status = Command::new("qemu-system-x86_64")

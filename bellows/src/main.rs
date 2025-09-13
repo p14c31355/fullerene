@@ -119,7 +119,7 @@ fn load_kernel(kernel: &[u8]) -> Option<extern "C" fn() -> !> {
     if kernel.len() < 24 {
         return None;
     }
-    if &kernel[0..4] != b"\x7FELF" {
+    if &kernel[0..4] != b"\x7fELF" {
         return None;
     }
     let header = unsafe { &*(kernel.as_ptr() as *const ElfHeader) };

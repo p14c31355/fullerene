@@ -7,8 +7,9 @@ use std::{
     path::{Path, PathBuf},
 };
 use hadris_iso::{
-    IsoImage, FormatOptions, Strictness, BootOptions,
-    BootEntryOptions, boot::EmulationType, FileInput
+    boot::{EmulationType, PlatformId},
+    BootEntryOptions, BootOptions, BootSectionOptions, FileInput, FileInterchange, FormatOptions,
+    IsoImage, PartitionOptions, Strictness,
 };
 use crate::part_io::{PartitionIo, copy_to_fat};
 
@@ -26,20 +27,25 @@ pub fn create_disk_and_iso(
     let temp_efi_dir = prepare_temp_efi(bellows_efi_src, kernel_efi_src)?;
 
     // 3. Create UEFI ISO
-    let efi_boot_path = PathBuf::from("EFI/BOOT/BOOTX64.EFI");
+    let efi_boot_path = PathBuf::from("BOOTX64.EFI");
 
     let boot_entry_options = BootEntryOptions {
         load_size: 0,
         boot_image_path: efi_boot_path.to_string_lossy().into_owned(),
-        boot_info_table: false,
+        boot_info_table: true, // Set to true for better UEFI compatibility
         grub2_boot_info: false,
         emulation: EmulationType::NoEmulation,
     };
 
     let boot_options = BootOptions {
         write_boot_catalogue: true,
-        default: boot_entry_options,
-        entries: Vec::new(),
+        default: boot_entry_options.clone(),
+        entries: vec![(
+            BootSectionOptions {
+                platform_id: PlatformId::UEFI,
+            },
+            boot_entry_options,
+        )],
     };
 
     // Use FileInput::from_fs() to read the temp directory
@@ -49,7 +55,8 @@ pub fn create_disk_and_iso(
         .with_files(files_to_add)
         .with_volume_name("FULLERENE".to_string())
         .with_strictness(Strictness::Default)
-        .with_boot_options(boot_options);
+        .with_boot_options(boot_options)
+        .with_level(FileInterchange::NonConformant);
 
     IsoImage::format_file(iso_path.to_path_buf(), options)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create ISO: {}", e)))?;
@@ -76,6 +83,10 @@ fn prepare_temp_efi(bellows: &Path, kernel: &Path) -> io::Result<PathBuf> {
     // Copy EFI binaries into the directory
     fs::copy(bellows, boot_dir.join("BOOTX64.EFI"))?;
     fs::copy(kernel, boot_dir.join("KERNEL.EFI"))?;
+
+    // Copy EFI binaries into the root for ISO booting
+    fs::copy(bellows, temp_dir.join("BOOTX64.EFI"))?;
+    fs::copy(kernel, temp_dir.join("KERNEL.EFI"))?;
 
     Ok(temp_dir)
 }
