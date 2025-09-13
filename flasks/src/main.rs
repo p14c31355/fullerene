@@ -13,7 +13,7 @@ fn main() -> io::Result<()> {
     // 0. Workspace root dynamically
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .unwrap()
+        .expect("Failed to get workspace root")
         .to_path_buf();
 
     // 1. Build fullerene-kernel
