@@ -11,9 +11,13 @@ use std::{
 };
 use crate::disk::create_disk_and_iso;
 
+/// Build kernel and bellows, create UEFI bootable ISO with xorriso, and run QEMU
 fn main() -> io::Result<()> {
-    // Workspace root dynamically
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+    // 0. Workspace root dynamically
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
 
     // 1. Build fullerene-kernel
     let status = Command::new("cargo")
@@ -58,14 +62,51 @@ fn main() -> io::Result<()> {
     let bellows_binary_path = workspace_root.join("target/x86_64-uefi/release/bellows");
     let kernel_binary_path = workspace_root.join("target/x86_64-uefi/release/fullerene-kernel");
 
-    // Disk and ISO paths
+    // 4. Disk image path
     let disk_image_path = Path::new("esp.img");
+
+    // 5. Ensure xorriso is installed
+    if Command::new("xorriso").arg("--version").output().is_err() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "xorriso not found. Please install it to create UEFI bootable ISO.",
+        ));
+    }
+
+    // 6. Create temporary EFI directory for ISO
+    let temp_efi_dir = Path::new("temp_efi");
+    if temp_efi_dir.exists() {
+        fs::remove_dir_all(&temp_efi_dir)?;
+    }
+    fs::create_dir_all(temp_efi_dir.join("EFI/BOOT"))?;
+    fs::copy(&bellows_binary_path, temp_efi_dir.join("EFI/BOOT/BOOTX64.EFI"))?;
+    fs::copy(&kernel_binary_path, temp_efi_dir.join("EFI/BOOT/KERNEL.EFI"))?;
+
+    // 7. Create ISO with xorriso for UEFI
     let iso_path = Path::new("fullerene.iso");
+    let xorriso_status = Command::new("xorriso")
+        .current_dir(&temp_efi_dir)
+        .args([
+            "-as", "mkisofs",
+            "-V", "FULLERENE",
+            "-o", iso_path.to_str().unwrap(),
+            "-efi-boot-part",
+            "--efi-boot-image", "EFI/BOOT/BOOTX64.EFI",
+            "-no-emul-boot",
+            "-boot-load-size", "4",
+            "-boot-info-table",
+            ".",
+        ])
+        .status()?;
 
-    // 4. Create disk and ISO
-    create_disk_and_iso(disk_image_path, iso_path, &bellows_binary_path, &kernel_binary_path)?;
+    if !xorriso_status.success() {
+        return Err(io::Error::new(io::ErrorKind::Other, "xorriso ISO creation failed"));
+    }
 
-    // 5. Prepare OVMF paths
+    // Cleanup temp EFI directory
+    fs::remove_dir_all(&temp_efi_dir)?;
+
+    // 8. Prepare OVMF paths
     let ovmf_code = Path::new("/usr/share/OVMF/OVMF_CODE_4M.fd");
     let ovmf_vars = Path::new("./OVMF_VARS.fd");
     let ovmf_vars_src = Path::new("/usr/share/OVMF/OVMF_VARS_4M.fd");
@@ -88,7 +129,7 @@ fn main() -> io::Result<()> {
         }
     }
 
-    // 6. Run QEMU
+    // 9. Run QEMU
     let qemu_args = [
         "-drive",
         &format!("if=pflash,format=raw,readonly=on,file={}", ovmf_code.display()),
@@ -96,21 +137,19 @@ fn main() -> io::Result<()> {
         &format!("if=pflash,format=raw,file={}", ovmf_vars.display()),
         "-cdrom",
         iso_path.to_str().unwrap(),
-        "-m",
-        "512M",
-        "-cpu",
-        "qemu64,+smap",
-        "-serial",
-        "stdio",
-        "-vga",
-        "std",
+        "-m", "512M",
+        "-cpu", "qemu64,+smap",
+        "-serial", "stdio",
+        "-vga", "std",
     ];
     println!("Running QEMU with args: {:?}", qemu_args);
 
     let qemu_status = Command::new("qemu-system-x86_64")
         .args(&qemu_args)
         .status()?;
-    assert!(qemu_status.success());
+    if !qemu_status.success() {
+        return Err(io::Error::new(io::ErrorKind::Other, "QEMU execution failed"));
+    }
 
     Ok(())
 }
