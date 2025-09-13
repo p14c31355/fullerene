@@ -63,8 +63,8 @@ fn main() -> io::Result<()> {
     let bellows_binary_path = workspace_root.join("target/x86_64-uefi/release/bellows");
     let kernel_binary_path = workspace_root.join("target/x86_64-uefi/release/fullerene-kernel");
 
-    // No need for temp_efi_dir anymore, as we pass the direct binary paths to create_disk_and_iso
-    // and it will handle copying to the FAT image and directly to the ISO.
+    // Removed temp_efi_dir creation and copying here.
+    // create_disk_and_iso will now handle its own staging for ISO creation.
 
     let disk_image_path = Path::new("esp.img");
     let iso_path = Path::new("fullerene.iso");

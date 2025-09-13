@@ -6,18 +6,16 @@ use std::{
     io::{self},
     path::{Path, PathBuf},
 };
-use hadris_iso::{
-    IsoImage, FileInput, FormatOptions, Strictness,
-    BootOptions, BootEntryOptions, boot::EmulationType,
-};
+use hadris_iso::{IsoImage, FileInput, FormatOptions, Strictness, BootOptions, BootEntryOptions, boot::EmulationType};
 use crate::part_io::{PartitionIo, copy_to_fat};
+use tempfile::tempdir; // Re-introduce tempfile
 
 /// Creates both a raw disk image and a UEFI-bootable ISO
 pub fn create_disk_and_iso(
     disk_image_path: &Path,
     iso_path: &Path,
-    bellows_efi_src: &Path,
-    kernel_efi_src: &Path,
+    bellows_efi_src: &Path, // These are now direct paths to the compiled binaries
+    kernel_efi_src: &Path,  // These are now direct paths to the compiled binaries
 ) -> io::Result<()> {
     // 1. Create raw disk image and populate it with EFI files
     // This function now handles creating the esp.img, partitioning, formatting,
@@ -41,14 +39,19 @@ pub fn create_disk_and_iso(
         entries: Vec::new(),
     };
 
-    // Directly specify the files to include in the ISO
-    let files_for_iso = vec![
-        (bellows_efi_src.to_path_buf(), PathBuf::from("EFI/BOOT/BOOTX64.EFI")),
-        (kernel_efi_src.to_path_buf(), PathBuf::from("EFI/BOOT/kernel.efi")),
-    ];
+    // Create a temporary directory for ISO staging with a short name
+    let temp_iso_dir = tempdir()?;
+    let iso_stage_path = temp_iso_dir.path().to_path_buf();
+
+    // Copy EFI files into the temporary staging directory
+    let efi_boot_dest_dir = iso_stage_path.join("EFI").join("BOOT");
+    fs::create_dir_all(&efi_boot_dest_dir)?;
+
+    fs::copy(bellows_efi_src, efi_boot_dest_dir.join("BOOTX64.EFI"))?;
+    fs::copy(kernel_efi_src, efi_boot_dest_dir.join("kernel.efi"))?;
 
     let options = FormatOptions::new()
-        .with_files(FileInput::FromPaths(files_for_iso)) // <--- CRITICAL CHANGE: Use FromPaths
+        .with_files(FileInput::from_fs(iso_stage_path)?) // CRITICAL CHANGE: Use from_fs with the temporary path
         .with_volume_name("FULLERENE".to_string())
         .with_strictness(Strictness::Default)
         .with_boot_options(boot_options);
@@ -56,6 +59,8 @@ pub fn create_disk_and_iso(
     IsoImage::format_file(iso_path.to_path_buf(), options)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create ISO: {}", e)))?;
     
+    // temp_iso_dir will be automatically cleaned up when it goes out of scope
+
     Ok(())
 }
 
