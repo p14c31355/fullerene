@@ -13,4 +13,4 @@ esp.img
 OVMF_VARS.fd
 fullerene.iso
 /temp_iso_stage
-/temp_efi
+**/temp_efi

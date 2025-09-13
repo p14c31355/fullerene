@@ -3,6 +3,7 @@ mod part_io;
 mod disk;
 
 use std::{
+    env,
     fs,
     io::{self},
     path::Path,
@@ -11,8 +12,13 @@ use std::{
 use crate::disk::create_disk_and_iso;
 
 fn main() -> io::Result<()> {
+    // Get the workspace root path dynamically
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+
     // 1. Build fullerene-kernel
     let status = Command::new("cargo")
+        .current_dir(workspace_root) // Ensure command runs from workspace root
+        .env("RUST_TARGET_PATH", workspace_root) // Tell rustc where to find custom targets
         .args([
             "build",
             "--package",
@@ -36,6 +42,8 @@ fn main() -> io::Result<()> {
 
     // 2. Build bellows
     let status = Command::new("cargo")
+        .current_dir(workspace_root) // Ensure command runs from workspace root
+        .env("RUST_TARGET_PATH", workspace_root) // Tell rustc where to find custom targets
         .args([
             "build",
             "--package",
@@ -51,8 +59,12 @@ fn main() -> io::Result<()> {
         return Err(io::Error::new(io::ErrorKind::Other, "bellows build failed"));
     }
 
+    // Construct absolute paths to the compiled binaries
+    let bellows_binary_path = workspace_root.join("target/x86_64-uefi/release/bellows");
+    let kernel_binary_path = workspace_root.join("target/x86_64-uefi/release/fullerene-kernel");
+
     // 3. Create a temporary directory for EFI files
-    let temp_efi_dir = Path::new("temp_efi");
+    let temp_efi_dir = Path::new("temp_efi"); // This is relative to the CWD of the flasks process
     if temp_efi_dir.exists() {
         fs::remove_dir_all(temp_efi_dir)?;
     }
@@ -60,11 +72,11 @@ fn main() -> io::Result<()> {
     
     // Copy the compiled EFI binaries to the temporary directory
     fs::copy(
-        Path::new("target/x86_64-uefi/release/bellows"),
+        &bellows_binary_path, // Use the absolute path
         temp_efi_dir.join("bellows"),
     )?;
     fs::copy(
-        Path::new("target/x86_64-uefi/release/fullerene-kernel"),
+        &kernel_binary_path, // Use the absolute path
         temp_efi_dir.join("fullerene-kernel"),
     )?;
 
