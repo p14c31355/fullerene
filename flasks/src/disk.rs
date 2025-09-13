@@ -187,7 +187,7 @@ fn create_gpt_partition(
     ).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
     let partition = gpt.partitions().get(&temp_part_id)
-        .expect("Added partition not found")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Added partition not found"))?
         .clone();
 
     gpt.write().map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
