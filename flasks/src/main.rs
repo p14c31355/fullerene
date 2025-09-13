@@ -106,7 +106,7 @@ fn main() -> io::Result<()> {
         "-drive",
         &format!("if=pflash,format=raw,file={}", ovmf_vars.display()),
         "-cdrom",
-        iso_path.to_str().unwrap(),
+        iso_path.to_str().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "ISO path is not valid UTF-8"))?,
         "-drive", // Add the new drive argument
         &format!("file={},format=raw", disk_image_path.display()),
         "-m", "512M",
