@@ -9,7 +9,7 @@ use std::{
 use hadris_iso::{
     boot::{EmulationType, PlatformId},
     BootEntryOptions, BootOptions, BootSectionOptions, FileInput, FileInterchange, FormatOptions,
-    IsoImage, PartitionOptions, Strictness,
+    IsoImage, Strictness, // PartitionOptions を削除
 };
 use crate::part_io::{PartitionIo, copy_to_fat};
 

@@ -149,7 +149,7 @@ unsafe fn read_kernel(bs: &EfiBootServices) -> Option<&'static [u8]> {
 
     // open volume (root)
     let mut root: *mut EfiFile = ptr::null_mut();
-    let status = ((*fs).open_volume)(fs, &mut root);
+    let status = unsafe { ((*fs).open_volume)(fs, &mut root) };
     if status != 0 {
         return None;
     }
@@ -160,13 +160,15 @@ unsafe fn read_kernel(bs: &EfiBootServices) -> Option<&'static [u8]> {
         'E' as u16, 'F' as u16, 'I' as u16, 0, 0,
     ];
     let mut kernel_file: *mut EfiFile = ptr::null_mut();
-    let status = ((*root).open)(
-        root,
-        &mut kernel_file,
-        kernel_name.as_ptr(),
-        0x1, /* READ */
-        0,
-    );
+    let status = unsafe {
+        ((*root).open)(
+            root,
+            &mut kernel_file,
+            kernel_name.as_ptr(),
+            0x1, /* READ */
+            0,
+        )
+    };
     if status != 0 {
         return None;
     }
@@ -184,35 +186,15 @@ unsafe fn read_kernel(bs: &EfiBootServices) -> Option<&'static [u8]> {
     let mut size: u64 = (pages * 4096) as u64;
 
     // Read file into allocated buffer
-    let status = ((*kernel_file).read)(kernel_file, &mut size, buf_ptr);
+    let status = unsafe { ((*kernel_file).read)(kernel_file, &mut size, buf_ptr) };
     if status != 0 {
         return None;
     }
 
     // Close the file
-    ((*kernel_file).close)(kernel_file);
+    unsafe { ((*kernel_file).close)(kernel_file) };
 
-    Some(slice::from_raw_parts(buf_ptr, size as usize))
-}
-
-/// Helper: convert integer to 16-byte ASCII hex buffer (for potential debug)
-fn int_to_hex(mut n: usize) -> [u8; 16] {
-    const HEX_CHARS: &[u8] = b"0123456789abcdef";
-    let mut buf = [b'0'; 16];
-    let mut i = 15usize;
-    if n == 0 {
-        buf[i] = HEX_CHARS[0];
-        return buf;
-    }
-    while n > 0 {
-        buf[i] = HEX_CHARS[n % 16];
-        n /= 16;
-        if i == 0 {
-            break;
-        }
-        i -= 1;
-    }
-    buf
+    Some(unsafe { slice::from_raw_parts(buf_ptr, size as usize) })
 }
 
 /// Entry point for UEFI. Note: name and calling convention are critical.

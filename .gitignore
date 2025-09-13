@@ -12,3 +12,4 @@ target/
 fullerene.img
 OVMF_VARS.fd
 fullerene.iso
+qemu_log.txt
