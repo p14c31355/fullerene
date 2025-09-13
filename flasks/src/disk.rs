@@ -6,7 +6,7 @@ use std::{
     io::{self},
     path::{Path, PathBuf},
 };
-use hadris_iso::{IsoImage, FileInput, FormatOptions, Strictness, BootOptions, BootEntryOptions, boot::EmulationType};
+use hadris_iso::{IsoImage, FormatOptions, Strictness, BootOptions, BootEntryOptions, boot::EmulationType};
 use crate::part_io::{PartitionIo, copy_to_fat};
 
 /// Creates both a raw disk image and a UEFI-bootable ISO
@@ -38,18 +38,17 @@ pub fn create_disk_and_iso(
         entries: Vec::new(),
     };
 
-    // CRITICAL CHANGE: Create a temporary directory and copy files into it to use `FileInput::from_fs`
-    let temp_dir = tempfile::tempdir()?;
-    let iso_root = temp_dir.path().to_path_buf();
-    let efi_dir = iso_root.join("EFI").join("BOOT");
-    fs::create_dir_all(&efi_dir)?;
-    fs::copy(bellows_efi_src, efi_dir.join("BOOTX64.EFI"))?;
-    fs::copy(kernel_efi_src, efi_dir.join("KERNEL.EFI"))?;
+    // CRITICAL CHANGE: Use FileInputBuilder to explicitly map source files to
+    // ISO 9660 compliant destination names. This prevents the runtime panic.
+    let files_to_add = FileInputBuilder::new()
+        .add_file(bellows_efi_src.to_path_buf(), PathBuf::from("EFI/BOOT/BOOTX64.EFI"))?
+        .add_file(kernel_efi_src.to_path_buf(), PathBuf::from("EFI/BOOT/KERNEL.EFI"))?
+        .build()?;
 
     let options = FormatOptions::new()
-        .with_files(FileInput::from_fs(iso_root)?)
+        .with_files(files_to_add)
         .with_volume_name("FULLERENE".to_string())
-        .with_strictness(Strictness::Default) // Can revert to Default, as names are now compliant
+        .with_strictness(Strictness::Default)
         .with_boot_options(boot_options);
 
     IsoImage::format_file(iso_path.to_path_buf(), options)
@@ -83,7 +82,7 @@ fn create_disk_image(
     if disk_image_path.exists() {
         fs::remove_file(disk_image_path)?;
     }
-    let mut file = OpenOptions::new() // No need for mut here, as it's passed to PartitionIo
+    let mut file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
@@ -98,7 +97,7 @@ fn create_disk_image(
 
     // Initialize PartitionIo for FAT32
     let mut part_io = PartitionIo::new(
-        file, // file is consumed here
+        file,
         partition_info.first_lba * sector_size,
         (partition_info.last_lba - partition_info.first_lba + 1) * sector_size,
     )?;
