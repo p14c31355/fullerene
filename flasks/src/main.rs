@@ -77,7 +77,8 @@ fn main() -> io::Result<()> {
     )?;
 
     // 7. Prepare OVMF paths
-    let ovmf_code = Path::new("/usr/share/OVMF/OVMF_CODE_4M.fd");
+    let ovmf_code_path = env::var("OVMF_CODE_PATH").unwrap_or_else(|_| "/usr/share/OVMF/OVMF_CODE_4M.fd".to_string());
+    let ovmf_code = Path::new(&ovmf_code_path);
     let ovmf_vars = Path::new("./OVMF_VARS.fd");
     let ovmf_vars_src = Path::new("/usr/share/OVMF/OVMF_VARS_4M.fd");
 
