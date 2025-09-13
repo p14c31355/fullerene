@@ -15,13 +15,9 @@ pub struct PartitionIo {
 impl PartitionIo {
     pub fn new(mut file: File, offset: u64, size: u64) -> io::Result<Self> {
         file.seek(SeekFrom::Start(offset))?;
-        Ok(Self {
-            file,
-            offset,
-            size,
-        })
+        Ok(Self { file, offset, size })
     }
-    
+
     pub fn into_inner(self) -> io::Result<File> {
         Ok(self.file)
     }
@@ -64,7 +60,10 @@ impl Seek for PartitionIo {
             SeekFrom::End(p) => {
                 let new = self.size as i64 + p;
                 if new < 0 {
-                    return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek beyond start"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "seek beyond start",
+                    ));
                 }
                 new as u64
             }
@@ -72,17 +71,24 @@ impl Seek for PartitionIo {
                 let current_pos_on_partition = self.file.stream_position()? - self.offset;
                 let new = current_pos_on_partition as i64 + p;
                 if new < 0 {
-                    return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek beyond start"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "seek beyond start",
+                    ));
                 }
                 new as u64
             }
         };
 
         if new_pos_on_partition > self.size {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek beyond end"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seek beyond end",
+            ));
         }
 
-        self.file.seek(SeekFrom::Start(self.offset + new_pos_on_partition))?;
+        self.file
+            .seek(SeekFrom::Start(self.offset + new_pos_on_partition))?;
         Ok(new_pos_on_partition)
     }
 }
@@ -118,4 +124,3 @@ pub fn copy_to_fat<T: Read + Write + Seek>(
     io::copy(&mut src_file, &mut f)?;
     Ok(())
 }
-

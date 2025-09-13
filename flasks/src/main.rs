@@ -1,15 +1,13 @@
 // fullerene/flasks/src/main.rs
-mod part_io;
 mod disk;
+mod part_io;
 
+use crate::disk::create_disk_and_iso;
 use std::{
-    env,
-    fs,
-    io,
+    env, fs, io,
     path::{Path, PathBuf},
     process::Command,
 };
-use crate::disk::create_disk_and_iso;
 
 /// Build kernel and bellows, create UEFI bootable ISO with xorriso, and run QEMU
 fn main() -> io::Result<()> {
@@ -36,7 +34,10 @@ fn main() -> io::Result<()> {
         ])
         .status()?;
     if !status.success() {
-        return Err(io::Error::new(io::ErrorKind::Other, "fullerene-kernel build failed"));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "fullerene-kernel build failed",
+        ));
     }
 
     // 2. Build bellows
@@ -77,7 +78,8 @@ fn main() -> io::Result<()> {
     )?;
 
     // 7. Prepare OVMF paths
-    let ovmf_code_path = env::var("OVMF_CODE_PATH").unwrap_or_else(|_| "/usr/share/OVMF/OVMF_CODE_4M.fd".to_string());
+    let ovmf_code_path = env::var("OVMF_CODE_PATH")
+        .unwrap_or_else(|_| "/usr/share/OVMF/OVMF_CODE_4M.fd".to_string());
     let ovmf_code = Path::new(&ovmf_code_path);
     let ovmf_vars = Path::new("./OVMF_VARS.fd");
     let ovmf_vars_src = Path::new("/usr/share/OVMF/OVMF_VARS_4M.fd");
@@ -85,7 +87,10 @@ fn main() -> io::Result<()> {
     if !ovmf_code.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("{} not found. Ensure 'ovmf' package is installed.", ovmf_code.display()),
+            format!(
+                "{} not found. Ensure 'ovmf' package is installed.",
+                ovmf_code.display()
+            ),
         ));
     }
 
@@ -95,7 +100,10 @@ fn main() -> io::Result<()> {
         } else {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("{} not found. Ensure 'ovmf' package is installed.", ovmf_vars_src.display()),
+                format!(
+                    "{} not found. Ensure 'ovmf' package is installed.",
+                    ovmf_vars_src.display()
+                ),
             ));
         }
     }
@@ -103,17 +111,24 @@ fn main() -> io::Result<()> {
     // 8. Run QEMU with the new disk image
     let qemu_args = [
         "-drive",
-        &format!("if=pflash,format=raw,readonly=on,file={}", ovmf_code.display()),
+        &format!(
+            "if=pflash,format=raw,readonly=on,file={}",
+            ovmf_code.display()
+        ),
         "-drive",
         &format!("if=pflash,format=raw,file={}", ovmf_vars.display()),
-        "-cdrom",
-        iso_path.to_str().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "ISO path is not valid UTF-8"))?,
-        "-drive", // Add the new drive argument
+        "-drive", // This is the new drive argument, moved up to a higher priority
         &format!("file={},format=raw", disk_image_path.display()),
-        "-m", "512M",
-        "-cpu", "qemu64,+smap",
-        "-serial", "stdio",
-        "-vga", "std",
+        "-boot",
+        "d", // Explicitly boot from the hard drive (d)
+        "-m",
+        "512M",
+        "-cpu",
+        "qemu64,+smap",
+        "-serial",
+        "stdio",
+        "-vga",
+        "std",
     ];
     println!("Running QEMU with args: {:?}", qemu_args);
 
@@ -121,7 +136,10 @@ fn main() -> io::Result<()> {
         .args(&qemu_args)
         .status()?;
     if !qemu_status.success() {
-        return Err(io::Error::new(io::ErrorKind::Other, "QEMU execution failed"));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "QEMU execution failed",
+        ));
     }
 
     Ok(())

@@ -1,17 +1,23 @@
 // fullerene/flasks/src/disk.rs
+use crate::part_io::{PartitionIo, copy_to_fat};
 use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions};
 use gpt::{GptConfig, disk::LogicalBlockSize, partition_types};
+use hadris_iso::{
+    BootEntryOptions,
+    BootOptions,
+    BootSectionOptions,
+    FileInput,
+    FileInterchange,
+    FormatOptions,
+    IsoImage,
+    Strictness,
+    boot::{EmulationType, PlatformId},
+};
 use std::{
-    fs::{self, OpenOptions, File},
+    fs::{self, File, OpenOptions},
     io::{self},
     path::{Path, PathBuf},
 };
-use hadris_iso::{
-    boot::{EmulationType, PlatformId},
-    BootEntryOptions, BootOptions, BootSectionOptions, FileInput, FileInterchange, FormatOptions,
-    IsoImage, Strictness, // PartitionOptions を削除
-};
-use crate::part_io::{PartitionIo, copy_to_fat};
 
 /// Creates both a raw disk image and a UEFI-bootable ISO
 pub fn create_disk_and_iso(
@@ -58,8 +64,9 @@ pub fn create_disk_and_iso(
         .with_boot_options(boot_options)
         .with_level(FileInterchange::NonConformant);
 
-    IsoImage::format_file(iso_path.to_path_buf(), options)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create ISO: {}", e)))?;
+    IsoImage::format_file(iso_path.to_path_buf(), options).map_err(|e| {
+        io::Error::new(io::ErrorKind::Other, format!("Failed to create ISO: {}", e))
+    })?;
 
     // Cleanup temporary directory
     fs::remove_dir_all(temp_efi_dir)?;
@@ -108,7 +115,10 @@ fn create_disk_image(
     if !kernel_efi_src.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("fullerene-kernel EFI not found: {}", kernel_efi_src.display()),
+            format!(
+                "fullerene-kernel EFI not found: {}",
+                kernel_efi_src.display()
+            ),
         ));
     }
 
@@ -136,7 +146,10 @@ fn create_disk_image(
         (partition_info.last_lba - partition_info.first_lba + 1) * sector_size,
     )?;
 
-    fatfs::format_volume(&mut part_io, FormatVolumeOptions::new().fat_type(FatType::Fat32))?;
+    fatfs::format_volume(
+        &mut part_io,
+        FormatVolumeOptions::new().fat_type(FatType::Fat32),
+    )?;
 
     {
         // Mount filesystem
@@ -164,7 +177,8 @@ fn create_gpt_partition(
         .create_from_device(file, None)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-    let header = gpt.primary_header()
+    let header = gpt
+        .primary_header()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
     let first_usable = header.first_usable;
     let last_usable = header.last_usable;
@@ -175,22 +189,30 @@ fn create_gpt_partition(
     let fat32_size_lba: u64 = (fat32_size_bytes + sector_size - 1) / sector_size;
 
     if first_usable + fat32_size_lba > last_usable {
-        return Err(io::Error::new(io::ErrorKind::Other, "Disk too small for 64 MiB EFI partition"));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Disk too small for 64 MiB EFI partition",
+        ));
     }
 
-    let temp_part_id = gpt.add_partition(
-        "EFI System Partition",
-        fat32_size_lba,
-        partition_types::EFI,
-        0,
-        None,
-    ).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    let temp_part_id = gpt
+        .add_partition(
+            "EFI System Partition",
+            fat32_size_lba,
+            partition_types::EFI,
+            0,
+            None,
+        )
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-    let partition = gpt.partitions().get(&temp_part_id)
+    let partition = gpt
+        .partitions()
+        .get(&temp_part_id)
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Added partition not found"))?
         .clone();
 
-    gpt.write().map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    gpt.write()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
     Ok(partition)
 }

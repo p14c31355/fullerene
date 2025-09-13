@@ -155,9 +155,9 @@ unsafe fn read_kernel(bs: &EfiBootServices) -> Option<&'static [u8]> {
     }
 
     // File name must be UCS-2 (UTF-16) and often expected uppercase for many firmwares
-    let kernel_name: [u16; 12] = [
-        'K' as u16, 'E' as u16, 'R' as u16, 'N' as u16, 'E' as u16, 'L' as u16, '.' as u16,
-        'E' as u16, 'F' as u16, 'I' as u16, 0, 0,
+    let kernel_name: [u16; 14] = [
+        'F' as u16, 'U' as u16, 'L' as u16, 'L' as u16, 'E' as u16, 'R' as u16, 'E' as u16,
+        'N' as u16, 'E' as u16, '.' as u16, 'E' as u16, 'F' as u16, 'I' as u16, 0,
     ];
     let mut kernel_file: *mut EfiFile = ptr::null_mut();
     let status = unsafe {
@@ -232,7 +232,7 @@ pub extern "efiapi" fn efi_main(_image_handle: usize, system_table: *mut EfiSyst
     let kernel_image = match kernel_opt {
         Some(k) => k,
         None => {
-            uefi_print(&st, "bellows: failed to read kernel.efi\n");
+            uefi_print(&st, "bellows: failed to read fullerene.efi\n");
             loop {}
         }
     };
