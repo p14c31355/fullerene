@@ -6,19 +6,19 @@ use std::{
     env,
     fs,
     io::{self},
-    path::Path,
+    path::{Path, PathBuf}, // Import PathBuf
     process::Command,
 };
 use crate::disk::create_disk_and_iso;
 
 fn main() -> io::Result<()> {
     // Get the workspace root path dynamically
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf(); // Use PathBuf
 
     // 1. Build fullerene-kernel
     let status = Command::new("cargo")
-        .current_dir(workspace_root) // Ensure command runs from workspace root
-        .env("RUST_TARGET_PATH", workspace_root) // Tell rustc where to find custom targets
+        .current_dir(&workspace_root) // Ensure command runs from workspace root
+        .env("RUST_TARGET_PATH", &workspace_root) // Tell rustc where to find custom targets
         .args([
             "build",
             "--package",
@@ -42,8 +42,8 @@ fn main() -> io::Result<()> {
 
     // 2. Build bellows
     let status = Command::new("cargo")
-        .current_dir(workspace_root) // Ensure command runs from workspace root
-        .env("RUST_TARGET_PATH", workspace_root) // Tell rustc where to find custom targets
+        .current_dir(&workspace_root) // Ensure command runs from workspace root
+        .env("RUST_TARGET_PATH", &workspace_root) // Tell rustc where to find custom targets
         .args([
             "build",
             "--package",
@@ -63,30 +63,14 @@ fn main() -> io::Result<()> {
     let bellows_binary_path = workspace_root.join("target/x86_64-uefi/release/bellows");
     let kernel_binary_path = workspace_root.join("target/x86_64-uefi/release/fullerene-kernel");
 
-    // 3. Create a temporary directory for EFI files
-    let temp_efi_dir = Path::new("temp_efi"); // This is relative to the CWD of the flasks process
-    if temp_efi_dir.exists() {
-        fs::remove_dir_all(temp_efi_dir)?;
-    }
-    fs::create_dir(temp_efi_dir)?;
-    
-    // Copy the compiled EFI binaries to the temporary directory
-    fs::copy(
-        &bellows_binary_path, // Use the absolute path
-        temp_efi_dir.join("bellows"),
-    )?;
-    fs::copy(
-        &kernel_binary_path, // Use the absolute path
-        temp_efi_dir.join("fullerene-kernel"),
-    )?;
+    // No need for temp_efi_dir anymore, as we pass the direct binary paths to create_disk_and_iso
+    // and it will handle copying to the FAT image and directly to the ISO.
 
-    // Use the short paths from the temporary directory
     let disk_image_path = Path::new("esp.img");
     let iso_path = Path::new("fullerene.iso");
-    let bellows_efi_src = temp_efi_dir.join("bellows");
-    let kernel_efi_src = temp_efi_dir.join("fullerene-kernel");
 
-    create_disk_and_iso(disk_image_path, iso_path, &bellows_efi_src, &kernel_efi_src)?;
+    // Pass the direct binary paths to create_disk_and_iso
+    create_disk_and_iso(disk_image_path, iso_path, &bellows_binary_path, &kernel_binary_path)?;
 
     // 4. Copy OVMF_VARS.fd if missing and check for OVMF_CODE.fd
     let ovmf_code = Path::new("/usr/share/OVMF/OVMF_CODE_4M.fd");
@@ -118,7 +102,7 @@ fn main() -> io::Result<()> {
         "-drive",
         &format!("if=pflash,format=raw,file={}", ovmf_vars.display()),
         "-drive",
-        &format!("file={},format=raw,if=ide", iso_path.display()),
+        &format!("file={},format=raw,if=ide", iso_path.display()), // Boot from ISO
         "-m",
         "512M",
         "-cpu",
@@ -126,7 +110,7 @@ fn main() -> io::Result<()> {
         "-serial",
         "stdio",
         "-boot",
-        "order=d",
+        "order=d", // Try to boot from CD-ROM (ISO) first
     ];
     println!("Running QEMU with args: {:?}", qemu_args);
     let qemu_status = Command::new("qemu-system-x86_64")

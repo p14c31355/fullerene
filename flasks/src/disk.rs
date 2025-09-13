@@ -3,7 +3,7 @@ use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions};
 use gpt::{GptConfig, disk::LogicalBlockSize, partition_types};
 use std::{
     fs::{self, OpenOptions, File},
-    io::{self, Seek, SeekFrom},
+    io::{self},
     path::{Path, PathBuf},
 };
 use hadris_iso::{
@@ -11,73 +11,22 @@ use hadris_iso::{
     BootOptions, BootEntryOptions, boot::EmulationType,
 };
 use crate::part_io::{PartitionIo, copy_to_fat};
-// Add this import for the tempfile crate
-use tempfile::tempdir;
+// Removed: use tempfile::tempdir; // No longer needed
 
 /// Creates both a raw disk image and a UEFI-bootable ISO
 pub fn create_disk_and_iso(
     disk_image_path: &Path,
     iso_path: &Path,
-    bellows_efi_src: &Path,
-    kernel_efi_src: &Path,
+    bellows_efi_src: &Path, // These are now direct paths to the compiled binaries
+    kernel_efi_src: &Path,  // These are now direct paths to the compiled binaries
 ) -> io::Result<()> {
-    // 1. Create raw disk image and get the file handle
-    let mut disk_file = create_disk_image(disk_image_path, bellows_efi_src, kernel_efi_src)?;
+    // 1. Create raw disk image and populate it with EFI files
+    // This function now handles creating the esp.img, partitioning, formatting,
+    // and copying the EFI binaries into it.
+    let _disk_file = create_disk_image(disk_image_path, bellows_efi_src, kernel_efi_src)?;
 
-    // 2. Create UEFI ISO from disk image using hadris-iso
-    let efi_boot_path = Path::new("EFI/BOOT/BOOTX64.EFI");
-    
-    // Create a temporary directory to stage the ISO contents using tempfile.
-    // This handles path length and ensures a unique directory name.
-    let temp_iso_dir = tempdir()?;
-    let temp_iso_dir_path = temp_iso_dir.path();
-
-    // Read GPT and find the EFI partition
-    disk_file.seek(SeekFrom::Start(0))?;
-    let gpt = GptConfig::default()
-        .logical_block_size(LogicalBlockSize::Lb512)
-        .open_from_device(&mut disk_file)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-
-    let efi_partition = gpt.partitions().iter()
-        .find(|&(_, p)| p.part_type_guid == partition_types::EFI)
-        .map(|(_, p)| p)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "EFI partition not found in disk image"))?;
-
-    let sector_size = LogicalBlockSize::Lb512.as_u64();
-    let efi_offset = efi_partition.first_lba * sector_size;
-    let efi_size = (efi_partition.last_lba - efi_partition.first_lba + 1) * sector_size;
-
-    // Create a PartitionIo for the EFI partition
-    let mut efi_part_io = PartitionIo::new(
-        disk_file,
-        efi_offset,
-        efi_size,
-    )?;
-
-    // Mount the FAT32 filesystem from the EFI partition
-    let efi_fs = FileSystem::new(&mut efi_part_io, FsOptions::new())?;
-
-    // Copy contents of the EFI partition to the temporary staging directory
-    let mut stack: Vec<(fatfs::Dir<'_, &mut PartitionIo>, PathBuf)> =
-        vec![(efi_fs.root_dir(), PathBuf::new())];
-
-    while let Some((current_dir, current_path)) = stack.pop() {
-        for entry in current_dir.iter().filter_map(|e| e.ok()) {
-            let entry_name = entry.file_name();
-            let entry_path = current_path.join(&entry_name);
-            let dest_path = temp_iso_dir_path.join(&entry_path);
-
-            if entry.is_dir() {
-                fs::create_dir_all(&dest_path)?;
-                stack.push((entry.to_dir(), entry_path));
-            } else {
-                let mut src_file = entry.to_file();
-                let mut dest_file = fs::File::create(&dest_path)?;
-                io::copy(&mut src_file, &mut dest_file)?;
-            }
-        }
-    }
+    // 2. Create UEFI ISO from the *already prepared* EFI files
+    let efi_boot_path = PathBuf::from("EFI/BOOT/BOOTX64.EFI"); // Destination path within the ISO
 
     let boot_entry_options = BootEntryOptions {
         load_size: 0,
@@ -93,16 +42,20 @@ pub fn create_disk_and_iso(
         entries: Vec::new(),
     };
 
+    // Directly specify the files to include in the ISO
+    let files_for_iso = vec![
+        (bellows_efi_src.to_path_buf(), PathBuf::from("EFI/BOOT/BOOTX64.EFI")),
+        (kernel_efi_src.to_path_buf(), PathBuf::from("EFI/BOOT/kernel.efi")),
+    ];
+
     let options = FormatOptions::new()
-        .with_files(FileInput::from_fs(temp_iso_dir_path.to_path_buf())?)
+        .with_files(FileInput::Files(files_for_iso)) // Use FileInput::Files with direct paths
         .with_volume_name("FULLERENE".to_string())
         .with_strictness(Strictness::Default)
         .with_boot_options(boot_options);
 
     IsoImage::format_file(iso_path.to_path_buf(), options)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create ISO: {}", e)))?;
-
-    // The temporary directory is automatically cleaned up when `temp_iso_dir` goes out of scope.
     
     Ok(())
 }
@@ -132,7 +85,7 @@ fn create_disk_image(
     if disk_image_path.exists() {
         fs::remove_file(disk_image_path)?;
     }
-    let mut file = OpenOptions::new()
+    let mut file = OpenOptions::new() // No need for mut here, as it's passed to PartitionIo
         .read(true)
         .write(true)
         .create(true)
@@ -147,7 +100,7 @@ fn create_disk_image(
 
     // Initialize PartitionIo for FAT32
     let mut part_io = PartitionIo::new(
-        file,
+        file, // file is consumed here
         partition_info.first_lba * sector_size,
         (partition_info.last_lba - partition_info.first_lba + 1) * sector_size,
     )?;
@@ -162,11 +115,9 @@ fn create_disk_image(
         // Mount filesystem
         let fs = FileSystem::new(&mut part_io, FsOptions::new())?;
 
-        // Ensure EFI/BOOT directories exist
-        let root_dir = fs.root_dir();
         // Copy EFI files into EFI/BOOT
-        copy_to_fat(&root_dir, bellows_efi_src, "EFI/BOOT/BOOTX64.EFI")?;
-        copy_to_fat(&root_dir, kernel_efi_src, "EFI/BOOT/kernel.efi")?;
+        copy_to_fat(&fs.root_dir(), bellows_efi_src, "EFI/BOOT/BOOTX64.EFI")?;
+        copy_to_fat(&fs.root_dir(), kernel_efi_src, "EFI/BOOT/kernel.efi")?;
     }
 
     // Get back the file handle
