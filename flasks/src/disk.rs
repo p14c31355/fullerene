@@ -11,6 +11,8 @@ use hadris_iso::{
     BootOptions, BootEntryOptions, boot::EmulationType,
 };
 use crate::part_io::{PartitionIo, copy_to_fat};
+// Add this import for the tempfile crate
+use tempfile::tempdir;
 
 /// Creates both a raw disk image and a UEFI-bootable ISO
 pub fn create_disk_and_iso(
@@ -25,12 +27,10 @@ pub fn create_disk_and_iso(
     // 2. Create UEFI ISO from disk image using hadris-iso
     let efi_boot_path = Path::new("EFI/BOOT/BOOTX64.EFI");
     
-    // Create a temporary directory to stage the ISO contents
-    let temp_iso_dir = Path::new("/tmp/iso_stage");
-    if temp_iso_dir.exists() {
-        fs::remove_dir_all(temp_iso_dir)?;
-    }
-    fs::create_dir_all(temp_iso_dir)?;
+    // Create a temporary directory to stage the ISO contents using tempfile.
+    // This handles path length and ensures a unique directory name.
+    let temp_iso_dir = tempdir()?;
+    let temp_iso_dir_path = temp_iso_dir.path();
 
     // Read GPT and find the EFI partition
     disk_file.seek(SeekFrom::Start(0))?;
@@ -66,7 +66,7 @@ pub fn create_disk_and_iso(
         for entry in current_dir.iter().filter_map(|e| e.ok()) {
             let entry_name = entry.file_name();
             let entry_path = current_path.join(&entry_name);
-            let dest_path = temp_iso_dir.join(&entry_path);
+            let dest_path = temp_iso_dir_path.join(&entry_path);
 
             if entry.is_dir() {
                 fs::create_dir_all(&dest_path)?;
@@ -80,7 +80,7 @@ pub fn create_disk_and_iso(
     }
 
     let boot_entry_options = BootEntryOptions {
-        load_size: 0, // UEFI doesn't need load_size
+        load_size: 0,
         boot_image_path: efi_boot_path.to_string_lossy().into_owned(),
         boot_info_table: false,
         grub2_boot_info: false,
@@ -94,7 +94,7 @@ pub fn create_disk_and_iso(
     };
 
     let options = FormatOptions::new()
-        .with_files(FileInput::from_fs(temp_iso_dir.to_path_buf())?)
+        .with_files(FileInput::from_fs(temp_iso_dir_path.to_path_buf())?)
         .with_volume_name("FULLERENE".to_string())
         .with_strictness(Strictness::Default)
         .with_boot_options(boot_options);
@@ -102,9 +102,8 @@ pub fn create_disk_and_iso(
     IsoImage::format_file(iso_path.to_path_buf(), options)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create ISO: {}", e)))?;
 
-    // Clean up the temporary directory
-    fs::remove_dir_all(temp_iso_dir)?;
-
+    // The temporary directory is automatically cleaned up when `temp_iso_dir` goes out of scope.
+    
     Ok(())
 }
 
@@ -129,7 +128,7 @@ fn create_disk_image(
         ));
     }
 
-    // Create or truncate disk image (128 MiB)
+    // Create or truncate disk image (256 MiB)
     if disk_image_path.exists() {
         fs::remove_file(disk_image_path)?;
     }
@@ -163,12 +162,11 @@ fn create_disk_image(
         // Mount filesystem
         let fs = FileSystem::new(&mut part_io, FsOptions::new())?;
 
-            // Ensure EFI/BOOT directories exist
-    let root_dir = fs.root_dir();
-    // Copy EFI files into EFI/BOOT
-    copy_to_fat(&root_dir, bellows_efi_src, "EFI/BOOT/BOOTX64.EFI")?;
-copy_to_fat(&root_dir, kernel_efi_src, "EFI/BOOT/kernel.efi")?;
-
+        // Ensure EFI/BOOT directories exist
+        let root_dir = fs.root_dir();
+        // Copy EFI files into EFI/BOOT
+        copy_to_fat(&root_dir, bellows_efi_src, "EFI/BOOT/BOOTX64.EFI")?;
+        copy_to_fat(&root_dir, kernel_efi_src, "EFI/BOOT/kernel.efi")?;
     }
 
     // Get back the file handle
@@ -176,7 +174,7 @@ copy_to_fat(&root_dir, kernel_efi_src, "EFI/BOOT/kernel.efi")?;
     Ok(file)
 }
 
-/// Creates a GPT partition table with a single EFI System Partition (16 MiB)
+/// Creates a GPT partition table with a single EFI System Partition (64 MiB)
 fn create_gpt_partition(
     file: &mut std::fs::File,
     logical_block_size: LogicalBlockSize,
@@ -192,7 +190,7 @@ fn create_gpt_partition(
     let first_usable = header.first_usable;
     let last_usable = header.last_usable;
 
-    // Calculate 16 MiB partition size in LBAs
+    // Calculate 64 MiB partition size in LBAs
     let sector_size = logical_block_size.as_u64();
     let fat32_size_bytes: u64 = 64 * 1024 * 1024;
     let fat32_size_lba: u64 = (fat32_size_bytes + sector_size - 1) / sector_size;
@@ -200,7 +198,7 @@ fn create_gpt_partition(
     if first_usable + fat32_size_lba > last_usable {
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            "Disk too small for 16 MiB EFI partition",
+            "Disk too small for 64 MiB EFI partition",
         ));
     }
 
