@@ -1,6 +1,5 @@
 // fullerene/flasks/src/main.rs
 mod disk;
-mod part_io;
 
 use crate::disk::create_disk_and_iso;
 use std::{
