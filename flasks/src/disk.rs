@@ -38,8 +38,8 @@ pub fn create_disk_and_iso(
         entries: Vec::new(),
     };
 
-    // Create a local temporary directory for ISO staging with a short name
-    let iso_stage_path = PathBuf::from("iso_stage_temp"); // Use a simple, known path
+    // Create a local temporary directory for ISO staging with a short, ISO 9660 compliant name
+    let iso_stage_path = PathBuf::from("ISO_STAGE"); // <--- CRITICAL CHANGE: Shorter, compliant name
     if iso_stage_path.exists() {
         fs::remove_dir_all(&iso_stage_path)?;
     }
@@ -50,12 +50,10 @@ pub fn create_disk_and_iso(
     fs::create_dir_all(&efi_boot_dest_dir)?;
 
     fs::copy(bellows_efi_src, efi_boot_dest_dir.join("BOOTX64.EFI"))?;
-    // CRITICAL CHANGE: Ensure kernel.efi is copied as KERNEL.EFI for ISO 9660 compliance
     fs::copy(kernel_efi_src, efi_boot_dest_dir.join("KERNEL.EFI"))?;
 
     // --- NEW DEBUGGING STEP --- 
-    println!("Contents of ISO staging directory ({}):
-----------------------------------------", iso_stage_path.display());
+    println!("Contents of ISO staging directory ({})\n----------------------------------------", iso_stage_path.display());
     for entry in fs::read_dir(&iso_stage_path)? {
         let entry = entry?;
         println!("  {}", entry.path().display());
@@ -78,7 +76,7 @@ pub fn create_disk_and_iso(
     let options = FormatOptions::new()
         .with_files(FileInput::from_fs(iso_stage_path.clone())?) // Use from_fs with the temporary path
         .with_volume_name("FULLERENE".to_string())
-        .with_strictness(Strictness::Relaxed) // <--- CRITICAL CHANGE: Try Relaxed strictness
+        .with_strictness(Strictness::Relaxed) // Try Relaxed strictness
         .with_boot_options(boot_options);
 
     IsoImage::format_file(iso_path.to_path_buf(), options)
