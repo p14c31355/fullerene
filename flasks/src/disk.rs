@@ -26,7 +26,7 @@ pub fn create_disk_and_iso(
     let efi_boot_path = Path::new("EFI/BOOT/BOOTX64.EFI");
     
     // Create a temporary directory to stage the ISO contents
-    let temp_iso_dir = Path::new("temp_iso_stage");
+    let temp_iso_dir = Path::new("/tmp/iso_stage");
     if temp_iso_dir.exists() {
         fs::remove_dir_all(temp_iso_dir)?;
     }
@@ -138,7 +138,7 @@ fn create_disk_image(
         .write(true)
         .create(true)
         .open(disk_image_path)?;
-    file.set_len(128 * 1024 * 1024)?; // 128 MiB
+    file.set_len(256 * 1024 * 1024)?; // 256 MiB
 
     let logical_block_size = LogicalBlockSize::Lb512;
     let sector_size = logical_block_size.as_u64();
@@ -163,14 +163,12 @@ fn create_disk_image(
         // Mount filesystem
         let fs = FileSystem::new(&mut part_io, FsOptions::new())?;
 
-        // Ensure EFI/BOOT directories exist
-        let root_dir = fs.root_dir(); // This is a Dir<'_, &mut PartitionIo>
-        let efi_dir = root_dir.open_dir("EFI").or_else(|_| root_dir.create_dir("EFI"))?; // This is also a Dir<'_, &mut PartitionIo>
-        let boot_dir = efi_dir.open_dir("BOOT").or_else(|_| efi_dir.create_dir("BOOT"))?;
+            // Ensure EFI/BOOT directories exist
+    let root_dir = fs.root_dir();
+    // Copy EFI files into EFI/BOOT
+    copy_to_fat(&root_dir, bellows_efi_src, "EFI/BOOT/BOOTX64.EFI")?;
+copy_to_fat(&root_dir, kernel_efi_src, "EFI/BOOT/kernel.efi")?;
 
-        // Copy EFI files into EFI/BOOT
-        copy_to_fat(&fs, bellows_efi_src, "EFI/BOOT/BOOTX64.EFI")?;
-        copy_to_fat(&fs, kernel_efi_src, "EFI/BOOT/kernel.efi")?;
     }
 
     // Get back the file handle
@@ -196,7 +194,7 @@ fn create_gpt_partition(
 
     // Calculate 16 MiB partition size in LBAs
     let sector_size = logical_block_size.as_u64();
-    let fat32_size_bytes: u64 = 16 * 1024 * 1024;
+    let fat32_size_bytes: u64 = 64 * 1024 * 1024;
     let fat32_size_lba: u64 = (fat32_size_bytes + sector_size - 1) / sector_size;
 
     if first_usable + fat32_size_lba > last_usable {

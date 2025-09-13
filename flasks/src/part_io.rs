@@ -102,6 +102,8 @@ pub fn copy_to_fat<T: Read + Write + Seek>(
             let name = component
                 .to_str()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Non-UTF8 path"))?;
+
+            // FATFS is case-insensitive and expects 8.3 names, so normalize here if needed
             dir = dir.open_dir(name).or_else(|_| dir.create_dir(name))?;
         }
     }
@@ -116,3 +118,4 @@ pub fn copy_to_fat<T: Read + Write + Seek>(
     io::copy(&mut src_file, &mut f)?;
     Ok(())
 }
+
