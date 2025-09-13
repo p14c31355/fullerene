@@ -2,11 +2,7 @@
 mod disk;
 
 use crate::disk::create_disk_and_iso;
-use std::{
-    env, io,
-    path::PathBuf,
-    process::Command,
-};
+use std::{env, io, path::PathBuf, process::Command};
 
 /// Build kernel and bellows, create UEFI bootable ISO with xorriso, and run QEMU
 fn main() -> io::Result<()> {
@@ -84,14 +80,20 @@ fn main() -> io::Result<()> {
     if !ovmf_code.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("{} not found. Please ensure it exists in the specified directory.", ovmf_code.display()),
+            format!(
+                "{} not found. Please ensure it exists in the specified directory.",
+                ovmf_code.display()
+            ),
         ));
     }
 
     if !ovmf_vars.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("{} not found. Please ensure it exists in the specified directory.", ovmf_vars.display()),
+            format!(
+                "{} not found. Please ensure it exists in the specified directory.",
+                ovmf_vars.display()
+            ),
         ));
     }
 

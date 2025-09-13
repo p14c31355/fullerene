@@ -60,7 +60,10 @@ impl Seek for PartitionIo {
             }
         };
         if new > self.size {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek beyond partition"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seek beyond partition",
+            ));
         }
         self.file.seek(SeekFrom::Start(self.offset + new))?;
         Ok(new)
@@ -84,29 +87,44 @@ fn create_disk_image(path: &Path, bellows: &Path, kernel: &Path) -> io::Result<F
     if path.exists() {
         fs::remove_file(path)?;
     }
-    let mut file = OpenOptions::new().read(true).write(true).create(true).open(path)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(path)?;
     file.set_len(256 * 1024 * 1024)?; // 256 MiB
 
     let lb_size = LogicalBlockSize::Lb512;
     let sector_size = lb_size.as_u64();
     let part = {
-        let mut gpt = GptConfig::default().writable(true).logical_block_size(lb_size)
-            .create_from_device(&mut file, None).unwrap();
+        let mut gpt = GptConfig::default()
+            .writable(true)
+            .logical_block_size(lb_size)
+            .create_from_device(&mut file, None)
+            .unwrap();
         let size = (64 * 1024 * 1024) / sector_size; // 64 MiB
-        let id = gpt.add_partition("EFI", size, partition_types::EFI, 0, None).unwrap();
+        let id = gpt
+            .add_partition("EFI", size, partition_types::EFI, 0, None)
+            .unwrap();
         let part = gpt.partitions()[&id].clone();
         gpt.write().unwrap();
         part
     };
 
-    let mut part_io = PartitionIo::new(file, part.first_lba*sector_size,
-                                       (part.last_lba-part.first_lba+1)*sector_size)?;
+    let mut part_io = PartitionIo::new(
+        file,
+        part.first_lba * sector_size,
+        (part.last_lba - part.first_lba + 1) * sector_size,
+    )?;
     {
-        fatfs::format_volume(&mut part_io, FormatVolumeOptions::new().fat_type(FatType::Fat32))?;
+        fatfs::format_volume(
+            &mut part_io,
+            FormatVolumeOptions::new().fat_type(FatType::Fat32),
+        )?;
         let fs = FileSystem::new(&mut part_io, FsOptions::new())?;
         let root = fs.root_dir();
         copy_to_fat(&root, bellows, "EFI/BOOT/BOOTX64.EFI")?;
-        copy_to_fat(&root, kernel,  "EFI/BOOT/KERNEL.EFI")?;
+        copy_to_fat(&root, kernel, "EFI/BOOT/KERNEL.EFI")?;
     }
     Ok(part_io.into_inner())
 }
@@ -127,25 +145,31 @@ fn pad_sector(f: &mut File) -> io::Result<()> {
 
 fn create_iso(path: &Path, efi_bin: &Path) -> io::Result<()> {
     let mut iso = File::create(path)?;
-    iso.write_all(&vec![0u8; SECTOR_SIZE*16])?; // system area
+    iso.write_all(&vec![0u8; SECTOR_SIZE * 16])?; // system area
 
     // PVD
     let mut pvd = [0u8; SECTOR_SIZE];
-    pvd[0]=1; pvd[1..6].copy_from_slice(b"CD001"); pvd[6]=1;
+    pvd[0] = 1;
+    pvd[1..6].copy_from_slice(b"CD001");
+    pvd[6] = 1;
     pvd[40..48].copy_from_slice(b"UEFI-POC"); // volume ID
     pvd[128..130].copy_from_slice(&(SECTOR_SIZE as u16).to_le_bytes());
     iso.write_all(&pvd)?;
 
     // Boot Record VD
     let mut brvd = [0u8; SECTOR_SIZE];
-    brvd[0]=0; brvd[1..6].copy_from_slice(b"CD001"); brvd[6]=1;
+    brvd[0] = 0;
+    brvd[1..6].copy_from_slice(b"CD001");
+    brvd[6] = 1;
     brvd[7..39].copy_from_slice(b"EL TORITO SPECIFICATION");
     brvd[71..75].copy_from_slice(&BOOT_CATALOG_SECTOR.to_le_bytes());
     iso.write_all(&brvd)?;
 
     // Terminator
     let mut term = [0u8; SECTOR_SIZE];
-    term[0]=255; term[1..6].copy_from_slice(b"CD001"); term[6]=1;
+    term[0] = 255;
+    term[1..6].copy_from_slice(b"CD001");
+    term[6] = 1;
     iso.write_all(&term)?;
 
     // Boot Catalog
@@ -153,8 +177,11 @@ fn create_iso(path: &Path, efi_bin: &Path) -> io::Result<()> {
         iso.write_all(&[0u8; SECTOR_SIZE])?;
     }
     let mut cat = [0u8; SECTOR_SIZE];
-    cat[0]=1; cat[30]=0x55; cat[31]=0xAA;
-    cat[32]=0x88; cat[33]=0xEF;
+    cat[0] = 1;
+    cat[30] = 0x55;
+    cat[31] = 0xAA;
+    cat[32] = 0x88;
+    cat[33] = 0xEF;
     cat[40..44].copy_from_slice(&BOOT_IMAGE_SECTOR.to_le_bytes());
     iso.write_all(&cat)?;
 
