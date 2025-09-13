@@ -15,7 +15,7 @@ use crate::part_io::{PartitionIo, copy_to_fat};
 
 /// Creates both a raw disk image and a UEFI-bootable ISO
 pub fn create_disk_and_iso(
-    disk_image_path: &Path,
+    disk_image_path: &Path, // This parameter will now be the path to the new fullerene.img
     iso_path: &Path,
     bellows_efi_src: &Path,
     kernel_efi_src: &Path,

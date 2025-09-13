@@ -9,12 +9,6 @@ target/
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 
-esp.img
+fullerene.img
 OVMF_VARS.fd
 fullerene.iso
-/temp_iso_stage
-**/temp_efi
-/_iso_stage_temp
-/iso_stage_temp
-/ISO_STAGE
-/ISO_STG
