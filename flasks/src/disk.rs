@@ -8,7 +8,7 @@ use std::{
 };
 use hadris_iso::{IsoImage, FileInput, FormatOptions, Strictness, BootOptions, BootEntryOptions, boot::EmulationType};
 use crate::part_io::{PartitionIo, copy_to_fat};
-use tempfile::tempdir; // Re-introduce tempfile
+// Removed: use tempfile::tempdir; // No longer using tempfile::tempdir() directly here
 
 /// Creates both a raw disk image and a UEFI-bootable ISO
 pub fn create_disk_and_iso(
@@ -39,9 +39,12 @@ pub fn create_disk_and_iso(
         entries: Vec::new(),
     };
 
-    // Create a temporary directory for ISO staging with a short name
-    let temp_iso_dir = tempdir()?;
-    let iso_stage_path = temp_iso_dir.path().to_path_buf();
+    // Create a local temporary directory for ISO staging with a short name
+    let iso_stage_path = PathBuf::from("./_iso_stage_temp"); // Use a simple, known path
+    if iso_stage_path.exists() {
+        fs::remove_dir_all(&iso_stage_path)?;
+    }
+    fs::create_dir_all(&iso_stage_path)?;
 
     // Copy EFI files into the temporary staging directory
     let efi_boot_dest_dir = iso_stage_path.join("EFI").join("BOOT");
@@ -51,7 +54,7 @@ pub fn create_disk_and_iso(
     fs::copy(kernel_efi_src, efi_boot_dest_dir.join("kernel.efi"))?;
 
     let options = FormatOptions::new()
-        .with_files(FileInput::from_fs(iso_stage_path)?) // CRITICAL CHANGE: Use from_fs with the temporary path
+        .with_files(FileInput::from_fs(iso_stage_path.clone())?) // CRITICAL CHANGE: Use from_fs with the temporary path
         .with_volume_name("FULLERENE".to_string())
         .with_strictness(Strictness::Default)
         .with_boot_options(boot_options);
@@ -59,7 +62,8 @@ pub fn create_disk_and_iso(
     IsoImage::format_file(iso_path.to_path_buf(), options)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create ISO: {}", e)))?;
     
-    // temp_iso_dir will be automatically cleaned up when it goes out of scope
+    // Clean up the temporary directory manually
+    fs::remove_dir_all(&iso_stage_path)?;
 
     Ok(())
 }
