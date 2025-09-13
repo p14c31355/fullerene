@@ -79,25 +79,37 @@ fn main() -> io::Result<()> {
         fs::remove_dir_all(&temp_efi_dir)?;
     }
     fs::create_dir_all(temp_efi_dir.join("EFI/BOOT"))?;
-    fs::copy(&bellows_binary_path, temp_efi_dir.join("EFI/BOOT/BOOTX64.EFI"))?;
-    fs::copy(&kernel_binary_path, temp_efi_dir.join("EFI/BOOT/KERNEL.EFI"))?;
+
+    // Copy binaries
+    let bootx64_path = temp_efi_dir.join("EFI/BOOT/BOOTX64.EFI");
+    let kernel_path = temp_efi_dir.join("EFI/BOOT/KERNEL.EFI");
+    fs::copy(&bellows_binary_path, &bootx64_path)?;
+    fs::copy(&kernel_binary_path, &kernel_path)?;
+
+    // Ensure boot files exist
+    if !bootx64_path.exists() || !kernel_path.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "BOOTX64.EFI or KERNEL.EFI missing in temp_efi/EFI/BOOT",
+        ));
+    }
 
     // 7. Create ISO with xorriso for UEFI
-    let iso_path = Path::new("fullerene.iso");
+    let iso_path = workspace_root.join("fullerene.iso");
     let xorriso_status = Command::new("xorriso")
-        .current_dir(&temp_efi_dir)
-        .args([
-            "-as", "mkisofs",
-            "-V", "FULLERENE",
-            "-o", iso_path.to_str().unwrap(),
-            "-efi-boot-part",
-            "--efi-boot-image", "EFI/BOOT/BOOTX64.EFI",
-            "-no-emul-boot",
-            "-boot-load-size", "4",
-            "-boot-info-table",
-            ".",
-        ])
-        .status()?;
+    .current_dir(&temp_efi_dir)
+    .args([
+        "-as", "mkisofs",
+        "-V", "FULLERENE",
+        "-o", iso_path.to_str().unwrap(),
+        "-efi-boot-part",
+        "--efi-boot-image", "EFI/BOOT/BOOTX64.EFI",
+        "-no-emul-boot",
+        "-boot-load-size", "4",
+        "-boot-info-table",
+        ".",
+    ])
+    .status()?;
 
     if !xorriso_status.success() {
         return Err(io::Error::new(io::ErrorKind::Other, "xorriso ISO creation failed"));
