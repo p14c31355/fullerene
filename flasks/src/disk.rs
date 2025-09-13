@@ -149,7 +149,7 @@ fn create_iso(path: &Path, efi_bin: &Path) -> io::Result<()> {
     iso.write_all(&term)?;
 
     // Boot Catalog
-    while iso.seek(SeekFrom::Current(0))?/SECTOR_SIZE as u64 < BOOT_CATALOG_SECTOR as u64 {
+    while (iso.seek(SeekFrom::Current(0))? / SECTOR_SIZE as u64) < BOOT_CATALOG_SECTOR as u64 {
         iso.write_all(&[0u8; SECTOR_SIZE])?;
     }
     let mut cat = [0u8; SECTOR_SIZE];
@@ -159,7 +159,7 @@ fn create_iso(path: &Path, efi_bin: &Path) -> io::Result<()> {
     iso.write_all(&cat)?;
 
     // Boot image (embed EFI binary)
-    while iso.seek(SeekFrom::Current(0))?/SECTOR_SIZE as u64 < BOOT_IMAGE_SECTOR as u64 {
+    while (iso.seek(SeekFrom::Current(0))? / SECTOR_SIZE as u64) < BOOT_IMAGE_SECTOR as u64 {
         iso.write_all(&[0u8; SECTOR_SIZE])?;
     }
     let mut f = File::open(efi_bin)?;
