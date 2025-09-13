@@ -6,23 +6,24 @@ use std::{
     io::{self},
     path::{Path, PathBuf},
 };
-use hadris_iso::{IsoImage, FormatOptions, Strictness, BootOptions, BootEntryOptions, boot::EmulationType};
+use hadris_iso::{
+    IsoImage, FormatOptions, Strictness, BootOptions,
+    BootEntryOptions, boot::EmulationType, FileInput
+};
 use crate::part_io::{PartitionIo, copy_to_fat};
 
 /// Creates both a raw disk image and a UEFI-bootable ISO
 pub fn create_disk_and_iso(
     disk_image_path: &Path,
     iso_path: &Path,
-    bellows_efi_src: &Path, // These are now direct paths to the compiled binaries
-    kernel_efi_src: &Path,  // These are now direct paths to the compiled binaries
+    bellows_efi_src: &Path,
+    kernel_efi_src: &Path,
 ) -> io::Result<()> {
     // 1. Create raw disk image and populate it with EFI files
-    // This function now handles creating the esp.img, partitioning, formatting,
-    // and copying the EFI binaries into it.
     let _disk_file = create_disk_image(disk_image_path, bellows_efi_src, kernel_efi_src)?;
 
-    // 2. Create UEFI ISO from the *already prepared* EFI files
-    let efi_boot_path = PathBuf::from("EFI/BOOT/BOOTX64.EFI"); // Destination path within the ISO
+    // 2. Prepare ISO boot options
+    let efi_boot_path = PathBuf::from("EFI/BOOT/BOOTX64.EFI");
 
     let boot_entry_options = BootEntryOptions {
         load_size: 0,
@@ -38,12 +39,9 @@ pub fn create_disk_and_iso(
         entries: Vec::new(),
     };
 
-    // CRITICAL CHANGE: Use FileInputBuilder to explicitly map source files to
-    // ISO 9660 compliant destination names. This prevents the runtime panic.
-    let files_to_add = FileInputBuilder::new()
-        .add_file(bellows_efi_src.to_path_buf(), PathBuf::from("EFI/BOOT/BOOTX64.EFI"))?
-        .add_file(kernel_efi_src.to_path_buf(), PathBuf::from("EFI/BOOT/KERNEL.EFI"))?
-        .build()?;
+    // ✅ FIX: use from_fs() instead of add_file
+    // Collect files from a staging directory that already contains BOOTX64.EFI + KERNEL.EFI
+    let files_to_add = FileInput::from_fs(PathBuf::from("temp_efi"))?;
 
     let options = FormatOptions::new()
         .with_files(files_to_add)
@@ -53,7 +51,7 @@ pub fn create_disk_and_iso(
 
     IsoImage::format_file(iso_path.to_path_buf(), options)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create ISO: {}", e)))?;
-    
+
     Ok(())
 }
 
