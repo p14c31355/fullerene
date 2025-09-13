@@ -3,8 +3,8 @@ mod disk;
 
 use crate::disk::create_disk_and_iso;
 use std::{
-    env, fs, io,
-    path::{Path, PathBuf},
+    env, io,
+    path::PathBuf,
     process::Command,
 };
 
@@ -76,35 +76,23 @@ fn main() -> io::Result<()> {
         &kernel_binary_path,
     )?;
 
-    // 7. Prepare OVMF paths
-    let ovmf_code_path = env::var("OVMF_CODE_PATH")
-        .unwrap_or_else(|_| "/usr/share/OVMF/OVMF_CODE_4M.fd".to_string());
-    let ovmf_code = Path::new(&ovmf_code_path);
-    let ovmf_vars = Path::new("./OVMF_VARS.fd");
-    let ovmf_vars_src = Path::new("/usr/share/OVMF/OVMF_VARS_4M.fd");
+    // 7. Prepare OVMF paths from the fixed local directory
+    let ovmf_dir = workspace_root.join("flasks").join("ovmf");
+    let ovmf_code = ovmf_dir.join("RELEASEX64_OVMF.fd");
+    let ovmf_vars = ovmf_dir.join("RELEASEX64_OVMF_VARS.fd");
 
     if !ovmf_code.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!(
-                "{} not found. Ensure 'ovmf' package is installed.",
-                ovmf_code.display()
-            ),
+            format!("{} not found. Please ensure it exists in the specified directory.", ovmf_code.display()),
         ));
     }
 
     if !ovmf_vars.exists() {
-        if ovmf_vars_src.exists() {
-            fs::copy(ovmf_vars_src, ovmf_vars)?;
-        } else {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!(
-                    "{} not found. Ensure 'ovmf' package is installed.",
-                    ovmf_vars_src.display()
-                ),
-            ));
-        }
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{} not found. Please ensure it exists in the specified directory.", ovmf_vars.display()),
+        ));
     }
 
     // 8. Run QEMU with the new disk image
@@ -116,10 +104,10 @@ fn main() -> io::Result<()> {
         ),
         "-drive",
         &format!("if=pflash,format=raw,file={}", ovmf_vars.display()),
-        "-drive", // This is the new drive argument, moved up to a higher priority
+        "-drive",
         &format!("file={},format=raw", disk_image_path.display()),
         "-boot",
-        "d", // Explicitly boot from the hard drive (d)
+        "d",
         "-m",
         "512M",
         "-cpu",
