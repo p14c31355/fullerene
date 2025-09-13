@@ -22,7 +22,10 @@ pub fn create_disk_and_iso(
     // 1. Create raw disk image and populate it with EFI files
     let _disk_file = create_disk_image(disk_image_path, bellows_efi_src, kernel_efi_src)?;
 
-    // 2. Prepare ISO boot options
+    // 2. Prepare a temporary directory with EFI/BOOT structure
+    let temp_efi_dir = prepare_temp_efi(bellows_efi_src, kernel_efi_src)?;
+
+    // 3. Create UEFI ISO
     let efi_boot_path = PathBuf::from("EFI/BOOT/BOOTX64.EFI");
 
     let boot_entry_options = BootEntryOptions {
@@ -39,9 +42,8 @@ pub fn create_disk_and_iso(
         entries: Vec::new(),
     };
 
-    // ✅ FIX: use from_fs() instead of add_file
-    // Collect files from a staging directory that already contains BOOTX64.EFI + KERNEL.EFI
-    let files_to_add = FileInput::from_fs(PathBuf::from("temp_efi"))?;
+    // Use FileInput::from_fs() to read the temp directory
+    let files_to_add = FileInput::from_fs(temp_efi_dir.clone())?;
 
     let options = FormatOptions::new()
         .with_files(files_to_add)
@@ -52,7 +54,30 @@ pub fn create_disk_and_iso(
     IsoImage::format_file(iso_path.to_path_buf(), options)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create ISO: {}", e)))?;
 
+    // Cleanup temporary directory
+    fs::remove_dir_all(temp_efi_dir)?;
+
     Ok(())
+}
+
+/// Prepares a temporary EFI directory with proper structure for the ISO
+fn prepare_temp_efi(bellows: &Path, kernel: &Path) -> io::Result<PathBuf> {
+    let temp_dir = PathBuf::from("temp_efi");
+
+    // Remove old directory if exists
+    if temp_dir.exists() {
+        fs::remove_dir_all(&temp_dir)?;
+    }
+
+    // Create EFI/BOOT directories
+    let boot_dir = temp_dir.join("EFI/BOOT");
+    fs::create_dir_all(&boot_dir)?;
+
+    // Copy EFI binaries into the directory
+    fs::copy(bellows, boot_dir.join("BOOTX64.EFI"))?;
+    fs::copy(kernel, boot_dir.join("KERNEL.EFI"))?;
+
+    Ok(temp_dir)
 }
 
 /// Creates and initializes the raw disk image with GPT, FAT32 filesystem,
@@ -100,32 +125,26 @@ fn create_disk_image(
         (partition_info.last_lba - partition_info.first_lba + 1) * sector_size,
     )?;
 
-    // Format FAT32
-    fatfs::format_volume(
-        &mut part_io,
-        FormatVolumeOptions::new().fat_type(FatType::Fat32),
-    )?;
-    
+    fatfs::format_volume(&mut part_io, FormatVolumeOptions::new().fat_type(FatType::Fat32))?;
+
     {
         // Mount filesystem
         let fs = FileSystem::new(&mut part_io, FsOptions::new())?;
 
         // Ensure EFI/BOOT directories exist
         let root_dir = fs.root_dir();
-        // Copy EFI files into EFI/BOOT
+
         copy_to_fat(&root_dir, bellows_efi_src, "EFI/BOOT/BOOTX64.EFI")?;
         // CRITICAL CHANGE: Ensure kernel.efi is copied as KERNEL.EFI for FAT32 compliance
         copy_to_fat(&root_dir, kernel_efi_src, "EFI/BOOT/KERNEL.EFI")?;
     }
 
-    // Get back the file handle
-    let file = part_io.into_inner()?;
-    Ok(file)
+    Ok(part_io.into_inner()?)
 }
 
 /// Creates a GPT partition table with a single EFI System Partition (64 MiB)
 fn create_gpt_partition(
-    file: &mut std::fs::File,
+    file: &mut File,
     logical_block_size: LogicalBlockSize,
 ) -> io::Result<gpt::partition::Partition> {
     let mut gpt = GptConfig::default()
@@ -145,14 +164,10 @@ fn create_gpt_partition(
     let fat32_size_lba: u64 = (fat32_size_bytes + sector_size - 1) / sector_size;
 
     if first_usable + fat32_size_lba > last_usable {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "Disk too small for 64 MiB EFI partition",
-        ));
+        return Err(io::Error::new(io::ErrorKind::Other, "Disk too small for 64 MiB EFI partition"));
     }
 
-    // Add EFI partition
-    let temp_part_id: u32 = gpt.add_partition(
+    let temp_part_id = gpt.add_partition(
         "EFI System Partition",
         fat32_size_lba,
         partition_types::EFI,
