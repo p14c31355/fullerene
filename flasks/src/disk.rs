@@ -38,53 +38,23 @@ pub fn create_disk_and_iso(
         entries: Vec::new(),
     };
 
-    // Create a local temporary directory for ISO staging with a short, ISO 9660 compliant name
-    let iso_stage_path = PathBuf::from("ISO_STAGE"); // <--- CRITICAL CHANGE: Shorter, compliant name
-    if iso_stage_path.exists() {
-        fs::remove_dir_all(&iso_stage_path)?;
-    }
-    fs::create_dir_all(&iso_stage_path)?;
-
-    // Copy EFI files into the temporary staging directory
-    let efi_boot_dest_dir = iso_stage_path.join("EFI").join("BOOT");
-    fs::create_dir_all(&efi_boot_dest_dir)?;
-
-    fs::copy(bellows_efi_src, efi_boot_dest_dir.join("BOOTX64.EFI"))?;
-    fs::copy(kernel_efi_src, efi_boot_dest_dir.join("KERNEL.EFI"))?;
-
-    // --- NEW DEBUGGING STEP --- 
-    println!("Contents of ISO staging directory ({})\n----------------------------------------", iso_stage_path.display());
-    for entry in fs::read_dir(&iso_stage_path)? {
-        let entry = entry?;
-        println!("  {}", entry.path().display());
-        if entry.file_type()?.is_dir() {
-            for sub_entry in fs::read_dir(entry.path())? {
-                let sub_entry = sub_entry?;
-                println!("    {}", sub_entry.path().display());
-                if sub_entry.file_type()?.is_dir() {
-                    for sub_sub_entry in fs::read_dir(sub_entry.path())? {
-                        let sub_sub_entry = sub_sub_entry?;
-                        println!("      {}", sub_sub_entry.path().display());
-                    }
-                }
-            }
-        }
-    }
-    println!("----------------------------------------");
-    // --- END NEW DEBUGGING STEP ---
+    // No need for a temporary staging directory for ISO creation anymore,
+    // as we are adding files individually.
 
     let options = FormatOptions::new()
-        .with_files(FileInput::from_fs(iso_stage_path.clone())?) // Use from_fs with the temporary path
+        // CRITICAL CHANGE: Explicitly add files with their ISO 9660 compliant names
+        .with_files(
+            FileInput::new()
+                .add_file(bellows_efi_src.to_path_buf(), PathBuf::from("EFI/BOOT/BOOTX64.EFI"))?
+                .add_file(kernel_efi_src.to_path_buf(), PathBuf::from("EFI/BOOT/KERNEL.EFI"))?
+        )
         .with_volume_name("FULLERENE".to_string())
-        .with_strictness(Strictness::Relaxed) // Try Relaxed strictness
+        .with_strictness(Strictness::Default) // Can revert to Default, as names are now compliant
         .with_boot_options(boot_options);
 
     IsoImage::format_file(iso_path.to_path_buf(), options)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to create ISO: {}", e)))?;
     
-    // Clean up the temporary directory manually
-    fs::remove_dir_all(&iso_stage_path)?;
-
     Ok(())
 }
 
