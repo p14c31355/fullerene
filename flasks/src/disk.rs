@@ -140,7 +140,7 @@ fn create_iso(path: &Path, disk_img: &Path) -> io::Result<()> {
     brvd[0] = 0;
     brvd[1..6].copy_from_slice(b"CD001");
     brvd[6] = 1;
-    brvd[7..39].copy_from_slice(b"EL TORITO SPECIFICATION");
+    brvd[7..39].copy_from_slice(b"EL TORITO SPECIFICATION\0\0\0\0\0\0\0\0\0");
     brvd[71..75].copy_from_slice(&BOOT_CATALOG_SECTOR.to_le_bytes());
     iso.write_all(&brvd)?;
 
