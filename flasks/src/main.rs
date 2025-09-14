@@ -61,9 +61,29 @@ fn main() -> io::Result<()> {
     let bellows_path = workspace_root.join("target/x86_64-uefi/release/bellows");
     let kernel_path = workspace_root.join("target/x86_64-uefi/release/fullerene-kernel");
 
-    let mut bellows_file = File::open(&bellows_path)?;
-    let mut kernel_file = File::open(&kernel_path)?;
+    let mut bellows_file = match File::open(&bellows_path) {
+        Ok(file) => file,
+        Err(e) => {
+            eprintln!(
+                "Failed to open bellows file at {}: {}",
+                bellows_path.display(),
+                e
+            );
+            return Err(e);
+        }
+    };
 
+    let mut kernel_file = match File::open(&kernel_path) {
+        Ok(file) => file,
+        Err(e) => {
+            eprintln!(
+                "Failed to open kernel file at {}: {}",
+                kernel_path.display(),
+                e
+            );
+            return Err(e);
+        }
+    };
     // 4. FAT32 disk image path
     let disk_image_path = workspace_root.join("fullerene.img");
     let iso_path = workspace_root.join("fullerene.iso");
@@ -73,7 +93,15 @@ fn main() -> io::Result<()> {
     println!("ISO Exists before QEMU: {}", iso_path.exists());
 
     // 5. Create FAT32 image containing EFI binaries
-    create_disk_and_iso(&disk_image_path, &iso_path, &mut bellows_file, &mut kernel_file)?;
+    if let Err(e) = create_disk_and_iso(
+        &disk_image_path,
+        &iso_path,
+        &mut bellows_file,
+        &mut kernel_file,
+    ) {
+        eprintln!("Error from create_disk_and_iso: {:?}", e);
+        return Err(e);
+    }
 
     println!("ISO Exists after creation: {}", iso_path.exists());
 
