@@ -1,7 +1,6 @@
 // fullerene/flasks/src/main.rs
-mod disk;
+use isobemak::create_disk_and_iso;
 
-use crate::disk::create_disk_and_iso;
 use std::{env, fs::File, io, path::PathBuf, process::Command};
 
 /// Build kernel and bellows, create UEFI bootable ISO with xorriso, and run QEMU
