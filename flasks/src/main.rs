@@ -1,4 +1,3 @@
-// fullerene/flasks/src/main.rs
 mod disk;
 
 use crate::disk::create_disk_and_iso;
@@ -73,25 +72,15 @@ fn main() -> io::Result<()> {
     // 5. Set the ISO path
     let iso_path = workspace_root.join("fullerene.iso");
 
-    println!("bellows path: {:?}", bellows_binary_path.canonicalize()?);
-    println!("kernel path: {:?}", kernel_binary_path.canonicalize()?);
-
-    // 6. Use the refactored create_disk_and_iso function
-        let bellows_file = std::fs::File::open(&bellows_binary_path)?;
+    let bellows_file = std::fs::File::open(&bellows_binary_path)?;
     let kernel_file = std::fs::File::open(&kernel_binary_path)?;
 
-    println!("bellows file opened successfully");
-    println!("kernel file opened successfully");
-
-    if let Err(e) = create_disk_and_iso(
+    create_disk_and_iso(
         &disk_image_path,
         &iso_path,
         &bellows_file,
         &kernel_file,
-    ) {
-        eprintln!("Error creating disk and iso: {:?}", e);
-        return Err(e);
-    }
+    )?;
 
     // 7. Prepare OVMF paths from the fixed local directory
     let ovmf_dir = workspace_root.join("flasks").join("ovmf");
@@ -141,7 +130,6 @@ fn main() -> io::Result<()> {
         "-vga",
         "std",
     ];
-    println!("Running QEMU with args: {:?}", qemu_args);
 
     let qemu_status = Command::new("qemu-system-x86_64")
         .args(&qemu_args)
