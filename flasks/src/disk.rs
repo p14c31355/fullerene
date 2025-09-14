@@ -6,7 +6,11 @@ use std::{
 };
 
 // ---------------- FAT32 Partition ----------------
-fn copy_to_fat<T: Read + Write + Seek>(dir: &fatfs::Dir<T>, src_file: &mut File, dest: &str) -> io::Result<()> {
+fn copy_to_fat<T: Read + Write + Seek>(
+    dir: &fatfs::Dir<T>,
+    src_file: &mut File,
+    dest: &str,
+) -> io::Result<()> {
     let mut f = dir.create_file(dest)?;
     src_file.seek(SeekFrom::Start(0))?;
     io::copy(src_file, &mut f)?;
@@ -14,23 +18,32 @@ fn copy_to_fat<T: Read + Write + Seek>(dir: &fatfs::Dir<T>, src_file: &mut File,
 }
 
 fn create_fat32_image(path: &Path, bellows: &mut File, kernel: &mut File) -> io::Result<File> {
-    if path.exists() { fs::remove_file(path)?; }
-    let mut file = OpenOptions::new().read(true).write(true).create(true).open(path)?;
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(path)?;
     file.set_len(64 * 1024 * 1024)?; // 64 MiB
-{
-    // Format FAT32
-    fatfs::format_volume(&mut file, FormatVolumeOptions::new().fat_type(FatType::Fat32))?;
-    let fs = FileSystem::new(&mut file, FsOptions::new())?;
-    let root = fs.root_dir();
-    root.create_dir("EFI")?;
-    root.create_dir("EFI/BOOT")?;
-    copy_to_fat(&root, bellows, "EFI/BOOT/BOOTX64.EFI")?;
-    copy_to_fat(&root, kernel, "EFI/BOOT/KERNEL.EFI")?;
-}
+    {
+        // Format FAT32
+        fatfs::format_volume(
+            &mut file,
+            FormatVolumeOptions::new().fat_type(FatType::Fat32),
+        )?;
+        let fs = FileSystem::new(&mut file, FsOptions::new())?;
+        let root = fs.root_dir();
+        root.create_dir("EFI")?;
+        root.create_dir("EFI/BOOT")?;
+        copy_to_fat(&root, bellows, "EFI/BOOT/BOOTX64.EFI")?;
+        copy_to_fat(&root, kernel, "EFI/BOOT/KERNEL.EFI")?;
+    }
     Ok(file)
 }
 
-// ---------------- ISO / El Torito UEFI ----------------
+// ---------------- ISO / El Torito ----------------
 const SECTOR_SIZE: usize = 2048;
 const BOOT_CATALOG_SECTOR: u32 = 20;
 const BOOT_IMAGE_SECTOR: u32 = 21;
@@ -42,6 +55,22 @@ fn pad_sector(f: &mut File) -> io::Result<()> {
         f.write_all(&vec![0u8; pad as usize])?;
     }
     Ok(())
+}
+
+// Calculate CRC16 for Validation Entry
+fn crc16(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0;
+    for &b in data {
+        crc ^= (b as u16) << 8;
+        for _ in 0..8 {
+            if (crc & 0x8000) != 0 {
+                crc = (crc << 1) ^ 0x1021;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    crc
 }
 
 fn create_iso(path: &Path, fat32_img: &Path) -> io::Result<()> {
@@ -77,21 +106,24 @@ fn create_iso(path: &Path, fat32_img: &Path) -> io::Result<()> {
     while (iso.seek(SeekFrom::Current(0))? / SECTOR_SIZE as u64) < BOOT_CATALOG_SECTOR as u64 {
         iso.write_all(&[0u8; SECTOR_SIZE])?;
     }
+
     let mut cat = [0u8; SECTOR_SIZE];
-    cat[0] = 1;         // Validation Entry
+    cat[0] = 1; // Header ID
+    cat[1] = 0; // Platform ID (x86)
+    cat[2] = 0; // Reserved
+    // Compute CRC16 for Validation Entry
+    let crc = crc16(&cat[0..30]);
+    cat[28..30].copy_from_slice(&crc.to_le_bytes());
     cat[30] = 0x55;
     cat[31] = 0xAA;
-
-    // Initial/Default Entry
-    let mut entry = [0u8; 32];
-    entry[0] = 0x88;    // Bootable
-    entry[1] = 0;       // Media type (EFI)
-    entry[2..6].copy_from_slice(&0u32.to_le_bytes()); // Load Segment unused
-    entry[6..10].copy_from_slice(&0u32.to_le_bytes()); // System type
-    entry[16..20].copy_from_slice(&0u32.to_le_bytes()); // Reserved
-    entry[20..24].copy_from_slice(&BOOT_IMAGE_SECTOR.to_le_bytes()); // LBA of boot image
-    cat[32..64].copy_from_slice(&entry);
     iso.write_all(&cat)?;
+
+    // Default Entry (EFI Boot)
+    let mut entry = [0u8; 32];
+    entry[0] = 0x88; // Bootable
+    entry[1] = 0; // Media Type (EFI)
+    entry[20..24].copy_from_slice(&BOOT_IMAGE_SECTOR.to_le_bytes()); // LBA of boot image
+    iso.write_all(&entry)?;
 
     // Boot Image (FAT32)
     while (iso.seek(SeekFrom::Current(0))? / SECTOR_SIZE as u64) < BOOT_IMAGE_SECTOR as u64 {

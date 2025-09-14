@@ -1,12 +1,7 @@
 mod disk;
 
 use crate::disk::create_disk_and_iso;
-use std::{
-    env,
-    io,
-    path::PathBuf,
-    process::Command,
-};
+use std::{env, io, path::PathBuf, process::Command};
 
 /// Build kernel and bellows, create UEFI bootable ISO with xorriso, and run QEMU
 fn main() -> io::Result<()> {
@@ -72,8 +67,12 @@ fn main() -> io::Result<()> {
     // 5. Set the ISO path
     let iso_path = workspace_root.join("fullerene.iso");
 
-    let mut bellows_file = std::fs::OpenOptions::new().read(true).open(&bellows_binary_path)?;
-    let mut kernel_file = std::fs::OpenOptions::new().read(true).open(&kernel_binary_path)?;
+    let mut bellows_file = std::fs::OpenOptions::new()
+        .read(true)
+        .open(&bellows_binary_path)?;
+    let mut kernel_file = std::fs::OpenOptions::new()
+        .read(true)
+        .open(&kernel_binary_path)?;
 
     create_disk_and_iso(
         &disk_image_path,
@@ -116,10 +115,10 @@ fn main() -> io::Result<()> {
         ),
         "-drive",
         &format!("if=pflash,format=raw,file={}", ovmf_vars.display()),
-        "-cdrom",
-        &format!("{}", iso_path.display()),
+        "-drive",
+        &format!("file={},format=raw,if=virtio", iso_path.display()), // ISO ではなく FAT32
         "-boot",
-        "d",
+        "once=d",
         "-m",
         "512M",
         "-cpu",
