@@ -27,7 +27,7 @@ pub fn create_fat32_image(path: &Path, bellows: &mut File, kernel: &mut File) ->
         .write(true)
         .create(true)
         .open(path)?;
-    file.set_len(64 * 1024 * 1024)?; // 64 MiB
+    file.set_len(32 * 1024 * 1024)?; // 32 MiB
     {
         // Format FAT32
         fatfs::format_volume(
@@ -178,12 +178,16 @@ fn create_iso(path: &Path, fat32_img: &Path) -> io::Result<()> {
     entry[2..4].copy_from_slice(&0u16.to_le_bytes()); // Load Segment (0 for UEFI)
     entry[4] = 0x00; // System Type (0 for UEFI)
     entry[5] = 0x00; // Unused
-    let sector_count = fat32_img_sectors as u64 * 4;
-    let sector_count_u16 = if sector_count >= 0xFFFF {
+    
+    let fat32_img_bytes = fs::metadata(fat32_img)?.len();
+    let sector_count_512 = (fat32_img_bytes + 511) / 512; 
+
+    let sector_count_u16 = if sector_count_512 > 0xFFFF {
         0xFFFF
     } else {
-        sector_count as u16
+        sector_count_512 as u16
     };
+    
     entry[6..8].copy_from_slice(&sector_count_u16.to_le_bytes()); // Sector Count in 512-byte sectors
     entry[8..12].copy_from_slice(&20u32.to_le_bytes()); // LBA of Boot Image (LBA 20) - our FAT32 image
     cat[32..64].copy_from_slice(&entry);
