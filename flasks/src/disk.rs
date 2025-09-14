@@ -57,7 +57,7 @@ fn pad_sector(f: &mut File) -> io::Result<()> {
     Ok(())
 }
 
-// Calculate CRC16 for Validation Entry
+// Simple CRC16 (for Validation Entry)
 fn crc16(data: &[u8]) -> u16 {
     let mut crc: u16 = 0;
     for &b in data {
@@ -82,8 +82,8 @@ fn create_iso(path: &Path, fat32_img: &Path) -> io::Result<()> {
     pvd[0] = 1;
     pvd[1..6].copy_from_slice(b"CD001");
     pvd[6] = 1;
-    pvd[40..49].copy_from_slice(b"FULLERENE"); // Volume Label
-    pvd[120..124].copy_from_slice(&(SECTOR_SIZE as u32).to_le_bytes()); // Logical block size
+    pvd[40..48].copy_from_slice(b"FULLERENE");
+    pvd[128..132].copy_from_slice(&(SECTOR_SIZE as u32).to_le_bytes()); // block size
     iso.write_all(&pvd)?;
 
     // Boot Record Volume Descriptor
@@ -91,7 +91,7 @@ fn create_iso(path: &Path, fat32_img: &Path) -> io::Result<()> {
     brvd[0] = 0;
     brvd[1..6].copy_from_slice(b"CD001");
     brvd[6] = 1;
-    brvd[7..30].copy_from_slice(b"EL TORITO SPECIFICATION");
+    brvd[7..39].copy_from_slice(b"EL TORITO SPECIFICATION".as_bytes());
     brvd[71..75].copy_from_slice(&BOOT_CATALOG_SECTOR.to_le_bytes());
     iso.write_all(&brvd)?;
 
@@ -102,33 +102,39 @@ fn create_iso(path: &Path, fat32_img: &Path) -> io::Result<()> {
     term[6] = 1;
     iso.write_all(&term)?;
 
-    // Boot Catalog
+    // Pad up to Boot Catalog sector
     while (iso.seek(SeekFrom::Current(0))? / SECTOR_SIZE as u64) < BOOT_CATALOG_SECTOR as u64 {
         iso.write_all(&[0u8; SECTOR_SIZE])?;
     }
 
+    // Boot Catalog
     let mut cat = [0u8; SECTOR_SIZE];
-    cat[0] = 1; // Header ID
-    cat[1] = 0; // Platform ID (x86)
-    cat[2] = 0; // Reserved
-    // Compute CRC16 for Validation Entry
+    // Validation Entry
+    cat[0] = 1; // header id
+    cat[1] = 0; // platform (x86)
     let crc = crc16(&cat[0..30]);
     cat[28..30].copy_from_slice(&crc.to_le_bytes());
     cat[30] = 0x55;
     cat[31] = 0xAA;
+
+    // Default Entry
+    let mut entry = [0u8; 32];
+    entry[0] = 0x88; // bootable, no emulation
+    entry[1] = 0x00; // media type (no emulation)
+    entry[4..6].copy_from_slice(&0u16.to_le_bytes()); // load segment
+    entry[6] = 0xEF; // system type = EFI
+    entry[8..10].copy_from_slice(&(1u16).to_le_bytes()); // sector count (dummy)
+    entry[28..32].copy_from_slice(&BOOT_IMAGE_SECTOR.to_le_bytes()); // boot image LBA
+
+    cat[32..64].copy_from_slice(&entry);
     iso.write_all(&cat)?;
 
-    // Default Entry (EFI Boot)
-    let mut entry = [0u8; 32];
-    entry[0] = 0x88; // Bootable
-    entry[1] = 0; // Media Type (EFI)
-    entry[20..24].copy_from_slice(&BOOT_IMAGE_SECTOR.to_le_bytes()); // LBA of boot image
-    iso.write_all(&entry)?;
-
-    // Boot Image (FAT32)
+    // Pad up to Boot Image sector
     while (iso.seek(SeekFrom::Current(0))? / SECTOR_SIZE as u64) < BOOT_IMAGE_SECTOR as u64 {
         iso.write_all(&[0u8; SECTOR_SIZE])?;
     }
+
+    // Boot Image (FAT32)
     let mut f = File::open(fat32_img)?;
     io::copy(&mut f, &mut iso)?;
     pad_sector(&mut iso)?;
