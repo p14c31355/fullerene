@@ -120,7 +120,6 @@ fn main() -> io::Result<()> {
         &format!("{}", iso_path.display()),
         "-boot",
         "d",
-        "-no-acpi",
         "-m",
         "512M",
         "-cpu",
