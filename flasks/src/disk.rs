@@ -160,16 +160,15 @@ fn create_iso(path: &Path, fat32_img: &Path) -> io::Result<()> {
     cat[0] = 1; // Header ID
     cat[1] = 0xEF; // Platform ID (UEFI)
     cat[2..4].copy_from_slice(&0u16.to_le_bytes()); // reserved
-    // Calculate checksum
-    let mut sum: u32 = 0;
-    for i in (0..32).step_by(2) {
-        if i == 28 { continue; } // skip checksum field itself
-        sum += u16::from_le_bytes([cat[i], cat[i+1]]) as u32;
-    }
-    let checksum: u16 = (0u32.wrapping_sub(sum) & 0xFFFF) as u16;
-    cat[28..30].copy_from_slice(&checksum.to_le_bytes()); // Checksum
     cat[30] = 0x55; // Key Bytes
     cat[31] = 0xAA; // Key Bytes
+    // Calculate checksum
+    let mut sum: u16 = 0;
+    for i in (0..32).step_by(2) {
+        sum = sum.wrapping_add(u16::from_le_bytes([cat[i], cat[i + 1]]));
+    }
+    let checksum = 0u16.wrapping_sub(sum);
+    cat[28..30].copy_from_slice(&checksum.to_le_bytes()); // Checksum
 
     // Initial/Default Entry (bytes 32-63)
     let mut entry = [0u8; 32];
@@ -178,7 +177,7 @@ fn create_iso(path: &Path, fat32_img: &Path) -> io::Result<()> {
     entry[2..4].copy_from_slice(&0u16.to_le_bytes()); // Load Segment (0 for UEFI)
     entry[4] = 0x00; // System Type (0 for UEFI)
     entry[5] = 0x00; // Unused
-    entry[6..8].copy_from_slice(&(fat32_img_sectors as u16).to_le_bytes()); // Sector Count (actual size of FAT32 image)
+    entry[6..8].copy_from_slice(&((fat32_img_sectors * 4) as u16).to_le_bytes()); // Sector Count in 512-byte sectors
     entry[8..12].copy_from_slice(&20u32.to_le_bytes()); // LBA of Boot Image (LBA 20) - our FAT32 image
     cat[32..64].copy_from_slice(&entry);
     iso.write_all(&cat)?;
