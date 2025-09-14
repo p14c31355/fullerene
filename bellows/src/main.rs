@@ -116,15 +116,11 @@ struct ElfHeader {
 
 /// Load kernel ELF and return an entry point function pointer (very naive)
 fn load_kernel(kernel: &[u8]) -> Option<extern "C" fn() -> !> {
-    if kernel.len() < 24 {
-        return None;
-    }
-    if &kernel[0..4] != b"\x7fELF" {
+    if kernel.len() < 24 || &kernel[0..4] != b"\x7fELF" {
         return None;
     }
     let header = unsafe { &*(kernel.as_ptr() as *const ElfHeader) };
-    let entry: extern "C" fn() -> ! = unsafe { core::mem::transmute(header.entry) };
-    Some(entry)
+    Some(unsafe { core::mem::transmute(header.entry) })
 }
 
 /// SimpleFileSystem GUID (EFI_SIMPLE_FILE_SYSTEM_PROTOCOL)
@@ -137,64 +133,47 @@ const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: [u8; 16] = [
 unsafe fn read_kernel(bs: &EfiBootServices) -> Option<&'static [u8]> {
     // locate SimpleFileSystem protocol
     let mut fs_ptr: *mut c_void = ptr::null_mut();
-    let status = (bs.locate_protocol)(
+    if (bs.locate_protocol)(
         EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID.as_ptr(),
         ptr::null_mut(),
         &mut fs_ptr,
-    );
-    if status != 0 {
+    ) != 0
+    {
         return None;
     }
     let fs = fs_ptr as *mut EfiSimpleFileSystem;
 
-    // open volume (root)
     let mut root: *mut EfiFile = ptr::null_mut();
-    let status = unsafe { ((*fs).open_volume)(fs, &mut root) };
-    if status != 0 {
+    if ((*fs).open_volume)(fs, &mut root) != 0 {
         return None;
     }
 
-    // File name must be UCS-2 (UTF-16) and often expected uppercase for many firmwares
-    let kernel_name: [u16; 12] = [
-        'K' as u16, 'E' as u16, 'R' as u16, 'N' as u16, 'E' as u16, 'L' as u16, '.' as u16,
-        'E' as u16, 'F' as u16, 'I' as u16, 0, 0,
+    let kernel_name: [u16; 11] = [
+        'B' as u16, 'O' as u16, 'O' as u16, 'T' as u16, 'X' as u16, '6' as u16, '4' as u16,
+        '.' as u16, 'E' as u16, 'F' as u16, 0,
     ];
+
     let mut kernel_file: *mut EfiFile = ptr::null_mut();
-    let status = unsafe {
-        ((*root).open)(
-            root,
-            &mut kernel_file,
-            kernel_name.as_ptr(),
-            0x1, /* READ */
-            0,
-        )
-    };
-    if status != 0 {
+    if ((*root).open)(root, &mut kernel_file, kernel_name.as_ptr(), 0x1, 0) != 0 {
         return None;
     }
 
-    // Allocate pages for kernel. Use AllocateAnyPages = 0
-    // We'll allocate 2 MiB for kernel (adjust if needed)
     let pages = (2 * 1024 * 1024) / 4096;
     let mut phys_addr: usize = 0;
-    let status = (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, pages, &mut phys_addr);
-    if status != 0 {
+    if (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, pages, &mut phys_addr) != 0 {
         return None;
     }
 
     let buf_ptr = phys_addr as *mut u8;
     let mut size: u64 = (pages * 4096) as u64;
 
-    // Read file into allocated buffer
-    let status = unsafe { ((*kernel_file).read)(kernel_file, &mut size, buf_ptr) };
-    if status != 0 {
+    if ((*kernel_file).read)(kernel_file, &mut size, buf_ptr) != 0 {
         return None;
     }
 
-    // Close the file
-    unsafe { ((*kernel_file).close)(kernel_file) };
+    ((*kernel_file).close)(kernel_file);
 
-    Some(unsafe { slice::from_raw_parts(buf_ptr, size as usize) })
+    Some(slice::from_raw_parts(buf_ptr, size as usize))
 }
 
 /// Entry point for UEFI. Note: name and calling convention are critical.
@@ -208,34 +187,27 @@ pub extern "efiapi" fn efi_main(_image_handle: usize, system_table: *mut EfiSyst
     //    AllocateAnyPages = 0
     let heap_pages = (HEAP_SIZE + 4095) / 4096;
     let mut heap_phys: usize = 0;
-    let status = (bs.allocate_pages)(
+    if (bs.allocate_pages)(
         0usize,
         EfiMemoryType::EfiLoaderData,
         heap_pages,
         &mut heap_phys,
-    );
-    if status != 0 {
-        // Allocation failed: we cannot continue safely
+    ) != 0
+    {
         loop {}
     }
 
     unsafe {
-        // init allocator with pointer and size in bytes
         ALLOCATOR.lock().init(heap_phys as *mut u8, HEAP_SIZE);
     }
 
     // Now we can use alloc-based data structures and printing via uefi_print
     uefi_print(&st, "bellows: bootloader started\n");
 
-    // 2) Read kernel from filesystem
-    let kernel_opt = unsafe { read_kernel(bs) };
-    let kernel_image = match kernel_opt {
-        Some(k) => k,
-        None => {
-            uefi_print(&st, "bellows: failed to read fullerene.efi\n");
-            loop {}
-        }
-    };
+    let kernel_image = unsafe { read_kernel(bs) }.unwrap_or_else(|| {
+        uefi_print(&st, "bellows: failed to read BOOTX64.EFI\n");
+        loop {}
+    });
 
     // 3) Parse ELF and jump to entry
     if let Some(entry) = load_kernel(kernel_image) {

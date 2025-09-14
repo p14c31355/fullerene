@@ -17,7 +17,7 @@ fn copy_to_fat<T: Read + Write + Seek>(
     Ok(())
 }
 
-fn create_fat32_image(path: &Path, bellows: &mut File, kernel: &mut File) -> io::Result<File> {
+pub fn create_fat32_image(path: &Path, bellows: &mut File, kernel: &mut File) -> io::Result<File> {
     if path.exists() {
         fs::remove_file(path)?;
     }
