@@ -3,4 +3,19 @@ name = "bellows"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "bellows"
+path = "src/main.rs"
+
+
+# [lib]
+# crate-type = ["staticlib"]  # Notes: PE/COFF (EFI)
+
 [dependencies]
+linked_list_allocator = "0.10.5"
+
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

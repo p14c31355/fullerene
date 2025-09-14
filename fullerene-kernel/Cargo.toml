@@ -1,6 +1,11 @@
+# fullerene-kernel/Cargo.toml
 [package]
 name = "fullerene-kernel"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+spin = { version = "0.10.0", default-features = false, features = ["once", "mutex", "spin_mutex"] }
+x86_64 = { version = "0.15.2", default-features = false, features = ["instructions"] }
+log = "0.4.21"
+uefi = { version = "0.35.0", features = ["global_allocator", "alloc", "panic_handler", "logger"] }
