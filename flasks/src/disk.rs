@@ -132,7 +132,7 @@ fn create_iso(path: &Path, disk_img: &Path) -> io::Result<()> {
     pvd[0] = 1;
     pvd[1..6].copy_from_slice(b"CD001");
     pvd[6] = 1;
-    pvd[40..48].copy_from_slice(b"FULLERENE");
+    pvd[40..49].copy_from_slice(b"FULLERENE");
     iso.write_all(&pvd)?;
 
     // Boot Record Volume Descriptor (BRVD)

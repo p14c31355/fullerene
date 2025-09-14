@@ -72,14 +72,14 @@ fn main() -> io::Result<()> {
     // 5. Set the ISO path
     let iso_path = workspace_root.join("fullerene.iso");
 
-    let bellows_file = std::fs::File::open(&bellows_binary_path)?;
-    let kernel_file = std::fs::File::open(&kernel_binary_path)?;
+    let mut bellows_file = std::fs::OpenOptions::new().read(true).open(&bellows_binary_path)?;
+    let mut kernel_file = std::fs::OpenOptions::new().read(true).open(&kernel_binary_path)?;
 
     create_disk_and_iso(
         &disk_image_path,
         &iso_path,
-        &bellows_file,
-        &kernel_file,
+        &mut bellows_file,
+        &mut kernel_file,
     )?;
 
     // 7. Prepare OVMF paths from the fixed local directory
