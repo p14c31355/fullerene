@@ -53,7 +53,7 @@ fn create_iso(path: &Path, fat32_img: &Path) -> io::Result<()> {
     pvd[0] = 1;
     pvd[1..6].copy_from_slice(b"CD001");
     pvd[6] = 1;
-    pvd[40..48].copy_from_slice(b"FULLERENE"); // Volume Label
+    pvd[40..49].copy_from_slice(b"FULLERENE"); // Volume Label
     pvd[120..124].copy_from_slice(&(SECTOR_SIZE as u32).to_le_bytes()); // Logical block size
     iso.write_all(&pvd)?;
 
@@ -62,7 +62,7 @@ fn create_iso(path: &Path, fat32_img: &Path) -> io::Result<()> {
     brvd[0] = 0;
     brvd[1..6].copy_from_slice(b"CD001");
     brvd[6] = 1;
-    brvd[7..39].copy_from_slice(b"EL TORITO SPECIFICATION");
+    brvd[7..30].copy_from_slice(b"EL TORITO SPECIFICATION");
     brvd[71..75].copy_from_slice(&BOOT_CATALOG_SECTOR.to_le_bytes());
     iso.write_all(&brvd)?;
 
