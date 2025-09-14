@@ -1,7 +1,7 @@
 // fullerene/flasks/src/main.rs
 mod disk;
 
-use crate::disk::{create_disk_and_iso, create_fat32_image};
+use crate::disk::create_disk_and_iso;
 use std::{env, fs::File, io, path::PathBuf, process::Command};
 
 /// Build kernel and bellows, create UEFI bootable ISO with xorriso, and run QEMU

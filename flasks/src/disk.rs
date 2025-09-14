@@ -82,7 +82,14 @@ fn create_iso(path: &Path, fat32_img: &Path) -> io::Result<()> {
     pvd[0] = 1;
     pvd[1..6].copy_from_slice(b"CD001");
     pvd[6] = 1;
-    pvd[40..48].copy_from_slice(b"FULLERENE");
+    let mut volume_id = [0u8; 32];
+    let project_name = b"FULLERENE";
+    volume_id[..project_name.len()].copy_from_slice(project_name);
+    // Pad with spaces
+    for i in project_name.len()..32 {
+        volume_id[i] = b' ';
+    }
+    pvd[40..72].copy_from_slice(&volume_id);
     pvd[128..132].copy_from_slice(&(SECTOR_SIZE as u32).to_le_bytes()); // block size
     iso.write_all(&pvd)?;
 
@@ -91,7 +98,14 @@ fn create_iso(path: &Path, fat32_img: &Path) -> io::Result<()> {
     brvd[0] = 0;
     brvd[1..6].copy_from_slice(b"CD001");
     brvd[6] = 1;
-    brvd[7..39].copy_from_slice(b"EL TORITO SPECIFICATION".as_bytes());
+    let mut el_torito_spec = [0u8; 32];
+    let spec_name = b"EL TORITO SPECIFICATION";
+    el_torito_spec[..spec_name.len()].copy_from_slice(spec_name);
+    // Pad with spaces
+    for i in spec_name.len()..32 {
+        el_torito_spec[i] = b' ';
+    }
+    brvd[7..39].copy_from_slice(&el_torito_spec);
     brvd[71..75].copy_from_slice(&BOOT_CATALOG_SECTOR.to_le_bytes());
     iso.write_all(&brvd)?;
 
