@@ -137,7 +137,9 @@ pub fn vga_init() {
     VGA_BUFFER.call_once(|| Mutex::new(VgaBuffer::new()));
     let mut writer = VGA_BUFFER.get().unwrap().lock();
     writer.clear_screen(); // Clear screen on boot
+    writer.color_code = ColorCode::new(Color::LightGreen, Color::Black);
     writer.write_string("Hello QEMU by fullerene!\n");
+    writer.color_code = ColorCode::new(Color::White, Color::Black);
     writer.write_string("This is output directly to VGA.\n");
 }
 
