@@ -65,14 +65,13 @@ impl Seek for PartitionIo {
     }
 }
 
-fn copy_to_fat<T: Read + Write + Seek>(dir: &fatfs::Dir<T>, src: &Path, dest: &str) -> io::Result<()> {
+fn copy_to_fat<T: Read + Write + Seek>(dir: &fatfs::Dir<T>, mut src_file: &File, dest: &str) -> io::Result<()> {
     let mut f = dir.create_file(dest)?;
-    let mut src_file = File::open(src)?;
     io::copy(&mut src_file, &mut f)?;
     Ok(())
 }
 
-fn create_disk_image(path: &Path, bellows: &Path, kernel: &Path) -> io::Result<File> {
+fn create_disk_image(path: &Path, bellows: &File, kernel: &File) -> io::Result<File> {
     if path.exists() {
         fs::remove_file(path)?;
     }
@@ -156,7 +155,7 @@ fn create_iso(path: &Path, disk_img: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub fn create_disk_and_iso(img: &Path, iso: &Path, bellows: &Path, kernel: &Path) -> io::Result<()> {
+pub fn create_disk_and_iso(img: &Path, iso: &Path, bellows: &File, kernel: &File) -> io::Result<()> {
     let _disk = create_disk_image(img, bellows, kernel)?;
     create_iso(iso, &img)?;
     Ok(())
