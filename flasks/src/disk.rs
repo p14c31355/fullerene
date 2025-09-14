@@ -90,11 +90,13 @@ fn create_disk_image(path: &Path, bellows: &Path, kernel: &Path) -> io::Result<F
         part
     };
     let mut part_io = PartitionIo::new(file, part.first_lba * sector_size, (part.last_lba - part.first_lba + 1) * sector_size)?;
-    fatfs::format_volume(&mut part_io, FormatVolumeOptions::new().fat_type(FatType::Fat32))?;
-    let fs = FileSystem::new(&mut part_io, FsOptions::new())?;
-    let root = fs.root_dir();
-    copy_to_fat(&root, bellows, "EFI/BOOT/BOOTX64.EFI")?;
-    copy_to_fat(&root, kernel, "EFI/BOOT/KERNEL.EFI")?;
+    {
+        fatfs::format_volume(&mut part_io, FormatVolumeOptions::new().fat_type(FatType::Fat32))?;
+        let fs = FileSystem::new(&mut part_io, FsOptions::new())?;
+        let root = fs.root_dir();
+        copy_to_fat(&root, bellows, "EFI/BOOT/BOOTX64.EFI")?;
+        copy_to_fat(&root, kernel, "EFI/BOOT/KERNEL.EFI")?;
+    }
     
     Ok(part_io.into_inner())
 }
@@ -155,7 +157,7 @@ fn create_iso(path: &Path, disk_img: &Path) -> io::Result<()> {
 }
 
 pub fn create_disk_and_iso(img: &Path, iso: &Path, bellows: &Path, kernel: &Path) -> io::Result<()> {
-    let disk = create_disk_image(img, bellows, kernel)?;
+    let _disk = create_disk_image(img, bellows, kernel)?;
     create_iso(iso, &img)?;
     Ok(())
 }
