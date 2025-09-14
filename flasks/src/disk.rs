@@ -1,3 +1,4 @@
+// fullerene/flasks/src/disk.rs
 use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions};
 use std::{
     fs::{self, File, OpenOptions},
@@ -90,6 +91,22 @@ fn create_iso(path: &Path, fat32_img: &Path) -> io::Result<()> {
         volume_id[i] = b' ';
     }
     pvd[40..72].copy_from_slice(&volume_id);
+
+    // Calculate total sectors
+    let total_sectors = ((16 /* system area */ 
+        + 1 /* PVD */
+        + 1 /* Boot Record VD */
+        + 1 /* Terminator */
+        + (BOOT_CATALOG_SECTOR - 19) /* padding to catalog */
+        + 1 /* catalog */
+        + (BOOT_IMAGE_SECTOR - BOOT_CATALOG_SECTOR - 1) /* padding to boot image */
+        + (fs::metadata(fat32_img)?.len() as u32 + SECTOR_SIZE as u32 - 1) / SECTOR_SIZE as u32
+    ) as u32);
+
+    // Write Volume Space Size
+    pvd[80..84].copy_from_slice(&total_sectors.to_le_bytes());
+    pvd[84..88].copy_from_slice(&total_sectors.to_be_bytes());
+
     pvd[128..132].copy_from_slice(&(SECTOR_SIZE as u32).to_le_bytes()); // block size
     iso.write_all(&pvd)?;
 
