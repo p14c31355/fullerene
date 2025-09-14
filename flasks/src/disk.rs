@@ -25,9 +25,7 @@ impl Read for PartitionIo {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let pos = self.file.stream_position()? - self.offset;
         let remaining = self.size.saturating_sub(pos);
-        if remaining == 0 {
-            return Ok(0);
-        }
+        if remaining == 0 { return Ok(0); }
         let n = std::cmp::min(buf.len() as u64, remaining);
         self.file.read(&mut buf[..n as usize])
     }
@@ -36,15 +34,11 @@ impl Write for PartitionIo {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let pos = self.file.stream_position()? - self.offset;
         let remaining = self.size.saturating_sub(pos);
-        if remaining == 0 {
-            return Ok(0);
-        }
+        if remaining == 0 { return Ok(0); }
         let n = std::cmp::min(buf.len() as u64, remaining);
         self.file.write(&buf[..n as usize])
     }
-    fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
-    }
+    fn flush(&mut self) -> io::Result<()> { self.file.flush() }
 }
 impl Seek for PartitionIo {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
@@ -56,9 +50,7 @@ impl Seek for PartitionIo {
                 (cur as i64 + p) as u64
             }
         };
-        if new > self.size {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek beyond partition"));
-        }
+        if new > self.size { return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek beyond partition")); }
         self.file.seek(SeekFrom::Start(self.offset + new))?;
         Ok(new)
     }
@@ -72,41 +64,20 @@ fn copy_to_fat<T: Read + Write + Seek>(dir: &fatfs::Dir<T>, src_file: &mut File,
     Ok(())
 }
 
-// ---------------- Disk Image (.img) ----------------
+// ---------------- Disk Image (.img, FAT32 only) ----------------
 fn create_disk_image(path: &Path, bellows: &mut File, kernel: &mut File) -> io::Result<File> {
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
+    if path.exists() { fs::remove_file(path)?; }
     let mut file = OpenOptions::new().read(true).write(true).create(true).open(path)?;
-    file.set_len(256 * 1024 * 1024)?; // 256 MiB
+    file.set_len(64 * 1024 * 1024)?; // 64 MiB for FAT32
 
-    let lb_size = LogicalBlockSize::Lb512;
-    let sector_size = lb_size.as_u64();
-    let part = {
-        let mut gpt = GptConfig::default()
-            .writable(true)
-            .logical_block_size(lb_size)
-            .create_from_device(&mut file, None)
-            .unwrap();
-        let size = (64 * 1024 * 1024) / sector_size; // 64 MiB
-        let id = gpt.add_partition("EFI", size, partition_types::EFI, 0, None).unwrap();
-        let part = gpt.partitions()[&id].clone();
-        gpt.write().unwrap();
-        part
-    };
-
-    let mut part_io = PartitionIo::new(file, part.first_lba * sector_size, (part.last_lba - part.first_lba + 1) * sector_size)?;
-    {
-        fatfs::format_volume(&mut part_io, FormatVolumeOptions::new().fat_type(FatType::Fat32))?;
-        let fs = FileSystem::new(&mut part_io, FsOptions::new())?;
-        let root = fs.root_dir();
-        root.create_dir("EFI")?;
-        root.create_dir("EFI/BOOT")?;
-        copy_to_fat(&root, bellows, "EFI/BOOT/BOOTX64.EFI")?;
-        copy_to_fat(&root, kernel, "EFI/BOOT/KERNEL.EFI")?;
-    }
-
-    Ok(part_io.into_inner())
+    fatfs::format_volume(&mut file, FormatVolumeOptions::new().fat_type(FatType::Fat32))?;
+    let fs = FileSystem::new(&mut file, FsOptions::new())?;
+    let root = fs.root_dir();
+    root.create_dir("EFI")?;
+    root.create_dir("EFI/BOOT")?;
+    copy_to_fat(&root, bellows, "EFI/BOOT/BOOTX64.EFI")?;
+    copy_to_fat(&root, kernel, "EFI/BOOT/KERNEL.EFI")?;
+    Ok(file)
 }
 
 // ---------------- ISO (.iso, El Torito UEFI) ----------------
@@ -117,17 +88,15 @@ const BOOT_IMAGE_SECTOR: u32 = 21;
 fn pad_sector(f: &mut File) -> io::Result<()> {
     let pos = f.seek(SeekFrom::Current(0))?;
     let pad = SECTOR_SIZE as u64 - (pos % SECTOR_SIZE as u64);
-    if pad != SECTOR_SIZE as u64 {
-        f.write_all(&vec![0u8; pad as usize])?;
-    }
+    if pad != SECTOR_SIZE as u64 { f.write_all(&vec![0u8; pad as usize])?; }
     Ok(())
 }
 
-fn create_iso(path: &Path, disk_img: &Path) -> io::Result<()> {
+fn create_iso(path: &Path, fat32_img: &Path) -> io::Result<()> {
     let mut iso = File::create(path)?;
     iso.write_all(&vec![0u8; SECTOR_SIZE * 16])?; // system area
 
-    // Primary Volume Descriptor (PVD)
+    // Primary Volume Descriptor
     let mut pvd = [0u8; SECTOR_SIZE];
     pvd[0] = 1;
     pvd[1..6].copy_from_slice(b"CD001");
@@ -135,12 +104,12 @@ fn create_iso(path: &Path, disk_img: &Path) -> io::Result<()> {
     pvd[40..49].copy_from_slice(b"FULLERENE");
     iso.write_all(&pvd)?;
 
-    // Boot Record Volume Descriptor (BRVD)
+    // Boot Record Volume Descriptor
     let mut brvd = [0u8; SECTOR_SIZE];
     brvd[0] = 0;
     brvd[1..6].copy_from_slice(b"CD001");
     brvd[6] = 1;
-    brvd[7..39].copy_from_slice(b"EL TORITO SPECIFICATION\0\0\0\0\0\0\0\0\0");
+    brvd[7..39].copy_from_slice(b"EL TORITO SPECIFICATION\0\0\0\0\0\0\0");
     brvd[71..75].copy_from_slice(&BOOT_CATALOG_SECTOR.to_le_bytes());
     iso.write_all(&brvd)?;
 
@@ -156,19 +125,19 @@ fn create_iso(path: &Path, disk_img: &Path) -> io::Result<()> {
         iso.write_all(&[0u8; SECTOR_SIZE])?;
     }
     let mut cat = [0u8; SECTOR_SIZE];
-    cat[0] = 1;      // Validation Entry
+    cat[0] = 1;       // Validation Entry
     cat[30] = 0x55;
     cat[31] = 0xAA;
-    cat[32] = 0x88;  // Boot Indicator
-    cat[33] = 0xEF;  // EFI Media Type
-    cat[40..44].copy_from_slice(&BOOT_IMAGE_SECTOR.to_le_bytes()); // Pointer to boot image
+    cat[32] = 0x88;   // Bootable
+    cat[33] = 0xEF;   // EFI
+    cat[40..44].copy_from_slice(&BOOT_IMAGE_SECTOR.to_le_bytes()); // FAT32 start
     iso.write_all(&cat)?;
 
-    // Boot Image (embed disk_img)
+    // Boot Image (FAT32)
     while (iso.seek(SeekFrom::Current(0))? / SECTOR_SIZE as u64) < BOOT_IMAGE_SECTOR as u64 {
         iso.write_all(&[0u8; SECTOR_SIZE])?;
     }
-    let mut f = File::open(disk_img)?;
+    let mut f = File::open(fat32_img)?;
     let mut buf = Vec::new();
     f.read_to_end(&mut buf)?;
     iso.write_all(&buf)?;
@@ -178,12 +147,12 @@ fn create_iso(path: &Path, disk_img: &Path) -> io::Result<()> {
 
 // ---------------- Unified Entry ----------------
 pub fn create_disk_and_iso(
-    img: &Path,
+    fat32_img: &Path,
     iso: &Path,
     bellows: &mut File,
     kernel: &mut File,
 ) -> io::Result<()> {
-    let _disk = create_disk_image(img, bellows, kernel)?;
-    create_iso(iso, img)?;
+    let _disk = create_disk_image(fat32_img, bellows, kernel)?;
+    create_iso(iso, fat32_img)?;
     Ok(())
 }
