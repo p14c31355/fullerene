@@ -66,12 +66,18 @@ impl Seek for PartitionIo {
 }
 
 fn copy_to_fat<T: Read + Write + Seek>(dir: &fatfs::Dir<T>, mut src_file: &File, dest: &str) -> io::Result<()> {
+    println!("copy_to_fat: src_file: {:?}", src_file);
+    println!("copy_to_fat: dest: {:?}", dest);
+    src_file.seek(SeekFrom::Start(0))?;
     let mut f = dir.create_file(dest)?;
     io::copy(&mut src_file, &mut f)?;
     Ok(())
 }
 
 fn create_disk_image(path: &Path, bellows: &File, kernel: &File) -> io::Result<File> {
+    println!("create_disk_image: path: {:?}", path);
+    println!("create_disk_image: bellows: {:?}", bellows);
+    println!("create_disk_image: kernel: {:?}", kernel);
     if path.exists() {
         fs::remove_file(path)?;
     }
@@ -93,6 +99,8 @@ fn create_disk_image(path: &Path, bellows: &File, kernel: &File) -> io::Result<F
         fatfs::format_volume(&mut part_io, FormatVolumeOptions::new().fat_type(FatType::Fat32))?;
         let fs = FileSystem::new(&mut part_io, FsOptions::new())?;
         let root = fs.root_dir();
+        root.create_dir("EFI")?;
+        root.create_dir("EFI/BOOT")?;
         copy_to_fat(&root, bellows, "EFI/BOOT/BOOTX64.EFI")?;
         copy_to_fat(&root, kernel, "EFI/BOOT/KERNEL.EFI")?;
     }
@@ -119,13 +127,13 @@ fn create_iso(path: &Path, disk_img: &Path) -> io::Result<()> {
     pvd[0] = 1;
     pvd[1..6].copy_from_slice(b"CD001");
     pvd[6] = 1;
-    pvd[40..48].copy_from_slice(b"FULLERENE");
+    pvd[40..49].copy_from_slice(b"FULLERENE");
     iso.write_all(&pvd)?;
     let mut brvd = [0u8; SECTOR_SIZE];
     brvd[0] = 0;
     brvd[1..6].copy_from_slice(b"CD001");
     brvd[6] = 1;
-    brvd[7..39].copy_from_slice(b"EL TORITO SPECIFICATION");
+    brvd[7..30].copy_from_slice(b"EL TORITO SPECIFICATION");
     brvd[71..75].copy_from_slice(&BOOT_CATALOG_SECTOR.to_le_bytes());
     iso.write_all(&brvd)?;
     let mut term = [0u8; SECTOR_SIZE];

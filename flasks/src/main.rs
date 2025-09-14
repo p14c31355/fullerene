@@ -2,7 +2,12 @@
 mod disk;
 
 use crate::disk::create_disk_and_iso;
-use std::{env, io, path::PathBuf, process::Command};
+use std::{
+    env,
+    io,
+    path::PathBuf,
+    process::Command,
+};
 
 /// Build kernel and bellows, create UEFI bootable ISO with xorriso, and run QEMU
 fn main() -> io::Result<()> {
@@ -26,6 +31,8 @@ fn main() -> io::Result<()> {
             "-Z",
             "build-std=core,alloc,compiler_builtins",
             "--no-default-features",
+            "--target-dir",
+            "target",
         ])
         .status()?;
     if !status.success() {
@@ -120,10 +127,11 @@ fn main() -> io::Result<()> {
         ),
         "-drive",
         &format!("if=pflash,format=raw,file={}", ovmf_vars.display()),
-        "-drive",
-        &format!("file={},format=raw", disk_image_path.display()),
+        "-cdrom",
+        &format!("{}", iso_path.display()),
         "-boot",
         "d",
+        "-no-acpi",
         "-m",
         "512M",
         "-cpu",
