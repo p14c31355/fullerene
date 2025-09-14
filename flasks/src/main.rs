@@ -1,8 +1,7 @@
 // fullerene/flasks/src/main.rs
 mod disk;
 
-use crate::disk::create_disk_and_iso;
-use crate::disk::create_fat32_image;
+use crate::disk::{create_disk_and_iso, create_fat32_image};
 use std::{env, fs::File, io, path::PathBuf, process::Command};
 
 /// Build kernel and bellows, create UEFI bootable ISO with xorriso, and run QEMU
@@ -68,9 +67,16 @@ fn main() -> io::Result<()> {
 
     // 4. FAT32 disk image path
     let disk_image_path = workspace_root.join("fullerene.img");
+    let iso_path = workspace_root.join("fullerene.iso");
+
+    println!("Disk Image Path: {}", disk_image_path.display());
+    println!("ISO Path: {}", iso_path.display());
+    println!("ISO Exists before QEMU: {}", iso_path.exists());
 
     // 5. Create FAT32 image containing EFI binaries
-    create_fat32_image(&disk_image_path, &mut bellows_file, &mut kernel_file)?;
+    create_disk_and_iso(&disk_image_path, &iso_path, &mut bellows_file, &mut kernel_file)?;
+
+    println!("ISO Exists after creation: {}", iso_path.exists());
 
     // 6. Prepare OVMF paths
     let ovmf_dir = workspace_root.join("flasks").join("ovmf");
@@ -93,8 +99,8 @@ fn main() -> io::Result<()> {
         ),
         "-drive",
         &format!("if=pflash,format=raw,file={}", ovmf_vars.display()),
-        "-drive",
-        &format!("file={},format=raw,if=ide", disk_image_path.display()), // FAT32 boot
+        "-cdrom",
+        &format!("{}", iso_path.display()), // Boot from ISO
         "-boot",
         "once=d",
         "-m",
