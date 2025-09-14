@@ -1,60 +1,11 @@
 use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions};
-use gpt::{GptConfig, disk::LogicalBlockSize, partition_types};
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
 };
 
-// ---------------- Partition IO ----------------
-pub struct PartitionIo {
-    file: File,
-    offset: u64,
-    size: u64,
-}
-impl PartitionIo {
-    pub fn new(mut file: File, offset: u64, size: u64) -> io::Result<Self> {
-        file.seek(SeekFrom::Start(offset))?;
-        Ok(Self { file, offset, size })
-    }
-    pub fn into_inner(self) -> File {
-        self.file
-    }
-}
-impl Read for PartitionIo {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let pos = self.file.stream_position()? - self.offset;
-        let remaining = self.size.saturating_sub(pos);
-        if remaining == 0 { return Ok(0); }
-        let n = std::cmp::min(buf.len() as u64, remaining);
-        self.file.read(&mut buf[..n as usize])
-    }
-}
-impl Write for PartitionIo {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let pos = self.file.stream_position()? - self.offset;
-        let remaining = self.size.saturating_sub(pos);
-        if remaining == 0 { return Ok(0); }
-        let n = std::cmp::min(buf.len() as u64, remaining);
-        self.file.write(&buf[..n as usize])
-    }
-    fn flush(&mut self) -> io::Result<()> { self.file.flush() }
-}
-impl Seek for PartitionIo {
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let new = match pos {
-            SeekFrom::Start(p) => p,
-            SeekFrom::End(p) => (self.size as i64 + p) as u64,
-            SeekFrom::Current(p) => {
-                let cur = self.file.stream_position()? - self.offset;
-                (cur as i64 + p) as u64
-            }
-        };
-        if new > self.size { return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek beyond partition")); }
-        self.file.seek(SeekFrom::Start(self.offset + new))?;
-        Ok(new)
-    }
-}
+
 
 // ---------------- FAT helper ----------------
 fn copy_to_fat<T: Read + Write + Seek>(dir: &fatfs::Dir<T>, src_file: &mut File, dest: &str) -> io::Result<()> {
@@ -70,13 +21,16 @@ fn create_disk_image(path: &Path, bellows: &mut File, kernel: &mut File) -> io::
     let mut file = OpenOptions::new().read(true).write(true).create(true).open(path)?;
     file.set_len(64 * 1024 * 1024)?; // 64 MiB for FAT32
 
-    fatfs::format_volume(&mut file, FormatVolumeOptions::new().fat_type(FatType::Fat32))?;
-    let fs = FileSystem::new(&mut file, FsOptions::new())?;
-    let root = fs.root_dir();
-    root.create_dir("EFI")?;
-    root.create_dir("EFI/BOOT")?;
-    copy_to_fat(&root, bellows, "EFI/BOOT/BOOTX64.EFI")?;
-    copy_to_fat(&root, kernel, "EFI/BOOT/KERNEL.EFI")?;
+    { // New scope for fatfs operations
+        fatfs::format_volume(&mut file, FormatVolumeOptions::new().fat_type(FatType::Fat32))?;
+        let fs = FileSystem::new(&mut file, FsOptions::new())?;
+        let root = fs.root_dir();
+        root.create_dir("EFI")?;
+        root.create_dir("EFI/BOOT")?;
+        copy_to_fat(&root, bellows, "EFI/BOOT/BOOTX64.EFI")?;
+        copy_to_fat(&root, kernel, "EFI/BOOT/KERNEL.EFI")?;
+    } // `fs` and `root` are dropped here, releasing the borrow on `file`
+
     Ok(file)
 }
 
