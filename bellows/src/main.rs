@@ -131,49 +131,51 @@ const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: [u8; 16] = [
 /// Read `KERNEL.EFI` from the volume using UEFI SimpleFileSystem protocol.
 /// Allocates pages for the kernel buffer via BootServices.allocate_pages.
 unsafe fn read_kernel(bs: &EfiBootServices) -> Option<&'static [u8]> {
-    // locate SimpleFileSystem protocol
-    let mut fs_ptr: *mut c_void = ptr::null_mut();
-    if (bs.locate_protocol)(
-        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID.as_ptr(),
-        ptr::null_mut(),
-        &mut fs_ptr,
-    ) != 0
-    {
-        return None;
+    unsafe {
+        // locate SimpleFileSystem protocol
+        let mut fs_ptr: *mut c_void = ptr::null_mut();
+        if (bs.locate_protocol)(
+            EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID.as_ptr(),
+            ptr::null_mut(),
+            &mut fs_ptr,
+        ) != 0
+        {
+            return None;
+        }
+        let fs = fs_ptr as *mut EfiSimpleFileSystem;
+
+        let mut root: *mut EfiFile = ptr::null_mut();
+        if ((*fs).open_volume)(fs, &mut root) != 0 {
+            return None;
+        }
+
+        let kernel_name: [u16; 11] = [
+            'K' as u16, 'E' as u16, 'R' as u16, 'N' as u16, 'E' as u16, 'L' as u16, '.' as u16,
+            'E' as u16, 'F' as u16, 'I' as u16, 0,
+        ];
+
+        let mut kernel_file: *mut EfiFile = ptr::null_mut();
+        if ((*root).open)(root, &mut kernel_file, kernel_name.as_ptr(), 0x1, 0) != 0 {
+            return None;
+        }
+
+        let pages = (2 * 1024 * 1024) / 4096;
+        let mut phys_addr: usize = 0;
+        if (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, pages, &mut phys_addr) != 0 {
+            return None;
+        }
+
+        let buf_ptr = phys_addr as *mut u8;
+        let mut size: u64 = (pages * 4096) as u64;
+
+        if ((*kernel_file).read)(kernel_file, &mut size, buf_ptr) != 0 {
+            return None;
+        }
+
+        ((*kernel_file).close)(kernel_file);
+
+        Some(slice::from_raw_parts(buf_ptr, size as usize))
     }
-    let fs = fs_ptr as *mut EfiSimpleFileSystem;
-
-    let mut root: *mut EfiFile = ptr::null_mut();
-    if ((*fs).open_volume)(fs, &mut root) != 0 {
-        return None;
-    }
-
-    let kernel_name: [u16; 11] = [
-        'K' as u16, 'E' as u16, 'R' as u16, 'N' as u16, 'E' as u16, 'L' as u16, '.' as u16,
-        'E' as u16, 'F' as u16, 'I' as u16, 0,
-    ];
-
-    let mut kernel_file: *mut EfiFile = ptr::null_mut();
-    if ((*root).open)(root, &mut kernel_file, kernel_name.as_ptr(), 0x1, 0) != 0 {
-        return None;
-    }
-
-    let pages = (2 * 1024 * 1024) / 4096;
-    let mut phys_addr: usize = 0;
-    if (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, pages, &mut phys_addr) != 0 {
-        return None;
-    }
-
-    let buf_ptr = phys_addr as *mut u8;
-    let mut size: u64 = (pages * 4096) as u64;
-
-    if ((*kernel_file).read)(kernel_file, &mut size, buf_ptr) != 0 {
-        return None;
-    }
-
-    ((*kernel_file).close)(kernel_file);
-
-    Some(slice::from_raw_parts(buf_ptr, size as usize))
 }
 
 /// Entry point for UEFI. Note: name and calling convention are critical.
