@@ -177,7 +177,7 @@ unsafe fn read_kernel(bs: &EfiBootServices) -> Option<&'static [u8]> { unsafe {
     ((*kernel_file).close)(kernel_file);
 
     Some(slice::from_raw_parts(buf_ptr, size as usize))
-}}
+}
 
 /// Entry point for UEFI. Note: name and calling convention are critical.
 #[unsafe(no_mangle)]
