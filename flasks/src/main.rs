@@ -1,7 +1,8 @@
 // fullerene/flasks/src/main.rs
-use isobemak::create_disk_and_iso;
+// use isobemak::create_disk_and_iso; // Removed as create_disk_and_iso is no longer available
+use serde_json::Value;
 
-use std::{env, fs::File, io, path::PathBuf, process::Command};
+use std::{env, fs, io, path::PathBuf, process::Command}; // fs::File is no longer directly used
 
 /// Build kernel and bellows, create UEFI bootable ISO with xorriso, and run QEMU
 fn main() -> io::Result<()> {
@@ -15,6 +16,7 @@ fn main() -> io::Result<()> {
     let status = Command::new("cargo")
         .current_dir(&workspace_root)
         .env("RUST_TARGET_PATH", &workspace_root)
+        .env("RUSTFLAGS", &format!("-C link-arg=-T{}", workspace_root.join("linker.ld").display()))
         .args([
             "build",
             "--package",
@@ -27,19 +29,23 @@ fn main() -> io::Result<()> {
             "--no-default-features",
             "--target-dir",
             "target",
+            "--message-format=json",
         ])
-        .status()?;
-    if !status.success() {
+        .output()?;
+    if !status.status.success() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
             "fullerene-kernel build failed",
         ));
     }
+    let kernel_path = parse_cargo_json_output(&status.stdout, "fullerene-kernel")?;
+    eprintln!("Kernel EFI path: {}", kernel_path.display());
 
     // 2. Build bellows
     let status = Command::new("cargo")
         .current_dir(&workspace_root)
         .env("RUST_TARGET_PATH", &workspace_root)
+        .env("RUSTFLAGS", &format!("-C link-arg=-T{}", workspace_root.join("linker.ld").display()))
         .args([
             "build",
             "--package",
@@ -51,55 +57,35 @@ fn main() -> io::Result<()> {
             "build-std=core,alloc,compiler_builtins",
             "--target-dir",
             "target",
+            "--message-format=json",
         ])
-        .status()?;
-    if !status.success() {
+        .output()?;
+    if !status.status.success() {
         return Err(io::Error::new(io::ErrorKind::Other, "bellows build failed"));
     }
+    let bellows_path = parse_cargo_json_output(&status.stdout, "bellows")?;
+    eprintln!("Bellows EFI path: {}", bellows_path.display());
 
     // 3. Paths to binaries
-    let bellows_path = workspace_root.join("target/x86_64-uefi/release/bellows");
-    let kernel_path = workspace_root.join("target/x86_64-uefi/release/fullerene-kernel");
+    // The paths are now obtained from the JSON output of cargo build
+    // The previous hardcoded paths and existence checks are removed as parse_cargo_json_output handles this.
 
-    let mut bellows_file = match File::open(&bellows_path) {
-        Ok(file) => file,
-        Err(e) => {
-            eprintln!(
-                "Failed to open bellows file at {}: {}",
-                bellows_path.display(),
-                e
-            );
-            return Err(e);
-        }
-    };
+    eprintln!("Kernel EFI path: {}", kernel_path.display());
+    eprintln!("Bellows EFI path: {}", bellows_path.display());
 
-    let mut kernel_file = match File::open(&kernel_path) {
-        Ok(file) => file,
-        Err(e) => {
-            eprintln!(
-                "Failed to open kernel file at {}: {}",
-                kernel_path.display(),
-                e
-            );
-            return Err(e);
-        }
-    };
-    // 4. FAT32 disk image path
-    let disk_image_path = workspace_root.join("fullerene.img");
+    // 4. ISO path
     let iso_path = workspace_root.join("fullerene.iso");
 
-    println!("Disk Image Path: {}", disk_image_path.display());
     println!("ISO Path: {}", iso_path.display());
     println!("ISO Exists before QEMU: {}", iso_path.exists());
 
-    // 5. Create FAT32 image containing EFI binaries
-    if let Err(e) = create_disk_and_iso(
-        &disk_image_path,
+    // 5. Create ISO image containing EFI binaries directly
+    if let Err(e) = isobemak::create_iso(
         &iso_path,
-        &mut bellows_file,
-        &mut kernel_file,
+        &bellows_path,
+        &kernel_path,
     ) {
-        eprintln!("Error from create_disk_and_iso: {:?}", e);
+        eprintln!("Error from create_iso: {:?}", e);
         return Err(e);
     }
 
@@ -134,10 +120,12 @@ fn main() -> io::Result<()> {
         "512M",
         "-cpu",
         "qemu64,+smap",
+        "-nographic",
         "-serial",
-        "stdio",
-        "-vga",
-        "std",
+        "mon:stdio",
+        // "-vga",
+        // "std",
+        
     ];
 
     let qemu_status = Command::new("qemu-system-x86_64")
@@ -151,4 +139,37 @@ fn main() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+/// Parses the JSON output from `cargo build --message-format=json` to find the path of the
+/// compiled EFI binary for a given package.
+fn parse_cargo_json_output(output: &[u8], package_name: &str) -> io::Result<PathBuf> {
+    for line in output.split(|&b| b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let val: Value = serde_json::from_slice(line)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Failed to parse JSON: {}", e)))?;
+
+        if val["reason"].as_str() == Some("compiler-artifact") {
+            if let Some(target_name) = val["target"]["name"].as_str() {
+                if target_name == package_name {
+                    if let Some(filenames) = val["filenames"].as_array() {
+                        for filename_val in filenames {
+                            if let Some(filename) = filename_val.as_str() {
+                                let path = PathBuf::from(filename);
+                                if path.extension().map_or(false, |ext| ext == "efi") {
+                                    return Ok(path);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("EFI file for package '{}' not found in cargo build output", package_name),
+    ))
 }

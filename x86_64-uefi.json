@@ -17,7 +17,7 @@
     "code-model": "kernel",
     "disable-redzone": true,
     "frame-pointer": "always",
-    "exe-suffix": "",
+    "exe-suffix": ".efi",
     "has-rpath": false,
     "no-default-libraries": true,
     "position-independent-executables": false

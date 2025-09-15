@@ -7,9 +7,8 @@ edition = "2024"
 name = "bellows"
 path = "src/main.rs"
 
-
 # [lib]
-# crate-type = ["staticlib"]  # Notes: PE/COFF (EFI)
+# crate-type = ["cdylib"]  # Notes: PE/COFF (EFI)
 
 [dependencies]
 linked_list_allocator = "0.10.5"
