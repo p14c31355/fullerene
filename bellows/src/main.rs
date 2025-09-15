@@ -149,12 +149,9 @@ unsafe fn read_kernel(bs: &EfiBootServices) -> Option<&'static [u8]> {
     }
 
     let kernel_name: [u16; 11] = [
-    'K' as u16, 'E' as u16, 'R' as u16, 'N' as u16,
-    'E' as u16, 'L' as u16, '.' as u16,
-    'E' as u16, 'F' as u16, 'I' as u16,
-    0,
-];
-
+        'K' as u16, 'E' as u16, 'R' as u16, 'N' as u16, 'E' as u16, 'L' as u16, '.' as u16,
+        'E' as u16, 'F' as u16, 'I' as u16, 0,
+    ];
 
     let mut kernel_file: *mut EfiFile = ptr::null_mut();
     if ((*root).open)(root, &mut kernel_file, kernel_name.as_ptr(), 0x1, 0) != 0 {
