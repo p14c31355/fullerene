@@ -1,4 +1,3 @@
-OUTPUT_FORMAT("efi-app-x86_64")
 ENTRY(efi_main)
 
 SECTIONS {

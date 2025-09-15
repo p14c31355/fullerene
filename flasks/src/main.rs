@@ -43,7 +43,7 @@ fn main() -> io::Result<()> {
         .join("release")
         .join("fullerene-kernel.efi");
 
-    // 2. Build bellows
+    // 2. Build bellows as cdylib (EFI)
     let status = Command::new("cargo")
         .current_dir(&workspace_root)
         .env(
@@ -54,7 +54,7 @@ fn main() -> io::Result<()> {
             ),
         )
         .args([
-            "build",
+            "rustc",
             "--package",
             "bellows",
             "--release",
@@ -62,6 +62,8 @@ fn main() -> io::Result<()> {
             "x86_64-unknown-none",
             "-Z",
             "build-std=core,alloc,compiler_builtins",
+            "--",
+            "--crate-type=cdylib", // EFI
         ])
         .status()?;
     if !status.success() {
