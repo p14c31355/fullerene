@@ -1,7 +1,7 @@
 // fullerene/flasks/src/main.rs
 // use isobemak::create_disk_and_iso; // Removed as create_disk_and_iso is no longer available
 
-use std::{env, io, path::PathBuf, process::Command};
+use std::{env, fs::File, io, path::PathBuf, process::Command};
 
 /// Build kernel and bellows, create UEFI bootable ISO with xorriso, and run QEMU
 fn main() -> io::Result<()> {
@@ -79,10 +79,13 @@ fn main() -> io::Result<()> {
     println!("ISO Exists before QEMU: {}", iso_path.exists());
 
     // 5. Create ISO image containing EFI binaries directly
+    let mut bellows_file = File::open(&bellows_path)?;
+    let mut kernel_file = File::open(&kernel_path)?;
+
     if let Err(e) = isobemak::create_iso(
         &iso_path,
-        &bellows_path,
-        &kernel_path,
+        &mut bellows_file,
+        &mut kernel_file,
     ) {
         eprintln!("Error from create_iso: {:?}", e);
         return Err(e);
