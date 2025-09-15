@@ -1,7 +1,7 @@
 // fullerene/flasks/src/main.rs
 // use isobemak::create_disk_and_iso; // Removed as create_disk_and_iso is no longer available
 
-use std::{env, fs, io, path::PathBuf, process::Command}; // fs::File is no longer directly used
+use std::{env, io, path::PathBuf, process::Command};
 
 /// Build kernel and bellows, create UEFI bootable ISO with xorriso, and run QEMU
 fn main() -> io::Result<()> {
