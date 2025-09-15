@@ -130,7 +130,7 @@ const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: [u8; 16] = [
 
 /// Read `KERNEL.EFI` from the volume using UEFI SimpleFileSystem protocol.
 /// Allocates pages for the kernel buffer via BootServices.allocate_pages.
-unsafe fn read_kernel(bs: &EfiBootServices) -> Option<&'static [u8]> { unsafe {
+unsafe fn read_kernel(bs: &EfiBootServices) -> Option<&'static [u8]> {
     // locate SimpleFileSystem protocol
     let mut fs_ptr: *mut c_void = ptr::null_mut();
     if (bs.locate_protocol)(

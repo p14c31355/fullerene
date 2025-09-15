@@ -498,14 +498,23 @@ pub fn system_table() -> &'static mut EfiSystemTable {
 pub struct UefiWriter;
 
 impl Write for UefiWriter {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
         let con_out = unsafe { (*system_table()).con_out };
-        let mut buf: [u16; 256] = [0; 256]; // 適当なバッファサイズ
-        for chunk in s.encode_utf16().collect::<Vec<u16>>().chunks(255) { // 終端NULLのために1文字減らす
-            for (i, &c) in chunk.iter().enumerate() {
-                buf[i] = c;
+        let mut buf: [u16; 256] = [0; 256]; // Buffer for UTF-16 string
+        let mut i = 0;
+        for c in s.encode_utf16() {
+            buf[i] = c;
+            i += 1;
+            if i == 255 {
+                buf[i] = 0; // Null terminator
+                unsafe {
+                    ((*con_out).output_string)(con_out, buf.as_mut_ptr());
+                }
+                i = 0;
             }
-            buf[chunk.len()] = 0; // 終端NULL
+        }
+        if i > 0 {
+            buf[i] = 0; // Null terminator for the remainder
             unsafe {
                 ((*con_out).output_string)(con_out, buf.as_mut_ptr());
             }

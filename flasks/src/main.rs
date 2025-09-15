@@ -1,6 +1,5 @@
 // fullerene/flasks/src/main.rs
 // use isobemak::create_disk_and_iso; // Removed as create_disk_and_iso is no longer available
-use serde_json::Value;
 
 use std::{env, fs, io, path::PathBuf, process::Command}; // fs::File is no longer directly used
 
@@ -144,30 +143,38 @@ fn main() -> io::Result<()> {
 /// Parses the JSON output from `cargo build --message-format=json` to find the path of the
 /// compiled EFI binary for a given package.
 fn parse_cargo_json_output(output: &[u8], package_name: &str) -> io::Result<PathBuf> {
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct Target {
+        name: String,
+    }
+
+    #[derive(Deserialize)]
+    struct Message {
+        reason: String,
+        target: Option<Target>,
+        filenames: Option<Vec<String>>,
+    }
+
     for line in output.split(|&b| b == b'\n') {
         if line.is_empty() {
             continue;
         }
-        let val: Value = serde_json::from_slice(line)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Failed to parse JSON: {}", e)))?;
 
-        if val["reason"].as_str() == Some("compiler-artifact") {
-            if let Some(target_name) = val["target"]["name"].as_str() {
-                if target_name == package_name {
-                    if let Some(filenames) = val["filenames"].as_array() {
-                        for filename_val in filenames {
-                            if let Some(filename) = filename_val.as_str() {
-                                let path = PathBuf::from(filename);
-                                if path.extension().map_or(false, |ext| ext == "efi") {
-                                    return Ok(path);
-                                }
-                            }
+        if let Ok(msg) = serde_json::from_slice::<Message>(line) {
+            if msg.reason == "compiler-artifact" {
+                if let (Some(target), Some(filenames)) = (msg.target, msg.filenames) {
+                    if target.name == package_name {
+                        if let Some(filename) = filenames.iter().find(|f| f.ends_with(".efi")) {
+                            return Ok(PathBuf::from(filename));
                         }
                     }
                 }
             }
         }
     }
+
     Err(io::Error::new(
         io::ErrorKind::NotFound,
         format!("EFI file for package '{}' not found in cargo build output", package_name),
