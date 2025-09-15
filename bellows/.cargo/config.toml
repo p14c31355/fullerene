@@ -1,6 +1,0 @@
-[build]
-target = "x86_64-uefi.json"
-
-[unstable]
-build-std = ["core", "alloc", "compiler_builtins"]
-build-std-features = ["compiler-builtins-mem"]

@@ -18,3 +18,6 @@ panic = "abort"
 
 [profile.dev]
 panic = "abort"
+
+[build-dependencies]
+compiler_builtins = { version = "0.1.160", default-features = false, features = ["no-asm"] }
