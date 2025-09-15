@@ -2,13 +2,12 @@
 build-std = ["core", "alloc", "compiler_builtins"]
 build-std-features = ["compiler-builtins-mem"]
 
-[target.'cfg(target_os = "none")']
+[build]
+target = "x86_64-unknown-uefi"
+
+[target.x86_64-unknown-uefi]
 linker = "rust-lld"
 rustflags = [
-  "-C", "link-arg=-nostdlib",
-  "-C", "link-arg=-Ttext=0x10000",
-  "-C", "link-arg=--no-relax",
-  "-C", "link-arg=--image-base=0x10000",
-  "-C", "link-arg=--entry=efi_main",
-  "--cfg=compiler_builtins_no_asm_on_unsupported_arch",
+    "-C", "link-arg=-nostdlib",
+    "-C", "link-arg=-Tlinker.ld",
 ]
