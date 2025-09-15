@@ -1,9 +1,8 @@
 // fullerene/flasks/src/main.rs
-// use isobemak::create_disk_and_iso; // Removed as create_disk_and_iso is no longer available
+use serde::Deserialize;
+use std::{env, io, path::PathBuf, process::Command};
 
-use std::{env, fs::File, io, path::PathBuf, process::Command};
-
-/// Build kernel and bellows, create UEFI bootable ISO with xorriso, and run QEMU
+/// Build kernel and bellows, create UEFI bootable image, and run QEMU
 fn main() -> io::Result<()> {
     // 0. Workspace root dynamically
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -66,32 +65,22 @@ fn main() -> io::Result<()> {
     eprintln!("Bellows EFI path: {}", bellows_path.display());
 
     // 3. Paths to binaries
-    // The paths are now obtained from the JSON output of cargo build
-    // The previous hardcoded paths and existence checks are removed as parse_cargo_json_output handles this.
-
     eprintln!("Kernel EFI path: {}", kernel_path.display());
     eprintln!("Bellows EFI path: {}", bellows_path.display());
 
-    // 4. ISO path
-    let iso_path = workspace_root.join("fullerene.iso");
+    // 4. FAT32 image path
+    let fat32_path = workspace_root.join("fullerene.img");
+    println!("FAT32 Image Path: {}", fat32_path.display());
 
-    println!("ISO Path: {}", iso_path.display());
-    println!("ISO Exists before QEMU: {}", iso_path.exists());
-
-    // 5. Create ISO image containing EFI binaries directly
-    let mut bellows_file = File::open(&bellows_path)?;
-    let mut kernel_file = File::open(&kernel_path)?;
-
-    if let Err(e) = isobemak::create_iso(
-        &iso_path,
-        &mut bellows_file,
-        &mut kernel_file,
+    // 5. Create FAT32 image containing EFI binaries
+    if let Err(e) = isobemak::create_fat32_image(
+        &fat32_path,
+        &bellows_path,
+        &kernel_path,
     ) {
-        eprintln!("Error from create_iso: {:?}", e);
+        eprintln!("Error from create_fat32_image: {:?}", e);
         return Err(e);
     }
-
-    println!("ISO Exists after creation: {}", iso_path.exists());
 
     // 6. Prepare OVMF paths
     let ovmf_dir = workspace_root.join("flasks").join("ovmf");
@@ -105,7 +94,7 @@ fn main() -> io::Result<()> {
         ));
     }
 
-    // 7. Run QEMU with FAT32 image as direct boot
+    // 7. Run QEMU with FAT32 image as a drive
     let qemu_args = [
         "-drive",
         &format!(
@@ -114,8 +103,8 @@ fn main() -> io::Result<()> {
         ),
         "-drive",
         &format!("if=pflash,format=raw,file={}", ovmf_vars.display()),
-        "-cdrom",
-        &format!("{}", iso_path.display()), // Boot from ISO
+        "-drive",
+        &format!("format=raw,file={}", fat32_path.display()), // Boot from FAT32 image
         "-boot",
         "once=d",
         "-m",
@@ -125,9 +114,6 @@ fn main() -> io::Result<()> {
         "-nographic",
         "-serial",
         "mon:stdio",
-        // "-vga",
-        // "std",
-        
     ];
 
     let qemu_status = Command::new("qemu-system-x86_64")
