@@ -3,7 +3,6 @@
 
 mod vga;
 
-use core::panic::PanicInfo;
 use vga::vga_init;
 
 #[unsafe(no_mangle)]
@@ -14,6 +13,6 @@ pub extern "C" fn _start() -> ! {
 }
 #[cfg(not(test))]
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }

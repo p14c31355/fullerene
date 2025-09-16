@@ -1,5 +1,5 @@
 // fullerene/flasks/src/main.rs
-use std::{env, io, path::PathBuf, process::Command};
+use std::{env, io::{self, Write}, path::PathBuf, process::Command};
 
 fn main() -> io::Result<()> {
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

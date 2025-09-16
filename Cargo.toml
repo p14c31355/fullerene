@@ -1,6 +1,8 @@
 [workspace]
 members = [
-  "bellows", "flasks", "fullerene-kernel",
+  "bellows",
+  "flasks",
+  "fullerene-kernel",
   "toluene",
 ]
 resolver = "2"
