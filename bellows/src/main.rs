@@ -70,6 +70,12 @@ pub struct EfiBootServices {
     _pad_2: [usize; 5],
     /// locate_protocol(ProtocolGUID, Registration, *mut *Interface) -> EFI_STATUS
     pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize,
+    _pad_3: [usize; 3],
+    /// get_memory_map(MemoryMapSize, *MemoryMap, *MapKey, *DescriptorSize, *DescriptorVersion) -> EFI_STATUS
+    pub get_memory_map: extern "efiapi" fn(*mut usize, *mut c_void, *mut usize, *mut usize, *mut u32) -> usize,
+    _pad_4: [usize; 2],
+    /// exit_boot_services(ImageHandle, MapKey) -> EFI_STATUS
+    pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize,
 }
 
 /// SimpleTextOutput protocol (we only use OutputString)
@@ -272,7 +278,7 @@ fn load_efi_image(bs: &EfiBootServices, image: &[u8]) -> Option<extern "efiapi" 
 
 /// Entry point for UEFI. Note: name and calling convention are critical.
 #[unsafe(no_mangle)]
-pub extern "efiapi" fn efi_main(_image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
+pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
     // SAFETY: UEFI provides a valid pointer for system_table when called by firmware.
     let st = unsafe { &*system_table };
     let bs = unsafe { &*st.boot_services };
@@ -302,12 +308,52 @@ pub extern "efiapi" fn efi_main(_image_handle: usize, system_table: *mut EfiSyst
         loop {}
     });
 
-    // 3) Parse PE/COFF and jump to entry
-    if let Some(entry) = load_efi_image(bs, efi_image_file) {
-        uefi_print(&st, "bellows: jumping to EFI image...\n");
-        entry(_image_handle, system_table); // should not return
-    } else {
+    let entry = load_efi_image(bs, efi_image_file).unwrap_or_else(|| {
         uefi_print(&st, "bellows: EFI file is not a valid PE/COFF image\n");
         loop {}
+    });
+    
+    uefi_print(&st, "bellows: Exiting Boot Services...\n");
+    
+    // Get Memory Map and Exit Boot Services
+    let mut map_size = 0;
+    let mut map_key = 0;
+    let mut descriptor_size = 0;
+    let mut descriptor_version = 0;
+    
+    // First call to get the required buffer size
+    unsafe {
+        (bs.get_memory_map)(&mut map_size, ptr::null_mut(), &mut map_key, &mut descriptor_size, &mut descriptor_version);
     }
+    
+    // Add a buffer for potential map size changes
+    map_size += 4096;
+    let map_pages = (map_size + 4095) / 4096;
+    let mut map_phys_addr: usize = 0;
+    unsafe {
+        if (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, map_pages, &mut map_phys_addr) != 0 {
+            loop {}
+        }
+    }
+    
+    let map_ptr = map_phys_addr as *mut c_void;
+    
+    // Second call to get the actual memory map
+    unsafe {
+        if (bs.get_memory_map)(&mut map_size, map_ptr, &mut map_key, &mut descriptor_size, &mut descriptor_version) != 0 {
+            loop {}
+        }
+    }
+    
+    // Exit Boot Services
+    unsafe {
+        if (bs.exit_boot_services)(image_handle, map_key) != 0 {
+            loop {}
+        }
+    }
+    
+    // Now we are in the kernel environment, without UEFI services.
+    // Jump to the kernel entry point.
+    // The kernel is responsible for setting up its own environment (GDT, IDT, etc.).
+    entry(image_handle, system_table); // should not return
 }
