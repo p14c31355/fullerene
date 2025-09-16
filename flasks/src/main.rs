@@ -12,7 +12,7 @@ fn main() -> io::Result<()> {
         .current_dir(&workspace_root)
         .args([
             "build",
-            "-Zbuild-std",
+            // "-Zbuild-std",
             "--package",
             "fullerene-kernel",
             "--release",
@@ -38,7 +38,7 @@ fn main() -> io::Result<()> {
         .current_dir(&workspace_root)
         .args([
             "build",
-            "-Zbuild-std",
+            // "-Zbuild-std",
             "--package",
             "bellows",
             "--release",
