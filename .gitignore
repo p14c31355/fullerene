@@ -12,3 +12,4 @@ target/
 fullerene.img
 fullerene.iso
 qemu_log.txt
+serial_log.txt

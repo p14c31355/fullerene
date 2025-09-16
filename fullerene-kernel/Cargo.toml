@@ -4,10 +4,10 @@ name = "fullerene-kernel"
 version = "0.1.0"
 edition = "2024"
 
-[[bin]]
-name = "fullerene-kernel"
-path = "src/main.rs"
-
 [dependencies]
-spin = { version = "0.10.0", default-features = false, features = ["once", "mutex", "spin_mutex"] }
 x86_64 = { version = "0.15.2", default-features = false, features = ["instructions"] }
+spin = { version = "0.10.0", default-features = false, features = ["once", "mutex", "spin_mutex"] }
+
+[profile.dev]
+debug = true
+split-debuginfo = "packed"

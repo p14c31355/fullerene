@@ -1,6 +1,7 @@
 // fullerene/fullerene-kernel/src/vga.rs
 use spin::Mutex;
 use spin::once::Once;
+use x86_64::instructions::port::Port;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
@@ -133,7 +134,40 @@ unsafe impl Sync for VgaBuffer {}
 // Replace SERIAL static with VGA_BUFFER static
 static VGA_BUFFER: Once<Mutex<VgaBuffer>> = Once::new();
 
+fn vga_hardware_init() {
+    unsafe {
+        // Set VGA text mode (80x25, 16 colors)
+        // This is a simplified approach; a full VGA mode set is more complex.
+        // For text mode, often the BIOS has already set it up.
+        // Here, we primarily ensure the cursor is visible and configured.
+
+        // Cursor Start Register (0x0A) - Set scanline start for cursor
+        let mut cursor_start_port = Port::new(0x3D4);
+        let mut cursor_end_port = Port::new(0x3D5);
+
+        cursor_start_port.write(0x0A as u8); // Cursor Start Register
+        cursor_end_port.write(0x0E as u8); // Cursor End Register (scanline 14, 15)
+
+        // Cursor Location High Register (0x0E) and Low Register (0x0F)
+        // Set cursor to (0,0)
+        cursor_start_port.write(0x0E as u8); // Cursor Location High Register
+        cursor_end_port.write(0x00 as u8); // High byte of cursor offset
+        cursor_start_port.write(0x0F as u8); // Cursor Location Low Register
+        cursor_end_port.write(0x00 as u8); // Low byte of cursor offset
+    }
+}
+
+pub fn log(msg: &str) {
+    
+    if let Some(vga) = VGA_BUFFER.get() {
+        let mut writer = vga.lock();
+        writer.write_string(msg);
+        writer.write_string("\n");
+    }
+}
+
 pub fn vga_init() {
+    vga_hardware_init(); // Initialize VGA hardware
     VGA_BUFFER.call_once(|| Mutex::new(VgaBuffer::new()));
     let mut writer = VGA_BUFFER.get().unwrap().lock();
     writer.clear_screen(); // Clear screen on boot
@@ -142,5 +176,3 @@ pub fn vga_init() {
     writer.color_code = ColorCode::new(Color::White, Color::Black);
     writer.write_string("This is output directly to VGA.\n");
 }
-
-
