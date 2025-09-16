@@ -12,22 +12,11 @@ fn main() -> io::Result<()> {
     // 1. Build fullerene-kernel
     let status = Command::new("cargo")
         .current_dir(&workspace_root)
-        .env(
-            "RUSTFLAGS",
-            format!(
-                "-C link-arg=-T{}",
-                workspace_root.join("linker.ld").display()
-            ),
-        )
         .args([
             "build",
             "--package",
             "fullerene-kernel",
             "--release",
-            "--target",
-            "x86_64-unknown-none",
-            "-Z",
-            "build-std=core,alloc,compiler_builtins",
         ])
         .status()?;
     if !status.success() {
@@ -39,31 +28,18 @@ fn main() -> io::Result<()> {
 
     let kernel_path = workspace_root
         .join("target")
-        .join("x86_64-unknown-none")
+        .join("x86_64-unknown-uefi")
         .join("release")
         .join("fullerene-kernel.efi");
 
     // 2. Build bellows as cdylib (EFI)
     let status = Command::new("cargo")
         .current_dir(&workspace_root)
-        .env(
-            "RUSTFLAGS",
-            format!(
-                "-C link-arg=-T{}",
-                workspace_root.join("linker.ld").display()
-            ),
-        )
         .args([
-            "rustc",
+            "build",
             "--package",
             "bellows",
             "--release",
-            "--target",
-            "x86_64-unknown-none",
-            "-Z",
-            "build-std=core,alloc,compiler_builtins",
-            "--",
-            "--crate-type=cdylib", // EFI
         ])
         .status()?;
     if !status.success() {
@@ -72,7 +48,7 @@ fn main() -> io::Result<()> {
 
     let bellows_path = workspace_root
         .join("target")
-        .join("x86_64-unknown-none")
+        .join("x86_64-unknown-uefi")
         .join("release")
         .join("bellows.efi");
 

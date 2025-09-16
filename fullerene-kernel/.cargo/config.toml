@@ -3,9 +3,9 @@ build-std = ["core", "alloc", "compiler_builtins"]
 build-std-features = ["compiler-builtins-mem"]
 
 [build]
-target = "x86_64-unknown-uefi"
+target = "x86_64-unknown-none"
 
-[target.x86_64-unknown-uefi]
+[target.x86_64-unknown-none]
 linker = "rust-lld"
 rustflags = [
     "-C", "link-arg=-nostdlib",
