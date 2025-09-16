@@ -24,9 +24,7 @@ fn main() -> io::Result<()> {
         ])
         .status()?;
     if !status.success() {
-        return Err(io::Error::other(
-            "fullerene-kernel build failed",
-        ));
+        return Err(io::Error::other("fullerene-kernel build failed"));
     }
 
     let target_dir = workspace_root
@@ -114,9 +112,7 @@ fn main() -> io::Result<()> {
         .status()?;
 
     if !qemu_status.success() {
-        return Err(io::Error::other(
-            "QEMU execution failed",
-        ));
+        return Err(io::Error::other("QEMU execution failed"));
     }
 
     // Clean up temporary FAT32 image
