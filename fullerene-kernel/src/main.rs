@@ -11,7 +11,7 @@ use vga::vga_init;
 pub extern "efiapi" fn efi_main(_image_handle: usize, _system_table: *mut core::ffi::c_void) -> ! {
     vga_init();
     serial_init();
-    vga::log("Entering _start");
+    vga::log("Entering efi_main");
     vga::log("Initializing memory");
     vga::log("Initializing drivers");
     serial_log("Hello Serial!\n");
