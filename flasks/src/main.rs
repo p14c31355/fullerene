@@ -76,6 +76,7 @@ fn main() -> io::Result<()> {
 
     let qemu_args = [
         "-cdrom",
+            ovmf_fd_path
             .to_str()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "ISO path contains invalid UTF-8"))?,
         "-m",
