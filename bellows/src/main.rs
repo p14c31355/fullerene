@@ -272,7 +272,10 @@ fn load_efi_image(
 
         let image_ptr = phys_addr as *mut u8;
 
-        // Copy the headers
+        // Zero out the allocated memory region to handle BSS sections.
+        ptr::write_bytes(image_ptr, 0, image_size);
+
+        // Copy the file's contents into the allocated memory.
         ptr::copy_nonoverlapping(
             image.as_ptr(),
             image_ptr,
