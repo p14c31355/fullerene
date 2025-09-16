@@ -7,12 +7,13 @@ fn main() -> io::Result<()> {
         .expect("Failed to get workspace root")
         .to_path_buf();
 
-    // 1. Build fullerene-kernel
+    // 1. Build fullerene-kernel (no_std)
     let status = Command::new("cargo")
         .current_dir(&workspace_root)
         .args([
+            "+nightly",
             "build",
-            // "-Zbuild-std",
+            "-Zbuild-std=core,alloc",
             "--package",
             "fullerene-kernel",
             "--release",
@@ -33,12 +34,13 @@ fn main() -> io::Result<()> {
         .join("release")
         .join("fullerene-kernel");
 
-    // 2. Build bellows
+    // 2. Build bellows (no_std)
     let status = Command::new("cargo")
         .current_dir(&workspace_root)
         .args([
+            "+nightly",
             "build",
-            // "-Zbuild-std",
+            "-Zbuild-std=core,alloc",
             "--package",
             "bellows",
             "--release",
@@ -59,11 +61,12 @@ fn main() -> io::Result<()> {
     // 3. Create a simple disk image
     let disk_img_path = workspace_root.join("fullerene.img");
     let mut file = std::fs::File::create(&disk_img_path)?;
-    // Write bellows (bootloader) to the beginning of the disk image
+
+    // Write bellows (bootloader) at the beginning
     let bellows_bytes = std::fs::read(&bellows_path)?;
     io::Write::write_all(&mut file, &bellows_bytes)?;
-    // For simplicity, we'll just append the kernel for now. A real bootloader
-    // would load the kernel from a known location on the disk.
+
+    // Append kernel
     let kernel_bytes = std::fs::read(&kernel_path)?;
     io::Write::write_all(&mut file, &kernel_bytes)?;
 
@@ -72,7 +75,7 @@ fn main() -> io::Result<()> {
         "-drive",
         &format!("format=raw,file={}", disk_img_path.display()),
         "-boot",
-        "a", // Boot from floppy/hard disk
+        "a", // Boot from disk
         "-m",
         "512M",
         "-cpu",
