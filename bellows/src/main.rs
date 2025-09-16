@@ -276,7 +276,7 @@ fn load_efi_image(
         ptr::copy_nonoverlapping(
             image.as_ptr(),
             image_ptr,
-            optional_header._size_of_headers as usize,
+            image.len(),
         );
 
         // This is a simplified loader. For a complete solution, we would iterate through sections
