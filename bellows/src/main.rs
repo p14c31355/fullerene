@@ -2,6 +2,7 @@
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
+#![feature(never_type)]
 
 extern crate alloc;
 
@@ -30,6 +31,10 @@ fn alloc_error(_layout: Layout) -> ! {
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
+
+/// A simple Result type for our bootloader,
+/// returning a static string on error.
+type Result<T> = core::result::Result<T, &'static str>;
 
 /// Minimal subset of UEFI memory types (only those we need)
 #[repr(usize)]
@@ -105,14 +110,14 @@ pub struct EfiFile {
     _revision: u64,
     open: extern "efiapi" fn(*mut EfiFile, *mut *mut EfiFile, *const u16, u64, u64) -> usize,
     close: extern "efiapi" fn(*mut EfiFile) -> usize,
-    delete: extern "efiapi" fn(*mut EfiFile) -> usize,
+    _delete: extern "efiapi" fn(*mut EfiFile) -> usize,
     read: extern "efiapi" fn(*mut EfiFile, *mut u64, *mut u8) -> usize,
-    write: extern "efiapi" fn(*mut EfiFile, *mut u64, *mut u8) -> usize,
+    _write: extern "efiapi" fn(*mut EfiFile, *mut u64, *mut u8) -> usize,
     _reserved: usize,
-    get_position: extern "efiapi" fn(*mut EfiFile, *mut u64) -> usize,
-    set_position: extern "efiapi" fn(*mut EfiFile, u64) -> usize,
+    _get_position: extern "efiapi" fn(*mut EfiFile, *mut u64) -> usize,
+    _set_position: extern "efiapi" fn(*mut EfiFile, u64) -> usize,
     get_info: extern "efiapi" fn(*mut EfiFile, *const u8, *mut usize, *mut c_void) -> usize,
-    set_info: extern "efiapi" fn(*mut EfiFile, *const u8, usize, *mut c_void) -> usize,
+    _set_info: extern "efiapi" fn(*mut EfiFile, *const u8, usize, *mut c_void) -> usize,
     flush: extern "efiapi" fn(*mut EfiFile) -> usize,
 }
 
@@ -224,7 +229,7 @@ const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: [u8; 16] = [
 ];
 
 /// Read `KERNEL.EFI` or `kernel.efi` from the volume using UEFI SimpleFileSystem protocol.
-unsafe fn read_efi_file(st: &EfiSystemTable) -> Option<(usize, usize)> {
+unsafe fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     let bs = &*st.boot_services;
 
     let mut fs_ptr: *mut c_void = ptr::null_mut();
@@ -234,15 +239,13 @@ unsafe fn read_efi_file(st: &EfiSystemTable) -> Option<(usize, usize)> {
         &mut fs_ptr,
     ) != 0
     {
-        uefi_print(st, "Failed to locate SimpleFileSystem protocol.\n");
-        return None;
+        return Err("Failed to locate SimpleFileSystem protocol.");
     }
     let fs = fs_ptr as *mut EfiSimpleFileSystem;
 
     let mut root: *mut EfiFile = ptr::null_mut();
     if ((*fs).open_volume)(fs, &mut root) != 0 {
-        uefi_print(st, "Failed to open volume.\n");
-        return None;
+        return Err("Failed to open volume.");
     }
 
     let file_names = [
@@ -261,11 +264,9 @@ unsafe fn read_efi_file(st: &EfiSystemTable) -> Option<(usize, usize)> {
     }
 
     if !found {
-        uefi_print(st, "Failed to open KERNEL.EFI or kernel.efi.\n");
-        return None;
+        return Err("Failed to open KERNEL.EFI or kernel.efi.");
     }
 
-    // Get file size
     let mut file_info_size: usize = 0;
     ((*efi_file).get_info)(
         efi_file,
@@ -283,164 +284,173 @@ unsafe fn read_efi_file(st: &EfiSystemTable) -> Option<(usize, usize)> {
         file_info_ptr,
     ) != 0
     {
-        uefi_print(st, "Failed to get file info.\n");
         ((*efi_file).close)(efi_file);
-        return None;
+        return Err("Failed to get file info.");
     }
 
     let file_info: &EfiFileInfo = &*(file_info_ptr as *const EfiFileInfo);
     let file_size = file_info.file_size as usize;
 
-    // Allocate buffer for file content based on actual size
     let pages = (file_size + 4095) / 4096;
     let mut phys_addr: usize = 0;
     if (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, pages, &mut phys_addr) != 0 {
-        uefi_print(st, "Failed to allocate pages for kernel file.\n");
         ((*efi_file).close)(efi_file);
-        return None;
+        return Err("Failed to allocate pages for kernel file.");
     }
 
     let buf_ptr = phys_addr as *mut u8;
     let mut read_size: u64 = file_size as u64;
 
     if ((*efi_file).read)(efi_file, &mut read_size, buf_ptr) != 0 {
-        uefi_print(st, "Failed to read kernel file.\n");
         (bs.free_pages)(phys_addr, pages);
         ((*efi_file).close)(efi_file);
-        return None;
+        return Err("Failed to read kernel file.");
     }
 
     ((*efi_file).close)(efi_file);
-
-    Some((phys_addr, read_size as usize))
+    Ok((phys_addr, read_size as usize))
 }
 
 /// Load an EFI image (PE/COFF file) and return the entry point
-fn load_efi_image(
+unsafe fn load_efi_image(
     st: &EfiSystemTable,
     image_file: &[u8],
-) -> Option<extern "efiapi" fn(usize, *mut EfiSystemTable) -> !> {
-    unsafe {
-        let bs = &*st.boot_services;
+) -> Result<extern "efiapi" fn(usize, *mut EfiSystemTable) -> !> {
+    let bs = &*st.boot_services;
 
-        // Parse PE/COFF headers
-        let dos_header = ptr::read_unaligned(image_file.as_ptr() as *const ImageDosHeader);
-        if dos_header.e_magic != 0x5a4d {
-            uefi_print(st, "Invalid PE/COFF file: Missing DOS header.\n");
-            return None;
-        }
-
-        let pe_header_offset = dos_header.e_lfanew as usize;
-        let pe_signature =
-            ptr::read_unaligned(image_file.as_ptr().add(pe_header_offset) as *const u32);
-        if pe_signature != 0x00004550 {
-            uefi_print(st, "Invalid PE/COFF file: Missing PE signature.\n");
-            return None;
-        }
-
-        let file_header_ptr = image_file.as_ptr().add(pe_header_offset + 4);
-        let file_header = ptr::read_unaligned(file_header_ptr as *const ImageFileHeader);
-
-        let optional_header_ptr = file_header_ptr.add(mem::size_of::<ImageFileHeader>());
-        let optional_header =
-            ptr::read_unaligned(optional_header_ptr as *const ImageOptionalHeader64);
-
-        let image_entry_point_rva = optional_header.address_of_entry_point as usize;
-        let preferred_image_base = optional_header.image_base as usize;
-        let preferred_image_size = optional_header.size_of_image as usize;
-
-        // Allocate memory for the image at its preferred base address
-        let pages_needed = (preferred_image_size + 4095) / 4096;
-        let mut phys_addr: usize = preferred_image_base;
-
-        let status = (bs.allocate_pages)(
-            1usize, // Allocate at a specific address (AllocateAddress)
-            EfiMemoryType::EfiLoaderData,
-            pages_needed,
-            &mut phys_addr,
-        );
-
-        if status != 0 {
-            let mut msg: Vec<u8> = Vec::new();
-            msg.extend_from_slice(
-                b"Failed to allocate pages for kernel image at preferred address. Status: ",
-            );
-            // Convert status to string and append. Simplified for brevity.
-            uefi_print(
-                st,
-                core::str::from_utf8(&msg).unwrap_or("Failed to log allocation error."),
-            );
-            return None;
-        }
-
-        let image_ptr = phys_addr as *mut u8;
-
-        // Copy headers and sections
-        let headers_size = optional_header._size_of_headers as usize;
-        ptr::copy_nonoverlapping(image_file.as_ptr(), image_ptr, headers_size);
-
-        let mut section_header_ptr =
-            optional_header_ptr.add(file_header.size_of_optional_header as usize);
-        for _ in 0..file_header.number_of_sections as usize {
-            let section_header =
-                ptr::read_unaligned(section_header_ptr as *const ImageSectionHeader);
-
-            if section_header.size_of_raw_data > 0 {
-                let raw_data_ptr = image_file
-                    .as_ptr()
-                    .add(section_header.pointer_to_raw_data as usize);
-                let virtual_address = phys_addr + section_header.virtual_address as usize;
-
-                ptr::copy_nonoverlapping(
-                    raw_data_ptr,
-                    virtual_address as *mut u8,
-                    section_header.size_of_raw_data as usize,
-                );
-            }
-            section_header_ptr = section_header_ptr.add(mem::size_of::<ImageSectionHeader>());
-        }
-
-        // Handle relocations
-        let reloc_data_dir = &optional_header.data_directory[5];
-        if reloc_data_dir.size > 0 {
-            let reloc_table_offset = image_file
-                .as_ptr()
-                .add(reloc_data_dir.virtual_address as usize)
-                as *const u8;
-            let mut current_reloc_block = reloc_table_offset;
-
-            while (current_reloc_block as usize - reloc_table_offset as usize)
-                < reloc_data_dir.size as usize
-            {
-                let reloc_block_header: &ImageBaseRelocation =
-                    &*(current_reloc_block as *const ImageBaseRelocation);
-                let reloc_block_size = reloc_block_header.size_of_block as usize;
-                let num_entries = (reloc_block_size - mem::size_of::<ImageBaseRelocation>()) / 2;
-
-                let fixup_list_ptr = current_reloc_block.add(mem::size_of::<ImageBaseRelocation>());
-                let fixup_list = slice::from_raw_parts(fixup_list_ptr as *const u16, num_entries);
-
-                let offset = phys_addr - preferred_image_base;
-                let reloc_page_va = phys_addr + reloc_block_header.virtual_address as usize;
-
-                for &fixup in fixup_list {
-                    let fixup_type = (fixup >> 12) & 0xF;
-                    let fixup_offset = fixup & 0xFFF;
-
-                    if fixup_type == 10 {
-                        // IMAGE_REL_BASED_DIR64
-                        let fixup_address_ptr = (reloc_page_va + fixup_offset as usize) as *mut u64;
-                        *fixup_address_ptr += offset as u64;
-                    }
-                }
-
-                current_reloc_block = current_reloc_block.add(reloc_block_size);
-            }
-        }
-
-        let entry_point_addr = phys_addr + image_entry_point_rva;
-        Some(mem::transmute(entry_point_addr))
+    if image_file.len() < mem::size_of::<ImageDosHeader>() {
+        return Err("Image file too small for DOS header.");
     }
+    let dos_header = ptr::read_unaligned(image_file.as_ptr() as *const ImageDosHeader);
+    if dos_header.e_magic != 0x5a4d {
+        return Err("Invalid PE/COFF file: Missing DOS header.");
+    }
+
+    let pe_header_offset = dos_header.e_lfanew as usize;
+    if image_file.len() < pe_header_offset + 4 {
+        return Err("Image file too small for PE signature.");
+    }
+    let pe_signature = ptr::read_unaligned(image_file.as_ptr().add(pe_header_offset) as *const u32);
+    if pe_signature != 0x00004550 {
+        return Err("Invalid PE/COFF file: Missing PE signature.");
+    }
+
+    let file_header_ptr = image_file.as_ptr().add(pe_header_offset + 4);
+    if image_file.len() < pe_header_offset + 4 + mem::size_of::<ImageFileHeader>() {
+        return Err("Image file too small for file header.");
+    }
+    let file_header = ptr::read_unaligned(file_header_ptr as *const ImageFileHeader);
+
+    let optional_header_ptr = file_header_ptr.add(mem::size_of::<ImageFileHeader>());
+    if image_file.len()
+        < pe_header_offset
+            + 4
+            + mem::size_of::<ImageFileHeader>()
+            + file_header.size_of_optional_header as usize
+    {
+        return Err("Image file too small for optional header.");
+    }
+    let optional_header = ptr::read_unaligned(optional_header_ptr as *const ImageOptionalHeader64);
+
+    let image_entry_point_rva = optional_header.address_of_entry_point as usize;
+    let preferred_image_base = optional_header.image_base as usize;
+    let preferred_image_size = optional_header.size_of_image as usize;
+
+    let pages_needed = (preferred_image_size + 4095) / 4096;
+    let mut phys_addr: usize = preferred_image_base;
+
+    let status = (bs.allocate_pages)(
+        1usize,
+        EfiMemoryType::EfiLoaderData,
+        pages_needed,
+        &mut phys_addr,
+    );
+    if status != 0 {
+        return Err("Failed to allocate pages for kernel image at preferred address.");
+    }
+    if phys_addr != preferred_image_base {
+        // This is a critical error. We requested a specific address, but didn't get it.
+        // It's not recoverable with the current relocation logic.
+        (bs.free_pages)(phys_addr, pages_needed);
+        return Err("Allocation did not return preferred address.");
+    }
+
+    let image_ptr = phys_addr as *mut u8;
+    let headers_size = optional_header._size_of_headers as usize;
+    if image_file.len() < headers_size {
+        return Err("Image file headers size is invalid.");
+    }
+    ptr::copy_nonoverlapping(image_file.as_ptr(), image_ptr, headers_size);
+
+    let mut section_header_ptr =
+        optional_header_ptr.add(file_header.size_of_optional_header as usize);
+    for _ in 0..file_header.number_of_sections as usize {
+        let section_header = ptr::read_unaligned(section_header_ptr as *const ImageSectionHeader);
+
+        if section_header.size_of_raw_data > 0 {
+            let raw_data_ptr = image_file
+                .as_ptr()
+                .add(section_header.pointer_to_raw_data as usize);
+            let virtual_address = phys_addr + section_header.virtual_address as usize;
+
+            if image_file.len()
+                < section_header.pointer_to_raw_data as usize
+                    + section_header.size_of_raw_data as usize
+            {
+                (bs.free_pages)(phys_addr, pages_needed);
+                return Err("Invalid section data size.");
+            }
+
+            ptr::copy_nonoverlapping(
+                raw_data_ptr,
+                virtual_address as *mut u8,
+                section_header.size_of_raw_data as usize,
+            );
+        }
+        section_header_ptr = section_header_ptr.add(mem::size_of::<ImageSectionHeader>());
+    }
+
+    let reloc_data_dir = &optional_header.data_directory[5];
+    if reloc_data_dir.size > 0 {
+        let reloc_table_offset = image_file
+            .as_ptr()
+            .add(reloc_data_dir.virtual_address as usize)
+            as *const u8;
+        let mut current_reloc_block = reloc_table_offset;
+
+        while (current_reloc_block as usize - reloc_table_offset as usize)
+            < reloc_data_dir.size as usize
+        {
+            let reloc_block_header: &ImageBaseRelocation =
+                &*(current_reloc_block as *const ImageBaseRelocation);
+            let reloc_block_size = reloc_block_header.size_of_block as usize;
+            let num_entries = (reloc_block_size - mem::size_of::<ImageBaseRelocation>()) / 2;
+
+            let fixup_list_ptr = current_reloc_block.add(mem::size_of::<ImageBaseRelocation>());
+            let fixup_list = slice::from_raw_parts(fixup_list_ptr as *const u16, num_entries);
+
+            let offset = phys_addr as u64 - preferred_image_base as u64;
+            let reloc_page_va = phys_addr + reloc_block_header.virtual_address as usize;
+
+            for &fixup in fixup_list {
+                let fixup_type = (fixup >> 12) & 0xF;
+                let fixup_offset = fixup & 0xFFF;
+
+                if fixup_type == 10 {
+                    let fixup_address_ptr = (reloc_page_va + fixup_offset as usize) as *mut u64;
+                    *fixup_address_ptr = (*fixup_address_ptr).wrapping_add(offset);
+                } else if fixup_type != 0 {
+                    // IMAGE_REL_BASED_ABSOLUTE
+                    (bs.free_pages)(phys_addr, pages_needed);
+                    return Err("Unsupported relocation type.");
+                }
+            }
+            current_reloc_block = current_reloc_block.add(reloc_block_size);
+        }
+    }
+
+    let entry_point_addr = phys_addr + image_entry_point_rva;
+    Ok(mem::transmute(entry_point_addr))
 }
 
 /// Entry point for UEFI. Note: name and calling convention are critical.
@@ -451,45 +461,27 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     uefi_print(&st, "bellows: bootloader started\n");
 
-    // 1) Allocate heap pages and initialize the global allocator.
-    let heap_pages = (HEAP_SIZE + 4095) / 4096;
-    let mut heap_phys: usize = 0;
-    if unsafe {
-        (bs.allocate_pages)(
-            0usize,
-            EfiMemoryType::EfiLoaderData,
-            heap_pages,
-            &mut heap_phys,
-        )
-    } != 0
-    {
-        uefi_print(&st, "Failed to allocate heap memory.\n");
+    if let Err(msg) = init_heap(&st, bs) {
+        uefi_print(&st, msg);
         loop {}
     }
 
-    unsafe {
-        ALLOCATOR.lock().init(heap_phys as *mut u8, HEAP_SIZE);
-    }
-
-    // 2) Read KERNEL.EFI into a buffer
     let (efi_image_phys, efi_image_size) = match unsafe { read_efi_file(&st) } {
-        Some(info) => info,
-        None => {
-            uefi_print(&st, "Failed to read kernel file. Halting.\n");
+        Ok(info) => info,
+        Err(err) => {
+            uefi_print(&st, err);
+            uefi_print(&st, "\nHalting.\n");
             loop {}
         }
     };
     let efi_image_file =
         unsafe { slice::from_raw_parts(efi_image_phys as *const u8, efi_image_size) };
 
-    // 3) Load the image into its preferred location
     let entry = match unsafe { load_efi_image(&st, efi_image_file) } {
-        Some(e) => e,
-        None => {
-            uefi_print(
-                &st,
-                "Failed to load the PE/COFF image into memory. Halting.\n",
-            );
+        Ok(e) => e,
+        Err(err) => {
+            uefi_print(&st, err);
+            uefi_print(&st, "\nHalting.\n");
             unsafe {
                 (bs.free_pages)(efi_image_phys, (efi_image_size + 4095) / 4096);
             }
@@ -497,7 +489,6 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         }
     };
 
-    // 4) Free the file buffer
     let file_pages = (efi_image_size + 4095) / 4096;
     unsafe {
         (bs.free_pages)(efi_image_phys, file_pages);
@@ -505,13 +496,44 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     uefi_print(&st, "bellows: Exiting Boot Services...\n");
 
-    // 5) Get Memory Map and Exit Boot Services
+    if let Err(msg) = exit_boot_services_and_jump(image_handle, system_table, entry) {
+        uefi_print(&st, msg);
+        loop {}
+    }
+    unreachable!(); 
+}
+
+fn init_heap(st: &EfiSystemTable, bs: &EfiBootServices) -> Result<()> {
+    let heap_pages = (HEAP_SIZE + 4095) / 4096;
+    let mut heap_phys: usize = 0;
+    let status = unsafe {
+        (bs.allocate_pages)(
+            0usize,
+            EfiMemoryType::EfiLoaderData,
+            heap_pages,
+            &mut heap_phys,
+        )
+    };
+    if status != 0 {
+        return Err("Failed to allocate heap memory.");
+    }
+    unsafe {
+        ALLOCATOR.lock().init(heap_phys as *mut u8, HEAP_SIZE);
+    }
+    Ok(())
+}
+
+fn exit_boot_services_and_jump(
+    image_handle: usize,
+    system_table: *mut EfiSystemTable,
+    entry: extern "efiapi" fn(usize, *mut EfiSystemTable) -> !,
+) -> Result<!> {
+    let bs = unsafe { &*(*system_table).boot_services };
     let mut map_size = 0;
     let mut map_key = 0;
     let mut descriptor_size = 0;
     let mut descriptor_version = 0;
 
-    // First call to get the required buffer size
     let status = unsafe {
         (bs.get_memory_map)(
             &mut map_size,
@@ -522,29 +544,26 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         )
     };
     if status != 0 {
-        uefi_print(&st, "Failed to get memory map size.\n");
-        loop {}
+        return Err("Failed to get memory map size.");
     }
 
     map_size += 4096;
     let map_pages = (map_size + 4095) / 4096;
     let mut map_phys_addr: usize = 0;
-    if unsafe {
+    let status = unsafe {
         (bs.allocate_pages)(
             0usize,
             EfiMemoryType::EfiLoaderData,
             map_pages,
             &mut map_phys_addr,
         )
-    } != 0
-    {
-        uefi_print(&st, "Failed to allocate memory map buffer.\n");
-        loop {}
+    };
+    if status != 0 {
+        return Err("Failed to allocate memory map buffer.");
     }
 
     let map_ptr = map_phys_addr as *mut c_void;
-
-    if unsafe {
+    let status = unsafe {
         (bs.get_memory_map)(
             &mut map_size,
             map_ptr,
@@ -552,24 +571,21 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             &mut descriptor_size,
             &mut descriptor_version,
         )
-    } != 0
-    {
-        uefi_print(&st, "Failed to get memory map on second attempt.\n");
+    };
+    if status != 0 {
         unsafe {
             (bs.free_pages)(map_phys_addr, map_pages);
         }
-        loop {}
+        return Err("Failed to get memory map on second attempt.");
     }
 
-    if unsafe { (bs.exit_boot_services)(image_handle, map_key) } != 0 {
-        uefi_print(&st, "Failed to exit boot services.\n");
+    let status = unsafe { (bs.exit_boot_services)(image_handle, map_key) };
+    if status != 0 {
         unsafe {
             (bs.free_pages)(map_phys_addr, map_pages);
         }
-        loop {}
+        return Err("Failed to exit boot services.");
     }
 
-    // Now we are in the kernel environment, without UEFI services.
-    // The kernel is responsible for setting up its own environment.
-    entry(image_handle, system_table); // should not return
+    entry(image_handle, system_table);
 }
