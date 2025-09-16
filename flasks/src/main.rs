@@ -2,26 +2,22 @@
 use std::{env, io, path::PathBuf, process::Command};
 
 fn main() -> io::Result<()> {
-    // Workspace root (one level up from flasks/)
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("Failed to get workspace root")
         .to_path_buf();
-
-    // // Set RUST_TARGET_PATH to include the directory with custom target specifications
-    // unsafe {
-    //     env::set_var("RUST_TARGET_PATH", workspace_root.join(".cargo"));
-    // }
 
     // 1. Build fullerene-kernel
     let status = Command::new("cargo")
         .current_dir(&workspace_root)
         .args([
             "build",
-            "-Zbuild-std", // Add this flag
+            "-Zbuild-std",
             "--package",
             "fullerene-kernel",
             "--release",
+            "--target",
+            "x86_64-unknown-none",
         ])
         .status()?;
     if !status.success() {
@@ -33,18 +29,21 @@ fn main() -> io::Result<()> {
 
     let kernel_path = workspace_root
         .join("target")
+        .join("x86_64-unknown-none")
         .join("release")
-        .join("fullerene-kernel"); // No .efi extension
+        .join("fullerene-kernel");
 
     // 2. Build bellows
     let status = Command::new("cargo")
         .current_dir(&workspace_root)
         .args([
             "build",
-            "-Zbuild-std", // Add this flag
+            "-Zbuild-std",
             "--package",
             "bellows",
             "--release",
+            "--target",
+            "x86_64-unknown-none",
         ])
         .status()?;
     if !status.success() {
@@ -53,10 +52,11 @@ fn main() -> io::Result<()> {
 
     let bellows_path = workspace_root
         .join("target")
+        .join("x86_64-unknown-none")
         .join("release")
-        .join("bellows"); // No .efi extension
+        .join("bellows");
 
-    // 3. Create a simple disk image (replace FAT32/EFI)
+    // 3. Create a simple disk image
     let disk_img_path = workspace_root.join("fullerene.img");
     let mut file = std::fs::File::create(&disk_img_path)?;
     // Write bellows (bootloader) to the beginning of the disk image
@@ -67,15 +67,7 @@ fn main() -> io::Result<()> {
     let kernel_bytes = std::fs::read(&kernel_path)?;
     io::Write::write_all(&mut file, &kernel_bytes)?;
 
-    // 4. Remove ISO creation (not needed for raw disk image boot)
-    // The original comments and code blocks are commented out or removed
-    // to reflect the new, simpler raw disk image approach.
-
-    // 5. OVMF files are not needed for bare-metal boot
-    // The original comments and code blocks are commented out or removed
-    // to reflect the new, simpler raw disk image approach.
-
-    // 6. Run QEMU with the raw disk image
+    // 4. Run QEMU with the raw disk image
     let qemu_args = [
         "-drive",
         &format!("format=raw,file={}", disk_img_path.display()),
