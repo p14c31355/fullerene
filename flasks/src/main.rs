@@ -60,11 +60,10 @@ fn main() -> io::Result<()> {
 
     // Write bellows (bootloader) at the beginning
     let bellows_bytes = std::fs::read(&bellows_path)?;
-    io::Write::write_all(&mut file, &bellows_bytes)?;
-
+    file.write_all(&bellows_bytes)?;
     // Append kernel
     let kernel_bytes = std::fs::read(&kernel_path)?;
-    io::Write::write_all(&mut file, &kernel_bytes)?;
+    file.write_all(&kernel_bytes)?;
 
     // 4. Run QEMU with the raw disk image
     let qemu_args = [
