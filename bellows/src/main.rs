@@ -176,7 +176,7 @@ const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: [u8; 16] = [
     0x95, 0x76, 0x6e, 0x91, 0x3f, 0x6d, 0xd2, 0x11, 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
 ];
 
-/// Read `BOOTX64.EFI` from the volume using UEFI SimpleFileSystem protocol.
+/// Read `KERNEL.EFI` from the volume using UEFI SimpleFileSystem protocol.
 /// Allocates pages for the kernel buffer via BootServices.allocate_pages.
 unsafe fn read_efi_file(bs: &EfiBootServices) -> Option<&'static [u8]> {
     // locate SimpleFileSystem protocol
@@ -197,8 +197,8 @@ unsafe fn read_efi_file(bs: &EfiBootServices) -> Option<&'static [u8]> {
     }
 
     let file_name: [u16; 11] = [
-        'B' as u16, 'O' as u16, 'O' as u16, 'T' as u16, 'X' as u16, '6' as u16, '4' as u16, '.' as u16,
-        'E' as u16, 'F' as u16, 'I' as u16,
+        'K' as u16, 'E' as u16, 'R' as u16, 'N' as u16, 'E' as u16, 'L' as u16, '.' as u16, 'E' as u16,
+        'F' as u16, 'I' as u16, 0,
     ];
 
     let mut efi_file: *mut EfiFile = ptr::null_mut();
@@ -303,13 +303,14 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     // Now we can use alloc-based data structures and printing via uefi_print
     uefi_print(&st, "bellows: bootloader started\n");
 
+    // Change: Reading KERNEL.EFI instead of BOOTX64.EFI
     let efi_image_file = unsafe { read_efi_file(bs) }.unwrap_or_else(|| {
-        uefi_print(&st, "bellows: failed to read BOOTX64.EFI\n");
+        uefi_print(&st, "bellows: failed to read KERNEL.EFI\n");
         loop {}
     });
 
     let entry = load_efi_image(bs, efi_image_file).unwrap_or_else(|| {
-        uefi_print(&st, "bellows: EFI file is not a valid PE/COFF image\n");
+        uefi_print(&st, "bellows: KERNEL.EFI is not a valid PE/COFF image\n");
         loop {}
     });
     
