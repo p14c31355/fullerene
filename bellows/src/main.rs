@@ -229,7 +229,7 @@ const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: [u8; 16] = [
 ];
 
 /// Read `KERNEL.EFI` or `kernel.efi` from the volume using UEFI SimpleFileSystem protocol.
-unsafe fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
+unsafe fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> { unsafe {
     let bs = &*st.boot_services;
 
     let mut fs_ptr: *mut c_void = ptr::null_mut();
@@ -291,7 +291,7 @@ unsafe fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     let file_info: &EfiFileInfo = &*(file_info_ptr as *const EfiFileInfo);
     let file_size = file_info.file_size as usize;
 
-    let pages = (file_size + 4095) / 4096;
+    let pages = file_size.div_ceil(4096);
     let mut phys_addr: usize = 0;
     if (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, pages, &mut phys_addr) != 0 {
         ((*efi_file).close)(efi_file);
@@ -309,13 +309,13 @@ unsafe fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
 
     ((*efi_file).close)(efi_file);
     Ok((phys_addr, read_size as usize))
-}
+}}
 
 /// Load an EFI image (PE/COFF file) and return the entry point
 unsafe fn load_efi_image(
     st: &EfiSystemTable,
     image_file: &[u8],
-) -> Result<extern "efiapi" fn(usize, *mut EfiSystemTable) -> !> {
+) -> Result<extern "efiapi" fn(usize, *mut EfiSystemTable) -> !> { unsafe {
     let bs = &*st.boot_services;
 
     if image_file.len() < mem::size_of::<ImageDosHeader>() {
@@ -356,7 +356,7 @@ unsafe fn load_efi_image(
     let preferred_image_base = optional_header.image_base as usize;
     let preferred_image_size = optional_header.size_of_image as usize;
 
-    let pages_needed = (preferred_image_size + 4095) / 4096;
+    let pages_needed = preferred_image_size.div_ceil(4096);
     let mut phys_addr: usize = preferred_image_base;
 
     let status = (bs.allocate_pages)(
@@ -451,7 +451,7 @@ unsafe fn load_efi_image(
 
     let entry_point_addr = phys_addr + image_entry_point_rva;
     Ok(mem::transmute(entry_point_addr))
-}
+}}
 
 /// Entry point for UEFI. Note: name and calling convention are critical.
 #[unsafe(no_mangle)]
@@ -459,52 +459,52 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     let st = unsafe { &*system_table };
     let bs = unsafe { &*st.boot_services };
 
-    uefi_print(&st, "bellows: bootloader started\n");
+    uefi_print(st, "bellows: bootloader started\n");
 
-    if let Err(msg) = init_heap(&st, bs) {
-        uefi_print(&st, msg);
+    if let Err(msg) = init_heap(st, bs) {
+        uefi_print(st, msg);
         loop {}
     }
 
-    let (efi_image_phys, efi_image_size) = match unsafe { read_efi_file(&st) } {
+    let (efi_image_phys, efi_image_size) = match unsafe { read_efi_file(st) } {
         Ok(info) => info,
         Err(err) => {
-            uefi_print(&st, err);
-            uefi_print(&st, "\nHalting.\n");
+            uefi_print(st, err);
+            uefi_print(st, "\nHalting.\n");
             loop {}
         }
     };
     let efi_image_file =
         unsafe { slice::from_raw_parts(efi_image_phys as *const u8, efi_image_size) };
 
-    let entry = match unsafe { load_efi_image(&st, efi_image_file) } {
+    let entry = match unsafe { load_efi_image(st, efi_image_file) } {
         Ok(e) => e,
         Err(err) => {
-            uefi_print(&st, err);
-            uefi_print(&st, "\nHalting.\n");
+            uefi_print(st, err);
+            uefi_print(st, "\nHalting.\n");
             unsafe {
-                (bs.free_pages)(efi_image_phys, (efi_image_size + 4095) / 4096);
+                (bs.free_pages)(efi_image_phys, efi_image_size.div_ceil(4096));
             }
             loop {}
         }
     };
 
-    let file_pages = (efi_image_size + 4095) / 4096;
+    let file_pages = efi_image_size.div_ceil(4096);
     unsafe {
         (bs.free_pages)(efi_image_phys, file_pages);
     }
 
-    uefi_print(&st, "bellows: Exiting Boot Services...\n");
+    uefi_print(st, "bellows: Exiting Boot Services...\n");
 
     if let Err(msg) = exit_boot_services_and_jump(image_handle, system_table, entry) {
-        uefi_print(&st, msg);
+        uefi_print(st, msg);
         loop {}
     }
     unreachable!(); 
 }
 
 fn init_heap(st: &EfiSystemTable, bs: &EfiBootServices) -> Result<()> {
-    let heap_pages = (HEAP_SIZE + 4095) / 4096;
+    let heap_pages = HEAP_SIZE.div_ceil(4096);
     let mut heap_phys: usize = 0;
     let status = unsafe {
         (bs.allocate_pages)(
@@ -548,7 +548,7 @@ fn exit_boot_services_and_jump(
     }
 
     map_size += 4096;
-    let map_pages = (map_size + 4095) / 4096;
+    let map_pages = map_size.div_ceil(4096);
     let mut map_phys_addr: usize = 0;
     let status = unsafe {
         (bs.allocate_pages)(

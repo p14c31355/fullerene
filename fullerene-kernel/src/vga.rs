@@ -145,15 +145,15 @@ fn vga_hardware_init() {
         let mut cursor_start_port = Port::new(0x3D4);
         let mut cursor_end_port = Port::new(0x3D5);
 
-        cursor_start_port.write(0x0A as u8); // Cursor Start Register
-        cursor_end_port.write(0x0E as u8); // Cursor End Register (scanline 14, 15)
+        cursor_start_port.write(0x0A_u8); // Cursor Start Register
+        cursor_end_port.write(0x0E_u8); // Cursor End Register (scanline 14, 15)
 
         // Cursor Location High Register (0x0E) and Low Register (0x0F)
         // Set cursor to (0,0)
-        cursor_start_port.write(0x0E as u8); // Cursor Location High Register
-        cursor_end_port.write(0x00 as u8); // High byte of cursor offset
-        cursor_start_port.write(0x0F as u8); // Cursor Location Low Register
-        cursor_end_port.write(0x00 as u8); // Low byte of cursor offset
+        cursor_start_port.write(0x0E_u8); // Cursor Location High Register
+        cursor_end_port.write(0x00_u8); // High byte of cursor offset
+        cursor_start_port.write(0x0F_u8); // Cursor Location Low Register
+        cursor_end_port.write(0x00_u8); // Low byte of cursor offset
     }
 }
 

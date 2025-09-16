@@ -24,8 +24,7 @@ fn main() -> io::Result<()> {
         ])
         .status()?;
     if !status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             "fullerene-kernel build failed",
         ));
     }
@@ -53,7 +52,7 @@ fn main() -> io::Result<()> {
         ])
         .status()?;
     if !status.success() {
-        return Err(io::Error::new(io::ErrorKind::Other, "bellows build failed"));
+        return Err(io::Error::other("bellows build failed"));
     }
 
     let bellows_path = target_dir.join("bellows.efi");
@@ -111,12 +110,11 @@ fn main() -> io::Result<()> {
     ];
 
     let qemu_status = Command::new("qemu-system-x86_64")
-        .args(&qemu_args)
+        .args(qemu_args)
         .status()?;
 
     if !qemu_status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             "QEMU execution failed",
         ));
     }
