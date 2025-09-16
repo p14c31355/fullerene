@@ -1,5 +1,11 @@
 // fullerene/flasks/src/main.rs
-use std::{env, io::{self, Write}, path::PathBuf, process::Command};
+use std::{
+    env,
+    io,
+    path::PathBuf,
+    process::Command,
+};
+use isobemak::create_disk_and_iso;
 
 fn main() -> io::Result<()> {
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -16,7 +22,6 @@ fn main() -> io::Result<()> {
             "-Zbuild-std=core,alloc",
             "--package",
             "fullerene-kernel",
-            "--release",
             "--target",
             "x86_64-unknown-none",
         ])
@@ -44,7 +49,6 @@ fn main() -> io::Result<()> {
             "-Zbuild-std=core,alloc",
             "--package",
             "bellows",
-            "--release",
             "--target",
             "x86_64-unknown-none",
         ])
@@ -54,30 +58,45 @@ fn main() -> io::Result<()> {
     }
 
     let bellows_path = target_dir.join("bellows");
-    // 3. Create a simple disk image
-    let disk_img_path = workspace_root.join("fullerene.img");
-    let mut file = std::fs::File::create(&disk_img_path)?;
 
-    // Write bellows (bootloader) at the beginning
-    let bellows_bytes = std::fs::read(&bellows_path)?;
-    file.write_all(&bellows_bytes)?;
-    // Append kernel
-    let kernel_bytes = std::fs::read(&kernel_path)?;
-    file.write_all(&kernel_bytes)?;
+    // 3. Create FAT32 image and ISO using isobemak
+    let fat32_img_path = workspace_root.join("fullerene.img");
+    let iso_path = workspace_root.join("fullerene.iso");
 
-    // 4. Run QEMU with the raw disk image
+    create_disk_and_iso(
+        &fat32_img_path,
+        &iso_path,
+        &bellows_path,
+        &kernel_path,
+    )?;
+
+    // 4. Run QEMU with the created ISO image
+    let ovmf_fd_path = workspace_root.join("flasks").join("ovmf").join("RELEASEX64_OVMF.fd");
+    let ovmf_vars_fd_path = workspace_root.join("flasks").join("ovmf").join("RELEASEX64_OVMF_VARS.fd");
+
     let qemu_args = [
-        "-drive",
-        &format!("format=raw,file={}", disk_img_path.display()),
-        "-boot",
-        "a", // Boot from disk
+        "-cdrom",
+        iso_path.to_str().expect("Failed to convert ISO path to string"),
         "-m",
         "512M",
         "-cpu",
         "qemu64,+smap",
+        "-vga",
+        "std",               // Enable standard VGA emulation
         "-nographic",
         "-serial",
-        "mon:stdio",
+        "file:serial_log.txt", // Redirect serial output to file
+        "-bios",
+        ovmf_fd_path.to_str().expect("Failed to convert OVMF.fd path to string"),
+        "-drive",
+        &format!("if=pflash,format=raw,file={}", ovmf_vars_fd_path.display()),
+        "-debugcon",
+        "file:qemu_log.txt", // Add debug output to file
+        "-no-reboot",        // Prevent QEMU from rebooting on panic
+        "-monitor",
+        "stdio",             // Connect QEMU monitor to stdio
+        "-S",                // Stop CPU at startup
+        "-s",                // Enable GDB server
     ];
 
     let qemu_status = Command::new("qemu-system-x86_64")
@@ -90,6 +109,9 @@ fn main() -> io::Result<()> {
             "QEMU execution failed",
         ));
     }
+
+    // Clean up temporary FAT32 image
+    std::fs::remove_file(&fat32_img_path)?;
 
     Ok(())
 }
