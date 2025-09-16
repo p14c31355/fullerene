@@ -232,7 +232,7 @@ fn load_efi_image(
 ) -> Option<extern "efiapi" fn(usize, *mut EfiSystemTable) -> !> {
     unsafe {
         // Check for DOS header signature 'MZ'
-                let dos_header = ptr::read_unaligned(image.as_ptr() as *const ImageDosHeader);
+        let dos_header = ptr::read_unaligned(image.as_ptr() as *const ImageDosHeader);
         if dos_header.e_magic != 0x5a4d {
             return None;
         }
