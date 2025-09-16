@@ -76,9 +76,8 @@ fn main() -> io::Result<()> {
 
     let qemu_args = [
         "-cdrom",
-        iso_path
             .to_str()
-            .expect("Failed to convert ISO path to string"),
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "ISO path contains invalid UTF-8"))?,
         "-m",
         "512M",
         "-cpu",
