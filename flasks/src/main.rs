@@ -90,7 +90,7 @@ fn main() -> io::Result<()> {
         "-bios",
         ovmf_fd_path
             .to_str()
-            .expect("Failed to convert OVMF.fd path to string"),
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "OVMF.fd path contains invalid UTF-8"))?,
         "-drive",
         &format!("if=pflash,format=raw,file={}", ovmf_vars_fd_path.display()),
         "-boot",
