@@ -495,7 +495,7 @@ fn init_heap(bs: &EfiBootServices) -> Result<()> {
     if status != 0 {
         return Err("Failed to allocate heap memory.");
     }
-    unsafe {}
+    unsafe { ALLOCATOR.lock().init(heap_phys as *mut u8, HEAP_SIZE); }
     Ok(())
 }
 
