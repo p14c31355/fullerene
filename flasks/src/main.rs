@@ -76,9 +76,12 @@ fn main() -> io::Result<()> {
 
     let qemu_args = [
         "-cdrom",
-            ovmf_fd_path
-            .to_str()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "ISO path contains invalid UTF-8"))?,
+        ovmf_fd_path.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "ISO path contains invalid UTF-8",
+            )
+        })?,
         "-m",
         "512M",
         "-cpu",
@@ -88,9 +91,12 @@ fn main() -> io::Result<()> {
         "-serial",
         "file:serial_log.txt", // Serial output for debugging
         "-bios",
-        ovmf_fd_path
-            .to_str()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "OVMF.fd path contains invalid UTF-8"))?,
+        ovmf_fd_path.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OVMF.fd path contains invalid UTF-8",
+            )
+        })?,
         "-drive",
         &format!("if=pflash,format=raw,file={}", ovmf_vars_fd_path.display()),
         "-boot",
