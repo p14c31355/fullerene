@@ -84,9 +84,9 @@ fn main() -> io::Result<()> {
         "-cpu",
         "qemu64,+smap",
         "-vga",
-        "std", // Enable standard VGA emulation
+        "std", // Standard VGA for EFI apps
         "-serial",
-        "file:serial_log.txt", // Redirect serial output to file
+        "file:serial_log.txt", // Serial output for debugging
         "-bios",
         ovmf_fd_path
             .to_str()
@@ -95,11 +95,13 @@ fn main() -> io::Result<()> {
         &format!("if=pflash,format=raw,file={}", ovmf_vars_fd_path.display()),
         "-boot",
         "order=d", // Boot from CD-ROM first
-        "-D",      // Add QEMU's internal logging to a file
+        "-D",
         "qemu_log.txt",
-        "-no-reboot", // Prevent QEMU from rebooting on panic
-        "-s",         // Enable GDB server
-        "-S",         // Stop CPU at startup
+        "-no-reboot",
+        "-s", // Enable GDB server
+        "-S", // Stop CPU at startup
+        "-display",
+        "gtk,gl=on", // Force display window for EFI output
     ];
 
     let qemu_status = Command::new("qemu-system-x86_64")
