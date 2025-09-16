@@ -9,6 +9,3 @@ path = "src/main.rs"
 
 [dependencies]
 linked_list_allocator = "0.10.5"
-# Removed uefi dependency as per user request
-# uefi = { version = "0.35.0", features = ["global_allocator", "alloc", "panic_handler", "logger"] }
-log = "0.4.21"

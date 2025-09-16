@@ -28,11 +28,12 @@ fn main() -> io::Result<()> {
         ));
     }
 
-    let kernel_path = workspace_root
+    let target_dir = workspace_root
         .join("target")
         .join("x86_64-unknown-none")
-        .join("release")
-        .join("fullerene-kernel");
+        .join("release");
+
+    let kernel_path = target_dir.join("fullerene-kernel");
 
     // 2. Build bellows (no_std)
     let status = Command::new("cargo")
@@ -52,12 +53,7 @@ fn main() -> io::Result<()> {
         return Err(io::Error::new(io::ErrorKind::Other, "bellows build failed"));
     }
 
-    let bellows_path = workspace_root
-        .join("target")
-        .join("x86_64-unknown-none")
-        .join("release")
-        .join("bellows");
-
+    let bellows_path = target_dir.join("bellows");
     // 3. Create a simple disk image
     let disk_img_path = workspace_root.join("fullerene.img");
     let mut file = std::fs::File::create(&disk_img_path)?;
