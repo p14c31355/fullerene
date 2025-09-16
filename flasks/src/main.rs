@@ -93,7 +93,9 @@ fn main() -> io::Result<()> {
             .expect("Failed to convert OVMF.fd path to string"),
         "-drive",
         &format!("if=pflash,format=raw,file={}", ovmf_vars_fd_path.display()),
-        "-D", // Add QEMU's internal logging to a file
+        "-boot",
+        "order=d", // Boot from CD-ROM first
+        "-D",      // Add QEMU's internal logging to a file
         "qemu_log.txt",
         "-no-reboot", // Prevent QEMU from rebooting on panic
         "-s",         // Enable GDB server

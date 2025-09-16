@@ -1,11 +1,11 @@
 #![no_std]
 #![no_main]
 
-mod vga;
 mod serial;
+mod vga;
 
-use vga::vga_init;
 use serial::{serial_init, serial_log};
+use vga::vga_init;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn efi_main() -> ! {

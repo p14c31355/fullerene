@@ -8,7 +8,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::ffi::c_void;
-use core::{ptr, slice, mem};
+use core::{mem, ptr, slice};
 use linked_list_allocator::LockedHeap;
 
 /// Size of the heap we will allocate for `alloc` usage (bytes).
@@ -72,7 +72,8 @@ pub struct EfiBootServices {
     pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize,
     _pad_3: [usize; 3],
     /// get_memory_map(MemoryMapSize, *MemoryMap, *MapKey, *DescriptorSize, *DescriptorVersion) -> EFI_STATUS
-    pub get_memory_map: extern "efiapi" fn(*mut usize, *mut c_void, *mut usize, *mut usize, *mut u32) -> usize,
+    pub get_memory_map:
+        extern "efiapi" fn(*mut usize, *mut c_void, *mut usize, *mut usize, *mut u32) -> usize,
     _pad_4: [usize; 2],
     /// exit_boot_services(ImageHandle, MapKey) -> EFI_STATUS
     pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize,
@@ -103,9 +104,9 @@ pub struct EfiFile {
 /// PE/COFF structures (minimal subset)
 #[repr(C, packed)]
 struct ImageDosHeader {
-    e_magic: u16,      // Magic number
+    e_magic: u16, // Magic number
     _pad: [u8; 58],
-    e_lfanew: i32,     // File address of new exe header
+    e_lfanew: i32, // File address of new exe header
 }
 
 #[repr(C, packed)]
@@ -197,8 +198,8 @@ unsafe fn read_efi_file(bs: &EfiBootServices) -> Option<&'static [u8]> {
     }
 
     let file_name: [u16; 11] = [
-        'K' as u16, 'E' as u16, 'R' as u16, 'N' as u16, 'E' as u16, 'L' as u16, '.' as u16, 'E' as u16,
-        'F' as u16, 'I' as u16, 0,
+        'K' as u16, 'E' as u16, 'R' as u16, 'N' as u16, 'E' as u16, 'L' as u16, '.' as u16,
+        'E' as u16, 'F' as u16, 'I' as u16, 0,
     ];
 
     let mut efi_file: *mut EfiFile = ptr::null_mut();
@@ -225,7 +226,10 @@ unsafe fn read_efi_file(bs: &EfiBootServices) -> Option<&'static [u8]> {
 }
 
 /// Load an EFI image (PE/COFF file) and return the entry point
-fn load_efi_image(bs: &EfiBootServices, image: &[u8]) -> Option<extern "efiapi" fn(usize, *mut EfiSystemTable) -> !> {
+fn load_efi_image(
+    bs: &EfiBootServices,
+    image: &[u8],
+) -> Option<extern "efiapi" fn(usize, *mut EfiSystemTable) -> !> {
     unsafe {
         // Check for DOS header signature 'MZ'
         let dos_header = &*(image.as_ptr() as *const ImageDosHeader);
@@ -257,14 +261,24 @@ fn load_efi_image(bs: &EfiBootServices, image: &[u8]) -> Option<extern "efiapi" 
         // Allocate memory for the image
         let pages_needed = (image_size + 4095) / 4096;
         let mut phys_addr: usize = image_base_addr as usize;
-        if (bs.allocate_pages)(1usize, EfiMemoryType::EfiLoaderData, pages_needed, &mut phys_addr) != 0 {
+        if (bs.allocate_pages)(
+            1usize,
+            EfiMemoryType::EfiLoaderData,
+            pages_needed,
+            &mut phys_addr,
+        ) != 0
+        {
             return None;
         }
 
         let image_ptr = phys_addr as *mut u8;
 
         // Copy the headers
-        ptr::copy_nonoverlapping(image.as_ptr(), image_ptr, optional_header._size_of_headers as usize);
+        ptr::copy_nonoverlapping(
+            image.as_ptr(),
+            image_ptr,
+            optional_header._size_of_headers as usize,
+        );
 
         // This is a simplified loader. For a complete solution, we would iterate through sections
         // and copy each section to its correct virtual address (relative to the image base).
@@ -313,46 +327,65 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         uefi_print(&st, "bellows: KERNEL.EFI is not a valid PE/COFF image\n");
         loop {}
     });
-    
+
     uefi_print(&st, "bellows: Exiting Boot Services...\n");
-    
+
     // Get Memory Map and Exit Boot Services
     let mut map_size = 0;
     let mut map_key = 0;
     let mut descriptor_size = 0;
     let mut descriptor_version = 0;
-    
+
     // First call to get the required buffer size
     unsafe {
-        (bs.get_memory_map)(&mut map_size, ptr::null_mut(), &mut map_key, &mut descriptor_size, &mut descriptor_version);
+        (bs.get_memory_map)(
+            &mut map_size,
+            ptr::null_mut(),
+            &mut map_key,
+            &mut descriptor_size,
+            &mut descriptor_version,
+        );
     }
-    
+
     // Add a buffer for potential map size changes
     map_size += 4096;
     let map_pages = (map_size + 4095) / 4096;
     let mut map_phys_addr: usize = 0;
     unsafe {
-        if (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, map_pages, &mut map_phys_addr) != 0 {
+        if (bs.allocate_pages)(
+            0usize,
+            EfiMemoryType::EfiLoaderData,
+            map_pages,
+            &mut map_phys_addr,
+        ) != 0
+        {
             loop {}
         }
     }
-    
+
     let map_ptr = map_phys_addr as *mut c_void;
-    
+
     // Second call to get the actual memory map
     unsafe {
-        if (bs.get_memory_map)(&mut map_size, map_ptr, &mut map_key, &mut descriptor_size, &mut descriptor_version) != 0 {
+        if (bs.get_memory_map)(
+            &mut map_size,
+            map_ptr,
+            &mut map_key,
+            &mut descriptor_size,
+            &mut descriptor_version,
+        ) != 0
+        {
             loop {}
         }
     }
-    
+
     // Exit Boot Services
     unsafe {
         if (bs.exit_boot_services)(image_handle, map_key) != 0 {
             loop {}
         }
     }
-    
+
     // Now we are in the kernel environment, without UEFI services.
     // Jump to the kernel entry point.
     // The kernel is responsible for setting up its own environment (GDT, IDT, etc.).

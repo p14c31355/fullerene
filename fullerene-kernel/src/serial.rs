@@ -1,5 +1,5 @@
-use x86_64::instructions::port::Port;
 use spin::Mutex;
+use x86_64::instructions::port::Port;
 
 pub struct SerialPort {
     data: Port<u8>,
@@ -25,8 +25,8 @@ impl SerialPort {
     pub fn init(&mut self) {
         unsafe {
             self.line_ctrl.write(0x80); // Enable DLAB
-            self.data.write(0x03);      // Baud rate divisor low byte (38400 bps)
-            self.irq_enable.write(0x00); 
+            self.data.write(0x03); // Baud rate divisor low byte (38400 bps)
+            self.irq_enable.write(0x00);
             self.line_ctrl.write(0x03); // 8 bits, no parity, one stop bit
             self.fifo_ctrl.write(0xC7); // Enable FIFO, clear, 14-byte threshold
             self.modem_ctrl.write(0x0B); // IRQs enabled, OUT2

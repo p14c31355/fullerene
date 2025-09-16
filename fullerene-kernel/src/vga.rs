@@ -158,7 +158,6 @@ fn vga_hardware_init() {
 }
 
 pub fn log(msg: &str) {
-    
     if let Some(vga) = VGA_BUFFER.get() {
         let mut writer = vga.lock();
         writer.write_string(msg);
