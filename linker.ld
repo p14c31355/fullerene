@@ -1,4 +1,4 @@
-ENTRY(efi_main)
+ENTRY(_start)
 
 SECTIONS {
     .text : {

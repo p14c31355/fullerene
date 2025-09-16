@@ -143,13 +143,4 @@ pub fn vga_init() {
     writer.write_string("This is output directly to VGA.\n");
 }
 
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    // Try to print panic info to VGA if initialized
-    if let Some(writer) = VGA_BUFFER.get() {
-        let mut writer = writer.lock();
-        writer.write_string("Kernel panicked!\n");
-    }
-    loop {}
-}
+

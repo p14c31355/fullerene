@@ -3,11 +3,10 @@ build-std = ["core", "alloc", "compiler_builtins"]
 build-std-features = ["compiler-builtins-mem"]
 
 [build]
-target = "x86_64-unknown-none"
+target = "x86_64-fullerene-kernel"
 
-[target.x86_64-unknown-none]
-linker = "rust-lld"
+[target.x86_64-fullerene-kernel]
 rustflags = [
     "-C", "link-arg=-nostdlib",
-    "-C", "link-arg=-Tlinker.ld",
+    "-C", "link-arg=-Wl,-T/home/placeless/fullerene/linker.ld",
 ]
