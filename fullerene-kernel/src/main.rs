@@ -8,7 +8,7 @@ use serial::{serial_init, serial_log};
 use vga::vga_init;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn efi_main() -> ! {
+pub extern "efiapi" fn efi_main(_image_handle: usize, _system_table: *mut core::ffi::c_void) -> ! {
     vga_init();
     serial_init();
     vga::log("Entering _start");

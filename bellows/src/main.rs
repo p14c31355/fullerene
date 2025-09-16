@@ -232,28 +232,27 @@ fn load_efi_image(
 ) -> Option<extern "efiapi" fn(usize, *mut EfiSystemTable) -> !> {
     unsafe {
         // Check for DOS header signature 'MZ'
-        let dos_header = &*(image.as_ptr() as *const ImageDosHeader);
+                let dos_header = ptr::read_unaligned(image.as_ptr() as *const ImageDosHeader);
         if dos_header.e_magic != 0x5a4d {
             return None;
         }
 
         // Check for PE signature 'PE\0\0'
         let pe_header_offset = dos_header.e_lfanew as usize;
-        let pe_signature = &*(image.as_ptr().add(pe_header_offset) as *const u32);
-        if *pe_signature != 0x00004550 {
+        let pe_signature = ptr::read_unaligned(image.as_ptr().add(pe_header_offset) as *const u32);
+        if pe_signature != 0x00004550 {
             return None;
         }
 
         let file_header_ptr = image.as_ptr().add(pe_header_offset + 4);
-        let file_header = &*(file_header_ptr as *const ImageFileHeader);
+        let file_header = ptr::read_unaligned(file_header_ptr as *const ImageFileHeader);
         let optional_header_ptr = file_header_ptr.add(mem::size_of::<ImageFileHeader>());
 
         // Check if it's a 64-bit optional header
         if file_header.size_of_optional_header < mem::size_of::<ImageOptionalHeader64>() as u16 {
             return None;
         }
-        let optional_header = &*(optional_header_ptr as *const ImageOptionalHeader64);
-
+        let optional_header = ptr::read_unaligned(optional_header_ptr as *const ImageOptionalHeader64);
         let image_base_addr = optional_header.image_base;
         let image_size = optional_header.size_of_image as usize;
         let entry_point_rva = optional_header.address_of_entry_point as usize;
