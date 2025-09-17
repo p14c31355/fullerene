@@ -50,7 +50,7 @@ fn init_gop(st: &EfiSystemTable) {
         (bs.locate_protocol)(
             &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID as *const u8,
             core::ptr::null_mut(),
-            &mut gop as *mut *mut EfiGraphicsOutputProtocol as *mut *mut c_void,
+            &mut gop as *mut *mut c_void,
         )
     });
 
