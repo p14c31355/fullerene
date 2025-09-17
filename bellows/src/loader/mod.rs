@@ -23,15 +23,13 @@ pub fn exit_boot_services_and_jump(
 
     // First call to GetMemoryMap to get buffer size.
     // The UEFI spec recommends calling this with a zero-sized buffer first.
-    let status = unsafe {
-        (bs.get_memory_map)(
-            &mut map_size,
-            ptr::null_mut(),
-            &mut map_key,
-            &mut descriptor_size,
-            &mut descriptor_version,
-        )
-    };
+    let status = (bs.get_memory_map)(
+        &mut map_size,
+        ptr::null_mut(),
+        &mut map_key,
+        &mut descriptor_size,
+        &mut descriptor_version,
+    );
     if status != 0 {
         return Err("Failed to get memory map size on first attempt.");
     }
@@ -41,14 +39,12 @@ pub fn exit_boot_services_and_jump(
     map_size += 4096; // 4096 is just a safe buffer, one page is usually enough
     let map_pages = map_size.div_ceil(4096);
     let mut map_phys_addr: usize = 0;
-    let status = unsafe {
-        (bs.allocate_pages)(
-            0usize,
-            EfiMemoryType::EfiLoaderData,
-            map_pages,
-            &mut map_phys_addr,
-        )
-    };
+    let status = (bs.allocate_pages)(
+        0usize,
+        EfiMemoryType::EfiLoaderData,
+        map_pages,
+        &mut map_phys_addr,
+    );
     if status != 0 {
         return Err("Failed to allocate memory map buffer.");
     }
@@ -60,22 +56,20 @@ pub fn exit_boot_services_and_jump(
     let status = loop {
         map_size += descriptor_size;
         let map_pages = map_size.div_ceil(4096);
-        unsafe { (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, map_pages, &mut map_phys_addr) };
-        let status = unsafe {
-            (bs.get_memory_map)(
-                &mut map_size,
-                map_ptr,
-                &mut map_key,
-                &mut descriptor_size,
-                &mut descriptor_version,
-            )
-        };
+        (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, map_pages, &mut map_phys_addr);
+        let status = (bs.get_memory_map)(
+            &mut map_size,
+            map_ptr,
+            &mut map_key,
+            &mut descriptor_size,
+            &mut descriptor_version,
+        );
         if status == 0 {
             break status;
         } else if status == 0x8000000000000005 { // EFI_BUFFER_TOO_SMALL
             continue;
         } else {
-            unsafe { (bs.free_pages)(map_phys_addr, map_pages) };
+            (bs.free_pages)(map_phys_addr, map_pages);
             return Err("Failed to get memory map after multiple attempts.");
         }
     };
@@ -84,7 +78,7 @@ pub fn exit_boot_services_and_jump(
     }
     
     // Exit boot services. This call must succeed.
-    let exit_status = unsafe { (bs.exit_boot_services)(image_handle, map_key) };
+    let exit_status = (bs.exit_boot_services)(image_handle, map_key);
     if exit_status != 0 {
         // If this fails, there's no way to recover.
         return Err("Failed to exit boot services.");

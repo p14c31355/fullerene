@@ -96,7 +96,7 @@ pub struct EfiGraphicsOutputProtocolMode {
     pub size_of_info: u64,
     pub frame_buffer_base: usize,
     pub frame_buffer_size: usize,
-    pub(crate) current_mode: (),
+    pub(crate) current_mode: u32,
 }
 
 #[repr(C)]

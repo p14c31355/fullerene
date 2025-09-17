@@ -48,7 +48,7 @@ struct ImageOptionalHeader64 {
     _minor_subsystem_version: u16,
     _win32_version_value: u32,
     size_of_image: u32,
-    _size_of_headers: u32,
+    size_of_headers: u32,
     _checksum: u32,
     _subsystem: u16,
     _dll_characteristics: u16,
@@ -59,13 +59,6 @@ struct ImageOptionalHeader64 {
     _loader_flags: u32,
     number_of_rva_and_sizes: u32,
     _data_directory: [ImageDataDirectory; 16],
-}
-
-#[repr(C, packed)]
-struct ImageNtHeaders64 {
-    signature: u32,
-    file_header: ImageFileHeader,
-    optional_header: ImageOptionalHeader64,
 }
 
 #[repr(C, packed)]
@@ -86,6 +79,13 @@ struct SectionHeader {
 struct ImageBaseRelocation {
     virtual_address: u32,
     size_of_block: u32,
+}
+
+#[repr(C, packed)]
+struct ImageNtHeaders64 {
+    signature: u32,
+    file_header: ImageFileHeader,
+    optional_header: ImageOptionalHeader64,
 }
 
 pub fn load_efi_image(
@@ -111,14 +111,14 @@ pub fn load_efi_image(
     // Allocate memory for the image
     let pages_needed = nt_headers.optional_header.size_of_image as usize / 4096 + 1;
     let mut phys_addr: usize = 0;
-    if (unsafe {
+    if unsafe {
         (bs.allocate_pages)(
             0usize,
             EfiMemoryType::EfiLoaderData,
             pages_needed,
             &mut phys_addr,
         )
-    }) != 0
+    } != 0
     {
         return Err("Failed to allocate pages for kernel image.");
     }
@@ -128,7 +128,7 @@ pub fn load_efi_image(
         ptr::copy_nonoverlapping(
             image_data.as_ptr(),
             phys_addr as *mut u8,
-            nt_headers.optional_header._size_of_headers as usize,
+            nt_headers.optional_header.size_of_headers as usize,
         );
     }
     let sections_ptr = unsafe {
@@ -159,7 +159,7 @@ pub fn load_efi_image(
     if reloc_base_va > 0 && reloc_size > 0 {
         let relocs_start_ptr = unsafe {
             (phys_addr as *mut u8)
-                .add(reloc_base_va as usize) as *const u8
+                .add(reloc_base_va as usize)
         };
         let mut current_reloc_block = relocs_start_ptr as *const u8;
         let relocs_end_ptr = unsafe { relocs_start_ptr.add(reloc_size) };
@@ -182,7 +182,7 @@ pub fn load_efi_image(
                         *fixup_address_ptr = (*fixup_address_ptr).wrapping_add(image_base_delta);
                     }
                 } else if fixup_type != 0 {
-                    unsafe { (bs.free_pages)(phys_addr, pages_needed) };
+                    (bs.free_pages)(phys_addr, pages_needed);
                     return Err("Unsupported relocation type.");
                 }
             }
@@ -191,5 +191,6 @@ pub fn load_efi_image(
     }
 
     let entry_point_addr = phys_addr + nt_headers.optional_header.address_of_entry_point as usize;
-    Ok(unsafe { mem::transmute(entry_point_addr) })
+
+    Ok(unsafe { core::mem::transmute(entry_point_addr) })
 }

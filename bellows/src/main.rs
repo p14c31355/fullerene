@@ -1,4 +1,5 @@
 // bellows/src/main.rs
+
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
@@ -7,8 +8,6 @@
 extern crate alloc;
 
 use alloc::format;
-use alloc::string::String;
-use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::ffi::c_void;
 use core::slice;
@@ -16,11 +15,12 @@ use core::slice;
 mod loader;
 mod uefi;
 
-use crate::loader::exit_boot_services_and_jump;
-use crate::loader::{file::read_efi_file, heap::init_heap, pe::load_efi_image};
+use crate::loader::{
+    exit_boot_services_and_jump, file::read_efi_file, heap::init_heap, pe::load_efi_image,
+};
 
 use crate::uefi::{
-    uefi_print, EfiGraphicsOutputProtocol, EfiMemoryType, EfiSystemTable,
+    uefi_print, EfiGraphicsOutputProtocol, EfiSystemTable,
     FullereneFramebufferConfig, EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
     FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
 };
@@ -44,15 +44,13 @@ fn init_gop(st: &EfiSystemTable) {
 
     let bs = unsafe { &*st.boot_services };
     let mut gop: *mut EfiGraphicsOutputProtocol = core::ptr::null_mut();
-    let _ = unsafe {
-        (bs.locate_protocol)(
-            EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
-            core::ptr::null_mut(),
-            &mut gop as *mut _ as *mut *mut c_void,
-        )
-    };
+    let _ = (bs.locate_protocol)(
+        EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
+        core::ptr::null_mut(),
+        &mut gop as *mut _ as *mut *mut c_void,
+    );
     if !gop.is_null() {
-        let mode = unsafe { (*(*gop).mode).current_mode };
+        let _mode = unsafe { (*(*gop).mode).current_mode };
         let info = unsafe { &*(*(*gop).mode).info };
         uefi_print(
             st,
@@ -61,18 +59,16 @@ fn init_gop(st: &EfiSystemTable) {
         let fb_addr = unsafe { (*(*gop).mode).frame_buffer_base };
         let fb_size = unsafe { (*(*gop).mode).frame_buffer_size } as usize;
         let fb_ptr = fb_addr as *mut u32;
-        let _ = unsafe {
-            (bs.install_configuration_table)(
-                FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
-                &FullereneFramebufferConfig {
-                    address: fb_addr as u64,
-                    width: info.horizontal_resolution,
-                    height: info.vertical_resolution,
-                    stride: info.pixels_per_scan_line,
-                    pixel_format: info.pixel_format,
-                } as *const _ as *mut c_void,
-            )
-        };
+        let _ = (bs.install_configuration_table)(
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
+            &FullereneFramebufferConfig {
+                address: fb_addr as u64,
+                width: info.horizontal_resolution,
+                height: info.vertical_resolution,
+                stride: info.pixels_per_scan_line,
+                pixel_format: info.pixel_format,
+            } as *const _ as *mut c_void,
+        );
         for i in 0..fb_size {
             unsafe {
                 *fb_ptr.add(i) = 0x000000;
