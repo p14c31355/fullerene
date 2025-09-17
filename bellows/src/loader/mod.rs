@@ -2,7 +2,7 @@
 
 use crate::uefi::{EfiMemoryType, EfiSystemTable, Result};
 use core::ffi::c_void;
-use core::{ptr};
+use core::ptr;
 
 pub mod file;
 pub mod heap;
@@ -58,17 +58,13 @@ pub fn exit_boot_services_and_jump(
         )
     });
     if status != 0 {
-        (unsafe {
-            (bs.free_pages)(map_phys_addr, map_pages)
-        });
+        (unsafe { (bs.free_pages)(map_phys_addr, map_pages) });
         return Err("Failed to get memory map on second attempt.");
     }
 
     let status = (unsafe { (bs.exit_boot_services)(image_handle, map_key) });
     if status != 0 {
-        (unsafe {
-            (bs.free_pages)(map_phys_addr, map_pages)
-        });
+        (unsafe { (bs.free_pages)(map_phys_addr, map_pages) });
         return Err("Failed to exit boot services.");
     }
     entry(image_handle, system_table, map_ptr, map_size);

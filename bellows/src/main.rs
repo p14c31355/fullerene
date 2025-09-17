@@ -16,19 +16,12 @@ mod loader;
 mod uefi;
 
 use crate::loader::{
-    file::{read_efi_file},
-    heap::init_heap,
-    pe::{load_efi_image},
-    exit_boot_services_and_jump,
+    exit_boot_services_and_jump, file::read_efi_file, heap::init_heap, pe::load_efi_image,
 };
 
 use crate::uefi::{
-    EfiGraphicsOutputProtocol,
-    EfiSystemTable,
-    uefi_print,
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiSystemTable, uefi_print,
 };
-
 
 /// Alloc error handler required when using `alloc` in no_std.
 #[alloc_error_handler]
@@ -44,6 +37,9 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 }
 
 fn init_gop(st: &EfiSystemTable) {
+    const TARGET_WIDTH: u32 = 1024;
+    const TARGET_HEIGHT: u32 = 768;
+
     let bs = unsafe { &*st.boot_services };
     let mut gop: *mut EfiGraphicsOutputProtocol = core::ptr::null_mut();
     let status = (unsafe {
@@ -67,20 +63,38 @@ fn init_gop(st: &EfiSystemTable) {
     for i in 0..unsafe { (*gop.mode).max_mode } {
         if (gop.query_mode)(gop, i, &mut size_of_info, &mut info) == 0 {
             let info = unsafe { &*info };
-            if info.horizontal_resolution == 1024 && info.vertical_resolution == 768 {
+            if info.horizontal_resolution == TARGET_WIDTH
+                && info.vertical_resolution == TARGET_HEIGHT
+            {
                 best_mode = Some(i);
+                break;
             }
         }
     }
 
     if let Some(mode) = best_mode {
         if (gop.set_mode)(gop, mode) == 0 {
-            uefi_print(st, "bellows: Set mode 1024x768\n");
+            uefi_print(
+                st,
+                &format!("bellows: Set mode {}x{}\n", TARGET_WIDTH, TARGET_HEIGHT),
+            );
         } else {
-            uefi_print(st, "bellows: Failed to set mode 1024x768\n");
+            uefi_print(
+                st,
+                &format!(
+                    "bellows: Failed to set mode {}x{}\n",
+                    TARGET_WIDTH, TARGET_HEIGHT
+                ),
+            );
         }
     } else {
-        uefi_print(st, "bellows: Mode 1024x768 not found\n");
+        uefi_print(
+            st,
+            &format!(
+                "bellows: Mode {}x{} not found\n",
+                TARGET_WIDTH, TARGET_HEIGHT
+            ),
+        );
     }
 
     let mode = unsafe { &*gop.mode };
@@ -118,8 +132,9 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             panic!();
         }
     };
-    let efi_image_file = unsafe { slice::from_raw_parts(efi_image_phys as *const u8, efi_image_size) };
-    
+    let efi_image_file =
+        unsafe { slice::from_raw_parts(efi_image_phys as *const u8, efi_image_size) };
+
     let entry = match load_efi_image(st, efi_image_file) {
         Ok(e) => e,
         Err(err) => {

@@ -82,25 +82,47 @@ struct ImageBaseRelocation {
 }
 
 /// Load an EFI image (PE/COFF file) and return the entry point
-pub fn load_efi_image(st: &EfiSystemTable, image_file: &[u8]) -> Result<extern "efiapi" fn(usize, *mut EfiSystemTable, *mut core::ffi::c_void, usize) -> !> {
+pub fn load_efi_image(
+    st: &EfiSystemTable,
+    image_file: &[u8],
+) -> Result<extern "efiapi" fn(usize, *mut EfiSystemTable, *mut core::ffi::c_void, usize) -> !> {
     let bs = unsafe { &*st.boot_services };
 
-    if image_file.len() < mem::size_of::<ImageDosHeader>() { return Err("Image file too small for DOS header."); }
+    if image_file.len() < mem::size_of::<ImageDosHeader>() {
+        return Err("Image file too small for DOS header.");
+    }
     let dos_header = unsafe { ptr::read_unaligned(image_file.as_ptr() as *const ImageDosHeader) };
-    if dos_header.e_magic != 0x5a4d { return Err("Invalid PE/COFF file: Missing DOS header."); }
+    if dos_header.e_magic != 0x5a4d {
+        return Err("Invalid PE/COFF file: Missing DOS header.");
+    }
 
     let pe_header_offset = dos_header.e_lfanew as usize;
-    if image_file.len() < pe_header_offset + 4 { return Err("Image file too small for PE signature."); }
-    let pe_signature = unsafe { ptr::read_unaligned(image_file.as_ptr().add(pe_header_offset) as *const u32) };
-    if pe_signature != 0x00004550 { return Err("Invalid PE/COFF file: Missing PE signature."); }
+    if image_file.len() < pe_header_offset + 4 {
+        return Err("Image file too small for PE signature.");
+    }
+    let pe_signature =
+        unsafe { ptr::read_unaligned(image_file.as_ptr().add(pe_header_offset) as *const u32) };
+    if pe_signature != 0x00004550 {
+        return Err("Invalid PE/COFF file: Missing PE signature.");
+    }
 
     let file_header_ptr = unsafe { image_file.as_ptr().add(pe_header_offset + 4) };
-    if image_file.len() < pe_header_offset + 4 + mem::size_of::<ImageFileHeader>() { return Err("Image file too small for file header."); }
+    if image_file.len() < pe_header_offset + 4 + mem::size_of::<ImageFileHeader>() {
+        return Err("Image file too small for file header.");
+    }
     let file_header = unsafe { ptr::read_unaligned(file_header_ptr as *const ImageFileHeader) };
 
     let optional_header_ptr = unsafe { file_header_ptr.add(mem::size_of::<ImageFileHeader>()) };
-    if image_file.len() < pe_header_offset + 4 + mem::size_of::<ImageFileHeader>() + file_header.size_of_optional_header as usize { return Err("Image file too small for optional header."); }
-    let optional_header = unsafe { ptr::read_unaligned(optional_header_ptr as *const ImageOptionalHeader64) };
+    if image_file.len()
+        < pe_header_offset
+            + 4
+            + mem::size_of::<ImageFileHeader>()
+            + file_header.size_of_optional_header as usize
+    {
+        return Err("Image file too small for optional header.");
+    }
+    let optional_header =
+        unsafe { ptr::read_unaligned(optional_header_ptr as *const ImageOptionalHeader64) };
 
     let image_entry_point_rva = optional_header.address_of_entry_point as usize;
     let preferred_image_base = optional_header.image_base as usize;
@@ -108,8 +130,17 @@ pub fn load_efi_image(st: &EfiSystemTable, image_file: &[u8]) -> Result<extern "
 
     let pages_needed = preferred_image_size.div_ceil(4096);
     let mut phys_addr: usize = preferred_image_base;
-    let status = (unsafe { (bs.allocate_pages)(1usize, EfiMemoryType::EfiLoaderData, pages_needed, &mut phys_addr) });
-    if status != 0 { return Err("Failed to allocate pages for kernel image at preferred address."); }
+    let status = (unsafe {
+        (bs.allocate_pages)(
+            1usize,
+            EfiMemoryType::EfiLoaderData,
+            pages_needed,
+            &mut phys_addr,
+        )
+    });
+    if status != 0 {
+        return Err("Failed to allocate pages for kernel image at preferred address.");
+    }
     if phys_addr != preferred_image_base {
         (unsafe { (bs.free_pages)(phys_addr, pages_needed) });
         return Err("Allocation did not return preferred address.");
@@ -117,34 +148,63 @@ pub fn load_efi_image(st: &EfiSystemTable, image_file: &[u8]) -> Result<extern "
 
     let image_ptr = phys_addr as *mut u8;
     let headers_size = optional_header._size_of_headers as usize;
-    if image_file.len() < headers_size { return Err("Image file headers size is invalid."); }
-    unsafe { ptr::copy_nonoverlapping(image_file.as_ptr(), image_ptr, headers_size); }
+    if image_file.len() < headers_size {
+        return Err("Image file headers size is invalid.");
+    }
+    unsafe {
+        ptr::copy_nonoverlapping(image_file.as_ptr(), image_ptr, headers_size);
+    }
 
-    let mut section_header_ptr = unsafe { optional_header_ptr.add(file_header.size_of_optional_header as usize) };
+    let mut section_header_ptr =
+        unsafe { optional_header_ptr.add(file_header.size_of_optional_header as usize) };
     for _ in 0..file_header.number_of_sections as usize {
-        let section_header = unsafe { ptr::read_unaligned(section_header_ptr as *const ImageSectionHeader) };
+        let section_header =
+            unsafe { ptr::read_unaligned(section_header_ptr as *const ImageSectionHeader) };
         if section_header.size_of_raw_data > 0 {
-            let raw_data_ptr = unsafe { image_file.as_ptr().add(section_header.pointer_to_raw_data as usize) };
+            let raw_data_ptr = unsafe {
+                image_file
+                    .as_ptr()
+                    .add(section_header.pointer_to_raw_data as usize)
+            };
             let virtual_address = phys_addr + section_header.virtual_address as usize;
-            if image_file.len() < section_header.pointer_to_raw_data as usize + section_header.size_of_raw_data as usize {
+            if image_file.len()
+                < section_header.pointer_to_raw_data as usize
+                    + section_header.size_of_raw_data as usize
+            {
                 (unsafe { (bs.free_pages)(phys_addr, pages_needed) });
                 return Err("Invalid section data size.");
             }
-            unsafe { ptr::copy_nonoverlapping(raw_data_ptr, virtual_address as *mut u8, section_header.size_of_raw_data as usize); }
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    raw_data_ptr,
+                    virtual_address as *mut u8,
+                    section_header.size_of_raw_data as usize,
+                );
+            }
         }
-        section_header_ptr = unsafe { section_header_ptr.add(mem::size_of::<ImageSectionHeader>()) };
+        section_header_ptr =
+            unsafe { section_header_ptr.add(mem::size_of::<ImageSectionHeader>()) };
     }
 
     let reloc_data_dir = &optional_header.data_directory[5];
     if reloc_data_dir.size > 0 {
-        let reloc_table_offset = unsafe { image_file.as_ptr().add(reloc_data_dir.virtual_address as usize) };
+        let reloc_table_offset = unsafe {
+            image_file
+                .as_ptr()
+                .add(reloc_data_dir.virtual_address as usize)
+        };
         let mut current_reloc_block = reloc_table_offset;
-        while (current_reloc_block as usize - reloc_table_offset as usize) < reloc_data_dir.size as usize {
-            let reloc_block_header: &ImageBaseRelocation = unsafe { &*(current_reloc_block as *const ImageBaseRelocation) };
+        while (current_reloc_block as usize - reloc_table_offset as usize)
+            < reloc_data_dir.size as usize
+        {
+            let reloc_block_header: &ImageBaseRelocation =
+                unsafe { &*(current_reloc_block as *const ImageBaseRelocation) };
             let reloc_block_size = reloc_block_header.size_of_block as usize;
             let num_entries = (reloc_block_size - mem::size_of::<ImageBaseRelocation>()) / 2;
-            let fixup_list_ptr = unsafe { current_reloc_block.add(mem::size_of::<ImageBaseRelocation>()) };
-            let fixup_list = unsafe { slice::from_raw_parts(fixup_list_ptr as *const u16, num_entries) };
+            let fixup_list_ptr =
+                unsafe { current_reloc_block.add(mem::size_of::<ImageBaseRelocation>()) };
+            let fixup_list =
+                unsafe { slice::from_raw_parts(fixup_list_ptr as *const u16, num_entries) };
             let offset = phys_addr as u64 - preferred_image_base as u64;
             let reloc_page_va = phys_addr + reloc_block_header.virtual_address as usize;
 
@@ -153,7 +213,9 @@ pub fn load_efi_image(st: &EfiSystemTable, image_file: &[u8]) -> Result<extern "
                 let fixup_offset = fixup & 0xFFF;
                 if fixup_type == 10 {
                     let fixup_address_ptr = (reloc_page_va + fixup_offset as usize) as *mut u64;
-                    unsafe { *fixup_address_ptr = (*fixup_address_ptr).wrapping_add(offset); }
+                    unsafe {
+                        *fixup_address_ptr = (*fixup_address_ptr).wrapping_add(offset);
+                    }
                 } else if fixup_type != 0 {
                     (unsafe { (bs.free_pages)(phys_addr, pages_needed) });
                     return Err("Unsupported relocation type.");
