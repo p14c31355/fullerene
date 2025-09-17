@@ -56,7 +56,12 @@ pub fn exit_boot_services_and_jump(
     let status = loop {
         map_size += descriptor_size;
         let map_pages = map_size.div_ceil(4096);
-        (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, map_pages, &mut map_phys_addr);
+        (bs.allocate_pages)(
+            0usize,
+            EfiMemoryType::EfiLoaderData,
+            map_pages,
+            &mut map_phys_addr,
+        );
         let status = (bs.get_memory_map)(
             &mut map_size,
             map_ptr,
@@ -66,7 +71,8 @@ pub fn exit_boot_services_and_jump(
         );
         if status == 0 {
             break status;
-        } else if status == 0x8000000000000005 { // EFI_BUFFER_TOO_SMALL
+        } else if status == 0x8000000000000005 {
+            // EFI_BUFFER_TOO_SMALL
             continue;
         } else {
             (bs.free_pages)(map_phys_addr, map_pages);
@@ -76,7 +82,7 @@ pub fn exit_boot_services_and_jump(
     if status != 0 {
         return Err("Failed to get memory map on final attempt.");
     }
-    
+
     // Exit boot services. This call must succeed.
     let exit_status = (bs.exit_boot_services)(image_handle, map_key);
     if exit_status != 0 {
@@ -86,11 +92,6 @@ pub fn exit_boot_services_and_jump(
 
     // Jump to the kernel. This is the last instruction in the bootloader.
     unsafe {
-        entry(
-            image_handle,
-            system_table,
-            map_ptr,
-            map_size,
-        );
+        entry(image_handle, system_table, map_ptr, map_size);
     }
 }

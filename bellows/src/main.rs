@@ -20,9 +20,8 @@ use crate::loader::{
 };
 
 use crate::uefi::{
-    uefi_print, EfiGraphicsOutputProtocol, EfiSystemTable,
-    FullereneFramebufferConfig, EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
-    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiSystemTable,
+    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig, uefi_print,
 };
 
 /// Alloc error handler required when using `alloc` in no_std.
@@ -52,10 +51,7 @@ fn init_gop(st: &EfiSystemTable) {
     if !gop.is_null() {
         let _mode = unsafe { (*(*gop).mode).current_mode };
         let info = unsafe { &*(*(*gop).mode).info };
-        uefi_print(
-            st,
-            &format!("gop info: {:?}\n", info),
-        );
+        uefi_print(st, &format!("gop info: {:?}\n", info));
         let fb_addr = unsafe { (*(*gop).mode).frame_buffer_base };
         let fb_size = unsafe { (*(*gop).mode).frame_buffer_size } as usize;
         let fb_ptr = fb_addr as *mut u32;
@@ -69,7 +65,8 @@ fn init_gop(st: &EfiSystemTable) {
                 pixel_format: info.pixel_format,
             } as *const _ as *mut c_void,
         );
-        for i in 0..fb_size {
+        let num_pixels = fb_size / 4; // Assuming 32bpp
+        for i in 0..num_pixels {
             unsafe {
                 *fb_ptr.add(i) = 0x000000;
             }
@@ -100,7 +97,8 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             panic!();
         }
     };
-    let efi_image_file = unsafe { slice::from_raw_parts(efi_image_phys as *const u8, efi_image_size) };
+    let efi_image_file =
+        unsafe { slice::from_raw_parts(efi_image_phys as *const u8, efi_image_size) };
 
     // Load the kernel and get its entry point.
     let entry = match load_efi_image(st, efi_image_file) {

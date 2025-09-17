@@ -1,6 +1,10 @@
 // fullerene/flasks/src/main.rs
 use isobemak::create_disk_and_iso;
-use std::{env, io, path::{Path, PathBuf}, process::Command};
+use std::{
+    env, io,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 fn main() -> io::Result<()> {
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -56,11 +60,7 @@ fn main() -> io::Result<()> {
     // --- 3. Create ISO using isobemak ---
     let iso_path = workspace_root.join("fullerene.iso");
 
-    create_disk_and_iso(
-        &iso_path,
-        &bellows_path,
-        &kernel_path,
-    )?;
+    create_disk_and_iso(&iso_path, &bellows_path, &kernel_path)?;
 
     // --- 4. Run QEMU with the created ISO ---
     let ovmf_fd_path = workspace_root
@@ -75,7 +75,10 @@ fn main() -> io::Result<()> {
     let qemu_args = [
         "-cdrom",
         iso_path.to_str().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "ISO path contains invalid UTF-8")
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "ISO path contains invalid UTF-8",
+            )
         })?,
         "-m",
         "512M",
@@ -87,7 +90,10 @@ fn main() -> io::Result<()> {
         "stdio",
         "-bios",
         ovmf_fd_path.to_str().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "OVMF.fd path contains invalid UTF-8")
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OVMF.fd path contains invalid UTF-8",
+            )
         })?,
         "-drive",
         &format!("if=pflash,format=raw,file={}", ovmf_vars_fd_path.display()),

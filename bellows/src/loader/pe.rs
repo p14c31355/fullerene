@@ -100,9 +100,7 @@ pub fn load_efi_image(
     }
 
     let nt_headers: &ImageNtHeaders64 = unsafe {
-        &*(image_data
-            .as_ptr()
-            .add(dos_header.e_lfanew as usize) as *const ImageNtHeaders64)
+        &*(image_data.as_ptr().add(dos_header.e_lfanew as usize) as *const ImageNtHeaders64)
     };
     if nt_headers.signature != 0x4550 {
         return Err("Invalid PE signature.");
@@ -146,7 +144,11 @@ pub fn load_efi_image(
 
     for section in sections.iter() {
         let dest = unsafe { (phys_addr as *mut u8).add(section.virtual_address as usize) };
-        let src = unsafe { image_data.as_ptr().add(section.pointer_to_raw_data as usize) };
+        let src = unsafe {
+            image_data
+                .as_ptr()
+                .add(section.pointer_to_raw_data as usize)
+        };
         unsafe {
             ptr::copy_nonoverlapping(src, dest, section.size_of_raw_data as usize);
         }
@@ -157,26 +159,27 @@ pub fn load_efi_image(
     let reloc_base_va = data_dir_reloc.virtual_address as usize;
     let reloc_size = data_dir_reloc.size as usize;
     if reloc_base_va > 0 && reloc_size > 0 {
-        let relocs_start_ptr = unsafe {
-            (phys_addr as *mut u8)
-                .add(reloc_base_va as usize)
-        };
+        let relocs_start_ptr = unsafe { (phys_addr as *mut u8).add(reloc_base_va as usize) };
         let mut current_reloc_block = relocs_start_ptr as *const u8;
         let relocs_end_ptr = unsafe { relocs_start_ptr.add(reloc_size) };
         let image_base_delta = phys_addr as u64 - nt_headers.optional_header.image_base;
 
         while current_reloc_block < relocs_end_ptr {
-            let reloc_block_header = unsafe { &*(current_reloc_block as *const ImageBaseRelocation) };
+            let reloc_block_header =
+                unsafe { &*(current_reloc_block as *const ImageBaseRelocation) };
             let reloc_block_size = reloc_block_header.size_of_block as usize;
             let num_entries = (reloc_block_size - mem::size_of::<ImageBaseRelocation>()) / 2;
-            let fixup_list_ptr = unsafe { current_reloc_block.add(mem::size_of::<ImageBaseRelocation>()) };
-            let fixup_list = unsafe { slice::from_raw_parts(fixup_list_ptr as *const u16, num_entries) };
+            let fixup_list_ptr =
+                unsafe { current_reloc_block.add(mem::size_of::<ImageBaseRelocation>()) };
+            let fixup_list =
+                unsafe { slice::from_raw_parts(fixup_list_ptr as *const u16, num_entries) };
             let reloc_page_va = phys_addr + reloc_block_header.virtual_address as usize;
 
             for &fixup in fixup_list {
                 let fixup_type = (fixup >> 12) & 0xF;
                 let fixup_offset = fixup & 0xFFF;
-                if fixup_type == 10 { // IMAGE_REL_BASED_DIR64
+                if fixup_type == 10 {
+                    // IMAGE_REL_BASED_DIR64
                     let fixup_address_ptr = (reloc_page_va + fixup_offset as usize) as *mut u64;
                     unsafe {
                         *fixup_address_ptr = (*fixup_address_ptr).wrapping_add(image_base_delta);
