@@ -58,6 +58,7 @@ fn main() -> io::Result<()> {
 
     create_disk_and_iso(
         &iso_path,
+        &bellows_path,
         &kernel_path,
     )?;
 

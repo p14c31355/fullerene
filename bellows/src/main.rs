@@ -52,7 +52,7 @@ fn init_gop(st: &EfiSystemTable) {
     });
 
     if status != 0 || gop.is_null() {
-        uefi_print(st, "bellows: GOP not found\n");
+        uefi_print(st, "bellows: GOP not found, skipping graphics initialization.\n");
         return;
     }
 
@@ -61,6 +61,7 @@ fn init_gop(st: &EfiSystemTable) {
     let mut size_of_info: usize = 0;
     let mut best_mode = None;
 
+    // First, try to find the preferred mode (1024x768).
     for i in 0..unsafe { (*gop.mode).max_mode } {
         if (gop.query_mode)(gop, i, &mut size_of_info, &mut info) == 0 {
             let info = unsafe { &*info };
@@ -73,29 +74,22 @@ fn init_gop(st: &EfiSystemTable) {
         }
     }
 
+    // If the preferred mode is not found, fallback to the first available mode.
+    if best_mode.is_none() {
+        uefi_print(st, &format!("bellows: Preferred mode {}x{} not found, falling back to mode 0.\n", TARGET_WIDTH, TARGET_HEIGHT));
+        best_mode = Some(0);
+    }
+    
     if let Some(mode) = best_mode {
         if (gop.set_mode)(gop, mode) == 0 {
-            uefi_print(
-                st,
-                &format!("bellows: Set mode {}x{}\n", TARGET_WIDTH, TARGET_HEIGHT),
-            );
+            let current_info = unsafe { &*(*gop.mode).info };
+            uefi_print(st, &format!("bellows: Set mode {}x{}\n", current_info.horizontal_resolution, current_info.vertical_resolution));
         } else {
-            uefi_print(
-                st,
-                &format!(
-                    "bellows: Failed to set mode {}x{}\n",
-                    TARGET_WIDTH, TARGET_HEIGHT
-                ),
-            );
+            uefi_print(st, &format!("bellows: Failed to set mode {}.\n", mode));
         }
     } else {
-        uefi_print(
-            st,
-            &format!(
-                "bellows: Mode {}x{} not found\n",
-                TARGET_WIDTH, TARGET_HEIGHT
-            ),
-        );
+        uefi_print(st, "bellows: No display modes found.\n");
+        return;
     }
 
     let mode = unsafe { &*gop.mode };
