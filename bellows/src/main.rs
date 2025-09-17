@@ -16,9 +16,7 @@ use core::slice;
 mod loader;
 mod uefi;
 
-use crate::loader::{
-    exit_boot_services_and_jump, file::read_efi_file, heap::init_heap, pe::load_efi_image,
-};
+use crate::loader::{file::read_efi_file, heap::init_heap, pe::load_efi_image};
 
 use crate::uefi::{
     uefi_print, EfiGraphicsOutputProtocol, EfiMemoryType, EfiSystemTable,
@@ -45,112 +43,39 @@ fn init_gop(st: &EfiSystemTable) {
 
     let bs = unsafe { &*st.boot_services };
     let mut gop: *mut EfiGraphicsOutputProtocol = core::ptr::null_mut();
-    let status = (unsafe {
+    let _ = unsafe {
         (bs.locate_protocol)(
-            &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID as *const u8,
+            EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
             core::ptr::null_mut(),
-            &mut gop as *mut *mut EfiGraphicsOutputProtocol as *mut *mut c_void,
+            &mut gop as *mut _ as *mut *mut c_void,
         )
-    });
-
-    if status != 0 || gop.is_null() {
-        uefi_print(st, "bellows: GOP not found, skipping graphics initialization.\n");
-        return;
-    }
-
-    let gop = unsafe { &mut *gop };
-    let mut info: *mut crate::uefi::EfiGraphicsOutputModeInformation = core::ptr::null_mut();
-    let mut size_of_info: usize = 0;
-    let mut best_mode = None;
-
-    // First, try to find the preferred mode (1024x768).
-    for i in 0..unsafe { (*gop.mode).max_mode } {
-        if (gop.query_mode)(gop, i, &mut size_of_info, &mut info) == 0 {
-            let info = unsafe { &*info };
-            if info.horizontal_resolution == TARGET_WIDTH
-                && info.vertical_resolution == TARGET_HEIGHT
-            {
-                best_mode = Some(i);
-                break;
+    };
+    if !gop.is_null() {
+        let mode = unsafe { (*(*gop).mode).current_mode };
+        let info = unsafe { &*(*(*gop).mode).info };
+        uefi_print(
+            st,
+            &format!("gop info: {:?}\n", info),
+        );
+        let fb_addr = unsafe { (*(*gop).mode).frame_buffer_base };
+        let fb_size = unsafe { (*(*gop).mode).frame_buffer_size } as usize;
+        let fb_ptr = fb_addr as *mut u32;
+        let _ = unsafe {
+            (bs.install_configuration_table)(
+                FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
+                &FullereneFramebufferConfig {
+                    address: fb_addr as u64,
+                    width: info.horizontal_resolution,
+                    height: info.vertical_resolution,
+                    stride: info.pixels_per_scan_line,
+                    pixel_format: info.pixel_format,
+                } as *const _ as *mut c_void,
+            )
+        };
+        for i in 0..fb_size {
+            unsafe {
+                *fb_ptr.add(i) = 0x000000;
             }
-        }
-    }
-
-    // If the preferred mode is not found, fallback to the first available mode.
-    if best_mode.is_none() {
-        uefi_print(st, &format!("bellows: Preferred mode {}x{} not found, falling back to mode 0.\n", TARGET_WIDTH, TARGET_HEIGHT));
-        best_mode = Some(0);
-    }
-    
-    if let Some(mode) = best_mode {
-        if (gop.set_mode)(gop, mode) == 0 {
-            let current_info = unsafe { &*(*gop.mode).info };
-            uefi_print(st, &format!("bellows: Set mode {}x{}\n", current_info.horizontal_resolution, current_info.vertical_resolution));
-        } else {
-            uefi_print(st, &format!("bellows: Failed to set mode {}.\n", mode));
-        }
-    } else {
-        uefi_print(st, "bellows: No display modes found.\n");
-        return;
-    }
-
-    let mode = unsafe { &*gop.mode };
-    let info = unsafe { &*mode.info };
-
-    let s = format!(
-        "bellows: GOP initialized\n    Resolution: {}x{}\n    Framebuffer base: {:#x}\n    Framebuffer size: {}\n",
-        info.horizontal_resolution,
-        info.vertical_resolution,
-        mode.frame_buffer_base,
-        mode.frame_buffer_size
-    );
-    uefi_print(st, &s);
-
-    // Allocate memory for the framebuffer config structure.
-    // Note: UEFI memory allocations must be in pages.
-    let mut config_addr: usize = 0;
-    let alloc_status = (unsafe {
-        (bs.allocate_pages)(
-            0, // Allocate any address
-            EfiMemoryType::EfiLoaderData,
-            1, // one page
-            &mut config_addr as *mut usize,
-        )
-    });
-
-    if alloc_status != 0 {
-        uefi_print(st, "bellows: Failed to allocate memory for framebuffer config\n");
-        return;
-    }
-
-    let config = unsafe { &mut *(config_addr as *mut FullereneFramebufferConfig) };
-    config.address = mode.frame_buffer_base as u64;
-    config.width = info.horizontal_resolution;
-    config.height = info.vertical_resolution;
-    config.stride = info.pixels_per_scan_line;
-    config.pixel_format = info.pixel_format;
-
-    // Install the configuration table
-    let install_status = (unsafe {
-        (bs.install_configuration_table)(
-            &FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID as *const u8,
-            config as *mut FullereneFramebufferConfig as *mut c_void,
-        )
-    });
-
-    if install_status != 0 {
-        uefi_print(st, "bellows: Failed to install framebuffer config table\n");
-        return;
-    }
-
-    uefi_print(st, "bellows: Framebuffer config table installed.\n");
-
-    let fb_ptr = mode.frame_buffer_base as *mut u32;
-    let fb_size = (info.horizontal_resolution * info.vertical_resolution) as usize;
-
-    for i in 0..fb_size {
-        unsafe {
-            *fb_ptr.add(i) = 0x00FF00;
         }
     }
 }
@@ -169,6 +94,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     init_gop(st);
 
+    // Read the kernel file before exiting boot services.
     let (efi_image_phys, efi_image_size) = match read_efi_file(st) {
         Ok(info) => info,
         Err(err) => {
@@ -177,24 +103,29 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             panic!();
         }
     };
-    let efi_image_file =
-        unsafe { slice::from_raw_parts(efi_image_phys as *const u8, efi_image_size) };
+    let efi_image_file = unsafe { slice::from_raw_parts(efi_image_phys as *const u8, efi_image_size) };
 
     let entry = match load_efi_image(st, efi_image_file) {
         Ok(e) => e,
         Err(err) => {
             uefi_print(st, err);
             uefi_print(st, "\nHalting.\n");
-            (unsafe { (bs.free_pages)(efi_image_phys, efi_image_size.div_ceil(4096)) });
             panic!();
         }
     };
 
-    let file_pages = efi_image_size.div_ceil(4096);
-    (unsafe { (bs.free_pages)(efi_image_phys, file_pages) });
-
-    uefi_print(st, "bellows: Exiting Boot Services...\n");
-    let Err(msg) = exit_boot_services_and_jump(image_handle, system_table, entry);
-    uefi_print(st, msg);
-    panic!();
+    // Exit boot services and jump to the kernel.
+    // The loader::exit_boot_services_and_jump function will handle the transition.
+    match crate::loader::exit_boot_services_and_jump(image_handle, system_table, entry) {
+        Ok(_) => {
+            // Should not be reached.
+            uefi_print(st, "\nJump failed.\n");
+            panic!();
+        }
+        Err(err) => {
+            uefi_print(st, err);
+            uefi_print(st, "\nHalting.\n");
+            panic!();
+        }
+    }
 }
