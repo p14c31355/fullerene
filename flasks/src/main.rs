@@ -1,6 +1,6 @@
 // fullerene/flasks/src/main.rs
 use isobemak::create_disk_and_iso;
-use std::{env, io, path::PathBuf, process::Command};
+use std::{env, io, path::{Path, PathBuf}, process::Command};
 
 fn main() -> io::Result<()> {
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -8,7 +8,7 @@ fn main() -> io::Result<()> {
         .expect("Failed to get workspace root")
         .to_path_buf();
 
-    // 1. Build fullerene-kernel (no_std)
+    // --- 1. Build fullerene-kernel (no_std) ---
     let status = Command::new("cargo")
         .current_dir(&workspace_root)
         .args([
@@ -31,10 +31,9 @@ fn main() -> io::Result<()> {
         .join("target")
         .join("x86_64-unknown-uefi")
         .join("debug");
-
     let kernel_path = target_dir.join("fullerene-kernel.efi");
 
-    // 2. Build bellows (no_std)
+    // --- 2. Build bellows (no_std) ---
     let status = Command::new("cargo")
         .current_dir(&workspace_root)
         .args([
@@ -52,16 +51,17 @@ fn main() -> io::Result<()> {
     if !status.success() {
         return Err(io::Error::other("bellows build failed"));
     }
-
     let bellows_path = target_dir.join("bellows.efi");
 
-    // 3. Create FAT32 image and ISO using isobemak
-    let fat32_img_path = workspace_root.join("fullerene.img");
+    // --- 3. Create ISO using isobemak ---
     let iso_path = workspace_root.join("fullerene.iso");
 
-    create_disk_and_iso(&fat32_img_path, &iso_path, &bellows_path, &kernel_path)?;
+    create_disk_and_iso(
+        &iso_path,
+        &kernel_path,
+    )?;
 
-    // 4. Run QEMU with the created ISO image
+    // --- 4. Run QEMU with the created ISO ---
     let ovmf_fd_path = workspace_root
         .join("flasks")
         .join("ovmf")
@@ -74,37 +74,30 @@ fn main() -> io::Result<()> {
     let qemu_args = [
         "-cdrom",
         iso_path.to_str().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "ISO path contains invalid UTF-8",
-            )
+            io::Error::new(io::ErrorKind::InvalidInput, "ISO path contains invalid UTF-8")
         })?,
         "-m",
         "512M",
         "-cpu",
         "qemu64,+smap",
         "-vga",
-        "std", // Standard VGA for EFI apps
+        "std",
         "-serial",
-        "file:serial_log.txt", // Serial output for debugging
+        "stdio",
         "-bios",
         ovmf_fd_path.to_str().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "OVMF.fd path contains invalid UTF-8",
-            )
+            io::Error::new(io::ErrorKind::InvalidInput, "OVMF.fd path contains invalid UTF-8")
         })?,
         "-drive",
         &format!("if=pflash,format=raw,file={}", ovmf_vars_fd_path.display()),
         "-boot",
-        "order=d", // Boot from CD-ROM first
+        "order=d",
         "-D",
         "qemu_log.txt",
         "-no-reboot",
-        "-s", // Enable GDB server
-        "-S", // Stop CPU at startup
+        "-s",
         "-display",
-        "gtk,gl=on", // Force display window for EFI output
+        "sdl",
     ];
 
     let qemu_status = Command::new("qemu-system-x86_64")
@@ -114,9 +107,6 @@ fn main() -> io::Result<()> {
     if !qemu_status.success() {
         return Err(io::Error::other("QEMU execution failed"));
     }
-
-    // Clean up temporary FAT32 image
-    std::fs::remove_file(&fat32_img_path)?;
 
     Ok(())
 }

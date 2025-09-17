@@ -8,6 +8,7 @@ extern crate alloc;
 
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::ffi::c_void;
 use core::slice;
@@ -108,6 +109,14 @@ fn init_gop(st: &EfiSystemTable) {
         mode.frame_buffer_size
     );
     uefi_print(st, &s);
+    let fb_ptr = mode.frame_buffer_base as *mut u32;
+    let fb_size = (info.horizontal_resolution * info.vertical_resolution) as usize;
+
+    for i in 0..fb_size {
+        unsafe {
+            *fb_ptr.add(i) = 0x00FF00;
+        }
+    }
 }
 
 /// Entry point for UEFI. Note: name and calling convention are critical.
