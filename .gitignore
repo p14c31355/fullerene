@@ -16,3 +16,4 @@ serial_log.txt
 mnt/
 tmp/
 fat32.img
+iso_root

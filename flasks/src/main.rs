@@ -73,39 +73,35 @@ fn main() -> io::Result<()> {
         .join("RELEASEX64_OVMF_VARS.fd");
 
     let qemu_args = [
-        "-cdrom",
-        iso_path.to_str().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "ISO path contains invalid UTF-8",
-            )
-        })?,
-        "-m",
-        "512M",
-        "-cpu",
-        "qemu64,+smap",
-        "-vga",
-        "std",
-        "-serial",
-        "stdio",
-        "-bios",
-        ovmf_fd_path.to_str().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "OVMF.fd path contains invalid UTF-8",
-            )
-        })?,
-        "-drive",
-        &format!("if=pflash,format=raw,file={}", ovmf_vars_fd_path.display()),
-        "-boot",
-        "order=d",
-        "-D",
-        "qemu_log.txt",
-        "-no-reboot",
-        "-s",
-        "-display",
-        "sdl",
-    ];
+    "-cdrom",
+    iso_path.to_str().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "ISO path contains invalid UTF-8")
+    })?,
+
+    "-m", "512M",
+
+    "-cpu", "qemu64,+smap",
+
+    "-vga", "std",
+
+    "-serial", "stdio",
+
+    "-drive",
+    &format!("if=pflash,format=raw,readonly=on,file={}", ovmf_fd_path.display()),
+
+    "-drive",
+    &format!("if=pflash,format=raw,file={}", ovmf_vars_fd_path.display()),
+
+    "-boot", "order=d",
+
+    "-display", "sdl",
+
+    "-no-reboot",
+    "-d", "guest_errors",
+    "-D", "qemu_log.txt",
+    "-s",
+];
+
 
     let qemu_status = Command::new("qemu-system-x86_64")
         .args(qemu_args)
