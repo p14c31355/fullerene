@@ -86,20 +86,13 @@ fn init_gop(st: &EfiSystemTable) {
     let mode = unsafe { &*gop.mode };
     let info = unsafe { &*mode.info };
 
-    let mut s = String::from("bellows: GOP initialized\n");
-    s.push_str(&format!(
-        "    Resolution: {}x{}\n",
+    let s = format!(
+        "bellows: GOP initialized\n    Resolution: {}x{}\n    Framebuffer base: {:#x}\n    Framebuffer size: {}\n",
         info.horizontal_resolution,
-        info.vertical_resolution
-    ));
-    s.push_str(&format!(
-        "    Framebuffer base: {:#x}\\n",
-        mode.frame_buffer_base
-    ));
-    s.push_str(&format!(
-        "    Framebuffer size: {}\\n",
+        info.vertical_resolution,
+        mode.frame_buffer_base,
         mode.frame_buffer_size
-    ));
+    );
     uefi_print(st, &s);
 }
 
