@@ -43,19 +43,22 @@ fn init_gop(st: &EfiSystemTable) {
 
     let bs = unsafe { &*st.boot_services };
     let mut gop: *mut EfiGraphicsOutputProtocol = core::ptr::null_mut();
-    let _ = (bs.locate_protocol)(
+    let status = (bs.locate_protocol)(
         EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
         core::ptr::null_mut(),
         &mut gop as *mut _ as *mut *mut c_void,
     );
+    if status != 0 {
+        // Optionally print an error, but GOP is not critical for booting.
+        return;
+    }
     if !gop.is_null() {
-        let _mode = unsafe { (*(*gop).mode).current_mode };
         let info = unsafe { &*(*(*gop).mode).info };
         uefi_print(st, &format!("gop info: {:?}\n", info));
         let fb_addr = unsafe { (*(*gop).mode).frame_buffer_base };
         let fb_size = unsafe { (*(*gop).mode).frame_buffer_size } as usize;
         let fb_ptr = fb_addr as *mut u32;
-        let _ = (bs.install_configuration_table)(
+        let status = (bs.install_configuration_table)(
             FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
             &FullereneFramebufferConfig {
                 address: fb_addr as u64,
@@ -65,6 +68,10 @@ fn init_gop(st: &EfiSystemTable) {
                 pixel_format: info.pixel_format,
             } as *const _ as *mut c_void,
         );
+        if status != 0 {
+            uefi_print(st, "Failed to install framebuffer config table.\n");
+            // Decide if this is a fatal error.
+        }
         let num_pixels = fb_size / 4; // Assuming 32bpp
         for i in 0..num_pixels {
             unsafe {

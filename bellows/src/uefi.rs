@@ -18,30 +18,37 @@ pub enum EfiMemoryType {
 #[repr(C)]
 pub struct EfiSystemTable {
     _hdr: [u8; 24],
-    pub con_out: *mut EfiSimpleTextOutput,
+    _firmware_vendor: *mut u16,
+    _firmware_revision: u32,
+    _console_in_handle: usize,
     _con_in: *mut c_void,
+    _console_out_handle: usize,
+    pub con_out: *mut EfiSimpleTextOutput,
+    _standard_error_handle: usize,
+    _std_err: *mut EfiSimpleTextOutput,
+    _runtime_services: *mut c_void,
     pub boot_services: *mut EfiBootServices,
+    // The rest of the table is not needed for the bootloader
 }
 
 /// Very small subset of Boot Services we call
 #[repr(C)]
 pub struct EfiBootServices {
-    _pad: [usize; 24],
+    _pad0: [usize; 2],
     /// allocate_pages(AllocateType, MemoryType, Pages, *mut PhysicalAddress) -> EFI_STATUS
     pub allocate_pages: extern "efiapi" fn(usize, EfiMemoryType, usize, *mut usize) -> usize,
     /// free_pages(PhysicalAddress, Pages) -> EFI_STATUS
     pub free_pages: extern "efiapi" fn(usize, usize) -> usize,
-    _pad_2: [usize; 4],
-    /// locate_protocol(ProtocolGUID, Registration, *mut *Interface) -> EFI_STATUS
-    pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize,
-    _pad_3: [usize; 3],
     /// get_memory_map(MemoryMapSize, *MemoryMap, *MapKey, *DescriptorSize, *DescriptorVersion) -> EFI_STATUS
     pub get_memory_map:
         extern "efiapi" fn(*mut usize, *mut c_void, *mut usize, *mut usize, *mut u32) -> usize,
-    _pad_4: [usize; 2],
+    _pad1: [usize; 8],
+    /// locate_protocol(ProtocolGUID, Registration, *mut *Interface) -> EFI_STATUS
+    pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize,
+    _pad2: [usize; 8],
     /// exit_boot_services(ImageHandle, MapKey) -> EFI_STATUS
     pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize,
-    _pad_5: [usize; 4],
+    _pad3: [usize; 4],
     /// install_configuration_table(Guid, *Table) -> EFI_STATUS
     pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize,
 }
@@ -96,7 +103,6 @@ pub struct EfiGraphicsOutputProtocolMode {
     pub size_of_info: u64,
     pub frame_buffer_base: usize,
     pub frame_buffer_size: usize,
-    pub(crate) current_mode: u32,
 }
 
 #[repr(C)]
