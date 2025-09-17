@@ -46,13 +46,13 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 fn init_gop(st: &EfiSystemTable) {
     let bs = unsafe { &*st.boot_services };
     let mut gop: *mut EfiGraphicsOutputProtocol = core::ptr::null_mut();
-    let status = unsafe {
+    let status = (unsafe {
         (bs.locate_protocol)(
             &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID as *const u8,
             core::ptr::null_mut(),
             &mut gop as *mut *mut EfiGraphicsOutputProtocol as *mut *mut c_void,
         )
-    };
+    });
 
     if status != 0 || gop.is_null() {
         uefi_print(st, "bellows: GOP not found\n");
@@ -97,7 +97,7 @@ fn init_gop(st: &EfiSystemTable) {
         mode.frame_buffer_base
     ));
     s.push_str(&format!(
-        "    Framebuffer size: {}{}\\n",
+        "    Framebuffer size: {}\\n",
         mode.frame_buffer_size
     ));
     uefi_print(st, &s);
@@ -132,13 +132,13 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         Err(err) => {
             uefi_print(st, err);
             uefi_print(st, "\nHalting.\n");
-            unsafe { (bs.free_pages)(efi_image_phys, efi_image_size.div_ceil(4096)); }
+            (unsafe { (bs.free_pages)(efi_image_phys, efi_image_size.div_ceil(4096)) });
             panic!();
         }
     };
 
     let file_pages = efi_image_size.div_ceil(4096);
-    unsafe { (bs.free_pages)(efi_image_phys, file_pages); }
+    (unsafe { (bs.free_pages)(efi_image_phys, file_pages) });
 
     uefi_print(st, "bellows: Exiting Boot Services...\n");
     let Err(msg) = exit_boot_services_and_jump(image_handle, system_table, entry);

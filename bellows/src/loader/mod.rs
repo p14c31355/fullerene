@@ -19,7 +19,7 @@ pub fn exit_boot_services_and_jump(
     let mut descriptor_size = 0;
     let mut descriptor_version = 0;
 
-    let status = unsafe {
+    let status = (unsafe {
         (bs.get_memory_map)(
             &mut map_size,
             ptr::null_mut(),
@@ -27,7 +27,7 @@ pub fn exit_boot_services_and_jump(
             &mut descriptor_size,
             &mut descriptor_version,
         )
-    };
+    });
     if status != 0 {
         return Err("Failed to get memory map size.");
     }
@@ -35,20 +35,20 @@ pub fn exit_boot_services_and_jump(
     map_size += 4096;
     let map_pages = map_size.div_ceil(4096);
     let mut map_phys_addr: usize = 0;
-    let status = unsafe {
+    let status = (unsafe {
         (bs.allocate_pages)(
             0usize,
             EfiMemoryType::EfiLoaderData,
             map_pages,
             &mut map_phys_addr,
         )
-    };
+    });
     if status != 0 {
         return Err("Failed to allocate memory map buffer.");
     }
 
     let map_ptr = map_phys_addr as *mut c_void;
-    let status = unsafe {
+    let status = (unsafe {
         (bs.get_memory_map)(
             &mut map_size,
             map_ptr,
@@ -56,19 +56,19 @@ pub fn exit_boot_services_and_jump(
             &mut descriptor_size,
             &mut descriptor_version,
         )
-    };
+    });
     if status != 0 {
-        unsafe {
-            (bs.free_pages)(map_phys_addr, map_pages);
-        }
+        (unsafe {
+            (bs.free_pages)(map_phys_addr, map_pages)
+        });
         return Err("Failed to get memory map on second attempt.");
     }
 
-    let status = unsafe { (bs.exit_boot_services)(image_handle, map_key) };
+    let status = (unsafe { (bs.exit_boot_services)(image_handle, map_key) });
     if status != 0 {
-        unsafe {
-            (bs.free_pages)(map_phys_addr, map_pages);
-        }
+        (unsafe {
+            (bs.free_pages)(map_phys_addr, map_pages)
+        });
         return Err("Failed to exit boot services.");
     }
     entry(image_handle, system_table, map_ptr, map_size);

@@ -108,10 +108,10 @@ pub fn load_efi_image(st: &EfiSystemTable, image_file: &[u8]) -> Result<extern "
 
     let pages_needed = preferred_image_size.div_ceil(4096);
     let mut phys_addr: usize = preferred_image_base;
-    let status = unsafe { (bs.allocate_pages)(1usize, EfiMemoryType::EfiLoaderData, pages_needed, &mut phys_addr) };
+    let status = (unsafe { (bs.allocate_pages)(1usize, EfiMemoryType::EfiLoaderData, pages_needed, &mut phys_addr) });
     if status != 0 { return Err("Failed to allocate pages for kernel image at preferred address."); }
     if phys_addr != preferred_image_base {
-        unsafe { (bs.free_pages)(phys_addr, pages_needed); }
+        (unsafe { (bs.free_pages)(phys_addr, pages_needed) });
         return Err("Allocation did not return preferred address.");
     }
 
@@ -127,7 +127,7 @@ pub fn load_efi_image(st: &EfiSystemTable, image_file: &[u8]) -> Result<extern "
             let raw_data_ptr = unsafe { image_file.as_ptr().add(section_header.pointer_to_raw_data as usize) };
             let virtual_address = phys_addr + section_header.virtual_address as usize;
             if image_file.len() < section_header.pointer_to_raw_data as usize + section_header.size_of_raw_data as usize {
-                unsafe { (bs.free_pages)(phys_addr, pages_needed); }
+                (unsafe { (bs.free_pages)(phys_addr, pages_needed) });
                 return Err("Invalid section data size.");
             }
             unsafe { ptr::copy_nonoverlapping(raw_data_ptr, virtual_address as *mut u8, section_header.size_of_raw_data as usize); }
@@ -155,7 +155,7 @@ pub fn load_efi_image(st: &EfiSystemTable, image_file: &[u8]) -> Result<extern "
                     let fixup_address_ptr = (reloc_page_va + fixup_offset as usize) as *mut u64;
                     unsafe { *fixup_address_ptr = (*fixup_address_ptr).wrapping_add(offset); }
                 } else if fixup_type != 0 {
-                    unsafe { (bs.free_pages)(phys_addr, pages_needed); }
+                    (unsafe { (bs.free_pages)(phys_addr, pages_needed) });
                     return Err("Unsupported relocation type.");
                 }
             }

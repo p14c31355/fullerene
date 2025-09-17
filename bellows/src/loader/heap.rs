@@ -13,7 +13,7 @@ static ALLOCATOR: LockedHeap = LockedHeap::empty();
 pub fn init_heap(bs: &EfiBootServices) -> Result<()> {
     let heap_pages = HEAP_SIZE.div_ceil(4096);
     let mut heap_phys: usize = 0;
-    let status = unsafe { (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, heap_pages, &mut heap_phys) };
+    let status = (unsafe { (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, heap_pages, &mut heap_phys) });
     if status != 0 { return Err("Failed to allocate heap memory."); }
     unsafe { ALLOCATOR.lock().init(heap_phys as *mut u8, HEAP_SIZE); }
     Ok(())
