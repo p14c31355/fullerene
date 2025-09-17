@@ -1,6 +1,10 @@
+// fullerene-kernel/src/serial.rs
+
+use core::fmt::{self, Write};
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
+/// Represents a serial port for communication.
 pub struct SerialPort {
     data: Port<u8>,
     irq_enable: Port<u8>,
@@ -11,6 +15,7 @@ pub struct SerialPort {
 }
 
 impl SerialPort {
+    /// Creates a new instance of the SerialPort.
     pub const fn new() -> SerialPort {
         SerialPort {
             data: Port::new(0x3F8),
@@ -22,6 +27,7 @@ impl SerialPort {
         }
     }
 
+    /// Initializes the serial port.
     pub fn init(&mut self) {
         unsafe {
             self.line_ctrl.write(0x80); // Enable DLAB
@@ -33,6 +39,7 @@ impl SerialPort {
         }
     }
 
+    /// Writes a single byte to the serial port.
     pub fn write_byte(&mut self, byte: u8) {
         unsafe {
             while (self.line_status.read() & 0x20) == 0 {}
@@ -40,6 +47,7 @@ impl SerialPort {
         }
     }
 
+    /// Writes a string to the serial port.
     pub fn write_string(&mut self, s: &str) {
         for b in s.bytes() {
             self.write_byte(b);
@@ -47,12 +55,40 @@ impl SerialPort {
     }
 }
 
+// Provides a global singleton for the serial port
 static SERIAL1: Mutex<SerialPort> = Mutex::new(SerialPort::new());
 
+/// Initializes the global serial port.
 pub fn serial_init() {
     SERIAL1.lock().init();
 }
 
+/// Logs a string to the serial port.
 pub fn serial_log(s: &str) {
     SERIAL1.lock().write_string(s);
+}
+
+pub fn panic_log(info: &core::panic::PanicInfo) {
+    let mut writer = SERIAL1.lock();
+    let _ = writer.write_str("KERNEL PANIC!\n");
+    if let Some(location) = info.location() {
+        let _ = write!(
+            writer,
+            "  at {}:{}:{}
+",
+            location.file(),
+            location.line(),
+            location.column()
+        );
+    }
+    let msg = info.message();
+    let _ = write!(writer, "  Message: {}\n", msg);
+}
+
+// Allows using `write!` and `writeln!` macros for the serial port
+impl fmt::Write for SerialPort {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.write_string(s);
+        Ok(())
+    }
 }

@@ -1,11 +1,12 @@
-// fullerene/fullerene-kernel/src/vga.rs
-use spin::Mutex;
-use spin::once::Once;
+// fullerene-kernel/src/vga.rs
+
+use core::fmt::Write;
+use spin::{Mutex, Once};
 use x86_64::instructions::port::Port;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
+#[allow(dead_code)]
 enum Color {
     Black = 0x0,
     Blue = 0x1,
@@ -45,6 +46,7 @@ struct ScreenChar {
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
 
+/// Represents the VGA text buffer writer.
 pub struct VgaBuffer {
     buffer: &'static mut [[ScreenChar; BUFFER_WIDTH]; BUFFER_HEIGHT],
     column_position: usize,
@@ -53,6 +55,7 @@ pub struct VgaBuffer {
 }
 
 impl VgaBuffer {
+    /// Creates a new VgaBuffer instance.
     pub fn new() -> VgaBuffer {
         VgaBuffer {
             buffer: unsafe { &mut *(0xb8000 as *mut _) },
@@ -62,6 +65,7 @@ impl VgaBuffer {
         }
     }
 
+    /// Writes a single byte to the buffer.
     pub fn write_byte(&mut self, byte: u8) {
         match byte {
             b'\n' => self.new_line(),
@@ -82,18 +86,20 @@ impl VgaBuffer {
         }
     }
 
+    /// Writes a string to the buffer.
     pub fn write_string(&mut self, s: &str) {
         for byte in s.bytes() {
             match byte {
-                // printable ASCII byte or newline
+                // Printable ASCII byte or newline
                 0x20..=0x7e | b'\n' => self.write_byte(byte),
-                // not part of printable ASCII range
+                // Not part of printable ASCII range, display a solid block
                 _ => self.write_byte(0xfe),
             }
         }
     }
 
-    pub fn new_line(&mut self) {
+    /// Moves the cursor to the next line.
+    fn new_line(&mut self) {
         self.column_position = 0;
         if self.row_position < BUFFER_HEIGHT - 1 {
             self.row_position += 1;
@@ -109,6 +115,7 @@ impl VgaBuffer {
         }
     }
 
+    /// Clears a specific row in the buffer.
     fn clear_row(&mut self, row: usize) {
         let blank_char = ScreenChar {
             ascii_character: b' ',
@@ -119,54 +126,77 @@ impl VgaBuffer {
         }
     }
 
+    /// Clears the entire screen and resets the cursor position.
     pub fn clear_screen(&mut self) {
         for row in 0..BUFFER_HEIGHT {
             self.clear_row(row);
         }
         self.column_position = 0;
         self.row_position = 0;
+        self.update_cursor();
+    }
+
+    /// Updates the hardware cursor position.
+    fn update_cursor(&self) {
+        let pos = self.row_position * BUFFER_WIDTH + self.column_position;
+        unsafe {
+            let mut command_port = Port::new(0x3D4);
+            let mut data_port = Port::new(0x3D5);
+
+            command_port.write(0x0F_u8);
+            data_port.write((pos & 0xFF) as u8);
+            command_port.write(0x0E_u8);
+            data_port.write(((pos >> 8) & 0xFF) as u8);
+        }
     }
 }
 
+impl core::fmt::Write for VgaBuffer {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.write_string(s);
+        Ok(())
+    }
+}
+
+// To ensure thread-safety for `spin` crates.
 unsafe impl Send for VgaBuffer {}
 unsafe impl Sync for VgaBuffer {}
 
-// Replace SERIAL static with VGA_BUFFER static
+// Global singleton for the VGA buffer writer
 static VGA_BUFFER: Once<Mutex<VgaBuffer>> = Once::new();
 
-fn vga_hardware_init() {
-    unsafe {
-        // Set VGA text mode (80x25, 16 colors)
-        // This is a simplified approach; a full VGA mode set is more complex.
-        // For text mode, often the BIOS has already set it up.
-        // Here, we primarily ensure the cursor is visible and configured.
-
-        // Cursor Start Register (0x0A) - Set scanline start for cursor
-        let mut cursor_start_port = Port::new(0x3D4);
-        let mut cursor_end_port = Port::new(0x3D5);
-
-        cursor_start_port.write(0x0A_u8); // Cursor Start Register
-        cursor_end_port.write(0x0E_u8); // Cursor End Register (scanline 14, 15)
-
-        // Cursor Location High Register (0x0E) and Low Register (0x0F)
-        // Set cursor to (0,0)
-        cursor_start_port.write(0x0E_u8); // Cursor Location High Register
-        cursor_end_port.write(0x00_u8); // High byte of cursor offset
-        cursor_start_port.write(0x0F_u8); // Cursor Location Low Register
-        cursor_end_port.write(0x00_u8); // Low byte of cursor offset
-    }
-}
-
+/// Logs a message to the VGA screen.
 pub fn log(msg: &str) {
     if let Some(vga) = VGA_BUFFER.get() {
         let mut writer = vga.lock();
         writer.write_string(msg);
         writer.write_string("\n");
+        writer.update_cursor();
     }
 }
 
+pub fn panic_log(info: &core::panic::PanicInfo) {
+    if let Some(vga) = VGA_BUFFER.get() {
+        let mut writer = vga.lock();
+        let _ = writer.write_str("KERNEL PANIC!\n");
+        if let Some(location) = info.location() {
+            let _ = write!(
+                writer,
+                "  at {}:{}:{}
+",
+                location.file(),
+                location.line(),
+                location.column()
+            );
+        }
+        let msg = info.message();
+        let _ = write!(writer, "  {}\n", msg);
+        writer.update_cursor();
+    }
+}
+
+/// Initializes the VGA screen.
 pub fn vga_init() {
-    vga_hardware_init(); // Initialize VGA hardware
     VGA_BUFFER.call_once(|| Mutex::new(VgaBuffer::new()));
     let mut writer = VGA_BUFFER.get().unwrap().lock();
     writer.clear_screen(); // Clear screen on boot
@@ -174,4 +204,5 @@ pub fn vga_init() {
     writer.write_string("Hello QEMU by fullerene!\n");
     writer.color_code = ColorCode::new(Color::White, Color::Black);
     writer.write_string("This is output directly to VGA.\n");
+    writer.update_cursor();
 }
