@@ -6,7 +6,10 @@
 
 extern crate alloc;
 
+use alloc::format;
+use alloc::string::String;
 use core::alloc::Layout;
+use core::ffi::c_void;
 use core::slice;
 
 mod loader;
@@ -20,8 +23,10 @@ use crate::loader::{
 };
 
 use crate::uefi::{
+    EfiGraphicsOutputProtocol,
     EfiSystemTable,
     uefi_print,
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
 };
 
 
@@ -38,6 +43,66 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     panic!();
 }
 
+fn init_gop(st: &EfiSystemTable) {
+    let bs = unsafe { &*st.boot_services };
+    let mut gop: *mut EfiGraphicsOutputProtocol = core::ptr::null_mut();
+    let status = unsafe {
+        (bs.locate_protocol)(
+            &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID as *const u8,
+            core::ptr::null_mut(),
+            &mut gop as *mut *mut EfiGraphicsOutputProtocol as *mut *mut c_void,
+        )
+    };
+
+    if status != 0 || gop.is_null() {
+        uefi_print(st, "bellows: GOP not found\n");
+        return;
+    }
+
+    let gop = unsafe { &mut *gop };
+    let mut info: *mut crate::uefi::EfiGraphicsOutputModeInformation = core::ptr::null_mut();
+    let mut size_of_info: usize = 0;
+    let mut best_mode = None;
+
+    for i in 0..unsafe { (*gop.mode).max_mode } {
+        if (gop.query_mode)(gop, i, &mut size_of_info, &mut info) == 0 {
+            let info = unsafe { &*info };
+            if info.horizontal_resolution == 1024 && info.vertical_resolution == 768 {
+                best_mode = Some(i);
+            }
+        }
+    }
+
+    if let Some(mode) = best_mode {
+        if (gop.set_mode)(gop, mode) == 0 {
+            uefi_print(st, "bellows: Set mode 1024x768\n");
+        } else {
+            uefi_print(st, "bellows: Failed to set mode 1024x768\n");
+        }
+    } else {
+        uefi_print(st, "bellows: Mode 1024x768 not found\n");
+    }
+
+    let mode = unsafe { &*gop.mode };
+    let info = unsafe { &*mode.info };
+
+    let mut s = String::from("bellows: GOP initialized\n");
+    s.push_str(&format!(
+        "    Resolution: {}x{}\n",
+        info.horizontal_resolution,
+        info.vertical_resolution
+    ));
+    s.push_str(&format!(
+        "    Framebuffer base: {:#x}\\n",
+        mode.frame_buffer_base
+    ));
+    s.push_str(&format!(
+        "    Framebuffer size: {}{}\\n",
+        mode.frame_buffer_size
+    ));
+    uefi_print(st, &s);
+}
+
 /// Entry point for UEFI. Note: name and calling convention are critical.
 #[unsafe(no_mangle)]
 pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
@@ -49,6 +114,8 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         uefi_print(st, msg);
         panic!();
     }
+
+    init_gop(st);
 
     let (efi_image_phys, efi_image_size) = match read_efi_file(st) {
         Ok(info) => info,
@@ -74,9 +141,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     unsafe { (bs.free_pages)(efi_image_phys, file_pages); }
 
     uefi_print(st, "bellows: Exiting Boot Services...\n");
-    if let Err(msg) = exit_boot_services_and_jump(image_handle, system_table, entry) {
-        uefi_print(st, msg);
-        panic!();
-    }
-    unreachable!();
+    let Err(msg) = exit_boot_services_and_jump(image_handle, system_table, entry);
+    uefi_print(st, msg);
+    panic!();
 }

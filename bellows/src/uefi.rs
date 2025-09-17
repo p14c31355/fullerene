@@ -67,6 +67,65 @@ pub const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: [u8; 16] = [
     0x22, 0x5b, 0x4e, 0x96, 0x59, 0x64, 0xd2, 0x11, 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
 ];
 
+/// GUID for EFI_GRAPHICS_OUTPUT_PROTOCOL
+pub const EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID: [u8; 16] = [
+    0xde, 0xa9, 0x42, 0x90, 0xdc, 0x23, 0x38, 0x4a, 0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a,
+];
+
+#[repr(C)]
+pub struct EfiGraphicsOutputProtocol {
+    pub query_mode: extern "efiapi" fn(
+        *mut EfiGraphicsOutputProtocol,
+        u32,
+        *mut usize,
+        *mut *mut EfiGraphicsOutputModeInformation,
+    ) -> usize,
+    pub set_mode: extern "efiapi" fn(*mut EfiGraphicsOutputProtocol, u32) -> usize,
+    _blt: *mut c_void,
+    pub mode: *mut EfiGraphicsOutputProtocolMode,
+}
+
+#[repr(C)]
+pub struct EfiGraphicsOutputProtocolMode {
+    pub max_mode: u32,
+    pub mode: u32,
+    pub info: *mut EfiGraphicsOutputModeInformation,
+    pub size_of_info: u64,
+    pub frame_buffer_base: usize,
+    pub frame_buffer_size: usize,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct EfiGraphicsOutputModeInformation {
+    pub version: u32,
+    pub horizontal_resolution: u32,
+    pub vertical_resolution: u32,
+    pub pixel_format: EfiGraphicsPixelFormat,
+    pub pixel_information: EfiPixelBitmask,
+    pub pixels_per_scan_line: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(dead_code)]
+pub enum EfiGraphicsPixelFormat {
+    PixelRedGreenBlueReserved8BitPerColor,
+    PixelBlueGreenRedReserved8BitPerColor,
+    PixelBitMask,
+    PixelBltOnly,
+    PixelFormatMax,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct EfiPixelBitmask {
+    pub red_mask: u32,
+    pub green_mask: u32,
+    pub blue_mask: u32,
+    pub reserved_mask: u32,
+}
+
 #[repr(C)]
 pub struct EfiFile {
     _revision: u64,
