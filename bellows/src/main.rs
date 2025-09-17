@@ -16,6 +16,7 @@ use core::slice;
 mod loader;
 mod uefi;
 
+use crate::loader::exit_boot_services_and_jump;
 use crate::loader::{file::read_efi_file, heap::init_heap, pe::load_efi_image};
 
 use crate::uefi::{
@@ -105,6 +106,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     };
     let efi_image_file = unsafe { slice::from_raw_parts(efi_image_phys as *const u8, efi_image_size) };
 
+    // Load the kernel and get its entry point.
     let entry = match load_efi_image(st, efi_image_file) {
         Ok(e) => e,
         Err(err) => {
@@ -116,7 +118,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     // Exit boot services and jump to the kernel.
     // The loader::exit_boot_services_and_jump function will handle the transition.
-    match crate::loader::exit_boot_services_and_jump(image_handle, system_table, entry) {
+    match exit_boot_services_and_jump(image_handle, system_table, entry) {
         Ok(_) => {
             // Should not be reached.
             uefi_print(st, "\nJump failed.\n");

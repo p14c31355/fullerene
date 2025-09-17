@@ -8,6 +8,8 @@ pub mod file;
 pub mod heap;
 pub mod pe;
 
+/// Exits boot services and jumps to the kernel's entry point.
+/// This function is the final step of the bootloader.
 pub fn exit_boot_services_and_jump(
     image_handle: usize,
     system_table: *mut EfiSystemTable,
@@ -19,7 +21,9 @@ pub fn exit_boot_services_and_jump(
     let mut descriptor_size = 0;
     let mut descriptor_version = 0;
 
-    let status = (unsafe {
+    // First call to GetMemoryMap to get buffer size.
+    // The UEFI spec recommends calling this with a zero-sized buffer first.
+    let status = unsafe {
         (bs.get_memory_map)(
             &mut map_size,
             ptr::null_mut(),
@@ -27,45 +31,72 @@ pub fn exit_boot_services_and_jump(
             &mut descriptor_size,
             &mut descriptor_version,
         )
-    });
+    };
     if status != 0 {
-        return Err("Failed to get memory map size.");
+        return Err("Failed to get memory map size on first attempt.");
     }
 
-    map_size += 4096;
+    // Allocate an appropriately-sized buffer for the memory map.
+    // We add extra space just in case the memory map changes between calls.
+    map_size += 4096; // 4096 is just a safe buffer, one page is usually enough
     let map_pages = map_size.div_ceil(4096);
     let mut map_phys_addr: usize = 0;
-    let status = (unsafe {
+    let status = unsafe {
         (bs.allocate_pages)(
             0usize,
             EfiMemoryType::EfiLoaderData,
             map_pages,
             &mut map_phys_addr,
         )
-    });
+    };
     if status != 0 {
         return Err("Failed to allocate memory map buffer.");
     }
 
     let map_ptr = map_phys_addr as *mut c_void;
-    let status = (unsafe {
-        (bs.get_memory_map)(
-            &mut map_size,
-            map_ptr,
-            &mut map_key,
-            &mut descriptor_size,
-            &mut descriptor_version,
-        )
-    });
-    if status != 0 {
-        (unsafe { (bs.free_pages)(map_phys_addr, map_pages) });
-        return Err("Failed to get memory map on second attempt.");
-    }
 
-    let status = (unsafe { (bs.exit_boot_services)(image_handle, map_key) });
+    // Retry GetMemoryMap in a loop to handle `EFI_BUFFER_TOO_SMALL`
+    // This is the most critical fix.
+    let status = loop {
+        map_size += descriptor_size;
+        let map_pages = map_size.div_ceil(4096);
+        unsafe { (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, map_pages, &mut map_phys_addr) };
+        let status = unsafe {
+            (bs.get_memory_map)(
+                &mut map_size,
+                map_ptr,
+                &mut map_key,
+                &mut descriptor_size,
+                &mut descriptor_version,
+            )
+        };
+        if status == 0 {
+            break status;
+        } else if status == 0x8000000000000005 { // EFI_BUFFER_TOO_SMALL
+            continue;
+        } else {
+            unsafe { (bs.free_pages)(map_phys_addr, map_pages) };
+            return Err("Failed to get memory map after multiple attempts.");
+        }
+    };
     if status != 0 {
-        (unsafe { (bs.free_pages)(map_phys_addr, map_pages) });
+        return Err("Failed to get memory map on final attempt.");
+    }
+    
+    // Exit boot services. This call must succeed.
+    let exit_status = unsafe { (bs.exit_boot_services)(image_handle, map_key) };
+    if exit_status != 0 {
+        // If this fails, there's no way to recover.
         return Err("Failed to exit boot services.");
     }
-    entry(image_handle, system_table, map_ptr, map_size);
+
+    // Jump to the kernel. This is the last instruction in the bootloader.
+    unsafe {
+        entry(
+            image_handle,
+            system_table,
+            map_ptr,
+            map_size,
+        );
+    }
 }
