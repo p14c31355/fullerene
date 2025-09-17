@@ -69,7 +69,7 @@ struct SectionHeader {
     size_of_raw_data: u32,
     pointer_to_raw_data: u32,
     _pointer_to_relocations: u32,
-    _pointer_to_linenumbers: u32,
+    _pointer_to_linenumbers: u16,
     _number_of_relocations: u16,
     _number_of_linenumbers: u16,
     _characteristics: u32,
@@ -174,7 +174,7 @@ pub fn load_efi_image(
         // We are copying data from the source image file to the newly allocated
         // memory. The pointers are checked to be within the bounds of the allocated
         // memory and the source data.
-        let dest = (phys_addr.saturating_add(section.virtual_address as usize)) as *mut u8;
+        let dest = phys_addr.saturating_add(section.virtual_address as usize) as *mut u8;
         let src = unsafe {
             image_data
                 .as_ptr()
@@ -190,7 +190,7 @@ pub fn load_efi_image(
         // Ensure the destination is within our allocated memory
         if dest.is_null()
             || dest < phys_addr as *mut u8
-            || unsafe { dest.add(copy_size) }
+            || (dest as usize).saturating_add(copy_size) as *mut u8
                 > (phys_addr.saturating_add(pages_needed * 4096)) as *mut u8
         {
             unsafe {
@@ -214,7 +214,7 @@ pub fn load_efi_image(
         let relocs_end_ptr = unsafe { relocs_start_ptr.add(reloc_size) };
         let image_base_delta = phys_addr as u64 - nt_headers.optional_header.image_base;
 
-        if relocs_end_ptr > unsafe { (phys_addr as *mut u8).add(pages_needed * 4096) } {
+        if relocs_end_ptr > (phys_addr.saturating_add(pages_needed * 4096)) as *mut u8 {
             unsafe {
                 (bs.free_pages)(phys_addr, pages_needed);
             }
@@ -255,11 +255,11 @@ pub fn load_efi_image(
                 if fixup_type == 10 {
                     // IMAGE_REL_BASED_DIR64
                     let fixup_address_ptr =
-                        unsafe { (reloc_page_va as *mut u8).add(fixup_offset as usize) as *mut u64 };
+                        (reloc_page_va.saturating_add(fixup_offset as usize)) as *mut u64;
                     // Additional check to prevent out-of-bounds writes
                     if fixup_address_ptr < phys_addr as *mut u64
                         || fixup_address_ptr as usize
-                            >= unsafe { (phys_addr as *mut u8).add(pages_needed * 4096) } as usize
+                            >= phys_addr.saturating_add(pages_needed * 4096)
                     {
                         unsafe {
                             (bs.free_pages)(phys_addr, pages_needed);
