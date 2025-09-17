@@ -21,7 +21,9 @@ use crate::loader::{
 };
 
 use crate::uefi::{
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiSystemTable, uefi_print,
+    uefi_print, EfiGraphicsOutputProtocol, EfiMemoryType, EfiSystemTable,
+    FullereneFramebufferConfig, EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
+    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
 };
 
 /// Alloc error handler required when using `alloc` in no_std.
@@ -103,6 +105,46 @@ fn init_gop(st: &EfiSystemTable) {
         mode.frame_buffer_size
     );
     uefi_print(st, &s);
+
+    // Allocate memory for the framebuffer config structure.
+    // Note: UEFI memory allocations must be in pages.
+    let mut config_addr: usize = 0;
+    let alloc_status = (unsafe {
+        (bs.allocate_pages)(
+            0, // Allocate any address
+            EfiMemoryType::EfiLoaderData,
+            1, // one page
+            &mut config_addr as *mut usize,
+        )
+    });
+
+    if alloc_status != 0 {
+        uefi_print(st, "bellows: Failed to allocate memory for framebuffer config\n");
+        return;
+    }
+
+    let config = unsafe { &mut *(config_addr as *mut FullereneFramebufferConfig) };
+    config.address = mode.frame_buffer_base as u64;
+    config.width = info.horizontal_resolution;
+    config.height = info.vertical_resolution;
+    config.stride = info.pixels_per_scan_line;
+    config.pixel_format = info.pixel_format;
+
+    // Install the configuration table
+    let install_status = (unsafe {
+        (bs.install_configuration_table)(
+            &FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID as *const u8,
+            config as *mut FullereneFramebufferConfig as *mut c_void,
+        )
+    });
+
+    if install_status != 0 {
+        uefi_print(st, "bellows: Failed to install framebuffer config table\n");
+        return;
+    }
+
+    uefi_print(st, "bellows: Framebuffer config table installed.\n");
+
     let fb_ptr = mode.frame_buffer_base as *mut u32;
     let fb_size = (info.horizontal_resolution * info.vertical_resolution) as usize;
 

@@ -41,6 +41,9 @@ pub struct EfiBootServices {
     _pad_4: [usize; 2],
     /// exit_boot_services(ImageHandle, MapKey) -> EFI_STATUS
     pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize,
+    _pad_5: [usize; 4],
+    /// install_configuration_table(Guid, *Table) -> EFI_STATUS
+    pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize,
 }
 
 /// SimpleTextOutput protocol (we only use OutputString)
@@ -152,6 +155,21 @@ pub struct EfiFileInfo {
     _modification_time: u64,
     _attribute: u64,
     _file_name: [u16; 1],
+}
+
+/// GUID for FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID
+pub const FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID: [u8; 16] = [
+    0x3c, 0x23, 0x88, 0x3f, 0x27, 0x4d, 0x78, 0x4d, 0x91, 0x2c, 0x73, 0x49, 0x3a, 0x0c, 0x23, 0x75,
+];
+
+/// The structure passed from the bootloader to the kernel.
+#[repr(C)]
+pub struct FullereneFramebufferConfig {
+    pub address: u64,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub pixel_format: EfiGraphicsPixelFormat,
 }
 
 /// Print a &str to the UEFI console via SimpleTextOutput (OutputString)
