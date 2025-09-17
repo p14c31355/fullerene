@@ -2,6 +2,7 @@
 
 use alloc::vec::Vec;
 use core::ffi::c_void;
+use core::ptr;
 
 /// A simple Result type for our bootloader,
 /// returning a static string on error.
@@ -183,9 +184,16 @@ pub struct FullereneFramebufferConfig {
 pub fn uefi_print(st: &EfiSystemTable, s: &str) {
     let mut ucs2: Vec<u16> = s.encode_utf16().collect();
     ucs2.push(0);
-    unsafe {
-        if !st.con_out.is_null() {
-            ((*st.con_out).output_string)(st.con_out, ucs2.as_ptr());
+    // Safety:
+    // The EfiSystemTable and its con_out pointer are provided by the UEFI firmware
+    // at the bootloader entry point and are assumed to be valid for the duration
+    // of boot services.
+    // The ucs2 vector is valid and contains a null-terminated UTF-16 string.
+    // The call to output_string is safe because we check that con_out is not null
+    // and the data is correctly formatted.
+    if !st.con_out.is_null() {
+        unsafe {
+            let _ = ((*st.con_out).output_string)(st.con_out, ucs2.as_ptr());
         }
     }
 }

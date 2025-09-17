@@ -24,6 +24,11 @@ pub fn init_heap(bs: &EfiBootServices) -> Result<()> {
     if status != 0 {
         return Err("Failed to allocate heap memory.");
     }
+    // Safety:
+    // We have successfully allocated a valid, non-zero memory region
+    // of size HEAP_SIZE. The `init` function correctly initializes the
+    // allocator with this region. This is a common and safe pattern
+    // for setting up a global allocator in a `no_std` environment.
     unsafe {
         ALLOCATOR.lock().init(heap_phys as *mut u8, HEAP_SIZE);
     }

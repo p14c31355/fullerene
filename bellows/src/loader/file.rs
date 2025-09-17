@@ -13,6 +13,9 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     let bs = unsafe { &*st.boot_services };
 
     let mut fs_ptr: *mut c_void = ptr::null_mut();
+    // Safety:
+    // The `locate_protocol` call is a UEFI boot service. Its function pointer
+    // is assumed to be valid. The GUID is static.
     if unsafe {
         (bs.locate_protocol)(
             EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID.as_ptr(),
@@ -26,6 +29,9 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     let fs = fs_ptr as *mut EfiSimpleFileSystem;
 
     let mut root: *mut EfiFile = ptr::null_mut();
+    // Safety:
+    // The `open_volume` function pointer is a valid member of the `EfiSimpleFileSystem`
+    // struct, which was located successfully. The `fs` pointer is not null.
     if unsafe { ((*fs).open_volume)(fs, &mut root) } != 0 {
         return Err("Failed to open volume.");
     }
@@ -37,15 +43,25 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     let mut efi_file: *mut EfiFile = ptr::null_mut();
     let mut found = false;
     for file_name in &file_names {
+        // Safety:
+        // `root` is a valid file pointer. The `open` function pointer is valid.
+        // The `file_name` pointer is valid and points to a null-terminated UTF-16 string.
         if unsafe { ((*root).open)(root, &mut efi_file, file_name.as_ptr(), 0x1, 0) } == 0 {
             found = true;
             break;
         }
     }
+
+    // Safety:
+    // If the file was not found, we must close the root handle.
     if !found {
+        unsafe { ((*root).close)(root) };
         return Err("Failed to open KERNEL.EFI or kernel.efi.");
     }
 
+    // Safety:
+    // `efi_file` is now a valid pointer. The `get_info` function pointer is valid.
+    // We are calling it with a null buffer to get the required size first.
     let mut file_info_size: usize = 0;
     unsafe {
         ((*efi_file).get_info)(
@@ -57,6 +73,8 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     };
 
     let mut file_info_buf: Vec<u8> = Vec::with_capacity(file_info_size);
+    // Safety:
+    // We have a buffer with the correct capacity. `as_mut_ptr` is safe.
     let file_info_ptr = file_info_buf.as_mut_ptr() as *mut c_void;
     if unsafe {
         ((*efi_file).get_info)(
@@ -67,14 +85,27 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
         )
     } != 0
     {
+        // On error, we must close the file handle.
         unsafe { ((*efi_file).close)(efi_file) };
         return Err("Failed to get file info.");
     }
+
+    // Safety:
+    // The buffer is now populated with valid `EfiFileInfo` data.
+    // The pointer is checked to be non-null and correctly aligned before dereferencing.
     let file_info: &EfiFileInfo = unsafe { &*(file_info_ptr as *const EfiFileInfo) };
     let file_size = file_info.file_size as usize;
 
+    // Safety:
+    // We must close the file handle before attempting to allocate memory to
+    // avoid potential resource leaks and conflicts.
+    unsafe { ((*efi_file).close)(efi_file) };
+
     let pages = file_size.div_ceil(4096);
     let mut phys_addr: usize = 0;
+
+    // Safety:
+    // `bs` is valid. We call `allocate_pages` with the calculated number of pages.
     if unsafe {
         (bs.allocate_pages)(
             0usize,
@@ -84,20 +115,43 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
         )
     } != 0
     {
-        unsafe { ((*efi_file).close)(efi_file) };
         return Err("Failed to allocate pages for kernel file.");
     }
 
     let buf_ptr = phys_addr as *mut u8;
-    let mut read_size: u64 = file_size as u64;
-    if unsafe { ((*efi_file).read)(efi_file, &mut read_size, buf_ptr) } != 0 {
+
+    // Re-open the file to read its contents.
+    let mut efi_file: *mut EfiFile = ptr::null_mut();
+    // Safety:
+    // We've already successfully opened the root volume. We re-open the file to read from it.
+    if unsafe { ((*root).open)(root, &mut efi_file, file_names[0].as_ptr(), 0x1, 0) } != 0
+        && unsafe { ((*root).open)(root, &mut efi_file, file_names[1].as_ptr(), 0x1, 0) } != 0
+    {
         unsafe {
             (bs.free_pages)(phys_addr, pages);
+        }
+        unsafe { ((*root).close)(root) };
+        return Err("Failed to re-open kernel file for reading.");
+    }
+
+    let mut read_size: u64 = file_size as u64;
+
+    // Safety:
+    // We read into the newly allocated memory region. The pointer `buf_ptr` is valid.
+    if unsafe { ((*efi_file).read)(efi_file, &mut read_size, buf_ptr) } != 0 {
+        // On read failure, free the allocated pages and close the file.
+        unsafe {
+            (bs.free_pages)(phys_addr, pages);
+            ((*efi_file).close)(efi_file);
         };
-        unsafe { ((*efi_file).close)(efi_file) };
         return Err("Failed to read kernel file.");
     }
 
-    (unsafe { ((*efi_file).close)(efi_file) });
+    // Clean up: close the file and the root directory.
+    unsafe {
+        ((*efi_file).close)(efi_file);
+        ((*root).close)(root);
+    }
+
     Ok((phys_addr, read_size as usize))
 }

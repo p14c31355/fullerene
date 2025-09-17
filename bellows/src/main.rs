@@ -34,31 +34,51 @@ fn alloc_error(_layout: Layout) -> ! {
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    panic!();
+    loop {}
 }
 
 fn init_gop(st: &EfiSystemTable) {
-    const TARGET_WIDTH: u32 = 1024;
-    const TARGET_HEIGHT: u32 = 768;
-
     let bs = unsafe { &*st.boot_services };
     let mut gop: *mut EfiGraphicsOutputProtocol = core::ptr::null_mut();
-    let status = (bs.locate_protocol)(
-        EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
-        core::ptr::null_mut(),
-        &mut gop as *mut _ as *mut *mut c_void,
-    );
-    if status != 0 {
+
+    // Safety:
+    // The GUID is a static global, its address is valid.
+    // The function pointer is from the UEFI boot services table, assumed to be valid.
+    let status = unsafe {
+        (bs.locate_protocol)(
+            EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
+            core::ptr::null_mut(),
+            &mut gop as *mut _ as *mut *mut c_void,
+        )
+    };
+
+    if status != 0 || gop.is_null() {
         // Optionally print an error, but GOP is not critical for booting.
         return;
     }
-    if !gop.is_null() {
-        let info = unsafe { &*(*(*gop).mode).info };
-        uefi_print(st, &format!("gop info: {:?}\n", info));
-        let fb_addr = unsafe { (*(*gop).mode).frame_buffer_base };
-        let fb_size = unsafe { (*(*gop).mode).frame_buffer_size } as usize;
-        let fb_ptr = fb_addr as *mut u32;
-        let status = (bs.install_configuration_table)(
+
+    // Safety:
+    // We have checked that `gop` is not null. The `mode` field and its `info` are
+    // guaranteed to be valid by the UEFI specification after a successful `locate_protocol`.
+    let (info, fb_addr, fb_size) = unsafe {
+        let gop_ref = &*gop;
+        let mode_ref = &*gop_ref.mode;
+        let info_ref = &*mode_ref.info;
+        (
+            info_ref,
+            mode_ref.frame_buffer_base,
+            mode_ref.frame_buffer_size as usize,
+        )
+    };
+
+    let fb_ptr = fb_addr as *mut u32;
+
+    // Safety:
+    // The GUID is a static global, its address is valid.
+    // The function pointer is from the UEFI boot services table, assumed to be valid.
+    // The `FullereneFramebufferConfig` struct is valid for the duration of the call.
+    let status = unsafe {
+        (bs.install_configuration_table)(
             FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
             &FullereneFramebufferConfig {
                 address: fb_addr as u64,
@@ -67,16 +87,29 @@ fn init_gop(st: &EfiSystemTable) {
                 stride: info.pixels_per_scan_line,
                 pixel_format: info.pixel_format,
             } as *const _ as *mut c_void,
-        );
-        if status != 0 {
-            uefi_print(st, "Failed to install framebuffer config table.\n");
-            // Decide if this is a fatal error.
-        }
-        let num_pixels = fb_size / 4; // Assuming 32bpp
-        for i in 0..num_pixels {
-            unsafe {
-                *fb_ptr.add(i) = 0x000000;
-            }
+        )
+    };
+
+    if status != 0 {
+        uefi_print(st, "Failed to install framebuffer config table.\n");
+        // Decide if this is a fatal error.
+    }
+
+    let num_pixels = fb_size / 4; // Assuming 32bpp
+    if fb_ptr.is_null() {
+        return; // Nothing to clear if framebuffer is not available.
+    }
+    // Safety:
+    // We are writing to the framebuffer memory region.
+    // We have verified the `fb_ptr` is not null and the `num_pixels` is calculated
+    // from the size provided by the UEFI firmware. This is a reasonable assumption
+    // for a bootloader and the only way to interact with the framebuffer.
+    for i in 0..num_pixels {
+        unsafe {
+            let pixel_ptr = fb_ptr.add(i);
+            // We use `write_volatile` to ensure the compiler doesn't optimize away
+            // the writes to the memory-mapped I/O region.
+            core::ptr::write_volatile(pixel_ptr, 0x00000000);
         }
     }
 }
@@ -104,8 +137,18 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             panic!();
         }
     };
-    let efi_image_file =
-        unsafe { slice::from_raw_parts(efi_image_phys as *const u8, efi_image_size) };
+
+    let efi_image_file = {
+        // Safety:
+        // `efi_image_phys` and `efi_image_size` are returned by `read_efi_file`,
+        // which allocates a valid memory region and reads the file into it.
+        // The slice created from this memory is valid for the duration of this function.
+        if efi_image_size == 0 {
+            uefi_print(st, "Kernel file is empty.\n");
+            panic!();
+        }
+        unsafe { slice::from_raw_parts(efi_image_phys as *const u8, efi_image_size) }
+    };
 
     // Load the kernel and get its entry point.
     let entry = match load_efi_image(st, efi_image_file) {
