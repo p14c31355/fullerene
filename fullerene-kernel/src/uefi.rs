@@ -28,7 +28,7 @@ pub struct FullereneFramebufferConfig {
 
 #[repr(C)]
 pub struct EfiSystemTable {
-    _hdr: [u8; 88], // Padding to reach number_of_table_entries
+    _hdr: [u8; 96], // Padding to reach number_of_table_entries
     pub number_of_table_entries: usize,
     pub configuration_table: *mut EfiConfigurationTable,
 }
