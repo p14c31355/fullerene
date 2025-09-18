@@ -202,6 +202,31 @@ pub fn load_efi_image(
         unsafe {
             ptr::copy_nonoverlapping(src, dest, copy_size);
         }
+
+        // After ptr::copy_nonoverlapping(...)
+        let raw_size = section.size_of_raw_data as usize;
+        let virtual_size = section.virtual_size as usize;
+        if virtual_size > raw_size {
+            let remaining_size = virtual_size - raw_size;
+            // Safety: `dest` is a valid pointer within allocated memory.
+            // `raw_size` is checked to be within bounds by `copy_nonoverlapping` above.
+            // We need to ensure `remaining_dest` and `remaining_size` do not exceed
+            // the allocated image memory.
+            unsafe {
+                let remaining_dest = dest.add(raw_size);
+
+                // Bounds check for `remaining_dest` before writing.
+                if remaining_dest.is_null()
+                    || remaining_dest < phys_addr as *mut u8
+                    || (remaining_dest as usize).saturating_add(remaining_size) as *mut u8
+                        > (phys_addr.saturating_add(pages_needed * 4096)) as *mut u8
+                {
+                    (bs.free_pages)(phys_addr, pages_needed);
+                    return Err("Zero-fill destination is outside allocated memory.");
+                }
+                ptr::write_bytes(remaining_dest, 0, remaining_size);
+            }
+        }
     }
 
     // Handle relocations

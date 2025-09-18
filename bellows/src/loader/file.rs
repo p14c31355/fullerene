@@ -96,16 +96,10 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     let file_info: &EfiFileInfo = unsafe { &*(file_info_ptr as *const EfiFileInfo) };
     let file_size = file_info.file_size as usize;
 
-    // Safety:
-    // We must close the file handle before attempting to allocate memory to
-    // avoid potential resource leaks and conflicts.
-    unsafe { ((*efi_file).close)(efi_file) };
-
     let pages = file_size.div_ceil(4096);
     let mut phys_addr: usize = 0;
 
-    // Safety:
-    // `bs` is valid. We call `allocate_pages` with the calculated number of pages.
+    // Safety: `bs` is valid. We call `allocate_pages` with the calculated number of pages.
     if unsafe {
         (bs.allocate_pages)(
             0usize,
@@ -115,29 +109,14 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
         )
     } != 0
     {
+        unsafe { ((*efi_file).close)(efi_file) };
         return Err("Failed to allocate pages for kernel file.");
     }
 
     let buf_ptr = phys_addr as *mut u8;
+    let mut read_size = file_size as u64;
 
-    // Re-open the file to read its contents.
-    let mut efi_file: *mut EfiFile = ptr::null_mut();
-    // Safety:
-    // We've already successfully opened the root volume. We re-open the file to read from it.
-    if unsafe { ((*root).open)(root, &mut efi_file, file_names[0].as_ptr(), 0x1, 0) } != 0
-        && unsafe { ((*root).open)(root, &mut efi_file, file_names[1].as_ptr(), 0x1, 0) } != 0
-    {
-        unsafe {
-            (bs.free_pages)(phys_addr, pages);
-        }
-        unsafe { ((*root).close)(root) };
-        return Err("Failed to re-open kernel file for reading.");
-    }
-
-    let mut read_size: u64 = file_size as u64;
-
-    // Safety:
-    // We read into the newly allocated memory region. The pointer `buf_ptr` is valid.
+    // Safety: We read into the newly allocated memory region. The pointer `buf_ptr` is valid.
     if unsafe { ((*efi_file).read)(efi_file, &mut read_size, buf_ptr) } != 0 {
         // On read failure, free the allocated pages and close the file.
         unsafe {
