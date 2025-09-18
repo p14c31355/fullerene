@@ -28,7 +28,17 @@ pub struct FullereneFramebufferConfig {
 
 #[repr(C)]
 pub struct EfiSystemTable {
-    _hdr: [u8; 104], // Padding to reach number_of_table_entries
+    _hdr: [u8; 24], // EfiTableHeader
+    _firmware_vendor: *mut u16,
+    _firmware_revision: u32,
+    _console_in_handle: usize,
+    _con_in: *mut core::ffi::c_void,
+    _console_out_handle: usize,
+    _con_out: *mut core::ffi::c_void,
+    _standard_error_handle: usize,
+    _std_err: *mut core::ffi::c_void,
+    _runtime_services: *mut core::ffi::c_void,
+    _boot_services: *mut core::ffi::c_void,
     pub number_of_table_entries: usize,
     pub configuration_table: *mut EfiConfigurationTable,
 }
