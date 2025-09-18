@@ -52,10 +52,14 @@ pub unsafe extern "efiapi" fn efi_main(
         // Correct logging using the serial port, as `vga::log` doesn't support numeric formatting
         // without an allocator, which is not available.
         serial::serial_log("Found framebuffer configuration!");
-        let _ = core::fmt::write(&mut *serial::SERIAL1.lock(),
-            format_args!("  Address: {:#x}\n", config.address));
-        let _ = core::fmt::write(&mut *serial::SERIAL1.lock(),
-            format_args!("  Resolution: {}x{}\n", config.width, config.height));
+        let _ = core::fmt::write(
+            &mut *serial::SERIAL1.lock(),
+            format_args!("  Address: {:#x}\n", config.address),
+        );
+        let _ = core::fmt::write(
+            &mut *serial::SERIAL1.lock(),
+            format_args!("  Resolution: {}x{}\n", config.width, config.height),
+        );
     } else {
         vga::log("Fullerene Framebuffer Config Table not found.");
         serial::serial_log("Fullerene Framebuffer Config Table not found.");
