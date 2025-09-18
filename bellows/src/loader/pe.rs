@@ -111,6 +111,9 @@ pub fn load_efi_image(
     // The NT headers location is calculated from the DOS header.
     // The length of the image_data is checked to ensure it's large enough to
     // contain the NT headers.
+    if dos_header.e_lfanew < 0 {
+        return Err("Invalid NT header offset in DOS header.");
+    }
     let nt_headers_offset = dos_header.e_lfanew as usize;
     if image_data.len() < nt_headers_offset + mem::size_of::<ImageNtHeaders64>() {
         return Err("Image data is too small to contain NT headers.");
