@@ -56,7 +56,7 @@ impl SerialPort {
 }
 
 // Provides a global singleton for the serial port
-static SERIAL1: Mutex<SerialPort> = Mutex::new(SerialPort::new());
+pub(crate) static SERIAL1: Mutex<SerialPort> = Mutex::new(SerialPort::new());
 
 /// Initializes the global serial port.
 pub fn serial_init() {
