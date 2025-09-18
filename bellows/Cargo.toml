@@ -3,4 +3,10 @@ name = "bellows"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "bellows"
+path = "src/main.rs"
+
 [dependencies]
+linked_list_allocator = "0.10.5"
+spin = "0.10.0"
