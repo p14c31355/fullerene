@@ -97,10 +97,10 @@ pub fn load_efi_image(
     // Safety:
     // The image_data slice is assumed to be valid and large enough to contain
     // the DOS header. The pointer is checked to be non-null and correctly aligned.
-    let dos_header: &ImageDosHeader = if image_data.len() < mem::size_of::<ImageDosHeader>() {
+    let dos_header: ImageDosHeader = if image_data.len() < mem::size_of::<ImageDosHeader>() {
         return Err("Image data is too small to contain DOS header.");
     } else {
-        unsafe { &*(image_data.as_ptr() as *const ImageDosHeader) }
+        unsafe { core::ptr::read_unaligned(image_data.as_ptr() as *const ImageDosHeader) }
     };
 
     if dos_header.e_magic != 0x5a4d {
