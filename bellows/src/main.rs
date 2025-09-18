@@ -115,8 +115,8 @@ fn init_gop(st: &EfiSystemTable) {
 }
 
 /// Entry point for UEFI. Note: name and calling convention are critical.
-#[unsafe(no_mangle)]
-pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
+#[no_mangle]
+pub unsafe extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
     let st = unsafe { &*system_table };
     let bs = unsafe { &*st.boot_services };
     uefi_print(st, "bellows: bootloader started\n");
