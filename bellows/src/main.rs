@@ -115,8 +115,8 @@ fn init_gop(st: &EfiSystemTable) {
 }
 
 /// Entry point for UEFI. Note: name and calling convention are critical.
-#[no_mangle]
-pub unsafe extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
+#[unsafe(no_mangle)]
+pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
     let st = unsafe { &*system_table };
     let bs = unsafe { &*st.boot_services };
     uefi_print(st, "bellows: bootloader started\n");
@@ -156,9 +156,18 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut E
         Err(err) => {
             uefi_print(st, err);
             uefi_print(st, "\nHalting.\n");
+            let file_pages = efi_image_size.div_ceil(4096);
+            unsafe {
+                (bs.free_pages)(efi_image_phys, file_pages);
+            }
             panic!();
         }
     };
+
+    let file_pages = efi_image_size.div_ceil(4096);
+    unsafe {
+        (bs.free_pages)(efi_image_phys, file_pages);
+    }
 
     // Exit boot services and jump to the kernel.
     // The loader::exit_boot_services_and_jump function will handle the transition.

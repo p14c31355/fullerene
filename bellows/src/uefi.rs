@@ -170,6 +170,9 @@ pub const FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID: [u8; 16] = [
     0x3c, 0x23, 0x88, 0x3f, 0x27, 0x4d, 0x78, 0x4d, 0x91, 0x2c, 0x73, 0x49, 0x3a, 0x0c, 0x23, 0x75,
 ];
 
+/// EFI_STATUS code for EFI_BUFFER_TOO_SMALL
+pub const EFI_BUFFER_TOO_SMALL: usize = 0x8000000000000005;
+
 /// The structure passed from the bootloader to the kernel.
 #[repr(C)]
 pub struct FullereneFramebufferConfig {
