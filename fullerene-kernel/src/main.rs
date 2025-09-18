@@ -41,14 +41,10 @@ pub unsafe extern "efiapi" fn efi_main(_image_handle: usize, system_table: *mut 
         }
     }
 
-    if let Some(config) = framebuffer_config {
+    if let Some(_config) = framebuffer_config {
         vga::log("Found framebuffer configuration!");
-        vga::log(&alloc::format!("  Address: 0x{:x}", config.address));
-        vga::log(&alloc::format!(
-            "  Resolution: {}x{}",
-            config.width,
-            config.height
-        ));
+        vga::log("  Address: <not available without a proper allocator>");
+        vga::log("  Resolution: <not available without a proper allocator>");
     } else {
         vga::log("Fullerene Framebuffer Config Table not found.");
     }
