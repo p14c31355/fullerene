@@ -10,8 +10,8 @@ extern crate alloc;
 use core::ffi::c_void;
 use uefi::{EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig};
 
-#[export_name = "efi_main"]
-#[link_section = ".text.efi_main"]
+#[unsafe(export_name = "efi_main")]
+#[unsafe(link_section = ".text.efi_main")]
 pub unsafe extern "efiapi" fn efi_main(_image_handle: usize, system_table: *mut c_void) -> ! {
     // Initialize serial and VGA first for logging
     serial::serial_init();
