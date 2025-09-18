@@ -1,6 +1,6 @@
 // bellows/src/loader/mod.rs
 
-use crate::uefi::{EfiMemoryType, EfiSystemTable, Result};
+use crate::uefi::{EFI_BUFFER_TOO_SMALL, EfiMemoryType, EfiSystemTable, Result};
 use core::ffi::c_void;
 use core::ptr;
 
@@ -31,7 +31,7 @@ pub fn exit_boot_services_and_jump(
             &mut descriptor_version,
         )
     };
-    if status != crate::uefi::EFI_BUFFER_TOO_SMALL {
+    if status != EFI_BUFFER_TOO_SMALL {
         return Err("Failed to get memory map size on first attempt.");
     }
 
@@ -67,8 +67,7 @@ pub fn exit_boot_services_and_jump(
         };
         if status == 0 {
             break;
-        } else if status == crate::uefi::EFI_BUFFER_TOO_SMALL {
-            // EFI_BUFFER_TOO_SMALL
+        } else if status == EFI_BUFFER_TOO_SMALL {
             // The memory map has changed. We need to free the old buffer, re-allocate a larger one, and try again.
             unsafe {
                 (bs.free_pages)(map_phys_addr, map_pages);
@@ -88,7 +87,7 @@ pub fn exit_boot_services_and_jump(
                 return Err("Failed to re-allocate memory map buffer.");
             }
             map_phys_addr = new_map_phys_addr;
-            map_pages = new_map_pages; // Update map_pages with the new size
+            map_pages = new_map_pages;
             map_ptr = map_phys_addr as *mut c_void;
             continue;
         } else {
@@ -104,6 +103,8 @@ pub fn exit_boot_services_and_jump(
     let exit_status = unsafe { (bs.exit_boot_services)(image_handle, map_key) };
     if exit_status != 0 {
         // If this fails, there's no way to recover.
+        // We cannot use the UEFI boot services anymore.
+        // The bootloader is in a failed state.
         return Err("Failed to exit boot services.");
     }
 

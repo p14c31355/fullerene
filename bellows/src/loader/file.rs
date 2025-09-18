@@ -18,7 +18,7 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     // is assumed to be valid. The GUID is static.
     if unsafe {
         (bs.locate_protocol)(
-            EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID.as_ptr(),
+            &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
             ptr::null_mut(),
             &mut fs_ptr,
         )
@@ -66,20 +66,22 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     unsafe {
         ((*efi_file).get_info)(
             efi_file,
-            EFI_FILE_INFO_GUID.as_ptr(),
+            &EFI_FILE_INFO_GUID as *const _ as *const u8,
             &mut file_info_size,
             ptr::null_mut(),
         )
     };
 
     let mut file_info_buf: Vec<u8> = Vec::with_capacity(file_info_size);
+    unsafe { file_info_buf.set_len(file_info_size) }; // Set length to capacity to allow write
+
     // Safety:
     // We have a buffer with the correct capacity. `as_mut_ptr` is safe.
     let file_info_ptr = file_info_buf.as_mut_ptr() as *mut c_void;
     if unsafe {
         ((*efi_file).get_info)(
             efi_file,
-            EFI_FILE_INFO_GUID.as_ptr(),
+            &EFI_FILE_INFO_GUID as *const _ as *const u8,
             &mut file_info_size,
             file_info_ptr,
         )

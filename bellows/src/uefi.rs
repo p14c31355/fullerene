@@ -2,6 +2,7 @@
 
 use alloc::vec::Vec;
 use core::ffi::c_void;
+use core::mem;
 use core::ptr;
 
 /// A simple Result type for our bootloader,

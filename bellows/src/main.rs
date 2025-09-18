@@ -10,6 +10,8 @@ extern crate alloc;
 use alloc::format;
 use core::alloc::Layout;
 use core::ffi::c_void;
+use core::mem;
+use core::ptr;
 use core::slice;
 
 mod loader;
@@ -20,40 +22,53 @@ use crate::loader::{
 };
 
 use crate::uefi::{
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiSystemTable,
-    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig, uefi_print,
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiGraphicsOutputProtocolMode,
+    EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
+    uefi_print,
 };
 
 /// Alloc error handler required when using `alloc` in no_std.
 #[alloc_error_handler]
 fn alloc_error(_layout: Layout) -> ! {
-    panic!();
+    panic!("Allocation error");
 }
 
 /// Panic handler
 #[cfg(not(test))]
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    // Print the panic message if available
+    uefi_print(
+        unsafe {
+            &*ptr::read_volatile(
+                info.location().unwrap().file() as *const _ as *const *const EfiSystemTable
+            )
+        },
+        &format!("Panicked at: {}\n", info),
+    );
     loop {}
 }
 
 fn init_gop(st: &EfiSystemTable) {
     let bs = unsafe { &*st.boot_services };
-    let mut gop: *mut EfiGraphicsOutputProtocol = core::ptr::null_mut();
+    let mut gop: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
 
     // Safety:
     // The GUID is a static global, its address is valid.
     // The function pointer is from the UEFI boot services table, assumed to be valid.
     let status = unsafe {
         (bs.locate_protocol)(
-            EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
-            core::ptr::null_mut(),
+            &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID as *const _ as *const u8,
+            ptr::null_mut(),
             &mut gop as *mut _ as *mut *mut c_void,
         )
     };
 
     if status != 0 || gop.is_null() {
-        // Optionally print an error, but GOP is not critical for booting.
+        uefi_print(
+            st,
+            "Failed to locate GOP protocol, continuing without it.\n",
+        );
         return;
     }
 
@@ -67,11 +82,19 @@ fn init_gop(st: &EfiSystemTable) {
         (
             info_ref,
             mode_ref.frame_buffer_base,
-            mode_ref.frame_buffer_size as usize,
+            mode_ref.frame_buffer_size,
         )
     };
 
     let fb_ptr = fb_addr as *mut u32;
+
+    let config = FullereneFramebufferConfig {
+        address: fb_addr as u64,
+        width: info.horizontal_resolution,
+        height: info.vertical_resolution,
+        stride: info.pixels_per_scan_line,
+        pixel_format: info.pixel_format,
+    };
 
     // Safety:
     // The GUID is a static global, its address is valid.
@@ -79,38 +102,27 @@ fn init_gop(st: &EfiSystemTable) {
     // The `FullereneFramebufferConfig` struct is valid for the duration of the call.
     let status = unsafe {
         (bs.install_configuration_table)(
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
-            &FullereneFramebufferConfig {
-                address: fb_addr as u64,
-                width: info.horizontal_resolution,
-                height: info.vertical_resolution,
-                stride: info.pixels_per_scan_line,
-                pixel_format: info.pixel_format,
-            } as *const _ as *mut c_void,
+            &FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID as *const _ as *const u8,
+            &config as *const _ as *mut c_void,
         )
     };
 
     if status != 0 {
         uefi_print(st, "Failed to install framebuffer config table.\n");
-        // Decide if this is a fatal error.
     }
 
-    let num_pixels = fb_size / 4; // Assuming 32bpp
-    if fb_ptr.is_null() {
-        return; // Nothing to clear if framebuffer is not available.
+    let num_pixels = fb_size / mem::size_of::<u32>();
+    if fb_ptr.is_null() || num_pixels == 0 {
+        return;
     }
+
     // Safety:
     // We are writing to the framebuffer memory region.
     // We have verified the `fb_ptr` is not null and the `num_pixels` is calculated
-    // from the size provided by the UEFI firmware. This is a reasonable assumption
-    // for a bootloader and the only way to interact with the framebuffer.
-    for i in 0..num_pixels {
-        unsafe {
-            let pixel_ptr = fb_ptr.add(i);
-            // We use `write_volatile` to ensure the compiler doesn't optimize away
-            // the writes to the memory-mapped I/O region.
-            core::ptr::write_volatile(pixel_ptr, 0x00000000);
-        }
+    // from the size provided by the UEFI firmware. `write_volatile` is used to
+    // prevent the compiler from optimizing the memory-mapped I/O writes away.
+    unsafe {
+        ptr::write_bytes(fb_ptr as *mut u8, 0x00, fb_size);
     }
 }
 
@@ -123,7 +135,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     if let Err(msg) = init_heap(bs) {
         uefi_print(st, msg);
-        panic!();
+        panic!("Failed to initialize heap.");
     }
 
     init_gop(st);
@@ -134,7 +146,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         Err(err) => {
             uefi_print(st, err);
             uefi_print(st, "\nHalting.\n");
-            panic!();
+            panic!("Failed to read EFI file.");
         }
     };
 
@@ -142,10 +154,9 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         // Safety:
         // `efi_image_phys` and `efi_image_size` are returned by `read_efi_file`,
         // which allocates a valid memory region and reads the file into it.
-        // The slice created from this memory is valid for the duration of this function.
         if efi_image_size == 0 {
             uefi_print(st, "Kernel file is empty.\n");
-            panic!();
+            panic!("Kernel file is empty.");
         }
         unsafe { slice::from_raw_parts(efi_image_phys as *const u8, efi_image_size) }
     };
@@ -160,7 +171,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             unsafe {
                 (bs.free_pages)(efi_image_phys, file_pages);
             }
-            panic!();
+            panic!("Failed to load EFI image.");
         }
     };
 
@@ -170,17 +181,16 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     }
 
     // Exit boot services and jump to the kernel.
-    // The loader::exit_boot_services_and_jump function will handle the transition.
     match exit_boot_services_and_jump(image_handle, system_table, entry) {
         Ok(_) => {
             // Should not be reached.
             uefi_print(st, "\nJump failed.\n");
-            panic!();
+            panic!("Jump failed.");
         }
         Err(err) => {
             uefi_print(st, err);
             uefi_print(st, "\nHalting.\n");
-            panic!();
+            panic!("Failed to exit boot services and jump.");
         }
     }
 }

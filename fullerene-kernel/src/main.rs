@@ -12,7 +12,12 @@ use uefi::{EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFra
 
 #[unsafe(export_name = "efi_main")]
 #[unsafe(link_section = ".text.efi_main")]
-pub unsafe extern "efiapi" fn efi_main(_image_handle: usize, system_table: *mut c_void, _memory_map: *mut c_void, _memory_map_size: usize) -> ! {
+pub unsafe extern "efiapi" fn efi_main(
+    _image_handle: usize,
+    system_table: *mut c_void,
+    _memory_map: *mut c_void,
+    _memory_map_size: usize,
+) -> ! {
     // Initialize serial and VGA first for logging
     serial::serial_init();
     vga::vga_init();

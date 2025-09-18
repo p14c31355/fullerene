@@ -96,11 +96,11 @@ pub fn load_efi_image(
 
     // Safety:
     // The image_data slice is assumed to be valid and large enough to contain
-    // the DOS header. The pointer is checked to be non-null and correctly aligned.
+    // the DOS header.
     let dos_header: ImageDosHeader = if image_data.len() < mem::size_of::<ImageDosHeader>() {
         return Err("Image data is too small to contain DOS header.");
     } else {
-        unsafe { core::ptr::read_unaligned(image_data.as_ptr() as *const ImageDosHeader) }
+        unsafe { ptr::read_unaligned(image_data.as_ptr() as *const ImageDosHeader) }
     };
 
     if dos_header.e_magic != 0x5a4d {
@@ -119,9 +119,7 @@ pub fn load_efi_image(
         return Err("Image data is too small to contain NT headers.");
     }
     let nt_headers: ImageNtHeaders64 = unsafe {
-        core::ptr::read_unaligned(
-            image_data.as_ptr().add(nt_headers_offset) as *const ImageNtHeaders64
-        )
+        ptr::read_unaligned(image_data.as_ptr().add(nt_headers_offset) as *const ImageNtHeaders64)
     };
 
     if nt_headers.signature != 0x4550 {
@@ -129,7 +127,7 @@ pub fn load_efi_image(
     }
 
     // Allocate memory for the image
-    let pages_needed = nt_headers.optional_header.size_of_image.div_ceil(4096) as usize;
+    let pages_needed = (nt_headers.optional_header.size_of_image as usize).div_ceil(4096);
     let mut phys_addr: usize = 0;
     // Safety:
     // The `allocate_pages` function is a UEFI boot service. Its function pointer
@@ -167,7 +165,6 @@ pub fn load_efi_image(
     // Safety:
     // We have checked that the image data contains the file header, and the
     // number of sections is derived from a trusted source (the file header).
-    // The memory pointed to by `sections_ptr` is valid for creating the slice.
     let sections: &[SectionHeader] = unsafe {
         slice::from_raw_parts(
             sections_ptr as *const SectionHeader,
@@ -176,10 +173,6 @@ pub fn load_efi_image(
     };
 
     for section in sections.iter() {
-        // Safety:
-        // We are copying data from the source image file to the newly allocated
-        // memory. The pointers are checked to be within the bounds of the allocated
-        // memory and the source data.
         let dest = phys_addr.saturating_add(section.virtual_address as usize) as *mut u8;
         let src = unsafe {
             image_data
@@ -195,9 +188,9 @@ pub fn load_efi_image(
 
         // Ensure the destination is within our allocated memory
         if dest.is_null()
-            || dest < phys_addr as *mut u8
-            || (dest as usize).saturating_add(copy_size) as *mut u8
-                > (phys_addr.saturating_add(pages_needed * 4096)) as *mut u8
+            || (dest as usize) < phys_addr
+            || (dest as usize).saturating_add(copy_size)
+                > (phys_addr.saturating_add(pages_needed * 4096))
         {
             unsafe {
                 (bs.free_pages)(phys_addr, pages_needed);
@@ -205,27 +198,24 @@ pub fn load_efi_image(
             return Err("Section destination is outside allocated memory.");
         }
 
+        // Safety:
+        // We have bounds-checked the source and destination pointers and the size.
+        // `copy_nonoverlapping` is now safe to call.
         unsafe {
             ptr::copy_nonoverlapping(src, dest, copy_size);
         }
 
-        // After ptr::copy_nonoverlapping(...)
         let raw_size = section.size_of_raw_data as usize;
         let virtual_size = section.virtual_size as usize;
         if virtual_size > raw_size {
             let remaining_size = virtual_size - raw_size;
-            // Safety: `dest` is a valid pointer within allocated memory.
-            // `raw_size` is checked to be within bounds by `copy_nonoverlapping` above.
-            // We need to ensure `remaining_dest` and `remaining_size` do not exceed
-            // the allocated image memory.
             unsafe {
                 let remaining_dest = dest.add(raw_size);
 
-                // Bounds check for `remaining_dest` before writing.
                 if remaining_dest.is_null()
-                    || remaining_dest < phys_addr as *mut u8
-                    || (remaining_dest as usize).saturating_add(remaining_size) as *mut u8
-                        > (phys_addr.saturating_add(pages_needed * 4096)) as *mut u8
+                    || (remaining_dest as usize) < phys_addr
+                    || (remaining_dest as usize).saturating_add(remaining_size)
+                        > (phys_addr.saturating_add(pages_needed * 4096))
                 {
                     (bs.free_pages)(phys_addr, pages_needed);
                     return Err("Zero-fill destination is outside allocated memory.");
@@ -254,7 +244,7 @@ pub fn load_efi_image(
             return Err("Relocation table is outside allocated memory.");
         }
 
-        while current_reloc_block < relocs_end_ptr {
+        while (current_reloc_block as usize) < (relocs_end_ptr as usize) {
             // Safety:
             // The pointer is checked against the end of the relocation table.
             let reloc_block_header =
@@ -268,8 +258,7 @@ pub fn load_efi_image(
                 unsafe { current_reloc_block.add(mem::size_of::<ImageBaseRelocation>()) };
             let fixup_list_end = unsafe { fixup_list_ptr.add(num_entries * 2) };
 
-            // Bounds checking for the fixup list itself.
-            if fixup_list_end > relocs_end_ptr {
+            if (fixup_list_end as usize) > (relocs_end_ptr as usize) {
                 unsafe {
                     (bs.free_pages)(phys_addr, pages_needed);
                 }
@@ -287,13 +276,12 @@ pub fn load_efi_image(
                 let fixup_offset = fixup & 0xFFF;
                 const IMAGE_REL_BASED_DIR64: u16 = 10;
                 if fixup_type == IMAGE_REL_BASED_DIR64 {
-                    // IMAGE_REL_BASED_DIR64
                     let fixup_address_ptr =
                         (reloc_page_va.saturating_add(fixup_offset as usize)) as *mut u64;
-                    // Additional check to prevent out-of-bounds writes
-                    if fixup_address_ptr < phys_addr as *mut u64
-                        || fixup_address_ptr as usize
-                            >= phys_addr.saturating_add(pages_needed * 4096)
+
+                    if (fixup_address_ptr as usize) < phys_addr
+                        || (fixup_address_ptr as usize).saturating_add(mem::size_of::<u64>())
+                            > (phys_addr.saturating_add(pages_needed * 4096))
                     {
                         unsafe {
                             (bs.free_pages)(phys_addr, pages_needed);
@@ -317,9 +305,16 @@ pub fn load_efi_image(
     let entry_point_addr =
         phys_addr.saturating_add(nt_headers.optional_header.address_of_entry_point as usize);
 
+    if entry_point_addr >= phys_addr.saturating_add(pages_needed * 4096)
+        || entry_point_addr < phys_addr
+    {
+        unsafe { (bs.free_pages)(phys_addr, pages_needed) };
+        return Err("Entry point address is outside allocated memory.");
+    }
+
     // Safety:
     // We are converting a memory address to a function pointer.
-    // The `entry_point_addr` is calculated from the PE headers, which are
-    // assumed to be correct. The `efiapi` calling convention is also assumed.
+    // The `entry_point_addr` is calculated from the PE headers and has been checked to be
+    // within the allocated memory. The `efiapi` calling convention is also assumed.
     Ok(unsafe { core::mem::transmute(entry_point_addr) })
 }
