@@ -31,7 +31,7 @@ pub fn exit_boot_services_and_jump(
             &mut descriptor_version,
         )
     };
-    if status != 0 {
+    if status != crate::uefi::EFI_BUFFER_TOO_SMALL {
         return Err("Failed to get memory map size on first attempt.");
     }
 
