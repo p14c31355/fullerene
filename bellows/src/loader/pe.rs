@@ -253,7 +253,8 @@ pub fn load_efi_image(
             for &fixup in fixup_list {
                 let fixup_type = (fixup >> 12) & 0xF;
                 let fixup_offset = fixup & 0xFFF;
-                if fixup_type == 10 {
+                const IMAGE_REL_BASED_DIR64: u16 = 10;
+                if fixup_type == IMAGE_REL_BASED_DIR64 {
                     // IMAGE_REL_BASED_DIR64
                     let fixup_address_ptr =
                         (reloc_page_va.saturating_add(fixup_offset as usize)) as *mut u64;
