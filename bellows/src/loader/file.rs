@@ -127,7 +127,8 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
         unsafe {
             (bs.free_pages)(phys_addr, pages);
             ((*efi_file).close)(efi_file);
-        };
+            ((*root).close)(root);
+        }
         return Err("Failed to read kernel file.");
     }
 
