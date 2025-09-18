@@ -111,7 +111,7 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
         )
     } != 0
     {
-        unsafe { ((*efi_file).close)(efi_file) };
+        unsafe { ((*efi_file).close)(efi_file); ((*root).close)(root); }
         return Err("Failed to allocate pages for kernel file.");
     }
 
