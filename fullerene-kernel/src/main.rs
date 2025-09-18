@@ -70,7 +70,7 @@ pub struct DummyAllocator;
 
 unsafe impl core::alloc::GlobalAlloc for DummyAllocator {
     unsafe fn alloc(&self, _layout: core::alloc::Layout) -> *mut u8 {
-        core::ptr::null_mut()
+        panic!("memory allocation is not supported");
     }
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {}
 }
