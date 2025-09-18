@@ -75,19 +75,20 @@ pub fn exit_boot_services_and_jump(
             }
             map_size += descriptor_size; // Increase buffer size
             let new_map_pages = map_size.div_ceil(4096);
-            let new_map_phys_addr = &mut 0;
+            let mut new_map_phys_addr: usize = 0;
             let new_status = unsafe {
                 (bs.allocate_pages)(
                     0usize,
                     EfiMemoryType::EfiLoaderData,
                     new_map_pages,
-                    new_map_phys_addr,
+                    &mut new_map_phys_addr,
                 )
             };
             if new_status != 0 {
                 return Err("Failed to re-allocate memory map buffer.");
             }
-            map_phys_addr = *new_map_phys_addr;
+            map_phys_addr = new_map_phys_addr;
+            map_pages = new_map_pages; // Update map_pages with the new size
             continue;
         } else {
             // Unexpected error status
