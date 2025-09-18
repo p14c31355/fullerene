@@ -73,7 +73,7 @@ pub fn exit_boot_services_and_jump(
             unsafe {
                 (bs.free_pages)(map_phys_addr, map_pages);
             }
-            map_size += descriptor_size; // Increase buffer size
+            map_size += 4096; // Increase buffer size with padding
             let new_map_pages = map_size.div_ceil(4096);
             let mut new_map_phys_addr: usize = 0;
             let new_status = unsafe {
