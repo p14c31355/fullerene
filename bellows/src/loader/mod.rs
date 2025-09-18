@@ -52,7 +52,7 @@ pub fn exit_boot_services_and_jump(
     if status != 0 {
         return Err("Failed to allocate memory map buffer.");
     }
-    let map_ptr = map_phys_addr as *mut c_void;
+    let mut map_ptr = map_phys_addr as *mut c_void;
 
     // Retry GetMemoryMap in a loop to handle `EFI_BUFFER_TOO_SMALL`
     loop {
@@ -89,7 +89,7 @@ pub fn exit_boot_services_and_jump(
             }
             map_phys_addr = new_map_phys_addr;
             map_pages = new_map_pages; // Update map_pages with the new size
-            let map_ptr = map_phys_addr as *mut c_void; // Re-declare map_ptr as mutable
+            map_ptr = map_phys_addr as *mut c_void;
             continue;
         } else {
             // Unexpected error status

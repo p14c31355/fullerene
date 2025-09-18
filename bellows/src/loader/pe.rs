@@ -115,8 +115,11 @@ pub fn load_efi_image(
     if image_data.len() < nt_headers_offset + mem::size_of::<ImageNtHeaders64>() {
         return Err("Image data is too small to contain NT headers.");
     }
-    let nt_headers: ImageNtHeaders64 =
-        unsafe { core::ptr::read_unaligned(image_data.as_ptr().add(nt_headers_offset) as *const ImageNtHeaders64) };
+    let nt_headers: ImageNtHeaders64 = unsafe {
+        core::ptr::read_unaligned(
+            image_data.as_ptr().add(nt_headers_offset) as *const ImageNtHeaders64
+        )
+    };
 
     if nt_headers.signature != 0x4550 {
         return Err("Invalid PE signature.");
