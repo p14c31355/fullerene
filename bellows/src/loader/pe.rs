@@ -206,7 +206,8 @@ pub fn load_efi_image(
 
     // Handle relocations
     const IMAGE_DIRECTORY_ENTRY_BASERELOC: usize = 5;
-    let data_dir_reloc = &nt_headers.optional_header._data_directory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+    let data_dir_reloc =
+        &nt_headers.optional_header._data_directory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
     let reloc_base_va = data_dir_reloc.virtual_address as usize;
     let reloc_size = data_dir_reloc.size as usize;
     if reloc_base_va > 0 && reloc_size > 0 {

@@ -37,7 +37,7 @@ pub fn exit_boot_services_and_jump(
 
     // Add extra space just in case the memory map changes between calls.
     map_size += 4096;
-    let map_pages = map_size.div_ceil(4096);
+    let mut map_pages = map_size.div_ceil(4096);
     let mut map_phys_addr: usize = 0;
 
     // Allocate an appropriately-sized buffer for the memory map.
