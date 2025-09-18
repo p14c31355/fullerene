@@ -67,7 +67,7 @@ pub fn exit_boot_services_and_jump(
         };
         if status == 0 {
             break;
-        } else if status == 0x8000000000000005 {
+        } else if status == crate::uefi::EFI_BUFFER_TOO_SMALL {
             // EFI_BUFFER_TOO_SMALL
             // The memory map has changed. We need to free the old buffer, re-allocate a larger one, and try again.
             unsafe {
