@@ -14,6 +14,16 @@ use core::mem;
 use core::ptr;
 use core::slice;
 
+use spin::Mutex;
+
+#[derive(Clone, Copy)]
+struct UefiSystemTablePtr(*mut EfiSystemTable);
+
+unsafe impl Send for UefiSystemTablePtr {}
+unsafe impl Sync for UefiSystemTablePtr {}
+
+static UEFI_SYSTEM_TABLE: Mutex<Option<UefiSystemTablePtr>> = Mutex::new(None);
+
 mod loader;
 mod uefi;
 
@@ -37,15 +47,16 @@ fn alloc_error(_layout: Layout) -> ! {
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    // Print the panic message if available
-    uefi_print(
-        unsafe {
-            &*ptr::read_volatile(
-                info.location().unwrap().file() as *const _ as *const *const EfiSystemTable
-            )
-        },
-        &format!("Panicked at: {}\n", info),
-    );
+    // Print the panic message if available.
+    // Use `try_lock` to avoid deadlocking if the panic occurred while the lock was held.
+    if let Some(guard) = UEFI_SYSTEM_TABLE.try_lock() {
+        if let Some(UefiSystemTablePtr(st_ptr)) = *guard {
+            if !st_ptr.is_null() {
+                let st = unsafe { &*st_ptr };
+                uefi_print(st, &format!("Panicked at: {}\n", info));
+            }
+        }
+    }
     loop {}
 }
 
@@ -130,6 +141,8 @@ fn init_gop(st: &EfiSystemTable) {
 #[unsafe(no_mangle)]
 pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
     let st = unsafe { &*system_table };
+    // In efi_main, after getting the system_table pointer
+    *UEFI_SYSTEM_TABLE.lock() = Some(UefiSystemTablePtr(system_table));
     let bs = unsafe { &*st.boot_services };
     uefi_print(st, "bellows: bootloader started\n");
 
