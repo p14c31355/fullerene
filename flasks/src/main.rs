@@ -73,10 +73,13 @@ fn main() -> io::Result<()> {
         .join("RELEASEX64_OVMF_VARS.fd");
 
     let ovmf_fd_drive = format!(
-        "if=pflash,format=raw,readonly=on,file={}",
-        ovmf_fd_path.display()
-    );
-    let ovmf_vars_fd_drive = format!("if=pflash,format=raw,file={}", ovmf_vars_fd_path.display());
+    "if=pflash,format=raw,unit=0,readonly=on,file={}",
+    ovmf_fd_path.display()
+);
+let ovmf_vars_fd_drive = format!(
+    "if=pflash,format=raw,unit=1,file={}",
+    ovmf_vars_fd_path.display()
+);
 
     let qemu_args = [
         "-cdrom",
@@ -99,12 +102,12 @@ fn main() -> io::Result<()> {
         "-drive",
         &ovmf_vars_fd_drive,
         "-boot",
-        "order=d",
+        "d",
         "-display",
         "sdl",
         "-no-reboot",
         "-d",
-        "guest_errors",
+        "int",
         "-D",
         "qemu_log.txt",
         "-s",

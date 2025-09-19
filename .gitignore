@@ -15,5 +15,5 @@ qemu_log.txt
 serial_log.txt
 mnt/
 tmp/
-fat32.img
+esp.img
 iso_root
