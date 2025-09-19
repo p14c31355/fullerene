@@ -7,6 +7,7 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::format;
 use core::alloc::Layout;
 use core::ffi::c_void;
@@ -99,13 +100,17 @@ fn init_gop(st: &EfiSystemTable) {
 
     let fb_ptr = fb_addr as *mut u32;
 
-    let config = FullereneFramebufferConfig {
+    let config = Box::new(FullereneFramebufferConfig {
         address: fb_addr as u64,
         width: info.horizontal_resolution,
         height: info.vertical_resolution,
         stride: info.pixels_per_scan_line,
         pixel_format: info.pixel_format,
-    };
+    });
+
+    // Leak the box to prevent the memory from being deallocated.
+    // The pointer will be valid for the kernel to use.
+    let config_ptr = Box::leak(config);
 
     // Safety:
     // The GUID is a static global, its address is valid.
@@ -114,7 +119,7 @@ fn init_gop(st: &EfiSystemTable) {
     let status = unsafe {
         (bs.install_configuration_table)(
             &FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID as *const _ as *const u8,
-            &config as *const _ as *mut c_void,
+            config_ptr as *const _ as *mut c_void,
         )
     };
 
