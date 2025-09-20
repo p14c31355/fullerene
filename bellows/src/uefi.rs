@@ -59,7 +59,7 @@ pub struct EfiBootServices {
 pub struct EfiSimpleTextOutput {
     _pad: [usize; 2],
     /// output_string(This, *mut u16) -> EFI_STATUS
-    pub output_string: extern "efiapi" fn(*mut EfiSimpleTextOutput, *mut u16) -> usize,
+    pub output_string: extern "efiapi" fn(*mut EfiSimpleTextOutput, *const u16) -> usize,
 }
 
 /// GUID for EFI_SIMPLE_FILE_SYSTEM_PROTOCOL
