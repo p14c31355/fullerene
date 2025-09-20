@@ -43,11 +43,14 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     // Safety:
     // The `locate_protocol` call is a UEFI boot service. Its function pointer
     // is assumed to be valid. The GUID is static.
-    let status = (bs.locate_protocol)(
-        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
-        ptr::null_mut(),
-        &mut fs_ptr,
-    );
+    let status = unsafe {
+        (bs.locate_protocol)(
+            &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+            ptr::null_mut(),
+            &mut fs_ptr,
+        )
+    };
+
     if EfiStatus::from(status) != EfiStatus::Success {
         return Err("Failed to locate SimpleFileSystem protocol.");
     }
