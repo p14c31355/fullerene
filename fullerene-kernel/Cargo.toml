@@ -7,6 +7,7 @@ edition = "2024"
 [dependencies]
 x86_64 = { version = "0.15.2", default-features = false, features = ["instructions"] }
 spin = { version = "0.10.0", default-features = false, features = ["once", "mutex", "spin_mutex"] }
+bitflags = { version = "2.3.2", default-features = false }
 
 [profile.dev]
 debug = true

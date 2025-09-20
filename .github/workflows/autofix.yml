@@ -23,8 +23,17 @@ jobs:
           toolchain: nightly
           components: clippy, rustfmt
 
-      - name: Run clippy and fix issues
-        run: cargo clippy --all-features --fix --allow-dirty --allow-staged
+      - name: Clippy (flasks only)
+        run: cargo clippy -p flasks --all-targets --fix --allow-dirty --allow-staged -- -D warnings
+
+      - name: Clippy (bellows only)
+        run: cargo clippy -p bellows --target x86_64-unknown-uefi --fix --allow-dirty --allow-staged -- -D warnings
+
+      - name: Clippy (kernel, custom target)
+        run: cargo clippy -p fullerene-kernel --target x86_64-unknown-uefi --fix --allow-dirty --allow-staged -- -D warnings
+
+      - name: Clippy (toluene only)
+        run: cargo clippy -p toluene --all-targets --fix --allow-dirty --allow-staged -- -D warnings
 
       - name: Run rustfmt
         run: cargo fmt

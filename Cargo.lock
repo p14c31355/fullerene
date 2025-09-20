@@ -135,6 +135,7 @@ dependencies = [
 name = "fullerene-kernel"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.9.4",
  "spin",
  "x86_64",
 ]
