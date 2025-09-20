@@ -132,7 +132,7 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
                 let _ = serial_writer.write_fmt(format_args!("{:?}", key));
             }
         }
-    }
+
 
     unsafe {
         PICS.lock()
