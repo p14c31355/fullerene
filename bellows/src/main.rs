@@ -30,8 +30,9 @@ use crate::loader::{
 };
 
 use crate::uefi::{
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiSystemTable,
-    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig, uefi_print,
+    BellowsError, EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiStatus,
+    EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
+    uefi_print,
 };
 
 /// Alloc error handler required when using `alloc` in no_std.
@@ -78,7 +79,10 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     uefi_print(st, "Bellows UEFI Bootloader starting...\n");
     uefi_print(st, "Initializing heap...\n");
-    init_heap(bs).expect("Failed to initialize heap.");
+    if let Err(e) = init_heap(bs) {
+        uefi_print(st, &format!("Failed to initialize heap: {:?}\n", e));
+        panic!("Failed to initialize heap.");
+    }
     uefi_print(st, "Heap initialized.\n");
 
     uefi_print(st, "Initializing GOP...\n");
@@ -89,8 +93,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     let (efi_image_phys, efi_image_size) = match read_efi_file(st) {
         Ok(t) => t,
         Err(err) => {
-            uefi_print(st, err);
-            uefi_print(st, "\nHalting.\n");
+            uefi_print(st, &format!("Failed to read EFI file: {:?}\n", err));
             panic!("Failed to read EFI file.");
         }
     };
@@ -110,8 +113,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     let entry = match load_efi_image(st, efi_image_file) {
         Ok(e) => e,
         Err(err) => {
-            uefi_print(st, err);
-            uefi_print(st, "\nHalting.\n");
+            uefi_print(st, &format!("Failed to load EFI image: {:?}\n", err));
             let file_pages = efi_image_size.div_ceil(4096);
             unsafe {
                 (bs.free_pages)(efi_image_phys, file_pages);
@@ -131,8 +133,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             unreachable!(); // This branch should never be reached if the function returns '!'
         }
         Err(err) => {
-            uefi_print(st, err);
-            uefi_print(st, "\nHalting.\n");
+            uefi_print(st, &format!("Failed to exit boot services: {:?}\n", err));
             panic!("Failed to exit boot services.");
         }
     }
@@ -149,7 +150,7 @@ fn init_gop(st: &EfiSystemTable) {
         &mut gop as *mut _ as *mut *mut c_void,
     );
 
-    if status != 0 || gop.is_null() {
+    if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
         uefi_print(
             st,
             "Failed to locate GOP protocol, continuing without it.\n",
@@ -158,7 +159,17 @@ fn init_gop(st: &EfiSystemTable) {
     }
 
     let gop_ref = unsafe { &*gop };
+    if gop_ref.mode.is_null() {
+        uefi_print(st, "GOP mode pointer is null, skipping.\n");
+        return;
+    }
+
     let mode_ref = unsafe { &*gop_ref.mode };
+    if mode_ref.info.is_null() {
+        uefi_print(st, "GOP mode info pointer is null, skipping.\n");
+        return;
+    }
+
     let info_ref = unsafe { &*mode_ref.info };
 
     let fb_addr = mode_ref.frame_buffer_base;
@@ -185,7 +196,7 @@ fn init_gop(st: &EfiSystemTable) {
         config_ptr as *const _ as *mut c_void,
     );
 
-    if status != 0 {
+    if EfiStatus::from(status) != EfiStatus::Success {
         let _ = unsafe { Box::from_raw(config_ptr) };
         uefi_print(st, "Failed to install framebuffer config table.\n");
         return;

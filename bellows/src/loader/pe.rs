@@ -1,6 +1,6 @@
 // bellows/src/loader/pe.rs
 
-use crate::uefi::{EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable, Result};
+use crate::uefi::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable, Result};
 use core::{ffi::c_void, mem, ptr, slice};
 
 #[repr(C, packed)]
@@ -110,22 +110,25 @@ pub fn load_efi_image(
     // Safety:
     // This is safe because we check the file size to ensure there's enough data
     // to read the headers. The pointer is valid within the bounds of `file`.
+    if file.len() < mem::size_of::<ImageDosHeader>() {
+        return Err(BellowsError::PeParse("File too small for DOS header."));
+    }
     let dos_header: &ImageDosHeader = unsafe { &*(file.as_ptr() as *const ImageDosHeader) };
     if dos_header.e_magic != 0x5a4d {
-        return Err("Invalid DOS signature (MZ).");
+        return Err(BellowsError::PeParse("Invalid DOS signature (MZ)."));
     }
 
     // Safety:
     // The offset `e_lfanew` is checked to be within the file bounds before dereferencing.
     let nt_headers_offset = dos_header.e_lfanew as usize;
     if nt_headers_offset + mem::size_of::<ImageNtHeaders64>() > file.len() {
-        return Err("Invalid NT headers offset.");
+        return Err(BellowsError::PeParse("Invalid NT headers offset."));
     }
     let nt_headers: &ImageNtHeaders64 =
         unsafe { &*(file.as_ptr().add(nt_headers_offset) as *const ImageNtHeaders64) };
 
     if nt_headers.optional_header._magic != 0x20b {
-        return Err("Invalid PE32+ magic number.");
+        return Err(BellowsError::PeParse("Invalid PE32+ magic number."));
     }
 
     let image_size = nt_headers.optional_header.size_of_image as usize;
@@ -140,7 +143,7 @@ pub fn load_efi_image(
         )
     };
     if EfiStatus::from(status) != EfiStatus::Success {
-        return Err("Failed to allocate memory for PE image.");
+        return Err(BellowsError::AllocationFailed("Failed to allocate memory for PE image."));
     }
 
     let image_base_addr = nt_headers.optional_header.image_base as usize;
@@ -169,7 +172,7 @@ pub fn load_efi_image(
         unsafe {
             (bs.free_pages)(phys_addr, pages_needed);
         }
-        return Err("Section headers out of bounds.");
+        return Err(BellowsError::PeParse("Section headers out of bounds."));
     }
 
     for i in 0..nt_headers._file_header.number_of_sections {
@@ -197,7 +200,7 @@ pub fn load_efi_image(
             unsafe {
                 (bs.free_pages)(phys_addr, pages_needed);
             }
-            return Err("Section data out of bounds.");
+            return Err(BellowsError::PeParse("Section data out of bounds."));
         }
 
         // Safety:
@@ -220,7 +223,7 @@ pub fn load_efi_image(
                 unsafe {
                     (bs.free_pages)(phys_addr, pages_needed);
                 }
-                return Err("Relocation table out of bounds.");
+                return Err(BellowsError::PeParse("Relocation table out of bounds."));
             }
 
             let mut current_reloc_block_ptr = reloc_table_ptr as *mut ImageBaseRelocation;
@@ -261,7 +264,7 @@ pub fn load_efi_image(
                             unsafe {
                                 (bs.free_pages)(phys_addr, pages_needed);
                             }
-                            return Err("Relocation fixup address is out of bounds.");
+                            return Err(BellowsError::PeParse("Relocation fixup address is out of bounds."));
                         }
                         let fixup_address_ptr = fixup_address as *mut u64;
                         // Safety:
@@ -275,15 +278,14 @@ pub fn load_efi_image(
                         unsafe {
                             (bs.free_pages)(phys_addr, pages_needed);
                         }
-                        return Err("Unsupported relocation type.");
+                        return Err(BellowsError::PeParse("Unsupported relocation type."));
                     }
                     unsafe {
                         fixup_ptr = fixup_ptr.add(1);
                     }
                 }
                 unsafe {
-                    current_reloc_block_ptr = current_reloc_block_ptr
-                        .add(reloc_block_size / mem::size_of::<ImageBaseRelocation>());
+                    current_reloc_block_ptr = (end_of_block_ptr as *mut ImageBaseRelocation);
                 }
             }
         }
@@ -298,7 +300,7 @@ pub fn load_efi_image(
         unsafe {
             (bs.free_pages)(phys_addr, pages_needed);
         }
-        return Err("Entry point address is outside allocated memory.");
+        return Err(BellowsError::PeParse("Entry point address is outside allocated memory."));
     }
 
     // Safety:

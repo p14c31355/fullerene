@@ -1,6 +1,6 @@
 // bellows/src/loader/mod.rs
 
-use crate::uefi::{EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable, Result};
+use crate::uefi::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable, Result};
 use core::ffi::c_void;
 use core::ptr;
 
@@ -38,7 +38,7 @@ pub fn exit_boot_services_and_jump(
                     (bs.free_pages)(map_phys_addr, map_pages);
                 }
             }
-            return Err("Failed to get memory map after multiple attempts.");
+            return Err(BellowsError::InvalidState("Failed to get memory map after multiple attempts."));
         }
 
         // First call to GetMemoryMap to get the required buffer size.
@@ -70,7 +70,7 @@ pub fn exit_boot_services_and_jump(
                         (bs.free_pages)(map_phys_addr, map_pages);
                     }
                 }
-                return Err("Failed to re-allocate memory map buffer.");
+                return Err(BellowsError::AllocationFailed("Failed to re-allocate memory map buffer."));
             }
 
             // Free the old buffer before re-assigning.
@@ -85,7 +85,7 @@ pub fn exit_boot_services_and_jump(
             // Memory map size is now correct, proceed to exit boot services.
             break;
         } else {
-            return Err("Failed to get memory map size on first attempt.");
+            return Err(BellowsError::InvalidState("Failed to get memory map size on first attempt."));
         }
     }
 
@@ -103,7 +103,7 @@ pub fn exit_boot_services_and_jump(
 
     if EfiStatus::from(status) != EfiStatus::Success {
         // If this fails, the system state is corrupted. We cannot use boot services to recover.
-        return Err("Failed to get memory map with allocated buffer.");
+        return Err(BellowsError::InvalidState("Failed to get memory map with allocated buffer."));
     }
 
     // Exit boot services. This call must succeed.
@@ -112,7 +112,7 @@ pub fn exit_boot_services_and_jump(
         // If this fails, there's no way to recover.
         // We cannot use the UEFI boot services anymore.
         // The bootloader is in a failed state.
-        return Err("Failed to exit boot services.");
+        return Err(BellowsError::InvalidState("Failed to exit boot services."));
     }
 
     // Note: The memory map buffer at `map_phys_addr` is intentionally not freed here

@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 
 #[repr(usize)]
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum EfiStatus {
     Success = 0,
     LoadError = 1,
@@ -52,9 +52,23 @@ impl From<usize> for EfiStatus {
     }
 }
 
-/// A simple Result type for our bootloader,
-/// returning a static string on error.
-pub type Result<T> = core::result::Result<T, &'static str>;
+/// A custom error type for the bootloader.
+#[derive(Debug, Clone, Copy)]
+pub enum BellowsError {
+    Efi(EfiStatus),
+    FileIo(&'static str),
+    PeParse(&'static str),
+    AllocationFailed(&'static str),
+    InvalidState(&'static str),
+}
+
+impl From<EfiStatus> for BellowsError {
+    fn from(status: EfiStatus) -> Self {
+        Self::Efi(status)
+    }
+}
+
+pub type Result<T> = core::result::Result<T, BellowsError>;
 
 /// Minimal subset of UEFI memory types (only those we need)
 #[repr(usize)]
