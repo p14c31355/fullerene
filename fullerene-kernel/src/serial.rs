@@ -82,7 +82,7 @@ pub fn panic_log(info: &core::panic::PanicInfo) {
         );
     }
     let msg = info.message();
-    let _ = write!(writer, "  Message: {}\n", msg);
+    let _ = writeln!(writer, "  Message: {}", msg);
 }
 
 // Allows using `write!` and `writeln!` macros for the serial port

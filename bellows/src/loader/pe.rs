@@ -128,8 +128,7 @@ pub fn load_efi_image(
 
     let headers_size = nt_headers.optional_header.size_of_headers as usize;
     if headers_size > 0 {
-        if (phys_addr as usize).saturating_add(headers_size)
-            > (phys_addr.saturating_add(pages_needed * 4096))
+        if phys_addr.saturating_add(headers_size) > (phys_addr.saturating_add(pages_needed * 4096))
         {
             (bs.free_pages)(phys_addr, pages_needed);
             return Err("Header size is too large for allocated memory.");
