@@ -11,7 +11,6 @@ use core::ptr;
 const EFI_FILE_MODE_READ: u64 = 0x1;
 const KERNEL_PATH: &str = r"\EFI\BOOT\KERNEL.EFI";
 
-
 /// A RAII wrapper for EfiFile that automatically closes the file when it goes out of scope.
 struct EfiFileWrapper {
     file: *mut EfiFile,
