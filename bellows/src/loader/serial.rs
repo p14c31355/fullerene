@@ -26,24 +26,30 @@ impl UefiWriter {
         self.con_out = con_out;
     }
 
-    pub fn write_string(&mut self, s: &str) {
+        pub fn write_string(&mut self, s: &str) -> Result<(), crate::uefi::EfiStatus> {
         if self.con_out.is_null() {
-            return;
+            return Ok(());
         }
 
         let mut s_utf16: Vec<u16> = s.encode_utf16().collect();
         s_utf16.push(0); // Add null terminator
 
-        unsafe {
-            ((*self.con_out).output_string)(self.con_out, s_utf16.as_ptr());
+        let status = unsafe {
+            ((*self.con_out).output_string)(self.con_out, s_utf16.as_ptr())
+        };
+
+        let efi_status = crate::uefi::EfiStatus::from(status);
+        if efi_status == crate::uefi::EfiStatus::Success {
+            Ok(())
+        } else {
+            Err(efi_status)
         }
     }
 }
 
 impl fmt::Write for UefiWriter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.write_string(s);
-        Ok(())
+        self.write_string(s).map_err(|_| fmt::Error)
     }
 }
 

@@ -45,8 +45,12 @@ fn alloc_error(_layout: Layout) -> ! {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     // Print the panic message using the refactored serial module.
-    if let Some(st_ptr) = UEFI_SYSTEM_TABLE.lock().as_ref() {
+        if let Some(st_ptr) = UEFI_SYSTEM_TABLE.lock().as_ref() {
         let st_ref = unsafe { &*st_ptr.0 };
+        // Initialize the writer to ensure panic messages can be printed.
+        unsafe {
+            serial::UEFI_WRITER.init(st_ref.con_out);
+        }
         // We use the same `uefi_print` here, but it's now a different function that uses `_print`.
         if let Some(location) = info.location() {
             serial::_print(format_args!(
@@ -80,15 +84,14 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         serial::UEFI_WRITER.init(st.con_out);
     }
     
-    serial::_print(format_args!("Bellows UEFI Bootloader starting...\n"));
+    println!("Bellows UEFI Bootloader starting...");
 
-    serial::_print(format_args!("Attempting to initialize heap...\n"));
+    println!("Attempting to initialize heap...");
     if let Err(e) = init_heap(bs) {
-        serial::_print(format_args!("Failed to initialize heap: {:?}\n", e));
+        println!("Failed to initialize heap: {:?}", e);
         panic!("Failed to initialize heap.");
     }
-    serial::_print(format_args!("Heap initialized successfully.\n"));
-
+    println!("Heap initialized successfully.");
     serial::_print(format_args!("Attempting to initialize GOP...\n"));
     init_gop(st);
     serial::_print(format_args!("GOP initialized successfully.\n"));
@@ -214,9 +217,4 @@ fn init_gop(st: &EfiSystemTable) {
     unsafe {
         core::ptr::write_bytes(fb_addr as *mut u8, 0x00, fb_size as usize);
     }
-
-    unsafe {
-        core::ptr::write_bytes(fb_addr as *mut u8, 0x00, fb_size as usize);
-    }
-
 }
