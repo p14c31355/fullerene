@@ -191,10 +191,10 @@ fn init_gop(st: &EfiSystemTable) {
         return;
     }
 
-    for i in 0..fb_size {
-        unsafe {
-            let byte_ptr = (fb_addr as *mut u8).add(i as usize); // Cast i to usize
-            *byte_ptr = 0x0;
-        }
+    
+            unsafe {
+        core::ptr::write_bytes(fb_addr as *mut u8, 0x00, fb_size as usize);
+    
+
     }
 }
