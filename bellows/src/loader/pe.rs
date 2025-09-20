@@ -171,9 +171,9 @@ pub fn load_efi_image(
     if section_headers_offset + section_headers_size > file.len() {
         // Safety:
         // We need to free the previously allocated memory if an error occurs.
-        
-            (bs.free_pages)(phys_addr, pages_needed);
-        
+
+        (bs.free_pages)(phys_addr, pages_needed);
+
         return Err(BellowsError::PeParse("Section headers out of bounds."));
     }
 
@@ -199,9 +199,8 @@ pub fn load_efi_image(
             || (dst_addr as usize).saturating_add(section_header.size_of_raw_data as usize)
                 > ((phys_addr as *mut u8) as usize).saturating_add(pages_needed * 4096)
         {
-            
-                (bs.free_pages)(phys_addr, pages_needed);
-            
+            (bs.free_pages)(phys_addr, pages_needed);
+
             return Err(BellowsError::PeParse("Section data out of bounds."));
         }
 
@@ -222,9 +221,8 @@ pub fn load_efi_image(
             if (reloc_table_ptr as usize).saturating_add(reloc_data_dir.size as usize)
                 > phys_addr.saturating_add(pages_needed * 4096)
             {
-                
-                    (bs.free_pages)(phys_addr, pages_needed);
-            
+                (bs.free_pages)(phys_addr, pages_needed);
+
                 return Err(BellowsError::PeParse("Relocation table out of bounds."));
             }
 
@@ -268,9 +266,8 @@ pub fn load_efi_image(
                         if fixup_address.saturating_add(8)
                             > (phys_addr.saturating_add(pages_needed * 4096))
                         {
-                            
-                                (bs.free_pages)(phys_addr, pages_needed);
-                            
+                            (bs.free_pages)(phys_addr, pages_needed);
+
                             return Err(BellowsError::PeParse(
                                 "Relocation fixup address is out of bounds.",
                             ));
@@ -284,18 +281,16 @@ pub fn load_efi_image(
                                 (*fixup_address_ptr).wrapping_add(image_base_delta);
                         }
                     } else if fixup_type != ImageRelBasedType::Absolute as u8 {
-                        
-                            (bs.free_pages)(phys_addr, pages_needed);
-                        
+                        (bs.free_pages)(phys_addr, pages_needed);
+
                         return Err(BellowsError::PeParse("Unsupported relocation type."));
                     }
                     unsafe {
                         fixup_ptr = fixup_ptr.add(1);
                     }
                 }
-                
-                    current_reloc_block_ptr = end_of_block_ptr as *mut ImageBaseRelocation;
-                
+
+                current_reloc_block_ptr = end_of_block_ptr as *mut ImageBaseRelocation;
             }
         }
     }
@@ -306,9 +301,8 @@ pub fn load_efi_image(
     if entry_point_addr >= phys_addr.saturating_add(pages_needed * 4096)
         || entry_point_addr < phys_addr
     {
-        
-            (bs.free_pages)(phys_addr, pages_needed);
-        
+        (bs.free_pages)(phys_addr, pages_needed);
+
         return Err(BellowsError::PeParse(
             "Entry point address is outside allocated memory.",
         ));

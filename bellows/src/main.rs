@@ -45,14 +45,14 @@ fn alloc_error(_layout: Layout) -> ! {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     // Print the panic message using the refactored serial module.
-        if let Some(st_ptr) = UEFI_SYSTEM_TABLE.lock().as_ref() {
+    if let Some(st_ptr) = UEFI_SYSTEM_TABLE.lock().as_ref() {
         let st_ref = unsafe { &*st_ptr.0 };
         // Initialize the writer to ensure panic messages can be printed.
         unsafe {
             serial::UEFI_WRITER.lock().init(st_ref.con_out);
         }
         // We use the same `uefi_print` here, but it's now a different function that uses `_print`.
-                if let Some(location) = info.location() {
+        if let Some(location) = info.location() {
             println!(
                 "Panic at {}:{}:{} - {}",
                 location.file(),
@@ -61,7 +61,10 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
                 info.message().unwrap_or_else(|| format_args!("no message"))
             );
         } else {
-            println!("Panic: {}", info.message().unwrap_or_else(|| format_args!("no message")));
+            println!(
+                "Panic: {}",
+                info.message().unwrap_or_else(|| format_args!("no message"))
+            );
         }
     }
 
@@ -83,7 +86,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     unsafe {
         serial::UEFI_WRITER.lock().init(st.con_out);
     }
-    
+
     println!("Bellows UEFI Bootloader starting...");
 
     println!("Attempting to initialize heap...");
@@ -107,8 +110,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     };
     serial::_print(format_args!(
         "Kernel EFI file read. Physical address: {:#x}, size: {}\n",
-        efi_image_phys,
-        efi_image_size
+        efi_image_phys, efi_image_size
     ));
 
     let efi_image_file = {
@@ -185,9 +187,7 @@ fn init_gop(st: &EfiSystemTable) {
     let info = info_ref;
 
     if fb_addr == 0 || fb_size == 0 {
-        serial::_print(format_args!(
-            "GOP framebuffer info is invalid, skipping.\n"
-        ));
+        serial::_print(format_args!("GOP framebuffer info is invalid, skipping.\n"));
         return;
     }
 
