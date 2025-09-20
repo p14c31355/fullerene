@@ -176,7 +176,9 @@ pub struct FullereneFramebufferConfig {
 pub fn uefi_print(st: &EfiSystemTable, s: &str) {
     let mut s_utf16: Vec<u16> = s.encode_utf16().collect();
     s_utf16.push(0); // Add null terminator
-    unsafe {
-        ((*st.con_out).output_string)(st.con_out, s_utf16.as_mut_ptr()); // Use as_mut_ptr()
+    if !st.con_out.is_null() {
+        unsafe {
+            ((*st.con_out).output_string)(st.con_out, s_utf16.as_mut_ptr()); // Use as_mut_ptr()
+        }
     }
 }
