@@ -48,29 +48,16 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     if let Some(st_ptr) = UEFI_SYSTEM_TABLE.lock().as_ref() {
         let st_ref = unsafe { &*st_ptr.0 };
         if let Some(location) = info.location() {
-            let msg = if let Some(msg_args) = info.message() {
-                format!(
-                    "Panic at {}:{}:{} - {}\n",
-                    location.file(),
-                    location.line(),
-                    location.column(),
-                    msg_args
-                )
-            } else {
-                format!(
-                    "Panic at {}:{}:{}\n",
-                    location.file(),
-                    location.line(),
-                    location.column()
-                )
-            };
+            let msg = format!(
+                "Panic at {}:{}:{} - {}\n",
+                location.file(),
+                location.line(),
+                location.column(),
+                info.message()
+            );
             uefi_print(st_ref, &msg);
         } else {
-            let msg = if let Some(msg_args) = info.message() {
-                format!("Panic: {}\n", msg_args)
-            } else {
-                format!("Panic: \n")
-            };
+            let msg = format!("Panic: {}\n", info.message());
             uefi_print(st_ref, &msg);
         }
     }
