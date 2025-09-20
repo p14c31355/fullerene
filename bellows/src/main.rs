@@ -78,17 +78,19 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     let bs = unsafe { &*st.boot_services };
 
     uefi_print(st, "Bellows UEFI Bootloader starting...\n");
-    uefi_print(st, "Initializing heap...\n");
+
+    uefi_print(st, "Attempting to initialize heap...\n");
     if let Err(e) = init_heap(bs) {
         uefi_print(st, &format!("Failed to initialize heap: {:?}\n", e));
         panic!("Failed to initialize heap.");
     }
-    uefi_print(st, "Heap initialized.\n");
+    uefi_print(st, "Heap initialized successfully.\n");
 
-    uefi_print(st, "Initializing GOP...\n");
+    uefi_print(st, "Attempting to initialize GOP...\n");
     init_gop(st);
-    uefi_print(st, "GOP initialized.\n");
+    uefi_print(st, "GOP initialized successfully.\n");
 
+    uefi_print(st, "Attempting to read kernel EFI file...\n");
     // Read the kernel file before exiting boot services.
     let (efi_image_phys, efi_image_size) = match read_efi_file(st) {
         Ok(t) => t,
@@ -97,6 +99,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             panic!("Failed to read EFI file.");
         }
     };
+    uefi_print(st, &format!("Kernel EFI file read. Physical address: {:#x}, size: {}\n", efi_image_phys, efi_image_size));
 
     let efi_image_file = {
         // Safety:
