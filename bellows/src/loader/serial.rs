@@ -2,7 +2,6 @@
 
 use alloc::vec::Vec;
 use core::fmt;
-use spin::Mutex;
 
 /// Minimal UEFI Simple Text Output Protocol
 #[repr(C)]
