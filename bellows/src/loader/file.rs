@@ -9,6 +9,8 @@ use core::ffi::c_void;
 use core::ptr;
 
 const EFI_FILE_MODE_READ: u64 = 0x1;
+const KERNEL_PATH: &str = r"\EFI\BOOT\KERNEL.EFI";
+
 
 /// A RAII wrapper for EfiFile that automatically closes the file when it goes out of scope.
 struct EfiFileWrapper {
@@ -82,7 +84,7 @@ pub fn read_efi_file(bs: &EfiBootServices) -> Result<(usize, usize)> {
     // Correct file name to match the kernel file
     let file = open_file(
         &volume,
-        r"\fullerene-kernel.efi"
+        KERNEL_PATH
             .encode_utf16()
             .chain(core::iter::once(0))
             .collect::<Vec<u16>>()
