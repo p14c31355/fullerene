@@ -96,7 +96,7 @@ fn main() -> io::Result<()> {
         "-drive",
         &ovmf_vars_fd_drive,
         "-cdrom",
-        &iso_path_str,
+        iso_path_str,
         "-boot",
         "d",
         "-no-reboot",
