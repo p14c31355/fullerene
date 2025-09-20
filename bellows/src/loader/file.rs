@@ -90,7 +90,8 @@ pub fn read_efi_file(bs: &EfiBootServices) -> Result<(usize, usize)> {
     )?;
 
     let mut file_info_buffer_size = 0;
-    let _ = unsafe {
+    
+    let status = unsafe {
         ((*file.file).get_info)(
             file.file,
             &EFI_FILE_INFO_GUID as *const _ as *const u8,
@@ -98,6 +99,9 @@ pub fn read_efi_file(bs: &EfiBootServices) -> Result<(usize, usize)> {
             ptr::null_mut(),
         )
     };
+    if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
+        return Err(BellowsError::FileIo("Failed to get file info size."));
+    }
 
     if file_info_buffer_size == 0 {
         return Err(BellowsError::FileIo("Failed to get file info size."));
