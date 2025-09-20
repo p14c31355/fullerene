@@ -1,7 +1,6 @@
 // bellows/src/loader/heap.rs
 
 use crate::uefi::{EfiBootServices, EfiMemoryType, Result};
-use core::ptr;
 use linked_list_allocator::LockedHeap;
 
 /// Size of the heap we will allocate for `alloc` usage (bytes).
@@ -14,7 +13,7 @@ static ALLOCATOR: LockedHeap = LockedHeap::empty();
 pub fn init_heap(bs: &EfiBootServices) -> Result<()> {
     let heap_pages = HEAP_SIZE.div_ceil(4096);
     let mut heap_phys: usize = 0;
-    let status = unsafe {
+    let status = {
         (bs.allocate_pages)(
             0usize,
             EfiMemoryType::EfiLoaderData,

@@ -1,12 +1,39 @@
 // bellows/src/loader/file.rs
 
 use crate::uefi::{
-    EFI_FILE_INFO_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiFile, EfiFileInfo,
-    EfiSimpleFileSystem, EfiSystemTable, Result,
+    EFI_FILE_INFO_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiBootServices, EfiFile,
+    EfiFileInfo, EfiSimpleFileSystem, EfiStatus, EfiSystemTable, Result,
 };
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr;
+
+/// A RAII wrapper for EfiFile that automatically closes the file when it goes out of scope.
+struct EfiFileWrapper<'a> {
+    file: *mut EfiFile,
+    bs: &'a EfiBootServices,
+}
+
+impl<'a> EfiFileWrapper<'a> {
+    fn new(file: *mut EfiFile, bs: &'a EfiBootServices) -> Self {
+        Self { file, bs }
+    }
+}
+
+impl Drop for EfiFileWrapper<'_> {
+    fn drop(&mut self) {
+        if !self.file.is_null() {
+            // Safety:
+            // The `EfiFile` pointer is assumed to be valid from the `new` function.
+            // This is the last use of the pointer, so it is safe to dereference it for the `close` call.
+            let status = unsafe { ((*self.file).close)(self.file) };
+            if EfiStatus::from(status) != EfiStatus::Success {
+                // In a real application, you might want to log this error.
+                // For a bootloader, this might be a non-recoverable state.
+            }
+        }
+    }
+}
 
 /// Read `KERNEL.EFI` or `kernel.efi` from the volume using UEFI SimpleFileSystem protocol.
 pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
@@ -16,14 +43,15 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     // Safety:
     // The `locate_protocol` call is a UEFI boot service. Its function pointer
     // is assumed to be valid. The GUID is static.
-    if unsafe {
+    let status = unsafe {
         (bs.locate_protocol)(
             &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
             ptr::null_mut(),
             &mut fs_ptr,
         )
-    } != 0
-    {
+    };
+
+    if EfiStatus::from(status) != EfiStatus::Success {
         return Err("Failed to locate SimpleFileSystem protocol.");
     }
     let fs = fs_ptr as *mut EfiSimpleFileSystem;
@@ -32,113 +60,109 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     // Safety:
     // The `open_volume` function pointer is a valid member of the `EfiSimpleFileSystem`
     // struct, which was located successfully. The `fs` pointer is not null.
-    if unsafe { ((*fs).open_volume)(fs, &mut root) } != 0 {
+    let status = unsafe { ((*fs).open_volume)(fs, &mut root) };
+    if EfiStatus::from(status) != EfiStatus::Success {
         return Err("Failed to open volume.");
     }
+    let root = EfiFileWrapper::new(root, bs);
 
-    let file_names = [
-        "KERNEL.EFI\0".encode_utf16().collect::<Vec<u16>>(),
-        "kernel.efi\0".encode_utf16().collect::<Vec<u16>>(),
+    let kernel_names = [
+        "\\KERNEL.EFI\0".encode_utf16().collect::<Vec<u16>>(),
+        "\\kernel.efi\0".encode_utf16().collect::<Vec<u16>>(),
     ];
-    let mut efi_file: *mut EfiFile = ptr::null_mut();
+    let mut efi_file_ptr: *mut EfiFile = ptr::null_mut();
     let mut found = false;
-    for file_name in &file_names {
+
+    // Try to open KERNEL.EFI, then kernel.efi
+    for name in kernel_names.iter() {
         // Safety:
-        // `root` is a valid file pointer. The `open` function pointer is valid.
-        // The `file_name` pointer is valid and points to a null-terminated UTF-16 string.
-        if unsafe { ((*root).open)(root, &mut efi_file, file_name.as_ptr(), 0x1, 0) } == 0 {
+        // `root.file` is a valid pointer. The `open` function pointer is a valid member.
+        // `name` is a null-terminated UTF-16 string as required by UEFI.
+        let status = unsafe {
+            ((*root.file).open)(
+                root.file,
+                &mut efi_file_ptr,
+                name.as_ptr(),
+                0x1, // EFI_FILE_MODE_READ
+                0x0, // 0 attributes
+            )
+        };
+        if EfiStatus::from(status) == EfiStatus::Success {
             found = true;
             break;
         }
     }
 
-    // Safety:
-    // If the file was not found, we must close the root handle.
     if !found {
-        unsafe { ((*root).close)(root) };
-        return Err("Failed to open KERNEL.EFI or kernel.efi.");
+        return Err("Failed to open kernel file.");
     }
 
+    let efi_file = EfiFileWrapper::new(efi_file_ptr, bs);
+
+    let mut file_info_size = 0;
     // Safety:
-    // `efi_file` is now a valid pointer. The `get_info` function pointer is valid.
-    // We are calling it with a null buffer to get the required size first.
-    let mut file_info_size: usize = 0;
-    unsafe {
-        ((*efi_file).get_info)(
-            efi_file,
+    // The first `get_info` call is to get the size of the buffer needed.
+    // The function pointer and file pointer are assumed to be valid.
+    let status = unsafe {
+        ((*efi_file.file).get_info)(
+            efi_file.file,
             &EFI_FILE_INFO_GUID as *const _ as *const u8,
             &mut file_info_size,
             ptr::null_mut(),
         )
     };
-
-    let mut file_info_buf: Vec<u8> = Vec::with_capacity(file_info_size);
-    unsafe { file_info_buf.set_len(file_info_size) }; // Set length to capacity to allow write
-
-    // Safety:
-    // We have a buffer with the correct capacity. `as_mut_ptr` is safe.
-    let file_info_ptr = file_info_buf.as_mut_ptr() as *mut c_void;
-    if unsafe {
-        ((*efi_file).get_info)(
-            efi_file,
-            &EFI_FILE_INFO_GUID as *const _ as *const u8,
-            &mut file_info_size,
-            file_info_ptr,
-        )
-    } != 0
-    {
-        unsafe {
-            ((*efi_file).close)(efi_file);
-            ((*root).close)(root);
-        }
-        return Err("Failed to get file info.");
+    if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
+        return Err("Failed to get file info size.");
     }
 
+    let mut file_info_buffer: Vec<u8> = Vec::with_capacity(file_info_size);
+    let status = unsafe {
+        ((*efi_file.file).get_info)(
+            efi_file.file,
+            &EFI_FILE_INFO_GUID as *const _ as *const u8,
+            &mut file_info_size,
+            file_info_buffer.as_mut_ptr() as *mut c_void,
+        )
+    };
+    if EfiStatus::from(status) != EfiStatus::Success {
+        return Err("Failed to get file info.");
+    }
     // Safety:
-    // The buffer is now populated with valid `EfiFileInfo` data.
+    // The size of the buffer is checked against the required size.
     // The pointer is checked to be non-null and correctly aligned before dereferencing.
-    let file_info: &EfiFileInfo = unsafe { &*(file_info_ptr as *const EfiFileInfo) };
+    let file_info: &EfiFileInfo =
+        unsafe { &*(file_info_buffer.as_mut_ptr() as *const EfiFileInfo) };
     let file_size = file_info.file_size as usize;
+
+    if file_size == 0 {
+        return Err("Kernel file is empty.");
+    }
 
     let pages = file_size.div_ceil(4096);
     let mut phys_addr: usize = 0;
 
-    // Safety: `bs` is valid. We call `allocate_pages` with the calculated number of pages.
-    if unsafe {
+    let status = {
         (bs.allocate_pages)(
             0usize,
             crate::uefi::EfiMemoryType::EfiLoaderData,
             pages,
             &mut phys_addr,
         )
-    } != 0
-    {
-        unsafe {
-            ((*efi_file).close)(efi_file);
-            ((*root).close)(root);
-        }
+    };
+    if EfiStatus::from(status) != EfiStatus::Success {
         return Err("Failed to allocate pages for kernel file.");
     }
 
     let buf_ptr = phys_addr as *mut u8;
     let mut read_size = file_size as u64;
 
-    // Safety: We read into the newly allocated memory region. The pointer `buf_ptr` is valid.
-    if unsafe { ((*efi_file).read)(efi_file, &mut read_size, buf_ptr) } != 0 {
-        // On read failure, free the allocated pages and close the file.
+    let status = unsafe { ((*efi_file.file).read)(efi_file.file, &mut read_size, buf_ptr) };
+    if EfiStatus::from(status) != EfiStatus::Success || read_size as usize != file_size {
         unsafe {
             (bs.free_pages)(phys_addr, pages);
-            ((*efi_file).close)(efi_file);
-            ((*root).close)(root);
         }
-        return Err("Failed to read kernel file.");
+        return Err("Failed to read kernel file or read size mismatch.");
     }
 
-    // Clean up: close the file and the root directory.
-    unsafe {
-        ((*efi_file).close)(efi_file);
-        ((*root).close)(root);
-    }
-
-    Ok((phys_addr, read_size as usize))
+    Ok((phys_addr, file_size))
 }

@@ -1,6 +1,6 @@
 // bellows/src/loader/pe.rs
 
-use crate::uefi::{EfiMemoryType, EfiSystemTable, Result};
+use crate::uefi::{EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable, Result};
 use core::{ffi::c_void, mem, ptr, slice};
 
 #[repr(C, packed)]
@@ -48,28 +48,35 @@ struct ImageOptionalHeader64 {
     _minor_subsystem_version: u16,
     _win32_version_value: u32,
     size_of_image: u32,
-    size_of_headers: u32,
+    _size_of_headers: u32,
     _checksum: u32,
     _subsystem: u16,
     _dll_characteristics: u16,
-    _size_of_stack_reserve: u64,
-    _size_of_stack_commit: u64,
-    _size_of_heap_reserve: u64,
-    _size_of_heap_commit: u64,
+    size_of_stack_reserve: u64,
+    size_of_stack_commit: u64,
+    size_of_heap_reserve: u64,
+    size_of_heap_commit: u64,
     _loader_flags: u32,
     number_of_rva_and_sizes: u32,
-    _data_directory: [ImageDataDirectory; 16],
+    data_directory: [ImageDataDirectory; 16],
 }
 
 #[repr(C, packed)]
-struct SectionHeader {
+struct ImageNtHeaders64 {
+    _signature: u32,
+    _file_header: ImageFileHeader,
+    optional_header: ImageOptionalHeader64,
+}
+
+#[repr(C, packed)]
+struct ImageSectionHeader {
     _name: [u8; 8],
-    virtual_size: u32,
+    _virtual_size: u32,
     virtual_address: u32,
     size_of_raw_data: u32,
     pointer_to_raw_data: u32,
     _pointer_to_relocations: u32,
-    _pointer_to_linenumbers: u16,
+    _pointer_to_linenumbers: u32,
     _number_of_relocations: u16,
     _number_of_linenumbers: u16,
     _characteristics: u32,
@@ -81,224 +88,204 @@ struct ImageBaseRelocation {
     size_of_block: u32,
 }
 
-#[repr(C, packed)]
-struct ImageNtHeaders64 {
-    signature: u32,
-    file_header: ImageFileHeader,
-    optional_header: ImageOptionalHeader64,
+#[repr(u16)]
+enum ImageRelBasedType {
+    Absolute = 0,
+    High = 1,
+    Low = 2,
+    HighLow = 3,
+    HighAdj = 4,
+    MachineSpecific1 = 5,
+    Reserved = 6,
+    Dir64 = 10,
 }
 
+/// Loads a PE image from a buffer into memory using UEFI Boot Services.
 pub fn load_efi_image(
     st: &EfiSystemTable,
-    image_data: &[u8],
+    file: &[u8],
 ) -> Result<extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !> {
     let bs = unsafe { &*st.boot_services };
 
     // Safety:
-    // The image_data slice is assumed to be valid and large enough to contain
-    // the DOS header.
-    let dos_header: ImageDosHeader = if image_data.len() < mem::size_of::<ImageDosHeader>() {
-        return Err("Image data is too small to contain DOS header.");
-    } else {
-        unsafe { ptr::read_unaligned(image_data.as_ptr() as *const ImageDosHeader) }
-    };
-
+    // This is safe because we check the file size to ensure there's enough data
+    // to read the headers. The pointer is valid within the bounds of `file`.
+    let dos_header: &ImageDosHeader = unsafe { &*(file.as_ptr() as *const ImageDosHeader) };
     if dos_header.e_magic != 0x5a4d {
-        return Err("Invalid DOS signature.");
+        return Err("Invalid DOS signature (MZ).");
     }
 
     // Safety:
-    // The NT headers location is calculated from the DOS header.
-    // The length of the image_data is checked to ensure it's large enough to
-    // contain the NT headers.
-    if dos_header.e_lfanew < 0 {
-        return Err("Invalid NT header offset in DOS header.");
-    }
+    // The offset `e_lfanew` is checked to be within the file bounds before dereferencing.
     let nt_headers_offset = dos_header.e_lfanew as usize;
-    if image_data.len() < nt_headers_offset + mem::size_of::<ImageNtHeaders64>() {
-        return Err("Image data is too small to contain NT headers.");
+    if nt_headers_offset + mem::size_of::<ImageNtHeaders64>() > file.len() {
+        return Err("Invalid NT headers offset.");
     }
-    let nt_headers: ImageNtHeaders64 = unsafe {
-        ptr::read_unaligned(image_data.as_ptr().add(nt_headers_offset) as *const ImageNtHeaders64)
-    };
+    let nt_headers: &ImageNtHeaders64 =
+        unsafe { &*(file.as_ptr().add(nt_headers_offset) as *const ImageNtHeaders64) };
 
-    if nt_headers.signature != 0x4550 {
-        return Err("Invalid PE signature.");
+    if nt_headers.optional_header._magic != 0x20b {
+        return Err("Invalid PE32+ magic number.");
     }
 
-    // Allocate memory for the image
-    let pages_needed = (nt_headers.optional_header.size_of_image as usize).div_ceil(4096);
+    let image_size = nt_headers.optional_header.size_of_image as usize;
+    let pages_needed = image_size.div_ceil(4096);
     let mut phys_addr: usize = 0;
-    // Safety:
-    // The `allocate_pages` function is a UEFI boot service. Its function pointer
-    // is assumed to be valid. The arguments are correct.
-    if unsafe {
+    let status = {
         (bs.allocate_pages)(
             0usize,
             EfiMemoryType::EfiLoaderData,
             pages_needed,
             &mut phys_addr,
         )
-    } != 0
-    {
-        return Err("Failed to allocate pages for kernel image.");
+    };
+    if EfiStatus::from(status) != EfiStatus::Success {
+        return Err("Failed to allocate memory for PE image.");
     }
 
-    // Copy headers and sections
-    // Safety:
-    // We have allocated a valid memory region `phys_addr` of sufficient size.
-    // The source pointers (`image_data.as_ptr()`) are valid.
-    let headers_size = nt_headers.optional_header.size_of_headers as usize;
-    if headers_size > 0 {
-        unsafe {
-            ptr::copy_nonoverlapping(image_data.as_ptr(), phys_addr as *mut u8, headers_size);
-        }
-    }
-
-    let sections_ptr = unsafe {
-        image_data
-            .as_ptr()
-            .add(nt_headers_offset)
-            .add(mem::size_of::<ImageNtHeaders64>())
-    };
+    let image_base_addr = nt_headers.optional_header.image_base as usize;
 
     // Safety:
-    // We have checked that the image data contains the file header, and the
-    // number of sections is derived from a trusted source (the file header).
-    let sections: &[SectionHeader] = unsafe {
-        slice::from_raw_parts(
-            sections_ptr as *const SectionHeader,
-            nt_headers.file_header.number_of_sections as usize,
-        )
-    };
-
-    for section in sections.iter() {
-        let dest = phys_addr.saturating_add(section.virtual_address as usize) as *mut u8;
-        let src = unsafe {
-            image_data
-                .as_ptr()
-                .add(section.pointer_to_raw_data as usize)
-        };
-        let copy_size = core::cmp::min(
-            section.size_of_raw_data as usize,
-            image_data
-                .len()
-                .saturating_sub(section.pointer_to_raw_data as usize),
+    // We have allocated memory for the image and `phys_addr` is a valid pointer to it.
+    // The `copy_nonoverlapping` is safe because `file.as_ptr()` is a valid source
+    // and `phys_addr` is a valid destination, and we only copy the header size, which is a known good size.
+    unsafe {
+        ptr::copy_nonoverlapping(
+            file.as_ptr(),
+            phys_addr as *mut u8,
+            nt_headers.optional_header._size_of_headers as usize,
         );
+    }
 
-        // Ensure the destination is within our allocated memory
-        if dest.is_null()
-            || (dest as usize) < phys_addr
-            || (dest as usize).saturating_add(copy_size)
-                > (phys_addr.saturating_add(pages_needed * 4096))
+    let mut section_headers_offset = nt_headers_offset
+        + mem::size_of::<u32>()
+        + mem::size_of::<ImageFileHeader>()
+        + nt_headers._file_header.size_of_optional_header as usize;
+    let section_headers_size =
+        nt_headers._file_header.number_of_sections as usize * mem::size_of::<ImageSectionHeader>();
+    if section_headers_offset + section_headers_size > file.len() {
+        // Safety:
+        // We need to free the previously allocated memory if an error occurs.
+        unsafe {
+            (bs.free_pages)(phys_addr, pages_needed);
+        }
+        return Err("Section headers out of bounds.");
+    }
+
+    for i in 0..nt_headers._file_header.number_of_sections {
+        let section_header_ptr = unsafe {
+            file.as_ptr()
+                .add(section_headers_offset + i as usize * mem::size_of::<ImageSectionHeader>())
+        };
+        // Safety:
+        // We have checked that the pointer is within the bounds of the file buffer.
+        let section_header: &ImageSectionHeader =
+            unsafe { &*(section_header_ptr as *const ImageSectionHeader) };
+
+        let src_addr = unsafe {
+            file.as_ptr()
+                .add(section_header.pointer_to_raw_data as usize)
+        };
+        let dst_addr =
+            unsafe { (phys_addr as *mut u8).add(section_header.virtual_address as usize) };
+
+        if (src_addr as usize).saturating_add(section_header.size_of_raw_data as usize)
+            > (file.as_ptr() as usize).saturating_add(file.len())
+            || (dst_addr as usize).saturating_add(section_header.size_of_raw_data as usize)
+                > ((phys_addr as *mut u8) as usize).saturating_add(pages_needed * 4096)
         {
             unsafe {
                 (bs.free_pages)(phys_addr, pages_needed);
             }
-            return Err("Section destination is outside allocated memory.");
+            return Err("Section data out of bounds.");
         }
 
         // Safety:
-        // We have bounds-checked the source and destination pointers and the size.
-        // `copy_nonoverlapping` is now safe to call.
+        // We have checked the source and destination bounds to prevent buffer overflows.
+        // `copy_nonoverlapping` is used to copy the section data.
         unsafe {
-            ptr::copy_nonoverlapping(src, dest, copy_size);
-        }
-
-        let raw_size = section.size_of_raw_data as usize;
-        let virtual_size = section.virtual_size as usize;
-        if virtual_size > raw_size {
-            let remaining_size = virtual_size - raw_size;
-            unsafe {
-                let remaining_dest = dest.add(raw_size);
-
-                if remaining_dest.is_null()
-                    || (remaining_dest as usize) < phys_addr
-                    || (remaining_dest as usize).saturating_add(remaining_size)
-                        > (phys_addr.saturating_add(pages_needed * 4096))
-                {
-                    (bs.free_pages)(phys_addr, pages_needed);
-                    return Err("Zero-fill destination is outside allocated memory.");
-                }
-                ptr::write_bytes(remaining_dest, 0, remaining_size);
-            }
+            ptr::copy_nonoverlapping(src_addr, dst_addr, section_header.size_of_raw_data as usize);
         }
     }
 
-    // Handle relocations
-    const IMAGE_DIRECTORY_ENTRY_BASERELOC: usize = 5;
-    let data_dir_reloc =
-        &nt_headers.optional_header._data_directory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
-    let reloc_base_va = data_dir_reloc.virtual_address as usize;
-    let reloc_size = data_dir_reloc.size as usize;
-    if reloc_base_va > 0 && reloc_size > 0 {
-        let relocs_start_ptr = unsafe { (phys_addr as *mut u8).add(reloc_base_va) };
-        let mut current_reloc_block = relocs_start_ptr;
-        let relocs_end_ptr = unsafe { relocs_start_ptr.add(reloc_size) };
-        let image_base_delta = phys_addr as u64 - nt_headers.optional_header.image_base;
-
-        if relocs_end_ptr > (phys_addr.saturating_add(pages_needed * 4096)) as *mut u8 {
-            unsafe {
-                (bs.free_pages)(phys_addr, pages_needed);
-            }
-            return Err("Relocation table is outside allocated memory.");
-        }
-
-        while (current_reloc_block as usize) < (relocs_end_ptr as usize) {
-            // Safety:
-            // The pointer is checked against the end of the relocation table.
-            let reloc_block_header =
-                unsafe { &*(current_reloc_block as *const ImageBaseRelocation) };
-            let reloc_block_size = reloc_block_header.size_of_block as usize;
-            if reloc_block_size == 0 {
-                break;
-            }
-            let num_entries = (reloc_block_size - mem::size_of::<ImageBaseRelocation>()) / 2;
-            let fixup_list_ptr =
-                unsafe { current_reloc_block.add(mem::size_of::<ImageBaseRelocation>()) };
-            let fixup_list_end = unsafe { fixup_list_ptr.add(num_entries * 2) };
-
-            if (fixup_list_end as usize) > (relocs_end_ptr as usize) {
+    let image_base_delta = (phys_addr as u64).wrapping_sub(nt_headers.optional_header.image_base);
+    if image_base_delta != 0 {
+        let reloc_data_dir = &nt_headers.optional_header.data_directory[5];
+        if reloc_data_dir.virtual_address != 0 {
+            let reloc_table_ptr =
+                unsafe { (phys_addr as *mut u8).add(reloc_data_dir.virtual_address as usize) };
+            if (reloc_table_ptr as usize).saturating_add(reloc_data_dir.size as usize)
+                > (phys_addr as usize).saturating_add(pages_needed * 4096)
+            {
                 unsafe {
                     (bs.free_pages)(phys_addr, pages_needed);
                 }
-                return Err("Relocation fixup list is malformed or out of bounds.");
+                return Err("Relocation table out of bounds.");
             }
 
+            let mut current_reloc_block_ptr = reloc_table_ptr as *mut ImageBaseRelocation;
+            let end_reloc_table_ptr = unsafe { reloc_table_ptr.add(reloc_data_dir.size as usize) };
+
             // Safety:
-            // We've verified the pointer and number of entries.
-            let fixup_list =
-                unsafe { slice::from_raw_parts(fixup_list_ptr as *const u16, num_entries) };
-            let reloc_page_va = phys_addr + reloc_block_header.virtual_address as usize;
+            // The loop iterates over relocation blocks. The pointer is advanced by a size
+            // provided by the PE file, which is assumed to be correct. The loop terminates
+            // when `current_reloc_block_ptr` reaches the end of the relocation table.
+            while (current_reloc_block_ptr as *mut u8) < end_reloc_table_ptr {
+                let current_reloc_block = unsafe { &*current_reloc_block_ptr };
+                let reloc_block_size = current_reloc_block.size_of_block as usize;
 
-            for &fixup in fixup_list {
-                let fixup_type = (fixup >> 12) & 0xF;
-                let fixup_offset = fixup & 0xFFF;
-                const IMAGE_REL_BASED_DIR64: u16 = 10;
-                if fixup_type == IMAGE_REL_BASED_DIR64 {
-                    let fixup_address_ptr =
-                        (reloc_page_va.saturating_add(fixup_offset as usize)) as *mut u64;
+                // Safety:
+                // We advance the pointer into the block to read the fixup entries.
+                // The `add` is safe because we check the pointer bounds against the end of the table.
+                let mut fixup_ptr = unsafe {
+                    (current_reloc_block_ptr as *mut u8).add(mem::size_of::<ImageBaseRelocation>())
+                        as *mut u16
+                };
+                let end_of_block_ptr =
+                    unsafe { (current_reloc_block_ptr as *mut u8).add(reloc_block_size) };
 
-                    if (fixup_address_ptr as usize) < phys_addr
-                        || (fixup_address_ptr as usize).saturating_add(mem::size_of::<u64>())
+                while (fixup_ptr as *mut u8) < end_of_block_ptr {
+                    // Safety:
+                    // The pointer `fixup_ptr` is checked against the end of the block.
+                    let fixup = unsafe { *fixup_ptr };
+                    let fixup_type = (fixup >> 12) as u8;
+                    let fixup_offset = (fixup & 0xFFF) as usize;
+
+                    if fixup_type == ImageRelBasedType::Dir64 as u8 {
+                        let fixup_address = phys_addr
+                            .saturating_add(current_reloc_block.virtual_address as usize)
+                            .saturating_add(fixup_offset);
+                        if fixup_address.saturating_add(8)
                             > (phys_addr.saturating_add(pages_needed * 4096))
-                    {
+                        {
+                            unsafe {
+                                (bs.free_pages)(phys_addr, pages_needed);
+                            }
+                            return Err("Relocation fixup address is out of bounds.");
+                        }
+                        let fixup_address_ptr = fixup_address as *mut u64;
+                        // Safety:
+                        // The address is validated to be within the allocated memory.
+                        // We are performing a 64-bit relocation by adding the image base delta.
+                        unsafe {
+                            *fixup_address_ptr =
+                                (*fixup_address_ptr).wrapping_add(image_base_delta);
+                        }
+                    } else if fixup_type != ImageRelBasedType::Absolute as u8 {
                         unsafe {
                             (bs.free_pages)(phys_addr, pages_needed);
                         }
-                        return Err("Relocation fixup address is out of bounds.");
+                        return Err("Unsupported relocation type.");
                     }
                     unsafe {
-                        *fixup_address_ptr = (*fixup_address_ptr).wrapping_add(image_base_delta);
+                        fixup_ptr = fixup_ptr.add(1);
                     }
-                } else if fixup_type != 0 {
-                    unsafe {
-                        (bs.free_pages)(phys_addr, pages_needed);
-                    }
-                    return Err("Unsupported relocation type.");
+                }
+                unsafe {
+                    current_reloc_block_ptr = current_reloc_block_ptr
+                        .add(reloc_block_size / mem::size_of::<ImageBaseRelocation>());
                 }
             }
-            current_reloc_block = unsafe { current_reloc_block.add(reloc_block_size) };
         }
     }
 
@@ -308,7 +295,9 @@ pub fn load_efi_image(
     if entry_point_addr >= phys_addr.saturating_add(pages_needed * 4096)
         || entry_point_addr < phys_addr
     {
-        unsafe { (bs.free_pages)(phys_addr, pages_needed) };
+        unsafe {
+            (bs.free_pages)(phys_addr, pages_needed);
+        }
         return Err("Entry point address is outside allocated memory.");
     }
 
@@ -316,5 +305,8 @@ pub fn load_efi_image(
     // We are converting a memory address to a function pointer.
     // The `entry_point_addr` is calculated from the PE headers and has been checked to be
     // within the allocated memory. The `efiapi` calling convention is also assumed.
-    Ok(unsafe { core::mem::transmute(entry_point_addr) })
+    let entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> ! =
+        unsafe { mem::transmute(entry_point_addr) };
+
+    Ok(entry)
 }

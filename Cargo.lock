@@ -135,6 +135,7 @@ dependencies = [
 name = "fullerene-kernel"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.9.4",
  "spin",
  "x86_64",
 ]
@@ -177,7 +178,9 @@ dependencies = [
 
 [[package]]
 name = "isobemak"
-version = "0.2.0"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3f7dd5548fb895a411e25e0e4fd0ba4f92185eba2d058515ff1627de9c9e024"
 dependencies = [
  "fatfs",
  "tempfile",

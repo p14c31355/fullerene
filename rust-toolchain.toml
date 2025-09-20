@@ -1,4 +1,6 @@
 [toolchain]
 channel = "nightly"
 components = ["rust-src", "llvm-tools-preview"]
-# targets = ["x86_64-unknown-none"]
+targets = ["x86_64-unknown-uefi"]
+build-std = ["core", "alloc"]
+build-std-features = ["compiler-builtins-mem"]

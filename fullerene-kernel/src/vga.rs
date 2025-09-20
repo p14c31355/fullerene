@@ -190,7 +190,7 @@ pub fn panic_log(info: &core::panic::PanicInfo) {
             );
         }
         let msg = info.message();
-        let _ = write!(writer, "  {}\n", msg);
+        let _ = writeln!(writer, "  {}", msg);
         writer.update_cursor();
     }
 }

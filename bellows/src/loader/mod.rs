@@ -1,6 +1,6 @@
 // bellows/src/loader/mod.rs
 
-use crate::uefi::{EFI_BUFFER_TOO_SMALL, EfiMemoryType, EfiSystemTable, Result};
+use crate::uefi::{EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable, Result};
 use core::ffi::c_void;
 use core::ptr;
 
@@ -16,97 +16,108 @@ pub fn exit_boot_services_and_jump(
     entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
 ) -> Result<!> {
     let bs = unsafe { &*(*system_table).boot_services };
+
     let mut map_size = 0;
     let mut map_key = 0;
     let mut descriptor_size = 0;
     let mut descriptor_version = 0;
 
-    // First call to GetMemoryMap to get buffer size.
-    let status = unsafe {
-        (bs.get_memory_map)(
+    // Use a loop to handle the case where the memory map changes between calls.
+    // This is a common and recommended UEFI pattern.
+    let mut map_phys_addr = 0;
+    let mut map_pages = 0;
+    let mut attempts = 0;
+
+    loop {
+        attempts += 1;
+        if attempts > 3 {
+            // Safety:
+            // Free the last allocated buffer if we fail after multiple attempts.
+            if map_phys_addr != 0 {
+                unsafe {
+                    (bs.free_pages)(map_phys_addr, map_pages);
+                }
+            }
+            return Err("Failed to get memory map after multiple attempts.");
+        }
+
+        // First call to GetMemoryMap to get the required buffer size.
+        let status = (bs.get_memory_map)(
             &mut map_size,
             ptr::null_mut(),
             &mut map_key,
             &mut descriptor_size,
             &mut descriptor_version,
-        )
-    };
-    if status != EFI_BUFFER_TOO_SMALL {
-        return Err("Failed to get memory map size on first attempt.");
-    }
+        );
 
-    // Add extra space just in case the memory map changes between calls.
-    map_size += 4096;
-    let mut map_pages = map_size.div_ceil(4096);
-    let mut map_phys_addr: usize = 0;
+        // If the buffer was too small, allocate a larger one and try again.
+        if EfiStatus::from(status) == EfiStatus::BufferTooSmall {
+            // Add extra space just in case the memory map changes.
+            let new_map_size = map_size.saturating_add(4096);
+            let new_map_pages = new_map_size.div_ceil(4096);
+            let mut new_map_phys_addr = 0;
+            let new_status = (bs.allocate_pages)(
+                0usize,
+                EfiMemoryType::EfiLoaderData,
+                new_map_pages,
+                &mut new_map_phys_addr,
+            );
 
-    // Allocate an appropriately-sized buffer for the memory map.
-    let status = unsafe {
-        (bs.allocate_pages)(
-            0usize,
-            EfiMemoryType::EfiLoaderData,
-            map_pages,
-            &mut map_phys_addr,
-        )
-    };
-    if status != 0 {
-        return Err("Failed to allocate memory map buffer.");
-    }
-    let mut map_ptr = map_phys_addr as *mut c_void;
-
-    // Retry GetMemoryMap in a loop to handle `EFI_BUFFER_TOO_SMALL`
-    loop {
-        let status = unsafe {
-            (bs.get_memory_map)(
-                &mut map_size,
-                map_ptr,
-                &mut map_key,
-                &mut descriptor_size,
-                &mut descriptor_version,
-            )
-        };
-        if status == 0 {
-            break;
-        } else if status == EFI_BUFFER_TOO_SMALL {
-            // The memory map has changed. We need to free the old buffer, re-allocate a larger one, and try again.
-            unsafe {
-                (bs.free_pages)(map_phys_addr, map_pages);
-            }
-            map_size += 4096; // Increase buffer size with padding
-            let new_map_pages = map_size.div_ceil(4096);
-            let mut new_map_phys_addr: usize = 0;
-            let new_status = unsafe {
-                (bs.allocate_pages)(
-                    0usize,
-                    EfiMemoryType::EfiLoaderData,
-                    new_map_pages,
-                    &mut new_map_phys_addr,
-                )
-            };
-            if new_status != 0 {
+            if EfiStatus::from(new_status) != EfiStatus::Success {
+                // If allocation fails, free any previously allocated memory.
+                if map_phys_addr != 0 {
+                    unsafe {
+                        (bs.free_pages)(map_phys_addr, map_pages);
+                    }
+                }
                 return Err("Failed to re-allocate memory map buffer.");
+            }
+
+            // Free the old buffer before re-assigning.
+            if map_phys_addr != 0 {
+                unsafe {
+                    (bs.free_pages)(map_phys_addr, map_pages);
+                }
             }
             map_phys_addr = new_map_phys_addr;
             map_pages = new_map_pages;
-            map_ptr = map_phys_addr as *mut c_void;
-            continue;
+        } else if EfiStatus::from(status) == EfiStatus::Success {
+            // Memory map size is now correct, proceed to exit boot services.
+            break;
         } else {
-            // Unexpected error status
-            unsafe {
-                (bs.free_pages)(map_phys_addr, map_pages);
-            }
-            return Err("Failed to get memory map after multiple attempts.");
+            return Err("Failed to get memory map size on first attempt.");
         }
     }
 
+    let map_ptr = map_phys_addr as *mut c_void;
+
+    // Second call to GetMemoryMap, this time with the allocated buffer.
+    // This call must succeed as we allocated a large enough buffer.
+    let status = (bs.get_memory_map)(
+        &mut map_size,
+        map_ptr,
+        &mut map_key,
+        &mut descriptor_size,
+        &mut descriptor_version,
+    );
+
+    if EfiStatus::from(status) != EfiStatus::Success {
+        // If this fails, the system state is corrupted. We cannot use boot services to recover.
+        return Err("Failed to get memory map with allocated buffer.");
+    }
+
     // Exit boot services. This call must succeed.
-    let exit_status = unsafe { (bs.exit_boot_services)(image_handle, map_key) };
-    if exit_status != 0 {
+    let exit_status = (bs.exit_boot_services)(image_handle, map_key);
+    if EfiStatus::from(exit_status) != EfiStatus::Success {
         // If this fails, there's no way to recover.
         // We cannot use the UEFI boot services anymore.
         // The bootloader is in a failed state.
         return Err("Failed to exit boot services.");
     }
+
+    // Note: The memory map buffer at `map_phys_addr` is intentionally not freed here
+    // because after `exit_boot_services` is called, the boot services are no longer
+    // available to the bootloader, making `bs.free_pages` an invalid call.
 
     // Jump to the kernel. This is the last instruction in the bootloader.
     // Safety:

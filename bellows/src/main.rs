@@ -4,14 +4,11 @@
 #![no_main]
 #![feature(alloc_error_handler)]
 #![feature(never_type)]
-
 extern crate alloc;
 
-use alloc::boxed::Box;
-use alloc::format;
+use alloc::{boxed::Box, format};
 use core::alloc::Layout;
 use core::ffi::c_void;
-use core::mem;
 use core::ptr;
 use core::slice;
 
@@ -33,9 +30,8 @@ use crate::loader::{
 };
 
 use crate::uefi::{
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiGraphicsOutputProtocolMode,
-    EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
-    uefi_print,
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiSystemTable,
+    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig, uefi_print,
 };
 
 /// Alloc error handler required when using `alloc` in no_std.
@@ -49,118 +45,49 @@ fn alloc_error(_layout: Layout) -> ! {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     // Print the panic message if available.
-    // Use `try_lock` to avoid deadlocking if the panic occurred while the lock was held.
-    if let Some(guard) = UEFI_SYSTEM_TABLE.try_lock() {
-        if let Some(UefiSystemTablePtr(st_ptr)) = *guard {
-            if !st_ptr.is_null() {
-                let st = unsafe { &*st_ptr };
-                uefi_print(st, &format!("Panicked at: {}\n", info));
-            }
+    if let Some(st_ptr) = UEFI_SYSTEM_TABLE.lock().as_ref() {
+        let st_ref = unsafe { &*st_ptr.0 };
+        if let Some(location) = info.location() {
+            let msg = format!(
+                "Panic at {}:{}:{} - {}\n",
+                location.file(),
+                location.line(),
+                location.column(),
+                info.message()
+            );
+            uefi_print(st_ref, &msg);
+        } else {
+            let msg = format!("Panic: {}\n", info.message());
+            uefi_print(st_ref, &msg);
         }
     }
+
     loop {}
 }
 
-fn init_gop(st: &EfiSystemTable) {
-    let bs = unsafe { &*st.boot_services };
-    let mut gop: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
-
-    // Safety:
-    // The GUID is a static global, its address is valid.
-    // The function pointer is from the UEFI boot services table, assumed to be valid.
-    let status = unsafe {
-        (bs.locate_protocol)(
-            &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID as *const _ as *const u8,
-            ptr::null_mut(),
-            &mut gop as *mut _ as *mut *mut c_void,
-        )
-    };
-
-    if status != 0 || gop.is_null() {
-        uefi_print(
-            st,
-            "Failed to locate GOP protocol, continuing without it.\n",
-        );
-        return;
-    }
-
-    // Safety:
-    // We have checked that `gop` is not null. The `mode` field and its `info` are
-    // guaranteed to be valid by the UEFI specification after a successful `locate_protocol`.
-    let (info, fb_addr, fb_size) = unsafe {
-        let gop_ref = &*gop;
-        let mode_ref = &*gop_ref.mode;
-        let info_ref = &*mode_ref.info;
-        (
-            info_ref,
-            mode_ref.frame_buffer_base,
-            mode_ref.frame_buffer_size,
-        )
-    };
-
-    let fb_ptr = fb_addr as *mut u32;
-
-    let config = Box::new(FullereneFramebufferConfig {
-        address: fb_addr as u64,
-        width: info.horizontal_resolution,
-        height: info.vertical_resolution,
-        stride: info.pixels_per_scan_line,
-        pixel_format: info.pixel_format,
-    });
-
-    // Leak the box to prevent the memory from being deallocated.
-    // The pointer will be valid for the kernel to use.
-    let config_ptr = Box::leak(config);
-
-    // Safety:
-    // The GUID is a static global, its address is valid.
-    // The function pointer is from the UEFI boot services table, assumed to be valid.
-    // The `FullereneFramebufferConfig` struct is valid for the duration of the call.
-    let status = unsafe {
-        (bs.install_configuration_table)(
-            &FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID as *const _ as *const u8,
-            config_ptr as *const _ as *mut c_void,
-        )
-    };
-
-    if status != 0 {
-        uefi_print(st, "Failed to install framebuffer config table.\n");
-    }
-
-    let num_pixels = fb_size / mem::size_of::<u32>();
-    if fb_ptr.is_null() || num_pixels == 0 {
-        return;
-    }
-
-    // Safety:
-    // We are writing to the framebuffer memory region.
-    // We have verified the `fb_ptr` is not null and the `num_pixels` is calculated
-    // from the size provided by the UEFI firmware. `write_volatile` is used to
-    // prevent the compiler from optimizing the memory-mapped I/O writes away.
-    unsafe {
-        ptr::write_bytes(fb_ptr as *mut u8, 0x00, fb_size);
-    }
-}
-
-/// Entry point for UEFI. Note: name and calling convention are critical.
+/// Main entry point of the bootloader.
+///
+/// This function is the `start` attribute as defined in the `Cargo.toml`.
 #[unsafe(no_mangle)]
 pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
+    let _ = UEFI_SYSTEM_TABLE
+        .lock()
+        .insert(UefiSystemTablePtr(system_table));
     let st = unsafe { &*system_table };
-    // In efi_main, after getting the system_table pointer
-    *UEFI_SYSTEM_TABLE.lock() = Some(UefiSystemTablePtr(system_table));
     let bs = unsafe { &*st.boot_services };
-    uefi_print(st, "bellows: bootloader started\n");
 
-    if let Err(msg) = init_heap(bs) {
-        uefi_print(st, msg);
-        panic!("Failed to initialize heap.");
-    }
+    uefi_print(st, "Bellows UEFI Bootloader starting...\n");
+    uefi_print(st, "Initializing heap...\n");
+    init_heap(bs).expect("Failed to initialize heap.");
+    uefi_print(st, "Heap initialized.\n");
 
+    uefi_print(st, "Initializing GOP...\n");
     init_gop(st);
+    uefi_print(st, "GOP initialized.\n");
 
     // Read the kernel file before exiting boot services.
     let (efi_image_phys, efi_image_size) = match read_efi_file(st) {
-        Ok(info) => info,
+        Ok(t) => t,
         Err(err) => {
             uefi_print(st, err);
             uefi_print(st, "\nHalting.\n");
@@ -201,14 +128,70 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     // Exit boot services and jump to the kernel.
     match exit_boot_services_and_jump(image_handle, system_table, entry) {
         Ok(_) => {
-            // Should not be reached.
-            uefi_print(st, "\nJump failed.\n");
-            panic!("Jump failed.");
+            unreachable!(); // This branch should never be reached if the function returns '!'
         }
         Err(err) => {
             uefi_print(st, err);
             uefi_print(st, "\nHalting.\n");
-            panic!("Failed to exit boot services and jump.");
+            panic!("Failed to exit boot services.");
         }
+    }
+}
+
+/// Initializes the Graphics Output Protocol (GOP) for framebuffer access.
+fn init_gop(st: &EfiSystemTable) {
+    let bs = unsafe { &*st.boot_services };
+    let mut gop: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
+
+    let status = (bs.locate_protocol)(
+        &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID as *const _ as *const u8,
+        ptr::null_mut(),
+        &mut gop as *mut _ as *mut *mut c_void,
+    );
+
+    if status != 0 || gop.is_null() {
+        uefi_print(
+            st,
+            "Failed to locate GOP protocol, continuing without it.\n",
+        );
+        return;
+    }
+
+    let gop_ref = unsafe { &*gop };
+    let mode_ref = unsafe { &*gop_ref.mode };
+    let info_ref = unsafe { &*mode_ref.info };
+
+    let fb_addr = mode_ref.frame_buffer_base;
+    let fb_size = mode_ref.frame_buffer_size;
+    let info = info_ref;
+
+    if fb_addr == 0 || fb_size == 0 {
+        uefi_print(st, "GOP framebuffer info is invalid, skipping.\n");
+        return;
+    }
+
+    let config = Box::new(FullereneFramebufferConfig {
+        address: fb_addr as u64,
+        width: info.horizontal_resolution,
+        height: info.vertical_resolution,
+        stride: info.pixels_per_scan_line,
+        pixel_format: info.pixel_format,
+    });
+
+    let config_ptr = Box::leak(config);
+
+    let status = (bs.install_configuration_table)(
+        &FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID as *const _ as *const u8,
+        config_ptr as *const _ as *mut c_void,
+    );
+
+    if status != 0 {
+        let _ = unsafe { Box::from_raw(config_ptr) };
+        uefi_print(st, "Failed to install framebuffer config table.\n");
+        return;
+    }
+
+    unsafe {
+        core::ptr::write_bytes(fb_addr as *mut u8, 0x00, fb_size as usize);
     }
 }

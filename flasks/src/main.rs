@@ -1,10 +1,6 @@
 // fullerene/flasks/src/main.rs
 use isobemak::create_disk_and_iso;
-use std::{
-    env, io,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{env, io, path::PathBuf, process::Command};
 
 fn main() -> io::Result<()> {
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -59,8 +55,9 @@ fn main() -> io::Result<()> {
 
     // --- 3. Create ISO using isobemak ---
     let iso_path = workspace_root.join("fullerene.iso");
+    let fat_img_path = workspace_root.join("fullerene.fat");
 
-    create_disk_and_iso(&iso_path, &bellows_path, &kernel_path)?;
+    create_disk_and_iso(&iso_path, &bellows_path, &kernel_path, &fat_img_path)?;
 
     // --- 4. Run QEMU with the created ISO ---
     let ovmf_fd_path = workspace_root
@@ -73,13 +70,13 @@ fn main() -> io::Result<()> {
         .join("RELEASEX64_OVMF_VARS.fd");
 
     let ovmf_fd_drive = format!(
-    "if=pflash,format=raw,unit=0,readonly=on,file={}",
-    ovmf_fd_path.display()
-);
-let ovmf_vars_fd_drive = format!(
-    "if=pflash,format=raw,unit=1,file={}",
-    ovmf_vars_fd_path.display()
-);
+        "if=pflash,format=raw,unit=0,readonly=on,file={}",
+        ovmf_fd_path.display()
+    );
+    let ovmf_vars_fd_drive = format!(
+        "if=pflash,format=raw,unit=1,file={}",
+        ovmf_vars_fd_path.display()
+    );
 
     let qemu_args = [
         "-cdrom",
