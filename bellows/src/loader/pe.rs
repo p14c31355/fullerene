@@ -240,6 +240,11 @@ pub fn load_efi_image(
             while (current_reloc_block_ptr as *mut u8) < end_reloc_table_ptr {
                 let current_reloc_block = unsafe { &*current_reloc_block_ptr };
                 let reloc_block_size = current_reloc_block.size_of_block as usize;
+                if reloc_block_size == 0 {
+                    break;
+                }
+                let current_reloc_block = unsafe { &*current_reloc_block_ptr };
+                let reloc_block_size = current_reloc_block.size_of_block as usize;
 
                 // Safety:
                 // We advance the pointer into the block to read the fixup entries.
