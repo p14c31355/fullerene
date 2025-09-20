@@ -53,7 +53,9 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
         )
     };
     if EfiStatus::from(status) != EfiStatus::Success {
-        return Err(BellowsError::FileIo("Failed to locate SimpleFileSystem protocol."));
+        return Err(BellowsError::FileIo(
+            "Failed to locate SimpleFileSystem protocol.",
+        ));
     }
     let fs = fs_ptr as *mut EfiSimpleFileSystem;
 
@@ -151,7 +153,9 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
         )
     };
     if EfiStatus::from(status) != EfiStatus::Success {
-        return Err(BellowsError::AllocationFailed("Failed to allocate pages for kernel file."));
+        return Err(BellowsError::AllocationFailed(
+            "Failed to allocate pages for kernel file.",
+        ));
     }
 
     let buf_ptr = phys_addr as *mut u8;
@@ -162,7 +166,9 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
         unsafe {
             (bs.free_pages)(phys_addr, pages);
         }
-        return Err(BellowsError::FileIo("Failed to read kernel file or read size mismatch."));
+        return Err(BellowsError::FileIo(
+            "Failed to read kernel file or read size mismatch.",
+        ));
     }
 
     Ok((phys_addr, file_size))

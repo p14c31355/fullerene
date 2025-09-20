@@ -22,11 +22,15 @@ pub fn init_heap(bs: &EfiBootServices) -> Result<()> {
         )
     };
     if EfiStatus::from(status) != EfiStatus::Success {
-        return Err(BellowsError::AllocationFailed("Failed to allocate heap memory."));
+        return Err(BellowsError::AllocationFailed(
+            "Failed to allocate heap memory.",
+        ));
     }
 
     if heap_phys == 0 {
-        return Err(BellowsError::AllocationFailed("Allocated heap address is null."));
+        return Err(BellowsError::AllocationFailed(
+            "Allocated heap address is null.",
+        ));
     }
 
     // Safety:

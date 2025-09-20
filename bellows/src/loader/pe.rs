@@ -1,6 +1,8 @@
 // bellows/src/loader/pe.rs
 
-use crate::uefi::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable, Result};
+use crate::uefi::{
+    BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable, Result,
+};
 use core::{ffi::c_void, mem, ptr, slice};
 
 #[repr(C, packed)]
@@ -143,7 +145,9 @@ pub fn load_efi_image(
         )
     };
     if EfiStatus::from(status) != EfiStatus::Success {
-        return Err(BellowsError::AllocationFailed("Failed to allocate memory for PE image."));
+        return Err(BellowsError::AllocationFailed(
+            "Failed to allocate memory for PE image.",
+        ));
     }
 
     let image_base_addr = nt_headers.optional_header.image_base as usize;
@@ -264,7 +268,9 @@ pub fn load_efi_image(
                             unsafe {
                                 (bs.free_pages)(phys_addr, pages_needed);
                             }
-                            return Err(BellowsError::PeParse("Relocation fixup address is out of bounds."));
+                            return Err(BellowsError::PeParse(
+                                "Relocation fixup address is out of bounds.",
+                            ));
                         }
                         let fixup_address_ptr = fixup_address as *mut u64;
                         // Safety:
@@ -300,7 +306,9 @@ pub fn load_efi_image(
         unsafe {
             (bs.free_pages)(phys_addr, pages_needed);
         }
-        return Err(BellowsError::PeParse("Entry point address is outside allocated memory."));
+        return Err(BellowsError::PeParse(
+            "Entry point address is outside allocated memory.",
+        ));
     }
 
     // Safety:
