@@ -116,10 +116,10 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         let mut serial_writer = serial::SERIAL1.lock();
         match key {
             DecodedKey::Unicode(character) => {
-                serial_writer.write_char(character).unwrap();
+                let _ = serial_writer.write_char(character);
             }
             DecodedKey::RawKey(key) => {
-                serial_writer.write_fmt(format_args!("{:?}", key)).unwrap();
+                let _ = serial_writer.write_fmt(format_args!("{:?}", key));
             }
         }
     }
