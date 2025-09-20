@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 
 #[repr(usize)]
+#[derive(PartialEq)]
 pub enum EfiStatus {
     Success = 0,
     LoadError = 1,
