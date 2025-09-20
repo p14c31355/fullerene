@@ -70,13 +70,6 @@ pub extern "efiapi" fn efi_main(
     loop {}
 }
 
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    vga::panic_log(info);
-    serial::panic_log(info);
-    loop {}
-}
 
 // Global allocator is required for `alloc::format!`
 #[global_allocator]

@@ -22,15 +22,13 @@ pub fn exit_boot_services_and_jump(
     let mut descriptor_version = 0;
 
     // First call to GetMemoryMap to get buffer size.
-    let status = unsafe {
-        (bs.get_memory_map)(
-            &mut map_size,
-            ptr::null_mut(),
-            &mut map_key,
-            &mut descriptor_size,
-            &mut descriptor_version,
-        )
-    };
+    let status = (bs.get_memory_map)(
+        &mut map_size,
+        ptr::null_mut(),
+        &mut map_key,
+        &mut descriptor_size,
+        &mut descriptor_version,
+    );
     if status != EFI_BUFFER_TOO_SMALL {
         return Err("Failed to get memory map size on first attempt.");
     }
@@ -38,51 +36,45 @@ pub fn exit_boot_services_and_jump(
     // Add extra space just in case the memory map changes between calls.
     map_size += 4096;
     let mut map_pages = map_size.div_ceil(4096);
-    let mut map_phys_addr: usize = 0;
-
-    // Allocate an appropriately-sized buffer for the memory map.
-    let status = unsafe {
-        (bs.allocate_pages)(
+    let mut map_phys_addr = 0usize;
+    let mut map_ptr: *mut c_void;
+    
+    loop {
+        let status = (bs.allocate_pages)(
             0usize,
             EfiMemoryType::EfiLoaderData,
             map_pages,
             &mut map_phys_addr,
-        )
-    };
-    if status != 0 {
-        return Err("Failed to allocate memory map buffer.");
-    }
-    let mut map_ptr = map_phys_addr as *mut c_void;
+        );
+        if status != 0 {
+            return Err("Failed to allocate memory map buffer.");
+        }
+        map_ptr = map_phys_addr as *mut c_void;
 
-    // Retry GetMemoryMap in a loop to handle `EFI_BUFFER_TOO_SMALL`
-    loop {
-        let status = unsafe {
-            (bs.get_memory_map)(
-                &mut map_size,
-                map_ptr,
-                &mut map_key,
-                &mut descriptor_size,
-                &mut descriptor_version,
-            )
-        };
+        // Retry GetMemoryMap in a loop to handle `EFI_BUFFER_TOO_SMALL`
+        let status = (bs.get_memory_map)(
+            &mut map_size,
+            map_ptr,
+            &mut map_key,
+            &mut descriptor_size,
+            &mut descriptor_version,
+        );
         if status == 0 {
             break;
-        } else if status == EFI_BUFFER_TOO_SMALL {
-            // The memory map has changed. We need to free the old buffer, re-allocate a larger one, and try again.
-            unsafe {
-                (bs.free_pages)(map_phys_addr, map_pages);
-            }
-            map_size += 4096; // Increase buffer size with padding
-            let new_map_pages = map_size.div_ceil(4096);
-            let mut new_map_phys_addr: usize = 0;
-            let new_status = unsafe {
-                (bs.allocate_pages)(
-                    0usize,
-                    EfiMemoryType::EfiLoaderData,
-                    new_map_pages,
-                    &mut new_map_phys_addr,
-                )
-            };
+        }
+
+        (bs.free_pages)(map_phys_addr, map_pages);
+
+        if status == EFI_BUFFER_TOO_SMALL {
+            let new_map_size = map_size + descriptor_size;
+            let new_map_pages = new_map_size.div_ceil(4096);
+            let mut new_map_phys_addr = 0;
+            let new_status = (bs.allocate_pages)(
+                0usize,
+                EfiMemoryType::EfiLoaderData,
+                new_map_pages,
+                &mut new_map_phys_addr,
+            );
             if new_status != 0 {
                 return Err("Failed to re-allocate memory map buffer.");
             }
@@ -92,15 +84,13 @@ pub fn exit_boot_services_and_jump(
             continue;
         } else {
             // Unexpected error status
-            unsafe {
-                (bs.free_pages)(map_phys_addr, map_pages);
-            }
+            (bs.free_pages)(map_phys_addr, map_pages);
             return Err("Failed to get memory map after multiple attempts.");
         }
     }
 
     // Exit boot services. This call must succeed.
-    let exit_status = unsafe { (bs.exit_boot_services)(image_handle, map_key) };
+    let exit_status = (bs.exit_boot_services)(image_handle, map_key);
     if exit_status != 0 {
         // If this fails, there's no way to recover.
         // We cannot use the UEFI boot services anymore.

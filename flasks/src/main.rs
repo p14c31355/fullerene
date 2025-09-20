@@ -2,7 +2,7 @@
 use isobemak::create_disk_and_iso;
 use std::{
     env, io,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::Command,
 };
 
