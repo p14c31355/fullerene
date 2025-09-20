@@ -25,13 +25,17 @@ static UEFI_SYSTEM_TABLE: Mutex<Option<UefiSystemTablePtr>> = Mutex::new(None);
 mod loader;
 mod uefi;
 
+use crate::loader::serial;
+
+use crate::loader::serial;
+
 use crate::loader::{
-    exit_boot_services_and_jump, file::read_efi_file, heap::init_heap, pe::load_efi_image,
+    exit_boot_services_and_jump, file::read_efi_file, heap::init_heap, pe::load_efi_image, serial,
 };
 
 use crate::uefi::{
     EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable,
-    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig, uefi_print,
+    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
 };
 
 /// Alloc error handler required when using `alloc` in no_std.
@@ -102,7 +106,8 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         st,
         &format!(
             "Kernel EFI file read. Physical address: {:#x}, size: {}\n",
-            efi_image_phys, efi_image_size
+            efi_image_phys,
+            efi_image_size
         ),
     );
 
