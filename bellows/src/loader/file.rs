@@ -152,10 +152,12 @@ pub fn read_efi_file(bs: &EfiBootServices) -> Result<(usize, usize)> {
     let mut read_size = file_size as u64;
 
     let status = unsafe { ((*file.file).read)(file.file, &mut read_size, buf_ptr) };
-    if EfiStatus::from(status) != EfiStatus::Success {
+    if EfiStatus::from(status) != EfiStatus::Success || read_size as usize != file_size {
         // It's important to free the allocated pages on failure to avoid memory leaks.
         unsafe { (bs.free_pages)(phys_addr, pages) };
-        return Err(BellowsError::FileIo("Failed to read kernel file."));
+        return Err(BellowsError::FileIo(
+            "Failed to read kernel file or read size mismatch.",
+        ));
     }
 
     Ok((phys_addr, file_size))
