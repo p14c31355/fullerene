@@ -123,17 +123,6 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
             }
         }
     }
-        let mut serial_writer = serial::SERIAL1.lock();
-        match key {
-            DecodedKey::Unicode(character) => {
-                let _ = serial_writer.write_char(character);
-            }
-            DecodedKey::RawKey(key) => {
-                let _ = serial_writer.write_fmt(format_args!("{:?}", key));
-            }
-        }
-
-
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8())
