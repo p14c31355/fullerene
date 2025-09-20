@@ -45,33 +45,23 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     if let Some(st_ptr) = UEFI_SYSTEM_TABLE.lock().as_ref() {
         let st_ref = unsafe { &*st_ptr.0 };
         // Initialize the writer to ensure panic messages can be printed.
-        unsafe {
-            serial::UEFI_WRITER.lock().init(st_ref.con_out);
-        }
+
+        serial::UEFI_WRITER.lock().init(st_ref.con_out);
 
         if let Some(location) = info.location() {
-            if let Some(message) = info.message() {
-                println!(
-                    "Panic at {}:{}:{} - {}",
-                    location.file(),
-                    location.line(),
-                    location.column(),
-                    message
-                );
-            } else {
-                println!(
-                    "Panic at {}:{}:{} - no message",
-                    location.file(),
-                    location.line(),
-                    location.column()
-                );
-            }
+            // Assuming info.message() returns Option<PanicMessage<'a>>
+            // and PanicMessage<'a> has a field 'args' of type &fmt::Arguments
+            println!(
+                "Panic at {}:{}:{} - {}",
+                location.file(),
+                location.line(),
+                location.column(),
+                info.message() // Directly use info.message()
+            );
         } else {
-            if let Some(message) = info.message() {
-                println!("Panic: {}", message);
-            } else {
-                println!("Panic: no message");
-            }
+            // Assuming info.message() returns Option<PanicMessage<'a>>
+            // and PanicMessage<'a> has a field 'args' of type &fmt::Arguments
+            println!("Panic: {}", info.message()); // Directly use info.message()
         }
     }
     loop {} // Panics must diverge
