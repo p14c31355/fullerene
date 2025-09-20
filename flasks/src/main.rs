@@ -100,6 +100,9 @@ fn main() -> io::Result<()> {
         "int",
         "-D",
         "qemu_log.txt",
+        "-boot",
+        "order=c",
+        "-nodefaults",
     ];
 
     let qemu_status = Command::new("qemu-system-x86_64")

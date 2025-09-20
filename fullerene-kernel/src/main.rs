@@ -1,3 +1,4 @@
+#![feature(abi_x86_interrupt)]
 // fullerene-kernel/src/main.rs
 
 #![no_std]
@@ -6,6 +7,8 @@
 mod serial;
 mod uefi;
 mod vga;
+mod gdt; // GDTモジュールを追加
+mod interrupts; // IDTモジュールを追加
 
 extern crate alloc;
 
@@ -20,6 +23,11 @@ pub extern "efiapi" fn efi_main(
     _memory_map: *mut c_void,
     _memory_map_size: usize,
 ) -> ! {
+    gdt::init(); // GDTを初期化
+    interrupts::init_idt(); // IDTを初期化
+    unsafe { interrupts::PICS.lock().initialize() };
+    x86_64::instructions::interrupts::enable();
+
     // Initialize serial and VGA first for logging
     serial::serial_init();
     vga::vga_init();
@@ -67,7 +75,7 @@ pub extern "efiapi" fn efi_main(
 
     // Main loop
     vga::log("Initialization complete. Entering kernel main loop.");
-    loop {}
+    hlt_loop();
 }
 
 #[cfg(not(test))]
@@ -89,4 +97,10 @@ unsafe impl core::alloc::GlobalAlloc for DummyAllocator {
         panic!("memory allocation is not supported");
     }
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {}
+}
+
+pub fn hlt_loop() -> ! {
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
