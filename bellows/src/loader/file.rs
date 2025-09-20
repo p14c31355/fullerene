@@ -1,8 +1,8 @@
 // bellows/src/loader/file.rs
 
 use crate::uefi::{
-    BellowsError, EFI_FILE_INFO_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiBootServices,
-    EfiFile, EfiFileInfo, EfiSimpleFileSystem, EfiStatus, EfiSystemTable, Result,
+    BellowsError, EFI_FILE_INFO_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiFile, EfiFileInfo,
+    EfiSimpleFileSystem, EfiStatus, EfiSystemTable, Result,
 };
 use alloc::vec::Vec;
 use core::ffi::c_void;
@@ -45,10 +45,10 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     // The `locate_protocol` call is a UEFI boot service. Its function pointer
     // is assumed to be valid. The GUID is static.
     let status = (bs.locate_protocol)(
-            &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
-            ptr::null_mut(),
-            &mut fs_ptr,
-        );
+        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+        ptr::null_mut(),
+        &mut fs_ptr,
+    );
     if EfiStatus::from(status) != EfiStatus::Success {
         return Err(BellowsError::FileIo(
             "Failed to locate SimpleFileSystem protocol.",

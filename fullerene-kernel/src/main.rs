@@ -1,14 +1,13 @@
 #![feature(abi_x86_interrupt)]
 // fullerene-kernel/src/main.rs
-
 #![no_std]
 #![no_main]
 
+mod gdt; // GDTモジュールを追加
+mod interrupts;
 mod serial;
 mod uefi;
-mod vga;
-mod gdt; // GDTモジュールを追加
-mod interrupts; // IDTモジュールを追加
+mod vga; // IDTモジュールを追加
 
 extern crate alloc;
 

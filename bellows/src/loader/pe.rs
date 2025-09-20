@@ -1,8 +1,6 @@
 // bellows/src/loader/pe.rs
 
-use crate::uefi::{
-    BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable, Result,
-};
+use crate::uefi::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable, Result};
 use core::{ffi::c_void, mem, ptr};
 
 #[repr(C, packed)]
@@ -222,7 +220,7 @@ pub fn load_efi_image(
             let reloc_table_ptr =
                 unsafe { (phys_addr as *mut u8).add(reloc_data_dir.virtual_address as usize) };
             if (reloc_table_ptr as usize).saturating_add(reloc_data_dir.size as usize)
-                > (phys_addr as usize).saturating_add(pages_needed * 4096)
+                > phys_addr.saturating_add(pages_needed * 4096)
             {
                 unsafe {
                     (bs.free_pages)(phys_addr, pages_needed);

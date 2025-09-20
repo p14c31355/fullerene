@@ -1,8 +1,6 @@
 // bellows/src/loader/mod.rs
 
-use crate::uefi::{
-    BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable, Result,
-};
+use crate::uefi::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable, Result};
 use core::ffi::c_void;
 use core::ptr;
 
@@ -34,7 +32,7 @@ pub fn exit_boot_services_and_jump(
         attempts += 1;
         if attempts > 3 {
             // Safety:
-(bs.free_pages)(map_phys_addr, map_pages);
+            (bs.free_pages)(map_phys_addr, map_pages);
             return Err(BellowsError::InvalidState(
                 "Failed to get memory map after multiple attempts.",
             ));
@@ -65,7 +63,7 @@ pub fn exit_boot_services_and_jump(
             if EfiStatus::from(new_status) != EfiStatus::Success {
                 // If allocation fails, free any previously allocated memory.
                 if map_phys_addr != 0 {
-        (bs.free_pages)(map_phys_addr, map_pages);
+                    (bs.free_pages)(map_phys_addr, map_pages);
                 }
                 return Err(BellowsError::AllocationFailed(
                     "Failed to re-allocate memory map buffer.",

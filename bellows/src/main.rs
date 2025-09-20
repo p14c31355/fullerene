@@ -30,9 +30,8 @@ use crate::loader::{
 };
 
 use crate::uefi::{
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiStatus,
-    EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
-    uefi_print,
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable,
+    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig, uefi_print,
 };
 
 /// Alloc error handler required when using `alloc` in no_std.
@@ -99,7 +98,13 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             panic!("Failed to read EFI file.");
         }
     };
-    uefi_print(st, &format!("Kernel EFI file read. Physical address: {:#x}, size: {}\n", efi_image_phys, efi_image_size));
+    uefi_print(
+        st,
+        &format!(
+            "Kernel EFI file read. Physical address: {:#x}, size: {}\n",
+            efi_image_phys, efi_image_size
+        ),
+    );
 
     let efi_image_file = {
         // Safety:

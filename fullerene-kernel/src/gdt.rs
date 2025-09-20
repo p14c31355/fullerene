@@ -1,12 +1,12 @@
 // fullerene-kernel/src/gdt.rs
 
-use x86_64::VirtAddr;
-use x86_64::structures::tss::TaskStateSegment;
-use x86_64::structures::gdt::{Descriptor, SegmentSelector};
-use x86_64::registers::segmentation::{CS, Segment};
-use x86_64::instructions::tables::{load_tss, DescriptorTablePointer};
-use spin::Once;
 use core::mem;
+use spin::Once;
+use x86_64::VirtAddr;
+use x86_64::instructions::tables::{DescriptorTablePointer, load_tss};
+use x86_64::registers::segmentation::{CS, Segment};
+use x86_64::structures::gdt::{Descriptor, SegmentSelector};
+use x86_64::structures::tss::TaskStateSegment;
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 
@@ -24,8 +24,8 @@ pub fn init() {
             static STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
 
             let stack_start = VirtAddr::from_ptr(&STACK);
-            let stack_end = stack_start + STACK_SIZE as u64;
-            stack_end
+
+            stack_start + STACK_SIZE as u64
         };
         tss
     });
@@ -60,7 +60,7 @@ pub fn init() {
         x86_64::instructions::tables::lgdt(&ptr);
     }
 
-    CODE_SELECTOR.call_once(|| SegmentSelector::new(1, x86_64::PrivilegeLevel::Ring0)); 
+    CODE_SELECTOR.call_once(|| SegmentSelector::new(1, x86_64::PrivilegeLevel::Ring0));
     TSS_SELECTOR.call_once(|| SegmentSelector::new(2, x86_64::PrivilegeLevel::Ring0));
 
     unsafe {
