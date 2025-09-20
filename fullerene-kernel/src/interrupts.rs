@@ -1,11 +1,9 @@
 // fullerene-kernel/src/interrupts.rs
 
-extern crate alloc;
-
 use crate::{gdt, serial, vga};
-use alloc::format;
+use core::fmt::Write;
 use lazy_static::lazy_static;
-use pc_keyboard::{DecodedKey, HandleControl, Keyboard, ScancodeSet1, layouts};
+use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
 use pic8259::ChainedPics;
 use spin::Mutex;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
@@ -38,7 +36,8 @@ pub fn init_idt() {
 
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     vga::log("EXCEPTION: BREAKPOINT");
-    vga::log(&format!("{:#?}", stack_frame));
+    let mut writer = vga::VGA_BUFFER.get().unwrap().lock();
+    writer.write_fmt(format_args!("{:#?}", stack_frame)).unwrap();
 }
 
 extern "x86-interrupt" fn page_fault_handler(
@@ -48,9 +47,16 @@ extern "x86-interrupt" fn page_fault_handler(
     use x86_64::registers::control::Cr2;
 
     vga::log("EXCEPTION: PAGE FAULT");
-    vga::log(&format!("Accessed Address: {:?}", Cr2::read()));
-    vga::log(&format!("Error Code: {:?}", error_code));
-    vga::log(&format!("{:#?}", stack_frame));
+    let mut writer = vga::WRITER.lock();
+    writer
+        .write_fmt(format_args!("Accessed Address: {:?}", Cr2::read()))
+        .unwrap();
+    writer
+        .write_fmt(format_args!("Error Code: {:?}", error_code))
+        .unwrap();
+    writer
+        .write_fmt(format_args!("{:#?}", stack_frame))
+        .unwrap();
 
     loop {}
 }
@@ -59,7 +65,8 @@ extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     _error_code: u64,
 ) -> ! {
-    panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
+    panic!("EXCEPTION: DOUBLE FAULT
+{:#?}", stack_frame);
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -76,10 +83,8 @@ impl InterruptIndex {
 }
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    unsafe {
-        PICS.lock()
-            .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
-    }
+    PICS.lock()
+        .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
 }
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
@@ -98,17 +103,20 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     let mut port = Port::new(0x60);
 
     let scancode: u8 = unsafe { port.read() };
-    if let Ok(Some(key_event)) = keyboard.add_byte(scancode)
-        && let Some(key) = keyboard.process_keyevent(key_event)
-    {
-        match key {
-            DecodedKey::Unicode(character) => serial::serial_log(&format!("{}", character)),
-            DecodedKey::RawKey(key) => serial::serial_log(&format!("{:?}", key)),
+    if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
+        if let Some(key) = keyboard.process_keyevent(key_event) {
+            let mut serial_writer = serial::SERIAL1.lock();
+            match key {
+                DecodedKey::Unicode(character) => {
+                    serial_writer.write_char(character).unwrap();
+                }
+                DecodedKey::RawKey(key) => {
+                    serial_writer.write_fmt(format_args!("{:?}", key)).unwrap();
+                }
+            }
         }
     }
 
-    unsafe {
-        PICS.lock()
-            .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
-    }
+    PICS.lock()
+        .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
 }

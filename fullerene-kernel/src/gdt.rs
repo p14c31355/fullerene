@@ -1,18 +1,16 @@
 // fullerene-kernel/src/gdt.rs
 
-use core::mem;
 use spin::Once;
 use x86_64::VirtAddr;
-use x86_64::instructions::tables::{DescriptorTablePointer, load_tss};
+use x86_64::instructions::tables::load_tss;
 use x86_64::registers::segmentation::{CS, Segment};
-use x86_64::structures::gdt::{Descriptor, SegmentSelector};
+use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 
 static TSS: Once<TaskStateSegment> = Once::new();
-
-static GDT_ENTRIES: Once<[u64; 4]> = Once::new();
+static GDT: Once<GlobalDescriptorTable> = Once::new();
 static CODE_SELECTOR: Once<SegmentSelector> = Once::new();
 static TSS_SELECTOR: Once<SegmentSelector> = Once::new();
 
@@ -30,38 +28,17 @@ pub fn init() {
         tss
     });
 
-    let gdt_entries = GDT_ENTRIES.call_once(|| {
-        let mut entries = [0; 4]; // Null descriptor, Kernel Code, TSS_low, TSS_high
-
-        let code_descriptor = Descriptor::kernel_code_segment();
-        let tss_descriptor = Descriptor::tss_segment(tss);
-
-        if let Descriptor::UserSegment(val) = code_descriptor {
-            entries[1] = val;
-        } else {
-            panic!("Unexpected code descriptor type");
-        }
-
-        if let Descriptor::SystemSegment(val_low, val_high) = tss_descriptor {
-            entries[2] = val_low;
-            entries[3] = val_high;
-        } else {
-            panic!("Unexpected TSS descriptor type");
-        }
-        entries
+    let gdt = GDT.call_once(|| {
+        let mut gdt = GlobalDescriptorTable::new();
+        let code_selector = gdt.add_entry(Descriptor::kernel_code_segment());
+        let tss_selector = gdt.add_entry(Descriptor::tss_segment(tss));
+        
+        CODE_SELECTOR.call_once(|| code_selector);
+        TSS_SELECTOR.call_once(|| tss_selector);
+        gdt
     });
 
-    // GDTをロード
-    let ptr = DescriptorTablePointer {
-        limit: (gdt_entries.len() * mem::size_of::<u64>() - 1) as u16,
-        base: VirtAddr::from_ptr(gdt_entries.as_ptr()),
-    };
-    unsafe {
-        x86_64::instructions::tables::lgdt(&ptr);
-    }
-
-    CODE_SELECTOR.call_once(|| SegmentSelector::new(1, x86_64::PrivilegeLevel::Ring0));
-    TSS_SELECTOR.call_once(|| SegmentSelector::new(2, x86_64::PrivilegeLevel::Ring0));
+    gdt.load();
 
     unsafe {
         CS::set_reg(*CODE_SELECTOR.get().unwrap());
