@@ -7,12 +7,11 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use core::alloc::Layout;
-use core::ffi::c_void;
-use core::ptr;
-use core::slice;
+use core::{alloc::Layout, ffi::c_void, fmt, ptr, slice};
 
 use spin::Mutex;
+
+static NO_MESSAGE_ARGS: fmt::Arguments = format_args!("no message");
 
 #[derive(Clone, Copy)]
 struct UefiSystemTablePtr(*mut EfiSystemTable);
@@ -58,13 +57,10 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
                 location.file(),
                 location.line(),
                 location.column(),
-                info.message().unwrap_or_else(|| format_args!("no message"))
+                info.message().unwrap_or(&NO_MESSAGE_ARGS)
             );
         } else {
-            println!(
-                "Panic: {}",
-                info.message().unwrap_or_else(|| format_args!("no message"))
-            );
+            println!("Panic: {}", info.message().unwrap_or(&NO_MESSAGE_ARGS));
         }
     }
 
@@ -83,9 +79,8 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     let bs = unsafe { &*st.boot_services };
 
     // Initialize the serial writer with the console output pointer.
-    unsafe {
-        serial::UEFI_WRITER.lock().init(st.con_out);
-    }
+
+    serial::UEFI_WRITER.lock().init(st.con_out);
 
     println!("Bellows UEFI Bootloader starting...");
 

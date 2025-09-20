@@ -1,21 +1,15 @@
 // bellows/src/loader/serial.rs
 
+use crate::uefi::EfiSimpleTextOutput;
 use alloc::vec::Vec;
 use core::fmt;
-
-/// Minimal UEFI Simple Text Output Protocol
-#[repr(C)]
-pub struct EfiSimpleTextOutput {
-    _pad: [usize; 2],
-    /// output_string(This, *mut u16) -> EFI_STATUS
-    pub output_string: extern "efiapi" fn(*mut EfiSimpleTextOutput, *const u16) -> usize,
-}
 
 pub struct UefiWriter {
     con_out: *mut EfiSimpleTextOutput,
 }
 
 unsafe impl Sync for UefiWriter {}
+unsafe impl Send for UefiWriter {}
 
 impl UefiWriter {
     pub const fn new() -> UefiWriter {
