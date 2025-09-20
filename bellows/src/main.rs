@@ -52,16 +52,16 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
             serial::UEFI_WRITER.init(st_ref.con_out);
         }
         // We use the same `uefi_print` here, but it's now a different function that uses `_print`.
-        if let Some(location) = info.location() {
-            serial::_print(format_args!(
-                "Panic at {}:{}:{} - {}\n",
+                if let Some(location) = info.location() {
+            println!(
+                "Panic at {}:{}:{} - {}",
                 location.file(),
                 location.line(),
                 location.column(),
-                info.message()
-            ));
+                info.message().unwrap_or(&format_args!("no message"))
+            );
         } else {
-            serial::_print(format_args!("Panic: {}\n", info.message()));
+            println!("Panic: {}", info.message().unwrap_or(&format_args!("no message")));
         }
     }
 

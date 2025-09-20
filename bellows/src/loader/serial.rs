@@ -2,6 +2,7 @@
 
 use alloc::vec::Vec;
 use core::fmt;
+use spin::Mutex;
 
 /// Minimal UEFI Simple Text Output Protocol
 #[repr(C)]
@@ -54,7 +55,7 @@ impl fmt::Write for UefiWriter {
 }
 
 // Global writer instance
-pub static mut UEFI_WRITER: UefiWriter = UefiWriter::new();
+pub static UEFI_WRITER: spin::Mutex<UefiWriter> = spin::Mutex::new(UefiWriter::new());
 
 #[macro_export]
 macro_rules! print {
@@ -70,11 +71,8 @@ macro_rules! println {
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
-    // Safety: Accessing a static mut is inherently unsafe.
-    // We assume single-threaded execution in the bootloader context
-    // before the kernel takes over, making this "safe enough" for now.
-    // In a multi-threaded environment, a spinlock would be necessary.
-    unsafe {
-        UEFI_WRITER.write_fmt(args).unwrap();
-    }
+    // By using a Mutex, we ensure safe access to the global writer,
+    // even though we expect single-threaded execution in the bootloader.
+    // This is safer and more idiomatic than using a `static mut`.
+    UEFI_WRITER.lock().write_fmt(args).unwrap();
 }
