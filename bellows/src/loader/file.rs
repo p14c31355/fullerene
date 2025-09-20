@@ -1,8 +1,8 @@
 // bellows/src/loader/file.rs
 
 use crate::uefi::{
-    BellowsError, EFI_FILE_INFO_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiFile, EfiFileInfo,
-    EfiSimpleFileSystem, EfiStatus, Result, EfiBootServices,
+    BellowsError, EFI_FILE_INFO_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiBootServices,
+    EfiFile, EfiFileInfo, EfiSimpleFileSystem, EfiStatus, Result,
 };
 use alloc::vec::Vec;
 use core::ffi::c_void;
@@ -37,8 +37,7 @@ impl Drop for EfiFileWrapper {
 }
 
 /// Helper function to open a file from a directory handle.
-fn open_file(dir: &EfiFileWrapper, path: &[
- u16]) -> Result<EfiFileWrapper> {
+fn open_file(dir: &EfiFileWrapper, path: &[u16]) -> Result<EfiFileWrapper> {
     let mut file_handle: *mut EfiFile = ptr::null_mut();
     let status = unsafe {
         ((*dir.file).open)(
@@ -76,12 +75,19 @@ pub fn read_efi_file(bs: &EfiBootServices) -> Result<(usize, usize)> {
         _ => {
             return Err(BellowsError::FileIo(
                 "Failed to open EFI SimpleFileSystem protocol volume.",
-            ))
+            ));
         }
     };
 
     // Correct file name to match the kernel file
-    let file = open_file(&volume, r"\fullerene-kernel.efi".encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>().as_slice())?;
+    let file = open_file(
+        &volume,
+        r"\fullerene-kernel.efi"
+            .encode_utf16()
+            .chain(core::iter::once(0))
+            .collect::<Vec<u16>>()
+            .as_slice(),
+    )?;
 
     let mut file_info_buffer_size = 0;
     let _ = unsafe {
@@ -97,7 +103,7 @@ pub fn read_efi_file(bs: &EfiBootServices) -> Result<(usize, usize)> {
         return Err(BellowsError::FileIo("Failed to get file info size."));
     }
 
-    let mut file_info_buffer = alloc::vec![0u8; file_info_buffer_size as usize];
+    let mut file_info_buffer = alloc::vec![0u8; file_info_buffer_size];
 
     let status = unsafe {
         ((*file.file).get_info)(
