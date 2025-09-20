@@ -91,7 +91,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     uefi_print(st, "Attempting to read kernel EFI file...\n");
     // Read the kernel file before exiting boot services.
-    let (efi_image_phys, efi_image_size) = match read_efi_file(unsafe { &*st.boot_services }) {
+    let (efi_image_phys, efi_image_size) = match read_efi_file(bs) {
         Ok(t) => t,
         Err(err) => {
             uefi_print(st, &format!("Failed to read EFI file: {:?}\n", err));
