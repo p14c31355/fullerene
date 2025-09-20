@@ -6,7 +6,7 @@
 #![feature(never_type)]
 extern crate alloc;
 
-use alloc::{boxed::Box, format};
+use alloc::boxed::Box;
 use core::alloc::Layout;
 use core::ffi::c_void;
 use core::ptr;
@@ -49,7 +49,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         let st_ref = unsafe { &*st_ptr.0 };
         // Initialize the writer to ensure panic messages can be printed.
         unsafe {
-            serial::UEFI_WRITER.init(st_ref.con_out);
+            serial::UEFI_WRITER.lock().init(st_ref.con_out);
         }
         // We use the same `uefi_print` here, but it's now a different function that uses `_print`.
                 if let Some(location) = info.location() {
@@ -58,10 +58,10 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
                 location.file(),
                 location.line(),
                 location.column(),
-                info.message().unwrap_or(&format_args!("no message"))
+                info.message().unwrap_or_else(|| format_args!("no message"))
             );
         } else {
-            println!("Panic: {}", info.message().unwrap_or(&format_args!("no message")));
+            println!("Panic: {}", info.message().unwrap_or_else(|| format_args!("no message")));
         }
     }
 
@@ -81,7 +81,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     // Initialize the serial writer with the console output pointer.
     unsafe {
-        serial::UEFI_WRITER.init(st.con_out);
+        serial::UEFI_WRITER.lock().init(st.con_out);
     }
     
     println!("Bellows UEFI Bootloader starting...");

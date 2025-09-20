@@ -1,6 +1,5 @@
 // bellows/src/uefi.rs
 
-use alloc::vec::Vec;
 use core::ffi::c_void;
 
 #[repr(usize)]

@@ -16,6 +16,8 @@ pub struct UefiWriter {
     con_out: *mut EfiSimpleTextOutput,
 }
 
+unsafe impl Sync for UefiWriter {}
+
 impl UefiWriter {
     pub const fn new() -> UefiWriter {
         UefiWriter {
