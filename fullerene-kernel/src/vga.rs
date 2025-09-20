@@ -163,7 +163,7 @@ unsafe impl Send for VgaBuffer {}
 unsafe impl Sync for VgaBuffer {}
 
 // Global singleton for the VGA buffer writer
-static VGA_BUFFER: Once<Mutex<VgaBuffer>> = Once::new();
+pub(crate) static VGA_BUFFER: Once<Mutex<VgaBuffer>> = Once::new();
 
 /// Logs a message to the VGA screen.
 pub fn log(msg: &str) {

@@ -47,7 +47,7 @@ extern "x86-interrupt" fn page_fault_handler(
     use x86_64::registers::control::Cr2;
 
     vga::log("EXCEPTION: PAGE FAULT");
-    let mut writer = vga::WRITER.lock();
+    let mut writer = vga::VGA_BUFFER.get().unwrap().lock();
     writer
         .write_fmt(format_args!("Accessed Address: {:?}", Cr2::read()))
         .unwrap();
@@ -83,8 +83,8 @@ impl InterruptIndex {
 }
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    PICS.lock()
-        .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
+    unsafe { PICS.lock()
+        .notify_end_of_interrupt(InterruptIndex::Timer.as_u8()) };
 }
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
@@ -117,6 +117,6 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         }
     }
 
-    PICS.lock()
-        .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
+    unsafe { PICS.lock()
+        .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8()) };
 }
