@@ -77,7 +77,7 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
         }
         return Err("Get file info failed on first attempt.");
     }
-    
+
     let mut file_info_buf: Vec<u8> = Vec::with_capacity(file_info_size);
     unsafe { file_info_buf.set_len(file_info_size) };
 
@@ -106,7 +106,7 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     // The pointer is checked to be non-null and correctly aligned before dereferencing.
     let file_info: &EfiFileInfo = unsafe { &*(file_info_ptr as *const EfiFileInfo) };
     let file_size = file_info.file_size as usize;
-    
+
     if file_size == 0 {
         unsafe {
             ((*efi_file).close)(efi_file);
@@ -118,7 +118,7 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     let pages = file_size.div_ceil(4096);
     let mut phys_addr: usize = 0;
 
-    let status = unsafe {
+    let status = {
         (bs.allocate_pages)(
             0usize,
             crate::uefi::EfiMemoryType::EfiLoaderData,

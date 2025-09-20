@@ -6,8 +6,7 @@
 #![feature(never_type)]
 extern crate alloc;
 
-use alloc::boxed::Box;
-use alloc::format;
+use alloc::{boxed::Box, format};
 use core::alloc::Layout;
 use core::ffi::c_void;
 use core::ptr;
@@ -27,19 +26,12 @@ mod loader;
 mod uefi;
 
 use crate::loader::{
-    exit_boot_services_and_jump,
-    file::read_efi_file,
-    heap::init_heap,
-    pe::load_efi_image,
+    exit_boot_services_and_jump, file::read_efi_file, heap::init_heap, pe::load_efi_image,
 };
 
 use crate::uefi::{
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
-    EfiGraphicsOutputProtocol,
-    EfiSystemTable,
-    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
-    FullereneFramebufferConfig,
-    uefi_print,
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiSystemTable,
+    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig, uefi_print,
 };
 
 /// Alloc error handler required when using `alloc` in no_std.
@@ -57,9 +49,20 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         let st_ref = unsafe { &*st_ptr.0 };
         if let Some(location) = info.location() {
             let msg = if let Some(msg_args) = info.message() {
-                format!("Panic at {}:{}:{} - {}\n", location.file(), location.line(), location.column(), msg_args)
+                format!(
+                    "Panic at {}:{}:{} - {}\n",
+                    location.file(),
+                    location.line(),
+                    location.column(),
+                    msg_args
+                )
             } else {
-                format!("Panic at {}:{}:{}\n", location.file(), location.line(), location.column())
+                format!(
+                    "Panic at {}:{}:{}\n",
+                    location.file(),
+                    location.line(),
+                    location.column()
+                )
             };
             uefi_print(st_ref, &msg);
         } else {

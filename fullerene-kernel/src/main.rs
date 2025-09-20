@@ -70,7 +70,6 @@ pub extern "efiapi" fn efi_main(
     loop {}
 }
 
-
 // Global allocator is required for `alloc::format!`
 #[global_allocator]
 static ALLOC: DummyAllocator = DummyAllocator;

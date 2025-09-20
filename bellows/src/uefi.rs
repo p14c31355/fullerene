@@ -36,8 +36,7 @@ pub struct EfiSystemTable {
 pub struct EfiBootServices {
     _pad0: [usize; 2],
     /// allocate_pages(AllocateType, MemoryType, Pages, *mut PhysicalAddress) -> EFI_STATUS
-    pub allocate_pages:
-        extern "efiapi" fn(usize, EfiMemoryType, usize, *mut usize) -> usize,
+    pub allocate_pages: extern "efiapi" fn(usize, EfiMemoryType, usize, *mut usize) -> usize,
     /// free_pages(PhysicalAddress, Pages) -> EFI_STATUS
     pub free_pages: extern "efiapi" fn(usize, usize) -> usize,
     _pad1: [usize; 2],
@@ -49,12 +48,10 @@ pub struct EfiBootServices {
     pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize,
     _pad3: [usize; 1],
     /// locate_protocol(Protocol, Registration, *mut Interface) -> EFI_STATUS
-    pub locate_protocol:
-        extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize,
+    pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize,
     _pad4: [usize; 3],
     /// install_configuration_table(Guid, Table) -> EFI_STATUS
-    pub install_configuration_table:
-        extern "efiapi" fn(*const u8, *mut c_void) -> usize,
+    pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize,
 }
 
 /// Minimal UEFI Simple Text Output Protocol
@@ -93,8 +90,7 @@ pub struct EfiFile {
     pub read: extern "efiapi" fn(*mut EfiFile, *mut u64, *mut u8) -> usize,
     _pad2: [usize; 2],
     /// get_info(This, *const Guid, *mut BufferSize, *mut Buffer) -> EFI_STATUS
-    pub get_info:
-        extern "efiapi" fn(*mut EfiFile, *const u8, *mut usize, *mut c_void) -> usize,
+    pub get_info: extern "efiapi" fn(*mut EfiFile, *const u8, *mut usize, *mut c_void) -> usize,
 }
 
 /// Minimal EFI_SIMPLE_FILE_SYSTEM_PROTOCOL

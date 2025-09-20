@@ -93,17 +93,13 @@ pub fn load_efi_image(
     image_data: &[u8],
 ) -> Result<extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !> {
     let bs = unsafe { &*st.boot_services };
-    let dos_header: &ImageDosHeader =
-        unsafe { &*(image_data.as_ptr() as *const ImageDosHeader) };
+    let dos_header: &ImageDosHeader = unsafe { &*(image_data.as_ptr() as *const ImageDosHeader) };
     if dos_header.e_magic != 0x5a4d {
         return Err("Invalid MZ header.");
     }
     let nt_headers_offset = dos_header.e_lfanew as usize;
-    let nt_headers: &ImageNtHeaders64 = unsafe {
-        &*(image_data
-            .as_ptr()
-            .add(nt_headers_offset) as *const ImageNtHeaders64)
-    };
+    let nt_headers: &ImageNtHeaders64 =
+        unsafe { &*(image_data.as_ptr().add(nt_headers_offset) as *const ImageNtHeaders64) };
     if nt_headers.signature != 0x4550 {
         return Err("Invalid PE signature.");
     }
@@ -114,7 +110,7 @@ pub fn load_efi_image(
     // Safety:
     // The `allocate_pages` function is a UEFI boot service. Its function pointer
     // is assumed to be valid. The arguments are correct.
-    if unsafe {
+    if {
         (bs.allocate_pages)(
             0usize,
             EfiMemoryType::EfiLoaderData,
@@ -125,16 +121,18 @@ pub fn load_efi_image(
     {
         return Err("Failed to allocate pages for kernel image.");
     }
-    
+
     if phys_addr == 0 {
         return Err("Allocated image address is null.");
     }
 
     let headers_size = nt_headers.optional_header.size_of_headers as usize;
     if headers_size > 0 {
-        if (phys_addr as usize).saturating_add(headers_size) > (phys_addr.saturating_add(pages_needed * 4096)) {
-             unsafe { (bs.free_pages)(phys_addr, pages_needed) };
-             return Err("Header size is too large for allocated memory.");
+        if (phys_addr as usize).saturating_add(headers_size)
+            > (phys_addr.saturating_add(pages_needed * 4096))
+        {
+            (bs.free_pages)(phys_addr, pages_needed);
+            return Err("Header size is too large for allocated memory.");
         }
         unsafe {
             ptr::copy_nonoverlapping(image_data.as_ptr(), phys_addr as *mut u8, headers_size);
@@ -178,7 +176,7 @@ pub fn load_efi_image(
             || unsafe { dest.add(copy_size) as usize }
                 > (phys_addr.saturating_add(pages_needed * 4096))
         {
-            unsafe {
+            {
                 (bs.free_pages)(phys_addr, pages_needed);
             }
             return Err("Section destination is outside allocated memory.");
@@ -197,9 +195,9 @@ pub fn load_efi_image(
             if unsafe { zero_fill_start.add(zero_fill_size) as usize }
                 > (phys_addr.saturating_add(pages_needed * 4096))
             {
-                 unsafe {
+                {
                     (bs.free_pages)(phys_addr, pages_needed);
-                 }
+                }
                 return Err("Zero-fill region is outside allocated memory.");
             }
             unsafe {
@@ -219,15 +217,15 @@ pub fn load_efi_image(
         if (relocs_start_ptr as usize).saturating_add(reloc_size)
             > (phys_addr.saturating_add(pages_needed * 4096))
         {
-            unsafe {
-                (bs.free_pages)(phys_addr, pages_needed);
-            }
+            (bs.free_pages)(phys_addr, pages_needed);
+
             return Err("Relocation table is outside allocated memory.");
         }
 
         let mut current_reloc_block = relocs_start_ptr;
         let relocs_end_ptr = unsafe { relocs_start_ptr.add(reloc_size) };
-        let image_base_delta = (phys_addr as u64).wrapping_sub(nt_headers.optional_header.image_base);
+        let image_base_delta =
+            (phys_addr as u64).wrapping_sub(nt_headers.optional_header.image_base);
 
         while (current_reloc_block as usize) < (relocs_end_ptr as usize) {
             // Safety:
@@ -238,9 +236,11 @@ pub fn load_efi_image(
             if reloc_block_size == 0 {
                 break;
             }
-            
-            if (current_reloc_block as usize).saturating_add(reloc_block_size) > (relocs_end_ptr as usize) {
-                unsafe { (bs.free_pages)(phys_addr, pages_needed) };
+
+            if (current_reloc_block as usize).saturating_add(reloc_block_size)
+                > (relocs_end_ptr as usize)
+            {
+                (bs.free_pages)(phys_addr, pages_needed);
                 return Err("Relocation block size is out of bounds.");
             }
 
@@ -250,9 +250,8 @@ pub fn load_efi_image(
             let fixup_list_end = unsafe { fixup_list_ptr.add(num_entries * 2) };
 
             if (fixup_list_end as usize) > (relocs_end_ptr as usize) {
-                unsafe {
-                    (bs.free_pages)(phys_addr, pages_needed);
-                }
+                (bs.free_pages)(phys_addr, pages_needed);
+
                 return Err("Relocation fixup list is malformed or out of bounds.");
             }
 
@@ -266,14 +265,13 @@ pub fn load_efi_image(
                     let fixup_address = phys_addr
                         .saturating_add(reloc_block_header.virtual_address as usize)
                         .saturating_add(fixup_offset);
-                    
+
                     if fixup_address < phys_addr
                         || fixup_address.saturating_add(8)
                             > (phys_addr.saturating_add(pages_needed * 4096))
                     {
-                        unsafe {
-                            (bs.free_pages)(phys_addr, pages_needed);
-                        }
+                        (bs.free_pages)(phys_addr, pages_needed);
+
                         return Err("Relocation fixup address is out of bounds.");
                     }
                     let fixup_address_ptr = fixup_address as *mut u64;
@@ -281,9 +279,8 @@ pub fn load_efi_image(
                         *fixup_address_ptr = (*fixup_address_ptr).wrapping_add(image_base_delta);
                     }
                 } else if fixup_type != 0 {
-                    unsafe {
-                        (bs.free_pages)(phys_addr, pages_needed);
-                    }
+                    (bs.free_pages)(phys_addr, pages_needed);
+
                     return Err("Unsupported relocation type.");
                 }
             }
@@ -297,7 +294,7 @@ pub fn load_efi_image(
     if entry_point_addr >= phys_addr.saturating_add(pages_needed * 4096)
         || entry_point_addr < phys_addr
     {
-        unsafe { (bs.free_pages)(phys_addr, pages_needed) };
+        (bs.free_pages)(phys_addr, pages_needed);
         return Err("Entry point address is outside allocated memory.");
     }
 

@@ -38,7 +38,7 @@ pub fn exit_boot_services_and_jump(
     let mut map_pages = map_size.div_ceil(4096);
     let mut map_phys_addr = 0usize;
     let mut map_ptr: *mut c_void;
-    
+
     loop {
         let status = (bs.allocate_pages)(
             0usize,
@@ -103,7 +103,6 @@ pub fn exit_boot_services_and_jump(
     // This is the point of no return. We are calling the kernel entry point,
     // passing the memory map and other data. The validity of the `entry`
     // function pointer is assumed based on the successful PE file loading.
-    unsafe {
-        entry(image_handle, system_table, map_ptr, map_size);
-    }
+
+    entry(image_handle, system_table, map_ptr, map_size);
 }
