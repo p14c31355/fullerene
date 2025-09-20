@@ -90,7 +90,7 @@ pub fn read_efi_file(bs: &EfiBootServices) -> Result<(usize, usize)> {
     )?;
 
     let mut file_info_buffer_size = 0;
-    
+
     let status = unsafe {
         ((*file.file).get_info)(
             file.file,
