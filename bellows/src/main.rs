@@ -92,7 +92,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         panic!("Failed to initialize heap.");
     }
     println!("Heap initialized successfully.");
-    serial::_print(format_args!("Attempting to initialize GOP...\n"));
+    println!("Attempting to initialize GOP...");
     init_gop(st);
     serial::_print(format_args!("GOP initialized successfully.\n"));
 
