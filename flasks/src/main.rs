@@ -59,8 +59,9 @@ fn main() -> io::Result<()> {
 
     // --- 3. Create ISO using isobemak ---
     let iso_path = workspace_root.join("fullerene.iso");
+    let fat_img_path = workspace_root.join("fullerene.fat");
 
-    create_disk_and_iso(&iso_path, &bellows_path, &kernel_path)?;
+    create_disk_and_iso(&iso_path, &bellows_path, &kernel_path, &fat_img_path)?;
 
     // --- 4. Run QEMU with the created ISO ---
     let ovmf_fd_path = workspace_root
