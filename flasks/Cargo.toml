@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-isobemak = "0.2.2"
+isobemak = { git = "https://github.com/p14c31355/isobemak.git" }
