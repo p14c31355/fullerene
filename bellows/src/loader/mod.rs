@@ -7,6 +7,7 @@ use core::ptr;
 pub mod file;
 pub mod heap;
 pub mod pe;
+pub mod serial;
 
 /// Exits boot services and jumps to the kernel's entry point.
 /// This function is the final step of the bootloader.

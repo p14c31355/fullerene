@@ -234,22 +234,3 @@ pub struct FullereneFramebufferConfig {
     pub stride: u32,
     pub pixel_format: EfiGraphicsPixelFormat,
 }
-
-/// Print a &str to the UEFI console via SimpleTextOutput (OutputString)
-pub fn uefi_print(st: &EfiSystemTable, s: &str) {
-    if st.con_out.is_null() {
-        return;
-    }
-
-    // Allocate a buffer for the UTF-16 string, including the null terminator.
-    let mut s_utf16: Vec<u16> = s.encode_utf16().collect();
-    s_utf16.push(0); // Add null terminator
-
-    // Safety:
-    // We check that `st.con_out` is not null. The `output_string` function
-    // expects a valid, null-terminated UTF-16 string pointer. We have created
-    // this buffer and ensure it has a null terminator. `as_ptr` is safe on a `Vec`.
-    unsafe {
-        ((*st.con_out).output_string)(st.con_out, s_utf16.as_ptr());
-    }
-}
