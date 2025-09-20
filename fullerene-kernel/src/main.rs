@@ -43,14 +43,13 @@ pub extern "efiapi" fn efi_main(
     let config_tables = unsafe {
         core::slice::from_raw_parts(
             system_table.configuration_table,
-            system_table.number_of_table_entries as usize,
+            system_table.number_of_table_entries,
         )
     };
     for table in config_tables {
         if table.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
-            framebuffer_config = unsafe {
-                Some(&*(table.vendor_table as *const FullereneFramebufferConfig))
-            };
+            framebuffer_config =
+                unsafe { Some(&*(table.vendor_table as *const FullereneFramebufferConfig)) };
             break;
         }
     }
