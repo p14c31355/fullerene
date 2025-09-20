@@ -7,11 +7,9 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use core::{alloc::Layout, ffi::c_void, fmt, ptr, slice};
+use core::{alloc::Layout, ffi::c_void, ptr, slice};
 
 use spin::Mutex;
-
-static NO_MESSAGE_ARGS: fmt::Arguments = format_args!("no message");
 
 #[derive(Clone, Copy)]
 struct UefiSystemTablePtr(*mut EfiSystemTable);
@@ -50,21 +48,33 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         unsafe {
             serial::UEFI_WRITER.lock().init(st_ref.con_out);
         }
-        // We use the same `uefi_print` here, but it's now a different function that uses `_print`.
+
         if let Some(location) = info.location() {
-            println!(
-                "Panic at {}:{}:{} - {}",
-                location.file(),
-                location.line(),
-                location.column(),
-                info.message().unwrap_or(&NO_MESSAGE_ARGS)
-            );
+            if let Some(message) = info.message() {
+                println!(
+                    "Panic at {}:{}:{} - {}",
+                    location.file(),
+                    location.line(),
+                    location.column(),
+                    message
+                );
+            } else {
+                println!(
+                    "Panic at {}:{}:{} - no message",
+                    location.file(),
+                    location.line(),
+                    location.column()
+                );
+            }
         } else {
-            println!("Panic: {}", info.message().unwrap_or(&NO_MESSAGE_ARGS));
+            if let Some(message) = info.message() {
+                println!("Panic: {}", message);
+            } else {
+                println!("Panic: no message");
+            }
         }
     }
-
-    loop {}
+    loop {} // Panics must diverge
 }
 
 /// Main entry point of the bootloader.
