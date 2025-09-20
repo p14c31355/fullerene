@@ -2,7 +2,7 @@
 
 use crate::uefi::{
     BellowsError, EFI_FILE_INFO_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiFile, EfiFileInfo,
-    EfiSimpleFileSystem, EfiStatus, EfiSystemTable, Result,
+    EfiSimpleFileSystem, EfiStatus, Result, EfiBootServices,
 };
 use alloc::vec::Vec;
 use core::ffi::c_void;
@@ -36,91 +36,74 @@ impl Drop for EfiFileWrapper {
     }
 }
 
-/// Read `KERNEL.EFI` or `kernel.efi` from the volume using UEFI SimpleFileSystem protocol.
-pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
-    let bs = unsafe { &*st.boot_services };
+/// Helper function to open a file from a directory handle.
+fn open_file(dir: &EfiFileWrapper, path: &[
+ u16]) -> Result<EfiFileWrapper> {
+    let mut file_handle: *mut EfiFile = ptr::null_mut();
+    let status = unsafe {
+        ((*dir.file).open)(
+            dir.file,
+            &mut file_handle,
+            path.as_ptr(),
+            EFI_FILE_MODE_READ,
+            0,
+        )
+    };
+    if EfiStatus::from(status) != EfiStatus::Success {
+        return Err(BellowsError::FileIo("Failed to open file."));
+    }
+    Ok(EfiFileWrapper::new(file_handle))
+}
 
-    let mut fs_ptr: *mut c_void = ptr::null_mut();
-    // Safety:
-    // The `locate_protocol` call is a UEFI boot service. Its function pointer
-    // is assumed to be valid. The GUID is static.
+/// Read `fullerene-kernel.efi` from the volume.
+pub fn read_efi_file(bs: &EfiBootServices) -> Result<(usize, usize)> {
+    let mut fs_proto: *mut EfiSimpleFileSystem = ptr::null_mut();
     let status = (bs.locate_protocol)(
-        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *mut _,
         ptr::null_mut(),
-        &mut fs_ptr,
+        &mut fs_proto as *mut _ as *mut _,
     );
     if EfiStatus::from(status) != EfiStatus::Success {
-        return Err(BellowsError::FileIo(
+        return Err(BellowsError::ProtocolNotFound(
             "Failed to locate SimpleFileSystem protocol.",
         ));
     }
-    let fs = fs_ptr as *mut EfiSimpleFileSystem;
 
-    let mut root: *mut EfiFile = ptr::null_mut();
-    // Safety:
-    // The `open_volume` function pointer is a valid member of the `EfiSimpleFileSystem`
-    // struct, which was located successfully. The `fs` pointer is not null.
-    let status = unsafe { ((*fs).open_volume)(fs, &mut root) };
-    if EfiStatus::from(status) != EfiStatus::Success {
-        return Err(BellowsError::FileIo("Failed to open volume."));
-    }
-    let root = EfiFileWrapper::new(root);
-
-    let kernel_names = [
-        "\\KERNEL.EFI\0".encode_utf16().collect::<Vec<u16>>(),
-        "\\kernel.efi\0".encode_utf16().collect::<Vec<u16>>(),
-    ];
-    let mut efi_file_ptr: *mut EfiFile = ptr::null_mut();
-    let mut found = false;
-
-    // Try to open KERNEL.EFI, then kernel.efi
-    for name in kernel_names.iter() {
-        // Safety:
-        // `root.file` is a valid pointer. The `open` function pointer is a valid member.
-        // `name` is a null-terminated UTF-16 string as required by UEFI.
-        let status = unsafe {
-            ((*root.file).open)(
-                root.file,
-                &mut efi_file_ptr,
-                name.as_ptr(),
-                EFI_FILE_MODE_READ,
-                0x0, // 0 attributes
-            )
-        };
-        if EfiStatus::from(status) == EfiStatus::Success {
-            found = true;
-            break;
+    let mut volume_file_handle: *mut EfiFile = ptr::null_mut();
+    let status = unsafe { ((*fs_proto).open_volume)(fs_proto, &mut volume_file_handle) };
+    let volume = match EfiStatus::from(status) {
+        EfiStatus::Success => EfiFileWrapper::new(volume_file_handle),
+        _ => {
+            return Err(BellowsError::FileIo(
+                "Failed to open EFI SimpleFileSystem protocol volume.",
+            ))
         }
-    }
+    };
 
-    if !found {
-        return Err(BellowsError::FileIo("Failed to open kernel file."));
-    }
+    // Correct file name to match the kernel file
+    let file = open_file(&volume, r"\fullerene-kernel.efi".encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>().as_slice())?;
 
-    let efi_file = EfiFileWrapper::new(efi_file_ptr);
-
-    let mut file_info_size = 0;
-    // Safety:
-    // The first `get_info` call is to get the size of the buffer needed.
-    // The function pointer and file pointer are assumed to be valid.
-    let status = unsafe {
-        ((*efi_file.file).get_info)(
-            efi_file.file,
+    let mut file_info_buffer_size = 0;
+    let _ = unsafe {
+        ((*file.file).get_info)(
+            file.file,
             &EFI_FILE_INFO_GUID as *const _ as *const u8,
-            &mut file_info_size,
+            &mut file_info_buffer_size,
             ptr::null_mut(),
         )
     };
-    if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
+
+    if file_info_buffer_size == 0 {
         return Err(BellowsError::FileIo("Failed to get file info size."));
     }
 
-    let mut file_info_buffer: Vec<u8> = Vec::with_capacity(file_info_size);
+    let mut file_info_buffer = alloc::vec![0u8; file_info_buffer_size as usize];
+
     let status = unsafe {
-        ((*efi_file.file).get_info)(
-            efi_file.file,
+        ((*file.file).get_info)(
+            file.file,
             &EFI_FILE_INFO_GUID as *const _ as *const u8,
-            &mut file_info_size,
+            &mut file_info_buffer_size,
             file_info_buffer.as_mut_ptr() as *mut c_void,
         )
     };
@@ -158,12 +141,9 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     let buf_ptr = phys_addr as *mut u8;
     let mut read_size = file_size as u64;
 
-    let status = unsafe { ((*efi_file.file).read)(efi_file.file, &mut read_size, buf_ptr) };
-    if EfiStatus::from(status) != EfiStatus::Success || read_size as usize != file_size {
-        (bs.free_pages)(phys_addr, pages);
-        return Err(BellowsError::FileIo(
-            "Failed to read kernel file or read size mismatch.",
-        ));
+    let status = unsafe { ((*file.file).read)(file.file, &mut read_size, buf_ptr) };
+    if EfiStatus::from(status) != EfiStatus::Success {
+        return Err(BellowsError::FileIo("Failed to read kernel file."));
     }
 
     Ok((phys_addr, file_size))
