@@ -3,7 +3,7 @@
 use crate::{gdt, serial, vga};
 use core::fmt::Write;
 use lazy_static::lazy_static;
-use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
+use pc_keyboard::{DecodedKey, HandleControl, Keyboard, ScancodeSet1, layouts};
 use pic8259::ChainedPics;
 use spin::Mutex;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
@@ -37,7 +37,9 @@ pub fn init_idt() {
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     vga::log("EXCEPTION: BREAKPOINT");
     let mut writer = vga::VGA_BUFFER.get().unwrap().lock();
-    writer.write_fmt(format_args!("{:#?}", stack_frame)).unwrap();
+    writer
+        .write_fmt(format_args!("{:#?}", stack_frame))
+        .unwrap();
 }
 
 extern "x86-interrupt" fn page_fault_handler(
@@ -65,8 +67,11 @@ extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     _error_code: u64,
 ) -> ! {
-    panic!("EXCEPTION: DOUBLE FAULT
-{:#?}", stack_frame);
+    panic!(
+        "EXCEPTION: DOUBLE FAULT
+{:#?}",
+        stack_frame
+    );
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -83,8 +88,10 @@ impl InterruptIndex {
 }
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    unsafe { PICS.lock()
-        .notify_end_of_interrupt(InterruptIndex::Timer.as_u8()) };
+    unsafe {
+        PICS.lock()
+            .notify_end_of_interrupt(InterruptIndex::Timer.as_u8())
+    };
 }
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
@@ -103,20 +110,22 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     let mut port = Port::new(0x60);
 
     let scancode: u8 = unsafe { port.read() };
-    if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
-        if let Some(key) = keyboard.process_keyevent(key_event) {
-            let mut serial_writer = serial::SERIAL1.lock();
-            match key {
-                DecodedKey::Unicode(character) => {
-                    serial_writer.write_char(character).unwrap();
-                }
-                DecodedKey::RawKey(key) => {
-                    serial_writer.write_fmt(format_args!("{:?}", key)).unwrap();
-                }
+    if let Ok(Some(key_event)) = keyboard.add_byte(scancode)
+        && let Some(key) = keyboard.process_keyevent(key_event)
+    {
+        let mut serial_writer = serial::SERIAL1.lock();
+        match key {
+            DecodedKey::Unicode(character) => {
+                serial_writer.write_char(character).unwrap();
+            }
+            DecodedKey::RawKey(key) => {
+                serial_writer.write_fmt(format_args!("{:?}", key)).unwrap();
             }
         }
     }
 
-    unsafe { PICS.lock()
-        .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8()) };
+    unsafe {
+        PICS.lock()
+            .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8())
+    };
 }
