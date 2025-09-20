@@ -30,7 +30,7 @@ use crate::loader::{
 };
 
 use crate::uefi::{
-    BellowsError, EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiStatus,
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiStatus,
     EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
     uefi_print,
 };
@@ -115,17 +115,13 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         Err(err) => {
             uefi_print(st, &format!("Failed to load EFI image: {:?}\n", err));
             let file_pages = efi_image_size.div_ceil(4096);
-            unsafe {
-                (bs.free_pages)(efi_image_phys, file_pages);
-            }
+            (bs.free_pages)(efi_image_phys, file_pages);
             panic!("Failed to load EFI image.");
         }
     };
 
     let file_pages = efi_image_size.div_ceil(4096);
-    unsafe {
-        (bs.free_pages)(efi_image_phys, file_pages);
-    }
+    (bs.free_pages)(efi_image_phys, file_pages);
 
     // Exit boot services and jump to the kernel.
     match exit_boot_services_and_jump(image_handle, system_table, entry) {

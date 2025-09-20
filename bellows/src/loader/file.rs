@@ -11,18 +11,17 @@ use core::ptr;
 const EFI_FILE_MODE_READ: u64 = 0x1;
 
 /// A RAII wrapper for EfiFile that automatically closes the file when it goes out of scope.
-struct EfiFileWrapper<'a> {
+struct EfiFileWrapper {
     file: *mut EfiFile,
-    bs: &'a EfiBootServices,
 }
 
-impl<'a> EfiFileWrapper<'a> {
-    fn new(file: *mut EfiFile, bs: &'a EfiBootServices) -> Self {
-        Self { file, bs }
+impl EfiFileWrapper {
+    fn new(file: *mut EfiFile) -> Self {
+        Self { file }
     }
 }
 
-impl Drop for EfiFileWrapper<'_> {
+impl Drop for EfiFileWrapper {
     fn drop(&mut self) {
         if !self.file.is_null() {
             // Safety:
@@ -45,13 +44,11 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     // Safety:
     // The `locate_protocol` call is a UEFI boot service. Its function pointer
     // is assumed to be valid. The GUID is static.
-    let status = unsafe {
-        (bs.locate_protocol)(
+    let status = (bs.locate_protocol)(
             &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
             ptr::null_mut(),
             &mut fs_ptr,
-        )
-    };
+        );
     if EfiStatus::from(status) != EfiStatus::Success {
         return Err(BellowsError::FileIo(
             "Failed to locate SimpleFileSystem protocol.",
@@ -67,7 +64,7 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     if EfiStatus::from(status) != EfiStatus::Success {
         return Err(BellowsError::FileIo("Failed to open volume."));
     }
-    let root = EfiFileWrapper::new(root, bs);
+    let root = EfiFileWrapper::new(root);
 
     let kernel_names = [
         "\\KERNEL.EFI\0".encode_utf16().collect::<Vec<u16>>(),
@@ -100,7 +97,7 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
         return Err(BellowsError::FileIo("Failed to open kernel file."));
     }
 
-    let efi_file = EfiFileWrapper::new(efi_file_ptr, bs);
+    let efi_file = EfiFileWrapper::new(efi_file_ptr);
 
     let mut file_info_size = 0;
     // Safety:
@@ -163,9 +160,7 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
 
     let status = unsafe { ((*efi_file.file).read)(efi_file.file, &mut read_size, buf_ptr) };
     if EfiStatus::from(status) != EfiStatus::Success || read_size as usize != file_size {
-        unsafe {
-            (bs.free_pages)(phys_addr, pages);
-        }
+        (bs.free_pages)(phys_addr, pages);
         return Err(BellowsError::FileIo(
             "Failed to read kernel file or read size mismatch.",
         ));

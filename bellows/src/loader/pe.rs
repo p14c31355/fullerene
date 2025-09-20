@@ -1,9 +1,9 @@
 // bellows/src/loader/pe.rs
 
 use crate::uefi::{
-    BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable, Result,
+    BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable, Result,
 };
-use core::{ffi::c_void, mem, ptr, slice};
+use core::{ffi::c_void, mem, ptr};
 
 #[repr(C, packed)]
 struct ImageDosHeader {
@@ -150,7 +150,7 @@ pub fn load_efi_image(
         ));
     }
 
-    let image_base_addr = nt_headers.optional_header.image_base as usize;
+    let _image_base_addr = nt_headers.optional_header.image_base as usize;
 
     // Safety:
     // We have allocated memory for the image and `phys_addr` is a valid pointer to it.
@@ -164,7 +164,7 @@ pub fn load_efi_image(
         );
     }
 
-    let mut section_headers_offset = nt_headers_offset
+    let section_headers_offset = nt_headers_offset
         + mem::size_of::<u32>()
         + mem::size_of::<ImageFileHeader>()
         + nt_headers._file_header.size_of_optional_header as usize;
@@ -296,7 +296,7 @@ pub fn load_efi_image(
                     }
                 }
                 unsafe {
-                    current_reloc_block_ptr = (end_of_block_ptr as *mut ImageBaseRelocation);
+                    current_reloc_block_ptr = end_of_block_ptr as *mut ImageBaseRelocation;
                 }
             }
         }
