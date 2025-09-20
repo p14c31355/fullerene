@@ -191,10 +191,7 @@ fn init_gop(st: &EfiSystemTable) {
         return;
     }
 
-    
-            unsafe {
+    unsafe {
         core::ptr::write_bytes(fb_addr as *mut u8, 0x00, fb_size as usize);
-    
-
     }
 }
