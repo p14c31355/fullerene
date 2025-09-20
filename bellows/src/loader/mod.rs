@@ -1,8 +1,6 @@
 // bellows/src/loader/mod.rs
 
-use crate::uefi::{
-    BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable, Result,
-};
+use crate::uefi::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable, Result};
 use core::ffi::c_void;
 use core::ptr;
 
@@ -34,12 +32,7 @@ pub fn exit_boot_services_and_jump(
         attempts += 1;
         if attempts > 3 {
             // Safety:
-            // Free the last allocated buffer if we fail after multiple attempts.
-            if map_phys_addr != 0 {
-                unsafe {
-                    (bs.free_pages)(map_phys_addr, map_pages);
-                }
-            }
+            (bs.free_pages)(map_phys_addr, map_pages);
             return Err(BellowsError::InvalidState(
                 "Failed to get memory map after multiple attempts.",
             ));
@@ -70,9 +63,7 @@ pub fn exit_boot_services_and_jump(
             if EfiStatus::from(new_status) != EfiStatus::Success {
                 // If allocation fails, free any previously allocated memory.
                 if map_phys_addr != 0 {
-                    unsafe {
-                        (bs.free_pages)(map_phys_addr, map_pages);
-                    }
+                    (bs.free_pages)(map_phys_addr, map_pages);
                 }
                 return Err(BellowsError::AllocationFailed(
                     "Failed to re-allocate memory map buffer.",
@@ -81,9 +72,7 @@ pub fn exit_boot_services_and_jump(
 
             // Free the old buffer before re-assigning.
             if map_phys_addr != 0 {
-                unsafe {
-                    (bs.free_pages)(map_phys_addr, map_pages);
-                }
+                (bs.free_pages)(map_phys_addr, map_pages);
             }
             map_phys_addr = new_map_phys_addr;
             map_pages = new_map_pages;
@@ -134,7 +123,5 @@ pub fn exit_boot_services_and_jump(
     // This is the point of no return. We are calling the kernel entry point,
     // passing the memory map and other data. The validity of the `entry`
     // function pointer is assumed based on the successful PE file loading.
-    unsafe {
-        entry(image_handle, system_table, map_ptr, map_size);
-    }
+    entry(image_handle, system_table, map_ptr, map_size);
 }

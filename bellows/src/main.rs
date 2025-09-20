@@ -30,9 +30,8 @@ use crate::loader::{
 };
 
 use crate::uefi::{
-    BellowsError, EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiStatus,
-    EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
-    uefi_print,
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable,
+    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig, uefi_print,
 };
 
 /// Alloc error handler required when using `alloc` in no_std.
@@ -78,25 +77,34 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     let bs = unsafe { &*st.boot_services };
 
     uefi_print(st, "Bellows UEFI Bootloader starting...\n");
-    uefi_print(st, "Initializing heap...\n");
+
+    uefi_print(st, "Attempting to initialize heap...\n");
     if let Err(e) = init_heap(bs) {
         uefi_print(st, &format!("Failed to initialize heap: {:?}\n", e));
         panic!("Failed to initialize heap.");
     }
-    uefi_print(st, "Heap initialized.\n");
+    uefi_print(st, "Heap initialized successfully.\n");
 
-    uefi_print(st, "Initializing GOP...\n");
+    uefi_print(st, "Attempting to initialize GOP...\n");
     init_gop(st);
-    uefi_print(st, "GOP initialized.\n");
+    uefi_print(st, "GOP initialized successfully.\n");
 
+    uefi_print(st, "Attempting to read kernel EFI file...\n");
     // Read the kernel file before exiting boot services.
-    let (efi_image_phys, efi_image_size) = match read_efi_file(st) {
+    let (efi_image_phys, efi_image_size) = match read_efi_file(bs) {
         Ok(t) => t,
         Err(err) => {
             uefi_print(st, &format!("Failed to read EFI file: {:?}\n", err));
             panic!("Failed to read EFI file.");
         }
     };
+    uefi_print(
+        st,
+        &format!(
+            "Kernel EFI file read. Physical address: {:#x}, size: {}\n",
+            efi_image_phys, efi_image_size
+        ),
+    );
 
     let efi_image_file = {
         // Safety:
@@ -115,17 +123,13 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         Err(err) => {
             uefi_print(st, &format!("Failed to load EFI image: {:?}\n", err));
             let file_pages = efi_image_size.div_ceil(4096);
-            unsafe {
-                (bs.free_pages)(efi_image_phys, file_pages);
-            }
+            (bs.free_pages)(efi_image_phys, file_pages);
             panic!("Failed to load EFI image.");
         }
     };
 
     let file_pages = efi_image_size.div_ceil(4096);
-    unsafe {
-        (bs.free_pages)(efi_image_phys, file_pages);
-    }
+    (bs.free_pages)(efi_image_phys, file_pages);
 
     // Exit boot services and jump to the kernel.
     match exit_boot_services_and_jump(image_handle, system_table, entry) {

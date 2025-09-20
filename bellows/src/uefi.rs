@@ -60,6 +60,7 @@ pub enum BellowsError {
     PeParse(&'static str),
     AllocationFailed(&'static str),
     InvalidState(&'static str),
+    ProtocolNotFound(&'static str),
 }
 
 impl From<EfiStatus> for BellowsError {

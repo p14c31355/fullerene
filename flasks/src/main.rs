@@ -78,14 +78,9 @@ fn main() -> io::Result<()> {
         ovmf_vars_fd_path.display()
     );
 
+    let fat_img_drive = format!("format=raw,file={}", fat_img_path.display());
+
     let qemu_args = [
-        "-cdrom",
-        iso_path.to_str().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "ISO path contains invalid UTF-8",
-            )
-        })?,
         "-m",
         "512M",
         "-cpu",
@@ -98,16 +93,16 @@ fn main() -> io::Result<()> {
         &ovmf_fd_drive,
         "-drive",
         &ovmf_vars_fd_drive,
-        "-boot",
-        "d",
-        "-display",
-        "sdl",
+        "-drive",
+        &fat_img_drive,
         "-no-reboot",
         "-d",
         "int",
         "-D",
         "qemu_log.txt",
-        "-s",
+        "-boot",
+        "order=c",
+        "-nodefaults",
     ];
 
     let qemu_status = Command::new("qemu-system-x86_64")

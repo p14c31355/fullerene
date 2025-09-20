@@ -5,10 +5,21 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-x86_64 = { version = "0.15.2", default-features = false, features = ["instructions"] }
-spin = { version = "0.10.0", default-features = false, features = ["once", "mutex", "spin_mutex"] }
-bitflags = { version = "2.3.2", default-features = false }
+x86_64 = { version = "0.15.2", default-features = false, features = [
+  "instructions",
+  "abi_x86_interrupt",
+] }
+spin = { version = "0.10.0", default-features = false, features = [
+  "once",
+  "mutex",
+  "spin_mutex",
+] }
+bitflags = { version = "2.9.4", default-features = false }
+lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
+pc-keyboard = { version = "0.8.0", default-features = false }
+pic8259 = "0.11.0"
 
 [profile.dev]
 debug = true
 split-debuginfo = "packed"
+panic = "abort"

@@ -1,9 +1,7 @@
 // bellows/src/loader/pe.rs
 
-use crate::uefi::{
-    BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable, Result,
-};
-use core::{ffi::c_void, mem, ptr, slice};
+use crate::uefi::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable, Result};
+use core::{ffi::c_void, mem, ptr};
 
 #[repr(C, packed)]
 struct ImageDosHeader {
@@ -150,7 +148,7 @@ pub fn load_efi_image(
         ));
     }
 
-    let image_base_addr = nt_headers.optional_header.image_base as usize;
+    let _image_base_addr = nt_headers.optional_header.image_base as usize;
 
     // Safety:
     // We have allocated memory for the image and `phys_addr` is a valid pointer to it.
@@ -164,7 +162,7 @@ pub fn load_efi_image(
         );
     }
 
-    let mut section_headers_offset = nt_headers_offset
+    let section_headers_offset = nt_headers_offset
         + mem::size_of::<u32>()
         + mem::size_of::<ImageFileHeader>()
         + nt_headers._file_header.size_of_optional_header as usize;
@@ -222,7 +220,7 @@ pub fn load_efi_image(
             let reloc_table_ptr =
                 unsafe { (phys_addr as *mut u8).add(reloc_data_dir.virtual_address as usize) };
             if (reloc_table_ptr as usize).saturating_add(reloc_data_dir.size as usize)
-                > (phys_addr as usize).saturating_add(pages_needed * 4096)
+                > phys_addr.saturating_add(pages_needed * 4096)
             {
                 unsafe {
                     (bs.free_pages)(phys_addr, pages_needed);
@@ -296,7 +294,7 @@ pub fn load_efi_image(
                     }
                 }
                 unsafe {
-                    current_reloc_block_ptr = (end_of_block_ptr as *mut ImageBaseRelocation);
+                    current_reloc_block_ptr = end_of_block_ptr as *mut ImageBaseRelocation;
                 }
             }
         }
