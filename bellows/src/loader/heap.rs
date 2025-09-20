@@ -1,6 +1,6 @@
 // bellows/src/loader/heap.rs
 
-use crate::uefi::{EfiBootServices, EfiMemoryType, Result};
+use crate::uefi::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, Result};
 use linked_list_allocator::LockedHeap;
 
 /// Size of the heap we will allocate for `alloc` usage (bytes).
@@ -21,12 +21,16 @@ pub fn init_heap(bs: &EfiBootServices) -> Result<()> {
             &mut heap_phys,
         )
     };
-    if status != 0 {
-        return Err("Failed to allocate heap memory.");
+    if EfiStatus::from(status) != EfiStatus::Success {
+        return Err(BellowsError::AllocationFailed(
+            "Failed to allocate heap memory.",
+        ));
     }
 
     if heap_phys == 0 {
-        return Err("Allocated heap address is null.");
+        return Err(BellowsError::AllocationFailed(
+            "Allocated heap address is null.",
+        ));
     }
 
     // Safety:

@@ -1,12 +1,14 @@
 // bellows/src/loader/file.rs
 
 use crate::uefi::{
-    EFI_FILE_INFO_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiBootServices, EfiFile,
-    EfiFileInfo, EfiSimpleFileSystem, EfiStatus, EfiSystemTable, Result,
+    BellowsError, EFI_FILE_INFO_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiBootServices,
+    EfiFile, EfiFileInfo, EfiSimpleFileSystem, EfiStatus, EfiSystemTable, Result,
 };
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr;
+
+const EFI_FILE_MODE_READ: u64 = 0x1;
 
 /// A RAII wrapper for EfiFile that automatically closes the file when it goes out of scope.
 struct EfiFileWrapper<'a> {
@@ -50,9 +52,10 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
             &mut fs_ptr,
         )
     };
-
     if EfiStatus::from(status) != EfiStatus::Success {
-        return Err("Failed to locate SimpleFileSystem protocol.");
+        return Err(BellowsError::FileIo(
+            "Failed to locate SimpleFileSystem protocol.",
+        ));
     }
     let fs = fs_ptr as *mut EfiSimpleFileSystem;
 
@@ -62,7 +65,7 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     // struct, which was located successfully. The `fs` pointer is not null.
     let status = unsafe { ((*fs).open_volume)(fs, &mut root) };
     if EfiStatus::from(status) != EfiStatus::Success {
-        return Err("Failed to open volume.");
+        return Err(BellowsError::FileIo("Failed to open volume."));
     }
     let root = EfiFileWrapper::new(root, bs);
 
@@ -83,7 +86,7 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
                 root.file,
                 &mut efi_file_ptr,
                 name.as_ptr(),
-                0x1, // EFI_FILE_MODE_READ
+                EFI_FILE_MODE_READ,
                 0x0, // 0 attributes
             )
         };
@@ -94,7 +97,7 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     }
 
     if !found {
-        return Err("Failed to open kernel file.");
+        return Err(BellowsError::FileIo("Failed to open kernel file."));
     }
 
     let efi_file = EfiFileWrapper::new(efi_file_ptr, bs);
@@ -112,7 +115,7 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
         )
     };
     if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
-        return Err("Failed to get file info size.");
+        return Err(BellowsError::FileIo("Failed to get file info size."));
     }
 
     let mut file_info_buffer: Vec<u8> = Vec::with_capacity(file_info_size);
@@ -125,7 +128,7 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
         )
     };
     if EfiStatus::from(status) != EfiStatus::Success {
-        return Err("Failed to get file info.");
+        return Err(BellowsError::FileIo("Failed to get file info."));
     }
     // Safety:
     // The size of the buffer is checked against the required size.
@@ -135,7 +138,7 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
     let file_size = file_info.file_size as usize;
 
     if file_size == 0 {
-        return Err("Kernel file is empty.");
+        return Err(BellowsError::FileIo("Kernel file is empty."));
     }
 
     let pages = file_size.div_ceil(4096);
@@ -150,7 +153,9 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
         )
     };
     if EfiStatus::from(status) != EfiStatus::Success {
-        return Err("Failed to allocate pages for kernel file.");
+        return Err(BellowsError::AllocationFailed(
+            "Failed to allocate pages for kernel file.",
+        ));
     }
 
     let buf_ptr = phys_addr as *mut u8;
@@ -161,7 +166,9 @@ pub fn read_efi_file(st: &EfiSystemTable) -> Result<(usize, usize)> {
         unsafe {
             (bs.free_pages)(phys_addr, pages);
         }
-        return Err("Failed to read kernel file or read size mismatch.");
+        return Err(BellowsError::FileIo(
+            "Failed to read kernel file or read size mismatch.",
+        ));
     }
 
     Ok((phys_addr, file_size))
