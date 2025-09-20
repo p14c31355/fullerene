@@ -175,7 +175,7 @@ fn init_gop(st: &EfiSystemTable) {
         width: info.horizontal_resolution,
         height: info.vertical_resolution,
         stride: info.pixels_per_scan_line,
-        pixel_format: info.pixel_format, // EfiGraphicsPixelFormatはCopyトレイトを実装していないため、直接ムーブする
+        pixel_format: info.pixel_format,
     });
 
     let config_ptr = Box::leak(config);

@@ -3,6 +3,54 @@
 use alloc::vec::Vec;
 use core::ffi::c_void;
 
+#[repr(usize)]
+pub enum EfiStatus {
+    Success = 0,
+    LoadError = 1,
+    InvalidParameter = 2,
+    Unsupported = 3,
+    BadBufferSize = 4,
+    BufferTooSmall = 5,
+    NotInReadyState = 6,
+    DeviceError = 7,
+    EndOfMedia = 8,
+    NotFound = 9,
+    AccessDenied = 10,
+    NoResponse = 11,
+    NoMapping = 12,
+    Timeout = 13,
+    NotStarted = 14,
+    AlreadyStarted = 15,
+    Aborted = 21,
+    IcalFailed = 26,
+}
+
+impl From<usize> for EfiStatus {
+    fn from(status: usize) -> Self {
+        match status {
+            0 => EfiStatus::Success,
+            1 => EfiStatus::LoadError,
+            2 => EfiStatus::InvalidParameter,
+            3 => EfiStatus::Unsupported,
+            4 => EfiStatus::BadBufferSize,
+            5 => EfiStatus::BufferTooSmall,
+            6 => EfiStatus::NotInReadyState,
+            7 => EfiStatus::DeviceError,
+            8 => EfiStatus::EndOfMedia,
+            9 => EfiStatus::NotFound,
+            10 => EfiStatus::AccessDenied,
+            11 => EfiStatus::NoResponse,
+            12 => EfiStatus::NoMapping,
+            13 => EfiStatus::Timeout,
+            14 => EfiStatus::NotStarted,
+            15 => EfiStatus::AlreadyStarted,
+            21 => EfiStatus::Aborted,
+            26 => EfiStatus::IcalFailed,
+            _ => panic!("Unknown EFI status code: {}", status),
+        }
+    }
+}
+
 /// A simple Result type for our bootloader,
 /// returning a static string on error.
 pub type Result<T> = core::result::Result<T, &'static str>;
@@ -174,11 +222,19 @@ pub struct FullereneFramebufferConfig {
 
 /// Print a &str to the UEFI console via SimpleTextOutput (OutputString)
 pub fn uefi_print(st: &EfiSystemTable, s: &str) {
+    if st.con_out.is_null() {
+        return;
+    }
+
+    // Allocate a buffer for the UTF-16 string, including the null terminator.
     let mut s_utf16: Vec<u16> = s.encode_utf16().collect();
     s_utf16.push(0); // Add null terminator
-    if !st.con_out.is_null() {
-        unsafe {
-            ((*st.con_out).output_string)(st.con_out, s_utf16.as_mut_ptr()); // Use as_mut_ptr()
-        }
+
+    // Safety:
+    // We check that `st.con_out` is not null. The `output_string` function
+    // expects a valid, null-terminated UTF-16 string pointer. We have created
+    // this buffer and ensure it has a null terminator. `as_ptr` is safe on a `Vec`.
+    unsafe {
+        ((*st.con_out).output_string)(st.con_out, s_utf16.as_ptr());
     }
 }
