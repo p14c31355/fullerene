@@ -105,14 +105,11 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
     // Notify the PIC that the interrupt has been handled.
     // We disable interrupts here to prevent a deadlock if the main code
     // has already locked the PICS mutex.
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        unsafe {
-            PICS.lock()
-                .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
-        }
+    x86_64::instructions::interrupts::without_interrupts(|| unsafe {
+        PICS.lock()
+            .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
     });
 }
-
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
     lazy_static! {
@@ -142,14 +139,11 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         }
     }
 
-        // Notify the PIC that the interrupt has been handled.
+    // Notify the PIC that the interrupt has been handled.
     // We disable interrupts here to prevent a deadlock if the main code
     // has already locked the PICS mutex.
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        unsafe {
-            PICS.lock()
-                .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
-        }
+    x86_64::instructions::interrupts::without_interrupts(|| unsafe {
+        PICS.lock()
+            .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
     });
-
 }
