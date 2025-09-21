@@ -1,5 +1,5 @@
 // fullerene/flasks/src/main.rs
-use isobemak::iso::builder::{BootInfo, IsoImage, IsoImageFile, UefiBootInfo, create_custom_iso};
+use isobemak::iso::builder::{BootInfo, IsoImage, IsoImageFile, UefiBootInfo, build_iso};
 use std::{env, io, path::PathBuf, process::Command};
 
 fn main() -> io::Result<()> {
@@ -59,17 +59,17 @@ fn main() -> io::Result<()> {
     let image = IsoImage {
         files: vec![IsoImageFile {
             source: kernel_path.clone(),
-            destination: "KERNEL.EFI".to_string(),
+            destination: "EFI/BOOT/KERNEL.EFI".to_string(),
         }],
         boot_info: BootInfo {
             bios_boot: None,
             uefi_boot: Some(UefiBootInfo {
                 boot_image: bellows_path.clone(),
-                destination_in_iso: "EFI/BOOT/EFI.img".to_string(),
+                destination_in_iso: "EFI/BOOT/BOOTX64.EFI".to_string(),
             }),
         },
     };
-    create_custom_iso(&iso_path, &image)?;
+    build_iso(&iso_path, &image)?;
 
     // --- 4. Run QEMU with the created ISO ---
     let ovmf_fd_path = workspace_root
@@ -107,8 +107,6 @@ fn main() -> io::Result<()> {
         &ovmf_vars_fd_drive,
         "-cdrom",
         iso_path_str,
-        "-boot",
-        "d",
         "-no-reboot",
         "-d",
         "int",
