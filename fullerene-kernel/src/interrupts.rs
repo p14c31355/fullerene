@@ -1,13 +1,13 @@
 // fullerene-kernel/src/interrupts.rs
 
-use crate::{gdt, serial, vga};
+use crate::{gdt, serial};
 use core::fmt::Write;
 use lazy_static::lazy_static;
 use pc_keyboard::{DecodedKey, HandleControl, Keyboard, ScancodeSet1, layouts};
 use pic8259::ChainedPics;
 use spin::Mutex;
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 use x86_64::instructions::port::Port;
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
@@ -37,7 +37,10 @@ pub fn init_idt() {
 
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     serial::serial_log("EXCEPTION: BREAKPOINT");
-    let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!("{:#?}\n", stack_frame));
+    let _ = core::fmt::write(
+        &mut *serial::SERIAL1.lock(),
+        format_args!("{:#?}\n", stack_frame),
+    );
 }
 
 extern "x86-interrupt" fn page_fault_handler(
@@ -45,8 +48,14 @@ extern "x86-interrupt" fn page_fault_handler(
     error_code: PageFaultErrorCode,
 ) {
     serial::serial_log("EXCEPTION: PAGE FAULT");
-    let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!("Error Code: {:#?}\n", error_code));
-    let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!("{:#?}\n", stack_frame));
+    let _ = core::fmt::write(
+        &mut *serial::SERIAL1.lock(),
+        format_args!("Error Code: {:#?}\n", error_code),
+    );
+    let _ = core::fmt::write(
+        &mut *serial::SERIAL1.lock(),
+        format_args!("{:#?}\n", stack_frame),
+    );
     loop {}
 }
 
@@ -55,7 +64,10 @@ extern "x86-interrupt" fn double_fault_handler(
     _error_code: u64,
 ) -> ! {
     serial::serial_log("EXCEPTION: DOUBLE FAULT");
-    let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!("{:#?}\n", stack_frame));
+    let _ = core::fmt::write(
+        &mut *serial::SERIAL1.lock(),
+        format_args!("{:#?}\n", stack_frame),
+    );
     panic!();
 }
 
@@ -84,7 +96,7 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
         // For now, let's remove it to be safe.
         // serial::serial_log(&alloc::format!("TIMER IRQ0 fired! count: {}", TIMER_INTERRUPT_COUNT));
     }
-    
+
     // Notify the PIC that the interrupt has been handled.
     // This is crucial to prevent the PIC from re-asserting the interrupt line.
     unsafe {
