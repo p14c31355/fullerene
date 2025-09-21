@@ -1,6 +1,33 @@
-// bellows/src/uefi.rs
+// petroleum/src/common.rs
 
 use core::ffi::c_void;
+
+// Common UEFI definitions shared between bootloader and kernel.
+
+/// GUID for FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID
+pub const FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID: [u8; 16] = [
+    0x3c, 0x23, 0x88, 0x3f, 0x27, 0x4d, 0x78, 0x4d, 0x91, 0x2c, 0x73, 0x49, 0x3a, 0x0c, 0x23, 0x75,
+];
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EfiGraphicsPixelFormat {
+    PixelRedGreenBlueReserved8BitPerColor = 0,
+    PixelBlueGreenRedReserved8BitPerColor = 1,
+    PixelBitMask = 2,
+    PixelBltOnly = 3,
+    PixelFormatMax = 4,
+}
+
+/// The structure passed from the bootloader to the kernel.
+#[repr(C)]
+pub struct FullereneFramebufferConfig {
+    pub address: u64,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub pixel_format: EfiGraphicsPixelFormat,
+}
 
 #[repr(usize)]
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -51,30 +78,47 @@ impl From<usize> for EfiStatus {
     }
 }
 
-/// A custom error type for the bootloader.
-#[derive(Debug, Clone, Copy)]
-pub enum BellowsError {
-    Efi(EfiStatus),
-    FileIo(&'static str),
-    PeParse(&'static str),
-    AllocationFailed(&'static str),
-    InvalidState(&'static str),
-    ProtocolNotFound(&'static str),
-}
-
-impl From<EfiStatus> for BellowsError {
-    fn from(status: EfiStatus) -> Self {
-        Self::Efi(status)
-    }
-}
-
-pub type Result<T> = core::result::Result<T, BellowsError>;
-
 /// Minimal subset of UEFI memory types (only those we need)
 #[repr(usize)]
 pub enum EfiMemoryType {
     EfiLoaderData = 2,
     EfiMaxMemoryType = 15,
+}
+
+/// GUID for EFI_SIMPLE_FILE_SYSTEM_PROTOCOL
+pub const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: [u8; 16] = [
+    0x96, 0x4e, 0x5b, 0x09, 0x21, 0x42, 0x06, 0x4f, 0x85, 0x3d, 0x05, 0x22, 0x22, 0x0b, 0xa2, 0x19,
+];
+
+pub const EFI_FILE_INFO_GUID: [u8; 16] = [
+    0x0d, 0x95, 0xde, 0x05, 0x93, 0x31, 0xd2, 0x11, 0x8a, 0x41, 0x00, 0xa0, 0xc9, 0x3e, 0xc7, 0xea,
+];
+
+/// GUID for EFI_GRAPHICS_OUTPUT_PROTOCOL
+pub const EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID: [u8; 16] = [
+    0xde, 0xa9, 0x42, 0x90, 0x4c, 0x23, 0x38, 0x4a, 0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a,
+];
+
+/// EFI_STATUS code for EFI_BUFFER_TOO_SMALL
+pub const EFI_BUFFER_TOO_SMALL: usize = 0x8000000000000005;
+
+/// Minimal EFI_FILE_INFO
+#[repr(C, packed)]
+pub struct EfiFileInfo {
+    _size: u64,
+    pub file_size: u64,
+    _physical_size: u64,
+    _create_time: u64,
+    _last_access_time: u64,
+    _modification_time: u64,
+    _attribute: u64,
+    _file_name: [u16; 1],
+}
+
+#[repr(C)]
+pub struct EfiConfigurationTable {
+    pub vendor_guid: [u8; 16],
+    pub vendor_table: usize,
 }
 
 /// Minimal UEFI System Table and protocols used by this loader
@@ -91,7 +135,8 @@ pub struct EfiSystemTable {
     _std_err: *mut EfiSimpleTextOutput,
     _runtime_services: *mut c_void,
     pub boot_services: *mut EfiBootServices,
-    // The rest of the table is not needed for the bootloader
+    pub number_of_table_entries: usize,
+    pub configuration_table: *mut EfiConfigurationTable,
 }
 
 /// Very small subset of Boot Services we call
@@ -125,20 +170,6 @@ pub struct EfiSimpleTextOutput {
     pub output_string: extern "efiapi" fn(*mut EfiSimpleTextOutput, *const u16) -> usize,
 }
 
-/// GUID for EFI_SIMPLE_FILE_SYSTEM_PROTOCOL
-pub const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: [u8; 16] = [
-    0x96, 0x4e, 0x5b, 0x09, 0x21, 0x42, 0x06, 0x4f, 0x85, 0x3d, 0x05, 0x22, 0x22, 0x0b, 0xa2, 0x19,
-];
-
-pub const EFI_FILE_INFO_GUID: [u8; 16] = [
-    0x0d, 0x95, 0xde, 0x05, 0x93, 0x31, 0xd2, 0x11, 0x8a, 0x41, 0x00, 0xa0, 0xc9, 0x3e, 0xc7, 0xea,
-];
-
-/// GUID for EFI_GRAPHICS_OUTPUT_PROTOCOL
-pub const EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID: [u8; 16] = [
-    0xde, 0xa9, 0x42, 0x90, 0x4c, 0x23, 0x38, 0x4a, 0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a,
-];
-
 /// A minimal subset of EFI_FILE_PROTOCOL
 #[repr(C)]
 pub struct EfiFile {
@@ -159,7 +190,7 @@ pub struct EfiFile {
 #[repr(C)]
 pub struct EfiSimpleFileSystem {
     _pad: [usize; 1],
-    /// open_volume(This, *mut EfiFile) -> EFI_STATUS
+    /// open_volume(This, *mut EfiSimpleFileSystem, *mut *mut EfiFile) -> EFI_STATUS
     pub open_volume: extern "efiapi" fn(*mut EfiSimpleFileSystem, *mut *mut EfiFile) -> usize,
 }
 
@@ -192,44 +223,21 @@ pub struct EfiGraphicsOutputModeInformation {
     pub pixels_per_scan_line: u32,
 }
 
-/// Minimal EFI_GRAPHICS_PIXEL_FORMAT
-#[repr(u32)]
-#[derive(Clone, Copy)] // Add Clone and Copy traits
-pub enum EfiGraphicsPixelFormat {
-    PixelRedGreenBlueReserved8BitPerColor = 0,
-    PixelBlueGreenRedReserved8BitPerColor = 1,
-    PixelBitMask = 2,
-    PixelBltOnly = 3,
-    PixelFormatMax = 4,
+/// A custom error type for the bootloader.
+#[derive(Debug, Clone, Copy)]
+pub enum BellowsError {
+    Efi { status: EfiStatus },
+    FileIo(&'static str),
+    PeParse(&'static str),
+    AllocationFailed(&'static str),
+    InvalidState(&'static str),
+    ProtocolNotFound(&'static str),
 }
 
-/// Minimal EFI_FILE_INFO
-#[repr(C, packed)]
-pub struct EfiFileInfo {
-    _size: u64,
-    pub file_size: u64,
-    _physical_size: u64,
-    _create_time: u64,
-    _last_access_time: u64,
-    _modification_time: u64,
-    _attribute: u64,
-    _file_name: [u16; 1],
+impl From<EfiStatus> for BellowsError {
+    fn from(status: EfiStatus) -> Self {
+        Self::Efi { status }
+    }
 }
 
-/// GUID for FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID
-pub const FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID: [u8; 16] = [
-    0x3c, 0x23, 0x88, 0x3f, 0x27, 0x4d, 0x78, 0x4d, 0x91, 0x2c, 0x73, 0x49, 0x3a, 0x0c, 0x23, 0x75,
-];
-
-/// EFI_STATUS code for EFI_BUFFER_TOO_SMALL
-pub const EFI_BUFFER_TOO_SMALL: usize = 0x8000000000000005;
-
-/// The structure passed from the bootloader to the kernel.
-#[repr(C)]
-pub struct FullereneFramebufferConfig {
-    pub address: u64,
-    pub width: u32,
-    pub height: u32,
-    pub stride: u32,
-    pub pixel_format: EfiGraphicsPixelFormat,
-}
+pub type Result<T> = core::result::Result<T, BellowsError>;

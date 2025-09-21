@@ -6,13 +6,14 @@
 mod gdt; // Add GDT module
 mod interrupts;
 mod serial;
-mod uefi;
 mod vga; // Add IDT module
 
 extern crate alloc;
 
 use core::ffi::c_void;
-use uefi::{EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig};
+use petroleum::common::{
+    EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
+};
 use x86_64::instructions::hlt;
 
 #[unsafe(export_name = "efi_main")]
@@ -84,14 +85,6 @@ pub extern "efiapi" fn efi_main(
     // Main loop
     vga::log("Initialization complete. Entering kernel main loop.\n");
     hlt_loop();
-}
-
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    vga::panic_log(info);
-    serial::panic_log(info);
-    loop {}
 }
 
 // Global allocator is required for `alloc::format!`

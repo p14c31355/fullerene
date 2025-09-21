@@ -3,5 +3,6 @@
     "bellows/Cargo.toml",
     "fullerene-kernel/Cargo.toml",
     "toluene/Cargo.toml"
-  ]
+  ],
+  "rust-analyzer.checkOnSave.extraArgs": ["--target", "x86_64-unknown-uefi"]
 }

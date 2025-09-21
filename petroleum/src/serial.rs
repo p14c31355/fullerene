@@ -1,8 +1,9 @@
-// bellows/src/loader/serial.rs
+// petroleum/src/serial.rs
 
-use crate::uefi::EfiSimpleTextOutput;
+use crate::common::{EfiSimpleTextOutput, EfiStatus};
 use alloc::vec::Vec;
 use core::fmt;
+use spin::Mutex;
 
 pub struct UefiWriter {
     con_out: *mut EfiSimpleTextOutput,
@@ -22,7 +23,7 @@ impl UefiWriter {
         self.con_out = con_out;
     }
 
-    pub fn write_string(&mut self, s: &str) -> Result<(), crate::uefi::EfiStatus> {
+    pub fn write_string(&mut self, s: &str) -> Result<(), EfiStatus> {
         if self.con_out.is_null() {
             return Ok(());
         }
@@ -32,8 +33,8 @@ impl UefiWriter {
 
         let status = unsafe { ((*self.con_out).output_string)(self.con_out, s_utf16.as_ptr()) };
 
-        let efi_status = crate::uefi::EfiStatus::from(status);
-        if efi_status == crate::uefi::EfiStatus::Success {
+        let efi_status = EfiStatus::from(status);
+        if efi_status == EfiStatus::Success {
             Ok(())
         } else {
             Err(efi_status)
@@ -48,11 +49,11 @@ impl fmt::Write for UefiWriter {
 }
 
 // Global writer instance
-pub static UEFI_WRITER: spin::Mutex<UefiWriter> = spin::Mutex::new(UefiWriter::new());
+pub static UEFI_WRITER: Mutex<UefiWriter> = Mutex::new(UefiWriter::new());
 
 #[macro_export]
 macro_rules! print {
-    ($($arg:tt)*) => ($crate::loader::serial::_print(format_args!($($arg)*)));
+    ($($arg:tt)*) => ($crate::serial::_print(format_args!($($arg)*)));
 }
 
 #[macro_export]

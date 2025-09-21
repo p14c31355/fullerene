@@ -2,108 +2,61 @@
 
 #![no_std]
 #![no_main]
-#![feature(alloc_error_handler)]
+// #![feature(alloc_error_handler)]
 #![feature(never_type)]
 extern crate alloc;
 
 use alloc::boxed::Box;
-use core::{alloc::Layout, ffi::c_void, ptr, slice};
-
-use spin::Mutex;
-
-#[derive(Clone, Copy)]
-struct UefiSystemTablePtr(*mut EfiSystemTable);
-
-unsafe impl Send for UefiSystemTablePtr {}
-unsafe impl Sync for UefiSystemTablePtr {}
-
-static UEFI_SYSTEM_TABLE: Mutex<Option<UefiSystemTablePtr>> = Mutex::new(None);
+use core::{ffi::c_void, ptr, slice};
 
 mod loader;
-mod uefi;
 
-use crate::loader::{
-    exit_boot_services_and_jump, file::read_efi_file, heap::init_heap, pe::load_efi_image, serial,
+use loader::{
+    exit_boot_services_and_jump, file::read_efi_file, heap::init_heap, pe::load_efi_image,
 };
 
-use crate::uefi::{
+use petroleum::common::{
     EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable,
     FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
 };
-
-/// Alloc error handler required when using `alloc` in no_std.
-#[alloc_error_handler]
-fn alloc_error(_layout: Layout) -> ! {
-    panic!("Allocation error");
-}
-
-/// Panic handler
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    // Print the panic message using the refactored serial module.
-    if let Some(st_ptr) = UEFI_SYSTEM_TABLE.lock().as_ref() {
-        let st_ref = unsafe { &*st_ptr.0 };
-        // Initialize the writer to ensure panic messages can be printed.
-
-        serial::UEFI_WRITER.lock().init(st_ref.con_out);
-
-        if let Some(location) = info.location() {
-            // Assuming info.message() returns Option<PanicMessage<'a>>
-            // and PanicMessage<'a> has a field 'args' of type &fmt::Arguments
-            println!(
-                "Panic at {}:{}:{} - {}",
-                location.file(),
-                location.line(),
-                location.column(),
-                info.message() // Directly use info.message()
-            );
-        } else {
-            // Assuming info.message() returns Option<PanicMessage<'a>>
-            // and PanicMessage<'a> has a field 'args' of type &fmt::Arguments
-            println!("Panic: {}", info.message()); // Directly use info.message()
-        }
-    }
-    loop {} // Panics must diverge
-}
 
 /// Main entry point of the bootloader.
 ///
 /// This function is the `start` attribute as defined in the `Cargo.toml`.
 #[unsafe(no_mangle)]
 pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
-    let _ = UEFI_SYSTEM_TABLE
+    let _ = petroleum::UEFI_SYSTEM_TABLE
         .lock()
-        .insert(UefiSystemTablePtr(system_table));
+        .insert(petroleum::UefiSystemTablePtr(system_table));
     let st = unsafe { &*system_table };
     let bs = unsafe { &*st.boot_services };
 
     // Initialize the serial writer with the console output pointer.
 
-    serial::UEFI_WRITER.lock().init(st.con_out);
+    petroleum::serial::UEFI_WRITER.lock().init(st.con_out);
 
-    println!("Bellows UEFI Bootloader starting...");
+    petroleum::println!("Bellows UEFI Bootloader starting...");
 
-    println!("Attempting to initialize heap...");
+    petroleum::println!("Attempting to initialize heap...");
     if let Err(e) = init_heap(bs) {
-        println!("Failed to initialize heap: {:?}", e);
+        petroleum::println!("Failed to initialize heap: {:?}", e);
         panic!("Failed to initialize heap.");
     }
-    println!("Heap initialized successfully.");
-    println!("Attempting to initialize GOP...");
+    petroleum::println!("Heap initialized successfully.");
+    petroleum::println!("Attempting to initialize GOP...");
     init_gop(st);
-    serial::_print(format_args!("GOP initialized successfully.\n"));
+    petroleum::serial::_print(format_args!("GOP initialized successfully.\n"));
 
-    serial::_print(format_args!("Attempting to read kernel EFI file...\n"));
+    petroleum::serial::_print(format_args!("Attempting to read kernel EFI file...\n"));
     // Read the kernel file before exiting boot services.
     let (efi_image_phys, efi_image_size) = match read_efi_file(bs) {
         Ok(t) => t,
         Err(err) => {
-            serial::_print(format_args!("Failed to read EFI file: {:?}\n", err));
+            petroleum::serial::_print(format_args!("Failed to read EFI file: {:?}\n", err));
             panic!("Failed to read EFI file.");
         }
     };
-    serial::_print(format_args!(
+    petroleum::serial::_print(format_args!(
         "Kernel EFI file read. Physical address: {:#x}, size: {}\n",
         efi_image_phys, efi_image_size
     ));
@@ -113,7 +66,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         // `efi_image_phys` and `efi_image_size` are returned by `read_efi_file`,
         // which allocates a valid memory region and reads the file into it.
         if efi_image_size == 0 {
-            serial::_print(format_args!("Kernel file is empty.\n"));
+            petroleum::println!("Kernel file is empty.");
             panic!("Kernel file is empty.");
         }
         unsafe { slice::from_raw_parts(efi_image_phys as *const u8, efi_image_size) }
@@ -123,7 +76,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     let entry = match load_efi_image(st, efi_image_file) {
         Ok(e) => e,
         Err(err) => {
-            serial::_print(format_args!("Failed to load EFI image: {:?}\n", err));
+            petroleum::println!("Failed to load EFI image: {:?}", err);
             let file_pages = efi_image_size.div_ceil(4096);
             (bs.free_pages)(efi_image_phys, file_pages);
             panic!("Failed to load EFI image.");
@@ -139,7 +92,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             unreachable!(); // This branch should never be reached if the function returns '!'
         }
         Err(err) => {
-            serial::_print(format_args!("Failed to exit boot services: {:?}\n", err));
+            petroleum::println!("Failed to exit boot services: {:?}", err);
             panic!("Failed to exit boot services.");
         }
     }
@@ -157,21 +110,19 @@ fn init_gop(st: &EfiSystemTable) {
     );
 
     if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
-        serial::_print(format_args!(
-            "Failed to locate GOP protocol, continuing without it.\n"
-        ));
+        petroleum::println!("Failed to locate GOP protocol, continuing without it.");
         return;
     }
 
     let gop_ref = unsafe { &*gop };
     if gop_ref.mode.is_null() {
-        serial::_print(format_args!("GOP mode pointer is null, skipping.\n"));
+        petroleum::println!("GOP mode pointer is null, skipping.");
         return;
     }
 
     let mode_ref = unsafe { &*gop_ref.mode };
     if mode_ref.info.is_null() {
-        serial::_print(format_args!("GOP mode info pointer is null, skipping.\n"));
+        petroleum::println!("GOP mode info pointer is null, skipping.");
         return;
     }
 
@@ -182,7 +133,7 @@ fn init_gop(st: &EfiSystemTable) {
     let info = info_ref;
 
     if fb_addr == 0 || fb_size == 0 {
-        serial::_print(format_args!("GOP framebuffer info is invalid, skipping.\n"));
+        petroleum::println!("GOP framebuffer info is invalid, skipping.");
         return;
     }
 
@@ -203,9 +154,7 @@ fn init_gop(st: &EfiSystemTable) {
 
     if EfiStatus::from(status) != EfiStatus::Success {
         let _ = unsafe { Box::from_raw(config_ptr) };
-        serial::_print(format_args!(
-            "Failed to install framebuffer config table.\n"
-        ));
+        petroleum::println!("Failed to install framebuffer config table.");
         return;
     }
 

@@ -78,7 +78,7 @@ fn main() -> io::Result<()> {
         ovmf_vars_fd_path.display()
     );
 
-    let fat_img_drive = format!("format=raw,file={}", fat_img_path.display());
+    let _fat_img_drive = format!("format=raw,file={}", fat_img_path.display());
 
     let iso_path_str = iso_path.to_str().unwrap();
 

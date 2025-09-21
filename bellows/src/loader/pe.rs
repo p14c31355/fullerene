@@ -1,7 +1,7 @@
 // bellows/src/loader/pe.rs
 
-use crate::uefi::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable, Result};
 use core::{ffi::c_void, mem, ptr};
+use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
 
 #[repr(C, packed)]
 struct ImageDosHeader {
@@ -104,7 +104,9 @@ enum ImageRelBasedType {
 pub fn load_efi_image(
     st: &EfiSystemTable,
     file: &[u8],
-) -> Result<extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !> {
+) -> petroleum::common::Result<
+    extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
+> {
     let bs = unsafe { &*st.boot_services };
 
     // Safety:
