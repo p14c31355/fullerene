@@ -55,7 +55,13 @@ extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
+    use x86_64::registers::control::Cr2;
+
     serial::serial_log("EXCEPTION: PAGE FAULT");
+    let _ = core::fmt::write(
+        &mut *serial::SERIAL1.lock(),
+        format_args!("Accessed Address: {:?}\n", Cr2::read()),
+    );
     let _ = core::fmt::write(
         &mut *serial::SERIAL1.lock(),
         format_args!("Error Code: {:#?}\n", error_code),
