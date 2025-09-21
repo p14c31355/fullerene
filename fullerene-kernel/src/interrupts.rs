@@ -1,9 +1,9 @@
 // fullerene-kernel/src/interrupts.rs
 
-use crate::{gdt, graphics, serial};
+use crate::{gdt, serial};
 use core::fmt::Write;
 use lazy_static::lazy_static;
-use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
+use pc_keyboard::{DecodedKey, HandleControl, Keyboard, ScancodeSet1, layouts};
 use pic8259::ChainedPics;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
@@ -114,12 +114,7 @@ pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: Interrupt
 // Exception handlers (not directly related to the fix, but included for completeness)
 pub extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     let mut writer = serial::SERIAL1.lock();
-    writeln!(
-        writer,
-        "\nEXCEPTION: BREAKPOINT\n{:#?}",
-        stack_frame
-    )
-    .ok();
+    writeln!(writer, "\nEXCEPTION: BREAKPOINT\n{:#?}", stack_frame).ok();
 }
 
 pub extern "x86-interrupt" fn page_fault_handler(

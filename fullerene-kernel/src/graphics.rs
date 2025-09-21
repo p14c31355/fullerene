@@ -1,8 +1,8 @@
 // fullerene-kernel/src/graphics.rs
 
 use core::fmt;
-use spin::{Mutex, Once};
 use petroleum::common::FullereneFramebufferConfig;
+use spin::{Mutex, Once};
 
 // A simple 8x8 PC screen font (Code Page 437).
 // This is a placeholder. A more complete font would be needed for full ASCII/Unicode support.
@@ -63,7 +63,9 @@ impl FramebufferWriter {
             let offset = y * self.framebuffer.stride * 4;
             let line_ptr = (self.framebuffer.address + offset as u64) as *mut u32;
             for x in 0..self.framebuffer.width {
-                unsafe { *line_ptr.add(x as usize) = self.bg_color; }
+                unsafe {
+                    *line_ptr.add(x as usize) = self.bg_color;
+                }
             }
         }
     }
