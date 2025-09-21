@@ -110,7 +110,7 @@ fn init_gop(st: &EfiSystemTable) {
     );
 
     if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
-        petroleum::println!("Failed to locate GOP protocol, continuing without it.\n");
+        petroleum::println!("Failed to locate GOP protocol, continuing without it.");
         return;
     }
 
