@@ -7,6 +7,7 @@ use pc_keyboard::{DecodedKey, HandleControl, Keyboard, ScancodeSet1, layouts};
 use pic8259::ChainedPics;
 use spin::Mutex;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+use x86_64::instructions::port::Port;
 
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
@@ -35,31 +36,17 @@ pub fn init_idt() {
 }
 
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
-    vga::log("EXCEPTION: BREAKPOINT");
-    let mut writer = vga::VGA_BUFFER.get().unwrap().lock();
-    writer
-        .write_fmt(format_args!("{:#?}", stack_frame))
-        .unwrap();
+    serial::serial_log("EXCEPTION: BREAKPOINT");
+    let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!("{:#?}\n", stack_frame));
 }
 
 extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
-    use x86_64::registers::control::Cr2;
-
-    vga::log("EXCEPTION: PAGE FAULT");
-    let mut writer = vga::VGA_BUFFER.get().unwrap().lock();
-    writer
-        .write_fmt(format_args!("Accessed Address: {:?}", Cr2::read()))
-        .unwrap();
-    writer
-        .write_fmt(format_args!("Error Code: {:?}", error_code))
-        .unwrap();
-    writer
-        .write_fmt(format_args!("{:#?}", stack_frame))
-        .unwrap();
-
+    serial::serial_log("EXCEPTION: PAGE FAULT");
+    let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!("Error Code: {:#?}\n", error_code));
+    let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!("{:#?}\n", stack_frame));
     loop {}
 }
 
@@ -67,15 +54,14 @@ extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     _error_code: u64,
 ) -> ! {
-    panic!(
-        "EXCEPTION: DOUBLE FAULT
-{:#?}",
-        stack_frame
-    );
+    serial::serial_log("EXCEPTION: DOUBLE FAULT");
+    let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!("{:#?}\n", stack_frame));
+    panic!();
 }
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
+#[allow(dead_code)]
 pub enum InterruptIndex {
     Timer = PIC_1_OFFSET,
     Keyboard,
@@ -87,8 +73,20 @@ impl InterruptIndex {
     }
 }
 
+// Global counter for timer interrupts
+static mut TIMER_INTERRUPT_COUNT: u64 = 0;
+
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    serial::serial_log("TIMER IRQ0 fired!");
+    // Increment the counter to prove the handler is running
+    unsafe {
+        TIMER_INTERRUPT_COUNT += 1;
+        // Optionally, print the count to show progress, but only if it's safe.
+        // For now, let's remove it to be safe.
+        // serial::serial_log(&alloc::format!("TIMER IRQ0 fired! count: {}", TIMER_INTERRUPT_COUNT));
+    }
+    
+    // Notify the PIC that the interrupt has been handled.
+    // This is crucial to prevent the PIC from re-asserting the interrupt line.
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Timer.as_u8())
@@ -96,8 +94,6 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
 }
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    use x86_64::instructions::port::Port;
-
     lazy_static! {
         static ref KEYBOARD: Mutex<Keyboard<layouts::Us104Key, ScancodeSet1>> =
             Mutex::new(Keyboard::new(
@@ -120,10 +116,11 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
                 let _ = serial_writer.write_char(character);
             }
             DecodedKey::RawKey(key) => {
-                let _ = serial_writer.write_fmt(format_args!("{:?}", key));
+                let _ = write!(serial_writer, "{:?}", key);
             }
         }
     }
+
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8())
