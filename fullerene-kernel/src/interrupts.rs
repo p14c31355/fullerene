@@ -1,9 +1,9 @@
 // fullerene-kernel/src/interrupts.rs
 
-use crate::{gdt, serial, vga};
+use crate::{gdt, graphics, serial};
 use core::fmt::Write;
 use lazy_static::lazy_static;
-use pc_keyboard::{DecodedKey, HandleControl, Keyboard, ScancodeSet1, layouts};
+use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
 use pic8259::ChainedPics;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
@@ -93,15 +93,10 @@ pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: Interrupt
         && let Some(key) = keyboard.process_keyevent(key_event)
     {
         let mut serial_writer = serial::SERIAL1.lock();
-        let vga_lock = vga::VGA_BUFFER.get();
         match key {
             DecodedKey::Unicode(character) => {
                 let _ = serial_writer.write_char(character);
-                if let Some(vga) = vga_lock {
-                    let mut vga_writer = vga.lock();
-                    vga_writer.write_byte(character as u8);
-                    vga_writer.update_cursor();
-                }
+                crate::print!("{}", character);
             }
             DecodedKey::RawKey(key) => {
                 let _ = write!(serial_writer, "{:?}", key);

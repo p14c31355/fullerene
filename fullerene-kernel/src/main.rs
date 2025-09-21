@@ -4,9 +4,9 @@
 #![no_main]
 
 mod gdt; // Add GDT module
+mod graphics;
 mod interrupts;
 mod serial;
-mod vga; // Add IDT module
 
 extern crate alloc;
 
@@ -28,7 +28,6 @@ pub extern "efiapi" fn efi_main(
     interrupts::init(); // Initialize IDT
 
     serial::serial_init(); // Initialize serial early for debugging
-    vga::vga_init(); // Initialize VGA early for debugging
 
     serial::serial_log("Initializing PICs...");
     // Initialize the PIC before enabling interrupts to prevent premature timer interrupts.
@@ -39,8 +38,8 @@ pub extern "efiapi" fn efi_main(
     x86_64::instructions::interrupts::enable();
     serial::serial_log("Interrupts enabled.");
 
-    vga::log("Entering efi_main...\n");
-    vga::log("Searching for framebuffer config table...\n");
+    serial::serial_log("Entering efi_main...\n");
+    serial::serial_log("Searching for framebuffer config table...\n");
 
     // Cast the system_table pointer to the correct type
     let system_table = unsafe { &*(system_table as *const EfiSystemTable) };
@@ -64,8 +63,7 @@ pub extern "efiapi" fn efi_main(
 
     if let Some(config) = framebuffer_config {
         if config.address == 0 {
-            vga::log("Fullerene Framebuffer Config Table found, but address is 0.\n");
-            serial::serial_log("Fullerene Framebuffer Config Table found, but address is 0.");
+            serial::serial_log("Fullerene Framebuffer Config Table found, but address is 0.\n");
             serial::serial_log("  This may be the cause of the kernel panic.");
         } else {
             let _ = core::fmt::write(
@@ -76,14 +74,15 @@ pub extern "efiapi" fn efi_main(
                 &mut *serial::SERIAL1.lock(),
                 format_args!("  Resolution: {}x{}\n", config.width, config.height),
             );
+            graphics::init(config);
+            serial::serial_log("Graphics initialized.");
         }
     } else {
-        vga::log("Fullerene Framebuffer Config Table not found.\n");
-        serial::serial_log("Fullerene Framebuffer Config Table not found.");
+        serial::serial_log("Fullerene Framebuffer Config Table not found.\n");
     }
 
     // Main loop
-    vga::log("Initialization complete. Entering kernel main loop.\n");
+    serial::serial_log("Initialization complete. Entering kernel main loop.\n");
     hlt_loop();
 }
 
