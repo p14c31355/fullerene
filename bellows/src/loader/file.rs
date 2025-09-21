@@ -1,12 +1,11 @@
 // bellows/src/loader/file.rs
 
-use crate::uefi::{
-    BellowsError, EFI_FILE_INFO_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiBootServices,
-    EfiFile, EfiFileInfo, EfiSimpleFileSystem, EfiStatus, Result,
-};
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr;
+use petroleum::common::{
+    BellowsError, EFI_FILE_INFO_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiBootServices, EfiFile, EfiFileInfo, EfiSimpleFileSystem, EfiStatus
+};
 
 const EFI_FILE_MODE_READ: u64 = 0x1;
 const KERNEL_PATH: &str = r"\EFI\BOOT\KERNEL.EFI";
@@ -38,7 +37,7 @@ impl Drop for EfiFileWrapper {
 }
 
 /// Helper function to open a file from a directory handle.
-fn open_file(dir: &EfiFileWrapper, path: &[u16]) -> Result<EfiFileWrapper> {
+fn open_file(dir: &EfiFileWrapper, path: &[u16]) -> petroleum::common::Result<EfiFileWrapper> {
     let mut file_handle: *mut EfiFile = ptr::null_mut();
     let status = unsafe {
         ((*dir.file).open)(
@@ -56,7 +55,7 @@ fn open_file(dir: &EfiFileWrapper, path: &[u16]) -> Result<EfiFileWrapper> {
 }
 
 /// Read `fullerene-kernel.efi` from the volume.
-pub fn read_efi_file(bs: &EfiBootServices) -> Result<(usize, usize)> {
+pub fn read_efi_file(bs: &EfiBootServices) -> petroleum::common::Result<(usize, usize)> {
     let mut fs_proto: *mut EfiSimpleFileSystem = ptr::null_mut();
     let status = (bs.locate_protocol)(
         &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *mut _,
@@ -138,7 +137,7 @@ pub fn read_efi_file(bs: &EfiBootServices) -> Result<(usize, usize)> {
     let status = {
         (bs.allocate_pages)(
             0usize,
-            crate::uefi::EfiMemoryType::EfiLoaderData,
+            petroleum::common::EfiMemoryType::EfiLoaderData,
             pages,
             &mut phys_addr,
         )

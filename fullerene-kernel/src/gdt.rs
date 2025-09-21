@@ -21,13 +21,13 @@ pub fn init() {
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
             const STACK_SIZE: usize = 4096 * 5; // 5 pages
             static mut DOUBLE_FAULT_STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
-            let stack_start = VirtAddr::from_ptr(unsafe { &raw const DOUBLE_FAULT_STACK });
+            let stack_start = VirtAddr::from_ptr(&raw const DOUBLE_FAULT_STACK);
             stack_start + STACK_SIZE as u64
         };
         tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = {
             const STACK_SIZE: usize = 4096 * 5; // 5 pages
             static mut TIMER_STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
-            let stack_start = VirtAddr::from_ptr(unsafe { &raw const TIMER_STACK });
+            let stack_start = VirtAddr::from_ptr(&raw const TIMER_STACK);
             stack_start + STACK_SIZE as u64
         };
         tss

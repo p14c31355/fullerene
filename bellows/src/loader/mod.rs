@@ -1,13 +1,12 @@
 // bellows/src/loader/mod.rs
 
-use crate::uefi::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable, Result};
 use core::ffi::c_void;
 use core::ptr;
+use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
 
 pub mod file;
 pub mod heap;
 pub mod pe;
-pub mod serial;
 
 /// Exits boot services and jumps to the kernel's entry point.
 /// This function is the final step of the bootloader.
@@ -15,18 +14,18 @@ pub fn exit_boot_services_and_jump(
     image_handle: usize,
     system_table: *mut EfiSystemTable,
     entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
-) -> Result<!> {
+) -> petroleum::common::Result<!> {
     let bs = unsafe { &*(*system_table).boot_services };
 
-    let mut map_size = 0;
-    let mut map_key = 0;
-    let mut descriptor_size = 0;
-    let mut descriptor_version = 0;
+    let mut map_size: usize = 0;
+    let mut map_key: usize = 0;
+    let mut descriptor_size: usize = 0;
+    let mut descriptor_version: u32 = 0;
 
     // Use a loop to handle the case where the memory map changes between calls.
     // This is a common and recommended UEFI pattern.
-    let mut map_phys_addr = 0;
-    let mut map_pages = 0;
+    let mut map_phys_addr: usize = 0;
+    let mut map_pages: usize = 0;
     let mut attempts = 0;
 
     loop {

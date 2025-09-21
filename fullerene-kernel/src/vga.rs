@@ -1,6 +1,5 @@
 // fullerene-kernel/src/vga.rs
 
-use core::fmt::Write;
 use spin::{Mutex, Once};
 use x86_64::instructions::port::Port;
 
@@ -170,26 +169,6 @@ pub fn log(msg: &str) {
     if let Some(vga) = VGA_BUFFER.get() {
         let mut writer = vga.lock();
         writer.write_string(msg);
-        writer.update_cursor();
-    }
-}
-
-pub fn panic_log(info: &core::panic::PanicInfo) {
-    if let Some(vga) = VGA_BUFFER.get() {
-        let mut writer = vga.lock();
-        let _ = writer.write_str("KERNEL PANIC!\n");
-        if let Some(location) = info.location() {
-            let _ = write!(
-                writer,
-                "  at {}:{}:{}
-",
-                location.file(),
-                location.line(),
-                location.column()
-            );
-        }
-        let msg = info.message();
-        let _ = writeln!(writer, "  {}", msg);
         writer.update_cursor();
     }
 }

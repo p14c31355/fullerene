@@ -1,6 +1,6 @@
 // bellows/src/loader/heap.rs
 
-use crate::uefi::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, Result};
+use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus};
 use linked_list_allocator::LockedHeap;
 
 /// Size of the heap we will allocate for `alloc` usage (bytes).
@@ -10,7 +10,7 @@ const HEAP_SIZE: usize = 128 * 1024; // 128 KiB
 #[global_allocator]
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
-pub fn init_heap(bs: &EfiBootServices) -> Result<()> {
+pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
     let heap_pages = HEAP_SIZE.div_ceil(4096);
     let mut heap_phys: usize = 0;
     let status = {
