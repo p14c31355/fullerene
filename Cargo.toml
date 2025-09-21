@@ -2,7 +2,8 @@
 members = [
   "bellows",
   "flasks",
-  "fullerene-kernel", "petroleum",
+  "fullerene-kernel",
+  "petroleum",
   "toluene",
 ]
 resolver = "2"
