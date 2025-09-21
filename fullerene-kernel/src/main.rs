@@ -13,6 +13,7 @@ extern crate alloc;
 
 use core::ffi::c_void;
 use uefi::{EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig};
+use x86_64::instructions::hlt;
 
 #[unsafe(export_name = "efi_main")]
 #[unsafe(link_section = ".text.efi_main")]
@@ -24,12 +25,16 @@ pub extern "efiapi" fn efi_main(
 ) -> ! {
     gdt::init(); // Initialize GDT
     interrupts::init_idt(); // Initialize IDT
+    
+    // Initialize the PIC before enabling interrupts to prevent premature timer interrupts.
     unsafe { interrupts::PICS.lock().initialize() };
-    x86_64::instructions::interrupts::enable();
 
     // Initialize serial and VGA first for logging
     serial::serial_init();
     vga::vga_init();
+    
+    // Now enable interrupts after everything is set up.
+    x86_64::instructions::interrupts::enable();
 
     vga::log("Entering efi_main...");
     vga::log("Searching for framebuffer config table...");
@@ -40,29 +45,17 @@ pub extern "efiapi" fn efi_main(
     let mut framebuffer_config: Option<&FullereneFramebufferConfig> = None;
 
     // Iterate through the configuration tables to find the framebuffer configuration
-    let config_tables = unsafe {
-        core::slice::from_raw_parts(
-            system_table.configuration_table,
-            system_table.number_of_table_entries,
-        )
-    };
-    for table in config_tables {
-        if table.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
-            framebuffer_config =
-                unsafe { Some(&*(table.vendor_table as *const FullereneFramebufferConfig)) };
-            break;
+    let config_table_entries = unsafe { core::slice::from_raw_parts(system_table.configuration_table, system_table.number_of_table_entries as usize) };
+    for entry in config_table_entries {
+        if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
+            framebuffer_config = unsafe { Some(&*(entry.vendor_table as *const FullereneFramebufferConfig)) };
         }
     }
 
     if let Some(config) = framebuffer_config {
-        // Correct logging using the serial port, as `vga::log` doesn't support numeric formatting
-        // without an allocator, which is not available.
-        serial::serial_log("Found framebuffer configuration!");
-
-        // Add a check to prevent `format_args!` from overflowing internal `u16`
-        // operations if width/height are too large.
-        if config.width > u16::MAX as u32 || config.height > u16::MAX as u32 {
-            serial::serial_log("  WARNING: Framebuffer resolution is too large to format safely!");
+        if config.address == 0 {
+            vga::log("Fullerene Framebuffer Config Table found, but address is 0.");
+            serial::serial_log("Fullerene Framebuffer Config Table found, but address is 0.");
             serial::serial_log("  This may be the cause of the kernel panic.");
         } else {
             let _ = core::fmt::write(
@@ -107,9 +100,9 @@ unsafe impl core::alloc::GlobalAlloc for DummyAllocator {
     }
 }
 
-// A simple loop to halt the CPU, preventing the program from exiting.
+// A simple loop that halts the CPU until the next interrupt
 pub fn hlt_loop() -> ! {
     loop {
-        x86_64::instructions::hlt();
+        hlt();
     }
 }
