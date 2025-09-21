@@ -266,6 +266,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0ca629cbb3f0d5b699c338f0129ff78c9bfd7ea8b1258ad529bff490dc8ed5a"
 
 [[package]]
+name = "petroleum"
+version = "0.1.0"
+
+[[package]]
 name = "pic8259"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
