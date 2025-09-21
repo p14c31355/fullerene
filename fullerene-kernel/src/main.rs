@@ -11,7 +11,9 @@ mod vga; // Add IDT module
 extern crate alloc;
 
 use core::ffi::c_void;
-use petroleum::common::{FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig, EfiSystemTable};
+use petroleum::common::{
+    EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
+};
 use x86_64::instructions::hlt;
 
 #[unsafe(export_name = "efi_main")]

@@ -4,7 +4,8 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr;
 use petroleum::common::{
-    BellowsError, EFI_FILE_INFO_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiBootServices, EfiFile, EfiFileInfo, EfiSimpleFileSystem, EfiStatus
+    BellowsError, EFI_FILE_INFO_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiBootServices,
+    EfiFile, EfiFileInfo, EfiSimpleFileSystem, EfiStatus,
 };
 
 const EFI_FILE_MODE_READ: u64 = 0x1;

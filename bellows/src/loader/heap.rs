@@ -1,7 +1,7 @@
 // bellows/src/loader/heap.rs
 
-use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus};
 use linked_list_allocator::LockedHeap;
+use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus};
 
 /// Size of the heap we will allocate for `alloc` usage (bytes).
 const HEAP_SIZE: usize = 128 * 1024; // 128 KiB

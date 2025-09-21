@@ -241,4 +241,3 @@ impl From<EfiStatus> for BellowsError {
 }
 
 pub type Result<T> = core::result::Result<T, BellowsError>;
-

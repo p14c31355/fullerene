@@ -15,7 +15,10 @@ use loader::{
     exit_boot_services_and_jump, file::read_efi_file, heap::init_heap, pe::load_efi_image,
 };
 
-use petroleum::common::{EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig};
+use petroleum::common::{
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable,
+    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
+};
 
 /// Main entry point of the bootloader.
 ///
@@ -107,9 +110,7 @@ fn init_gop(st: &EfiSystemTable) {
     );
 
     if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
-        petroleum::println!(
-            "Failed to locate GOP protocol, continuing without it.\n"
-        );
+        petroleum::println!("Failed to locate GOP protocol, continuing without it.\n");
         return;
     }
 
@@ -153,9 +154,7 @@ fn init_gop(st: &EfiSystemTable) {
 
     if EfiStatus::from(status) != EfiStatus::Success {
         let _ = unsafe { Box::from_raw(config_ptr) };
-        petroleum::println!(
-            "Failed to install framebuffer config table.\n"
-        );
+        petroleum::println!("Failed to install framebuffer config table.\n");
         return;
     }
 

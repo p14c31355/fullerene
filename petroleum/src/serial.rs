@@ -1,8 +1,8 @@
 // petroleum/src/serial.rs
 
-use crate::common::{EfiStatus, EfiSimpleTextOutput};
-use core::fmt;
+use crate::common::{EfiSimpleTextOutput, EfiStatus};
 use alloc::vec::Vec;
+use core::fmt;
 use spin::Mutex;
 
 pub struct UefiWriter {
