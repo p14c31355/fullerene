@@ -92,7 +92,7 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
     let mut writer = serial::SERIAL1.lock();
     let _ = writeln!(writer, ".");
     vga::log(".");
-    
+
     // Notify the PIC that the interrupt has been handled.
     // We disable interrupts here to prevent a deadlock if the main code
     // has already locked the PICS mutex.
