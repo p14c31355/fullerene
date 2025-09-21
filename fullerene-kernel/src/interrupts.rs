@@ -63,16 +63,7 @@ extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     _error_code: u64,
 ) -> ! {
-    serial::serial_log("EXCEPTION: DOUBLE FAULT");
-    let _ = core::fmt::write(
-        &mut *serial::SERIAL1.lock(),
-        format_args!(
-            r#"{:#?}
-"#,
-            stack_frame
-        ),
-    );
-    panic!();
+    panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
 }
 
 #[derive(Debug, Clone, Copy)]
