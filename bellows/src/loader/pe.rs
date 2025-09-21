@@ -101,12 +101,12 @@ enum ImageRelBasedType {
 }
 
 /// Loads a PE image from a buffer into memory using UEFI Boot Services.
+use petroleum::common::FullereneFramebufferConfig;
+
 pub fn load_efi_image(
     st: &EfiSystemTable,
     file: &[u8],
-) -> petroleum::common::Result<
-    extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
-> {
+) -> petroleum::common::Result<extern "efiapi" fn(*const FullereneFramebufferConfig) -> !> {
     let bs = unsafe { &*st.boot_services };
 
     // Safety:
