@@ -17,6 +17,20 @@ pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 pub static PICS: Mutex<ChainedPics> =
     Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
+// Enum to represent hardware interrupt indices, with an offset for the PICs.
+#[derive(Debug, Clone, Copy)]
+#[repr(u8)]
+pub enum InterruptIndex {
+    Timer = PIC_1_OFFSET,
+    Keyboard,
+}
+
+impl InterruptIndex {
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
 lazy_static! {
     // The Interrupt Descriptor Table (IDT)
     static ref IDT: InterruptDescriptorTable = {
@@ -41,23 +55,13 @@ lazy_static! {
     };
 }
 
-// Enum to represent hardware interrupt indices, with an offset for the PICs.
-#[derive(Debug, Clone, Copy)]
-#[repr(u8)]
-pub enum InterruptIndex {
-    Timer = PIC_1_OFFSET,
-    Keyboard,
-}
-
-impl InterruptIndex {
-    fn as_u8(self) -> u8 {
-        self as u8
-    }
-}
-
-// Initialize the Interrupt Descriptor Table (IDT).
-pub fn init_idt() {
+// Initialize the Interrupt Descriptor Table (IDT) and the PICs.
+pub fn init() {
     IDT.load();
+    unsafe {
+        PICS.lock().initialize();
+    }
+    x86_64::instructions::interrupts::enable();
 }
 
 // Timer interrupt handler.

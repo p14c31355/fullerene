@@ -25,7 +25,7 @@ pub extern "efiapi" fn efi_main(
     _memory_map_size: usize,
 ) -> ! {
     gdt::init(); // Initialize GDT
-    interrupts::init_idt(); // Initialize IDT
+    interrupts::init(); // Initialize IDT
 
     serial::serial_init(); // Initialize serial early for debugging
     vga::vga_init(); // Initialize VGA early for debugging
