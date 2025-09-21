@@ -1,6 +1,6 @@
 // fullerene-kernel/src/interrupts.rs
 
-use crate::{gdt, serial, vga};
+use crate::{gdt, serial};
 use core::fmt::Write;
 use lazy_static::lazy_static;
 use pc_keyboard::{DecodedKey, HandleControl, Keyboard, ScancodeSet1, layouts};
@@ -8,10 +8,10 @@ use pic8259::ChainedPics;
 use spin::Mutex;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 use x86_64::instructions::port::Port;
-
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 
+// Use a Mutex to wrap ChainedPics for safe access in a multi-threaded context.
 pub static PICS: Mutex<ChainedPics> =
     Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
@@ -25,7 +25,11 @@ lazy_static! {
                 .set_handler_fn(double_fault_handler)
                 .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
         }
-        idt[InterruptIndex::Timer.as_u8()].set_handler_fn(timer_interrupt_handler);
+        unsafe {
+            idt[InterruptIndex::Timer.as_u8()]
+                .set_handler_fn(timer_interrupt_handler)
+                .set_stack_index(gdt::TIMER_IST_INDEX);
+        }
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
         idt
     };
@@ -37,7 +41,9 @@ pub fn init_idt() {
 
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     serial::serial_log("EXCEPTION: BREAKPOINT");
-    let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!("{:#?}\n", stack_frame));
+    let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!(r#"{:#?}
+"#,
+ stack_frame));
 }
 
 extern "x86-interrupt" fn page_fault_handler(
@@ -46,16 +52,21 @@ extern "x86-interrupt" fn page_fault_handler(
 ) {
     serial::serial_log("EXCEPTION: PAGE FAULT");
     let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!("Error Code: {:#?}\n", error_code));
-    let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!("{:#?}\n", stack_frame));
+    let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!(r#"{:#?}
+"#,
+ stack_frame));
     loop {}
 }
 
 extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     _error_code: u64,
-) -> ! {
+) -> !
+{
     serial::serial_log("EXCEPTION: DOUBLE FAULT");
-    let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!("{:#?}\n", stack_frame));
+    let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!(r#"{:#?}
+"#,
+ stack_frame));
     panic!();
 }
 
@@ -73,22 +84,18 @@ impl InterruptIndex {
     }
 }
 
-// Global counter for timer interrupts
-static mut TIMER_INTERRUPT_COUNT: u64 = 0;
-
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
     // Notify the PIC that the interrupt has been handled at the very beginning.
-    // This is crucial to prevent the PIC from re-asserting the interrupt line
-    // while we are still inside the handler.
+    // Use unsafe to directly access the ChainedPics instance, avoiding the mutex deadlock.
     unsafe {
-        PICS.lock()
-            .notify_end_of_interrupt(InterruptIndex::Timer.as_u8())
-    };
-
-    // Increment the counter to prove the handler is running
+        PICS.lock().notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
+    }
+    // Add a simple counter to verify the timer interrupt is firing.
+    // This is a temporary measure for debugging.
+    static mut TIMER_TICKS: u64 = 0;
     unsafe {
-        TIMER_INTERRUPT_COUNT += 1;
-        // serial::serial_log(&alloc::format!("TIMER IRQ0 fired! count: {}", TIMER_INTERRUPT_COUNT));
+        TIMER_TICKS += 1;
+        
     }
 }
 
@@ -120,8 +127,9 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         }
     }
 
+    // Notify the PIC that the interrupt has been handled.
+    // Use unsafe to directly access the ChainedPics instance, avoiding the mutex deadlock.
     unsafe {
-        PICS.lock()
-            .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8())
-    };
+        PICS.lock().notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
+    }
 }
