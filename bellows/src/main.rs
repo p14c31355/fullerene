@@ -122,7 +122,7 @@ fn init_gop(st: &EfiSystemTable) {
 
     let mode_ref = unsafe { &*gop_ref.mode };
     if mode_ref.info.is_null() {
-        petroleum::println!("GOP mode info pointer is null, skipping.\n");
+        petroleum::println!("GOP mode info pointer is null, skipping.");
         return;
     }
 
