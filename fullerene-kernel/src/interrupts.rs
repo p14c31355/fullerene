@@ -6,8 +6,8 @@ use lazy_static::lazy_static;
 use pc_keyboard::{DecodedKey, HandleControl, Keyboard, ScancodeSet1, layouts};
 use pic8259::ChainedPics;
 use spin::Mutex;
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 use x86_64::instructions::port::Port;
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 
@@ -41,9 +41,14 @@ pub fn init_idt() {
 
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     serial::serial_log("EXCEPTION: BREAKPOINT");
-    let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!(r#"{:#?}
+    let _ = core::fmt::write(
+        &mut *serial::SERIAL1.lock(),
+        format_args!(
+            r#"{:#?}
 "#,
- stack_frame));
+            stack_frame
+        ),
+    );
 }
 
 extern "x86-interrupt" fn page_fault_handler(
@@ -51,22 +56,34 @@ extern "x86-interrupt" fn page_fault_handler(
     error_code: PageFaultErrorCode,
 ) {
     serial::serial_log("EXCEPTION: PAGE FAULT");
-    let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!("Error Code: {:#?}\n", error_code));
-    let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!(r#"{:#?}
+    let _ = core::fmt::write(
+        &mut *serial::SERIAL1.lock(),
+        format_args!("Error Code: {:#?}\n", error_code),
+    );
+    let _ = core::fmt::write(
+        &mut *serial::SERIAL1.lock(),
+        format_args!(
+            r#"{:#?}
 "#,
- stack_frame));
+            stack_frame
+        ),
+    );
     loop {}
 }
 
 extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     _error_code: u64,
-) -> !
-{
+) -> ! {
     serial::serial_log("EXCEPTION: DOUBLE FAULT");
-    let _ = core::fmt::write(&mut *serial::SERIAL1.lock(), format_args!(r#"{:#?}
+    let _ = core::fmt::write(
+        &mut *serial::SERIAL1.lock(),
+        format_args!(
+            r#"{:#?}
 "#,
- stack_frame));
+            stack_frame
+        ),
+    );
     panic!();
 }
 
@@ -89,14 +106,14 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
     // Notify the PIC that the interrupt has been handled at the very beginning.
     // Use unsafe to directly access the ChainedPics instance, avoiding the mutex deadlock.
     unsafe {
-        PICS.lock().notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
+        PICS.lock()
+            .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
     }
     // Add a simple counter to verify the timer interrupt is firing.
     // This is a temporary measure for debugging.
     static mut TIMER_TICKS: u64 = 0;
     unsafe {
         TIMER_TICKS += 1;
-        
     }
     serial::serial_log("Timer interrupt handled."); // Add this line
 }
@@ -132,6 +149,7 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     // Notify the PIC that the interrupt has been handled.
     // Use unsafe to directly access the ChainedPics instance, avoiding the mutex deadlock.
     unsafe {
-        PICS.lock().notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
+        PICS.lock()
+            .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
     }
 }

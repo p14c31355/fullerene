@@ -33,7 +33,7 @@ pub extern "efiapi" fn efi_main(
     // Initialize the PIC before enabling interrupts to prevent premature timer interrupts.
     unsafe { interrupts::PICS.lock().initialize() };
     serial::serial_log("PICs initialized.");
-    
+
     // Now enable interrupts after everything is set up.
     x86_64::instructions::interrupts::enable();
     serial::serial_log("Interrupts enabled.");
@@ -47,10 +47,16 @@ pub extern "efiapi" fn efi_main(
     let mut framebuffer_config: Option<&FullereneFramebufferConfig> = None;
 
     // Iterate through the configuration tables to find the framebuffer configuration
-    let config_table_entries = unsafe { core::slice::from_raw_parts(system_table.configuration_table, system_table.number_of_table_entries as usize) };
+    let config_table_entries = unsafe {
+        core::slice::from_raw_parts(
+            system_table.configuration_table,
+            system_table.number_of_table_entries,
+        )
+    };
     for entry in config_table_entries {
         if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
-            framebuffer_config = unsafe { Some(&*(entry.vendor_table as *const FullereneFramebufferConfig)) };
+            framebuffer_config =
+                unsafe { Some(&*(entry.vendor_table as *const FullereneFramebufferConfig)) };
         }
     }
 
