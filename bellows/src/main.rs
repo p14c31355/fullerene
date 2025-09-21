@@ -92,7 +92,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             unreachable!(); // This branch should never be reached if the function returns '!'
         }
         Err(err) => {
-            petroleum::println!("Failed to exit boot services: {:?}\n", err);
+            petroleum::println!("Failed to exit boot services: {:?}", err);
             panic!("Failed to exit boot services.");
         }
     }
