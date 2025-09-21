@@ -102,21 +102,17 @@ impl InterruptIndex {
 }
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    serial::serial_log("Timer interrupt fired."); // Add this line
-    // Notify the PIC that the interrupt has been handled at the very beginning.
-    // Use unsafe to directly access the ChainedPics instance, avoiding the mutex deadlock.
-    unsafe {
-        PICS.lock()
-            .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
-    }
-    // Add a simple counter to verify the timer interrupt is firing.
-    // This is a temporary measure for debugging.
-    static mut TIMER_TICKS: u64 = 0;
-    unsafe {
-        TIMER_TICKS += 1;
-    }
-    serial::serial_log("Timer interrupt handled."); // Add this line
+    // Notify the PIC that the interrupt has been handled.
+    // We disable interrupts here to prevent a deadlock if the main code
+    // has already locked the PICS mutex.
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        unsafe {
+            PICS.lock()
+                .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
+        }
+    });
 }
+
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
     lazy_static! {
@@ -146,10 +142,14 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         }
     }
 
-    // Notify the PIC that the interrupt has been handled.
-    // Use unsafe to directly access the ChainedPics instance, avoiding the mutex deadlock.
-    unsafe {
-        PICS.lock()
-            .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
-    }
+        // Notify the PIC that the interrupt has been handled.
+    // We disable interrupts here to prevent a deadlock if the main code
+    // has already locked the PICS mutex.
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        unsafe {
+            PICS.lock()
+                .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
+        }
+    });
+
 }

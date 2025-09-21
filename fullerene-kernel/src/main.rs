@@ -53,10 +53,11 @@ pub extern "efiapi" fn efi_main(
             system_table.number_of_table_entries,
         )
     };
-    for entry in config_table_entries {
+        for entry in config_table_entries {
         if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
             framebuffer_config =
                 unsafe { Some(&*(entry.vendor_table as *const FullereneFramebufferConfig)) };
+            break;
         }
     }
 
