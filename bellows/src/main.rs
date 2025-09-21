@@ -133,7 +133,7 @@ fn init_gop(st: &EfiSystemTable) {
     let info = info_ref;
 
     if fb_addr == 0 || fb_size == 0 {
-        petroleum::println!("GOP framebuffer info is invalid, skipping.\n");
+        petroleum::println!("GOP framebuffer info is invalid, skipping.");
         return;
     }
 
