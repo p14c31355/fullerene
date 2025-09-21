@@ -182,8 +182,7 @@ dependencies = [
 [[package]]
 name = "isobemak"
 version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3f7dd5548fb895a411e25e0e4fd0ba4f92185eba2d058515ff1627de9c9e024"
+source = "git+https://github.com/p14c31355/isobemak.git#ccff6fb6693c2c202c22b9db941d25cb6e962114"
 dependencies = [
  "fatfs",
  "tempfile",

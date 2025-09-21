@@ -17,7 +17,7 @@ spin = { version = "0.10.0", default-features = false, features = [
 bitflags = { version = "2.9.4", default-features = false }
 lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
 pc-keyboard = { version = "0.8.0", default-features = false }
-pic8259 = "0.11.0"
+pic8259 = { version = "0.11.0", default-features = false }
 
 [profile.dev]
 debug = true

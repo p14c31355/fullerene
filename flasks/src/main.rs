@@ -1,5 +1,5 @@
 // fullerene/flasks/src/main.rs
-use isobemak::create_disk_and_iso;
+use isobemak::builder::create_disk_and_iso;
 use std::{env, io, path::PathBuf, process::Command};
 
 fn main() -> io::Result<()> {
@@ -63,7 +63,7 @@ fn main() -> io::Result<()> {
     let ovmf_fd_path = workspace_root
         .join("flasks")
         .join("ovmf")
-        .join("RELEASEX64_OVMF.fd");
+        .join("RELEASEX64_OVMF_CODE.fd");
     let ovmf_vars_fd_path = workspace_root
         .join("flasks")
         .join("ovmf")

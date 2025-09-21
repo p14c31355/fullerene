@@ -13,6 +13,7 @@ extern crate alloc;
 
 use core::ffi::c_void;
 use uefi::{EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig};
+use x86_64::instructions::hlt;
 
 #[unsafe(export_name = "efi_main")]
 #[unsafe(link_section = ".text.efi_main")]
@@ -24,15 +25,21 @@ pub extern "efiapi" fn efi_main(
 ) -> ! {
     gdt::init(); // Initialize GDT
     interrupts::init_idt(); // Initialize IDT
+
+    serial::serial_init(); // Initialize serial early for debugging
+    vga::vga_init(); // Initialize VGA early for debugging
+
+    serial::serial_log("Initializing PICs...");
+    // Initialize the PIC before enabling interrupts to prevent premature timer interrupts.
     unsafe { interrupts::PICS.lock().initialize() };
+    serial::serial_log("PICs initialized.");
+
+    // Now enable interrupts after everything is set up.
     x86_64::instructions::interrupts::enable();
+    serial::serial_log("Interrupts enabled.");
 
-    // Initialize serial and VGA first for logging
-    serial::serial_init();
-    vga::vga_init();
-
-    vga::log("Entering efi_main...");
-    vga::log("Searching for framebuffer config table...");
+    vga::log("Entering efi_main...\n");
+    vga::log("Searching for framebuffer config table...\n");
 
     // Cast the system_table pointer to the correct type
     let system_table = unsafe { &*(system_table as *const EfiSystemTable) };
@@ -40,29 +47,24 @@ pub extern "efiapi" fn efi_main(
     let mut framebuffer_config: Option<&FullereneFramebufferConfig> = None;
 
     // Iterate through the configuration tables to find the framebuffer configuration
-    let config_tables = unsafe {
+    let config_table_entries = unsafe {
         core::slice::from_raw_parts(
             system_table.configuration_table,
             system_table.number_of_table_entries,
         )
     };
-    for table in config_tables {
-        if table.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
+    for entry in config_table_entries {
+        if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
             framebuffer_config =
-                unsafe { Some(&*(table.vendor_table as *const FullereneFramebufferConfig)) };
+                unsafe { Some(&*(entry.vendor_table as *const FullereneFramebufferConfig)) };
             break;
         }
     }
 
     if let Some(config) = framebuffer_config {
-        // Correct logging using the serial port, as `vga::log` doesn't support numeric formatting
-        // without an allocator, which is not available.
-        serial::serial_log("Found framebuffer configuration!");
-
-        // Add a check to prevent `format_args!` from overflowing internal `u16`
-        // operations if width/height are too large.
-        if config.width > u16::MAX as u32 || config.height > u16::MAX as u32 {
-            serial::serial_log("  WARNING: Framebuffer resolution is too large to format safely!");
+        if config.address == 0 {
+            vga::log("Fullerene Framebuffer Config Table found, but address is 0.\n");
+            serial::serial_log("Fullerene Framebuffer Config Table found, but address is 0.");
             serial::serial_log("  This may be the cause of the kernel panic.");
         } else {
             let _ = core::fmt::write(
@@ -75,12 +77,12 @@ pub extern "efiapi" fn efi_main(
             );
         }
     } else {
-        vga::log("Fullerene Framebuffer Config Table not found.");
+        vga::log("Fullerene Framebuffer Config Table not found.\n");
         serial::serial_log("Fullerene Framebuffer Config Table not found.");
     }
 
     // Main loop
-    vga::log("Initialization complete. Entering kernel main loop.");
+    vga::log("Initialization complete. Entering kernel main loop.\n");
     hlt_loop();
 }
 
@@ -107,9 +109,9 @@ unsafe impl core::alloc::GlobalAlloc for DummyAllocator {
     }
 }
 
-// A simple loop to halt the CPU, preventing the program from exiting.
+// A simple loop that halts the CPU until the next interrupt
 pub fn hlt_loop() -> ! {
     loop {
-        x86_64::instructions::hlt();
+        hlt();
     }
 }
