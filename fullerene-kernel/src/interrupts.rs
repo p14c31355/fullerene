@@ -40,15 +40,9 @@ pub fn init_idt() {
 }
 
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
-    serial::serial_log("EXCEPTION: BREAKPOINT");
-    let _ = core::fmt::write(
-        &mut *serial::SERIAL1.lock(),
-        format_args!(
-            r#"{:#?}
-"#,
-            stack_frame
-        ),
-    );
+    let mut writer = serial::SERIAL1.lock();
+    let _ = writeln!(writer, "EXCEPTION: BREAKPOINT");
+    let _ = writeln!(writer, "{:#?}", stack_frame);
 }
 
 extern "x86-interrupt" fn page_fault_handler(
