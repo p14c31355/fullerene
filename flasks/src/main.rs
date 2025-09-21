@@ -57,25 +57,21 @@ fn main() -> io::Result<()> {
     let iso_path = workspace_root.join("fullerene.iso");
 
     let image = IsoImage {
-        files: vec![
-            IsoImageFile {
-                source: kernel_path.clone(),
-                destination: "kernel".to_string(),
-            },
-            IsoImageFile {
-                source: bellows_path.clone(),
-                destination: "EFI/BOOT/EFI.img".to_string(),
-            },
-        ],
-        boot_info: BootInfo {
-            bios_boot: None,
-            uefi_boot: Some(UefiBootInfo {
-                boot_image: bellows_path.clone(),
-                destination_in_iso: "EFI/BOOT/EFI.img".to_string(),
-            }),
+    files: vec![
+        IsoImageFile {
+            source: kernel_path.clone(),
+            destination: "KERNEL.EFI".to_string(),
         },
-    };
-    create_custom_iso(&iso_path, &image)?;
+    ],
+    boot_info: BootInfo {
+        bios_boot: None,
+        uefi_boot: Some(UefiBootInfo {
+            boot_image: bellows_path.clone(),
+            destination_in_iso: "EFI/BOOT/EFI.img".to_string(),
+        }),
+    },
+};
+create_custom_iso(&iso_path, &image)?;
 
     // --- 4. Run QEMU with the created ISO ---
     let ovmf_fd_path = workspace_root
