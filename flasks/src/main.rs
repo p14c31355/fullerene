@@ -1,5 +1,5 @@
 // fullerene/flasks/src/main.rs
-use isobemak::create_disk_and_iso;
+use isobemak::builder::create_disk_and_iso;
 use std::{env, io, path::PathBuf, process::Command};
 
 fn main() -> io::Result<()> {

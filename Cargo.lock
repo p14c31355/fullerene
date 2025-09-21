@@ -182,7 +182,7 @@ dependencies = [
 [[package]]
 name = "isobemak"
 version = "0.2.2"
-source = "git+https://github.com/p14c31355/isobemak.git#c27d7f80944d57b25725c8276523586de496f03c"
+source = "git+https://github.com/p14c31355/isobemak.git#ccff6fb6693c2c202c22b9db941d25cb6e962114"
 dependencies = [
  "fatfs",
  "tempfile",
