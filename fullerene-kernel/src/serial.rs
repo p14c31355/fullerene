@@ -65,7 +65,7 @@ pub fn serial_init() {
 
 /// Logs a string to the serial port.
 pub fn serial_log(s: &str) {
-    SERIAL1.lock().write_string(s);
+    let _ = write!(SERIAL1.lock(), "{}\n", s);
 }
 
 pub fn panic_log(info: &core::panic::PanicInfo) {

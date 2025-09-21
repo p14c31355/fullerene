@@ -137,7 +137,7 @@ impl VgaBuffer {
     }
 
     /// Updates the hardware cursor position.
-    fn update_cursor(&self) {
+    pub fn update_cursor(&self) {
         let pos = self.row_position * BUFFER_WIDTH + self.column_position;
         unsafe {
             let mut command_port = Port::new(0x3D4);
@@ -170,7 +170,6 @@ pub fn log(msg: &str) {
     if let Some(vga) = VGA_BUFFER.get() {
         let mut writer = vga.lock();
         writer.write_string(msg);
-        writer.write_string("\n");
         writer.update_cursor();
     }
 }

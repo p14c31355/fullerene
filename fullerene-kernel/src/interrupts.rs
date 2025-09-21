@@ -1,6 +1,6 @@
 // fullerene-kernel/src/interrupts.rs
 
-use crate::{gdt, serial};
+use crate::{gdt, serial, vga};
 use core::fmt::Write;
 use lazy_static::lazy_static;
 use pc_keyboard::{DecodedKey, HandleControl, Keyboard, ScancodeSet1, layouts};
@@ -8,6 +8,8 @@ use pic8259::ChainedPics;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+
+// Programmable Interrupt Controller (PIC) configuration
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 
@@ -16,8 +18,11 @@ pub static PICS: Mutex<ChainedPics> =
     Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
 lazy_static! {
+    // The Interrupt Descriptor Table (IDT)
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
+
+        // Set up handlers for CPU exceptions
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         idt.page_fault.set_handler_fn(page_fault_handler);
         unsafe {
@@ -25,6 +30,8 @@ lazy_static! {
                 .set_handler_fn(double_fault_handler)
                 .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
         }
+
+        // Set up handlers for hardware interrupts
         unsafe {
             idt[InterruptIndex::Timer.as_u8()]
                 .set_handler_fn(timer_interrupt_handler)
@@ -35,6 +42,7 @@ lazy_static! {
     };
 }
 
+/// Initializes the IDT and loads it.
 pub fn init_idt() {
     IDT.load();
 }
@@ -81,6 +89,10 @@ impl InterruptIndex {
 }
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    let mut writer = serial::SERIAL1.lock();
+    let _ = writeln!(writer, ".");
+    vga::log(".");
+    
     // Notify the PIC that the interrupt has been handled.
     // We disable interrupts here to prevent a deadlock if the main code
     // has already locked the PICS mutex.
@@ -108,9 +120,12 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         && let Some(key) = keyboard.process_keyevent(key_event)
     {
         let mut serial_writer = serial::SERIAL1.lock();
+        let mut vga_writer = vga::VGA_BUFFER.get().unwrap().lock();
         match key {
             DecodedKey::Unicode(character) => {
                 let _ = serial_writer.write_char(character);
+                vga_writer.write_byte(character as u8);
+                vga_writer.update_cursor();
             }
             DecodedKey::RawKey(key) => {
                 let _ = write!(serial_writer, "{:?}", key);
