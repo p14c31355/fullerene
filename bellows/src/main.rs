@@ -66,7 +66,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         // `efi_image_phys` and `efi_image_size` are returned by `read_efi_file`,
         // which allocates a valid memory region and reads the file into it.
         if efi_image_size == 0 {
-            petroleum::println!("Kernel file is empty.\n");
+            petroleum::println!("Kernel file is empty.");
             panic!("Kernel file is empty.");
         }
         unsafe { slice::from_raw_parts(efi_image_phys as *const u8, efi_image_size) }
