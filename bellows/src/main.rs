@@ -154,7 +154,7 @@ fn init_gop(st: &EfiSystemTable) {
 
     if EfiStatus::from(status) != EfiStatus::Success {
         let _ = unsafe { Box::from_raw(config_ptr) };
-        petroleum::println!("Failed to install framebuffer config table.\n");
+        petroleum::println!("Failed to install framebuffer config table.");
         return;
     }
 
