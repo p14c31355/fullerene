@@ -85,6 +85,7 @@ impl InterruptIndex {
 }
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    serial::serial_log("Timer interrupt fired."); // Add this line
     // Notify the PIC that the interrupt has been handled at the very beginning.
     // Use unsafe to directly access the ChainedPics instance, avoiding the mutex deadlock.
     unsafe {
@@ -97,6 +98,7 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
         TIMER_TICKS += 1;
         
     }
+    serial::serial_log("Timer interrupt handled."); // Add this line
 }
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {

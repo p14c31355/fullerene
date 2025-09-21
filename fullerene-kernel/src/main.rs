@@ -25,16 +25,18 @@ pub extern "efiapi" fn efi_main(
 ) -> ! {
     gdt::init(); // Initialize GDT
     interrupts::init_idt(); // Initialize IDT
-    
+
+    serial::serial_init(); // Initialize serial early for debugging
+    vga::vga_init(); // Initialize VGA early for debugging
+
+    serial::serial_log("Initializing PICs...");
     // Initialize the PIC before enabling interrupts to prevent premature timer interrupts.
     unsafe { interrupts::PICS.lock().initialize() };
-
-    // Initialize serial and VGA first for logging
-    serial::serial_init();
-    vga::vga_init();
+    serial::serial_log("PICs initialized.");
     
     // Now enable interrupts after everything is set up.
     x86_64::instructions::interrupts::enable();
+    serial::serial_log("Interrupts enabled.");
 
     vga::log("Entering efi_main...");
     vga::log("Searching for framebuffer config table...");
