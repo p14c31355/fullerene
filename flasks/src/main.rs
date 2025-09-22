@@ -69,7 +69,7 @@ fn main() -> io::Result<()> {
             }),
         },
     };
-    build_iso(&iso_path, &image)?;
+    build_iso(&iso_path, &image, true)?;
 
     // --- 4. Run QEMU with the created ISO ---
     let ovmf_fd_path = workspace_root
