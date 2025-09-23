@@ -2,9 +2,9 @@
 
 use core::ffi::c_void;
 
-// Common UEFI definitions shared between bootloader and kernel.
+// Common definitions for UEFI and BIOS modes.
 
-/// GUID for FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID
+/// GUID for FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID (UEFI only)
 pub const FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID: [u8; 16] = [
     0x3c, 0x23, 0x88, 0x3f, 0x27, 0x4d, 0x78, 0x4d, 0x91, 0x2c, 0x73, 0x49, 0x3a, 0x0c, 0x23, 0x75,
 ];
@@ -19,7 +19,7 @@ pub enum EfiGraphicsPixelFormat {
     PixelFormatMax = 4,
 }
 
-/// The structure passed from the bootloader to the kernel.
+/// The structure passed from the bootloader to the kernel (UEFI).
 #[repr(C)]
 pub struct FullereneFramebufferConfig {
     pub address: u64,
@@ -27,6 +27,15 @@ pub struct FullereneFramebufferConfig {
     pub height: u32,
     pub stride: u32,
     pub pixel_format: EfiGraphicsPixelFormat,
+}
+
+/// BIOS VGA config (fixed for mode 13h).
+#[repr(C)]
+pub struct VgaFramebufferConfig {
+    pub address: u64,
+    pub width: u32,
+    pub height: u32,
+    pub bpp: u32,  // Bits per pixel
 }
 
 #[repr(usize)]
@@ -85,7 +94,7 @@ pub enum EfiMemoryType {
     EfiMaxMemoryType = 15,
 }
 
-/// GUID for EFI_SIMPLE_FILE_SYSTEM_PROTOCOL
+/// GUID for EFI_SIMPLE_FILE_SYSTEM_PROTOCOL (UEFI)
 pub const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: [u8; 16] = [
     0x96, 0x4e, 0x5b, 0x09, 0x21, 0x42, 0x06, 0x4f, 0x85, 0x3d, 0x05, 0x22, 0x22, 0x0b, 0xa2, 0x19,
 ];
@@ -94,15 +103,15 @@ pub const EFI_FILE_INFO_GUID: [u8; 16] = [
     0x0d, 0x95, 0xde, 0x05, 0x93, 0x31, 0xd2, 0x11, 0x8a, 0x41, 0x00, 0xa0, 0xc9, 0x3e, 0xc7, 0xea,
 ];
 
-/// GUID for EFI_GRAPHICS_OUTPUT_PROTOCOL
+/// GUID for EFI_GRAPHICS_OUTPUT_PROTOCOL (UEFI)
 pub const EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID: [u8; 16] = [
     0xde, 0xa9, 0x42, 0x90, 0x4c, 0x23, 0x38, 0x4a, 0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a,
 ];
 
-/// EFI_STATUS code for EFI_BUFFER_TOO_SMALL
+/// EFI_STATUS code for EFI_BUFFER_TOO_SMALL (UEFI)
 pub const EFI_BUFFER_TOO_SMALL: usize = 0x8000000000000005;
 
-/// Minimal EFI_FILE_INFO
+/// Minimal EFI_FILE_INFO (UEFI)
 #[repr(C, packed)]
 pub struct EfiFileInfo {
     _size: u64,
@@ -121,7 +130,7 @@ pub struct EfiConfigurationTable {
     pub vendor_table: usize,
 }
 
-/// Minimal UEFI System Table and protocols used by this loader
+/// Minimal UEFI System Table and protocols used by this loader (UEFI)
 #[repr(C)]
 pub struct EfiSystemTable {
     _hdr: [u8; 24],
@@ -139,7 +148,7 @@ pub struct EfiSystemTable {
     pub configuration_table: *mut EfiConfigurationTable,
 }
 
-/// Very small subset of Boot Services we call
+/// Very small subset of Boot Services we call (UEFI)
 #[repr(C)]
 pub struct EfiBootServices {
     _pad0: [usize; 2],
@@ -162,7 +171,7 @@ pub struct EfiBootServices {
     pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize,
 }
 
-/// Minimal UEFI Simple Text Output Protocol
+/// Minimal UEFI Simple Text Output Protocol (UEFI)
 #[repr(C)]
 pub struct EfiSimpleTextOutput {
     _pad: [usize; 2],
@@ -170,7 +179,7 @@ pub struct EfiSimpleTextOutput {
     pub output_string: extern "efiapi" fn(*mut EfiSimpleTextOutput, *const u16) -> usize,
 }
 
-/// A minimal subset of EFI_FILE_PROTOCOL
+/// A minimal subset of EFI_FILE_PROTOCOL (UEFI)
 #[repr(C)]
 pub struct EfiFile {
     _pad0: [usize; 3],
@@ -186,7 +195,7 @@ pub struct EfiFile {
     pub get_info: extern "efiapi" fn(*mut EfiFile, *const u8, *mut usize, *mut c_void) -> usize,
 }
 
-/// Minimal EFI_SIMPLE_FILE_SYSTEM_PROTOCOL
+/// Minimal EFI_SIMPLE_FILE_SYSTEM_PROTOCOL (UEFI)
 #[repr(C)]
 pub struct EfiSimpleFileSystem {
     _pad: [usize; 1],
@@ -194,14 +203,14 @@ pub struct EfiSimpleFileSystem {
     pub open_volume: extern "efiapi" fn(*mut EfiSimpleFileSystem, *mut *mut EfiFile) -> usize,
 }
 
-/// Minimal EFI_GRAPHICS_OUTPUT_PROTOCOL
+/// Minimal EFI_GRAPHICS_OUTPUT_PROTOCOL (UEFI)
 #[repr(C)]
 pub struct EfiGraphicsOutputProtocol {
     _pad: [usize; 3],
     pub mode: *mut EfiGraphicsOutputProtocolMode,
 }
 
-/// Minimal EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE
+/// Minimal EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE (UEFI)
 #[repr(C)]
 pub struct EfiGraphicsOutputProtocolMode {
     _pad: [usize; 2],
@@ -212,7 +221,7 @@ pub struct EfiGraphicsOutputProtocolMode {
     pub frame_buffer_size: u64,
 }
 
-/// Minimal EFI_GRAPHICS_OUTPUT_MODE_INFORMATION
+/// Minimal EFI_GRAPHICS_OUTPUT_MODE_INFORMATION (UEFI)
 #[repr(C)]
 pub struct EfiGraphicsOutputModeInformation {
     _version: u32,
@@ -223,7 +232,7 @@ pub struct EfiGraphicsOutputModeInformation {
     pub pixels_per_scan_line: u32,
 }
 
-/// A custom error type for the bootloader.
+/// A custom error type for the bootloader (UEFI/BIOS).
 #[derive(Debug, Clone, Copy)]
 pub enum BellowsError {
     Efi { status: EfiStatus },

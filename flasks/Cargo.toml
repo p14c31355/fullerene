@@ -1,7 +1,7 @@
 [package]
 name = "flasks"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
-isobemak = { git = "https://github.com/p14c31355/isobemak.git" }
+isobemak = { path = "../../isobemak"}

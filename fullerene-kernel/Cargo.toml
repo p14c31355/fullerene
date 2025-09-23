@@ -2,7 +2,7 @@
 [package]
 name = "fullerene-kernel"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 x86_64 = { version = "0.15.2", default-features = false, features = [
@@ -25,3 +25,10 @@ petroleum = { path = "../petroleum" }
 debug = true
 split-debuginfo = "packed"
 panic = "abort"
+
+[profile.release]
+debug = true
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+overflow-checks = true

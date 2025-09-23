@@ -7,12 +7,13 @@ mod gdt; // Add GDT module
 mod graphics;
 mod interrupts;
 mod serial;
+mod vga;
 
 extern crate alloc;
 
 use core::ffi::c_void;
 use petroleum::common::{
-    EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
+    EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig, VgaFramebufferConfig,
 };
 use x86_64::instructions::hlt;
 
@@ -80,6 +81,45 @@ pub extern "efiapi" fn efi_main(
     } else {
         serial::serial_log("Fullerene Framebuffer Config Table not found.\n");
     }
+
+    // Main loop
+    serial::serial_log("Initialization complete. Entering kernel main loop.\n");
+    hlt_loop();
+}
+
+#[cfg(not(target_os = "uefi"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _start() -> ! {
+    gdt::init(); // Initialize GDT
+    interrupts::init(); // Initialize IDT
+
+    serial::serial_init(); // Initialize serial early for debugging
+
+    serial::serial_log("Initializing PICs...");
+    // Initialize the PIC before enabling interrupts to prevent premature timer interrupts.
+    unsafe { interrupts::PICS.lock().initialize() };
+    serial::serial_log("PICs initialized.");
+
+    // Now enable interrupts after everything is set up.
+    x86_64::instructions::interrupts::enable();
+    serial::serial_log("Interrupts enabled.");
+
+    serial::serial_log("Entering _start...\n");
+
+    // BIOS VGA initialization (text mode)
+    vga::vga_init();
+    serial::serial_log("VGA text mode initialized.");
+
+    // Graphics initialization for VGA framebuffer (graphics mode)
+    let vga_config = VgaFramebufferConfig {
+        address: 0xA0000,
+        width: 320,
+        height: 200,
+        bpp: 8,
+    };
+    graphics::init_vga(&vga_config);
+
+    serial::serial_log("VGA graphics mode initialized.");
 
     // Main loop
     serial::serial_log("Initialization complete. Entering kernel main loop.\n");
