@@ -17,6 +17,7 @@ use petroleum::common::{
 };
 use x86_64::instructions::hlt;
 
+#[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]
 #[unsafe(link_section = ".text.efi_main")]
 pub extern "efiapi" fn efi_main(
