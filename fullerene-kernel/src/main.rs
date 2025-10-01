@@ -31,14 +31,7 @@ pub extern "efiapi" fn efi_main(
 
     serial::serial_init(); // Initialize serial early for debugging
 
-    serial::serial_log("Initializing PICs...");
-    // Initialize the PIC before enabling interrupts to prevent premature timer interrupts.
-    unsafe { interrupts::PICS.lock().initialize() };
-    serial::serial_log("PICs initialized.");
-
-    // Now enable interrupts after everything is set up.
-    x86_64::instructions::interrupts::enable();
-    serial::serial_log("Interrupts enabled.");
+    serial::serial_log("Interrupts initialized via init().");
 
     serial::serial_log("Entering efi_main...\n");
     serial::serial_log("Searching for framebuffer config table...\n");
@@ -96,14 +89,7 @@ pub unsafe extern "C" fn _start() -> ! {
 
     serial::serial_init(); // Initialize serial early for debugging
 
-    serial::serial_log("Initializing PICs...");
-    // Initialize the PIC before enabling interrupts to prevent premature timer interrupts.
-    unsafe { interrupts::PICS.lock().initialize() };
-    serial::serial_log("PICs initialized.");
-
-    // Now enable interrupts after everything is set up.
-    x86_64::instructions::interrupts::enable();
-    serial::serial_log("Interrupts enabled.");
+    serial::serial_log("Interrupts initialized via init().");
 
     serial::serial_log("Entering _start...\n");
 
