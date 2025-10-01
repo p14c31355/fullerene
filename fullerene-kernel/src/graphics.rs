@@ -324,12 +324,19 @@ fn setup_misc_output() {
 
 /// Configures the VGA Sequencer registers.
 fn setup_sequencer() {
+    // Sequencer Register Indices
+    const SEQ_RESET: u8 = 0x00;
+    const SEQ_CLOCKING_MODE: u8 = 0x01;
+    const SEQ_MAP_MASK: u8 = 0x02;
+    const SEQ_CHARACTER_MAP_SELECT: u8 = 0x03;
+    const SEQ_MEMORY_MODE: u8 = 0x04;
+
     const SEQUENCER_VALUES: &[(u8, u8)] = &[
-        (0x00, 0x03), // Reset
-        (0x01, 0x01), // Clocking mode
-        (0x02, 0x0F), // Map mask
-        (0x03, 0x00), // Character map select
-        (0x04, 0x0E), // Memory mode (for 256 color, chain 4)
+        (SEQ_RESET, 0x03), // Reset
+        (SEQ_CLOCKING_MODE, 0x01), // Clocking mode
+        (SEQ_MAP_MASK, 0x0F), // Map mask
+        (SEQ_CHARACTER_MAP_SELECT, 0x00), // Character map select
+        (SEQ_MEMORY_MODE, 0x0E), // Memory mode (for 256 color, chain 4)
     ];
     for &(index, value) in SEQUENCER_VALUES {
         write_indexed(
@@ -343,25 +350,45 @@ fn setup_sequencer() {
 
 /// Configures the VGA CRTC (Cathode Ray Tube Controller) registers.
 fn setup_crtc() {
+    // CRTC Register Indices
+    const CRTC_HORIZONTAL_TOTAL: u8 = 0x00;
+    const CRTC_HORIZONTAL_DISPLAYED: u8 = 0x01;
+    const CRTC_HORIZONTAL_BLANKING_START: u8 = 0x02;
+    const CRTC_HORIZONTAL_BLANKING_END: u8 = 0x03;
+    const CRTC_HORIZONTAL_SYNC_START: u8 = 0x04;
+    const CRTC_HORIZONTAL_SYNC_END: u8 = 0x05;
+    const CRTC_VERTICAL_TOTAL: u8 = 0x06;
+    const CRTC_OVERFLOW: u8 = 0x07;
+    const CRTC_PRESET_ROW_SCAN: u8 = 0x08;
+    const CRTC_MAXIMUM_SCAN_LINE: u8 = 0x09;
+    const CRTC_VERTICAL_SYNC_START: u8 = 0x10;
+    const CRTC_VERTICAL_SYNC_END: u8 = 0x11;
+    const CRTC_VERTICAL_DISPLAYED: u8 = 0x12;
+    const CRTC_ROW_OFFSET: u8 = 0x13;
+    const CRTC_UNDERLINE_LOCATION: u8 = 0x14;
+    const CRTC_VERTICAL_BLANKING_START: u8 = 0x15;
+    const CRTC_VERTICAL_BLANKING_END: u8 = 0x16;
+    const CRTC_MODE_CONTROL: u8 = 0x17;
+
     const CRTC_VALUES: &[(u8, u8)] = &[
-        (0x00, 0x5F), // Horizontal total
-        (0x01, 0x4F), // Horizontal displayed
-        (0x02, 0x50), // Horizontal blanking start
-        (0x03, 0x82), // Horizontal blanking end
-        (0x04, 0x54), // Horizontal sync start
-        (0x05, 0x80), // Horizontal sync end
-        (0x06, 0xBF), // Vertical total
-        (0x07, 0x1F), // Overflow
-        (0x08, 0x00), // Preset row scan
-        (0x09, 0x41), // Maximum scan line
-        (0x10, 0x9C), // Vertical sync start
-        (0x11, 0x8E), // Vertical sync end
-        (0x12, 0x8F), // Vertical displayed
-        (0x13, 0x28), // Row offset
-        (0x14, 0x40), // Underline location
-        (0x15, 0x96), // Vertical blanking start
-        (0x16, 0xB9), // Vertical blanking end
-        (0x17, 0xA3), // Line compare / Mode control
+        (CRTC_HORIZONTAL_TOTAL, 0x5F), // Horizontal total
+        (CRTC_HORIZONTAL_DISPLAYED, 0x4F), // Horizontal displayed
+        (CRTC_HORIZONTAL_BLANKING_START, 0x50), // Horizontal blanking start
+        (CRTC_HORIZONTAL_BLANKING_END, 0x82), // Horizontal blanking end
+        (CRTC_HORIZONTAL_SYNC_START, 0x54), // Horizontal sync start
+        (CRTC_HORIZONTAL_SYNC_END, 0x80), // Horizontal sync end
+        (CRTC_VERTICAL_TOTAL, 0xBF), // Vertical total
+        (CRTC_OVERFLOW, 0x1F), // Overflow
+        (CRTC_PRESET_ROW_SCAN, 0x00), // Preset row scan
+        (CRTC_MAXIMUM_SCAN_LINE, 0x41), // Maximum scan line
+        (CRTC_VERTICAL_SYNC_START, 0x9C), // Vertical sync start
+        (CRTC_VERTICAL_SYNC_END, 0x8E), // Vertical sync end
+        (CRTC_VERTICAL_DISPLAYED, 0x8F), // Vertical displayed
+        (CRTC_ROW_OFFSET, 0x28), // Row offset
+        (CRTC_UNDERLINE_LOCATION, 0x40), // Underline location
+        (CRTC_VERTICAL_BLANKING_START, 0x96), // Vertical blanking start
+        (CRTC_VERTICAL_BLANKING_END, 0xB9), // Vertical blanking end
+        (CRTC_MODE_CONTROL, 0xA3), // Line compare / Mode control
     ];
     for &(index, value) in CRTC_VALUES {
         write_indexed(
@@ -375,16 +402,27 @@ fn setup_crtc() {
 
 /// Configures the VGA Graphics Controller registers.
 fn setup_graphics_controller() {
+    // Graphics Controller Register Indices
+    const GC_SET_RESET: u8 = 0x00;
+    const GC_ENABLE_SET_RESET: u8 = 0x01;
+    const GC_COLOR_COMPARE: u8 = 0x02;
+    const GC_DATA_ROTATE: u8 = 0x03;
+    const GC_READ_MAP_SELECT: u8 = 0x04;
+    const GC_GRAPHICS_MODE: u8 = 0x05;
+    const GC_MISCELLANEOUS: u8 = 0x06;
+    const GC_COLOR_DONT_CARE: u8 = 0x07;
+    const GC_BIT_MASK: u8 = 0x08;
+
     const GC_VALUES: &[(u8, u8)] = &[
-        (0x00, 0x00), // Set/reset
-        (0x01, 0x00), // Enable set/reset
-        (0x02, 0x00), // Color compare
-        (0x03, 0x00), // Data rotate
-        (0x04, 0x00), // Read map select
-        (0x05, 0x40), // Graphics mode (256 color)
-        (0x06, 0x05), // Miscellaneous
-        (0x07, 0x0F), // Color don't care
-        (0x08, 0xFF), // Bit mask
+        (GC_SET_RESET, 0x00), // Set/reset
+        (GC_ENABLE_SET_RESET, 0x00), // Enable set/reset
+        (GC_COLOR_COMPARE, 0x00), // Color compare
+        (GC_DATA_ROTATE, 0x00), // Data rotate
+        (GC_READ_MAP_SELECT, 0x00), // Read map select
+        (GC_GRAPHICS_MODE, 0x40), // Graphics mode (256 color)
+        (GC_MISCELLANEOUS, 0x05), // Miscellaneous
+        (GC_COLOR_DONT_CARE, 0x0F), // Color don't care
+        (GC_BIT_MASK, 0xFF), // Bit mask
     ];
     for &(index, value) in GC_VALUES {
         write_indexed(
@@ -398,22 +436,39 @@ fn setup_graphics_controller() {
 
 /// Configures the VGA Attribute Controller registers.
 fn setup_attribute_controller() {
+    // Attribute Controller Register Indices
+    const AC_MODE_CONTROL_1: u8 = 0x00;
+    const AC_OVERSCAN_COLOR: u8 = 0x01;
+    const AC_COLOR_PLANE_ENABLE: u8 = 0x02;
+    const AC_HORIZONTAL_PIXEL_PANNING: u8 = 0x03;
+    const AC_COLOR_SELECT: u8 = 0x04;
+    const AC_MODE_CONTROL_2: u8 = 0x05;
+    const AC_SCROLL: u8 = 0x06;
+    const AC_GRAPHICS_MODE: u8 = 0x07;
+    const AC_LINE_GRAPHICS: u8 = 0x08;
+    const AC_FOREGROUND_COLOR: u8 = 0x09;
+    const AC_MODE_CONTROL_256_COLORS: u8 = 0x10;
+    const AC_OVERSCAN_COLOR_BORDER: u8 = 0x11;
+    const AC_COLOR_PLANE_ENABLE_2: u8 = 0x12;
+    const AC_HORIZONTAL_PIXEL_PANNING_2: u8 = 0x13;
+    const AC_COLOR_SELECT_2: u8 = 0x14;
+
     const AC_VALUES: &[(u8, u8)] = &[
-        (0x00, 0x00), // Mode control 1
-        (0x01, 0x00), // Overscan color
-        (0x02, 0x0F), // Color plane enable
-        (0x03, 0x00), // Horizontal pixel panning
-        (0x04, 0x00), // Color select
-        (0x05, 0x00), // Mode control 2
-        (0x06, 0x00), // Scroll
-        (0x07, 0x00), // Graphics mode
-        (0x08, 0xFF), // Line graphics
-        (0x09, 0x00), // Foreground color
-        (0x10, 0x41), // Mode control (for 256 colors)
-        (0x11, 0x00), // Overscan color (border)
-        (0x12, 0x0F), // Color plane enable
-        (0x13, 0x00), // Horizontal pixel panning
-        (0x14, 0x00), // Color select
+        (AC_MODE_CONTROL_1, 0x00), // Mode control 1
+        (AC_OVERSCAN_COLOR, 0x00), // Overscan color
+        (AC_COLOR_PLANE_ENABLE, 0x0F), // Color plane enable
+        (AC_HORIZONTAL_PIXEL_PANNING, 0x00), // Horizontal pixel panning
+        (AC_COLOR_SELECT, 0x00), // Color select
+        (AC_MODE_CONTROL_2, 0x00), // Mode control 2
+        (AC_SCROLL, 0x00), // Scroll
+        (AC_GRAPHICS_MODE, 0x00), // Graphics mode
+        (AC_LINE_GRAPHICS, 0xFF), // Line graphics
+        (AC_FOREGROUND_COLOR, 0x00), // Foreground color
+        (AC_MODE_CONTROL_256_COLORS, 0x41), // Mode control (for 256 colors)
+        (AC_OVERSCAN_COLOR_BORDER, 0x00), // Overscan color (border)
+        (AC_COLOR_PLANE_ENABLE_2, 0x0F), // Color plane enable
+        (AC_HORIZONTAL_PIXEL_PANNING_2, 0x00), // Horizontal pixel panning
+        (AC_COLOR_SELECT_2, 0x00), // Color select
     ];
 
     unsafe {
