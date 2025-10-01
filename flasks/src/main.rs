@@ -57,20 +57,26 @@ fn main() -> io::Result<()> {
     let iso_path = workspace_root.join("fullerene.iso");
 
     let image = IsoImage {
-        files: vec![IsoImageFile {
-            source: kernel_path.clone(),
-            destination: "EFI/BOOT/KERNEL.EFI".to_string(),
-        }],
+        files: vec![
+            IsoImageFile {
+                source: kernel_path.clone(),
+                destination: "EFI/BOOT/KERNEL.EFI".to_string(),
+            },
+            IsoImageFile {
+                source: bellows_path.clone(),
+                destination: "EFI/BOOT/BOOTX64.EFI".to_string(),
+            },
+        ],
         boot_info: BootInfo {
             bios_boot: None,
-            uefi_boot: Some(UefiBootInfo {
-                boot_image: bellows_path.clone(),
-                kernel_image: kernel_path.clone(),
-                destination_in_iso: "EFI/BOOT/BOOTX64.EFI".to_string(),
-            }),
+                uefi_boot: Some(UefiBootInfo {
+                    boot_image: bellows_path.clone(),
+                    kernel_image: kernel_path.clone(),
+                    destination_in_iso: "EFI/BOOT/BOOTX64.EFI".to_string(),
+                }),
         },
     };
-    build_iso(&iso_path, &image, true)?;
+    build_iso(&iso_path, &image, false)?;
 
     // --- 4. Run QEMU with the created ISO ---
     let ovmf_fd_path = workspace_root
@@ -118,7 +124,9 @@ fn main() -> io::Result<()> {
         "-nodefaults",
     ];
 
-    let qemu_status = Command::new("qemu-system-x86_64")
+    let qemu_status = Command::new("/usr/bin/qemu-system-x86_64")
+        .env("LD_PRELOAD", "/lib/x86_64-linux-gnu/libpthread.so.0")
+        .env("LD_LIBRARY_PATH", "/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu")
         .args(qemu_args)
         .status()?;
 
