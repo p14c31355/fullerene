@@ -4,5 +4,9 @@
     "fullerene-kernel/Cargo.toml",
     "toluene/Cargo.toml"
   ],
-  "rust-analyzer.checkOnSave.extraArgs": ["--target", "x86_64-unknown-uefi"]
+  "rust-analyzer.checkOnSave.extraArgs": ["--target", "x86_64-unknown-uefi"],
+  "terminal.integrated.env.linux": {
+    "GTK_PATH": "",
+    "GIO_MODULE_DIR": ""
+  }
 }
