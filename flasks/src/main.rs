@@ -69,11 +69,11 @@ fn main() -> io::Result<()> {
         ],
         boot_info: BootInfo {
             bios_boot: None,
-                uefi_boot: Some(UefiBootInfo {
-                    boot_image: bellows_path.clone(),
-                    kernel_image: kernel_path.clone(),
-                    destination_in_iso: "EFI/BOOT/BOOTX64.EFI".to_string(),
-                }),
+            uefi_boot: Some(UefiBootInfo {
+                boot_image: bellows_path.clone(),
+                kernel_image: kernel_path.clone(),
+                destination_in_iso: "EFI/BOOT/BOOTX64.EFI".to_string(),
+            }),
         },
     };
     build_iso(&iso_path, &image, false)?;
