@@ -97,7 +97,7 @@ fn main() -> io::Result<()> {
         ovmf_vars_fd_path.display()
     );
 
-    let iso_path_str = iso_path.to_str().unwrap();
+    let iso_path_str = iso_path.to_str().expect("ISO path should be valid UTF-8");
 
     let qemu_args = [
         "-m",
