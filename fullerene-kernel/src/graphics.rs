@@ -5,9 +5,11 @@ use spin::{Mutex, Once};
 use core::marker::{Send, Sync};
 use x86_64::instructions::port::Port;
 
+use crate::font::FONT_8X8;
+
 // A simple 8x8 PC screen font (Code Page 437).
 // This is a placeholder. A more complete font would be needed for full ASCII/Unicode support.
-static FONT: [u8; 8605] = *include_bytes!("font.txt");
+static FONT: [[u8; 8]; 128] = FONT_8X8;
 
 #[cfg(target_os = "uefi")]
 struct FramebufferWriter {
@@ -111,11 +113,12 @@ impl FramebufferWriter {
 
     fn draw_char(&self, c: char, x: u32, y: u32) {
         let char_idx = (c as u8) as usize;
-        let glyph_start = char_idx * 8;
-        if !c.is_ascii() || glyph_start + 8 > FONT.len() {
+        // The FONT is now a 2D array [[u8; 8]; 128], so we access it directly.
+        // We also need to ensure char_idx is within bounds for the 128 glyphs.
+        if !c.is_ascii() || char_idx >= 128 {
             return;
         }
-        let font_char = &FONT[glyph_start..glyph_start + 8];
+        let font_char = &FONT[char_idx];
         for (row, &byte) in font_char.iter().enumerate() {
             for col in 0..8 {
                 let color = if (byte >> (7 - col)) & 1 == 1 {
@@ -220,11 +223,10 @@ impl VgaWriter {
 
     fn draw_char(&self, c: char, x: u32, y: u32) {
         let char_idx = (c as u8) as usize;
-        let glyph_start = char_idx * 8;
-        if !c.is_ascii() || glyph_start + 8 > FONT.len() {
+        if !c.is_ascii() || char_idx >= 128 {
             return;
         }
-        let font_char = &FONT[glyph_start..glyph_start + 8];
+        let font_char = &FONT[char_idx];
         for (row, &byte) in font_char.iter().enumerate() {
             for col in 0..8 {
                 let color = if (byte >> (7 - col)) & 1 == 1 {

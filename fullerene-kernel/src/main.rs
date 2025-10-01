@@ -9,6 +9,7 @@ mod interrupts;
 mod serial;
 mod vga;
 mod heap;
+pub(crate) mod font;
 
 extern crate alloc;
 
