@@ -51,7 +51,7 @@ fn main() -> io::Result<()> {
     if !status.success() {
         return Err(io::Error::other("bellows build failed"));
     }
-    let bellows_path = workspace_root.join("bellows").join("target").join("x86_64-unknown-uefi").join("debug").join("bellows.efi");
+    let bellows_path = workspace_root.join("target").join("x86_64-unknown-uefi").join("debug").join("bellows.efi");
 
     // --- 3. Create ISO using isobemak ---
     let iso_path = workspace_root.join("fullerene.iso");
