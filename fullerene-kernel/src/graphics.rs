@@ -1,6 +1,9 @@
 use core::fmt;
-use petroleum::common::VgaFramebufferConfig;
+use alloc::boxed::Box; // Import Box
+use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig, VgaFramebufferConfig}; // Import missing types
 use spin::{Mutex, Once};
+
+use crate::display::DisplayWriter;
 
 // A simple 8x8 PC screen font (Code Page 437).
 // This is a placeholder. A more complete font would be needed for full ASCII/Unicode support.
@@ -78,7 +81,7 @@ impl FramebufferWriter {
         }
     }
 
-    fn new_line(&mut self) {
+    pub fn new_line(&mut self) {
         self.y_pos += 8; // Font height
         self.x_pos = 0;
         if self.y_pos >= self.framebuffer.height {
@@ -143,6 +146,28 @@ impl core::fmt::Write for FramebufferWriter {
     }
 }
 
+#[cfg(target_os = "uefi")]
+impl DisplayWriter for FramebufferWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        // Call the write_str method provided by core::fmt::Write implementation
+        self.write_str(s)
+    }
+
+    fn clear_screen(&mut self) {
+        // Call the actual implementation method
+        self.clear_screen()
+    }
+
+    fn new_line(&mut self) {
+        // Call the actual implementation method
+        self.new_line()
+    }
+
+    fn update_cursor(&mut self) {
+        // No-op for framebuffer
+    }
+}
+
 #[cfg(not(target_os = "uefi"))]
 struct VgaWriter {
     address: u64,
@@ -186,7 +211,7 @@ impl VgaWriter {
         }
     }
 
-    fn new_line(&mut self) {
+    pub fn new_line(&mut self) {
         self.y_pos += 8; // Font height
         self.x_pos = 0;
         if self.y_pos >= self.height {
@@ -250,17 +275,39 @@ impl core::fmt::Write for VgaWriter {
     }
 }
 
+#[cfg(not(target_os = "uefi"))]
+impl DisplayWriter for VgaWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        // Call the write_str method provided by core::fmt::Write implementation
+        self.write_str(s)
+    }
+
+    fn clear_screen(&mut self) {
+        // Call the actual implementation method
+        self.clear_screen()
+    }
+
+    fn new_line(&mut self) {
+        // Call the actual implementation method
+        self.new_line()
+    }
+
+    fn update_cursor(&mut self) {
+        // No-op for VGA graphics mode
+    }
+}
+
 #[cfg(target_os = "uefi")]
-pub static WRITER_UEFI: Once<Mutex<FramebufferWriter>> = Once::new();
+pub static WRITER_UEFI: Once<Mutex<Box<dyn DisplayWriter>>> = Once::new();
 
 #[cfg(not(target_os = "uefi"))]
-pub static WRITER_BIOS: Once<Mutex<VgaWriter>> = Once::new();
+pub static WRITER_BIOS: Once<Mutex<Box<dyn DisplayWriter>>> = Once::new();
 
 #[cfg(target_os = "uefi")]
 pub fn init(config: &FullereneFramebufferConfig) {
     let writer = FramebufferWriter::new(config);
     writer.clear_screen();
-    WRITER_UEFI.call_once(|| Mutex::new(writer));
+    WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer)));
 }
 
 #[cfg(not(target_os = "uefi"))]
@@ -377,16 +424,16 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
 
     let writer = VgaWriter::new(config);
     writer.clear_screen();
-    WRITER_BIOS.call_once(|| Mutex::new(writer));
+    WRITER_BIOS.call_once(|| Mutex::new(Box::new(writer)));
 }
 
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
-    use core::fmt::Write;
     #[cfg(target_os = "uefi")]
     {
         if let Some(writer) = WRITER_UEFI.get() {
             let mut writer = writer.lock();
+            // Use the DisplayWriter trait method
             writer.write_fmt(args).ok();
         }
     }
@@ -394,6 +441,7 @@ pub fn _print(args: fmt::Arguments) {
     {
         if let Some(writer) = WRITER_BIOS.get() {
             let mut writer = writer.lock();
+            // Use the DisplayWriter trait method
             writer.write_fmt(args).ok();
         }
     }

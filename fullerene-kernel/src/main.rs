@@ -34,6 +34,9 @@ pub extern "efiapi" fn efi_main(
 
     serial::serial_init(); // Initialize serial early for debugging
 
+    // Common initialization for both UEFI and BIOS
+    init_common();
+
     serial::serial_log("Interrupts initialized via init().");
 
     serial::serial_log("Entering efi_main...\n");
@@ -84,17 +87,17 @@ pub extern "efiapi" fn efi_main(
     hlt_loop();
 }
 
-#[cfg(not(target_os = "uefi"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn _start() -> ! {
+// Function to perform common initialization steps for both UEFI and BIOS.
+fn init_common() {
     gdt::init(); // Initialize GDT
     interrupts::init(); // Initialize IDT
     heap::init();
-
     serial::serial_init(); // Initialize serial early for debugging
+}
 
-    serial::serial_log("Interrupts initialized via init().");
-
+#[cfg(not(target_os = "uefi"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _start() -> ! {
     serial::serial_log("Entering _start...\n");
 
     // BIOS VGA initialization (text mode)
