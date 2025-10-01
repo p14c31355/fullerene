@@ -293,7 +293,7 @@ mod tests {
     fn test_color_code_new() {
         let color_code = ColorCode::new(Color::Red, Color::Blue);
         // Blue (0x1) << 4 | Red (0x4) = 0x14
-        assert_eq!(color_code.0, 0x14);
+        assert_eq!(color_code.0, (Color::Blue as u8) << 4 | (Color::Red as u8));
     }
 
     #[test]
