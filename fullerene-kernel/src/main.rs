@@ -28,12 +28,6 @@ pub extern "efiapi" fn efi_main(
     _memory_map: *mut c_void,
     _memory_map_size: usize,
 ) -> ! {
-    gdt::init(); // Initialize GDT
-    interrupts::init(); // Initialize IDT
-    heap::init();
-
-    serial::serial_init(); // Initialize serial early for debugging
-
     // Common initialization for both UEFI and BIOS
     init_common();
 

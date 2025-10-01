@@ -272,26 +272,18 @@ pub fn init(config: &FullereneFramebufferConfig) {
     WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer)));
 }
 
-#[cfg(not(target_os = "uefi"))]
-const VGA_MISC_OUTPUT_WRITE: u16 = 0x3C2;
-#[cfg(not(target_os = "uefi"))]
-const VGA_CRTC_INDEX: u16 = 0x3D4;
-#[cfg(not(target_os = "uefi"))]
-const VGA_CRTC_DATA: u16 = 0x3D5;
-#[cfg(not(target_os = "uefi"))]
-const VGA_ATTRIBUTE_INDEX: u16 = 0x3C0;
-#[cfg(not(target_os = "uefi"))]
-const VGA_DAC_INDEX: u16 = 0x3C8;
-#[cfg(not(target_os = "uefi"))]
-const VGA_DAC_DATA: u16 = 0x3C9;
-#[cfg(not(target_os = "uefi"))]
-const VGA_GRAPHICS_INDEX: u16 = 0x3CE;
-#[cfg(not(target_os = "uefi"))]
-const VGA_GRAPHICS_DATA: u16 = 0x3CF;
-#[cfg(not(target_os = "uefi"))]
-const VGA_SEQUENCER_INDEX: u16 = 0x3C4;
-#[cfg(not(target_os = "uefi"))]
-const VGA_SEQUENCER_DATA: u16 = 0x3C5;
+// Define constants for VGA port addresses
+const VGA_MISC_OUTPUT_PORT_ADDRESS: u16 = 0x3C2;
+const VGA_CRTC_INDEX_PORT_ADDRESS: u16 = 0x3D4;
+const VGA_CRTC_DATA_PORT_ADDRESS: u16 = 0x3D5;
+const VGA_STATUS_PORT_ADDRESS: u16 = 0x3DA;
+const VGA_ATTRIBUTE_INDEX_PORT_ADDRESS: u16 = 0x3C0;
+const VGA_DAC_INDEX_PORT_ADDRESS: u16 = 0x3C8;
+const VGA_DAC_DATA_PORT_ADDRESS: u16 = 0x3C9;
+const VGA_GRAPHICS_INDEX_PORT_ADDRESS: u16 = 0x3CE;
+const VGA_GRAPHICS_DATA_PORT_ADDRESS: u16 = 0x3CF;
+const VGA_SEQUENCER_INDEX_PORT_ADDRESS: u16 = 0x3C4;
+const VGA_SEQUENCER_DATA_PORT_ADDRESS: u16 = 0x3C5;
 
 #[cfg(not(target_os = "uefi"))]
 pub fn init_vga(config: &VgaFramebufferConfig) {
@@ -299,12 +291,12 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
 
     unsafe {
         // Miscellaneous output register
-        let mut misc_output_port = Port::new(VGA_MISC_OUTPUT_WRITE);
-        misc_output_port.write(0x63u8);
+        let mut misc_output_port = Port::new(VGA_MISC_OUTPUT_PORT_ADDRESS);
+        misc_output_port.write(0x63u8); // Value for enabling VGA
 
         // CRTC registers
-        let mut crtc_index_port = Port::new(VGA_CRTC_INDEX);
-        let mut crtc_data_port = Port::new(VGA_CRTC_DATA);
+        let mut crtc_index_port = Port::new(VGA_CRTC_INDEX_PORT_ADDRESS);
+        let mut crtc_data_port = Port::new(VGA_CRTC_DATA_PORT_ADDRESS);
         crtc_index_port.write(0x00u8); crtc_data_port.write(0x5Fu8); // Horizontal total
         crtc_index_port.write(0x01u8); crtc_data_port.write(0x4Fu8); // Horizontal displayed
         crtc_index_port.write(0x02u8); crtc_data_port.write(0x50u8); // Horizontal blanking start
@@ -325,11 +317,11 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
         crtc_index_port.write(0x17u8); crtc_data_port.write(0xA3u8); // Line compare / Mode control
 
         // Attribute controller registers
-        let mut status_port = Port::<u8>::new(0x3DA);
+        let mut status_port = Port::<u8>::new(VGA_STATUS_PORT_ADDRESS);
         unsafe {
-            let _ = status_port.read();
+            let _ = status_port.read(); // Wait for horizontal retrace
         }
-        let mut attribute_port = Port::<u8>::new(VGA_ATTRIBUTE_INDEX);
+        let mut attribute_port = Port::<u8>::new(VGA_ATTRIBUTE_INDEX_PORT_ADDRESS);
         attribute_port.write(0x00u8); attribute_port.write(0x00u8); // Mode control 1
         attribute_port.write(0x01u8); attribute_port.write(0x00u8); // Overscan color
         attribute_port.write(0x02u8); attribute_port.write(0x0Fu8); // Color plane enable
@@ -350,8 +342,8 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
         attribute_port.write(0x17u8); attribute_port.write(0x00u8); // Internal palette
 
         // DAC (simplified, default palette)
-        let mut dac_index_port = Port::new(VGA_DAC_INDEX);
-        let mut dac_data_port = Port::new(VGA_DAC_DATA);
+        let mut dac_index_port = Port::new(VGA_DAC_INDEX_PORT_ADDRESS);
+        let mut dac_data_port = Port::new(VGA_DAC_DATA_PORT_ADDRESS);
         for i in 0..256 {
             dac_index_port.write(i as u8); // Set index
             let val = (i * 63 / 255) as u8; // 6-bit grayscale
@@ -361,8 +353,8 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
         }
 
         // Graphics controller registers
-        let mut graphics_index_port = Port::new(VGA_GRAPHICS_INDEX);
-        let mut graphics_data_port = Port::new(VGA_GRAPHICS_DATA);
+        let mut graphics_index_port = Port::new(VGA_GRAPHICS_INDEX_PORT_ADDRESS);
+        let mut graphics_data_port = Port::new(VGA_GRAPHICS_DATA_PORT_ADDRESS);
         graphics_index_port.write(0x00u8); graphics_data_port.write(0x00u8); // Set/reset
         graphics_index_port.write(0x01u8); graphics_data_port.write(0x00u8); // Enable set/reset
         graphics_index_port.write(0x02u8); graphics_data_port.write(0x00u8); // Color compare
@@ -374,8 +366,8 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
         graphics_index_port.write(0x08u8); graphics_data_port.write(0xFFu8); // Bit mask
 
         // Sequencer registers
-        let mut sequencer_index_port = Port::new(VGA_SEQUENCER_INDEX);
-        let mut sequencer_data_port = Port::new(VGA_SEQUENCER_DATA);
+        let mut sequencer_index_port = Port::new(VGA_SEQUENCER_INDEX_PORT_ADDRESS);
+        let mut sequencer_data_port = Port::new(VGA_SEQUENCER_DATA_PORT_ADDRESS);
         sequencer_index_port.write(0x00u8); sequencer_data_port.write(0x03u8); // Reset
         sequencer_index_port.write(0x01u8); sequencer_data_port.write(0x01u8); // Clocking mode
         sequencer_index_port.write(0x02u8); sequencer_data_port.write(0x0Fu8); // Map mask

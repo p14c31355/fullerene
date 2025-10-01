@@ -124,7 +124,11 @@ fn main() -> io::Result<()> {
         "order=d",
         "-nodefaults",
     ]);
-    qemu_cmd.env("LD_PRELOAD", "/lib/x86_64-linux-gnu/libpthread.so.0");
+    // LD_PRELOAD is a workaround for specific QEMU/libpthread versions.
+    // It can be overridden by setting the FULLERENE_QEMU_LD_PRELOAD environment variable.
+    let ld_preload_path = env::var("FULLERENE_QEMU_LD_PRELOAD")
+        .unwrap_or_else(|_| "/lib/x86_64-linux-gnu/libpthread.so.0".to_string());
+    qemu_cmd.env("LD_PRELOAD", ld_preload_path);
     let qemu_status = qemu_cmd.status()?;
 
     if !qemu_status.success() {
