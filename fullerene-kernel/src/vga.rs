@@ -188,8 +188,7 @@ pub fn vga_init() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec; // vec! マクロを使用するために alloc::vec をインポート
-    use alloc::vec::Vec; // Vec 型を明示的にインポート
+    use alloc::vec; // For the vec! macro
 
     // Mock VgaBuffer that uses a Vec for testing
     struct MockVgaBuffer {
