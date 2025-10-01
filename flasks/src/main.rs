@@ -155,6 +155,7 @@ fn find_libpthread() -> String {
         }
     }
 
-    // Fallback to the original default if not found
+    // Fallback to the original default if not found, with a warning.
+    eprintln!("warning: libpthread.so.0 not found in common paths, falling back to default. Set FULLERENE_QEMU_LD_PRELOAD to override if this fails.");
     "/lib/x86_64-linux-gnu/libpthread.so.0".to_string()
 }
