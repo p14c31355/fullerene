@@ -6,3 +6,5 @@
   - Also, if 'petroleum' itself has bugs, feel free to edit and fix them.
 
 - Also, keep the use of asm macros to a minimum. The same applies to unsafe code. However, do not include the existing bootloader crate or uefi crate in your dependencies. Implement using Rust's core functions whenever possible.
+
+- Additionally, all subcrates are treated as the default binary crate.
