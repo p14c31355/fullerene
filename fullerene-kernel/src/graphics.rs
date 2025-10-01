@@ -238,7 +238,9 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
         port.write(0xE3u8); // Misc output
 
         port = Port::new(0x3D4);
-        port.write(0x00u8); let mut data = Port::new(0x3D5); data.write(0x00u8); // Horizontal total
+        port.write(0x00u8); // Horizontal total
+        let mut data = Port::new(0x3D5); 
+        data.write(0x00u8);
         port.write(0x01u8); data.write(0xCFu8); // Horizontal displayed
         port.write(0x02u8); data.write(0x4Fu8); // Horizontal blanking start
         port.write(0x03u8); data.write(0x50u8); // Horizontal blanking end
