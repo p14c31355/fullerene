@@ -1,6 +1,7 @@
 // fullerene-kernel/src/graphics.rs
 
 use core::fmt;
+use core::slice;
 use alloc::boxed::Box;
 use petroleum::common::{FullereneFramebufferConfig, VgaFramebufferConfig, EfiGraphicsPixelFormat};
 use spin::{Mutex, Once};
@@ -45,11 +46,19 @@ impl FramebufferWriter {
         }
     }
 
+    fn bytes_per_pixel(&self) -> u32 {
+        match self.framebuffer.pixel_format {
+            EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
+            | EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor => 4,
+            _ => panic!("Unsupported pixel format"),
+        }
+    }
+
     fn put_pixel(&self, x: u32, y: u32, color: u32) {
         if x >= self.framebuffer.width || y >= self.framebuffer.height {
             return;
         }
-        let bytes_per_pixel = 4; // Assuming 32-bit color based on common formats
+        let bytes_per_pixel = self.bytes_per_pixel();
         let offset = (y * self.framebuffer.stride + x) * bytes_per_pixel;
         let fb_ptr = self.framebuffer.address as *mut u8;
         unsafe {
@@ -62,14 +71,13 @@ impl FramebufferWriter {
     }
 
     fn clear_screen(&self) {
-        let line_bytes = self.framebuffer.width * 4;
+        let bytes_per_pixel = self.bytes_per_pixel();
         for y in 0..self.framebuffer.height {
-            let offset = y * self.framebuffer.stride * 4;
+            let offset = y * self.framebuffer.stride * bytes_per_pixel;
             let line_ptr = (self.framebuffer.address + offset as u64) as *mut u32;
-            for x in 0..self.framebuffer.width {
-                unsafe {
-                    *line_ptr.add(x as usize) = self.bg_color;
-                }
+            unsafe {
+                let line_slice = core::slice::from_raw_parts_mut(line_ptr, self.framebuffer.width as usize);
+                line_slice.fill(self.bg_color);
             }
         }
     }
@@ -77,10 +85,28 @@ impl FramebufferWriter {
     fn new_line(&mut self) {
         self.y_pos += 8; // Font height
         self.x_pos = 0;
-        if self.y_pos + 8 > self.framebuffer.height {
-            // Simple scrolling: clear screen and reset
-            self.y_pos = 0;
-            self.clear_screen();
+        if self.y_pos >= self.framebuffer.height {
+            let bytes_per_pixel = self.bytes_per_pixel();
+            let bytes_per_line = self.framebuffer.stride * bytes_per_pixel;
+            let shift_bytes = 8u64 * bytes_per_line as u64;
+            let total_bytes = self.framebuffer.height as u64 * bytes_per_line as u64;
+            let fb_ptr = self.framebuffer.address as *mut u8;
+            unsafe {
+                core::ptr::copy(
+                    fb_ptr.add(shift_bytes as usize),
+                    fb_ptr,
+                    (total_bytes - shift_bytes) as usize,
+                );
+            }
+            // Clear the last 8 lines
+            let last_lines_offset = (self.framebuffer.height - 8) * self.framebuffer.stride * bytes_per_pixel;
+            let clear_ptr = (self.framebuffer.address + last_lines_offset as u64) as *mut u32;
+            let clear_num_u32 = 8 * self.framebuffer.stride as usize;
+            unsafe {
+                let clear_slice = core::slice::from_raw_parts_mut(clear_ptr, clear_num_u32);
+                clear_slice.fill(self.bg_color);
+            }
+            self.y_pos -= 8;
         }
     }
 
@@ -122,14 +148,10 @@ impl core::fmt::Write for FramebufferWriter {
 }
 
 #[cfg(not(target_os = "uefi"))]
-const VGA_WIDTH: u32 = 320;
-#[cfg(not(target_os = "uefi"))]
-const VGA_HEIGHT: u32 = 200;
-#[cfg(not(target_os = "uefi"))]
-const VGA_FB_ADDR: u64 = 0xA0000;
-
-#[cfg(not(target_os = "uefi"))]
 struct VgaWriter {
+    address: u64,
+    width: u32,
+    height: u32,
     x_pos: u32,
     y_pos: u32,
     fg_color: u8,  // 256-color palette index
@@ -138,8 +160,11 @@ struct VgaWriter {
 
 #[cfg(not(target_os = "uefi"))]
 impl VgaWriter {
-    fn new() -> Self {
+    fn new(config: &VgaFramebufferConfig) -> Self {
         VgaWriter {
+            address: config.address,
+            width: config.width,
+            height: config.height,
             x_pos: 0,
             y_pos: 0,
             fg_color: 0x0Fu8, // White
@@ -148,30 +173,46 @@ impl VgaWriter {
     }
 
     fn put_pixel(&self, x: u32, y: u32, color: u8) {
-        if x >= VGA_WIDTH || y >= VGA_HEIGHT {
+        if x >= self.width || y >= self.height {
             return;
         }
-        let offset = (y * VGA_WIDTH + x) as usize;
+        let offset = (y * self.width + x) as usize;
         unsafe {
-            let fb_ptr = VGA_FB_ADDR as *mut u8;
+            let fb_ptr = self.address as *mut u8;
             *fb_ptr.add(offset) = color;
         }
     }
 
     fn clear_screen(&self) {
-        let fb_ptr = VGA_FB_ADDR as *mut u8;
+        let fb_ptr = self.address as *mut u8;
         unsafe {
-            core::ptr::write_bytes(fb_ptr, self.bg_color, (VGA_WIDTH * VGA_HEIGHT) as usize);
+            core::ptr::write_bytes(fb_ptr, self.bg_color, (self.width * self.height) as usize);
         }
     }
 
     fn new_line(&mut self) {
         self.y_pos += 8; // Font height
         self.x_pos = 0;
-        if self.y_pos + 8 > VGA_HEIGHT {
-            // Simple scrolling: clear screen and reset
-            self.y_pos = 0;
-            self.clear_screen();
+        if self.y_pos >= self.height {
+            let bytes_per_line = self.width;
+            let shift_bytes = 8u64 * bytes_per_line as u64;
+            let total_bytes = self.height as u64 * bytes_per_line as u64;
+            let fb_ptr = self.address as *mut u8;
+            unsafe {
+                core::ptr::copy(
+                    fb_ptr.add(shift_bytes as usize),
+                    fb_ptr,
+                    (total_bytes - shift_bytes) as usize,
+                );
+            }
+            // Clear last 8 lines
+            let clear_offset = (self.height - 8) * self.width;
+            let clear_ptr = fb_ptr.add(clear_offset as usize);
+            let clear_size = 8 * self.width as usize;
+            unsafe {
+                core::ptr::write_bytes(clear_ptr, self.bg_color, clear_size);
+            }
+            self.y_pos -= 8;
         }
     }
 
@@ -203,7 +244,7 @@ impl core::fmt::Write for VgaWriter {
             } else {
                 self.draw_char(c, self.x_pos, self.y_pos);
                 self.x_pos += 8;
-                if self.x_pos + 8 > VGA_WIDTH {
+                if self.x_pos + 8 > self.width {
                     self.new_line();
                 }
             }
@@ -277,26 +318,29 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
         crtc_index_port.write(0x17u8); crtc_data_port.write(0x00u8); // Line compare
 
         // Attribute controller registers
-        let mut attribute_index_port = Port::new(VGA_ATTRIBUTE_INDEX);
-        let mut attribute_data_port = Port::new(VGA_ATTRIBUTE_INDEX);
-        attribute_index_port.write(0x00u8); attribute_data_port.write(0x00u8); // Mode control
-        attribute_index_port.write(0x01u8); attribute_data_port.write(0x01u8); // Overscan color
-        attribute_index_port.write(0x02u8); attribute_data_port.write(0x0Fu8); // Color plane enable
-        attribute_index_port.write(0x03u8); attribute_data_port.write(0x00u8); // Horizontal pixel panning
-        attribute_index_port.write(0x04u8); attribute_data_port.write(0x00u8); // Color select
-        attribute_index_port.write(0x05u8); attribute_data_port.write(0x00u8); // Mode control
-        attribute_index_port.write(0x06u8); attribute_data_port.write(0x00u8); // Scroll
-        attribute_index_port.write(0x07u8); attribute_data_port.write(0x00u8); // Graphics mode
-        attribute_index_port.write(0x08u8); attribute_data_port.write(0xFFu8); // Line graphics
-        attribute_index_port.write(0x09u8); attribute_data_port.write(0x00u8); // Foreground color
-        attribute_index_port.write(0x10u8); attribute_data_port.write(0x00u8); // Background color
-        attribute_index_port.write(0x11u8); attribute_data_port.write(0x00u8); // Border color
-        attribute_index_port.write(0x12u8); attribute_data_port.write(0x00u8); // Internal palette
-        attribute_index_port.write(0x13u8); attribute_data_port.write(0x00u8); // Internal palette
-        attribute_index_port.write(0x14u8); attribute_data_port.write(0x00u8); // Internal palette
-        attribute_index_port.write(0x15u8); attribute_data_port.write(0x00u8); // Internal palette
-        attribute_index_port.write(0x16u8); attribute_data_port.write(0x00u8); // Internal palette
-        attribute_index_port.write(0x17u8); attribute_data_port.write(0x00u8); // Internal palette
+        let mut status_port = Port::new(0x3DAu16);
+        unsafe {
+            let _ = status_port.read::<u8>();
+        }
+        let mut attribute_port = Port::new(VGA_ATTRIBUTE_INDEX);
+        attribute_port.write(0x00u8); attribute_port.write(0x00u8); // Mode control
+        attribute_port.write(0x01u8); attribute_port.write(0x01u8); // Overscan color
+        attribute_port.write(0x02u8); attribute_port.write(0x0Fu8); // Color plane enable
+        attribute_port.write(0x03u8); attribute_port.write(0x00u8); // Horizontal pixel panning
+        attribute_port.write(0x04u8); attribute_port.write(0x00u8); // Color select
+        attribute_port.write(0x05u8); attribute_port.write(0x00u8); // Mode control
+        attribute_port.write(0x06u8); attribute_port.write(0x00u8); // Scroll
+        attribute_port.write(0x07u8); attribute_port.write(0x00u8); // Graphics mode
+        attribute_port.write(0x08u8); attribute_port.write(0xFFu8); // Line graphics
+        attribute_port.write(0x09u8); attribute_port.write(0x00u8); // Foreground color
+        attribute_port.write(0x10u8); attribute_port.write(0x00u8); // Background color
+        attribute_port.write(0x11u8); attribute_port.write(0x00u8); // Border color
+        attribute_port.write(0x12u8); attribute_port.write(0x00u8); // Internal palette
+        attribute_port.write(0x13u8); attribute_port.write(0x00u8); // Internal palette
+        attribute_port.write(0x14u8); attribute_port.write(0x00u8); // Internal palette
+        attribute_port.write(0x15u8); attribute_port.write(0x00u8); // Internal palette
+        attribute_port.write(0x16u8); attribute_port.write(0x00u8); // Internal palette
+        attribute_port.write(0x17u8); attribute_port.write(0x00u8); // Internal palette
 
         // DAC (simplified, default palette)
         let mut dac_index_port = Port::new(VGA_DAC_INDEX);
@@ -332,7 +376,7 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
         sequencer_index_port.write(0x04u8); sequencer_data_port.write(0x03u8); // Memory mode (0x03 for 256 color)
     }
 
-    let writer = VgaWriter::new();
+    let writer = VgaWriter::new(config);
     writer.clear_screen();
     WRITER_BIOS.call_once(|| Mutex::new(writer));
 }
