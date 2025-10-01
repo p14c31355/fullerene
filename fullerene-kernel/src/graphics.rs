@@ -1,6 +1,6 @@
 use core::fmt;
 use alloc::boxed::Box; // Import Box
-use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig, VgaFramebufferConfig}; // Import missing types
+use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig}; // Import missing types
 use spin::{Mutex, Once};
 use core::marker::{Send, Sync};
 use x86_64::instructions::port::Port;
