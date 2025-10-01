@@ -8,4 +8,4 @@
 - Also, keep the use of asm macros to a minimum. The same applies to unsafe code. However, do not include the existing bootloader crate or uefi crate in your dependencies. Implement using Rust's core functions whenever possible.
 
 - Additionally, all subcrates are treated as the default binary crate.
-- Do not execute the same command more than three times.
+- Do not execute the same command three or more times consecutively.
