@@ -47,7 +47,7 @@ lazy_static! {
 
         // Set up handlers for hardware interrupts
         unsafe {
-            idt[InterruptIndex::Timer.as_u8()].set_handler_fn(timer_interrupt_handler);
+            idt[InterruptIndex::Timer.as_u8()].set_handler_fn(timer_interrupt_handler).set_stack_index(gdt::TIMER_IST_INDEX);
             idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
         }
 
