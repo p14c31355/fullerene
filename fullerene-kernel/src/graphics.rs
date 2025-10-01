@@ -286,98 +286,172 @@ const VGA_SEQUENCER_INDEX_PORT_ADDRESS: u16 = 0x3C4;
 const VGA_SEQUENCER_DATA_PORT_ADDRESS: u16 = 0x3C5;
 
 #[cfg(not(target_os = "uefi"))]
+/// Initializes VGA graphics mode 13h (320x200, 256 colors).
+///
+/// This function configures the VGA controller registers to switch to the specified
+/// graphics mode. It is a complex process involving multiple sets of registers.
+/// The initialization is broken down into smaller helper functions for clarity.
 pub fn init_vga(config: &VgaFramebufferConfig) {
-    // Set VGA mode 13h using port writes (no asm!)
-
-    unsafe {
-        // Miscellaneous output register
-        let mut misc_output_port = Port::new(VGA_MISC_OUTPUT_PORT_ADDRESS);
-        misc_output_port.write(0x63u8); // Value for enabling VGA
-
-        // CRTC registers
-        let mut crtc_index_port = Port::new(VGA_CRTC_INDEX_PORT_ADDRESS);
-        let mut crtc_data_port = Port::new(VGA_CRTC_DATA_PORT_ADDRESS);
-        crtc_index_port.write(0x00u8); crtc_data_port.write(0x5Fu8); // Horizontal total
-        crtc_index_port.write(0x01u8); crtc_data_port.write(0x4Fu8); // Horizontal displayed
-        crtc_index_port.write(0x02u8); crtc_data_port.write(0x50u8); // Horizontal blanking start
-        crtc_index_port.write(0x03u8); crtc_data_port.write(0x82u8); // Horizontal blanking end
-        crtc_index_port.write(0x04u8); crtc_data_port.write(0x54u8); // Horizontal sync start
-        crtc_index_port.write(0x05u8); crtc_data_port.write(0x80u8); // Horizontal sync end
-        crtc_index_port.write(0x06u8); crtc_data_port.write(0xBFu8); // Vertical total
-        crtc_index_port.write(0x07u8); crtc_data_port.write(0x1Fu8); // Overflow
-        crtc_index_port.write(0x08u8); crtc_data_port.write(0x00u8); // Preset row scan
-        crtc_index_port.write(0x09u8); crtc_data_port.write(0x41u8); // Maximum scan line
-        crtc_index_port.write(0x10u8); crtc_data_port.write(0x9Cu8); // Vertical sync start
-        crtc_index_port.write(0x11u8); crtc_data_port.write(0x8Eu8); // Vertical sync end
-        crtc_index_port.write(0x12u8); crtc_data_port.write(0x8Fu8); // Vertical displayed
-        crtc_index_port.write(0x13u8); crtc_data_port.write(0x28u8); // Row offset
-        crtc_index_port.write(0x14u8); crtc_data_port.write(0x40u8); // Underline location
-        crtc_index_port.write(0x15u8); crtc_data_port.write(0x96u8); // Vertical blanking start
-        crtc_index_port.write(0x16u8); crtc_data_port.write(0xB9u8); // Vertical blanking end
-        crtc_index_port.write(0x17u8); crtc_data_port.write(0xA3u8); // Line compare / Mode control
-
-        // Attribute controller registers
-        let mut status_port = Port::<u8>::new(VGA_STATUS_PORT_ADDRESS);
-        unsafe {
-            let _ = status_port.read(); // Wait for horizontal retrace
-        }
-        let mut attribute_port = Port::<u8>::new(VGA_ATTRIBUTE_INDEX_PORT_ADDRESS);
-        attribute_port.write(0x00u8); attribute_port.write(0x00u8); // Mode control 1
-        attribute_port.write(0x01u8); attribute_port.write(0x00u8); // Overscan color
-        attribute_port.write(0x02u8); attribute_port.write(0x0Fu8); // Color plane enable
-        attribute_port.write(0x03u8); attribute_port.write(0x00u8); // Horizontal pixel panning
-        attribute_port.write(0x04u8); attribute_port.write(0x00u8); // Color select
-        attribute_port.write(0x05u8); attribute_port.write(0x00u8); // Mode control 2
-        attribute_port.write(0x06u8); attribute_port.write(0x00u8); // Scroll
-        attribute_port.write(0x07u8); attribute_port.write(0x00u8); // Graphics mode
-        attribute_port.write(0x08u8); attribute_port.write(0xFFu8); // Line graphics
-        attribute_port.write(0x09u8); attribute_port.write(0x00u8); // Foreground color
-        attribute_port.write(0x10u8); attribute_port.write(0x41u8); // Mode control (for 256 colors)
-        attribute_port.write(0x11u8); attribute_port.write(0x00u8); // Overscan color (border)
-        attribute_port.write(0x12u8); attribute_port.write(0x0Fu8); // Color plane enable
-        attribute_port.write(0x13u8); attribute_port.write(0x00u8); // Horizontal pixel panning
-        attribute_port.write(0x14u8); attribute_port.write(0x00u8); // Color select
-        attribute_port.write(0x15u8); attribute_port.write(0x00u8); // Internal palette
-        attribute_port.write(0x16u8); attribute_port.write(0x00u8); // Internal palette
-        attribute_port.write(0x17u8); attribute_port.write(0x00u8); // Internal palette
-
-        // DAC (simplified, default palette)
-        let mut dac_index_port = Port::new(VGA_DAC_INDEX_PORT_ADDRESS);
-        let mut dac_data_port = Port::new(VGA_DAC_DATA_PORT_ADDRESS);
-        for i in 0..256 {
-            dac_index_port.write(i as u8); // Set index
-            let val = (i * 63 / 255) as u8; // 6-bit grayscale
-            dac_data_port.write(val); // Red
-            dac_data_port.write(val); // Green
-            dac_data_port.write(val); // Blue
-        }
-
-        // Graphics controller registers
-        let mut graphics_index_port = Port::new(VGA_GRAPHICS_INDEX_PORT_ADDRESS);
-        let mut graphics_data_port = Port::new(VGA_GRAPHICS_DATA_PORT_ADDRESS);
-        graphics_index_port.write(0x00u8); graphics_data_port.write(0x00u8); // Set/reset
-        graphics_index_port.write(0x01u8); graphics_data_port.write(0x00u8); // Enable set/reset
-        graphics_index_port.write(0x02u8); graphics_data_port.write(0x00u8); // Color compare
-        graphics_index_port.write(0x03u8); graphics_data_port.write(0x00u8); // Data rotate
-        graphics_index_port.write(0x04u8); graphics_data_port.write(0x00u8); // Read map select
-        graphics_index_port.write(0x05u8); graphics_data_port.write(0x40u8); // Graphics mode (256 color)
-        graphics_index_port.write(0x06u8); graphics_data_port.write(0x05u8); // Miscellaneous
-        graphics_index_port.write(0x07u8); graphics_data_port.write(0x0Fu8); // Color don't care
-        graphics_index_port.write(0x08u8); graphics_data_port.write(0xFFu8); // Bit mask
-
-        // Sequencer registers
-        let mut sequencer_index_port = Port::new(VGA_SEQUENCER_INDEX_PORT_ADDRESS);
-        let mut sequencer_data_port = Port::new(VGA_SEQUENCER_DATA_PORT_ADDRESS);
-        sequencer_index_port.write(0x00u8); sequencer_data_port.write(0x03u8); // Reset
-        sequencer_index_port.write(0x01u8); sequencer_data_port.write(0x01u8); // Clocking mode
-        sequencer_index_port.write(0x02u8); sequencer_data_port.write(0x0Fu8); // Map mask
-        sequencer_index_port.write(0x03u8); sequencer_data_port.write(0x00u8); // Character map select
-        sequencer_index_port.write(0x04u8); sequencer_data_port.write(0x0Eu8); // Memory mode (0x0E for 256 color, chain 4)
-    }
+    setup_misc_output();
+    setup_sequencer();
+    setup_crtc(); // Must be done before other registers
+    setup_graphics_controller();
+    setup_attribute_controller();
+    setup_palette();
 
     let writer = VgaWriter::new(config);
     writer.clear_screen();
     WRITER_BIOS.call_once(|| Mutex::new(Box::new(writer)));
+}
+
+/// Writes a value to an indexed VGA register.
+fn write_indexed(index_port_addr: u16, data_port_addr: u16, index: u8, data: u8) {
+    unsafe {
+        let mut index_port = Port::new(index_port_addr);
+        let mut data_port = Port::new(data_port_addr);
+        index_port.write(index);
+        data_port.write(data);
+    }
+}
+
+/// Configures the Miscellaneous Output Register.
+fn setup_misc_output() {
+    unsafe {
+        let mut misc_output_port = Port::new(VGA_MISC_OUTPUT_PORT_ADDRESS);
+        misc_output_port.write(0x63u8); // Value for enabling VGA in 320x200x256 mode
+    }
+}
+
+/// Configures the VGA Sequencer registers.
+fn setup_sequencer() {
+    const SEQUENCER_VALUES: &[(u8, u8)] = &[
+        (0x00, 0x03), // Reset
+        (0x01, 0x01), // Clocking mode
+        (0x02, 0x0F), // Map mask
+        (0x03, 0x00), // Character map select
+        (0x04, 0x0E), // Memory mode (for 256 color, chain 4)
+    ];
+    for &(index, value) in SEQUENCER_VALUES {
+        write_indexed(
+            VGA_SEQUENCER_INDEX_PORT_ADDRESS,
+            VGA_SEQUENCER_DATA_PORT_ADDRESS,
+            index,
+            value,
+        );
+    }
+}
+
+/// Configures the VGA CRTC (Cathode Ray Tube Controller) registers.
+fn setup_crtc() {
+    const CRTC_VALUES: &[(u8, u8)] = &[
+        (0x00, 0x5F), // Horizontal total
+        (0x01, 0x4F), // Horizontal displayed
+        (0x02, 0x50), // Horizontal blanking start
+        (0x03, 0x82), // Horizontal blanking end
+        (0x04, 0x54), // Horizontal sync start
+        (0x05, 0x80), // Horizontal sync end
+        (0x06, 0xBF), // Vertical total
+        (0x07, 0x1F), // Overflow
+        (0x08, 0x00), // Preset row scan
+        (0x09, 0x41), // Maximum scan line
+        (0x10, 0x9C), // Vertical sync start
+        (0x11, 0x8E), // Vertical sync end
+        (0x12, 0x8F), // Vertical displayed
+        (0x13, 0x28), // Row offset
+        (0x14, 0x40), // Underline location
+        (0x15, 0x96), // Vertical blanking start
+        (0x16, 0xB9), // Vertical blanking end
+        (0x17, 0xA3), // Line compare / Mode control
+    ];
+    for &(index, value) in CRTC_VALUES {
+        write_indexed(
+            VGA_CRTC_INDEX_PORT_ADDRESS,
+            VGA_CRTC_DATA_PORT_ADDRESS,
+            index,
+            value,
+        );
+    }
+}
+
+/// Configures the VGA Graphics Controller registers.
+fn setup_graphics_controller() {
+    const GC_VALUES: &[(u8, u8)] = &[
+        (0x00, 0x00), // Set/reset
+        (0x01, 0x00), // Enable set/reset
+        (0x02, 0x00), // Color compare
+        (0x03, 0x00), // Data rotate
+        (0x04, 0x00), // Read map select
+        (0x05, 0x40), // Graphics mode (256 color)
+        (0x06, 0x05), // Miscellaneous
+        (0x07, 0x0F), // Color don't care
+        (0x08, 0xFF), // Bit mask
+    ];
+    for &(index, value) in GC_VALUES {
+        write_indexed(
+            VGA_GRAPHICS_INDEX_PORT_ADDRESS,
+            VGA_GRAPHICS_DATA_PORT_ADDRESS,
+            index,
+            value,
+        );
+    }
+}
+
+/// Configures the VGA Attribute Controller registers.
+fn setup_attribute_controller() {
+    const AC_VALUES: &[(u8, u8)] = &[
+        (0x00, 0x00), // Mode control 1
+        (0x01, 0x00), // Overscan color
+        (0x02, 0x0F), // Color plane enable
+        (0x03, 0x00), // Horizontal pixel panning
+        (0x04, 0x00), // Color select
+        (0x05, 0x00), // Mode control 2
+        (0x06, 0x00), // Scroll
+        (0x07, 0x00), // Graphics mode
+        (0x08, 0xFF), // Line graphics
+        (0x09, 0x00), // Foreground color
+        (0x10, 0x41), // Mode control (for 256 colors)
+        (0x11, 0x00), // Overscan color (border)
+        (0x12, 0x0F), // Color plane enable
+        (0x13, 0x00), // Horizontal pixel panning
+        (0x14, 0x00), // Color select
+    ];
+
+    unsafe {
+        let mut status_port = Port::<u8>::new(VGA_STATUS_PORT_ADDRESS);
+        let mut index_port = Port::<u8>::new(VGA_ATTRIBUTE_INDEX_PORT_ADDRESS);
+        let mut data_port = Port::<u8>::new(VGA_ATTRIBUTE_INDEX_PORT_ADDRESS); // Yes, same port for data
+
+        // The AC registers are accessed in a slightly different way.
+        // First, you read the status register to reset the index/data flip-flop.
+        let _ = status_port.read();
+
+        // Then, for each register, you write the index and then the data.
+        for &(index, value) in AC_VALUES {
+            index_port.write(index);
+            data_port.write(value);
+        }
+
+        // Finally, enable video output by writing 0x20 to the index port.
+        index_port.write(0x20);
+    }
+}
+
+/// Sets up a simple grayscale palette for the 256-color mode.
+fn setup_palette() {
+    unsafe {
+        let mut dac_index_port = Port::new(VGA_DAC_INDEX_PORT_ADDRESS);
+        let mut dac_data_port = Port::new(VGA_DAC_DATA_PORT_ADDRESS);
+
+        dac_index_port.write(0x00); // Start at color index 0
+
+        for i in 0..256 {
+            // Create a simple grayscale palette (6-bit values)
+            let val = (i * 63 / 255) as u8;
+            dac_data_port.write(val); // Red
+            dac_data_port.write(val); // Green
+            dac_data_port.write(val); // Blue
+        }
+    }
 }
 
 // Text mode structures for BIOS boot message
@@ -491,13 +565,21 @@ impl VgaBuffer {
     fn update_cursor(&self) {
         let pos = self.row_position * BUFFER_WIDTH + self.column_position;
         unsafe {
-            let mut command_port = Port::new(0x3D4);
-            let mut data_port = Port::new(0x3D5);
+            const CURSOR_LOCATION_HIGH_REG: u8 = 0x0E;
+            const CURSOR_LOCATION_LOW_REG: u8 = 0x0F;
 
-            command_port.write(0x0F_u8);
-            data_port.write((pos & 0xFF) as u8);
-            command_port.write(0x0E_u8);
-            data_port.write(((pos >> 8) & 0xFF) as u8);
+            write_indexed(
+                VGA_CRTC_INDEX_PORT_ADDRESS,
+                VGA_CRTC_DATA_PORT_ADDRESS,
+                CURSOR_LOCATION_LOW_REG,
+                (pos & 0xFF) as u8,
+            );
+            write_indexed(
+                VGA_CRTC_INDEX_PORT_ADDRESS,
+                VGA_CRTC_DATA_PORT_ADDRESS,
+                CURSOR_LOCATION_HIGH_REG,
+                ((pos >> 8) & 0xFF) as u8,
+            );
         }
     }
 }

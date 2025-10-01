@@ -95,10 +95,6 @@ pub unsafe extern "C" fn _start() -> ! {
     init_common();
     serial::serial_log("Entering _start...\n");
 
-    // BIOS VGA initialization (text mode)
-    vga::vga_init();
-    serial::serial_log("VGA text mode initialized.");
-
     // Graphics initialization for VGA framebuffer (graphics mode)
     let vga_config = VgaFramebufferConfig {
         address: 0xA0000,
