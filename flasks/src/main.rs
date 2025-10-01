@@ -124,9 +124,9 @@ fn main() -> io::Result<()> {
         "-nodefaults",
     ];
 
-    let qemu_status = Command::new("/usr/bin/qemu-system-x86_64")
-        .env("LD_PRELOAD", "/lib/x86_64-linux-gnu/libpthread.so.0")
-        .env("LD_LIBRARY_PATH", "/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu")
+    let qemu_status = Command::new("qemu-system-x86_64")
+        .args(qemu_args)
+        .status()?;
         .args(qemu_args)
         .status()?;
 
