@@ -442,7 +442,7 @@ fn setup_palette() {
         let mut dac_index_port = Port::new(VGA_DAC_INDEX_PORT_ADDRESS);
         let mut dac_data_port = Port::new(VGA_DAC_DATA_PORT_ADDRESS);
 
-        dac_index_port.write(0x00); // Start at color index 0
+        dac_index_port.write(0x00u8); // Start at color index 0
 
         for i in 0..256 {
             // Create a simple grayscale palette (6-bit values)
@@ -454,146 +454,7 @@ fn setup_palette() {
     }
 }
 
-// Text mode structures for BIOS boot message
-#[derive(Debug, Clone, Copy)]
-#[repr(u8)]
-enum Color {
-    Black = 0x0,
-    LightGreen = 0xA,
-    White = 0xF,
-}
 
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-struct ColorCode(u8);
-
-impl ColorCode {
-    fn new(foreground: Color, background: Color) -> ColorCode {
-        ColorCode((background as u8) << 4 | (foreground as u8))
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-struct ScreenChar {
-    ascii_character: u8,
-    color_code: ColorCode,
-}
-
-const BUFFER_HEIGHT: usize = 25;
-const BUFFER_WIDTH: usize = 80;
-
-struct VgaBuffer {
-    buffer: &'static mut [[ScreenChar; BUFFER_WIDTH]; BUFFER_HEIGHT],
-    column_position: usize,
-    row_position: usize,
-    color_code: ColorCode,
-}
-
-impl VgaBuffer {
-    fn new() -> VgaBuffer {
-        VgaBuffer {
-            buffer: unsafe { &mut *(0xb8000 as *mut _) },
-            column_position: 0,
-            row_position: 0,
-            color_code: ColorCode::new(Color::White, Color::Black),
-        }
-    }
-
-    fn write_byte(&mut self, byte: u8) {
-        match byte {
-            b'\n' => self.new_line(),
-            byte => {
-                if self.column_position >= BUFFER_WIDTH {
-                    self.new_line();
-                }
-
-                let row = self.row_position;
-                let col = self.column_position;
-
-                self.buffer[row][col] = ScreenChar {
-                    ascii_character: byte,
-                    color_code: self.color_code,
-                };
-                self.column_position += 1;
-            }
-        }
-    }
-
-    fn write_string(&mut self, s: &str) {
-        for byte in s.bytes() {
-            match byte {
-                0x20..=0x7e | b'\n' => self.write_byte(byte),
-                _ => self.write_byte(0xfe),
-            }
-        }
-    }
-
-    fn new_line(&mut self) {
-        self.column_position = 0;
-        if self.row_position < BUFFER_HEIGHT - 1 {
-            self.row_position += 1;
-        } else {
-            for row in 1..BUFFER_HEIGHT {
-                for col in 0..BUFFER_WIDTH {
-                    self.buffer[row - 1][col] = self.buffer[row][col];
-                }
-            }
-            self.clear_row(BUFFER_HEIGHT - 1);
-        }
-    }
-
-    fn clear_row(&mut self, row: usize) {
-        let blank_char = ScreenChar {
-            ascii_character: b' ',
-            color_code: self.color_code,
-        };
-        for col in 0..BUFFER_WIDTH {
-            self.buffer[row][col] = blank_char;
-        }
-    }
-
-    fn clear_screen(&mut self) {
-        for row in 0..BUFFER_HEIGHT {
-            self.clear_row(row);
-        }
-        self.column_position = 0;
-        self.row_position = 0;
-        self.update_cursor();
-    }
-
-    fn update_cursor(&self) {
-        let pos = self.row_position * BUFFER_WIDTH + self.column_position;
-        unsafe {
-            const CURSOR_LOCATION_HIGH_REG: u8 = 0x0E;
-            const CURSOR_LOCATION_LOW_REG: u8 = 0x0F;
-
-            write_indexed(
-                VGA_CRTC_INDEX_PORT_ADDRESS,
-                VGA_CRTC_DATA_PORT_ADDRESS,
-                CURSOR_LOCATION_LOW_REG,
-                (pos & 0xFF) as u8,
-            );
-            write_indexed(
-                VGA_CRTC_INDEX_PORT_ADDRESS,
-                VGA_CRTC_DATA_PORT_ADDRESS,
-                CURSOR_LOCATION_HIGH_REG,
-                ((pos >> 8) & 0xFF) as u8,
-            );
-        }
-    }
-}
-
-/// Initializes VGA text mode and prints boot message.
-pub fn init_text() {
-    let mut writer = VgaBuffer::new();
-    writer.clear_screen();
-    writer.color_code = ColorCode::new(Color::LightGreen, Color::Black);
-    writer.write_string("Hello QEMU by fullerene!\n");
-    writer.color_code = ColorCode::new(Color::White, Color::Black);
-    writer.write_string("This is output directly to VGA.\n");
-    writer.update_cursor();
-}
 
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {

@@ -13,10 +13,7 @@ pub(crate) mod font;
 
 extern crate alloc;
 
-use core::ffi::c_void;
-use petroleum::common::{
-    EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig, VgaFramebufferConfig,
-};
+use petroleum::common::{VgaFramebufferConfig};
 use x86_64::instructions::hlt;
 
 #[cfg(target_os = "uefi")]
