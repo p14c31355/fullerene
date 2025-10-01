@@ -111,7 +111,7 @@ pub unsafe extern "C" fn _start() -> ! {
     serial::serial_log("VGA graphics mode initialized.");
 
     // Main loop
-    serial::serial_log("Initialization complete. Entering kernel main loop.\n");
+    println!("Initialization complete. Entering kernel main loop.");
     hlt_loop();
 }
 
