@@ -7,7 +7,7 @@ use x86_64::instructions::port::Port;
 
 // A simple 8x8 PC screen font (Code Page 437).
 // This is a placeholder. A more complete font would be needed for full ASCII/Unicode support.
-static FONT: [[u8; 8]; 256] = *include_bytes!("font.txt");
+static FONT: [u8; 8605] = *include_bytes!("font.txt");
 
 #[cfg(target_os = "uefi")]
 struct FramebufferWriter {
@@ -110,19 +110,20 @@ impl FramebufferWriter {
     }
 
     fn draw_char(&self, c: char, x: u32, y: u32) {
-        let char_idx = c as usize;
-        if !c.is_ascii() || char_idx >= FONT.len() {
+        let char_idx = (c as u8) as usize;
+        let glyph_start = char_idx * 8;
+        if !c.is_ascii() || glyph_start + 8 > FONT.len() {
             return;
         }
-        let font_char = FONT[char_idx];
-        for (row, byte) in font_char.iter().enumerate() {
+        let font_char = &FONT[glyph_start..glyph_start + 8];
+        for (row, &byte) in font_char.iter().enumerate() {
             for col in 0..8 {
                 let color = if (byte >> (7 - col)) & 1 == 1 {
                     self.fg_color
                 } else {
                     self.bg_color
                 };
-                self.put_pixel(x + col, y + row as u32, color);
+                self.put_pixel(x + col as u32, y + row as u32, color);
             }
         }
     }
@@ -218,19 +219,20 @@ impl VgaWriter {
     }
 
     fn draw_char(&self, c: char, x: u32, y: u32) {
-        let char_idx = c as usize;
-        if !c.is_ascii() || char_idx >= FONT.len() {
+        let char_idx = (c as u8) as usize;
+        let glyph_start = char_idx * 8;
+        if !c.is_ascii() || glyph_start + 8 > FONT.len() {
             return;
         }
-        let font_char = FONT[char_idx];
-        for (row, byte) in font_char.iter().enumerate() {
+        let font_char = &FONT[glyph_start..glyph_start + 8];
+        for (row, &byte) in font_char.iter().enumerate() {
             for col in 0..8 {
                 let color = if (byte >> (7 - col)) & 1 == 1 {
                     self.fg_color
                 } else {
                     self.bg_color
                 };
-                self.put_pixel(x + col, y + row as u32, color);
+                self.put_pixel(x + col as u32, y + row as u32, color);
             }
         }
     }
