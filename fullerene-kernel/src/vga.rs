@@ -203,13 +203,11 @@ mod tests {
     impl MockVgaBuffer {
         fn new(width: usize, height: usize) -> Self {
             MockVgaBuffer {
-                buffer: vec![
-                    ScreenChar {
-                        ascii_character: b' ',
-                        color_code: ColorCode::new(Color::White, Color::Black),
-                    };
-                    width * height
-                ],
+                buffer: vec![ScreenChar {
+                    ascii_character: b' ',
+                    color_code: ColorCode::new(Color::White, Color::Black),
+                }; width * height],
+
                 column_position: 0,
                 row_position: 0,
                 color_code: ColorCode::new(Color::White, Color::Black),
