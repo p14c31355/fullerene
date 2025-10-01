@@ -77,7 +77,7 @@ pub extern "efiapi" fn efi_main(
     }
 
     // Main loop
-    serial::serial_log("Initialization complete. Entering kernel main loop.\n");
+    println!("Initialization complete. Entering kernel main loop.");
     hlt_loop();
 }
 
