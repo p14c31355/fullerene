@@ -68,10 +68,10 @@ pub fn init() {
 pub extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
     // Notify the PIC that the interrupt has been handled.
     // This is crucial to prevent the PIC from repeatedly raising the same interrupt.
-    unsafe {
+    x86_64::instructions::interrupts::without_interrupts(|| unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
-    }
+    });
 }
 
 // Keyboard interrupt handler.
@@ -105,10 +105,10 @@ pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: Interrupt
     }
 
     // Notify the PIC that the interrupt has been handled.
-    unsafe {
+    x86_64::instructions::interrupts::without_interrupts(|| unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
-    }
+    });
 }
 
 // Exception handlers (not directly related to the fix, but included for completeness)
