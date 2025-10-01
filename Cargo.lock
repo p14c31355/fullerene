@@ -147,6 +147,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.9.4",
  "lazy_static",
+ "linked_list_allocator",
  "pc-keyboard",
  "petroleum",
  "pic8259",

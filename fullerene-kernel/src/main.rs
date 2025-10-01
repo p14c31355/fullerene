@@ -8,6 +8,8 @@ mod graphics;
 mod interrupts;
 mod serial;
 mod vga;
+mod heap;
+mod display;
 
 extern crate alloc;
 
@@ -28,6 +30,7 @@ pub extern "efiapi" fn efi_main(
 ) -> ! {
     gdt::init(); // Initialize GDT
     interrupts::init(); // Initialize IDT
+    heap::init();
 
     serial::serial_init(); // Initialize serial early for debugging
 
@@ -86,6 +89,7 @@ pub extern "efiapi" fn efi_main(
 pub unsafe extern "C" fn _start() -> ! {
     gdt::init(); // Initialize GDT
     interrupts::init(); // Initialize IDT
+    heap::init();
 
     serial::serial_init(); // Initialize serial early for debugging
 
@@ -111,21 +115,6 @@ pub unsafe extern "C" fn _start() -> ! {
     // Main loop
     serial::serial_log("Initialization complete. Entering kernel main loop.\n");
     hlt_loop();
-}
-
-// Global allocator is required for `alloc::format!`
-#[global_allocator]
-static ALLOC: DummyAllocator = DummyAllocator;
-
-pub struct DummyAllocator;
-
-unsafe impl core::alloc::GlobalAlloc for DummyAllocator {
-    unsafe fn alloc(&self, _layout: core::alloc::Layout) -> *mut u8 {
-        panic!("memory allocation is not supported");
-    }
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {
-        panic!("memory deallocation is not supported");
-    }
 }
 
 // A simple loop that halts the CPU until the next interrupt

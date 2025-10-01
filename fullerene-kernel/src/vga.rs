@@ -3,6 +3,8 @@
 use spin::{Mutex, Once};
 use x86_64::instructions::port::Port;
 
+use crate::display::DisplayWriter;
+
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 #[allow(dead_code)]
@@ -98,7 +100,7 @@ impl VgaBuffer {
     }
 
     /// Moves the cursor to the next line.
-    fn new_line(&mut self) {
+    pub fn new_line(&mut self) {
         self.column_position = 0;
         if self.row_position < BUFFER_HEIGHT - 1 {
             self.row_position += 1;
@@ -154,6 +156,25 @@ impl core::fmt::Write for VgaBuffer {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         self.write_string(s);
         Ok(())
+    }
+}
+
+impl DisplayWriter for VgaBuffer {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.write_string(s);
+        Ok(())
+    }
+
+    fn clear_screen(&mut self) {
+        self.clear_screen();
+    }
+
+    fn new_line(&mut self) {
+        self.new_line();
+    }
+
+    fn update_cursor(&mut self) {
+        self.update_cursor();
     }
 }
 

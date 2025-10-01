@@ -1,9 +1,5 @@
-// fullerene-kernel/src/graphics.rs
-
 use core::fmt;
-use core::slice;
-use alloc::boxed::Box;
-use petroleum::common::{FullereneFramebufferConfig, VgaFramebufferConfig, EfiGraphicsPixelFormat};
+use petroleum::common::VgaFramebufferConfig;
 use spin::{Mutex, Once};
 
 // A simple 8x8 PC screen font (Code Page 437).
@@ -207,9 +203,10 @@ impl VgaWriter {
             }
             // Clear last 8 lines
             let clear_offset = (self.height - 8) * self.width;
-            let clear_ptr = fb_ptr.add(clear_offset as usize);
             let clear_size = 8 * self.width as usize;
+            let fb_ptr = self.address as *mut u8;
             unsafe {
+                let clear_ptr = fb_ptr.add(clear_offset as usize);
                 core::ptr::write_bytes(clear_ptr, self.bg_color, clear_size);
             }
             self.y_pos -= 8;
@@ -293,9 +290,9 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
     use x86_64::instructions::port::Port;
 
     unsafe {
-    // Miscellaneous output register
-    let mut misc_output_port = Port::new(VGA_MISC_OUTPUT_WRITE);
-    misc_output_port.write(0x63u8);
+        // Miscellaneous output register
+        let mut misc_output_port = Port::new(VGA_MISC_OUTPUT_WRITE);
+        misc_output_port.write(0x63u8);
 
         // CRTC registers
         let mut crtc_index_port = Port::new(VGA_CRTC_INDEX);
