@@ -7,7 +7,7 @@ use x86_64::instructions::port::Port;
 
 // A simple 8x8 PC screen font (Code Page 437).
 // This is a placeholder. A more complete font would be needed for full ASCII/Unicode support.
-static FONT: [[u8; 8]; 256] = include!("font.txt");
+static FONT: [[u8; 8]; 256] = *include_bytes!("font.txt");
 
 #[cfg(target_os = "uefi")]
 struct FramebufferWriter {
