@@ -127,8 +127,6 @@ fn main() -> io::Result<()> {
     let qemu_status = Command::new("qemu-system-x86_64")
         .args(qemu_args)
         .status()?;
-        .args(qemu_args)
-        .status()?;
 
     if !qemu_status.success() {
         return Err(io::Error::other("QEMU execution failed"));
