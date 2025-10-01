@@ -293,51 +293,53 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
     use x86_64::instructions::port::Port;
 
     unsafe {
-        // Miscellaneous output register
-        let mut misc_output_port = Port::new(VGA_MISC_OUTPUT_WRITE);
-        misc_output_port.write(0xE3u8);
+    // Miscellaneous output register
+    let mut misc_output_port = Port::new(VGA_MISC_OUTPUT_WRITE);
+    misc_output_port.write(0x63u8);
 
         // CRTC registers
         let mut crtc_index_port = Port::new(VGA_CRTC_INDEX);
         let mut crtc_data_port = Port::new(VGA_CRTC_DATA);
-        crtc_index_port.write(0x00u8); crtc_data_port.write(0x00u8); // Horizontal total
-        crtc_index_port.write(0x01u8); crtc_data_port.write(0xCFu8); // Horizontal displayed
-        crtc_index_port.write(0x02u8); crtc_data_port.write(0x4Fu8); // Horizontal blanking start
-        crtc_index_port.write(0x03u8); crtc_data_port.write(0x50u8); // Horizontal blanking end
-        crtc_index_port.write(0x04u8); crtc_data_port.write(0x82u8); // Horizontal sync start
-        crtc_index_port.write(0x05u8); crtc_data_port.write(0xC3u8); // Horizontal sync end
-        crtc_index_port.write(0x06u8); crtc_data_port.write(0xA0u8); // Vertical total
-        crtc_index_port.write(0x07u8); crtc_data_port.write(0x00u8); // Overflow
+        crtc_index_port.write(0x00u8); crtc_data_port.write(0x5Fu8); // Horizontal total
+        crtc_index_port.write(0x01u8); crtc_data_port.write(0x4Fu8); // Horizontal displayed
+        crtc_index_port.write(0x02u8); crtc_data_port.write(0x50u8); // Horizontal blanking start
+        crtc_index_port.write(0x03u8); crtc_data_port.write(0x82u8); // Horizontal blanking end
+        crtc_index_port.write(0x04u8); crtc_data_port.write(0x54u8); // Horizontal sync start
+        crtc_index_port.write(0x05u8); crtc_data_port.write(0x80u8); // Horizontal sync end
+        crtc_index_port.write(0x06u8); crtc_data_port.write(0xBFu8); // Vertical total
+        crtc_index_port.write(0x07u8); crtc_data_port.write(0x1Fu8); // Overflow
         crtc_index_port.write(0x08u8); crtc_data_port.write(0x00u8); // Preset row scan
-        crtc_index_port.write(0x09u8); crtc_data_port.write(0x00u8); // Maximum scan line
-        crtc_index_port.write(0x10u8); crtc_data_port.write(0x40u8); // Vertical sync start
-        crtc_index_port.write(0x11u8); crtc_data_port.write(0x00u8); // Vertical sync end
-        crtc_index_port.write(0x12u8); crtc_data_port.write(0x00u8); // Vertical displayed
-        crtc_index_port.write(0x13u8); crtc_data_port.write(0x00u8); // Vertical blanking start
-        crtc_index_port.write(0x14u8); crtc_data_port.write(0x00u8); // Vertical blanking end
-        crtc_index_port.write(0x17u8); crtc_data_port.write(0x00u8); // Line compare
+        crtc_index_port.write(0x09u8); crtc_data_port.write(0x41u8); // Maximum scan line
+        crtc_index_port.write(0x10u8); crtc_data_port.write(0x9Cu8); // Vertical sync start
+        crtc_index_port.write(0x11u8); crtc_data_port.write(0x8Eu8); // Vertical sync end
+        crtc_index_port.write(0x12u8); crtc_data_port.write(0x8Fu8); // Vertical displayed
+        crtc_index_port.write(0x13u8); crtc_data_port.write(0x28u8); // Row offset
+        crtc_index_port.write(0x14u8); crtc_data_port.write(0x40u8); // Underline location
+        crtc_index_port.write(0x15u8); crtc_data_port.write(0x96u8); // Vertical blanking start
+        crtc_index_port.write(0x16u8); crtc_data_port.write(0xB9u8); // Vertical blanking end
+        crtc_index_port.write(0x17u8); crtc_data_port.write(0xA3u8); // Line compare / Mode control
 
         // Attribute controller registers
-        let mut status_port = Port::new(0x3DAu16);
+        let mut status_port = Port::<u8>::new(0x3DA);
         unsafe {
-            let _ = status_port.read::<u8>();
+            let _ = status_port.read();
         }
-        let mut attribute_port = Port::new(VGA_ATTRIBUTE_INDEX);
-        attribute_port.write(0x00u8); attribute_port.write(0x00u8); // Mode control
-        attribute_port.write(0x01u8); attribute_port.write(0x01u8); // Overscan color
+        let mut attribute_port = Port::<u8>::new(VGA_ATTRIBUTE_INDEX);
+        attribute_port.write(0x00u8); attribute_port.write(0x00u8); // Mode control 1
+        attribute_port.write(0x01u8); attribute_port.write(0x00u8); // Overscan color
         attribute_port.write(0x02u8); attribute_port.write(0x0Fu8); // Color plane enable
         attribute_port.write(0x03u8); attribute_port.write(0x00u8); // Horizontal pixel panning
         attribute_port.write(0x04u8); attribute_port.write(0x00u8); // Color select
-        attribute_port.write(0x05u8); attribute_port.write(0x00u8); // Mode control
+        attribute_port.write(0x05u8); attribute_port.write(0x00u8); // Mode control 2
         attribute_port.write(0x06u8); attribute_port.write(0x00u8); // Scroll
         attribute_port.write(0x07u8); attribute_port.write(0x00u8); // Graphics mode
         attribute_port.write(0x08u8); attribute_port.write(0xFFu8); // Line graphics
         attribute_port.write(0x09u8); attribute_port.write(0x00u8); // Foreground color
-        attribute_port.write(0x10u8); attribute_port.write(0x00u8); // Background color
-        attribute_port.write(0x11u8); attribute_port.write(0x00u8); // Border color
-        attribute_port.write(0x12u8); attribute_port.write(0x00u8); // Internal palette
-        attribute_port.write(0x13u8); attribute_port.write(0x00u8); // Internal palette
-        attribute_port.write(0x14u8); attribute_port.write(0x00u8); // Internal palette
+        attribute_port.write(0x10u8); attribute_port.write(0x41u8); // Mode control (for 256 colors)
+        attribute_port.write(0x11u8); attribute_port.write(0x00u8); // Overscan color (border)
+        attribute_port.write(0x12u8); attribute_port.write(0x0Fu8); // Color plane enable
+        attribute_port.write(0x13u8); attribute_port.write(0x00u8); // Horizontal pixel panning
+        attribute_port.write(0x14u8); attribute_port.write(0x00u8); // Color select
         attribute_port.write(0x15u8); attribute_port.write(0x00u8); // Internal palette
         attribute_port.write(0x16u8); attribute_port.write(0x00u8); // Internal palette
         attribute_port.write(0x17u8); attribute_port.write(0x00u8); // Internal palette
@@ -361,8 +363,8 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
         graphics_index_port.write(0x02u8); graphics_data_port.write(0x00u8); // Color compare
         graphics_index_port.write(0x03u8); graphics_data_port.write(0x00u8); // Data rotate
         graphics_index_port.write(0x04u8); graphics_data_port.write(0x00u8); // Read map select
-        graphics_index_port.write(0x05u8); graphics_data_port.write(0x10u8); // Graphics mode (256 color)
-        graphics_index_port.write(0x06u8); graphics_data_port.write(0x40u8); // Miscellaneous
+        graphics_index_port.write(0x05u8); graphics_data_port.write(0x40u8); // Graphics mode (256 color)
+        graphics_index_port.write(0x06u8); graphics_data_port.write(0x05u8); // Miscellaneous
         graphics_index_port.write(0x07u8); graphics_data_port.write(0x0Fu8); // Color don't care
         graphics_index_port.write(0x08u8); graphics_data_port.write(0xFFu8); // Bit mask
 
@@ -373,7 +375,7 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
         sequencer_index_port.write(0x01u8); sequencer_data_port.write(0x01u8); // Clocking mode
         sequencer_index_port.write(0x02u8); sequencer_data_port.write(0x0Fu8); // Map mask
         sequencer_index_port.write(0x03u8); sequencer_data_port.write(0x00u8); // Character map select
-        sequencer_index_port.write(0x04u8); sequencer_data_port.write(0x03u8); // Memory mode (0x03 for 256 color)
+        sequencer_index_port.write(0x04u8); sequencer_data_port.write(0x0Eu8); // Memory mode (0x0E for 256 color, chain 4)
     }
 
     let writer = VgaWriter::new(config);
