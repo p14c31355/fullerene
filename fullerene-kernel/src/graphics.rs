@@ -159,9 +159,9 @@ impl VgaWriter {
     }
 
     fn clear_screen(&self) {
+        let fb_ptr = VGA_FB_ADDR as *mut u8;
         for i in 0..(VGA_WIDTH * VGA_HEIGHT) as usize {
             unsafe {
-                let fb_ptr = VGA_FB_ADDR as *mut u8;
                 *fb_ptr.add(i) = self.bg_color;
             }
         }
