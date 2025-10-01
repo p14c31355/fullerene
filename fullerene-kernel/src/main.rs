@@ -4,18 +4,22 @@
 #![no_main]
 
 mod gdt; // Add GDT module
+mod graphics;
 mod interrupts;
 mod serial;
-mod vga; // Add IDT module
+mod vga;
+mod heap;
+pub(crate) mod font;
 
 extern crate alloc;
 
 use core::ffi::c_void;
 use petroleum::common::{
-    EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
+    EfiSystemTable, FullereneFramebufferConfig, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID
 };
 use x86_64::instructions::hlt;
 
+#[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]
 #[unsafe(link_section = ".text.efi_main")]
 pub extern "efiapi" fn efi_main(
@@ -24,23 +28,13 @@ pub extern "efiapi" fn efi_main(
     _memory_map: *mut c_void,
     _memory_map_size: usize,
 ) -> ! {
-    gdt::init(); // Initialize GDT
-    interrupts::init_idt(); // Initialize IDT
+    // Common initialization for both UEFI and BIOS
+    init_common();
 
-    serial::serial_init(); // Initialize serial early for debugging
-    vga::vga_init(); // Initialize VGA early for debugging
+    serial::serial_log("Interrupts initialized via init().");
 
-    serial::serial_log("Initializing PICs...");
-    // Initialize the PIC before enabling interrupts to prevent premature timer interrupts.
-    unsafe { interrupts::PICS.lock().initialize() };
-    serial::serial_log("PICs initialized.");
-
-    // Now enable interrupts after everything is set up.
-    x86_64::instructions::interrupts::enable();
-    serial::serial_log("Interrupts enabled.");
-
-    vga::log("Entering efi_main...\n");
-    vga::log("Searching for framebuffer config table...\n");
+    serial::serial_log("Entering efi_main...\n");
+    serial::serial_log("Searching for framebuffer config table...\n");
 
     // Cast the system_table pointer to the correct type
     let system_table = unsafe { &*(system_table as *const EfiSystemTable) };
@@ -64,8 +58,7 @@ pub extern "efiapi" fn efi_main(
 
     if let Some(config) = framebuffer_config {
         if config.address == 0 {
-            vga::log("Fullerene Framebuffer Config Table found, but address is 0.\n");
-            serial::serial_log("Fullerene Framebuffer Config Table found, but address is 0.");
+            serial::serial_log("Fullerene Framebuffer Config Table found, but address is 0.\n");
             serial::serial_log("  This may be the cause of the kernel panic.");
         } else {
             let _ = core::fmt::write(
@@ -76,30 +69,46 @@ pub extern "efiapi" fn efi_main(
                 &mut *serial::SERIAL1.lock(),
                 format_args!("  Resolution: {}x{}\n", config.width, config.height),
             );
+            graphics::init(config);
+            serial::serial_log("Graphics initialized.");
         }
     } else {
-        vga::log("Fullerene Framebuffer Config Table not found.\n");
-        serial::serial_log("Fullerene Framebuffer Config Table not found.");
+        serial::serial_log("Fullerene Framebuffer Config Table not found.\n");
     }
 
     // Main loop
-    vga::log("Initialization complete. Entering kernel main loop.\n");
+    println!("Initialization complete. Entering kernel main loop.");
     hlt_loop();
 }
 
-// Global allocator is required for `alloc::format!`
-#[global_allocator]
-static ALLOC: DummyAllocator = DummyAllocator;
+// Function to perform common initialization steps for both UEFI and BIOS.
+fn init_common() {
+    gdt::init(); // Initialize GDT
+    interrupts::init(); // Initialize IDT
+    heap::init();
+    serial::serial_init(); // Initialize serial early for debugging
+}
 
-pub struct DummyAllocator;
+#[cfg(not(target_os = "uefi"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _start() -> ! {
+    init_common();
+    serial::serial_log("Entering _start...\n");
 
-unsafe impl core::alloc::GlobalAlloc for DummyAllocator {
-    unsafe fn alloc(&self, _layout: core::alloc::Layout) -> *mut u8 {
-        panic!("memory allocation is not supported");
-    }
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {
-        panic!("memory deallocation is not supported");
-    }
+    // Graphics initialization for VGA framebuffer (graphics mode)
+    let vga_config = VgaFramebufferConfig {
+        address: 0xA0000,
+        width: 320,
+        height: 200,
+        bpp: 8,
+    };
+    graphics::init_vga(&vga_config);
+
+    serial::serial_log("VGA graphics mode initialized.");
+
+    // Main loop
+    println!("Initialization complete. Entering kernel main loop.");
+    hlt_loop();
 }
 
 // A simple loop that halts the CPU until the next interrupt

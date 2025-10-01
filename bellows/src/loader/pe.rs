@@ -100,7 +100,6 @@ enum ImageRelBasedType {
     Dir64 = 10,
 }
 
-/// Loads a PE image from a buffer into memory using UEFI Boot Services.
 pub fn load_efi_image(
     st: &EfiSystemTable,
     file: &[u8],

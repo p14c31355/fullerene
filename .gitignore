@@ -9,7 +9,5 @@ target/
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 
-fullerene.fat
 fullerene.iso
 qemu_log.txt
-serial_log.txt
