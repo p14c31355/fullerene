@@ -322,7 +322,7 @@ pub fn _print(args: fmt::Arguments) {
     {
         if let Some(writer) = WRITER_UEFI.get() {
             let mut writer = writer.lock();
-            writer.write_fmt(args).unwrap();
+            writer.write_fmt(args).ok();
         }
     }
     #[cfg(not(target_os = "uefi"))]
