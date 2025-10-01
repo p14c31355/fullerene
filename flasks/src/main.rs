@@ -99,7 +99,8 @@ fn main() -> io::Result<()> {
 
     let iso_path_str = iso_path.to_str().expect("ISO path should be valid UTF-8");
 
-    let qemu_args = [
+    let mut qemu_cmd = Command::new("qemu-system-x86_64");
+    qemu_cmd.args([
         "-m",
         "512M",
         "-cpu",
@@ -122,11 +123,9 @@ fn main() -> io::Result<()> {
         "-boot",
         "order=d",
         "-nodefaults",
-    ];
-
-    let qemu_status = Command::new("qemu-system-x86_64")
-        .args(qemu_args)
-        .status()?;
+    ]);
+    qemu_cmd.env("LD_PRELOAD", "/lib/x86_64-linux-gnu/libpthread.so.0");
+    let qemu_status = qemu_cmd.status()?;
 
     if !qemu_status.success() {
         return Err(io::Error::other("QEMU execution failed"));
