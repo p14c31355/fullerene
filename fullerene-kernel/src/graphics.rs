@@ -2,8 +2,8 @@ use core::fmt;
 use alloc::boxed::Box; // Import Box
 use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig, VgaFramebufferConfig}; // Import missing types
 use spin::{Mutex, Once};
-
-use crate::display::DisplayWriter;
+use core::marker::{Send, Sync};
+use x86_64::instructions::port::Port;
 
 // A simple 8x8 PC screen font (Code Page 437).
 // This is a placeholder. A more complete font would be needed for full ASCII/Unicode support.
@@ -146,27 +146,6 @@ impl core::fmt::Write for FramebufferWriter {
     }
 }
 
-#[cfg(target_os = "uefi")]
-impl DisplayWriter for FramebufferWriter {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        // Call the write_str method provided by core::fmt::Write implementation
-        self.write_str(s)
-    }
-
-    fn clear_screen(&mut self) {
-        // Call the actual implementation method
-        self.clear_screen()
-    }
-
-    fn new_line(&mut self) {
-        // Call the actual implementation method
-        self.new_line()
-    }
-
-    fn update_cursor(&mut self) {
-        // No-op for framebuffer
-    }
-}
 
 #[cfg(not(target_os = "uefi"))]
 struct VgaWriter {
@@ -275,33 +254,12 @@ impl core::fmt::Write for VgaWriter {
     }
 }
 
-#[cfg(not(target_os = "uefi"))]
-impl DisplayWriter for VgaWriter {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        // Call the write_str method provided by core::fmt::Write implementation
-        self.write_str(s)
-    }
-
-    fn clear_screen(&mut self) {
-        // Call the actual implementation method
-        self.clear_screen()
-    }
-
-    fn new_line(&mut self) {
-        // Call the actual implementation method
-        self.new_line()
-    }
-
-    fn update_cursor(&mut self) {
-        // No-op for VGA graphics mode
-    }
-}
 
 #[cfg(target_os = "uefi")]
-pub static WRITER_UEFI: Once<Mutex<Box<dyn DisplayWriter>>> = Once::new();
+pub static WRITER_UEFI: Once<Mutex<Box<dyn core::fmt::Write + Send + Sync>>> = Once::new();
 
 #[cfg(not(target_os = "uefi"))]
-pub static WRITER_BIOS: Once<Mutex<Box<dyn DisplayWriter>>> = Once::new();
+pub static WRITER_BIOS: Once<Mutex<Box<dyn core::fmt::Write + Send + Sync>>> = Once::new();
 
 #[cfg(target_os = "uefi")]
 pub fn init(config: &FullereneFramebufferConfig) {
@@ -334,7 +292,6 @@ const VGA_SEQUENCER_DATA: u16 = 0x3C5;
 #[cfg(not(target_os = "uefi"))]
 pub fn init_vga(config: &VgaFramebufferConfig) {
     // Set VGA mode 13h using port writes (no asm!)
-    use x86_64::instructions::port::Port;
 
     unsafe {
         // Miscellaneous output register
@@ -427,13 +384,145 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
     WRITER_BIOS.call_once(|| Mutex::new(Box::new(writer)));
 }
 
+// Text mode structures for BIOS boot message
+#[derive(Debug, Clone, Copy)]
+#[repr(u8)]
+enum Color {
+    Black = 0x0,
+    LightGreen = 0xA,
+    White = 0xF,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+struct ColorCode(u8);
+
+impl ColorCode {
+    fn new(foreground: Color, background: Color) -> ColorCode {
+        ColorCode((background as u8) << 4 | (foreground as u8))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+struct ScreenChar {
+    ascii_character: u8,
+    color_code: ColorCode,
+}
+
+const BUFFER_HEIGHT: usize = 25;
+const BUFFER_WIDTH: usize = 80;
+
+struct VgaBuffer {
+    buffer: &'static mut [[ScreenChar; BUFFER_WIDTH]; BUFFER_HEIGHT],
+    column_position: usize,
+    row_position: usize,
+    color_code: ColorCode,
+}
+
+impl VgaBuffer {
+    fn new() -> VgaBuffer {
+        VgaBuffer {
+            buffer: unsafe { &mut *(0xb8000 as *mut _) },
+            column_position: 0,
+            row_position: 0,
+            color_code: ColorCode::new(Color::White, Color::Black),
+        }
+    }
+
+    fn write_byte(&mut self, byte: u8) {
+        match byte {
+            b'\n' => self.new_line(),
+            byte => {
+                if self.column_position >= BUFFER_WIDTH {
+                    self.new_line();
+                }
+
+                let row = self.row_position;
+                let col = self.column_position;
+
+                self.buffer[row][col] = ScreenChar {
+                    ascii_character: byte,
+                    color_code: self.color_code,
+                };
+                self.column_position += 1;
+            }
+        }
+    }
+
+    fn write_string(&mut self, s: &str) {
+        for byte in s.bytes() {
+            match byte {
+                0x20..=0x7e | b'\n' => self.write_byte(byte),
+                _ => self.write_byte(0xfe),
+            }
+        }
+    }
+
+    fn new_line(&mut self) {
+        self.column_position = 0;
+        if self.row_position < BUFFER_HEIGHT - 1 {
+            self.row_position += 1;
+        } else {
+            for row in 1..BUFFER_HEIGHT {
+                for col in 0..BUFFER_WIDTH {
+                    self.buffer[row - 1][col] = self.buffer[row][col];
+                }
+            }
+            self.clear_row(BUFFER_HEIGHT - 1);
+        }
+    }
+
+    fn clear_row(&mut self, row: usize) {
+        let blank_char = ScreenChar {
+            ascii_character: b' ',
+            color_code: self.color_code,
+        };
+        for col in 0..BUFFER_WIDTH {
+            self.buffer[row][col] = blank_char;
+        }
+    }
+
+    fn clear_screen(&mut self) {
+        for row in 0..BUFFER_HEIGHT {
+            self.clear_row(row);
+        }
+        self.column_position = 0;
+        self.row_position = 0;
+        self.update_cursor();
+    }
+
+    fn update_cursor(&self) {
+        let pos = self.row_position * BUFFER_WIDTH + self.column_position;
+        unsafe {
+            let mut command_port = Port::new(0x3D4);
+            let mut data_port = Port::new(0x3D5);
+
+            command_port.write(0x0F_u8);
+            data_port.write((pos & 0xFF) as u8);
+            command_port.write(0x0E_u8);
+            data_port.write(((pos >> 8) & 0xFF) as u8);
+        }
+    }
+}
+
+/// Initializes VGA text mode and prints boot message.
+pub fn init_text() {
+    let mut writer = VgaBuffer::new();
+    writer.clear_screen();
+    writer.color_code = ColorCode::new(Color::LightGreen, Color::Black);
+    writer.write_string("Hello QEMU by fullerene!\n");
+    writer.color_code = ColorCode::new(Color::White, Color::Black);
+    writer.write_string("This is output directly to VGA.\n");
+    writer.update_cursor();
+}
+
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     #[cfg(target_os = "uefi")]
     {
         if let Some(writer) = WRITER_UEFI.get() {
             let mut writer = writer.lock();
-            // Use the DisplayWriter trait method
             writer.write_fmt(args).ok();
         }
     }
@@ -441,7 +530,6 @@ pub fn _print(args: fmt::Arguments) {
     {
         if let Some(writer) = WRITER_BIOS.get() {
             let mut writer = writer.lock();
-            // Use the DisplayWriter trait method
             writer.write_fmt(args).ok();
         }
     }

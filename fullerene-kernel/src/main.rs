@@ -9,7 +9,6 @@ mod interrupts;
 mod serial;
 mod vga;
 mod heap;
-mod display;
 
 extern crate alloc;
 
