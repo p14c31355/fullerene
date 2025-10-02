@@ -92,6 +92,8 @@ fn init_common() {
 #[cfg(not(target_os = "uefi"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start() -> ! {
+    use petroleum::common::VgaFramebufferConfig;
+
     init_common();
     serial::serial_log("Entering _start...\n");
 
