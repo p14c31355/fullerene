@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 isobemak = { path = "../../isobemak"}
+tempfile = "3.22.0"

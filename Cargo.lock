@@ -139,6 +139,7 @@ name = "flasks"
 version = "0.1.0"
 dependencies = [
  "isobemak",
+ "tempfile",
 ]
 
 [[package]]
