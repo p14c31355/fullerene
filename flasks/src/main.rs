@@ -1,5 +1,5 @@
 // fullerene/flasks/src/main.rs
-use isobemak::iso::builder::{BiosBootInfo, BootInfo, IsoImage, IsoImageFile, UefiBootInfo, build_iso};
+use isobemak::{BiosBootInfo, BootInfo, IsoImage, IsoImageFile, UefiBootInfo, build_iso};
 use std::{env, io, path::{Path, PathBuf}, process::Command};
 
 fn main() -> io::Result<()> {
