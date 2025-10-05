@@ -84,7 +84,7 @@ fn main() -> io::Result<()> {
             }),
         },
     };
-    build_iso(&iso_path, &image, false)?;
+    build_iso(&iso_path, &image, true)?; // Set to true for isohybrid UEFI boot
 
     // --- 4. Run QEMU with the created ISO ---
     let ovmf_fd_path = workspace_root
