@@ -4,10 +4,17 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr;
 use petroleum::common::{
-    BellowsError, EFI_FILE_INFO_GUID, EFI_LOADED_IMAGE_PROTOCOL_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiBootServices,
+    BellowsError, EFI_FILE_INFO_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiBootServices,
     EfiFile, EfiFileInfo, EfiLoadedImageProtocol, EfiSimpleFileSystem, EfiStatus,
 };
 use x86_64::instructions::port::Port; // Import Port for direct I/O
+
+const EFI_LOADED_IMAGE_PROTOCOL_GUID: [u8; 16] = [
+    0xA1, 0x31, 0x1B, 0x5B,
+    0x62, 0x95,
+    0xD2, 0x11,
+    0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B
+];
 
 /// Writes a single byte to the COM1 serial port (0x3F8).
 /// This is a very basic, early debug function that doesn't rely on any complex initialization.
@@ -91,8 +98,8 @@ pub fn read_efi_file(bs: &EfiBootServices, image_handle: usize) -> petroleum::co
         device_handle,
         &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
         &mut fs_proto as *mut _ as *mut *mut c_void,
-        image_handle,
-        0,
+        image_handle, // agent_handle
+        0, // controller_handle
         1, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
     );
     if EfiStatus::from(status) != EfiStatus::Success {

@@ -80,7 +80,7 @@ pub extern "efiapi" fn efi_main(
     }
 
     // Main loop
-    println!("Initialization complete. Entering kernel main loop.");
+    println!("Hello QEMU by FullereneOS");
     hlt_loop();
 }
 
@@ -112,7 +112,7 @@ pub unsafe extern "C" fn _start() -> ! {
     serial::serial_log("VGA graphics mode initialized.");
 
     // Main loop
-    println!("Initialization complete. Entering kernel main loop.");
+    println!("Hello QEMU by FullereneOS");
     hlt_loop();
 }
 
