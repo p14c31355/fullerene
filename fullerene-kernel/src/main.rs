@@ -28,8 +28,17 @@ pub extern "efiapi" fn efi_main(
     _memory_map: *mut c_void,
     _memory_map_size: usize,
 ) -> ! {
-    // Early debug print to confirm kernel entry point is reached
-    serial::serial_log("Kernel: efi_main entered.\n");
+    // Early debug print to confirm kernel entry point is reached using direct port access
+    use x86_64::instructions::port::Port;
+    let mut port = Port::new(0x3F8);
+    unsafe {
+        let msg = b"Kernel: efi_main entered.\n";
+        for &byte in msg {
+            while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
+            port.write(byte);
+        }
+    }
+    serial::serial_log("Kernel: efi_main entered (via serial_log).\n");
 
     // Common initialization for both UEFI and BIOS
     init_common();

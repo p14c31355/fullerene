@@ -1,20 +1,13 @@
 // bellows/src/loader/file.rs
 
-use alloc::vec::Vec;
+use alloc::{format, vec::Vec};
 use core::ffi::c_void;
 use core::ptr;
 use petroleum::common::{
-    BellowsError, EFI_FILE_INFO_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiBootServices,
+    BellowsError, EFI_FILE_INFO_GUID, EFI_LOADED_IMAGE_PROTOCOL_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiBootServices,
     EfiFile, EfiFileInfo, EfiLoadedImageProtocol, EfiSimpleFileSystem, EfiStatus,
 };
 use x86_64::instructions::port::Port; // Import Port for direct I/O
-
-const EFI_LOADED_IMAGE_PROTOCOL_GUID: [u8; 16] = [
-    0xA1, 0x31, 0x1B, 0x5B,
-    0x62, 0x95,
-    0xD2, 0x11,
-    0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B
-];
 
 /// Writes a single byte to the COM1 serial port (0x3F8).
 /// This is a very basic, early debug function that doesn't rely on any complex initialization.
@@ -88,9 +81,41 @@ pub fn read_efi_file(bs: &EfiBootServices, image_handle: usize) -> petroleum::co
     // Debug print: Starting file read
     debug_print_str("File: Starting read_efi_file...\n");
 
-    // Use the image handle as the device handle
-    let device_handle = image_handle;
-    debug_print_str("File: Using image_handle as device_handle.\n");
+    // Get the device handle from the LoadedImageProtocol
+    let mut loaded_image: *mut EfiLoadedImageProtocol = ptr::null_mut();
+    let status = (bs.open_protocol)(
+        image_handle,
+        &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
+        &mut loaded_image as *mut _ as *mut *mut c_void,
+        image_handle,
+        0,
+        1, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
+    );
+    if EfiStatus::from(status) != EfiStatus::Success {
+        debug_print_str("File: Failed to get LoadedImageProtocol.\n");
+        // Debug: print status
+        let status_str = match EfiStatus::from(status) {
+            EfiStatus::Success => "Success",
+            EfiStatus::NotFound => "NotFound",
+            EfiStatus::InvalidParameter => "InvalidParameter",
+            _ => "Other",
+        };
+        debug_print_str("File: Status: ");
+        debug_print_str(status_str);
+        debug_print_str("\n");
+        return Err(BellowsError::ProtocolNotFound("Failed to get LoadedImageProtocol."));
+    }
+    let revision = unsafe { (*loaded_image).revision };
+    debug_print_str("File: LoadedImageProtocol revision: ");
+    let rev_str = format!("{:x}", revision);
+    debug_print_str(&rev_str);
+    debug_print_str("\n");
+    let device_handle = unsafe { (*loaded_image).device_handle };
+    debug_print_str("File: Got device_handle from LoadedImageProtocol. Handle: ");
+    // Debug: print device_handle as hex
+    let handle_str = format!("{:x}", device_handle);
+    debug_print_str(&handle_str);
+    debug_print_str("\n");
 
     // Get the SimpleFileSystem protocol from the device
     let mut fs_proto: *mut EfiSimpleFileSystem = ptr::null_mut();

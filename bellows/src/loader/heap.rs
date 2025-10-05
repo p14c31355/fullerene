@@ -42,7 +42,15 @@ pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
         )
     };
     if EfiStatus::from(status) != EfiStatus::Success {
-        debug_print_str("Heap: Failed to allocate heap memory.\n");
+        debug_print_str("Heap: Failed to allocate heap memory. Status: ");
+        let status_str = match EfiStatus::from(status) {
+            EfiStatus::Success => "Success",
+            EfiStatus::NotFound => "NotFound",
+            EfiStatus::InvalidParameter => "InvalidParameter",
+            _ => "Other",
+        };
+        debug_print_str(status_str);
+        debug_print_str("\n");
         return Err(BellowsError::AllocationFailed(
             "Failed to allocate heap memory.",
         ));
