@@ -25,6 +25,7 @@ use petroleum::common::{
 /// This function is the `start` attribute as defined in the `Cargo.toml`.
 #[unsafe(no_mangle)]
 pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
+    unsafe { core::arch::asm!("hlt") }; // DEBUG: Halt at the beginning of efi_main
     let _ = petroleum::UEFI_SYSTEM_TABLE
         .lock()
         .insert(petroleum::UefiSystemTablePtr(system_table));
@@ -35,16 +36,17 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     petroleum::serial::UEFI_WRITER.lock().init(st.con_out);
 
-    // Heap initをここに移動（出力前に確保）
     petroleum::serial::_print(format_args!("Attempting to initialize heap...\n"));
     if let Err(e) = init_heap(bs) {
-        // ここはheapなしでエラー出力（後述のheap-less版追加）
+
         panic!("Failed to initialize heap: {:?}", e);
     }
     petroleum::serial::_print(format_args!("Heap initialized successfully.\n"));
 
     petroleum::println!("Bellows UEFI Bootloader starting...");
     petroleum::serial::_print(format_args!("Attempting to initialize GOP...\n"));
+    petroleum::println!("Image Handle: {:#x}", image_handle);
+    petroleum::println!("System Table: {:#p}", system_table);
     init_gop(st);
     petroleum::serial::_print(format_args!("GOP initialized successfully.\n"));
 
@@ -62,6 +64,8 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         efi_image_phys, efi_image_size
     ));
 
+    petroleum::serial::_print(format_args!("Attempting to load EFI image...\n"));
+
     let efi_image_file = {
         // Safety:
         // `efi_image_phys` and `efi_image_size` are returned by `read_efi_file`,
@@ -75,7 +79,10 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     // Load the kernel and get its entry point.
     let entry = match load_efi_image(st, efi_image_file) {
-        Ok(e) => e,
+        Ok(e) => {
+            petroleum::serial::_print(format_args!("EFI image loaded successfully. Entry point: {:#p}\n", e as *const ()));
+            e
+        },
         Err(err) => {
             petroleum::println!("Failed to load EFI image: {:?}", err);
             let file_pages = efi_image_size.div_ceil(4096);
@@ -87,6 +94,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     let file_pages = efi_image_size.div_ceil(4096);
     (bs.free_pages)(efi_image_phys, file_pages);
 
+    petroleum::serial::_print(format_args!("Exiting boot services and jumping to kernel...\n"));
     // Exit boot services and jump to the kernel.
     match exit_boot_services_and_jump(image_handle, system_table, entry) {
         Ok(_) => {

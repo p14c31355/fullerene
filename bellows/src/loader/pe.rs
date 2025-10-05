@@ -114,28 +114,33 @@ pub fn load_efi_image(
     if file.len() < mem::size_of::<ImageDosHeader>() {
         return Err(BellowsError::PeParse("File too small for DOS header."));
     }
-    let dos_header: &ImageDosHeader = unsafe { &*(file.as_ptr() as *const ImageDosHeader) };
-    if dos_header.e_magic != 0x5a4d {
+    if file.len() < mem::size_of::<ImageDosHeader>() {
+        return Err(BellowsError::PeParse("File too small for DOS header."));
+    }
+    let dos_header_ptr = file.as_ptr() as *const ImageDosHeader;
+    let e_magic = unsafe { ptr::read_unaligned(dos_header_ptr as *const u16) };
+    if e_magic != 0x5a4d {
         return Err(BellowsError::PeParse("Invalid DOS signature (MZ)."));
     }
+    let e_lfanew = unsafe { ptr::read_unaligned((dos_header_ptr as *const u8).add(offset_of!(ImageDosHeader, e_lfanew)) as *const i32) };
+    petroleum::println!("DOS header parsed. e_lfanew: {:#x}", e_lfanew);
 
-    // Safety:
-    // The offset `e_lfanew` is checked to be within the file bounds before dereferencing.
-    let nt_headers_offset = dos_header.e_lfanew as usize;
+    let nt_headers_offset = e_lfanew as usize;
     if nt_headers_offset + mem::size_of::<ImageNtHeaders64>() > file.len() {
         return Err(BellowsError::PeParse("Invalid NT headers offset."));
     }
-    let nt_headers: &ImageNtHeaders64 =
-        unsafe { &*(file.as_ptr().add(nt_headers_offset) as *const ImageNtHeaders64) };
+    let nt_headers_ptr = unsafe { file.as_ptr().add(nt_headers_offset) as *const ImageNtHeaders64 };
+    let optional_header_magic = unsafe { ptr::read_unaligned((nt_headers_ptr as *const u8).add(offset_of!(ImageNtHeaders64, optional_header)).add(offset_of!(ImageOptionalHeader64, _magic)) as *const u16) };
+    petroleum::println!("NT headers parsed. Optional Header Magic: {:#x}", optional_header_magic);
 
-    if nt_headers.optional_header._magic != 0x20b {
+    if optional_header_magic != 0x20b {
         return Err(BellowsError::PeParse("Invalid PE32+ magic number."));
     }
 
-    let image_size = nt_headers.optional_header.size_of_image as usize;
+    let image_size = unsafe { ptr::read_unaligned((nt_headers_ptr as *const u8).add(offset_of!(ImageNtHeaders64, optional_header)).add(offset_of!(ImageOptionalHeader64, size_of_image)) as *const u32) } as usize;
     let pages_needed = image_size.div_ceil(4096);
     let mut phys_addr: usize = 0;
-    let status = {
+    let status = unsafe {
         (bs.allocate_pages)(
             0usize,
             EfiMemoryType::EfiLoaderData,
@@ -148,77 +153,98 @@ pub fn load_efi_image(
             "Failed to allocate memory for PE image.",
         ));
     }
+    petroleum::println!("Memory allocated for PE image. Phys Addr: {:#x}, Pages: {}", phys_addr, pages_needed);
 
-    let _image_base_addr = nt_headers.optional_header.image_base as usize;
+    let image_base = unsafe { ptr::read_unaligned((nt_headers_ptr as *const u8).add(offset_of!(ImageNtHeaders64, optional_header)).add(offset_of!(ImageOptionalHeader64, image_base)) as *const u64) } as usize;
+    petroleum::println!("Image Base from header: {:#x}", image_base);
 
-    // Safety:
-    // We have allocated memory for the image and `phys_addr` is a valid pointer to it.
-    // The `copy_nonoverlapping` is safe because `file.as_ptr()` is a valid source
-    // and `phys_addr` is a valid destination, and we only copy the header size, which is a known good size.
+    petroleum::println!("Copying headers...");
+    let size_of_headers = unsafe { ptr::read_unaligned((nt_headers_ptr as *const u8).add(offset_of!(ImageNtHeaders64, optional_header)).add(offset_of!(ImageOptionalHeader64, _size_of_headers)) as *const u32) } as usize;
     unsafe {
         ptr::copy_nonoverlapping(
             file.as_ptr(),
             phys_addr as *mut u8,
-            nt_headers.optional_header._size_of_headers as usize,
+            size_of_headers,
         );
     }
+    petroleum::println!("Headers copied.");
+
+    let number_of_sections = unsafe { ptr::read_unaligned((nt_headers_ptr as *const u8).add(offset_of!(ImageNtHeaders64, _file_header)).add(offset_of!(ImageFileHeader, number_of_sections)) as *const u16) } as usize;
+    let size_of_optional_header = unsafe { ptr::read_unaligned((nt_headers_ptr as *const u8).add(offset_of!(ImageNtHeaders64, _file_header)).add(offset_of!(ImageFileHeader, size_of_optional_header)) as *const u16) } as usize;
 
     let section_headers_offset = nt_headers_offset
-        + mem::size_of::<u32>()
+        + mem::size_of::<u32>() // Signature
         + mem::size_of::<ImageFileHeader>()
-        + nt_headers._file_header.size_of_optional_header as usize;
+        + size_of_optional_header;
     let section_headers_size =
-        nt_headers._file_header.number_of_sections as usize * mem::size_of::<ImageSectionHeader>();
+        number_of_sections * mem::size_of::<ImageSectionHeader>();
     if section_headers_offset + section_headers_size > file.len() {
-        // Safety:
-        // We need to free the previously allocated memory if an error occurs.
-
-        (bs.free_pages)(phys_addr, pages_needed);
-
+        unsafe { (bs.free_pages)(phys_addr, pages_needed) };
         return Err(BellowsError::PeParse("Section headers out of bounds."));
     }
+    petroleum::println!("Section headers offset: {:#x}, size: {}", section_headers_offset, section_headers_size);
+    petroleum::println!("Copying sections...");
 
-    for i in 0..nt_headers._file_header.number_of_sections {
-        let section_header_ptr = unsafe {
+    for i in 0..number_of_sections {
+        let section_header_base_ptr = unsafe {
             file.as_ptr()
-                .add(section_headers_offset + i as usize * mem::size_of::<ImageSectionHeader>())
+                .add(section_headers_offset + i * mem::size_of::<ImageSectionHeader>())
         };
-        // Safety:
-        // We have checked that the pointer is within the bounds of the file buffer.
-        let section_header: &ImageSectionHeader =
-            unsafe { &*(section_header_ptr as *const ImageSectionHeader) };
+        let virtual_address = unsafe {
+            ptr::read_unaligned(
+                section_header_base_ptr.add(offset_of!(ImageSectionHeader, virtual_address))
+                    as *const u32,
+            )
+        };
+        let size_of_raw_data = unsafe {
+            ptr::read_unaligned(
+                section_header_base_ptr.add(offset_of!(ImageSectionHeader, size_of_raw_data))
+                    as *const u32,
+            )
+        };
+        let pointer_to_raw_data = unsafe {
+            ptr::read_unaligned(
+                section_header_base_ptr.add(offset_of!(ImageSectionHeader, pointer_to_raw_data))
+                    as *const u32,
+            )
+        };
+
+        petroleum::println!(
+            "  Section {}: VirtualAddress={:#x}, SizeOfRawData={:#x}, PointerToRawData={:#x}",
+            i,
+            virtual_address,
+            size_of_raw_data,
+            pointer_to_raw_data
+        );
 
         let src_addr = unsafe {
             file.as_ptr()
-                .add(section_header.pointer_to_raw_data as usize)
+                .add(pointer_to_raw_data as usize)
         };
         let dst_addr =
-            unsafe { (phys_addr as *mut u8).add(section_header.virtual_address as usize) };
+            unsafe { (phys_addr as *mut u8).add(virtual_address as usize) };
 
-        if (src_addr as usize).saturating_add(section_header.size_of_raw_data as usize)
+        if (src_addr as usize).saturating_add(size_of_raw_data as usize)
             > (file.as_ptr() as usize).saturating_add(file.len())
-            || (dst_addr as usize).saturating_add(section_header.size_of_raw_data as usize)
+            || (dst_addr as usize).saturating_add(size_of_raw_data as usize)
                 > ((phys_addr as *mut u8) as usize).saturating_add(pages_needed * 4096)
         {
-            (bs.free_pages)(phys_addr, pages_needed);
-
+            unsafe { (bs.free_pages)(phys_addr, pages_needed) };
             return Err(BellowsError::PeParse("Section data out of bounds."));
         }
 
-        // Safety:
-        // We have checked the source and destination bounds to prevent buffer overflows.
-        // `copy_nonoverlapping` is used to copy the section data.
         unsafe {
-            ptr::copy_nonoverlapping(src_addr, dst_addr, section_header.size_of_raw_data as usize);
+            ptr::copy_nonoverlapping(src_addr, dst_addr, size_of_raw_data as usize);
         }
     }
+    petroleum::println!("Sections copied.");
 
-    let image_base_delta = (phys_addr as u64).wrapping_sub(nt_headers.optional_header.image_base);
+    let image_base_delta = (phys_addr as u64).wrapping_sub(image_base as u64);
+    petroleum::println!("Image Base Delta: {:#x}", image_base_delta);
 
     if image_base_delta != 0 {
-        // Read the ImageDataDirectory struct unaligned
         let reloc_data_dir_ptr = unsafe {
-            (nt_headers as *const _ as *const u8)
+            (nt_headers_ptr as *const u8)
                 .add(offset_of!(ImageNtHeaders64, optional_header))
                 .add(offset_of!(ImageOptionalHeader64, data_directory))
                 .add(mem::size_of::<ImageDataDirectory>() * 5) // Index 5 for relocation table
@@ -241,8 +267,7 @@ pub fn load_efi_image(
             if (reloc_table_ptr as usize).saturating_add(reloc_size as usize)
                 > phys_addr.saturating_add(pages_needed * 4096)
             {
-                (bs.free_pages)(phys_addr, pages_needed);
-
+                unsafe { (bs.free_pages)(phys_addr, pages_needed) };
                 return Err(BellowsError::PeParse("Relocation table out of bounds."));
             }
 
@@ -253,11 +278,10 @@ pub fn load_efi_image(
             while (current_reloc_block_ptr as *const u8) < end_reloc_table_ptr {
                 reloc_count += 1;
                 if reloc_count > 10000 {
-                    (bs.free_pages)(phys_addr, pages_needed);
+                    unsafe { (bs.free_pages)(phys_addr, pages_needed) };
                     return Err(BellowsError::PeParse("Too many relocations, possible infinite loop."));
                 }
 
-                // Read virtual_address and size_of_block unaligned
                 let virtual_address = unsafe {
                     ptr::read_unaligned(
                         (current_reloc_block_ptr as *const u8)
@@ -296,7 +320,7 @@ pub fn load_efi_image(
                         if fixup_address.saturating_add(8)
                             > (phys_addr.saturating_add(pages_needed * 4096))
                         {
-                            (bs.free_pages)(phys_addr, pages_needed);
+                            unsafe { (bs.free_pages)(phys_addr, pages_needed) };
                             return Err(BellowsError::PeParse(
                                 "Relocation fixup address is out of bounds.",
                             ));
@@ -307,7 +331,7 @@ pub fn load_efi_image(
                                 (*fixup_address_ptr).wrapping_add(image_base_delta);
                         }
                     } else if fixup_type != ImageRelBasedType::Absolute as u8 {
-                        (bs.free_pages)(phys_addr, pages_needed);
+                        unsafe { (bs.free_pages)(phys_addr, pages_needed) };
                         return Err(BellowsError::PeParse("Unsupported relocation type."));
                     }
                     unsafe {
@@ -315,28 +339,30 @@ pub fn load_efi_image(
                     }
                 }
 
-                current_reloc_block_ptr = (end_of_block_ptr as *const ImageBaseRelocation);
+                current_reloc_block_ptr = end_of_block_ptr as *const ImageBaseRelocation;
             }
+            petroleum::println!("Relocations applied.");
+        } else {
+            petroleum::println!("No relocation table found or virtual address is 0.");
         }
+    } else {
+        petroleum::println!("Image base delta is 0, no relocations needed.");
     }
 
+    let address_of_entry_point = unsafe { ptr::read_unaligned((nt_headers_ptr as *const u8).add(offset_of!(ImageNtHeaders64, optional_header)).add(offset_of!(ImageOptionalHeader64, address_of_entry_point)) as *const u32) };
     let entry_point_addr =
-        phys_addr.saturating_add(nt_headers.optional_header.address_of_entry_point as usize);
+        phys_addr.saturating_add(address_of_entry_point as usize);
+    petroleum::println!("Calculated Entry Point Address: {:#x}", entry_point_addr);
 
     if entry_point_addr >= phys_addr.saturating_add(pages_needed * 4096)
         || entry_point_addr < phys_addr
     {
-        (bs.free_pages)(phys_addr, pages_needed);
-
+        unsafe { (bs.free_pages)(phys_addr, pages_needed) };
         return Err(BellowsError::PeParse(
             "Entry point address is outside allocated memory.",
         ));
     }
 
-    // Safety:
-    // We are converting a memory address to a function pointer.
-    // The `entry_point_addr` is calculated from the PE headers and has been checked to be
-    // within the allocated memory. The `efiapi` calling convention is also assumed.
     let entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> ! =
         unsafe { mem::transmute(entry_point_addr) };
 

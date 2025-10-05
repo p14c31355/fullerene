@@ -26,67 +26,55 @@ pub fn exit_boot_services_and_jump(
     let mut map_phys_addr: usize = 0;
     let mut map_pages: usize = 0;
 
-    // First call: Get the required buffer size (with NULL buffer)
-    let status = (bs.get_memory_map)(
-        &mut map_size,
-        ptr::null_mut(),
-        &mut map_key,
-        &mut descriptor_size,
-        &mut descriptor_version,
-    );
-
-    if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
-        println!("Error: Failed to get initial memory map size: {:?}", EfiStatus::from(status));
-        return Err(BellowsError::InvalidState("Failed to get initial memory map size."));
-    }
-
-    // Allocate buffer with some extra space
-    let alloc_size = map_size.saturating_add(4096);
-    map_pages = alloc_size.div_ceil(4096);
-    let mut alloc_phys = 0;
-    let alloc_status = (bs.allocate_pages)(
-        0usize,
-        EfiMemoryType::EfiLoaderData,
-        map_pages,
-        &mut alloc_phys,
-    );
-
-    if EfiStatus::from(alloc_status) != EfiStatus::Success {
-        println!("Error: Failed to allocate memory map buffer: {:?}", EfiStatus::from(alloc_status));
-        return Err(BellowsError::AllocationFailed("Failed to allocate memory map buffer."));
-    }
-    map_phys_addr = alloc_phys;
-
-    // Retry loop: Call GetMemoryMap with the allocated buffer
-    let mut attempts = 0;
+    // Loop to get the memory map until successful
     loop {
-        attempts += 1;
-        println!("Attempt {}: map_key={:#x}, size={}", attempts, map_key, map_size); // Added for debugging
-
-        if attempts > 3 {
-            // If BufferTooSmall occurs more than 3 times, reset map_key to 0
-            // instead of forcing exit, as per the suggestion.
-            // This allows the loop to continue with a potentially fresh map_key.
-            if EfiStatus::from((bs.get_memory_map)(
-                &mut map_size,
-                map_phys_addr as *mut c_void,
-                &mut map_key,
-                &mut descriptor_size,
-                &mut descriptor_version,
-            )) == EfiStatus::BufferTooSmall {
-                println!("BufferTooSmall occurred more than 3 times, resetting map_key to 0.");
-                map_key = 0; // Reset map_key
-                // Continue the loop to try again with the reset map_key
-            } else {
-                (bs.free_pages)(map_phys_addr, map_pages);
-                println!("Error: Failed to get memory map after multiple attempts.");
-                return Err(BellowsError::InvalidState("Failed to get memory map after multiple attempts."));
-            }
-        }
-
+        // First call: Get the required buffer size (with NULL buffer)
         let status = (bs.get_memory_map)(
             &mut map_size,
-            map_phys_addr as *mut c_void, // Use the allocated buffer
+            ptr::null_mut(),
+            &mut map_key,
+            &mut descriptor_size,
+            &mut descriptor_version,
+        );
+
+        if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
+            println!("Error: Failed to get initial memory map size: {:?}", EfiStatus::from(status));
+            return Err(BellowsError::InvalidState("Failed to get initial memory map size."));
+        }
+
+        // Allocate buffer with some extra space
+        let alloc_size = map_size.saturating_add(4096); // Add some buffer for potential growth
+        let new_map_pages = alloc_size.div_ceil(4096);
+        let mut new_map_phys_addr = 0;
+
+        let alloc_status = (bs.allocate_pages)(
+            0usize,
+            EfiMemoryType::EfiLoaderData,
+            new_map_pages,
+            &mut new_map_phys_addr,
+        );
+
+        if EfiStatus::from(alloc_status) != EfiStatus::Success {
+            // If we had a previous allocation, free it before returning an error
+            if map_phys_addr != 0 {
+                (bs.free_pages)(map_phys_addr, map_pages);
+            }
+            println!("Error: Failed to allocate memory map buffer: {:?}", EfiStatus::from(alloc_status));
+            return Err(BellowsError::AllocationFailed("Failed to allocate memory map buffer."));
+        }
+
+        // Free previous allocation if it exists
+        if map_phys_addr != 0 {
+            (bs.free_pages)(map_phys_addr, map_pages);
+        }
+
+        map_phys_addr = new_map_phys_addr;
+        map_pages = new_map_pages;
+
+        // Second call: Get the memory map with the allocated buffer
+        let status = (bs.get_memory_map)(
+            &mut map_size,
+            map_phys_addr as *mut c_void,
             &mut map_key,
             &mut descriptor_size,
             &mut descriptor_version,
@@ -95,25 +83,9 @@ pub fn exit_boot_services_and_jump(
         match EfiStatus::from(status) {
             EfiStatus::Success => break, // Successfully got the memory map
             EfiStatus::BufferTooSmall => {
-                // Memory map changed, re-allocate a larger buffer
-                println!("Memory map changed, re-allocating buffer.");
-                let new_alloc_size = map_size.saturating_add(4096);
-                let new_pages = new_alloc_size.div_ceil(4096);
-                let mut new_phys = 0;
-                let new_status = (bs.allocate_pages)(
-                    0usize,
-                    EfiMemoryType::EfiLoaderData,
-                    new_pages,
-                    &mut new_phys,
-                );
-                if EfiStatus::from(new_status) != EfiStatus::Success {
-                    (bs.free_pages)(map_phys_addr, map_pages);
-                    println!("Error: Failed to re-allocate memory map buffer: {:?}", EfiStatus::from(new_status));
-                    return Err(BellowsError::AllocationFailed("Failed to re-allocate memory map buffer."));
-                }
-                (bs.free_pages)(map_phys_addr, map_pages); // Free old buffer
-                map_phys_addr = new_phys;
-                map_pages = new_pages;
+                // Memory map changed, loop again to re-allocate a larger buffer
+                println!("Memory map changed, re-attempting to get memory map.");
+                // The loop will naturally re-allocate in the next iteration
             }
             _ => {
                 (bs.free_pages)(map_phys_addr, map_pages);

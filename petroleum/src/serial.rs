@@ -1,8 +1,7 @@
 // petroleum/src/serial.rs
 
 use crate::common::{EfiSimpleTextOutput, EfiStatus};
-use alloc::vec::Vec;
-use core::{fmt, slice}; // Add slice for write_string_heapless
+use core::fmt;
 use spin::Mutex;
 
 pub struct UefiWriter {
@@ -23,25 +22,6 @@ impl UefiWriter {
         self.con_out = con_out;
     }
 
-    pub fn write_string(&mut self, s: &str) -> Result<(), EfiStatus> {
-        if self.con_out.is_null() {
-            return Ok(());
-        }
-
-        let mut s_utf16: Vec<u16> = s.encode_utf16().collect();
-        s_utf16.push(0); // Add null terminator
-
-        let status = unsafe { ((*self.con_out).output_string)(self.con_out, s_utf16.as_ptr()) };
-
-        let efi_status = EfiStatus::from(status);
-        if efi_status == EfiStatus::Success {
-            Ok(())
-        } else {
-            Err(efi_status)
-        }
-    }
-
-    // Heapなし版: 最大256文字の固定バッファでUTF-16変換
     pub fn write_string_heapless(&mut self, s: &str) -> Result<(), EfiStatus> {
         if self.con_out.is_null() {
             return Ok(());
@@ -54,7 +34,7 @@ impl UefiWriter {
                 utf16_buf[idx] = c;
                 idx += 1;
             } else {
-                break; // バッファオーバーフロー
+                break;
             }
         }
         utf16_buf[idx] = 0; // null terminate
@@ -71,7 +51,7 @@ impl UefiWriter {
 
 impl fmt::Write for UefiWriter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.write_string(s).map_err(|_| fmt::Error)
+        self.write_string_heapless(s).map_err(|_| fmt::Error)
     }
 }
 
