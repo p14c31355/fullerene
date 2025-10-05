@@ -7,6 +7,25 @@ use petroleum::common::{
     BellowsError, EFI_FILE_INFO_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiBootServices,
     EfiFile, EfiFileInfo, EfiSimpleFileSystem, EfiStatus,
 };
+use x86_64::instructions::port::Port; // Import Port for direct I/O
+
+/// Writes a single byte to the COM1 serial port (0x3F8).
+/// This is a very basic, early debug function that doesn't rely on any complex initialization.
+fn debug_print_byte(byte: u8) {
+    let mut port = Port::new(0x3F8);
+    unsafe {
+        // Wait until the transmit buffer is empty
+        while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
+        port.write(byte);
+    }
+}
+
+/// Writes a string to the COM1 serial port.
+fn debug_print_str(s: &str) {
+    for byte in s.bytes() {
+        debug_print_byte(byte);
+    }
+}
 
 const EFI_FILE_MODE_READ: u64 = 0x1;
 const KERNEL_PATH: &str = r"\EFI\BOOT\KERNEL.EFI";
@@ -57,6 +76,9 @@ fn open_file(dir: &EfiFileWrapper, path: &[u16]) -> petroleum::common::Result<Ef
 
 /// Read `fullerene-kernel.efi` from the volume.
 pub fn read_efi_file(bs: &EfiBootServices) -> petroleum::common::Result<(usize, usize)> {
+    // Debug print: Starting file read
+    debug_print_str("File: Starting read_efi_file...\n");
+
     let mut fs_proto: *mut EfiSimpleFileSystem = ptr::null_mut();
     let status = (bs.locate_protocol)(
         &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *mut _,
@@ -64,10 +86,12 @@ pub fn read_efi_file(bs: &EfiBootServices) -> petroleum::common::Result<(usize, 
         &mut fs_proto as *mut _ as *mut _,
     );
     if EfiStatus::from(status) != EfiStatus::Success {
+        debug_print_str("File: Failed to locate SimpleFileSystem protocol.\n");
         return Err(BellowsError::ProtocolNotFound(
             "Failed to locate SimpleFileSystem protocol.",
         ));
     }
+    debug_print_str("File: Located SimpleFileSystem protocol.\n");
 
     let mut volume_file_handle: *mut EfiFile = ptr::null_mut();
     let status = unsafe { ((*fs_proto).open_volume)(fs_proto, &mut volume_file_handle) };

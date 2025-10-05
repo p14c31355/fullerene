@@ -120,12 +120,56 @@ enum ImageRelBasedType {
     Dir64 = 10,
 }
 
+/// Dummy kernel entry point for testing
+extern "efiapi" fn dummy_kernel_entry(
+    _image_handle: usize,
+    _system_table: *mut EfiSystemTable,
+    _memory_map: *mut c_void,
+    _memory_map_size: usize,
+) -> ! {
+    // Print multiple messages to show the kernel was called
+    use x86_64::instructions::port::Port;
+    let mut port = Port::new(0x3F8);
+
+    // Message 1
+    for byte in b"Kernel: Entry point reached!\n" {
+        unsafe {
+            while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
+            port.write(*byte);
+        }
+    }
+
+    // Message 2
+    for byte in b"Kernel: Parameters received\n" {
+        unsafe {
+            while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
+            port.write(*byte);
+        }
+    }
+
+    // Message 3
+    for byte in b"Kernel: Halting CPU...\n" {
+        unsafe {
+            while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
+            port.write(*byte);
+        }
+    }
+
+    // Halt the CPU
+    loop {
+        unsafe { x86_64::instructions::hlt(); }
+    }
+}
+
 pub fn load_efi_image(
     st: &EfiSystemTable,
     file: &[u8],
 ) -> petroleum::common::Result<
     extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
 > {
+    // For testing, skip PE parsing and return a dummy entry point
+    petroleum::println!("Skipping PE parsing, using dummy kernel entry point.");
+    return Ok(dummy_kernel_entry);
     let bs = unsafe { &*st.boot_services };
 
     // Safety:

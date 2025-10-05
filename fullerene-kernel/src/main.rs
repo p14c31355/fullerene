@@ -28,6 +28,9 @@ pub extern "efiapi" fn efi_main(
     _memory_map: *mut c_void,
     _memory_map_size: usize,
 ) -> ! {
+    // Early debug print to confirm kernel entry point is reached
+    serial::serial_log("Kernel: efi_main entered.\n");
+
     // Common initialization for both UEFI and BIOS
     init_common();
 

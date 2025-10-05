@@ -65,7 +65,7 @@ fn main() -> io::Result<()> {
         files: vec![
             IsoImageFile {
                 source: kernel_path.clone(),
-                destination: "EFI/BOOT/KERNEL.EFI".to_string(),
+                destination: "EFI\\BOOT\\KERNEL.EFI".to_string(),
             },
             IsoImageFile {
                 source: bellows_path.clone(),
@@ -129,7 +129,8 @@ fn main() -> io::Result<()> {
         &ovmf_fd_drive,
         "-drive",
         &ovmf_vars_fd_drive,
-        "-cdrom", iso_path_str,
+        "-drive",
+        &format!("file={},if=ide,media=cdrom", iso_path_str), // Use drive instead of cdrom
         "-no-reboot",
         "-no-shutdown", // Keep QEMU running after guest exit
         "-boot",
