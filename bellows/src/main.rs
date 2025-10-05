@@ -112,7 +112,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         Err(err) => {
             petroleum::println!("Failed to load EFI image: {:?}", err);
             let file_pages = efi_image_size.div_ceil(4096);
-            (bs.free_pages)(efi_image_phys, file_pages);
+            unsafe { (bs.free_pages)(efi_image_phys, file_pages) };
             panic!("Failed to load EFI image.");
         }
     };
