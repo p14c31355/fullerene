@@ -64,13 +64,16 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         panic!("Failed to initialize heap: {:?}", e);
     }
     petroleum::serial::_print(format_args!("Heap initialized successfully.\n"));
+    debug_print_str("Bellows: Heap initialized.\n"); // Debug print after heap initialization
 
     petroleum::println!("Bellows UEFI Bootloader starting...");
+    debug_print_str("Bellows: 'Bellows UEFI Bootloader starting...' printed.\n"); // Debug print after println!
     petroleum::serial::_print(format_args!("Attempting to initialize GOP...\n"));
     petroleum::println!("Image Handle: {:#x}", image_handle);
     petroleum::println!("System Table: {:#p}", system_table);
     init_gop(st);
     petroleum::serial::_print(format_args!("GOP initialized successfully.\n"));
+    debug_print_str("Bellows: GOP initialized.\n"); // Debug print after GOP initialization
 
     petroleum::serial::_print(format_args!("Attempting to read kernel EFI file...\n"));
     // Read the kernel file before exiting boot services.
@@ -85,6 +88,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         "Kernel EFI file read. Physical address: {:#x}, size: {}\n",
         efi_image_phys, efi_image_size
     ));
+    debug_print_str("Bellows: Kernel EFI file read.\n"); // Debug print after read_efi_file
 
     petroleum::serial::_print(format_args!("Attempting to load EFI image...\n"));
 
@@ -112,12 +116,16 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             panic!("Failed to load EFI image.");
         }
     };
+    debug_print_str("Bellows: EFI image loaded.\n"); // Debug print after load_efi_image
 
+    // Free the memory allocated for the EFI image file.
     let file_pages = efi_image_size.div_ceil(4096);
     (bs.free_pages)(efi_image_phys, file_pages);
+    debug_print_str("Bellows: EFI image memory freed.\n"); // Debug print after freeing memory
 
     petroleum::serial::_print(format_args!("Exiting boot services and jumping to kernel...\n"));
     // Exit boot services and jump to the kernel.
+    debug_print_str("Bellows: About to exit boot services and jump to kernel.\n"); // Debug print just before the call
     match exit_boot_services_and_jump(image_handle, system_table, entry) {
         Ok(_) => {
             unreachable!(); // This branch should never be reached if the function returns '!'
@@ -127,6 +135,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             panic!("Failed to exit boot services.");
         }
     }
+    debug_print_str("Bellows: Exited boot services and jumped to kernel.\n"); // Debug print after exit_boot_services_and_jump
 }
 
 /// Initializes the Graphics Output Protocol (GOP) for framebuffer access.
