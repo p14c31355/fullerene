@@ -15,9 +15,18 @@ extern crate alloc;
 
 use core::ffi::c_void;
 use petroleum::common::{
-    EfiSystemTable, FullereneFramebufferConfig, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID
+    EfiSystemTable, FullereneFramebufferConfig, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, EfiMemoryType
 };
 use x86_64::instructions::hlt;
+
+#[repr(C)]
+pub struct EfiMemoryDescriptor {
+    pub type_: EfiMemoryType,
+    pub physical_start: u64,
+    pub virtual_start: u64,
+    pub number_of_pages: u64,
+    pub attribute: u64,
+}
 
 #[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]
@@ -41,7 +50,7 @@ pub extern "efiapi" fn efi_main(
     serial::serial_log("Kernel: efi_main entered (via serial_log).\n");
 
     // Common initialization for both UEFI and BIOS
-    init_common();
+    init_common(_memory_map, _memory_map_size);
 
     serial::serial_log("Interrupts initialized via init().");
 
@@ -70,8 +79,7 @@ pub extern "efiapi" fn efi_main(
 
     if let Some(config) = framebuffer_config {
         if config.address == 0 {
-            serial::serial_log("Fullerene Framebuffer Config Table found, but address is 0.\n");
-            serial::serial_log("  This may be the cause of the kernel panic.");
+            panic!("Framebuffer address 0 - check bootloader GOP install");
         } else {
             let _ = core::fmt::write(
                 &mut *serial::SERIAL1.lock(),
@@ -93,11 +101,43 @@ pub extern "efiapi" fn efi_main(
     hlt_loop();
 }
 
-// Function to perform common initialization steps for both UEFI and BIOS.
-fn init_common() {
-    gdt::init(); // Initialize GDT
+#[cfg(target_os = "uefi")]
+fn init_common(memory_map: *mut c_void, memory_map_size: usize) {
+    // Parse memory map to find LoaderData region for heap
+    let descriptors = unsafe {
+        core::slice::from_raw_parts(memory_map as *const EfiMemoryDescriptor, memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>())
+    };
+    let mut loader_data_start = None;
+    for desc in descriptors {
+        if desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0 {
+            loader_data_start = Some(x86_64::PhysAddr::new(desc.physical_start));
+            break;
+        }
+    }
+    let loader_data_start = loader_data_start.expect("No LoaderData region found in memory map");
+    let heap_start = heap::allocate_heap_from_map(loader_data_start, heap::HEAP_SIZE);
+
+    gdt::init(heap_start); // Initialize GDT with heap start
     interrupts::init(); // Initialize IDT
-    heap::init();
+    heap::init(heap_start, heap::HEAP_SIZE); // Initialize heap
+    serial::serial_init(); // Initialize serial early for debugging
+}
+
+#[cfg(not(target_os = "uefi"))]
+fn init_common() {
+    use core::mem::MaybeUninit;
+    use x86_64::VirtAddr;
+
+    // Static heap for BIOS
+    static mut HEAP: [MaybeUninit<u8>; heap::HEAP_SIZE] = [MaybeUninit::uninit(); heap::HEAP_SIZE];
+    unsafe {
+        let heap_start = &raw const HEAP as *const MaybeUninit<u8> as *mut u8;
+        heap::ALLOCATOR.lock().init(heap_start, heap::HEAP_SIZE);
+    }
+
+    gdt::init(VirtAddr::new(0)); // Dummy heap start
+    interrupts::init(); // Initialize IDT
+    // Heap already initialized
     serial::serial_init(); // Initialize serial early for debugging
 }
 

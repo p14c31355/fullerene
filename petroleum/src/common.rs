@@ -100,7 +100,7 @@ impl From<usize> for EfiStatus {
 
 /// Minimal subset of UEFI memory types (only those we need)
 #[repr(usize)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum EfiMemoryType {
     EfiLoaderData = 2,
     EfiRuntimeServicesData = 6,
