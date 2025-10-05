@@ -1,5 +1,5 @@
 // fullerene/flasks/src/main.rs
-use isobemak::iso::builder::{BootInfo, IsoImage, IsoImageFile, UefiBootInfo, build_iso};
+use isobemak::{BiosBootInfo, BootInfo, IsoImage, IsoImageFile, UefiBootInfo, build_iso};
 use std::{env, io, path::{Path, PathBuf}, process::Command};
 
 fn main() -> io::Result<()> {
@@ -56,6 +56,10 @@ fn main() -> io::Result<()> {
     // --- 3. Create ISO using isobemak ---
     let iso_path = workspace_root.join("fullerene.iso");
 
+    // Create dummy file for BIOS boot catalog path required by BiosBootInfo struct
+    let dummy_boot_catalog_path = workspace_root.join("dummy_boot_catalog.bin");
+    std::fs::File::create(&dummy_boot_catalog_path)?;
+
     let image = IsoImage {
         files: vec![
             IsoImageFile {
@@ -64,29 +68,38 @@ fn main() -> io::Result<()> {
             },
             IsoImageFile {
                 source: bellows_path.clone(),
-                destination: "EFI/BOOT/BOOTX64.EFI".to_string(),
+                destination: "EFI\\BOOT\\BOOTX64.EFI".to_string(),
             },
         ],
         boot_info: BootInfo {
-            bios_boot: None,
+            bios_boot: Some(BiosBootInfo {
+                boot_catalog: dummy_boot_catalog_path,
+                boot_image: bellows_path.clone(),
+                destination_in_iso: "EFI\\BOOT\\BOOTX64.EFI".to_string(),
+            }),
             uefi_boot: Some(UefiBootInfo {
                 boot_image: bellows_path.clone(),
                 kernel_image: kernel_path.clone(),
-                destination_in_iso: "EFI/BOOT/BOOTX64.EFI".to_string(),
+                destination_in_iso: "EFI\\BOOT\\BOOTX64.EFI".to_string(),
             }),
         },
     };
-    build_iso(&iso_path, &image, false)?;
+    build_iso(&iso_path, &image, true)?; // Set to true for isohybrid UEFI boot
 
     // --- 4. Run QEMU with the created ISO ---
     let ovmf_fd_path = workspace_root
         .join("flasks")
         .join("ovmf")
         .join("RELEASEX64_OVMF_CODE.fd");
-    let ovmf_vars_fd_path = workspace_root
+    let ovmf_vars_fd_original_path = workspace_root
         .join("flasks")
         .join("ovmf")
         .join("RELEASEX64_OVMF_VARS.fd");
+
+    // Create a temporary file for OVMF_VARS.fd to ensure a clean state each run
+    let mut temp_ovmf_vars_fd = tempfile::NamedTempFile::new()?;
+    std::io::copy(&mut std::fs::File::open(&ovmf_vars_fd_original_path)?, temp_ovmf_vars_fd.as_file_mut())?;
+    let ovmf_vars_fd_path = temp_ovmf_vars_fd.path().to_path_buf();
 
     let ovmf_fd_drive = format!(
         "if=pflash,format=raw,unit=0,readonly=on,file={}",
@@ -113,17 +126,18 @@ fn main() -> io::Result<()> {
         &ovmf_fd_drive,
         "-drive",
         &ovmf_vars_fd_drive,
-        "-cdrom",
-        iso_path_str,
+        "-cdrom", iso_path_str,
         "-no-reboot",
         "-d",
         "int",
         "-D",
         "qemu_log.txt",
         "-boot",
-        "order=d",
+        "order=d", // Boot from CD-ROM
         "-nodefaults",
     ]);
+    // Keep the temporary file alive until QEMU exits
+    let _temp_ovmf_vars_fd_holder = temp_ovmf_vars_fd;
     // LD_PRELOAD is a workaround for specific QEMU/libpthread versions.
     // It can be overridden by setting the FULLERENE_QEMU_LD_PRELOAD environment variable.
     let ld_preload_path = env::var("FULLERENE_QEMU_LD_PRELOAD").unwrap_or_else(|_| find_libpthread());

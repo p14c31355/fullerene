@@ -35,15 +35,16 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     petroleum::serial::UEFI_WRITER.lock().init(st.con_out);
 
-    petroleum::println!("Bellows UEFI Bootloader starting...");
-
-    petroleum::println!("Attempting to initialize heap...");
+    // Heap initをここに移動（出力前に確保）
+    petroleum::serial::_print(format_args!("Attempting to initialize heap...\n"));
     if let Err(e) = init_heap(bs) {
-        petroleum::println!("Failed to initialize heap: {:?}", e);
-        panic!("Failed to initialize heap.");
+        // ここはheapなしでエラー出力（後述のheap-less版追加）
+        panic!("Failed to initialize heap: {:?}", e);
     }
-    petroleum::println!("Heap initialized successfully.");
-    petroleum::println!("Attempting to initialize GOP...");
+    petroleum::serial::_print(format_args!("Heap initialized successfully.\n"));
+
+    petroleum::println!("Bellows UEFI Bootloader starting...");
+    petroleum::serial::_print(format_args!("Attempting to initialize GOP...\n"));
     init_gop(st);
     petroleum::serial::_print(format_args!("GOP initialized successfully.\n"));
 
@@ -110,19 +111,19 @@ fn init_gop(st: &EfiSystemTable) {
     );
 
     if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
-        petroleum::println!("Failed to locate GOP protocol, continuing without it.");
+        petroleum::serial::_print(format_args!("Failed to locate GOP protocol, continuing without it.\n"));
         return;
     }
 
     let gop_ref = unsafe { &*gop };
     if gop_ref.mode.is_null() {
-        petroleum::println!("GOP mode pointer is null, skipping.");
+        petroleum::serial::_print(format_args!("GOP mode pointer is null, skipping.\n"));
         return;
     }
 
     let mode_ref = unsafe { &*gop_ref.mode };
     if mode_ref.info.is_null() {
-        petroleum::println!("GOP mode info pointer is null, skipping.");
+        petroleum::serial::_print(format_args!("GOP mode info pointer is null, skipping.\n"));
         return;
     }
 
@@ -133,7 +134,7 @@ fn init_gop(st: &EfiSystemTable) {
     let info = info_ref;
 
     if fb_addr == 0 || fb_size == 0 {
-        petroleum::println!("GOP framebuffer info is invalid, skipping.");
+        petroleum::serial::_print(format_args!("GOP framebuffer info is invalid, skipping.\n"));
         return;
     }
 
@@ -153,8 +154,9 @@ fn init_gop(st: &EfiSystemTable) {
     );
 
     if EfiStatus::from(status) != EfiStatus::Success {
+        petroleum::serial::_print(format_args!("Failed to install framebuffer config table, recovering memory.\n"));
         let _ = unsafe { Box::from_raw(config_ptr) };
-        petroleum::println!("Failed to install framebuffer config table.");
+        petroleum::serial::_print(format_args!("Failed to install framebuffer config table.\n"));
         return;
     }
 

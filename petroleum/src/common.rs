@@ -82,7 +82,7 @@ impl From<usize> for EfiStatus {
             15 => EfiStatus::AlreadyStarted,
             21 => EfiStatus::Aborted,
             26 => EfiStatus::IcalFailed,
-            _ => panic!("Unknown EFI status code: {}", status),
+            _ => EfiStatus::Unsupported, // Fallback for unknown status codes
         }
     }
 }

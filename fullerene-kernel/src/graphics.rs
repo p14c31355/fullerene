@@ -1,5 +1,7 @@
 use core::fmt;
 use alloc::boxed::Box; // Import Box
+#[cfg(not(target_os = "uefi"))]
+use petroleum::common::VgaFramebufferConfig;
 use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig}; // Import missing types
 use spin::{Mutex, Once};
 use core::marker::{Send, Sync};
