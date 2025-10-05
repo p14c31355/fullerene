@@ -35,7 +35,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     petroleum::serial::UEFI_WRITER.lock().init(st.con_out);
 
-    petroleum::serial::_print(format_args!("Bellows UEFI Bootloader starting...\n"));
+    petroleum::println!("Bellows UEFI Bootloader starting...");
 
     petroleum::serial::_print(format_args!("Attempting to initialize heap...\n"));
     if let Err(e) = init_heap(bs) {
