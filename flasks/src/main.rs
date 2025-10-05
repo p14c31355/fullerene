@@ -115,26 +115,21 @@ fn main() -> io::Result<()> {
 
     let mut qemu_cmd = Command::new("qemu-system-x86_64");
     qemu_cmd.args([
-        "-m",
-        "1G",
-        "-cpu",
-        "qemu64,+smap",
-        "-vga",
-        "std", // Use standard VGA graphics
-        "-serial",
-        "stdio", // Redirect COM1 to stdio
-        "-monitor",
-        "telnet:localhost:1234,server,nowait", // Redirect QEMU monitor to a telnet port
-        "-drive",
-        &ovmf_fd_drive,
-        "-drive",
-        &ovmf_vars_fd_drive,
-        "-drive",
-        &format!("file={},if=ide,media=cdrom", iso_path_str), // Use drive instead of cdrom
+        "-m", "1G",
+        "-cpu", "qemu64,+smap,-svm",  // TCG向けCPUモデル、SVMオフ
+        "-smp", "2",
+        "-machine", "q35",
+        "-vga", "virtio",  // stdからvirtio-vgaに（VGAハング回避）
+        "-serial", "stdio",
+        "-monitor", "telnet:localhost:1234,server,nowait",
+        "-accel", "tcg,thread=single",  // シングルスレッドTCGで安定
+        "-d", "int,unimp",  // mmuオフ（ループ抑制）、中断/未実装ログのみ
+        "-drive", &ovmf_fd_drive,
+        "-drive", &ovmf_vars_fd_drive,  // リセット済み
+        "-drive", &format!("file={},if=virtio,format=raw", iso_path_str),
         "-no-reboot",
-        "-no-shutdown", // Keep QEMU running after guest exit
-        "-boot",
-        "order=d", // Boot from CD-ROM
+        "-no-shutdown",
+        "-boot", "strict=on,order=d",  // 厳格ブートでループ防ぎ
         "-nodefaults",
     ]);
     // Keep the temporary file alive until QEMU exits
