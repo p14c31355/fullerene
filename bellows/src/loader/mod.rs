@@ -61,10 +61,27 @@ pub fn exit_boot_services_and_jump(
     let mut attempts = 0;
     loop {
         attempts += 1;
+        println!("Attempt {}: map_key={:#x}, size={}", attempts, map_key, map_size); // Added for debugging
+
         if attempts > 3 {
-            (bs.free_pages)(map_phys_addr, map_pages);
-            println!("Error: Failed to get memory map after multiple attempts.");
-            return Err(BellowsError::InvalidState("Failed to get memory map after multiple attempts."));
+            // If BufferTooSmall occurs more than 3 times, reset map_key to 0
+            // instead of forcing exit, as per the suggestion.
+            // This allows the loop to continue with a potentially fresh map_key.
+            if EfiStatus::from((bs.get_memory_map)(
+                &mut map_size,
+                map_phys_addr as *mut c_void,
+                &mut map_key,
+                &mut descriptor_size,
+                &mut descriptor_version,
+            )) == EfiStatus::BufferTooSmall {
+                println!("BufferTooSmall occurred more than 3 times, resetting map_key to 0.");
+                map_key = 0; // Reset map_key
+                // Continue the loop to try again with the reset map_key
+            } else {
+                (bs.free_pages)(map_phys_addr, map_pages);
+                println!("Error: Failed to get memory map after multiple attempts.");
+                return Err(BellowsError::InvalidState("Failed to get memory map after multiple attempts."));
+            }
         }
 
         let status = (bs.get_memory_map)(

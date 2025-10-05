@@ -1,3 +1,5 @@
+cargo-features = ["profile-rustflags"]
+
 [package]
 name = "bellows"
 version = "0.1.0"
@@ -6,6 +8,14 @@ edition = "2024"
 [[bin]]
 name = "bellows"
 path = "src/main.rs"
+
+[profile.dev]
+codegen-units = 1
+rustflags = ["-C", "target-feature=-red-zone"]
+
+[profile.release]
+codegen-units = 1
+rustflags = ["-C", "target-feature=-red-zone"]
 
 [dependencies]
 linked_list_allocator = "0.10.5"

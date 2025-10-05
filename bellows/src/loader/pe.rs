@@ -1,6 +1,6 @@
 // bellows/src/loader/pe.rs
 
-use core::{ffi::c_void, mem, ptr};
+use core::{ffi::c_void, mem, ptr, mem::offset_of};
 use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
 
 #[repr(C, packed)]
@@ -214,12 +214,31 @@ pub fn load_efi_image(
     }
 
     let image_base_delta = (phys_addr as u64).wrapping_sub(nt_headers.optional_header.image_base);
+
     if image_base_delta != 0 {
-        let reloc_data_dir = &nt_headers.optional_header.data_directory[5];
-        if reloc_data_dir.virtual_address != 0 {
+        // Read the ImageDataDirectory struct unaligned
+        let reloc_data_dir_ptr = unsafe {
+            (nt_headers as *const _ as *const u8)
+                .add(offset_of!(ImageNtHeaders64, optional_header))
+                .add(offset_of!(ImageOptionalHeader64, data_directory))
+                .add(mem::size_of::<ImageDataDirectory>() * 5) // Index 5 for relocation table
+                as *const ImageDataDirectory
+        };
+        let reloc_data_dir = unsafe { ptr::read_unaligned(reloc_data_dir_ptr) };
+
+        let reloc_virtual_address = reloc_data_dir.virtual_address;
+        let reloc_size = reloc_data_dir.size;
+
+        petroleum::println!(
+            "Relocation Table: VirtualAddress={:#x}, Size={:#x}",
+            reloc_virtual_address,
+            reloc_size
+        );
+
+        if reloc_virtual_address != 0 {
             let reloc_table_ptr =
-                unsafe { (phys_addr as *mut u8).add(reloc_data_dir.virtual_address as usize) };
-            if (reloc_table_ptr as usize).saturating_add(reloc_data_dir.size as usize)
+                unsafe { (phys_addr as *mut u8).add(reloc_virtual_address as usize) };
+            if (reloc_table_ptr as usize).saturating_add(reloc_size as usize)
                 > phys_addr.saturating_add(pages_needed * 4096)
             {
                 (bs.free_pages)(phys_addr, pages_needed);
@@ -227,63 +246,68 @@ pub fn load_efi_image(
                 return Err(BellowsError::PeParse("Relocation table out of bounds."));
             }
 
-            let mut current_reloc_block_ptr = reloc_table_ptr as *mut ImageBaseRelocation;
-            let end_reloc_table_ptr = unsafe { reloc_table_ptr.add(reloc_data_dir.size as usize) };
+            let mut current_reloc_block_ptr = reloc_table_ptr as *const ImageBaseRelocation;
+            let end_reloc_table_ptr = unsafe { reloc_table_ptr.add(reloc_size as usize) };
 
-            // Safety:
-            // The loop iterates over relocation blocks. The pointer is advanced by a size
-            // provided by the PE file, which is assumed to be correct. The loop terminates
-            // when `current_reloc_block_ptr` reaches the end of the relocation table.
-            while (current_reloc_block_ptr as *mut u8) < end_reloc_table_ptr {
-                let current_reloc_block = unsafe { &*current_reloc_block_ptr };
-                let reloc_block_size = current_reloc_block.size_of_block as usize;
+            let mut reloc_count = 0;
+            while (current_reloc_block_ptr as *const u8) < end_reloc_table_ptr {
+                reloc_count += 1;
+                if reloc_count > 10000 {
+                    (bs.free_pages)(phys_addr, pages_needed);
+                    return Err(BellowsError::PeParse("Too many relocations, possible infinite loop."));
+                }
+
+                // Read virtual_address and size_of_block unaligned
+                let virtual_address = unsafe {
+                    ptr::read_unaligned(
+                        (current_reloc_block_ptr as *const u8)
+                            .add(offset_of!(ImageBaseRelocation, virtual_address))
+                            as *const u32,
+                    )
+                };
+                let reloc_block_size = unsafe {
+                    ptr::read_unaligned(
+                        (current_reloc_block_ptr as *const u8)
+                            .add(offset_of!(ImageBaseRelocation, size_of_block))
+                            as *const u32,
+                    )
+                } as usize;
+
                 if reloc_block_size == 0 {
                     break;
                 }
-                let current_reloc_block = unsafe { &*current_reloc_block_ptr };
-                let reloc_block_size = current_reloc_block.size_of_block as usize;
 
-                // Safety:
-                // We advance the pointer into the block to read the fixup entries.
-                // The `add` is safe because we check the pointer bounds against the end of the table.
                 let mut fixup_ptr = unsafe {
-                    (current_reloc_block_ptr as *mut u8).add(mem::size_of::<ImageBaseRelocation>())
-                        as *mut u16
+                    (current_reloc_block_ptr as *const u8).add(mem::size_of::<ImageBaseRelocation>())
+                        as *const u16
                 };
                 let end_of_block_ptr =
-                    unsafe { (current_reloc_block_ptr as *mut u8).add(reloc_block_size) };
+                    unsafe { (current_reloc_block_ptr as *const u8).add(reloc_block_size) };
 
-                while (fixup_ptr as *mut u8) < end_of_block_ptr {
-                    // Safety:
-                    // The pointer `fixup_ptr` is checked against the end of the block.
-                    let fixup = unsafe { *fixup_ptr };
+                while (fixup_ptr as *const u8) < end_of_block_ptr {
+                    let fixup = unsafe { ptr::read_unaligned(fixup_ptr) };
                     let fixup_type = (fixup >> 12) as u8;
                     let fixup_offset = (fixup & 0xFFF) as usize;
 
                     if fixup_type == ImageRelBasedType::Dir64 as u8 {
                         let fixup_address = phys_addr
-                            .saturating_add(current_reloc_block.virtual_address as usize)
+                            .saturating_add(virtual_address as usize)
                             .saturating_add(fixup_offset);
                         if fixup_address.saturating_add(8)
                             > (phys_addr.saturating_add(pages_needed * 4096))
                         {
                             (bs.free_pages)(phys_addr, pages_needed);
-
                             return Err(BellowsError::PeParse(
                                 "Relocation fixup address is out of bounds.",
                             ));
                         }
                         let fixup_address_ptr = fixup_address as *mut u64;
-                        // Safety:
-                        // The address is validated to be within the allocated memory.
-                        // We are performing a 64-bit relocation by adding the image base delta.
                         unsafe {
                             *fixup_address_ptr =
                                 (*fixup_address_ptr).wrapping_add(image_base_delta);
                         }
                     } else if fixup_type != ImageRelBasedType::Absolute as u8 {
                         (bs.free_pages)(phys_addr, pages_needed);
-
                         return Err(BellowsError::PeParse("Unsupported relocation type."));
                     }
                     unsafe {
@@ -291,7 +315,7 @@ pub fn load_efi_image(
                     }
                 }
 
-                current_reloc_block_ptr = end_of_block_ptr as *mut ImageBaseRelocation;
+                current_reloc_block_ptr = (end_of_block_ptr as *const ImageBaseRelocation);
             }
         }
     }

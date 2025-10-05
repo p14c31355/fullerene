@@ -35,15 +35,15 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     petroleum::serial::UEFI_WRITER.lock().init(st.con_out);
 
-    petroleum::println!("Bellows UEFI Bootloader starting...");
+    petroleum::serial::_print(format_args!("Bellows UEFI Bootloader starting...\n"));
 
-    petroleum::println!("Attempting to initialize heap...");
+    petroleum::serial::_print(format_args!("Attempting to initialize heap...\n"));
     if let Err(e) = init_heap(bs) {
-        petroleum::println!("Failed to initialize heap: {:?}", e);
+        petroleum::serial::_print(format_args!("Failed to initialize heap: {:?}\n", e));
         panic!("Failed to initialize heap.");
     }
-    petroleum::println!("Heap initialized successfully.");
-    petroleum::println!("Attempting to initialize GOP...");
+    petroleum::serial::_print(format_args!("Heap initialized successfully.\n"));
+    petroleum::serial::_print(format_args!("Attempting to initialize GOP...\n"));
     init_gop(st);
     petroleum::serial::_print(format_args!("GOP initialized successfully.\n"));
 
@@ -153,9 +153,9 @@ fn init_gop(st: &EfiSystemTable) {
     );
 
     if EfiStatus::from(status) != EfiStatus::Success {
-        petroleum::println!("Failed to install framebuffer config table, recovering memory.");
+        petroleum::serial::_print(format_args!("Failed to install framebuffer config table, recovering memory.\n"));
         let _ = unsafe { Box::from_raw(config_ptr) };
-        petroleum::println!("Failed to install framebuffer config table.");
+        petroleum::serial::_print(format_args!("Failed to install framebuffer config table.\n"));
         return;
     }
 
