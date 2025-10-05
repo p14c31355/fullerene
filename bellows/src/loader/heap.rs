@@ -1,5 +1,6 @@
 // bellows/src/loader/heap.rs
 
+use core::arch::asm;
 use linked_list_allocator::LockedHeap;
 use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus};
 use x86_64::instructions::port::Port; // Import Port for direct I/O
@@ -42,7 +43,7 @@ fn try_allocate_pages(bs: &EfiBootServices, pages: usize, preferred_type: EfiMem
             _ => debug_print_str("Other)...\n"),
         };
         let status = (bs.allocate_pages)(
-            0usize,  // AllocateAnyPages（境界エラー回避）
+            0usize,  // AllocateAnyPages
             mem_type,
             pages,
             &mut phys_addr,

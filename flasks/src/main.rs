@@ -116,16 +116,17 @@ fn main() -> io::Result<()> {
     let mut qemu_cmd = Command::new("qemu-system-x86_64");
     qemu_cmd.args([
         "-m", "1G",
-        "-cpu", "qemu64,+smap,-svm",
+        "-cpu", "qemu64,+smap",
         "-smp", "2",
-        "-machine", "q35",
-        "-vga", "virtio", 
+        "-machine", "q35,smm=off",  // SMMオフ: 割り込みストーム回避
+        "-vga", "virtio",
         "-serial", "stdio",
         "-monitor", "telnet:localhost:1234,server,nowait",
-        "-accel", "tcg,thread=single",
-        "-d", "int,unimp",
+        "-enable-kvm",
+        "-cpu", "host",
+        "-d", "int",  // intのみ（ループログ抑制）
         "-drive", &ovmf_fd_drive,
-        "-drive", &ovmf_vars_fd_drive,
+        "-drive", &ovmf_vars_fd_drive,  // Secure Bootオフ済み
         "-drive", &format!("file={},if=virtio,format=raw", iso_path_str),
         "-no-reboot",
         "-no-shutdown",
