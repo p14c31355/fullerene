@@ -88,7 +88,7 @@ pub fn read_efi_file(bs: &EfiBootServices, image_handle: usize) -> petroleum::co
     // Debug print: Starting file read
     debug_print_str("File: Starting read_efi_file...\n");
 
-    // Assume the device handle is the image handle
+    // Use the image handle as the device handle
     let device_handle = image_handle;
     debug_print_str("File: Using image_handle as device_handle.\n");
 

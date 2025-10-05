@@ -164,7 +164,10 @@ pub struct EfiBootServices {
     /// get_memory_map(*mut MapSize, *mut MemoryMap, *mut MapKey, *mut DescriptorSize, *mut DescriptorVersion) -> EFI_STATUS
     pub get_memory_map:
         extern "efiapi" fn(*mut usize, *mut c_void, *mut usize, *mut usize, *mut u32) -> usize, //4
-    _pad1: [usize; 11], //5-15
+    _pad1: [usize; 6], //5-10
+    /// locate_handle(SearchType, Protocol, SearchKey, *mut BufferSize, *mut Buffer) -> EFI_STATUS
+    pub locate_handle: extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut usize) -> usize, //11
+    _pad1_5: [usize; 4], //12-15
     /// handle_protocol(Handle, Protocol, *mut Interface) -> EFI_STATUS
     pub handle_protocol: extern "efiapi" fn(usize, *const u8, *mut *mut c_void) -> usize, //16
     _pad2: [usize; 4], //17-20
