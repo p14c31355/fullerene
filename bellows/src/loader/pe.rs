@@ -167,9 +167,6 @@ pub fn load_efi_image(
 ) -> petroleum::common::Result<
     extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
 > {
-    // For testing, skip PE parsing and return a dummy entry point
-    petroleum::println!("Skipping PE parsing, using dummy kernel entry point.");
-    return Ok(dummy_kernel_entry);
     let bs = unsafe { &*st.boot_services };
 
     // Safety:

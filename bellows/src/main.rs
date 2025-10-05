@@ -13,7 +13,7 @@ use x86_64::instructions::port::Port; // Import Port for direct I/O
 mod loader;
 
 use loader::{
-    exit_boot_services_and_jump, file::read_efi_file, pe::load_efi_image,
+    exit_boot_services_and_jump, file::read_efi_file, heap::init_heap, pe::load_efi_image,
 };
 
 use petroleum::common::{
