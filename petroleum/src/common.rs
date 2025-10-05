@@ -49,16 +49,22 @@ pub enum EfiStatus {
     BufferTooSmall = 5,
     NotInReadyState = 6,
     DeviceError = 7,
-    EndOfMedia = 8,
-    NotFound = 9,
-    AccessDenied = 10,
-    NoResponse = 11,
-    NoMapping = 12,
-    Timeout = 13,
-    NotStarted = 14,
-    AlreadyStarted = 15,
+    WriteProtected = 8,
+    OutOfResources = 9,
+    VolumeCorrupted = 10,
+    VolumeFull = 11,
+    NoMedia = 12,
+    MediaChanged = 13,
+    NotFound = 14,
+    AccessDenied = 15,
+    NoResponse = 16,
+    NoMapping = 17,
+    Timeout = 18,
+    NotStarted = 19,
+    AlreadyStarted = 20,
     Aborted = 21,
-    IcalFailed = 26,
+    IcalFailed = 22,
+    // ... more can be added as needed
 }
 
 impl From<usize> for EfiStatus {
@@ -72,16 +78,21 @@ impl From<usize> for EfiStatus {
             5 => EfiStatus::BufferTooSmall,
             6 => EfiStatus::NotInReadyState,
             7 => EfiStatus::DeviceError,
-            8 => EfiStatus::EndOfMedia,
-            9 => EfiStatus::NotFound,
-            10 => EfiStatus::AccessDenied,
-            11 => EfiStatus::NoResponse,
-            12 => EfiStatus::NoMapping,
-            13 => EfiStatus::Timeout,
-            14 => EfiStatus::NotStarted,
-            15 => EfiStatus::AlreadyStarted,
+            8 => EfiStatus::WriteProtected,
+            9 => EfiStatus::OutOfResources,
+            10 => EfiStatus::VolumeCorrupted,
+            11 => EfiStatus::VolumeFull,
+            12 => EfiStatus::NoMedia,
+            13 => EfiStatus::MediaChanged,
+            14 => EfiStatus::NotFound,
+            15 => EfiStatus::AccessDenied,
+            16 => EfiStatus::NoResponse,
+            17 => EfiStatus::NoMapping,
+            18 => EfiStatus::Timeout,
+            19 => EfiStatus::NotStarted,
+            20 => EfiStatus::AlreadyStarted,
             21 => EfiStatus::Aborted,
-            26 => EfiStatus::IcalFailed,
+            22 => EfiStatus::IcalFailed,
             _ => EfiStatus::Unsupported, // Fallback for unknown status codes
         }
     }
@@ -89,8 +100,10 @@ impl From<usize> for EfiStatus {
 
 /// Minimal subset of UEFI memory types (only those we need)
 #[repr(usize)]
+#[derive(Clone, Copy)]
 pub enum EfiMemoryType {
     EfiLoaderData = 2,
+    EfiConventionalMemory = 7,
     EfiMaxMemoryType = 15,
 }
 

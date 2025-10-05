@@ -29,39 +29,63 @@ const HEAP_SIZE: usize = 64 * 1024; // 64 KiB
 #[global_allocator]
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
+/// Tries to allocate pages with a given memory type, with fallback.
+fn try_allocate_pages(bs: &EfiBootServices, pages: usize, preferred_type: EfiMemoryType) -> Result<usize, BellowsError> {
+    let mut phys_addr: usize = 0;
+    let types_to_try = [preferred_type, EfiMemoryType::EfiConventionalMemory]; // Fallback
+
+    for mem_type in types_to_try {
+        let status = (bs.allocate_pages)(
+            0usize, // AllocateAnyPages
+            mem_type,
+            pages,
+            &mut phys_addr,
+        );
+        let status_efi = EfiStatus::from(status);
+        debug_print_str("Heap: Tried allocate_pages with type ");
+        // Simple debug: print type name
+        match mem_type {
+            EfiMemoryType::EfiLoaderData => debug_print_str("LoaderData"),
+            EfiMemoryType::EfiConventionalMemory => debug_print_str("Conventional"),
+            _ => debug_print_str("Other"),
+        }
+        debug_print_str(". Status: ");
+        debug_print_str(match status_efi {
+            EfiStatus::Success => "Success",
+            EfiStatus::InvalidParameter => "InvalidParameter",
+            EfiStatus::OutOfResources => "OutOfResources",
+            EfiStatus::NotFound => "NotFound",
+            _ => "Other",
+        });
+        debug_print_str("\n");
+
+        if status_efi == EfiStatus::Success && phys_addr != 0 {
+            debug_print_str("Heap: Allocated successfully.\n");
+            return Ok(phys_addr);
+        }
+        // Reset address for next attempt
+        phys_addr = 0;
+    }
+
+    Err(BellowsError::AllocationFailed("All allocation attempts failed."))
+}
+
 pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
     debug_print_str("Heap: Allocating pages for heap...\n");
     let heap_pages = HEAP_SIZE.div_ceil(4096);
-    let mut heap_phys: usize = 0;
-    let status = {
-        (bs.allocate_pages)(
-            0usize,
-            EfiMemoryType::EfiLoaderData,
-            heap_pages,
-            &mut heap_phys,
-        )
-    };
-    if EfiStatus::from(status) != EfiStatus::Success {
-        debug_print_str("Heap: Failed to allocate heap memory. Status: ");
-        let status_str = match EfiStatus::from(status) {
-            EfiStatus::Success => "Success",
-            EfiStatus::NotFound => "NotFound",
-            EfiStatus::InvalidParameter => "InvalidParameter",
-            _ => "Other",
-        };
-        debug_print_str(status_str);
-        debug_print_str("\n");
-        return Err(BellowsError::AllocationFailed(
-            "Failed to allocate heap memory.",
-        ));
+    debug_print_str("Heap: Requesting ");
+    // Simple debug: print number of pages (assuming small number)
+    match heap_pages {
+        16 => debug_print_str("16"),
+        _ => debug_print_str("other"),
     }
+    debug_print_str(" pages.\n");
 
-    debug_print_str("Heap: Allocated heap memory.\n");
+    let heap_phys = try_allocate_pages(bs, heap_pages, EfiMemoryType::EfiLoaderData)?;
+
     if heap_phys == 0 {
         debug_print_str("Heap: Allocated heap address is null!\n");
-        return Err(BellowsError::AllocationFailed(
-            "Allocated heap address is null.",
-        ));
+        return Err(BellowsError::AllocationFailed("Allocated heap address is null."));
     }
 
     debug_print_str("Heap: Initializing allocator...\n");

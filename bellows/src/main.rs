@@ -61,12 +61,20 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     petroleum::serial::_print(format_args!("Attempting to initialize heap...\n"));
     debug_print_str("Bellows: 'Attempting to initialize heap...' printed.\n"); // Debug print after _print call
-    if let Err(e) = init_heap(bs) {
-        petroleum::serial::_print(format_args!("Failed to initialize heap: {:?}\n", e));
-        panic!("Failed to initialize heap: {:?}", e);
+    match init_heap(bs) {
+        Ok(()) => {
+            petroleum::serial::_print(format_args!("Heap initialized successfully.\n"));
+            debug_print_str("Bellows: Heap initialized.\n");
+        }
+        Err(e) => {
+            petroleum::serial::_print(format_args!("Failed to initialize heap: {:?}\n", e));
+            debug_print_str("Bellows: Heap init failed.\n");
+            // Halt instead of panic to allow debugging
+            loop {
+                unsafe { core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst); }
+            }
+        }
     }
-    petroleum::serial::_print(format_args!("Heap initialized successfully.\n"));
-    debug_print_str("Bellows: Heap initialized.\n"); // Debug print after heap initialization
 
     petroleum::println!("Bellows UEFI Bootloader starting...");
     debug_print_str("Bellows: 'Bellows UEFI Bootloader starting...' printed.\n"); // Debug print after println!
