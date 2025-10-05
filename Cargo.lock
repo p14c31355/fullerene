@@ -33,6 +33,7 @@ dependencies = [
  "linked_list_allocator",
  "petroleum",
  "spin 0.10.0",
+ "x86_64",
 ]
 
 [[package]]

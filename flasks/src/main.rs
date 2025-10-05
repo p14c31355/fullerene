@@ -3,6 +3,7 @@ use isobemak::{BiosBootInfo, BootInfo, IsoImage, IsoImageFile, UefiBootInfo, bui
 use std::{env, io, path::{Path, PathBuf}, process::Command};
 
 fn main() -> io::Result<()> {
+    println!("Starting flasks application...");
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("Failed to get workspace root")
@@ -119,19 +120,18 @@ fn main() -> io::Result<()> {
         "-cpu",
         "qemu64,+smap",
         "-vga",
-        "std",
+        "std", // Use standard VGA graphics
         "-serial",
-        "stdio",
+        "stdio", // Redirect COM1 to stdio
+        "-monitor",
+        "telnet:localhost:1234,server,nowait", // Redirect QEMU monitor to a telnet port
         "-drive",
         &ovmf_fd_drive,
         "-drive",
         &ovmf_vars_fd_drive,
         "-cdrom", iso_path_str,
         "-no-reboot",
-        "-d",
-        "int",
-        "-D",
-        "qemu_log.txt",
+        "-no-shutdown", // Keep QEMU running after guest exit
         "-boot",
         "order=d", // Boot from CD-ROM
         "-nodefaults",

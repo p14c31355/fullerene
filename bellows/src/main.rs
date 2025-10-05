@@ -8,6 +8,7 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use core::{ffi::c_void, ptr, slice};
+use x86_64::instructions::port::Port; // Import Port for direct I/O
 
 mod loader;
 
@@ -20,24 +21,46 @@ use petroleum::common::{
     FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
 };
 
+/// Writes a single byte to the COM1 serial port (0x3F8).
+/// This is a very basic, early debug function that doesn't rely on any complex initialization.
+fn debug_print_byte(byte: u8) {
+    let mut port = Port::new(0x3F8);
+    unsafe {
+        // Wait until the transmit buffer is empty
+        while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
+        port.write(byte);
+    }
+}
+
+/// Writes a string to the COM1 serial port.
+fn debug_print_str(s: &str) {
+    for byte in s.bytes() {
+        debug_print_byte(byte);
+    }
+}
+
 /// Main entry point of the bootloader.
 ///
 /// This function is the `start` attribute as defined in the `Cargo.toml`.
 #[unsafe(no_mangle)]
 pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
+    debug_print_str("Bellows: efi_main entered.\n"); // Early debug print
+
     let _ = petroleum::UEFI_SYSTEM_TABLE
         .lock()
         .insert(petroleum::UefiSystemTablePtr(system_table));
+    debug_print_str("Bellows: UEFI_SYSTEM_TABLE initialized.\n"); // Debug print after initialization
     let st = unsafe { &*system_table };
     let bs = unsafe { &*st.boot_services };
 
-    // Initialize the serial writer with the console output pointer.
+    debug_print_str("Bellows: UEFI system table and boot services acquired.\n"); // Early debug print
 
+    // Initialize the serial writer with the console output pointer.
     petroleum::serial::UEFI_WRITER.lock().init(st.con_out);
 
     petroleum::serial::_print(format_args!("Attempting to initialize heap...\n"));
     if let Err(e) = init_heap(bs) {
-
+        petroleum::serial::_print(format_args!("Failed to initialize heap: {:?}\n", e));
         panic!("Failed to initialize heap: {:?}", e);
     }
     petroleum::serial::_print(format_args!("Heap initialized successfully.\n"));
