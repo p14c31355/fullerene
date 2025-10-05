@@ -35,14 +35,15 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     petroleum::serial::UEFI_WRITER.lock().init(st.con_out);
 
-    petroleum::println!("Bellows UEFI Bootloader starting...");
-
+    // Heap initをここに移動（出力前に確保）
     petroleum::serial::_print(format_args!("Attempting to initialize heap...\n"));
     if let Err(e) = init_heap(bs) {
-        petroleum::serial::_print(format_args!("Failed to initialize heap: {:?}\n", e));
-        panic!("Failed to initialize heap.");
+        // ここはheapなしでエラー出力（後述のheap-less版追加）
+        panic!("Failed to initialize heap: {:?}", e);
     }
     petroleum::serial::_print(format_args!("Heap initialized successfully.\n"));
+
+    petroleum::println!("Bellows UEFI Bootloader starting...");
     petroleum::serial::_print(format_args!("Attempting to initialize GOP...\n"));
     init_gop(st);
     petroleum::serial::_print(format_args!("GOP initialized successfully.\n"));

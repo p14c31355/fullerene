@@ -2,7 +2,7 @@
 
 use crate::common::{EfiSimpleTextOutput, EfiStatus};
 use alloc::vec::Vec;
-use core::fmt;
+use core::{fmt, slice}; // Add slice for write_string_heapless
 use spin::Mutex;
 
 pub struct UefiWriter {
@@ -40,6 +40,33 @@ impl UefiWriter {
             Err(efi_status)
         }
     }
+
+    // Heapなし版: 最大256文字の固定バッファでUTF-16変換
+    pub fn write_string_heapless(&mut self, s: &str) -> Result<(), EfiStatus> {
+        if self.con_out.is_null() {
+            return Ok(());
+        }
+
+        let mut utf16_buf = [0u16; 512]; // 文字列 + null, 余裕持って
+        let mut idx = 0;
+        for c in s.encode_utf16() {
+            if idx < utf16_buf.len() - 1 {
+                utf16_buf[idx] = c;
+                idx += 1;
+            } else {
+                break; // バッファオーバーフロー
+            }
+        }
+        utf16_buf[idx] = 0; // null terminate
+
+        let status = unsafe { ((*self.con_out).output_string)(self.con_out, utf16_buf.as_ptr()) };
+        let efi_status = EfiStatus::from(status);
+        if efi_status == EfiStatus::Success {
+            Ok(())
+        } else {
+            Err(efi_status)
+        }
+    }
 }
 
 impl fmt::Write for UefiWriter {
@@ -68,5 +95,8 @@ pub fn _print(args: fmt::Arguments) {
     // By using a Mutex, we ensure safe access to the global writer,
     // even though we expect single-threaded execution in the bootloader.
     // This is safer and more idiomatic than using a `static mut`.
-    UEFI_WRITER.lock().write_fmt(args).unwrap();
+    UEFI_WRITER
+        .lock()
+        .write_fmt(args)
+        .expect("Serial write failed");
 }
