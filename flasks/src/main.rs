@@ -64,7 +64,7 @@ fn main() -> io::Result<()> {
         files: vec![
             IsoImageFile {
                 source: kernel_path.clone(),
-                destination: "EFI\\BOOT\\KERNEL.EFI".to_string(),
+                destination: "EFI/BOOT/KERNEL.EFI".to_string(),
             },
             IsoImageFile {
                 source: bellows_path.clone(),
