@@ -29,13 +29,13 @@ pub fn exit_boot_services_and_jump(
     // Loop to get the memory map until successful
     loop {
         // First call: Get the required buffer size (with NULL buffer)
-        let status = (bs.get_memory_map)(
+        let status = unsafe { (bs.get_memory_map)(
             &mut map_size,
             ptr::null_mut(),
             &mut map_key,
             &mut descriptor_size,
             &mut descriptor_version,
-        );
+        ) };
 
         if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
             println!("Error: Failed to get initial memory map size: {:?}", EfiStatus::from(status));
