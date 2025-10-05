@@ -47,12 +47,12 @@ fn try_allocate_pages(bs: &EfiBootServices, pages: usize, preferred_type: EfiMem
         let status: usize;
         unsafe {
             asm!(
-                "sub rsp, 40h", 
-                "call rax",     
+                "sub rsp, 40h",
+                "call rax",
                 "add rsp, 40h",
                 in("rdi") 0usize,
                 in("rsi") mem_type as usize,
-                in("rdx") pages,
+                in("rdx") pages.min(8),
                 inlateout("rcx") phys_addr_local => phys_addr_local,
                 in("rax") bs.allocate_pages,
                 lateout("rax") status,
@@ -92,14 +92,8 @@ fn try_allocate_pages(bs: &EfiBootServices, pages: usize, preferred_type: EfiMem
 
 pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
     debug_print_str("Heap: Allocating pages for heap...\n");
-    let heap_pages = HEAP_SIZE.div_ceil(4096);
-    debug_print_str("Heap: Requesting ");
-    // Simple debug: print number of pages (assuming small number)
-    match heap_pages {
-        16 => debug_print_str("16"),
-        _ => debug_print_str("other"),
-    }
-    debug_print_str(" pages.\n");
+    let heap_pages = 8; // Test with 8 pages (32 KiB) to avoid allocation issues
+    debug_print_str("Heap: Requesting 8 pages (test).\n");
     let heap_phys = try_allocate_pages(bs, heap_pages, EfiMemoryType::EfiLoaderData)?;  // 固定
     // アライメント検証強化
     if heap_phys % 4096 != 0 {
@@ -116,7 +110,7 @@ pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
     // Calculate actual allocated size (we may have gotten fewer pages than requested)
     // For now, assume we got the full amount since we don't track partial allocations
     // In a more robust implementation, we'd modify try_allocate_pages to return the actual size
-    let actual_heap_size = HEAP_SIZE;
+    let actual_heap_size = heap_pages * 4096;
 
     debug_print_str("Heap: Initializing allocator...\n");
     // Safety:

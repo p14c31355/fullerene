@@ -52,12 +52,12 @@ pub fn exit_boot_services_and_jump(
         let alloc_status: usize;
         unsafe {
             asm!(
-                "sub rsp, 40h", 
-                "call rax",     
-                "add rsp, 40h",  
+                "sub rsp, 40h",
+                "call rax",
+                "add rsp, 40h",
                 in("rdi") 0usize,
                 in("rsi") EfiMemoryType::EfiLoaderData as usize,
-                in("rdx") new_map_pages,
+                in("rdx") new_map_pages.min(8),
                 inlateout("rcx") new_map_phys_addr_local => new_map_phys_addr_local,
                 in("rax") bs.allocate_pages,
                 lateout("rax") alloc_status,
