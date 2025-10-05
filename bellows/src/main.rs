@@ -120,7 +120,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     // Free the memory allocated for the EFI image file.
     let file_pages = efi_image_size.div_ceil(4096);
-    (bs.free_pages)(efi_image_phys, file_pages);
+    unsafe { (bs.free_pages)(efi_image_phys, file_pages) };
     debug_print_str("Bellows: EFI image memory freed.\n"); // Debug print after freeing memory
 
     petroleum::serial::_print(format_args!("Exiting boot services and jumping to kernel...\n"));
