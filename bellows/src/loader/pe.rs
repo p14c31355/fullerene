@@ -1,30 +1,10 @@
 // bellows/src/loader/pe.rs
 
 use core::{ffi::c_void, mem, ptr, mem::offset_of};
+use alloc::format;
 use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
 use x86_64::instructions::port::Port; // Import Port for direct I/O
 use core::fmt::{self, Write}; // Import fmt module for format_args! and Write
-/// Writes a single byte to the COM1 serial port (0x3F8).
-/// This is a very basic, early debug function that doesn't rely on any complex initialization.
-fn debug_print_byte(byte: u8) {
-    let mut port = Port::new(0x3F8);
-    unsafe {
-        // Wait until the transmit buffer is empty
-        while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
-        port.write(byte);
-    }
-}
-
-/// Writes a string to the COM1 serial port.
-fn debug_print_str(s: &str) {
-    for byte in s.bytes() {
-        debug_print_byte(byte);
-    }
-}
-
-/// Writes a single byte to the COM1 serial port (0x3F8).
-/// This is a very basic, early debug function that doesn't rely on any complex initialization.
-
 /// Writes a single byte to the COM1 serial port (0x3F8).
 /// This is a very basic, early debug function that doesn't rely on any complex initialization.
 fn debug_print_byte(byte: u8) {
