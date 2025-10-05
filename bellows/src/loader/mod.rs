@@ -3,6 +3,7 @@
 use core::ffi::c_void;
 use core::ptr;
 use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
+use petroleum::println; // Added for debugging
 
 pub mod file;
 pub mod heap;
@@ -17,100 +18,100 @@ pub fn exit_boot_services_and_jump(
 ) -> petroleum::common::Result<!> {
     let bs = unsafe { &*(*system_table).boot_services };
 
+    // Initial setup for memory map
     let mut map_size: usize = 0;
     let mut map_key: usize = 0;
     let mut descriptor_size: usize = 0;
     let mut descriptor_version: u32 = 0;
-
-    // Use a loop to handle the case where the memory map changes between calls.
-    // This is a common and recommended UEFI pattern.
     let mut map_phys_addr: usize = 0;
     let mut map_pages: usize = 0;
-    let mut attempts = 0;
 
-    loop {
-        attempts += 1;
-        if attempts > 3 {
-            // Safety:
-            (bs.free_pages)(map_phys_addr, map_pages);
-            return Err(BellowsError::InvalidState(
-                "Failed to get memory map after multiple attempts.",
-            ));
-        }
-
-        // First call to GetMemoryMap to get the required buffer size.
-        let status = (bs.get_memory_map)(
-            &mut map_size,
-            ptr::null_mut(),
-            &mut map_key,
-            &mut descriptor_size,
-            &mut descriptor_version,
-        );
-
-        // If the buffer was too small, allocate a larger one and try again.
-        if EfiStatus::from(status) == EfiStatus::BufferTooSmall {
-            // Add extra space just in case the memory map changes.
-            let new_map_size = map_size.saturating_add(4096);
-            let new_map_pages = new_map_size.div_ceil(4096);
-            let mut new_map_phys_addr = 0;
-            let new_status = (bs.allocate_pages)(
-                0usize,
-                EfiMemoryType::EfiLoaderData,
-                new_map_pages,
-                &mut new_map_phys_addr,
-            );
-
-            if EfiStatus::from(new_status) != EfiStatus::Success {
-                // If allocation fails, free any previously allocated memory.
-                if map_phys_addr != 0 {
-                    (bs.free_pages)(map_phys_addr, map_pages);
-                }
-                return Err(BellowsError::AllocationFailed(
-                    "Failed to re-allocate memory map buffer.",
-                ));
-            }
-
-            // Free the old buffer before re-assigning.
-            if map_phys_addr != 0 {
-                (bs.free_pages)(map_phys_addr, map_pages);
-            }
-            map_phys_addr = new_map_phys_addr;
-            map_pages = new_map_pages;
-        } else if EfiStatus::from(status) == EfiStatus::Success {
-            // Memory map size is now correct, proceed to exit boot services.
-            break;
-        } else {
-            return Err(BellowsError::InvalidState(
-                "Failed to get memory map size on first attempt.",
-            ));
-        }
-    }
-
-    let map_ptr = map_phys_addr as *mut c_void;
-
-    // Second call to GetMemoryMap, this time with the allocated buffer.
-    // This call must succeed as we allocated a large enough buffer.
+    // First call: Get the required buffer size (with NULL buffer)
     let status = (bs.get_memory_map)(
         &mut map_size,
-        map_ptr,
+        ptr::null_mut(),
         &mut map_key,
         &mut descriptor_size,
         &mut descriptor_version,
     );
 
-    if EfiStatus::from(status) != EfiStatus::Success {
-        // If this fails, the system state is corrupted. We cannot use boot services to recover.
-        return Err(BellowsError::InvalidState(
-            "Failed to get memory map with allocated buffer.",
-        ));
+    if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
+        println!("Error: Failed to get initial memory map size: {:?}", EfiStatus::from(status));
+        return Err(BellowsError::InvalidState("Failed to get initial memory map size."));
     }
+
+    // Allocate buffer with some extra space
+    let alloc_size = map_size.saturating_add(4096);
+    map_pages = alloc_size.div_ceil(4096);
+    let mut alloc_phys = 0;
+    let alloc_status = (bs.allocate_pages)(
+        0usize,
+        EfiMemoryType::EfiLoaderData,
+        map_pages,
+        &mut alloc_phys,
+    );
+
+    if EfiStatus::from(alloc_status) != EfiStatus::Success {
+        println!("Error: Failed to allocate memory map buffer: {:?}", EfiStatus::from(alloc_status));
+        return Err(BellowsError::AllocationFailed("Failed to allocate memory map buffer."));
+    }
+    map_phys_addr = alloc_phys;
+
+    // Retry loop: Call GetMemoryMap with the allocated buffer
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        if attempts > 3 {
+            (bs.free_pages)(map_phys_addr, map_pages);
+            println!("Error: Failed to get memory map after multiple attempts.");
+            return Err(BellowsError::InvalidState("Failed to get memory map after multiple attempts."));
+        }
+
+        let status = (bs.get_memory_map)(
+            &mut map_size,
+            map_phys_addr as *mut c_void, // Use the allocated buffer
+            &mut map_key,
+            &mut descriptor_size,
+            &mut descriptor_version,
+        );
+
+        match EfiStatus::from(status) {
+            EfiStatus::Success => break, // Successfully got the memory map
+            EfiStatus::BufferTooSmall => {
+                // Memory map changed, re-allocate a larger buffer
+                println!("Memory map changed, re-allocating buffer.");
+                let new_alloc_size = map_size.saturating_add(4096);
+                let new_pages = new_alloc_size.div_ceil(4096);
+                let mut new_phys = 0;
+                let new_status = (bs.allocate_pages)(
+                    0usize,
+                    EfiMemoryType::EfiLoaderData,
+                    new_pages,
+                    &mut new_phys,
+                );
+                if EfiStatus::from(new_status) != EfiStatus::Success {
+                    (bs.free_pages)(map_phys_addr, map_pages);
+                    println!("Error: Failed to re-allocate memory map buffer: {:?}", EfiStatus::from(new_status));
+                    return Err(BellowsError::AllocationFailed("Failed to re-allocate memory map buffer."));
+                }
+                (bs.free_pages)(map_phys_addr, map_pages); // Free old buffer
+                map_phys_addr = new_phys;
+                map_pages = new_pages;
+            }
+            _ => {
+                (bs.free_pages)(map_phys_addr, map_pages);
+                println!("Error: Failed to get memory map: {:?}", EfiStatus::from(status));
+                return Err(BellowsError::InvalidState("Failed to get memory map."));
+            }
+        }
+    }
+
+    let map_ptr = map_phys_addr as *mut c_void;
 
     // Exit boot services. This call must succeed.
     let exit_status = (bs.exit_boot_services)(image_handle, map_key);
     if EfiStatus::from(exit_status) != EfiStatus::Success {
-        // If this fails, there's no way to recover.
-        // We cannot use the UEFI boot services anymore.
-        // The bootloader is in a failed state.
+        println!("Error: Failed to exit boot services: {:?}", EfiStatus::from(exit_status));
         return Err(BellowsError::InvalidState("Failed to exit boot services."));
     }
 
