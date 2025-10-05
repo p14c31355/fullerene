@@ -84,13 +84,9 @@ pub fn panic(info: &core::panic::PanicInfo) -> ! {
         }
 
         let _ = writer.write_string_heapless("Panic occurred!\n");
-        if let Some(msg) = info.message() {
-            let _ = writer.write_string_heapless("Message: ");
-            let _ = writer.write_fmt(*msg);
-            let _ = writer.write_string_heapless("\n");
-        } else {
-            let _ = writer.write_string_heapless("(no message)\n");
-        }
+        let _ = writer.write_string_heapless("Message: ");
+        let _ = write!(writer, "{}", info.message());
+        let _ = writer.write_string_heapless("\n");
     }
     // For QEMU debugging, halt the CPU
     unsafe {
