@@ -68,10 +68,10 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         }
         Err(e) => {
             petroleum::serial::_print(format_args!("Failed to initialize heap: {:?}\n", e));
-            debug_print_str("Bellows: Heap init failed.\n");
+            debug_print_str("Bellows: Heap init failed. Halting...\n");
             // Halt instead of panic to allow debugging
             loop {
-                unsafe { core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst); }
+                unsafe { x86_64::instructions::hlt(); }
             }
         }
     }

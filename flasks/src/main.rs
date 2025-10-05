@@ -116,7 +116,7 @@ fn main() -> io::Result<()> {
     let mut qemu_cmd = Command::new("qemu-system-x86_64");
     qemu_cmd.args([
         "-m",
-        "512M",
+        "1G",
         "-cpu",
         "qemu64,+smap",
         "-vga",

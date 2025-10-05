@@ -103,6 +103,7 @@ impl From<usize> for EfiStatus {
 #[derive(Clone, Copy)]
 pub enum EfiMemoryType {
     EfiLoaderData = 2,
+    EfiRuntimeServicesData = 6,
     EfiConventionalMemory = 7,
     EfiMaxMemoryType = 15,
 }
