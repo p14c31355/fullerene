@@ -67,12 +67,9 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             debug_print_str("Bellows: Heap initialized.\n");
         }
         Err(e) => {
-            petroleum::serial::_print(format_args!("Failed to initialize heap: {:?}\n", e));
-            debug_print_str("Bellows: Heap init failed. Halting...\n");
-            // Halt instead of panic to allow debugging
-            loop {
-                unsafe { x86_64::instructions::hlt(); }
-            }
+            petroleum::serial::_print(format_args!("Failed to initialize heap: {:?} (PF likely OVMF bug)\n", e));
+            debug_print_str("Bellows: Heap init failed (PF). Trying without heap...\n");
+            loop { unsafe { x86_64::instructions::hlt(); } }
         }
     }
 

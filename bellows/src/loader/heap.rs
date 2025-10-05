@@ -42,12 +42,24 @@ fn try_allocate_pages(bs: &EfiBootServices, pages: usize, preferred_type: EfiMem
             EfiMemoryType::EfiConventionalMemory => debug_print_str("Conventional)...\n"),
             _ => debug_print_str("Other)...\n"),
         };
-        let status = (bs.allocate_pages)(
-            0usize,  // AllocateAnyPages
-            mem_type,
-            pages,
-            &mut phys_addr,
-        );
+        
+        let mut phys_addr_local: usize = 0;
+        let status: usize;
+        unsafe {
+            asm!(
+                "sub rsp, 40h", 
+                "call rax",     
+                "add rsp, 40h",
+                in("rdi") 0usize,
+                in("rsi") mem_type as usize,
+                in("rdx") pages,
+                inlateout("rcx") phys_addr_local => phys_addr_local,
+                in("rax") bs.allocate_pages,
+                lateout("rax") status,
+                clobber_abi("system"),
+            );
+        }
+        phys_addr = phys_addr_local;
         debug_print_str("Heap: allocate_pages returned.\n");
 
         // 即時検証: phys_addrがページ境界かチェック（Invalid read回避）

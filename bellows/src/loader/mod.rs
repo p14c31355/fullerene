@@ -1,5 +1,6 @@
 // bellows/src/loader/mod.rs
 
+use core::arch::asm;
 use core::ffi::c_void;
 use core::ptr;
 use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
@@ -47,12 +48,23 @@ pub fn exit_boot_services_and_jump(
         let new_map_pages = alloc_size.div_ceil(4096);
         let mut new_map_phys_addr = 0;
 
-        let alloc_status = (bs.allocate_pages)(
-            0usize,
-            EfiMemoryType::EfiLoaderData,
-            new_map_pages,
-            &mut new_map_phys_addr,
-        );
+        let mut new_map_phys_addr_local: usize = 0;
+        let alloc_status: usize;
+        unsafe {
+            asm!(
+                "sub rsp, 40h", 
+                "call rax",     
+                "add rsp, 40h",  
+                in("rdi") 0usize,
+                in("rsi") EfiMemoryType::EfiLoaderData as usize,
+                in("rdx") new_map_pages,
+                inlateout("rcx") new_map_phys_addr_local => new_map_phys_addr_local,
+                in("rax") bs.allocate_pages,
+                lateout("rax") alloc_status,
+                clobber_abi("system"),
+            );
+        }
+        new_map_phys_addr = new_map_phys_addr_local;
 
         if EfiStatus::from(alloc_status) != EfiStatus::Success {
             // If we had a previous allocation, free it before returning an error
