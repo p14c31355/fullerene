@@ -246,7 +246,7 @@ impl VgaWriter {
             );
         }
         // Clear last 8 lines
-        let clear_offset = (self.height - 8) * self.width;
+        let clear_offset = (self.height.saturating_sub(8)) * self.width;
         let clear_size = 8 * self.width as usize;
         let fb_ptr = self.address as *mut u8;
         unsafe {
