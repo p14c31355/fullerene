@@ -1,4 +1,7 @@
-use core::{alloc::{GlobalAlloc, Layout}, ptr::NonNull};
+use core::{
+    alloc::{GlobalAlloc, Layout},
+    ptr::NonNull,
+};
 use x86_64::{PhysAddr, VirtAddr};
 
 pub const HEAP_SIZE: usize = 100 * 1024; // 100 KiB

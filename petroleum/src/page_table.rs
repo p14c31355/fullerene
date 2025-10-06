@@ -1,8 +1,8 @@
 use x86_64::{
+    PhysAddr, VirtAddr,
     structures::paging::{
         FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PhysFrame, Size4KiB,
     },
-    PhysAddr, VirtAddr,
 };
 
 /// A FrameAllocator that returns usable frames from the bootloader's memory map.
@@ -17,7 +17,9 @@ impl BootInfoFrameAllocator {
     /// This function is unsafe because the caller must guarantee that the passed
     /// memory map is valid. The main requirement is that all frames that are marked
     /// as `USABLE` in it are really unused.
-    pub unsafe fn init(memory_map: &'static [x86_64::structures::paging::page_table::PageTableEntry]) -> Self {
+    pub unsafe fn init(
+        memory_map: &'static [x86_64::structures::paging::page_table::PageTableEntry],
+    ) -> Self {
         BootInfoFrameAllocator {
             memory_map,
             next: 0,
@@ -49,9 +51,7 @@ pub unsafe fn init(physical_memory_offset: VirtAddr) -> OffsetPageTable<'static>
 /// complete physical memory is mapped to virtual memory at the passed
 /// `physical_memory_offset`. Also, this function must be only called once
 /// to avoid aliasing `&mut` references (which is undefined behavior).
-unsafe fn active_level_4_table(physical_memory_offset: VirtAddr)
-    -> &'static mut PageTable
-{
+unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static mut PageTable {
     use x86_64::registers::control::Cr3;
 
     let (level_4_table_frame, _) = Cr3::read();
@@ -74,9 +74,7 @@ pub fn create_example_mapping(
     let frame = PhysFrame::containing_address(PhysAddr::new(0xb8000));
     let flags = Flags::PRESENT | Flags::WRITABLE;
 
-    let map_to_result = unsafe {
-        mapper.map_to(page, frame, flags, frame_allocator)
-    };
+    let map_to_result = unsafe { mapper.map_to(page, frame, flags, frame_allocator) };
     map_to_result.expect("map_to failed").flush();
 }
 
@@ -86,9 +84,7 @@ pub fn create_example_mapping(
 /// This function is unsafe because the caller must guarantee that the
 /// complete physical memory is mapped to virtual memory at the passed
 /// `physical_memory_offset`.
-pub unsafe fn translate_addr(addr: VirtAddr, physical_memory_offset: VirtAddr)
-    -> Option<PhysAddr>
-{
+pub unsafe fn translate_addr(addr: VirtAddr, physical_memory_offset: VirtAddr) -> Option<PhysAddr> {
     translate_addr_inner(addr, physical_memory_offset)
 }
 
@@ -96,17 +92,18 @@ pub unsafe fn translate_addr(addr: VirtAddr, physical_memory_offset: VirtAddr)
 ///
 /// This function is safe to limit the scope of `unsafe` because Rust is
 /// conservative around generic types.
-fn translate_addr_inner(addr: VirtAddr, physical_memory_offset: VirtAddr)
-    -> Option<PhysAddr>
-{
-    use x86_64::structures::paging::page_table::FrameError;
+fn translate_addr_inner(addr: VirtAddr, physical_memory_offset: VirtAddr) -> Option<PhysAddr> {
     use x86_64::registers::control::Cr3;
+    use x86_64::structures::paging::page_table::FrameError;
 
     // read the active level 4 frame from the CR3 register
     let (level_4_table_frame, _) = Cr3::read();
 
     let table_indexes = [
-        addr.p4_index(), addr.p3_index(), addr.p2_index(), addr.p1_index()
+        addr.p4_index(),
+        addr.p3_index(),
+        addr.p2_index(),
+        addr.p1_index(),
     ];
     let mut frame = level_4_table_frame;
 
@@ -115,7 +112,7 @@ fn translate_addr_inner(addr: VirtAddr, physical_memory_offset: VirtAddr)
         // convert the frame into a page table reference
         let virt = physical_memory_offset + frame.start_address().as_u64();
         let table_ptr: *const PageTable = virt.as_ptr();
-        let table = unsafe {&*table_ptr};
+        let table = unsafe { &*table_ptr };
 
         // read the page table entry and update `frame`
         let entry = &table[index];

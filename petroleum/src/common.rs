@@ -35,7 +35,7 @@ pub struct VgaFramebufferConfig {
     pub address: u64,
     pub width: u32,
     pub height: u32,
-    pub bpp: u32,  // Bits per pixel
+    pub bpp: u32, // Bits per pixel
 }
 
 #[repr(usize)]
@@ -183,7 +183,8 @@ pub struct EfiBootServices {
     pub handle_protocol: extern "efiapi" fn(usize, *const u8, *mut *mut c_void) -> usize, //19
     _pad2: [usize; 2], //20-21
     /// locate_handle(SearchType, Protocol, SearchKey, *mut BufferSize, *mut Buffer) -> EFI_STATUS
-    pub locate_handle: extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut usize) -> usize, //22
+    pub locate_handle:
+        extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut usize) -> usize, //22
     _pad3: [usize; 2], //23-24
     /// install_configuration_table(Guid, Table) -> EFI_STATUS
     pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize, //25
@@ -192,7 +193,8 @@ pub struct EfiBootServices {
     pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize, //29
     _pad5: [usize; 3], //30-32
     /// open_protocol(Handle, Protocol, Interface, AgentHandle, ControllerHandle, Attributes) -> EFI_STATUS
-    pub open_protocol: extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, //33
+    pub open_protocol:
+        extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, //33
     _pad6: [usize; 7], //34-40
     /// locate_protocol(Protocol, Registration, *mut Interface) -> EFI_STATUS
     pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize, //41

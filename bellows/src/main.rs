@@ -21,8 +21,6 @@ use petroleum::common::{
     FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
 };
 
-
-
 /// Main entry point of the bootloader.
 ///
 /// This function is the `start` attribute as defined in the `Cargo.toml`.
@@ -48,6 +46,19 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     petroleum::serial::_print(format_args!("Attempting to initialize GOP...\n"));
     petroleum::println!("Image Handle: {:#x}", image_handle);
     petroleum::println!("System Table: {:#p}", system_table);
+    // Initialize heap
+    petroleum::serial::_print(format_args!("Attempting to initialize heap...\n"));
+    match init_heap(bs) {
+        Ok(()) => {
+            petroleum::serial::_print(format_args!("Heap initialized successfully.\n"));
+            debug_print_str("Bellows: Heap OK.\n");
+        }
+        Err(e) => {
+            petroleum::serial::_print(format_args!("Heap failed (OK for minimal boot): {:?}\n", e));
+            debug_print_str("Bellows: Heap skipped.\n");
+            // Continue without heap; use fixed buffers in PE loader
+        }
+    }
     init_gop(st);
     petroleum::serial::_print(format_args!("GOP initialized successfully.\n"));
     debug_print_str("Bellows: GOP initialized.\n"); // Debug print after GOP initialization
@@ -71,34 +82,28 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     }
 
     debug_print_str("Bellows: Kernel file loaded.\n");
-    petroleum::serial::_print(format_args!("Kernel file loaded. Size: {}\n", efi_image_size));
-
-    // Initialize heap after successful file read
-    petroleum::serial::_print(format_args!("Attempting late heap init after file read...\n"));
-    match init_heap(bs) {
-        Ok(()) => {
-            petroleum::serial::_print(format_args!("Late heap initialized successfully.\n"));
-            debug_print_str("Bellows: Late heap OK.\n");
-        }
-        Err(e) => {
-            petroleum::serial::_print(format_args!("Late heap failed (OK for minimal boot): {:?}\n", e));
-            debug_print_str("Bellows: Late heap skipped.\n");
-            // Continue without heap; use fixed buffers in PE loader
-        }
-    }
+    petroleum::serial::_print(format_args!(
+        "Kernel file loaded. Size: {}\n",
+        efi_image_size
+    ));
 
     petroleum::serial::_print(format_args!("Attempting to load EFI image...\n"));
 
     // Load the kernel and get its entry point.
     let entry = match load_efi_image(st, efi_image_file) {
         Ok(e) => {
-            petroleum::serial::_print(format_args!("EFI image loaded successfully. Entry point: {:#p}\n", e as *const ()));
+            petroleum::serial::_print(format_args!(
+                "EFI image loaded successfully. Entry point: {:#p}\n",
+                e as *const ()
+            ));
             e
-        },
+        }
         Err(err) => {
             petroleum::println!("Failed to load EFI image: {:?}", err);
             let file_pages = efi_image_size.div_ceil(4096);
-            unsafe { (bs.free_pages)(addr, file_pages); }
+            unsafe {
+                (bs.free_pages)(addr, file_pages);
+            }
             panic!("Failed to load EFI image.");
         }
     };
@@ -106,11 +111,15 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     // Free the memory that was used to hold the kernel file contents
     let file_pages = efi_image_size.div_ceil(4096);
-    unsafe { (bs.free_pages)(addr, file_pages); }
+    unsafe {
+        (bs.free_pages)(addr, file_pages);
+    }
 
     debug_print_str("Bellows: Kernel loaded into allocated memory.\n");
 
-    petroleum::serial::_print(format_args!("Exiting boot services and jumping to kernel...\n"));
+    petroleum::serial::_print(format_args!(
+        "Exiting boot services and jumping to kernel...\n"
+    ));
     // Exit boot services and jump to the kernel.
     debug_print_str("Bellows: About to exit boot services and jump to kernel.\n"); // Debug print just before the call
     match exit_boot_services_and_jump(image_handle, system_table, entry) {
@@ -137,7 +146,9 @@ fn init_gop(st: &EfiSystemTable) {
     );
 
     if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
-        petroleum::serial::_print(format_args!("Failed to locate GOP protocol, continuing without it.\n"));
+        petroleum::serial::_print(format_args!(
+            "Failed to locate GOP protocol, continuing without it.\n"
+        ));
         return;
     }
 
@@ -180,9 +191,13 @@ fn init_gop(st: &EfiSystemTable) {
     );
 
     if EfiStatus::from(status) != EfiStatus::Success {
-        petroleum::serial::_print(format_args!("Failed to install framebuffer config table, recovering memory.\n"));
+        petroleum::serial::_print(format_args!(
+            "Failed to install framebuffer config table, recovering memory.\n"
+        ));
         let _ = unsafe { Box::from_raw(config_ptr) };
-        petroleum::serial::_print(format_args!("Failed to install framebuffer config table.\n"));
+        petroleum::serial::_print(format_args!(
+            "Failed to install framebuffer config table.\n"
+        ));
         return;
     }
 
@@ -195,6 +210,8 @@ fn init_gop(st: &EfiSystemTable) {
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {
-        unsafe { x86_64::instructions::hlt(); }
+        unsafe {
+            x86_64::instructions::hlt();
+        }
     }
 }

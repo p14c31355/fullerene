@@ -31,17 +31,24 @@ pub fn exit_boot_services_and_jump(
     // Loop to get the memory map until successful
     loop {
         // First call: Get the required buffer size (with NULL buffer)
-        let status = unsafe { (bs.get_memory_map)(
-            &mut map_size,
-            ptr::null_mut(),
-            &mut map_key,
-            &mut descriptor_size,
-            &mut descriptor_version,
-        ) };
+        let status = unsafe {
+            (bs.get_memory_map)(
+                &mut map_size,
+                ptr::null_mut(),
+                &mut map_key,
+                &mut descriptor_size,
+                &mut descriptor_version,
+            )
+        };
 
         if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
-            println!("Error: Failed to get initial memory map size: {:?}", EfiStatus::from(status));
-            return Err(BellowsError::InvalidState("Failed to get initial memory map size."));
+            println!(
+                "Error: Failed to get initial memory map size: {:?}",
+                EfiStatus::from(status)
+            );
+            return Err(BellowsError::InvalidState(
+                "Failed to get initial memory map size.",
+            ));
         }
 
         // Allocate buffer with some extra space
@@ -50,24 +57,29 @@ pub fn exit_boot_services_and_jump(
         let mut new_map_phys_addr: usize = 0;
 
         let alloc_status = (bs.allocate_pages)(
-            0usize,  // AllocateAnyPages
+            0usize, // AllocateAnyPages
             EfiMemoryType::EfiLoaderData,
-            new_map_pages,  // No .min(8)
+            new_map_pages, // No .min(8)
             &mut new_map_phys_addr,
         );
 
         if EfiStatus::from(alloc_status) != EfiStatus::Success {
             // If we had a previous allocation, free it before returning an error
             if map_phys_addr != 0 {
-                let _ = (bs.free_pages)(map_phys_addr, map_pages);  // Ignore status
+                let _ = (bs.free_pages)(map_phys_addr, map_pages); // Ignore status
             }
-            println!("Error: Failed to allocate memory map buffer: {:?}", EfiStatus::from(alloc_status));
-            return Err(BellowsError::AllocationFailed("Failed to allocate memory map buffer."));
+            println!(
+                "Error: Failed to allocate memory map buffer: {:?}",
+                EfiStatus::from(alloc_status)
+            );
+            return Err(BellowsError::AllocationFailed(
+                "Failed to allocate memory map buffer.",
+            ));
         }
 
         // Free previous allocation if it exists
         if map_phys_addr != 0 {
-            let _ = (bs.free_pages)(map_phys_addr, map_pages);  // Ignore status
+            let _ = (bs.free_pages)(map_phys_addr, map_pages); // Ignore status
         }
 
         map_phys_addr = new_map_phys_addr;
@@ -91,7 +103,10 @@ pub fn exit_boot_services_and_jump(
             }
             _ => {
                 (bs.free_pages)(map_phys_addr, map_pages);
-                println!("Error: Failed to get memory map: {:?}", EfiStatus::from(status));
+                println!(
+                    "Error: Failed to get memory map: {:?}",
+                    EfiStatus::from(status)
+                );
                 return Err(BellowsError::InvalidState("Failed to get memory map."));
             }
         }
@@ -102,7 +117,10 @@ pub fn exit_boot_services_and_jump(
     // Exit boot services. This call must succeed.
     let exit_status = (bs.exit_boot_services)(image_handle, map_key);
     if EfiStatus::from(exit_status) != EfiStatus::Success {
-        println!("Error: Failed to exit boot services: {:?}", EfiStatus::from(exit_status));
+        println!(
+            "Error: Failed to exit boot services: {:?}",
+            EfiStatus::from(exit_status)
+        );
         return Err(BellowsError::InvalidState("Failed to exit boot services."));
     }
 

@@ -5,8 +5,8 @@
 extern crate alloc;
 
 pub mod common;
-pub mod serial;
 pub mod page_table;
+pub mod serial;
 
 use core::{alloc::Layout, arch::asm, fmt::Write};
 use spin::Mutex;

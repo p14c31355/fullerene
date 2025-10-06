@@ -30,7 +30,11 @@ pub fn debug_print_hex(value: usize) {
     }
     while temp > 0 && i < 16 {
         let digit = (temp % 16) as u8;
-        digits[i] = if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) };
+        digits[i] = if digit < 10 {
+            b'0' + digit
+        } else {
+            b'a' + (digit - 10)
+        };
         temp /= 16;
         i += 1;
     }

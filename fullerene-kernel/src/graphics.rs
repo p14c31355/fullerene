@@ -1,10 +1,10 @@
-use core::fmt;
 use alloc::boxed::Box; // Import Box
+use core::fmt;
+use core::marker::{Send, Sync};
 #[cfg(not(target_os = "uefi"))]
 use petroleum::common::VgaFramebufferConfig;
 use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig}; // Import missing types
 use spin::{Mutex, Once};
-use core::marker::{Send, Sync};
 use x86_64::instructions::port::Port;
 
 use crate::font::FONT_8X8;
@@ -111,7 +111,8 @@ impl FramebufferWriter {
             );
         }
         // Clear the last 8 lines
-        let last_lines_offset = (self.framebuffer.height - 8) * self.framebuffer.stride * bytes_per_pixel;
+        let last_lines_offset =
+            (self.framebuffer.height - 8) * self.framebuffer.stride * bytes_per_pixel;
         let clear_ptr = (self.framebuffer.address + last_lines_offset as u64) as *mut u32;
         let clear_num_u32 = 8 * self.framebuffer.stride as usize;
         unsafe {
@@ -142,7 +143,8 @@ impl FramebufferLike for FramebufferWriter {
             let offset = y * self.framebuffer.stride * bytes_per_pixel;
             let line_ptr = (self.framebuffer.address + offset as u64) as *mut u32;
             unsafe {
-                let line_slice = core::slice::from_raw_parts_mut(line_ptr, self.framebuffer.width as usize);
+                let line_slice =
+                    core::slice::from_raw_parts_mut(line_ptr, self.framebuffer.width as usize);
                 line_slice.fill(self.bg_color);
             }
         }
@@ -205,7 +207,6 @@ impl core::fmt::Write for FramebufferWriter {
     }
 }
 
-
 #[cfg(not(target_os = "uefi"))]
 struct VgaWriter {
     address: u64,
@@ -213,7 +214,7 @@ struct VgaWriter {
     height: u32,
     x_pos: u32,
     y_pos: u32,
-    fg_color: u8,  // 256-color palette index
+    fg_color: u8, // 256-color palette index
     bg_color: u8,
 }
 
@@ -331,7 +332,6 @@ impl core::fmt::Write for VgaWriter {
     }
 }
 
-
 #[cfg(target_os = "uefi")]
 pub static WRITER_UEFI: Once<Mutex<Box<dyn core::fmt::Write + Send + Sync>>> = Once::new();
 
@@ -405,11 +405,11 @@ fn setup_sequencer() {
     const SEQ_MEMORY_MODE: u8 = 0x04;
 
     const SEQUENCER_VALUES: &[(u8, u8)] = &[
-        (SEQ_RESET, 0x03), // Reset
-        (SEQ_CLOCKING_MODE, 0x01), // Clocking mode
-        (SEQ_MAP_MASK, 0x0F), // Map mask
+        (SEQ_RESET, 0x03),                // Reset
+        (SEQ_CLOCKING_MODE, 0x01),        // Clocking mode
+        (SEQ_MAP_MASK, 0x0F),             // Map mask
         (SEQ_CHARACTER_MAP_SELECT, 0x00), // Character map select
-        (SEQ_MEMORY_MODE, 0x0E), // Memory mode (for 256 color, chain 4)
+        (SEQ_MEMORY_MODE, 0x0E),          // Memory mode (for 256 color, chain 4)
     ];
     for &(index, value) in SEQUENCER_VALUES {
         write_indexed(
@@ -444,24 +444,24 @@ fn setup_crtc() {
     const CRTC_MODE_CONTROL: u8 = 0x17;
 
     const CRTC_VALUES: &[(u8, u8)] = &[
-        (CRTC_HORIZONTAL_TOTAL, 0x5F), // Horizontal total
-        (CRTC_HORIZONTAL_DISPLAYED, 0x4F), // Horizontal displayed
+        (CRTC_HORIZONTAL_TOTAL, 0x5F),          // Horizontal total
+        (CRTC_HORIZONTAL_DISPLAYED, 0x4F),      // Horizontal displayed
         (CRTC_HORIZONTAL_BLANKING_START, 0x50), // Horizontal blanking start
-        (CRTC_HORIZONTAL_BLANKING_END, 0x82), // Horizontal blanking end
-        (CRTC_HORIZONTAL_SYNC_START, 0x54), // Horizontal sync start
-        (CRTC_HORIZONTAL_SYNC_END, 0x80), // Horizontal sync end
-        (CRTC_VERTICAL_TOTAL, 0xBF), // Vertical total
-        (CRTC_OVERFLOW, 0x1F), // Overflow
-        (CRTC_PRESET_ROW_SCAN, 0x00), // Preset row scan
-        (CRTC_MAXIMUM_SCAN_LINE, 0x41), // Maximum scan line
-        (CRTC_VERTICAL_SYNC_START, 0x9C), // Vertical sync start
-        (CRTC_VERTICAL_SYNC_END, 0x8E), // Vertical sync end
-        (CRTC_VERTICAL_DISPLAYED, 0x8F), // Vertical displayed
-        (CRTC_ROW_OFFSET, 0x28), // Row offset
-        (CRTC_UNDERLINE_LOCATION, 0x40), // Underline location
-        (CRTC_VERTICAL_BLANKING_START, 0x96), // Vertical blanking start
-        (CRTC_VERTICAL_BLANKING_END, 0xB9), // Vertical blanking end
-        (CRTC_MODE_CONTROL, 0xA3), // Line compare / Mode control
+        (CRTC_HORIZONTAL_BLANKING_END, 0x82),   // Horizontal blanking end
+        (CRTC_HORIZONTAL_SYNC_START, 0x54),     // Horizontal sync start
+        (CRTC_HORIZONTAL_SYNC_END, 0x80),       // Horizontal sync end
+        (CRTC_VERTICAL_TOTAL, 0xBF),            // Vertical total
+        (CRTC_OVERFLOW, 0x1F),                  // Overflow
+        (CRTC_PRESET_ROW_SCAN, 0x00),           // Preset row scan
+        (CRTC_MAXIMUM_SCAN_LINE, 0x41),         // Maximum scan line
+        (CRTC_VERTICAL_SYNC_START, 0x9C),       // Vertical sync start
+        (CRTC_VERTICAL_SYNC_END, 0x8E),         // Vertical sync end
+        (CRTC_VERTICAL_DISPLAYED, 0x8F),        // Vertical displayed
+        (CRTC_ROW_OFFSET, 0x28),                // Row offset
+        (CRTC_UNDERLINE_LOCATION, 0x40),        // Underline location
+        (CRTC_VERTICAL_BLANKING_START, 0x96),   // Vertical blanking start
+        (CRTC_VERTICAL_BLANKING_END, 0xB9),     // Vertical blanking end
+        (CRTC_MODE_CONTROL, 0xA3),              // Line compare / Mode control
     ];
     for &(index, value) in CRTC_VALUES {
         write_indexed(
@@ -487,15 +487,15 @@ fn setup_graphics_controller() {
     const GC_BIT_MASK: u8 = 0x08;
 
     const GC_VALUES: &[(u8, u8)] = &[
-        (GC_SET_RESET, 0x00), // Set/reset
+        (GC_SET_RESET, 0x00),        // Set/reset
         (GC_ENABLE_SET_RESET, 0x00), // Enable set/reset
-        (GC_COLOR_COMPARE, 0x00), // Color compare
-        (GC_DATA_ROTATE, 0x00), // Data rotate
-        (GC_READ_MAP_SELECT, 0x00), // Read map select
-        (GC_GRAPHICS_MODE, 0x40), // Graphics mode (256 color)
-        (GC_MISCELLANEOUS, 0x05), // Miscellaneous
-        (GC_COLOR_DONT_CARE, 0x0F), // Color don't care
-        (GC_BIT_MASK, 0xFF), // Bit mask
+        (GC_COLOR_COMPARE, 0x00),    // Color compare
+        (GC_DATA_ROTATE, 0x00),      // Data rotate
+        (GC_READ_MAP_SELECT, 0x00),  // Read map select
+        (GC_GRAPHICS_MODE, 0x40),    // Graphics mode (256 color)
+        (GC_MISCELLANEOUS, 0x05),    // Miscellaneous
+        (GC_COLOR_DONT_CARE, 0x0F),  // Color don't care
+        (GC_BIT_MASK, 0xFF),         // Bit mask
     ];
     for &(index, value) in GC_VALUES {
         write_indexed(
@@ -527,21 +527,21 @@ fn setup_attribute_controller() {
     const AC_COLOR_SELECT_2: u8 = 0x14;
 
     const AC_VALUES: &[(u8, u8)] = &[
-        (AC_MODE_CONTROL_1, 0x00), // Mode control 1
-        (AC_OVERSCAN_COLOR, 0x00), // Overscan color
-        (AC_COLOR_PLANE_ENABLE, 0x0F), // Color plane enable
-        (AC_HORIZONTAL_PIXEL_PANNING, 0x00), // Horizontal pixel panning
-        (AC_COLOR_SELECT, 0x00), // Color select
-        (AC_MODE_CONTROL_2, 0x00), // Mode control 2
-        (AC_SCROLL, 0x00), // Scroll
-        (AC_GRAPHICS_MODE, 0x00), // Graphics mode
-        (AC_LINE_GRAPHICS, 0xFF), // Line graphics
-        (AC_FOREGROUND_COLOR, 0x00), // Foreground color
-        (AC_MODE_CONTROL_256_COLORS, 0x41), // Mode control (for 256 colors)
-        (AC_OVERSCAN_COLOR_BORDER, 0x00), // Overscan color (border)
-        (AC_COLOR_PLANE_ENABLE_2, 0x0F), // Color plane enable
+        (AC_MODE_CONTROL_1, 0x00),             // Mode control 1
+        (AC_OVERSCAN_COLOR, 0x00),             // Overscan color
+        (AC_COLOR_PLANE_ENABLE, 0x0F),         // Color plane enable
+        (AC_HORIZONTAL_PIXEL_PANNING, 0x00),   // Horizontal pixel panning
+        (AC_COLOR_SELECT, 0x00),               // Color select
+        (AC_MODE_CONTROL_2, 0x00),             // Mode control 2
+        (AC_SCROLL, 0x00),                     // Scroll
+        (AC_GRAPHICS_MODE, 0x00),              // Graphics mode
+        (AC_LINE_GRAPHICS, 0xFF),              // Line graphics
+        (AC_FOREGROUND_COLOR, 0x00),           // Foreground color
+        (AC_MODE_CONTROL_256_COLORS, 0x41),    // Mode control (for 256 colors)
+        (AC_OVERSCAN_COLOR_BORDER, 0x00),      // Overscan color (border)
+        (AC_COLOR_PLANE_ENABLE_2, 0x0F),       // Color plane enable
         (AC_HORIZONTAL_PIXEL_PANNING_2, 0x00), // Horizontal pixel panning
-        (AC_COLOR_SELECT_2, 0x00), // Color select
+        (AC_COLOR_SELECT_2, 0x00),             // Color select
     ];
 
     unsafe {
@@ -581,8 +581,6 @@ fn setup_palette() {
         }
     }
 }
-
-
 
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {

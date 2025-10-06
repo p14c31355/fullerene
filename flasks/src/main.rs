@@ -1,6 +1,10 @@
 // fullerene/flasks/src/main.rs
 use isobemak::{BiosBootInfo, BootInfo, IsoImage, IsoImageFile, UefiBootInfo, build_iso};
-use std::{env, io, path::{Path, PathBuf}, process::Command};
+use std::{
+    env, io,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 fn main() -> io::Result<()> {
     println!("Starting flasks application...");
@@ -104,7 +108,10 @@ fn main() -> io::Result<()> {
 
     // Create a temporary file for OVMF_VARS.fd to ensure a clean state each run
     let mut temp_ovmf_vars_fd = tempfile::NamedTempFile::new()?;
-    std::io::copy(&mut std::fs::File::open(&ovmf_vars_fd_original_path)?, temp_ovmf_vars_fd.as_file_mut())?;
+    std::io::copy(
+        &mut std::fs::File::open(&ovmf_vars_fd_original_path)?,
+        temp_ovmf_vars_fd.as_file_mut(),
+    )?;
     let ovmf_vars_fd_path = temp_ovmf_vars_fd.path().to_path_buf();
 
     let ovmf_fd_drive = format!(
@@ -120,29 +127,44 @@ fn main() -> io::Result<()> {
 
     let mut qemu_cmd = Command::new("qemu-system-x86_64");
     qemu_cmd.args([
-        "-m", "4G",
-        "-cpu", "qemu64,+smap,-invtsc",
-        "-smp", "1",
-        "-machine", "q35,smm=off",
-        "-vga", "virtio",
-        "-serial", "stdio",
-        "-monitor", "telnet:localhost:1234,server,nowait",
-        "-accel", "tcg,thread=single",
-        "-d", "guest_errors",
-        "-global", "driver=or6.efi-setup,property=Enable,value=0",
-        "-drive", &ovmf_fd_drive,
-        "-drive", &ovmf_vars_fd_drive,
-        "-drive", &format!("file={},if=virtio,format=raw", iso_path_str),
+        "-m",
+        "4G",
+        "-cpu",
+        "qemu64,+smap,-invtsc",
+        "-smp",
+        "1",
+        "-machine",
+        "q35,smm=off",
+        "-vga",
+        "virtio",
+        "-serial",
+        "stdio",
+        "-monitor",
+        "telnet:localhost:1234,server,nowait",
+        "-accel",
+        "tcg,thread=single",
+        "-d",
+        "guest_errors",
+        "-global",
+        "driver=or6.efi-setup,property=Enable,value=0",
+        "-drive",
+        &ovmf_fd_drive,
+        "-drive",
+        &ovmf_vars_fd_drive,
+        "-drive",
+        &format!("file={},if=virtio,format=raw", iso_path_str),
         "-no-reboot",
         "-no-shutdown",
-        "-boot", "strict=on,order=d",
+        "-boot",
+        "strict=on,order=d",
         "-nodefaults",
     ]);
     // Keep the temporary file alive until QEMU exits
     let _temp_ovmf_vars_fd_holder = temp_ovmf_vars_fd;
     // LD_PRELOAD is a workaround for specific QEMU/libpthread versions.
     // It can be overridden by setting the FULLERENE_QEMU_LD_PRELOAD environment variable.
-    let ld_preload_path = env::var("FULLERENE_QEMU_LD_PRELOAD").unwrap_or_else(|_| find_libpthread());
+    let ld_preload_path =
+        env::var("FULLERENE_QEMU_LD_PRELOAD").unwrap_or_else(|_| find_libpthread());
     qemu_cmd.env("LD_PRELOAD", ld_preload_path);
     let qemu_status = qemu_cmd.status()?;
 
@@ -161,8 +183,8 @@ fn main() -> io::Result<()> {
 fn find_libpthread() -> String {
     const COMMON_PATHS: &[&str] = &[
         "/lib/x86_64-linux-gnu/libpthread.so.0", // Debian/Ubuntu
-        "/usr/lib64/libpthread.so.0",             // Fedora/CentOS
-        "/usr/lib/libpthread.so.0",               // Arch/Other
+        "/usr/lib64/libpthread.so.0",            // Fedora/CentOS
+        "/usr/lib/libpthread.so.0",              // Arch/Other
     ];
 
     for path in COMMON_PATHS {
@@ -172,6 +194,8 @@ fn find_libpthread() -> String {
     }
 
     // Fallback to the original default if not found, with a warning.
-    eprintln!("warning: libpthread.so.0 not found in common paths, falling back to default. Set FULLERENE_QEMU_LD_PRELOAD to override if this fails.");
+    eprintln!(
+        "warning: libpthread.so.0 not found in common paths, falling back to default. Set FULLERENE_QEMU_LD_PRELOAD to override if this fails."
+    );
     "/lib/x86_64-linux-gnu/libpthread.so.0".to_string()
 }

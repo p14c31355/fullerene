@@ -4,8 +4,9 @@ use alloc::{format, vec::Vec};
 use core::ffi::c_void;
 use core::ptr;
 use petroleum::common::{
-    BellowsError, EFI_FILE_INFO_GUID, EFI_LOADED_IMAGE_PROTOCOL_GUID, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiBootServices,
-    EfiFile, EfiFileInfo, EfiLoadedImageProtocol, EfiSimpleFileSystem, EfiStatus,
+    BellowsError, EFI_FILE_INFO_GUID, EFI_LOADED_IMAGE_PROTOCOL_GUID,
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiBootServices, EfiFile, EfiFileInfo,
+    EfiLoadedImageProtocol, EfiSimpleFileSystem, EfiStatus,
 };
 
 use super::debug::*;
@@ -14,7 +15,8 @@ const EFI_FILE_MODE_READ: u64 = 0x1;
 const KERNEL_PATH: &str = r"\EFI\BOOT\KERNEL.EFI";
 
 /// Fixed UTF-16 encode for KERNEL_PATH (no alloc).
-fn kernel_path_utf16() -> [u16; 32] {  // Enough for path + null
+fn kernel_path_utf16() -> [u16; 32] {
+    // Enough for path + null
     let path = KERNEL_PATH.encode_utf16().chain(core::iter::once(0u16));
     let mut buf = [0u16; 32];
     let mut i = 0;
@@ -26,7 +28,7 @@ fn kernel_path_utf16() -> [u16; 32] {  // Enough for path + null
             break;
         }
     }
-    buf[i] = 0;  // Ensure null-term
+    buf[i] = 0; // Ensure null-term
     buf
 }
 
@@ -77,7 +79,10 @@ fn open_file(dir: &EfiFileWrapper, path: &[u16]) -> petroleum::common::Result<Ef
 }
 
 /// Read `fullerene-kernel.efi` from the volume.
-pub fn read_efi_file(bs: &EfiBootServices, image_handle: usize) -> petroleum::common::Result<(usize, usize)> {
+pub fn read_efi_file(
+    bs: &EfiBootServices,
+    image_handle: usize,
+) -> petroleum::common::Result<(usize, usize)> {
     // Debug print: Starting file read
     debug_print_str("File: Starting read_efi_file...\n");
 
@@ -105,7 +110,9 @@ pub fn read_efi_file(bs: &EfiBootServices, image_handle: usize) -> petroleum::co
         debug_print_str("File: Status: ");
         debug_print_str(status_str);
         debug_print_str("\n");
-        return Err(BellowsError::ProtocolNotFound("Failed to get LoadedImageProtocol."));
+        return Err(BellowsError::ProtocolNotFound(
+            "Failed to get LoadedImageProtocol.",
+        ));
     }
     debug_print_str("File: Success getting LoadedImageProtocol.\n");
     let revision = unsafe { (*loaded_image).revision };
@@ -125,8 +132,8 @@ pub fn read_efi_file(bs: &EfiBootServices, image_handle: usize) -> petroleum::co
         &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
         &mut fs_proto as *mut _ as *mut *mut c_void,
         image_handle, // agent_handle
-        0, // controller_handle
-        1, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
+        0,            // controller_handle
+        1,            // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
     );
     if EfiStatus::from(status) != EfiStatus::Success {
         debug_print_str("File: Failed to get SimpleFileSystem protocol from device.\n");
@@ -154,7 +161,7 @@ pub fn read_efi_file(bs: &EfiBootServices, image_handle: usize) -> petroleum::co
     // Correct file name to match the kernel file
     let file = open_file(
         &volume,
-        &kernel_path_utf16()[..],  // Fixed slice
+        &kernel_path_utf16()[..], // Fixed slice
     )?;
 
     let mut file_info_buffer_size = 0;

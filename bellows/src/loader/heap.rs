@@ -14,7 +14,11 @@ const HEAP_SIZE: usize = 64 * 1024; // 64 KiB
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
 /// Tries to allocate pages with multiple strategies and memory types.
-fn try_allocate_pages(bs: &EfiBootServices, pages: usize, preferred_type: EfiMemoryType) -> Result<usize, BellowsError> {
+fn try_allocate_pages(
+    bs: &EfiBootServices,
+    pages: usize,
+    preferred_type: EfiMemoryType,
+) -> Result<usize, BellowsError> {
     let mut phys_addr: usize = 0;
     // Swap order: Try Conventional first, then LoaderData
     let types_to_try = [EfiMemoryType::EfiConventionalMemory, preferred_type];
@@ -35,25 +39,25 @@ fn try_allocate_pages(bs: &EfiBootServices, pages: usize, preferred_type: EfiMem
         debug_print_str("\n");
         debug_print_str("Heap: Entering allocate_pages call...\n");
         // Use AllocateAnyPages (0) for any mem
-        let alloc_type = 0usize;  // AllocateAnyPages
+        let alloc_type = 0usize; // AllocateAnyPages
         let status = (bs.allocate_pages)(
             alloc_type,
             mem_type,
-            pages,   // Start with 1 for testing
+            pages, // Start with 1 for testing
             &mut phys_addr_local,
         );
-        debug_print_str("Heap: Exited allocate_pages call.\n");  // Marker after call
+        debug_print_str("Heap: Exited allocate_pages call.\n"); // Marker after call
         phys_addr = phys_addr_local;
         debug_print_str("Heap: allocate_pages returned, phys_addr=");
         debug_print_hex(phys_addr);
         debug_print_str(", raw_status=0x");
-        debug_print_hex(status);  // Print raw status as hex
+        debug_print_hex(status); // Print raw status as hex
         debug_print_str("\n");
 
         // Immediate validation: check if phys_addr is page-aligned (avoid invalid reads)
         if phys_addr != 0 && phys_addr % 4096 != 0 {
             debug_print_str("Heap: WARNING: phys_addr not page-aligned!\n");
-            let _ = (bs.free_pages)(phys_addr, pages);  // Ignore status on free
+            let _ = (bs.free_pages)(phys_addr, pages); // Ignore status on free
             phys_addr = 0;
             continue;
         }
@@ -75,24 +79,32 @@ fn try_allocate_pages(bs: &EfiBootServices, pages: usize, preferred_type: EfiMem
         phys_addr = 0;
     }
 
-    Err(BellowsError::AllocationFailed("All allocation attempts failed."))
+    Err(BellowsError::AllocationFailed(
+        "All allocation attempts failed.",
+    ))
 }
 
 pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
     debug_print_str("Heap: Allocating pages for heap...\n");
     let heap_pages = HEAP_SIZE.div_ceil(4096);
     debug_print_str("Heap: Requesting 1 page (minimal test).\n");
-    let heap_phys = try_allocate_pages(bs, heap_pages, EfiMemoryType::EfiLoaderData)?;  // 固定
+    let heap_phys = try_allocate_pages(bs, heap_pages, EfiMemoryType::EfiLoaderData)?; // 固定
     // アライメント検証強化
     if heap_phys % 4096 != 0 {
         debug_print_str("Heap: Misaligned alloc! Freeing...\n");
-        unsafe { (bs.free_pages)(heap_phys, heap_pages); }
-        return Err(BellowsError::AllocationFailed("Misaligned heap allocation."));
+        unsafe {
+            (bs.free_pages)(heap_phys, heap_pages);
+        }
+        return Err(BellowsError::AllocationFailed(
+            "Misaligned heap allocation.",
+        ));
     }
 
     if heap_phys == 0 {
         debug_print_str("Heap: Allocated heap address is null!\n");
-        return Err(BellowsError::AllocationFailed("Allocated heap address is null."));
+        return Err(BellowsError::AllocationFailed(
+            "Allocated heap address is null.",
+        ));
     }
 
     // Calculate actual allocated size (we may have gotten fewer pages than requested)
@@ -105,7 +117,9 @@ pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
     // We have successfully allocated a valid, non-zero memory region.
     // The `init` function correctly initializes the allocator with this region.
     unsafe {
-        ALLOCATOR.lock().init(heap_phys as *mut u8, actual_heap_size);
+        ALLOCATOR
+            .lock()
+            .init(heap_phys as *mut u8, actual_heap_size);
     }
     debug_print_str("Heap: Allocator initialized successfully.\n");
     Ok(())

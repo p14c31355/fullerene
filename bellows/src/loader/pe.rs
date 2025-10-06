@@ -1,9 +1,9 @@
 // bellows/src/loader/pe.rs
 
-use core::{ffi::c_void, mem, ptr, mem::offset_of};
 use alloc::format;
-use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
-use core::fmt::{self, Write}; // Import fmt module for format_args! and Write
+use core::fmt::{self, Write};
+use core::{ffi::c_void, mem, mem::offset_of, ptr};
+use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable}; // Import fmt module for format_args! and Write
 
 use super::debug::*;
 
@@ -141,7 +141,9 @@ extern "efiapi" fn dummy_kernel_entry(
 
     // Halt the CPU
     loop {
-        unsafe { x86_64::instructions::hlt(); }
+        unsafe {
+            x86_64::instructions::hlt();
+        }
     }
 }
 
@@ -164,7 +166,11 @@ pub fn load_efi_image(
     if e_magic != 0x5a4d {
         return Err(BellowsError::PeParse("Invalid DOS signature (MZ)."));
     }
-    let e_lfanew = unsafe { ptr::read_unaligned((dos_header_ptr as *const u8).add(offset_of!(ImageDosHeader, e_lfanew)) as *const i32) };
+    let e_lfanew = unsafe {
+        ptr::read_unaligned(
+            (dos_header_ptr as *const u8).add(offset_of!(ImageDosHeader, e_lfanew)) as *const i32,
+        )
+    };
     petroleum::println!("DOS header parsed. e_lfanew: {:#x}", e_lfanew);
 
     let nt_headers_offset = e_lfanew as usize;
@@ -172,14 +178,29 @@ pub fn load_efi_image(
         return Err(BellowsError::PeParse("Invalid NT headers offset."));
     }
     let nt_headers_ptr = unsafe { file.as_ptr().add(nt_headers_offset) as *const ImageNtHeaders64 };
-    let optional_header_magic = unsafe { ptr::read_unaligned((nt_headers_ptr as *const u8).add(offset_of!(ImageNtHeaders64, optional_header)).add(offset_of!(ImageOptionalHeader64, _magic)) as *const u16) };
-    petroleum::println!("NT headers parsed. Optional Header Magic: {:#x}", optional_header_magic);
+    let optional_header_magic = unsafe {
+        ptr::read_unaligned(
+            (nt_headers_ptr as *const u8)
+                .add(offset_of!(ImageNtHeaders64, optional_header))
+                .add(offset_of!(ImageOptionalHeader64, _magic)) as *const u16,
+        )
+    };
+    petroleum::println!(
+        "NT headers parsed. Optional Header Magic: {:#x}",
+        optional_header_magic
+    );
 
     if optional_header_magic != 0x20b {
         return Err(BellowsError::PeParse("Invalid PE32+ magic number."));
     }
 
-    let image_size = unsafe { ptr::read_unaligned((nt_headers_ptr as *const u8).add(offset_of!(ImageNtHeaders64, optional_header)).add(offset_of!(ImageOptionalHeader64, size_of_image)) as *const u32) } as usize;
+    let image_size = unsafe {
+        ptr::read_unaligned(
+            (nt_headers_ptr as *const u8)
+                .add(offset_of!(ImageNtHeaders64, optional_header))
+                .add(offset_of!(ImageOptionalHeader64, size_of_image)) as *const u32,
+        )
+    } as usize;
     let pages_needed = image_size.div_ceil(4096);
     let mut phys_addr: usize = 0;
     let status = unsafe {
@@ -195,36 +216,64 @@ pub fn load_efi_image(
             "Failed to allocate memory for PE image.",
         ));
     }
-    petroleum::println!("Memory allocated for PE image. Phys Addr: {:#x}, Pages: {}", phys_addr, pages_needed);
+    petroleum::println!(
+        "Memory allocated for PE image. Phys Addr: {:#x}, Pages: {}",
+        phys_addr,
+        pages_needed
+    );
 
-    let image_base = unsafe { ptr::read_unaligned((nt_headers_ptr as *const u8).add(offset_of!(ImageNtHeaders64, optional_header)).add(offset_of!(ImageOptionalHeader64, image_base)) as *const u64) } as usize;
+    let image_base = unsafe {
+        ptr::read_unaligned(
+            (nt_headers_ptr as *const u8)
+                .add(offset_of!(ImageNtHeaders64, optional_header))
+                .add(offset_of!(ImageOptionalHeader64, image_base)) as *const u64,
+        )
+    } as usize;
     petroleum::println!("Image Base from header: {:#x}", image_base);
 
     petroleum::println!("Copying headers...");
-    let size_of_headers = unsafe { ptr::read_unaligned((nt_headers_ptr as *const u8).add(offset_of!(ImageNtHeaders64, optional_header)).add(offset_of!(ImageOptionalHeader64, _size_of_headers)) as *const u32) } as usize;
+    let size_of_headers = unsafe {
+        ptr::read_unaligned(
+            (nt_headers_ptr as *const u8)
+                .add(offset_of!(ImageNtHeaders64, optional_header))
+                .add(offset_of!(ImageOptionalHeader64, _size_of_headers)) as *const u32,
+        )
+    } as usize;
     unsafe {
-        ptr::copy_nonoverlapping(
-            file.as_ptr(),
-            phys_addr as *mut u8,
-            size_of_headers,
-        );
+        ptr::copy_nonoverlapping(file.as_ptr(), phys_addr as *mut u8, size_of_headers);
     }
     petroleum::println!("Headers copied.");
 
-    let number_of_sections = unsafe { ptr::read_unaligned((nt_headers_ptr as *const u8).add(offset_of!(ImageNtHeaders64, _file_header)).add(offset_of!(ImageFileHeader, number_of_sections)) as *const u16) } as usize;
-    let size_of_optional_header = unsafe { ptr::read_unaligned((nt_headers_ptr as *const u8).add(offset_of!(ImageNtHeaders64, _file_header)).add(offset_of!(ImageFileHeader, size_of_optional_header)) as *const u16) } as usize;
+    let number_of_sections = unsafe {
+        ptr::read_unaligned(
+            (nt_headers_ptr as *const u8)
+                .add(offset_of!(ImageNtHeaders64, _file_header))
+                .add(offset_of!(ImageFileHeader, number_of_sections)) as *const u16,
+        )
+    } as usize;
+    let size_of_optional_header = unsafe {
+        ptr::read_unaligned(
+            (nt_headers_ptr as *const u8)
+                .add(offset_of!(ImageNtHeaders64, _file_header))
+                .add(offset_of!(ImageFileHeader, size_of_optional_header))
+                as *const u16,
+        )
+    } as usize;
 
     let section_headers_offset = nt_headers_offset
         + mem::size_of::<u32>() // Signature
         + mem::size_of::<ImageFileHeader>()
         + size_of_optional_header;
-    let section_headers_size =
-        number_of_sections * mem::size_of::<ImageSectionHeader>();
+    let section_headers_size = number_of_sections * mem::size_of::<ImageSectionHeader>();
     if section_headers_offset + section_headers_size > file.len() {
         unsafe { (bs.free_pages)(phys_addr, pages_needed) };
         return Err(BellowsError::PeParse("Section headers out of bounds."));
     }
-    petroleum::println!("Section headers offset: {:#x}, size: {}", section_headers_offset, section_headers_size);
+    petroleum::println!(
+        "Section headers offset: {:#x}, size: {}",
+        section_headers_offset,
+        section_headers_size
+    );
     petroleum::println!("Copying sections...");
 
     for i in 0..number_of_sections {
@@ -259,12 +308,8 @@ pub fn load_efi_image(
             pointer_to_raw_data
         );
 
-        let src_addr = unsafe {
-            file.as_ptr()
-                .add(pointer_to_raw_data as usize)
-        };
-        let dst_addr =
-            unsafe { (phys_addr as *mut u8).add(virtual_address as usize) };
+        let src_addr = unsafe { file.as_ptr().add(pointer_to_raw_data as usize) };
+        let dst_addr = unsafe { (phys_addr as *mut u8).add(virtual_address as usize) };
 
         if (src_addr as usize).saturating_add(size_of_raw_data as usize)
             > (file.as_ptr() as usize).saturating_add(file.len())
@@ -321,7 +366,9 @@ pub fn load_efi_image(
                 reloc_count += 1;
                 if reloc_count > 10000 {
                     unsafe { (bs.free_pages)(phys_addr, pages_needed) };
-                    return Err(BellowsError::PeParse("Too many relocations, possible infinite loop."));
+                    return Err(BellowsError::PeParse(
+                        "Too many relocations, possible infinite loop.",
+                    ));
                 }
 
                 let virtual_address = unsafe {
@@ -344,7 +391,8 @@ pub fn load_efi_image(
                 }
 
                 let mut fixup_ptr = unsafe {
-                    (current_reloc_block_ptr as *const u8).add(mem::size_of::<ImageBaseRelocation>())
+                    (current_reloc_block_ptr as *const u8)
+                        .add(mem::size_of::<ImageBaseRelocation>())
                         as *const u16
                 };
                 let end_of_block_ptr =
@@ -391,9 +439,15 @@ pub fn load_efi_image(
         petroleum::println!("Image base delta is 0, no relocations needed.");
     }
 
-    let address_of_entry_point = unsafe { ptr::read_unaligned((nt_headers_ptr as *const u8).add(offset_of!(ImageNtHeaders64, optional_header)).add(offset_of!(ImageOptionalHeader64, address_of_entry_point)) as *const u32) };
-    let entry_point_addr =
-        phys_addr.saturating_add(address_of_entry_point as usize);
+    let address_of_entry_point = unsafe {
+        ptr::read_unaligned(
+            (nt_headers_ptr as *const u8)
+                .add(offset_of!(ImageNtHeaders64, optional_header))
+                .add(offset_of!(ImageOptionalHeader64, address_of_entry_point))
+                as *const u32,
+        )
+    };
+    let entry_point_addr = phys_addr.saturating_add(address_of_entry_point as usize);
     petroleum::println!("Calculated Entry Point Address: {:#x}", entry_point_addr);
 
     if entry_point_addr >= phys_addr.saturating_add(pages_needed * 4096)

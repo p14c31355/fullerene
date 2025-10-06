@@ -3,13 +3,13 @@
 #![no_std]
 #![no_main]
 
+pub(crate) mod font;
 mod gdt; // Add GDT module
 mod graphics;
+mod heap;
 mod interrupts;
 mod serial;
 mod vga;
-mod heap;
-pub(crate) mod font;
 
 extern crate alloc;
 
@@ -17,11 +17,12 @@ use core::panic::PanicInfo;
 
 use core::ffi::c_void;
 use petroleum::common::{
-    EfiConfigurationTable, EfiSystemTable, FullereneFramebufferConfig, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, EfiMemoryType
+    EfiConfigurationTable, EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
+    FullereneFramebufferConfig,
 };
 use petroleum::page_table::translate_addr;
-use x86_64::instructions::hlt;
 use x86_64::VirtAddr;
+use x86_64::instructions::hlt;
 
 #[repr(C)]
 pub struct EfiMemoryDescriptor {
@@ -54,7 +55,10 @@ pub extern "efiapi" fn efi_main(
 
     // Early heap and serial init for UEFI
     let descriptors = unsafe {
-        core::slice::from_raw_parts(_memory_map as *const EfiMemoryDescriptor, _memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>())
+        core::slice::from_raw_parts(
+            _memory_map as *const EfiMemoryDescriptor,
+            _memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>(),
+        )
     };
     let mut loader_data_start = None;
     for desc in descriptors {
@@ -64,7 +68,11 @@ pub extern "efiapi" fn efi_main(
         }
     }
     let loader_data_start = loader_data_start.expect("No LoaderData region found in memory map");
-    let virtual_start = descriptors.iter().find(|desc| desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0).map(|desc| desc.virtual_start).unwrap_or(loader_data_start.as_u64());
+    let virtual_start = descriptors
+        .iter()
+        .find(|desc| desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0)
+        .map(|desc| desc.virtual_start)
+        .unwrap_or(loader_data_start.as_u64());
     let heap_start = x86_64::VirtAddr::new(virtual_start);
 
     serial::serial_log("Kernel: efi_main entered (via serial_log).\n");
@@ -113,7 +121,7 @@ pub extern "efiapi" fn efi_main(
             serial::serial_log("Graphics initialized.");
         }
     } else {
-    serial::serial_log("Fullerene Framebuffer Config Table not found.\n");
+        serial::serial_log("Fullerene Framebuffer Config Table not found.\n");
     }
 
     // Main loop
@@ -125,7 +133,10 @@ pub extern "efiapi" fn efi_main(
 fn init_common(memory_map: *mut c_void, memory_map_size: usize) {
     // Parse memory map to find LoaderData region for heap
     let descriptors = unsafe {
-        core::slice::from_raw_parts(memory_map as *const EfiMemoryDescriptor, memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>())
+        core::slice::from_raw_parts(
+            memory_map as *const EfiMemoryDescriptor,
+            memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>(),
+        )
     };
     let mut loader_data_start = None;
     for desc in descriptors {
@@ -136,7 +147,11 @@ fn init_common(memory_map: *mut c_void, memory_map_size: usize) {
     }
     let loader_data_start = loader_data_start.expect("No LoaderData region found in memory map");
     // Find virtual_start for the LoaderData region
-    let virtual_start = descriptors.iter().find(|desc| desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0).map(|desc| desc.virtual_start).unwrap_or(loader_data_start.as_u64());
+    let virtual_start = descriptors
+        .iter()
+        .find(|desc| desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0)
+        .map(|desc| desc.virtual_start)
+        .unwrap_or(loader_data_start.as_u64());
     let heap_start = x86_64::VirtAddr::new(virtual_start);
 
     let heap_start = gdt::init(heap_start); // Initialize GDT with heap start, get adjusted heap start
