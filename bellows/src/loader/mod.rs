@@ -1,6 +1,5 @@
 // bellows/src/loader/mod.rs
 
-use core::arch::asm;
 use core::ffi::c_void;
 use core::ptr;
 use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};

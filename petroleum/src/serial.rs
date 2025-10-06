@@ -11,6 +11,12 @@ pub struct UefiWriter {
 unsafe impl Sync for UefiWriter {}
 unsafe impl Send for UefiWriter {}
 
+impl Default for UefiWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UefiWriter {
     pub const fn new() -> UefiWriter {
         UefiWriter {

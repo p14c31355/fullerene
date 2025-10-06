@@ -1,7 +1,5 @@
 // bellows/src/loader/pe.rs
 
-use alloc::format;
-use core::fmt::{self, Write};
 use core::{ffi::c_void, mem, mem::offset_of, ptr};
 use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable}; // Import fmt module for format_args! and Write
 

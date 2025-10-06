@@ -1,6 +1,5 @@
 // bellows/src/loader/heap.rs
 
-use core::arch::asm;
 use linked_list_allocator::LockedHeap;
 use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus};
 
@@ -55,7 +54,7 @@ fn try_allocate_pages(
         debug_print_str("\n");
 
         // Immediate validation: check if phys_addr is page-aligned (avoid invalid reads)
-        if phys_addr != 0 && phys_addr % 4096 != 0 {
+        if phys_addr != 0 && !phys_addr.is_multiple_of(4096) {
             debug_print_str("Heap: WARNING: phys_addr not page-aligned!\n");
             let _ = (bs.free_pages)(phys_addr, pages); // Ignore status on free
             phys_addr = 0;

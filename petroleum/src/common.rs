@@ -172,24 +172,24 @@ pub struct EfiSystemTable {
 pub struct EfiBootServices {
     pub hdr: [u64; 3], // EFI_TABLE_HEADER
     _pad0: [usize; 2], // raise_tpl, restore_tpl
-    pub allocate_pages: extern "efiapi" fn(usize, EfiMemoryType, usize, *mut usize) -> usize, // idx 5
-    pub free_pages: extern "efiapi" fn(usize, usize) -> usize, // idx 6
+    pub allocate_pages: extern "efiapi" fn(usize, EfiMemoryType, usize, *mut usize) -> usize, // idx 3
+    pub free_pages: extern "efiapi" fn(usize, usize) -> usize, // idx 4
     pub get_memory_map:
-        extern "efiapi" fn(*mut usize, *mut c_void, *mut usize, *mut usize, *mut u32) -> usize, // idx 7
-    _pad1: [usize; 11], // 8-18
-    pub handle_protocol: extern "efiapi" fn(usize, *const u8, *mut *mut c_void) -> usize, // idx 19
-    _pad2: [usize; 2],  // 20-21
+        extern "efiapi" fn(*mut usize, *mut c_void, *mut usize, *mut usize, *mut u32) -> usize, // idx 5
+    _pad1: [usize; 11], // 6-16
+    pub handle_protocol: extern "efiapi" fn(usize, *const u8, *mut *mut c_void) -> usize, // idx 17
+    _pad2: [usize; 1],  // 18
     pub locate_handle:
-        extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut usize) -> usize, // idx 22
-    _pad3: [usize; 1],  // 23
-    pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize, // idx 24
-    _pad4: [usize; 4],  // 25-28
-    pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize, // idx 29
-    _pad5: [usize; 5],  // 30-34
+        extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut usize) -> usize, // idx 19
+    _pad3: [usize; 1],  // 20
+    pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize, // idx 21
+    _pad4: [usize; 4],  // 22-25
+    pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize, // idx 26
+    _pad5: [usize; 5],  // 27-31
     pub open_protocol:
-        extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, // idx 35
-    _pad6: [usize; 4], // 36-39
-    pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize, // idx 40
+        extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, // idx 32
+    _pad6: [usize; 4], // 33-36
+    pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize, // idx 37
 }
 
 /// Minimal UEFI Simple Text Output Protocol (UEFI)

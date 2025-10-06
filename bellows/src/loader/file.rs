@@ -1,6 +1,5 @@
 // bellows/src/loader/file.rs
 
-use alloc::{format, vec::Vec};
 use core::ffi::c_void;
 use core::ptr;
 use petroleum::common::{
@@ -9,7 +8,7 @@ use petroleum::common::{
     EfiLoadedImageProtocol, EfiSimpleFileSystem, EfiStatus,
 };
 
-use super::debug::*;
+use petroleum;
 
 const EFI_FILE_MODE_READ: u64 = 0x1;
 const KERNEL_PATH: &str = r"\EFI\BOOT\KERNEL.EFI";
@@ -71,10 +70,8 @@ fn open_file(dir: &EfiFileWrapper, path: &[u16]) -> petroleum::common::Result<Ef
         )
     };
     if EfiStatus::from(status) != EfiStatus::Success {
-        debug_print_str("File: Failed to open file.\n");
         return Err(BellowsError::FileIo("Failed to open file."));
     }
-    debug_print_str("File: Opened file.\n");
     Ok(EfiFileWrapper::new(file_handle))
 }
 
@@ -83,12 +80,8 @@ pub fn read_efi_file(
     bs: &EfiBootServices,
     image_handle: usize,
 ) -> petroleum::common::Result<(usize, usize)> {
-    // Debug print: Starting file read
-    debug_print_str("File: Starting read_efi_file...\n");
-
     // Get the device handle from the LoadedImageProtocol
     let mut loaded_image: *mut EfiLoadedImageProtocol = ptr::null_mut();
-    debug_print_str("File: About to open LoadedImageProtocol...\n");
     let status = (bs.open_protocol)(
         image_handle,
         &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
@@ -97,33 +90,12 @@ pub fn read_efi_file(
         0,
         1, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
     );
-    debug_print_str("File: Opened LoadedImageProtocol.\n");
     if EfiStatus::from(status) != EfiStatus::Success {
-        debug_print_str("File: Failed to get LoadedImageProtocol.\n");
-        // Debug: print status
-        let status_str = match EfiStatus::from(status) {
-            EfiStatus::Success => "Success",
-            EfiStatus::NotFound => "NotFound",
-            EfiStatus::InvalidParameter => "InvalidParameter",
-            _ => "Other",
-        };
-        debug_print_str("File: Status: ");
-        debug_print_str(status_str);
-        debug_print_str("\n");
         return Err(BellowsError::ProtocolNotFound(
             "Failed to get LoadedImageProtocol.",
         ));
     }
-    debug_print_str("File: Success getting LoadedImageProtocol.\n");
-    let revision = unsafe { (*loaded_image).revision };
-    debug_print_str("File: LoadedImageProtocol revision: ");
-    debug_print_hex(revision as usize);
-    debug_print_str("\n");
     let device_handle = unsafe { (*loaded_image).device_handle };
-    debug_print_str("File: Got device_handle from LoadedImageProtocol. Handle: ");
-    // Debug: print device_handle as hex
-    debug_print_hex(device_handle);
-    debug_print_str("\n");
 
     // Get the SimpleFileSystem protocol from the device
     let mut fs_proto: *mut EfiSimpleFileSystem = ptr::null_mut();
@@ -136,22 +108,16 @@ pub fn read_efi_file(
         1,            // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
     );
     if EfiStatus::from(status) != EfiStatus::Success {
-        debug_print_str("File: Failed to get SimpleFileSystem protocol from device.\n");
         return Err(BellowsError::ProtocolNotFound(
             "Failed to get SimpleFileSystem protocol from device.",
         ));
     }
-    debug_print_str("File: Got SimpleFileSystem protocol from device.\n");
 
     let mut volume_file_handle: *mut EfiFile = ptr::null_mut();
     let status = unsafe { ((*fs_proto).open_volume)(fs_proto, &mut volume_file_handle) };
     let volume = match EfiStatus::from(status) {
-        EfiStatus::Success => {
-            debug_print_str("File: Opened volume.\n");
-            EfiFileWrapper::new(volume_file_handle)
-        }
+        EfiStatus::Success => EfiFileWrapper::new(volume_file_handle),
         _ => {
-            debug_print_str("File: Failed to open volume.\n");
             return Err(BellowsError::FileIo(
                 "Failed to open EFI SimpleFileSystem protocol volume.",
             ));
@@ -175,20 +141,16 @@ pub fn read_efi_file(
         )
     };
     if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
-        debug_print_str("File: Failed to get file info size.\n");
         return Err(BellowsError::FileIo("Failed to get file info size."));
     }
-    debug_print_str("File: Got file info size.\n");
 
     if file_info_buffer_size == 0 {
-        debug_print_str("File: File info size is 0.\n");
         return Err(BellowsError::FileIo("Failed to get file info size."));
     }
 
     // Use a page-sized buffer on the stack, which is safer for variable-sized info.
     let mut file_info_buffer = [0u8; 4096];
     if file_info_buffer_size > file_info_buffer.len() {
-        debug_print_str("File: File info buffer too large for fixed buffer.\n");
         return Err(BellowsError::FileIo("File info buffer too large."));
     }
 
@@ -201,10 +163,8 @@ pub fn read_efi_file(
         )
     };
     if EfiStatus::from(status) != EfiStatus::Success {
-        debug_print_str("File: Failed to get file info.\n");
         return Err(BellowsError::FileIo("Failed to get file info."));
     }
-    debug_print_str("File: Got file info.\n");
     // Safety:
     // The size of the buffer is checked against the required size.
     // The pointer is checked to be non-null and correctly aligned before dereferencing.
@@ -228,12 +188,10 @@ pub fn read_efi_file(
         )
     };
     if EfiStatus::from(status) != EfiStatus::Success {
-        debug_print_str("File: Failed to allocate pages.\n");
         return Err(BellowsError::AllocationFailed(
             "Failed to allocate pages for kernel file.",
         ));
     }
-    debug_print_str("File: Allocated pages.\n");
 
     let buf_ptr = phys_addr as *mut u8;
     let mut read_size = file_size as u64;
@@ -242,13 +200,9 @@ pub fn read_efi_file(
     if EfiStatus::from(status) != EfiStatus::Success || read_size as usize != file_size {
         // It's important to free the allocated pages on failure to avoid memory leaks.
         (bs.free_pages)(phys_addr, pages);
-        debug_print_str("File: Failed to read file.\n");
         return Err(BellowsError::FileIo(
             "Failed to read kernel file or read size mismatch.",
         ));
     }
-    debug_print_str("File: Read file.\n");
-
-    debug_print_str("File: Returning from read_efi_file.\n");
     Ok((phys_addr, file_size))
 }
