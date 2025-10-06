@@ -23,6 +23,27 @@ fn debug_print_str(s: &str) {
     }
 }
 
+/// Prints a usize as hex (simple, no alloc).
+fn debug_print_hex(value: usize) {
+    debug_print_str("0x");
+    let mut temp = value;
+    let mut digits = [0u8; 16];
+    let mut i = 0;
+    if temp == 0 {
+        debug_print_byte(b'0');
+        return;
+    }
+    while temp > 0 && i < 16 {
+        let digit = (temp % 16) as u8;
+        digits[i] = if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) };
+        temp /= 16;
+        i += 1;
+    }
+    for j in (0..i).rev() {
+        debug_print_byte(digits[j]);
+    }
+}
+
 /// Size of the heap we will allocate for `alloc` usage (bytes).
 const HEAP_SIZE: usize = 64 * 1024; // 64 KiB
 
@@ -42,30 +63,28 @@ fn try_allocate_pages(bs: &EfiBootServices, pages: usize, preferred_type: EfiMem
             EfiMemoryType::EfiConventionalMemory => debug_print_str("Conventional)...\n"),
             _ => debug_print_str("Other)...\n"),
         };
-        
-        let mut phys_addr_local: usize = 0;
-        let status: usize;
-        unsafe {
-            asm!(
-                "sub rsp, 40h",
-                "call rax",
-                "add rsp, 40h",
-                in("rdi") 0usize,
-                in("rsi") mem_type as usize,
-                in("rdx") pages.min(8),
-                inlateout("rcx") phys_addr_local => phys_addr_local,
-                in("rax") bs.allocate_pages,
-                lateout("rax") status,
-                clobber_abi("system"),
-            );
-        }
-        phys_addr = phys_addr_local;
-        debug_print_str("Heap: allocate_pages returned.\n");
 
-        // 即時検証: phys_addrがページ境界かチェック（Invalid read回避）
+        let mut phys_addr_local: usize = 0;
+        debug_print_str("Heap: Calling allocate_pages with pages=");
+        debug_print_hex(pages);
+        debug_print_str(", mem_type=");
+        debug_print_hex(mem_type as usize);
+        debug_print_str("\n");
+        let status = (bs.allocate_pages)(
+            0usize,  // AllocateAnyPages
+            mem_type,
+            pages,   // No .min(8)
+            &mut phys_addr_local,
+        );
+        phys_addr = phys_addr_local;
+        debug_print_str("Heap: allocate_pages returned, phys_addr=");
+        debug_print_hex(phys_addr);
+        debug_print_str("\n");
+
+        // Immediate validation: check if phys_addr is page-aligned (avoid invalid reads)
         if phys_addr != 0 && phys_addr % 4096 != 0 {
             debug_print_str("Heap: WARNING: phys_addr not page-aligned!\n");
-            (bs.free_pages)(phys_addr, pages);  // 即時解放
+            let _ = (bs.free_pages)(phys_addr, pages);  // Ignore status on free
             phys_addr = 0;
             continue;
         }

@@ -46,30 +46,19 @@ pub fn exit_boot_services_and_jump(
         // Allocate buffer with some extra space
         let alloc_size = map_size.saturating_add(4096); // Add some buffer for potential growth
         let new_map_pages = alloc_size.div_ceil(4096);
-        let mut new_map_phys_addr = 0;
+        let mut new_map_phys_addr: usize = 0;
 
-        let mut new_map_phys_addr_local: usize = 0;
-        let alloc_status: usize;
-        unsafe {
-            asm!(
-                "sub rsp, 40h",
-                "call rax",
-                "add rsp, 40h",
-                in("rdi") 0usize,
-                in("rsi") EfiMemoryType::EfiLoaderData as usize,
-                in("rdx") new_map_pages.min(8),
-                inlateout("rcx") new_map_phys_addr_local => new_map_phys_addr_local,
-                in("rax") bs.allocate_pages,
-                lateout("rax") alloc_status,
-                clobber_abi("system"),
-            );
-        }
-        new_map_phys_addr = new_map_phys_addr_local;
+        let alloc_status = (bs.allocate_pages)(
+            0usize,  // AllocateAnyPages
+            EfiMemoryType::EfiLoaderData,
+            new_map_pages,  // No .min(8)
+            &mut new_map_phys_addr,
+        );
 
         if EfiStatus::from(alloc_status) != EfiStatus::Success {
             // If we had a previous allocation, free it before returning an error
             if map_phys_addr != 0 {
-                (bs.free_pages)(map_phys_addr, map_pages);
+                let _ = (bs.free_pages)(map_phys_addr, map_pages);  // Ignore status
             }
             println!("Error: Failed to allocate memory map buffer: {:?}", EfiStatus::from(alloc_status));
             return Err(BellowsError::AllocationFailed("Failed to allocate memory map buffer."));
@@ -77,7 +66,7 @@ pub fn exit_boot_services_and_jump(
 
         // Free previous allocation if it exists
         if map_phys_addr != 0 {
-            (bs.free_pages)(map_phys_addr, map_pages);
+            let _ = (bs.free_pages)(map_phys_addr, map_pages);  // Ignore status
         }
 
         map_phys_addr = new_map_phys_addr;
