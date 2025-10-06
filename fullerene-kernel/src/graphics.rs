@@ -10,8 +10,48 @@ use x86_64::instructions::port::Port;
 use crate::font::FONT_8X8;
 
 // A simple 8x8 PC screen font (Code Page 437).
-// This is a placeholder. A more complete font would be needed for full ASCII/Unicode support.
 static FONT: [[u8; 8]; 128] = FONT_8X8;
+
+fn draw_char(fb: &impl FramebufferLike, c: char, x: u32, y: u32) {
+    let char_idx = (c as u8) as usize;
+    if !c.is_ascii() || char_idx >= 128 {
+        return;
+    }
+    let font_char = &FONT[char_idx];
+    for (row, &byte) in font_char.iter().enumerate() {
+        for col in 0..8 {
+            let color = if (byte >> (7 - col)) & 1 == 1 {
+                fb.get_fg_color()
+            } else {
+                fb.get_bg_color()
+            };
+            fb.put_pixel(x + col as u32, y + row as u32, color);
+        }
+    }
+}
+
+fn new_line(fb: &mut impl FramebufferLike) {
+    let (_, mut y_pos) = fb.get_position();
+    y_pos += 8; // Font height
+    let mut x_pos = 0;
+    if y_pos >= fb.get_height() {
+        fb.scroll_up();
+        y_pos -= 8;
+    }
+    fb.set_position(x_pos, y_pos);
+}
+
+trait FramebufferLike {
+    fn put_pixel(&self, x: u32, y: u32, color: u32);
+    fn clear_screen(&self);
+    fn get_width(&self) -> u32;
+    fn get_height(&self) -> u32;
+    fn get_fg_color(&self) -> u32;
+    fn get_bg_color(&self) -> u32;
+    fn set_position(&mut self, x: u32, y: u32);
+    fn get_position(&self) -> (u32, u32);
+    fn scroll_up(&self);
+}
 
 #[cfg(target_os = "uefi")]
 struct FramebufferWriter {
@@ -57,6 +97,32 @@ impl FramebufferWriter {
         }
     }
 
+    fn scroll_up(&self) {
+        let bytes_per_pixel = self.bytes_per_pixel();
+        let bytes_per_line = self.framebuffer.stride * bytes_per_pixel;
+        let shift_bytes = 8u64 * bytes_per_line as u64;
+        let total_bytes = self.framebuffer.height as u64 * bytes_per_line as u64;
+        let fb_ptr = self.framebuffer.address as *mut u8;
+        unsafe {
+            core::ptr::copy(
+                fb_ptr.add(shift_bytes as usize),
+                fb_ptr,
+                (total_bytes - shift_bytes) as usize,
+            );
+        }
+        // Clear the last 8 lines
+        let last_lines_offset = (self.framebuffer.height - 8) * self.framebuffer.stride * bytes_per_pixel;
+        let clear_ptr = (self.framebuffer.address + last_lines_offset as u64) as *mut u32;
+        let clear_num_u32 = 8 * self.framebuffer.stride as usize;
+        unsafe {
+            let clear_slice = core::slice::from_raw_parts_mut(clear_ptr, clear_num_u32);
+            clear_slice.fill(self.bg_color);
+        }
+    }
+}
+
+#[cfg(target_os = "uefi")]
+impl FramebufferLike for FramebufferWriter {
     fn put_pixel(&self, x: u32, y: u32, color: u32) {
         if x >= self.framebuffer.width || y >= self.framebuffer.height {
             return;
@@ -65,9 +131,6 @@ impl FramebufferWriter {
         let offset = (y * self.framebuffer.stride + x) * bytes_per_pixel;
         let fb_ptr = self.framebuffer.address as *mut u8;
         unsafe {
-            // Assuming a BGRx or RGBx 32-bit format.
-            // The color is ARGB, so we might need to swizzle.
-            // For now, we write it directly.
             let pixel_ptr = fb_ptr.add(offset as usize) as *mut u32;
             *pixel_ptr = color;
         }
@@ -85,66 +148,56 @@ impl FramebufferWriter {
         }
     }
 
-    pub fn new_line(&mut self) {
-        self.y_pos += 8; // Font height
-        self.x_pos = 0;
-        if self.y_pos >= self.framebuffer.height {
-            let bytes_per_pixel = self.bytes_per_pixel();
-            let bytes_per_line = self.framebuffer.stride * bytes_per_pixel;
-            let shift_bytes = 8u64 * bytes_per_line as u64;
-            let total_bytes = self.framebuffer.height as u64 * bytes_per_line as u64;
-            let fb_ptr = self.framebuffer.address as *mut u8;
-            unsafe {
-                core::ptr::copy(
-                    fb_ptr.add(shift_bytes as usize),
-                    fb_ptr,
-                    (total_bytes - shift_bytes) as usize,
-                );
-            }
-            // Clear the last 8 lines
-            let last_lines_offset = (self.framebuffer.height - 8) * self.framebuffer.stride * bytes_per_pixel;
-            let clear_ptr = (self.framebuffer.address + last_lines_offset as u64) as *mut u32;
-            let clear_num_u32 = 8 * self.framebuffer.stride as usize;
-            unsafe {
-                let clear_slice = core::slice::from_raw_parts_mut(clear_ptr, clear_num_u32);
-                clear_slice.fill(self.bg_color);
-            }
-            self.y_pos -= 8;
-        }
+    fn get_width(&self) -> u32 {
+        self.framebuffer.width
     }
 
-    fn draw_char(&self, c: char, x: u32, y: u32) {
-        let char_idx = (c as u8) as usize;
-        // The FONT is now a 2D array [[u8; 8]; 128], so we access it directly.
-        // We also need to ensure char_idx is within bounds for the 128 glyphs.
-        if !c.is_ascii() || char_idx >= 128 {
-            return;
-        }
-        let font_char = &FONT[char_idx];
-        for (row, &byte) in font_char.iter().enumerate() {
-            for col in 0..8 {
-                let color = if (byte >> (7 - col)) & 1 == 1 {
-                    self.fg_color
-                } else {
-                    self.bg_color
-                };
-                self.put_pixel(x + col as u32, y + row as u32, color);
-            }
-        }
+    fn get_height(&self) -> u32 {
+        self.framebuffer.height
+    }
+
+    fn get_fg_color(&self) -> u32 {
+        self.fg_color
+    }
+
+    fn get_bg_color(&self) -> u32 {
+        self.bg_color
+    }
+
+    fn set_position(&mut self, x: u32, y: u32) {
+        self.x_pos = x;
+        self.y_pos = y;
+    }
+
+    fn get_position(&self) -> (u32, u32) {
+        (self.x_pos, self.y_pos)
+    }
+
+    fn scroll_up(&self) {
+        self.scroll_up();
     }
 }
 
 #[cfg(target_os = "uefi")]
 impl core::fmt::Write for FramebufferWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let (mut x_pos, mut y_pos) = self.get_position();
         for c in s.chars() {
             if c == '\n' {
-                self.new_line();
+                new_line(self);
+                let (new_x, new_y) = self.get_position();
+                x_pos = new_x;
+                y_pos = new_y;
             } else {
-                self.draw_char(c, self.x_pos, self.y_pos);
-                self.x_pos += 8;
-                if self.x_pos + 8 > self.framebuffer.width {
-                    self.new_line();
+                draw_char(self, c, x_pos, y_pos);
+                x_pos += 8;
+                if x_pos + 8 > self.get_width() {
+                    new_line(self);
+                    let (new_x, new_y) = self.get_position();
+                    x_pos = new_x;
+                    y_pos = new_y;
+                } else {
+                    self.set_position(x_pos, y_pos);
                 }
             }
         }
@@ -178,14 +231,39 @@ impl VgaWriter {
         }
     }
 
-    fn put_pixel(&self, x: u32, y: u32, color: u8) {
+    fn scroll_up(&self) {
+        let bytes_per_line = self.width;
+        let shift_bytes = 8u64 * bytes_per_line as u64;
+        let total_bytes = self.height as u64 * bytes_per_line as u64;
+        let fb_ptr = self.address as *mut u8;
+        unsafe {
+            core::ptr::copy(
+                fb_ptr.add(shift_bytes as usize),
+                fb_ptr,
+                (total_bytes - shift_bytes) as usize,
+            );
+        }
+        // Clear last 8 lines
+        let clear_offset = (self.height - 8) * self.width;
+        let clear_size = 8 * self.width as usize;
+        let fb_ptr = self.address as *mut u8;
+        unsafe {
+            let clear_ptr = fb_ptr.add(clear_offset as usize);
+            core::ptr::write_bytes(clear_ptr, self.bg_color, clear_size);
+        }
+    }
+}
+
+#[cfg(not(target_os = "uefi"))]
+impl FramebufferLike for VgaWriter {
+    fn put_pixel(&self, x: u32, y: u32, color: u32) {
         if x >= self.width || y >= self.height {
             return;
         }
         let offset = (y * self.width + x) as usize;
         unsafe {
             let fb_ptr = self.address as *mut u8;
-            *fb_ptr.add(offset) = color;
+            *fb_ptr.add(offset) = color as u8;
         }
     }
 
@@ -196,63 +274,56 @@ impl VgaWriter {
         }
     }
 
-    pub fn new_line(&mut self) {
-        self.y_pos += 8; // Font height
-        self.x_pos = 0;
-        if self.y_pos >= self.height {
-            let bytes_per_line = self.width;
-            let shift_bytes = 8u64 * bytes_per_line as u64;
-            let total_bytes = self.height as u64 * bytes_per_line as u64;
-            let fb_ptr = self.address as *mut u8;
-            unsafe {
-                core::ptr::copy(
-                    fb_ptr.add(shift_bytes as usize),
-                    fb_ptr,
-                    (total_bytes - shift_bytes) as usize,
-                );
-            }
-            // Clear last 8 lines
-            let clear_offset = (self.height - 8) * self.width;
-            let clear_size = 8 * self.width as usize;
-            let fb_ptr = self.address as *mut u8;
-            unsafe {
-                let clear_ptr = fb_ptr.add(clear_offset as usize);
-                core::ptr::write_bytes(clear_ptr, self.bg_color, clear_size);
-            }
-            self.y_pos -= 8;
-        }
+    fn get_width(&self) -> u32 {
+        self.width
     }
 
-    fn draw_char(&self, c: char, x: u32, y: u32) {
-        let char_idx = (c as u8) as usize;
-        if !c.is_ascii() || char_idx >= 128 {
-            return;
-        }
-        let font_char = &FONT[char_idx];
-        for (row, &byte) in font_char.iter().enumerate() {
-            for col in 0..8 {
-                let color = if (byte >> (7 - col)) & 1 == 1 {
-                    self.fg_color
-                } else {
-                    self.bg_color
-                };
-                self.put_pixel(x + col as u32, y + row as u32, color);
-            }
-        }
+    fn get_height(&self) -> u32 {
+        self.height
+    }
+
+    fn get_fg_color(&self) -> u32 {
+        self.fg_color as u32
+    }
+
+    fn get_bg_color(&self) -> u32 {
+        self.bg_color as u32
+    }
+
+    fn set_position(&mut self, x: u32, y: u32) {
+        self.x_pos = x;
+        self.y_pos = y;
+    }
+
+    fn get_position(&self) -> (u32, u32) {
+        (self.x_pos, self.y_pos)
+    }
+
+    fn scroll_up(&self) {
+        self.scroll_up();
     }
 }
 
 #[cfg(not(target_os = "uefi"))]
 impl core::fmt::Write for VgaWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let (mut x_pos, mut y_pos) = self.get_position();
         for c in s.chars() {
             if c == '\n' {
-                self.new_line();
+                new_line(self);
+                let (new_x, new_y) = self.get_position();
+                x_pos = new_x;
+                y_pos = new_y;
             } else {
-                self.draw_char(c, self.x_pos, self.y_pos);
-                self.x_pos += 8;
-                if self.x_pos + 8 > self.width {
-                    self.new_line();
+                draw_char(self, c, x_pos, y_pos);
+                x_pos += 8;
+                if x_pos + 8 > self.get_width() {
+                    new_line(self);
+                    let (new_x, new_y) = self.get_position();
+                    x_pos = new_x;
+                    y_pos = new_y;
+                } else {
+                    self.set_position(x_pos, y_pos);
                 }
             }
         }

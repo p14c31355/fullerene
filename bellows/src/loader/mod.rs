@@ -6,6 +6,7 @@ use core::ptr;
 use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
 use petroleum::println; // Added for debugging
 
+pub mod debug;
 pub mod file;
 pub mod heap;
 pub mod pe;
