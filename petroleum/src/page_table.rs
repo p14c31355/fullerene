@@ -16,19 +16,19 @@ pub struct EfiMemoryDescriptor {
 }
 
 /// A FrameAllocator that returns usable frames from the bootloader's memory map.
-pub struct BootInfoFrameAllocator {
-    memory_map: &'static [EfiMemoryDescriptor],
+pub struct BootInfoFrameAllocator<'a> {
+    memory_map: &'a [EfiMemoryDescriptor],
     next: usize,
 }
 
-impl BootInfoFrameAllocator {
+impl<'a> BootInfoFrameAllocator<'a> {
     /// Create a FrameAllocator from the passed memory map.
     ///
-    /// This function is unsafe because the caller must guarantee that the passed
+    /// This function is unsafe because the caller must guarantee that the
     /// memory map is valid. The main requirement is that all frames that are marked
     /// as `USABLE` in it are really unused.
     pub unsafe fn init(
-        memory_map: &'static [EfiMemoryDescriptor],
+        memory_map: &'a [EfiMemoryDescriptor],
     ) -> Self {
         BootInfoFrameAllocator {
             memory_map,
@@ -37,7 +37,7 @@ impl BootInfoFrameAllocator {
     }
 }
 
-unsafe impl FrameAllocator<Size4KiB> for BootInfoFrameAllocator {
+unsafe impl<'a> FrameAllocator<Size4KiB> for BootInfoFrameAllocator<'a> {
     fn allocate_frame(&mut self) -> Option<PhysFrame> {
         const FRAME_SIZE: u64 = 4096; // 4 KiB
 

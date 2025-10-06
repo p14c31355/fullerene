@@ -1,6 +1,9 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
 use x86_64::{PhysAddr, VirtAddr};
+use spin::Mutex;
+use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
+use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PhysFrame, PageTableFlags as Flags, Size4KiB};
 
 pub const HEAP_SIZE: usize = 100 * 1024; // 100 KiB
 
@@ -156,6 +159,9 @@ unsafe impl GlobalAlloc for Locked<Heap> {
 #[global_allocator]
 pub static ALLOCATOR: Locked<Heap> = Locked::new(Heap::empty());
 
+static MAPPER: spin::Once<Mutex<OffsetPageTable<'static>>> = spin::Once::new();
+static FRAME_ALLOCATOR: spin::Once<Mutex<BootInfoFrameAllocator<'static>>> = spin::Once::new();
+
 pub fn init(heap_start: VirtAddr, heap_size: usize) {
     unsafe {
         let heap_start = heap_start.as_mut_ptr::<u8>();
@@ -163,8 +169,38 @@ pub fn init(heap_start: VirtAddr, heap_size: usize) {
     }
 }
 
-// Allocate heap from memory map (simplified: assume identity mapping for now)
+pub fn init_page_table(physical_memory_offset: VirtAddr) {
+    let mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
+    MAPPER.call_once(|| Mutex::new(mapper));
+}
+
+pub fn init_frame_allocator(memory_map: &'static [petroleum::page_table::EfiMemoryDescriptor]) {
+    let allocator = unsafe { BootInfoFrameAllocator::init(memory_map) };
+    FRAME_ALLOCATOR.call_once(|| Mutex::new(allocator));
+}
+
+// Allocate heap from memory map (proper page table mapping)
 pub fn allocate_heap_from_map(phys_start: PhysAddr, _size: usize) -> VirtAddr {
-    // Simplified: assume identity mapping (implement proper page table later)
+    let mut mapper = MAPPER.get().unwrap().lock();
+    let mut frame_allocator = FRAME_ALLOCATOR.get().unwrap().lock();
+
+    let start_addr = phys_start;
+    let end_addr = start_addr + _size as u64;
+
+    let start_page = Page::<Size4KiB>::containing_address(VirtAddr::new(start_addr.as_u64()));
+    let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(end_addr.as_u64() - 1));
+
+    for page in Page::<Size4KiB>::range_inclusive(start_page, end_page) {
+        let page_start = page.start_address().as_u64();
+        let offset = page_start - start_addr.as_u64();
+        let frame_start = start_addr + offset;
+        let frame = PhysFrame::<Size4KiB>::containing_address(frame_start);
+
+        let flags = Flags::PRESENT | Flags::WRITABLE;
+        unsafe {
+            mapper.map_to(page, frame, flags, &mut *frame_allocator).unwrap().flush();
+        }
+    }
+
     VirtAddr::new(phys_start.as_u64())
 }

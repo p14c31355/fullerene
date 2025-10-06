@@ -16,25 +16,21 @@ extern crate alloc;
 use core::panic::PanicInfo;
 
 use core::ffi::c_void;
+use spin::Once;
 use petroleum::common::{
     EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
     FullereneFramebufferConfig,
 };
+use petroleum::page_table::EfiMemoryDescriptor;
+use x86_64::VirtAddr;
 use x86_64::instructions::hlt;
+
+static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
 
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     petroleum::handle_panic(info);
-}
-
-#[repr(C)]
-pub struct EfiMemoryDescriptor {
-    pub type_: EfiMemoryType,
-    pub physical_start: u64,
-    pub virtual_start: u64,
-    pub number_of_pages: u64,
-    pub attribute: u64,
 }
 
 #[cfg(target_os = "uefi")]
@@ -120,6 +116,11 @@ fn init_common(memory_map: *mut c_void, memory_map_size: usize) {
             memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>(),
         )
     };
+    MEMORY_MAP.call_once(|| unsafe { &*(descriptors as *const _) });
+
+    heap::init_page_table(VirtAddr::new(0));
+    heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
+
     let mut loader_data_start = None;
     for desc in descriptors {
         if desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0 {
@@ -128,13 +129,8 @@ fn init_common(memory_map: *mut c_void, memory_map_size: usize) {
         }
     }
     let loader_data_start = loader_data_start.expect("No LoaderData region found in memory map");
-    // Find virtual_start for the LoaderData region
-    let virtual_start = descriptors
-        .iter()
-        .find(|desc| desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0)
-        .map(|desc| desc.virtual_start)
-        .unwrap_or(loader_data_start.as_u64());
-    let heap_start = x86_64::VirtAddr::new(virtual_start);
+
+    let heap_start = heap::allocate_heap_from_map(loader_data_start, heap::HEAP_SIZE);
 
     let heap_start = gdt::init(heap_start); // Initialize GDT with heap start, get adjusted heap start
     interrupts::init(); // Initialize IDT
