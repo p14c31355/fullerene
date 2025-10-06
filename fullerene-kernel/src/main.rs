@@ -134,12 +134,14 @@ fn init_common() {
 
     // Static heap for BIOS
     static mut HEAP: [MaybeUninit<u8>; heap::HEAP_SIZE] = [MaybeUninit::uninit(); heap::HEAP_SIZE];
+    let heap_start_addr: x86_64::VirtAddr;
     unsafe {
-        let heap_start = &raw const HEAP as *const MaybeUninit<u8> as *mut u8;
-        heap::ALLOCATOR.lock().init(heap_start, heap::HEAP_SIZE);
+        let heap_start_ptr = HEAP.as_mut_ptr();
+        heap_start_addr = x86_64::VirtAddr::from_ptr(heap_start_ptr);
+        heap::ALLOCATOR.lock().init(heap_start_ptr, heap::HEAP_SIZE);
     }
 
-    gdt::init(VirtAddr::new(0)); // Dummy heap start
+    gdt::init(heap_start_addr); // Pass the actual heap start address
     interrupts::init(); // Initialize IDT
     // Heap already initialized
     serial::serial_init(); // Initialize serial early for debugging
