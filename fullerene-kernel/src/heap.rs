@@ -3,7 +3,8 @@ use core::ptr;
 use x86_64::{PhysAddr, VirtAddr};
 use spin::Mutex;
 use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
-use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PhysFrame, PageTableFlags as Flags, Size4KiB};
+use x86_64::structures::paging::{FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PhysFrame, PageTableFlags as Flags, Size4KiB};
+use x86_64::registers::control::Cr3Flags;
 
 pub const HEAP_SIZE: usize = 100 * 1024; // 100 KiB
 
@@ -161,6 +162,7 @@ pub static ALLOCATOR: Locked<Heap> = Locked::new(Heap::empty());
 
 static MAPPER: spin::Once<Mutex<OffsetPageTable<'static>>> = spin::Once::new();
 static FRAME_ALLOCATOR: spin::Once<Mutex<BootInfoFrameAllocator<'static>>> = spin::Once::new();
+static MEMORY_MAP: spin::Once<&'static [petroleum::page_table::EfiMemoryDescriptor]> = spin::Once::new();
 
 pub fn init(heap_start: VirtAddr, heap_size: usize) {
     unsafe {
@@ -177,30 +179,69 @@ pub fn init_page_table(physical_memory_offset: VirtAddr) {
 pub fn init_frame_allocator(memory_map: &'static [petroleum::page_table::EfiMemoryDescriptor]) {
     let allocator = unsafe { BootInfoFrameAllocator::init(memory_map) };
     FRAME_ALLOCATOR.call_once(|| Mutex::new(allocator));
+    MEMORY_MAP.call_once(|| memory_map);
 }
 
-// Allocate heap from memory map (proper page table mapping)
-pub fn allocate_heap_from_map(phys_start: PhysAddr, _size: usize) -> VirtAddr {
-    let mut mapper = MAPPER.get().unwrap().lock();
+pub fn reinit_page_table() {
+    use x86_64::structures::paging::{PageTable, PageTableFlags as Flags};
+    use x86_64::registers::control::Cr3;
+
     let mut frame_allocator = FRAME_ALLOCATOR.get().unwrap().lock();
 
-    let start_addr = phys_start;
-    let end_addr = start_addr + _size as u64;
+    // Allocate a new level 4 page table
+    let level_4_frame = frame_allocator.allocate_frame().expect("Failed to allocate level 4 frame");
+    let level_4_table = unsafe { &mut *(level_4_frame.start_address().as_u64() as *mut PageTable) };
 
-    let start_page = Page::<Size4KiB>::containing_address(VirtAddr::new(start_addr.as_u64()));
-    let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(end_addr.as_u64() - 1));
+    // Zero the table
+    level_4_table.zero();
 
-    for page in Page::<Size4KiB>::range_inclusive(start_page, end_page) {
-        let page_start = page.start_address().as_u64();
-        let offset = page_start - start_addr.as_u64();
-        let frame_start = start_addr + offset;
-        let frame = PhysFrame::<Size4KiB>::containing_address(frame_start);
+    // Set up identity mapping for the first 4 GiB
+    for i in 0..512 {
+        let page_table_3_frame = frame_allocator.allocate_frame().expect("Failed to allocate level 3 frame");
+        let page_table_3 = unsafe { &mut *(page_table_3_frame.start_address().as_u64() as *mut PageTable) };
+        page_table_3.zero();
 
-        let flags = Flags::PRESENT | Flags::WRITABLE;
-        unsafe {
-            mapper.map_to(page, frame, flags, &mut *frame_allocator).unwrap().flush();
+        for j in 0..512 {
+            let page_table_2_frame = frame_allocator.allocate_frame().expect("Failed to allocate level 2 frame");
+            let page_table_2 = unsafe { &mut *(page_table_2_frame.start_address().as_u64() as *mut PageTable) };
+            page_table_2.zero();
+
+            for k in 0..512 {
+                let page_table_1_frame = frame_allocator.allocate_frame().expect("Failed to allocate level 1 frame");
+                let page_table_1 = unsafe { &mut *(page_table_1_frame.start_address().as_u64() as *mut PageTable) };
+                page_table_1.zero();
+
+                // Identity map 2 MiB pages
+                for l in 0..512 {
+                    let addr = ((i as u64) << 39) | ((j as u64) << 30) | ((k as u64) << 21) | ((l as u64) << 12);
+                    page_table_1[l].set_addr(PhysAddr::new(addr), Flags::PRESENT | Flags::WRITABLE);
+                }
+
+                page_table_2[k].set_addr(page_table_1_frame.start_address(), Flags::PRESENT | Flags::WRITABLE);
+            }
+
+            page_table_3[j].set_addr(page_table_2_frame.start_address(), Flags::PRESENT | Flags::WRITABLE);
         }
+
+        level_4_table[i].set_addr(page_table_3_frame.start_address(), Flags::PRESENT | Flags::WRITABLE);
     }
 
+    // Set the new CR3
+    unsafe { Cr3::write(level_4_frame, Cr3Flags::empty()) };
+
+    // Reinitialize the mapper
+    let mapper = unsafe { petroleum::page_table::init(VirtAddr::new(0)) };
+    *MAPPER.get().unwrap().lock() = mapper;
+}
+
+// Allocate heap from memory map (find virtual address from physical)
+pub fn allocate_heap_from_map(phys_start: PhysAddr, _size: usize) -> VirtAddr {
+    let memory_map = *MEMORY_MAP.get().unwrap();
+    for desc in memory_map {
+        if desc.physical_start == phys_start.as_u64() {
+            return VirtAddr::new(desc.virtual_start);
+        }
+    }
+    // Fallback to identity mapping
     VirtAddr::new(phys_start.as_u64())
 }

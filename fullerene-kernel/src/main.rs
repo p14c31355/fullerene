@@ -55,6 +55,17 @@ pub extern "efiapi" fn efi_main(
 
     serial::serial_log("Kernel: efi_main entered (via serial_log).\n");
 
+    // Reinitialize page table after exit boot services
+    let descriptors = unsafe {
+        core::slice::from_raw_parts(
+            _memory_map as *const EfiMemoryDescriptor,
+            _memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>(),
+        )
+    };
+    MEMORY_MAP.call_once(|| unsafe { &*(descriptors as *const _) });
+    heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
+    heap::reinit_page_table();
+
     // Common initialization for both UEFI and BIOS
     init_common(_memory_map, _memory_map_size);
 
@@ -108,18 +119,8 @@ pub extern "efiapi" fn efi_main(
 }
 
 #[cfg(target_os = "uefi")]
-fn init_common(memory_map: *mut c_void, memory_map_size: usize) {
-    // Parse memory map to find LoaderData region for heap
-    let descriptors = unsafe {
-        core::slice::from_raw_parts(
-            memory_map as *const EfiMemoryDescriptor,
-            memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>(),
-        )
-    };
-    MEMORY_MAP.call_once(|| unsafe { &*(descriptors as *const _) });
-
-    heap::init_page_table(VirtAddr::new(0));
-    heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
+fn init_common(_memory_map: *mut c_void, _memory_map_size: usize) {
+    let descriptors = *MEMORY_MAP.get().unwrap();
 
     let mut loader_data_start = None;
     for desc in descriptors {
