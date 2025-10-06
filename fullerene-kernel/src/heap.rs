@@ -66,13 +66,7 @@ impl Heap {
                 let node = &mut **current;
                 let alloc_start = align_up(node.start_addr(), align);
                 let alloc_end = alloc_start + size;
-
-                // Check if padding is too small to create a free block
                 let padding = alloc_start - node.start_addr();
-                if padding > 0 && padding < core::mem::size_of::<ListNode>() {
-                    current = &mut node.next;
-                    continue;
-                }
 
                 if alloc_end <= node.end_addr() {
                     // Found a suitable block

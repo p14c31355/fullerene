@@ -18,7 +18,8 @@ pub struct EfiMemoryDescriptor {
 /// A FrameAllocator that returns usable frames from the bootloader's memory map.
 pub struct BootInfoFrameAllocator<'a> {
     memory_map: &'a [EfiMemoryDescriptor],
-    next: usize,
+    next_descriptor: usize,
+    next_frame_offset: u64,
 }
 
 impl<'a> BootInfoFrameAllocator<'a> {
@@ -32,7 +33,8 @@ impl<'a> BootInfoFrameAllocator<'a> {
     ) -> Self {
         BootInfoFrameAllocator {
             memory_map,
-            next: 0,
+            next_descriptor: 0,
+            next_frame_offset: 0,
         }
     }
 }
@@ -41,24 +43,22 @@ unsafe impl<'a> FrameAllocator<Size4KiB> for BootInfoFrameAllocator<'a> {
     fn allocate_frame(&mut self) -> Option<PhysFrame> {
         const FRAME_SIZE: u64 = 4096; // 4 KiB
 
-        for descriptor in self.memory_map.iter().skip(self.next) {
+        while self.next_descriptor < self.memory_map.len() {
+            let descriptor = &self.memory_map[self.next_descriptor];
             if descriptor.type_ == crate::common::EfiMemoryType::EfiConventionalMemory
                 && descriptor.number_of_pages > 0
             {
-                let start_addr = PhysAddr::new(descriptor.physical_start);
-                let end_addr = start_addr + (descriptor.number_of_pages * FRAME_SIZE);
-
-                // Find the next available frame in this region
-                let mut current_addr = start_addr;
-                while current_addr < end_addr {
-                    if let Ok(frame) = PhysFrame::<Size4KiB>::from_start_address(current_addr) {
-                        self.next += 1;
+                while self.next_frame_offset < descriptor.number_of_pages {
+                    let frame_addr = PhysAddr::new(descriptor.physical_start + self.next_frame_offset * FRAME_SIZE);
+                    if let Ok(frame) = PhysFrame::<Size4KiB>::from_start_address(frame_addr) {
+                        self.next_frame_offset += 1;
                         return Some(frame);
                     }
-                    current_addr += FRAME_SIZE;
+                    self.next_frame_offset += 1;
                 }
             }
-            self.next += 1;
+            self.next_descriptor += 1;
+            self.next_frame_offset = 0;
         }
 
         None // No more usable frames
