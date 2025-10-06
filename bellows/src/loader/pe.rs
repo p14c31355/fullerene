@@ -23,6 +23,27 @@ fn debug_print_str(s: &str) {
     }
 }
 
+/// Prints a usize as hex (simple, no alloc).
+fn debug_print_hex(value: usize) {
+    debug_print_str("0x");
+    let mut temp = value;
+    let mut digits = [0u8; 16];
+    let mut i = 0;
+    if temp == 0 {
+        debug_print_byte(b'0');
+        return;
+    }
+    while temp > 0 && i < 16 {
+        let digit = (temp % 16) as u8;
+        digits[i] = if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) };
+        temp /= 16;
+        i += 1;
+    }
+    for j in (0..i).rev() {
+        debug_print_byte(digits[j]);
+    }
+}
+
 #[repr(C, packed)]
 struct ImageDosHeader {
     e_magic: u16,
@@ -425,7 +446,9 @@ pub fn load_efi_image(
     }
 
     // Debug print just before transmuting to function pointer
-    debug_print_str(&format!("Bellows: Transmuting entry point at {:#x}\n", entry_point_addr));
+    debug_print_str("PE: EFI image loaded. Entry: ");
+    debug_print_hex(entry_point_addr);
+    debug_print_str("\n");
 
     let entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> ! =
         unsafe { mem::transmute(entry_point_addr) };

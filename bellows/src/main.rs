@@ -103,6 +103,20 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     debug_print_str("Bellows: Kernel file loaded.\n");
     petroleum::serial::_print(format_args!("Kernel file loaded. Size: {}\n", efi_image_size));
 
+    // NOW init heap after successful file alloc (proof of free memory)
+    petroleum::serial::_print(format_args!("Attempting late heap init after file read...\n"));
+    match init_heap(bs) {
+        Ok(()) => {
+            petroleum::serial::_print(format_args!("Late heap initialized successfully.\n"));
+            debug_print_str("Bellows: Late heap OK.\n");
+        }
+        Err(e) => {
+            petroleum::serial::_print(format_args!("Late heap failed (OK for minimal boot): {:?}\n", e));
+            debug_print_str("Bellows: Late heap skipped.\n");
+            // Continue without heap; use fixed buffers in PE loader
+        }
+    }
+
     petroleum::serial::_print(format_args!("Attempting to load EFI image...\n"));
 
     // Load the kernel and get its entry point.

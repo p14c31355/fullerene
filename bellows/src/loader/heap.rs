@@ -54,7 +54,8 @@ static ALLOCATOR: LockedHeap = LockedHeap::empty();
 /// Tries to allocate pages with multiple strategies and memory types.
 fn try_allocate_pages(bs: &EfiBootServices, pages: usize, preferred_type: EfiMemoryType) -> Result<usize, BellowsError> {
     let mut phys_addr: usize = 0;
-    let types_to_try = [preferred_type, EfiMemoryType::EfiConventionalMemory];
+    // Swap order: Try Conventional first, then LoaderData
+    let types_to_try = [EfiMemoryType::EfiConventionalMemory, preferred_type];
 
     for mem_type in types_to_try {
         debug_print_str("Heap: About to call allocate_pages (type AnyPages, mem ");
@@ -70,15 +71,21 @@ fn try_allocate_pages(bs: &EfiBootServices, pages: usize, preferred_type: EfiMem
         debug_print_str(", mem_type=");
         debug_print_hex(mem_type as usize);
         debug_print_str("\n");
+        debug_print_str("Heap: Entering allocate_pages call...\n");
+        // Use AllocateMaxAddress (0x80000000) for high mem preference
+        let alloc_type = 0x80000000usize;  // Instead of 0
         let status = (bs.allocate_pages)(
-            0usize,  // AllocateAnyPages
+            alloc_type,
             mem_type,
-            pages,   // No .min(8)
+            pages,   // Start with 1 for testing
             &mut phys_addr_local,
         );
+        debug_print_str("Heap: Exited allocate_pages call.\n");  // Marker after call
         phys_addr = phys_addr_local;
         debug_print_str("Heap: allocate_pages returned, phys_addr=");
         debug_print_hex(phys_addr);
+        debug_print_str(", raw_status=0x");
+        debug_print_hex(status);  // Print raw status as hex
         debug_print_str("\n");
 
         // Immediate validation: check if phys_addr is page-aligned (avoid invalid reads)
@@ -111,8 +118,8 @@ fn try_allocate_pages(bs: &EfiBootServices, pages: usize, preferred_type: EfiMem
 
 pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
     debug_print_str("Heap: Allocating pages for heap...\n");
-    let heap_pages = 8; // Test with 8 pages (32 KiB) to avoid allocation issues
-    debug_print_str("Heap: Requesting 8 pages (test).\n");
+    let heap_pages = 1; // Minimal test: 1 page (4 KiB)
+    debug_print_str("Heap: Requesting 1 page (minimal test).\n");
     let heap_phys = try_allocate_pages(bs, heap_pages, EfiMemoryType::EfiLoaderData)?;  // 固定
     // アライメント検証強化
     if heap_phys % 4096 != 0 {

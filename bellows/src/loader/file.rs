@@ -27,8 +27,46 @@ fn debug_print_str(s: &str) {
     }
 }
 
+/// Prints a usize as hex (simple, no alloc).
+fn debug_print_hex(value: usize) {
+    debug_print_str("0x");
+    let mut temp = value;
+    let mut digits = [0u8; 16];
+    let mut i = 0;
+    if temp == 0 {
+        debug_print_byte(b'0');
+        return;
+    }
+    while temp > 0 && i < 16 {
+        let digit = (temp % 16) as u8;
+        digits[i] = if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) };
+        temp /= 16;
+        i += 1;
+    }
+    for j in (0..i).rev() {
+        debug_print_byte(digits[j]);
+    }
+}
+
 const EFI_FILE_MODE_READ: u64 = 0x1;
 const KERNEL_PATH: &str = r"\EFI\BOOT\KERNEL.EFI";
+
+/// Fixed UTF-16 encode for KERNEL_PATH (no alloc).
+fn kernel_path_utf16() -> [u16; 32] {  // Enough for path + null
+    let path = KERNEL_PATH.encode_utf16().chain(core::iter::once(0u16));
+    let mut buf = [0u16; 32];
+    let mut i = 0;
+    for c in path {
+        if i < buf.len() - 1 {
+            buf[i] = c;
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    buf[i] = 0;  // Ensure null-term
+    buf
+}
 
 /// A RAII wrapper for EfiFile that automatically closes the file when it goes out of scope.
 struct EfiFileWrapper {
@@ -107,14 +145,12 @@ pub fn read_efi_file(bs: &EfiBootServices, image_handle: usize) -> petroleum::co
     }
     let revision = unsafe { (*loaded_image).revision };
     debug_print_str("File: LoadedImageProtocol revision: ");
-    let rev_str = format!("{:x}", revision);
-    debug_print_str(&rev_str);
+    debug_print_hex(revision as usize);
     debug_print_str("\n");
     let device_handle = unsafe { (*loaded_image).device_handle };
     debug_print_str("File: Got device_handle from LoadedImageProtocol. Handle: ");
     // Debug: print device_handle as hex
-    let handle_str = format!("{:x}", device_handle);
-    debug_print_str(&handle_str);
+    debug_print_hex(device_handle);
     debug_print_str("\n");
 
     // Get the SimpleFileSystem protocol from the device
@@ -153,11 +189,7 @@ pub fn read_efi_file(bs: &EfiBootServices, image_handle: usize) -> petroleum::co
     // Correct file name to match the kernel file
     let file = open_file(
         &volume,
-        KERNEL_PATH
-            .encode_utf16()
-            .chain(core::iter::once(0))
-            .collect::<Vec<u16>>()
-            .as_slice(),
+        &kernel_path_utf16()[..],  // Fixed slice
     )?;
 
     let mut file_info_buffer_size = 0;
