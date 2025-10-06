@@ -91,16 +91,7 @@ pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
     debug_print_hex(heap_pages);
     debug_print_str(" pages for heap.\n");
     let heap_phys = try_allocate_pages(bs, heap_pages, EfiMemoryType::EfiLoaderData)?; // 固定
-    // アライメント検証強化
-    if heap_phys % 4096 != 0 {
-        debug_print_str("Heap: Misaligned alloc! Freeing...\n");
-        unsafe {
-            (bs.free_pages)(heap_phys, heap_pages);
-        }
-        return Err(BellowsError::AllocationFailed(
-            "Misaligned heap allocation.",
-        ));
-    }
+
 
     if heap_phys == 0 {
         debug_print_str("Heap: Allocated heap address is null!\n");

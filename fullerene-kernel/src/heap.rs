@@ -88,6 +88,22 @@ impl Heap {
         ptr::null_mut()
     }
 
+    unsafe fn insert_sorted(&mut self, new_node: *mut ListNode) {
+        if self.head.is_null() || (*new_node).start_addr() < (*self.head).start_addr() {
+            (*new_node).next = self.head;
+            self.head = new_node;
+            return;
+        }
+
+        let mut current = self.head;
+        while !(*current).next.is_null() && (*(*current).next).start_addr() < (*new_node).start_addr() {
+            current = (*current).next;
+        }
+
+        (*new_node).next = (*current).next;
+        (*current).next = new_node;
+    }
+
     fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
         let size = layout.size();
         let block_start = ptr as usize;
@@ -97,9 +113,8 @@ impl Heap {
             let new_node = ptr as *mut ListNode;
             *new_node = ListNode::new(size);
 
-            // Insert into the free list (simple insertion at head for now)
-            (*new_node).next = self.head;
-            self.head = new_node;
+            // Insert into the free list in sorted order by address
+            self.insert_sorted(new_node);
 
             // Coalesce adjacent blocks
             self.coalesce();
@@ -111,21 +126,15 @@ impl Heap {
             return;
         }
 
-        // Simple bubble sort by address and merge
-        let mut changed = true;
-        while changed {
-            changed = false;
-            let mut current = self.head;
-            while !(*current).next.is_null() {
-                let next = (*current).next;
-                if (*current).end_addr() == (*next).start_addr() {
-                    // Merge
-                    (*current).size += (*next).size;
-                    (*current).next = (*next).next;
-                    changed = true;
-                } else {
-                    current = next;
-                }
+        let mut current = self.head;
+        while !(*current).next.is_null() {
+            let next = (*current).next;
+            if (*current).end_addr() == (*next).start_addr() {
+                // Merge
+                (*current).size += (*next).size;
+                (*current).next = (*next).next;
+            } else {
+                current = next;
             }
         }
     }
@@ -187,6 +196,7 @@ pub fn reinit_page_table() {
     use x86_64::registers::control::Cr3;
 
     let mut frame_allocator = FRAME_ALLOCATOR.get().unwrap().lock();
+    let memory_map = *MEMORY_MAP.get().unwrap();
 
     // Allocate a new level 4 page table
     let level_4_frame = frame_allocator.allocate_frame().expect("Failed to allocate level 4 frame");
@@ -195,35 +205,36 @@ pub fn reinit_page_table() {
     // Zero the table
     level_4_table.zero();
 
-    // Set up identity mapping for the first 4 GiB
-    for i in 0..512 {
-        let page_table_3_frame = frame_allocator.allocate_frame().expect("Failed to allocate level 3 frame");
-        let page_table_3 = unsafe { &mut *(page_table_3_frame.start_address().as_u64() as *mut PageTable) };
-        page_table_3.zero();
+    // Map usable memory regions from the memory map
+    for desc in memory_map {
+        // Only map conventional memory, loader data, and runtime services data
+        if matches!(desc.type_,
+            petroleum::common::EfiMemoryType::EfiConventionalMemory |
+            petroleum::common::EfiMemoryType::EfiLoaderData |
+            petroleum::common::EfiMemoryType::EfiRuntimeServicesData)
+            && desc.number_of_pages > 0
+        {
+            let start_addr = PhysAddr::new(desc.physical_start);
+            let end_addr = start_addr + (desc.number_of_pages * 4096);
 
-        for j in 0..512 {
-            let page_table_2_frame = frame_allocator.allocate_frame().expect("Failed to allocate level 2 frame");
-            let page_table_2 = unsafe { &mut *(page_table_2_frame.start_address().as_u64() as *mut PageTable) };
-            page_table_2.zero();
+            // Map each 4KiB page in this region
+            let mut current_addr = start_addr;
+            while current_addr < end_addr {
+                let page = Page::<Size4KiB>::containing_address(VirtAddr::new(current_addr.as_u64()));
+                let frame = PhysFrame::<Size4KiB>::containing_address(current_addr);
 
-            for k in 0..512 {
-                let page_table_1_frame = frame_allocator.allocate_frame().expect("Failed to allocate level 1 frame");
-                let page_table_1 = unsafe { &mut *(page_table_1_frame.start_address().as_u64() as *mut PageTable) };
-                page_table_1.zero();
-
-                // Identity map 2 MiB pages
-                for l in 0..512 {
-                    let addr = ((i as u64) << 39) | ((j as u64) << 30) | ((k as u64) << 21) | ((l as u64) << 12);
-                    page_table_1[l].set_addr(PhysAddr::new(addr), Flags::PRESENT | Flags::WRITABLE);
+                // Use the mapper to create the mapping
+                let mapper = unsafe { petroleum::page_table::init(VirtAddr::new(0)) };
+                let mut mapper_guard = MAPPER.get().unwrap().lock();
+                unsafe {
+                    mapper_guard.map_to(page, frame, Flags::PRESENT | Flags::WRITABLE, &mut *frame_allocator)
+                        .expect("Failed to map page")
+                        .flush();
                 }
 
-                page_table_2[k].set_addr(page_table_1_frame.start_address(), Flags::PRESENT | Flags::WRITABLE);
+                current_addr += 4096;
             }
-
-            page_table_3[j].set_addr(page_table_2_frame.start_address(), Flags::PRESENT | Flags::WRITABLE);
         }
-
-        level_4_table[i].set_addr(page_table_3_frame.start_address(), Flags::PRESENT | Flags::WRITABLE);
     }
 
     // Set the new CR3
