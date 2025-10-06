@@ -201,24 +201,70 @@ pub fn load_efi_image(
     } as usize;
     let pages_needed = image_size.div_ceil(4096);
     let mut phys_addr: usize = 0;
-    let status = unsafe {
-        (bs.allocate_pages)(
-            0usize,
-            EfiMemoryType::EfiLoaderData,
-            pages_needed,
-            &mut phys_addr,
+    let preferred_base = unsafe {
+        ptr::read_unaligned(
+            (nt_headers_ptr as *const u8)
+                .add(offset_of!(ImageNtHeaders64, optional_header))
+                .add(offset_of!(ImageOptionalHeader64, image_base)) as *const u64,
         )
-    };
-    if EfiStatus::from(status) != EfiStatus::Success {
-        return Err(BellowsError::AllocationFailed(
-            "Failed to allocate memory for PE image.",
-        ));
+    } as usize;
+    let mut alloc_type = 0usize; // AllocateAnyPages
+    let mut alloc_addr = 0usize; // for AddressPages
+
+    // Try to allocate at preferred base if it's higher-half
+    if preferred_base != 0 && preferred_base >= 0x1000_0000 {
+        alloc_type = 2usize; // AllocateAddressPages
+        alloc_addr = preferred_base;
+        let status = unsafe {
+            (bs.allocate_pages)(
+                alloc_type,
+                EfiMemoryType::EfiLoaderData,
+                pages_needed,
+                &mut phys_addr,
+            )
+        };
+        if EfiStatus::from(status) == EfiStatus::Success {
+            petroleum::println!("Allocated at preferred base: {:#x}", phys_addr);
+        } else {
+            // Fallback to AllocateAnyPages
+            alloc_type = 0;
+            phys_addr = 0;
+            let status = unsafe {
+                (bs.allocate_pages)(
+                    alloc_type,
+                    EfiMemoryType::EfiLoaderData,
+                    pages_needed,
+                    &mut phys_addr,
+                )
+            };
+            if EfiStatus::from(status) != EfiStatus::Success {
+                return Err(BellowsError::AllocationFailed(
+                    "Failed to allocate memory for PE image.",
+                ));
+            }
+            petroleum::println!("Fallback alloc at {:#x}", phys_addr);
+        }
+    } else {
+        // Low address or zero preferred base, use AllocateAnyPages
+        let status = unsafe {
+            (bs.allocate_pages)(
+                alloc_type,
+                EfiMemoryType::EfiLoaderData,
+                pages_needed,
+                &mut phys_addr,
+            )
+        };
+        if EfiStatus::from(status) != EfiStatus::Success {
+            return Err(BellowsError::AllocationFailed(
+                "Failed to allocate memory for PE image.",
+            ));
+        }
+        petroleum::println!(
+            "Memory allocated for PE image. Phys Addr: {:#x}, Pages: {}",
+            phys_addr,
+            pages_needed
+        );
     }
-    petroleum::println!(
-        "Memory allocated for PE image. Phys Addr: {:#x}, Pages: {}",
-        phys_addr,
-        pages_needed
-    );
 
     let image_base = unsafe {
         ptr::read_unaligned(
