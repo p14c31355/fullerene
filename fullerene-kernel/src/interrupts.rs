@@ -5,14 +5,21 @@ use core::fmt::Write;
 use lazy_static::lazy_static;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
+// Macro to reduce repetitive IDT handler setup
+macro_rules! setup_idt_handler {
+    ($idt:expr, $field:ident, $handler:ident) => {
+        $idt.$field.set_handler_fn($handler);
+    };
+}
+
 lazy_static! {
     // The Interrupt Descriptor Table (IDT)
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
 
         // Set up handlers for CPU exceptions
-        idt.breakpoint.set_handler_fn(breakpoint_handler);
-        idt.page_fault.set_handler_fn(page_fault_handler);
+        setup_idt_handler!(idt, breakpoint, breakpoint_handler);
+        setup_idt_handler!(idt, page_fault, page_fault_handler);
         unsafe {
             idt.double_fault
                 .set_handler_fn(double_fault_handler)

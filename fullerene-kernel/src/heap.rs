@@ -7,6 +7,13 @@ use x86_64::structures::paging::{FrameAllocator, Mapper, OffsetPageTable, Page, 
 use x86_64::registers::control::Cr3Flags;
 use crate::serial;
 
+// Macro to reduce repetitive unsafe node operations
+macro_rules! with_node {
+    ($node_ptr:expr, $body:expr) => {
+        unsafe { $body(&mut *$node_ptr) }
+    };
+}
+
 pub const HEAP_SIZE: usize = 100 * 1024; // 100 KiB
 
 fn align_up(addr: usize, align: usize) -> usize {
