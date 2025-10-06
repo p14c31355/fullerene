@@ -118,7 +118,7 @@ fn try_allocate_pages(bs: &EfiBootServices, pages: usize, preferred_type: EfiMem
 
 pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
     debug_print_str("Heap: Allocating pages for heap...\n");
-    let heap_pages = 1; // Minimal test: 1 page (4 KiB)
+    let heap_pages = HEAP_SIZE.div_ceil(4096);
     debug_print_str("Heap: Requesting 1 page (minimal test).\n");
     let heap_phys = try_allocate_pages(bs, heap_pages, EfiMemoryType::EfiLoaderData)?;  // 固定
     // アライメント検証強化
