@@ -63,8 +63,22 @@ pub extern "efiapi" fn efi_main(
         )
     };
     MEMORY_MAP.call_once(|| unsafe { &*(descriptors as *const _) });
+
+    // Calculate physical_memory_offset from kernel's location in memory map
+    let kernel_addr = efi_main as usize;
+    let mut physical_memory_offset = VirtAddr::new(0);
+    for desc in descriptors {
+        let start = desc.physical_start as usize;
+        let end = start + (desc.number_of_pages as usize * 4096);
+        if kernel_addr >= start && kernel_addr < end {
+            physical_memory_offset = VirtAddr::new(desc.virtual_start - desc.physical_start);
+            break;
+        }
+    }
+
     heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
-    heap::reinit_page_table();
+    heap::init_page_table(physical_memory_offset);
+    heap::reinit_page_table(physical_memory_offset);
 
     // Common initialization for both UEFI and BIOS
     init_common(_memory_map, _memory_map_size);
