@@ -25,7 +25,7 @@ pic8259 = { version = "0.11.0", default-features = false, features = [
 
 linked_list_allocator = "0.10.5"
 
-petroleum = { path = "../petroleum", features = ["std"] }
+petroleum = { path = "../petroleum" }
 
 [profile.dev]
 debug = true
