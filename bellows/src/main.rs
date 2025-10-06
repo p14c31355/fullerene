@@ -26,8 +26,6 @@ use petroleum::common::{
 fn debug_print_byte(byte: u8) {
     let mut port = Port::new(0x3F8);
     unsafe {
-        // Wait until the transmit buffer is empty
-        while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
         port.write(byte);
     }
 }
@@ -103,7 +101,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     debug_print_str("Bellows: Kernel file loaded.\n");
     petroleum::serial::_print(format_args!("Kernel file loaded. Size: {}\n", efi_image_size));
 
-    // NOW init heap after successful file alloc (proof of free memory)
+    // Initialize heap after successful file read
     petroleum::serial::_print(format_args!("Attempting late heap init after file read...\n"));
     match init_heap(bs) {
         Ok(()) => {
@@ -216,5 +214,13 @@ fn init_gop(st: &EfiSystemTable) {
 
     unsafe {
         core::ptr::write_bytes(fb_addr as *mut u8, 0x00, fb_size as usize);
+    }
+}
+
+#[cfg(not(test))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {
+        unsafe { x86_64::instructions::hlt(); }
     }
 }

@@ -14,8 +14,6 @@ use x86_64::instructions::port::Port; // Import Port for direct I/O
 fn debug_print_byte(byte: u8) {
     let mut port = Port::new(0x3F8);
     unsafe {
-        // Wait until the transmit buffer is empty
-        while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
         port.write(byte);
     }
 }
@@ -121,6 +119,7 @@ pub fn read_efi_file(bs: &EfiBootServices, image_handle: usize) -> petroleum::co
 
     // Get the device handle from the LoadedImageProtocol
     let mut loaded_image: *mut EfiLoadedImageProtocol = ptr::null_mut();
+    debug_print_str("File: About to open LoadedImageProtocol...\n");
     let status = (bs.open_protocol)(
         image_handle,
         &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
@@ -129,6 +128,7 @@ pub fn read_efi_file(bs: &EfiBootServices, image_handle: usize) -> petroleum::co
         0,
         1, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
     );
+    debug_print_str("File: Opened LoadedImageProtocol.\n");
     if EfiStatus::from(status) != EfiStatus::Success {
         debug_print_str("File: Failed to get LoadedImageProtocol.\n");
         // Debug: print status
@@ -143,6 +143,7 @@ pub fn read_efi_file(bs: &EfiBootServices, image_handle: usize) -> petroleum::co
         debug_print_str("\n");
         return Err(BellowsError::ProtocolNotFound("Failed to get LoadedImageProtocol."));
     }
+    debug_print_str("File: Success getting LoadedImageProtocol.\n");
     let revision = unsafe { (*loaded_image).revision };
     debug_print_str("File: LoadedImageProtocol revision: ");
     debug_print_hex(revision as usize);
