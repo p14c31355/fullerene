@@ -132,6 +132,10 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     };
     debug_print_str("Bellows: EFI image loaded.\n"); // Debug print after load_efi_image
 
+    // Free the memory that was used to hold the kernel file contents
+    let file_pages = efi_image_size.div_ceil(4096);
+    unsafe { (bs.free_pages)(addr, file_pages); }
+
     debug_print_str("Bellows: Kernel loaded into allocated memory.\n");
 
     petroleum::serial::_print(format_args!("Exiting boot services and jumping to kernel...\n"));
