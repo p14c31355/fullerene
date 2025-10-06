@@ -17,9 +17,11 @@ use core::panic::PanicInfo;
 
 use core::ffi::c_void;
 use petroleum::common::{
-    EfiSystemTable, FullereneFramebufferConfig, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, EfiMemoryType
+    EfiConfigurationTable, EfiSystemTable, FullereneFramebufferConfig, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, EfiMemoryType
 };
+use petroleum::page_table::translate_addr;
 use x86_64::instructions::hlt;
+use x86_64::VirtAddr;
 
 #[repr(C)]
 pub struct EfiMemoryDescriptor {
@@ -49,6 +51,24 @@ pub extern "efiapi" fn efi_main(
             port.write(byte);
         }
     }
+
+    // Early heap and serial init for UEFI
+    let descriptors = unsafe {
+        core::slice::from_raw_parts(_memory_map as *const EfiMemoryDescriptor, _memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>())
+    };
+    let mut loader_data_start = None;
+    for desc in descriptors {
+        if desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0 {
+            loader_data_start = Some(x86_64::PhysAddr::new(desc.physical_start));
+            break;
+        }
+    }
+    let loader_data_start = loader_data_start.expect("No LoaderData region found in memory map");
+    let virtual_start = descriptors.iter().find(|desc| desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0).map(|desc| desc.virtual_start).unwrap_or(loader_data_start.as_u64());
+    let heap_start = x86_64::VirtAddr::new(virtual_start);
+    heap::init(heap_start, heap::HEAP_SIZE);
+    serial::serial_init();
+
     serial::serial_log("Kernel: efi_main entered (via serial_log).\n");
 
     // Common initialization for both UEFI and BIOS
@@ -95,7 +115,7 @@ pub extern "efiapi" fn efi_main(
             serial::serial_log("Graphics initialized.");
         }
     } else {
-        serial::serial_log("Fullerene Framebuffer Config Table not found.\n");
+    serial::serial_log("Fullerene Framebuffer Config Table not found.\n");
     }
 
     // Main loop
