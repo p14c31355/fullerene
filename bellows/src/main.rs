@@ -206,12 +206,3 @@ fn init_gop(st: &EfiSystemTable) {
     }
 }
 
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {
-        unsafe {
-            x86_64::instructions::hlt();
-        }
-    }
-}

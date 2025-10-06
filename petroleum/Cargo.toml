@@ -17,3 +17,4 @@ x86_64 = { version = "0.15.2", default-features = false, features = [
   "instructions",
   "abi_x86_interrupt",
 ] }
+bitflags = { version = "2.9.4", default-features = false }

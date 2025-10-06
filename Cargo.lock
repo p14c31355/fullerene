@@ -300,6 +300,7 @@ checksum = "f0ca629cbb3f0d5b699c338f0129ff78c9bfd7ea8b1258ad529bff490dc8ed5a"
 name = "petroleum"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.9.4",
  "spin 0.10.0",
  "x86_64",
 ]

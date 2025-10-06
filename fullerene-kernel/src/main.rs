@@ -24,6 +24,12 @@ use petroleum::page_table::translate_addr;
 use x86_64::VirtAddr;
 use x86_64::instructions::hlt;
 
+
+
+
+
+
+
 #[repr(C)]
 pub struct EfiMemoryDescriptor {
     pub type_: EfiMemoryType,
@@ -206,15 +212,6 @@ pub unsafe extern "C" fn _start() -> ! {
 
 // A simple loop that halts the CPU until the next interrupt
 pub fn hlt_loop() -> ! {
-    loop {
-        hlt();
-    }
-}
-
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    // Since panic = "abort", this should not be called, but required for no_std
     loop {
         hlt();
     }
