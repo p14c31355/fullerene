@@ -174,7 +174,7 @@ impl FramebufferLike for FramebufferWriter {
     }
 
     fn scroll_up(&self) {
-        self.scroll_up();
+        FramebufferWriter::scroll_up(self);
     }
 }
 
