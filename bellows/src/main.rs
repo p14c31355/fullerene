@@ -48,17 +48,9 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     petroleum::println!("System Table: {:#p}", system_table);
     // Initialize heap
     petroleum::serial::_print(format_args!("Attempting to initialize heap...\n"));
-    match init_heap(bs) {
-        Ok(()) => {
-            petroleum::serial::_print(format_args!("Heap initialized successfully.\n"));
-            debug_print_str("Bellows: Heap OK.\n");
-        }
-        Err(e) => {
-            petroleum::serial::_print(format_args!("Heap failed (OK for minimal boot): {:?}\n", e));
-            debug_print_str("Bellows: Heap skipped.\n");
-            // Continue without heap; use fixed buffers in PE loader
-        }
-    }
+    init_heap(bs).expect("Heap initialization failed");
+    petroleum::serial::_print(format_args!("Heap initialized successfully.\n"));
+    debug_print_str("Bellows: Heap OK.\n");
     init_gop(st);
     petroleum::serial::_print(format_args!("GOP initialized successfully.\n"));
     debug_print_str("Bellows: GOP initialized.\n"); // Debug print after GOP initialization

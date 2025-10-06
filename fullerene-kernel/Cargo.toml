@@ -23,6 +23,7 @@ petroleum = { path = "../petroleum" }
 [profile.dev]
 debug = true
 split-debuginfo = "packed"
+panic = "abort"
 
 [profile.release]
 debug = true

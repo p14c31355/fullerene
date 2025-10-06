@@ -23,11 +23,10 @@ use petroleum::common::{
 use x86_64::VirtAddr;
 use x86_64::instructions::hlt;
 
+#[cfg(not(test))]
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    loop {
-        hlt();
-    }
+fn panic(info: &PanicInfo) -> ! {
+    petroleum::handle_panic(info);
 }
 
 #[repr(C)]
@@ -58,28 +57,6 @@ pub extern "efiapi" fn efi_main(
             port.write(byte);
         }
     }
-
-    // Early heap and serial init for UEFI
-    let descriptors = unsafe {
-        core::slice::from_raw_parts(
-            _memory_map as *const EfiMemoryDescriptor,
-            _memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>(),
-        )
-    };
-    let mut loader_data_start = None;
-    for desc in descriptors {
-        if desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0 {
-            loader_data_start = Some(x86_64::PhysAddr::new(desc.physical_start));
-            break;
-        }
-    }
-    let loader_data_start = loader_data_start.expect("No LoaderData region found in memory map");
-    let virtual_start = descriptors
-        .iter()
-        .find(|desc| desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0)
-        .map(|desc| desc.virtual_start)
-        .unwrap_or(loader_data_start.as_u64());
-    let _heap_start = x86_64::VirtAddr::new(virtual_start);
 
     serial::serial_log("Kernel: efi_main entered (via serial_log).\n");
 
