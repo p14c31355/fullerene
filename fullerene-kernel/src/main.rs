@@ -20,7 +20,6 @@ use petroleum::common::{
     EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
     FullereneFramebufferConfig,
 };
-use x86_64::VirtAddr;
 use x86_64::instructions::hlt;
 
 #[cfg(not(test))]
