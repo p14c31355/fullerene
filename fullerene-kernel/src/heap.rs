@@ -216,12 +216,20 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr) {
     // Zero the table
     level_4_table.zero();
 
+    // Create a mapper for the new page table
+    let mut new_mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
+
     // Map usable memory regions from the memory map
     for desc in memory_map {
-        // Only map conventional memory, loader data, and runtime services data
+        // Only map usable memory regions from the memory map
         if matches!(desc.type_,
+            petroleum::common::EfiMemoryType::EfiReservedMemoryType |
             petroleum::common::EfiMemoryType::EfiConventionalMemory |
             petroleum::common::EfiMemoryType::EfiLoaderData |
+            petroleum::common::EfiMemoryType::EfiLoaderCode |
+            petroleum::common::EfiMemoryType::EfiBootServicesCode |
+            petroleum::common::EfiMemoryType::EfiBootServicesData |
+            petroleum::common::EfiMemoryType::EfiRuntimeServicesCode |
             petroleum::common::EfiMemoryType::EfiRuntimeServicesData)
             && desc.number_of_pages > 0
         {
@@ -235,11 +243,9 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr) {
                 let page = Page::<Size4KiB>::containing_address(VirtAddr::new(virt_addr));
                 let frame = PhysFrame::<Size4KiB>::containing_address(current_addr);
 
-                // Use the mapper to create the mapping
-                let mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
-                let mut mapper_guard = MAPPER.get().unwrap().lock();
+                // Use the new mapper to create the mapping
                 unsafe {
-                    mapper_guard.map_to(page, frame, Flags::PRESENT | Flags::WRITABLE, &mut *frame_allocator)
+                    new_mapper.map_to(page, frame, Flags::PRESENT | Flags::WRITABLE, &mut *frame_allocator)
                         .expect("Failed to map page")
                         .flush();
                 }

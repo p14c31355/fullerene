@@ -53,8 +53,6 @@ pub extern "efiapi" fn efi_main(
         }
     }
 
-    serial::serial_log("Kernel: efi_main entered (via serial_log).\n");
-
     // Reinitialize page table after exit boot services
     let descriptors = unsafe {
         core::slice::from_raw_parts(
@@ -83,6 +81,7 @@ pub extern "efiapi" fn efi_main(
     // Common initialization for both UEFI and BIOS
     init_common(_memory_map, _memory_map_size);
 
+    serial::serial_log("Kernel: efi_main entered (via serial_log).\n");
     serial::serial_log("Interrupts initialized via init().");
 
     serial::serial_log("Entering efi_main...\n");

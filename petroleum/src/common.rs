@@ -102,7 +102,12 @@ impl From<usize> for EfiStatus {
 #[repr(usize)]
 #[derive(Clone, Copy, PartialEq)]
 pub enum EfiMemoryType {
+    EfiReservedMemoryType = 0,
+    EfiLoaderCode = 1,
     EfiLoaderData = 2,
+    EfiBootServicesCode = 3,
+    EfiBootServicesData = 4,
+    EfiRuntimeServicesCode = 5,
     EfiRuntimeServicesData = 6,
     EfiConventionalMemory = 7,
     EfiMaxMemoryType = 15,
