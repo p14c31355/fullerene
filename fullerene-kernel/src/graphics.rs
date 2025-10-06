@@ -112,7 +112,8 @@ impl FramebufferWriter {
         }
         // Clear the last 8 lines
         let last_lines_offset =
-            (self.framebuffer.height - 8) * self.framebuffer.stride * bytes_per_pixel;
+        let last_lines_offset =
+            (self.framebuffer.height.saturating_sub(8)) * self.framebuffer.stride * bytes_per_pixel;
         let clear_ptr = (self.framebuffer.address + last_lines_offset as u64) as *mut u32;
         let clear_num_u32 = 8 * self.framebuffer.stride as usize;
         unsafe {
