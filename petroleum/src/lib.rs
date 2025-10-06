@@ -41,6 +41,7 @@ fn u32_to_str_heapless(n: u32, buffer: &mut [u8]) -> &str {
 }
 
 /// Alloc error handler required when using `alloc` in no_std.
+#[cfg(panic = "unwind")]
 #[alloc_error_handler]
 fn alloc_error(_layout: Layout) -> ! {
     // Avoid recursive panics by directly looping
@@ -61,7 +62,7 @@ fn alloc_error(_layout: Layout) -> ! {
 }
 
 /// Panic handler
-#[cfg(not(test))]
+#[cfg(all(not(test), panic = "unwind"))]
 #[panic_handler]
 pub fn panic(info: &core::panic::PanicInfo) -> ! {
     // Print the panic message using the refactored serial module.

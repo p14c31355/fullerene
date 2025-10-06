@@ -13,6 +13,8 @@ pub(crate) mod font;
 
 extern crate alloc;
 
+use core::panic::PanicInfo;
+
 use core::ffi::c_void;
 use petroleum::common::{
     EfiSystemTable, FullereneFramebufferConfig, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, EfiMemoryType
@@ -169,6 +171,15 @@ pub unsafe extern "C" fn _start() -> ! {
 
 // A simple loop that halts the CPU until the next interrupt
 pub fn hlt_loop() -> ! {
+    loop {
+        hlt();
+    }
+}
+
+#[cfg(not(test))]
+#[panic_handler]
+fn panic(_info: &PanicInfo) -> ! {
+    // Since panic = "abort", this should not be called, but required for no_std
     loop {
         hlt();
     }
