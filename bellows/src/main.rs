@@ -13,7 +13,7 @@ use x86_64::instructions::port::Port; // Import Port for direct I/O
 mod loader;
 
 use loader::{
-    exit_boot_services_and_jump, file::read_efi_file, heap::init_heap, pe::load_efi_image,
+    debug::*, exit_boot_services_and_jump, file::read_efi_file, heap::init_heap, pe::load_efi_image,
 };
 
 use petroleum::common::{
@@ -21,21 +21,7 @@ use petroleum::common::{
     FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
 };
 
-/// Writes a single byte to the COM1 serial port (0x3F8).
-/// This is a very basic, early debug function that doesn't rely on any complex initialization.
-fn debug_print_byte(byte: u8) {
-    let mut port = Port::new(0x3F8);
-    unsafe {
-        port.write(byte);
-    }
-}
 
-/// Writes a string to the COM1 serial port.
-fn debug_print_str(s: &str) {
-    for byte in s.bytes() {
-        debug_print_byte(byte);
-    }
-}
 
 /// Main entry point of the bootloader.
 ///
@@ -56,20 +42,6 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     // Initialize the serial writer with the console output pointer.
     petroleum::serial::UEFI_WRITER.lock().init(st.con_out);
     debug_print_str("Bellows: UEFI_WRITER initialized.\n"); // Debug print after UEFI_WRITER init
-
-    petroleum::serial::_print(format_args!("Attempting to initialize heap...\n"));
-    debug_print_str("Bellows: 'Attempting to initialize heap...' printed.\n"); // Debug print after _print call
-    match init_heap(bs) {
-        Ok(()) => {
-            petroleum::serial::_print(format_args!("Heap initialized successfully.\n"));
-            debug_print_str("Bellows: Heap initialized.\n");
-        }
-        Err(e) => {
-            petroleum::serial::_print(format_args!("Failed to initialize heap: {:?} (PF likely OVMF bug)\n", e));
-            debug_print_str("Bellows: Heap init failed (PF). Trying without heap...\n");
-            loop { unsafe { x86_64::instructions::hlt(); } }
-        }
-    }
 
     petroleum::println!("Bellows UEFI Bootloader starting...");
     debug_print_str("Bellows: 'Bellows UEFI Bootloader starting...' printed.\n"); // Debug print after println!
@@ -125,6 +97,8 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         },
         Err(err) => {
             petroleum::println!("Failed to load EFI image: {:?}", err);
+            let file_pages = efi_image_size.div_ceil(4096);
+            unsafe { (bs.free_pages)(addr, file_pages); }
             panic!("Failed to load EFI image.");
         }
     };

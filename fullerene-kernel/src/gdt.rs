@@ -16,10 +16,11 @@ static GDT: Once<GlobalDescriptorTable> = Once::new();
 static CODE_SELECTOR: Once<SegmentSelector> = Once::new();
 static TSS_SELECTOR: Once<SegmentSelector> = Once::new();
 
-pub fn init(heap_start: VirtAddr) {
+pub fn init(heap_start: VirtAddr) -> VirtAddr {
     const STACK_SIZE: usize = 4096 * 5;
     let double_fault_ist = heap_start + STACK_SIZE as u64;
     let timer_ist = double_fault_ist + STACK_SIZE as u64;
+    let new_heap_start = timer_ist + STACK_SIZE as u64; // Reserve space for both stacks
 
     let tss = TSS.call_once(|| {
         let mut tss = TaskStateSegment::new();
@@ -44,4 +45,6 @@ pub fn init(heap_start: VirtAddr) {
         CS::set_reg(*CODE_SELECTOR.get().unwrap());
         load_tss(*TSS_SELECTOR.get().unwrap());
     }
+
+    new_heap_start
 }

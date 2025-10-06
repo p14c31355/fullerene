@@ -48,8 +48,15 @@ impl Heap {
         }
     }
 
-    fn dealloc(&mut self, _ptr: *mut u8, _layout: Layout) {
-        // Simple bump allocator - no deallocation for now
+    fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
+        // Simple bump allocator - only dealloc the last allocation
+        let ptr_usize = ptr as usize;
+        let alloc_end = ptr_usize + layout.size();
+        if alloc_end == self.next {
+            self.next = ptr_usize;
+            self.used -= layout.size();
+        }
+        // Otherwise, leak the memory (acceptable for early boot)
     }
 }
 

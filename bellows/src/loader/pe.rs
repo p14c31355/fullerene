@@ -159,9 +159,6 @@ pub fn load_efi_image(
     if file.len() < mem::size_of::<ImageDosHeader>() {
         return Err(BellowsError::PeParse("File too small for DOS header."));
     }
-    if file.len() < mem::size_of::<ImageDosHeader>() {
-        return Err(BellowsError::PeParse("File too small for DOS header."));
-    }
     let dos_header_ptr = file.as_ptr() as *const ImageDosHeader;
     let e_magic = unsafe { ptr::read_unaligned(dos_header_ptr as *const u16) };
     if e_magic != 0x5a4d {
