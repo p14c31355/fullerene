@@ -1,62 +1,129 @@
 use core::alloc::{GlobalAlloc, Layout};
+use core::ptr;
 use x86_64::{PhysAddr, VirtAddr};
 
 pub const HEAP_SIZE: usize = 100 * 1024; // 100 KiB
-
-#[repr(C)]
-struct ListNode {
-    size: usize,
-    next: Option<&'static mut ListNode>,
-}
-
-pub struct Heap {
-    bottom: usize,
-    size: usize,
-    used: usize,
-    next: usize,
-}
 
 fn align_up(addr: usize, align: usize) -> usize {
     (addr + align - 1) & !(align - 1)
 }
 
+#[repr(C)]
+struct ListNode {
+    size: usize,
+    next: *mut ListNode,
+}
+
+impl ListNode {
+    fn new(size: usize) -> Self {
+        ListNode {
+            size,
+            next: ptr::null_mut(),
+        }
+    }
+
+    fn start_addr(&self) -> usize {
+        self as *const Self as usize
+    }
+
+    fn end_addr(&self) -> usize {
+        self.start_addr() + self.size
+    }
+}
+
+pub struct Heap {
+    head: *mut ListNode,
+}
+
+// SAFETY: This is a single-threaded kernel allocator
+unsafe impl Send for Heap {}
+
 impl Heap {
     pub const fn empty() -> Self {
         Heap {
-            bottom: 0,
-            size: 0,
-            used: 0,
-            next: 0,
+            head: ptr::null_mut(),
         }
     }
 
     pub unsafe fn init(&mut self, heap_start: *mut u8, heap_size: usize) {
-        self.bottom = heap_start as usize;
-        self.size = heap_size;
-        self.used = 0;
-        self.next = self.bottom;
+        // Initialize the free list with one big block
+        let node = heap_start as *mut ListNode;
+        *node = ListNode::new(heap_size);
+        self.head = node;
     }
 
     fn alloc(&mut self, layout: Layout) -> *mut u8 {
-        let alloc_start = align_up(self.next, layout.align());
-        self.next = alloc_start + layout.size();
-        if self.next > self.bottom + self.size {
-            core::ptr::null_mut()
-        } else {
-            self.used += layout.size();
-            alloc_start as *mut u8
+        let size = layout.size();
+        let align = layout.align();
+
+        unsafe {
+            let mut current = &mut self.head;
+            while !(*current).is_null() {
+                let node = &mut **current;
+                let alloc_start = align_up(node.start_addr(), align);
+                let alloc_end = alloc_start + size;
+
+                if alloc_end <= node.end_addr() {
+                    // Found a suitable block
+                    let remaining = node.end_addr() - alloc_end;
+                    if remaining > core::mem::size_of::<ListNode>() {
+                        // Split the block
+                        let new_node = alloc_end as *mut ListNode;
+                        *new_node = ListNode::new(remaining);
+                        (*new_node).next = node.next;
+                        node.next = new_node;
+                    }
+                    node.size = alloc_start - node.start_addr();
+                    return alloc_start as *mut u8;
+                }
+                current = &mut node.next;
+            }
         }
+
+        // No suitable block found
+        ptr::null_mut()
     }
 
     fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
-        // Simple bump allocator - only dealloc the last allocation
-        let ptr_usize = ptr as usize;
-        let alloc_end = ptr_usize + layout.size();
-        if alloc_end == self.next {
-            self.next = ptr_usize;
-            self.used -= layout.size();
+        let size = layout.size();
+        let block_start = ptr as usize;
+
+        unsafe {
+            // Create a new free node
+            let new_node = ptr as *mut ListNode;
+            *new_node = ListNode::new(size);
+
+            // Insert into the free list (simple insertion at head for now)
+            (*new_node).next = self.head;
+            self.head = new_node;
+
+            // Coalesce adjacent blocks
+            self.coalesce();
         }
-        // Otherwise, leak the memory (acceptable for early boot)
+    }
+
+    unsafe fn coalesce(&mut self) {
+        if self.head.is_null() {
+            return;
+        }
+
+        // Simple bubble sort by address and merge
+        let mut changed = true;
+        while changed {
+            changed = false;
+            let mut current = self.head;
+            while !(*current).next.is_null() {
+                let next = (*current).next;
+                if (*current).end_addr() == (*next).start_addr() {
+                    // Merge
+                    (*current).size += (*next).size;
+                    (*current).next = (*next).next;
+                    changed = true;
+                } else {
+                    current = next;
+                }
+            }
+        }
     }
 }
 

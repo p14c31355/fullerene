@@ -5,9 +5,19 @@ use x86_64::{
     },
 };
 
+/// EFI Memory Descriptor as defined in UEFI spec
+#[repr(C)]
+pub struct EfiMemoryDescriptor {
+    pub type_: crate::common::EfiMemoryType,
+    pub physical_start: u64,
+    pub virtual_start: u64,
+    pub number_of_pages: u64,
+    pub attribute: u64,
+}
+
 /// A FrameAllocator that returns usable frames from the bootloader's memory map.
 pub struct BootInfoFrameAllocator {
-    memory_map: &'static [x86_64::structures::paging::page_table::PageTableEntry],
+    memory_map: &'static [EfiMemoryDescriptor],
     next: usize,
 }
 
@@ -18,7 +28,7 @@ impl BootInfoFrameAllocator {
     /// memory map is valid. The main requirement is that all frames that are marked
     /// as `USABLE` in it are really unused.
     pub unsafe fn init(
-        memory_map: &'static [x86_64::structures::paging::page_table::PageTableEntry],
+        memory_map: &'static [EfiMemoryDescriptor],
     ) -> Self {
         BootInfoFrameAllocator {
             memory_map,
@@ -29,8 +39,29 @@ impl BootInfoFrameAllocator {
 
 unsafe impl FrameAllocator<Size4KiB> for BootInfoFrameAllocator {
     fn allocate_frame(&mut self) -> Option<PhysFrame> {
-        // Implementation needed
-        None
+        const FRAME_SIZE: u64 = 4096; // 4 KiB
+
+        for descriptor in self.memory_map.iter().skip(self.next) {
+            if descriptor.type_ == crate::common::EfiMemoryType::EfiConventionalMemory
+                && descriptor.number_of_pages > 0
+            {
+                let start_addr = PhysAddr::new(descriptor.physical_start);
+                let end_addr = start_addr + (descriptor.number_of_pages * FRAME_SIZE);
+
+                // Find the next available frame in this region
+                let mut current_addr = start_addr;
+                while current_addr < end_addr {
+                    if let Ok(frame) = PhysFrame::<Size4KiB>::from_start_address(current_addr) {
+                        self.next += 1;
+                        return Some(frame);
+                    }
+                    current_addr += FRAME_SIZE;
+                }
+            }
+            self.next += 1;
+        }
+
+        None // No more usable frames
     }
 }
 
