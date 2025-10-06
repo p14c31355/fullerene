@@ -8,10 +8,9 @@ pub mod common;
 pub mod page_table;
 pub mod serial;
 
-
-use core::{arch::asm, fmt::Write};
 #[cfg(all(panic = "unwind", not(feature = "std")))]
 use core::alloc::Layout;
+use core::{arch::asm, fmt::Write};
 use spin::Mutex;
 
 use crate::common::EfiSystemTable;
@@ -42,8 +41,6 @@ fn u32_to_str_heapless(n: u32, buffer: &mut [u8]) -> &str {
     }
     core::str::from_utf8(&buffer[i..]).unwrap_or("ERR")
 }
-
-
 
 /// Panic handler implementation that can be used by binaries
 pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {

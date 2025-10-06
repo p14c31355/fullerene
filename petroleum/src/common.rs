@@ -180,18 +180,20 @@ pub struct EfiBootServices {
     _pad1: [usize; 10], // Idx 8-17
     /// handle_protocol(Handle, Protocol, *mut Interface) -> EFI_STATUS
     pub handle_protocol: extern "efiapi" fn(usize, *const u8, *mut *mut c_void) -> usize, // Idx 18
-    _pad2: [usize; 2], // Idx 19-20
+    _pad2: [usize; 2],  // Idx 19-20
     /// locate_handle(SearchType, Protocol, SearchKey, *mut BufferSize, *mut Buffer) -> EFI_STATUS
-    pub locate_handle: extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut usize) -> usize, // Idx 21
-    _pad3: [usize; 1], // Idx 22 (for LocateDevicePath)
+    pub locate_handle:
+        extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut usize) -> usize, // Idx 21
+    _pad3: [usize; 1],  // Idx 22 (for LocateDevicePath)
     /// install_configuration_table(Guid, Table) -> EFI_STATUS
     pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize, // Idx 23
-    _pad4: [usize; 4], // Idx 24-27
+    _pad4: [usize; 4],  // Idx 24-27
     /// exit_boot_services(ImageHandle, MapKey) -> EFI_STATUS
     pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize, // Idx 28
-    _pad5: [usize; 5], // Idx 29-33
+    _pad5: [usize; 5],  // Idx 29-33
     /// open_protocol(Handle, Protocol, Interface, AgentHandle, ControllerHandle, Attributes) -> EFI_STATUS
-    pub open_protocol: extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, // Idx 34
+    pub open_protocol:
+        extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, // Idx 34
     _pad6: [usize; 5], // Idx 35-39
     /// locate_protocol(Protocol, Registration, *mut Interface) -> EFI_STATUS
     pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize, // Idx 40

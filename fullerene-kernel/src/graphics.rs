@@ -33,7 +33,7 @@ fn draw_char(fb: &impl FramebufferLike, c: char, x: u32, y: u32) {
 fn new_line(fb: &mut impl FramebufferLike) {
     let (_, mut y_pos) = fb.get_position();
     y_pos += 8; // Font height
-    let mut x_pos = 0;
+    let x_pos = 0;
     if y_pos >= fb.get_height() {
         fb.scroll_up();
         y_pos -= 8;

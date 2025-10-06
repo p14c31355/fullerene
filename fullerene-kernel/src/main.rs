@@ -17,18 +17,18 @@ use core::panic::PanicInfo;
 
 use core::ffi::c_void;
 use petroleum::common::{
-    EfiConfigurationTable, EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
+    EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
     FullereneFramebufferConfig,
 };
-use petroleum::page_table::translate_addr;
 use x86_64::VirtAddr;
 use x86_64::instructions::hlt;
 
-
-
-
-
-
+#[panic_handler]
+fn panic(_info: &PanicInfo) -> ! {
+    loop {
+        hlt();
+    }
+}
 
 #[repr(C)]
 pub struct EfiMemoryDescriptor {
@@ -79,7 +79,7 @@ pub extern "efiapi" fn efi_main(
         .find(|desc| desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0)
         .map(|desc| desc.virtual_start)
         .unwrap_or(loader_data_start.as_u64());
-    let heap_start = x86_64::VirtAddr::new(virtual_start);
+    let _heap_start = x86_64::VirtAddr::new(virtual_start);
 
     serial::serial_log("Kernel: efi_main entered (via serial_log).\n");
 
