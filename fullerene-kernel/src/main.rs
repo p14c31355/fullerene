@@ -122,16 +122,27 @@ pub extern "efiapi" fn efi_main(
 fn init_common(_memory_map: *mut c_void, _memory_map_size: usize) {
     let descriptors = *MEMORY_MAP.get().unwrap();
 
-    let mut loader_data_start = None;
+    let mut heap_phys_start = None;
+    // First, try to find EfiLoaderData
     for desc in descriptors {
         if desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0 {
-            loader_data_start = Some(x86_64::PhysAddr::new(desc.physical_start));
+            heap_phys_start = Some(x86_64::PhysAddr::new(desc.physical_start));
             break;
         }
     }
-    let loader_data_start = loader_data_start.expect("No LoaderData region found in memory map");
+    // If not found, find EfiConventionalMemory large enough
+    if heap_phys_start.is_none() {
+        let required_pages = (heap::HEAP_SIZE + 4095) / 4096; // Ceiling division
+        for desc in descriptors {
+            if desc.type_ == EfiMemoryType::EfiConventionalMemory && desc.number_of_pages >= required_pages as u64 {
+                heap_phys_start = Some(x86_64::PhysAddr::new(desc.physical_start));
+                break;
+            }
+        }
+    }
+    let heap_phys_start = heap_phys_start.expect("No suitable memory region found for heap");
 
-    let heap_start = heap::allocate_heap_from_map(loader_data_start, heap::HEAP_SIZE);
+    let heap_start = heap::allocate_heap_from_map(heap_phys_start, heap::HEAP_SIZE);
 
     let heap_start = gdt::init(heap_start); // Initialize GDT with heap start, get adjusted heap start
     interrupts::init(); // Initialize IDT

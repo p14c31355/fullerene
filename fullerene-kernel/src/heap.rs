@@ -67,6 +67,13 @@ impl Heap {
                 let alloc_start = align_up(node.start_addr(), align);
                 let alloc_end = alloc_start + size;
 
+                // Check if padding is too small to create a free block
+                let padding = alloc_start - node.start_addr();
+                if padding > 0 && padding < core::mem::size_of::<ListNode>() {
+                    current = &mut node.next;
+                    continue;
+                }
+
                 if alloc_end <= node.end_addr() {
                     // Found a suitable block
                     let remaining = node.end_addr() - alloc_end;
@@ -77,7 +84,11 @@ impl Heap {
                         (*new_node).next = node.next;
                         node.next = new_node;
                     }
-                    node.size = alloc_start - node.start_addr();
+                    node.size = padding;
+                    if node.size == 0 {
+                        // Remove consumed node
+                        *current = node.next;
+                    }
                     return alloc_start as *mut u8;
                 }
                 current = &mut node.next;
