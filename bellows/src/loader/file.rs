@@ -178,9 +178,9 @@ pub fn read_efi_file(bs: &EfiBootServices, image_handle: usize) -> petroleum::co
         return Err(BellowsError::FileIo("Failed to get file info size."));
     }
 
-    // ヒープなしモード用: 固定バッファ (一時テスト)
-    let mut file_info_buffer = [0u8; 1024];
-    if file_info_buffer_size > 1024 {
+    // Use a page-sized buffer on the stack, which is safer for variable-sized info.
+    let mut file_info_buffer = [0u8; 4096];
+    if file_info_buffer_size > file_info_buffer.len() {
         debug_print_str("File: File info buffer too large for fixed buffer.\n");
         return Err(BellowsError::FileIo("File info buffer too large."));
     }
