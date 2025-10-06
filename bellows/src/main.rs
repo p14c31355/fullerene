@@ -7,6 +7,8 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+#[cfg(not(test))]
+use core::panic::PanicInfo;
 use core::{ffi::c_void, ptr};
  // Import Port for direct I/O
 
@@ -196,4 +198,10 @@ fn init_gop(st: &EfiSystemTable) {
     unsafe {
         core::ptr::write_bytes(fb_addr as *mut u8, 0x00, fb_size as usize);
     }
+}
+
+#[cfg(not(test))]
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    petroleum::handle_panic(info);
 }
