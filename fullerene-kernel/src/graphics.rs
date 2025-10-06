@@ -300,7 +300,7 @@ impl FramebufferLike for VgaWriter {
     }
 
     fn scroll_up(&self) {
-        self.scroll_up();
+        VgaWriter::scroll_up(self);
     }
 }
 
