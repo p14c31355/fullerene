@@ -115,7 +115,9 @@ fn init_common(memory_map: *mut c_void, memory_map_size: usize) {
         }
     }
     let loader_data_start = loader_data_start.expect("No LoaderData region found in memory map");
-    let heap_start = heap::allocate_heap_from_map(loader_data_start, heap::HEAP_SIZE);
+    // Find virtual_start for the LoaderData region
+    let virtual_start = descriptors.iter().find(|desc| desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0).map(|desc| desc.virtual_start).unwrap_or(loader_data_start.as_u64());
+    let heap_start = x86_64::VirtAddr::new(virtual_start);
 
     gdt::init(heap_start); // Initialize GDT with heap start
     interrupts::init(); // Initialize IDT

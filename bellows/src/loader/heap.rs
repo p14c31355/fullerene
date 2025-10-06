@@ -72,8 +72,8 @@ fn try_allocate_pages(bs: &EfiBootServices, pages: usize, preferred_type: EfiMem
         debug_print_hex(mem_type as usize);
         debug_print_str("\n");
         debug_print_str("Heap: Entering allocate_pages call...\n");
-        // Use AllocateMaxAddress (0x80000000) for high mem preference
-        let alloc_type = 0x80000000usize;  // Instead of 0
+        // Use AllocateAnyPages (0) for any mem
+        let alloc_type = 0usize;  // AllocateAnyPages
         let status = (bs.allocate_pages)(
             alloc_type,
             mem_type,

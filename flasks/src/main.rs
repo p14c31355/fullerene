@@ -32,27 +32,32 @@ fn main() -> io::Result<()> {
         .join("target")
         .join("x86_64-unknown-uefi")
         .join("debug");
-    let kernel_path = target_dir.join("fullerene-kernel.efi");
+    let kernel_path = target_dir.join("fullerene-kernel");
 
     // --- 2. Build bellows (no_std) ---
-    let status = Command::new("cargo")
-        .current_dir(&workspace_root)
-        .args([
-            "+nightly",
-            "build",
-            "-Zbuild-std=core,alloc",
-            "--package",
-            "bellows",
-            "--target",
-            "x86_64-unknown-uefi",
-            "--profile",
-            "dev",
-        ])
-        .status()?;
-    if !status.success() {
-        return Err(io::Error::other("bellows build failed"));
-    }
+    // For BIOS mode, skip bellows
     let bellows_path = target_dir.join("bellows.efi");
+    if bellows_path.exists() {
+        // Use existing
+    } else {
+        let status = Command::new("cargo")
+            .current_dir(&workspace_root)
+            .args([
+                "+nightly",
+                "build",
+                "-Zbuild-std=core,alloc",
+                "--package",
+                "bellows",
+                "--target",
+                "x86_64-unknown-uefi",
+                "--profile",
+                "dev",
+            ])
+            .status()?;
+        if !status.success() {
+            return Err(io::Error::other("bellows build failed"));
+        }
+    }
 
     // --- 3. Create ISO using isobemak ---
     let iso_path = workspace_root.join("fullerene.iso");
@@ -115,7 +120,7 @@ fn main() -> io::Result<()> {
 
     let mut qemu_cmd = Command::new("qemu-system-x86_64");
     qemu_cmd.args([
-        "-m", "2G",
+        "-m", "4G",
         "-cpu", "qemu64,+smap,-invtsc",
         "-smp", "1",
         "-machine", "q35,smm=off",
