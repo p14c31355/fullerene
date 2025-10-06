@@ -136,7 +136,7 @@ fn init_common() {
     static mut HEAP: [MaybeUninit<u8>; heap::HEAP_SIZE] = [MaybeUninit::uninit(); heap::HEAP_SIZE];
     let heap_start_addr: x86_64::VirtAddr;
     unsafe {
-        let heap_start_ptr = HEAP.as_mut_ptr();
+        let heap_start_ptr: *mut u8 = core::ptr::addr_of_mut!(HEAP) as *mut u8;
         heap_start_addr = x86_64::VirtAddr::from_ptr(heap_start_ptr);
         heap::ALLOCATOR.lock().init(heap_start_ptr, heap::HEAP_SIZE);
     }
