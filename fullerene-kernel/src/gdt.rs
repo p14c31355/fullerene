@@ -1,5 +1,3 @@
-// fullerene-kernel/src/gdt.rs
-
 use spin::Once;
 use x86_64::VirtAddr;
 use x86_64::instructions::tables::load_tss;
@@ -15,21 +13,16 @@ static GDT: Once<GlobalDescriptorTable> = Once::new();
 static CODE_SELECTOR: Once<SegmentSelector> = Once::new();
 static TSS_SELECTOR: Once<SegmentSelector> = Once::new();
 
-pub fn init() {
+pub fn init(heap_start: VirtAddr) -> VirtAddr {
+    const STACK_SIZE: usize = 4096 * 5;
+    let double_fault_ist = heap_start + STACK_SIZE as u64;
+    let timer_ist = double_fault_ist + STACK_SIZE as u64;
+    let new_heap_start = timer_ist + STACK_SIZE as u64; // Reserve space for both stacks
+
     let tss = TSS.call_once(|| {
         let mut tss = TaskStateSegment::new();
-        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
-            const STACK_SIZE: usize = 4096 * 5; // 5 pages
-            static mut DOUBLE_FAULT_STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
-            let stack_start = VirtAddr::from_ptr(&raw const DOUBLE_FAULT_STACK);
-            stack_start + STACK_SIZE as u64
-        };
-        tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = {
-            const STACK_SIZE: usize = 4096 * 5; // 5 pages
-            static mut TIMER_STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
-            let stack_start = VirtAddr::from_ptr(&raw const TIMER_STACK);
-            stack_start + STACK_SIZE as u64
-        };
+        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = double_fault_ist;
+        tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = timer_ist;
         tss
     });
 
@@ -49,4 +42,6 @@ pub fn init() {
         CS::set_reg(*CODE_SELECTOR.get().unwrap());
         load_tss(*TSS_SELECTOR.get().unwrap());
     }
+
+    new_heap_start
 }

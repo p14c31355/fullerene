@@ -8,11 +8,12 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use core::{ffi::c_void, ptr, slice};
+use x86_64::instructions::port::Port; // Import Port for direct I/O
 
 mod loader;
 
 use loader::{
-    exit_boot_services_and_jump, file::read_efi_file, heap::init_heap, pe::load_efi_image,
+    debug::*, exit_boot_services_and_jump, file::read_efi_file, heap::init_heap, pe::load_efi_image,
 };
 
 use petroleum::common::{
@@ -25,69 +26,94 @@ use petroleum::common::{
 /// This function is the `start` attribute as defined in the `Cargo.toml`.
 #[unsafe(no_mangle)]
 pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
+    debug_print_str("Bellows: efi_main entered.\n"); // Early debug print
+
     let _ = petroleum::UEFI_SYSTEM_TABLE
         .lock()
         .insert(petroleum::UefiSystemTablePtr(system_table));
+    debug_print_str("Bellows: UEFI_SYSTEM_TABLE initialized.\n"); // Debug print after initialization
     let st = unsafe { &*system_table };
     let bs = unsafe { &*st.boot_services };
 
+    debug_print_str("Bellows: UEFI system table and boot services acquired.\n"); // Early debug print
+
     // Initialize the serial writer with the console output pointer.
-
     petroleum::serial::UEFI_WRITER.lock().init(st.con_out);
-
-    // Heap initをここに移動（出力前に確保）
-    petroleum::serial::_print(format_args!("Attempting to initialize heap...\n"));
-    if let Err(e) = init_heap(bs) {
-        // ここはheapなしでエラー出力（後述のheap-less版追加）
-        panic!("Failed to initialize heap: {:?}", e);
-    }
-    petroleum::serial::_print(format_args!("Heap initialized successfully.\n"));
+    debug_print_str("Bellows: UEFI_WRITER initialized.\n"); // Debug print after UEFI_WRITER init
 
     petroleum::println!("Bellows UEFI Bootloader starting...");
+    debug_print_str("Bellows: 'Bellows UEFI Bootloader starting...' printed.\n"); // Debug print after println!
     petroleum::serial::_print(format_args!("Attempting to initialize GOP...\n"));
+    petroleum::println!("Image Handle: {:#x}", image_handle);
+    petroleum::println!("System Table: {:#p}", system_table);
+    // Initialize heap
+    petroleum::serial::_print(format_args!("Attempting to initialize heap...\n"));
+    init_heap(bs).expect("Heap initialization failed");
+    petroleum::serial::_print(format_args!("Heap initialized successfully.\n"));
+    debug_print_str("Bellows: Heap OK.\n");
     init_gop(st);
     petroleum::serial::_print(format_args!("GOP initialized successfully.\n"));
+    debug_print_str("Bellows: GOP initialized.\n"); // Debug print after GOP initialization
 
-    petroleum::serial::_print(format_args!("Attempting to read kernel EFI file...\n"));
-    // Read the kernel file before exiting boot services.
-    let (efi_image_phys, efi_image_size) = match read_efi_file(bs) {
-        Ok(t) => t,
+    debug_print_str("Bellows: Reading kernel from file...\n");
+    // Read the kernel from the file system
+    let (addr, size) = match read_efi_file(bs, image_handle) {
+        Ok(data) => data,
         Err(err) => {
-            petroleum::serial::_print(format_args!("Failed to read EFI file: {:?}\n", err));
-            panic!("Failed to read EFI file.");
+            petroleum::println!("Failed to read kernel file: {:?}", err);
+            panic!("Failed to read kernel file.");
         }
     };
+    let efi_image_file = unsafe { core::slice::from_raw_parts(addr as *const u8, size) };
+    let efi_image_size = size;
+
+    if efi_image_size == 0 {
+        debug_print_str("Bellows: Kernel file is empty!\n");
+        petroleum::println!("Kernel file is empty.");
+        panic!("Kernel file is empty.");
+    }
+
+    debug_print_str("Bellows: Kernel file loaded.\n");
     petroleum::serial::_print(format_args!(
-        "Kernel EFI file read. Physical address: {:#x}, size: {}\n",
-        efi_image_phys, efi_image_size
+        "Kernel file loaded. Size: {}\n",
+        efi_image_size
     ));
 
-    let efi_image_file = {
-        // Safety:
-        // `efi_image_phys` and `efi_image_size` are returned by `read_efi_file`,
-        // which allocates a valid memory region and reads the file into it.
-        if efi_image_size == 0 {
-            petroleum::println!("Kernel file is empty.");
-            panic!("Kernel file is empty.");
-        }
-        unsafe { slice::from_raw_parts(efi_image_phys as *const u8, efi_image_size) }
-    };
+    petroleum::serial::_print(format_args!("Attempting to load EFI image...\n"));
 
     // Load the kernel and get its entry point.
     let entry = match load_efi_image(st, efi_image_file) {
-        Ok(e) => e,
+        Ok(e) => {
+            petroleum::serial::_print(format_args!(
+                "EFI image loaded successfully. Entry point: {:#p}\n",
+                e as *const ()
+            ));
+            e
+        }
         Err(err) => {
             petroleum::println!("Failed to load EFI image: {:?}", err);
             let file_pages = efi_image_size.div_ceil(4096);
-            (bs.free_pages)(efi_image_phys, file_pages);
+            unsafe {
+                (bs.free_pages)(addr, file_pages);
+            }
             panic!("Failed to load EFI image.");
         }
     };
+    debug_print_str("Bellows: EFI image loaded.\n"); // Debug print after load_efi_image
 
+    // Free the memory that was used to hold the kernel file contents
     let file_pages = efi_image_size.div_ceil(4096);
-    (bs.free_pages)(efi_image_phys, file_pages);
+    unsafe {
+        (bs.free_pages)(addr, file_pages);
+    }
 
+    debug_print_str("Bellows: Kernel loaded into allocated memory.\n");
+
+    petroleum::serial::_print(format_args!(
+        "Exiting boot services and jumping to kernel...\n"
+    ));
     // Exit boot services and jump to the kernel.
+    debug_print_str("Bellows: About to exit boot services and jump to kernel.\n"); // Debug print just before the call
     match exit_boot_services_and_jump(image_handle, system_table, entry) {
         Ok(_) => {
             unreachable!(); // This branch should never be reached if the function returns '!'
@@ -97,6 +123,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             panic!("Failed to exit boot services.");
         }
     }
+    debug_print_str("Bellows: Exited boot services and jumped to kernel.\n"); // Debug print after exit_boot_services_and_jump
 }
 
 /// Initializes the Graphics Output Protocol (GOP) for framebuffer access.
@@ -111,7 +138,9 @@ fn init_gop(st: &EfiSystemTable) {
     );
 
     if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
-        petroleum::serial::_print(format_args!("Failed to locate GOP protocol, continuing without it.\n"));
+        petroleum::serial::_print(format_args!(
+            "Failed to locate GOP protocol, continuing without it.\n"
+        ));
         return;
     }
 
@@ -154,9 +183,13 @@ fn init_gop(st: &EfiSystemTable) {
     );
 
     if EfiStatus::from(status) != EfiStatus::Success {
-        petroleum::serial::_print(format_args!("Failed to install framebuffer config table, recovering memory.\n"));
+        petroleum::serial::_print(format_args!(
+            "Failed to install framebuffer config table, recovering memory.\n"
+        ));
         let _ = unsafe { Box::from_raw(config_ptr) };
-        petroleum::serial::_print(format_args!("Failed to install framebuffer config table.\n"));
+        petroleum::serial::_print(format_args!(
+            "Failed to install framebuffer config table.\n"
+        ));
         return;
     }
 

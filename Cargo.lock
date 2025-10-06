@@ -33,6 +33,7 @@ dependencies = [
  "linked_list_allocator",
  "petroleum",
  "spin 0.10.0",
+ "x86_64",
 ]
 
 [[package]]
@@ -155,12 +156,8 @@ dependencies = [
 name = "fullerene-kernel"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.9.4",
  "lazy_static",
- "linked_list_allocator",
- "pc-keyboard",
  "petroleum",
- "pic8259",
  "spin 0.10.0",
  "x86_64",
 ]
@@ -290,24 +287,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 
 [[package]]
-name = "pc-keyboard"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0ca629cbb3f0d5b699c338f0129ff78c9bfd7ea8b1258ad529bff490dc8ed5a"
-
-[[package]]
 name = "petroleum"
 version = "0.1.0"
 dependencies = [
  "spin 0.10.0",
-]
-
-[[package]]
-name = "pic8259"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62d9a86c292b165f757e47e7fd66855def189b2564609bc4203727b27c33db22"
-dependencies = [
  "x86_64",
 ]
 

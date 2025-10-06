@@ -14,16 +14,9 @@ spin = { version = "0.10.0", default-features = false, features = [
   "mutex",
   "spin_mutex",
 ] }
-bitflags = { version = "2.9.4", default-features = false, features = [] }
 lazy_static = { version = "1.5.0", default-features = false, features = [
   "spin_no_std",
 ] }
-pc-keyboard = { version = "0.8.0", default-features = false }
-pic8259 = { version = "0.11.0", default-features = false, features = [
-  "nightly",
-] }
-
-linked_list_allocator = "0.10.5"
 
 petroleum = { path = "../petroleum" }
 

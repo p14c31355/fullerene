@@ -35,7 +35,7 @@ pub struct VgaFramebufferConfig {
     pub address: u64,
     pub width: u32,
     pub height: u32,
-    pub bpp: u32,  // Bits per pixel
+    pub bpp: u32, // Bits per pixel
 }
 
 #[repr(usize)]
@@ -49,16 +49,22 @@ pub enum EfiStatus {
     BufferTooSmall = 5,
     NotInReadyState = 6,
     DeviceError = 7,
-    EndOfMedia = 8,
-    NotFound = 9,
-    AccessDenied = 10,
-    NoResponse = 11,
-    NoMapping = 12,
-    Timeout = 13,
-    NotStarted = 14,
-    AlreadyStarted = 15,
+    WriteProtected = 8,
+    OutOfResources = 9,
+    VolumeCorrupted = 10,
+    VolumeFull = 11,
+    NoMedia = 12,
+    MediaChanged = 13,
+    NotFound = 14,
+    AccessDenied = 15,
+    NoResponse = 16,
+    NoMapping = 17,
+    Timeout = 18,
+    NotStarted = 19,
+    AlreadyStarted = 20,
     Aborted = 21,
-    IcalFailed = 26,
+    IcalFailed = 22,
+    // ... more can be added as needed
 }
 
 impl From<usize> for EfiStatus {
@@ -72,16 +78,21 @@ impl From<usize> for EfiStatus {
             5 => EfiStatus::BufferTooSmall,
             6 => EfiStatus::NotInReadyState,
             7 => EfiStatus::DeviceError,
-            8 => EfiStatus::EndOfMedia,
-            9 => EfiStatus::NotFound,
-            10 => EfiStatus::AccessDenied,
-            11 => EfiStatus::NoResponse,
-            12 => EfiStatus::NoMapping,
-            13 => EfiStatus::Timeout,
-            14 => EfiStatus::NotStarted,
-            15 => EfiStatus::AlreadyStarted,
+            8 => EfiStatus::WriteProtected,
+            9 => EfiStatus::OutOfResources,
+            10 => EfiStatus::VolumeCorrupted,
+            11 => EfiStatus::VolumeFull,
+            12 => EfiStatus::NoMedia,
+            13 => EfiStatus::MediaChanged,
+            14 => EfiStatus::NotFound,
+            15 => EfiStatus::AccessDenied,
+            16 => EfiStatus::NoResponse,
+            17 => EfiStatus::NoMapping,
+            18 => EfiStatus::Timeout,
+            19 => EfiStatus::NotStarted,
+            20 => EfiStatus::AlreadyStarted,
             21 => EfiStatus::Aborted,
-            26 => EfiStatus::IcalFailed,
+            22 => EfiStatus::IcalFailed,
             _ => EfiStatus::Unsupported, // Fallback for unknown status codes
         }
     }
@@ -89,10 +100,18 @@ impl From<usize> for EfiStatus {
 
 /// Minimal subset of UEFI memory types (only those we need)
 #[repr(usize)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum EfiMemoryType {
     EfiLoaderData = 2,
+    EfiRuntimeServicesData = 6,
+    EfiConventionalMemory = 7,
     EfiMaxMemoryType = 15,
 }
+
+/// GUID for EFI_LOADED_IMAGE_PROTOCOL (UEFI)
+pub const EFI_LOADED_IMAGE_PROTOCOL_GUID: [u8; 16] = [
+    0xa1, 0x31, 0x1b, 0x5b, 0x62, 0x95, 0xd2, 0x11, 0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
+];
 
 /// GUID for EFI_SIMPLE_FILE_SYSTEM_PROTOCOL (UEFI)
 pub const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: [u8; 16] = [
@@ -151,24 +170,26 @@ pub struct EfiSystemTable {
 /// Very small subset of Boot Services we call (UEFI)
 #[repr(C)]
 pub struct EfiBootServices {
-    _pad0: [usize; 2],
-    /// allocate_pages(AllocateType, MemoryType, Pages, *mut PhysicalAddress) -> EFI_STATUS
-    pub allocate_pages: extern "efiapi" fn(usize, EfiMemoryType, usize, *mut usize) -> usize,
-    /// free_pages(PhysicalAddress, Pages) -> EFI_STATUS
-    pub free_pages: extern "efiapi" fn(usize, usize) -> usize,
-    _pad1: [usize; 2],
-    /// get_memory_map(*mut MapSize, *mut MemoryMap, *mut MapKey, *mut DescriptorSize, *mut DescriptorVersion) -> EFI_STATUS
+    pub hdr: [u64; 3], // EFI_TABLE_HEADER
+    _pad0: [usize; 2], // raise_tpl, restore_tpl
+    pub allocate_pages: extern "efiapi" fn(usize, EfiMemoryType, usize, *mut usize) -> usize, // idx 5
+    pub free_pages: extern "efiapi" fn(usize, usize) -> usize, // idx 6
     pub get_memory_map:
-        extern "efiapi" fn(*mut usize, *mut c_void, *mut usize, *mut usize, *mut u32) -> usize,
-    _pad2: [usize; 2],
-    /// exit_boot_services(ImageHandle, MapKey) -> EFI_STATUS
-    pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize,
-    _pad3: [usize; 1],
-    /// locate_protocol(Protocol, Registration, *mut Interface) -> EFI_STATUS
-    pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize,
-    _pad4: [usize; 3],
-    /// install_configuration_table(Guid, Table) -> EFI_STATUS
-    pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize,
+        extern "efiapi" fn(*mut usize, *mut c_void, *mut usize, *mut usize, *mut u32) -> usize, // idx 7
+    _pad1: [usize; 11], // 8-18
+    pub handle_protocol: extern "efiapi" fn(usize, *const u8, *mut *mut c_void) -> usize, // idx 19
+    _pad2: [usize; 2],  // 20-21
+    pub locate_handle:
+        extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut usize) -> usize, // idx 22
+    _pad3: [usize; 1],  // 23
+    pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize, // idx 24
+    _pad4: [usize; 4],  // 25-28
+    pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize, // idx 29
+    _pad5: [usize; 5],  // 30-34
+    pub open_protocol:
+        extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, // idx 35
+    _pad6: [usize; 4], // 36-39
+    pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize, // idx 40
 }
 
 /// Minimal UEFI Simple Text Output Protocol (UEFI)
@@ -201,6 +222,15 @@ pub struct EfiSimpleFileSystem {
     _pad: [usize; 1],
     /// open_volume(This, *mut EfiSimpleFileSystem, *mut *mut EfiFile) -> EFI_STATUS
     pub open_volume: extern "efiapi" fn(*mut EfiSimpleFileSystem, *mut *mut EfiFile) -> usize,
+}
+
+/// Minimal EFI_LOADED_IMAGE_PROTOCOL (UEFI)
+#[repr(C)]
+pub struct EfiLoadedImageProtocol {
+    pub revision: u32,
+    pub parent_handle: usize,
+    pub device_handle: usize,
+    // more fields, but we only need these
 }
 
 /// Minimal EFI_GRAPHICS_OUTPUT_PROTOCOL (UEFI)

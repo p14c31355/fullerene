@@ -1,17 +1,57 @@
-use core::fmt;
 use alloc::boxed::Box; // Import Box
+use core::fmt;
+use core::marker::{Send, Sync};
 #[cfg(not(target_os = "uefi"))]
 use petroleum::common::VgaFramebufferConfig;
 use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig}; // Import missing types
 use spin::{Mutex, Once};
-use core::marker::{Send, Sync};
 use x86_64::instructions::port::Port;
 
 use crate::font::FONT_8X8;
 
 // A simple 8x8 PC screen font (Code Page 437).
-// This is a placeholder. A more complete font would be needed for full ASCII/Unicode support.
 static FONT: [[u8; 8]; 128] = FONT_8X8;
+
+fn draw_char(fb: &impl FramebufferLike, c: char, x: u32, y: u32) {
+    let char_idx = (c as u8) as usize;
+    if !c.is_ascii() || char_idx >= 128 {
+        return;
+    }
+    let font_char = &FONT[char_idx];
+    for (row, &byte) in font_char.iter().enumerate() {
+        for col in 0..8 {
+            let color = if (byte >> (7 - col)) & 1 == 1 {
+                fb.get_fg_color()
+            } else {
+                fb.get_bg_color()
+            };
+            fb.put_pixel(x + col as u32, y + row as u32, color);
+        }
+    }
+}
+
+fn new_line(fb: &mut impl FramebufferLike) {
+    let (_, mut y_pos) = fb.get_position();
+    y_pos += 8; // Font height
+    let x_pos = 0;
+    if y_pos >= fb.get_height() {
+        fb.scroll_up();
+        y_pos -= 8;
+    }
+    fb.set_position(x_pos, y_pos);
+}
+
+trait FramebufferLike {
+    fn put_pixel(&self, x: u32, y: u32, color: u32);
+    fn clear_screen(&self);
+    fn get_width(&self) -> u32;
+    fn get_height(&self) -> u32;
+    fn get_fg_color(&self) -> u32;
+    fn get_bg_color(&self) -> u32;
+    fn set_position(&mut self, x: u32, y: u32);
+    fn get_position(&self) -> (u32, u32);
+    fn scroll_up(&self);
+}
 
 #[cfg(target_os = "uefi")]
 struct FramebufferWriter {
@@ -57,6 +97,33 @@ impl FramebufferWriter {
         }
     }
 
+    fn scroll_up(&self) {
+        let bytes_per_pixel = self.bytes_per_pixel();
+        let bytes_per_line = self.framebuffer.stride * bytes_per_pixel;
+        let shift_bytes = 8u64 * bytes_per_line as u64;
+        let total_bytes = self.framebuffer.height as u64 * bytes_per_line as u64;
+        let fb_ptr = self.framebuffer.address as *mut u8;
+        unsafe {
+            core::ptr::copy(
+                fb_ptr.add(shift_bytes as usize),
+                fb_ptr,
+                (total_bytes - shift_bytes) as usize,
+            );
+        }
+        // Clear the last 8 lines
+        let last_lines_offset =
+            (self.framebuffer.height.saturating_sub(8)) * self.framebuffer.stride * bytes_per_pixel;
+        let clear_ptr = (self.framebuffer.address + last_lines_offset as u64) as *mut u32;
+        let clear_num_u32 = 8 * self.framebuffer.stride as usize;
+        unsafe {
+            let clear_slice = core::slice::from_raw_parts_mut(clear_ptr, clear_num_u32);
+            clear_slice.fill(self.bg_color);
+        }
+    }
+}
+
+#[cfg(target_os = "uefi")]
+impl FramebufferLike for FramebufferWriter {
     fn put_pixel(&self, x: u32, y: u32, color: u32) {
         if x >= self.framebuffer.width || y >= self.framebuffer.height {
             return;
@@ -65,9 +132,6 @@ impl FramebufferWriter {
         let offset = (y * self.framebuffer.stride + x) * bytes_per_pixel;
         let fb_ptr = self.framebuffer.address as *mut u8;
         unsafe {
-            // Assuming a BGRx or RGBx 32-bit format.
-            // The color is ARGB, so we might need to swizzle.
-            // For now, we write it directly.
             let pixel_ptr = fb_ptr.add(offset as usize) as *mut u32;
             *pixel_ptr = color;
         }
@@ -79,79 +143,69 @@ impl FramebufferWriter {
             let offset = y * self.framebuffer.stride * bytes_per_pixel;
             let line_ptr = (self.framebuffer.address + offset as u64) as *mut u32;
             unsafe {
-                let line_slice = core::slice::from_raw_parts_mut(line_ptr, self.framebuffer.width as usize);
+                let line_slice =
+                    core::slice::from_raw_parts_mut(line_ptr, self.framebuffer.width as usize);
                 line_slice.fill(self.bg_color);
             }
         }
     }
 
-    pub fn new_line(&mut self) {
-        self.y_pos += 8; // Font height
-        self.x_pos = 0;
-        if self.y_pos >= self.framebuffer.height {
-            let bytes_per_pixel = self.bytes_per_pixel();
-            let bytes_per_line = self.framebuffer.stride * bytes_per_pixel;
-            let shift_bytes = 8u64 * bytes_per_line as u64;
-            let total_bytes = self.framebuffer.height as u64 * bytes_per_line as u64;
-            let fb_ptr = self.framebuffer.address as *mut u8;
-            unsafe {
-                core::ptr::copy(
-                    fb_ptr.add(shift_bytes as usize),
-                    fb_ptr,
-                    (total_bytes - shift_bytes) as usize,
-                );
-            }
-            // Clear the last 8 lines
-            let last_lines_offset = (self.framebuffer.height - 8) * self.framebuffer.stride * bytes_per_pixel;
-            let clear_ptr = (self.framebuffer.address + last_lines_offset as u64) as *mut u32;
-            let clear_num_u32 = 8 * self.framebuffer.stride as usize;
-            unsafe {
-                let clear_slice = core::slice::from_raw_parts_mut(clear_ptr, clear_num_u32);
-                clear_slice.fill(self.bg_color);
-            }
-            self.y_pos -= 8;
-        }
+    fn get_width(&self) -> u32 {
+        self.framebuffer.width
     }
 
-    fn draw_char(&self, c: char, x: u32, y: u32) {
-        let char_idx = (c as u8) as usize;
-        // The FONT is now a 2D array [[u8; 8]; 128], so we access it directly.
-        // We also need to ensure char_idx is within bounds for the 128 glyphs.
-        if !c.is_ascii() || char_idx >= 128 {
-            return;
-        }
-        let font_char = &FONT[char_idx];
-        for (row, &byte) in font_char.iter().enumerate() {
-            for col in 0..8 {
-                let color = if (byte >> (7 - col)) & 1 == 1 {
-                    self.fg_color
-                } else {
-                    self.bg_color
-                };
-                self.put_pixel(x + col as u32, y + row as u32, color);
-            }
-        }
+    fn get_height(&self) -> u32 {
+        self.framebuffer.height
+    }
+
+    fn get_fg_color(&self) -> u32 {
+        self.fg_color
+    }
+
+    fn get_bg_color(&self) -> u32 {
+        self.bg_color
+    }
+
+    fn set_position(&mut self, x: u32, y: u32) {
+        self.x_pos = x;
+        self.y_pos = y;
+    }
+
+    fn get_position(&self) -> (u32, u32) {
+        (self.x_pos, self.y_pos)
+    }
+
+    fn scroll_up(&self) {
+        FramebufferWriter::scroll_up(self);
     }
 }
 
 #[cfg(target_os = "uefi")]
 impl core::fmt::Write for FramebufferWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let (mut x_pos, mut y_pos) = self.get_position();
         for c in s.chars() {
             if c == '\n' {
-                self.new_line();
+                new_line(self);
+                let (new_x, new_y) = self.get_position();
+                x_pos = new_x;
+                y_pos = new_y;
             } else {
-                self.draw_char(c, self.x_pos, self.y_pos);
-                self.x_pos += 8;
-                if self.x_pos + 8 > self.framebuffer.width {
-                    self.new_line();
+                draw_char(self, c, x_pos, y_pos);
+                x_pos += 8;
+                if x_pos + 8 > self.get_width() {
+                    new_line(self);
+                    let (new_x, new_y) = self.get_position();
+                    x_pos = new_x;
+                    y_pos = new_y;
+                } else {
+                    self.set_position(x_pos, y_pos);
                 }
             }
         }
         Ok(())
     }
 }
-
 
 #[cfg(not(target_os = "uefi"))]
 struct VgaWriter {
@@ -160,7 +214,7 @@ struct VgaWriter {
     height: u32,
     x_pos: u32,
     y_pos: u32,
-    fg_color: u8,  // 256-color palette index
+    fg_color: u8, // 256-color palette index
     bg_color: u8,
 }
 
@@ -178,14 +232,39 @@ impl VgaWriter {
         }
     }
 
-    fn put_pixel(&self, x: u32, y: u32, color: u8) {
+    fn scroll_up(&self) {
+        let bytes_per_line = self.width;
+        let shift_bytes = 8u64 * bytes_per_line as u64;
+        let total_bytes = self.height as u64 * bytes_per_line as u64;
+        let fb_ptr = self.address as *mut u8;
+        unsafe {
+            core::ptr::copy(
+                fb_ptr.add(shift_bytes as usize),
+                fb_ptr,
+                (total_bytes - shift_bytes) as usize,
+            );
+        }
+        // Clear last 8 lines
+        let clear_offset = (self.height.saturating_sub(8)) * self.width;
+        let clear_size = 8 * self.width as usize;
+        let fb_ptr = self.address as *mut u8;
+        unsafe {
+            let clear_ptr = fb_ptr.add(clear_offset as usize);
+            core::ptr::write_bytes(clear_ptr, self.bg_color, clear_size);
+        }
+    }
+}
+
+#[cfg(not(target_os = "uefi"))]
+impl FramebufferLike for VgaWriter {
+    fn put_pixel(&self, x: u32, y: u32, color: u32) {
         if x >= self.width || y >= self.height {
             return;
         }
         let offset = (y * self.width + x) as usize;
         unsafe {
             let fb_ptr = self.address as *mut u8;
-            *fb_ptr.add(offset) = color;
+            *fb_ptr.add(offset) = color as u8;
         }
     }
 
@@ -196,70 +275,62 @@ impl VgaWriter {
         }
     }
 
-    pub fn new_line(&mut self) {
-        self.y_pos += 8; // Font height
-        self.x_pos = 0;
-        if self.y_pos >= self.height {
-            let bytes_per_line = self.width;
-            let shift_bytes = 8u64 * bytes_per_line as u64;
-            let total_bytes = self.height as u64 * bytes_per_line as u64;
-            let fb_ptr = self.address as *mut u8;
-            unsafe {
-                core::ptr::copy(
-                    fb_ptr.add(shift_bytes as usize),
-                    fb_ptr,
-                    (total_bytes - shift_bytes) as usize,
-                );
-            }
-            // Clear last 8 lines
-            let clear_offset = (self.height - 8) * self.width;
-            let clear_size = 8 * self.width as usize;
-            let fb_ptr = self.address as *mut u8;
-            unsafe {
-                let clear_ptr = fb_ptr.add(clear_offset as usize);
-                core::ptr::write_bytes(clear_ptr, self.bg_color, clear_size);
-            }
-            self.y_pos -= 8;
-        }
+    fn get_width(&self) -> u32 {
+        self.width
     }
 
-    fn draw_char(&self, c: char, x: u32, y: u32) {
-        let char_idx = (c as u8) as usize;
-        if !c.is_ascii() || char_idx >= 128 {
-            return;
-        }
-        let font_char = &FONT[char_idx];
-        for (row, &byte) in font_char.iter().enumerate() {
-            for col in 0..8 {
-                let color = if (byte >> (7 - col)) & 1 == 1 {
-                    self.fg_color
-                } else {
-                    self.bg_color
-                };
-                self.put_pixel(x + col as u32, y + row as u32, color);
-            }
-        }
+    fn get_height(&self) -> u32 {
+        self.height
+    }
+
+    fn get_fg_color(&self) -> u32 {
+        self.fg_color as u32
+    }
+
+    fn get_bg_color(&self) -> u32 {
+        self.bg_color as u32
+    }
+
+    fn set_position(&mut self, x: u32, y: u32) {
+        self.x_pos = x;
+        self.y_pos = y;
+    }
+
+    fn get_position(&self) -> (u32, u32) {
+        (self.x_pos, self.y_pos)
+    }
+
+    fn scroll_up(&self) {
+        VgaWriter::scroll_up(self);
     }
 }
 
 #[cfg(not(target_os = "uefi"))]
 impl core::fmt::Write for VgaWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let (mut x_pos, mut y_pos) = self.get_position();
         for c in s.chars() {
             if c == '\n' {
-                self.new_line();
+                new_line(self);
+                let (new_x, new_y) = self.get_position();
+                x_pos = new_x;
+                y_pos = new_y;
             } else {
-                self.draw_char(c, self.x_pos, self.y_pos);
-                self.x_pos += 8;
-                if self.x_pos + 8 > self.width {
-                    self.new_line();
+                draw_char(self, c, x_pos, y_pos);
+                x_pos += 8;
+                if x_pos + 8 > self.get_width() {
+                    new_line(self);
+                    let (new_x, new_y) = self.get_position();
+                    x_pos = new_x;
+                    y_pos = new_y;
+                } else {
+                    self.set_position(x_pos, y_pos);
                 }
             }
         }
         Ok(())
     }
 }
-
 
 #[cfg(target_os = "uefi")]
 pub static WRITER_UEFI: Once<Mutex<Box<dyn core::fmt::Write + Send + Sync>>> = Once::new();
@@ -334,11 +405,11 @@ fn setup_sequencer() {
     const SEQ_MEMORY_MODE: u8 = 0x04;
 
     const SEQUENCER_VALUES: &[(u8, u8)] = &[
-        (SEQ_RESET, 0x03), // Reset
-        (SEQ_CLOCKING_MODE, 0x01), // Clocking mode
-        (SEQ_MAP_MASK, 0x0F), // Map mask
+        (SEQ_RESET, 0x03),                // Reset
+        (SEQ_CLOCKING_MODE, 0x01),        // Clocking mode
+        (SEQ_MAP_MASK, 0x0F),             // Map mask
         (SEQ_CHARACTER_MAP_SELECT, 0x00), // Character map select
-        (SEQ_MEMORY_MODE, 0x0E), // Memory mode (for 256 color, chain 4)
+        (SEQ_MEMORY_MODE, 0x0E),          // Memory mode (for 256 color, chain 4)
     ];
     for &(index, value) in SEQUENCER_VALUES {
         write_indexed(
@@ -373,24 +444,24 @@ fn setup_crtc() {
     const CRTC_MODE_CONTROL: u8 = 0x17;
 
     const CRTC_VALUES: &[(u8, u8)] = &[
-        (CRTC_HORIZONTAL_TOTAL, 0x5F), // Horizontal total
-        (CRTC_HORIZONTAL_DISPLAYED, 0x4F), // Horizontal displayed
+        (CRTC_HORIZONTAL_TOTAL, 0x5F),          // Horizontal total
+        (CRTC_HORIZONTAL_DISPLAYED, 0x4F),      // Horizontal displayed
         (CRTC_HORIZONTAL_BLANKING_START, 0x50), // Horizontal blanking start
-        (CRTC_HORIZONTAL_BLANKING_END, 0x82), // Horizontal blanking end
-        (CRTC_HORIZONTAL_SYNC_START, 0x54), // Horizontal sync start
-        (CRTC_HORIZONTAL_SYNC_END, 0x80), // Horizontal sync end
-        (CRTC_VERTICAL_TOTAL, 0xBF), // Vertical total
-        (CRTC_OVERFLOW, 0x1F), // Overflow
-        (CRTC_PRESET_ROW_SCAN, 0x00), // Preset row scan
-        (CRTC_MAXIMUM_SCAN_LINE, 0x41), // Maximum scan line
-        (CRTC_VERTICAL_SYNC_START, 0x9C), // Vertical sync start
-        (CRTC_VERTICAL_SYNC_END, 0x8E), // Vertical sync end
-        (CRTC_VERTICAL_DISPLAYED, 0x8F), // Vertical displayed
-        (CRTC_ROW_OFFSET, 0x28), // Row offset
-        (CRTC_UNDERLINE_LOCATION, 0x40), // Underline location
-        (CRTC_VERTICAL_BLANKING_START, 0x96), // Vertical blanking start
-        (CRTC_VERTICAL_BLANKING_END, 0xB9), // Vertical blanking end
-        (CRTC_MODE_CONTROL, 0xA3), // Line compare / Mode control
+        (CRTC_HORIZONTAL_BLANKING_END, 0x82),   // Horizontal blanking end
+        (CRTC_HORIZONTAL_SYNC_START, 0x54),     // Horizontal sync start
+        (CRTC_HORIZONTAL_SYNC_END, 0x80),       // Horizontal sync end
+        (CRTC_VERTICAL_TOTAL, 0xBF),            // Vertical total
+        (CRTC_OVERFLOW, 0x1F),                  // Overflow
+        (CRTC_PRESET_ROW_SCAN, 0x00),           // Preset row scan
+        (CRTC_MAXIMUM_SCAN_LINE, 0x41),         // Maximum scan line
+        (CRTC_VERTICAL_SYNC_START, 0x9C),       // Vertical sync start
+        (CRTC_VERTICAL_SYNC_END, 0x8E),         // Vertical sync end
+        (CRTC_VERTICAL_DISPLAYED, 0x8F),        // Vertical displayed
+        (CRTC_ROW_OFFSET, 0x28),                // Row offset
+        (CRTC_UNDERLINE_LOCATION, 0x40),        // Underline location
+        (CRTC_VERTICAL_BLANKING_START, 0x96),   // Vertical blanking start
+        (CRTC_VERTICAL_BLANKING_END, 0xB9),     // Vertical blanking end
+        (CRTC_MODE_CONTROL, 0xA3),              // Line compare / Mode control
     ];
     for &(index, value) in CRTC_VALUES {
         write_indexed(
@@ -416,15 +487,15 @@ fn setup_graphics_controller() {
     const GC_BIT_MASK: u8 = 0x08;
 
     const GC_VALUES: &[(u8, u8)] = &[
-        (GC_SET_RESET, 0x00), // Set/reset
+        (GC_SET_RESET, 0x00),        // Set/reset
         (GC_ENABLE_SET_RESET, 0x00), // Enable set/reset
-        (GC_COLOR_COMPARE, 0x00), // Color compare
-        (GC_DATA_ROTATE, 0x00), // Data rotate
-        (GC_READ_MAP_SELECT, 0x00), // Read map select
-        (GC_GRAPHICS_MODE, 0x40), // Graphics mode (256 color)
-        (GC_MISCELLANEOUS, 0x05), // Miscellaneous
-        (GC_COLOR_DONT_CARE, 0x0F), // Color don't care
-        (GC_BIT_MASK, 0xFF), // Bit mask
+        (GC_COLOR_COMPARE, 0x00),    // Color compare
+        (GC_DATA_ROTATE, 0x00),      // Data rotate
+        (GC_READ_MAP_SELECT, 0x00),  // Read map select
+        (GC_GRAPHICS_MODE, 0x40),    // Graphics mode (256 color)
+        (GC_MISCELLANEOUS, 0x05),    // Miscellaneous
+        (GC_COLOR_DONT_CARE, 0x0F),  // Color don't care
+        (GC_BIT_MASK, 0xFF),         // Bit mask
     ];
     for &(index, value) in GC_VALUES {
         write_indexed(
@@ -456,21 +527,21 @@ fn setup_attribute_controller() {
     const AC_COLOR_SELECT_2: u8 = 0x14;
 
     const AC_VALUES: &[(u8, u8)] = &[
-        (AC_MODE_CONTROL_1, 0x00), // Mode control 1
-        (AC_OVERSCAN_COLOR, 0x00), // Overscan color
-        (AC_COLOR_PLANE_ENABLE, 0x0F), // Color plane enable
-        (AC_HORIZONTAL_PIXEL_PANNING, 0x00), // Horizontal pixel panning
-        (AC_COLOR_SELECT, 0x00), // Color select
-        (AC_MODE_CONTROL_2, 0x00), // Mode control 2
-        (AC_SCROLL, 0x00), // Scroll
-        (AC_GRAPHICS_MODE, 0x00), // Graphics mode
-        (AC_LINE_GRAPHICS, 0xFF), // Line graphics
-        (AC_FOREGROUND_COLOR, 0x00), // Foreground color
-        (AC_MODE_CONTROL_256_COLORS, 0x41), // Mode control (for 256 colors)
-        (AC_OVERSCAN_COLOR_BORDER, 0x00), // Overscan color (border)
-        (AC_COLOR_PLANE_ENABLE_2, 0x0F), // Color plane enable
+        (AC_MODE_CONTROL_1, 0x00),             // Mode control 1
+        (AC_OVERSCAN_COLOR, 0x00),             // Overscan color
+        (AC_COLOR_PLANE_ENABLE, 0x0F),         // Color plane enable
+        (AC_HORIZONTAL_PIXEL_PANNING, 0x00),   // Horizontal pixel panning
+        (AC_COLOR_SELECT, 0x00),               // Color select
+        (AC_MODE_CONTROL_2, 0x00),             // Mode control 2
+        (AC_SCROLL, 0x00),                     // Scroll
+        (AC_GRAPHICS_MODE, 0x00),              // Graphics mode
+        (AC_LINE_GRAPHICS, 0xFF),              // Line graphics
+        (AC_FOREGROUND_COLOR, 0x00),           // Foreground color
+        (AC_MODE_CONTROL_256_COLORS, 0x41),    // Mode control (for 256 colors)
+        (AC_OVERSCAN_COLOR_BORDER, 0x00),      // Overscan color (border)
+        (AC_COLOR_PLANE_ENABLE_2, 0x0F),       // Color plane enable
         (AC_HORIZONTAL_PIXEL_PANNING_2, 0x00), // Horizontal pixel panning
-        (AC_COLOR_SELECT_2, 0x00), // Color select
+        (AC_COLOR_SELECT_2, 0x00),             // Color select
     ];
 
     unsafe {
@@ -510,8 +581,6 @@ fn setup_palette() {
         }
     }
 }
-
-
 
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {

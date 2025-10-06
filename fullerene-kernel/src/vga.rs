@@ -203,10 +203,13 @@ mod tests {
     impl MockVgaBuffer {
         fn new(width: usize, height: usize) -> Self {
             MockVgaBuffer {
-                buffer: vec![ScreenChar {
-                    ascii_character: b' ',
-                    color_code: ColorCode::new(Color::White, Color::Black),
-                }; width * height],
+                buffer: vec![
+                    ScreenChar {
+                        ascii_character: b' ',
+                        color_code: ColorCode::new(Color::White, Color::Black),
+                    };
+                    width * height
+                ],
                 column_position: 0,
                 row_position: 0,
                 color_code: ColorCode::new(Color::White, Color::Black),
@@ -247,14 +250,14 @@ mod tests {
             if self.row_position < self.height - 1 {
                 self.row_position += 1;
             } else {
-            // Shift all lines up
-            for row in 1..self.height {
-                for col in 0..self.width {
-                    let src_index = row * self.width + col;
-                    let dest_index = (row - 1) * self.width + col;
-                    self.buffer[dest_index] = self.buffer[src_index];
+                // Shift all lines up
+                for row in 1..self.height {
+                    for col in 0..self.width {
+                        let src_index = row * self.width + col;
+                        let dest_index = (row - 1) * self.width + col;
+                        self.buffer[dest_index] = self.buffer[src_index];
+                    }
                 }
-            }
                 // Clear the last line
                 self.clear_row(self.height - 1);
             }
@@ -304,7 +307,10 @@ mod tests {
 
         let char_h = mock_buffer.get_char(0, 0).unwrap();
         assert_eq!(char_h.ascii_character, b'H');
-        assert_eq!(char_h.color_code.0, ColorCode::new(Color::White, Color::Black).0);
+        assert_eq!(
+            char_h.color_code.0,
+            ColorCode::new(Color::White, Color::Black).0
+        );
 
         let char_i = mock_buffer.get_char(0, 1).unwrap();
         assert_eq!(char_i.ascii_character, b'i');
@@ -321,7 +327,13 @@ mod tests {
 
         assert_eq!(mock_buffer.row_position, 1);
         assert_eq!(mock_buffer.column_position, 1);
-        assert_eq!(mock_buffer.get_char(0, BUFFER_WIDTH - 1).unwrap().ascii_character, b'A');
+        assert_eq!(
+            mock_buffer
+                .get_char(0, BUFFER_WIDTH - 1)
+                .unwrap()
+                .ascii_character,
+            b'A'
+        );
         assert_eq!(mock_buffer.get_char(1, 0).unwrap().ascii_character, b'B');
     }
 
@@ -353,10 +365,22 @@ mod tests {
         // The first line should now contain the 'A's from the original second line
         assert_eq!(mock_buffer.get_char(0, 0).unwrap().ascii_character, b'A');
         // The last character of the last line should be 'B'
-        assert_eq!(mock_buffer.get_char(BUFFER_HEIGHT - 1, 0).unwrap().ascii_character, b'B');
+        assert_eq!(
+            mock_buffer
+                .get_char(BUFFER_HEIGHT - 1, 0)
+                .unwrap()
+                .ascii_character,
+            b'B'
+        );
         // The rest of the last line should be cleared
         for c in 1..BUFFER_WIDTH {
-            assert_eq!(mock_buffer.get_char(BUFFER_HEIGHT - 1, c).unwrap().ascii_character, b' ');
+            assert_eq!(
+                mock_buffer
+                    .get_char(BUFFER_HEIGHT - 1, c)
+                    .unwrap()
+                    .ascii_character,
+                b' '
+            );
         }
     }
 
