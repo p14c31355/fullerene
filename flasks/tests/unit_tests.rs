@@ -39,6 +39,7 @@ mod tests {
     fn test_find_libpthread() {
         // Since find_libpthread is a fn in flasks/src/main.rs, we test the logic directly
         // Instead of testing the function directly, we'll test similar path logic
+        // Note: Keep path_candidates in sync with COMMON_PATHS in flasks/src/main.rs
         let path_candidates = [
             "/lib/x86_64-linux-gnu/libpthread.so.0",
             "/usr/lib64/libpthread.so.0",

@@ -24,7 +24,7 @@ unsafe impl Sync for UefiSystemTablePtr {}
 pub static UEFI_SYSTEM_TABLE: Mutex<Option<UefiSystemTablePtr>> = Mutex::new(None);
 
 // Helper function to convert u32 to string without heap allocation
-fn u32_to_str_heapless(n: u32, buffer: &mut [u8]) -> &str {
+pub fn u32_to_str_heapless(n: u32, buffer: &mut [u8]) -> &str {
     let mut i = buffer.len();
     let mut n = n;
     if n == 0 {

@@ -166,14 +166,19 @@ pub fn debug_print_byte_to_com1(byte: u8) {
 
 /// Prints a usize as hex to COM1 (early debug, no alloc).
 pub fn debug_print_hex(value: usize) {
-    debug_print_str_to_com1("0x");
+    let mut writer = SERIAL_PORT_WRITER.lock();
+    let _ = format_hex(&mut *writer, value);
+}
+
+/// Formats a usize as hex to the given writer without allocation.
+fn format_hex(writer: &mut impl core::fmt::Write, value: usize) -> core::fmt::Result {
+    write!(writer, "0x")?;
+    if value == 0 {
+        return write!(writer, "0");
+    }
     let mut temp = value;
     let mut digits = [0u8; 16];
     let mut i = 0;
-    if temp == 0 {
-        debug_print_byte_to_com1(b'0');
-        return;
-    }
     while temp > 0 && i < 16 {
         let digit = (temp % 16) as u8;
         digits[i] = if digit < 10 {
@@ -185,8 +190,9 @@ pub fn debug_print_hex(value: usize) {
         i += 1;
     }
     for j in (0..i).rev() {
-        debug_print_byte_to_com1(digits[j]);
+        writer.write_str(core::str::from_utf8(&[digits[j]]).unwrap())?;
     }
+    Ok(())
 }
 
 #[doc(hidden)]
@@ -207,11 +213,44 @@ mod tests {
 
     #[test]
     fn test_debug_print_hex() {
-        // Test basic hex printing functionality
+        // Test that debug_print_hex doesn't panic (output goes to serial)
         debug_print_hex(0);
         debug_print_hex(255);
         debug_print_hex(4096);
-        // These tests don't verify output but ensure no panic
+    }
+
+    #[test]
+    fn test_format_hex_output() {
+        struct TestWriter {
+            buf: alloc::vec::Vec<u8>,
+        }
+
+        impl TestWriter {
+            fn new() -> Self {
+                TestWriter {
+                    buf: alloc::vec::Vec::new(),
+                }
+            }
+        }
+
+        impl fmt::Write for TestWriter {
+            fn write_str(&mut self, s: &str) -> fmt::Result {
+                self.buf.extend_from_slice(s.as_bytes());
+                Ok(())
+            }
+        }
+
+        let mut writer = TestWriter::new();
+        format_hex(&mut writer, 0).unwrap();
+        assert_eq!(core::str::from_utf8(&writer.buf).unwrap(), "0x0");
+
+        let mut writer = TestWriter::new();
+        format_hex(&mut writer, 255).unwrap();
+        assert_eq!(core::str::from_utf8(&writer.buf).unwrap(), "0xff");
+
+        let mut writer = TestWriter::new();
+        format_hex(&mut writer, 4096).unwrap();
+        assert_eq!(core::str::from_utf8(&writer.buf).unwrap(), "0x1000");
     }
 
     #[test]

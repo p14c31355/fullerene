@@ -180,6 +180,7 @@ fn main() -> io::Result<()> {
 /// This function is a workaround for the `LD_PRELOAD` issue with QEMU on some systems.
 /// It checks a list of common paths for the library and returns the first one that exists.
 /// If the library is not found, it returns a default path.
+// Note: If updating COMMON_PATHS, also update path_candidates in flasks/tests/unit_tests.rs
 fn find_libpthread() -> String {
     const COMMON_PATHS: &[&str] = &[
         "/lib/x86_64-linux-gnu/libpthread.so.0", // Debian/Ubuntu
