@@ -79,7 +79,7 @@ pub fn serial_log(s: &str) {
 }
 
 // Allows using `write!` and `writeln!` macros for the serial port
-impl fmt::Write for SerialPort {
+impl<S: SerialPortOps> fmt::Write for SerialPort<S> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         self.write_string(s);
         Ok(())

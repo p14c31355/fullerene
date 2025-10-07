@@ -77,43 +77,6 @@ pub fn serial_log(s: &str) {
     writer.write_string("\n");
 }
 
-// Macro to write to port with wait
-macro_rules! write_port {
-    ($port:expr, $value:expr) => {
-        unsafe {
-            while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
-            $port.write($value);
-        }
-    };
-}
-
-// Generic writer trait to unify different output methods
-trait Writer {
-    fn write_string(&mut self, s: &str);
-}
-
-// COM1Writer for serial output
-pub struct Com1Writer;
-
-impl Com1Writer {
-    pub const fn new() -> Self {
-        Com1Writer
-    }
-
-    pub fn write_byte(&mut self, byte: u8) {
-        let mut port = Port::new(0x3F8);
-        write_port!(port, byte);
-    }
-}
-
-impl Writer for Com1Writer {
-    fn write_string(&mut self, s: &str) {
-        for byte in s.bytes() {
-            self.write_byte(byte);
-        }
-    }
-}
-
 pub struct UefiWriter {
     con_out: *mut EfiSimpleTextOutput,
 }
@@ -164,10 +127,8 @@ impl UefiWriter {
         }
         Ok(())
     }
-}
 
-impl Writer for UefiWriter {
-    fn write_string(&mut self, s: &str) {
+    pub fn write_string(&mut self, s: &str) {
         self.write_string_heapless(s).ok();
     }
 }
@@ -195,15 +156,12 @@ macro_rules! println {
 /// Writes a string to the COM1 serial port.
 /// This is a very early debug function for use beforeUEFI writers are available.
 pub fn debug_print_str_to_com1(s: &str) {
-    for byte in s.bytes() {
-        debug_print_byte_to_com1(byte);
-    }
+    SERIAL_PORT_WRITER.lock().write_string(s);
 }
 
 /// Writes a single byte to the COM1 serial port (0x3F8).
 pub fn debug_print_byte_to_com1(byte: u8) {
-    let mut port = Port::new(0x3F8);
-    write_port!(port, byte);
+    SERIAL_PORT_WRITER.lock().write_byte(byte);
 }
 
 /// Prints a usize as hex to COM1 (early debug, no alloc).
