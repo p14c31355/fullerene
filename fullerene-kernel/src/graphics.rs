@@ -103,8 +103,8 @@ unsafe fn scroll_buffer<T: Copy>(address: u64, stride: u32, height: u32, bg_colo
 
 unsafe fn clear_buffer<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
     let fb_ptr = address as *mut T;
-    core::ptr::write_bytes(fb_ptr, 0, (stride * height) as usize);
-    // Note: For non-u8 types, we initialize to 0 and let caller handle color filling
+    let count = (stride * height) as usize;
+    core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color);
 }
 
 // For UEFI, fill with actual color
