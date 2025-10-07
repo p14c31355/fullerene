@@ -30,8 +30,8 @@ mod tests {
         let bellows_path = target_dir.join("bellows.efi");
 
         // Check that paths are constructed correctly (files may not exist in test environment)
-        assert!(kernel_path.to_str().unwrap().contains("fullerene-kernel.efi"));
-        assert!(bellows_path.to_str().unwrap().contains("bellows.efi"));
+        assert_eq!(kernel_path.file_name().unwrap(), "fullerene-kernel.efi");
+        assert_eq!(bellows_path.file_name().unwrap(), "bellows.efi");
     }
 
     #[test]
