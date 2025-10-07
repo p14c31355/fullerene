@@ -1,9 +1,44 @@
-// petroleum/src/serial.rs
-
 use crate::common::{EfiSimpleTextOutput, EfiStatus};
 use core::fmt;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
+
+// Macro to write to port with wait
+macro_rules! write_port {
+    ($port:expr, $value:expr) => {
+        unsafe {
+            while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
+            $port.write($value);
+        }
+    };
+}
+
+// Generic writer trait to unify different output methods
+trait Writer {
+    fn write_string(&mut self, s: &str);
+}
+
+// COM1Writer for serial output
+pub struct Com1Writer;
+
+impl Com1Writer {
+    pub const fn new() -> Self {
+        Com1Writer
+    }
+
+    pub fn write_byte(&mut self, byte: u8) {
+        let mut port = Port::new(0x3F8);
+        write_port!(port, byte);
+    }
+}
+
+impl Writer for Com1Writer {
+    fn write_string(&mut self, s: &str) {
+        for byte in s.bytes() {
+            self.write_byte(byte);
+        }
+    }
+}
 
 pub struct UefiWriter {
     con_out: *mut EfiSimpleTextOutput,
@@ -50,10 +85,16 @@ impl UefiWriter {
         let efi_status = EfiStatus::from(status);
         if efi_status != EfiStatus::Success {
             // Fallback to COM1
-            debug_print_str_to_com1(s);
+            Com1Writer::new().write_string(s);
             return Err(efi_status);
         }
         Ok(())
+    }
+}
+
+impl Writer for UefiWriter {
+    fn write_string(&mut self, s: &str) {
+        self.write_string_heapless(s).ok();
     }
 }
 
@@ -75,16 +116,6 @@ macro_rules! print {
 macro_rules! println {
     () => ($crate::print!("\n"));
     ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
-}
-
-// Macro to write to port with wait
-macro_rules! write_port {
-    ($port:expr, $value:expr) => {
-        unsafe {
-            while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
-            $port.write($value);
-        }
-    };
 }
 
 /// Writes a string to the COM1 serial port.

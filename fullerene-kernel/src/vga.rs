@@ -51,6 +51,86 @@ struct ScreenChar {
     color_code: ColorCode,
 }
 
+// Trait for text buffer operations with default implementations
+trait TextBufferOperations {
+    fn get_width(&self) -> usize;
+    fn get_height(&self) -> usize;
+    fn get_color_code(&self) -> ColorCode;
+    fn get_position(&self) -> (usize, usize);
+    fn set_position(&mut self, row: usize, col: usize);
+    fn set_char_at(&mut self, row: usize, col: usize, char: ScreenChar);
+    fn get_char_at(&self, row: usize, col: usize) -> ScreenChar;
+
+    fn write_byte(&mut self, byte: u8) {
+        match byte {
+            b'\n' => self.new_line(),
+            byte => {
+                let (row, col) = self.get_position();
+                if col >= self.get_width() {
+                    self.new_line();
+                    let (new_row, new_col) = self.get_position();
+                    self.set_char_at(new_row, new_col, ScreenChar {
+                        ascii_character: byte,
+                        color_code: self.get_color_code(),
+                    });
+                    self.set_position(new_row, new_col + 1);
+                } else {
+                    self.set_char_at(row, col, ScreenChar {
+                        ascii_character: byte,
+                        color_code: self.get_color_code(),
+                    });
+                    self.set_position(row, col + 1);
+                }
+            }
+        }
+    }
+
+    fn write_string(&mut self, s: &str) {
+        for byte in s.bytes() {
+            match byte {
+                0x20..=0x7e | b'\n' => self.write_byte(byte),
+                _ => self.write_byte(0xfe),
+            }
+        }
+    }
+
+    fn new_line(&mut self) {
+        let (row, _) = self.get_position();
+        self.set_position(row + 1, 0);
+        if self.get_position().0 >= self.get_height() {
+            self.scroll_up();
+            self.set_position(self.get_height() - 1, 0);
+        }
+    }
+
+    fn clear_row(&mut self, row: usize) {
+        let blank_char = ScreenChar {
+            ascii_character: b' ',
+            color_code: self.get_color_code(),
+        };
+        for col in 0..self.get_width() {
+            self.set_char_at(row, col, blank_char);
+        }
+    }
+
+    fn clear_screen(&mut self) {
+        for row in 0..self.get_height() {
+            self.clear_row(row);
+        }
+        self.set_position(0, 0);
+    }
+
+    fn scroll_up(&mut self) {
+        for row in 1..self.get_height() {
+            for col in 0..self.get_width() {
+                let src = self.get_char_at(row, col);
+                self.set_char_at(row - 1, col, src);
+            }
+        }
+        self.clear_row(self.get_height() - 1);
+    }
+}
+
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
 
@@ -71,79 +151,6 @@ impl VgaBuffer {
             row_position: 0,
             color_code: ColorCode::new(Color::White, Color::Black),
         }
-    }
-
-    /// Writes a single byte to the buffer.
-    pub fn write_byte(&mut self, byte: u8) {
-        match byte {
-            b'\n' => self.new_line(),
-            byte => {
-                if self.column_position >= BUFFER_WIDTH {
-                    self.new_line();
-                }
-
-                let row = self.row_position;
-                let col = self.column_position;
-
-                with_buffer!(self.buffer, row, col, |char: &mut ScreenChar| {
-                    *char = ScreenChar {
-                        ascii_character: byte,
-                        color_code: self.color_code,
-                    };
-                });
-                self.column_position += 1;
-            }
-        }
-    }
-
-    /// Writes a string to the buffer.
-    pub fn write_string(&mut self, s: &str) {
-        for byte in s.bytes() {
-            match byte {
-                // Printable ASCII byte or newline
-                0x20..=0x7e | b'\n' => self.write_byte(byte),
-                // Not part of printable ASCII range, display a solid block
-                _ => self.write_byte(0xfe),
-            }
-        }
-    }
-
-    /// Moves the cursor to the next line.
-    pub fn new_line(&mut self) {
-        self.column_position = 0;
-        if self.row_position < BUFFER_HEIGHT - 1 {
-            self.row_position += 1;
-        } else {
-            // Shift all lines up
-            for row in 1..BUFFER_HEIGHT {
-                for col in 0..BUFFER_WIDTH {
-                    self.buffer[row - 1][col] = self.buffer[row][col];
-                }
-            }
-            // Clear the last line
-            self.clear_row(BUFFER_HEIGHT - 1);
-        }
-    }
-
-    /// Clears a specific row in the buffer.
-    fn clear_row(&mut self, row: usize) {
-        let blank_char = ScreenChar {
-            ascii_character: b' ',
-            color_code: self.color_code,
-        };
-        for col in 0..BUFFER_WIDTH {
-            self.buffer[row][col] = blank_char;
-        }
-    }
-
-    /// Clears the entire screen and resets the cursor position.
-    pub fn clear_screen(&mut self) {
-        for row in 0..BUFFER_HEIGHT {
-            self.clear_row(row);
-        }
-        self.column_position = 0;
-        self.row_position = 0;
-        self.update_cursor();
     }
 
     /// Updates the hardware cursor position.
@@ -171,6 +178,46 @@ impl core::fmt::Write for VgaBuffer {
 // To ensure thread-safety for `spin` crates.
 unsafe impl Send for VgaBuffer {}
 unsafe impl Sync for VgaBuffer {}
+
+impl TextBufferOperations for VgaBuffer {
+    fn get_width(&self) -> usize {
+        BUFFER_WIDTH
+    }
+
+    fn get_height(&self) -> usize {
+        BUFFER_HEIGHT
+    }
+
+    fn get_color_code(&self) -> ColorCode {
+        self.color_code
+    }
+
+    fn get_position(&self) -> (usize, usize) {
+        (self.row_position, self.column_position)
+    }
+
+    fn set_position(&mut self, row: usize, col: usize) {
+        self.row_position = row;
+        self.column_position = col;
+    }
+
+    fn set_char_at(&mut self, row: usize, col: usize, chr: ScreenChar) {
+        if row < BUFFER_HEIGHT && col < BUFFER_WIDTH {
+            self.buffer[row][col] = chr;
+        }
+    }
+
+    fn get_char_at(&self, row: usize, col: usize) -> ScreenChar {
+        if row < BUFFER_HEIGHT && col < BUFFER_WIDTH {
+            self.buffer[row][col]
+        } else {
+            ScreenChar {
+                ascii_character: 0,
+                color_code: self.color_code,
+            }
+        }
+    }
+}
 
 // Global singleton for the VGA buffer writer
 pub(crate) static VGA_BUFFER: Once<Mutex<VgaBuffer>> = Once::new();

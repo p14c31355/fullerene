@@ -41,6 +41,66 @@ fn new_line(fb: &mut impl FramebufferLike) {
     fb.set_position(x_pos, y_pos);
 }
 
+fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result {
+    let (mut x_pos, mut y_pos) = writer.get_position();
+    for c in s.chars() {
+        if c == '\n' {
+            new_line(writer);
+            let (new_x, new_y) = writer.get_position();
+            x_pos = new_x;
+            y_pos = new_y;
+        } else {
+            draw_char(writer, c, x_pos, y_pos);
+            x_pos += 8;
+            if x_pos + 8 > writer.get_width() {
+                new_line(writer);
+                let (new_x, new_y) = writer.get_position();
+                x_pos = new_x;
+                y_pos = new_y;
+            } else {
+                writer.set_position(x_pos, y_pos);
+            }
+        }
+    }
+    Ok(())
+}
+
+unsafe fn scroll_buffer_u8(address: u64, width: u32, height: u32, bg_color: u8) {
+    let bytes_per_line = width;
+    let shift_bytes = 8u64 * bytes_per_line as u64;
+    let total_bytes = height as u64 * bytes_per_line as u64;
+    let fb_ptr = address as *mut u8;
+    core::ptr::copy(
+        fb_ptr.add(shift_bytes as usize),
+        fb_ptr,
+        (total_bytes - shift_bytes) as usize,
+    );
+    // Clear last 8 lines
+    let clear_offset = (height - 8) * width;
+    let clear_ptr = fb_ptr.add(clear_offset as usize);
+    let clear_size = 8 * width as usize;
+    core::ptr::write_bytes(clear_ptr, bg_color, clear_size);
+}
+
+unsafe fn scroll_buffer_u32(address: u64, stride: u32, height: u32, bg_color: u32) {
+    let bytes_per_pixel = 4;
+    let bytes_per_line = stride * bytes_per_pixel;
+    let shift_bytes = 8u64 * bytes_per_line as u64;
+    let total_bytes = height as u64 * bytes_per_line as u64;
+    let fb_ptr = address as *mut u8;
+    core::ptr::copy(
+        fb_ptr.add(shift_bytes as usize),
+        fb_ptr,
+        (total_bytes - shift_bytes) as usize,
+    );
+    // Clear the last 8 lines
+    let last_lines_offset = (height - 8) * stride * bytes_per_pixel;
+    let clear_ptr = (address + last_lines_offset as u64) as *mut u32;
+    let clear_num_u32 = 8 * stride as usize;
+    let clear_slice = core::slice::from_raw_parts_mut(clear_ptr, clear_num_u32);
+    clear_slice.fill(bg_color);
+}
+
 trait FramebufferLike {
     fn put_pixel(&self, x: u32, y: u32, color: u32);
     fn clear_screen(&self);
@@ -98,27 +158,7 @@ impl FramebufferWriter {
     }
 
     fn scroll_up(&self) {
-        let bytes_per_pixel = self.bytes_per_pixel();
-        let bytes_per_line = self.framebuffer.stride * bytes_per_pixel;
-        let shift_bytes = 8u64 * bytes_per_line as u64;
-        let total_bytes = self.framebuffer.height as u64 * bytes_per_line as u64;
-        let fb_ptr = self.framebuffer.address as *mut u8;
-        unsafe {
-            core::ptr::copy(
-                fb_ptr.add(shift_bytes as usize),
-                fb_ptr,
-                (total_bytes - shift_bytes) as usize,
-            );
-        }
-        // Clear the last 8 lines
-        let last_lines_offset =
-            (self.framebuffer.height.saturating_sub(8)) * self.framebuffer.stride * bytes_per_pixel;
-        let clear_ptr = (self.framebuffer.address + last_lines_offset as u64) as *mut u32;
-        let clear_num_u32 = 8 * self.framebuffer.stride as usize;
-        unsafe {
-            let clear_slice = core::slice::from_raw_parts_mut(clear_ptr, clear_num_u32);
-            clear_slice.fill(self.bg_color);
-        }
+        unsafe { scroll_buffer_u32(self.framebuffer.address, self.framebuffer.stride, self.framebuffer.height, self.bg_color) };
     }
 }
 
@@ -183,27 +223,7 @@ impl FramebufferLike for FramebufferWriter {
 #[cfg(target_os = "uefi")]
 impl core::fmt::Write for FramebufferWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let (mut x_pos, mut y_pos) = self.get_position();
-        for c in s.chars() {
-            if c == '\n' {
-                new_line(self);
-                let (new_x, new_y) = self.get_position();
-                x_pos = new_x;
-                y_pos = new_y;
-            } else {
-                draw_char(self, c, x_pos, y_pos);
-                x_pos += 8;
-                if x_pos + 8 > self.get_width() {
-                    new_line(self);
-                    let (new_x, new_y) = self.get_position();
-                    x_pos = new_x;
-                    y_pos = new_y;
-                } else {
-                    self.set_position(x_pos, y_pos);
-                }
-            }
-        }
-        Ok(())
+        write_text(self, s)
     }
 }
 
@@ -233,25 +253,7 @@ impl VgaWriter {
     }
 
     fn scroll_up(&self) {
-        let bytes_per_line = self.width;
-        let shift_bytes = 8u64 * bytes_per_line as u64;
-        let total_bytes = self.height as u64 * bytes_per_line as u64;
-        let fb_ptr = self.address as *mut u8;
-        unsafe {
-            core::ptr::copy(
-                fb_ptr.add(shift_bytes as usize),
-                fb_ptr,
-                (total_bytes - shift_bytes) as usize,
-            );
-        }
-        // Clear last 8 lines
-        let clear_offset = (self.height.saturating_sub(8)) * self.width;
-        let clear_size = 8 * self.width as usize;
-        let fb_ptr = self.address as *mut u8;
-        unsafe {
-            let clear_ptr = fb_ptr.add(clear_offset as usize);
-            core::ptr::write_bytes(clear_ptr, self.bg_color, clear_size);
-        }
+        unsafe { scroll_buffer_u8(self.address, self.width, self.height, self.bg_color) };
     }
 }
 
@@ -308,27 +310,7 @@ impl FramebufferLike for VgaWriter {
 #[cfg(not(target_os = "uefi"))]
 impl core::fmt::Write for VgaWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let (mut x_pos, mut y_pos) = self.get_position();
-        for c in s.chars() {
-            if c == '\n' {
-                new_line(self);
-                let (new_x, new_y) = self.get_position();
-                x_pos = new_x;
-                y_pos = new_y;
-            } else {
-                draw_char(self, c, x_pos, y_pos);
-                x_pos += 8;
-                if x_pos + 8 > self.get_width() {
-                    new_line(self);
-                    let (new_x, new_y) = self.get_position();
-                    x_pos = new_x;
-                    y_pos = new_y;
-                } else {
-                    self.set_position(x_pos, y_pos);
-                }
-            }
-        }
-        Ok(())
+        write_text(self, s)
     }
 }
 

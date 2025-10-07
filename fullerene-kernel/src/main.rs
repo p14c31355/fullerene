@@ -70,9 +70,7 @@ static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
 
 #[cfg(not(test))]
 #[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    petroleum::handle_panic(info);
-}
+
 
 #[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]
