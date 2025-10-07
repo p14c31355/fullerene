@@ -117,6 +117,7 @@ fn open_file(dir: &EfiFileWrapper, path: &[u16]) -> petroleum::common::Result<Ef
 pub fn read_efi_file(
     bs: &EfiBootServices,
     image_handle: usize,
+    system_table: *mut petroleum::common::EfiSystemTable,
 ) -> petroleum::common::Result<(usize, usize)> {
     file_debug!("Starting read_efi_file...");
     debug_print_str("File: image_handle=0x");
@@ -134,50 +135,86 @@ pub fn read_efi_file(
         &mut loaded_image as *mut _ as *mut *mut c_void,
     );
     let status_h_efi = EfiStatus::from(status_h);
-    debug_print_str("File: handle_protocol status=");
+    debug_print_str("File: handle_protocol status=0x");
     debug_print_hex(status_h);
     debug_print_str(" (");
     match status_h_efi {
         EfiStatus::Success => debug_print_str("Success"),
+        EfiStatus::OutOfResources => debug_print_str("OutOfResources"),
+        EfiStatus::NotFound => debug_print_str("NotFound"),
         EfiStatus::InvalidParameter => debug_print_str("InvalidParameter"),
         _ => debug_print_str("Other"),
     }
     debug_print_str(")\n");
 
     if status_h_efi != EfiStatus::Success {
-        // Fallback: try open_protocol
-        debug_print_str("File: Trying open_protocol fallback...\n");
-        let status = (bs.open_protocol)(
-            image_handle,
+        debug_print_str("File: Trying locate_handle_buffer for LoadedImage...\n");
+        let mut handle_count = 0;
+        let mut handles: *mut usize = ptr::null_mut();
+        let status = (bs.locate_handle_buffer)(
+            2, // ByProtocol
             &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
-            &mut loaded_image as *mut *mut _ as *mut *mut c_void,
-            image_handle,
-            0,
-            1, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
+            ptr::null_mut(),
+            &mut handle_count,
+            &mut handles,
         );
-        let status_efi = EfiStatus::from(status);
-        debug_print_str("File: open_protocol status=");
+        debug_print_str("File: locate_handle_buffer status=");
         debug_print_hex(status);
-        debug_print_str(" (");
-        match status_efi {
-            EfiStatus::Success => debug_print_str("Success"),
-            EfiStatus::InvalidParameter => debug_print_str("InvalidParameter"),
-            _ => debug_print_str("Other"),
+        debug_print_str("\n");
+        if EfiStatus::from(status) == EfiStatus::Success && handle_count > 0 && !handles.is_null() {
+            debug_print_str("File: Found LoadedImage handles.\n");
+            // Use the first handle
+            let loaded_handle = unsafe { *handles };
+            (bs.free_pool)(handles as *mut c_void);
+            // Open the protocol on the handle
+            let status = (bs.open_protocol)(
+                loaded_handle,
+                &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
+                &mut loaded_image as *mut _ as *mut *mut c_void,
+                0, // AgentHandle
+                0, // ControllerHandle
+                1, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
+            );
+            debug_print_str("File: open_protocol on located handle status=");
+            debug_print_hex(status);
+            debug_print_str("\n");
+            if EfiStatus::from(status) == EfiStatus::Success {
+                debug_print_str("File: Opened protocol on located handle.\n");
+            } else {
+                debug_print_str("File: Failed to open protocol on located handle.\n");
+            }
         }
-        debug_print_str(")\n");
-        if status_efi != EfiStatus::Success {
-            return Err(BellowsError::ProtocolNotFound(
-                "Both handle/open_protocol failed for LoadedImage.",
-            ));
+    }
+
+    if loaded_image.is_null() {
+        debug_print_str("File: Trying LocateProtocol fallback...\n");
+        // Global fallback: system_tableからLoadedImage locate (稀に効く)
+        let mut global_loaded: *mut EfiLoadedImageProtocol = ptr::null_mut();
+        let loc_status = (bs.locate_protocol)(
+            &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
+            ptr::null_mut(),
+            &mut global_loaded as *mut _ as *mut *mut c_void,
+        );
+        let loc_efi = EfiStatus::from(loc_status);
+        debug_print_str("File: LocateProtocol fallback status=0x");
+        debug_print_hex(loc_status);
+        debug_print_str("\n");
+        if loc_efi == EfiStatus::Success && !global_loaded.is_null() {
+            debug_print_str("File: LocateProtocol fallback success!\n");
+            loaded_image = global_loaded;
+            debug_print_str("File: Using global LoadedImage.\n");
+        } else {
+            debug_print_str("File: LocateProtocol fallback failed.\n");
         }
     }
 
     if loaded_image.is_null() {
         return Err(BellowsError::ProtocolNotFound(
-            "LoadedImage protocol is null.",
+            "All LoadedImage methods failed.",
         ));
     }
 
+    // Try multiple methods to find SimpleFileSystem protocol
     let loaded_image_ref = unsafe { &*loaded_image };
     file_debug!("Success getting LoadedImageProtocol.");
     let revision = loaded_image_ref.revision;
@@ -206,7 +243,9 @@ pub fn read_efi_file(
             debug_print_str("File: Got SimpleFileSystem via locate_protocol.\n");
             fs_proto_ptr
         } else {
-            debug_print_str("File: locate_protocol failed, trying handle_protocol on device_handle.\n");
+            debug_print_str(
+                "File: locate_protocol failed, trying handle_protocol on device_handle.\n",
+            );
             let mut proto_ptr: *mut EfiSimpleFileSystem = ptr::null_mut();
             let status = (bs.handle_protocol)(
                 device_handle,
@@ -217,22 +256,28 @@ pub fn read_efi_file(
             debug_print_hex(status);
             debug_print_str("\n");
             if EfiStatus::from(status) == EfiStatus::Success && !proto_ptr.is_null() {
-                debug_print_str("File: Got SimpleFileSystem via handle_protocol on device_handle.\n");
+                debug_print_str(
+                    "File: Got SimpleFileSystem via handle_protocol on device_handle.\n",
+                );
                 proto_ptr
             } else {
-                debug_print_str("File: handle_protocol on device_handle failed, trying open_protocol.\n");
+                debug_print_str(
+                    "File: handle_protocol on device_handle failed, trying open_protocol.\n",
+                );
                 let open_res = open_protocol::<EfiSimpleFileSystem>(
                     bs,
                     device_handle,
                     &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
                     image_handle,
-                    2, // EFI_OPEN_PROTOCOL_GET_PROTOCOL
+                    1, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
                 );
                 if let Ok(proto) = open_res {
                     debug_print_str("File: Got SimpleFileSystem on device_handle.\n");
                     proto
                 } else {
-                    debug_print_str("File: Open on device_handle failed, trying locate_handle_buffer.\n");
+                    debug_print_str(
+                        "File: Open on device_handle failed, trying locate_handle_buffer.\n",
+                    );
                     // Locate SimpleFileSystem handles
                     let mut handle_count = 0;
                     let mut handles: *mut usize = ptr::null_mut();
@@ -248,7 +293,10 @@ pub fn read_efi_file(
                     debug_print_str("\nFile: handle_count=");
                     debug_print_hex(handle_count);
                     debug_print_str("\n");
-                    if EfiStatus::from(status) != EfiStatus::Success || handle_count == 0 || handles.is_null() {
+                    if EfiStatus::from(status) != EfiStatus::Success
+                        || handle_count == 0
+                        || handles.is_null()
+                    {
                         file_debug!("Failed to locate SimpleFileSystem handles.");
                         return Err(BellowsError::ProtocolNotFound(
                             "No SimpleFileSystem handles found.",
@@ -263,7 +311,7 @@ pub fn read_efi_file(
                         fs_handle,
                         &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
                         image_handle,
-                        2, // EFI_OPEN_PROTOCOL_GET_PROTOCOL
+                        1, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
                     )?;
                     proto
                 }

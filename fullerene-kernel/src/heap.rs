@@ -332,5 +332,8 @@ pub fn allocate_heap_from_map(phys_start: PhysAddr, _size: usize) -> VirtAddr {
             return VirtAddr::new(desc.virtual_start + offset_in_desc);
         }
     }
-    panic!("Could not find virtual address for physical address {:#x}", phys_start);
+    panic!(
+        "Could not find virtual address for physical address {:#x}",
+        phys_start
+    );
 }
