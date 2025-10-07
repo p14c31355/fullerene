@@ -29,7 +29,7 @@ mod tests_with_std {
     }
 
     #[test]
-    fn test_panic_handling() {
+    fn test_uefi_system_table_ptr_creation() {
         // Test that we can create basic structures without panicking
         let ptr = crate::UefiSystemTablePtr(core::ptr::null_mut());
         assert!(ptr.0.is_null());
