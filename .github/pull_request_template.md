@@ -21,7 +21,7 @@
 
 <!-- How should reviewers test these changes? Provide step-by-step instructions. -->
 
-**Build verification:**
+### Build verification:
 ```sh
 $ cargo check     # Should pass
 $ cargo test      # Should pass (run tests)
