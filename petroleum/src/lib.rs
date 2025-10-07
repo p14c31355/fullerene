@@ -96,3 +96,40 @@ fn alloc_error(_layout: Layout) -> ! {
         }
     }
 }
+
+#[cfg(test)]
+use core::panic::PanicInfo;
+
+/// Test harness for no_std environment
+#[cfg(test)]
+pub trait Testable {
+    fn run(&self);
+}
+
+#[cfg(test)]
+impl<T> Testable for T
+where
+    T: Fn(),
+{
+    fn run(&self) {
+        println!("{}...\t", core::any::type_name::<T>());
+        self();
+        println!("[ok]");
+    }
+}
+
+#[cfg(test)]
+pub fn test_runner(tests: &[&dyn Testable]) {
+    println!("Running {} tests", tests.len());
+    for test in tests {
+        test.run();
+    }
+}
+
+#[cfg(test)]
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    println!("[failed]");
+    println!("Error: {}", info);
+    loop {}
+}

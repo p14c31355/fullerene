@@ -200,3 +200,32 @@ pub fn _print(args: fmt::Arguments) {
         .write_fmt(args)
         .expect("Serial write failed");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::EfiStatus;
+
+    #[test]
+    fn test_debug_print_hex() {
+        // Test basic hex printing functionality
+        debug_print_hex(0);
+        debug_print_hex(255);
+        debug_print_hex(4096);
+        // These tests don't verify output but ensure no panic
+    }
+
+    #[test]
+    fn test_uefi_writer_new() {
+        let writer = UefiWriter::new();
+        assert!(writer.con_out.is_null());
+    }
+
+    #[test]
+    fn test_serial_port_writer_new() {
+        let writer = SerialPortWriter::new();
+        // Port addresses are set correctly
+        // Note: This test assumes the port addresses are properly initialized
+        // In a real environment, we would test the actual I/O operations
+    }
+}

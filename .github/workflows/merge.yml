@@ -14,5 +14,42 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
 
-      - name: Run tests
-        run: cargo test --all-features
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+
+      - name: Add rust-src component for no_std crates
+        run: rustup component add rust-src --toolchain nightly
+
+      - name: Install x86_64-unknown-uefi target
+        run: rustup component add x86_64-unknown-uefi --toolchain nightly
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./ -> target"
+
+      - name: Install isobemak (for building)
+        run: |
+          cd ~/dev/isobemak
+          cargo build --release
+          cargo install --path . --force
+
+      - name: Run comprehensive tests
+        run: |
+          cargo test --package toluene --verbose
+          cargo test --package flasks --verbose
+          cargo test --package petroleum --verbose
+
+      - name: Build all components
+        run: |
+          cargo build -Z build-std=core,alloc --package fullerene-kernel --target x86_64-unknown-uefi --profile dev
+          cargo build -Z build-std=core,alloc --package bellows --target x86_64-unknown-uefi --profile dev
+          cargo build --package toluene --profile dev
+          cargo build --package flasks --profile dev
+
+      - name: Check documentation
+        run: cargo doc --document-private-items --no-deps --all-targets
+        env:
+          RUSTDOCFLAGS: -D warnings
