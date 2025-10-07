@@ -108,20 +108,29 @@ pub extern "efiapi" fn efi_main(
     MEMORY_MAP.call_once(|| unsafe { &*(descriptors as *const _) });
 
     // Calculate physical_memory_offset from kernel's location in memory map
-    let kernel_addr = efi_main as usize;
+    let kernel_virt_addr = efi_main as u64;
     let mut physical_memory_offset = VirtAddr::new(0);
+    let mut kernel_phys_start = x86_64::PhysAddr::new(0);
+
+    // Find physical_memory_offset and kernel_phys_start
     for desc in descriptors {
-        let start = desc.physical_start as usize;
-        let end = start + (desc.number_of_pages as usize * 4096);
-        if kernel_addr >= start && kernel_addr < end {
+        let virt_start = desc.virtual_start;
+        let virt_end = virt_start + desc.number_of_pages * 4096;
+        if kernel_virt_addr >= virt_start && kernel_virt_addr < virt_end {
             physical_memory_offset = VirtAddr::new(desc.virtual_start - desc.physical_start);
-            break;
+            if desc.type_ == EfiMemoryType::EfiLoaderCode {
+                kernel_phys_start = x86_64::PhysAddr::new(desc.physical_start);
+            }
         }
+    }
+
+    if kernel_phys_start.is_null() {
+        panic!("Could not determine kernel's physical start address.");
     }
 
     heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
     heap::init_page_table(physical_memory_offset);
-    heap::reinit_page_table(physical_memory_offset);
+    heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
 
     // Common initialization for both UEFI and BIOS
     init_common(_memory_map, _memory_map_size);

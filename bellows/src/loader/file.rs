@@ -189,33 +189,87 @@ pub fn read_efi_file(
     debug_print_hex(device_handle);
     debug_print_str("\n");
 
-    // Locate SimpleFileSystem handles instead of using device_handle
-    let mut handle_count = 0;
-    let mut handles: *mut usize = ptr::null_mut();
-    let status = (bs.locate_handle_buffer)(
-        2, // ByProtocol
-        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
-        ptr::null_mut(),
-        &mut handle_count,
-        &mut handles,
-    );
-    if EfiStatus::from(status) != EfiStatus::Success || handle_count == 0 {
-        file_debug!("Failed to locate SimpleFileSystem handles.");
-        return Err(BellowsError::ProtocolNotFound(
-            "No SimpleFileSystem handles found.",
-        ));
-    }
-    file_debug!("Located SimpleFileSystem handles.");
-    // Use the first handle
-    let fs_handle = unsafe { *handles };
-    (bs.free_pool)(handles as *mut c_void);
-    let fs_proto = open_protocol::<EfiSimpleFileSystem>(
-        bs,
-        fs_handle,
-        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
-        image_handle,
-        2, // EFI_OPEN_PROTOCOL_GET_PROTOCOL
-    )?;
+    // Try multiple methods to find SimpleFileSystem protocol
+    let fs_proto: *mut EfiSimpleFileSystem = {
+        // Try locate_protocol first
+        debug_print_str("File: Trying locate_protocol for SimpleFileSystem...\n");
+        let mut fs_proto_ptr: *mut EfiSimpleFileSystem = ptr::null_mut();
+        let status = (bs.locate_protocol)(
+            &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+            ptr::null_mut(),
+            &mut fs_proto_ptr as *mut _ as *mut *mut c_void,
+        );
+        debug_print_str("File: locate_protocol status=");
+        debug_print_hex(status);
+        debug_print_str("\n");
+        if EfiStatus::from(status) == EfiStatus::Success && !fs_proto_ptr.is_null() {
+            debug_print_str("File: Got SimpleFileSystem via locate_protocol.\n");
+            fs_proto_ptr
+        } else {
+            debug_print_str("File: locate_protocol failed, trying handle_protocol on device_handle.\n");
+            let mut proto_ptr: *mut EfiSimpleFileSystem = ptr::null_mut();
+            let status = (bs.handle_protocol)(
+                device_handle,
+                &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+                &mut proto_ptr as *mut _ as *mut *mut c_void,
+            );
+            debug_print_str("File: handle_protocol on device_handle status=");
+            debug_print_hex(status);
+            debug_print_str("\n");
+            if EfiStatus::from(status) == EfiStatus::Success && !proto_ptr.is_null() {
+                debug_print_str("File: Got SimpleFileSystem via handle_protocol on device_handle.\n");
+                proto_ptr
+            } else {
+                debug_print_str("File: handle_protocol on device_handle failed, trying open_protocol.\n");
+                let open_res = open_protocol::<EfiSimpleFileSystem>(
+                    bs,
+                    device_handle,
+                    &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+                    image_handle,
+                    2, // EFI_OPEN_PROTOCOL_GET_PROTOCOL
+                );
+                if let Ok(proto) = open_res {
+                    debug_print_str("File: Got SimpleFileSystem on device_handle.\n");
+                    proto
+                } else {
+                    debug_print_str("File: Open on device_handle failed, trying locate_handle_buffer.\n");
+                    // Locate SimpleFileSystem handles
+                    let mut handle_count = 0;
+                    let mut handles: *mut usize = ptr::null_mut();
+                    let status = (bs.locate_handle_buffer)(
+                        2, // ByProtocol
+                        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+                        ptr::null_mut(),
+                        &mut handle_count,
+                        &mut handles,
+                    );
+                    debug_print_str("File: locate_handle_buffer status=");
+                    debug_print_hex(status);
+                    debug_print_str("\nFile: handle_count=");
+                    debug_print_hex(handle_count);
+                    debug_print_str("\n");
+                    if EfiStatus::from(status) != EfiStatus::Success || handle_count == 0 || handles.is_null() {
+                        file_debug!("Failed to locate SimpleFileSystem handles.");
+                        return Err(BellowsError::ProtocolNotFound(
+                            "No SimpleFileSystem handles found.",
+                        ));
+                    }
+                    file_debug!("Located SimpleFileSystem handles.");
+                    // Use the first handle
+                    let fs_handle = unsafe { *handles };
+                    (bs.free_pool)(handles as *mut c_void);
+                    let proto = open_protocol::<EfiSimpleFileSystem>(
+                        bs,
+                        fs_handle,
+                        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+                        image_handle,
+                        2, // EFI_OPEN_PROTOCOL_GET_PROTOCOL
+                    )?;
+                    proto
+                }
+            }
+        }
+    };
     file_debug!("Got SimpleFileSystem protocol.");
 
     let mut volume_file_handle: *mut EfiFile = ptr::null_mut();

@@ -251,7 +251,7 @@ unsafe fn map_physical_range(
     }
 }
 
-pub fn reinit_page_table(physical_memory_offset: VirtAddr) {
+pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: PhysAddr) {
     use x86_64::registers::control::Cr3;
     use x86_64::structures::paging::{PageTable, PageTableFlags as Flags};
 
@@ -296,7 +296,6 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr) {
     );
 
     // Add kernel code/data mapping (higher-half)
-    let kernel_phys_start = PhysAddr::new(0x100000);
     let kernel_virt_start = VirtAddr::new(0xffff_0000_1000_0000);
     let kernel_size = 0x200000; // Assume 2MB for kernel
     let kernel_end_phys = kernel_phys_start + kernel_size;
@@ -325,12 +324,13 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr) {
 // Allocate heap from memory map (find virtual address from physical)
 pub fn allocate_heap_from_map(phys_start: PhysAddr, _size: usize) -> VirtAddr {
     let memory_map = *MEMORY_MAP.get().unwrap();
-    let offset = *PHYSICAL_MEMORY_OFFSET.get().unwrap();
     for desc in memory_map {
-        if desc.physical_start == phys_start.as_u64() {
-            return VirtAddr::new(desc.virtual_start);
+        let start = desc.physical_start;
+        let end = start + desc.number_of_pages * 4096;
+        if phys_start.as_u64() >= start && phys_start.as_u64() < end {
+            let offset_in_desc = phys_start.as_u64() - start;
+            return VirtAddr::new(desc.virtual_start + offset_in_desc);
         }
     }
-    // Fallback to higher-half mapping using offset
-    VirtAddr::new(phys_start.as_u64() + offset.as_u64())
+    panic!("Could not find virtual address for physical address {:#x}", phys_start);
 }

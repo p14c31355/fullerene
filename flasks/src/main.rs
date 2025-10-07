@@ -145,8 +145,6 @@ fn main() -> io::Result<()> {
         "telnet:localhost:1234,server,nowait",
         "-accel",
         "tcg,thread=single",
-        "-d",
-        "guest_errors",
         "-global",
         "driver=or6.efi-setup,property=Enable,value=0",
         "-drive",
