@@ -103,7 +103,7 @@ jobs:
 
       - name: Build documentation
         run: |
-          cargo doc --document-private-items --no-deps --all-targets --workspace
+          cargo doc --document-private-items --no-deps --all-features --workspace
           echo '<meta http-equiv="refresh" content="0; url=fullerene/index.html">' > target/doc/index.html
 
       - name: Deploy to GitHub Pages

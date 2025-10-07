@@ -45,6 +45,6 @@ jobs:
           cargo build --package flasks --profile dev
 
       - name: Check documentation
-        run: cargo doc --document-private-items --no-deps --all-targets
+        run: cargo doc --document-private-items --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings

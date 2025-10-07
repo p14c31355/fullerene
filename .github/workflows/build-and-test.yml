@@ -98,6 +98,6 @@ jobs:
           workspaces: "./ -> target"
 
       - name: Check documentation
-        run: cargo +nightly doc --document-private-items --no-deps --all-targets
+        run: cargo +nightly doc --document-private-items --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
