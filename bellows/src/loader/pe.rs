@@ -218,12 +218,10 @@ pub fn load_efi_image(
     } as usize;
     let pages_needed = image_size.div_ceil(4096);
     let mut phys_addr: usize = 0;
-    let preferred_base = unsafe {
-        ptr::read_unaligned(
-            (nt_headers_ptr as *const u8)
-                .add(offset_of!(ImageNtHeaders64, optional_header))
-                .add(offset_of!(ImageOptionalHeader64, image_base)) as *const u64,
-        )
+    let preferred_base = {
+        let offset = offset_of!(ImageNtHeaders64, optional_header)
+            + offset_of!(ImageOptionalHeader64, image_base);
+        read_field!(nt_headers_ptr, offset, u64)
     } as usize;
     let mut status;
     // Try to allocate at the preferred base if it's a high address.
