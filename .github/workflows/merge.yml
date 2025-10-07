@@ -30,11 +30,6 @@ jobs:
         with:
           workspaces: "./ -> target"
 
-      - name: Install isobemak (for building)
-        run: |
-          cd ~/dev/isobemak
-          cargo build --release
-          cargo install --path . --force
 
       - name: Run comprehensive tests
         run: |

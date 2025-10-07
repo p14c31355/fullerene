@@ -40,11 +40,6 @@ jobs:
         with:
           workspaces: "./ -> target"
 
-      - name: Install isobemak
-        run: |
-          cd ~/dev/isobemak
-          cargo build --release
-          cargo install --path . --force
 
       - name: Build release binaries
         run: |

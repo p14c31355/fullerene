@@ -67,11 +67,6 @@ jobs:
         with:
           workspaces: "./ -> target"
 
-      - name: Install isobemak (for OVMF in flasks)
-        run: |
-          cd ~/dev/isobemak
-          cargo build --release
-          cargo install --path . --force
 
       - name: Build fullerene-kernel
         run: cargo +nightly build -Z build-std=core,alloc --package fullerene-kernel --target x86_64-unknown-uefi --profile dev
