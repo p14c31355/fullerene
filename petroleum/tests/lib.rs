@@ -25,7 +25,7 @@ mod tests_with_std {
         let mut buffer = [0u8; 20];
         let result = crate::u32_to_str_heapless(u32::MAX, &mut buffer);
         // Just verify it produces some output
-        assert!(!result.is_empty());
+        assert_eq!(result, "4294967295");
     }
 
     #[test]
