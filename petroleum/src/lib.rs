@@ -1,5 +1,4 @@
 #![no_std]
-#![feature(alloc_error_handler)]
 #![feature(never_type)]
 
 extern crate alloc;
@@ -78,7 +77,7 @@ pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
 
 /// Alloc error handler required when using `alloc` in no_std.
 #[cfg(all(panic = "unwind", not(feature = "std")))]
-#[alloc_error_handler]
+#[warn(dead_code)]
 fn alloc_error(_layout: Layout) -> ! {
     // Avoid recursive panics by directly looping
     loop {
@@ -96,9 +95,6 @@ fn alloc_error(_layout: Layout) -> ! {
         }
     }
 }
-
-#[cfg(test)]
-use core::panic::PanicInfo;
 
 /// Test harness for no_std environment
 #[cfg(test)]
@@ -124,12 +120,4 @@ pub fn test_runner(tests: &[&dyn Testable]) {
     for test in tests {
         test.run();
     }
-}
-
-#[cfg(test)]
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    println!("[failed]");
-    println!("Error: {}", info);
-    loop {}
 }
