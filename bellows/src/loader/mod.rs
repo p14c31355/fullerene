@@ -1,5 +1,7 @@
 // bellows/src/loader/mod.rs
 
+// bellows/src/loader/mod.rs
+
 use core::ffi::c_void;
 use core::ptr;
 use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
@@ -9,6 +11,23 @@ pub mod debug;
 pub mod file;
 pub mod heap;
 pub mod pe;
+
+// Helper function to allocate memory map buffer
+fn allocate_map_buffer(bs: &petroleum::common::EfiBootServices, alloc_size: usize) -> petroleum::common::Result<(usize, usize)> {
+    let map_pages = alloc_size.div_ceil(4096).max(1);
+    let mut map_phys_addr: usize = 0;
+    let alloc_status = (bs.allocate_pages)(
+        0usize, // AllocateAnyPages
+        EfiMemoryType::EfiLoaderData,
+        map_pages,
+        &mut map_phys_addr,
+    );
+    if EfiStatus::from(alloc_status) != EfiStatus::Success {
+        println!("Error: Failed to allocate memory map buffer: {:?}", EfiStatus::from(alloc_status));
+        return Err(BellowsError::AllocationFailed("Failed to allocate memory map buffer."));
+    }
+    Ok((map_phys_addr, map_pages))
+}
 
 /// Exits boot services and jumps to the kernel's entry point.
 /// This function is the final step of the bootloader.

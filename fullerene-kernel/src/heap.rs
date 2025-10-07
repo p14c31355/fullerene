@@ -230,25 +230,20 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr) {
     for desc in memory_map {
         // Only map usable memory regions from the memory map
         if matches!(desc.type_,
-            petroleum::common::EfiMemoryType::EfiReservedMemoryType |
             petroleum::common::EfiMemoryType::EfiConventionalMemory |
             petroleum::common::EfiMemoryType::EfiLoaderData |
-            petroleum::common::EfiMemoryType::EfiLoaderCode |
-            petroleum::common::EfiMemoryType::EfiBootServicesCode |
-            petroleum::common::EfiMemoryType::EfiBootServicesData |
-            petroleum::common::EfiMemoryType::EfiRuntimeServicesCode |
             petroleum::common::EfiMemoryType::EfiRuntimeServicesData)
             && desc.number_of_pages > 0
         {
-            let start_addr = PhysAddr::new(desc.physical_start);
-            let end_addr = start_addr + (desc.number_of_pages * 4096);
+            let start_phys = PhysAddr::new(desc.physical_start);
+            let end_phys = start_phys + (desc.number_of_pages * 4096);
 
             // Map each 4KiB page in this region
-            let mut current_addr = start_addr;
-            while current_addr < end_addr {
-                let virt_addr = current_addr.as_u64() + physical_memory_offset.as_u64();
-                let page = Page::<Size4KiB>::containing_address(VirtAddr::new(virt_addr));
-                let frame = PhysFrame::<Size4KiB>::containing_address(current_addr);
+            let mut current_phys = start_phys;
+            while current_phys < end_phys {
+                let virt_addr = physical_memory_offset + current_phys.as_u64();
+                let page = Page::<Size4KiB>::containing_address(VirtAddr::new(virt_addr.as_u64()));
+                let frame = PhysFrame::<Size4KiB>::containing_address(current_phys);
 
                 // Use the new mapper to create the mapping
                 unsafe {
@@ -257,15 +252,36 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr) {
                         .flush();
                 }
 
-                current_addr += 4096;
+                current_phys += 4096u64;
             }
         }
+    }
+
+    // Add kernel code/data mapping (higher-half)
+    let kernel_phys_start = PhysAddr::new(0x100000);
+    let kernel_virt_start = VirtAddr::new(0xffff_0000_1000_0000);
+    let kernel_size = 0x200000; // Assume 2MB for kernel
+    let mut current_phys = kernel_phys_start;
+    let end_phys = kernel_phys_start + kernel_size;
+    while current_phys < end_phys {
+        let offset_in_kernel = current_phys.as_u64() - kernel_phys_start.as_u64();
+        let virt_addr = VirtAddr::new(kernel_virt_start.as_u64() + offset_in_kernel);
+        let page = Page::<Size4KiB>::containing_address(virt_addr);
+        let frame = PhysFrame::<Size4KiB>::containing_address(current_phys);
+
+        unsafe {
+            new_mapper.map_to(page, frame, Flags::PRESENT | Flags::WRITABLE, &mut *frame_allocator)
+                .expect("Failed to map kernel page")
+                .flush();
+        }
+
+        current_phys += 4096u64;
     }
 
     // Set the new CR3
     unsafe { Cr3::write(level_4_frame, Cr3Flags::empty()) };
 
-    // Reinitialize the mapper
+    // Reinitialize the mapper with new CR3
     let mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
     *MAPPER.get().unwrap().lock() = mapper;
 
