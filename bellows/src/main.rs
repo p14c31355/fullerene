@@ -141,7 +141,13 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             panic!("Failed to exit boot services.");
         }
     }
-    petroleum::println!("Bellows: Exited boot services and jumped to kernel."); // Debug print after exit_boot_services_and_jump
+}
+
+#[cfg(not(test))]
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    petroleum::println!("PANIC: {}", info);
+    loop {}
 }
 
 /// Initializes the Graphics Output Protocol (GOP) for framebuffer access.
