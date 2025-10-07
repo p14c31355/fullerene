@@ -24,6 +24,7 @@ fn open_protocol<T>(
     handle: usize,
     guid: *const u8,
     agent_handle: usize,
+    attributes: u32,
 ) -> petroleum::common::Result<*mut T> {
     let mut proto: *mut T = ptr::null_mut();
     let status = (bs.open_protocol)(
@@ -32,7 +33,7 @@ fn open_protocol<T>(
         &mut proto as *mut _ as *mut *mut c_void,
         agent_handle,
         0,
-        1, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
+        attributes,
     );
     if EfiStatus::from(status) != EfiStatus::Success {
         // It's useful to know which status was returned for debugging.
@@ -123,43 +124,50 @@ pub fn read_efi_file(
     debug_print_str("\n");
 
     // Get the device handle from the LoadedImageProtocol
-    // open_protocol
     let mut loaded_image: *mut EfiLoadedImageProtocol = ptr::null_mut();
-    let status = (bs.open_protocol)(
+
+    // Try handle_protocol first (preferred for LoadedImage)
+    debug_print_str("File: Trying handle_protocol for LoadedImage...\n");
+    let status_h = (bs.handle_protocol)(
         image_handle,
         &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
-        &mut loaded_image as *mut *mut _ as *mut *mut c_void,
-        image_handle,
-        0,
-        2, // EFI_OPEN_PROTOCOL_GET_PROTOCOL
+        &mut loaded_image as *mut _ as *mut *mut c_void,
     );
-
-    let status_efi = EfiStatus::from(status);
-    debug_print_str("File: open_protocol status=");
-    debug_print_hex(status);
+    let status_h_efi = EfiStatus::from(status_h);
+    debug_print_str("File: handle_protocol status=");
+    debug_print_hex(status_h);
     debug_print_str(" (");
-    match status_efi {
+    match status_h_efi {
         EfiStatus::Success => debug_print_str("Success"),
         EfiStatus::InvalidParameter => debug_print_str("InvalidParameter"),
         _ => debug_print_str("Other"),
     }
     debug_print_str(")\n");
 
-    if status_efi != EfiStatus::Success {
-        // Fallback: handle_protocol試す (legacy)
-        debug_print_str("File: Trying handle_protocol fallback...\n");
-        let status_h = (bs.handle_protocol)(
+    if status_h_efi != EfiStatus::Success {
+        // Fallback: open_protocol試す
+        debug_print_str("File: Trying open_protocol fallback...\n");
+        let status = (bs.open_protocol)(
             image_handle,
             &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
-            &mut loaded_image as *mut _ as *mut *mut c_void,
+            &mut loaded_image as *mut *mut _ as *mut *mut c_void,
+            image_handle,
+            0,
+            1, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
         );
-        let status_h_efi = EfiStatus::from(status_h);
-        debug_print_str("File: handle_protocol status=");
-        debug_print_hex(status_h);
-        debug_print_str("\n");
-        if status_h_efi != EfiStatus::Success {
+        let status_efi = EfiStatus::from(status);
+        debug_print_str("File: open_protocol status=");
+        debug_print_hex(status);
+        debug_print_str(" (");
+        match status_efi {
+            EfiStatus::Success => debug_print_str("Success"),
+            EfiStatus::InvalidParameter => debug_print_str("InvalidParameter"),
+            _ => debug_print_str("Other"),
+        }
+        debug_print_str(")\n");
+        if status_efi != EfiStatus::Success {
             return Err(BellowsError::ProtocolNotFound(
-                "Both open/handle_protocol failed for LoadedImage.",
+                "Both handle/open_protocol failed for LoadedImage.",
             ));
         }
     }
@@ -202,6 +210,7 @@ pub fn read_efi_file(
         fs_handle,
         &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
         image_handle,
+        2, // EFI_OPEN_PROTOCOL_GET_PROTOCOL
     )?;
     file_debug!("Got SimpleFileSystem protocol.");
 
