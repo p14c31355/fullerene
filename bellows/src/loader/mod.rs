@@ -88,7 +88,7 @@ pub fn exit_boot_services_and_jump(
         }
 
         // Allocate buffer with some extra space, capped at 64KiB
-        let alloc_size = map_size.saturating_add(4096).min(64 * 1024);
+        let alloc_size = map_size.saturating_add(4096);
         let new_map_pages = alloc_size.div_ceil(4096).max(1);
         let mut new_map_phys_addr: usize = 0;
 
