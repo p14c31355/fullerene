@@ -73,7 +73,7 @@ fn try_allocate_pages(
 
         if status_efi == EfiStatus::InvalidParameter {
             debug_print_str("Heap: -> Skipping invalid type.\n");
-            continue; // Conventional無視
+            continue; // Ignore Conventional memory type
         }
 
         if status_efi == EfiStatus::Success && phys_addr != 0 {
