@@ -52,6 +52,6 @@ mod tests {
         }
         // Should find at least one libpthread on typical Linux systems
         // This test can be adjusted based on your system configuration
-        let _ = found; // Just check it compiles
+        assert!(found, "libpthread.so.0 was not found in any of the common paths.");
     }
 }
