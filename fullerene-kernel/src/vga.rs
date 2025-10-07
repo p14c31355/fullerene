@@ -3,15 +3,6 @@
 use spin::{Mutex, Once};
 use x86_64::instructions::port::Port;
 
-// Macro to reduce repetitive buffer operations
-macro_rules! with_buffer {
-    ($buffer:expr, $row:expr, $col:expr, $body:expr) => {
-        if $row < BUFFER_HEIGHT && $col < BUFFER_WIDTH {
-            $body(&mut $buffer[$row][$col])
-        }
-    };
-}
-
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 #[allow(dead_code)]
