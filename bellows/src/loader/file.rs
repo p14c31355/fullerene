@@ -35,7 +35,10 @@ fn open_protocol<T>(
         1, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
     );
     if EfiStatus::from(status) != EfiStatus::Success {
-        file_debug!("Failed to open protocol.");
+        // It's useful to know which status was returned for debugging.
+        debug_print_str("File: Failed to open protocol. Status: ");
+        debug_print_hex(status);
+        debug_print_str("\n");
         return Err(BellowsError::ProtocolNotFound("Failed to open protocol."));
     }
     file_debug!("Opened protocol.");

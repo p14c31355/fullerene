@@ -5,6 +5,8 @@ use x86_64::instructions::port::Port;
 pub fn debug_print_byte(byte: u8) {
     let mut port = Port::new(0x3F8);
     unsafe {
+        // Wait until the transmit buffer is empty
+        while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
         port.write(byte);
     }
 }
