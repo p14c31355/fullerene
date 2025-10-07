@@ -112,38 +112,98 @@ fn open_file(dir: &EfiFileWrapper, path: &[u16]) -> petroleum::common::Result<Ef
     Ok(EfiFileWrapper::new(file_handle))
 }
 
-/// Read `fullerene-kernel.efi` from the volume.
+    /// Read `fullerene-kernel.efi` from the volume.
 pub fn read_efi_file(
     bs: &EfiBootServices,
     image_handle: usize,
 ) -> petroleum::common::Result<(usize, usize)> {
     file_debug!("Starting read_efi_file...");
+    debug_print_str("File: image_handle=0x");
+    debug_print_hex(image_handle);
+    debug_print_str("\n");
 
     // Get the device handle from the LoadedImageProtocol
-    let loaded_image = open_protocol::<EfiLoadedImageProtocol>(
-        bs,
+    // open_protocol
+    let mut loaded_image: *mut EfiLoadedImageProtocol = ptr::null_mut();
+    let status = (bs.open_protocol)(
         image_handle,
         &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
+        &mut loaded_image as *mut *mut _ as *mut *mut c_void,
         image_handle,
-    )?;
+        0,
+        2, // EFI_OPEN_PROTOCOL_GET_PROTOCOL
+    );
+
+    let status_efi = EfiStatus::from(status);
+    debug_print_str("File: open_protocol status=");
+    debug_print_hex(status);
+    debug_print_str(" (");
+    match status_efi {
+        EfiStatus::Success => debug_print_str("Success"),
+        EfiStatus::InvalidParameter => debug_print_str("InvalidParameter"),
+        _ => debug_print_str("Other"),
+    }
+    debug_print_str(")\n");
+
+    if status_efi != EfiStatus::Success {
+        // Fallback: handle_protocol試す (legacy)
+        debug_print_str("File: Trying handle_protocol fallback...\n");
+        let status_h = (bs.handle_protocol)(
+            image_handle,
+            &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
+            &mut loaded_image as *mut _ as *mut *mut c_void,
+        );
+        let status_h_efi = EfiStatus::from(status_h);
+        debug_print_str("File: handle_protocol status=");
+        debug_print_hex(status_h);
+        debug_print_str("\n");
+        if status_h_efi != EfiStatus::Success {
+            return Err(BellowsError::ProtocolNotFound(
+                "Both open/handle_protocol failed for LoadedImage.",
+            ));
+        }
+    }
+
+    if loaded_image.is_null() {
+        return Err(BellowsError::ProtocolNotFound("LoadedImage protocol is null."));
+    }
+
+    let loaded_image_ref = unsafe { &*loaded_image };
     file_debug!("Success getting LoadedImageProtocol.");
-    let revision = unsafe { (*loaded_image).revision };
+    let revision = loaded_image_ref.revision;
     debug_print_str("File: LoadedImageProtocol revision: ");
     debug_print_hex(revision as usize);
     debug_print_str("\n");
-    let device_handle = unsafe { (*loaded_image).device_handle };
+    let device_handle = loaded_image_ref.device_handle;
     debug_print_str("File: Got device_handle from LoadedImageProtocol. Handle: ");
     debug_print_hex(device_handle);
     debug_print_str("\n");
 
-    // Get the SimpleFileSystem protocol from the device
+    // Locate SimpleFileSystem handles instead of using device_handle
+    let mut handle_count = 0;
+    let mut handles: *mut usize = ptr::null_mut();
+    let status = (bs.locate_handle_buffer)(
+        2, // ByProtocol
+        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+        ptr::null_mut(),
+        &mut handle_count,
+        &mut handles,
+    );
+    if EfiStatus::from(status) != EfiStatus::Success || handle_count == 0 {
+        file_debug!("Failed to locate SimpleFileSystem handles.");
+        return Err(BellowsError::ProtocolNotFound("No SimpleFileSystem handles found."));
+    }
+    file_debug!("Located SimpleFileSystem handles.");
+    // Use the first handle
+    let fs_handle = unsafe { *handles };
+    (bs.free_pool)(handles as *mut c_void);
     let fs_proto = open_protocol::<EfiSimpleFileSystem>(
         bs,
-        device_handle,
+        fs_handle,
         &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
         image_handle,
     )?;
-    file_debug!("Got SimpleFileSystem protocol from device.");
+    file_debug!("Got SimpleFileSystem protocol.");
 
     let mut volume_file_handle: *mut EfiFile = ptr::null_mut();
     let status = unsafe { ((*fs_proto).open_volume)(fs_proto, &mut volume_file_handle) };

@@ -115,7 +115,7 @@ pub enum EfiMemoryType {
 
 /// GUID for EFI_LOADED_IMAGE_PROTOCOL (UEFI)
 pub const EFI_LOADED_IMAGE_PROTOCOL_GUID: [u8; 16] = [
-    0xa1, 0x31, 0x1b, 0x5b, 0x62, 0x95, 0xd2, 0x11, 0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
+    0x5b, 0x1b, 0x31, 0xa1, 0x62, 0x95, 0xd2, 0x11, 0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
 ];
 
 /// GUID for EFI_SIMPLE_FILE_SYSTEM_PROTOCOL (UEFI)
@@ -181,20 +181,23 @@ pub struct EfiBootServices {
     pub free_pages: extern "efiapi" fn(usize, usize) -> usize, // idx 4
     pub get_memory_map:
         extern "efiapi" fn(*mut usize, *mut c_void, *mut usize, *mut usize, *mut u32) -> usize, // idx 5
-    _pad1: [usize; 11], // 6-16
+    _pad1: [usize; 1], // 6
+    pub free_pool: extern "efiapi" fn(*mut c_void) -> usize, // idx 7
+    _pad2: [usize; 9], // 8-16
     pub handle_protocol: extern "efiapi" fn(usize, *const u8, *mut *mut c_void) -> usize, // idx 17
-    _pad2: [usize; 1],  // 18
+    _pad3: [usize; 1],  // 18
     pub locate_handle:
         extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut usize) -> usize, // idx 19
-    _pad3: [usize; 1],  // 20
+    _pad4: [usize; 1],  // 20
     pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize, // idx 21
-    _pad4: [usize; 4],  // 22-25
+    _pad5: [usize; 4],  // 22-25
     pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize, // idx 26
-    _pad5: [usize; 5],  // 27-31
+    _pad6: [usize; 5],  // 27-31
     pub open_protocol:
         extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, // idx 32
-    _pad6: [usize; 4], // 33-36
-    pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize, // idx 37
+    _pad7: [usize; 4], // 33-36
+    pub locate_handle_buffer: extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut *mut usize) -> usize, // idx 37
+    pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize, // idx 38
 }
 
 /// Minimal UEFI Simple Text Output Protocol (UEFI)

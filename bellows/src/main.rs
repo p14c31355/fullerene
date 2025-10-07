@@ -31,6 +31,17 @@ use petroleum::common::{
 pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
     petroleum::println!("Bellows: efi_main entered."); // Early debug print
 
+    debug_print_str("Main: image_handle=0x");
+    debug_print_hex(image_handle);
+    debug_print_str(", system_table=0x");
+    debug_print_hex(system_table as usize);
+    debug_print_str("\n");
+
+    // UEFI_SYSTEM_TABLE.set前
+    if image_handle == 0 {
+        panic!("Invalid image_handle");
+    }
+
     let _ = petroleum::UEFI_SYSTEM_TABLE
         .lock()
         .insert(petroleum::UefiSystemTablePtr(system_table));
