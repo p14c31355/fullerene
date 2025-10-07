@@ -1,10 +1,5 @@
-#[cfg_attr(feature = "std", macro_use)]
-#[cfg(feature = "std")]
-extern crate std;
-
 #[cfg(feature = "std")]
 mod tests_with_std {
-    use super::*;
 
     #[test]
     fn test_u32_to_str_heapless() {

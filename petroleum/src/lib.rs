@@ -1,5 +1,6 @@
 #![no_std]
 #![feature(never_type)]
+#![feature(alloc_error_handler)]
 
 extern crate alloc;
 
@@ -77,7 +78,7 @@ pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
 
 /// Alloc error handler required when using `alloc` in no_std.
 #[cfg(all(panic = "unwind", not(feature = "std")))]
-#[warn(dead_code)]
+#[alloc_error_handler]
 fn alloc_error(_layout: Layout) -> ! {
     // Avoid recursive panics by directly looping
     loop {

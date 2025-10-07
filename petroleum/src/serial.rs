@@ -204,7 +204,6 @@ pub fn _print(args: fmt::Arguments) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::EfiStatus;
 
     #[test]
     fn test_debug_print_hex() {

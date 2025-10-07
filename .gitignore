@@ -11,6 +11,6 @@ target/
 
 fullerene.iso
 *.log
-*.txt
 *.img
 *.bin
+qemu_log.txt

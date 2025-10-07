@@ -35,6 +35,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_find_libpthread() {
         // Since find_libpthread is a fn in flasks/src/main.rs, we test the logic directly
         // Instead of testing the function directly, we'll test similar path logic
@@ -43,13 +44,11 @@ mod tests {
             "/usr/lib64/libpthread.so.0",
             "/usr/lib/libpthread.so.0",
         ];
-        let mut found = false;
-        for path in path_candidates {
-            if std::path::Path::new(path).exists() {
-                found = true;
-                break;
-            }
-        }
+
+        let found = path_candidates
+            .iter()
+            .any(|path| std::path::Path::new(path).exists());
+
         // Should find at least one libpthread on typical Linux systems
         // This test can be adjusted based on your system configuration
         assert!(found, "libpthread.so.0 was not found in any of the common paths.");
