@@ -108,7 +108,13 @@ unsafe fn clear_buffer<T: Copy>(address: u64, stride: u32, height: u32, bg_color
 }
 
 // For UEFI, fill with actual color
-unsafe fn clear_framebuffer(address: u64, width: u32, height: u32, bg_color: u32, bytes_per_pixel: u32) {
+unsafe fn clear_framebuffer(
+    address: u64,
+    width: u32,
+    height: u32,
+    bg_color: u32,
+    bytes_per_pixel: u32,
+) {
     let fb_ptr = address as *mut u32;
     let line_size = width;
     for y in 0..height {
@@ -411,44 +417,140 @@ struct RegisterConfig {
 }
 
 const SEQUENCER_CONFIG: &[RegisterConfig] = &[
-    RegisterConfig { index: 0x00, value: 0x03 }, // Reset
-    RegisterConfig { index: 0x01, value: 0x01 }, // Clocking mode
-    RegisterConfig { index: 0x02, value: 0x0F }, // Map mask
-    RegisterConfig { index: 0x03, value: 0x00 }, // Character map select
-    RegisterConfig { index: 0x04, value: 0x0E }, // Memory mode (for 256 color, chain 4)
+    RegisterConfig {
+        index: 0x00,
+        value: 0x03,
+    }, // Reset
+    RegisterConfig {
+        index: 0x01,
+        value: 0x01,
+    }, // Clocking mode
+    RegisterConfig {
+        index: 0x02,
+        value: 0x0F,
+    }, // Map mask
+    RegisterConfig {
+        index: 0x03,
+        value: 0x00,
+    }, // Character map select
+    RegisterConfig {
+        index: 0x04,
+        value: 0x0E,
+    }, // Memory mode (for 256 color, chain 4)
 ];
 
 const CRTC_CONFIG: &[RegisterConfig] = &[
-    RegisterConfig { index: 0x00, value: 0x5F }, // Horizontal total
-    RegisterConfig { index: 0x01, value: 0x4F }, // Horizontal displayed
-    RegisterConfig { index: 0x02, value: 0x50 }, // Horizontal blanking start
-    RegisterConfig { index: 0x03, value: 0x82 }, // Horizontal blanking end
-    RegisterConfig { index: 0x04, value: 0x54 }, // Horizontal sync start
-    RegisterConfig { index: 0x05, value: 0x80 }, // Horizontal sync end
-    RegisterConfig { index: 0x06, value: 0xBF }, // Vertical total
-    RegisterConfig { index: 0x07, value: 0x1F }, // Overflow
-    RegisterConfig { index: 0x08, value: 0x00 }, // Preset row scan
-    RegisterConfig { index: 0x09, value: 0x41 }, // Maximum scan line
-    RegisterConfig { index: 0x10, value: 0x9C }, // Vertical sync start
-    RegisterConfig { index: 0x11, value: 0x8E }, // Vertical sync end
-    RegisterConfig { index: 0x12, value: 0x8F }, // Vertical displayed
-    RegisterConfig { index: 0x13, value: 0x28 }, // Row offset
-    RegisterConfig { index: 0x14, value: 0x40 }, // Underline location
-    RegisterConfig { index: 0x15, value: 0x96 }, // Vertical blanking start
-    RegisterConfig { index: 0x16, value: 0xB9 }, // Vertical blanking end
-    RegisterConfig { index: 0x17, value: 0xA3 }, // Line compare / Mode control
+    RegisterConfig {
+        index: 0x00,
+        value: 0x5F,
+    }, // Horizontal total
+    RegisterConfig {
+        index: 0x01,
+        value: 0x4F,
+    }, // Horizontal displayed
+    RegisterConfig {
+        index: 0x02,
+        value: 0x50,
+    }, // Horizontal blanking start
+    RegisterConfig {
+        index: 0x03,
+        value: 0x82,
+    }, // Horizontal blanking end
+    RegisterConfig {
+        index: 0x04,
+        value: 0x54,
+    }, // Horizontal sync start
+    RegisterConfig {
+        index: 0x05,
+        value: 0x80,
+    }, // Horizontal sync end
+    RegisterConfig {
+        index: 0x06,
+        value: 0xBF,
+    }, // Vertical total
+    RegisterConfig {
+        index: 0x07,
+        value: 0x1F,
+    }, // Overflow
+    RegisterConfig {
+        index: 0x08,
+        value: 0x00,
+    }, // Preset row scan
+    RegisterConfig {
+        index: 0x09,
+        value: 0x41,
+    }, // Maximum scan line
+    RegisterConfig {
+        index: 0x10,
+        value: 0x9C,
+    }, // Vertical sync start
+    RegisterConfig {
+        index: 0x11,
+        value: 0x8E,
+    }, // Vertical sync end
+    RegisterConfig {
+        index: 0x12,
+        value: 0x8F,
+    }, // Vertical displayed
+    RegisterConfig {
+        index: 0x13,
+        value: 0x28,
+    }, // Row offset
+    RegisterConfig {
+        index: 0x14,
+        value: 0x40,
+    }, // Underline location
+    RegisterConfig {
+        index: 0x15,
+        value: 0x96,
+    }, // Vertical blanking start
+    RegisterConfig {
+        index: 0x16,
+        value: 0xB9,
+    }, // Vertical blanking end
+    RegisterConfig {
+        index: 0x17,
+        value: 0xA3,
+    }, // Line compare / Mode control
 ];
 
 const GRAPHICS_CONFIG: &[RegisterConfig] = &[
-    RegisterConfig { index: 0x00, value: 0x00 }, // Set/reset
-    RegisterConfig { index: 0x01, value: 0x00 }, // Enable set/reset
-    RegisterConfig { index: 0x02, value: 0x00 }, // Color compare
-    RegisterConfig { index: 0x03, value: 0x00 }, // Data rotate
-    RegisterConfig { index: 0x04, value: 0x00 }, // Read map select
-    RegisterConfig { index: 0x05, value: 0x40 }, // Graphics mode (256 color)
-    RegisterConfig { index: 0x06, value: 0x05 }, // Miscellaneous
-    RegisterConfig { index: 0x07, value: 0x0F }, // Color don't care
-    RegisterConfig { index: 0x08, value: 0xFF }, // Bit mask
+    RegisterConfig {
+        index: 0x00,
+        value: 0x00,
+    }, // Set/reset
+    RegisterConfig {
+        index: 0x01,
+        value: 0x00,
+    }, // Enable set/reset
+    RegisterConfig {
+        index: 0x02,
+        value: 0x00,
+    }, // Color compare
+    RegisterConfig {
+        index: 0x03,
+        value: 0x00,
+    }, // Data rotate
+    RegisterConfig {
+        index: 0x04,
+        value: 0x00,
+    }, // Read map select
+    RegisterConfig {
+        index: 0x05,
+        value: 0x40,
+    }, // Graphics mode (256 color)
+    RegisterConfig {
+        index: 0x06,
+        value: 0x05,
+    }, // Miscellaneous
+    RegisterConfig {
+        index: 0x07,
+        value: 0x0F,
+    }, // Color don't care
+    RegisterConfig {
+        index: 0x08,
+        value: 0xFF,
+    }, // Bit mask
 ];
 
 // Macro to setup multiple registers from a config array
@@ -470,7 +572,11 @@ fn setup_misc_output() {
 
 /// Configures the VGA Sequencer registers.
 fn setup_sequencer() {
-    setup_registers_from_config!(SEQUENCER_CONFIG, VgaPorts::SEQUENCER_INDEX, VgaPorts::SEQUENCER_DATA);
+    setup_registers_from_config!(
+        SEQUENCER_CONFIG,
+        VgaPorts::SEQUENCER_INDEX,
+        VgaPorts::SEQUENCER_DATA
+    );
 }
 
 /// Configures the VGA CRTC (Cathode Ray Tube Controller) registers.
@@ -480,26 +586,75 @@ fn setup_crtc() {
 
 /// Configures the VGA Graphics Controller registers.
 fn setup_graphics_controller() {
-    setup_registers_from_config!(GRAPHICS_CONFIG, VgaPorts::GRAPHICS_INDEX, VgaPorts::GRAPHICS_DATA);
+    setup_registers_from_config!(
+        GRAPHICS_CONFIG,
+        VgaPorts::GRAPHICS_INDEX,
+        VgaPorts::GRAPHICS_DATA
+    );
 }
 
 // Attribute controller register configuration
 const ATTRIBUTE_CONFIG: &[RegisterConfig] = &[
-    RegisterConfig { index: 0x00, value: 0x00 }, // Mode control 1
-    RegisterConfig { index: 0x01, value: 0x00 }, // Overscan color
-    RegisterConfig { index: 0x02, value: 0x0F }, // Color plane enable
-    RegisterConfig { index: 0x03, value: 0x00 }, // Horizontal pixel panning
-    RegisterConfig { index: 0x04, value: 0x00 }, // Color select
-    RegisterConfig { index: 0x05, value: 0x00 }, // Mode control 2
-    RegisterConfig { index: 0x06, value: 0x00 }, // Scroll
-    RegisterConfig { index: 0x07, value: 0x00 }, // Graphics mode
-    RegisterConfig { index: 0x08, value: 0xFF }, // Line graphics
-    RegisterConfig { index: 0x09, value: 0x00 }, // Foreground color
-    RegisterConfig { index: 0x10, value: 0x41 }, // Mode control (for 256 colors)
-    RegisterConfig { index: 0x11, value: 0x00 }, // Overscan color (border)
-    RegisterConfig { index: 0x12, value: 0x0F }, // Color plane enable
-    RegisterConfig { index: 0x13, value: 0x00 }, // Horizontal pixel panning
-    RegisterConfig { index: 0x14, value: 0x00 }, // Color select
+    RegisterConfig {
+        index: 0x00,
+        value: 0x00,
+    }, // Mode control 1
+    RegisterConfig {
+        index: 0x01,
+        value: 0x00,
+    }, // Overscan color
+    RegisterConfig {
+        index: 0x02,
+        value: 0x0F,
+    }, // Color plane enable
+    RegisterConfig {
+        index: 0x03,
+        value: 0x00,
+    }, // Horizontal pixel panning
+    RegisterConfig {
+        index: 0x04,
+        value: 0x00,
+    }, // Color select
+    RegisterConfig {
+        index: 0x05,
+        value: 0x00,
+    }, // Mode control 2
+    RegisterConfig {
+        index: 0x06,
+        value: 0x00,
+    }, // Scroll
+    RegisterConfig {
+        index: 0x07,
+        value: 0x00,
+    }, // Graphics mode
+    RegisterConfig {
+        index: 0x08,
+        value: 0xFF,
+    }, // Line graphics
+    RegisterConfig {
+        index: 0x09,
+        value: 0x00,
+    }, // Foreground color
+    RegisterConfig {
+        index: 0x10,
+        value: 0x41,
+    }, // Mode control (for 256 colors)
+    RegisterConfig {
+        index: 0x11,
+        value: 0x00,
+    }, // Overscan color (border)
+    RegisterConfig {
+        index: 0x12,
+        value: 0x0F,
+    }, // Color plane enable
+    RegisterConfig {
+        index: 0x13,
+        value: 0x00,
+    }, // Horizontal pixel panning
+    RegisterConfig {
+        index: 0x14,
+        value: 0x00,
+    }, // Color select
 ];
 
 /// Helper function to write to attribute registers with special sequence
