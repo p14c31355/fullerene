@@ -1,9 +1,17 @@
 // fullerene-kernel/src/interrupts.rs
 
-use crate::{gdt, serial};
+use crate::gdt;
 use core::fmt::Write;
 use lazy_static::lazy_static;
+use petroleum::serial::SERIAL_PORT_WRITER as SERIAL1;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+
+// Macro to reduce repetitive IDT handler setup
+macro_rules! setup_idt_handler {
+    ($idt:expr, $field:ident, $handler:ident) => {
+        $idt.$field.set_handler_fn($handler);
+    };
+}
 
 lazy_static! {
     // The Interrupt Descriptor Table (IDT)
@@ -11,8 +19,8 @@ lazy_static! {
         let mut idt = InterruptDescriptorTable::new();
 
         // Set up handlers for CPU exceptions
-        idt.breakpoint.set_handler_fn(breakpoint_handler);
-        idt.page_fault.set_handler_fn(page_fault_handler);
+        setup_idt_handler!(idt, breakpoint, breakpoint_handler);
+        setup_idt_handler!(idt, page_fault, page_fault_handler);
         unsafe {
             idt.double_fault
                 .set_handler_fn(double_fault_handler)
@@ -33,7 +41,7 @@ pub fn init() {
 
 // Exception handlers
 pub extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
-    let mut writer = serial::SERIAL1.lock();
+    let mut writer = SERIAL1.lock();
     writeln!(writer, "\nEXCEPTION: BREAKPOINT\n{:#?}", stack_frame).ok();
 }
 
@@ -41,7 +49,7 @@ pub extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
-    let mut writer = serial::SERIAL1.lock();
+    let mut writer = SERIAL1.lock();
     writeln!(
         writer,
         "\nEXCEPTION: PAGE FAULT\n{:#?}\nError Code: {:?}",

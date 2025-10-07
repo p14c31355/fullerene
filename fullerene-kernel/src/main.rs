@@ -8,29 +8,74 @@ mod gdt; // Add GDT module
 mod graphics;
 mod heap;
 mod interrupts;
-mod serial;
+// mod serial; // Removed, now using petroleum
 mod vga;
 
 extern crate alloc;
 
 use core::panic::PanicInfo;
 
+use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, serial_log};
+
 use core::ffi::c_void;
-use spin::Once;
 use petroleum::common::{
     EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
     FullereneFramebufferConfig,
 };
 use petroleum::page_table::EfiMemoryDescriptor;
+use spin::Once;
 use x86_64::VirtAddr;
 use x86_64::instructions::hlt;
+
+// Macro to reduce repetitive serial logging
+macro_rules! kernel_log {
+    ($msg:expr) => {
+        serial_log(concat!($msg, "\n"));
+    };
+}
+
+// Helper function to find framebuffer config
+fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&FullereneFramebufferConfig> {
+    let config_table_entries = unsafe {
+        core::slice::from_raw_parts(
+            system_table.configuration_table,
+            system_table.number_of_table_entries,
+        )
+    };
+    for entry in config_table_entries {
+        if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
+            return unsafe { Some(&*(entry.vendor_table as *const FullereneFramebufferConfig)) };
+        }
+    }
+    None
+}
+
+// Helper function to find heap start from memory map
+fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> x86_64::PhysAddr {
+    // First, try to find EfiLoaderData
+    for desc in descriptors {
+        if desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0 {
+            return x86_64::PhysAddr::new(desc.physical_start);
+        }
+    }
+    // If not found, find EfiConventionalMemory large enough
+    let required_pages = (heap::HEAP_SIZE + 4095) / 4096;
+    for desc in descriptors {
+        if desc.type_ == EfiMemoryType::EfiConventionalMemory
+            && desc.number_of_pages >= required_pages as u64
+        {
+            return x86_64::PhysAddr::new(desc.physical_start);
+        }
+    }
+    panic!("No suitable memory region found for heap");
+}
 
 static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
 
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    petroleum::handle_panic(info);
+    petroleum::handle_panic(info)
 }
 
 #[cfg(target_os = "uefi")]
@@ -53,8 +98,6 @@ pub extern "efiapi" fn efi_main(
         }
     }
 
-    serial::serial_log("Kernel: efi_main entered (via serial_log).\n");
-
     // Reinitialize page table after exit boot services
     let descriptors = unsafe {
         core::slice::from_raw_parts(
@@ -63,54 +106,61 @@ pub extern "efiapi" fn efi_main(
         )
     };
     MEMORY_MAP.call_once(|| unsafe { &*(descriptors as *const _) });
+
+    // Calculate physical_memory_offset from kernel's location in memory map
+    let kernel_virt_addr = efi_main as u64;
+    let mut physical_memory_offset = VirtAddr::new(0);
+    let mut kernel_phys_start = x86_64::PhysAddr::new(0);
+
+    // Find physical_memory_offset and kernel_phys_start
+    for desc in descriptors {
+        let virt_start = desc.virtual_start;
+        let virt_end = virt_start + desc.number_of_pages * 4096;
+        if kernel_virt_addr >= virt_start && kernel_virt_addr < virt_end {
+            physical_memory_offset = VirtAddr::new(desc.virtual_start - desc.physical_start);
+            if desc.type_ == EfiMemoryType::EfiLoaderCode {
+                kernel_phys_start = x86_64::PhysAddr::new(desc.physical_start);
+            }
+        }
+    }
+
+    if kernel_phys_start.is_null() {
+        panic!("Could not determine kernel's physical start address.");
+    }
+
     heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
-    heap::reinit_page_table();
+    heap::init_page_table(physical_memory_offset);
+    heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
 
     // Common initialization for both UEFI and BIOS
     init_common(_memory_map, _memory_map_size);
 
-    serial::serial_log("Interrupts initialized via init().");
+    kernel_log!("Kernel: efi_main entered (via serial_log).");
+    kernel_log!("Interrupts initialized via init().");
 
-    serial::serial_log("Entering efi_main...\n");
-    serial::serial_log("Searching for framebuffer config table...\n");
+    kernel_log!("Entering efi_main...");
+    kernel_log!("Searching for framebuffer config table...");
 
     // Cast the system_table pointer to the correct type
     let system_table = unsafe { &*(system_table as *const EfiSystemTable) };
 
-    let mut framebuffer_config: Option<&FullereneFramebufferConfig> = None;
-
-    // Iterate through the configuration tables to find the framebuffer configuration
-    let config_table_entries = unsafe {
-        core::slice::from_raw_parts(
-            system_table.configuration_table,
-            system_table.number_of_table_entries,
-        )
-    };
-    for entry in config_table_entries {
-        if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
-            framebuffer_config =
-                unsafe { Some(&*(entry.vendor_table as *const FullereneFramebufferConfig)) };
-            break;
-        }
-    }
-
-    if let Some(config) = framebuffer_config {
+    if let Some(config) = find_framebuffer_config(system_table) {
         if config.address == 0 {
             panic!("Framebuffer address 0 - check bootloader GOP install");
         } else {
             let _ = core::fmt::write(
-                &mut *serial::SERIAL1.lock(),
+                &mut *SERIAL1.lock(),
                 format_args!("  Address: {:#x}\n", config.address),
             );
             let _ = core::fmt::write(
-                &mut *serial::SERIAL1.lock(),
+                &mut *SERIAL1.lock(),
                 format_args!("  Resolution: {}x{}\n", config.width, config.height),
             );
             graphics::init(config);
-            serial::serial_log("Graphics initialized.");
+            kernel_log!("Graphics initialized.");
         }
     } else {
-        serial::serial_log("Fullerene Framebuffer Config Table not found.\n");
+        kernel_log!("Fullerene Framebuffer Config Table not found.");
     }
 
     // Main loop
@@ -121,33 +171,12 @@ pub extern "efiapi" fn efi_main(
 #[cfg(target_os = "uefi")]
 fn init_common(_memory_map: *mut c_void, _memory_map_size: usize) {
     let descriptors = *MEMORY_MAP.get().unwrap();
-
-    let mut heap_phys_start = None;
-    // First, try to find EfiLoaderData
-    for desc in descriptors {
-        if desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0 {
-            heap_phys_start = Some(x86_64::PhysAddr::new(desc.physical_start));
-            break;
-        }
-    }
-    // If not found, find EfiConventionalMemory large enough
-    if heap_phys_start.is_none() {
-        let required_pages = (heap::HEAP_SIZE + 4095) / 4096; // Ceiling division
-        for desc in descriptors {
-            if desc.type_ == EfiMemoryType::EfiConventionalMemory && desc.number_of_pages >= required_pages as u64 {
-                heap_phys_start = Some(x86_64::PhysAddr::new(desc.physical_start));
-                break;
-            }
-        }
-    }
-    let heap_phys_start = heap_phys_start.expect("No suitable memory region found for heap");
-
+    let heap_phys_start = find_heap_start(descriptors);
     let heap_start = heap::allocate_heap_from_map(heap_phys_start, heap::HEAP_SIZE);
-
     let heap_start = gdt::init(heap_start); // Initialize GDT with heap start, get adjusted heap start
     interrupts::init(); // Initialize IDT
     heap::init(heap_start, heap::HEAP_SIZE); // Initialize heap
-    serial::serial_init(); // Initialize serial early for debugging
+    serial_init(); // Initialize serial early for debugging
 }
 
 #[cfg(not(target_os = "uefi"))]
@@ -167,7 +196,7 @@ fn init_common() {
     gdt::init(heap_start_addr); // Pass the actual heap start address
     interrupts::init(); // Initialize IDT
     // Heap already initialized
-    serial::serial_init(); // Initialize serial early for debugging
+    serial_init(); // Initialize serial early for debugging
 }
 
 #[cfg(not(target_os = "uefi"))]
@@ -176,7 +205,7 @@ pub unsafe extern "C" fn _start() -> ! {
     use petroleum::common::VgaFramebufferConfig;
 
     init_common();
-    serial::serial_log("Entering _start...\n");
+    kernel_log!("Entering _start...");
 
     // Graphics initialization for VGA framebuffer (graphics mode)
     let vga_config = VgaFramebufferConfig {
@@ -187,7 +216,7 @@ pub unsafe extern "C" fn _start() -> ! {
     };
     graphics::init_vga(&vga_config);
 
-    serial::serial_log("VGA graphics mode initialized.");
+    kernel_log!("VGA graphics mode initialized.");
 
     // Main loop
     println!("Hello QEMU by FullereneOS");

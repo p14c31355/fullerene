@@ -1,10 +1,36 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
-use x86_64::{PhysAddr, VirtAddr};
-use spin::Mutex;
 use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
-use x86_64::structures::paging::{FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PhysFrame, PageTableFlags as Flags, Size4KiB};
+use petroleum::serial;
+use spin::Mutex;
 use x86_64::registers::control::Cr3Flags;
+use x86_64::structures::paging::{
+    FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags as Flags, PhysFrame,
+    Size4KiB,
+};
+use x86_64::{PhysAddr, VirtAddr};
+
+// Macro to reduce repetitive unsafe node operations
+macro_rules! with_node {
+    ($node_ptr:expr, $body:expr) => {
+        unsafe { $body(&mut *$node_ptr) }
+    };
+}
+
+// Helper function to iterate over memory descriptors with a specific type
+fn for_each_memory_descriptor<F>(
+    memory_map: &[petroleum::page_table::EfiMemoryDescriptor],
+    types: &[petroleum::common::EfiMemoryType],
+    mut f: F,
+) where
+    F: FnMut(&petroleum::page_table::EfiMemoryDescriptor),
+{
+    for desc in memory_map {
+        if types.iter().any(|&t| desc.type_ == t) && desc.number_of_pages > 0 {
+            f(desc);
+        }
+    }
+}
 
 pub const HEAP_SIZE: usize = 100 * 1024; // 100 KiB
 
@@ -101,7 +127,9 @@ impl Heap {
         }
 
         let mut current = self.head;
-        while !(*current).next.is_null() && (*(*current).next).start_addr() < (*new_node).start_addr() {
+        while !(*current).next.is_null()
+            && (*(*current).next).start_addr() < (*new_node).start_addr()
+        {
             current = (*current).next;
         }
 
@@ -174,9 +202,11 @@ unsafe impl GlobalAlloc for Locked<Heap> {
 #[global_allocator]
 pub static ALLOCATOR: Locked<Heap> = Locked::new(Heap::empty());
 
+static PHYSICAL_MEMORY_OFFSET: spin::Once<VirtAddr> = spin::Once::new();
 static MAPPER: spin::Once<Mutex<OffsetPageTable<'static>>> = spin::Once::new();
 static FRAME_ALLOCATOR: spin::Once<Mutex<BootInfoFrameAllocator<'static>>> = spin::Once::new();
-static MEMORY_MAP: spin::Once<&'static [petroleum::page_table::EfiMemoryDescriptor]> = spin::Once::new();
+static MEMORY_MAP: spin::Once<&'static [petroleum::page_table::EfiMemoryDescriptor]> =
+    spin::Once::new();
 
 pub fn init(heap_start: VirtAddr, heap_size: usize) {
     unsafe {
@@ -186,6 +216,7 @@ pub fn init(heap_start: VirtAddr, heap_size: usize) {
 }
 
 pub fn init_page_table(physical_memory_offset: VirtAddr) {
+    PHYSICAL_MEMORY_OFFSET.call_once(|| physical_memory_offset);
     let mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
     MAPPER.call_once(|| Mutex::new(mapper));
 }
@@ -196,68 +227,110 @@ pub fn init_frame_allocator(memory_map: &'static [petroleum::page_table::EfiMemo
     MEMORY_MAP.call_once(|| memory_map);
 }
 
-pub fn reinit_page_table() {
-    use x86_64::structures::paging::{PageTable, PageTableFlags as Flags};
+/// Helper function to map a contiguous physical memory range to virtual memory
+unsafe fn map_physical_range(
+    mapper: &mut OffsetPageTable,
+    start_phys: PhysAddr,
+    end_phys: PhysAddr,
+    start_virt: VirtAddr,
+    flags: Flags,
+    frame_allocator: &mut BootInfoFrameAllocator,
+) {
+    let mut current_phys = start_phys;
+    while current_phys < end_phys {
+        let virt_addr = start_virt + (current_phys - start_phys);
+        let page = Page::<Size4KiB>::containing_address(virt_addr);
+        let frame = PhysFrame::<Size4KiB>::containing_address(current_phys);
+
+        mapper
+            .map_to(page, frame, flags, frame_allocator)
+            .expect("Failed to map page")
+            .flush();
+
+        current_phys += 4096u64;
+    }
+}
+
+pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: PhysAddr) {
     use x86_64::registers::control::Cr3;
+    use x86_64::structures::paging::{PageTable, PageTableFlags as Flags};
 
     let mut frame_allocator = FRAME_ALLOCATOR.get().unwrap().lock();
     let memory_map = *MEMORY_MAP.get().unwrap();
 
+    serial::serial_log("Reinitializing page table with offset: ");
+    serial::serial_log(&alloc::format!("{:#x}\n", physical_memory_offset.as_u64()));
+
     // Allocate a new level 4 page table
-    let level_4_frame = frame_allocator.allocate_frame().expect("Failed to allocate level 4 frame");
+    let level_4_frame = frame_allocator
+        .allocate_frame()
+        .expect("Failed to allocate level 4 frame");
     let level_4_table = unsafe { &mut *(level_4_frame.start_address().as_u64() as *mut PageTable) };
 
     // Zero the table
     level_4_table.zero();
 
+    // Create a mapper for the new page table
+    let mut new_mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
+
     // Map usable memory regions from the memory map
-    for desc in memory_map {
-        // Only map conventional memory, loader data, and runtime services data
-        if matches!(desc.type_,
-            petroleum::common::EfiMemoryType::EfiConventionalMemory |
-            petroleum::common::EfiMemoryType::EfiLoaderData |
-            petroleum::common::EfiMemoryType::EfiRuntimeServicesData)
-            && desc.number_of_pages > 0
-        {
-            let start_addr = PhysAddr::new(desc.physical_start);
-            let end_addr = start_addr + (desc.number_of_pages * 4096);
-
-            // Map each 4KiB page in this region
-            let mut current_addr = start_addr;
-            while current_addr < end_addr {
-                let page = Page::<Size4KiB>::containing_address(VirtAddr::new(current_addr.as_u64()));
-                let frame = PhysFrame::<Size4KiB>::containing_address(current_addr);
-
-                // Use the mapper to create the mapping
-                let mapper = unsafe { petroleum::page_table::init(VirtAddr::new(0)) };
-                let mut mapper_guard = MAPPER.get().unwrap().lock();
-                unsafe {
-                    mapper_guard.map_to(page, frame, Flags::PRESENT | Flags::WRITABLE, &mut *frame_allocator)
-                        .expect("Failed to map page")
-                        .flush();
-                }
-
-                current_addr += 4096;
+    use petroleum::common::EfiMemoryType::*;
+    for_each_memory_descriptor(
+        memory_map,
+        &[EfiConventionalMemory, EfiLoaderData, EfiRuntimeServicesData],
+        |desc| {
+            let start_phys = PhysAddr::new(desc.physical_start);
+            let end_phys = start_phys + (desc.number_of_pages * 4096);
+            // Map to identity-mapped virtual addresses for simplicity
+            unsafe {
+                map_physical_range(
+                    &mut new_mapper,
+                    start_phys,
+                    end_phys,
+                    VirtAddr::new(start_phys.as_u64()),
+                    Flags::PRESENT | Flags::WRITABLE,
+                    &mut frame_allocator,
+                );
             }
-        }
+        },
+    );
+
+    // Add kernel code/data mapping (higher-half)
+    let kernel_virt_start = VirtAddr::new(0xffff_0000_1000_0000);
+    let kernel_size = 0x200000; // Assume 2MB for kernel
+    let kernel_end_phys = kernel_phys_start + kernel_size;
+
+    unsafe {
+        map_physical_range(
+            &mut new_mapper,
+            kernel_phys_start,
+            kernel_end_phys,
+            kernel_virt_start,
+            Flags::PRESENT | Flags::WRITABLE,
+            &mut frame_allocator,
+        );
     }
 
     // Set the new CR3
     unsafe { Cr3::write(level_4_frame, Cr3Flags::empty()) };
 
-    // Reinitialize the mapper
-    let mapper = unsafe { petroleum::page_table::init(VirtAddr::new(0)) };
+    // Reinitialize the mapper with new CR3
+    let mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
     *MAPPER.get().unwrap().lock() = mapper;
+
+    serial::serial_log("Page table reinitialized.\n");
 }
 
 // Allocate heap from memory map (find virtual address from physical)
 pub fn allocate_heap_from_map(phys_start: PhysAddr, _size: usize) -> VirtAddr {
     let memory_map = *MEMORY_MAP.get().unwrap();
     for desc in memory_map {
-        if desc.physical_start == phys_start.as_u64() {
-            return VirtAddr::new(desc.virtual_start);
+        let start = desc.physical_start;
+        let end = start + desc.number_of_pages * 4096;
+        if phys_start.as_u64() >= start && phys_start.as_u64() < end {
+            let offset_in_desc = phys_start.as_u64() - start;
+            return VirtAddr::new(desc.virtual_start + offset_in_desc);
         }
     }
-    // Fallback to identity mapping
-    VirtAddr::new(phys_start.as_u64())
+    panic!("Could not find virtual address for physical address {:#x}", phys_start);
 }

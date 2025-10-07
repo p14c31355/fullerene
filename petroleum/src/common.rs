@@ -102,7 +102,12 @@ impl From<usize> for EfiStatus {
 #[repr(usize)]
 #[derive(Clone, Copy, PartialEq)]
 pub enum EfiMemoryType {
+    EfiReservedMemoryType = 0,
+    EfiLoaderCode = 1,
     EfiLoaderData = 2,
+    EfiBootServicesCode = 3,
+    EfiBootServicesData = 4,
+    EfiRuntimeServicesCode = 5,
     EfiRuntimeServicesData = 6,
     EfiConventionalMemory = 7,
     EfiMaxMemoryType = 15,
@@ -115,7 +120,7 @@ pub const EFI_LOADED_IMAGE_PROTOCOL_GUID: [u8; 16] = [
 
 /// GUID for EFI_SIMPLE_FILE_SYSTEM_PROTOCOL (UEFI)
 pub const EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID: [u8; 16] = [
-    0x96, 0x4e, 0x5b, 0x09, 0x21, 0x42, 0x06, 0x4f, 0x85, 0x3d, 0x05, 0x22, 0x22, 0x0b, 0xa2, 0x19,
+    0x22, 0x5b, 0x4e, 0x96, 0x59, 0x64, 0xd2, 0x11, 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
 ];
 
 pub const EFI_FILE_INFO_GUID: [u8; 16] = [
@@ -172,24 +177,30 @@ pub struct EfiSystemTable {
 pub struct EfiBootServices {
     pub hdr: [u64; 3], // EFI_TABLE_HEADER
     _pad0: [usize; 2], // raise_tpl, restore_tpl
-    pub allocate_pages: extern "efiapi" fn(usize, EfiMemoryType, usize, *mut usize) -> usize, // idx 5
-    pub free_pages: extern "efiapi" fn(usize, usize) -> usize, // idx 6
+    pub allocate_pages: extern "efiapi" fn(usize, EfiMemoryType, usize, *mut usize) -> usize, // idx 3
+    pub free_pages: extern "efiapi" fn(usize, usize) -> usize, // idx 4
     pub get_memory_map:
-        extern "efiapi" fn(*mut usize, *mut c_void, *mut usize, *mut usize, *mut u32) -> usize, // idx 7
-    _pad1: [usize; 11], // 8-18
-    pub handle_protocol: extern "efiapi" fn(usize, *const u8, *mut *mut c_void) -> usize, // idx 19
-    _pad2: [usize; 2],  // 20-21
+        extern "efiapi" fn(*mut usize, *mut c_void, *mut usize, *mut usize, *mut u32) -> usize, // idx 5
+    _pad1: [usize; 1],                                       // 6
+    pub free_pool: extern "efiapi" fn(*mut c_void) -> usize, // idx 7
+    _pad2: [usize; 9],                                       // 8-16
+    pub handle_protocol: extern "efiapi" fn(usize, *const u8, *mut *mut c_void) -> usize, // idx 17
+    _pad3: [usize; 1],                                       // 18
     pub locate_handle:
-        extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut usize) -> usize, // idx 22
-    _pad3: [usize; 1],  // 23
-    pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize, // idx 24
-    _pad4: [usize; 4],  // 25-28
-    pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize, // idx 29
-    _pad5: [usize; 5],  // 30-34
+        extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut usize) -> usize, // idx 19
+    _pad4: [usize; 1],                                       // 20
+    pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize, // idx 21
+    _pad5: [usize; 4],                                       // 22-25
+    pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize, // idx 26
+    _pad6: [usize; 1],                                       // 27
+    pub stall: extern "efiapi" fn(usize) -> usize,           // idx 28
+    _pad7: [usize; 3],                                       // 29-31
     pub open_protocol:
-        extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, // idx 35
-    _pad6: [usize; 4], // 36-39
-    pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize, // idx 40
+        extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, // idx 32
+    _pad8: [usize; 4], // 33-36
+    pub locate_handle_buffer:
+        extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut *mut usize) -> usize, // idx 37
+    pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize, // idx 38
 }
 
 /// Minimal UEFI Simple Text Output Protocol (UEFI)

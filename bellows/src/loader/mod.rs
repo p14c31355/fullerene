@@ -1,6 +1,5 @@
 // bellows/src/loader/mod.rs
 
-use core::arch::asm;
 use core::ffi::c_void;
 use core::ptr;
 use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
@@ -29,7 +28,17 @@ pub fn exit_boot_services_and_jump(
     let mut map_pages: usize = 0;
 
     // Loop to get the memory map until successful
+    let mut attempts = 0;
+    const MAX_ATTEMPTS: usize = 5;
+
     loop {
+        if attempts >= MAX_ATTEMPTS {
+            return Err(BellowsError::InvalidState(
+                "Too many attempts to get memory map.",
+            ));
+        }
+        attempts += 1;
+
         // First call: Get the required buffer size (with NULL buffer)
         let status = unsafe {
             (bs.get_memory_map)(
@@ -51,15 +60,15 @@ pub fn exit_boot_services_and_jump(
             ));
         }
 
-        // Allocate buffer with some extra space
-        let alloc_size = map_size.saturating_add(4096); // Add some buffer for potential growth
-        let new_map_pages = alloc_size.div_ceil(4096);
+        // Allocate buffer with some extra space, capped at 64KiB
+        let alloc_size = map_size.saturating_add(4096);
+        let new_map_pages = alloc_size.div_ceil(4096).max(1);
         let mut new_map_phys_addr: usize = 0;
 
         let alloc_status = (bs.allocate_pages)(
             0usize, // AllocateAnyPages
             EfiMemoryType::EfiLoaderData,
-            new_map_pages, // No .min(8)
+            new_map_pages,
             &mut new_map_phys_addr,
         );
 
@@ -95,11 +104,16 @@ pub fn exit_boot_services_and_jump(
         );
 
         match EfiStatus::from(status) {
-            EfiStatus::Success => break, // Successfully got the memory map
+            EfiStatus::Success => {
+                println!(
+                    "Memory map acquired after {} attempts. Size: {}",
+                    attempts, map_size
+                );
+                break;
+            }
             EfiStatus::BufferTooSmall => {
-                // Memory map changed, loop again to re-allocate a larger buffer
-                println!("Memory map changed, re-attempting to get memory map.");
-                // The loop will naturally re-allocate in the next iteration
+                println!("Buffer too small (size now {}), retrying...", map_size);
+                continue;
             }
             _ => {
                 (bs.free_pages)(map_phys_addr, map_pages);
@@ -133,5 +147,9 @@ pub fn exit_boot_services_and_jump(
     // This is the point of no return. We are calling the kernel entry point,
     // passing the memory map and other data. The validity of the `entry`
     // function pointer is assumed based on the successful PE file loading.
+    println!(
+        "Jumping to kernel at {:#x} with map at {:#x} size {}",
+        entry as usize, map_phys_addr, map_size
+    );
     entry(image_handle, system_table, map_ptr, map_size);
 }

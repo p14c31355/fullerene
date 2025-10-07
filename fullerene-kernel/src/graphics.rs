@@ -41,6 +41,66 @@ fn new_line(fb: &mut impl FramebufferLike) {
     fb.set_position(x_pos, y_pos);
 }
 
+fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result {
+    let (mut x_pos, mut y_pos) = writer.get_position();
+    for c in s.chars() {
+        if c == '\n' {
+            new_line(writer);
+            let (new_x, new_y) = writer.get_position();
+            x_pos = new_x;
+            y_pos = new_y;
+        } else {
+            draw_char(writer, c, x_pos, y_pos);
+            x_pos += 8;
+            if x_pos + 8 > writer.get_width() {
+                new_line(writer);
+                let (new_x, new_y) = writer.get_position();
+                x_pos = new_x;
+                y_pos = new_y;
+            } else {
+                writer.set_position(x_pos, y_pos);
+            }
+        }
+    }
+    Ok(())
+}
+
+unsafe fn scroll_buffer_u8(address: u64, width: u32, height: u32, bg_color: u8) {
+    let bytes_per_line = width;
+    let shift_bytes = 8u64 * bytes_per_line as u64;
+    let total_bytes = height as u64 * bytes_per_line as u64;
+    let fb_ptr = address as *mut u8;
+    core::ptr::copy(
+        fb_ptr.add(shift_bytes as usize),
+        fb_ptr,
+        (total_bytes - shift_bytes) as usize,
+    );
+    // Clear last 8 lines
+    let clear_offset = (height - 8) * width;
+    let clear_ptr = fb_ptr.add(clear_offset as usize);
+    let clear_size = 8 * width as usize;
+    core::ptr::write_bytes(clear_ptr, bg_color, clear_size);
+}
+
+unsafe fn scroll_buffer_u32(address: u64, stride: u32, height: u32, bg_color: u32) {
+    let bytes_per_pixel = 4;
+    let bytes_per_line = stride * bytes_per_pixel;
+    let shift_bytes = 8u64 * bytes_per_line as u64;
+    let total_bytes = height as u64 * bytes_per_line as u64;
+    let fb_ptr = address as *mut u8;
+    core::ptr::copy(
+        fb_ptr.add(shift_bytes as usize),
+        fb_ptr,
+        (total_bytes - shift_bytes) as usize,
+    );
+    // Clear the last 8 lines
+    let last_lines_offset = (height - 8) * stride * bytes_per_pixel;
+    let clear_ptr = (address + last_lines_offset as u64) as *mut u32;
+    let clear_num_u32 = 8 * stride as usize;
+    let clear_slice = core::slice::from_raw_parts_mut(clear_ptr, clear_num_u32);
+    clear_slice.fill(bg_color);
+}
+
 trait FramebufferLike {
     fn put_pixel(&self, x: u32, y: u32, color: u32);
     fn clear_screen(&self);
@@ -98,27 +158,14 @@ impl FramebufferWriter {
     }
 
     fn scroll_up(&self) {
-        let bytes_per_pixel = self.bytes_per_pixel();
-        let bytes_per_line = self.framebuffer.stride * bytes_per_pixel;
-        let shift_bytes = 8u64 * bytes_per_line as u64;
-        let total_bytes = self.framebuffer.height as u64 * bytes_per_line as u64;
-        let fb_ptr = self.framebuffer.address as *mut u8;
         unsafe {
-            core::ptr::copy(
-                fb_ptr.add(shift_bytes as usize),
-                fb_ptr,
-                (total_bytes - shift_bytes) as usize,
-            );
-        }
-        // Clear the last 8 lines
-        let last_lines_offset =
-            (self.framebuffer.height.saturating_sub(8)) * self.framebuffer.stride * bytes_per_pixel;
-        let clear_ptr = (self.framebuffer.address + last_lines_offset as u64) as *mut u32;
-        let clear_num_u32 = 8 * self.framebuffer.stride as usize;
-        unsafe {
-            let clear_slice = core::slice::from_raw_parts_mut(clear_ptr, clear_num_u32);
-            clear_slice.fill(self.bg_color);
-        }
+            scroll_buffer_u32(
+                self.framebuffer.address,
+                self.framebuffer.stride,
+                self.framebuffer.height,
+                self.bg_color,
+            )
+        };
     }
 }
 
@@ -183,27 +230,7 @@ impl FramebufferLike for FramebufferWriter {
 #[cfg(target_os = "uefi")]
 impl core::fmt::Write for FramebufferWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let (mut x_pos, mut y_pos) = self.get_position();
-        for c in s.chars() {
-            if c == '\n' {
-                new_line(self);
-                let (new_x, new_y) = self.get_position();
-                x_pos = new_x;
-                y_pos = new_y;
-            } else {
-                draw_char(self, c, x_pos, y_pos);
-                x_pos += 8;
-                if x_pos + 8 > self.get_width() {
-                    new_line(self);
-                    let (new_x, new_y) = self.get_position();
-                    x_pos = new_x;
-                    y_pos = new_y;
-                } else {
-                    self.set_position(x_pos, y_pos);
-                }
-            }
-        }
-        Ok(())
+        write_text(self, s)
     }
 }
 
@@ -233,25 +260,7 @@ impl VgaWriter {
     }
 
     fn scroll_up(&self) {
-        let bytes_per_line = self.width;
-        let shift_bytes = 8u64 * bytes_per_line as u64;
-        let total_bytes = self.height as u64 * bytes_per_line as u64;
-        let fb_ptr = self.address as *mut u8;
-        unsafe {
-            core::ptr::copy(
-                fb_ptr.add(shift_bytes as usize),
-                fb_ptr,
-                (total_bytes - shift_bytes) as usize,
-            );
-        }
-        // Clear last 8 lines
-        let clear_offset = (self.height.saturating_sub(8)) * self.width;
-        let clear_size = 8 * self.width as usize;
-        let fb_ptr = self.address as *mut u8;
-        unsafe {
-            let clear_ptr = fb_ptr.add(clear_offset as usize);
-            core::ptr::write_bytes(clear_ptr, self.bg_color, clear_size);
-        }
+        unsafe { scroll_buffer_u8(self.address, self.width, self.height, self.bg_color) };
     }
 }
 
@@ -308,27 +317,7 @@ impl FramebufferLike for VgaWriter {
 #[cfg(not(target_os = "uefi"))]
 impl core::fmt::Write for VgaWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let (mut x_pos, mut y_pos) = self.get_position();
-        for c in s.chars() {
-            if c == '\n' {
-                new_line(self);
-                let (new_x, new_y) = self.get_position();
-                x_pos = new_x;
-                y_pos = new_y;
-            } else {
-                draw_char(self, c, x_pos, y_pos);
-                x_pos += 8;
-                if x_pos + 8 > self.get_width() {
-                    new_line(self);
-                    let (new_x, new_y) = self.get_position();
-                    x_pos = new_x;
-                    y_pos = new_y;
-                } else {
-                    self.set_position(x_pos, y_pos);
-                }
-            }
-        }
-        Ok(())
+        write_text(self, s)
     }
 }
 
@@ -387,6 +376,15 @@ fn write_indexed(index_port_addr: u16, data_port_addr: u16, index: u8, data: u8)
     }
 }
 
+/// Macro to setup multiple registers at once.
+macro_rules! setup_registers {
+    ($index_port:expr, $data_port:expr, $($index:expr => $value:expr),*) => {
+        $(
+            write_indexed($index_port, $data_port, $index, $value);
+        )*
+    };
+}
+
 /// Configures the Miscellaneous Output Register.
 fn setup_misc_output() {
     unsafe {
@@ -397,114 +395,58 @@ fn setup_misc_output() {
 
 /// Configures the VGA Sequencer registers.
 fn setup_sequencer() {
-    // Sequencer Register Indices
-    const SEQ_RESET: u8 = 0x00;
-    const SEQ_CLOCKING_MODE: u8 = 0x01;
-    const SEQ_MAP_MASK: u8 = 0x02;
-    const SEQ_CHARACTER_MAP_SELECT: u8 = 0x03;
-    const SEQ_MEMORY_MODE: u8 = 0x04;
-
-    const SEQUENCER_VALUES: &[(u8, u8)] = &[
-        (SEQ_RESET, 0x03),                // Reset
-        (SEQ_CLOCKING_MODE, 0x01),        // Clocking mode
-        (SEQ_MAP_MASK, 0x0F),             // Map mask
-        (SEQ_CHARACTER_MAP_SELECT, 0x00), // Character map select
-        (SEQ_MEMORY_MODE, 0x0E),          // Memory mode (for 256 color, chain 4)
-    ];
-    for &(index, value) in SEQUENCER_VALUES {
-        write_indexed(
-            VGA_SEQUENCER_INDEX_PORT_ADDRESS,
-            VGA_SEQUENCER_DATA_PORT_ADDRESS,
-            index,
-            value,
-        );
-    }
+    setup_registers!(
+        VGA_SEQUENCER_INDEX_PORT_ADDRESS,
+        VGA_SEQUENCER_DATA_PORT_ADDRESS,
+        0x00 => 0x03, // Reset
+        0x01 => 0x01, // Clocking mode
+        0x02 => 0x0F, // Map mask
+        0x03 => 0x00, // Character map select
+        0x04 => 0x0E  // Memory mode (for 256 color, chain 4)
+    );
 }
 
 /// Configures the VGA CRTC (Cathode Ray Tube Controller) registers.
 fn setup_crtc() {
-    // CRTC Register Indices
-    const CRTC_HORIZONTAL_TOTAL: u8 = 0x00;
-    const CRTC_HORIZONTAL_DISPLAYED: u8 = 0x01;
-    const CRTC_HORIZONTAL_BLANKING_START: u8 = 0x02;
-    const CRTC_HORIZONTAL_BLANKING_END: u8 = 0x03;
-    const CRTC_HORIZONTAL_SYNC_START: u8 = 0x04;
-    const CRTC_HORIZONTAL_SYNC_END: u8 = 0x05;
-    const CRTC_VERTICAL_TOTAL: u8 = 0x06;
-    const CRTC_OVERFLOW: u8 = 0x07;
-    const CRTC_PRESET_ROW_SCAN: u8 = 0x08;
-    const CRTC_MAXIMUM_SCAN_LINE: u8 = 0x09;
-    const CRTC_VERTICAL_SYNC_START: u8 = 0x10;
-    const CRTC_VERTICAL_SYNC_END: u8 = 0x11;
-    const CRTC_VERTICAL_DISPLAYED: u8 = 0x12;
-    const CRTC_ROW_OFFSET: u8 = 0x13;
-    const CRTC_UNDERLINE_LOCATION: u8 = 0x14;
-    const CRTC_VERTICAL_BLANKING_START: u8 = 0x15;
-    const CRTC_VERTICAL_BLANKING_END: u8 = 0x16;
-    const CRTC_MODE_CONTROL: u8 = 0x17;
-
-    const CRTC_VALUES: &[(u8, u8)] = &[
-        (CRTC_HORIZONTAL_TOTAL, 0x5F),          // Horizontal total
-        (CRTC_HORIZONTAL_DISPLAYED, 0x4F),      // Horizontal displayed
-        (CRTC_HORIZONTAL_BLANKING_START, 0x50), // Horizontal blanking start
-        (CRTC_HORIZONTAL_BLANKING_END, 0x82),   // Horizontal blanking end
-        (CRTC_HORIZONTAL_SYNC_START, 0x54),     // Horizontal sync start
-        (CRTC_HORIZONTAL_SYNC_END, 0x80),       // Horizontal sync end
-        (CRTC_VERTICAL_TOTAL, 0xBF),            // Vertical total
-        (CRTC_OVERFLOW, 0x1F),                  // Overflow
-        (CRTC_PRESET_ROW_SCAN, 0x00),           // Preset row scan
-        (CRTC_MAXIMUM_SCAN_LINE, 0x41),         // Maximum scan line
-        (CRTC_VERTICAL_SYNC_START, 0x9C),       // Vertical sync start
-        (CRTC_VERTICAL_SYNC_END, 0x8E),         // Vertical sync end
-        (CRTC_VERTICAL_DISPLAYED, 0x8F),        // Vertical displayed
-        (CRTC_ROW_OFFSET, 0x28),                // Row offset
-        (CRTC_UNDERLINE_LOCATION, 0x40),        // Underline location
-        (CRTC_VERTICAL_BLANKING_START, 0x96),   // Vertical blanking start
-        (CRTC_VERTICAL_BLANKING_END, 0xB9),     // Vertical blanking end
-        (CRTC_MODE_CONTROL, 0xA3),              // Line compare / Mode control
-    ];
-    for &(index, value) in CRTC_VALUES {
-        write_indexed(
-            VGA_CRTC_INDEX_PORT_ADDRESS,
-            VGA_CRTC_DATA_PORT_ADDRESS,
-            index,
-            value,
-        );
-    }
+    setup_registers!(
+        VGA_CRTC_INDEX_PORT_ADDRESS,
+        VGA_CRTC_DATA_PORT_ADDRESS,
+        0x00 => 0x5F, // Horizontal total
+        0x01 => 0x4F, // Horizontal displayed
+        0x02 => 0x50, // Horizontal blanking start
+        0x03 => 0x82, // Horizontal blanking end
+        0x04 => 0x54, // Horizontal sync start
+        0x05 => 0x80, // Horizontal sync end
+        0x06 => 0xBF, // Vertical total
+        0x07 => 0x1F, // Overflow
+        0x08 => 0x00, // Preset row scan
+        0x09 => 0x41, // Maximum scan line
+        0x10 => 0x9C, // Vertical sync start
+        0x11 => 0x8E, // Vertical sync end
+        0x12 => 0x8F, // Vertical displayed
+        0x13 => 0x28, // Row offset
+        0x14 => 0x40, // Underline location
+        0x15 => 0x96, // Vertical blanking start
+        0x16 => 0xB9, // Vertical blanking end
+        0x17 => 0xA3  // Line compare / Mode control
+    );
 }
 
 /// Configures the VGA Graphics Controller registers.
 fn setup_graphics_controller() {
-    // Graphics Controller Register Indices
-    const GC_SET_RESET: u8 = 0x00;
-    const GC_ENABLE_SET_RESET: u8 = 0x01;
-    const GC_COLOR_COMPARE: u8 = 0x02;
-    const GC_DATA_ROTATE: u8 = 0x03;
-    const GC_READ_MAP_SELECT: u8 = 0x04;
-    const GC_GRAPHICS_MODE: u8 = 0x05;
-    const GC_MISCELLANEOUS: u8 = 0x06;
-    const GC_COLOR_DONT_CARE: u8 = 0x07;
-    const GC_BIT_MASK: u8 = 0x08;
-
-    const GC_VALUES: &[(u8, u8)] = &[
-        (GC_SET_RESET, 0x00),        // Set/reset
-        (GC_ENABLE_SET_RESET, 0x00), // Enable set/reset
-        (GC_COLOR_COMPARE, 0x00),    // Color compare
-        (GC_DATA_ROTATE, 0x00),      // Data rotate
-        (GC_READ_MAP_SELECT, 0x00),  // Read map select
-        (GC_GRAPHICS_MODE, 0x40),    // Graphics mode (256 color)
-        (GC_MISCELLANEOUS, 0x05),    // Miscellaneous
-        (GC_COLOR_DONT_CARE, 0x0F),  // Color don't care
-        (GC_BIT_MASK, 0xFF),         // Bit mask
-    ];
-    for &(index, value) in GC_VALUES {
-        write_indexed(
-            VGA_GRAPHICS_INDEX_PORT_ADDRESS,
-            VGA_GRAPHICS_DATA_PORT_ADDRESS,
-            index,
-            value,
-        );
-    }
+    setup_registers!(
+        VGA_GRAPHICS_INDEX_PORT_ADDRESS,
+        VGA_GRAPHICS_DATA_PORT_ADDRESS,
+        0x00 => 0x00, // Set/reset
+        0x01 => 0x00, // Enable set/reset
+        0x02 => 0x00, // Color compare
+        0x03 => 0x00, // Data rotate
+        0x04 => 0x00, // Read map select
+        0x05 => 0x40, // Graphics mode (256 color)
+        0x06 => 0x05, // Miscellaneous
+        0x07 => 0x0F, // Color don't care
+        0x08 => 0xFF  // Bit mask
+    );
 }
 
 /// Configures the VGA Attribute Controller registers.
