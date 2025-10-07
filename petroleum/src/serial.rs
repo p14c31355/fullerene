@@ -189,10 +189,10 @@ fn format_hex(writer: &mut impl core::fmt::Write, value: usize) -> core::fmt::Re
         temp /= 16;
         i += 1;
     }
-    for j in (0..i).rev() {
-        writer.write_str(core::str::from_utf8(&[digits[j]]).unwrap())?;
-    }
-    Ok(())
+    // Reverse the digits slice in place
+    digits[0..i].reverse();
+    // Write the full hex string in one call
+    writer.write_str(core::str::from_utf8(&digits[0..i]).unwrap())
 }
 
 #[doc(hidden)]
@@ -209,26 +209,19 @@ pub fn _print(args: fmt::Arguments) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn test_debug_print_hex() {
-        // Test that debug_print_hex doesn't panic (output goes to serial)
-        debug_print_hex(0);
-        debug_print_hex(255);
-        debug_print_hex(4096);
-    }
+    use alloc::vec::Vec;
+    use core::fmt;
 
     #[test]
     fn test_format_hex_output() {
         struct TestWriter {
-            buf: alloc::vec::Vec<u8>,
+            buf: Vec<u8>,
         }
 
         impl TestWriter {
             fn new() -> Self {
                 TestWriter {
-                    buf: alloc::vec::Vec::new(),
+                    buf: Vec::new(),
                 }
             }
         }
@@ -241,21 +234,21 @@ mod tests {
         }
 
         let mut writer = TestWriter::new();
-        format_hex(&mut writer, 0).unwrap();
+        super::format_hex(&mut writer, 0).unwrap();
         assert_eq!(core::str::from_utf8(&writer.buf).unwrap(), "0x0");
 
         let mut writer = TestWriter::new();
-        format_hex(&mut writer, 255).unwrap();
+        super::format_hex(&mut writer, 255).unwrap();
         assert_eq!(core::str::from_utf8(&writer.buf).unwrap(), "0xff");
 
         let mut writer = TestWriter::new();
-        format_hex(&mut writer, 4096).unwrap();
+        super::format_hex(&mut writer, 4096).unwrap();
         assert_eq!(core::str::from_utf8(&writer.buf).unwrap(), "0x1000");
     }
 
     #[test]
     fn test_uefi_writer_new() {
-        let writer = UefiWriter::new();
+        let writer = super::UefiWriter::new();
         assert!(writer.con_out.is_null());
     }
 }

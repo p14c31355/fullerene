@@ -8,8 +8,6 @@ pub mod common;
 pub mod page_table;
 pub mod serial;
 
-#[cfg(all(panic = "unwind", not(feature = "std")))]
-use core::alloc::Layout;
 use core::{arch::asm, fmt::Write};
 use spin::Mutex;
 
@@ -77,9 +75,9 @@ pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
 }
 
 /// Alloc error handler required when using `alloc` in no_std.
-#[cfg(all(panic = "unwind", not(feature = "std")))]
+#[cfg(all(panic = "unwind", not(feature = "std"), not(test)))]
 #[alloc_error_handler]
-fn alloc_error(_layout: Layout) -> ! {
+fn alloc_error(_layout: core::alloc::Layout) -> ! {
     // Avoid recursive panics by directly looping
     loop {
         // Optionally, try to print a message using the heap-less writer if possible

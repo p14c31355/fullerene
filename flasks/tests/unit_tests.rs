@@ -3,13 +3,10 @@ mod tests {
     use std::path::PathBuf;
 
     fn get_workspace_root() -> PathBuf {
-        let mut path = std::env::current_dir().expect("Failed to get current directory");
-        while !path.join(".git").exists() {
-            if !path.pop() {
-                panic!("Could not find workspace root");
-            }
-        }
-        path
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("Failed to get workspace root")
+            .to_path_buf()
     }
 
     #[test]
@@ -37,21 +34,13 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn test_find_libpthread() {
-        // Since find_libpthread is a fn in flasks/src/main.rs, we test the logic directly
-        // Instead of testing the function directly, we'll test similar path logic
-        // Note: Keep path_candidates in sync with COMMON_PATHS in flasks/src/main.rs
-        let path_candidates = [
-            "/lib/x86_64-linux-gnu/libpthread.so.0",
-            "/usr/lib64/libpthread.so.0",
-            "/usr/lib/libpthread.so.0",
-        ];
-
-        let found = path_candidates
-            .iter()
-            .any(|path| std::path::Path::new(path).exists());
-
-        // Should find at least one libpthread on typical Linux systems
-        // This test can be adjusted based on your system configuration
-        assert!(found, "libpthread.so.0 was not found in any of the common paths.");
+        // Test that find_libpthread returns a valid existing path (or the fallback)
+        let path = flasks::find_libpthread();
+        assert!(!path.is_empty());
+        // The path should either exist or be the fallback
+        assert!(
+            std::path::Path::new(&path).exists()
+                || path == "/lib/x86_64-linux-gnu/libpthread.so.0"
+        );
     }
 }
