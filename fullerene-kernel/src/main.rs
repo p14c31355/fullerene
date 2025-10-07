@@ -8,12 +8,14 @@ mod gdt; // Add GDT module
 mod graphics;
 mod heap;
 mod interrupts;
-mod serial;
+// mod serial; // Removed, now using petroleum
 mod vga;
 
 extern crate alloc;
 
 use core::panic::PanicInfo;
+
+use petroleum::serial::{serial_init, serial_log, SERIAL_PORT_WRITER as SERIAL1};
 
 use core::ffi::c_void;
 use spin::Once;
@@ -28,7 +30,7 @@ use x86_64::instructions::hlt;
 // Macro to reduce repetitive serial logging
 macro_rules! kernel_log {
     ($msg:expr) => {
-        serial::serial_log(concat!($msg, "\n"));
+        serial_log(concat!($msg, "\n"));
     };
 }
 
@@ -134,11 +136,11 @@ pub extern "efiapi" fn efi_main(
             panic!("Framebuffer address 0 - check bootloader GOP install");
         } else {
             let _ = core::fmt::write(
-                &mut *serial::SERIAL1.lock(),
+                &mut *SERIAL1.lock(),
                 format_args!("  Address: {:#x}\n", config.address),
             );
             let _ = core::fmt::write(
-                &mut *serial::SERIAL1.lock(),
+                &mut *SERIAL1.lock(),
                 format_args!("  Resolution: {}x{}\n", config.width, config.height),
             );
             graphics::init(config);
@@ -161,7 +163,7 @@ fn init_common(_memory_map: *mut c_void, _memory_map_size: usize) {
     let heap_start = gdt::init(heap_start); // Initialize GDT with heap start, get adjusted heap start
     interrupts::init(); // Initialize IDT
     heap::init(heap_start, heap::HEAP_SIZE); // Initialize heap
-    serial::serial_init(); // Initialize serial early for debugging
+    serial_init(); // Initialize serial early for debugging
 }
 
 #[cfg(not(target_os = "uefi"))]
@@ -181,7 +183,7 @@ fn init_common() {
     gdt::init(heap_start_addr); // Pass the actual heap start address
     interrupts::init(); // Initialize IDT
     // Heap already initialized
-    serial::serial_init(); // Initialize serial early for debugging
+    serial_init(); // Initialize serial early for debugging
 }
 
 #[cfg(not(target_os = "uefi"))]

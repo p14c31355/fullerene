@@ -1,6 +1,7 @@
 // fullerene-kernel/src/interrupts.rs
 
-use crate::{gdt, serial};
+use crate::gdt;
+use petroleum::serial::SERIAL_PORT_WRITER as SERIAL1;
 use core::fmt::Write;
 use lazy_static::lazy_static;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
@@ -40,7 +41,7 @@ pub fn init() {
 
 // Exception handlers
 pub extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
-    let mut writer = serial::SERIAL1.lock();
+    let mut writer = SERIAL1.lock();
     writeln!(writer, "\nEXCEPTION: BREAKPOINT\n{:#?}", stack_frame).ok();
 }
 
@@ -48,7 +49,7 @@ pub extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
-    let mut writer = serial::SERIAL1.lock();
+    let mut writer = SERIAL1.lock();
     writeln!(
         writer,
         "\nEXCEPTION: PAGE FAULT\n{:#?}\nError Code: {:?}",

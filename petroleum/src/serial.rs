@@ -3,6 +3,80 @@ use core::fmt;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
+/// Low-level serial port writer for COM1 (0x3F8).
+pub struct SerialPortWriter {
+    data: Port<u8>,
+    irq_enable: Port<u8>,
+    fifo_ctrl: Port<u8>,
+    line_ctrl: Port<u8>,
+    modem_ctrl: Port<u8>,
+    line_status: Port<u8>,
+}
+
+impl SerialPortWriter {
+    /// Creates a new instance of the SerialPortWriter.
+    pub const fn new() -> SerialPortWriter {
+        SerialPortWriter {
+            data: Port::new(0x3F8),
+            irq_enable: Port::new(0x3F9),
+            fifo_ctrl: Port::new(0x3FA),
+            line_ctrl: Port::new(0x3FB),
+            modem_ctrl: Port::new(0x3FC),
+            line_status: Port::new(0x3FD),
+        }
+    }
+
+    /// Initializes the serial port.
+    pub fn init(&mut self) {
+        unsafe {
+            self.line_ctrl.write(0x80); // Enable DLAB
+            self.data.write(0x03); // Baud rate divisor low byte (38400 bps)
+            self.irq_enable.write(0x00);
+            self.line_ctrl.write(0x03); // 8 bits, no parity, one stop bit
+            self.fifo_ctrl.write(0xC7); // Enable FIFO, clear, 14-byte threshold
+            self.modem_ctrl.write(0x0B); // IRQs enabled, OUT2
+        }
+    }
+
+    /// Writes a single byte to the serial port.
+    pub fn write_byte(&mut self, byte: u8) {
+        unsafe {
+            while (self.line_status.read() & 0x20) == 0 {}
+            self.data.write(byte);
+        }
+    }
+
+    /// Writes a string to the serial port.
+    pub fn write_string(&mut self, s: &str) {
+        for b in s.bytes() {
+            self.write_byte(b);
+        }
+    }
+}
+
+// Provides a fmt::Write implementation for SerialPortWriter
+impl fmt::Write for SerialPortWriter {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.write_string(s);
+        Ok(())
+    }
+}
+
+// Provides a global singleton for the serial port
+pub static SERIAL_PORT_WRITER: Mutex<SerialPortWriter> = Mutex::new(SerialPortWriter::new());
+
+/// Initializes the global serial port writer.
+pub fn serial_init() {
+    SERIAL_PORT_WRITER.lock().init();
+}
+
+/// Logs a string to the serial port.
+pub fn serial_log(s: &str) {
+    let mut writer = SERIAL_PORT_WRITER.lock();
+    writer.write_string(s);
+    writer.write_string("\n");
+}
+
 // Macro to write to port with wait
 macro_rules! write_port {
     ($port:expr, $value:expr) => {
@@ -119,16 +193,42 @@ macro_rules! println {
 }
 
 /// Writes a string to the COM1 serial port.
-fn debug_print_str_to_com1(s: &str) {
+/// This is a very early debug function for use beforeUEFI writers are available.
+pub fn debug_print_str_to_com1(s: &str) {
     for byte in s.bytes() {
         debug_print_byte_to_com1(byte);
     }
 }
 
 /// Writes a single byte to the COM1 serial port (0x3F8).
-fn debug_print_byte_to_com1(byte: u8) {
+pub fn debug_print_byte_to_com1(byte: u8) {
     let mut port = Port::new(0x3F8);
     write_port!(port, byte);
+}
+
+/// Prints a usize as hex to COM1 (early debug, no alloc).
+pub fn debug_print_hex(value: usize) {
+    debug_print_str_to_com1("0x");
+    let mut temp = value;
+    let mut digits = [0u8; 16];
+    let mut i = 0;
+    if temp == 0 {
+        debug_print_byte_to_com1(b'0');
+        return;
+    }
+    while temp > 0 && i < 16 {
+        let digit = (temp % 16) as u8;
+        digits[i] = if digit < 10 {
+            b'0' + digit
+        } else {
+            b'a' + (digit - 10)
+        };
+        temp /= 16;
+        i += 1;
+    }
+    for j in (0..i).rev() {
+        debug_print_byte_to_com1(digits[j]);
+    }
 }
 
 #[doc(hidden)]

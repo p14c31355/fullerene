@@ -5,7 +5,7 @@ use spin::Mutex;
 use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
 use x86_64::structures::paging::{FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PhysFrame, PageTableFlags as Flags, Size4KiB};
 use x86_64::registers::control::Cr3Flags;
-use crate::serial;
+use petroleum::serial;
 
 // Macro to reduce repetitive unsafe node operations
 macro_rules! with_node {
