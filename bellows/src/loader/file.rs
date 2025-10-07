@@ -226,7 +226,7 @@ pub fn read_efi_file(
                     device_handle,
                     &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
                     image_handle,
-                    2, // EFI_OPEN_PROTOCOL_GET_PROTOCOL
+                    1, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
                 );
                 if let Ok(proto) = open_res {
                     debug_print_str("File: Got SimpleFileSystem on device_handle.\n");
@@ -263,7 +263,7 @@ pub fn read_efi_file(
                         fs_handle,
                         &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
                         image_handle,
-                        2, // EFI_OPEN_PROTOCOL_GET_PROTOCOL
+                        1, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
                     )?;
                     proto
                 }

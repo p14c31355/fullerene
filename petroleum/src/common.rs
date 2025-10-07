@@ -181,9 +181,9 @@ pub struct EfiBootServices {
     pub free_pages: extern "efiapi" fn(usize, usize) -> usize, // idx 4
     pub get_memory_map:
         extern "efiapi" fn(*mut usize, *mut c_void, *mut usize, *mut usize, *mut u32) -> usize, // idx 5
-    _pad1: [usize; 1],                                       // 6
+    pub connect_controller: extern "efiapi" fn(usize, *mut usize, *mut usize, u32) -> usize, // idx 6
     pub free_pool: extern "efiapi" fn(*mut c_void) -> usize, // idx 7
-    _pad2: [usize; 9],                                       // 8-16
+    _pad2: [usize; 8],                                       // 8-15
     pub handle_protocol: extern "efiapi" fn(usize, *const u8, *mut *mut c_void) -> usize, // idx 17
     _pad3: [usize; 1],                                       // 18
     pub locate_handle:
