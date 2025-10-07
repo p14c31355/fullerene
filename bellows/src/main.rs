@@ -17,6 +17,7 @@ mod loader;
 use loader::{
     exit_boot_services_and_jump, file::read_efi_file, heap::init_heap, pe::load_efi_image,
 };
+use loader::debug::*;
 
 use petroleum::common::{
     EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable,
@@ -51,9 +52,14 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     // Initialize heap
     petroleum::serial::_print(format_args!("Attempting to initialize heap...\n"));
     init_heap(bs).expect("Heap initialization failed");
+    debug_print_str("Main: Heap init returned OK.\n");
     petroleum::serial::_print(format_args!("Heap initialized successfully.\n"));
+    debug_print_str("Main: After Heap initialized print.\n");
     petroleum::println!("Bellows: Heap OK.");
+    debug_print_str("Main: After Heap OK println.\n");
+    debug_print_str("Main: About to call init_gop.\n");
     init_gop(st);
+    debug_print_str("Main: init_gop returned.\n");
     petroleum::serial::_print(format_args!("GOP initialized successfully.\n"));
     petroleum::println!("Bellows: GOP initialized."); // Debug print after GOP initialization
 
@@ -131,6 +137,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
 /// Initializes the Graphics Output Protocol (GOP) for framebuffer access.
 fn init_gop(st: &EfiSystemTable) {
+    debug_print_str("GOP: init_gop entered.\n");
     let bs = unsafe { &*st.boot_services };
     let mut gop: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
 

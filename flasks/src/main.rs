@@ -128,7 +128,7 @@ fn main() -> io::Result<()> {
     let mut qemu_cmd = Command::new("qemu-system-x86_64");
     qemu_cmd.args([
         "-m",
-        "4G",
+        "8G",
         "-cpu",
         "qemu64,+smap,-invtsc",
         "-smp",
@@ -138,7 +138,7 @@ fn main() -> io::Result<()> {
         "-vga",
         "virtio",
         "-serial",
-        "stdio",
+        "mon:stdio",
         "-monitor",
         "telnet:localhost:1234,server,nowait",
         "-accel",

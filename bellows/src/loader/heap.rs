@@ -6,7 +6,7 @@ use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus}
 use super::debug::*;
 
 /// Size of the heap we will allocate for `alloc` usage (bytes).
-const HEAP_SIZE: usize = 64 * 1024; // 64 KiB
+const HEAP_SIZE: usize = 32 * 1024; // 32 KiB
 
 /// Global allocator (linked-list allocator)
 #[global_allocator]
@@ -19,8 +19,8 @@ fn try_allocate_pages(
     preferred_type: EfiMemoryType,
 ) -> Result<usize, BellowsError> {
     let mut phys_addr: usize = 0;
-    // Swap order: Try Conventional first, then LoaderData
-    let types_to_try = [EfiMemoryType::EfiConventionalMemory, preferred_type];
+    // Try LoaderData first, then Conventional (skip if invalid)
+    let types_to_try = [preferred_type, EfiMemoryType::EfiConventionalMemory];
 
     for mem_type in types_to_try {
         debug_print_str("Heap: About to call allocate_pages (type AnyPages, mem ");
@@ -71,6 +71,11 @@ fn try_allocate_pages(
         });
         debug_print_str("\n");
 
+        if status_efi == EfiStatus::InvalidParameter {
+            debug_print_str("Heap: -> Skipping invalid type.\n");
+            continue; // Conventional無視
+        }
+
         if status_efi == EfiStatus::Success && phys_addr != 0 {
             debug_print_str("Heap: Allocated at address, aligned OK.\n");
             return Ok(phys_addr);
@@ -108,11 +113,13 @@ pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
     // Safety:
     // We have successfully allocated a valid, non-zero memory region.
     // The `init` function correctly initializes the allocator with this region.
+    debug_print_str("Heap: About to init ALLOCATOR...\n");
     unsafe {
         ALLOCATOR
             .lock()
             .init(heap_phys as *mut u8, actual_heap_size);
     }
-    debug_print_str("Heap: Allocator initialized successfully.\n");
+    debug_print_str("Heap: ALLOCATOR init done.\n");
+    debug_print_str("Heap: Returning Ok(()).\n");
     Ok(())
 }

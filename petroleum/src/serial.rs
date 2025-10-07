@@ -3,6 +3,7 @@
 use crate::common::{EfiSimpleTextOutput, EfiStatus};
 use core::fmt;
 use spin::Mutex;
+use x86_64::instructions::port::Port;
 
 pub struct UefiWriter {
     con_out: *mut EfiSimpleTextOutput,
@@ -47,11 +48,12 @@ impl UefiWriter {
 
         let status = unsafe { ((*self.con_out).output_string)(self.con_out, utf16_buf.as_ptr()) };
         let efi_status = EfiStatus::from(status);
-        if efi_status == EfiStatus::Success {
-            Ok(())
-        } else {
-            Err(efi_status)
+        if efi_status != EfiStatus::Success {
+            // Fallback to COM1
+            debug_print_str_to_com1(s);
+            return Err(efi_status);
         }
+        Ok(())
     }
 }
 
@@ -73,6 +75,29 @@ macro_rules! print {
 macro_rules! println {
     () => ($crate::print!("\n"));
     ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
+}
+
+// Macro to write to port with wait
+macro_rules! write_port {
+    ($port:expr, $value:expr) => {
+        unsafe {
+            while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
+            $port.write($value);
+        }
+    };
+}
+
+/// Writes a string to the COM1 serial port.
+fn debug_print_str_to_com1(s: &str) {
+    for byte in s.bytes() {
+        debug_print_byte_to_com1(byte);
+    }
+}
+
+/// Writes a single byte to the COM1 serial port (0x3F8).
+fn debug_print_byte_to_com1(byte: u8) {
+    let mut port = Port::new(0x3F8);
+    write_port!(port, byte);
 }
 
 #[doc(hidden)]
