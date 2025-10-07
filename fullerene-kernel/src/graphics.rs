@@ -12,77 +12,109 @@ use crate::font::FONT_8X8;
 // A simple 8x8 PC screen font (Code Page 437).
 static FONT: [[u8; 8]; 128] = FONT_8X8;
 
+// Helper struct to reduce position update boilerplate
+struct TextPosition {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+impl TextPosition {
+    fn new(fb: &impl FramebufferLike) -> Self {
+        let (x, y) = fb.get_position();
+        Self {
+            x,
+            y,
+            width: fb.get_width(),
+            height: fb.get_height(),
+        }
+    }
+
+    fn new_line(&mut self, fb: &mut impl FramebufferLike) {
+        self.y += 8; // Font height
+        self.x = 0;
+        if self.y >= self.height {
+            fb.scroll_up();
+            self.y -= 8;
+        }
+        fb.set_position(self.x, self.y);
+    }
+
+    fn advance_char(&mut self, fb: &mut impl FramebufferLike) {
+        self.x += 8;
+        if self.x + 8 > self.width {
+            self.new_line(fb);
+        } else {
+            fb.set_position(self.x, self.y);
+        }
+    }
+}
+
 fn draw_char(fb: &impl FramebufferLike, c: char, x: u32, y: u32) {
-    let char_idx = (c as u8) as usize;
-    if !c.is_ascii() || char_idx >= 128 {
+    let char_idx = c as usize;
+    if char_idx >= 128 || !c.is_ascii() {
         return;
     }
     let font_char = &FONT[char_idx];
+    let fg = fb.get_fg_color();
+    let bg = fb.get_bg_color();
+
     for (row, &byte) in font_char.iter().enumerate() {
         for col in 0..8 {
-            let color = if (byte >> (7 - col)) & 1 == 1 {
-                fb.get_fg_color()
-            } else {
-                fb.get_bg_color()
-            };
+            let color = if byte & (0x80 >> col) != 0 { fg } else { bg };
             fb.put_pixel(x + col as u32, y + row as u32, color);
         }
     }
 }
 
-fn new_line(fb: &mut impl FramebufferLike) {
-    let (_, mut y_pos) = fb.get_position();
-    y_pos += 8; // Font height
-    let x_pos = 0;
-    if y_pos >= fb.get_height() {
-        fb.scroll_up();
-        y_pos -= 8;
-    }
-    fb.set_position(x_pos, y_pos);
-}
-
 fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result {
-    let (mut x_pos, mut y_pos) = writer.get_position();
+    let mut pos = TextPosition::new(writer);
+
     for c in s.chars() {
         if c == '\n' {
-            new_line(writer);
-            let (new_x, new_y) = writer.get_position();
-            x_pos = new_x;
-            y_pos = new_y;
+            pos.new_line(writer);
         } else {
-            draw_char(writer, c, x_pos, y_pos);
-            x_pos += 8;
-            if x_pos + 8 > writer.get_width() {
-                new_line(writer);
-                let (new_x, new_y) = writer.get_position();
-                x_pos = new_x;
-                y_pos = new_y;
-            } else {
-                writer.set_position(x_pos, y_pos);
-            }
+            draw_char(writer, c, pos.x, pos.y);
+            pos.advance_char(writer);
         }
     }
     Ok(())
 }
 
-/// Generic scroll function for framebuffer buffers.
-/// Scrolls the buffer up by 8 lines, clearing the last 8 lines with bg_color.
+/// Generic framebuffer operations for common patterns
 unsafe fn scroll_buffer<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
     let bytes_per_pixel = core::mem::size_of::<T>() as u32;
     let bytes_per_line = stride * bytes_per_pixel;
     let shift_bytes = 8u64 * bytes_per_line as u64;
-    let total_bytes = height as u64 * bytes_per_line as u64;
     let fb_ptr = address as *mut u8;
+    let total_bytes = height as u64 * bytes_per_line as u64;
     core::ptr::copy(
         fb_ptr.add(shift_bytes as usize),
         fb_ptr,
         (total_bytes - shift_bytes) as usize,
     );
-    // Clear the last 8 lines
+    // Clear last 8 lines
     let clear_offset = (height - 8) as usize * bytes_per_line as usize;
     let clear_ptr = (address + clear_offset as u64) as *mut T;
     let clear_count = 8 * stride as usize;
     core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color);
+}
+
+unsafe fn clear_buffer<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
+    let fb_ptr = address as *mut T;
+    core::ptr::write_bytes(fb_ptr, 0, (stride * height) as usize);
+    // Note: For non-u8 types, we initialize to 0 and let caller handle color filling
+}
+
+// For UEFI, fill with actual color
+unsafe fn clear_framebuffer(address: u64, width: u32, height: u32, bg_color: u32, bytes_per_pixel: u32) {
+    let fb_ptr = address as *mut u32;
+    let line_size = width;
+    for y in 0..height {
+        let line_ptr = fb_ptr.add((y * width) as usize);
+        core::slice::from_raw_parts_mut(line_ptr, width as usize).fill(bg_color);
+    }
 }
 
 trait FramebufferLike {
@@ -169,15 +201,14 @@ impl FramebufferLike for FramebufferWriter {
     }
 
     fn clear_screen(&self) {
-        let bytes_per_pixel = self.bytes_per_pixel();
-        for y in 0..self.framebuffer.height {
-            let offset = y * self.framebuffer.stride * bytes_per_pixel;
-            let line_ptr = (self.framebuffer.address + offset as u64) as *mut u32;
-            unsafe {
-                let line_slice =
-                    core::slice::from_raw_parts_mut(line_ptr, self.framebuffer.width as usize);
-                line_slice.fill(self.bg_color);
-            }
+        unsafe {
+            clear_framebuffer(
+                self.framebuffer.address,
+                self.framebuffer.width,
+                self.framebuffer.height,
+                self.bg_color,
+                self.bytes_per_pixel(),
+            );
         }
     }
 
@@ -318,18 +349,22 @@ pub fn init(config: &FullereneFramebufferConfig) {
     WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer)));
 }
 
-// Define constants for VGA port addresses
-const VGA_MISC_OUTPUT_PORT_ADDRESS: u16 = 0x3C2;
-const VGA_CRTC_INDEX_PORT_ADDRESS: u16 = 0x3D4;
-const VGA_CRTC_DATA_PORT_ADDRESS: u16 = 0x3D5;
-const VGA_STATUS_PORT_ADDRESS: u16 = 0x3DA;
-const VGA_ATTRIBUTE_INDEX_PORT_ADDRESS: u16 = 0x3C0;
-const VGA_DAC_INDEX_PORT_ADDRESS: u16 = 0x3C8;
-const VGA_DAC_DATA_PORT_ADDRESS: u16 = 0x3C9;
-const VGA_GRAPHICS_INDEX_PORT_ADDRESS: u16 = 0x3CE;
-const VGA_GRAPHICS_DATA_PORT_ADDRESS: u16 = 0x3CF;
-const VGA_SEQUENCER_INDEX_PORT_ADDRESS: u16 = 0x3C4;
-const VGA_SEQUENCER_DATA_PORT_ADDRESS: u16 = 0x3C5;
+// VGA port addresses
+struct VgaPorts;
+
+impl VgaPorts {
+    const MISC_OUTPUT: u16 = 0x3C2;
+    const CRTC_INDEX: u16 = 0x3D4;
+    const CRTC_DATA: u16 = 0x3D5;
+    const STATUS: u16 = 0x3DA;
+    const ATTRIBUTE_INDEX: u16 = 0x3C0;
+    const DAC_INDEX: u16 = 0x3C8;
+    const DAC_DATA: u16 = 0x3C9;
+    const GRAPHICS_INDEX: u16 = 0x3CE;
+    const GRAPHICS_DATA: u16 = 0x3CF;
+    const SEQUENCER_INDEX: u16 = 0x3C4;
+    const SEQUENCER_DATA: u16 = 0x3C5;
+}
 
 #[cfg(not(target_os = "uefi"))]
 /// Initializes VGA graphics mode 13h (320x200, 256 colors).
@@ -369,141 +404,141 @@ macro_rules! setup_registers {
     };
 }
 
+// VGA register configurations using structs for data-driven setup
+struct RegisterConfig {
+    index: u8,
+    value: u8,
+}
+
+const SEQUENCER_CONFIG: &[RegisterConfig] = &[
+    RegisterConfig { index: 0x00, value: 0x03 }, // Reset
+    RegisterConfig { index: 0x01, value: 0x01 }, // Clocking mode
+    RegisterConfig { index: 0x02, value: 0x0F }, // Map mask
+    RegisterConfig { index: 0x03, value: 0x00 }, // Character map select
+    RegisterConfig { index: 0x04, value: 0x0E }, // Memory mode (for 256 color, chain 4)
+];
+
+const CRTC_CONFIG: &[RegisterConfig] = &[
+    RegisterConfig { index: 0x00, value: 0x5F }, // Horizontal total
+    RegisterConfig { index: 0x01, value: 0x4F }, // Horizontal displayed
+    RegisterConfig { index: 0x02, value: 0x50 }, // Horizontal blanking start
+    RegisterConfig { index: 0x03, value: 0x82 }, // Horizontal blanking end
+    RegisterConfig { index: 0x04, value: 0x54 }, // Horizontal sync start
+    RegisterConfig { index: 0x05, value: 0x80 }, // Horizontal sync end
+    RegisterConfig { index: 0x06, value: 0xBF }, // Vertical total
+    RegisterConfig { index: 0x07, value: 0x1F }, // Overflow
+    RegisterConfig { index: 0x08, value: 0x00 }, // Preset row scan
+    RegisterConfig { index: 0x09, value: 0x41 }, // Maximum scan line
+    RegisterConfig { index: 0x10, value: 0x9C }, // Vertical sync start
+    RegisterConfig { index: 0x11, value: 0x8E }, // Vertical sync end
+    RegisterConfig { index: 0x12, value: 0x8F }, // Vertical displayed
+    RegisterConfig { index: 0x13, value: 0x28 }, // Row offset
+    RegisterConfig { index: 0x14, value: 0x40 }, // Underline location
+    RegisterConfig { index: 0x15, value: 0x96 }, // Vertical blanking start
+    RegisterConfig { index: 0x16, value: 0xB9 }, // Vertical blanking end
+    RegisterConfig { index: 0x17, value: 0xA3 }, // Line compare / Mode control
+];
+
+const GRAPHICS_CONFIG: &[RegisterConfig] = &[
+    RegisterConfig { index: 0x00, value: 0x00 }, // Set/reset
+    RegisterConfig { index: 0x01, value: 0x00 }, // Enable set/reset
+    RegisterConfig { index: 0x02, value: 0x00 }, // Color compare
+    RegisterConfig { index: 0x03, value: 0x00 }, // Data rotate
+    RegisterConfig { index: 0x04, value: 0x00 }, // Read map select
+    RegisterConfig { index: 0x05, value: 0x40 }, // Graphics mode (256 color)
+    RegisterConfig { index: 0x06, value: 0x05 }, // Miscellaneous
+    RegisterConfig { index: 0x07, value: 0x0F }, // Color don't care
+    RegisterConfig { index: 0x08, value: 0xFF }, // Bit mask
+];
+
+// Macro to setup multiple registers from a config array
+macro_rules! setup_registers_from_config {
+    ($config:expr, $index_port:expr, $data_port:expr) => {
+        for reg in $config {
+            write_indexed($index_port, $data_port, reg.index, reg.value);
+        }
+    };
+}
+
 /// Configures the Miscellaneous Output Register.
 fn setup_misc_output() {
     unsafe {
-        let mut misc_output_port = Port::new(VGA_MISC_OUTPUT_PORT_ADDRESS);
+        let mut misc_output_port = Port::new(VgaPorts::MISC_OUTPUT);
         misc_output_port.write(0x63u8); // Value for enabling VGA in 320x200x256 mode
     }
 }
 
 /// Configures the VGA Sequencer registers.
 fn setup_sequencer() {
-    setup_registers!(
-        VGA_SEQUENCER_INDEX_PORT_ADDRESS,
-        VGA_SEQUENCER_DATA_PORT_ADDRESS,
-        0x00 => 0x03, // Reset
-        0x01 => 0x01, // Clocking mode
-        0x02 => 0x0F, // Map mask
-        0x03 => 0x00, // Character map select
-        0x04 => 0x0E  // Memory mode (for 256 color, chain 4)
-    );
+    setup_registers_from_config!(SEQUENCER_CONFIG, VgaPorts::SEQUENCER_INDEX, VgaPorts::SEQUENCER_DATA);
 }
 
 /// Configures the VGA CRTC (Cathode Ray Tube Controller) registers.
 fn setup_crtc() {
-    setup_registers!(
-        VGA_CRTC_INDEX_PORT_ADDRESS,
-        VGA_CRTC_DATA_PORT_ADDRESS,
-        0x00 => 0x5F, // Horizontal total
-        0x01 => 0x4F, // Horizontal displayed
-        0x02 => 0x50, // Horizontal blanking start
-        0x03 => 0x82, // Horizontal blanking end
-        0x04 => 0x54, // Horizontal sync start
-        0x05 => 0x80, // Horizontal sync end
-        0x06 => 0xBF, // Vertical total
-        0x07 => 0x1F, // Overflow
-        0x08 => 0x00, // Preset row scan
-        0x09 => 0x41, // Maximum scan line
-        0x10 => 0x9C, // Vertical sync start
-        0x11 => 0x8E, // Vertical sync end
-        0x12 => 0x8F, // Vertical displayed
-        0x13 => 0x28, // Row offset
-        0x14 => 0x40, // Underline location
-        0x15 => 0x96, // Vertical blanking start
-        0x16 => 0xB9, // Vertical blanking end
-        0x17 => 0xA3  // Line compare / Mode control
-    );
+    setup_registers_from_config!(CRTC_CONFIG, VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA);
 }
 
 /// Configures the VGA Graphics Controller registers.
 fn setup_graphics_controller() {
-    setup_registers!(
-        VGA_GRAPHICS_INDEX_PORT_ADDRESS,
-        VGA_GRAPHICS_DATA_PORT_ADDRESS,
-        0x00 => 0x00, // Set/reset
-        0x01 => 0x00, // Enable set/reset
-        0x02 => 0x00, // Color compare
-        0x03 => 0x00, // Data rotate
-        0x04 => 0x00, // Read map select
-        0x05 => 0x40, // Graphics mode (256 color)
-        0x06 => 0x05, // Miscellaneous
-        0x07 => 0x0F, // Color don't care
-        0x08 => 0xFF  // Bit mask
-    );
+    setup_registers_from_config!(GRAPHICS_CONFIG, VgaPorts::GRAPHICS_INDEX, VgaPorts::GRAPHICS_DATA);
+}
+
+// Attribute controller register configuration
+const ATTRIBUTE_CONFIG: &[RegisterConfig] = &[
+    RegisterConfig { index: 0x00, value: 0x00 }, // Mode control 1
+    RegisterConfig { index: 0x01, value: 0x00 }, // Overscan color
+    RegisterConfig { index: 0x02, value: 0x0F }, // Color plane enable
+    RegisterConfig { index: 0x03, value: 0x00 }, // Horizontal pixel panning
+    RegisterConfig { index: 0x04, value: 0x00 }, // Color select
+    RegisterConfig { index: 0x05, value: 0x00 }, // Mode control 2
+    RegisterConfig { index: 0x06, value: 0x00 }, // Scroll
+    RegisterConfig { index: 0x07, value: 0x00 }, // Graphics mode
+    RegisterConfig { index: 0x08, value: 0xFF }, // Line graphics
+    RegisterConfig { index: 0x09, value: 0x00 }, // Foreground color
+    RegisterConfig { index: 0x10, value: 0x41 }, // Mode control (for 256 colors)
+    RegisterConfig { index: 0x11, value: 0x00 }, // Overscan color (border)
+    RegisterConfig { index: 0x12, value: 0x0F }, // Color plane enable
+    RegisterConfig { index: 0x13, value: 0x00 }, // Horizontal pixel panning
+    RegisterConfig { index: 0x14, value: 0x00 }, // Color select
+];
+
+/// Helper function to write to attribute registers with special sequence
+fn write_attribute_registers() {
+    unsafe {
+        let mut status_port = Port::<u8>::new(VgaPorts::STATUS);
+        let mut index_port = Port::<u8>::new(VgaPorts::ATTRIBUTE_INDEX);
+        let mut data_port = Port::<u8>::new(VgaPorts::ATTRIBUTE_INDEX);
+
+        let _ = status_port.read(); // Reset flip-flop
+
+        for reg in ATTRIBUTE_CONFIG {
+            index_port.write(reg.index);
+            data_port.write(reg.value);
+        }
+
+        index_port.write(0x20); // Enable video output
+    }
 }
 
 /// Configures the VGA Attribute Controller registers.
 fn setup_attribute_controller() {
-    // Attribute Controller Register Indices
-    const AC_MODE_CONTROL_1: u8 = 0x00;
-    const AC_OVERSCAN_COLOR: u8 = 0x01;
-    const AC_COLOR_PLANE_ENABLE: u8 = 0x02;
-    const AC_HORIZONTAL_PIXEL_PANNING: u8 = 0x03;
-    const AC_COLOR_SELECT: u8 = 0x04;
-    const AC_MODE_CONTROL_2: u8 = 0x05;
-    const AC_SCROLL: u8 = 0x06;
-    const AC_GRAPHICS_MODE: u8 = 0x07;
-    const AC_LINE_GRAPHICS: u8 = 0x08;
-    const AC_FOREGROUND_COLOR: u8 = 0x09;
-    const AC_MODE_CONTROL_256_COLORS: u8 = 0x10;
-    const AC_OVERSCAN_COLOR_BORDER: u8 = 0x11;
-    const AC_COLOR_PLANE_ENABLE_2: u8 = 0x12;
-    const AC_HORIZONTAL_PIXEL_PANNING_2: u8 = 0x13;
-    const AC_COLOR_SELECT_2: u8 = 0x14;
-
-    const AC_VALUES: &[(u8, u8)] = &[
-        (AC_MODE_CONTROL_1, 0x00),             // Mode control 1
-        (AC_OVERSCAN_COLOR, 0x00),             // Overscan color
-        (AC_COLOR_PLANE_ENABLE, 0x0F),         // Color plane enable
-        (AC_HORIZONTAL_PIXEL_PANNING, 0x00),   // Horizontal pixel panning
-        (AC_COLOR_SELECT, 0x00),               // Color select
-        (AC_MODE_CONTROL_2, 0x00),             // Mode control 2
-        (AC_SCROLL, 0x00),                     // Scroll
-        (AC_GRAPHICS_MODE, 0x00),              // Graphics mode
-        (AC_LINE_GRAPHICS, 0xFF),              // Line graphics
-        (AC_FOREGROUND_COLOR, 0x00),           // Foreground color
-        (AC_MODE_CONTROL_256_COLORS, 0x41),    // Mode control (for 256 colors)
-        (AC_OVERSCAN_COLOR_BORDER, 0x00),      // Overscan color (border)
-        (AC_COLOR_PLANE_ENABLE_2, 0x0F),       // Color plane enable
-        (AC_HORIZONTAL_PIXEL_PANNING_2, 0x00), // Horizontal pixel panning
-        (AC_COLOR_SELECT_2, 0x00),             // Color select
-    ];
-
-    unsafe {
-        let mut status_port = Port::<u8>::new(VGA_STATUS_PORT_ADDRESS);
-        let mut index_port = Port::<u8>::new(VGA_ATTRIBUTE_INDEX_PORT_ADDRESS);
-        let mut data_port = Port::<u8>::new(VGA_ATTRIBUTE_INDEX_PORT_ADDRESS); // Yes, same port for data
-
-        // The AC registers are accessed in a slightly different way.
-        // First, you read the status register to reset the index/data flip-flop.
-        let _ = status_port.read();
-
-        // Then, for each register, you write the index and then the data.
-        for &(index, value) in AC_VALUES {
-            index_port.write(index);
-            data_port.write(value);
-        }
-
-        // Finally, enable video output by writing 0x20 to the index port.
-        index_port.write(0x20);
-    }
+    write_attribute_registers();
 }
 
 /// Sets up a simple grayscale palette for the 256-color mode.
 fn setup_palette() {
     unsafe {
-        let mut dac_index_port = Port::new(VGA_DAC_INDEX_PORT_ADDRESS);
-        let mut dac_data_port = Port::new(VGA_DAC_DATA_PORT_ADDRESS);
+        let mut dac_index_port = Port::new(VgaPorts::DAC_INDEX);
+        let mut dac_data_port = Port::new(VgaPorts::DAC_DATA);
 
         dac_index_port.write(0x00u8); // Start at color index 0
 
-        for i in 0..256 {
-            // Create a simple grayscale palette (6-bit values)
-            let val = (i * 63 / 255) as u8;
-            dac_data_port.write(val); // Red
-            dac_data_port.write(val); // Green
-            dac_data_port.write(val); // Blue
+        // Generate grayscale palette inline to reduce loop
+        for i in 0..64 {
+            let val = (i * 4) as u8; // 0,4,8,...,252
+            dac_data_port.write(val); // R
+            dac_data_port.write(val); // G
+            dac_data_port.write(val); // B
         }
     }
 }
