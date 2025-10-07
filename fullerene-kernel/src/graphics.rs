@@ -111,14 +111,13 @@ unsafe fn clear_buffer<T: Copy>(address: u64, stride: u32, height: u32, bg_color
 unsafe fn clear_framebuffer(
     address: u64,
     width: u32,
+    stride: u32,
     height: u32,
     bg_color: u32,
-    bytes_per_pixel: u32,
 ) {
     let fb_ptr = address as *mut u32;
-    let line_size = width;
     for y in 0..height {
-        let line_ptr = fb_ptr.add((y * width) as usize);
+        let line_ptr = fb_ptr.add((y * stride) as usize);
         core::slice::from_raw_parts_mut(line_ptr, width as usize).fill(bg_color);
     }
 }
@@ -211,9 +210,9 @@ impl FramebufferLike for FramebufferWriter {
             clear_framebuffer(
                 self.framebuffer.address,
                 self.framebuffer.width,
+                self.framebuffer.stride,
                 self.framebuffer.height,
                 self.bg_color,
-                self.bytes_per_pixel(),
             );
         }
     }
@@ -688,12 +687,12 @@ fn setup_palette() {
 
         dac_index_port.write(0x00u8); // Start at color index 0
 
-        // Generate grayscale palette inline to reduce loop
-        for i in 0..64 {
-            let val = (i * 4) as u8; // 0,4,8,...,252
-            dac_data_port.write(val); // R
-            dac_data_port.write(val); // G
-            dac_data_port.write(val); // B
+        for i in 0..256 {
+            // Create a simple grayscale palette. VGA DACs are 6-bit, so map 0-255 to 0-63.
+            let val = (i * 63 / 255) as u8;
+            dac_data_port.write(val); // Red
+            dac_data_port.write(val); // Green
+            dac_data_port.write(val); // Blue
         }
     }
 }
