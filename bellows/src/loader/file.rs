@@ -178,36 +178,41 @@ pub fn read_efi_file(
             debug_print_str("File: open_protocol on located handle status=");
             debug_print_hex(status);
             debug_print_str("\n");
-            if EfiStatus::from(status) != EfiStatus::Success {
-                debug_print_str("File: Failed to open protocol on located handle.\n");
-                return Err(BellowsError::ProtocolNotFound(
-                    "Failed to open LoadedImage protocol.",
-                ));
-            }
-        } else {
-            debug_print_str("File: locate_handle_buffer failed, trying LocateProtocol...\n");
-            // Global fallback: system_tableからLoadedImage locate (稀に効く)
-            let mut global_loaded: *mut EfiLoadedImageProtocol = ptr::null_mut();
-            let loc_status = (bs.locate_protocol)(
-                &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
-                ptr::null_mut(),
-                &mut global_loaded as *mut _ as *mut *mut c_void,
-            );
-            let loc_efi = EfiStatus::from(loc_status);
-            debug_print_str("File: LocateProtocol fallback status=0x");
-            debug_print_hex(loc_status);
-            debug_print_str("\n");
-            if loc_efi == EfiStatus::Success && !global_loaded.is_null() {
-                debug_print_str("File: LocateProtocol fallback success!\n");
-                loaded_image = global_loaded;
-                debug_print_str("File: Using global LoadedImage.\n");
+            if EfiStatus::from(status) == EfiStatus::Success {
+                debug_print_str("File: Opened protocol on located handle.\n");
             } else {
-                debug_print_str("File: LocateProtocol fallback failed.\n");
-                return Err(BellowsError::ProtocolNotFound(
-                    "All LoadedImage methods failed.",
-                ));
+                debug_print_str("File: Failed to open protocol on located handle.\n");
             }
         }
+
+    }
+
+    if loaded_image.is_null() {
+        debug_print_str("File: Trying LocateProtocol fallback...\n");
+        // Global fallback: system_tableからLoadedImage locate (稀に効く)
+        let mut global_loaded: *mut EfiLoadedImageProtocol = ptr::null_mut();
+        let loc_status = (bs.locate_protocol)(
+            &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
+            ptr::null_mut(),
+            &mut global_loaded as *mut _ as *mut *mut c_void,
+        );
+        let loc_efi = EfiStatus::from(loc_status);
+        debug_print_str("File: LocateProtocol fallback status=0x");
+        debug_print_hex(loc_status);
+        debug_print_str("\n");
+        if loc_efi == EfiStatus::Success && !global_loaded.is_null() {
+            debug_print_str("File: LocateProtocol fallback success!\n");
+            loaded_image = global_loaded;
+            debug_print_str("File: Using global LoadedImage.\n");
+        } else {
+            debug_print_str("File: LocateProtocol fallback failed.\n");
+        }
+    }
+
+    if loaded_image.is_null() {
+        return Err(BellowsError::ProtocolNotFound(
+            "All LoadedImage methods failed.",
+        ));
     }
 
     // Try multiple methods to find SimpleFileSystem protocol
