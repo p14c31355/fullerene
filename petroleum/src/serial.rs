@@ -158,8 +158,8 @@ impl UefiWriter {
         let status = unsafe { ((*self.con_out).output_string)(self.con_out, utf16_buf.as_ptr()) };
         let efi_status = EfiStatus::from(status);
         if efi_status != EfiStatus::Success {
-            // Fallback to COM1
-            Com1Writer::new().write_string(s);
+            // Fallback to COM1 using the initialized global writer
+            SERIAL_PORT_WRITER.lock().write_string(s);
             return Err(efi_status);
         }
         Ok(())
