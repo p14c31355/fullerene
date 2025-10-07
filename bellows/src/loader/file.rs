@@ -145,7 +145,7 @@ pub fn read_efi_file(
     debug_print_str(")\n");
 
     if status_h_efi != EfiStatus::Success {
-        // Fallback: open_protocol試す
+        // Fallback: try open_protocol
         debug_print_str("File: Trying open_protocol fallback...\n");
         let status = (bs.open_protocol)(
             image_handle,
