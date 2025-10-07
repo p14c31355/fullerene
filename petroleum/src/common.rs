@@ -68,8 +68,10 @@ pub enum EfiStatus {
 }
 
 impl From<usize> for EfiStatus {
-    fn from(status: usize) -> Self {
-        match status {
+    fn from(value: usize) -> Self {
+        // EFI status: bit 63 set for errors, clear code bits for specific errors
+        let code = value & 0x7FFFFFFFFFFFFFFF;
+        match code {
             0 => EfiStatus::Success,
             1 => EfiStatus::LoadError,
             2 => EfiStatus::InvalidParameter,
