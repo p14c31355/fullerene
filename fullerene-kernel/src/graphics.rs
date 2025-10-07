@@ -108,13 +108,7 @@ unsafe fn clear_buffer<T: Copy>(address: u64, stride: u32, height: u32, bg_color
 }
 
 // For UEFI, fill with actual color
-unsafe fn clear_framebuffer(
-    address: u64,
-    width: u32,
-    stride: u32,
-    height: u32,
-    bg_color: u32,
-) {
+unsafe fn clear_framebuffer(address: u64, width: u32, stride: u32, height: u32, bg_color: u32) {
     let fb_ptr = address as *mut u32;
     for y in 0..height {
         let line_ptr = fb_ptr.add((y * stride) as usize);

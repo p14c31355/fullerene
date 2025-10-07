@@ -184,7 +184,6 @@ pub fn read_efi_file(
                 debug_print_str("File: Failed to open protocol on located handle.\n");
             }
         }
-
     }
 
     if loaded_image.is_null() {
@@ -216,22 +215,16 @@ pub fn read_efi_file(
     }
 
     // Try multiple methods to find SimpleFileSystem protocol
-    let device_handle: usize;
-    if loaded_image.is_null() {
-        debug_print_str("File: LoadedImage failed, using image_handle as device_handle.\n");
-        device_handle = image_handle;
-    } else {
-        let loaded_image_ref = unsafe { &*loaded_image };
-        file_debug!("Success getting LoadedImageProtocol.");
-        let revision = loaded_image_ref.revision;
-        debug_print_str("File: LoadedImageProtocol revision: ");
-        debug_print_hex(revision as usize);
-        debug_print_str("\n");
-        device_handle = loaded_image_ref.device_handle;
-        debug_print_str("File: Got device_handle from LoadedImageProtocol. Handle: ");
-        debug_print_hex(device_handle);
-        debug_print_str("\n");
-    }
+    let loaded_image_ref = unsafe { &*loaded_image };
+    file_debug!("Success getting LoadedImageProtocol.");
+    let revision = loaded_image_ref.revision;
+    debug_print_str("File: LoadedImageProtocol revision: ");
+    debug_print_hex(revision as usize);
+    debug_print_str("\n");
+    let device_handle = loaded_image_ref.device_handle;
+    debug_print_str("File: Got device_handle from LoadedImageProtocol. Handle: ");
+    debug_print_hex(device_handle);
+    debug_print_str("\n");
 
     // Try multiple methods to find SimpleFileSystem protocol
     let fs_proto: *mut EfiSimpleFileSystem = {
