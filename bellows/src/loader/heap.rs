@@ -96,7 +96,6 @@ pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
     debug_print_str(" pages for heap.\n");
     let heap_phys = try_allocate_pages(bs, heap_pages, EfiMemoryType::EfiLoaderData)?; // 固定
 
-
     if heap_phys == 0 {
         debug_print_str("Heap: Allocated heap address is null!\n");
         return Err(BellowsError::AllocationFailed(

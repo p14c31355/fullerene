@@ -1,9 +1,9 @@
 // fullerene-kernel/src/interrupts.rs
 
 use crate::gdt;
-use petroleum::serial::SERIAL_PORT_WRITER as SERIAL1;
 use core::fmt::Write;
 use lazy_static::lazy_static;
+use petroleum::serial::SERIAL_PORT_WRITER as SERIAL1;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
 // Macro to reduce repetitive IDT handler setup

@@ -28,9 +28,7 @@ impl<'a> BootInfoFrameAllocator<'a> {
     /// This function is unsafe because the caller must guarantee that the
     /// memory map is valid. The main requirement is that all frames that are marked
     /// as `USABLE` in it are really unused.
-    pub unsafe fn init(
-        memory_map: &'a [EfiMemoryDescriptor],
-    ) -> Self {
+    pub unsafe fn init(memory_map: &'a [EfiMemoryDescriptor]) -> Self {
         BootInfoFrameAllocator {
             memory_map,
             next_descriptor: 0,
@@ -49,7 +47,9 @@ unsafe impl<'a> FrameAllocator<Size4KiB> for BootInfoFrameAllocator<'a> {
                 && descriptor.number_of_pages > 0
             {
                 while self.next_frame_offset < descriptor.number_of_pages {
-                    let frame_addr = PhysAddr::new(descriptor.physical_start + self.next_frame_offset * FRAME_SIZE);
+                    let frame_addr = PhysAddr::new(
+                        descriptor.physical_start + self.next_frame_offset * FRAME_SIZE,
+                    );
                     if let Ok(frame) = PhysFrame::<Size4KiB>::from_start_address(frame_addr) {
                         self.next_frame_offset += 1;
                         return Some(frame);

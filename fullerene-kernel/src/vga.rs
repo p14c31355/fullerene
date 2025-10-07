@@ -69,16 +69,24 @@ trait TextBufferOperations {
                 if col >= self.get_width() {
                     self.new_line();
                     let (new_row, new_col) = self.get_position();
-                    self.set_char_at(new_row, new_col, ScreenChar {
-                        ascii_character: byte,
-                        color_code: self.get_color_code(),
-                    });
+                    self.set_char_at(
+                        new_row,
+                        new_col,
+                        ScreenChar {
+                            ascii_character: byte,
+                            color_code: self.get_color_code(),
+                        },
+                    );
                     self.set_position(new_row, new_col + 1);
                 } else {
-                    self.set_char_at(row, col, ScreenChar {
-                        ascii_character: byte,
-                        color_code: self.get_color_code(),
-                    });
+                    self.set_char_at(
+                        row,
+                        col,
+                        ScreenChar {
+                            ascii_character: byte,
+                            color_code: self.get_color_code(),
+                        },
+                    );
                     self.set_position(row, col + 1);
                 }
             }

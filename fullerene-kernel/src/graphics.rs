@@ -158,7 +158,14 @@ impl FramebufferWriter {
     }
 
     fn scroll_up(&self) {
-        unsafe { scroll_buffer_u32(self.framebuffer.address, self.framebuffer.stride, self.framebuffer.height, self.bg_color) };
+        unsafe {
+            scroll_buffer_u32(
+                self.framebuffer.address,
+                self.framebuffer.stride,
+                self.framebuffer.height,
+                self.bg_color,
+            )
+        };
     }
 }
 
@@ -440,6 +447,47 @@ fn setup_graphics_controller() {
         0x07 => 0x0F, // Color don't care
         0x08 => 0xFF  // Bit mask
     );
+}
+
+/// Generic serial port writer with support for both COM1 and other serial ports
+struct SerialPortWriter {
+    data_port: u16,
+    interrupt_enable_port: u16,
+    line_ctrl_port: u16,
+    fifo_ctrl_port: u16,
+    modem_ctrl_port: u16,
+    line_status_port: u16,
+}
+
+impl SerialPortWriter {
+    const fn new(base_port: u16) -> Self {
+        SerialPortWriter {
+            data_port: base_port,
+            interrupt_enable_port: base_port + 1,
+            line_ctrl_port: base_port + 3,
+            fifo_ctrl_port: base_port + 2,
+            modem_ctrl_port: base_port + 4,
+            line_status_port: base_port + 5,
+        }
+    }
+
+    fn init(&mut self) {
+        unsafe {
+            Port::new(self.line_ctrl_port).write(0x80u8); // Enable DLAB
+            Port::new(self.data_port).write(0x03u8); // Baud rate divisor low byte
+            Port::new(self.interrupt_enable_port).write(0x00u8); // Disable interrupts
+            Port::new(self.line_ctrl_port).write(0x03u8); // 8 bits, no parity, one stop bit
+            Port::new(self.fifo_ctrl_port).write(0xC7u8); // Enable FIFO, clear, 14-byte threshold
+            Port::new(self.modem_ctrl_port).write(0x0Bu8); // IRQs enabled, OUT2
+        }
+    }
+
+    fn write_byte(&mut self, byte: u8) {
+        unsafe {
+            while (Port::<u8>::new(self.line_status_port).read() & 0x20) == 0 {}
+            Port::new(self.data_port).write(byte);
+        }
+    }
 }
 
 /// Configures the VGA Attribute Controller registers.

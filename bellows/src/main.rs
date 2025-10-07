@@ -9,14 +9,14 @@ extern crate alloc;
 use alloc::boxed::Box;
 
 use core::{ffi::c_void, ptr};
- // Import Port for direct I/O
+// Import Port for direct I/O
 
 mod loader;
 
+use loader::debug::*;
 use loader::{
     exit_boot_services_and_jump, file::read_efi_file, heap::init_heap, pe::load_efi_image,
 };
-use loader::debug::*;
 
 use petroleum::common::{
     EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable,
@@ -132,7 +132,10 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     ));
     // Exit boot services and jump to the kernel.
     petroleum::println!("Bellows: About to exit boot services and jump to kernel."); // Debug print just before the call
-    petroleum::serial::_print(format_args!("Jump params: entry={:#x}, map={:#x}, size={}\n", entry as usize, 0, 0)); // Placeholder, will be updated in mod.rs
+    petroleum::serial::_print(format_args!(
+        "Jump params: entry={:#x}, map={:#x}, size={}\n",
+        entry as usize, 0, 0
+    )); // Placeholder, will be updated in mod.rs
     match exit_boot_services_and_jump(image_handle, system_table, entry) {
         Ok(_) => {
             unreachable!(); // This branch should never be reached if the function returns '!'

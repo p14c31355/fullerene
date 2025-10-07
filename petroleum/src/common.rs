@@ -181,24 +181,25 @@ pub struct EfiBootServices {
     pub free_pages: extern "efiapi" fn(usize, usize) -> usize, // idx 4
     pub get_memory_map:
         extern "efiapi" fn(*mut usize, *mut c_void, *mut usize, *mut usize, *mut u32) -> usize, // idx 5
-    _pad1: [usize; 1], // 6
+    _pad1: [usize; 1],                                       // 6
     pub free_pool: extern "efiapi" fn(*mut c_void) -> usize, // idx 7
-    _pad2: [usize; 9], // 8-16
+    _pad2: [usize; 9],                                       // 8-16
     pub handle_protocol: extern "efiapi" fn(usize, *const u8, *mut *mut c_void) -> usize, // idx 17
-    _pad3: [usize; 1],  // 18
+    _pad3: [usize; 1],                                       // 18
     pub locate_handle:
         extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut usize) -> usize, // idx 19
-    _pad4: [usize; 1],  // 20
+    _pad4: [usize; 1],                                       // 20
     pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize, // idx 21
-    _pad5: [usize; 4],  // 22-25
+    _pad5: [usize; 4],                                       // 22-25
     pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize, // idx 26
-    _pad6: [usize; 1],  // 27
-    pub stall: extern "efiapi" fn(usize) -> usize, // idx 28
-    _pad7: [usize; 3],  // 29-31
+    _pad6: [usize; 1],                                       // 27
+    pub stall: extern "efiapi" fn(usize) -> usize,           // idx 28
+    _pad7: [usize; 3],                                       // 29-31
     pub open_protocol:
         extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, // idx 32
     _pad8: [usize; 4], // 33-36
-    pub locate_handle_buffer: extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut *mut usize) -> usize, // idx 37
+    pub locate_handle_buffer:
+        extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut *mut usize) -> usize, // idx 37
     pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize, // idx 38
 }
 

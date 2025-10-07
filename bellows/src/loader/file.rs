@@ -113,7 +113,7 @@ fn open_file(dir: &EfiFileWrapper, path: &[u16]) -> petroleum::common::Result<Ef
     Ok(EfiFileWrapper::new(file_handle))
 }
 
-    /// Read `fullerene-kernel.efi` from the volume.
+/// Read `fullerene-kernel.efi` from the volume.
 pub fn read_efi_file(
     bs: &EfiBootServices,
     image_handle: usize,
@@ -173,7 +173,9 @@ pub fn read_efi_file(
     }
 
     if loaded_image.is_null() {
-        return Err(BellowsError::ProtocolNotFound("LoadedImage protocol is null."));
+        return Err(BellowsError::ProtocolNotFound(
+            "LoadedImage protocol is null.",
+        ));
     }
 
     let loaded_image_ref = unsafe { &*loaded_image };
@@ -199,7 +201,9 @@ pub fn read_efi_file(
     );
     if EfiStatus::from(status) != EfiStatus::Success || handle_count == 0 {
         file_debug!("Failed to locate SimpleFileSystem handles.");
-        return Err(BellowsError::ProtocolNotFound("No SimpleFileSystem handles found."));
+        return Err(BellowsError::ProtocolNotFound(
+            "No SimpleFileSystem handles found.",
+        ));
     }
     file_debug!("Located SimpleFileSystem handles.");
     // Use the first handle

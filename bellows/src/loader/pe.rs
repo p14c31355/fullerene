@@ -18,11 +18,7 @@ macro_rules! pe_log {
 // Macro to read unaligned field from pointer
 macro_rules! read_field {
     ($ptr:expr, $offset:expr, $ty:ty) => {
-        unsafe {
-            ptr::read_unaligned(
-                ($ptr as *const u8).add($offset) as *const $ty
-            )
-        }
+        unsafe { ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) }
     };
 }
 
@@ -229,7 +225,7 @@ pub fn load_efi_image(
                 .add(offset_of!(ImageOptionalHeader64, image_base)) as *const u64,
         )
     } as usize;
-        let mut status;
+    let mut status;
     // Try to allocate at the preferred base if it's a high address.
     if preferred_base >= 0x1000_0000 {
         phys_addr = preferred_base;

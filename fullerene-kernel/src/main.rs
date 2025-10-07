@@ -15,15 +15,15 @@ extern crate alloc;
 
 use core::panic::PanicInfo;
 
-use petroleum::serial::{serial_init, serial_log, SERIAL_PORT_WRITER as SERIAL1};
+use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, serial_log};
 
 use core::ffi::c_void;
-use spin::Once;
 use petroleum::common::{
     EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
     FullereneFramebufferConfig,
 };
 use petroleum::page_table::EfiMemoryDescriptor;
+use spin::Once;
 use x86_64::VirtAddr;
 use x86_64::instructions::hlt;
 
@@ -61,7 +61,9 @@ fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> x86_64::PhysAddr {
     // If not found, find EfiConventionalMemory large enough
     let required_pages = (heap::HEAP_SIZE + 4095) / 4096;
     for desc in descriptors {
-        if desc.type_ == EfiMemoryType::EfiConventionalMemory && desc.number_of_pages >= required_pages as u64 {
+        if desc.type_ == EfiMemoryType::EfiConventionalMemory
+            && desc.number_of_pages >= required_pages as u64
+        {
             return x86_64::PhysAddr::new(desc.physical_start);
         }
     }
@@ -72,7 +74,9 @@ static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
 
 #[cfg(not(test))]
 #[panic_handler]
-
+fn panic(info: &PanicInfo) -> ! {
+    petroleum::handle_panic(info)
+}
 
 #[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]

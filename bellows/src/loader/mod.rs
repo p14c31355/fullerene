@@ -13,7 +13,10 @@ pub mod heap;
 pub mod pe;
 
 // Helper function to allocate memory map buffer
-fn allocate_map_buffer(bs: &petroleum::common::EfiBootServices, alloc_size: usize) -> petroleum::common::Result<(usize, usize)> {
+fn allocate_map_buffer(
+    bs: &petroleum::common::EfiBootServices,
+    alloc_size: usize,
+) -> petroleum::common::Result<(usize, usize)> {
     let map_pages = alloc_size.div_ceil(4096).max(1);
     let mut map_phys_addr: usize = 0;
     let alloc_status = (bs.allocate_pages)(
@@ -23,8 +26,13 @@ fn allocate_map_buffer(bs: &petroleum::common::EfiBootServices, alloc_size: usiz
         &mut map_phys_addr,
     );
     if EfiStatus::from(alloc_status) != EfiStatus::Success {
-        println!("Error: Failed to allocate memory map buffer: {:?}", EfiStatus::from(alloc_status));
-        return Err(BellowsError::AllocationFailed("Failed to allocate memory map buffer."));
+        println!(
+            "Error: Failed to allocate memory map buffer: {:?}",
+            EfiStatus::from(alloc_status)
+        );
+        return Err(BellowsError::AllocationFailed(
+            "Failed to allocate memory map buffer.",
+        ));
     }
     Ok((map_phys_addr, map_pages))
 }
@@ -52,7 +60,9 @@ pub fn exit_boot_services_and_jump(
 
     loop {
         if attempts >= MAX_ATTEMPTS {
-            return Err(BellowsError::InvalidState("Too many attempts to get memory map."));
+            return Err(BellowsError::InvalidState(
+                "Too many attempts to get memory map.",
+            ));
         }
         attempts += 1;
 
@@ -122,7 +132,10 @@ pub fn exit_boot_services_and_jump(
 
         match EfiStatus::from(status) {
             EfiStatus::Success => {
-                println!("Memory map acquired after {} attempts. Size: {}", attempts, map_size);
+                println!(
+                    "Memory map acquired after {} attempts. Size: {}",
+                    attempts, map_size
+                );
                 break;
             }
             EfiStatus::BufferTooSmall => {
@@ -161,6 +174,9 @@ pub fn exit_boot_services_and_jump(
     // This is the point of no return. We are calling the kernel entry point,
     // passing the memory map and other data. The validity of the `entry`
     // function pointer is assumed based on the successful PE file loading.
-    println!("Jumping to kernel at {:#x} with map at {:#x} size {}", entry as usize, map_phys_addr, map_size);
+    println!(
+        "Jumping to kernel at {:#x} with map at {:#x} size {}",
+        entry as usize, map_phys_addr, map_size
+    );
     entry(image_handle, system_table, map_ptr, map_size);
 }
