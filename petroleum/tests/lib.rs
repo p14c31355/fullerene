@@ -35,13 +35,3 @@ mod tests_with_std {
         assert!(ptr.0.is_null());
     }
 }
-
-#[cfg(not(feature = "std"))]
-mod tests_no_std {
-    // For no_std tests, we can only do compile-time checks
-    // Real testing would require a UEFI environment or emulator
-    const _: () = {
-        // Check that certain functions are accessible via linking
-        // (would cause link-time errors if not present)
-    };
-}

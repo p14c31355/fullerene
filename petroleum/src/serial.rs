@@ -220,12 +220,4 @@ mod tests {
         let writer = UefiWriter::new();
         assert!(writer.con_out.is_null());
     }
-
-    #[test]
-    fn test_serial_port_writer_new() {
-        let writer = SerialPortWriter::new();
-        // Port addresses are set correctly
-        // Note: This test assumes the port addresses are properly initialized
-        // In a real environment, we would test the actual I/O operations
-    }
 }
