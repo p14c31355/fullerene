@@ -52,6 +52,6 @@ $ cargo build --release  # Should build successfully
 
 <!-- Any additional context, concerns, or reminders for reviewers -->
 
-**Breaking Changes:** [x] No / [ ] Yes (describe if yes)
+**Breaking Changes:** [ ] No / [ ] Yes (describe if yes)
 
 ---
