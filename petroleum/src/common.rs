@@ -192,10 +192,12 @@ pub struct EfiBootServices {
     pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize, // idx 21
     _pad5: [usize; 4],  // 22-25
     pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize, // idx 26
-    _pad6: [usize; 5],  // 27-31
+    _pad6: [usize; 1],  // 27
+    pub stall: extern "efiapi" fn(usize) -> usize, // idx 28
+    _pad7: [usize; 3],  // 29-31
     pub open_protocol:
         extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, // idx 32
-    _pad7: [usize; 4], // 33-36
+    _pad8: [usize; 4], // 33-36
     pub locate_handle_buffer: extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut *mut usize) -> usize, // idx 37
     pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize, // idx 38
 }

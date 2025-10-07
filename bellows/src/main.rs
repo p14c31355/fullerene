@@ -76,7 +76,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     petroleum::println!("Bellows: Reading kernel from file...");
     // Read the kernel from the file system
-    let (addr, size) = match read_efi_file(bs, image_handle) {
+    let (addr, size) = match unsafe { read_efi_file(bs, image_handle) } {
         Ok(data) => data,
         Err(err) => {
             petroleum::println!("Failed to read kernel file: {:?}", err);
