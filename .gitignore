@@ -10,5 +10,7 @@ target/
 *.pdb
 
 fullerene.iso
-qemu_log.txt
-dummy_boot_catalog.bin
+*.log
+*.txt
+*.img
+*.bin
