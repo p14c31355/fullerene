@@ -151,12 +151,12 @@ fn main() -> io::Result<()> {
         &ovmf_fd_drive,
         "-drive",
         &ovmf_vars_fd_drive,
-        "-drive",
-        &format!("file={},if=virtio,format=raw", iso_path_str),
+        "-cdrom",
+        iso_path_str,
         "-no-reboot",
         "-no-shutdown",
         "-boot",
-        "strict=on,order=d",
+        "menu=on,order=d",
         "-nodefaults",
     ]);
     // Keep the temporary file alive until QEMU exits
