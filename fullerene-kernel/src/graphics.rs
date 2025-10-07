@@ -65,25 +65,10 @@ fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result 
     Ok(())
 }
 
-unsafe fn scroll_buffer_u8(address: u64, width: u32, height: u32, bg_color: u8) {
-    let bytes_per_line = width;
-    let shift_bytes = 8u64 * bytes_per_line as u64;
-    let total_bytes = height as u64 * bytes_per_line as u64;
-    let fb_ptr = address as *mut u8;
-    core::ptr::copy(
-        fb_ptr.add(shift_bytes as usize),
-        fb_ptr,
-        (total_bytes - shift_bytes) as usize,
-    );
-    // Clear last 8 lines
-    let clear_offset = (height - 8) * width;
-    let clear_ptr = fb_ptr.add(clear_offset as usize);
-    let clear_size = 8 * width as usize;
-    core::ptr::write_bytes(clear_ptr, bg_color, clear_size);
-}
-
-unsafe fn scroll_buffer_u32(address: u64, stride: u32, height: u32, bg_color: u32) {
-    let bytes_per_pixel = 4;
+/// Generic scroll function for framebuffer buffers.
+/// Scrolls the buffer up by 8 lines, clearing the last 8 lines with bg_color.
+unsafe fn scroll_buffer<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
+    let bytes_per_pixel = core::mem::size_of::<T>() as u32;
     let bytes_per_line = stride * bytes_per_pixel;
     let shift_bytes = 8u64 * bytes_per_line as u64;
     let total_bytes = height as u64 * bytes_per_line as u64;
@@ -94,11 +79,10 @@ unsafe fn scroll_buffer_u32(address: u64, stride: u32, height: u32, bg_color: u3
         (total_bytes - shift_bytes) as usize,
     );
     // Clear the last 8 lines
-    let last_lines_offset = (height - 8) * stride * bytes_per_pixel;
-    let clear_ptr = (address + last_lines_offset as u64) as *mut u32;
-    let clear_num_u32 = 8 * stride as usize;
-    let clear_slice = core::slice::from_raw_parts_mut(clear_ptr, clear_num_u32);
-    clear_slice.fill(bg_color);
+    let clear_offset = (height - 8) as usize * bytes_per_line as usize;
+    let clear_ptr = (address + clear_offset as u64) as *mut T;
+    let clear_count = 8 * stride as usize;
+    core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color);
 }
 
 trait FramebufferLike {
@@ -159,13 +143,13 @@ impl FramebufferWriter {
 
     fn scroll_up(&self) {
         unsafe {
-            scroll_buffer_u32(
+            scroll_buffer::<u32>(
                 self.framebuffer.address,
                 self.framebuffer.stride,
                 self.framebuffer.height,
                 self.bg_color,
-            )
-        };
+            );
+        }
     }
 }
 
@@ -260,7 +244,7 @@ impl VgaWriter {
     }
 
     fn scroll_up(&self) {
-        unsafe { scroll_buffer_u8(self.address, self.width, self.height, self.bg_color) };
+        unsafe { scroll_buffer::<u8>(self.address, self.width, self.height, self.bg_color) };
     }
 }
 
