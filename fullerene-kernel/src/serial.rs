@@ -66,7 +66,7 @@ impl SerialPortOps for Com1Ops {
 }
 
 // Provides a global singleton for the serial port
-pub(crate) static SERIAL1: Mutex<SerialPort> = Mutex::new(SerialPort::new());
+pub(crate) static SERIAL1: Mutex<SerialPort<Com1Ops>> = Mutex::new(SerialPort::new(Com1Ops));
 
 /// Initializes the global serial port.
 pub fn serial_init() {
