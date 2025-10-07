@@ -4,7 +4,7 @@ mod tests {
 
     fn get_workspace_root() -> PathBuf {
         let mut path = std::env::current_dir().expect("Failed to get current directory");
-        while !path.join("Cargo.toml").exists() || !path.join("flasks").exists() {
+        while !path.join(".git").exists() {
             if !path.pop() {
                 panic!("Could not find workspace root");
             }
