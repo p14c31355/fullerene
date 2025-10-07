@@ -216,3 +216,9 @@ fn init_gop(st: &EfiSystemTable) {
         core::ptr::write_bytes(fb_addr as *mut u8, 0x00, fb_size as usize);
     }
 }
+
+#[cfg(not(test))]
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    petroleum::handle_panic(info)
+}
