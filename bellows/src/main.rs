@@ -217,8 +217,8 @@ fn init_gop(st: &EfiSystemTable) {
     }
 }
 
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    petroleum::handle_panic(info)
-}
+// #[cfg(not(test))]
+// #[panic_handler]
+// fn panic(info: &core::panic::PanicInfo) -> ! {
+//     petroleum::handle_panic(info)
+// }

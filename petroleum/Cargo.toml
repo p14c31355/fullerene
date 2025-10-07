@@ -17,3 +17,7 @@ x86_64 = { version = "0.15.2", default-features = false, features = [
   "instructions",
   "abi_x86_interrupt",
 ] }
+
+[lib]
+name = "petroleum"
+path = "src/lib.rs"

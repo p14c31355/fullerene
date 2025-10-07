@@ -2,7 +2,7 @@
 use isobemak::{BiosBootInfo, BootInfo, IsoImage, IsoImageFile, UefiBootInfo, build_iso};
 use std::{
     env, io,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::Command,
 };
 
@@ -164,7 +164,7 @@ fn main() -> io::Result<()> {
     // LD_PRELOAD is a workaround for specific QEMU/libpthread versions.
     // It can be overridden by setting the FULLERENE_QEMU_LD_PRELOAD environment variable.
     let ld_preload_path =
-        env::var("FULLERENE_QEMU_LD_PRELOAD").unwrap_or_else(|_| find_libpthread());
+        env::var("FULLERENE_QEMU_LD_PRELOAD").unwrap_or_else(|_| flasks::find_libpthread().expect("libpthread.so.0 not found in common locations"));
     qemu_cmd.env("LD_PRELOAD", ld_preload_path);
     let qemu_status = qemu_cmd.status()?;
 
@@ -173,29 +173,4 @@ fn main() -> io::Result<()> {
     }
 
     Ok(())
-}
-
-/// Finds the path to `libpthread.so.0` in common locations.
-///
-/// This function is a workaround for the `LD_PRELOAD` issue with QEMU on some systems.
-/// It checks a list of common paths for the library and returns the first one that exists.
-/// If the library is not found, it returns a default path.
-fn find_libpthread() -> String {
-    const COMMON_PATHS: &[&str] = &[
-        "/lib/x86_64-linux-gnu/libpthread.so.0", // Debian/Ubuntu
-        "/usr/lib64/libpthread.so.0",            // Fedora/CentOS
-        "/usr/lib/libpthread.so.0",              // Arch/Other
-    ];
-
-    for path in COMMON_PATHS {
-        if Path::new(path).exists() {
-            return path.to_string();
-        }
-    }
-
-    // Fallback to the original default if not found, with a warning.
-    eprintln!(
-        "warning: libpthread.so.0 not found in common paths, falling back to default. Set FULLERENE_QEMU_LD_PRELOAD to override if this fails."
-    );
-    "/lib/x86_64-linux-gnu/libpthread.so.0".to_string()
 }

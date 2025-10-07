@@ -1,0 +1,115 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag_name: ${{ steps.get-tag.outputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get tag name
+        id: get-tag
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+          targets: x86_64-unknown-uefi
+
+      - name: Add rust-src component
+        run: rustup component add rust-src --toolchain nightly
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./ -> target"
+
+
+      - name: Build release binaries
+        run: |
+          cargo build -Z build-std=core,alloc --package fullerene-kernel --target x86_64-unknown-uefi --release
+          cargo build -Z build-std=core,alloc --package bellows --target x86_64-unknown-uefi --release
+          cargo build --package toluene --release
+          cargo build --package flasks --release
+
+      - name: Create fullerene ISO
+        run: |
+          mkdir -p release-artifacts
+          target/release/flasks
+          cp fullerene.iso release-artifacts/
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fullerene-iso-${{ steps.get-tag.outputs.tag }}
+          path: release-artifacts/fullerene.iso
+
+      - name: Create release archive
+        run: |
+          cd release-artifacts
+          tar czf fullerene-${{ steps.get-tag.outputs.tag }}.tar.gz fullerene.iso
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.get-tag.outputs.tag }}
+          name: Release ${{ steps.get-tag.outputs.tag }}
+          body: |
+            ## Changes in this release
+
+            - See [CHANGELOG.md](https://github.com/p14c31355/fullerene/blob/main/README.md) for details
+
+            ## Artifacts
+
+            - `fullerene.iso`: Bootable UEFI ISO image
+          files: |
+            release-artifacts/fullerene-${{ steps.get-tag.outputs.tag }}.tar.gz
+          draft: false
+          prerelease: ${{ contains(steps.get-tag.outputs.tag, 'rc') || contains(steps.get-tag.outputs.tag, 'beta') || contains(steps.get-tag.outputs.tag, 'alpha') }}
+
+  docs:
+    name: Publish Documentation
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+
+      - name: Add rust-src component
+        run: rustup component add rust-src --toolchain nightly
+
+      - name: Build documentation
+        run: |
+          cargo doc --document-private-items --no-deps --all-features --workspace
+          echo '<meta http-equiv="refresh" content="0; url=fullerene/index.html">' > target/doc/index.html
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, 'rc') && !contains(github.ref, 'beta') && !contains(github.ref, 'alpha')
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./target/doc
+          cname: docs.fullerene.dev # Replace with your actual domain if you have one

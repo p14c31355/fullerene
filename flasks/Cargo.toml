@@ -3,6 +3,14 @@ name = "flasks"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "flasks"
+path = "src/lib.rs"
+
+[[bin]]
+name = "flasks"
+path = "src/main.rs"
+
 [dependencies]
-isobemak = { path = "../../isobemak"}
+isobemak = "0.2.3"
 tempfile = "3.22.0"

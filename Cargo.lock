@@ -200,7 +200,9 @@ dependencies = [
 
 [[package]]
 name = "isobemak"
-version = "0.2.2"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49f7c30532f5875767898676678c293cc0251697a58aa31208b13dd501e37510"
 dependencies = [
  "crc32fast",
  "fatfs",

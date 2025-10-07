@@ -1,6 +1,6 @@
 #![no_std]
-#![feature(alloc_error_handler)]
 #![feature(never_type)]
+#![feature(alloc_error_handler)]
 
 extern crate alloc;
 
@@ -8,8 +8,6 @@ pub mod common;
 pub mod page_table;
 pub mod serial;
 
-#[cfg(all(panic = "unwind", not(feature = "std")))]
-use core::alloc::Layout;
 use core::{arch::asm, fmt::Write};
 use spin::Mutex;
 
@@ -24,7 +22,7 @@ unsafe impl Sync for UefiSystemTablePtr {}
 pub static UEFI_SYSTEM_TABLE: Mutex<Option<UefiSystemTablePtr>> = Mutex::new(None);
 
 // Helper function to convert u32 to string without heap allocation
-fn u32_to_str_heapless(n: u32, buffer: &mut [u8]) -> &str {
+pub fn u32_to_str_heapless(n: u32, buffer: &mut [u8]) -> &str {
     let mut i = buffer.len();
     let mut n = n;
     if n == 0 {
@@ -77,9 +75,9 @@ pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
 }
 
 /// Alloc error handler required when using `alloc` in no_std.
-#[cfg(all(panic = "unwind", not(feature = "std")))]
+#[cfg(all(panic = "unwind", not(feature = "std"), not(test)))]
 #[alloc_error_handler]
-fn alloc_error(_layout: Layout) -> ! {
+fn alloc_error(_layout: core::alloc::Layout) -> ! {
     // Avoid recursive panics by directly looping
     loop {
         // Optionally, try to print a message using the heap-less writer if possible
@@ -94,5 +92,31 @@ fn alloc_error(_layout: Layout) -> ! {
         unsafe {
             asm!("hlt"); // For QEMU debugging
         }
+    }
+}
+
+/// Test harness for no_std environment
+#[cfg(test)]
+pub trait Testable {
+    fn run(&self);
+}
+
+#[cfg(test)]
+impl<T> Testable for T
+where
+    T: Fn(),
+{
+    fn run(&self) {
+        println!("{}...\t", core::any::type_name::<T>());
+        self();
+        println!("[ok]");
+    }
+}
+
+#[cfg(test)]
+pub fn test_runner(tests: &[&dyn Testable]) {
+    println!("Running {} tests", tests.len());
+    for test in tests {
+        test.run();
     }
 }
