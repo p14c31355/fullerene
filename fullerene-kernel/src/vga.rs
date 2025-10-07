@@ -7,8 +7,7 @@ use x86_64::instructions::port::Port;
 macro_rules! with_buffer {
     ($buffer:expr, $row:expr, $col:expr, $body:expr) => {
         if $row < BUFFER_HEIGHT && $col < BUFFER_WIDTH {
-            let index = $row * BUFFER_WIDTH + $col;
-            $body(&mut $buffer[index])
+            $body(&mut $buffer[$row][$col])
         }
     };
 }
@@ -86,10 +85,12 @@ impl VgaBuffer {
                 let row = self.row_position;
                 let col = self.column_position;
 
-                self.buffer[row][col] = ScreenChar {
-                    ascii_character: byte,
-                    color_code: self.color_code,
-                };
+                with_buffer!(self.buffer, row, col, |char: &mut ScreenChar| {
+                    *char = ScreenChar {
+                        ascii_character: byte,
+                        color_code: self.color_code,
+                    };
+                });
                 self.column_position += 1;
             }
         }

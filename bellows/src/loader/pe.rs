@@ -1,9 +1,30 @@
 // bellows/src/loader/pe.rs
 
 use core::{ffi::c_void, mem, mem::offset_of, ptr};
-use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable}; // Import fmt module for format_args! and Write
+use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
 
 use super::debug::*;
+
+// Macro to reduce repetitive println
+macro_rules! pe_log {
+    ($msg:expr) => {
+        petroleum::println!($msg);
+    };
+    ($msg:expr, $($arg:tt)*) => {
+        petroleum::println!($msg, $($arg)*);
+    };
+}
+
+// Macro to read unaligned field from pointer
+macro_rules! read_field {
+    ($ptr:expr, $offset:expr, $ty:ty) => {
+        unsafe {
+            ptr::read_unaligned(
+                ($ptr as *const u8).add($offset) as *const $ty
+            )
+        }
+    };
+}
 
 #[repr(C, packed)]
 struct ImageDosHeader {
