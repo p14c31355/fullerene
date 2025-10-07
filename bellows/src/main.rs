@@ -36,7 +36,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     debug_print_hex(system_table as usize);
     debug_print_str("\n");
 
-    // UEFI_SYSTEM_TABLE.set前
+    // Before setting UEFI_SYSTEM_TABLE
     if image_handle == 0 {
         panic!("Invalid image_handle");
     }
