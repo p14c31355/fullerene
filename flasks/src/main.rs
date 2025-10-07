@@ -164,7 +164,7 @@ fn main() -> io::Result<()> {
     // LD_PRELOAD is a workaround for specific QEMU/libpthread versions.
     // It can be overridden by setting the FULLERENE_QEMU_LD_PRELOAD environment variable.
     let ld_preload_path =
-        env::var("FULLERENE_QEMU_LD_PRELOAD").unwrap_or_else(|_| flasks::find_libpthread());
+        env::var("FULLERENE_QEMU_LD_PRELOAD").unwrap_or_else(|_| flasks::find_libpthread().expect("libpthread.so.0 not found in common locations"));
     qemu_cmd.env("LD_PRELOAD", ld_preload_path);
     let qemu_status = qemu_cmd.status()?;
 

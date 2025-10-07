@@ -33,14 +33,11 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn test_find_libpthread() {
-        // Test that find_libpthread returns a valid existing path (or the fallback)
-        let path = flasks::find_libpthread();
-        assert!(!path.is_empty());
-        // The path should either exist or be the fallback
-        assert!(
-            std::path::Path::new(&path).exists()
-                || path == "/lib/x86_64-linux-gnu/libpthread.so.0"
-        );
+        fn test_find_libpthread() {
+        // Test that find_libpthread returns an existing path or None.
+        if let Some(path) = flasks::find_libpthread() {
+            assert!(std::path::Path::new(&path).exists(), "If a path is returned, it must exist");
+        }
+        // If it returns None, that's a valid outcome on systems where the lib isn't in a standard path.
     }
 }

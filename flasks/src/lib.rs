@@ -5,7 +5,7 @@ use std::path::Path;
 /// This function is a workaround for the `LD_PRELOAD` issue with QEMU on some systems.
 /// It checks a list of common paths for the library and returns the first one that exists.
 /// If the library is not found, it returns a default path.
-pub fn find_libpthread() -> String {
+pub fn find_libpthread() -> Option<String> {
     const COMMON_PATHS: &[&str] = &[
         "/lib/x86_64-linux-gnu/libpthread.so.0", // Debian/Ubuntu
         "/usr/lib64/libpthread.so.0",            // Fedora/CentOS
@@ -14,13 +14,9 @@ pub fn find_libpthread() -> String {
 
     for path in COMMON_PATHS {
         if Path::new(path).exists() {
-            return path.to_string();
+            return Some(path.to_string());
         }
     }
 
-    // Fallback to the original default if not found, with a warning.
-    eprintln!(
-        "warning: libpthread.so.0 not found in common paths, falling back to default. Set FULLERENE_QEMU_LD_PRELOAD to override if this fails."
-    );
-    "/lib/x86_64-linux-gnu/libpthread.so.0".to_string()
+    None
 }
