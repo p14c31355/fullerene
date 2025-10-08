@@ -162,6 +162,8 @@ fn init_gop(st: &EfiSystemTable) {
 
     let mut target_mode: Option<usize> = None;
     let mut best_resolution: u64 = 0;
+    // Allocate a buffer outside the loop to avoid repeated heap allocations
+    let mut mode_info_buf = alloc::vec![0u8; 512];
     for mode_num in 0..max_mode {
         let mut size = 0;
         let status = (gop_ref.query_mode)(gop, mode_num, &mut size, ptr::null_mut());
@@ -169,16 +171,23 @@ fn init_gop(st: &EfiSystemTable) {
             continue;
         }
 
-        let mut mode_info = alloc::vec![0u8; size];
+        if size > mode_info_buf.len() {
+            petroleum::serial::_print(format_args!(
+                "GOP: Mode {} size {} too large (max {}), skipping.\n",
+                mode_num, size, mode_info_buf.len()
+            ));
+            continue;
+        }
+
         let status = (gop_ref.query_mode)(
             gop,
             mode_num,
             &mut size,
-            mode_info.as_mut_ptr() as *mut c_void,
+            mode_info_buf.as_mut_ptr() as *mut c_void,
         );
         if EfiStatus::from(status) == EfiStatus::Success {
             let info: &EfiGraphicsOutputModeInformation =
-                unsafe { &*(mode_info.as_ptr() as *const EfiGraphicsOutputModeInformation) };
+                unsafe { &*(mode_info_buf.as_ptr() as *const EfiGraphicsOutputModeInformation) };
             petroleum::serial::_print(format_args!(
                 "GOP: Mode {}: {}x{}, format: {}\n",
                 mode_num,

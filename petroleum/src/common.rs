@@ -279,12 +279,10 @@ pub struct EfiGraphicsOutputProtocol {
 pub struct EfiGraphicsOutputProtocolMode {
     pub max_mode: u32,
     pub mode: u32,
-    _pad: [usize; 1], // reserved
     pub info: *mut EfiGraphicsOutputModeInformation,
     pub size_of_info: usize,
     pub frame_buffer_base: u64,
     pub frame_buffer_size: usize,
-    _pad2: [usize; 1], // status? we don't need it
 }
 
 /// Minimal EFI_GRAPHICS_OUTPUT_MODE_INFORMATION (UEFI)
