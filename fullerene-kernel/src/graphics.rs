@@ -116,6 +116,74 @@ unsafe fn clear_framebuffer(address: u64, width: u32, stride: u32, height: u32, 
     }
 }
 
+struct ColorScheme {
+    fg: u32,
+    bg: u32,
+}
+
+impl ColorScheme {
+    const UEFI_WHITE_ON_BLACK: Self = Self {
+        fg: 0xFFFFFFu32,
+        bg: 0x000000u32,
+    };
+    const VGA_WHITE_ON_BLACK: Self = Self {
+        fg: 0x0Fu32,
+        bg: 0x00u32,
+    };
+}
+
+#[cfg(target_os = "uefi")]
+struct FramebufferInfo {
+    address: u64,
+    width: u32,
+    height: u32,
+    stride: u32,
+    pixel_format: EfiGraphicsPixelFormat,
+    colors: ColorScheme,
+}
+
+#[cfg(not(target_os = "uefi"))]
+struct FramebufferInfo {
+    address: u64,
+    width: u32,
+    height: u32,
+    colors: ColorScheme,
+}
+
+#[cfg(target_os = "uefi")]
+impl FramebufferInfo {
+    fn new(fb_config: &FullereneFramebufferConfig) -> Self {
+        Self {
+            address: fb_config.address,
+            width: fb_config.width,
+            height: fb_config.height,
+            stride: fb_config.stride,
+            pixel_format: fb_config.pixel_format,
+            colors: ColorScheme::UEFI_WHITE_ON_BLACK,
+        }
+    }
+
+    fn bytes_per_pixel(&self) -> u32 {
+        match self.pixel_format {
+            EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
+            | EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor => 4,
+            _ => panic!("Unsupported pixel format"),
+        }
+    }
+}
+
+#[cfg(not(target_os = "uefi"))]
+impl FramebufferInfo {
+    fn new(config: &VgaFramebufferConfig) -> Self {
+        Self {
+            address: config.address,
+            width: config.width,
+            height: config.height,
+            colors: ColorScheme::VGA_WHITE_ON_BLACK,
+        }
+    }
+}
+
 trait FramebufferLike {
     fn put_pixel(&self, x: u32, y: u32, color: u32);
     fn clear_screen(&self);
@@ -130,101 +198,131 @@ trait FramebufferLike {
 
 #[cfg(target_os = "uefi")]
 struct FramebufferWriter {
-    framebuffer: Framebuffer,
+    info: FramebufferInfo,
     x_pos: u32,
     y_pos: u32,
-    fg_color: u32,
-    bg_color: u32,
-}
-
-#[cfg(target_os = "uefi")]
-struct Framebuffer {
-    address: u64,
-    width: u32,
-    height: u32,
-    stride: u32,
-    pixel_format: EfiGraphicsPixelFormat,
 }
 
 #[cfg(target_os = "uefi")]
 impl FramebufferWriter {
     fn new(fb_config: &FullereneFramebufferConfig) -> Self {
-        FramebufferWriter {
-            framebuffer: Framebuffer {
-                address: fb_config.address,
-                width: fb_config.width,
-                height: fb_config.height,
-                stride: fb_config.stride,
-                pixel_format: fb_config.pixel_format,
-            },
+        Self {
+            info: FramebufferInfo::new(fb_config),
             x_pos: 0,
             y_pos: 0,
-            fg_color: FG_WHITE_UEFI,
-            bg_color: BG_BLACK_UEFI,
         }
     }
 
     fn bytes_per_pixel(&self) -> u32 {
-        match self.framebuffer.pixel_format {
-            EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
-            | EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor => 4,
-            _ => panic!("Unsupported pixel format"),
-        }
+        self.info.bytes_per_pixel()
     }
 
     fn scroll_up(&self) {
         unsafe {
             scroll_buffer::<u32>(
-                self.framebuffer.address,
-                self.framebuffer.stride,
-                self.framebuffer.height,
-                self.bg_color,
+                self.info.address,
+                self.info.stride,
+                self.info.height,
+                self.info.colors.bg,
             );
         }
     }
 }
 
-#[cfg(target_os = "uefi")]
+#[cfg(not(target_os = "uefi"))]
+struct FramebufferWriter {
+    info: FramebufferInfo,
+    x_pos: u32,
+    y_pos: u32,
+}
+
+#[cfg(not(target_os = "uefi"))]
+impl FramebufferWriter {
+    fn new(config: &VgaFramebufferConfig) -> Self {
+        Self {
+            info: FramebufferInfo::new(config),
+            x_pos: 0,
+            y_pos: 0,
+        }
+    }
+
+    fn scroll_up(&self) {
+        unsafe {
+            scroll_buffer::<u8>(
+                self.info.address,
+                self.info.width,
+                self.info.height,
+                self.info.colors.bg as u8,
+            );
+        }
+    }
+}
+
+// Generic impl for both UEFI and VGA
 impl FramebufferLike for FramebufferWriter {
     fn put_pixel(&self, x: u32, y: u32, color: u32) {
-        if x >= self.framebuffer.width || y >= self.framebuffer.height {
+        if x >= self.info.width || y >= self.info.height {
             return;
         }
-        let bytes_per_pixel = self.bytes_per_pixel();
-        let offset = (y * self.framebuffer.stride + x) * bytes_per_pixel;
-        let fb_ptr = self.framebuffer.address as *mut u8;
-        unsafe {
-            let pixel_ptr = fb_ptr.add(offset as usize) as *mut u32;
-            *pixel_ptr = color;
+
+        #[cfg(target_os = "uefi")]
+        {
+            let bytes_per_pixel = self.bytes_per_pixel();
+            let offset = (y * self.info.stride + x) * bytes_per_pixel;
+            let fb_ptr = self.info.address as *mut u8;
+            unsafe {
+                let pixel_ptr = fb_ptr.add(offset as usize) as *mut u32;
+                *pixel_ptr = color;
+            }
+        }
+
+        #[cfg(not(target_os = "uefi"))]
+        {
+            let offset = (y * self.info.width + x) as usize;
+            unsafe {
+                let fb_ptr = self.info.address as *mut u8;
+                *fb_ptr.add(offset) = color as u8;
+            }
         }
     }
 
     fn clear_screen(&self) {
+        #[cfg(target_os = "uefi")]
         unsafe {
             clear_framebuffer(
-                self.framebuffer.address,
-                self.framebuffer.width,
-                self.framebuffer.stride,
-                self.framebuffer.height,
-                self.bg_color,
+                self.info.address,
+                self.info.width,
+                self.info.stride,
+                self.info.height,
+                self.info.colors.bg,
+            );
+        }
+
+        #[cfg(not(target_os = "uefi"))]
+        unsafe {
+            let fb_ptr = self.info.address as *mut u8;
+            core::ptr::write_bytes(
+                fb_ptr,
+                self.info.colors.bg as u8,
+                (self.info.width * self.info.height) as usize,
             );
         }
     }
 
     fn get_width(&self) -> u32 {
-        self.framebuffer.width
+        self.info.width
     }
 
     fn get_height(&self) -> u32 {
-        self.framebuffer.height
+        self.info.height
     }
 
     fn get_fg_color(&self) -> u32 {
-        self.fg_color
+        self.info.colors.fg
     }
 
     fn get_bg_color(&self) -> u32 {
-        self.bg_color
+        self.info.colors.bg
     }
 
     fn set_position(&mut self, x: u32, y: u32) {
@@ -241,95 +339,7 @@ impl FramebufferLike for FramebufferWriter {
     }
 }
 
-#[cfg(target_os = "uefi")]
 impl core::fmt::Write for FramebufferWriter {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        write_text(self, s)
-    }
-}
-
-#[cfg(not(target_os = "uefi"))]
-struct VgaWriter {
-    address: u64,
-    width: u32,
-    height: u32,
-    x_pos: u32,
-    y_pos: u32,
-    fg_color: u8, // 256-color palette index
-    bg_color: u8,
-}
-
-#[cfg(not(target_os = "uefi"))]
-impl VgaWriter {
-    fn new(config: &VgaFramebufferConfig) -> Self {
-        VgaWriter {
-            address: config.address,
-            width: config.width,
-            height: config.height,
-            x_pos: 0,
-            y_pos: 0,
-            fg_color: FG_WHITE_VGA,
-            bg_color: BG_BLACK_VGA,
-        }
-    }
-
-    fn scroll_up(&self) {
-        unsafe { scroll_buffer::<u8>(self.address, self.width, self.height, self.bg_color) };
-    }
-}
-
-#[cfg(not(target_os = "uefi"))]
-impl FramebufferLike for VgaWriter {
-    fn put_pixel(&self, x: u32, y: u32, color: u32) {
-        if x >= self.width || y >= self.height {
-            return;
-        }
-        let offset = (y * self.width + x) as usize;
-        unsafe {
-            let fb_ptr = self.address as *mut u8;
-            *fb_ptr.add(offset) = color as u8;
-        }
-    }
-
-    fn clear_screen(&self) {
-        let fb_ptr = self.address as *mut u8;
-        unsafe {
-            core::ptr::write_bytes(fb_ptr, self.bg_color, (self.width * self.height) as usize);
-        }
-    }
-
-    fn get_width(&self) -> u32 {
-        self.width
-    }
-
-    fn get_height(&self) -> u32 {
-        self.height
-    }
-
-    fn get_fg_color(&self) -> u32 {
-        self.fg_color as u32
-    }
-
-    fn get_bg_color(&self) -> u32 {
-        self.bg_color as u32
-    }
-
-    fn set_position(&mut self, x: u32, y: u32) {
-        self.x_pos = x;
-        self.y_pos = y;
-    }
-
-    fn get_position(&self) -> (u32, u32) {
-        (self.x_pos, self.y_pos)
-    }
-
-    fn scroll_up(&self) {
-        VgaWriter::scroll_up(self);
-    }
-}
-
-#[cfg(not(target_os = "uefi"))]
-impl core::fmt::Write for VgaWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         write_text(self, s)
     }
@@ -379,7 +389,7 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
     setup_attribute_controller();
     setup_palette();
 
-    let writer = VgaWriter::new(config);
+    let writer = FramebufferWriter::new(config);
     writer.clear_screen();
     WRITER_BIOS.call_once(|| Mutex::new(Box::new(writer)));
 }
@@ -451,11 +461,7 @@ const GRAPHICS_CONFIG: &[RegisterConfig] = &[
     RegisterConfig { index: 0x08, value: 0xFF },
 ];
 
-// Color constants to reduce initialization boilerplate
-const FG_WHITE_UEFI: u32 = 0xFFFFFFu32;
-const BG_BLACK_UEFI: u32 = 0x000000u32;
-const FG_WHITE_VGA: u8 = 0x0Fu8;
-const BG_BLACK_VGA: u8 = 0x00u8;
+
 
 // Helper function to write a palette value in grayscale
 fn write_palette_grayscale(val: u8) {
