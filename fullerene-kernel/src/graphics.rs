@@ -4,6 +4,7 @@ use core::marker::{Send, Sync};
 #[cfg(not(target_os = "uefi"))]
 use petroleum::common::VgaFramebufferConfig;
 use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig}; // Import missing types
+use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
 use spin::{Mutex, Once};
 use x86_64::instructions::port::Port;
 
@@ -82,39 +83,7 @@ fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result 
     Ok(())
 }
 
-/// Generic framebuffer operations for common patterns
-unsafe fn scroll_buffer<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
-    let bytes_per_pixel = core::mem::size_of::<T>() as u32;
-    let bytes_per_line = stride * bytes_per_pixel;
-    let shift_bytes = 8u64 * bytes_per_line as u64;
-    let fb_ptr = address as *mut u8;
-    let total_bytes = height as u64 * bytes_per_line as u64;
-    core::ptr::copy(
-        fb_ptr.add(shift_bytes as usize),
-        fb_ptr,
-        (total_bytes - shift_bytes) as usize,
-    );
-    // Clear last 8 lines
-    let clear_offset = (height - 8) as usize * bytes_per_line as usize;
-    let clear_ptr = (address + clear_offset as u64) as *mut T;
-    let clear_count = 8 * stride as usize;
-    core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color);
-}
-
-unsafe fn clear_buffer<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
-    let fb_ptr = address as *mut T;
-    let count = (stride * height) as usize;
-    core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color);
-}
-
-// For UEFI, fill with actual color
-unsafe fn clear_framebuffer(address: u64, width: u32, stride: u32, height: u32, bg_color: u32) {
-    let fb_ptr = address as *mut u32;
-    for y in 0..height {
-        let line_ptr = fb_ptr.add((y * stride) as usize);
-        core::slice::from_raw_parts_mut(line_ptr, width as usize).fill(bg_color);
-    }
-}
+/// Generic framebuffer operations (shared functions in petroleum crate)
 
 struct ColorScheme {
     fg: u32,
@@ -219,7 +188,7 @@ impl FramebufferWriter {
 
     fn scroll_up(&self) {
         unsafe {
-            scroll_buffer::<u32>(
+            scroll_buffer_pixels::<u32>(
                 self.info.address,
                 self.info.stride,
                 self.info.height,
@@ -248,7 +217,7 @@ impl FramebufferWriter {
 
     fn scroll_up(&self) {
         unsafe {
-            scroll_buffer::<u8>(
+            scroll_buffer_pixels::<u8>(
                 self.info.address,
                 self.info.width,
                 self.info.height,
@@ -289,10 +258,9 @@ impl FramebufferLike for FramebufferWriter {
     fn clear_screen(&self) {
         #[cfg(target_os = "uefi")]
         unsafe {
-            clear_framebuffer(
+            clear_buffer_pixels::<u32>(
                 self.info.address,
                 self.info.width,
-                self.info.stride,
                 self.info.height,
                 self.info.colors.bg,
             );
@@ -300,11 +268,11 @@ impl FramebufferLike for FramebufferWriter {
 
         #[cfg(not(target_os = "uefi"))]
         unsafe {
-            let fb_ptr = self.info.address as *mut u8;
-            core::ptr::write_bytes(
-                fb_ptr,
+            clear_buffer_pixels::<u8>(
+                self.info.address,
+                self.info.width,
+                self.info.height,
                 self.info.colors.bg as u8,
-                (self.info.width * self.info.height) as usize,
             );
         }
     }
