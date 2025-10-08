@@ -1,5 +1,6 @@
 use core::ffi::c_void;
 use core::ptr;
+use alloc::vec;
 use petroleum::common::{BellowsError, EFI_FILE_INFO_GUID, EfiBootServices, EfiFile, EfiFileInfo, EfiMemoryType, EfiStatus};
 use super::super::debug::*;
 
@@ -15,19 +16,18 @@ const KERNEL_PATH: &str = r"\EFI\BOOT\KERNEL.EFI";
 
 /// Fixed UTF-16 encode for KERNEL_PATH (no alloc).
 pub fn kernel_path_utf16() -> [u16; 32] {
-    // Enough for path + null
-    let path = KERNEL_PATH.encode_utf16().chain(core::iter::once(0u16));
     let mut buf = [0u16; 32];
     let mut i = 0;
-    for c in path {
-        if i < buf.len() - 1 {
+    // KERNEL_PATH is a constant, so we can rely on its length being less than 31.
+    for c in KERNEL_PATH.encode_utf16() {
+        if i < buf.len() - 1 { // Ensure space for null terminator
             buf[i] = c;
             i += 1;
         } else {
-            break;
+            break; // Path too long, should not happen for a constant
         }
     }
-    buf[i] = 0; // Ensure null-term
+    // The rest of the buffer is zero-initialized, so buf[i] is already 0.
     buf
 }
 
@@ -97,11 +97,7 @@ pub fn read_file_to_memory(
         return Err(BellowsError::FileIo("Failed to get file info size."));
     }
 
-    let mut file_info_buffer = [0u8; 4096];
-    if file_info_buffer_size > file_info_buffer.len() {
-        file_debug!("File info buffer too large.");
-        return Err(BellowsError::FileIo("File info buffer too large."));
-    }
+    let mut file_info_buffer = alloc::vec![0u8; file_info_buffer_size];
 
     let status = unsafe {
         ((*file.file).get_info)(

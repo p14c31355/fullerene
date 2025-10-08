@@ -15,7 +15,6 @@ macro_rules! file_debug {
 pub fn read_efi_file(
     bs: &EfiBootServices,
     image_handle: usize,
-    _system_table: *mut petroleum::common::EfiSystemTable,
 ) -> petroleum::common::Result<(usize, usize)> {
     file_debug!("Starting read_efi_file...");
 

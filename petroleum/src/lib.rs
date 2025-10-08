@@ -9,7 +9,7 @@ pub mod graphics;
 pub mod page_table;
 pub mod serial;
 pub use graphics::{Color, ColorCode, ScreenChar, TextBufferOperations};
-pub use serial::{SerialPortWriter, Com1Ops, SerialPort, SerialPortOps};
+pub use serial::{Com1Ops, SerialPort, SerialPortOps};
 
 use core::{arch::asm, fmt::Write};
 use spin::Mutex;
