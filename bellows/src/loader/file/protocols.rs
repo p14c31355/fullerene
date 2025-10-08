@@ -46,16 +46,22 @@ pub fn get_loaded_image_protocol(
     image_handle: usize,
 ) -> petroleum::common::Result<*mut EfiLoadedImageProtocol> {
     let mut loaded_image: *mut EfiLoadedImageProtocol = ptr::null_mut();
+    debug_print_str("File: Getting loaded image protocol for handle=");
+    debug_print_hex(image_handle);
+    debug_print_str("\n");
 
     // Try handle_protocol first
+    debug_print_str("File: Trying handle_protocol\n");
     let status_h = (bs.handle_protocol)(
         image_handle,
         &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
         &mut loaded_image as *mut _ as *mut *mut c_void,
     );
     if EfiStatus::from(status_h) == EfiStatus::Success {
+        debug_print_str("File: Loaded image protocol found via handle_protocol\n");
         return Ok(loaded_image);
     }
+    debug_print_str("File: handle_protocol failed (");
 
     // Try locate_handle_buffer
     let mut handle_count = 0;
@@ -102,7 +108,13 @@ pub fn get_simple_file_system(
     device_handle: usize,
     image_handle: usize,
 ) -> petroleum::common::Result<*mut EfiSimpleFileSystem> {
-    // Try locate_protocol first
+    debug_print_str("File: Getting SimpleFileSystem, device_handle=");
+    debug_print_hex(device_handle);
+    debug_print_str(", image_handle=");
+    debug_print_hex(image_handle);
+    debug_print_str("\n");
+
+    // First try locate_protocol
     let mut fs_proto_ptr: *mut EfiSimpleFileSystem = ptr::null_mut();
     let status = (bs.locate_protocol)(
         &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
@@ -110,6 +122,20 @@ pub fn get_simple_file_system(
         &mut fs_proto_ptr as *mut _ as *mut *mut c_void,
     );
     if EfiStatus::from(status) == EfiStatus::Success && !fs_proto_ptr.is_null() {
+        return Ok(fs_proto_ptr);
+    }
+
+    // For CD boot, try the image_handle itself first (bootloader handle is the filesystem device)
+    debug_print_str("File: Trying image_handle directly for filesystem protocol\n");
+    let status_img = (bs.handle_protocol)(
+        image_handle,
+        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+        &mut fs_proto_ptr as *mut _ as *mut *mut c_void,
+    );
+    debug_print_str("File: image_handle protocol status=");
+    debug_print_hex(status_img);
+    debug_print_str("\n");
+    if EfiStatus::from(status_img) == EfiStatus::Success && !fs_proto_ptr.is_null() {
         return Ok(fs_proto_ptr);
     }
 

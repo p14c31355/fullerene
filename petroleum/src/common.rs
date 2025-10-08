@@ -138,7 +138,7 @@ pub const EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID: [u8; 16] = [
 pub const EFI_BUFFER_TOO_SMALL: usize = 0x8000000000000005;
 
 /// Minimal EFI_FILE_INFO (UEFI)
-#[repr(C, packed)]
+#[repr(C)]
 pub struct EfiFileInfo {
     _size: u64,
     pub file_size: u64,
@@ -185,7 +185,7 @@ pub struct EfiBootServices {
         extern "efiapi" fn(*mut usize, *mut c_void, *mut usize, *mut usize, *mut u32) -> usize, // idx 5
     pub connect_controller: extern "efiapi" fn(usize, *mut usize, *mut usize, u32) -> usize, // idx 6
     pub free_pool: extern "efiapi" fn(*mut c_void) -> usize, // idx 7
-    _pad2: [usize; 8],                                       // 8-15
+    _pad2: [usize; 1],                                       // 8-8
     pub handle_protocol: extern "efiapi" fn(usize, *const u8, *mut *mut c_void) -> usize, // idx 17
     _pad3: [usize; 1],                                       // 18
     pub locate_handle:
@@ -238,7 +238,7 @@ pub struct EfiSimpleFileSystem {
 }
 
 /// Minimal EFI_LOADED_IMAGE_PROTOCOL (UEFI)
-#[repr(C)]
+#[repr(C, packed)]
 pub struct EfiLoadedImageProtocol {
     pub revision: u32,
     pub parent_handle: usize,

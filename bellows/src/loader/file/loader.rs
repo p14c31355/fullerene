@@ -18,7 +18,11 @@ pub fn read_efi_file(
     file_debug!("Starting read_efi_file...");
 
     let loaded_image = get_loaded_image_protocol(bs, image_handle)?;
+    file_debug!("Got loaded image protocol.");
     let device_handle = unsafe { (*loaded_image).device_handle };
+    debug_print_str("Device handle: ");
+    debug_print_hex(device_handle);
+    debug_print_str("\n");
 
     let fs_proto = get_simple_file_system(bs, device_handle, image_handle)?;
     file_debug!("Got SimpleFileSystem protocol.");
