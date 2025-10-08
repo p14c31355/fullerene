@@ -253,7 +253,7 @@ pub struct EfiSimpleFileSystem {
 }
 
 /// Minimal EFI_LOADED_IMAGE_PROTOCOL (UEFI)
-#[repr(C, packed)]
+#[repr(C)]
 pub struct EfiLoadedImageProtocol {
     pub revision: u32,
     pub parent_handle: usize,
