@@ -49,22 +49,22 @@ pub trait TextBufferOperations {
     fn get_char_at(&self, row: usize, col: usize) -> ScreenChar;
 
     fn write_byte(&mut self, byte: u8) {
+        let (row, col) = self.get_position();
         match byte {
             b'\n' => self.new_line(),
             byte => {
-                let (row, col) = self.get_position();
                 if col >= self.get_width() {
                     self.new_line();
-                    let (new_row, new_col) = self.get_position();
+                    let (new_row, _) = self.get_position();
                     self.set_char_at(
                         new_row,
-                        new_col,
+                        0,
                         ScreenChar {
                             ascii_character: byte,
                             color_code: self.get_color_code(),
                         },
                     );
-                    self.set_position(new_row, new_col + 1);
+                    self.set_position(new_row, 1);
                 } else {
                     self.set_char_at(
                         row,

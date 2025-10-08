@@ -52,19 +52,19 @@ impl TextPosition {
     }
 }
 
+/// Generic function to draw a character on any framebuffer
 fn draw_char(fb: &impl FramebufferLike, c: char, x: u32, y: u32) {
     let char_idx = c as usize;
-    if char_idx >= 128 || !c.is_ascii() {
-        return;
-    }
-    let font_char = &FONT[char_idx];
-    let fg = fb.get_fg_color();
-    let bg = fb.get_bg_color();
+    if char_idx < 128 && c.is_ascii() {
+        let font_char = &FONT[char_idx];
+        let fg = fb.get_fg_color();
+        let bg = fb.get_bg_color();
 
-    for (row, &byte) in font_char.iter().enumerate() {
-        for col in 0..8 {
-            let color = if byte & (0x80 >> col) != 0 { fg } else { bg };
-            fb.put_pixel(x + col as u32, y + row as u32, color);
+        for (row, &byte) in font_char.iter().enumerate() {
+            for col in 0..8 {
+                let color = if byte & (0x80 >> col) != 0 { fg } else { bg };
+                fb.put_pixel(x + col as u32, y + row as u32, color);
+            }
         }
     }
 }
@@ -372,14 +372,7 @@ fn write_indexed(index_port_addr: u16, data_port_addr: u16, index: u8, data: u8)
     }
 }
 
-/// Macro to setup multiple registers at once.
-macro_rules! setup_registers {
-    ($index_port:expr, $data_port:expr, $($index:expr => $value:expr),*) => {
-        $(
-            write_indexed($index_port, $data_port, $index, $value);
-        )*
-    };
-}
+// Macro was used for register setup but is now redundant due to config arrays - kept for backward compatibility
 
 // VGA register configurations using structs for data-driven setup
 struct RegisterConfig {
