@@ -151,5 +151,6 @@ pub fn exit_boot_services_and_jump(
         "Jumping to kernel at {:#x} with map at {:#x} size {}",
         entry as usize, map_phys_addr, map_size
     );
+    debug_print_str("About to call kernel entry.\n");
     entry(image_handle, system_table, map_ptr, map_size);
 }
