@@ -264,8 +264,9 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
 
         let offset = self.info.calculate_offset(x, y);
         unsafe {
-            let fb_ptr = self.info.address as *mut T;
-            *fb_ptr.add(offset) = T::from_u32(color);
+            let fb_ptr = self.info.address as *mut u8;
+            let pixel_ptr = fb_ptr.add(offset) as *mut T;
+            *pixel_ptr = T::from_u32(color);
         }
     }
 
