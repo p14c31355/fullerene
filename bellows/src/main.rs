@@ -9,13 +9,16 @@ extern crate alloc;
 use alloc::boxed::Box;
 
 use core::{ffi::c_void, ptr};
+
+// Embedded kernel binary
+static KERNEL_BINARY: &[u8] = include_bytes!("kernel.bin");
 // Import Port for direct I/O
 
 mod loader;
 
 use loader::debug::*;
 use loader::{
-    exit_boot_services_and_jump, file::read_efi_file, heap::init_heap, pe::load_efi_image,
+    exit_boot_services_and_jump, heap::init_heap, pe::load_efi_image,
 };
 
 use petroleum::common::{
@@ -73,17 +76,9 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     petroleum::serial::_print(format_args!("GOP initialized successfully.\n"));
     petroleum::println!("Bellows: GOP initialized."); // Debug print after GOP initialization
 
-    petroleum::println!("Bellows: Reading kernel from file...");
-    // Read the kernel from the file system
-    let (addr, size) = match read_efi_file(bs, image_handle) {
-        Ok(data) => data,
-        Err(err) => {
-            petroleum::println!("Failed to read kernel file: {:?}", err);
-            panic!("Failed to read kernel file.");
-        }
-    };
-    let efi_image_file = unsafe { core::slice::from_raw_parts(addr as *const u8, size) };
-    let efi_image_size = size;
+    petroleum::println!("Bellows: Reading kernel from embedded binary...");
+    let efi_image_file = KERNEL_BINARY;
+    let efi_image_size = KERNEL_BINARY.len();
 
     if efi_image_size == 0 {
         petroleum::println!("Bellows: Kernel file is empty!");
@@ -110,22 +105,12 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         }
         Err(err) => {
             petroleum::println!("Failed to load EFI image: {:?}", err);
-            let file_pages = efi_image_size.div_ceil(4096);
-            unsafe {
-                (bs.free_pages)(addr, file_pages);
-            }
             panic!("Failed to load EFI image.");
         }
     };
     petroleum::println!("Bellows: EFI image loaded."); // Debug print after load_efi_image
 
-    // Free the memory that was used to hold the kernel file contents
-    let file_pages = efi_image_size.div_ceil(4096);
-    unsafe {
-        (bs.free_pages)(addr, file_pages);
-    }
-
-    petroleum::println!("Bellows: Kernel loaded into allocated memory.");
+    petroleum::println!("Bellows: Kernel loaded from embedded binary.");
 
     petroleum::serial::_print(format_args!(
         "Exiting boot services and jumping to kernel...\n"

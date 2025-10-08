@@ -37,6 +37,8 @@ fn main() -> io::Result<()> {
         .join("x86_64-unknown-uefi")
         .join("debug");
     let kernel_path = target_dir.join("fullerene-kernel.efi");
+    // Copy kernel to bellows/src for embedding
+    std::fs::copy(&kernel_path, "bellows/src/kernel.bin")?;
 
     // --- 2. Build bellows (no_std) ---
     // For BIOS mode, skip bellows
