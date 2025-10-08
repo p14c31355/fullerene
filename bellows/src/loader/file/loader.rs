@@ -1,4 +1,3 @@
-use core::ffi::c_void;
 use core::ptr;
 use petroleum::common::{EfiBootServices, EfiFile, EfiStatus, BellowsError};
 use super::protocols::{get_loaded_image_protocol, get_simple_file_system};
@@ -26,18 +25,14 @@ pub fn read_efi_file(
 
     let mut volume_file_handle: *mut EfiFile = ptr::null_mut();
     let status = unsafe { ((*fs_proto).open_volume)(fs_proto, &mut volume_file_handle) };
-    let volume = match EfiStatus::from(status) {
-        EfiStatus::Success => {
-            file_debug!("Opened volume.");
-            EfiFileWrapper::new(volume_file_handle)
-        }
-        _ => {
-            file_debug!("Failed to open volume.");
-            return Err(BellowsError::FileIo(
-                "Failed to open EFI SimpleFileSystem protocol volume.",
-            ));
-        }
-    };
+    if EfiStatus::from(status) != EfiStatus::Success {
+        file_debug!("Failed to open volume.");
+        return Err(BellowsError::FileIo(
+            "Failed to open EFI SimpleFileSystem protocol volume.",
+        ));
+    }
+    file_debug!("Opened volume.");
+    let volume = EfiFileWrapper::new(volume_file_handle);
 
     // Correct file name to match the kernel file
     let file = open_file(

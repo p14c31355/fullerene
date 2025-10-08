@@ -1,7 +1,6 @@
 use core::ffi::c_void;
 use core::ptr;
-use alloc::vec;
-use petroleum::common::{BellowsError, EFI_FILE_INFO_GUID, EfiBootServices, EfiFile, EfiFileInfo, EfiMemoryType, EfiStatus};
+use petroleum::common::{BellowsError, EFI_FILE_INFO_GUID, EfiBootServices, EfiFile, EfiFileInfo, EfiStatus};
 use super::super::debug::*;
 
 // Macro to reduce repetitive debug prints
@@ -20,12 +19,11 @@ pub fn kernel_path_utf16() -> [u16; 32] {
     let mut i = 0;
     // KERNEL_PATH is a constant, so we can rely on its length being less than 31.
     for c in KERNEL_PATH.encode_utf16() {
-        if i < buf.len() - 1 { // Ensure space for null terminator
-            buf[i] = c;
-            i += 1;
-        } else {
+        if i >= buf.len() - 1 {
             break; // Path too long, should not happen for a constant
         }
+        buf[i] = c;
+        i += 1;
     }
     // The rest of the buffer is zero-initialized, so buf[i] is already 0.
     buf
