@@ -249,19 +249,26 @@ pub struct EfiLoadedImageProtocol {
 /// Minimal EFI_GRAPHICS_OUTPUT_PROTOCOL (UEFI)
 #[repr(C)]
 pub struct EfiGraphicsOutputProtocol {
-    _pad: [usize; 3],
+    /// query_mode(This, ModeNumber, SizeOfInfo, *mut Info) -> EFI_STATUS
+    pub query_mode: extern "efiapi" fn(*mut EfiGraphicsOutputProtocol, u32, *mut usize, *mut c_void) -> usize,
+    /// set_mode(This, ModeNumber) -> EFI_STATUS
+    pub set_mode: extern "efiapi" fn(*mut EfiGraphicsOutputProtocol, u32) -> usize,
+    /// blt(This, BltBuffer, BltOperation, SourceX, SourceY, DestinationX, DestinationY, Width, Height, Delta)
+    pub blt: usize, // We don't need this function, so we can ignore it or use usize
     pub mode: *mut EfiGraphicsOutputProtocolMode,
 }
 
 /// Minimal EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE (UEFI)
 #[repr(C)]
 pub struct EfiGraphicsOutputProtocolMode {
-    _pad: [usize; 2],
+    pub max_mode: u32,
+    pub mode: u32,
+    _pad: [usize; 1], // reserved
     pub info: *mut EfiGraphicsOutputModeInformation,
     pub size_of_info: usize,
-    _pad2: [usize; 1],
     pub frame_buffer_base: u64,
-    pub frame_buffer_size: u64,
+    pub frame_buffer_size: usize,
+    _pad2: [usize; 1], // status? we don't need it
 }
 
 /// Minimal EFI_GRAPHICS_OUTPUT_MODE_INFORMATION (UEFI)
