@@ -51,10 +51,10 @@ pub fn exit_boot_services_and_jump(
         };
 
         if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
-            println!(
-                "Error: Failed to get initial memory map size: {:?}",
+            petroleum::serial::_print(format_args!(
+                "Error: Failed to get initial memory map size: {:?}\n",
                 EfiStatus::from(status)
-            );
+            ));
             return Err(BellowsError::InvalidState(
                 "Failed to get initial memory map size.",
             ));
@@ -77,10 +77,10 @@ pub fn exit_boot_services_and_jump(
             if map_phys_addr != 0 {
                 let _ = (bs.free_pages)(map_phys_addr, map_pages); // Ignore status
             }
-            println!(
-                "Error: Failed to allocate memory map buffer: {:?}",
+            petroleum::serial::_print(format_args!(
+                "Error: Failed to allocate memory map buffer: {:?}\n",
                 EfiStatus::from(alloc_status)
-            );
+            ));
             return Err(BellowsError::AllocationFailed(
                 "Failed to allocate memory map buffer.",
             ));
@@ -105,22 +105,22 @@ pub fn exit_boot_services_and_jump(
 
         match EfiStatus::from(status) {
             EfiStatus::Success => {
-                println!(
-                    "Memory map acquired after {} attempts. Size: {}",
+                petroleum::serial::_print(format_args!(
+                    "Memory map acquired after {} attempts. Size: {}\n",
                     attempts, map_size
-                );
+                ));
                 break;
             }
             EfiStatus::BufferTooSmall => {
-                println!("Buffer too small (size now {}), retrying...", map_size);
+                petroleum::serial::_print(format_args!("Buffer too small (size now {}), retrying...\n", map_size));
                 continue;
             }
             _ => {
                 (bs.free_pages)(map_phys_addr, map_pages);
-                println!(
-                    "Error: Failed to get memory map: {:?}",
+                petroleum::serial::_print(format_args!(
+                    "Error: Failed to get memory map: {:?}\n",
                     EfiStatus::from(status)
-                );
+                ));
                 return Err(BellowsError::InvalidState("Failed to get memory map."));
             }
         }
@@ -131,10 +131,10 @@ pub fn exit_boot_services_and_jump(
     // Exit boot services. This call must succeed.
     let exit_status = (bs.exit_boot_services)(image_handle, map_key);
     if EfiStatus::from(exit_status) != EfiStatus::Success {
-        println!(
-            "Error: Failed to exit boot services: {:?}",
+        petroleum::serial::_print(format_args!(
+            "Error: Failed to exit boot services: {:?}\n",
             EfiStatus::from(exit_status)
-        );
+        ));
         return Err(BellowsError::InvalidState("Failed to exit boot services."));
     }
 
@@ -147,10 +147,10 @@ pub fn exit_boot_services_and_jump(
     // This is the point of no return. We are calling the kernel entry point,
     // passing the memory map and other data. The validity of the `entry`
     // function pointer is assumed based on the successful PE file loading.
-    println!(
-        "Jumping to kernel at {:#x} with map at {:#x} size {}",
+    petroleum::serial::_print(format_args!(
+        "Jumping to kernel at {:#x} with map at {:#x} size {}\n",
         entry as usize, map_phys_addr, map_size
-    );
+    ));
     debug_print_str("About to call kernel entry.\n");
     entry(image_handle, system_table, map_ptr, map_size);
 }

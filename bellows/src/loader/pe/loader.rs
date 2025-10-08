@@ -101,7 +101,15 @@ pub fn load_efi_image(
                 .add(offset_of!(ImageOptionalHeader64, size_of_image)) as *const u32,
         )
     } as usize;
-    let pages_needed = image_size.div_ceil(4096);
+    let address_of_entry_point = unsafe {
+        ptr::read_unaligned(
+            (nt_headers_ptr as *const u8)
+                .add(offset_of!(ImageNtHeaders64, optional_header))
+                .add(offset_of!(ImageOptionalHeader64, address_of_entry_point))
+                as *const u32,
+        )
+    } as usize;
+    let pages_needed = (image_size.max(address_of_entry_point + 4096)).div_ceil(4096);
     let mut phys_addr: usize = 0;
     let preferred_base = {
         let offset = offset_of!(ImageNtHeaders64, optional_header)
@@ -380,15 +388,20 @@ pub fn load_efi_image(
         petroleum::println!("Image base delta is 0, no relocations needed.");
     }
 
-    let address_of_entry_point = unsafe {
-        ptr::read_unaligned(
-            (nt_headers_ptr as *const u8)
-                .add(offset_of!(ImageNtHeaders64, optional_header))
-                .add(offset_of!(ImageOptionalHeader64, address_of_entry_point))
-                as *const u32,
-        )
-    };
-    let entry_point_addr = phys_addr.saturating_add(address_of_entry_point as usize);
+    debug_print_str("PE: phys_addr = ");
+    debug_print_hex(phys_addr);
+    debug_print_str("\n");
+
+    let entry_point_addr = phys_addr.saturating_add(address_of_entry_point);
+
+    debug_print_str("PE: address_of_entry_point = ");
+    debug_print_hex(address_of_entry_point as usize);
+    debug_print_str("\n");
+
+    debug_print_str("PE: entry_point_addr = ");
+    debug_print_hex(entry_point_addr);
+    debug_print_str("\n");
+
     petroleum::println!("Calculated Entry Point Address: {:#x}", entry_point_addr);
 
     if entry_point_addr >= phys_addr.saturating_add(pages_needed * 4096)
@@ -408,5 +421,6 @@ pub fn load_efi_image(
     let entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> ! =
         unsafe { mem::transmute(entry_point_addr) };
 
+    debug_print_str("PE: load_efi_image completed successfully.\n");
     Ok(entry)
 }

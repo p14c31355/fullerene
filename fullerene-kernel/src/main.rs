@@ -98,16 +98,33 @@ pub extern "efiapi" fn efi_main(
         }
     }
 
+    // Helper function for kernel debug prints
+    fn print_kernel(msg: &str) {
+        use x86_64::instructions::port::Port;
+        let mut port = Port::new(0x3F8);
+        for byte in msg.bytes() {
+            unsafe {
+                while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
+                port.write(byte);
+            }
+        }
+    }
+
+    print_kernel("Kernel: starting to parse parameters.\n");
+
     // Initialize serial immediately after entry (before any complex initialization)
     serial_init();
+    print_kernel("Kernel: serial_init done.\n");
 
     // Initialize GDT early (before any heap/page table operations)
     // Use a temporary heap location for GDT stack space
     let temp_heap_start = VirtAddr::new(0x1000000); // Use 16MB temporarily
     let temp_heap_start = gdt::init(temp_heap_start);
+    print_kernel("Kernel: GDT init done (temp).\n");
 
     // Initialize IDT early with exception handlers
     interrupts::init();
+    print_kernel("Kernel: IDT init done.\n");
 
     // Early serial log works now
     kernel_log!("Kernel: basic init complete");
@@ -142,20 +159,25 @@ pub extern "efiapi" fn efi_main(
         panic!("Could not determine kernel's physical start address.");
     }
 
+    print_kernel("Kernel: phys offset found.\n");
     kernel_log!("Kernel: memory map parsed, kernel_phys_start found");
     kernel_log!("Starting heap frame allocator init...");
 
     heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
+    print_kernel("Kernel: frame allocator init done.\n");
     heap::init_page_table(physical_memory_offset);
+    print_kernel("Kernel: page table init done.\n");
 
     kernel_log!("Kernel: page table init complete, starting reinit...");
 
     heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
+    print_kernel("Kernel: page table reinit done.\n");
 
     kernel_log!("Kernel: page table reinitialization complete");
 
     // Common initialization for both UEFI and BIOS
     init_common(_memory_map, _memory_map_size);
+    print_kernel("Kernel: init_common done.\n");
 
     kernel_log!("Kernel: efi_main entered (via serial_log).");
     kernel_log!("GDT initialized.");
@@ -178,11 +200,9 @@ pub extern "efiapi" fn efi_main(
                 &mut *SERIAL1.lock(),
                 format_args!("  Address: {:#x}\n", config.address),
             );
-            let _ = core::fmt::write(
-                &mut *SERIAL1.lock(),
-                format_args!("  Resolution: {}x{}\n", config.width, config.height),
-            );
+            print_kernel("Kernel: about to init graphics.\n");
             graphics::init(config);
+            print_kernel("Kernel: graphics init done.\n");
             kernel_log!("Graphics initialized.");
         }
     } else {
@@ -191,8 +211,10 @@ pub extern "efiapi" fn efi_main(
 
     // Also initialize VGA text mode for reliable output
     vga::vga_init();
+    print_kernel("Kernel: VGA init done.\n");
 
     // Main loop
+    print_kernel("Kernel: about to print hello.\n");
     println!("Hello QEMU by FullereneOS");
     hlt_loop();
 }
