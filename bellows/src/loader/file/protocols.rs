@@ -32,10 +32,6 @@ fn open_protocol<T>(
         attributes,
     );
     if EfiStatus::from(status) != EfiStatus::Success {
-        // It's useful to know which status was returned for debugging.
-        debug_print_str("File: Failed to open protocol. Status: ");
-        debug_print_hex(status);
-        debug_print_str("\n");
         return Err(BellowsError::ProtocolNotFound("Failed to open protocol."));
     }
     file_debug!("Opened protocol.");
