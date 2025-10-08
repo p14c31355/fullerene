@@ -3,7 +3,7 @@
 use linked_list_allocator::LockedHeap;
 use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus};
 
-use super::debug::*;
+use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
 /// Size of the heap we will allocate for `alloc` usage (bytes).
 const HEAP_SIZE: usize = 32 * 1024; // 32 KiB

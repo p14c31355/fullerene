@@ -56,12 +56,24 @@ impl<S: SerialPortOps> SerialPort<S> {
 pub struct Com1Ops;
 
 impl SerialPortOps for Com1Ops {
-    fn data_port(&self) -> Port<u8> { Port::new(0x3F8) }
-    fn irq_enable_port(&self) -> Port<u8> { Port::new(0x3F9) }
-    fn fifo_ctrl_port(&self) -> Port<u8> { Port::new(0x3FA) }
-    fn line_ctrl_port(&self) -> Port<u8> { Port::new(0x3FB) }
-    fn modem_ctrl_port(&self) -> Port<u8> { Port::new(0x3FC) }
-    fn line_status_port(&self) -> Port<u8> { Port::new(0x3FD) }
+    fn data_port(&self) -> Port<u8> {
+        Port::new(0x3F8)
+    }
+    fn irq_enable_port(&self) -> Port<u8> {
+        Port::new(0x3F9)
+    }
+    fn fifo_ctrl_port(&self) -> Port<u8> {
+        Port::new(0x3FA)
+    }
+    fn line_ctrl_port(&self) -> Port<u8> {
+        Port::new(0x3FB)
+    }
+    fn modem_ctrl_port(&self) -> Port<u8> {
+        Port::new(0x3FC)
+    }
+    fn line_status_port(&self) -> Port<u8> {
+        Port::new(0x3FD)
+    }
 }
 
 impl<S: SerialPortOps> fmt::Write for SerialPort<S> {
@@ -229,9 +241,7 @@ mod tests {
 
         impl TestWriter {
             fn new() -> Self {
-                TestWriter {
-                    buf: Vec::new(),
-                }
+                TestWriter { buf: Vec::new() }
             }
         }
 

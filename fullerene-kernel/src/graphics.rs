@@ -1,9 +1,10 @@
 use alloc::boxed::Box; // Import Box
-use core::fmt;
+use core::fmt::{self, Write};
 use core::marker::{Send, Sync};
 #[cfg(not(target_os = "uefi"))]
 use petroleum::common::VgaFramebufferConfig;
 use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig}; // Import missing types
+use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
 use spin::{Mutex, Once};
 use x86_64::instructions::port::Port;
 
@@ -51,19 +52,19 @@ impl TextPosition {
     }
 }
 
+/// Generic function to draw a character on any framebuffer
 fn draw_char(fb: &impl FramebufferLike, c: char, x: u32, y: u32) {
     let char_idx = c as usize;
-    if char_idx >= 128 || !c.is_ascii() {
-        return;
-    }
-    let font_char = &FONT[char_idx];
-    let fg = fb.get_fg_color();
-    let bg = fb.get_bg_color();
+    if char_idx < 128 && c.is_ascii() {
+        let font_char = &FONT[char_idx];
+        let fg = fb.get_fg_color();
+        let bg = fb.get_bg_color();
 
-    for (row, &byte) in font_char.iter().enumerate() {
-        for col in 0..8 {
-            let color = if byte & (0x80 >> col) != 0 { fg } else { bg };
-            fb.put_pixel(x + col as u32, y + row as u32, color);
+        for (row, &byte) in font_char.iter().enumerate() {
+            for col in 0..8 {
+                let color = if byte & (0x80 >> col) != 0 { fg } else { bg };
+                fb.put_pixel(x + col as u32, y + row as u32, color);
+            }
         }
     }
 }
@@ -82,37 +83,135 @@ fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result 
     Ok(())
 }
 
-/// Generic framebuffer operations for common patterns
-unsafe fn scroll_buffer<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
-    let bytes_per_pixel = core::mem::size_of::<T>() as u32;
-    let bytes_per_line = stride * bytes_per_pixel;
-    let shift_bytes = 8u64 * bytes_per_line as u64;
-    let fb_ptr = address as *mut u8;
-    let total_bytes = height as u64 * bytes_per_line as u64;
-    core::ptr::copy(
-        fb_ptr.add(shift_bytes as usize),
-        fb_ptr,
-        (total_bytes - shift_bytes) as usize,
-    );
-    // Clear last 8 lines
-    let clear_offset = (height - 8) as usize * bytes_per_line as usize;
-    let clear_ptr = (address + clear_offset as u64) as *mut T;
-    let clear_count = 8 * stride as usize;
-    core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color);
+/// Generic framebuffer operations (shared functions in petroleum crate)
+
+struct ColorScheme {
+    fg: u32,
+    bg: u32,
 }
 
-unsafe fn clear_buffer<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
-    let fb_ptr = address as *mut T;
-    let count = (stride * height) as usize;
-    core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color);
+impl ColorScheme {
+    const UEFI_WHITE_ON_BLACK: Self = Self {
+        fg: 0xFFFFFFu32,
+        bg: 0x000000u32,
+    };
+    const VGA_WHITE_ON_BLACK: Self = Self {
+        fg: 0x0Fu32,
+        bg: 0x00u32,
+    };
 }
 
-// For UEFI, fill with actual color
-unsafe fn clear_framebuffer(address: u64, width: u32, stride: u32, height: u32, bg_color: u32) {
-    let fb_ptr = address as *mut u32;
-    for y in 0..height {
-        let line_ptr = fb_ptr.add((y * stride) as usize);
-        core::slice::from_raw_parts_mut(line_ptr, width as usize).fill(bg_color);
+#[cfg(target_os = "uefi")]
+struct FramebufferInfo {
+    address: u64,
+    width: u32,
+    height: u32,
+    stride: u32,
+    pixel_format: EfiGraphicsPixelFormat,
+    colors: ColorScheme,
+}
+
+#[cfg(not(target_os = "uefi"))]
+struct FramebufferInfo {
+    address: u64,
+    width: u32,
+    height: u32,
+    colors: ColorScheme,
+}
+
+impl FramebufferInfo {
+    fn width_or_stride(&self) -> u32 {
+        #[cfg(target_os = "uefi")]
+        {
+            self.stride
+        }
+        #[cfg(not(target_os = "uefi"))]
+        {
+            self.width
+        }
+    }
+
+    fn calculate_offset(&self, x: u32, y: u32) -> usize {
+        #[cfg(target_os = "uefi")]
+        {
+            ((y * self.stride + x) * self.bytes_per_pixel()) as usize
+        }
+        #[cfg(not(target_os = "uefi"))]
+        {
+            ((y * self.width + x) * 1) as usize
+        } // 1 byte per pixel for VGA
+    }
+
+    fn bytes_per_pixel(&self) -> u32 {
+        #[cfg(target_os = "uefi")]
+        {
+            match self.pixel_format {
+                EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
+                | EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor => 4,
+                _ => panic!("Unsupported pixel format"),
+            }
+        }
+        #[cfg(not(target_os = "uefi"))]
+        {
+            1
+        }
+    }
+}
+
+#[cfg(target_os = "uefi")]
+impl FramebufferInfo {
+    fn new(fb_config: &FullereneFramebufferConfig) -> Self {
+        Self {
+            address: fb_config.address,
+            width: fb_config.width,
+            height: fb_config.height,
+            stride: fb_config.stride,
+            pixel_format: fb_config.pixel_format,
+            colors: ColorScheme::UEFI_WHITE_ON_BLACK,
+        }
+    }
+}
+
+#[cfg(not(target_os = "uefi"))]
+impl FramebufferInfo {
+    fn new(config: &VgaFramebufferConfig) -> Self {
+        Self {
+            address: config.address,
+            width: config.width,
+            height: config.height,
+            colors: ColorScheme::VGA_WHITE_ON_BLACK,
+        }
+    }
+}
+
+// Generic pixel type trait for type safety
+trait PixelType: Copy {
+    fn bytes_per_pixel() -> u32;
+    fn from_u32(color: u32) -> Self;
+    fn to_generic(color: u32) -> u32;
+}
+
+impl PixelType for u32 {
+    fn bytes_per_pixel() -> u32 {
+        4
+    }
+    fn from_u32(color: u32) -> Self {
+        color
+    }
+    fn to_generic(color: u32) -> u32 {
+        color
+    }
+}
+
+impl PixelType for u8 {
+    fn bytes_per_pixel() -> u32 {
+        1
+    }
+    fn from_u32(color: u32) -> Self {
+        color as u8
+    }
+    fn to_generic(color: u32) -> u32 {
+        color & 0xFF
     }
 }
 
@@ -128,103 +227,71 @@ trait FramebufferLike {
     fn scroll_up(&self);
 }
 
-#[cfg(target_os = "uefi")]
-struct FramebufferWriter {
-    framebuffer: Framebuffer,
+struct FramebufferWriter<T: PixelType> {
+    info: FramebufferInfo,
     x_pos: u32,
     y_pos: u32,
-    fg_color: u32,
-    bg_color: u32,
+    _phantom: core::marker::PhantomData<T>,
 }
 
-#[cfg(target_os = "uefi")]
-struct Framebuffer {
-    address: u64,
-    width: u32,
-    height: u32,
-    stride: u32,
-    pixel_format: EfiGraphicsPixelFormat,
-}
-
-#[cfg(target_os = "uefi")]
-impl FramebufferWriter {
-    fn new(fb_config: &FullereneFramebufferConfig) -> Self {
-        FramebufferWriter {
-            framebuffer: Framebuffer {
-                address: fb_config.address,
-                width: fb_config.width,
-                height: fb_config.height,
-                stride: fb_config.stride,
-                pixel_format: fb_config.pixel_format,
-            },
+impl<T: PixelType> FramebufferWriter<T> {
+    fn new(info: FramebufferInfo) -> Self {
+        Self {
+            info,
             x_pos: 0,
             y_pos: 0,
-            fg_color: 0xFFFFFFu32, // White
-            bg_color: 0x000000u32, // Black
-        }
-    }
-
-    fn bytes_per_pixel(&self) -> u32 {
-        match self.framebuffer.pixel_format {
-            EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
-            | EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor => 4,
-            _ => panic!("Unsupported pixel format"),
+            _phantom: core::marker::PhantomData,
         }
     }
 
     fn scroll_up(&self) {
         unsafe {
-            scroll_buffer::<u32>(
-                self.framebuffer.address,
-                self.framebuffer.stride,
-                self.framebuffer.height,
-                self.bg_color,
+            scroll_buffer_pixels::<T>(
+                self.info.address,
+                self.info.width_or_stride(),
+                self.info.height,
+                T::from_u32(self.info.colors.bg),
             );
         }
     }
 }
 
-#[cfg(target_os = "uefi")]
-impl FramebufferLike for FramebufferWriter {
+impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
     fn put_pixel(&self, x: u32, y: u32, color: u32) {
-        if x >= self.framebuffer.width || y >= self.framebuffer.height {
+        if x >= self.info.width || y >= self.info.height {
             return;
         }
-        let bytes_per_pixel = self.bytes_per_pixel();
-        let offset = (y * self.framebuffer.stride + x) * bytes_per_pixel;
-        let fb_ptr = self.framebuffer.address as *mut u8;
+
+        let offset = self.info.calculate_offset(x, y);
         unsafe {
-            let pixel_ptr = fb_ptr.add(offset as usize) as *mut u32;
-            *pixel_ptr = color;
+            let fb_ptr = self.info.address as *mut u8;
+            let pixel_ptr = fb_ptr.add(offset) as *mut T;
+            *pixel_ptr = T::from_u32(color);
         }
     }
 
     fn clear_screen(&self) {
         unsafe {
-            clear_framebuffer(
-                self.framebuffer.address,
-                self.framebuffer.width,
-                self.framebuffer.stride,
-                self.framebuffer.height,
-                self.bg_color,
+            clear_buffer_pixels::<T>(
+                self.info.address,
+                self.info.width_or_stride(),
+                self.info.height,
+                T::from_u32(self.info.colors.bg),
             );
         }
     }
 
     fn get_width(&self) -> u32 {
-        self.framebuffer.width
+        self.info.width
     }
-
     fn get_height(&self) -> u32 {
-        self.framebuffer.height
+        self.info.height
     }
-
     fn get_fg_color(&self) -> u32 {
-        self.fg_color
+        self.info.colors.fg
     }
-
     fn get_bg_color(&self) -> u32 {
-        self.bg_color
+        self.info.colors.bg
     }
 
     fn set_position(&mut self, x: u32, y: u32) {
@@ -241,95 +308,11 @@ impl FramebufferLike for FramebufferWriter {
     }
 }
 
-#[cfg(target_os = "uefi")]
-impl core::fmt::Write for FramebufferWriter {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        write_text(self, s)
-    }
-}
+// Convenience type aliases
+type UefiFramebufferWriter = FramebufferWriter<u32>;
+type VgaFramebufferWriter = FramebufferWriter<u8>;
 
-#[cfg(not(target_os = "uefi"))]
-struct VgaWriter {
-    address: u64,
-    width: u32,
-    height: u32,
-    x_pos: u32,
-    y_pos: u32,
-    fg_color: u8, // 256-color palette index
-    bg_color: u8,
-}
-
-#[cfg(not(target_os = "uefi"))]
-impl VgaWriter {
-    fn new(config: &VgaFramebufferConfig) -> Self {
-        VgaWriter {
-            address: config.address,
-            width: config.width,
-            height: config.height,
-            x_pos: 0,
-            y_pos: 0,
-            fg_color: 0x0Fu8, // White
-            bg_color: 0x00u8, // Black
-        }
-    }
-
-    fn scroll_up(&self) {
-        unsafe { scroll_buffer::<u8>(self.address, self.width, self.height, self.bg_color) };
-    }
-}
-
-#[cfg(not(target_os = "uefi"))]
-impl FramebufferLike for VgaWriter {
-    fn put_pixel(&self, x: u32, y: u32, color: u32) {
-        if x >= self.width || y >= self.height {
-            return;
-        }
-        let offset = (y * self.width + x) as usize;
-        unsafe {
-            let fb_ptr = self.address as *mut u8;
-            *fb_ptr.add(offset) = color as u8;
-        }
-    }
-
-    fn clear_screen(&self) {
-        let fb_ptr = self.address as *mut u8;
-        unsafe {
-            core::ptr::write_bytes(fb_ptr, self.bg_color, (self.width * self.height) as usize);
-        }
-    }
-
-    fn get_width(&self) -> u32 {
-        self.width
-    }
-
-    fn get_height(&self) -> u32 {
-        self.height
-    }
-
-    fn get_fg_color(&self) -> u32 {
-        self.fg_color as u32
-    }
-
-    fn get_bg_color(&self) -> u32 {
-        self.bg_color as u32
-    }
-
-    fn set_position(&mut self, x: u32, y: u32) {
-        self.x_pos = x;
-        self.y_pos = y;
-    }
-
-    fn get_position(&self) -> (u32, u32) {
-        (self.x_pos, self.y_pos)
-    }
-
-    fn scroll_up(&self) {
-        VgaWriter::scroll_up(self);
-    }
-}
-
-#[cfg(not(target_os = "uefi"))]
-impl core::fmt::Write for VgaWriter {
+impl<T: PixelType> core::fmt::Write for FramebufferWriter<T> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         write_text(self, s)
     }
@@ -343,7 +326,7 @@ pub static WRITER_BIOS: Once<Mutex<Box<dyn core::fmt::Write + Send + Sync>>> = O
 
 #[cfg(target_os = "uefi")]
 pub fn init(config: &FullereneFramebufferConfig) {
-    let writer = FramebufferWriter::new(config);
+    let writer = FramebufferWriter::<u32>::new(FramebufferInfo::new(config));
     writer.clear_screen();
     WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer)));
 }
@@ -379,7 +362,7 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
     setup_attribute_controller();
     setup_palette();
 
-    let writer = VgaWriter::new(config);
+    let writer = FramebufferWriter::<u8>::new(FramebufferInfo::new(config));
     writer.clear_screen();
     WRITER_BIOS.call_once(|| Mutex::new(Box::new(writer)));
 }
@@ -394,14 +377,7 @@ fn write_indexed(index_port_addr: u16, data_port_addr: u16, index: u8, data: u8)
     }
 }
 
-/// Macro to setup multiple registers at once.
-macro_rules! setup_registers {
-    ($index_port:expr, $data_port:expr, $($index:expr => $value:expr),*) => {
-        $(
-            write_indexed($index_port, $data_port, $index, $value);
-        )*
-    };
-}
+// Macro was used for register setup but is now redundant due to config arrays - kept for backward compatibility
 
 // VGA register configurations using structs for data-driven setup
 struct RegisterConfig {
@@ -409,58 +385,62 @@ struct RegisterConfig {
     value: u8,
 }
 
+// VGA Sequencer registers configuration for mode 13h (320x200, 256 colors)
+// These control the timing and memory access for the VGA sequencer
 const SEQUENCER_CONFIG: &[RegisterConfig] = &[
     RegisterConfig {
         index: 0x00,
         value: 0x03,
-    }, // Reset
+    }, // Reset register - synchronous reset
     RegisterConfig {
         index: 0x01,
         value: 0x01,
-    }, // Clocking mode
+    }, // Clocking mode register - 8/9 dot clocks, use 9th bit in text mode (not applicable in graphics mode)
     RegisterConfig {
         index: 0x02,
         value: 0x0F,
-    }, // Map mask
+    }, // Map mask register - enable all planes (15)
     RegisterConfig {
         index: 0x03,
         value: 0x00,
-    }, // Character map select
+    }, // Character map select register - select character sets (not used in graphics mode)
     RegisterConfig {
         index: 0x04,
         value: 0x0E,
-    }, // Memory mode (for 256 color, chain 4)
+    }, // Memory mode register - enable ext memory, enable odd/even in chain 4, use chain 4 addressing mode
 ];
 
+// VGA CRTC (Cathode Ray Tube Controller) registers configuration for mode 13h
+// These control horizontal/vertical synchronization, display size, and timing
 const CRTC_CONFIG: &[RegisterConfig] = &[
     RegisterConfig {
         index: 0x00,
         value: 0x5F,
-    }, // Horizontal total
+    }, // Horizontal total (horizontal display end)
     RegisterConfig {
         index: 0x01,
         value: 0x4F,
-    }, // Horizontal displayed
+    }, // Horizontal display enable end
     RegisterConfig {
         index: 0x02,
         value: 0x50,
-    }, // Horizontal blanking start
+    }, // Start horizontal blanking
     RegisterConfig {
         index: 0x03,
         value: 0x82,
-    }, // Horizontal blanking end
+    }, // End horizontal blanking
     RegisterConfig {
         index: 0x04,
         value: 0x54,
-    }, // Horizontal sync start
+    }, // Start horizontal retrace pulse
     RegisterConfig {
         index: 0x05,
         value: 0x80,
-    }, // Horizontal sync end
+    }, // End horizontal retrace
     RegisterConfig {
         index: 0x06,
         value: 0xBF,
-    }, // Vertical total
+    }, // Vertical total (vertical display end)
     RegisterConfig {
         index: 0x07,
         value: 0x1F,
@@ -476,19 +456,19 @@ const CRTC_CONFIG: &[RegisterConfig] = &[
     RegisterConfig {
         index: 0x10,
         value: 0x9C,
-    }, // Vertical sync start
+    }, // Start vertical retrace
     RegisterConfig {
         index: 0x11,
         value: 0x8E,
-    }, // Vertical sync end
+    }, // End vertical retrace
     RegisterConfig {
         index: 0x12,
         value: 0x8F,
-    }, // Vertical displayed
+    }, // Vertical display enable end
     RegisterConfig {
         index: 0x13,
         value: 0x28,
-    }, // Row offset
+    }, // Offset (line offset/logical width - number of bytes per scan line)
     RegisterConfig {
         index: 0x14,
         value: 0x40,
@@ -496,55 +476,68 @@ const CRTC_CONFIG: &[RegisterConfig] = &[
     RegisterConfig {
         index: 0x15,
         value: 0x96,
-    }, // Vertical blanking start
+    }, // Start vertical blanking
     RegisterConfig {
         index: 0x16,
         value: 0xB9,
-    }, // Vertical blanking end
+    }, // End vertical blanking
     RegisterConfig {
         index: 0x17,
         value: 0xA3,
-    }, // Line compare / Mode control
+    }, // CRTC mode control
 ];
 
+// VGA Graphics Controller registers configuration for mode 13h
+// These control how graphics memory is mapped and accessed
 const GRAPHICS_CONFIG: &[RegisterConfig] = &[
     RegisterConfig {
         index: 0x00,
         value: 0x00,
-    }, // Set/reset
+    }, // Set/reset register - reset all bits
     RegisterConfig {
         index: 0x01,
         value: 0x00,
-    }, // Enable set/reset
+    }, // Enable set/reset register - disable
     RegisterConfig {
         index: 0x02,
         value: 0x00,
-    }, // Color compare
+    }, // Color compare register - compare mode
     RegisterConfig {
         index: 0x03,
         value: 0x00,
-    }, // Data rotate
+    }, // Data rotate register - no rotate
     RegisterConfig {
         index: 0x04,
         value: 0x00,
-    }, // Read map select
+    }, // Read plane select register - select plane 0
     RegisterConfig {
         index: 0x05,
         value: 0x40,
-    }, // Graphics mode (256 color)
+    }, // Graphics mode register - chain odd/even planes, read mode 0, write mode 0, read plane 0
     RegisterConfig {
         index: 0x06,
         value: 0x05,
-    }, // Miscellaneous
+    }, // Miscellaneous register - memory map mode A0000-AFFFF (64KB), alphanumerics/text mode disabled, chain odd/even planes disabled
     RegisterConfig {
         index: 0x07,
         value: 0x0F,
-    }, // Color don't care
+    }, // Color don't care register - care about all bits
     RegisterConfig {
         index: 0x08,
         value: 0xFF,
-    }, // Bit mask
+    }, // Bit mask register - enable all bits
 ];
+
+// Helper function to write a palette value in grayscale
+fn write_palette_grayscale(val: u8) {
+    unsafe {
+        let mut dac_data_port: Port<u8> = Port::new(VgaPorts::DAC_DATA);
+        for _ in 0..3 {
+            // RGB
+            dac_data_port.write(val);
+        }
+    }
+}
 
 // Macro to setup multiple registers from a config array
 macro_rules! setup_registers_from_config {
@@ -586,68 +579,93 @@ fn setup_graphics_controller() {
     );
 }
 
-// Attribute controller register configuration
+// VGA Attribute Controller registers configuration for mode 13h
+// These control color mapping and screen display attributes
 const ATTRIBUTE_CONFIG: &[RegisterConfig] = &[
     RegisterConfig {
         index: 0x00,
         value: 0x00,
-    }, // Mode control 1
+    }, // Palette register 0 (red|green|blue|intensity)
     RegisterConfig {
         index: 0x01,
         value: 0x00,
-    }, // Overscan color
+    }, // Palette register 1
     RegisterConfig {
         index: 0x02,
         value: 0x0F,
-    }, // Color plane enable
+    }, // Palette register 2
     RegisterConfig {
         index: 0x03,
         value: 0x00,
-    }, // Horizontal pixel panning
+    }, // Palette register 3
     RegisterConfig {
         index: 0x04,
         value: 0x00,
-    }, // Color select
+    }, // Palette register 4
     RegisterConfig {
         index: 0x05,
         value: 0x00,
-    }, // Mode control 2
+    }, // Palette register 5
     RegisterConfig {
         index: 0x06,
         value: 0x00,
-    }, // Scroll
+    }, // Palette register 6
     RegisterConfig {
         index: 0x07,
         value: 0x00,
-    }, // Graphics mode
+    }, // Palette register 7
     RegisterConfig {
         index: 0x08,
-        value: 0xFF,
-    }, // Line graphics
+        value: 0x00,
+    }, // Palette register 8
     RegisterConfig {
         index: 0x09,
         value: 0x00,
-    }, // Foreground color
+    }, // Palette register 9
+    RegisterConfig {
+        index: 0x0A,
+        value: 0x00,
+    }, // Palette register A
+    RegisterConfig {
+        index: 0x0B,
+        value: 0x00,
+    }, // Palette register B
+    RegisterConfig {
+        index: 0x0C,
+        value: 0x00,
+    }, // Palette register C
+    RegisterConfig {
+        index: 0x0D,
+        value: 0x00,
+    }, // Palette register D
+    RegisterConfig {
+        index: 0x0E,
+        value: 0x00,
+    }, // Palette register E
+    RegisterConfig {
+        index: 0x0F,
+        value: 0x00,
+    }, // Palette register F
     RegisterConfig {
         index: 0x10,
         value: 0x41,
-    }, // Mode control (for 256 colors)
+    }, // Attr mode control register - enable 256-color mode, enable graphics mode
     RegisterConfig {
         index: 0x11,
         value: 0x00,
-    }, // Overscan color (border)
+    }, // Overscan color register - border color (black)
     RegisterConfig {
         index: 0x12,
         value: 0x0F,
-    }, // Color plane enable
+    }, // Color plane enable register - enable all planes
     RegisterConfig {
         index: 0x13,
         value: 0x00,
-    }, // Horizontal pixel panning
+    }, // Horizontal pixel panning register - no panning
     RegisterConfig {
         index: 0x14,
         value: 0x00,
-    }, // Color select
+    }, // Color select register - no color select
 ];
 
 /// Helper function to write to attribute registers with special sequence
@@ -676,17 +694,12 @@ fn setup_attribute_controller() {
 /// Sets up a simple grayscale palette for the 256-color mode.
 fn setup_palette() {
     unsafe {
-        let mut dac_index_port = Port::new(VgaPorts::DAC_INDEX);
-        let mut dac_data_port = Port::new(VgaPorts::DAC_DATA);
-
+        let mut dac_index_port: Port<u8> = Port::new(VgaPorts::DAC_INDEX);
         dac_index_port.write(0x00u8); // Start at color index 0
 
         for i in 0..256 {
-            // Create a simple grayscale palette. VGA DACs are 6-bit, so map 0-255 to 0-63.
             let val = (i * 63 / 255) as u8;
-            dac_data_port.write(val); // Red
-            dac_data_port.write(val); // Green
-            dac_data_port.write(val); // Blue
+            write_palette_grayscale(val);
         }
     }
 }
@@ -706,6 +719,12 @@ pub fn _print(args: fmt::Arguments) {
             let mut writer = writer.lock();
             writer.write_fmt(args).ok();
         }
+    }
+    // Also output to VGA text buffer for reliable visibility
+    if let Some(vga) = crate::vga::VGA_BUFFER.get() {
+        let mut vga_writer = vga.lock();
+        vga_writer.write_fmt(args).ok();
+        vga_writer.update_cursor();
     }
 }
 

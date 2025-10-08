@@ -163,6 +163,9 @@ pub extern "efiapi" fn efi_main(
         kernel_log!("Fullerene Framebuffer Config Table not found.");
     }
 
+    // Also initialize VGA text mode for reliable output
+    vga::vga_init();
+
     // Main loop
     println!("Hello QEMU by FullereneOS");
     hlt_loop();

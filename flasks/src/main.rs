@@ -1,10 +1,6 @@
 // fullerene/flasks/src/main.rs
 use isobemak::{BiosBootInfo, BootInfo, IsoImage, IsoImageFile, UefiBootInfo, build_iso};
-use std::{
-    env, io,
-    path::PathBuf,
-    process::Command,
-};
+use std::{env, io, path::PathBuf, process::Command};
 
 fn main() -> io::Result<()> {
     println!("Starting flasks application...");
@@ -37,6 +33,8 @@ fn main() -> io::Result<()> {
         .join("x86_64-unknown-uefi")
         .join("debug");
     let kernel_path = target_dir.join("fullerene-kernel.efi");
+    // Copy kernel to bellows/src for embedding
+    std::fs::copy(&kernel_path, "bellows/src/kernel.bin")?;
 
     // --- 2. Build bellows (no_std) ---
     // For BIOS mode, skip bellows
@@ -145,8 +143,6 @@ fn main() -> io::Result<()> {
         "telnet:localhost:1234,server,nowait",
         "-accel",
         "tcg,thread=single",
-        "-global",
-        "driver=or6.efi-setup,property=Enable,value=0",
         "-drive",
         &ovmf_fd_drive,
         "-drive",
@@ -163,8 +159,9 @@ fn main() -> io::Result<()> {
     let _temp_ovmf_vars_fd_holder = temp_ovmf_vars_fd;
     // LD_PRELOAD is a workaround for specific QEMU/libpthread versions.
     // It can be overridden by setting the FULLERENE_QEMU_LD_PRELOAD environment variable.
-    let ld_preload_path =
-        env::var("FULLERENE_QEMU_LD_PRELOAD").unwrap_or_else(|_| flasks::find_libpthread().expect("libpthread.so.0 not found in common locations"));
+    let ld_preload_path = env::var("FULLERENE_QEMU_LD_PRELOAD").unwrap_or_else(|_| {
+        flasks::find_libpthread().expect("libpthread.so.0 not found in common locations")
+    });
     qemu_cmd.env("LD_PRELOAD", ld_preload_path);
     let qemu_status = qemu_cmd.status()?;
 

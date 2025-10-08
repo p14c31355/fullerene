@@ -1,17 +1,12 @@
 use core::ffi::c_void;
 use core::ptr;
-use petroleum::common::{BellowsError, EFI_FILE_INFO_GUID, EfiBootServices, EfiFile, EfiFileInfo, EfiStatus};
-use super::super::debug::*;
-
-// Macro to reduce repetitive debug prints
-macro_rules! file_debug {
-    ($msg:expr) => {
-        debug_print_str(concat!("File: ", $msg, "\n"));
-    };
-}
+use petroleum::common::{
+    BellowsError, EFI_FILE_INFO_GUID, EfiBootServices, EfiFile, EfiFileInfo, EfiStatus,
+};
+use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
 const EFI_FILE_MODE_READ: u64 = 0x1;
-const KERNEL_PATH: &str = r"\EFI\BOOT\KERNEL.EFI";
+const KERNEL_PATH: &str = r"EFI\BOOT\KERNEL.EFI";
 
 /// Fixed UTF-16 encode for KERNEL_PATH (no alloc).
 pub fn kernel_path_utf16() -> [u16; 32] {
@@ -68,10 +63,10 @@ pub fn open_file(dir: &EfiFileWrapper, path: &[u16]) -> petroleum::common::Resul
         )
     };
     if EfiStatus::from(status) != EfiStatus::Success {
-        file_debug!("Failed to open file.");
+        debug_print_str("File: Failed to open file.\n");
         return Err(BellowsError::FileIo("Failed to open file."));
     }
-    file_debug!("Opened file.");
+    debug_print_str("File: Opened file.\n");
     Ok(EfiFileWrapper::new(file_handle))
 }
 
@@ -91,11 +86,11 @@ pub fn read_file_to_memory(
         )
     };
     if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
-        file_debug!("Failed to get file info size.");
+        debug_print_str("File: Failed to get file info size.\n");
         return Err(BellowsError::FileIo("Failed to get file info size."));
     }
     if file_info_buffer_size == 0 {
-        file_debug!("File info size is 0.");
+        debug_print_str("File: File info size is 0.\n");
         return Err(BellowsError::FileIo("File info size is 0."));
     }
 
@@ -110,11 +105,12 @@ pub fn read_file_to_memory(
         )
     };
     if EfiStatus::from(status) != EfiStatus::Success {
-        file_debug!("Failed to get file info.");
+        debug_print_str("File: Failed to get file info.\n");
         return Err(BellowsError::FileIo("Failed to get file info."));
     }
 
-    let file_info: &EfiFileInfo = unsafe { &*(file_info_buffer.as_mut_ptr() as *const EfiFileInfo) };
+    let file_info: &EfiFileInfo =
+        unsafe { &*(file_info_buffer.as_mut_ptr() as *const EfiFileInfo) };
     let file_size = file_info.file_size as usize;
 
     if file_size == 0 {
@@ -131,7 +127,7 @@ pub fn read_file_to_memory(
         &mut phys_addr,
     );
     if EfiStatus::from(status) != EfiStatus::Success {
-        file_debug!("Failed to allocate pages.");
+        debug_print_str("File: Failed to allocate pages.\n");
         return Err(BellowsError::AllocationFailed(
             "Failed to allocate pages for kernel file.",
         ));
@@ -143,7 +139,7 @@ pub fn read_file_to_memory(
     let status = unsafe { ((*file.file).read)(file.file, &mut read_size, buf_ptr) };
     if EfiStatus::from(status) != EfiStatus::Success || read_size as usize != file_size {
         (bs.free_pages)(phys_addr, pages);
-        file_debug!("Failed to read file.");
+        debug_print_str("File: Failed to read file.\n");
         return Err(BellowsError::FileIo(
             "Failed to read kernel file or read size mismatch.",
         ));
