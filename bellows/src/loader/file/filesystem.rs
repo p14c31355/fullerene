@@ -11,7 +11,7 @@ macro_rules! file_debug {
 }
 
 const EFI_FILE_MODE_READ: u64 = 0x1;
-const KERNEL_PATH: &str = r"\EFI\BOOT\KERNEL.EFI";
+const KERNEL_PATH: &str = r"EFI\BOOT\KERNEL.EFI";
 
 /// Fixed UTF-16 encode for KERNEL_PATH (no alloc).
 pub fn kernel_path_utf16() -> [u16; 32] {
