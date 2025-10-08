@@ -75,7 +75,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 
     petroleum::println!("Bellows: Reading kernel from file...");
     // Read the kernel from the file system
-    let (addr, size) = match read_efi_file(bs, image_handle, system_table) {
+    let (addr, size) = match read_efi_file(bs, image_handle) {
         Ok(data) => data,
         Err(err) => {
             petroleum::println!("Failed to read kernel file: {:?}", err);
@@ -141,7 +141,6 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             panic!("Failed to exit boot services.");
         }
     }
-    petroleum::println!("Bellows: Exited boot services and jumped to kernel."); // Debug print after exit_boot_services_and_jump
 }
 
 /// Initializes the Graphics Output Protocol (GOP) for framebuffer access.
@@ -217,8 +216,8 @@ fn init_gop(st: &EfiSystemTable) {
     }
 }
 
-// #[cfg(not(test))]
-// #[panic_handler]
-// fn panic(info: &core::panic::PanicInfo) -> ! {
-//     petroleum::handle_panic(info)
-// }
+#[cfg(not(test))]
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    petroleum::handle_panic(info)
+}

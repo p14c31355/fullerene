@@ -3,46 +3,44 @@ use core::fmt;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
-/// Low-level serial port writer for COM1 (0x3F8).
-pub struct SerialPortWriter {
-    data: Port<u8>,
-    irq_enable: Port<u8>,
-    fifo_ctrl: Port<u8>,
-    line_ctrl: Port<u8>,
-    modem_ctrl: Port<u8>,
-    line_status: Port<u8>,
+// Generic serial port implementation that works with different bases
+pub trait SerialPortOps {
+    fn data_port(&self) -> Port<u8>;
+    fn irq_enable_port(&self) -> Port<u8>;
+    fn fifo_ctrl_port(&self) -> Port<u8>;
+    fn line_ctrl_port(&self) -> Port<u8>;
+    fn modem_ctrl_port(&self) -> Port<u8>;
+    fn line_status_port(&self) -> Port<u8>;
 }
 
-impl SerialPortWriter {
-    /// Creates a new instance of the SerialPortWriter.
-    pub const fn new() -> SerialPortWriter {
-        SerialPortWriter {
-            data: Port::new(0x3F8),
-            irq_enable: Port::new(0x3F9),
-            fifo_ctrl: Port::new(0x3FA),
-            line_ctrl: Port::new(0x3FB),
-            modem_ctrl: Port::new(0x3FC),
-            line_status: Port::new(0x3FD),
-        }
+/// Represents a serial port for communication.
+pub struct SerialPort<S: SerialPortOps> {
+    ops: S,
+}
+
+impl<S: SerialPortOps> SerialPort<S> {
+    /// Creates a new instance of the SerialPort.
+    pub const fn new(ops: S) -> SerialPort<S> {
+        SerialPort { ops }
     }
 
     /// Initializes the serial port.
     pub fn init(&mut self) {
         unsafe {
-            self.line_ctrl.write(0x80); // Enable DLAB
-            self.data.write(0x03); // Baud rate divisor low byte (38400 bps)
-            self.irq_enable.write(0x00);
-            self.line_ctrl.write(0x03); // 8 bits, no parity, one stop bit
-            self.fifo_ctrl.write(0xC7); // Enable FIFO, clear, 14-byte threshold
-            self.modem_ctrl.write(0x0B); // IRQs enabled, OUT2
+            self.ops.line_ctrl_port().write(0x80); // Enable DLAB
+            self.ops.data_port().write(0x03); // Baud rate divisor low byte (38400 bps)
+            self.ops.irq_enable_port().write(0x00);
+            self.ops.line_ctrl_port().write(0x03); // 8 bits, no parity, one stop bit
+            self.ops.fifo_ctrl_port().write(0xC7); // Enable FIFO, clear, 14-byte threshold
+            self.ops.modem_ctrl_port().write(0x0B); // IRQs enabled, OUT2
         }
     }
 
     /// Writes a single byte to the serial port.
     pub fn write_byte(&mut self, byte: u8) {
         unsafe {
-            while (self.line_status.read() & 0x20) == 0 {}
-            self.data.write(byte);
+            while (self.ops.line_status_port().read() & 0x20) == 0 {}
+            self.ops.data_port().write(byte);
         }
     }
 
@@ -54,8 +52,19 @@ impl SerialPortWriter {
     }
 }
 
-// Provides a fmt::Write implementation for SerialPortWriter
-impl fmt::Write for SerialPortWriter {
+/// COM1 implementation
+pub struct Com1Ops;
+
+impl SerialPortOps for Com1Ops {
+    fn data_port(&self) -> Port<u8> { Port::new(0x3F8) }
+    fn irq_enable_port(&self) -> Port<u8> { Port::new(0x3F9) }
+    fn fifo_ctrl_port(&self) -> Port<u8> { Port::new(0x3FA) }
+    fn line_ctrl_port(&self) -> Port<u8> { Port::new(0x3FB) }
+    fn modem_ctrl_port(&self) -> Port<u8> { Port::new(0x3FC) }
+    fn line_status_port(&self) -> Port<u8> { Port::new(0x3FD) }
+}
+
+impl<S: SerialPortOps> fmt::Write for SerialPort<S> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         self.write_string(s);
         Ok(())
@@ -63,7 +72,7 @@ impl fmt::Write for SerialPortWriter {
 }
 
 // Provides a global singleton for the serial port
-pub static SERIAL_PORT_WRITER: Mutex<SerialPortWriter> = Mutex::new(SerialPortWriter::new());
+pub static SERIAL_PORT_WRITER: Mutex<SerialPort<Com1Ops>> = Mutex::new(SerialPort::new(Com1Ops));
 
 /// Initializes the global serial port writer.
 pub fn serial_init() {
