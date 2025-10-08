@@ -122,16 +122,24 @@ struct FramebufferInfo {
 impl FramebufferInfo {
     fn width_or_stride(&self) -> u32 {
         #[cfg(target_os = "uefi")]
-        { self.stride }
+        {
+            self.stride
+        }
         #[cfg(not(target_os = "uefi"))]
-        { self.width }
+        {
+            self.width
+        }
     }
 
     fn calculate_offset(&self, x: u32, y: u32) -> usize {
         #[cfg(target_os = "uefi")]
-        { ((y * self.stride + x) * self.bytes_per_pixel()) as usize }
+        {
+            ((y * self.stride + x) * self.bytes_per_pixel()) as usize
+        }
         #[cfg(not(target_os = "uefi"))]
-        { ((y * self.width + x) * 1) as usize } // 1 byte per pixel for VGA
+        {
+            ((y * self.width + x) * 1) as usize
+        } // 1 byte per pixel for VGA
     }
 
     fn bytes_per_pixel(&self) -> u32 {
@@ -144,7 +152,9 @@ impl FramebufferInfo {
             }
         }
         #[cfg(not(target_os = "uefi"))]
-        { 1 }
+        {
+            1
+        }
     }
 }
 
@@ -182,15 +192,27 @@ trait PixelType: Copy {
 }
 
 impl PixelType for u32 {
-    fn bytes_per_pixel() -> u32 { 4 }
-    fn from_u32(color: u32) -> Self { color }
-    fn to_generic(color: u32) -> u32 { color }
+    fn bytes_per_pixel() -> u32 {
+        4
+    }
+    fn from_u32(color: u32) -> Self {
+        color
+    }
+    fn to_generic(color: u32) -> u32 {
+        color
+    }
 }
 
 impl PixelType for u8 {
-    fn bytes_per_pixel() -> u32 { 1 }
-    fn from_u32(color: u32) -> Self { color as u8 }
-    fn to_generic(color: u32) -> u32 { color & 0xFF }
+    fn bytes_per_pixel() -> u32 {
+        1
+    }
+    fn from_u32(color: u32) -> Self {
+        color as u8
+    }
+    fn to_generic(color: u32) -> u32 {
+        color & 0xFF
+    }
 }
 
 trait FramebufferLike {
@@ -258,10 +280,18 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
         }
     }
 
-    fn get_width(&self) -> u32 { self.info.width }
-    fn get_height(&self) -> u32 { self.info.height }
-    fn get_fg_color(&self) -> u32 { self.info.colors.fg }
-    fn get_bg_color(&self) -> u32 { self.info.colors.bg }
+    fn get_width(&self) -> u32 {
+        self.info.width
+    }
+    fn get_height(&self) -> u32 {
+        self.info.height
+    }
+    fn get_fg_color(&self) -> u32 {
+        self.info.colors.fg
+    }
+    fn get_bg_color(&self) -> u32 {
+        self.info.colors.bg
+    }
 
     fn set_position(&mut self, x: u32, y: u32) {
         self.x_pos = x;
@@ -356,53 +386,148 @@ struct RegisterConfig {
 
 // Unified register configurations for data-driven setup (comments removed to reduce lines)
 const SEQUENCER_CONFIG: &[RegisterConfig] = &[
-    RegisterConfig { index: 0x00, value: 0x03 },
-    RegisterConfig { index: 0x01, value: 0x01 },
-    RegisterConfig { index: 0x02, value: 0x0F },
-    RegisterConfig { index: 0x03, value: 0x00 },
-    RegisterConfig { index: 0x04, value: 0x0E },
+    RegisterConfig {
+        index: 0x00,
+        value: 0x03,
+    },
+    RegisterConfig {
+        index: 0x01,
+        value: 0x01,
+    },
+    RegisterConfig {
+        index: 0x02,
+        value: 0x0F,
+    },
+    RegisterConfig {
+        index: 0x03,
+        value: 0x00,
+    },
+    RegisterConfig {
+        index: 0x04,
+        value: 0x0E,
+    },
 ];
 
 const CRTC_CONFIG: &[RegisterConfig] = &[
-    RegisterConfig { index: 0x00, value: 0x5F },
-    RegisterConfig { index: 0x01, value: 0x4F },
-    RegisterConfig { index: 0x02, value: 0x50 },
-    RegisterConfig { index: 0x03, value: 0x82 },
-    RegisterConfig { index: 0x04, value: 0x54 },
-    RegisterConfig { index: 0x05, value: 0x80 },
-    RegisterConfig { index: 0x06, value: 0xBF },
-    RegisterConfig { index: 0x07, value: 0x1F },
-    RegisterConfig { index: 0x08, value: 0x00 },
-    RegisterConfig { index: 0x09, value: 0x41 },
-    RegisterConfig { index: 0x10, value: 0x9C },
-    RegisterConfig { index: 0x11, value: 0x8E },
-    RegisterConfig { index: 0x12, value: 0x8F },
-    RegisterConfig { index: 0x13, value: 0x28 },
-    RegisterConfig { index: 0x14, value: 0x40 },
-    RegisterConfig { index: 0x15, value: 0x96 },
-    RegisterConfig { index: 0x16, value: 0xB9 },
-    RegisterConfig { index: 0x17, value: 0xA3 },
+    RegisterConfig {
+        index: 0x00,
+        value: 0x5F,
+    },
+    RegisterConfig {
+        index: 0x01,
+        value: 0x4F,
+    },
+    RegisterConfig {
+        index: 0x02,
+        value: 0x50,
+    },
+    RegisterConfig {
+        index: 0x03,
+        value: 0x82,
+    },
+    RegisterConfig {
+        index: 0x04,
+        value: 0x54,
+    },
+    RegisterConfig {
+        index: 0x05,
+        value: 0x80,
+    },
+    RegisterConfig {
+        index: 0x06,
+        value: 0xBF,
+    },
+    RegisterConfig {
+        index: 0x07,
+        value: 0x1F,
+    },
+    RegisterConfig {
+        index: 0x08,
+        value: 0x00,
+    },
+    RegisterConfig {
+        index: 0x09,
+        value: 0x41,
+    },
+    RegisterConfig {
+        index: 0x10,
+        value: 0x9C,
+    },
+    RegisterConfig {
+        index: 0x11,
+        value: 0x8E,
+    },
+    RegisterConfig {
+        index: 0x12,
+        value: 0x8F,
+    },
+    RegisterConfig {
+        index: 0x13,
+        value: 0x28,
+    },
+    RegisterConfig {
+        index: 0x14,
+        value: 0x40,
+    },
+    RegisterConfig {
+        index: 0x15,
+        value: 0x96,
+    },
+    RegisterConfig {
+        index: 0x16,
+        value: 0xB9,
+    },
+    RegisterConfig {
+        index: 0x17,
+        value: 0xA3,
+    },
 ];
 
 const GRAPHICS_CONFIG: &[RegisterConfig] = &[
-    RegisterConfig { index: 0x00, value: 0x00 },
-    RegisterConfig { index: 0x01, value: 0x00 },
-    RegisterConfig { index: 0x02, value: 0x00 },
-    RegisterConfig { index: 0x03, value: 0x00 },
-    RegisterConfig { index: 0x04, value: 0x00 },
-    RegisterConfig { index: 0x05, value: 0x40 },
-    RegisterConfig { index: 0x06, value: 0x05 },
-    RegisterConfig { index: 0x07, value: 0x0F },
-    RegisterConfig { index: 0x08, value: 0xFF },
+    RegisterConfig {
+        index: 0x00,
+        value: 0x00,
+    },
+    RegisterConfig {
+        index: 0x01,
+        value: 0x00,
+    },
+    RegisterConfig {
+        index: 0x02,
+        value: 0x00,
+    },
+    RegisterConfig {
+        index: 0x03,
+        value: 0x00,
+    },
+    RegisterConfig {
+        index: 0x04,
+        value: 0x00,
+    },
+    RegisterConfig {
+        index: 0x05,
+        value: 0x40,
+    },
+    RegisterConfig {
+        index: 0x06,
+        value: 0x05,
+    },
+    RegisterConfig {
+        index: 0x07,
+        value: 0x0F,
+    },
+    RegisterConfig {
+        index: 0x08,
+        value: 0xFF,
+    },
 ];
-
-
 
 // Helper function to write a palette value in grayscale
 fn write_palette_grayscale(val: u8) {
     unsafe {
         let mut dac_data_port: Port<u8> = Port::new(VgaPorts::DAC_DATA);
-        for _ in 0..3 { // RGB
+        for _ in 0..3 {
+            // RGB
             dac_data_port.write(val);
         }
     }
@@ -452,21 +577,66 @@ fn setup_graphics_controller() {
 /// Attribute controller register configuration
 fn get_attribute_config() -> &'static [RegisterConfig] {
     const CONFIG: &[RegisterConfig] = &[
-        RegisterConfig { index: 0x00, value: 0x00 }, // Mode control 1
-        RegisterConfig { index: 0x01, value: 0x00 }, // Overscan color
-        RegisterConfig { index: 0x02, value: 0x0F }, // Color plane enable
-        RegisterConfig { index: 0x03, value: 0x00 }, // Horizontal pixel panning
-        RegisterConfig { index: 0x04, value: 0x00 }, // Color select
-        RegisterConfig { index: 0x05, value: 0x00 }, // Mode control 2
-        RegisterConfig { index: 0x06, value: 0x00 }, // Scroll
-        RegisterConfig { index: 0x07, value: 0x00 }, // Graphics mode
-        RegisterConfig { index: 0x08, value: 0xFF }, // Line graphics
-        RegisterConfig { index: 0x09, value: 0x00 }, // Foreground color
-        RegisterConfig { index: 0x10, value: 0x41 }, // Mode control (for 256 colors)
-        RegisterConfig { index: 0x11, value: 0x00 }, // Overscan color (border)
-        RegisterConfig { index: 0x12, value: 0x0F }, // Color plane enable
-        RegisterConfig { index: 0x13, value: 0x00 }, // Horizontal pixel panning
-        RegisterConfig { index: 0x14, value: 0x00 }, // Color select
+        RegisterConfig {
+            index: 0x00,
+            value: 0x00,
+        }, // Mode control 1
+        RegisterConfig {
+            index: 0x01,
+            value: 0x00,
+        }, // Overscan color
+        RegisterConfig {
+            index: 0x02,
+            value: 0x0F,
+        }, // Color plane enable
+        RegisterConfig {
+            index: 0x03,
+            value: 0x00,
+        }, // Horizontal pixel panning
+        RegisterConfig {
+            index: 0x04,
+            value: 0x00,
+        }, // Color select
+        RegisterConfig {
+            index: 0x05,
+            value: 0x00,
+        }, // Mode control 2
+        RegisterConfig {
+            index: 0x06,
+            value: 0x00,
+        }, // Scroll
+        RegisterConfig {
+            index: 0x07,
+            value: 0x00,
+        }, // Graphics mode
+        RegisterConfig {
+            index: 0x08,
+            value: 0xFF,
+        }, // Line graphics
+        RegisterConfig {
+            index: 0x09,
+            value: 0x00,
+        }, // Foreground color
+        RegisterConfig {
+            index: 0x10,
+            value: 0x41,
+        }, // Mode control (for 256 colors)
+        RegisterConfig {
+            index: 0x11,
+            value: 0x00,
+        }, // Overscan color (border)
+        RegisterConfig {
+            index: 0x12,
+            value: 0x0F,
+        }, // Color plane enable
+        RegisterConfig {
+            index: 0x13,
+            value: 0x00,
+        }, // Horizontal pixel panning
+        RegisterConfig {
+            index: 0x14,
+            value: 0x00,
+        }, // Color select
     ];
     CONFIG
 }

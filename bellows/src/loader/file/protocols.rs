@@ -5,7 +5,7 @@ use petroleum::common::{
     EfiBootServices, EfiLoadedImageProtocol, EfiSimpleFileSystem, EfiStatus,
 };
 
-use super::super::debug::*;
+use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
 // Helper function to open a protocol
 fn open_protocol<T>(

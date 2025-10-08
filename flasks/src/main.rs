@@ -1,10 +1,6 @@
 // fullerene/flasks/src/main.rs
 use isobemak::{BiosBootInfo, BootInfo, IsoImage, IsoImageFile, UefiBootInfo, build_iso};
-use std::{
-    env, io,
-    path::PathBuf,
-    process::Command,
-};
+use std::{env, io, path::PathBuf, process::Command};
 
 fn main() -> io::Result<()> {
     println!("Starting flasks application...");
@@ -163,8 +159,9 @@ fn main() -> io::Result<()> {
     let _temp_ovmf_vars_fd_holder = temp_ovmf_vars_fd;
     // LD_PRELOAD is a workaround for specific QEMU/libpthread versions.
     // It can be overridden by setting the FULLERENE_QEMU_LD_PRELOAD environment variable.
-    let ld_preload_path =
-        env::var("FULLERENE_QEMU_LD_PRELOAD").unwrap_or_else(|_| flasks::find_libpthread().expect("libpthread.so.0 not found in common locations"));
+    let ld_preload_path = env::var("FULLERENE_QEMU_LD_PRELOAD").unwrap_or_else(|_| {
+        flasks::find_libpthread().expect("libpthread.so.0 not found in common locations")
+    });
     qemu_cmd.env("LD_PRELOAD", ld_preload_path);
     let qemu_status = qemu_cmd.status()?;
 

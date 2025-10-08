@@ -33,10 +33,13 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
-        fn test_find_libpthread() {
+    fn test_find_libpthread() {
         // Test that find_libpthread returns an existing path or None.
         if let Some(path) = flasks::find_libpthread() {
-            assert!(std::path::Path::new(&path).exists(), "If a path is returned, it must exist");
+            assert!(
+                std::path::Path::new(&path).exists(),
+                "If a path is returned, it must exist"
+            );
         }
         // If it returns None, that's a valid outcome on systems where the lib isn't in a standard path.
     }

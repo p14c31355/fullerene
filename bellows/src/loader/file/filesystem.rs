@@ -1,7 +1,9 @@
 use core::ffi::c_void;
 use core::ptr;
-use petroleum::common::{BellowsError, EFI_FILE_INFO_GUID, EfiBootServices, EfiFile, EfiFileInfo, EfiStatus};
-use super::super::debug::*;
+use petroleum::common::{
+    BellowsError, EFI_FILE_INFO_GUID, EfiBootServices, EfiFile, EfiFileInfo, EfiStatus,
+};
+use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
 const EFI_FILE_MODE_READ: u64 = 0x1;
 const KERNEL_PATH: &str = r"EFI\BOOT\KERNEL.EFI";
@@ -107,7 +109,8 @@ pub fn read_file_to_memory(
         return Err(BellowsError::FileIo("Failed to get file info."));
     }
 
-    let file_info: &EfiFileInfo = unsafe { &*(file_info_buffer.as_mut_ptr() as *const EfiFileInfo) };
+    let file_info: &EfiFileInfo =
+        unsafe { &*(file_info_buffer.as_mut_ptr() as *const EfiFileInfo) };
     let file_size = file_info.file_size as usize;
 
     if file_size == 0 {

@@ -16,14 +16,12 @@ static KERNEL_BINARY: &[u8] = include_bytes!("kernel.bin");
 
 mod loader;
 
-use loader::debug::*;
-use loader::{
-    exit_boot_services_and_jump, heap::init_heap, pe::load_efi_image,
-};
+use loader::{exit_boot_services_and_jump, heap::init_heap, pe::load_efi_image};
+use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
 use petroleum::common::{
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputProtocol, EfiGraphicsOutputModeInformation, EfiStatus, EfiSystemTable,
-    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputModeInformation, EfiGraphicsOutputProtocol,
+    EfiStatus, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
 };
 
 /// Main entry point of the bootloader.
@@ -157,7 +155,10 @@ fn init_gop(st: &EfiSystemTable) {
 
     // Try to set a preferred graphics mode (1024x768 or highest available)
     let max_mode = mode_ref.max_mode;
-    petroleum::serial::_print(format_args!("GOP: Max modes: {}, Current mode: {}\n", max_mode, mode_ref.mode as usize));
+    petroleum::serial::_print(format_args!(
+        "GOP: Max modes: {}, Current mode: {}\n",
+        max_mode, mode_ref.mode as usize
+    ));
 
     let mut target_mode: Option<usize> = None;
     for mode_num in 0..max_mode {
@@ -168,18 +169,31 @@ fn init_gop(st: &EfiSystemTable) {
         }
 
         let mut mode_info = alloc::vec![0u8; size];
-        let status = (gop_ref.query_mode)(gop, mode_num, &mut size, mode_info.as_mut_ptr() as *mut c_void);
+        let status = (gop_ref.query_mode)(
+            gop,
+            mode_num,
+            &mut size,
+            mode_info.as_mut_ptr() as *mut c_void,
+        );
         if EfiStatus::from(status) == EfiStatus::Success {
-            let info: &EfiGraphicsOutputModeInformation = unsafe { &*(mode_info.as_ptr() as *const EfiGraphicsOutputModeInformation) };
-            petroleum::serial::_print(format_args!("GOP: Mode {}: {}x{}, format: {}\n",
-                mode_num, info.horizontal_resolution, info.vertical_resolution, info.pixel_format as u32));
+            let info: &EfiGraphicsOutputModeInformation =
+                unsafe { &*(mode_info.as_ptr() as *const EfiGraphicsOutputModeInformation) };
+            petroleum::serial::_print(format_args!(
+                "GOP: Mode {}: {}x{}, format: {}\n",
+                mode_num,
+                info.horizontal_resolution,
+                info.vertical_resolution,
+                info.pixel_format as u32
+            ));
 
             // Prefer 1024x768, or highest resolution if not available
             if info.horizontal_resolution == 1024 && info.vertical_resolution == 768 {
                 target_mode = Some(mode_num as usize);
                 break;
             }
-            if target_mode.is_none() || (info.horizontal_resolution >= 1024 && info.vertical_resolution >= 768) {
+            if target_mode.is_none()
+                || (info.horizontal_resolution >= 1024 && info.vertical_resolution >= 768)
+            {
                 target_mode = Some(mode_num as usize);
             }
         }
@@ -189,10 +203,16 @@ fn init_gop(st: &EfiSystemTable) {
     if let Some(mode_num) = target_mode {
         let current_mode = mode_ref.mode as usize;
         if mode_num != current_mode {
-            petroleum::serial::_print(format_args!("GOP: Setting mode {} (currently {})\n", mode_num, current_mode));
+            petroleum::serial::_print(format_args!(
+                "GOP: Setting mode {} (currently {})\n",
+                mode_num, current_mode
+            ));
             let status = (gop_ref.set_mode)(gop, mode_num as u32);
             if EfiStatus::from(status) != EfiStatus::Success {
-                petroleum::serial::_print(format_args!("GOP: Failed to set mode, status: {:#x}\n", status));
+                petroleum::serial::_print(format_args!(
+                    "GOP: Failed to set mode, status: {:#x}\n",
+                    status
+                ));
             } else {
                 petroleum::serial::_print(format_args!("GOP: Mode set successfully\n"));
             }
@@ -219,8 +239,14 @@ fn init_gop(st: &EfiSystemTable) {
         return;
     }
 
-    petroleum::serial::_print(format_args!("GOP: Framebuffer at {:#x}, size: {}KB, resolution: {}x{}, stride: {}\n",
-        fb_addr, fb_size / 1024, info.horizontal_resolution, info.vertical_resolution, info.pixels_per_scan_line));
+    petroleum::serial::_print(format_args!(
+        "GOP: Framebuffer at {:#x}, size: {}KB, resolution: {}x{}, stride: {}\n",
+        fb_addr,
+        fb_size / 1024,
+        info.horizontal_resolution,
+        info.vertical_resolution,
+        info.pixels_per_scan_line
+    ));
 
     let config = Box::new(FullereneFramebufferConfig {
         address: fb_addr as u64,

@@ -126,12 +126,7 @@ pub fn test_runner(tests: &[&dyn Testable]) {
 
 /// Generic function to safely and efficiently scroll a raw pixel buffer up
 /// Reduces code duplication in buffer management
-pub unsafe fn scroll_buffer_pixels<T: Copy>(
-    address: u64,
-    stride: u32,
-    height: u32,
-    bg_color: T,
-) {
+pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
     let bytes_per_pixel = core::mem::size_of::<T>() as u32;
     let bytes_per_line = stride * bytes_per_pixel;
     let shift_bytes = 8u64 * bytes_per_line as u64;

@@ -1,8 +1,8 @@
 use core::{ffi::c_void, mem, mem::offset_of, ptr};
 use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
 
-use crate::loader::debug::*;
 use super::headers::*;
+use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
 /// Dummy kernel entry point for testing
 extern "efiapi" fn dummy_kernel_entry(

@@ -250,7 +250,8 @@ pub struct EfiLoadedImageProtocol {
 #[repr(C)]
 pub struct EfiGraphicsOutputProtocol {
     /// query_mode(This, ModeNumber, SizeOfInfo, *mut Info) -> EFI_STATUS
-    pub query_mode: extern "efiapi" fn(*mut EfiGraphicsOutputProtocol, u32, *mut usize, *mut c_void) -> usize,
+    pub query_mode:
+        extern "efiapi" fn(*mut EfiGraphicsOutputProtocol, u32, *mut usize, *mut c_void) -> usize,
     /// set_mode(This, ModeNumber) -> EFI_STATUS
     pub set_mode: extern "efiapi" fn(*mut EfiGraphicsOutputProtocol, u32) -> usize,
     /// blt(This, BltBuffer, BltOperation, SourceX, SourceY, DestinationX, DestinationY, Width, Height, Delta)

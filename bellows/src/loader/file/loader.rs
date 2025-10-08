@@ -1,8 +1,8 @@
-use core::ptr;
-use petroleum::common::{EfiBootServices, EfiFile, EfiStatus, BellowsError};
+use super::filesystem::{EfiFileWrapper, kernel_path_utf16, open_file, read_file_to_memory};
 use super::protocols::{get_loaded_image_protocol, get_simple_file_system};
-use super::filesystem::{EfiFileWrapper, open_file, kernel_path_utf16, read_file_to_memory};
-use super::super::debug::*;
+use core::ptr;
+use petroleum::common::{BellowsError, EfiBootServices, EfiFile, EfiStatus};
+use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
 /// Read `fullerene-kernel.efi` from the volume.
 pub fn read_efi_file(
