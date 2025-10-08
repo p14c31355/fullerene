@@ -159,8 +159,8 @@ impl FramebufferWriter {
             },
             x_pos: 0,
             y_pos: 0,
-            fg_color: 0xFFFFFFu32, // White
-            bg_color: 0x000000u32, // Black
+            fg_color: FG_WHITE_UEFI,
+            bg_color: BG_BLACK_UEFI,
         }
     }
 
@@ -268,8 +268,8 @@ impl VgaWriter {
             height: config.height,
             x_pos: 0,
             y_pos: 0,
-            fg_color: 0x0Fu8, // White
-            bg_color: 0x00u8, // Black
+            fg_color: FG_WHITE_VGA,
+            bg_color: BG_BLACK_VGA,
         }
     }
 
@@ -409,142 +409,63 @@ struct RegisterConfig {
     value: u8,
 }
 
+// Unified register configurations for data-driven setup (comments removed to reduce lines)
 const SEQUENCER_CONFIG: &[RegisterConfig] = &[
-    RegisterConfig {
-        index: 0x00,
-        value: 0x03,
-    }, // Reset
-    RegisterConfig {
-        index: 0x01,
-        value: 0x01,
-    }, // Clocking mode
-    RegisterConfig {
-        index: 0x02,
-        value: 0x0F,
-    }, // Map mask
-    RegisterConfig {
-        index: 0x03,
-        value: 0x00,
-    }, // Character map select
-    RegisterConfig {
-        index: 0x04,
-        value: 0x0E,
-    }, // Memory mode (for 256 color, chain 4)
+    RegisterConfig { index: 0x00, value: 0x03 },
+    RegisterConfig { index: 0x01, value: 0x01 },
+    RegisterConfig { index: 0x02, value: 0x0F },
+    RegisterConfig { index: 0x03, value: 0x00 },
+    RegisterConfig { index: 0x04, value: 0x0E },
 ];
 
 const CRTC_CONFIG: &[RegisterConfig] = &[
-    RegisterConfig {
-        index: 0x00,
-        value: 0x5F,
-    }, // Horizontal total
-    RegisterConfig {
-        index: 0x01,
-        value: 0x4F,
-    }, // Horizontal displayed
-    RegisterConfig {
-        index: 0x02,
-        value: 0x50,
-    }, // Horizontal blanking start
-    RegisterConfig {
-        index: 0x03,
-        value: 0x82,
-    }, // Horizontal blanking end
-    RegisterConfig {
-        index: 0x04,
-        value: 0x54,
-    }, // Horizontal sync start
-    RegisterConfig {
-        index: 0x05,
-        value: 0x80,
-    }, // Horizontal sync end
-    RegisterConfig {
-        index: 0x06,
-        value: 0xBF,
-    }, // Vertical total
-    RegisterConfig {
-        index: 0x07,
-        value: 0x1F,
-    }, // Overflow
-    RegisterConfig {
-        index: 0x08,
-        value: 0x00,
-    }, // Preset row scan
-    RegisterConfig {
-        index: 0x09,
-        value: 0x41,
-    }, // Maximum scan line
-    RegisterConfig {
-        index: 0x10,
-        value: 0x9C,
-    }, // Vertical sync start
-    RegisterConfig {
-        index: 0x11,
-        value: 0x8E,
-    }, // Vertical sync end
-    RegisterConfig {
-        index: 0x12,
-        value: 0x8F,
-    }, // Vertical displayed
-    RegisterConfig {
-        index: 0x13,
-        value: 0x28,
-    }, // Row offset
-    RegisterConfig {
-        index: 0x14,
-        value: 0x40,
-    }, // Underline location
-    RegisterConfig {
-        index: 0x15,
-        value: 0x96,
-    }, // Vertical blanking start
-    RegisterConfig {
-        index: 0x16,
-        value: 0xB9,
-    }, // Vertical blanking end
-    RegisterConfig {
-        index: 0x17,
-        value: 0xA3,
-    }, // Line compare / Mode control
+    RegisterConfig { index: 0x00, value: 0x5F },
+    RegisterConfig { index: 0x01, value: 0x4F },
+    RegisterConfig { index: 0x02, value: 0x50 },
+    RegisterConfig { index: 0x03, value: 0x82 },
+    RegisterConfig { index: 0x04, value: 0x54 },
+    RegisterConfig { index: 0x05, value: 0x80 },
+    RegisterConfig { index: 0x06, value: 0xBF },
+    RegisterConfig { index: 0x07, value: 0x1F },
+    RegisterConfig { index: 0x08, value: 0x00 },
+    RegisterConfig { index: 0x09, value: 0x41 },
+    RegisterConfig { index: 0x10, value: 0x9C },
+    RegisterConfig { index: 0x11, value: 0x8E },
+    RegisterConfig { index: 0x12, value: 0x8F },
+    RegisterConfig { index: 0x13, value: 0x28 },
+    RegisterConfig { index: 0x14, value: 0x40 },
+    RegisterConfig { index: 0x15, value: 0x96 },
+    RegisterConfig { index: 0x16, value: 0xB9 },
+    RegisterConfig { index: 0x17, value: 0xA3 },
 ];
 
 const GRAPHICS_CONFIG: &[RegisterConfig] = &[
-    RegisterConfig {
-        index: 0x00,
-        value: 0x00,
-    }, // Set/reset
-    RegisterConfig {
-        index: 0x01,
-        value: 0x00,
-    }, // Enable set/reset
-    RegisterConfig {
-        index: 0x02,
-        value: 0x00,
-    }, // Color compare
-    RegisterConfig {
-        index: 0x03,
-        value: 0x00,
-    }, // Data rotate
-    RegisterConfig {
-        index: 0x04,
-        value: 0x00,
-    }, // Read map select
-    RegisterConfig {
-        index: 0x05,
-        value: 0x40,
-    }, // Graphics mode (256 color)
-    RegisterConfig {
-        index: 0x06,
-        value: 0x05,
-    }, // Miscellaneous
-    RegisterConfig {
-        index: 0x07,
-        value: 0x0F,
-    }, // Color don't care
-    RegisterConfig {
-        index: 0x08,
-        value: 0xFF,
-    }, // Bit mask
+    RegisterConfig { index: 0x00, value: 0x00 },
+    RegisterConfig { index: 0x01, value: 0x00 },
+    RegisterConfig { index: 0x02, value: 0x00 },
+    RegisterConfig { index: 0x03, value: 0x00 },
+    RegisterConfig { index: 0x04, value: 0x00 },
+    RegisterConfig { index: 0x05, value: 0x40 },
+    RegisterConfig { index: 0x06, value: 0x05 },
+    RegisterConfig { index: 0x07, value: 0x0F },
+    RegisterConfig { index: 0x08, value: 0xFF },
 ];
+
+// Color constants to reduce initialization boilerplate
+const FG_WHITE_UEFI: u32 = 0xFFFFFFu32;
+const BG_BLACK_UEFI: u32 = 0x000000u32;
+const FG_WHITE_VGA: u8 = 0x0Fu8;
+const BG_BLACK_VGA: u8 = 0x00u8;
+
+// Helper function to write a palette value in grayscale
+fn write_palette_grayscale(val: u8) {
+    unsafe {
+        let mut dac_data_port: Port<u8> = Port::new(VgaPorts::DAC_DATA);
+        for _ in 0..3 { // RGB
+            dac_data_port.write(val);
+        }
+    }
+}
 
 // Macro to setup multiple registers from a config array
 macro_rules! setup_registers_from_config {
@@ -587,68 +508,27 @@ fn setup_graphics_controller() {
 }
 
 // Attribute controller register configuration
-const ATTRIBUTE_CONFIG: &[RegisterConfig] = &[
-    RegisterConfig {
-        index: 0x00,
-        value: 0x00,
-    }, // Mode control 1
-    RegisterConfig {
-        index: 0x01,
-        value: 0x00,
-    }, // Overscan color
-    RegisterConfig {
-        index: 0x02,
-        value: 0x0F,
-    }, // Color plane enable
-    RegisterConfig {
-        index: 0x03,
-        value: 0x00,
-    }, // Horizontal pixel panning
-    RegisterConfig {
-        index: 0x04,
-        value: 0x00,
-    }, // Color select
-    RegisterConfig {
-        index: 0x05,
-        value: 0x00,
-    }, // Mode control 2
-    RegisterConfig {
-        index: 0x06,
-        value: 0x00,
-    }, // Scroll
-    RegisterConfig {
-        index: 0x07,
-        value: 0x00,
-    }, // Graphics mode
-    RegisterConfig {
-        index: 0x08,
-        value: 0xFF,
-    }, // Line graphics
-    RegisterConfig {
-        index: 0x09,
-        value: 0x00,
-    }, // Foreground color
-    RegisterConfig {
-        index: 0x10,
-        value: 0x41,
-    }, // Mode control (for 256 colors)
-    RegisterConfig {
-        index: 0x11,
-        value: 0x00,
-    }, // Overscan color (border)
-    RegisterConfig {
-        index: 0x12,
-        value: 0x0F,
-    }, // Color plane enable
-    RegisterConfig {
-        index: 0x13,
-        value: 0x00,
-    }, // Horizontal pixel panning
-    RegisterConfig {
-        index: 0x14,
-        value: 0x00,
-    }, // Color select
-];
+/// Attribute controller register configuration
+fn get_attribute_config() -> &'static [RegisterConfig] {
+    const CONFIG: &[RegisterConfig] = &[
+        RegisterConfig { index: 0x00, value: 0x00 }, // Mode control 1
+        RegisterConfig { index: 0x01, value: 0x00 }, // Overscan color
+        RegisterConfig { index: 0x02, value: 0x0F }, // Color plane enable
+        RegisterConfig { index: 0x03, value: 0x00 }, // Horizontal pixel panning
+        RegisterConfig { index: 0x04, value: 0x00 }, // Color select
+        RegisterConfig { index: 0x05, value: 0x00 }, // Mode control 2
+        RegisterConfig { index: 0x06, value: 0x00 }, // Scroll
+        RegisterConfig { index: 0x07, value: 0x00 }, // Graphics mode
+        RegisterConfig { index: 0x08, value: 0xFF }, // Line graphics
+        RegisterConfig { index: 0x09, value: 0x00 }, // Foreground color
+        RegisterConfig { index: 0x10, value: 0x41 }, // Mode control (for 256 colors)
+        RegisterConfig { index: 0x11, value: 0x00 }, // Overscan color (border)
+        RegisterConfig { index: 0x12, value: 0x0F }, // Color plane enable
+        RegisterConfig { index: 0x13, value: 0x00 }, // Horizontal pixel panning
+        RegisterConfig { index: 0x14, value: 0x00 }, // Color select
+    ];
+    CONFIG
+}
 
 /// Helper function to write to attribute registers with special sequence
 fn write_attribute_registers() {
@@ -659,7 +539,7 @@ fn write_attribute_registers() {
 
         let _ = status_port.read(); // Reset flip-flop
 
-        for reg in ATTRIBUTE_CONFIG {
+        for reg in get_attribute_config() {
             index_port.write(reg.index);
             data_port.write(reg.value);
         }
@@ -676,17 +556,12 @@ fn setup_attribute_controller() {
 /// Sets up a simple grayscale palette for the 256-color mode.
 fn setup_palette() {
     unsafe {
-        let mut dac_index_port = Port::new(VgaPorts::DAC_INDEX);
-        let mut dac_data_port = Port::new(VgaPorts::DAC_DATA);
-
+        let mut dac_index_port: Port<u8> = Port::new(VgaPorts::DAC_INDEX);
         dac_index_port.write(0x00u8); // Start at color index 0
 
         for i in 0..256 {
-            // Create a simple grayscale palette. VGA DACs are 6-bit, so map 0-255 to 0-63.
             let val = (i * 63 / 255) as u8;
-            dac_data_port.write(val); // Red
-            dac_data_port.write(val); // Green
-            dac_data_port.write(val); // Blue
+            write_palette_grayscale(val);
         }
     }
 }
