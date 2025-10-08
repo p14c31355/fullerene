@@ -1,6 +1,5 @@
 // bellows/src/loader/file.rs
 
-use alloc::{format, vec::Vec};
 use core::ffi::c_void;
 use core::ptr;
 use petroleum::common::{
@@ -113,211 +112,216 @@ fn open_file(dir: &EfiFileWrapper, path: &[u16]) -> petroleum::common::Result<Ef
     Ok(EfiFileWrapper::new(file_handle))
 }
 
-/// Read `fullerene-kernel.efi` from the volume.
-pub fn read_efi_file(
+fn get_loaded_image_protocol(
     bs: &EfiBootServices,
     image_handle: usize,
-    system_table: *mut petroleum::common::EfiSystemTable,
-) -> petroleum::common::Result<(usize, usize)> {
-    file_debug!("Starting read_efi_file...");
-    debug_print_str("File: image_handle=0x");
-    debug_print_hex(image_handle);
-    debug_print_str("\n");
-
-    // Get the device handle from the LoadedImageProtocol
+) -> petroleum::common::Result<*mut EfiLoadedImageProtocol> {
     let mut loaded_image: *mut EfiLoadedImageProtocol = ptr::null_mut();
 
-    // Try handle_protocol first (preferred for LoadedImage)
-    debug_print_str("File: Trying handle_protocol for LoadedImage...\n");
+    // Try handle_protocol first
     let status_h = (bs.handle_protocol)(
         image_handle,
         &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
         &mut loaded_image as *mut _ as *mut *mut c_void,
     );
-    let status_h_efi = EfiStatus::from(status_h);
-    debug_print_str("File: handle_protocol status=0x");
-    debug_print_hex(status_h);
-    debug_print_str(" (");
-    match status_h_efi {
-        EfiStatus::Success => debug_print_str("Success"),
-        EfiStatus::OutOfResources => debug_print_str("OutOfResources"),
-        EfiStatus::NotFound => debug_print_str("NotFound"),
-        EfiStatus::InvalidParameter => debug_print_str("InvalidParameter"),
-        _ => debug_print_str("Other"),
+    if EfiStatus::from(status_h) == EfiStatus::Success {
+        return Ok(loaded_image);
     }
-    debug_print_str(")\n");
 
-    if status_h_efi != EfiStatus::Success {
-        debug_print_str("File: Trying locate_handle_buffer for LoadedImage...\n");
-        let mut handle_count = 0;
-        let mut handles: *mut usize = ptr::null_mut();
-        let status = (bs.locate_handle_buffer)(
-            2, // ByProtocol
+    // Try locate_handle_buffer
+    let mut handle_count = 0;
+    let mut handles: *mut usize = ptr::null_mut();
+    let status = (bs.locate_handle_buffer)(
+        2, // ByProtocol
+        &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
+        ptr::null_mut(),
+        &mut handle_count,
+        &mut handles,
+    );
+    if EfiStatus::from(status) == EfiStatus::Success && handle_count > 0 && !handles.is_null() {
+        let loaded_handle = unsafe { *handles };
+        (bs.free_pool)(handles as *mut c_void);
+        let status = (bs.open_protocol)(
+            loaded_handle,
             &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
-            ptr::null_mut(),
-            &mut handle_count,
-            &mut handles,
+            &mut loaded_image as *mut _ as *mut *mut c_void,
+            0,
+            0,
+            1,
         );
-        debug_print_str("File: locate_handle_buffer status=");
-        debug_print_hex(status);
-        debug_print_str("\n");
-        if EfiStatus::from(status) == EfiStatus::Success && handle_count > 0 && !handles.is_null() {
-            debug_print_str("File: Found LoadedImage handles.\n");
-            // Use the first handle
-            let loaded_handle = unsafe { *handles };
-            (bs.free_pool)(handles as *mut c_void);
-            // Open the protocol on the handle
-            let status = (bs.open_protocol)(
-                loaded_handle,
-                &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
-                &mut loaded_image as *mut _ as *mut *mut c_void,
-                0, // AgentHandle
-                0, // ControllerHandle
-                1, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
-            );
-            debug_print_str("File: open_protocol on located handle status=");
-            debug_print_hex(status);
-            debug_print_str("\n");
-            if EfiStatus::from(status) == EfiStatus::Success {
-                debug_print_str("File: Opened protocol on located handle.\n");
-            } else {
-                debug_print_str("File: Failed to open protocol on located handle.\n");
-            }
+        if EfiStatus::from(status) == EfiStatus::Success {
+            return Ok(loaded_image);
         }
     }
 
-    if loaded_image.is_null() {
-        debug_print_str("File: Trying LocateProtocol fallback...\n");
-        // Global fallback: system_tableからLoadedImage locate (稀に効く)
-        let mut global_loaded: *mut EfiLoadedImageProtocol = ptr::null_mut();
-        let loc_status = (bs.locate_protocol)(
-            &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
-            ptr::null_mut(),
-            &mut global_loaded as *mut _ as *mut *mut c_void,
-        );
-        let loc_efi = EfiStatus::from(loc_status);
-        debug_print_str("File: LocateProtocol fallback status=0x");
-        debug_print_hex(loc_status);
-        debug_print_str("\n");
-        if loc_efi == EfiStatus::Success && !global_loaded.is_null() {
-            debug_print_str("File: LocateProtocol fallback success!\n");
-            loaded_image = global_loaded;
-            debug_print_str("File: Using global LoadedImage.\n");
-        } else {
-            debug_print_str("File: LocateProtocol fallback failed.\n");
-        }
+    // LocateProtocol fallback
+    let mut global_loaded: *mut EfiLoadedImageProtocol = ptr::null_mut();
+    let loc_status = (bs.locate_protocol)(
+        &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
+        ptr::null_mut(),
+        &mut global_loaded as *mut _ as *mut *mut c_void,
+    );
+    if EfiStatus::from(loc_status) == EfiStatus::Success && !global_loaded.is_null() {
+        return Ok(global_loaded);
     }
 
-    if loaded_image.is_null() {
-        return Err(BellowsError::ProtocolNotFound(
-            "All LoadedImage methods failed.",
+    Err(BellowsError::ProtocolNotFound("All LoadedImage methods failed."))
+}
+
+fn get_simple_file_system(
+    bs: &EfiBootServices,
+    device_handle: usize,
+    image_handle: usize,
+) -> petroleum::common::Result<*mut EfiSimpleFileSystem> {
+    // Try locate_protocol first
+    let mut fs_proto_ptr: *mut EfiSimpleFileSystem = ptr::null_mut();
+    let status = (bs.locate_protocol)(
+        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+        ptr::null_mut(),
+        &mut fs_proto_ptr as *mut _ as *mut *mut c_void,
+    );
+    if EfiStatus::from(status) == EfiStatus::Success && !fs_proto_ptr.is_null() {
+        return Ok(fs_proto_ptr);
+    }
+
+    // Try handle_protocol on device_handle
+    let mut proto_ptr: *mut EfiSimpleFileSystem = ptr::null_mut();
+    let status = (bs.handle_protocol)(
+        device_handle,
+        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+        &mut proto_ptr as *mut _ as *mut *mut c_void,
+    );
+    if EfiStatus::from(status) == EfiStatus::Success && !proto_ptr.is_null() {
+        return Ok(proto_ptr);
+    }
+
+    // Try open_protocol
+    if let Ok(proto) = open_protocol::<EfiSimpleFileSystem>(
+        bs,
+        device_handle,
+        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+        image_handle,
+        1,
+    ) {
+        return Ok(proto);
+    }
+
+    // Try locate_handle_buffer
+    let mut handle_count = 0;
+    let mut handles: *mut usize = ptr::null_mut();
+    let status = (bs.locate_handle_buffer)(
+        2,
+        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+        ptr::null_mut(),
+        &mut handle_count,
+        &mut handles,
+    );
+    if EfiStatus::from(status) == EfiStatus::Success && handle_count > 0 && !handles.is_null() {
+        let fs_handle = unsafe { *handles };
+        (bs.free_pool)(handles as *mut c_void);
+        let proto = open_protocol::<EfiSimpleFileSystem>(
+            bs,
+            fs_handle,
+            &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+            image_handle,
+            1,
+        )?;
+        return Ok(proto);
+    }
+
+    Err(BellowsError::ProtocolNotFound("No SimpleFileSystem handles found."))
+}
+
+// Function to read file content into memory
+
+fn read_file_to_memory(
+    bs: &EfiBootServices,
+    file: &EfiFileWrapper,
+) -> petroleum::common::Result<(usize, usize)> {
+    let mut file_info_buffer_size = 0;
+
+    let status = unsafe {
+        ((*file.file).get_info)(
+            file.file,
+            &EFI_FILE_INFO_GUID as *const _ as *const u8,
+            &mut file_info_buffer_size,
+            ptr::null_mut(),
+        )
+    };
+    if EfiStatus::from(status) != EfiStatus::BufferTooSmall || file_info_buffer_size == 0 {
+        file_debug!("Failed to get file info size.");
+        return Err(BellowsError::FileIo("Failed to get file info size."));
+    }
+
+    let mut file_info_buffer = [0u8; 4096];
+    if file_info_buffer_size > file_info_buffer.len() {
+        file_debug!("File info buffer too large.");
+        return Err(BellowsError::FileIo("File info buffer too large."));
+    }
+
+    let status = unsafe {
+        ((*file.file).get_info)(
+            file.file,
+            &EFI_FILE_INFO_GUID as *const _ as *const u8,
+            &mut file_info_buffer_size,
+            file_info_buffer.as_mut_ptr() as *mut c_void,
+        )
+    };
+    if EfiStatus::from(status) != EfiStatus::Success {
+        file_debug!("Failed to get file info.");
+        return Err(BellowsError::FileIo("Failed to get file info."));
+    }
+
+    let file_info: &EfiFileInfo = unsafe { &*(file_info_buffer.as_mut_ptr() as *const EfiFileInfo) };
+    let file_size = file_info.file_size as usize;
+
+    if file_size == 0 {
+        return Err(BellowsError::FileIo("Kernel file is empty."));
+    }
+
+    let pages = file_size.div_ceil(4096);
+    let mut phys_addr: usize = 0;
+
+    let status = (bs.allocate_pages)(
+        0usize,
+        petroleum::common::EfiMemoryType::EfiLoaderData,
+        pages,
+        &mut phys_addr,
+    );
+    if EfiStatus::from(status) != EfiStatus::Success {
+        file_debug!("Failed to allocate pages.");
+        return Err(BellowsError::AllocationFailed(
+            "Failed to allocate pages for kernel file.",
         ));
     }
 
-    // Try multiple methods to find SimpleFileSystem protocol
-    let loaded_image_ref = unsafe { &*loaded_image };
-    file_debug!("Success getting LoadedImageProtocol.");
-    let revision = loaded_image_ref.revision;
-    debug_print_str("File: LoadedImageProtocol revision: ");
-    debug_print_hex(revision as usize);
-    debug_print_str("\n");
-    let device_handle = loaded_image_ref.device_handle;
-    debug_print_str("File: Got device_handle from LoadedImageProtocol. Handle: ");
-    debug_print_hex(device_handle);
-    debug_print_str("\n");
+    let buf_ptr = phys_addr as *mut u8;
+    let mut read_size = file_size as u64;
 
-    // Try multiple methods to find SimpleFileSystem protocol
-    let fs_proto: *mut EfiSimpleFileSystem = {
-        // Try locate_protocol first
-        debug_print_str("File: Trying locate_protocol for SimpleFileSystem...\n");
-        let mut fs_proto_ptr: *mut EfiSimpleFileSystem = ptr::null_mut();
-        let status = (bs.locate_protocol)(
-            &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
-            ptr::null_mut(),
-            &mut fs_proto_ptr as *mut _ as *mut *mut c_void,
-        );
-        debug_print_str("File: locate_protocol status=");
-        debug_print_hex(status);
-        debug_print_str("\n");
-        if EfiStatus::from(status) == EfiStatus::Success && !fs_proto_ptr.is_null() {
-            debug_print_str("File: Got SimpleFileSystem via locate_protocol.\n");
-            fs_proto_ptr
-        } else {
-            debug_print_str(
-                "File: locate_protocol failed, trying handle_protocol on device_handle.\n",
-            );
-            let mut proto_ptr: *mut EfiSimpleFileSystem = ptr::null_mut();
-            let status = (bs.handle_protocol)(
-                device_handle,
-                &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
-                &mut proto_ptr as *mut _ as *mut *mut c_void,
-            );
-            debug_print_str("File: handle_protocol on device_handle status=");
-            debug_print_hex(status);
-            debug_print_str("\n");
-            if EfiStatus::from(status) == EfiStatus::Success && !proto_ptr.is_null() {
-                debug_print_str(
-                    "File: Got SimpleFileSystem via handle_protocol on device_handle.\n",
-                );
-                proto_ptr
-            } else {
-                debug_print_str(
-                    "File: handle_protocol on device_handle failed, trying open_protocol.\n",
-                );
-                let open_res = open_protocol::<EfiSimpleFileSystem>(
-                    bs,
-                    device_handle,
-                    &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
-                    image_handle,
-                    1, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
-                );
-                if let Ok(proto) = open_res {
-                    debug_print_str("File: Got SimpleFileSystem on device_handle.\n");
-                    proto
-                } else {
-                    debug_print_str(
-                        "File: Open on device_handle failed, trying locate_handle_buffer.\n",
-                    );
-                    // Locate SimpleFileSystem handles
-                    let mut handle_count = 0;
-                    let mut handles: *mut usize = ptr::null_mut();
-                    let status = (bs.locate_handle_buffer)(
-                        2, // ByProtocol
-                        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
-                        ptr::null_mut(),
-                        &mut handle_count,
-                        &mut handles,
-                    );
-                    debug_print_str("File: locate_handle_buffer status=");
-                    debug_print_hex(status);
-                    debug_print_str("\nFile: handle_count=");
-                    debug_print_hex(handle_count);
-                    debug_print_str("\n");
-                    if EfiStatus::from(status) != EfiStatus::Success
-                        || handle_count == 0
-                        || handles.is_null()
-                    {
-                        file_debug!("Failed to locate SimpleFileSystem handles.");
-                        return Err(BellowsError::ProtocolNotFound(
-                            "No SimpleFileSystem handles found.",
-                        ));
-                    }
-                    file_debug!("Located SimpleFileSystem handles.");
-                    // Use the first handle
-                    let fs_handle = unsafe { *handles };
-                    (bs.free_pool)(handles as *mut c_void);
-                    let proto = open_protocol::<EfiSimpleFileSystem>(
-                        bs,
-                        fs_handle,
-                        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
-                        image_handle,
-                        1, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
-                    )?;
-                    proto
-                }
-            }
-        }
-    };
+    let status = unsafe { ((*file.file).read)(file.file, &mut read_size, buf_ptr) };
+    if EfiStatus::from(status) != EfiStatus::Success || read_size as usize != file_size {
+        (bs.free_pages)(phys_addr, pages);
+        file_debug!("Failed to read file.");
+        return Err(BellowsError::FileIo(
+            "Failed to read kernel file or read size mismatch.",
+        ));
+    }
+
+    Ok((phys_addr, file_size))
+}
+
+/// Read `fullerene-kernel.efi` from the volume.
+pub fn read_efi_file(
+    bs: &EfiBootServices,
+    image_handle: usize,
+    _system_table: *mut petroleum::common::EfiSystemTable,
+) -> petroleum::common::Result<(usize, usize)> {
+    file_debug!("Starting read_efi_file...");
+
+    let loaded_image = get_loaded_image_protocol(bs, image_handle)?;
+    let device_handle = unsafe { (*loaded_image).device_handle };
+
+    let fs_proto = get_simple_file_system(bs, device_handle, image_handle)?;
     file_debug!("Got SimpleFileSystem protocol.");
 
     let mut volume_file_handle: *mut EfiFile = ptr::null_mut();
@@ -341,91 +345,8 @@ pub fn read_efi_file(
         &kernel_path_utf16()[..], // Fixed slice
     )?;
 
-    let mut file_info_buffer_size = 0;
+    let (phys_addr, file_size) = read_file_to_memory(bs, &file)?;
 
-    let status = unsafe {
-        ((*file.file).get_info)(
-            file.file,
-            &EFI_FILE_INFO_GUID as *const _ as *const u8,
-            &mut file_info_buffer_size,
-            ptr::null_mut(),
-        )
-    };
-    if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
-        file_debug!("Failed to get file info size.");
-        return Err(BellowsError::FileIo("Failed to get file info size."));
-    }
-    file_debug!("Got file info size.");
-
-    if file_info_buffer_size == 0 {
-        file_debug!("File info size is 0.");
-        return Err(BellowsError::FileIo("Failed to get file info size."));
-    }
-
-    // Use a page-sized buffer on the stack, which is safer for variable-sized info.
-    let mut file_info_buffer = [0u8; 4096];
-    if file_info_buffer_size > file_info_buffer.len() {
-        file_debug!("File info buffer too large for fixed buffer.");
-        return Err(BellowsError::FileIo("File info buffer too large."));
-    }
-
-    let status = unsafe {
-        ((*file.file).get_info)(
-            file.file,
-            &EFI_FILE_INFO_GUID as *const _ as *const u8,
-            &mut file_info_buffer_size,
-            file_info_buffer.as_mut_ptr() as *mut c_void,
-        )
-    };
-    if EfiStatus::from(status) != EfiStatus::Success {
-        file_debug!("Failed to get file info.");
-        return Err(BellowsError::FileIo("Failed to get file info."));
-    }
-    file_debug!("Got file info.");
-    // Safety:
-    // The size of the buffer is checked against the required size.
-    // The pointer is checked to be non-null and correctly aligned before dereferencing.
-    let file_info: &EfiFileInfo =
-        unsafe { &*(file_info_buffer.as_mut_ptr() as *const EfiFileInfo) };
-    let file_size = file_info.file_size as usize;
-
-    if file_size == 0 {
-        return Err(BellowsError::FileIo("Kernel file is empty."));
-    }
-
-    let pages = file_size.div_ceil(4096);
-    let mut phys_addr: usize = 0;
-
-    let status = {
-        (bs.allocate_pages)(
-            0usize,
-            petroleum::common::EfiMemoryType::EfiLoaderData,
-            pages,
-            &mut phys_addr,
-        )
-    };
-    if EfiStatus::from(status) != EfiStatus::Success {
-        file_debug!("Failed to allocate pages.");
-        return Err(BellowsError::AllocationFailed(
-            "Failed to allocate pages for kernel file.",
-        ));
-    }
-    file_debug!("Allocated pages.");
-
-    let buf_ptr = phys_addr as *mut u8;
-    let mut read_size = file_size as u64;
-
-    let status = unsafe { ((*file.file).read)(file.file, &mut read_size, buf_ptr) };
-    if EfiStatus::from(status) != EfiStatus::Success || read_size as usize != file_size {
-        // It's important to free the allocated pages on failure to avoid memory leaks.
-        (bs.free_pages)(phys_addr, pages);
-        file_debug!("Failed to read file.");
-        return Err(BellowsError::FileIo(
-            "Failed to read kernel file or read size mismatch.",
-        ));
-    }
-    file_debug!("Read file.");
-
-    file_debug!("Returning from read_efi_file.");
+    file_debug!("Read file successfully.");
     Ok((phys_addr, file_size))
 }
