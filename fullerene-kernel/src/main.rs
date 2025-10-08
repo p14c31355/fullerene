@@ -98,6 +98,20 @@ pub extern "efiapi" fn efi_main(
         }
     }
 
+    // Initialize serial immediately after entry (before any complex initialization)
+    serial_init();
+
+    // Initialize GDT early (before any heap/page table operations)
+    // Use a temporary heap location for GDT stack space
+    let temp_heap_start = VirtAddr::new(0x1000000); // Use 16MB temporarily
+    let temp_heap_start = gdt::init(temp_heap_start);
+
+    // Initialize IDT early with exception handlers
+    interrupts::init();
+
+    // Early serial log works now
+    kernel_log!("Kernel: basic init complete");
+
     // Reinitialize page table after exit boot services
     let descriptors = unsafe {
         core::slice::from_raw_parts(
@@ -128,15 +142,27 @@ pub extern "efiapi" fn efi_main(
         panic!("Could not determine kernel's physical start address.");
     }
 
+    kernel_log!("Kernel: memory map parsed, kernel_phys_start found");
+    kernel_log!("Starting heap frame allocator init...");
+
     heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
     heap::init_page_table(physical_memory_offset);
+
+    kernel_log!("Kernel: page table init complete, starting reinit...");
+
     heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
+
+    kernel_log!("Kernel: page table reinitialization complete");
 
     // Common initialization for both UEFI and BIOS
     init_common(_memory_map, _memory_map_size);
 
     kernel_log!("Kernel: efi_main entered (via serial_log).");
-    kernel_log!("Interrupts initialized via init().");
+    kernel_log!("GDT initialized.");
+    kernel_log!("IDT initialized.");
+    kernel_log!("APIC initialized.");
+    kernel_log!("Heap initialized.");
+    kernel_log!("Serial initialized.");
 
     kernel_log!("Entering efi_main...");
     kernel_log!("Searching for framebuffer config table...");
@@ -176,10 +202,14 @@ fn init_common(_memory_map: *mut c_void, _memory_map_size: usize) {
     let descriptors = *MEMORY_MAP.get().unwrap();
     let heap_phys_start = find_heap_start(descriptors);
     let heap_start = heap::allocate_heap_from_map(heap_phys_start, heap::HEAP_SIZE);
-    let heap_start = gdt::init(heap_start); // Initialize GDT with heap start, get adjusted heap start
-    interrupts::init(); // Initialize IDT
+    let heap_start = gdt::init(heap_start); // Initialize GDT with proper heap location
     heap::init(heap_start, heap::HEAP_SIZE); // Initialize heap
-    serial_init(); // Initialize serial early for debugging
+
+    kernel_log!("Kernel: heap and GDT fully initialized");
+
+    // Now safe to initialize APIC and enable interrupts (after stable page tables and heap)
+    interrupts::init_apic();
+    kernel_log!("Kernel: APIC initialized and interrupts enabled");
 }
 
 #[cfg(not(target_os = "uefi"))]
