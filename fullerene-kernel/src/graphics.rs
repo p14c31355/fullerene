@@ -303,7 +303,7 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
     }
 
     fn scroll_up(&self) {
-        self.scroll_up();
+        FramebufferWriter::scroll_up(self);
     }
 }
 
