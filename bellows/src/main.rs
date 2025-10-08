@@ -160,8 +160,8 @@ fn init_gop(st: &EfiSystemTable) {
         max_mode, mode_ref.mode as usize
     ));
 
-    let mut target_mode: Option<usize> = None;
-    let mut best_area: u32 = 0;
+        let mut target_mode: Option<usize> = None;
+    let mut best_resolution: u64 = 0;
     for mode_num in 0..max_mode {
         let mut size = 0;
         let status = (gop_ref.query_mode)(gop, mode_num, &mut size, ptr::null_mut());
@@ -192,10 +192,12 @@ fn init_gop(st: &EfiSystemTable) {
                 target_mode = Some(mode_num as usize);
                 break;
             }
-            let area = info.horizontal_resolution * info.vertical_resolution;
-            if info.horizontal_resolution >= 1024 && info.vertical_resolution >= 768 && area > best_area {
-                best_area = area;
-                target_mode = Some(mode_num as usize);
+            if info.horizontal_resolution >= 1024 && info.vertical_resolution >= 768 {
+                let resolution = info.horizontal_resolution as u64 * info.vertical_resolution as u64;
+                if resolution > best_resolution {
+                    best_resolution = resolution;
+                    target_mode = Some(mode_num as usize);
+                }
             }
         }
     }
