@@ -1,3 +1,4 @@
+use core::fmt::Write;
 use petroleum::serial;
 use spin::Mutex;
 
@@ -11,6 +12,5 @@ pub fn serial_init() {
 
 /// Logs a string to the serial port.
 pub fn serial_log(s: &str) {
-    use core::fmt::Write;
     let _ = writeln!(SERIAL1.lock(), "{}", s);
 }

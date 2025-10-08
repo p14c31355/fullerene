@@ -92,9 +92,13 @@ pub fn read_file_to_memory(
             ptr::null_mut(),
         )
     };
-    if EfiStatus::from(status) != EfiStatus::BufferTooSmall || file_info_buffer_size == 0 {
+    if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
         file_debug!("Failed to get file info size.");
         return Err(BellowsError::FileIo("Failed to get file info size."));
+    }
+    if file_info_buffer_size == 0 {
+        file_debug!("File info size is 0.");
+        return Err(BellowsError::FileIo("File info size is 0."));
     }
 
     let mut file_info_buffer = alloc::vec![0u8; file_info_buffer_size];

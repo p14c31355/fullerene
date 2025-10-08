@@ -143,8 +143,6 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     }
 }
 
-
-
 /// Initializes the Graphics Output Protocol (GOP) for framebuffer access.
 fn init_gop(st: &EfiSystemTable) {
     debug_print_str("GOP: init_gop entered.\n");
