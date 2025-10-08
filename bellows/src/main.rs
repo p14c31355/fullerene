@@ -160,7 +160,7 @@ fn init_gop(st: &EfiSystemTable) {
         max_mode, mode_ref.mode as usize
     ));
 
-        let mut target_mode: Option<usize> = None;
+    let mut target_mode: Option<usize> = None;
     let mut best_resolution: u64 = 0;
     for mode_num in 0..max_mode {
         let mut size = 0;
