@@ -1,5 +1,5 @@
 use alloc::boxed::Box; // Import Box
-use core::fmt;
+use core::fmt::{self, Write};
 use core::marker::{Send, Sync};
 #[cfg(not(target_os = "uefi"))]
 use petroleum::common::VgaFramebufferConfig;
@@ -706,6 +706,12 @@ pub fn _print(args: fmt::Arguments) {
             let mut writer = writer.lock();
             writer.write_fmt(args).ok();
         }
+    }
+    // Also output to VGA text buffer for reliable visibility
+    if let Some(vga) = crate::vga::VGA_BUFFER.get() {
+        let mut vga_writer = vga.lock();
+        vga_writer.write_fmt(args).ok();
+        vga_writer.update_cursor();
     }
 }
 
