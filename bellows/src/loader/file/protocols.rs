@@ -7,13 +7,6 @@ use petroleum::common::{
 
 use super::super::debug::*;
 
-// Macro to reduce repetitive debug prints
-macro_rules! file_debug {
-    ($msg:expr) => {
-        debug_print_str(concat!("File: ", $msg, "\n"));
-    };
-}
-
 // Helper function to open a protocol
 fn open_protocol<T>(
     bs: &EfiBootServices,
@@ -37,7 +30,7 @@ fn open_protocol<T>(
         debug_print_str("\n");
         return Err(BellowsError::ProtocolNotFound("Failed to open protocol."));
     }
-    file_debug!("Opened protocol.");
+    debug_print_str("File: Opened protocol.\n");
     Ok(proto)
 }
 
