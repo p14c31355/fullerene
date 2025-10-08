@@ -132,6 +132,61 @@ mod tests {
         width: usize,
     }
 
+    impl TextBufferOperations for MockVgaBuffer {
+        fn get_width(&self) -> usize {
+            self.width
+        }
+
+        fn get_height(&self) -> usize {
+            self.height
+        }
+
+        fn get_color_code(&self) -> ColorCode {
+            self.color_code
+        }
+
+        fn get_position(&self) -> (usize, usize) {
+            (self.row_position, self.column_position)
+        }
+
+        fn set_position(&mut self, row: usize, col: usize) {
+            self.row_position = row;
+            self.column_position = col;
+        }
+
+        fn set_char_at(&mut self, row: usize, col: usize, chr: ScreenChar) {
+            if row < self.height && col < self.width {
+                let index = row * self.width + col;
+                self.buffer[index] = chr;
+            }
+        }
+
+        fn get_char_at(&self, row: usize, col: usize) -> ScreenChar {
+            if row < self.height && col < self.width {
+                let index = row * self.width + col;
+                self.buffer[index]
+            } else {
+                ScreenChar {
+                    ascii_character: 0,
+                    color_code: self.color_code,
+                }
+            }
+        }
+
+        fn scroll_up(&mut self) {
+            // Scroll all lines up
+            for row in 1..self.height {
+                for col in 0..self.width {
+                    let src_index = row * self.width + col;
+                    let dest_index = (row - 1) * self.width + col;
+                    self.buffer[dest_index] = self.buffer[src_index];
+                }
+            }
+            // Clear the last line
+            self.clear_row(self.height - 1);
+        }
+    }
+
     impl MockVgaBuffer {
         fn new(width: usize, height: usize) -> Self {
             MockVgaBuffer {

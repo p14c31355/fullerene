@@ -9,6 +9,7 @@ mod graphics;
 mod heap;
 mod interrupts;
 // mod serial; // Removed, now using petroleum
+mod shared;
 mod vga;
 
 extern crate alloc;
