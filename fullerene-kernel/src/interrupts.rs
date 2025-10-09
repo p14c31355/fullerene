@@ -222,7 +222,6 @@ pub extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
 pub extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
     // Keyboard interrupt - handle keyboard input
     // TODO: Read scancode from keyboard controller and process
-    use x86_64::instructions::port::Port;
     let mut port = Port::<u8>::new(0x60);
     let _scancode = unsafe { port.read() };
     // TODO: Process scancode and add to input buffer
@@ -232,7 +231,6 @@ pub extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame
 pub extern "x86-interrupt" fn mouse_handler(_stack_frame: InterruptStackFrame) {
     // Mouse interrupt - handle mouse input
     // TODO: Read mouse packet from controller and process
-    use x86_64::instructions::port::Port;
     let mut port = Port::<u8>::new(0x60);
     let _packet = unsafe { port.read() };
     // TODO: Process mouse packet and update cursor position
