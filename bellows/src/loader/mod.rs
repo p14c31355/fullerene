@@ -27,7 +27,8 @@ pub fn exit_boot_services_and_jump(
     debug_print_str("About to set up memory map vars.\n");
 
     // Initial setup for memory map
-    let mut map_size: usize = 0;
+    // Start with a reasonable initial size to avoid EFI_INVALID_PARAMETER on some UEFI implementations
+    let mut map_size: usize = 16 * 4096; // 64 KiB initial guess
     let mut map_key: usize = 0;
     let mut descriptor_size: usize = 0;
     let mut descriptor_version: u32 = 0;
@@ -35,6 +36,7 @@ pub fn exit_boot_services_and_jump(
     let mut map_pages: usize = 0;
 
     // Loop to get the memory map until successful
+    // Since some UEFI implementations don't handle null buffers well, allocate directly
     let mut attempts = 0;
     const MAX_ATTEMPTS: usize = 5;
 
@@ -51,40 +53,14 @@ pub fn exit_boot_services_and_jump(
         debug_print_hex(map_size);
         debug_print_str("\n");
 
-        // First call: Get the required buffer size (with NULL buffer)
-        debug_print_str("About to call get_memory_map (null buffer)\n");
-        let status = unsafe {
-            (bs.get_memory_map)(
-                &mut map_size,
-                ptr::null_mut(),
-                &mut map_key,
-                &mut descriptor_size,
-                &mut descriptor_version,
-            )
-        };
-        debug_print_str("get_memory_map returned, status=");
-        debug_print_hex(status as usize);
-        debug_print_str("\n");
-
-        if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
-            petroleum::serial::_print(format_args!(
-                "Error: Failed to get initial memory map size: {:?}\n",
-                EfiStatus::from(status)
-            ));
-            return Err(BellowsError::InvalidState(
-                "Failed to get initial memory map size.",
-            ));
-        }
-
-        // Allocate buffer with some extra space, capped at 64KiB
-        let alloc_size = map_size.saturating_add(4096);
-        let new_map_pages = alloc_size.div_ceil(4096).max(1);
+        // Allocate buffer for current map_size
+        let alloc_pages = (map_size as usize).div_ceil(4096).max(1);
         let mut new_map_phys_addr: usize = 0;
 
         let alloc_status = (bs.allocate_pages)(
             0usize, // AllocateAnyPages
             EfiMemoryType::EfiLoaderData,
-            new_map_pages,
+            alloc_pages,
             &mut new_map_phys_addr,
         );
 
@@ -108,19 +84,22 @@ pub fn exit_boot_services_and_jump(
         }
 
         map_phys_addr = new_map_phys_addr;
-        map_pages = new_map_pages;
+        map_pages = alloc_pages;
 
-        // Set map_size to the allocated buffer size for input
-        map_size = new_map_pages * 4096;
-
-        // Second call: Get the memory map with the allocated buffer
-        let status = (bs.get_memory_map)(
-            &mut map_size,
-            map_phys_addr as *mut c_void,
-            &mut map_key,
-            &mut descriptor_size,
-            &mut descriptor_version,
-        );
+        // Call get_memory_map with the allocated buffer
+        debug_print_str("About to call get_memory_map (with buffer)\n");
+        let status = unsafe {
+            (bs.get_memory_map)(
+                &mut map_size,
+                map_phys_addr as *mut c_void,
+                &mut map_key,
+                &mut descriptor_size,
+                &mut descriptor_version,
+            )
+        };
+        debug_print_str("get_memory_map returned, status=");
+        debug_print_hex(status as usize);
+        debug_print_str("\n");
 
         match EfiStatus::from(status) {
             EfiStatus::Success => {
@@ -132,6 +111,7 @@ pub fn exit_boot_services_and_jump(
             }
             EfiStatus::BufferTooSmall => {
                 petroleum::serial::_print(format_args!("Buffer too small (size now {}), retrying...\n", map_size));
+                // Continue with enlarged map_size (updated by the call)
                 continue;
             }
             _ => {
