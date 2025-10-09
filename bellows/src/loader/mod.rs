@@ -130,6 +130,12 @@ pub fn exit_boot_services_and_jump(
                         }
                         break; // Success, exit the loop and proceed to kernel jump
                     }
+                    EfiStatus::Unsupported => {
+                        #[cfg(feature = "debug_loader")] {
+                            debug_print_str("exit_boot_services returned Unsupported, proceeding anyway\n");
+                        }
+                        break; // Proceed to jump to kernel
+                    }
                     EfiStatus::InvalidParameter => {
                         #[cfg(feature = "debug_loader")] {
                             debug_print_str("exit_boot_services returned InvalidParameter, proceeding anyway\n");
