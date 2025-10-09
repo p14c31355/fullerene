@@ -29,7 +29,7 @@ use petroleum::common::{
 /// This function is the `start` attribute as defined in the `Cargo.toml`.
 #[unsafe(no_mangle)]
 pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
-    petroleum::println!("Bellows: efi_main entered."); // Early debug print
+    petroleum::serial::_print(format_args!("Bellows: efi_main entered.\n"));
 
     debug_print_str("Main: image_handle=0x");
     debug_print_hex(image_handle);
@@ -45,11 +45,11 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     let _ = petroleum::UEFI_SYSTEM_TABLE
         .lock()
         .insert(petroleum::UefiSystemTablePtr(system_table));
-    petroleum::println!("Bellows: UEFI_SYSTEM_TABLE initialized."); // Debug print after initialization
+    petroleum::serial::_print(format_args!("Bellows: UEFI_SYSTEM_TABLE initialized.\n"));
     let st = unsafe { &*system_table };
     let bs = unsafe { &*st.boot_services };
 
-    petroleum::println!("Bellows: UEFI system table and boot services acquired."); // Early debug print
+    petroleum::serial::_print(format_args!("Bellows: UEFI system table and boot services acquired.\n"));
 
     // Initialize the serial writer with the console output pointer.
     petroleum::serial::UEFI_WRITER.lock().init(st.con_out);
@@ -106,7 +106,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             panic!("Failed to load EFI image.");
         }
     };
-    petroleum::println!("Bellows: EFI image loaded."); // Debug print after load_efi_image
+    petroleum::serial::_print(format_args!("Bellows: EFI image loaded.\n"));
 
     petroleum::println!("Bellows: Kernel loaded from embedded binary.");
 
@@ -115,6 +115,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     ));
     // Exit boot services and jump to the kernel.
     petroleum::println!("Bellows: About to exit boot services and jump to kernel."); // Debug print just before the call
+    debug_print_str("Before match exit_boot_services_and_jump.\n");
     match exit_boot_services_and_jump(image_handle, system_table, entry) {
         Ok(_) => {
             unreachable!(); // This branch should never be reached if the function returns '!'

@@ -3,6 +3,7 @@ use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
 
 use super::headers::*;
 use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
+use petroleum::write_serial_bytes;
 
 /// Dummy kernel entry point for testing
 extern "efiapi" fn dummy_kernel_entry(
@@ -12,32 +13,9 @@ extern "efiapi" fn dummy_kernel_entry(
     _memory_map_size: usize,
 ) -> ! {
     // Print multiple messages to show the kernel was called
-    use x86_64::instructions::port::Port;
-    let mut port = Port::new(0x3F8);
-
-    // Message 1
-    for byte in b"Kernel: Entry point reached!\n" {
-        unsafe {
-            while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
-            port.write(*byte);
-        }
-    }
-
-    // Message 2
-    for byte in b"Kernel: Parameters received\n" {
-        unsafe {
-            while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
-            port.write(*byte);
-        }
-    }
-
-    // Message 3
-    for byte in b"Kernel: Halting CPU...\n" {
-        unsafe {
-            while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
-            port.write(*byte);
-        }
-    }
+    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: Entry point reached!\n");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: Parameters received\n");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: Halting CPU...\n");
 
     // Halt the CPU
     loop {
@@ -101,9 +79,17 @@ pub fn load_efi_image(
                 .add(offset_of!(ImageOptionalHeader64, size_of_image)) as *const u32,
         )
     } as usize;
-    let pages_needed = image_size.div_ceil(4096);
+    let address_of_entry_point = unsafe {
+        ptr::read_unaligned(
+            (nt_headers_ptr as *const u8)
+                .add(offset_of!(ImageNtHeaders64, optional_header))
+                .add(offset_of!(ImageOptionalHeader64, address_of_entry_point))
+                as *const u32,
+        )
+    } as usize;
+    let pages_needed = (image_size.max(address_of_entry_point + 4096)).div_ceil(4096); // Ensure the entire page containing the entry point is allocated
     let mut phys_addr: usize = 0;
-    let preferred_base = {
+    let mut preferred_base = {
         let offset = offset_of!(ImageNtHeaders64, optional_header)
             + offset_of!(ImageOptionalHeader64, image_base);
         read_field!(nt_headers_ptr, offset, u64)
@@ -111,11 +97,13 @@ pub fn load_efi_image(
     let mut status;
     // Try to allocate at the preferred base if it's a high address.
     if preferred_base >= 0x1000_0000 {
+        // Use a low address instead, as high may not have execute permissions
+        preferred_base = 0x100000;
         phys_addr = preferred_base;
         status = unsafe {
             (bs.allocate_pages)(
                 2, // AllocateAddress
-                EfiMemoryType::EfiLoaderData,
+                EfiMemoryType::EfiLoaderCode,
                 pages_needed,
                 &mut phys_addr,
             )
@@ -129,7 +117,7 @@ pub fn load_efi_image(
             status = unsafe {
                 (bs.allocate_pages)(
                     0, // AllocateAnyPages
-                    EfiMemoryType::EfiLoaderData,
+                    EfiMemoryType::EfiLoaderCode,
                     pages_needed,
                     &mut phys_addr,
                 )
@@ -143,7 +131,7 @@ pub fn load_efi_image(
         status = unsafe {
             (bs.allocate_pages)(
                 0, // AllocateAnyPages
-                EfiMemoryType::EfiLoaderData,
+                EfiMemoryType::EfiLoaderCode,
                 pages_needed,
                 &mut phys_addr,
             )
@@ -380,15 +368,20 @@ pub fn load_efi_image(
         petroleum::println!("Image base delta is 0, no relocations needed.");
     }
 
-    let address_of_entry_point = unsafe {
-        ptr::read_unaligned(
-            (nt_headers_ptr as *const u8)
-                .add(offset_of!(ImageNtHeaders64, optional_header))
-                .add(offset_of!(ImageOptionalHeader64, address_of_entry_point))
-                as *const u32,
-        )
-    };
-    let entry_point_addr = phys_addr.saturating_add(address_of_entry_point as usize);
+    debug_print_str("PE: phys_addr = ");
+    debug_print_hex(phys_addr);
+    debug_print_str("\n");
+
+    let entry_point_addr = phys_addr.saturating_add(address_of_entry_point);
+
+    debug_print_str("PE: address_of_entry_point = ");
+    debug_print_hex(address_of_entry_point as usize);
+    debug_print_str("\n");
+
+    debug_print_str("PE: entry_point_addr = ");
+    debug_print_hex(entry_point_addr);
+    debug_print_str("\n");
+
     petroleum::println!("Calculated Entry Point Address: {:#x}", entry_point_addr);
 
     if entry_point_addr >= phys_addr.saturating_add(pages_needed * 4096)
@@ -408,5 +401,6 @@ pub fn load_efi_image(
     let entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> ! =
         unsafe { mem::transmute(entry_point_addr) };
 
+    debug_print_str("PE: load_efi_image completed successfully.\n");
     Ok(entry)
 }

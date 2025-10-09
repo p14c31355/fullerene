@@ -9,6 +9,11 @@ pub const FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID: [u8; 16] = [
     0x3c, 0x23, 0x88, 0x3f, 0x27, 0x4d, 0x78, 0x4d, 0x91, 0x2c, 0x73, 0x49, 0x3a, 0x0c, 0x23, 0x75,
 ];
 
+/// GUID for FULLERENE_MEMORY_MAP_CONFIG_TABLE_GUID (UEFI only)
+pub const FULLERENE_MEMORY_MAP_CONFIG_TABLE_GUID: [u8; 16] = [
+    0x78, 0x56, 0x34, 0x12, 0xbc, 0x9a, 0xf0, 0xde, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+];
+
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EfiGraphicsPixelFormat {
@@ -27,6 +32,13 @@ pub struct FullereneFramebufferConfig {
     pub height: u32,
     pub stride: u32,
     pub pixel_format: EfiGraphicsPixelFormat,
+}
+
+/// The structure passed from the bootloader to the kernel (UEFI) for memory map.
+#[repr(C)]
+pub struct FullereneMemoryMap {
+    pub physical_address: u64,
+    pub size: usize,
 }
 
 /// BIOS VGA config (fixed for mode 13h).

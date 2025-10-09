@@ -4,6 +4,7 @@ use x86_64::instructions::tables::load_tss;
 use x86_64::registers::segmentation::{CS, Segment};
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
+use petroleum::serial::{serial_log, debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 pub const TIMER_IST_INDEX: u16 = 1;
@@ -12,8 +13,19 @@ static TSS: Once<TaskStateSegment> = Once::new();
 static GDT: Once<GlobalDescriptorTable> = Once::new();
 static CODE_SELECTOR: Once<SegmentSelector> = Once::new();
 static TSS_SELECTOR: Once<SegmentSelector> = Once::new();
+static GDT_INITIALIZED: Once<()> = Once::new();
 
 pub fn init(heap_start: VirtAddr) -> VirtAddr {
+    // If already initialized, just return the heap start (don't modify)
+    if GDT_INITIALIZED.is_completed() {
+        serial_log("GDT: Already initialized, skipping\n");
+        return heap_start;
+    }
+
+    debug_print_str("GDT: Initializing with heap at ");
+    debug_print_hex(heap_start.as_u64() as usize);
+    debug_print_str("\n");
+
     const STACK_SIZE: usize = 4096 * 5;
     let double_fault_ist = heap_start + STACK_SIZE as u64;
     let timer_ist = double_fault_ist + STACK_SIZE as u64;
@@ -41,7 +53,10 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
     unsafe {
         CS::set_reg(*CODE_SELECTOR.get().unwrap());
         load_tss(*TSS_SELECTOR.get().unwrap());
+        debug_print_str("GDT: Loaded and segments set\n");
     }
 
+    // Mark as initialized
+    GDT_INITIALIZED.call_once(|| {});
     new_heap_start
 }
