@@ -45,18 +45,21 @@ pub fn u32_to_str_heapless(n: u32, buffer: &mut [u8]) -> &str {
 
 /// Panic handler implementation that can be used by binaries
 pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
+    use alloc::format;
+
     // Print the panic message using the refactored serial module.
     if let Some(st_ptr) = UEFI_SYSTEM_TABLE.lock().as_ref() {
         let st_ref = unsafe { &*st_ptr.0 };
         crate::serial::UEFI_WRITER.lock().init(st_ref.con_out);
 
-        // Use write_string_heapless for panic messages to avoid heap allocation
+        // Use write_string_heapless for panic messages to avoid heap allocation initially
         let mut writer = crate::serial::UEFI_WRITER.lock();
-        let mut line_buf = [0u8; 10]; // Buffer for line number
-        let mut col_buf = [0u8; 10]; // Buffer for column number
+        let _ = writer.write_string_heapless("PANIC!\n");
 
         if let Some(loc) = info.location() {
-            let _ = writer.write_string_heapless("Panic at ");
+            let mut line_buf = [0u8; 10];
+            let mut col_buf = [0u8; 10];
+            let _ = writer.write_string_heapless("Location: ");
             let _ = writer.write_string_heapless(loc.file());
             let _ = writer.write_string_heapless(":");
             let _ = writer.write_string_heapless(u32_to_str_heapless(loc.line(), &mut line_buf));
@@ -65,11 +68,43 @@ pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
             let _ = writer.write_string_heapless("\n");
         }
 
-        let _ = writer.write_string_heapless("Panic occurred!\n");
         let _ = writer.write_string_heapless("Message: ");
-        let _ = write!(writer, "{}", info.message());
+        // Try to write the message as a string slice if possible
+        if let Some(msg) = info.message().as_str() {
+            let _ = writer.write_string_heapless(msg);
+        } else {
+            let _ = writer.write_string_heapless("(message formatting failed)");
+        }
         let _ = writer.write_string_heapless("\n");
     }
+
+    // Also output to VGA buffer if available
+    #[cfg(feature = "vga_panic")]
+    {
+        // Import VGA module here to avoid dependency issues
+        extern crate vga_buffer;
+        use vga_buffer::{Writer, ColorCode, Color, BUFFER_HEIGHT, BUFFER_WIDTH};
+
+        let mut writer = Writer {
+            column_position: 0,
+            color_code: ColorCode::new(Color::Red, Color::Black),
+            buffer: unsafe { &mut *(0xb8000 as *mut vga_buffer::Buffer) },
+        };
+
+        for (i, line) in format_args!("PANIC: {}", info).to_string().lines().enumerate() {
+            if i >= BUFFER_HEIGHT {
+                break;
+            }
+            for (j, byte) in line.bytes().enumerate() {
+                if j >= BUFFER_WIDTH {
+                    break;
+                }
+                writer.write_byte(byte);
+            }
+            writer.new_line();
+        }
+    }
+
     // For QEMU debugging, halt the CPU
     unsafe {
         asm!("hlt");

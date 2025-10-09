@@ -112,12 +112,28 @@ pub extern "efiapi" fn efi_main(
 
     print_kernel("Kernel: starting to parse parameters.\n");
 
+    // Verify our own address as sanity check for PE relocation
+    let self_addr = efi_main as u64;
+    serial_log("Kernel: efi_main located at ");
+    serial_log(&alloc::format!("{:#x}", self_addr));
+
     // Initialize serial immediately after entry (before any complex initialization)
     serial_init();
     print_kernel("Kernel: serial_init done.\n");
 
-    // Initialize GDT early (before any heap/page table operations)
-    // Use a temporary heap location for GDT stack space
+    // Confirm ExitBootServices has been called by bootloader (it should have)
+    // The bootloader already calls ExitBootServices before jumping to kernel
+    kernel_log!("UEFI ExitBootServices assumed called by bootloader");
+
+    // Debugging: print CR3 before page table operations
+    use x86_64::registers::control::Cr3;
+    kernel_log!("CR3 before page table init:");
+    let cr3_before = unsafe { Cr3::read() };
+    serial_log("  CR3: ");
+    serial_log(&alloc::format!("{:#x}", cr3_before.0.start_address().as_u64()));
+
+    // Initialize GDT after page tables are initialized, but before heap operations
+    // For now, keep temp heap - we'll reinitialize later with proper heap
     let temp_heap_start = VirtAddr::new(0x1000000); // Use 16MB temporarily
     let temp_heap_start = gdt::init(temp_heap_start);
     print_kernel("Kernel: GDT init done (temp).\n");
@@ -168,12 +184,24 @@ pub extern "efiapi" fn efi_main(
     heap::init_page_table(physical_memory_offset);
     print_kernel("Kernel: page table init done.\n");
 
-    kernel_log!("Kernel: page table init complete, starting reinit...");
-
-    heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
-    print_kernel("Kernel: page table reinit done.\n");
-
-    kernel_log!("Kernel: page table reinitialization complete");
+    // For UEFI, skip reinit_page_table as UEFI already has proper page tables
+    // Only do reinit for BIOS mode if needed
+    #[cfg(not(target_os = "uefi"))]
+    {
+        kernel_log!("Kernel: page table init complete, starting reinit...");
+        heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
+        print_kernel("Kernel: page table reinit done.\n");
+        kernel_log!("Kernel: page table reinitialization complete");
+    }
+    #[cfg(target_os = "uefi")]
+    {
+        kernel_log!("Kernel: UEFI mode - using UEFI page tables without reinit");
+        // Print CR3 after init to compare
+        use x86_64::registers::control::Cr3;
+        let cr3_after = unsafe { Cr3::read() };
+        serial_log("  CR3 after init: ");
+        serial_log(&alloc::format!("{:#x}", cr3_after.0.start_address().as_u64()));
+    }
 
     // Common initialization for both UEFI and BIOS
     init_common(_memory_map, _memory_map_size);
@@ -232,6 +260,11 @@ fn init_common(_memory_map: *mut c_void, _memory_map_size: usize) {
     // Now safe to initialize APIC and enable interrupts (after stable page tables and heap)
     interrupts::init_apic();
     kernel_log!("Kernel: APIC initialized and interrupts enabled");
+
+    // Test interrupt handling - should not panic or crash if APIC is working
+    kernel_log!("Testing interrupt handling with int3...");
+    unsafe { x86_64::instructions::interrupts::int3(); }
+    kernel_log!("Interrupt test passed (no crash)");
 }
 
 #[cfg(not(target_os = "uefi"))]
