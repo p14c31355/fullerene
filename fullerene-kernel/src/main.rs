@@ -13,8 +13,6 @@ mod vga;
 
 extern crate alloc;
 
-use core::panic::PanicInfo;
-
 // use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, serial_log};
 use petroleum::serial::{
     SERIAL_PORT_WRITER as SERIAL1, debug_print_hex, debug_print_str_to_com1 as debug_print_str,
@@ -22,7 +20,7 @@ use petroleum::serial::{
 
 #[cfg(not(test))]
 #[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo) -> ! {
     petroleum::handle_panic(info)
 }
 
