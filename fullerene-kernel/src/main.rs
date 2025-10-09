@@ -16,23 +16,26 @@ extern crate alloc;
 use core::panic::PanicInfo;
 
 // use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, serial_log};
-use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, serial_log, debug_print_hex, debug_print_str_to_com1 as debug_print_str};
+use petroleum::serial::{
+    SERIAL_PORT_WRITER as SERIAL1, debug_print_hex, debug_print_str_to_com1 as debug_print_str,
+};
 
 use core::ffi::c_void;
 use petroleum::common::{
     EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
-    FullereneFramebufferConfig,
+    FullereneFramebufferConfig, VgaFramebufferConfig,
 };
 use petroleum::page_table::EfiMemoryDescriptor;
 use petroleum::write_serial_bytes;
 use spin::Once;
-use x86_64::VirtAddr;
 use x86_64::instructions::hlt;
+use x86_64::{PhysAddr, VirtAddr};
 
 // Macro to reduce repetitive serial logging
 macro_rules! kernel_log {
-    ($msg:expr) => {
-        serial_log(concat!($msg, "\n"));
+    ($($arg:tt)*) => {
+        let _ = core::fmt::write(&mut *SERIAL1.lock(), format_args!($($arg)*));
+        let _ = core::fmt::write(&mut *SERIAL1.lock(), format_args!("\n"));
     };
 }
 
@@ -45,13 +48,17 @@ fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&FullereneFr
         )
     };
     for entry in config_table_entries {
+        kernel_log!(
+            "Checking config table entry: GUID={:?}",
+            entry.vendor_guid
+        );
         if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
+            kernel_log!("Found matching Fullerene framebuffer config GUID");
             return unsafe { Some(&*(entry.vendor_table as *const FullereneFramebufferConfig)) };
         }
     }
     None
 }
-
 
 // Helper function to find heap start from memory map
 fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> x86_64::PhysAddr {
@@ -92,6 +99,17 @@ pub extern "efiapi" fn efi_main(
 ) -> ! {
     // Early debug print to confirm kernel entry point is reached using direct port access
     write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main entered.\n");
+
+    // Early VGA text output to ensure visible output on screen
+    {
+        let vga_buffer = unsafe { &mut *(0xb8000 as *mut [[u16; 80]; 25]) };
+        let hello = b"UEFI Kernel Starting...";
+        for (i, &byte) in hello.iter().enumerate() {
+            if i < 80 {
+                vga_buffer[0][i] = (0x0F00 as u16) | (byte as u16); // White on black
+            }
+        }
+    }
 
     // Helper function for kernel debug prints
     fn print_kernel(msg: &str) {
@@ -159,7 +177,10 @@ pub extern "efiapi" fn efi_main(
 
     // Initialize heap with the remaining memory
     let gdt_mem_usage = heap_start_after_gdt - heap_start;
-    heap::init(heap_start_after_gdt, heap::HEAP_SIZE - gdt_mem_usage as usize);
+    heap::init(
+        heap_start_after_gdt,
+        heap::HEAP_SIZE - gdt_mem_usage as usize,
+    );
     kernel_log!("Kernel: heap initialized");
 
     // Early serial log works now
@@ -181,41 +202,30 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Heap initialized.");
     kernel_log!("Serial initialized.");
 
-    kernel_log!("Entering efi_main...");
     kernel_log!("Searching for framebuffer config table...");
-
     if let Some(config) = find_framebuffer_config(system_table) {
-        if config.address == 0 {
-            panic!("Framebuffer address 0 - check bootloader GOP install");
-        } else {
-            let _ = core::fmt::write(
-                &mut *SERIAL1.lock(),
-                format_args!("  Address: {:#x}\n", config.address),
-            );
-            print_kernel("Kernel: about to init graphics.\n");
+        if config.address != 0 {
             graphics::init(config);
-            print_kernel("Kernel: graphics init done.\n");
-            kernel_log!("Graphics initialized.");
+            kernel_log!("GOP graphics initialized.");
+        } else {
+            panic!("Framebuffer address is 0, check bootloader GOP install");
         }
     } else {
-        kernel_log!("Fullerene Framebuffer Config Table not found.");
+        kernel_log!("Fullerene Framebuffer Config Table not found, falling back to VGA.");
+        let vga_config = VgaFramebufferConfig {
+            address: 0xA0000,
+            width: 320,
+            height: 200,
+            bpp: 8,
+        };
+        graphics::init_vga(&vga_config);
+        kernel_log!("VGA graphics initialized.");
     }
-
-    // Also initialize VGA text mode for reliable output
-    vga::vga_init();
-    print_kernel("Kernel: VGA init done.\n");
-
-    // Main loop
-    print_kernel("Kernel: about to print hello.\n");
     println!("Hello QEMU by FullereneOS");
 
-    // Exit QEMU instead of infinite halt
-    print_kernel("Kernel: exiting QEMU...\n");
-    unsafe {
-        // Write 0x1 to port 0xf4 to exit QEMU
-        x86_64::instructions::port::Port::new(0xf4).write(0x1u32);
-    }
-    // If we get here (which we won't), halt
+    // Keep kernel running instead of exiting
+    print_kernel("Kernel: running in main loop...\n");
+    kernel_log!("FullereneOS kernel is now running.");
     hlt_loop();
 }
 
@@ -227,7 +237,9 @@ fn init_common() {
 
     // Test interrupt handling - should not panic or crash if APIC is working
     kernel_log!("Testing interrupt handling with int3...");
-    unsafe { x86_64::instructions::interrupts::int3(); }
+    unsafe {
+        x86_64::instructions::interrupts::int3();
+    }
     kernel_log!("Interrupt test passed (no crash)");
 }
 
@@ -248,7 +260,7 @@ fn init_common() {
     gdt::init(heap_start_addr); // Pass the actual heap start address
     interrupts::init(); // Initialize IDT
     // Heap already initialized
-    serial_init(); // Initialize serial early for debugging
+    petroleum::serial::serial_init(); // Initialize serial early for debugging
 }
 
 #[cfg(not(target_os = "uefi"))]
@@ -257,7 +269,7 @@ pub unsafe extern "C" fn _start() -> ! {
     use petroleum::common::VgaFramebufferConfig;
 
     init_common();
-    kernel_log!("Entering _start...");
+    kernel_log!("Entering _start (BIOS mode)...");
 
     // Graphics initialization for VGA framebuffer (graphics mode)
     let vga_config = VgaFramebufferConfig {
@@ -268,10 +280,13 @@ pub unsafe extern "C" fn _start() -> ! {
     };
     graphics::init_vga(&vga_config);
 
-    kernel_log!("VGA graphics mode initialized.");
+    kernel_log!("VGA graphics mode initialized (BIOS mode).");
 
     // Main loop
     println!("Hello QEMU by FullereneOS");
+
+    // Keep kernel running instead of exiting
+    kernel_log!("BIOS boot complete, kernel running...");
     hlt_loop();
 }
 

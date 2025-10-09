@@ -1,7 +1,7 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
 use petroleum::page_table::BootInfoFrameAllocator;
-use petroleum::serial;
+
 use spin::Mutex;
 use x86_64::registers::control::Cr3Flags;
 use x86_64::structures::paging::{
@@ -195,8 +195,9 @@ unsafe impl GlobalAlloc for Locked<Heap> {
 pub static ALLOCATOR: Locked<Heap> = Locked::new(Heap::empty());
 
 static PHYSICAL_MEMORY_OFFSET: spin::Once<VirtAddr> = spin::Once::new();
-static MAPPER: spin::Once<Mutex<OffsetPageTable<'static>>> = spin::Once::new();
-static FRAME_ALLOCATOR: spin::Once<Mutex<BootInfoFrameAllocator<'static>>> = spin::Once::new();
+pub(crate) static MAPPER: spin::Once<Mutex<OffsetPageTable<'static>>> = spin::Once::new();
+pub(crate) static FRAME_ALLOCATOR: spin::Once<Mutex<BootInfoFrameAllocator<'static>>> =
+    spin::Once::new();
 static MEMORY_MAP: spin::Once<&'static [petroleum::page_table::EfiMemoryDescriptor]> =
     spin::Once::new();
 
@@ -220,7 +221,7 @@ pub fn init_frame_allocator(memory_map: &'static [petroleum::page_table::EfiMemo
 }
 
 /// Helper function to map a contiguous physical memory range to virtual memory
-unsafe fn map_physical_range(
+pub(crate) unsafe fn map_physical_range(
     mapper: &mut OffsetPageTable,
     start_phys: PhysAddr,
     end_phys: PhysAddr,
@@ -250,8 +251,8 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     let mut frame_allocator = FRAME_ALLOCATOR.get().unwrap().lock();
     let memory_map = *MEMORY_MAP.get().unwrap();
 
-    serial::serial_log("Reinitializing page table with offset: ");
-    serial::serial_log(&alloc::format!("{:#x}\n", physical_memory_offset.as_u64()));
+    petroleum::serial::serial_log(format_args!("Reinitializing page table with offset: "));
+    petroleum::serial::serial_log(format_args!("{:#x}\n", physical_memory_offset.as_u64()));
 
     // Allocate a new level 4 page table
     let level_4_frame = frame_allocator
@@ -310,7 +311,7 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     let mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
     *MAPPER.get().unwrap().lock() = mapper;
 
-    serial::serial_log("Page table reinitialized.\n");
+    petroleum::serial::serial_log(format_args!("Page table reinitialized.\n"));
 }
 
 // Allocate heap from memory map (find virtual address from physical)

@@ -1,30 +1,73 @@
-// Helper traits and macros for reducing repetition
+// Generic port writer struct to reduce unsafe block repetition and improve type safety
+pub struct PortWriter<T> {
+    port: Port<T>,
+}
+
+impl<T> PortWriter<T> {
+    pub fn new(port_addr: u16) -> Self {
+        Self {
+            port: Port::new(port_addr),
+        }
+    }
+
+    pub unsafe fn write(&mut self, value: T)
+    where
+        T: x86_64::instructions::port::PortWrite,
+    {
+        self.port.write(value);
+    }
+
+    pub unsafe fn read(&mut self) -> T
+    where
+        T: x86_64::instructions::port::PortRead,
+    {
+        self.port.read()
+    }
+}
+
+// Specialized VGA port operations
+struct VgaPortOps {
+    index_writer: PortWriter<u8>,
+    data_writer: PortWriter<u8>,
+}
+
+impl VgaPortOps {
+    fn new(index_port: u16, data_port: u16) -> Self {
+        Self {
+            index_writer: PortWriter::new(index_port),
+            data_writer: PortWriter::new(data_port),
+        }
+    }
+
+    fn write_register(&mut self, index: u8, value: u8) {
+        unsafe {
+            self.index_writer.write(index);
+            self.data_writer.write(value);
+        }
+    }
+
+    fn write_sequence(&mut self, configs: &[RegisterConfig]) {
+        for reg in configs {
+            self.write_register(reg.index, reg.value);
+        }
+    }
+}
+
+// Enhanced macro for writing port sequences with automatic port management
 macro_rules! write_port_sequence {
-    ($($config:expr, $index_port:expr, $data_port:expr);*) => {{
+    ($($config:expr, $index_port:expr, $data_port:expr);*$(;)?) => {{
         $(
-            let regs = $config;
-            for reg in regs {
-                unsafe {
-                    let mut idx_port = Port::<u8>::new($index_port);
-                    let mut data_port = Port::<u8>::new($data_port);
-                    idx_port.write(reg.index);
-                    data_port.write(reg.value);
-                }
-            }
+            let mut vga_ports = VgaPortOps::new($index_port, $data_port);
+            vga_ports.write_sequence($config);
         )*
     }};
 }
 
-
-
-macro_rules! write_vga_index {
+// Simplified macro for single register writes
+macro_rules! write_vga_register {
     ($index_port:expr, $data_port:expr, $index:expr, $data:expr) => {{
-        unsafe {
-            let mut idx_port = Port::<u8>::new($index_port);
-            let mut data_port = Port::<u8>::new($data_port);
-            idx_port.write($index);
-            data_port.write($data);
-        }
+        let mut vga_ports = VgaPortOps::new($index_port, $data_port);
+        vga_ports.write_register($index, $data);
     }};
 }
 
@@ -33,7 +76,6 @@ macro_rules! write_vga_index {
 use alloc::boxed::Box; // Import Box
 use core::fmt::{self, Write};
 use core::marker::{Send, Sync};
-#[cfg(not(target_os = "uefi"))]
 use petroleum::common::VgaFramebufferConfig;
 use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig}; // Import missing types
 use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
@@ -133,21 +175,12 @@ impl ColorScheme {
     };
 }
 
-#[cfg(target_os = "uefi")]
 struct FramebufferInfo {
     address: u64,
     width: u32,
     height: u32,
     stride: u32,
-    pixel_format: EfiGraphicsPixelFormat,
-    colors: ColorScheme,
-}
-
-#[cfg(not(target_os = "uefi"))]
-struct FramebufferInfo {
-    address: u64,
-    width: u32,
-    height: u32,
+    pixel_format: Option<EfiGraphicsPixelFormat>,
     colors: ColorScheme,
 }
 
@@ -175,17 +208,11 @@ impl FramebufferInfo {
     }
 
     fn bytes_per_pixel(&self) -> u32 {
-        #[cfg(target_os = "uefi")]
-        {
-            match self.pixel_format {
-                EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
-                | EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor => 4,
-                _ => panic!("Unsupported pixel format"),
-            }
-        }
-        #[cfg(not(target_os = "uefi"))]
-        {
-            1
+        match self.pixel_format {
+            Some(EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor)
+            | Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor) => 4,
+            Some(_) => panic!("Unsupported pixel format"),
+            None => 1, // VGA
         }
     }
 }
@@ -198,19 +225,20 @@ impl FramebufferInfo {
             width: fb_config.width,
             height: fb_config.height,
             stride: fb_config.stride,
-            pixel_format: fb_config.pixel_format,
+            pixel_format: Some(fb_config.pixel_format),
             colors: ColorScheme::UEFI_WHITE_ON_BLACK,
         }
     }
 }
 
-#[cfg(not(target_os = "uefi"))]
 impl FramebufferInfo {
-    fn new(config: &VgaFramebufferConfig) -> Self {
+    fn new_vga(config: &VgaFramebufferConfig) -> Self {
         Self {
             address: config.address,
             width: config.width,
             height: config.height,
+            stride: config.width,
+            pixel_format: None,
             colors: ColorScheme::VGA_WHITE_ON_BLACK,
         }
     }
@@ -380,7 +408,6 @@ impl VgaPorts {
     const SEQUENCER_DATA: u16 = 0x3C5;
 }
 
-#[cfg(not(target_os = "uefi"))]
 /// Initializes VGA graphics mode 13h (320x200, 256 colors).
 ///
 /// This function configures the VGA controller registers to switch to the specified
@@ -392,8 +419,11 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
     setup_attribute_controller();
     setup_palette();
 
-    let writer = FramebufferWriter::<u8>::new(FramebufferInfo::new(config));
+    let writer = FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(config));
     writer.clear_screen();
+    #[cfg(target_os = "uefi")]
+    WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer)));
+    #[cfg(not(target_os = "uefi"))]
     WRITER_BIOS.call_once(|| Mutex::new(Box::new(writer)));
 }
 
@@ -576,8 +606,6 @@ fn setup_registers_from_configs() {
     );
 }
 
-
-
 // VGA Attribute Controller registers configuration for mode 13h
 // These control color mapping and screen display attributes
 const ATTRIBUTE_CONFIG: &[RegisterConfig] = &[
@@ -692,7 +720,7 @@ fn setup_attribute_controller() {
 
 /// Sets up a simple grayscale palette for the 256-color mode.
 fn setup_palette() {
-    write_vga_index!(VgaPorts::DAC_INDEX, VgaPorts::DAC_DATA, 0x00, 0x00); // Start at color index 0
+    write_vga_register!(VgaPorts::DAC_INDEX, VgaPorts::DAC_DATA, 0x00, 0x00); // Start at color index 0
 
     for i in 0..256 {
         let val = (i * 63 / 255) as u8;

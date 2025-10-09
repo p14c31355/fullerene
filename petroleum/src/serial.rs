@@ -68,9 +68,9 @@ impl<S: SerialPortOps> SerialPort<S> {
 }
 
 /// COM1 implementation
-pub struct Com1Ops;
+pub struct Com1Ports;
 
-impl SerialPortOps for Com1Ops {
+impl SerialPortOps for Com1Ports {
     fn data_port(&self) -> Port<u8> {
         Port::new(0x3F8)
     }
@@ -99,18 +99,13 @@ impl<S: SerialPortOps> fmt::Write for SerialPort<S> {
 }
 
 // Provides a global singleton for the serial port
-pub static SERIAL_PORT_WRITER: Mutex<SerialPort<Com1Ops>> = Mutex::new(SerialPort::new(Com1Ops));
+// Provides a global singleton for the serial port
+pub static SERIAL_PORT_WRITER: Mutex<SerialPort<Com1Ports>> =
+    Mutex::new(SerialPort::new(Com1Ports));
 
 /// Initializes the global serial port writer.
 pub fn serial_init() {
     SERIAL_PORT_WRITER.lock().init();
-}
-
-/// Logs a string to the serial port.
-pub fn serial_log(s: &str) {
-    let mut writer = SERIAL_PORT_WRITER.lock();
-    writer.write_string(s);
-    writer.write_string("\n");
 }
 
 pub struct UefiWriter {
@@ -192,7 +187,11 @@ macro_rules! println {
 /// Writes a string to the COM1 serial port.
 /// This is a very early debug function for use beforeUEFI writers are available.
 pub fn debug_print_str_to_com1(s: &str) {
-    SERIAL_PORT_WRITER.lock().write_string(s);
+    write_serial_bytes!(0x3F8, 0x3FD, s.as_bytes());
+}
+
+pub fn serial_log(args: core::fmt::Arguments) {
+    _print(args);
 }
 
 /// Writes a single byte to the COM1 serial port (0x3F8).

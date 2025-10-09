@@ -3,11 +3,44 @@
 use crate::gdt;
 use core::fmt::Write;
 use lazy_static::lazy_static;
-use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_log};
 use petroleum::init_io_apic;
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
-use x86_64::instructions::port::Port;
+use petroleum::serial::SERIAL_PORT_WRITER as SERIAL1;
 use spin::Mutex;
+use x86_64::instructions::port::Port;
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+
+static TICK_COUNTER: Mutex<u64> = Mutex::new(0);
+
+// Input handling structures
+#[derive(Clone, Copy)]
+struct KeyboardQueue {
+    buffer: [u8; 256],
+    head: usize,
+    tail: usize,
+}
+
+#[derive(Clone, Copy)]
+struct MouseState {
+    x: i16,
+    y: i16,
+    buttons: u8,
+    packet: [u8; 3],
+    packet_idx: usize,
+}
+
+static KEYBOARD_QUEUE: Mutex<KeyboardQueue> = Mutex::new(KeyboardQueue {
+    buffer: [0; 256],
+    head: 0,
+    tail: 0,
+});
+
+static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState {
+    x: 0,
+    y: 0,
+    buttons: 0,
+    packet: [0; 3],
+    packet_idx: 0,
+});
 
 // APIC register definitions
 const APIC_BASE_MSR: u32 = 0x1B;
@@ -36,13 +69,38 @@ pub const TIMER_INTERRUPT_INDEX: u32 = 32;
 pub const KEYBOARD_INTERRUPT_INDEX: u32 = 33;
 pub const MOUSE_INTERRUPT_INDEX: u32 = 44;
 
-// PIC ports (for disabling legacy PIC)
-const PIC1_COMMAND: u16 = 0x20;
-const PIC1_DATA: u16 = 0x21;
-const PIC2_COMMAND: u16 = 0xA0;
-const PIC2_DATA: u16 = 0xA1;
+// PIC configuration structs and macros to reduce repetitive port writes
+struct PicPorts {
+    command: u16,
+    data: u16,
+}
+
+const PIC1: PicPorts = PicPorts {
+    command: 0x20,
+    data: 0x21,
+};
+
+const PIC2: PicPorts = PicPorts {
+    command: 0xA0,
+    data: 0xA1,
+};
+
 const ICW1_INIT: u8 = 0x10;
 const ICW4_8086: u8 = 0x01;
+
+macro_rules! init_pic {
+    ($pic:expr, $vector_offset:expr, $slave_on:expr) => {{
+        unsafe {
+            let mut cmd_port = Port::<u8>::new($pic.command);
+            let mut data_port = Port::<u8>::new($pic.data);
+
+            cmd_port.write(ICW1_INIT | ICW4_8086);
+            data_port.write($vector_offset); // ICW2: vector offset
+            data_port.write($slave_on); // ICW3: slave configuration
+            data_port.write(ICW4_8086);
+        }
+    }};
+}
 
 // APIC structure for register access
 struct Apic {
@@ -69,22 +127,16 @@ static APIC: Mutex<Option<Apic>> = Mutex::new(None);
 
 // Helper functions for APIC setup
 fn disable_legacy_pic() {
+    // Remap and initialize PICs
+    init_pic!(PIC1, 0x20, 4); // PIC1: vectors 32-39, slave on IR2
+    init_pic!(PIC2, 0x28, 2); // PIC2: vectors 40-47, slave identity 2
+
+    // Mask all interrupts
     unsafe {
-        // Remap PIC1 to vectors 32-39
-        Port::<u8>::new(PIC1_COMMAND).write(ICW1_INIT | ICW4_8086);
-        Port::<u8>::new(PIC1_DATA).write(0x20); // ICW2: vector offset 32
-        Port::<u8>::new(PIC1_DATA).write(4); // ICW3: slave on IR2
-        Port::<u8>::new(PIC1_DATA).write(ICW4_8086);
-
-        // Remap PIC2 to vectors 40-47
-        Port::<u8>::new(PIC2_COMMAND).write(ICW1_INIT | ICW4_8086);
-        Port::<u8>::new(PIC2_DATA).write(0x28); // ICW2: vector offset 40
-        Port::<u8>::new(PIC2_DATA).write(2); // ICW3: slave identity 2
-        Port::<u8>::new(PIC2_DATA).write(ICW4_8086);
-
-        // Mask all interrupts
-        Port::<u8>::new(PIC1_DATA).write(0xFF);
-        Port::<u8>::new(PIC2_DATA).write(0xFF);
+        let mut pic1_data = Port::<u8>::new(PIC1.data);
+        let mut pic2_data = Port::<u8>::new(PIC2.data);
+        pic1_data.write(0xFF);
+        pic2_data.write(0xFF);
     }
 }
 
@@ -92,7 +144,8 @@ fn get_apic_base() -> Option<u64> {
     use x86_64::registers::model_specific::Msr;
     let msr = Msr::new(APIC_BASE_MSR);
     let value = unsafe { msr.read() };
-    if value & (1 << 11) != 0 { // APIC is enabled
+    if value & (1 << 11) != 0 {
+        // APIC is enabled
         Some(value & APIC_BASE_ADDR_MASK)
     } else {
         None
@@ -144,15 +197,15 @@ lazy_static! {
 // Initialize IDT and optionally APIC
 pub fn init() {
     IDT.load();
-    serial_log("IDT loaded with exception handlers.\n");
+    petroleum::serial::serial_log(format_args!("IDT loaded with exception handlers.\n"));
 }
 
 pub fn init_apic() {
-    serial_log("Initializing APIC...\n");
+    petroleum::serial::serial_log(format_args!("Initializing APIC...\n"));
 
     // Disable legacy PIC
     disable_legacy_pic();
-    serial_log("Legacy PIC disabled.\n");
+    petroleum::serial::serial_log(format_args!("Legacy PIC disabled.\n"));
 
     // Get APIC base address
     let base_addr = get_apic_base().unwrap_or(0xFEE00000); // Default local APIC address
@@ -215,25 +268,48 @@ pub extern "x86-interrupt" fn double_fault_handler(
 // Hardware interrupt handlers
 pub extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
     // Timer interrupt - handle timer ticks
-    // TODO: Implement timer logic (increment tick counter, schedule tasks, etc.)
+    *TICK_COUNTER.lock() += 1;
+    // Basic scheduling: could schedule tasks here in future, but for now just tick
     send_eoi();
 }
 
 pub extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
     // Keyboard interrupt - handle keyboard input
-    // TODO: Read scancode from keyboard controller and process
     let mut port = Port::<u8>::new(0x60);
-    let _scancode = unsafe { port.read() };
-    // TODO: Process scancode and add to input buffer
+    let scancode = unsafe { port.read() };
+    // Process scancode and add to input buffer
+    let mut keyboard_queue = KEYBOARD_QUEUE.lock();
+    let head = keyboard_queue.head;
+    let tail = keyboard_queue.tail;
+    let next_tail = (tail + 1) % 256;
+    if next_tail != head {
+        // Not full
+        keyboard_queue.buffer[tail] = scancode;
+        keyboard_queue.tail = next_tail;
+    }
+    // If full, drop the input for simplicity
     send_eoi();
 }
 
 pub extern "x86-interrupt" fn mouse_handler(_stack_frame: InterruptStackFrame) {
     // Mouse interrupt - handle mouse input
-    // TODO: Read mouse packet from controller and process
     let mut port = Port::<u8>::new(0x60);
-    let _packet = unsafe { port.read() };
-    // TODO: Process mouse packet and update cursor position
+    let byte = unsafe { port.read() };
+    let mut mouse_state = MOUSE_STATE.lock();
+    let current_idx = mouse_state.packet_idx;
+    mouse_state.packet[current_idx] = byte;
+    mouse_state.packet_idx += 1;
+    if mouse_state.packet_idx == 3 {
+        // Full packet received, process
+        let status = mouse_state.packet[0];
+        let dx = mouse_state.packet[1] as i8 as i16;
+        let dy = mouse_state.packet[2] as i8 as i16;
+        mouse_state.x = mouse_state.x.wrapping_add(dx);
+        mouse_state.y = mouse_state.y.wrapping_add(dy);
+        mouse_state.buttons = status & 0x07; // Left, right, middle bits
+        mouse_state.packet_idx = 0; // Reset for next packet
+        mouse_state.packet = [0; 3];
+    }
     send_eoi();
 }
 
