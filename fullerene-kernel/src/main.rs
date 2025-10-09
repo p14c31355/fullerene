@@ -31,7 +31,7 @@ use petroleum::common::{
     FullereneFramebufferConfig, VgaFramebufferConfig,
 };
 use petroleum::page_table::EfiMemoryDescriptor;
-use petroleum::write_serial_bytes;
+use petroleum::graphics::init_vga_text_mode;
 use spin::Once;
 use x86_64::instructions::hlt;
 use x86_64::instructions::port::Port;
@@ -206,8 +206,6 @@ pub extern "efiapi" fn efi_main(
     // Cast system_table to reference
     let system_table = unsafe { &*system_table };
 
-    debug_print_str("Starting VGA setup\n");
-
     vga_text_mode_setup();
 
     debug_print_str("VGA setup done\n");
@@ -222,10 +220,6 @@ pub extern "efiapi" fn efi_main(
             }
         }
     }
-
-    debug_print_str("Buffer written\n");
-
-    debug_print_str("Before descriptors\n");
 
     // Use the passed memory map
     let descriptors = unsafe {
@@ -257,25 +251,22 @@ pub extern "efiapi" fn efi_main(
         panic!("Could not determine kernel's physical start address.");
     }
 
-    debug_print_str("Memory map parsed\n");
-
-    print_kernel("Kernel: phys offset found.\n");
     kernel_log!("Kernel: memory map parsed, kernel_phys_start found");
     kernel_log!("Starting heap frame allocator init...");
 
     heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
-    print_kernel("Kernel: frame allocator init done.\n");
+    kernel_log!("Kernel: frame allocator init done");
     heap::init_page_table(physical_memory_offset);
-    print_kernel("Kernel: page table init done.\n");
+    kernel_log!("Kernel: page table init done");
 
     heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
-    print_kernel("Kernel: page table reinit done.\n");
+    kernel_log!("Kernel: page table reinit done");
 
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(descriptors);
     let heap_start = heap::allocate_heap_from_map(heap_phys_start, heap::HEAP_SIZE);
     let heap_start_after_gdt = gdt::init(heap_start);
-    print_kernel("Kernel: GDT init done.\n");
+    kernel_log!("Kernel: GDT init done");
 
     // Initialize heap with the remaining memory
     let gdt_mem_usage = heap_start_after_gdt - heap_start;
@@ -291,39 +282,33 @@ pub extern "efiapi" fn efi_main(
     // Common initialization for both UEFI and BIOS
     // Initialize IDT before enabling interrupts
     interrupts::init();
-    print_kernel("Kernel: IDT init done.\n");
+    kernel_log!("Kernel: IDT init done");
 
     // Common initialization (enables interrupts)
     init_common();
-    print_kernel("Kernel: init_common done.\n");
+    kernel_log!("Kernel: init_common done");
 
-    // Debug: Test VGA output immediately after init
-    println!("TEST: VGA output after init_common");
-
-    kernel_log!("Kernel: efi_main entered (via serial_log).");
-    kernel_log!("GDT initialized.");
-    kernel_log!("IDT initialized.");
-    kernel_log!("APIC initialized.");
-    kernel_log!("Heap initialized.");
-    kernel_log!("Serial initialized.");
+    kernel_log!("Kernel: efi_main entered");
+    kernel_log!("GDT initialized");
+    kernel_log!("IDT initialized");
+    kernel_log!("APIC initialized");
+    kernel_log!("Heap initialized");
+    kernel_log!("Serial initialized");
 
     kernel_log!("Searching for framebuffer config table...");
     if let Some(config) = find_framebuffer_config(system_table) {
         if config.address != 0 {
-            // Skip graphics init when running in text mode
-            // graphics::init(config);
-            kernel_log!("GOP graphics initialization skipped (text mode).");
+            kernel_log!("GOP graphics initialization skipped (text mode)");
         } else {
-            kernel_log!("Framebuffer address is 0, VGA will handle display.");
+            kernel_log!("Framebuffer address is 0, VGA will handle display");
         }
     } else {
-        kernel_log!("Fullerene Framebuffer Config Table not found.");
+        kernel_log!("Fullerene Framebuffer Config Table not found");
     }
     println!("Hello QEMU by FullereneOS");
 
-    // Keep kernel running instead of exiting
-    print_kernel("Kernel: running in main loop...\n");
-    kernel_log!("FullereneOS kernel is now running.");
+    kernel_log!("Kernel: running in main loop");
+    kernel_log!("FullereneOS kernel is now running");
     hlt_loop();
 }
 

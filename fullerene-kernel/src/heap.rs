@@ -165,17 +165,15 @@ impl Heap {
 
         let mut current = self.head;
         while !unsafe { (*current).next.is_null() } {
-            let next = unsafe { (*current).next };
-            if unsafe { (*current).end_addr() == (*next).start_addr() } {
-                // Merge
-                unsafe {
+            unsafe {
+                let next = (*current).next;
+                if (*current).end_addr() == (*next).start_addr() {
+                    // Merge
                     (*current).size += (*next).size;
-                }
-                unsafe {
                     (*current).next = (*next).next;
+                } else {
+                    current = next;
                 }
-            } else {
-                current = next;
             }
         }
     }
