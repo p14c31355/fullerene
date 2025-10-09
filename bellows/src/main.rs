@@ -285,8 +285,15 @@ fn init_gop(st: &EfiSystemTable) {
         address: fb_addr as u64,
         width: info.horizontal_resolution,
         height: info.vertical_resolution,
-        stride: info.pixels_per_scan_line,
         pixel_format: info.pixel_format,
+        bpp: match info.pixel_format {
+            EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor => 32,
+            EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor => 32,
+            EfiGraphicsPixelFormat::PixelBitMask => 32,
+            EfiGraphicsPixelFormat::PixelBltOnly => 32,
+            EfiGraphicsPixelFormat::PixelFormatMax => 32,
+        },
+        stride: info.pixels_per_scan_line,
     });
 
     let config_ptr = Box::leak(config);

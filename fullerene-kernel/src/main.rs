@@ -97,21 +97,21 @@ pub extern "efiapi" fn efi_main(
     // Early debug print to confirm kernel entry point is reached using direct port access
     write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main entered.\n");
 
-    // Early VGA text output to ensure visible output on screen
-    {
-        let vga_buffer = unsafe { &mut *(0xb8000 as *mut [[u16; 80]; 25]) };
-        let hello = b"UEFI Kernel Starting...";
-        for (i, &byte) in hello.iter().enumerate() {
-            if i < 80 {
-                vga_buffer[0][i] = (0x0200 as u16) | (byte as u16); // Green on black
-            }
-        }
-    }
+    debug_print_str("Early VGA write done\n");
 
     // Helper function for kernel debug prints
     fn print_kernel(msg: &str) {
         write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
     }
+
+    // Debug parameter values
+    debug_print_str("Parameters: system_table=");
+    debug_print_hex(system_table as usize);
+    debug_print_str(" memory_map=");
+    debug_print_hex(memory_map as usize);
+    debug_print_str(" memory_map_size=");
+    debug_print_hex(memory_map_size);
+    debug_print_str("\n");
 
     print_kernel("Kernel: starting to parse parameters.\n");
 
@@ -123,6 +123,8 @@ pub extern "efiapi" fn efi_main(
 
     // Cast system_table to reference
     let system_table = unsafe { &*system_table };
+
+    debug_print_str("Starting VGA setup\n");
 
     // Setup VGA text mode registers (UEFI leaves it in graphics mode)
     unsafe {
@@ -191,6 +193,23 @@ pub extern "efiapi" fn efi_main(
         Port::new(0x3C0).write(0x20u8); // Enable video output
     }
 
+    debug_print_str("VGA setup done\n");
+
+    // Early VGA text output to ensure visible output on screen
+    {
+        let vga_buffer = unsafe { &mut *(0xb8000 as *mut [[u16; 80]; 25]) };
+        let hello = b"UEFI Kernel Starting...";
+        for (i, &byte) in hello.iter().enumerate() {
+            if i < 80 {
+                vga_buffer[0][i] = (0x0200 as u16) | (byte as u16); // Green on black
+            }
+        }
+    }
+
+    debug_print_str("Buffer written\n");
+
+    debug_print_str("Before descriptors\n");
+
     // Use the passed memory map
     let descriptors = unsafe {
         core::slice::from_raw_parts(
@@ -220,6 +239,8 @@ pub extern "efiapi" fn efi_main(
     if kernel_phys_start.is_null() {
         panic!("Could not determine kernel's physical start address.");
     }
+
+    debug_print_str("Memory map parsed\n");
 
     print_kernel("Kernel: phys offset found.\n");
     kernel_log!("Kernel: memory map parsed, kernel_phys_start found");
