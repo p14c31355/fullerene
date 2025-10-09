@@ -36,6 +36,9 @@ use spin::Once;
 use x86_64::instructions::hlt;
 use x86_64::{PhysAddr, VirtAddr};
 
+const VGA_BUFFER_ADDRESS: usize = 0xb8000;
+const VGA_COLOR_GREEN_ON_BLACK: u16 = 0x0200;
+
 // Macro to reduce repetitive serial logging
 macro_rules! kernel_log {
     ($($arg:tt)*) => {
@@ -138,11 +141,11 @@ pub extern "efiapi" fn efi_main(
 
     // Early VGA text output to ensure visible output on screen
     {
-        let vga_buffer = unsafe { &mut *(0xb8000 as *mut [[u16; 80]; 25]) };
+        let vga_buffer = unsafe { &mut *(VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]) };
         let hello = b"UEFI Kernel Starting...";
         for (i, &byte) in hello.iter().enumerate() {
             if i < 80 {
-                vga_buffer[0][i] = (0x0200 as u16) | (byte as u16); // Green on black
+                vga_buffer[0][i] = VGA_COLOR_GREEN_ON_BLACK | (byte as u16); // Green on black
             }
         }
     }

@@ -1,6 +1,10 @@
 // Import necessary types and constants from parent module
 use super::{BUFFER_HEIGHT, BUFFER_WIDTH, Color, ColorCode, ScreenChar, TextBufferOperations};
+use petroleum::graphics::ports::VgaPorts;
 use x86_64::instructions::port::Port;
+
+const CURSOR_POS_LOW_REG: u8 = 0x0F;
+const CURSOR_POS_HIGH_REG: u8 = 0x0E;
 
 /// Represents the VGA text buffer writer.
 pub struct VgaBuffer {
@@ -30,12 +34,12 @@ impl VgaBuffer {
     pub fn update_cursor(&self) {
         let pos = self.row_position * BUFFER_WIDTH + self.column_position;
         unsafe {
-            let mut command_port = Port::new(0x3D4);
-            let mut data_port = Port::new(0x3D5);
+            let mut command_port = Port::new(VgaPorts::CRTC_INDEX);
+            let mut data_port = Port::new(VgaPorts::CRTC_DATA);
 
-            command_port.write(0x0F_u8);
+            command_port.write(CURSOR_POS_LOW_REG);
             data_port.write((pos & 0xFF) as u8);
-            command_port.write(0x0E_u8);
+            command_port.write(CURSOR_POS_HIGH_REG);
             data_port.write(((pos >> 8) & 0xFF) as u8);
         }
     }

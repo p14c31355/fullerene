@@ -1,5 +1,6 @@
 // PortWriter, VgaPortOps, and related macros are now in petroleum crate
-use petroleum::*; // Import macros and functions from petroleum
+use petroleum::graphics::init_vga_graphics;
+use petroleum::common::*;
 
 // Helper functions for color operations
 
