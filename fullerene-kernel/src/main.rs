@@ -147,6 +147,50 @@ pub extern "efiapi" fn efi_main(
     };
     MEMORY_MAP.call_once(|| unsafe { &*(descriptors as *const _) });
 
+    #[cfg(not(target_os = "uefi"))]
+    {
+        // Calculate physical_memory_offset from kernel's location in memory map
+        let kernel_virt_addr = efi_main as u64;
+        let mut physical_memory_offset = VirtAddr::new(0);
+        let mut kernel_phys_start = x86_64::PhysAddr::new(0);
+
+        // Find physical_memory_offset and kernel_phys_start
+        for desc in descriptors {
+            let virt_start = desc.virtual_start;
+            let virt_end = virt_start + desc.number_of_pages * 4096;
+            if kernel_virt_addr >= virt_start && kernel_virt_addr < virt_end {
+                physical_memory_offset = VirtAddr::new(desc.virtual_start - desc.physical_start);
+                if desc.type_ == EfiMemoryType::EfiLoaderCode {
+                    kernel_phys_start = x86_64::PhysAddr::new(desc.physical_start);
+                }
+            }
+        }
+
+        if kernel_phys_start.is_null() {
+            panic!("Could not determine kernel's physical start address.");
+        }
+
+        print_kernel("Kernel: phys offset found.\n");
+        kernel_log!("Kernel: memory map parsed, kernel_phys_start found");
+        kernel_log!("Starting heap frame allocator init...");
+
+        heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
+        print_kernel("Kernel: frame allocator init done.\n");
+        heap::init_page_table(physical_memory_offset);
+        print_kernel("Kernel: page table init done.\n");
+
+        #[cfg(target_os = "bios")]
+        {
+            heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
+            print_kernel("Kernel: page table reinit done.\n");
+        }
+    }
+
+    #[cfg(target_os = "uefi")]
+    {
+        kernel_log!("UEFI mode - using UEFI page tables, no reinit");
+    }
+
     // Initialize serial immediately after entry (before any complex initialization)
     serial_init();
     print_kernel("Kernel: serial_init done.\n");
@@ -171,56 +215,6 @@ pub extern "efiapi" fn efi_main(
 
     // Early serial log works now
     kernel_log!("Kernel: basic init complete");
-
-    // Calculate physical_memory_offset from kernel's location in memory map
-    let kernel_virt_addr = efi_main as u64;
-    let mut physical_memory_offset = VirtAddr::new(0);
-    let mut kernel_phys_start = x86_64::PhysAddr::new(0);
-
-    // Find physical_memory_offset and kernel_phys_start
-    for desc in descriptors {
-        let virt_start = desc.virtual_start;
-        let virt_end = virt_start + desc.number_of_pages * 4096;
-        if kernel_virt_addr >= virt_start && kernel_virt_addr < virt_end {
-            physical_memory_offset = VirtAddr::new(desc.virtual_start - desc.physical_start);
-            if desc.type_ == EfiMemoryType::EfiLoaderCode {
-                kernel_phys_start = x86_64::PhysAddr::new(desc.physical_start);
-            }
-        }
-    }
-
-    if kernel_phys_start.is_null() {
-        panic!("Could not determine kernel's physical start address.");
-    }
-
-    print_kernel("Kernel: phys offset found.\n");
-    kernel_log!("Kernel: memory map parsed, kernel_phys_start found");
-    kernel_log!("Starting heap frame allocator init...");
-
-    heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
-    print_kernel("Kernel: frame allocator init done.\n");
-    heap::init_page_table(physical_memory_offset);
-    print_kernel("Kernel: page table init done.\n");
-
-    // For UEFI, skip reinit_page_table as UEFI already has proper page tables
-    // Only do reinit for BIOS mode if needed
-    #[cfg(not(target_os = "uefi"))]
-    {
-        kernel_log!("Kernel: page table init complete, starting reinit...");
-        heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
-        print_kernel("Kernel: page table reinit done.\n");
-        kernel_log!("Kernel: page table reinitialization complete");
-    }
-    #[cfg(target_os = "uefi")]
-    {
-        kernel_log!("Kernel: UEFI mode - using UEFI page tables without reinit");
-        // Print CR3 after init to compare
-        use x86_64::registers::control::Cr3;
-        let cr3_after = unsafe { Cr3::read() };
-        debug_print_str("  CR3 after init: ");
-        debug_print_hex(cr3_after.0.start_address().as_u64() as usize);
-        debug_print_str("\n");
-    }
 
     // Common initialization for both UEFI and BIOS
     init_common();
