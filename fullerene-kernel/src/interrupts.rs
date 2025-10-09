@@ -69,6 +69,19 @@ static APIC: Mutex<Option<Apic>> = Mutex::new(None);
 // Helper functions for APIC setup
 fn disable_legacy_pic() {
     unsafe {
+        // Remap PIC1 to vectors 32-39
+        Port::<u8>::new(PIC1_COMMAND).write(ICW1_INIT | ICW4_8086);
+        Port::<u8>::new(PIC1_DATA).write(0x20); // ICW2: vector offset 32
+        Port::<u8>::new(PIC1_DATA).write(4); // ICW3: slave on IR2
+        Port::<u8>::new(PIC1_DATA).write(ICW4_8086);
+
+        // Remap PIC2 to vectors 40-47
+        Port::<u8>::new(PIC2_COMMAND).write(ICW1_INIT | ICW4_8086);
+        Port::<u8>::new(PIC2_DATA).write(0x28); // ICW2: vector offset 40
+        Port::<u8>::new(PIC2_DATA).write(2); // ICW3: slave identity 2
+        Port::<u8>::new(PIC2_DATA).write(ICW4_8086);
+
+        // Mask all interrupts
         Port::<u8>::new(PIC1_DATA).write(0xFF);
         Port::<u8>::new(PIC2_DATA).write(0xFF);
     }

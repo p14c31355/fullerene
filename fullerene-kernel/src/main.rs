@@ -21,9 +21,10 @@ use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, serial_log, 
 use core::ffi::c_void;
 use petroleum::common::{
     EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
-    FullereneFramebufferConfig, FULLERENE_MEMORY_MAP_CONFIG_TABLE_GUID, FullereneMemoryMap,
+    FullereneFramebufferConfig,
 };
 use petroleum::page_table::EfiMemoryDescriptor;
+use petroleum::write_serial_bytes;
 use spin::Once;
 use x86_64::VirtAddr;
 use x86_64::instructions::hlt;
@@ -33,21 +34,6 @@ macro_rules! kernel_log {
     ($msg:expr) => {
         serial_log(concat!($msg, "\n"));
     };
-}
-
-// Macro for writing bytes to serial port with busy waiting
-macro_rules! write_serial_bytes {
-    ($port_addr:expr, $status_addr:expr, $bytes:expr) => {{
-        use x86_64::instructions::port::Port;
-        unsafe {
-            let mut port = Port::<u8>::new($port_addr);
-            let mut status_port = Port::<u8>::new($status_addr);
-            for &byte in $bytes {
-                while (status_port.read() & 0x20) == 0 {}
-                port.write(byte);
-            }
-        }
-    }};
 }
 
 // Helper function to find framebuffer config
@@ -66,21 +52,6 @@ fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&FullereneFr
     None
 }
 
-// Helper function to find memory map config
-fn find_memory_map_config(system_table: &EfiSystemTable) -> Option<&FullereneMemoryMap> {
-    let config_table_entries = unsafe {
-        core::slice::from_raw_parts(
-            system_table.configuration_table,
-            system_table.number_of_table_entries,
-        )
-    };
-    for entry in config_table_entries {
-        if entry.vendor_guid == FULLERENE_MEMORY_MAP_CONFIG_TABLE_GUID {
-            return unsafe { Some(&*(entry.vendor_table as *const FullereneMemoryMap)) };
-        }
-    }
-    None
-}
 
 // Helper function to find heap start from memory map
 fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> x86_64::PhysAddr {

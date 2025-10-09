@@ -1,9 +1,11 @@
 // bellows/src/loader/mod.rs
 
+use alloc::boxed::Box;
 use core::ffi::c_void;
 use core::ptr;
-use alloc::boxed::Box;
-use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable, FULLERENE_MEMORY_MAP_CONFIG_TABLE_GUID, FullereneMemoryMap};
+use petroleum::common::{
+    BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable,
+};
 use petroleum::println; // Added for debugging
 pub use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
@@ -18,13 +20,19 @@ pub fn exit_boot_services_and_jump(
     system_table: *mut EfiSystemTable,
     entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
 ) -> petroleum::common::Result<!> {
-    debug_print_str("Inside exit_boot_services_and_jump.\n");
-    debug_print_str("system_table = ");
-    debug_print_hex(system_table as usize);
-    debug_print_str("\n");
+    #[cfg(feature = "debug_loader")]
+    {
+        debug_print_str("Inside exit_boot_services_and_jump.\n");
+        debug_print_str("system_table = ");
+        debug_print_hex(system_table as usize);
+        debug_print_str("\n");
+    }
     let bs = unsafe { &*(*system_table).boot_services };
-    debug_print_str("bs obtained.\n");
-    debug_print_str("About to set up memory map vars.\n");
+    #[cfg(feature = "debug_loader")]
+    {
+        debug_print_str("bs obtained.\n");
+        debug_print_str("About to set up memory map vars.\n");
+    }
 
     // Initial setup for memory map
     // Start with a reasonable initial size to avoid EFI_INVALID_PARAMETER on some UEFI implementations
@@ -47,11 +55,13 @@ pub fn exit_boot_services_and_jump(
             ));
         }
         attempts += 1;
-        debug_print_str("Loop start, attempts=");
-        debug_print_hex(attempts);
-        debug_print_str(", map_size=");
-        debug_print_hex(map_size);
-        debug_print_str("\n");
+        #[cfg(feature = "debug_loader")] {
+            debug_print_str("Loop start, attempts=");
+            debug_print_hex(attempts);
+            debug_print_str(", map_size=");
+            debug_print_hex(map_size);
+            debug_print_str("\n");
+        }
 
         // Allocate buffer for current map_size
         let alloc_pages = (map_size as usize).div_ceil(4096).max(1);
@@ -87,7 +97,9 @@ pub fn exit_boot_services_and_jump(
         map_pages = alloc_pages;
 
         // Call get_memory_map with the allocated buffer
-        debug_print_str("About to call get_memory_map (with buffer)\n");
+        #[cfg(feature = "debug_loader")] {
+            debug_print_str("About to call get_memory_map (with buffer)\n");
+        }
         let status = unsafe {
             (bs.get_memory_map)(
                 &mut map_size,
@@ -97,33 +109,41 @@ pub fn exit_boot_services_and_jump(
                 &mut descriptor_version,
             )
         };
-        debug_print_str("get_memory_map returned, status=");
-        debug_print_hex(status as usize);
-        debug_print_str("\n");
+        #[cfg(feature = "debug_loader")] {
+            debug_print_str("get_memory_map returned, status=");
+            debug_print_hex(status as usize);
+            debug_print_str("\n");
+        }
 
         match EfiStatus::from(status) {
             EfiStatus::Success => {
-                debug_print_str("Memory map acquired after ");
-                debug_print_hex(attempts);
-                debug_print_str(" attempts. Size: ");
-                debug_print_hex(map_size);
-                debug_print_str(", map_key: ");
-                debug_print_hex(map_key);
-                debug_print_str("\n");
+                #[cfg(feature = "debug_loader")] {
+                    debug_print_str("Memory map acquired after ");
+                    debug_print_hex(attempts);
+                    debug_print_str(" attempts. Size: ");
+                    debug_print_hex(map_size);
+                    debug_print_str(", map_key: ");
+                    debug_print_hex(map_key);
+                    debug_print_str("\n");
+                }
                 break;
             }
             EfiStatus::BufferTooSmall => {
-                debug_print_str("Buffer too small (size now ");
-                debug_print_hex(map_size);
-                debug_print_str("), retrying...\n");
+                #[cfg(feature = "debug_loader")] {
+                    debug_print_str("Buffer too small (size now ");
+                    debug_print_hex(map_size);
+                    debug_print_str("), retrying...\n");
+                }
                 // Continue with enlarged map_size (updated by the call)
                 continue;
             }
             _ => {
                 (bs.free_pages)(map_phys_addr, map_pages);
-                debug_print_str("Error: Failed to get memory map: status=");
-                debug_print_hex(status);
-                debug_print_str("\n");
+                #[cfg(feature = "debug_loader")] {
+                    debug_print_str("Error: Failed to get memory map: status=");
+                    debug_print_hex(status);
+                    debug_print_str("\n");
+                }
                 return Err(BellowsError::InvalidState("Failed to get memory map."));
             }
         }
@@ -131,36 +151,22 @@ pub fn exit_boot_services_and_jump(
 
     let map_ptr = map_phys_addr as *mut c_void;
 
-    let mm_config = FullereneMemoryMap {
-        physical_address: map_phys_addr as u64,
-        size: map_size,
-    };
-    let mm_config_ptr = Box::into_raw(Box::new(mm_config));
-    unsafe {
-        let status = (bs.install_configuration_table)(
-            FULLERENE_MEMORY_MAP_CONFIG_TABLE_GUID.as_ptr() as *const u8,
-            mm_config_ptr as *mut c_void,
-        );
-        if EfiStatus::from(status) != EfiStatus::Success {
-            debug_print_str("Error: Failed to install memory map config table: status=");
-            debug_print_hex(status as usize);
-            debug_print_str("\n");
-            return Err(BellowsError::InvalidState("Failed to install memory map config table."));
-        }
-    }
-
     let exit_status = (bs.exit_boot_services)(image_handle, map_key);
     match EfiStatus::from(exit_status) {
         EfiStatus::Success => {
-            debug_print_str("Exit boot services succeeded.\n");
-            debug_print_str("About to jump.\n");
+            #[cfg(feature = "debug_loader")] {
+                debug_print_str("Exit boot services succeeded.\n");
+                debug_print_str("About to jump.\n");
+            }
         }
         _ => {
-            debug_print_str("Error: Failed to exit boot services: status=");
-            debug_print_hex(exit_status);
-            debug_print_str("\n");
+            #[cfg(feature = "debug_loader")] {
+                debug_print_str("Error: Failed to exit boot services: status=");
+                debug_print_hex(exit_status);
+                debug_print_str("\n");
+            }
             return Err(BellowsError::InvalidState("Failed to exit boot services."));
-        }
+}
     }
 
     // Note: The memory map buffer at `map_phys_addr` is intentionally not freed here
@@ -172,13 +178,15 @@ pub fn exit_boot_services_and_jump(
     // This is the point of no return. We are calling the kernel entry point,
     // passing the memory map and other data. The validity of the `entry`
     // function pointer is assumed based on the successful PE file loading.
-    debug_print_str("Jumping to kernel at ");
-    debug_print_hex(entry as usize);
-    debug_print_str(" with map at ");
-    debug_print_hex(map_phys_addr);
-    debug_print_str(" size ");
-    debug_print_hex(map_size);
-    debug_print_str("\n");
-    debug_print_str("About to call kernel entry.\n");
+    #[cfg(feature = "debug_loader")] {
+        debug_print_str("Jumping to kernel at ");
+        debug_print_hex(entry as usize);
+        debug_print_str(" with map at ");
+        debug_print_hex(map_phys_addr);
+        debug_print_str(" size ");
+        debug_print_hex(map_size);
+        debug_print_str("\n");
+        debug_print_str("About to call kernel entry.\n");
+    }
     entry(image_handle, system_table, map_ptr, map_size);
 }

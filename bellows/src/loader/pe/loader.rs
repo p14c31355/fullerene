@@ -3,21 +3,7 @@ use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
 
 use super::headers::*;
 use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
-
-// Macro for writing bytes to serial port with busy waiting
-macro_rules! write_serial_bytes {
-    ($port_addr:expr, $status_addr:expr, $bytes:expr) => {{
-        use x86_64::instructions::port::Port;
-        unsafe {
-            let mut port = Port::<u8>::new($port_addr);
-            let mut status_port = Port::<u8>::new($status_addr);
-            for &byte in $bytes {
-                while (status_port.read() & 0x20) == 0 {}
-                port.write(byte);
-            }
-        }
-    }};
-}
+use petroleum::write_serial_bytes;
 
 /// Dummy kernel entry point for testing
 extern "efiapi" fn dummy_kernel_entry(
