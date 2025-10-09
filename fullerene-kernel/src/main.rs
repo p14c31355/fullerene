@@ -211,12 +211,23 @@ pub extern "efiapi" fn efi_main(
     debug_print_str("Before descriptors\n");
 
     // Use the passed memory map
+    debug_print_str("About to create slice\n");
     let descriptors = unsafe {
         core::slice::from_raw_parts(
             memory_map as *const EfiMemoryDescriptor,
             memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>(),
         )
     };
+    debug_print_str("Slice created\n");
+    debug_print_str("Starting loop\n");
+
+    // Debug: Print first descriptor
+    if let Some(desc) = descriptors.first() {
+        debug_print_str("First desc: type=");
+        debug_print_hex(desc.type_ as usize);
+        debug_print_str("\n");
+    }
+    debug_print_str("Finished debug\n");
     MEMORY_MAP.call_once(|| unsafe { &*(descriptors as *const _) });
 
     // Calculate physical_memory_offset from kernel's location in memory map
@@ -225,7 +236,11 @@ pub extern "efiapi" fn efi_main(
     let mut kernel_phys_start = x86_64::PhysAddr::new(0);
 
     // Find physical_memory_offset and kernel_phys_start
+    let mut count = 0usize;
     for desc in descriptors {
+        debug_print_str("Processing desc ");
+        debug_print_hex(count);
+        debug_print_str("\n");
         let virt_start = desc.virtual_start;
         let virt_end = virt_start + desc.number_of_pages * 4096;
         if kernel_virt_addr >= virt_start && kernel_virt_addr < virt_end {
@@ -234,7 +249,10 @@ pub extern "efiapi" fn efi_main(
                 kernel_phys_start = x86_64::PhysAddr::new(desc.physical_start);
             }
         }
+        count += 1;
+        if count > 10 { break; } // limit to first 10 to see
     }
+    debug_print_str("After descriptor loop\n");
 
     if kernel_phys_start.is_null() {
         panic!("Could not determine kernel's physical start address.");
