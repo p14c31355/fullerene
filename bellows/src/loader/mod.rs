@@ -2,7 +2,8 @@
 
 use core::ffi::c_void;
 use core::ptr;
-use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
+use alloc::boxed::Box;
+use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable, FULLERENE_MEMORY_MAP_CONFIG_TABLE_GUID, FullereneMemoryMap};
 use petroleum::println; // Added for debugging
 pub use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
@@ -15,7 +16,7 @@ pub mod pe;
 pub fn exit_boot_services_and_jump(
     image_handle: usize,
     system_table: *mut EfiSystemTable,
-    entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
+    entry: extern "efiapi" fn(usize, *mut EfiSystemTable) -> !,
 ) -> petroleum::common::Result<!> {
     debug_print_str("Inside exit_boot_services_and_jump.\n");
     debug_print_str("system_table = ");
@@ -23,6 +24,7 @@ pub fn exit_boot_services_and_jump(
     debug_print_str("\n");
     let bs = unsafe { &*(*system_table).boot_services };
     debug_print_str("bs obtained.\n");
+    debug_print_str("About to set up memory map vars.\n");
 
     // Initial setup for memory map
     let mut map_size: usize = 0;
@@ -43,8 +45,14 @@ pub fn exit_boot_services_and_jump(
             ));
         }
         attempts += 1;
+        debug_print_str("Loop start, attempts=");
+        debug_print_hex(attempts);
+        debug_print_str(", map_size=");
+        debug_print_hex(map_size);
+        debug_print_str("\n");
 
         // First call: Get the required buffer size (with NULL buffer)
+        debug_print_str("About to call get_memory_map (null buffer)\n");
         let status = unsafe {
             (bs.get_memory_map)(
                 &mut map_size,
@@ -54,6 +62,9 @@ pub fn exit_boot_services_and_jump(
                 &mut descriptor_version,
             )
         };
+        debug_print_str("get_memory_map returned, status=");
+        debug_print_hex(status as usize);
+        debug_print_str("\n");
 
         if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
             petroleum::serial::_print(format_args!(
@@ -99,6 +110,9 @@ pub fn exit_boot_services_and_jump(
         map_phys_addr = new_map_phys_addr;
         map_pages = new_map_pages;
 
+        // Set map_size to the allocated buffer size for input
+        map_size = new_map_pages * 4096;
+
         // Second call: Get the memory map with the allocated buffer
         let status = (bs.get_memory_map)(
             &mut map_size,
@@ -133,6 +147,25 @@ pub fn exit_boot_services_and_jump(
 
     let map_ptr = map_phys_addr as *mut c_void;
 
+    // Install the memory map into the configuration table
+    let mm_config = FullereneMemoryMap {
+        physical_address: map_phys_addr as u64,
+        size: map_size,
+    };
+    let mm_config_ptr = Box::into_raw(Box::new(mm_config));
+    unsafe {
+        let status = (bs.install_configuration_table)(
+            FULLERENE_MEMORY_MAP_CONFIG_TABLE_GUID.as_ptr() as *const u8,
+            mm_config_ptr as *mut c_void,
+        );
+        if EfiStatus::from(status) != EfiStatus::Success {
+            petroleum::println!("Failed to install memory map config table");
+            return Err(BellowsError::InvalidState(
+                "Failed to install memory map config table.",
+            ));
+        }
+    }
+
     // Exit boot services. This call must succeed.
     let exit_status = (bs.exit_boot_services)(image_handle, map_key);
     if EfiStatus::from(exit_status) != EfiStatus::Success {
@@ -157,5 +190,5 @@ pub fn exit_boot_services_and_jump(
         entry as usize, map_phys_addr, map_size
     ));
     debug_print_str("About to call kernel entry.\n");
-    entry(image_handle, system_table, map_ptr, map_size);
+    entry(image_handle, system_table);
 }

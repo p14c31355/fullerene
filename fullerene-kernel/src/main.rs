@@ -20,7 +20,7 @@ use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, serial_log};
 use core::ffi::c_void;
 use petroleum::common::{
     EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
-    FullereneFramebufferConfig,
+    FullereneFramebufferConfig, FULLERENE_MEMORY_MAP_CONFIG_TABLE_GUID, FullereneMemoryMap,
 };
 use petroleum::page_table::EfiMemoryDescriptor;
 use spin::Once;
@@ -45,6 +45,22 @@ fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&FullereneFr
     for entry in config_table_entries {
         if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
             return unsafe { Some(&*(entry.vendor_table as *const FullereneFramebufferConfig)) };
+        }
+    }
+    None
+}
+
+// Helper function to find memory map config
+fn find_memory_map_config(system_table: &EfiSystemTable) -> Option<&FullereneMemoryMap> {
+    let config_table_entries = unsafe {
+        core::slice::from_raw_parts(
+            system_table.configuration_table,
+            system_table.number_of_table_entries,
+        )
+    };
+    for entry in config_table_entries {
+        if entry.vendor_guid == FULLERENE_MEMORY_MAP_CONFIG_TABLE_GUID {
+            return unsafe { Some(&*(entry.vendor_table as *const FullereneMemoryMap)) };
         }
     }
     None
@@ -83,9 +99,7 @@ fn panic(info: &PanicInfo) -> ! {
 #[unsafe(link_section = ".text.efi_main")]
 pub extern "efiapi" fn efi_main(
     _image_handle: usize,
-    system_table: *mut c_void,
-    _memory_map: *mut c_void,
-    _memory_map_size: usize,
+    system_table: *mut EfiSystemTable,
 ) -> ! {
     // Early debug print to confirm kernel entry point is reached using direct port access
     use x86_64::instructions::port::Port;
@@ -117,6 +131,19 @@ pub extern "efiapi" fn efi_main(
     serial_log("Kernel: efi_main located at ");
     serial_log(&alloc::format!("{:#x}", self_addr));
 
+    // Cast system_table to reference
+    let system_table = unsafe { &*system_table };
+
+    // Get memory map from config table
+    let memory_map_config = find_memory_map_config(system_table).expect("Memory map config not found");
+    let descriptors = unsafe {
+        core::slice::from_raw_parts(
+            memory_map_config.physical_address as *const EfiMemoryDescriptor,
+            memory_map_config.size / core::mem::size_of::<EfiMemoryDescriptor>(),
+        )
+    };
+    MEMORY_MAP.call_once(|| unsafe { &*(descriptors as *const _) });
+
     // Initialize serial immediately after entry (before any complex initialization)
     serial_init();
     print_kernel("Kernel: serial_init done.\n");
@@ -144,15 +171,6 @@ pub extern "efiapi" fn efi_main(
 
     // Early serial log works now
     kernel_log!("Kernel: basic init complete");
-
-    // Reinitialize page table after exit boot services
-    let descriptors = unsafe {
-        core::slice::from_raw_parts(
-            _memory_map as *const EfiMemoryDescriptor,
-            _memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>(),
-        )
-    };
-    MEMORY_MAP.call_once(|| unsafe { &*(descriptors as *const _) });
 
     // Calculate physical_memory_offset from kernel's location in memory map
     let kernel_virt_addr = efi_main as u64;
@@ -204,7 +222,7 @@ pub extern "efiapi" fn efi_main(
     }
 
     // Common initialization for both UEFI and BIOS
-    init_common(_memory_map, _memory_map_size);
+    init_common();
     print_kernel("Kernel: init_common done.\n");
 
     kernel_log!("Kernel: efi_main entered (via serial_log).");
@@ -216,9 +234,6 @@ pub extern "efiapi" fn efi_main(
 
     kernel_log!("Entering efi_main...");
     kernel_log!("Searching for framebuffer config table...");
-
-    // Cast the system_table pointer to the correct type
-    let system_table = unsafe { &*(system_table as *const EfiSystemTable) };
 
     if let Some(config) = find_framebuffer_config(system_table) {
         if config.address == 0 {
@@ -248,7 +263,7 @@ pub extern "efiapi" fn efi_main(
 }
 
 #[cfg(target_os = "uefi")]
-fn init_common(_memory_map: *mut c_void, _memory_map_size: usize) {
+fn init_common() {
     let descriptors = *MEMORY_MAP.get().unwrap();
     let heap_phys_start = find_heap_start(descriptors);
     let heap_start = heap::allocate_heap_from_map(heap_phys_start, heap::HEAP_SIZE);
