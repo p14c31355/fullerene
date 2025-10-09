@@ -63,7 +63,6 @@ impl ApicOffsets {
 // APIC control bits (grouped)
 struct ApicFlags;
 impl ApicFlags {
-    const ENABLE: u32 = 1 << 8;
     const SW_ENABLE: u32 = 1 << 8;
     const DISABLE: u32 = 0x10000;
     const TIMER_PERIODIC: u32 = 1 << 17;
