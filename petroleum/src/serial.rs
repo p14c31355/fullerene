@@ -237,19 +237,7 @@ pub fn _print(args: fmt::Arguments) {
         .expect("Serial write failed");
 }
 
-#[macro_export]
-macro_rules! serial_log {
-    ($($arg:tt)*) => ($crate::serial::_serial_log(format_args!($($arg)*)));
-}
 
-#[doc(hidden)]
-pub fn _serial_log(args: fmt::Arguments) {
-    use core::fmt::Write;
-    UEFI_WRITER
-        .lock()
-        .write_fmt(args)
-        .expect("Serial write failed");
-}
 
 /// Initializes the global serial port writer.
 pub fn serial_init() {

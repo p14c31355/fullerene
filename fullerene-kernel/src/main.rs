@@ -16,9 +16,7 @@ extern crate alloc;
 use core::panic::PanicInfo;
 
 // use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, serial_log};
-use petroleum::serial::{
-    SERIAL_PORT_WRITER as SERIAL1, debug_print_hex, debug_print_str_to_com1 as debug_print_str,
-};
+use petroleum::serial::SERIAL_PORT_WRITER as SERIAL1;
 
 #[cfg(not(test))]
 #[panic_handler]
@@ -33,7 +31,6 @@ use petroleum::common::{
 };
 use petroleum::page_table::EfiMemoryDescriptor;
 use petroleum::graphics::init_vga_text_mode;
-use petroleum::write_serial_bytes;
 use spin::Once;
 use x86_64::instructions::hlt;
 use x86_64::{PhysAddr, VirtAddr};
@@ -95,41 +92,11 @@ pub extern "efiapi" fn efi_main(
     memory_map: *mut c_void,
     memory_map_size: usize,
 ) -> ! {
-    // Early debug print to confirm kernel entry point is reached using direct port access
-    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main entered.\n");
-
-    debug_print_str("Early VGA write done\n");
-
-    // Helper function for kernel debug prints
-    fn print_kernel(msg: &str) {
-        write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
-    }
-
-    // Debug parameter values
-    debug_print_str("Parameters: system_table=");
-    debug_print_hex(system_table as usize);
-    debug_print_str(" memory_map=");
-    debug_print_hex(memory_map as usize);
-    debug_print_str(" memory_map_size=");
-    debug_print_hex(memory_map_size);
-    debug_print_str("\n");
-
-    print_kernel("Kernel: starting to parse parameters.\n");
-
-    // Verify our own address as sanity check for PE relocation
-    let self_addr = efi_main as u64;
-    debug_print_str("Kernel: efi_main located at ");
-    debug_print_hex(self_addr as usize);
-    debug_print_str("\n");
-
     // Cast system_table to reference
     let system_table = unsafe { &*system_table };
 
-    debug_print_str("Starting VGA setup\n");
-
     // Setup VGA text mode registers (UEFI leaves it in graphics mode)
     init_vga_text_mode();
-    debug_print_str("VGA setup done\n");
 
     // Early VGA text output to ensure visible output on screen
     {
@@ -142,28 +109,13 @@ pub extern "efiapi" fn efi_main(
         }
     }
 
-    debug_print_str("Buffer written\n");
-
-    debug_print_str("Before descriptors\n");
-
     // Use the passed memory map
-    debug_print_str("About to create slice\n");
     let descriptors = unsafe {
         core::slice::from_raw_parts(
             memory_map as *const EfiMemoryDescriptor,
             memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>(),
         )
     };
-    debug_print_str("Slice created\n");
-    debug_print_str("Starting loop\n");
-
-    // Debug: Print first descriptor
-    if let Some(desc) = descriptors.first() {
-        debug_print_str("First desc: type=");
-        debug_print_hex(desc.type_ as usize);
-        debug_print_str("\n");
-    }
-    debug_print_str("Finished debug\n");
     MEMORY_MAP.call_once(|| unsafe { &*(descriptors as *const _) });
 
     // Calculate physical_memory_offset from kernel's location in memory map
@@ -172,11 +124,7 @@ pub extern "efiapi" fn efi_main(
     let mut kernel_phys_start = x86_64::PhysAddr::new(0);
 
     // Find physical_memory_offset and kernel_phys_start
-    let mut count = 0usize;
     for desc in descriptors {
-        debug_print_str("Processing desc ");
-        debug_print_hex(count);
-        debug_print_str("\n");
         let virt_start = desc.virtual_start;
         let virt_end = virt_start + desc.number_of_pages * 4096;
         if kernel_virt_addr >= virt_start && kernel_virt_addr < virt_end {
@@ -185,34 +133,28 @@ pub extern "efiapi" fn efi_main(
                 kernel_phys_start = x86_64::PhysAddr::new(desc.physical_start);
             }
         }
-        count += 1;
-        if count > 10 { break; } // limit to first 10 to see
     }
-    debug_print_str("After descriptor loop\n");
 
     if kernel_phys_start.is_null() {
         panic!("Could not determine kernel's physical start address.");
     }
 
-    debug_print_str("Memory map parsed\n");
-
-    print_kernel("Kernel: phys offset found.\n");
     kernel_log!("Kernel: memory map parsed, kernel_phys_start found");
     kernel_log!("Starting heap frame allocator init...");
 
     heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
-    print_kernel("Kernel: frame allocator init done.\n");
+    kernel_log!("Kernel: frame allocator init done");
     heap::init_page_table(physical_memory_offset);
-    print_kernel("Kernel: page table init done.\n");
+    kernel_log!("Kernel: page table init done");
 
     heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
-    print_kernel("Kernel: page table reinit done.\n");
+    kernel_log!("Kernel: page table reinit done");
 
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(descriptors);
     let heap_start = heap::allocate_heap_from_map(heap_phys_start, heap::HEAP_SIZE);
     let heap_start_after_gdt = gdt::init(heap_start);
-    print_kernel("Kernel: GDT init done.\n");
+    kernel_log!("Kernel: GDT init done");
 
     // Initialize heap with the remaining memory
     let gdt_mem_usage = heap_start_after_gdt - heap_start;
@@ -228,37 +170,33 @@ pub extern "efiapi" fn efi_main(
     // Common initialization for both UEFI and BIOS
     // Initialize IDT before enabling interrupts
     interrupts::init();
-    print_kernel("Kernel: IDT init done.\n");
+    kernel_log!("Kernel: IDT init done");
 
     // Common initialization (enables interrupts)
     init_common();
-    print_kernel("Kernel: init_common done.\n");
+    kernel_log!("Kernel: init_common done");
 
-    // Debug: Test VGA output immediately after init
-    println!("TEST: VGA output after init_common");
-
-    kernel_log!("Kernel: efi_main entered (via serial_log).");
-    kernel_log!("GDT initialized.");
-    kernel_log!("IDT initialized.");
-    kernel_log!("APIC initialized.");
-    kernel_log!("Heap initialized.");
-    kernel_log!("Serial initialized.");
+    kernel_log!("Kernel: efi_main entered");
+    kernel_log!("GDT initialized");
+    kernel_log!("IDT initialized");
+    kernel_log!("APIC initialized");
+    kernel_log!("Heap initialized");
+    kernel_log!("Serial initialized");
 
     kernel_log!("Searching for framebuffer config table...");
     if let Some(config) = find_framebuffer_config(system_table) {
         if config.address != 0 {
-            kernel_log!("GOP graphics initialization skipped (text mode).");
+            kernel_log!("GOP graphics initialization skipped (text mode)");
         } else {
-            kernel_log!("Framebuffer address is 0, VGA will handle display.");
+            kernel_log!("Framebuffer address is 0, VGA will handle display");
         }
     } else {
-        kernel_log!("Fullerene Framebuffer Config Table not found.");
+        kernel_log!("Fullerene Framebuffer Config Table not found");
     }
     println!("Hello QEMU by FullereneOS");
 
-    // Keep kernel running instead of exiting
-    print_kernel("Kernel: running in main loop...\n");
-    kernel_log!("FullereneOS kernel is now running.");
+    kernel_log!("Kernel: running in main loop");
+    kernel_log!("FullereneOS kernel is now running");
     hlt_loop();
 }
 

@@ -328,6 +328,266 @@ pub const ATTRIBUTE_CONFIG: &[RegisterConfig] = &[
     }, // Color select register
 ];
 
+// VGA Sequencer registers configuration for text mode (80x25)
+// These control the timing and memory access for the VGA sequencer
+pub const TEXT_MODE_SEQUENCER_CONFIG: &[RegisterConfig] = &[
+    RegisterConfig {
+        index: 0x00,
+        value: 0x03,
+    }, // Reset register - synchronous reset
+    RegisterConfig {
+        index: 0x01,
+        value: 0x00,
+    }, // Clocking mode register - 8/9 dot clocks (not applicable in text mode)
+    RegisterConfig {
+        index: 0x02,
+        value: 0x03,
+    }, // Map mask register - enable planes 0 and 1 (text mode)
+    RegisterConfig {
+        index: 0x03,
+        value: 0x00,
+    }, // Character map select register - select character sets
+    RegisterConfig {
+        index: 0x04,
+        value: 0x02,
+    }, // Memory mode register - enable odd/even, use chain 4 addressing mode
+];
+
+// VGA CRTC (Cathode Ray Tube Controller) registers configuration for text mode (80x25, 16 colors)
+// These control horizontal/vertical synchronization, display size, and timing
+pub const TEXT_MODE_CRTC_CONFIG: &[RegisterConfig] = &[
+    RegisterConfig {
+        index: 0x00,
+        value: 0x5F,
+    }, // Horizontal total
+    RegisterConfig {
+        index: 0x01,
+        value: 0x4F,
+    }, // Horizontal display enable end
+    RegisterConfig {
+        index: 0x02,
+        value: 0x50,
+    }, // Start horizontal blanking
+    RegisterConfig {
+        index: 0x03,
+        value: 0x82,
+    }, // End horizontal blanking
+    RegisterConfig {
+        index: 0x04,
+        value: 0x55,
+    }, // Start horizontal retrace pulse
+    RegisterConfig {
+        index: 0x05,
+        value: 0x81,
+    }, // End horizontal retrace
+    RegisterConfig {
+        index: 0x06,
+        value: 0xBF,
+    }, // Vertical total
+    RegisterConfig {
+        index: 0x07,
+        value: 0x1F,
+    }, // Overflow
+    RegisterConfig {
+        index: 0x08,
+        value: 0x00,
+    }, // Preset row scan
+    RegisterConfig {
+        index: 0x09,
+        value: 0x4F,
+    }, // Maximum scan line
+    RegisterConfig {
+        index: 0x0A,
+        value: 0x0D,
+    }, // Cursor start
+    RegisterConfig {
+        index: 0x0B,
+        value: 0x0E,
+    }, // Cursor end
+    RegisterConfig {
+        index: 0x0C,
+        value: 0x00,
+    }, // Start address high
+    RegisterConfig {
+        index: 0x0D,
+        value: 0x00,
+    }, // Start address low
+    RegisterConfig {
+        index: 0x0E,
+        value: 0x00,
+    }, // Cursor location high
+    RegisterConfig {
+        index: 0x0F,
+        value: 0x00,
+    }, // Cursor location low
+    RegisterConfig {
+        index: 0x10,
+        value: 0x9C,
+    }, // Start vertical retrace
+    RegisterConfig {
+        index: 0x11,
+        value: 0x8E,
+    }, // End vertical retrace
+    RegisterConfig {
+        index: 0x12,
+        value: 0x8F,
+    }, // Vertical display enable end
+    RegisterConfig {
+        index: 0x13,
+        value: 0x28,
+    }, // Offset (line offset/logical width)
+    RegisterConfig {
+        index: 0x14,
+        value: 0x0F,
+    }, // Underline location (enable underline, but normally disabled in text mode)
+    RegisterConfig {
+        index: 0x15,
+        value: 0x96,
+    }, // Start vertical blanking
+    RegisterConfig {
+        index: 0x16,
+        value: 0xB9,
+    }, // End vertical blanking
+    RegisterConfig {
+        index: 0x17,
+        value: 0xA3,
+    }, // CRTC mode control
+    RegisterConfig {
+        index: 0x18,
+        value: 0xFF,
+    }, // Line compare
+];
+
+// VGA Graphics Controller registers configuration for text mode (80x25, 16 colors)
+// These control how graphics memory is mapped and accessed in text mode
+pub const TEXT_MODE_GRAPHICS_CONFIG: &[RegisterConfig] = &[
+    RegisterConfig {
+        index: 0x00,
+        value: 0x00,
+    }, // Set/reset register - reset all bits
+    RegisterConfig {
+        index: 0x01,
+        value: 0x00,
+    }, // Enable set/reset register - disable
+    RegisterConfig {
+        index: 0x02,
+        value: 0x00,
+    }, // Color compare register - compare mode
+    RegisterConfig {
+        index: 0x03,
+        value: 0x00,
+    }, // Data rotate register - no rotate, no function select
+    RegisterConfig {
+        index: 0x04,
+        value: 0x00,
+    }, // Read plane select register - select plane 0
+    RegisterConfig {
+        index: 0x05,
+        value: 0x10,
+    }, // Graphics mode register - read mode 0, write mode 0, odd/even disabled, shift register disabled
+    RegisterConfig {
+        index: 0x06,
+        value: 0x0E,
+    }, // Miscellaneous register - memory map B8000-BFFFF (64KB), alpha mode, chain odd/even enabled
+    RegisterConfig {
+        index: 0x07,
+        value: 0x00,
+    }, // Color don't care register - care about all bits (not used in text mode)
+    RegisterConfig {
+        index: 0x08,
+        value: 0xFF,
+    }, // Bit mask register - enable all bits (not normally used in text mode)
+];
+
+// VGA Attribute Controller registers configuration for text mode (80x25, 16 colors)
+// These control color mapping and screen display attributes
+pub const TEXT_MODE_ATTRIBUTE_CONFIG: &[RegisterConfig] = &[
+    RegisterConfig {
+        index: 0x00,
+        value: 0x00,
+    }, // Palette register 0 (black)
+    RegisterConfig {
+        index: 0x01,
+        value: 0x01,
+    }, // Palette register 1 (blue)
+    RegisterConfig {
+        index: 0x02,
+        value: 0x02,
+    }, // Palette register 2 (green)
+    RegisterConfig {
+        index: 0x03,
+        value: 0x03,
+    }, // Palette register 3 (cyan)
+    RegisterConfig {
+        index: 0x04,
+        value: 0x04,
+    }, // Palette register 4 (red)
+    RegisterConfig {
+        index: 0x05,
+        value: 0x05,
+    }, // Palette register 5 (magenta)
+    RegisterConfig {
+        index: 0x06,
+        value: 0x14,
+    }, // Palette register 6 (brown)
+    RegisterConfig {
+        index: 0x07,
+        value: 0x07,
+    }, // Palette register 7 (light gray)
+    RegisterConfig {
+        index: 0x08,
+        value: 0x38,
+    }, // Palette register 8 (dark gray)
+    RegisterConfig {
+        index: 0x09,
+        value: 0x39,
+    }, // Palette register 9 (light blue)
+    RegisterConfig {
+        index: 0x0A,
+        value: 0x3A,
+    }, // Palette register A (light green)
+    RegisterConfig {
+        index: 0x0B,
+        value: 0x3B,
+    }, // Palette register B (light cyan)
+    RegisterConfig {
+        index: 0x0C,
+        value: 0x3C,
+    }, // Palette register C (light red)
+    RegisterConfig {
+        index: 0x0D,
+        value: 0x3D,
+    }, // Palette register D (light magenta)
+    RegisterConfig {
+        index: 0x0E,
+        value: 0x3E,
+    }, // Palette register E (yellow)
+    RegisterConfig {
+        index: 0x0F,
+        value: 0x3F,
+    }, // Palette register F (white)
+    RegisterConfig {
+        index: 0x10,
+        value: 0x0C,
+    }, // Attr mode control register - enable text mode, enable line graphics, disable blinking
+    RegisterConfig {
+        index: 0x11,
+        value: 0x00,
+    }, // Overscan color register - border color (black)
+    RegisterConfig {
+        index: 0x12,
+        value: 0x0F,
+    }, // Color plane enable register - enable all planes
+    RegisterConfig {
+        index: 0x13,
+        value: 0x08,
+    }, // Horizontal pixel panning register - no panning
+    RegisterConfig {
+        index: 0x14,
+        value: 0x00,
+    }, // Color select register
+];
+
 // Helper function to write a palette value in grayscale
 pub fn write_palette_grayscale(val: u8) {
     unsafe {
@@ -414,127 +674,48 @@ macro_rules! write_vga_register {
     }};
 }
 
+/// Helper function to write to text mode attribute registers with special sequence
+pub fn write_text_mode_attribute_registers() {
+    unsafe {
+        let mut status_port = Port::<u8>::new(VgaPorts::STATUS);
+        let mut index_port = Port::<u8>::new(VgaPorts::ATTRIBUTE_INDEX);
+        let mut data_port = Port::<u8>::new(VgaPorts::ATTRIBUTE_INDEX);
+
+        let _ = status_port.read(); // Reset flip-flop
+
+        for reg in TEXT_MODE_ATTRIBUTE_CONFIG {
+            index_port.write(reg.index);
+            data_port.write(reg.value);
+        }
+
+        index_port.write(0x20); // Enable video output
+    }
+}
+
+/// Configures the Miscellaneous Output Register for text mode.
+pub fn setup_text_mode_misc_output() {
+    unsafe {
+        let mut misc_output_port = Port::new(VgaPorts::MISC_OUTPUT);
+        misc_output_port.write(0x63u8); // Value for enabling VGA in text mode with 25MHz clock
+    }
+}
+
+/// Configures the VGA registers for text mode using the framework
+pub fn setup_text_mode_registers() {
+    write_port_sequence!(
+        TEXT_MODE_SEQUENCER_CONFIG, VgaPorts::SEQUENCER_INDEX, VgaPorts::SEQUENCER_DATA;
+        TEXT_MODE_CRTC_CONFIG, VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA;
+        TEXT_MODE_GRAPHICS_CONFIG, VgaPorts::GRAPHICS_INDEX, VgaPorts::GRAPHICS_DATA
+    );
+    write_text_mode_attribute_registers();
+}
+
 /// Initializes VGA text mode registers (80x25 text mode).
 /// UEFI often leaves the graphics card in graphics mode, so this function
 /// reprograms the VGA registers to enter text mode for proper console output.
 pub fn init_vga_text_mode() {
-    unsafe {
-        use x86_64::instructions::port::Port;
-
-        // Misc output register: enable RAM, select 25.175 MHz clock
-        Port::new(0x3C2).write(0x63u8);
-
-        // Sequencer registers
-        Port::new(0x3C4).write(0x00u8);
-        Port::new(0x3C5).write(0x03u8); // Reset
-        Port::new(0x3C4).write(0x01u8);
-        Port::new(0x3C5).write(0x00u8); // Clocking
-        Port::new(0x3C4).write(0x02u8);
-        Port::new(0x3C5).write(0x03u8); // Plane access
-        Port::new(0x3C4).write(0x03u8);
-        Port::new(0x3C5).write(0x00u8); // Character map
-        Port::new(0x3C4).write(0x04u8);
-        Port::new(0x3C5).write(0x02u8); // Memory mode
-
-        // CRTC unlock protection bit
-        Port::new(0x3D4).write(0x11u8);
-        Port::new(0x3D5).write(0x0Eu8);
-
-        // CRTC registers for 80x25 text mode
-        Port::new(0x3D4).write(0x00u8);
-        Port::new(0x3D5).write(0x5Fu8); // H total
-        Port::new(0x3D4).write(0x01u8);
-        Port::new(0x3D5).write(0x4Fu8); // H display end
-        Port::new(0x3D4).write(0x02u8);
-        Port::new(0x3D5).write(0x50u8); // H blank start
-        Port::new(0x3D4).write(0x03u8);
-        Port::new(0x3D5).write(0x82u8); // H blank end
-        Port::new(0x3D4).write(0x04u8);
-        Port::new(0x3D5).write(0x55u8); // H retrace start
-        Port::new(0x3D4).write(0x05u8);
-        Port::new(0x3D5).write(0x81u8); // H retrace end
-        Port::new(0x3D4).write(0x06u8);
-        Port::new(0x3D5).write(0xBFu8); // V total
-        Port::new(0x3D4).write(0x07u8);
-        Port::new(0x3D5).write(0x1Fu8); // Overflow
-        Port::new(0x3D4).write(0x08u8);
-        Port::new(0x3D5).write(0x00u8); // Preset row scan
-        Port::new(0x3D4).write(0x09u8);
-        Port::new(0x3D5).write(0x4Fu8); // Max scan line
-        Port::new(0x3D4).write(0x10u8);
-        Port::new(0x3D5).write(0x9Cu8); // V retrace start
-        Port::new(0x3D4).write(0x11u8);
-        Port::new(0x3D5).write(0x8Eu8); // V retrace end
-        Port::new(0x3D4).write(0x12u8);
-        Port::new(0x3D5).write(0x8Fu8); // V display end
-        Port::new(0x3D4).write(0x13u8);
-        Port::new(0x3D5).write(0x28u8); // Offset
-        Port::new(0x3D4).write(0x14u8);
-        Port::new(0x3D5).write(0x1Fu8); // Underline location
-        Port::new(0x3D4).write(0x15u8);
-        Port::new(0x3D5).write(0x96u8); // V blank start
-        Port::new(0x3D4).write(0x16u8);
-        Port::new(0x3D5).write(0xB9u8); // V blank end
-        Port::new(0x3D4).write(0x17u8);
-        Port::new(0x3D5).write(0xA3u8); // CRTC mode control
-
-        // Graphics registers for text mode
-        Port::new(0x3CE).write(0x05u8);
-        Port::new(0x3CF).write(0x10u8); // Graphics mode
-        Port::new(0x3CE).write(0x06u8);
-        Port::new(0x3CF).write(0x0Eu8); // Misc graphics
-
-        // Attribute controller setup (reset flip-flop first)
-        let _ = Port::<u8>::new(0x3DA).read(); // Reset flip-flop
-
-        // Write palette registers
-        Port::new(0x3C0).write(0x00u8);
-        Port::new(0x3C0).write(0x00u8); // Palette 0
-        Port::new(0x3C0).write(0x01u8);
-        Port::new(0x3C0).write(0x01u8); // Palette 1
-        Port::new(0x3C0).write(0x02u8);
-        Port::new(0x3C0).write(0x02u8); // Palette 2
-        Port::new(0x3C0).write(0x03u8);
-        Port::new(0x3C0).write(0x03u8); // Palette 3
-        Port::new(0x3C0).write(0x04u8);
-        Port::new(0x3C0).write(0x04u8); // Palette 4
-        Port::new(0x3C0).write(0x05u8);
-        Port::new(0x3C0).write(0x05u8); // Palette 5
-        Port::new(0x3C0).write(0x06u8);
-        Port::new(0x3C0).write(0x06u8); // Palette 6
-        Port::new(0x3C0).write(0x07u8);
-        Port::new(0x3C0).write(0x07u8); // Palette 7
-        Port::new(0x3C0).write(0x08u8);
-        Port::new(0x3C0).write(0x10u8); // Palette 8
-        Port::new(0x3C0).write(0x09u8);
-        Port::new(0x3C0).write(0x11u8); // Palette 9
-        Port::new(0x3C0).write(0x0Au8);
-        Port::new(0x3C0).write(0x12u8); // Palette 10
-        Port::new(0x3C0).write(0x0Bu8);
-        Port::new(0x3C0).write(0x13u8); // Palette 11
-        Port::new(0x3C0).write(0x0Cu8);
-        Port::new(0x3C0).write(0x14u8); // Palette 12
-        Port::new(0x3C0).write(0x0Du8);
-        Port::new(0x3C0).write(0x15u8); // Palette 13
-        Port::new(0x3C0).write(0x0Eu8);
-        Port::new(0x3C0).write(0x16u8); // Palette 14
-        Port::new(0x3C0).write(0x0Fu8);
-        Port::new(0x3C0).write(0x17u8); // Palette 15
-
-        // Mode control registers
-        Port::new(0x3C0).write(0x10u8);
-        Port::new(0x3C0).write(0x0Cu8); // Mode control
-        Port::new(0x3C0).write(0x11u8);
-        Port::new(0x3C0).write(0x00u8); // Overscan
-        Port::new(0x3C0).write(0x12u8);
-        Port::new(0x3C0).write(0x0Fu8); // Plane enable
-        Port::new(0x3C0).write(0x13u8);
-        Port::new(0x3C0).write(0x00u8); // Pixel padding
-        Port::new(0x3C0).write(0x14u8);
-        Port::new(0x3C0).write(0x00u8); // Color select
-
-        Port::new(0x3C0).write(0x20u8); // Enable video output
-    }
+    setup_text_mode_misc_output();
+    setup_text_mode_registers();
 }
 
 #[derive(Debug, Clone, Copy)]
