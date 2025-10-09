@@ -294,7 +294,14 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
     }
 
     fn scroll_up(&self) {
-        FramebufferWriter::scroll_up(self);
+        unsafe {
+            petroleum::scroll_buffer_pixels::<T>(
+                self.info.address,
+                self.info.width_or_stride(),
+                self.info.height,
+                T::from_u32(self.info.colors.bg),
+            );
+        }
     }
 }
 

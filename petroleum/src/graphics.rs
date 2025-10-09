@@ -529,13 +529,5 @@ pub trait TextBufferOperations {
         self.set_position(0, 0);
     }
 
-    fn scroll_up(&mut self) {
-        for row in 1..self.get_height() {
-            for col in 0..self.get_width() {
-                let src = self.get_char_at(row, col);
-                self.set_char_at(row - 1, col, src);
-            }
-        }
-        self.clear_row(self.get_height() - 1);
-    }
+    fn scroll_up(&mut self);
 }

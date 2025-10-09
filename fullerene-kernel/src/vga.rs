@@ -91,6 +91,15 @@ impl TextBufferOperations for VgaBuffer {
             }
         }
     }
+
+    fn scroll_up(&mut self) {
+        for row in 1..BUFFER_HEIGHT {
+            for col in 0..BUFFER_WIDTH {
+                self.buffer[row - 1][col] = self.buffer[row][col];
+            }
+        }
+        self.clear_row(BUFFER_HEIGHT - 1);
+    }
 }
 
 // Global singleton for the VGA buffer writer
