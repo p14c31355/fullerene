@@ -95,12 +95,12 @@ struct ColorScheme {
 }
 
 impl ColorScheme {
-    const UEFI_WHITE_ON_BLACK: Self = Self {
-        fg: 0xFFFFFFu32,
+    const UEFI_GREEN_ON_BLACK: Self = Self {
+        fg: 0x00FF00u32,
         bg: 0x000000u32,
     };
-    const VGA_WHITE_ON_BLACK: Self = Self {
-        fg: 0x0Fu32,
+    const VGA_GREEN_ON_BLACK: Self = Self {
+        fg: 0x02u32,
         bg: 0x00u32,
     };
 }
@@ -156,7 +156,7 @@ impl FramebufferInfo {
             height: fb_config.height,
             stride: fb_config.stride,
             pixel_format: Some(fb_config.pixel_format),
-            colors: ColorScheme::UEFI_WHITE_ON_BLACK,
+            colors: ColorScheme::UEFI_GREEN_ON_BLACK,
         }
     }
 }
@@ -169,7 +169,7 @@ impl FramebufferInfo {
             height: config.height,
             stride: config.width,
             pixel_format: None,
-            colors: ColorScheme::VGA_WHITE_ON_BLACK,
+            colors: ColorScheme::VGA_GREEN_ON_BLACK,
         }
     }
 }

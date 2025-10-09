@@ -103,7 +103,7 @@ pub extern "efiapi" fn efi_main(
         let hello = b"UEFI Kernel Starting...";
         for (i, &byte) in hello.iter().enumerate() {
             if i < 80 {
-                vga_buffer[0][i] = (0x0F00 as u16) | (byte as u16); // White on black
+                vga_buffer[0][i] = (0x0200 as u16) | (byte as u16); // Green on black
             }
         }
     }
@@ -123,6 +123,73 @@ pub extern "efiapi" fn efi_main(
 
     // Cast system_table to reference
     let system_table = unsafe { &*system_table };
+
+    // Setup VGA text mode registers (UEFI leaves it in graphics mode)
+    unsafe {
+        use x86_64::instructions::port::Port;
+
+        // Misc output register: enable RAM, select 25.175 MHz clock
+        Port::new(0x3C2).write(0x63u8);
+
+        // Sequencer registers
+        Port::new(0x3C4).write(0x00u8); Port::new(0x3C5).write(0x03u8); // Reset
+        Port::new(0x3C4).write(0x01u8); Port::new(0x3C5).write(0x00u8); // Clocking
+        Port::new(0x3C4).write(0x02u8); Port::new(0x3C5).write(0x03u8); // Plane access
+        Port::new(0x3C4).write(0x03u8); Port::new(0x3C5).write(0x00u8); // Character map
+        Port::new(0x3C4).write(0x04u8); Port::new(0x3C5).write(0x02u8); // Memory mode
+
+        // CRTC unlock protection bit
+        Port::new(0x3D4).write(0x11u8); Port::new(0x3D5).write(0x0Eu8);
+
+        // CRTC registers for 80x25 text mode
+        Port::new(0x3D4).write(0x00u8); Port::new(0x3D5).write(0x5Fu8); // H total
+        Port::new(0x3D4).write(0x01u8); Port::new(0x3D5).write(0x4Fu8); // H display end
+        Port::new(0x3D4).write(0x02u8); Port::new(0x3D5).write(0x50u8); // H blank start
+        Port::new(0x3D4).write(0x03u8); Port::new(0x3D5).write(0x82u8); // H blank end
+        Port::new(0x3D4).write(0x04u8); Port::new(0x3D5).write(0x55u8); // H retrace start
+        Port::new(0x3D4).write(0x05u8); Port::new(0x3D5).write(0x81u8); // H retrace end
+        Port::new(0x3D4).write(0x06u8); Port::new(0x3D5).write(0xBFu8); // V total
+        Port::new(0x3D4).write(0x07u8); Port::new(0x3D5).write(0x1Fu8); // Overflow
+        Port::new(0x3D4).write(0x08u8); Port::new(0x3D5).write(0x00u8); // Preset row scan
+        Port::new(0x3D4).write(0x09u8); Port::new(0x3D5).write(0x4Fu8); // Max scan line
+        Port::new(0x3D4).write(0x10u8); Port::new(0x3D5).write(0x9Cu8); // V retrace start
+        Port::new(0x3D4).write(0x11u8); Port::new(0x3D5).write(0x8Eu8); // V retrace end
+        Port::new(0x3D4).write(0x12u8); Port::new(0x3D5).write(0x8Fu8); // V display end
+        Port::new(0x3D4).write(0x13u8); Port::new(0x3D5).write(0x28u8); // Offset
+        Port::new(0x3D4).write(0x14u8); Port::new(0x3D5).write(0x1Fu8); // Underline location
+        Port::new(0x3D4).write(0x15u8); Port::new(0x3D5).write(0x96u8); // V blank start
+        Port::new(0x3D4).write(0x16u8); Port::new(0x3D5).write(0xB9u8); // V blank end
+        Port::new(0x3D4).write(0x17u8); Port::new(0x3D5).write(0xA3u8); // CRTC mode control
+
+        // Graphics registers for text mode
+        Port::new(0x3CE).write(0x05u8); Port::new(0x3CF).write(0x10u8); // Graphics mode
+        Port::new(0x3CE).write(0x06u8); Port::new(0x3CF).write(0x0Eu8); // Misc graphics
+
+        // Attribute controller setup (reset flip-flop first)
+        Port::<u8>::new(0x3DA).read(); // Reset flip-flop
+        Port::new(0x3C0).write(0x00u8); Port::new(0x3C0).write(0x00u8); // Palette 0
+        Port::new(0x3C0).write(0x01u8); Port::new(0x3C0).write(0x01u8); // Palette 1
+        Port::new(0x3C0).write(0x02u8); Port::new(0x3C0).write(0x02u8); // Palette 2
+        Port::new(0x3C0).write(0x03u8); Port::new(0x3C0).write(0x03u8); // Palette 3
+        Port::new(0x3C0).write(0x04u8); Port::new(0x3C0).write(0x04u8); // Palette 4
+        Port::new(0x3C0).write(0x05u8); Port::new(0x3C0).write(0x05u8); // Palette 5
+        Port::new(0x3C0).write(0x06u8); Port::new(0x3C0).write(0x06u8); // Palette 6
+        Port::new(0x3C0).write(0x07u8); Port::new(0x3C0).write(0x07u8); // Palette 7
+        Port::new(0x3C0).write(0x08u8); Port::new(0x3C0).write(0x10u8); // Palette 8
+        Port::new(0x3C0).write(0x09u8); Port::new(0x3C0).write(0x11u8); // Palette 9
+        Port::new(0x3C0).write(0x0Au8); Port::new(0x3C0).write(0x12u8); // Palette 10
+        Port::new(0x3C0).write(0x0Bu8); Port::new(0x3C0).write(0x13u8); // Palette 11
+        Port::new(0x3C0).write(0x0Cu8); Port::new(0x3C0).write(0x14u8); // Palette 12
+        Port::new(0x3C0).write(0x0Du8); Port::new(0x3C0).write(0x15u8); // Palette 13
+        Port::new(0x3C0).write(0x0Eu8); Port::new(0x3C0).write(0x16u8); // Palette 14
+        Port::new(0x3C0).write(0x0Fu8); Port::new(0x3C0).write(0x17u8); // Palette 15
+        Port::new(0x3C0).write(0x10u8); Port::new(0x3C0).write(0x0Cu8); // Mode control
+        Port::new(0x3C0).write(0x11u8); Port::new(0x3C0).write(0x00u8); // Overscan
+        Port::new(0x3C0).write(0x12u8); Port::new(0x3C0).write(0x0Fu8); // Plane enable
+        Port::new(0x3C0).write(0x13u8); Port::new(0x3C0).write(0x00u8); // Pixel padding
+        Port::new(0x3C0).write(0x14u8); Port::new(0x3C0).write(0x00u8); // Color select
+        Port::new(0x3C0).write(0x20u8); // Enable video output
+    }
 
     // Use the passed memory map
     let descriptors = unsafe {
@@ -192,6 +259,9 @@ pub extern "efiapi" fn efi_main(
     init_common();
     print_kernel("Kernel: init_common done.\n");
 
+    // Debug: Test VGA output immediately after init
+    println!("TEST: VGA output after init_common");
+
     kernel_log!("Kernel: efi_main entered (via serial_log).");
     kernel_log!("GDT initialized.");
     kernel_log!("IDT initialized.");
@@ -202,21 +272,14 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Searching for framebuffer config table...");
     if let Some(config) = find_framebuffer_config(system_table) {
         if config.address != 0 {
-            graphics::init(config);
-            kernel_log!("GOP graphics initialized.");
+            // Skip graphics init when running in text mode
+            // graphics::init(config);
+            kernel_log!("GOP graphics initialization skipped (text mode).");
         } else {
-            panic!("Framebuffer address is 0, check bootloader GOP install");
+            kernel_log!("Framebuffer address is 0, VGA will handle display.");
         }
     } else {
-        kernel_log!("Fullerene Framebuffer Config Table not found, falling back to VGA.");
-        let vga_config = VgaFramebufferConfig {
-            address: 0xA0000,
-            width: 320,
-            height: 200,
-            bpp: 8,
-        };
-        graphics::init_vga(&vga_config);
-        kernel_log!("VGA graphics initialized.");
+        kernel_log!("Fullerene Framebuffer Config Table not found.");
     }
     println!("Hello QEMU by FullereneOS");
 
@@ -228,6 +291,7 @@ pub extern "efiapi" fn efi_main(
 
 #[cfg(target_os = "uefi")]
 fn init_common() {
+    crate::vga::vga_init();
     // Now safe to initialize APIC and enable interrupts (after stable page tables and heap)
     interrupts::init_apic();
     kernel_log!("Kernel: APIC initialized and interrupts enabled");
@@ -257,6 +321,7 @@ fn init_common() {
     interrupts::init(); // Initialize IDT
     // Heap already initialized
     petroleum::serial::serial_init(); // Initialize serial early for debugging
+    crate::vga::vga_init();
 }
 
 #[cfg(not(target_os = "uefi"))]
