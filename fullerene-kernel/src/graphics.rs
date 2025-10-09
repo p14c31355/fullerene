@@ -606,8 +606,6 @@ fn setup_registers_from_configs() {
     );
 }
 
-
-
 // VGA Attribute Controller registers configuration for mode 13h
 // These control color mapping and screen display attributes
 const ATTRIBUTE_CONFIG: &[RegisterConfig] = &[

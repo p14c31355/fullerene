@@ -9,7 +9,7 @@ pub mod common;
 pub mod graphics;
 pub mod page_table;
 pub mod serial;
-pub use apic::{init_io_apic, IoApic, IoApicRedirectionEntry};
+pub use apic::{IoApic, IoApicRedirectionEntry, init_io_apic};
 pub use graphics::{Color, ColorCode, ScreenChar, TextBufferOperations};
 pub use serial::{Com1Ports, SerialPort, SerialPortOps};
 
@@ -82,7 +82,7 @@ pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
     {
         // Import VGA module here to avoid dependency issues
         extern crate vga_buffer;
-        use vga_buffer::{Writer, ColorCode, Color, BUFFER_HEIGHT, BUFFER_WIDTH};
+        use vga_buffer::{BUFFER_HEIGHT, BUFFER_WIDTH, Color, ColorCode, Writer};
 
         let mut writer = Writer {
             column_position: 0,
@@ -102,7 +102,12 @@ pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
             for byte in loc_str.bytes() {
                 if byte == b'\n' {
                     writer.new_line();
-                } else if byte.is_ascii_graphic() || byte == b' ' || byte == b'.' || byte == b'/' || byte == b'\\' {
+                } else if byte.is_ascii_graphic()
+                    || byte == b' '
+                    || byte == b'.'
+                    || byte == b'/'
+                    || byte == b'\\'
+                {
                     writer.write_byte(byte);
                 }
             }

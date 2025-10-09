@@ -20,13 +20,21 @@ pub struct IoApicRedirectionEntry {
 
 impl IoApicRedirectionEntry {
     /// Create a new RTE with specified parameters
-    pub fn new(vector: u8, delivery_mode: u8, dest_mode: bool, polarity: bool, trigger: bool, mask: bool, dest: u8) -> Self {
-        let mut lower = (vector as u32) |
-                        ((delivery_mode as u32) << 8) |
-                        ((dest_mode as u32) << 11) |
-                        ((polarity as u32) << 13) |
-                        ((trigger as u32) << 15) |
-                        ((mask as u32) << 16);
+    pub fn new(
+        vector: u8,
+        delivery_mode: u8,
+        dest_mode: bool,
+        polarity: bool,
+        trigger: bool,
+        mask: bool,
+        dest: u8,
+    ) -> Self {
+        let mut lower = (vector as u32)
+            | ((delivery_mode as u32) << 8)
+            | ((dest_mode as u32) << 11)
+            | ((polarity as u32) << 13)
+            | ((trigger as u32) << 15)
+            | ((mask as u32) << 16);
 
         let mut upper = (dest as u32) << 24;
 
@@ -154,11 +162,13 @@ pub fn find_io_apic_base() -> u64 {
 /// Configure I/O APIC for legacy IRQs
 pub fn configure_io_apic_for_legacy_irqs(io_apic: &mut IoApic, local_apic_id: u8) {
     // Configure keyboard (IRQ 1) -> vector 33
-    let mut keyboard_rte = IoApicRedirectionEntry::new(33, 0, false, false, false, false, local_apic_id);
+    let mut keyboard_rte =
+        IoApicRedirectionEntry::new(33, 0, false, false, false, false, local_apic_id);
     io_apic.write_rte(1, keyboard_rte);
 
     // Configure mouse (IRQ 12) -> vector 44
-    let mut mouse_rte = IoApicRedirectionEntry::new(44, 0, false, false, false, false, local_apic_id);
+    let mut mouse_rte =
+        IoApicRedirectionEntry::new(44, 0, false, false, false, false, local_apic_id);
     io_apic.write_rte(12, mouse_rte);
 
     // Note: Other IRQs can be configured similarly as needed

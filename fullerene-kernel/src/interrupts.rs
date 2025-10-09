@@ -3,11 +3,11 @@
 use crate::gdt;
 use core::fmt::Write;
 use lazy_static::lazy_static;
-use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1};
 use petroleum::init_io_apic;
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
-use x86_64::instructions::port::Port;
+use petroleum::serial::SERIAL_PORT_WRITER as SERIAL1;
 use spin::Mutex;
+use x86_64::instructions::port::Port;
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
 static TICK_COUNTER: Mutex<u64> = Mutex::new(0);
 
@@ -123,7 +123,8 @@ fn get_apic_base() -> Option<u64> {
     use x86_64::registers::model_specific::Msr;
     let msr = Msr::new(APIC_BASE_MSR);
     let value = unsafe { msr.read() };
-    if value & (1 << 11) != 0 { // APIC is enabled
+    if value & (1 << 11) != 0 {
+        // APIC is enabled
         Some(value & APIC_BASE_ADDR_MASK)
     } else {
         None
@@ -260,7 +261,8 @@ pub extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame
     let head = *KEYBOARD_BUFFER_HEAD.lock();
     let mut tail = *KEYBOARD_BUFFER_TAIL.lock();
     let next_tail = (tail + 1) % 256;
-    if next_tail != head {  // Not full
+    if next_tail != head {
+        // Not full
         buffer[tail] = scancode;
         *KEYBOARD_BUFFER_TAIL.lock() = next_tail;
     }
@@ -283,8 +285,8 @@ pub extern "x86-interrupt" fn mouse_handler(_stack_frame: InterruptStackFrame) {
         let dy = packet[2] as i8 as i16;
         *MOUSE_X.lock() += dx;
         *MOUSE_Y.lock() += dy;
-        *MOUSE_BUTTONS.lock() = status & 0x07;  // Left, right, middle bits
-        idx = 0;  // Reset for next packet
+        *MOUSE_BUTTONS.lock() = status & 0x07; // Left, right, middle bits
+        idx = 0; // Reset for next packet
         packet[0] = 0;
         packet[1] = 0;
         packet[2] = 0;

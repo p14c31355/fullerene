@@ -21,7 +21,8 @@ use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_
 
 use petroleum::common::{
     EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputModeInformation, EfiGraphicsOutputProtocol,
-    EfiGraphicsPixelFormat, EfiStatus, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
+    EfiGraphicsPixelFormat, EfiStatus, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
+    FullereneFramebufferConfig,
 };
 
 /// Main entry point of the bootloader.
@@ -49,7 +50,9 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     let st = unsafe { &*system_table };
     let bs = unsafe { &*st.boot_services };
 
-    petroleum::serial::_print(format_args!("Bellows: UEFI system table and boot services acquired.\n"));
+    petroleum::serial::_print(format_args!(
+        "Bellows: UEFI system table and boot services acquired.\n"
+    ));
 
     // Initialize the serial writer with the console output pointer.
     petroleum::serial::UEFI_WRITER.lock().init(st.con_out);
@@ -175,7 +178,9 @@ fn init_gop(st: &EfiSystemTable) {
         if size > mode_info_buf.len() {
             petroleum::serial::_print(format_args!(
                 "GOP: Mode {} size {} too large (max {}), skipping.\n",
-                mode_num, size, mode_info_buf.len()
+                mode_num,
+                size,
+                mode_info_buf.len()
             ));
             continue;
         }
@@ -198,12 +203,21 @@ fn init_gop(st: &EfiSystemTable) {
             ));
 
             // Prefer 1024x768 with AddRgb, or highest resolution if not available
-            if info.horizontal_resolution == 1024 && info.vertical_resolution == 768 && info.pixel_format == EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor {
+            if info.horizontal_resolution == 1024
+                && info.vertical_resolution == 768
+                && info.pixel_format
+                    == EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
+            {
                 target_mode = Some(mode_num as usize);
                 break;
             }
-            if info.horizontal_resolution >= 1024 && info.vertical_resolution >= 768 && info.pixel_format == EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor {
-                let resolution = info.horizontal_resolution as u64 * info.vertical_resolution as u64;
+            if info.horizontal_resolution >= 1024
+                && info.vertical_resolution >= 768
+                && info.pixel_format
+                    == EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
+            {
+                let resolution =
+                    info.horizontal_resolution as u64 * info.vertical_resolution as u64;
                 if resolution > best_resolution {
                     best_resolution = resolution;
                     target_mode = Some(mode_num as usize);
@@ -292,7 +306,10 @@ fn init_gop(st: &EfiSystemTable) {
         core::ptr::write_bytes(fb_addr as *mut u8, 0x00, fb_size as usize);
     }
 
-    petroleum::serial::serial_log(format_args!("GOP set: {}x{} @ {:#x}", info.horizontal_resolution, info.vertical_resolution, fb_addr));
+    petroleum::serial::serial_log(format_args!(
+        "GOP set: {}x{} @ {:#x}",
+        info.horizontal_resolution, info.vertical_resolution, fb_addr
+    ));
     petroleum::serial::_print(format_args!("GOP: Framebuffer initialized and cleared\n"));
 }
 

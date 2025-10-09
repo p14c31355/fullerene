@@ -100,14 +100,13 @@ impl<S: SerialPortOps> fmt::Write for SerialPort<S> {
 
 // Provides a global singleton for the serial port
 // Provides a global singleton for the serial port
-pub static SERIAL_PORT_WRITER: Mutex<SerialPort<Com1Ports>> = Mutex::new(SerialPort::new(Com1Ports));
+pub static SERIAL_PORT_WRITER: Mutex<SerialPort<Com1Ports>> =
+    Mutex::new(SerialPort::new(Com1Ports));
 
 /// Initializes the global serial port writer.
 pub fn serial_init() {
     SERIAL_PORT_WRITER.lock().init();
 }
-
-
 
 pub struct UefiWriter {
     con_out: *mut EfiSimpleTextOutput,

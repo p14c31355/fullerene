@@ -16,7 +16,9 @@ extern crate alloc;
 use core::panic::PanicInfo;
 
 // use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, serial_log};
-use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, debug_print_hex, debug_print_str_to_com1 as debug_print_str};
+use petroleum::serial::{
+    SERIAL_PORT_WRITER as SERIAL1, debug_print_hex, debug_print_str_to_com1 as debug_print_str,
+};
 
 use core::ffi::c_void;
 use petroleum::common::{
@@ -26,8 +28,8 @@ use petroleum::common::{
 use petroleum::page_table::EfiMemoryDescriptor;
 use petroleum::write_serial_bytes;
 use spin::Once;
-use x86_64::{VirtAddr, PhysAddr};
 use x86_64::instructions::hlt;
+use x86_64::{PhysAddr, VirtAddr};
 
 // Macro to reduce repetitive serial logging
 macro_rules! kernel_log {
@@ -47,7 +49,13 @@ fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&FullereneFr
     };
     for entry in config_table_entries {
         let guid = entry.vendor_guid;
-        kernel_log!("Checking config table entry: GUID={:x}{:x}{:x}{:x}", guid[0], guid[1], guid[2], guid[3]);
+        kernel_log!(
+            "Checking config table entry: GUID={:x}{:x}{:x}{:x}",
+            guid[0],
+            guid[1],
+            guid[2],
+            guid[3]
+        );
         if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
             kernel_log!("Found matching Fullerene framebuffer config GUID");
             return unsafe { Some(&*(entry.vendor_table as *const FullereneFramebufferConfig)) };
@@ -55,7 +63,6 @@ fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&FullereneFr
     }
     None
 }
-
 
 // Helper function to find heap start from memory map
 fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> x86_64::PhysAddr {
@@ -174,7 +181,10 @@ pub extern "efiapi" fn efi_main(
 
     // Initialize heap with the remaining memory
     let gdt_mem_usage = heap_start_after_gdt - heap_start;
-    heap::init(heap_start_after_gdt, heap::HEAP_SIZE - gdt_mem_usage as usize);
+    heap::init(
+        heap_start_after_gdt,
+        heap::HEAP_SIZE - gdt_mem_usage as usize,
+    );
     kernel_log!("Kernel: heap initialized");
 
     // Early serial log works now
@@ -196,17 +206,25 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Heap initialized.");
     kernel_log!("Serial initialized.");
 
-    // Initialize VGA graphics mode
-    let vga_config = VgaFramebufferConfig {
-        address: 0xA0000,
-        width: 320,
-        height: 200,
-        bpp: 8,
-    };
-    print_kernel("Kernel: about to init VGA graphics.\n");
-    graphics::init_vga(&vga_config);
-    print_kernel("Kernel: VGA graphics init done.\n");
-    kernel_log!("VGA graphics initialized successfully.");
+    kernel_log!("Searching for framebuffer config table...");
+    if let Some(config) = find_framebuffer_config(system_table) {
+        if config.address != 0 {
+            graphics::init(config);
+            kernel_log!("GOP graphics initialized.");
+        } else {
+            panic!("Framebuffer address is 0, check bootloader GOP install");
+        }
+    } else {
+        kernel_log!("Fullerene Framebuffer Config Table not found, falling back to VGA.");
+        let vga_config = VgaFramebufferConfig {
+            address: 0xA0000,
+            width: 320,
+            height: 200,
+            bpp: 8,
+        };
+        graphics::init_vga(&vga_config);
+        kernel_log!("VGA graphics initialized.");
+    }
     println!("Hello QEMU by FullereneOS");
 
     // Exit QEMU instead of infinite halt
@@ -227,7 +245,9 @@ fn init_common() {
 
     // Test interrupt handling - should not panic or crash if APIC is working
     kernel_log!("Testing interrupt handling with int3...");
-    unsafe { x86_64::instructions::interrupts::int3(); }
+    unsafe {
+        x86_64::instructions::interrupts::int3();
+    }
     kernel_log!("Interrupt test passed (no crash)");
 }
 

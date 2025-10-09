@@ -196,7 +196,8 @@ pub static ALLOCATOR: Locked<Heap> = Locked::new(Heap::empty());
 
 static PHYSICAL_MEMORY_OFFSET: spin::Once<VirtAddr> = spin::Once::new();
 pub(crate) static MAPPER: spin::Once<Mutex<OffsetPageTable<'static>>> = spin::Once::new();
-pub(crate) static FRAME_ALLOCATOR: spin::Once<Mutex<BootInfoFrameAllocator<'static>>> = spin::Once::new();
+pub(crate) static FRAME_ALLOCATOR: spin::Once<Mutex<BootInfoFrameAllocator<'static>>> =
+    spin::Once::new();
 static MEMORY_MAP: spin::Once<&'static [petroleum::page_table::EfiMemoryDescriptor]> =
     spin::Once::new();
 
