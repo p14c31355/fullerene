@@ -4,6 +4,21 @@ use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
 use super::headers::*;
 use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
+// Macro for writing bytes to serial port with busy waiting
+macro_rules! write_serial_bytes {
+    ($port_addr:expr, $status_addr:expr, $bytes:expr) => {{
+        use x86_64::instructions::port::Port;
+        unsafe {
+            let mut port = Port::<u8>::new($port_addr);
+            let mut status_port = Port::<u8>::new($status_addr);
+            for &byte in $bytes {
+                while (status_port.read() & 0x20) == 0 {}
+                port.write(byte);
+            }
+        }
+    }};
+}
+
 /// Dummy kernel entry point for testing
 extern "efiapi" fn dummy_kernel_entry(
     _image_handle: usize,
@@ -12,32 +27,9 @@ extern "efiapi" fn dummy_kernel_entry(
     _memory_map_size: usize,
 ) -> ! {
     // Print multiple messages to show the kernel was called
-    use x86_64::instructions::port::Port;
-    let mut port = Port::new(0x3F8);
-
-    // Message 1
-    for byte in b"Kernel: Entry point reached!\n" {
-        unsafe {
-            while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
-            port.write(*byte);
-        }
-    }
-
-    // Message 2
-    for byte in b"Kernel: Parameters received\n" {
-        unsafe {
-            while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
-            port.write(*byte);
-        }
-    }
-
-    // Message 3
-    for byte in b"Kernel: Halting CPU...\n" {
-        unsafe {
-            while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
-            port.write(*byte);
-        }
-    }
+    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: Entry point reached!\n");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: Parameters received\n");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: Halting CPU...\n");
 
     // Halt the CPU
     loop {

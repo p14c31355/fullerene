@@ -1,3 +1,35 @@
+// Helper traits and macros for reducing repetition
+macro_rules! write_port_sequence {
+    ($($config:expr, $index_port:expr, $data_port:expr);*) => {{
+        $(
+            let regs = $config;
+            for reg in regs {
+                unsafe {
+                    let mut idx_port = Port::<u8>::new($index_port);
+                    let mut data_port = Port::<u8>::new($data_port);
+                    idx_port.write(reg.index);
+                    data_port.write(reg.value);
+                }
+            }
+        )*
+    }};
+}
+
+
+
+macro_rules! write_vga_index {
+    ($index_port:expr, $data_port:expr, $index:expr, $data:expr) => {{
+        unsafe {
+            let mut idx_port = Port::<u8>::new($index_port);
+            let mut data_port = Port::<u8>::new($data_port);
+            idx_port.write($index);
+            data_port.write($data);
+        }
+    }};
+}
+
+// Helper functions for color operations
+
 use alloc::boxed::Box; // Import Box
 use core::fmt::{self, Write};
 use core::marker::{Send, Sync};
@@ -367,16 +399,6 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
     WRITER_BIOS.call_once(|| Mutex::new(Box::new(writer)));
 }
 
-/// Writes a value to an indexed VGA register.
-fn write_indexed(index_port_addr: u16, data_port_addr: u16, index: u8, data: u8) {
-    unsafe {
-        let mut index_port = Port::new(index_port_addr);
-        let mut data_port = Port::new(data_port_addr);
-        index_port.write(index);
-        data_port.write(data);
-    }
-}
-
 // Macro was used for register setup but is now redundant due to config arrays - kept for backward compatibility
 
 // VGA register configurations using structs for data-driven setup
@@ -539,15 +561,6 @@ fn write_palette_grayscale(val: u8) {
     }
 }
 
-// Macro to setup multiple registers from a config array
-macro_rules! setup_registers_from_config {
-    ($config:expr, $index_port:expr, $data_port:expr) => {
-        for reg in $config {
-            write_indexed($index_port, $data_port, reg.index, reg.value);
-        }
-    };
-}
-
 /// Configures the Miscellaneous Output Register.
 fn setup_misc_output() {
     unsafe {
@@ -556,27 +569,26 @@ fn setup_misc_output() {
     }
 }
 
-/// Configures the VGA Sequencer registers.
+/// Configures the VGA registers using the new macro
+fn setup_registers_from_configs() {
+    write_port_sequence!(
+        SEQUENCER_CONFIG, VgaPorts::SEQUENCER_INDEX, VgaPorts::SEQUENCER_DATA;
+        CRTC_CONFIG, VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA;
+        GRAPHICS_CONFIG, VgaPorts::GRAPHICS_INDEX, VgaPorts::GRAPHICS_DATA
+    );
+}
+
+/// Legacy functions for compatibility (now just wrappers)
 fn setup_sequencer() {
-    setup_registers_from_config!(
-        SEQUENCER_CONFIG,
-        VgaPorts::SEQUENCER_INDEX,
-        VgaPorts::SEQUENCER_DATA
-    );
+    write_port_sequence!(SEQUENCER_CONFIG, VgaPorts::SEQUENCER_INDEX, VgaPorts::SEQUENCER_DATA);
 }
 
-/// Configures the VGA CRTC (Cathode Ray Tube Controller) registers.
 fn setup_crtc() {
-    setup_registers_from_config!(CRTC_CONFIG, VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA);
+    write_port_sequence!(CRTC_CONFIG, VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA);
 }
 
-/// Configures the VGA Graphics Controller registers.
 fn setup_graphics_controller() {
-    setup_registers_from_config!(
-        GRAPHICS_CONFIG,
-        VgaPorts::GRAPHICS_INDEX,
-        VgaPorts::GRAPHICS_DATA
-    );
+    write_port_sequence!(GRAPHICS_CONFIG, VgaPorts::GRAPHICS_INDEX, VgaPorts::GRAPHICS_DATA);
 }
 
 // VGA Attribute Controller registers configuration for mode 13h
@@ -693,14 +705,11 @@ fn setup_attribute_controller() {
 
 /// Sets up a simple grayscale palette for the 256-color mode.
 fn setup_palette() {
-    unsafe {
-        let mut dac_index_port: Port<u8> = Port::new(VgaPorts::DAC_INDEX);
-        dac_index_port.write(0x00u8); // Start at color index 0
+    write_vga_index!(VgaPorts::DAC_INDEX, VgaPorts::DAC_DATA, 0x00, 0x00); // Start at color index 0
 
-        for i in 0..256 {
-            let val = (i * 63 / 255) as u8;
-            write_palette_grayscale(val);
-        }
+    for i in 0..256 {
+        let val = (i * 63 / 255) as u8;
+        write_palette_grayscale(val);
     }
 }
 

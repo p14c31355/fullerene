@@ -35,6 +35,21 @@ macro_rules! kernel_log {
     };
 }
 
+// Macro for writing bytes to serial port with busy waiting
+macro_rules! write_serial_bytes {
+    ($port_addr:expr, $status_addr:expr, $bytes:expr) => {{
+        use x86_64::instructions::port::Port;
+        unsafe {
+            let mut port = Port::<u8>::new($port_addr);
+            let mut status_port = Port::<u8>::new($status_addr);
+            for &byte in $bytes {
+                while (status_port.read() & 0x20) == 0 {}
+                port.write(byte);
+            }
+        }
+    }};
+}
+
 // Helper function to find framebuffer config
 fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&FullereneFramebufferConfig> {
     let config_table_entries = unsafe {
@@ -105,26 +120,11 @@ pub extern "efiapi" fn efi_main(
     memory_map_size: usize,
 ) -> ! {
     // Early debug print to confirm kernel entry point is reached using direct port access
-    use x86_64::instructions::port::Port;
-    let mut port = Port::new(0x3F8);
-    unsafe {
-        let msg = b"Kernel: efi_main entered.\n";
-        for &byte in msg {
-            while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
-            port.write(byte);
-        }
-    }
+    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main entered.\n");
 
     // Helper function for kernel debug prints
     fn print_kernel(msg: &str) {
-        use x86_64::instructions::port::Port;
-        let mut port = Port::new(0x3F8);
-        for byte in msg.bytes() {
-            unsafe {
-                while (Port::<u8>::new(0x3FD).read() & 0x20) == 0 {}
-                port.write(byte);
-            }
-        }
+        write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
     }
 
     print_kernel("Kernel: starting to parse parameters.\n");
