@@ -103,11 +103,6 @@ impl<S: SerialPortOps> fmt::Write for SerialPort<S> {
 pub static SERIAL_PORT_WRITER: Mutex<SerialPort<Com1Ports>> =
     Mutex::new(SerialPort::new(Com1Ports));
 
-/// Initializes the global serial port writer.
-pub fn serial_init() {
-    SERIAL_PORT_WRITER.lock().init();
-}
-
 pub struct UefiWriter {
     con_out: *mut EfiSimpleTextOutput,
 }
@@ -240,6 +235,29 @@ pub fn _print(args: fmt::Arguments) {
         .lock()
         .write_fmt(args)
         .expect("Serial write failed");
+}
+
+#[macro_export]
+macro_rules! serial_log {
+    ($($arg:tt)*) => ($crate::serial::_serial_log(format_args!($($arg)*)));
+}
+
+#[doc(hidden)]
+pub fn _serial_log(args: fmt::Arguments) {
+    use core::fmt::Write;
+    UEFI_WRITER
+        .lock()
+        .write_fmt(args)
+        .expect("Serial write failed");
+}
+
+/// Provides a global singleton for the serial port writer.
+pub static SERIAL_PORT_WRITER_GLOBAL: Mutex<SerialPort<Com1Ports>> =
+    Mutex::new(SerialPort::new(Com1Ports));
+
+/// Initializes the global serial port writer.
+pub fn serial_init() {
+    SERIAL_PORT_WRITER_GLOBAL.lock().init();
 }
 
 #[cfg(test)]

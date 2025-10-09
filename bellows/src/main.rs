@@ -25,6 +25,12 @@ use petroleum::common::{
     FullereneFramebufferConfig,
 };
 
+#[cfg(not(test))]
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    petroleum::handle_panic(info)
+}
+
 /// Main entry point of the bootloader.
 ///
 /// This function is the `start` attribute as defined in the `Cargo.toml`.
@@ -311,10 +317,4 @@ fn init_gop(st: &EfiSystemTable) {
         info.horizontal_resolution, info.vertical_resolution, fb_addr
     ));
     petroleum::serial::_print(format_args!("GOP: Framebuffer initialized and cleared\n"));
-}
-
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    petroleum::handle_panic(info)
 }

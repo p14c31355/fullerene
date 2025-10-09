@@ -70,7 +70,9 @@ impl Heap {
     pub unsafe fn init(&mut self, heap_start: *mut u8, heap_size: usize) {
         // Initialize the free list with one big block
         let node = heap_start as *mut ListNode;
-        *node = ListNode::new(heap_size);
+        unsafe {
+            *node = ListNode::new(heap_size);
+        }
         self.head = node;
     }
 
@@ -92,8 +94,12 @@ impl Heap {
                     if remaining > core::mem::size_of::<ListNode>() {
                         // Split the block
                         let new_node = alloc_end as *mut ListNode;
-                        *new_node = ListNode::new(remaining);
-                        (*new_node).next = node.next;
+                        unsafe {
+                            *new_node = ListNode::new(remaining);
+                        }
+                        unsafe {
+                            (*new_node).next = node.next;
+                        }
                         node.next = new_node;
                     }
                     node.size = padding;
@@ -112,21 +118,27 @@ impl Heap {
     }
 
     unsafe fn insert_sorted(&mut self, new_node: *mut ListNode) {
-        if self.head.is_null() || (*new_node).start_addr() < (*self.head).start_addr() {
-            (*new_node).next = self.head;
+        if self.head.is_null() || unsafe { (*new_node).start_addr() < (*self.head).start_addr() } {
+            unsafe {
+                (*new_node).next = self.head;
+            }
             self.head = new_node;
             return;
         }
 
         let mut current = self.head;
-        while !(*current).next.is_null()
-            && (*(*current).next).start_addr() < (*new_node).start_addr()
+        while !unsafe { (*current).next.is_null() }
+            && unsafe { (*(*current).next).start_addr() < (*new_node).start_addr() }
         {
-            current = (*current).next;
+            current = unsafe { (*current).next };
         }
 
-        (*new_node).next = (*current).next;
-        (*current).next = new_node;
+        unsafe {
+            (*new_node).next = (*current).next;
+        }
+        unsafe {
+            (*current).next = new_node;
+        }
     }
 
     fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
@@ -152,12 +164,16 @@ impl Heap {
         }
 
         let mut current = self.head;
-        while !(*current).next.is_null() {
-            let next = (*current).next;
-            if (*current).end_addr() == (*next).start_addr() {
+        while !unsafe { (*current).next.is_null() } {
+            let next = unsafe { (*current).next };
+            if unsafe { (*current).end_addr() == (*next).start_addr() } {
                 // Merge
-                (*current).size += (*next).size;
-                (*current).next = (*next).next;
+                unsafe {
+                    (*current).size += (*next).size;
+                }
+                unsafe {
+                    (*current).next = (*next).next;
+                }
             } else {
                 current = next;
             }
@@ -235,10 +251,12 @@ pub(crate) unsafe fn map_physical_range(
         let page = Page::<Size4KiB>::containing_address(virt_addr);
         let frame = PhysFrame::<Size4KiB>::containing_address(current_phys);
 
-        mapper
-            .map_to(page, frame, flags, frame_allocator)
-            .expect("Failed to map page")
-            .flush();
+        unsafe {
+            mapper
+                .map_to(page, frame, flags, frame_allocator)
+                .expect("Failed to map page")
+                .flush();
+        }
 
         current_phys += 4096u64;
     }

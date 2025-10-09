@@ -114,12 +114,12 @@ impl Apic {
 
     unsafe fn read(&self, offset: u32) -> u32 {
         let addr = (self.base_addr + offset as u64) as *mut u32;
-        addr.read_volatile()
+        unsafe { addr.read_volatile() }
     }
 
     unsafe fn write(&self, offset: u32, value: u32) {
         let addr = (self.base_addr + offset as u64) as *mut u32;
-        addr.write_volatile(value);
+        unsafe { addr.write_volatile(value) }
     }
 }
 

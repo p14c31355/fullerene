@@ -20,6 +20,12 @@ use petroleum::serial::{
     SERIAL_PORT_WRITER as SERIAL1, debug_print_hex, debug_print_str_to_com1 as debug_print_str,
 };
 
+#[cfg(not(test))]
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    petroleum::handle_panic(info)
+}
+
 use core::ffi::c_void;
 use petroleum::common::{
     EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
@@ -48,10 +54,7 @@ fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&FullereneFr
         )
     };
     for entry in config_table_entries {
-        kernel_log!(
-            "Checking config table entry: GUID={:?}",
-            entry.vendor_guid
-        );
+        kernel_log!("Checking config table entry: GUID={:?}", entry.vendor_guid);
         if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
             kernel_log!("Found matching Fullerene framebuffer config GUID");
             return unsafe { Some(&*(entry.vendor_table as *const FullereneFramebufferConfig)) };
@@ -81,12 +84,6 @@ fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> x86_64::PhysAddr {
 }
 
 static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
-
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    petroleum::handle_panic(info)
-}
 
 #[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]
@@ -246,7 +243,6 @@ fn init_common() {
 #[cfg(not(target_os = "uefi"))]
 fn init_common() {
     use core::mem::MaybeUninit;
-    use x86_64::VirtAddr;
 
     // Static heap for BIOS
     static mut HEAP: [MaybeUninit<u8>; heap::HEAP_SIZE] = [MaybeUninit::uninit(); heap::HEAP_SIZE];
