@@ -96,8 +96,6 @@ impl Heap {
                         let new_node = alloc_end as *mut ListNode;
                         unsafe {
                             *new_node = ListNode::new(remaining);
-                        }
-                        unsafe {
                             (*new_node).next = node.next;
                         }
                         node.next = new_node;
@@ -135,8 +133,6 @@ impl Heap {
 
         unsafe {
             (*new_node).next = (*current).next;
-        }
-        unsafe {
             (*current).next = new_node;
         }
     }

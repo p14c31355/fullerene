@@ -17,7 +17,7 @@ extern crate alloc;
 use petroleum::serial::{
     SERIAL_PORT_WRITER as SERIAL1, debug_print_hex, debug_print_str_to_com1 as debug_print_str,
 };
-use petroleum::graphics::VgaPorts;
+use petroleum::graphics::init_vga_text_mode;
 
 #[cfg(not(test))]
 #[panic_handler]
@@ -31,10 +31,9 @@ use petroleum::common::{
     FullereneFramebufferConfig, VgaFramebufferConfig,
 };
 use petroleum::page_table::EfiMemoryDescriptor;
-use petroleum::graphics::init_vga_text_mode;
+use petroleum::write_serial_bytes;
 use spin::Once;
 use x86_64::instructions::hlt;
-use x86_64::instructions::port::Port;
 use x86_64::{PhysAddr, VirtAddr};
 
 // Macro to reduce repetitive serial logging
@@ -45,80 +44,7 @@ macro_rules! kernel_log {
     };
 }
 
-// Helper function to write multiple registers to a port pair (for VGA setup)
-fn write_vga_registers(index_port: u16, data_port: u16, configs: &[(u8, u8)]) {
-    unsafe {
-        let mut idx_port = Port::<u8>::new(index_port);
-        let mut dat_port = Port::<u8>::new(data_port);
-        for &(index, value) in configs {
-            idx_port.write(index);
-            dat_port.write(value);
-        }
-    }
-}
 
-// Helper function to set VGA attribute controller registers
-fn setup_vga_attributes() {
-    unsafe {
-        // Reset flip-flop first
-        Port::<u8>::new(VgaPorts::STATUS).read();
-        // Attribute registers configuration
-        let attr_configs = [
-            (0x00, 0x00), (0x01, 0x01), (0x02, 0x02), (0x03, 0x03),
-            (0x04, 0x04), (0x05, 0x05), (0x06, 0x06), (0x07, 0x07),
-            (0x08, 0x08), (0x09, 0x09), (0x0A, 0x0A), (0x0B, 0x0B),
-            (0x0C, 0x0C), (0x0D, 0x0D), (0x0E, 0x0E), (0x0F, 0x0F), // Palette setup
-            (0x10, 0x0C), // Mode control
-            (0x11, 0x00), // Overscan
-            (0x12, 0x0F), // Plane enable
-            (0x13, 0x00), // Pixel padding
-            (0x14, 0x00), // Color select
-        ];
-        write_vga_registers(VgaPorts::ATTRIBUTE_INDEX, VgaPorts::ATTRIBUTE_INDEX, &attr_configs);
-        // Enable video output by writing index 0x20 (no data needed)
-        Port::<u8>::new(VgaPorts::ATTRIBUTE_INDEX).write(0x20);
-    }
-}
-
-// Comprehensive VGA text mode setup using helper functions
-fn vga_text_mode_setup() {
-    unsafe {
-        // Misc output register
-        Port::<u8>::new(VgaPorts::MISC_OUTPUT).write(0x63);
-
-        // Sequencer registers
-        let seq_configs = [
-            (0x00, 0x03), // Reset
-            (0x01, 0x00), // Clocking
-            (0x02, 0x03), // Plane access
-            (0x03, 0x00), // Character map
-            (0x04, 0x02), // Memory mode
-        ];
-        write_vga_registers(VgaPorts::SEQUENCER_INDEX, VgaPorts::SEQUENCER_DATA, &seq_configs);
-
-        // Unlock CRTC protection
-        write_vga_registers(VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA, &[(0x11, 0x0E)]);
-
-        // CRTC registers
-        let crtc_configs = [
-            (0x00, 0x5F), (0x01, 0x4F), (0x02, 0x50), (0x03, 0x82),
-            (0x04, 0x55), (0x05, 0x81), (0x06, 0xBF), (0x07, 0x1F),
-            (0x08, 0x00), (0x09, 0x4F), (0x10, 0x9C), (0x11, 0x8E),
-            (0x12, 0x8F), (0x13, 0x28), (0x14, 0x1F), (0x15, 0x96),
-            (0x16, 0xB9), (0x17, 0xA3),
-        ];
-        write_vga_registers(VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA, &crtc_configs);
-
-        // Graphics registers
-        let graphics_configs = [
-            (0x05, 0x10), (0x06, 0x0E),
-        ];
-        write_vga_registers(VgaPorts::GRAPHICS_INDEX, VgaPorts::GRAPHICS_DATA, &graphics_configs);
-
-        // Attribute controller setup
-        setup_vga_attributes();
-    }
-}
 
 // Helper function for early debug prints to serial
 fn print_kernel(msg: &str) {
@@ -206,7 +132,7 @@ pub extern "efiapi" fn efi_main(
     // Cast system_table to reference
     let system_table = unsafe { &*system_table };
 
-    vga_text_mode_setup();
+    init_vga_text_mode();
 
     debug_print_str("VGA setup done\n");
 
