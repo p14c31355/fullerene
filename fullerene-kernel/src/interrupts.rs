@@ -12,14 +12,35 @@ use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, Pag
 static TICK_COUNTER: Mutex<u64> = Mutex::new(0);
 
 // Input handling structures
-static KEYBOARD_BUFFER: Mutex<[u8; 256]> = Mutex::new([0; 256]);
-static KEYBOARD_BUFFER_HEAD: Mutex<usize> = Mutex::new(0);
-static KEYBOARD_BUFFER_TAIL: Mutex<usize> = Mutex::new(0);
-static MOUSE_X: Mutex<i16> = Mutex::new(0);
-static MOUSE_Y: Mutex<i16> = Mutex::new(0);
-static MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
-static MOUSE_PACKET: Mutex<[u8; 3]> = Mutex::new([0; 3]);
-static MOUSE_PACKET_IDX: Mutex<usize> = Mutex::new(0);
+#[derive(Clone, Copy)]
+struct KeyboardQueue {
+    buffer: [u8; 256],
+    head: usize,
+    tail: usize,
+}
+
+#[derive(Clone, Copy)]
+struct MouseState {
+    x: i16,
+    y: i16,
+    buttons: u8,
+    packet: [u8; 3],
+    packet_idx: usize,
+}
+
+static KEYBOARD_QUEUE: Mutex<KeyboardQueue> = Mutex::new(KeyboardQueue {
+    buffer: [0; 256],
+    head: 0,
+    tail: 0,
+});
+
+static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState {
+    x: 0,
+    y: 0,
+    buttons: 0,
+    packet: [0; 3],
+    packet_idx: 0,
+});
 
 // APIC register definitions
 const APIC_BASE_MSR: u32 = 0x1B;
@@ -257,14 +278,14 @@ pub extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame
     let mut port = Port::<u8>::new(0x60);
     let scancode = unsafe { port.read() };
     // Process scancode and add to input buffer
-    let mut buffer = KEYBOARD_BUFFER.lock();
-    let head = *KEYBOARD_BUFFER_HEAD.lock();
-    let mut tail = *KEYBOARD_BUFFER_TAIL.lock();
+    let mut keyboard_queue = KEYBOARD_QUEUE.lock();
+    let head = keyboard_queue.head;
+    let tail = keyboard_queue.tail;
     let next_tail = (tail + 1) % 256;
     if next_tail != head {
         // Not full
-        buffer[tail] = scancode;
-        *KEYBOARD_BUFFER_TAIL.lock() = next_tail;
+        keyboard_queue.buffer[tail] = scancode;
+        keyboard_queue.tail = next_tail;
     }
     // If full, drop the input for simplicity
     send_eoi();
@@ -274,24 +295,21 @@ pub extern "x86-interrupt" fn mouse_handler(_stack_frame: InterruptStackFrame) {
     // Mouse interrupt - handle mouse input
     let mut port = Port::<u8>::new(0x60);
     let byte = unsafe { port.read() };
-    let mut idx = *MOUSE_PACKET_IDX.lock();
-    let mut packet = MOUSE_PACKET.lock();
-    packet[idx] = byte;
-    idx += 1;
-    if idx == 3 {
+    let mut mouse_state = MOUSE_STATE.lock();
+    let current_idx = mouse_state.packet_idx;
+    mouse_state.packet[current_idx] = byte;
+    mouse_state.packet_idx += 1;
+    if mouse_state.packet_idx == 3 {
         // Full packet received, process
-        let status = packet[0];
-        let dx = packet[1] as i8 as i16;
-        let dy = packet[2] as i8 as i16;
-        *MOUSE_X.lock() += dx;
-        *MOUSE_Y.lock() += dy;
-        *MOUSE_BUTTONS.lock() = status & 0x07; // Left, right, middle bits
-        idx = 0; // Reset for next packet
-        packet[0] = 0;
-        packet[1] = 0;
-        packet[2] = 0;
+        let status = mouse_state.packet[0];
+        let dx = mouse_state.packet[1] as i8 as i16;
+        let dy = mouse_state.packet[2] as i8 as i16;
+        mouse_state.x = mouse_state.x.wrapping_add(dx);
+        mouse_state.y = mouse_state.y.wrapping_add(dy);
+        mouse_state.buttons = status & 0x07; // Left, right, middle bits
+        mouse_state.packet_idx = 0; // Reset for next packet
+        mouse_state.packet = [0; 3];
     }
-    *MOUSE_PACKET_IDX.lock() = idx;
     send_eoi();
 }
 

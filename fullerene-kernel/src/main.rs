@@ -227,13 +227,9 @@ pub extern "efiapi" fn efi_main(
     }
     println!("Hello QEMU by FullereneOS");
 
-    // Exit QEMU instead of infinite halt
-    print_kernel("Kernel: exiting QEMU...\n");
-    unsafe {
-        // Write 0x1 to port 0xf4 to exit QEMU
-        x86_64::instructions::port::Port::new(0xf4).write(0x1u32);
-    }
-    // If we get here (which we won't), halt
+    // Keep kernel running instead of exiting
+    print_kernel("Kernel: running in main loop...\n");
+    kernel_log!("FullereneOS kernel is now running.");
     hlt_loop();
 }
 
@@ -293,13 +289,8 @@ pub unsafe extern "C" fn _start() -> ! {
     // Main loop
     println!("Hello QEMU by FullereneOS");
 
-    // Exit QEMU instead of infinite halt
-    kernel_log!("BIOS boot complete, exiting QEMU...");
-    unsafe {
-        // Write 0x1 to port 0xf4 to exit QEMU
-        x86_64::instructions::port::Port::new(0xf4).write(0x1u32);
-    }
-    // If we get here (which we won't), halt
+    // Keep kernel running instead of exiting
+    kernel_log!("BIOS boot complete, kernel running...");
     hlt_loop();
 }
 
