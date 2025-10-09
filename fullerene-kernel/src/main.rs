@@ -35,6 +35,7 @@ use petroleum::page_table::EfiMemoryDescriptor;
 use petroleum::write_serial_bytes;
 use spin::Once;
 use x86_64::instructions::hlt;
+use x86_64::instructions::port::Port;
 use x86_64::{PhysAddr, VirtAddr};
 
 // Macro to reduce repetitive serial logging
@@ -45,7 +46,95 @@ macro_rules! kernel_log {
     };
 }
 
-// Helper function to find framebuffer config
+// Helper function to write multiple registers to a port pair (for VGA setup)
+fn write_vga_registers(index_port: u16, data_port: u16, configs: &[(u8, u8)]) {
+    unsafe {
+        let mut idx_port = Port::<u8>::new(index_port);
+        let mut dat_port = Port::<u8>::new(data_port);
+        for &(index, value) in configs {
+            idx_port.write(index);
+            dat_port.write(value);
+        }
+    }
+}
+
+// Helper function to set VGA attribute controller registers
+fn setup_vga_attributes() {
+    unsafe {
+        // Reset flip-flop first
+        Port::<u8>::new(0x3DA).read();
+        let mut attr_port = Port::<u8>::new(0x3C0);
+        // Palette setup (0-15)
+        for i in 0..16 {
+            attr_port.write(i);
+            attr_port.write(i);
+        }
+        // Mode control and others
+        attr_port.write(0x10); attr_port.write(0x0C); // Mode control
+        attr_port.write(0x11); attr_port.write(0x00); // Overscan
+        attr_port.write(0x12); attr_port.write(0x0F); // Plane enable
+        attr_port.write(0x13); attr_port.write(0x00); // Pixel padding
+        attr_port.write(0x14); attr_port.write(0x00); // Color select
+        attr_port.write(0x20); // Enable video output
+    }
+}
+
+// Comprehensive VGA text mode setup using helper functions
+fn vga_text_mode_setup() {
+    unsafe {
+        // Misc output register
+        Port::<u8>::new(0x3C2).write(0x63);
+
+        // Sequencer registers
+        let seq_configs = [
+            (0x00, 0x03), // Reset
+            (0x01, 0x00), // Clocking
+            (0x02, 0x03), // Plane access
+            (0x03, 0x00), // Character map
+            (0x04, 0x02), // Memory mode
+        ];
+        write_vga_registers(0x3C4, 0x3C5, &seq_configs);
+
+        // Unlock CRTC protection
+        write_vga_registers(0x3D4, 0x3D5, &[(0x11, 0x0E)]);
+
+        // CRTC registers
+        let crtc_configs = [
+            (0x00, 0x5F), (0x01, 0x4F), (0x02, 0x50), (0x03, 0x82),
+            (0x04, 0x55), (0x05, 0x81), (0x06, 0xBF), (0x07, 0x1F),
+            (0x08, 0x00), (0x09, 0x4F), (0x10, 0x9C), (0x11, 0x8E),
+            (0x12, 0x8F), (0x13, 0x28), (0x14, 0x1F), (0x15, 0x96),
+            (0x16, 0xB9), (0x17, 0xA3),
+        ];
+        write_vga_registers(0x3D4, 0x3D5, &crtc_configs);
+
+        // Graphics registers
+        let graphics_configs = [
+            (0x05, 0x10), (0x06, 0x0E),
+        ];
+        write_vga_registers(0x3CE, 0x3CF, &graphics_configs);
+
+        // Attribute controller setup
+        setup_vga_attributes();
+    }
+}
+
+// Helper function for early debug prints to serial
+fn print_kernel(msg: &str) {
+    write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
+}
+
+// Generic helper for searching memory descriptors
+fn find_memory_descriptor_address<F>(descriptors: &[EfiMemoryDescriptor], predicate: F) -> Option<usize>
+where
+    F: Fn(&EfiMemoryDescriptor) -> bool,
+{
+    descriptors.iter()
+        .find(|desc| predicate(desc))
+        .map(|desc| desc.physical_start as usize)
+}
+
+// Helper function to find framebuffer config (using generic)
 fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&FullereneFramebufferConfig> {
     let config_table_entries = unsafe {
         core::slice::from_raw_parts(
@@ -54,31 +143,28 @@ fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&FullereneFr
         )
     };
     for entry in config_table_entries {
-        kernel_log!("Checking config table entry: GUID={:?}", entry.vendor_guid);
         if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
-            kernel_log!("Found matching Fullerene framebuffer config GUID");
             return unsafe { Some(&*(entry.vendor_table as *const FullereneFramebufferConfig)) };
         }
     }
     None
 }
 
-// Helper function to find heap start from memory map
+// Helper function to find heap start from memory map (using generic)
 fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> x86_64::PhysAddr {
     // First, try to find EfiLoaderData
-    for desc in descriptors {
-        if desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0 {
-            return x86_64::PhysAddr::new(desc.physical_start);
-        }
+    if let Some(addr) = find_memory_descriptor_address(descriptors, |desc|
+        desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0
+    ) {
+        return x86_64::PhysAddr::new(addr as u64);
     }
     // If not found, find EfiConventionalMemory large enough
     let required_pages = (heap::HEAP_SIZE + 4095) / 4096;
-    for desc in descriptors {
-        if desc.type_ == EfiMemoryType::EfiConventionalMemory
-            && desc.number_of_pages >= required_pages as u64
-        {
-            return x86_64::PhysAddr::new(desc.physical_start);
-        }
+    if let Some(addr) = find_memory_descriptor_address(descriptors, |desc|
+        desc.type_ == EfiMemoryType::EfiConventionalMemory
+        && desc.number_of_pages >= required_pages as u64
+    ) {
+        return x86_64::PhysAddr::new(addr as u64);
     }
     panic!("No suitable memory region found for heap");
 }
@@ -98,11 +184,6 @@ pub extern "efiapi" fn efi_main(
     write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main entered.\n");
 
     debug_print_str("Early VGA write done\n");
-
-    // Helper function for kernel debug prints
-    fn print_kernel(msg: &str) {
-        write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
-    }
 
     // Debug parameter values
     debug_print_str("Parameters: system_table=");
@@ -126,72 +207,7 @@ pub extern "efiapi" fn efi_main(
 
     debug_print_str("Starting VGA setup\n");
 
-    // Setup VGA text mode registers (UEFI leaves it in graphics mode)
-    unsafe {
-        use x86_64::instructions::port::Port;
-
-        // Misc output register: enable RAM, select 25.175 MHz clock
-        Port::new(0x3C2).write(0x63u8);
-
-        // Sequencer registers
-        Port::new(0x3C4).write(0x00u8); Port::new(0x3C5).write(0x03u8); // Reset
-        Port::new(0x3C4).write(0x01u8); Port::new(0x3C5).write(0x00u8); // Clocking
-        Port::new(0x3C4).write(0x02u8); Port::new(0x3C5).write(0x03u8); // Plane access
-        Port::new(0x3C4).write(0x03u8); Port::new(0x3C5).write(0x00u8); // Character map
-        Port::new(0x3C4).write(0x04u8); Port::new(0x3C5).write(0x02u8); // Memory mode
-
-        // CRTC unlock protection bit
-        Port::new(0x3D4).write(0x11u8); Port::new(0x3D5).write(0x0Eu8);
-
-        // CRTC registers for 80x25 text mode
-        Port::new(0x3D4).write(0x00u8); Port::new(0x3D5).write(0x5Fu8); // H total
-        Port::new(0x3D4).write(0x01u8); Port::new(0x3D5).write(0x4Fu8); // H display end
-        Port::new(0x3D4).write(0x02u8); Port::new(0x3D5).write(0x50u8); // H blank start
-        Port::new(0x3D4).write(0x03u8); Port::new(0x3D5).write(0x82u8); // H blank end
-        Port::new(0x3D4).write(0x04u8); Port::new(0x3D5).write(0x55u8); // H retrace start
-        Port::new(0x3D4).write(0x05u8); Port::new(0x3D5).write(0x81u8); // H retrace end
-        Port::new(0x3D4).write(0x06u8); Port::new(0x3D5).write(0xBFu8); // V total
-        Port::new(0x3D4).write(0x07u8); Port::new(0x3D5).write(0x1Fu8); // Overflow
-        Port::new(0x3D4).write(0x08u8); Port::new(0x3D5).write(0x00u8); // Preset row scan
-        Port::new(0x3D4).write(0x09u8); Port::new(0x3D5).write(0x4Fu8); // Max scan line
-        Port::new(0x3D4).write(0x10u8); Port::new(0x3D5).write(0x9Cu8); // V retrace start
-        Port::new(0x3D4).write(0x11u8); Port::new(0x3D5).write(0x8Eu8); // V retrace end
-        Port::new(0x3D4).write(0x12u8); Port::new(0x3D5).write(0x8Fu8); // V display end
-        Port::new(0x3D4).write(0x13u8); Port::new(0x3D5).write(0x28u8); // Offset
-        Port::new(0x3D4).write(0x14u8); Port::new(0x3D5).write(0x1Fu8); // Underline location
-        Port::new(0x3D4).write(0x15u8); Port::new(0x3D5).write(0x96u8); // V blank start
-        Port::new(0x3D4).write(0x16u8); Port::new(0x3D5).write(0xB9u8); // V blank end
-        Port::new(0x3D4).write(0x17u8); Port::new(0x3D5).write(0xA3u8); // CRTC mode control
-
-        // Graphics registers for text mode
-        Port::new(0x3CE).write(0x05u8); Port::new(0x3CF).write(0x10u8); // Graphics mode
-        Port::new(0x3CE).write(0x06u8); Port::new(0x3CF).write(0x0Eu8); // Misc graphics
-
-        // Attribute controller setup (reset flip-flop first)
-        Port::<u8>::new(0x3DA).read(); // Reset flip-flop
-        Port::new(0x3C0).write(0x00u8); Port::new(0x3C0).write(0x00u8); // Palette 0
-        Port::new(0x3C0).write(0x01u8); Port::new(0x3C0).write(0x01u8); // Palette 1
-        Port::new(0x3C0).write(0x02u8); Port::new(0x3C0).write(0x02u8); // Palette 2
-        Port::new(0x3C0).write(0x03u8); Port::new(0x3C0).write(0x03u8); // Palette 3
-        Port::new(0x3C0).write(0x04u8); Port::new(0x3C0).write(0x04u8); // Palette 4
-        Port::new(0x3C0).write(0x05u8); Port::new(0x3C0).write(0x05u8); // Palette 5
-        Port::new(0x3C0).write(0x06u8); Port::new(0x3C0).write(0x06u8); // Palette 6
-        Port::new(0x3C0).write(0x07u8); Port::new(0x3C0).write(0x07u8); // Palette 7
-        Port::new(0x3C0).write(0x08u8); Port::new(0x3C0).write(0x10u8); // Palette 8
-        Port::new(0x3C0).write(0x09u8); Port::new(0x3C0).write(0x11u8); // Palette 9
-        Port::new(0x3C0).write(0x0Au8); Port::new(0x3C0).write(0x12u8); // Palette 10
-        Port::new(0x3C0).write(0x0Bu8); Port::new(0x3C0).write(0x13u8); // Palette 11
-        Port::new(0x3C0).write(0x0Cu8); Port::new(0x3C0).write(0x14u8); // Palette 12
-        Port::new(0x3C0).write(0x0Du8); Port::new(0x3C0).write(0x15u8); // Palette 13
-        Port::new(0x3C0).write(0x0Eu8); Port::new(0x3C0).write(0x16u8); // Palette 14
-        Port::new(0x3C0).write(0x0Fu8); Port::new(0x3C0).write(0x17u8); // Palette 15
-        Port::new(0x3C0).write(0x10u8); Port::new(0x3C0).write(0x0Cu8); // Mode control
-        Port::new(0x3C0).write(0x11u8); Port::new(0x3C0).write(0x00u8); // Overscan
-        Port::new(0x3C0).write(0x12u8); Port::new(0x3C0).write(0x0Fu8); // Plane enable
-        Port::new(0x3C0).write(0x13u8); Port::new(0x3C0).write(0x00u8); // Pixel padding
-        Port::new(0x3C0).write(0x14u8); Port::new(0x3C0).write(0x00u8); // Color select
-        Port::new(0x3C0).write(0x20u8); // Enable video output
-    }
+    vga_text_mode_setup();
 
     debug_print_str("VGA setup done\n");
 
