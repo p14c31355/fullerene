@@ -115,6 +115,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     ));
     // Exit boot services and jump to the kernel.
     petroleum::println!("Bellows: About to exit boot services and jump to kernel."); // Debug print just before the call
+    debug_print_str("Before match exit_boot_services_and_jump.\n");
     match exit_boot_services_and_jump(image_handle, system_table, entry) {
         Ok(_) => {
             unreachable!(); // This branch should never be reached if the function returns '!'

@@ -17,7 +17,12 @@ pub fn exit_boot_services_and_jump(
     system_table: *mut EfiSystemTable,
     entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
 ) -> petroleum::common::Result<!> {
+    debug_print_str("Inside exit_boot_services_and_jump.\n");
+    debug_print_str("system_table = ");
+    debug_print_hex(system_table as usize);
+    debug_print_str("\n");
     let bs = unsafe { &*(*system_table).boot_services };
+    debug_print_str("bs obtained.\n");
 
     // Initial setup for memory map
     let mut map_size: usize = 0;

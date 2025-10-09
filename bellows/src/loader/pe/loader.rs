@@ -111,7 +111,7 @@ pub fn load_efi_image(
     } as usize;
     let pages_needed = (image_size.max(address_of_entry_point + 4096)).div_ceil(4096);
     let mut phys_addr: usize = 0;
-    let preferred_base = {
+    let mut preferred_base = {
         let offset = offset_of!(ImageNtHeaders64, optional_header)
             + offset_of!(ImageOptionalHeader64, image_base);
         read_field!(nt_headers_ptr, offset, u64)
@@ -119,11 +119,13 @@ pub fn load_efi_image(
     let mut status;
     // Try to allocate at the preferred base if it's a high address.
     if preferred_base >= 0x1000_0000 {
+        // Use a low address instead, as high may not have execute permissions
+        preferred_base = 0x100000;
         phys_addr = preferred_base;
         status = unsafe {
             (bs.allocate_pages)(
                 2, // AllocateAddress
-                EfiMemoryType::EfiLoaderData,
+                EfiMemoryType::EfiLoaderCode,
                 pages_needed,
                 &mut phys_addr,
             )
@@ -137,7 +139,7 @@ pub fn load_efi_image(
             status = unsafe {
                 (bs.allocate_pages)(
                     0, // AllocateAnyPages
-                    EfiMemoryType::EfiLoaderData,
+                    EfiMemoryType::EfiLoaderCode,
                     pages_needed,
                     &mut phys_addr,
                 )
@@ -151,7 +153,7 @@ pub fn load_efi_image(
         status = unsafe {
             (bs.allocate_pages)(
                 0, // AllocateAnyPages
-                EfiMemoryType::EfiLoaderData,
+                EfiMemoryType::EfiLoaderCode,
                 pages_needed,
                 &mut phys_addr,
             )
