@@ -15,14 +15,14 @@ pub fn exit_boot_services_and_jump(
     system_table: *mut EfiSystemTable,
     entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
 ) -> petroleum::common::Result<!> {
-        // Immediate debug prints on entry to pinpoint exact hang location
+    // Immediate debug prints on entry to pinpoint exact hang location
     #[cfg(feature = "debug_loader")]
-{
-    debug_print_str("ENTER\n");
-    debug_print_str("system_table=");
-    debug_print_hex(system_table as usize);
-    debug_print_str("\n");
-}
+    {
+        debug_print_str("ENTER\n");
+        debug_print_str("system_table=");
+        debug_print_hex(system_table as usize);
+        debug_print_str("\n");
+    }
 
     #[cfg(feature = "debug_loader")]
     debug_print_str("About to get boot_services ptr\n");
@@ -161,7 +161,7 @@ pub fn exit_boot_services_and_jump(
                     }
                 }
             }
-                        EfiStatus::BufferTooSmall => {
+            EfiStatus::BufferTooSmall => {
                 #[cfg(feature = "debug_loader")]
                 {
                     debug_print_str("Buffer too small, required size is now ");

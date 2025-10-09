@@ -42,27 +42,32 @@ static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState {
     packet_idx: 0,
 });
 
-// APIC register definitions
-const APIC_BASE_MSR: u32 = 0x1B;
-const APIC_BASE_ADDR_MASK: u64 = !0xFFF;
-const APIC_SPURIOUS_VECTOR: u32 = 0x0F0;
-const APIC_LVT_TIMER: u32 = 0x320;
-const APIC_LVT_LINT0: u32 = 0x350;
-const APIC_LVT_LINT1: u32 = 0x360;
-const APIC_LVT_ERROR: u32 = 0x370;
-const APIC_TMRDIV: u32 = 0x3E0;
-const APIC_TMRINITCNT: u32 = 0x380;
-const APIC_TMRCURRCNT: u32 = 0x390;
-const APIC_EOI: u32 = 0x0B0;
-const APIC_ID: u32 = 0x20;
-const APIC_VERSION: u32 = 0x30;
+// APIC register definitions (grouped to reduce constants)
+struct ApicOffsets;
+impl ApicOffsets {
+    const BASE_MSR: u32 = 0x1B;
+    const BASE_ADDR_MASK: u64 = !0xFFF;
+    const SPURIOUS_VECTOR: u32 = 0x0F0;
+    const LVT_TIMER: u32 = 0x320;
+    const LVT_LINT0: u32 = 0x350;
+    const LVT_LINT1: u32 = 0x360;
+    const LVT_ERROR: u32 = 0x370;
+    const TMRDIV: u32 = 0x3E0;
+    const TMRINITCNT: u32 = 0x380;
+    const TMRCURRCNT: u32 = 0x390;
+    const EOI: u32 = 0x0B0;
+    const ID: u32 = 0x20;
+    const VERSION: u32 = 0x30;
+}
 
-// APIC control bits
-const APIC_ENABLE: u32 = 1 << 8;
-const APIC_SW_ENABLE: u32 = 1 << 8;
-const APIC_DISABLE: u32 = 0x10000;
-const APIC_TIMER_PERIODIC: u32 = 1 << 17;
-const APIC_TIMER_MASKED: u32 = 1 << 16;
+// APIC control bits (grouped)
+struct ApicFlags;
+impl ApicFlags {
+    const SW_ENABLE: u32 = 1 << 8;
+    const DISABLE: u32 = 0x10000;
+    const TIMER_PERIODIC: u32 = 1 << 17;
+    const TIMER_MASKED: u32 = 1 << 16;
+}
 
 // Hardware interrupt vectors
 pub const TIMER_INTERRUPT_INDEX: u32 = 32;
@@ -114,12 +119,12 @@ impl Apic {
 
     unsafe fn read(&self, offset: u32) -> u32 {
         let addr = (self.base_addr + offset as u64) as *mut u32;
-        addr.read_volatile()
+        unsafe { addr.read_volatile() }
     }
 
     unsafe fn write(&self, offset: u32, value: u32) {
         let addr = (self.base_addr + offset as u64) as *mut u32;
-        addr.write_volatile(value);
+        unsafe { addr.write_volatile(value) }
     }
 }
 
@@ -142,11 +147,11 @@ fn disable_legacy_pic() {
 
 fn get_apic_base() -> Option<u64> {
     use x86_64::registers::model_specific::Msr;
-    let msr = Msr::new(APIC_BASE_MSR);
+    let msr = Msr::new(ApicOffsets::BASE_MSR);
     let value = unsafe { msr.read() };
     if value & (1 << 11) != 0 {
         // APIC is enabled
-        Some(value & APIC_BASE_ADDR_MASK)
+        Some(value & ApicOffsets::BASE_ADDR_MASK)
     } else {
         None
     }
@@ -155,8 +160,8 @@ fn get_apic_base() -> Option<u64> {
 fn enable_apic(apic: &mut Apic) {
     unsafe {
         // Enable APIC by setting bit 8 in spurious vector register
-        let spurious = apic.read(APIC_SPURIOUS_VECTOR);
-        apic.write(APIC_SPURIOUS_VECTOR, spurious | APIC_SW_ENABLE | 0xFF);
+        let spurious = apic.read(ApicOffsets::SPURIOUS_VECTOR);
+        apic.write(ApicOffsets::SPURIOUS_VECTOR, spurious | ApicFlags::SW_ENABLE | 0xFF);
     }
 }
 
@@ -216,9 +221,9 @@ pub fn init_apic() {
 
     // Configure timer interrupt
     unsafe {
-        apic.write(APIC_LVT_TIMER, TIMER_INTERRUPT_INDEX | APIC_TIMER_PERIODIC);
-        apic.write(APIC_TMRDIV, 0x3); // Divide by 16
-        apic.write(APIC_TMRINITCNT, 1000000); // Initial count for ~100ms at 10MHz
+        apic.write(ApicOffsets::LVT_TIMER, TIMER_INTERRUPT_INDEX | ApicFlags::TIMER_PERIODIC);
+        apic.write(ApicOffsets::TMRDIV, 0x3); // Divide by 16
+        apic.write(ApicOffsets::TMRINITCNT, 1000000); // Initial count for ~100ms at 10MHz
     }
 
     // Store APIC instance
@@ -265,6 +270,19 @@ pub extern "x86-interrupt" fn double_fault_handler(
     panic!("\nEXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
 }
 
+// Macro to generate input device handlers (keyboard/mouse)
+macro_rules! define_input_interrupt_handler {
+    ($handler_name:ident, $port:expr, $process_input:expr) => {
+        pub extern "x86-interrupt" fn $handler_name(_stack_frame: InterruptStackFrame) {
+            // Common input handling pattern
+            let mut port = Port::<u8>::new($port);
+            let data = unsafe { port.read() };
+            $process_input(data);
+            send_eoi();
+        }
+    };
+}
+
 // Hardware interrupt handlers
 pub extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
     // Timer interrupt - handle timer ticks
@@ -273,11 +291,7 @@ pub extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
     send_eoi();
 }
 
-pub extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
-    // Keyboard interrupt - handle keyboard input
-    let mut port = Port::<u8>::new(0x60);
-    let scancode = unsafe { port.read() };
-    // Process scancode and add to input buffer
+define_input_interrupt_handler!(keyboard_handler, 0x60, |scancode: u8| {
     let mut keyboard_queue = KEYBOARD_QUEUE.lock();
     let head = keyboard_queue.head;
     let tail = keyboard_queue.tail;
@@ -287,14 +301,9 @@ pub extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame
         keyboard_queue.buffer[tail] = scancode;
         keyboard_queue.tail = next_tail;
     }
-    // If full, drop the input for simplicity
-    send_eoi();
-}
+});
 
-pub extern "x86-interrupt" fn mouse_handler(_stack_frame: InterruptStackFrame) {
-    // Mouse interrupt - handle mouse input
-    let mut port = Port::<u8>::new(0x60);
-    let byte = unsafe { port.read() };
+define_input_interrupt_handler!(mouse_handler, 0x60, |byte: u8| {
     let mut mouse_state = MOUSE_STATE.lock();
     let current_idx = mouse_state.packet_idx;
     mouse_state.packet[current_idx] = byte;
@@ -310,14 +319,13 @@ pub extern "x86-interrupt" fn mouse_handler(_stack_frame: InterruptStackFrame) {
         mouse_state.packet_idx = 0; // Reset for next packet
         mouse_state.packet = [0; 3];
     }
-    send_eoi();
-}
+});
 
 // Send End-Of-Interrupt to APIC
 fn send_eoi() {
     if let Some(apic) = APIC.lock().as_ref() {
         unsafe {
-            apic.write(APIC_EOI, 0);
+            apic.write(ApicOffsets::EOI, 0);
         }
     }
 }

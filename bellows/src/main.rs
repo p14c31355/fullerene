@@ -25,6 +25,12 @@ use petroleum::common::{
     FullereneFramebufferConfig,
 };
 
+#[cfg(not(test))]
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    petroleum::handle_panic(info)
+}
+
 /// Main entry point of the bootloader.
 ///
 /// This function is the `start` attribute as defined in the `Cargo.toml`.
@@ -71,9 +77,6 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     debug_print_str("Main: After Heap initialized print.\n");
     petroleum::println!("Bellows: Heap OK.");
     debug_print_str("Main: After Heap OK println.\n");
-    debug_print_str("Main: About to call init_gop.\n");
-    init_gop(st);
-    debug_print_str("Main: init_gop returned.\n");
     petroleum::serial::_print(format_args!("GOP initialized successfully.\n"));
     petroleum::println!("Bellows: GOP initialized."); // Debug print after GOP initialization
 
@@ -157,97 +160,25 @@ fn init_gop(st: &EfiSystemTable) {
 
     let mode_ref = unsafe { &*gop_ref.mode };
 
-    // Try to set a preferred graphics mode (1024x768 or highest available)
-    let max_mode = mode_ref.max_mode;
-    petroleum::serial::_print(format_args!(
-        "GOP: Max modes: {}, Current mode: {}\n",
-        max_mode, mode_ref.mode as usize
-    ));
-
-    let mut target_mode: Option<usize> = None;
-    let mut best_resolution: u64 = 0;
-    // Allocate a buffer outside the loop to avoid repeated heap allocations
-    let mut mode_info_buf = alloc::vec![0u8; 512];
-    for mode_num in 0..max_mode {
-        let mut size = 0;
-        let status = (gop_ref.query_mode)(gop, mode_num, &mut size, ptr::null_mut());
-        if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
-            continue;
-        }
-
-        if size > mode_info_buf.len() {
+    // Set GOP to text mode (mode 0)
+    let target_mode = 0;
+    let current_mode = mode_ref.mode as usize;
+    if target_mode != current_mode {
+        petroleum::serial::_print(format_args!(
+            "GOP: Setting mode {} (text mode) (currently {})\n",
+            target_mode, current_mode
+        ));
+        let status = (gop_ref.set_mode)(gop, target_mode as u32);
+        if EfiStatus::from(status) != EfiStatus::Success {
             petroleum::serial::_print(format_args!(
-                "GOP: Mode {} size {} too large (max {}), skipping.\n",
-                mode_num,
-                size,
-                mode_info_buf.len()
+                "GOP: Failed to set mode, status: {:#x}\n",
+                status
             ));
-            continue;
-        }
-
-        let status = (gop_ref.query_mode)(
-            gop,
-            mode_num,
-            &mut size,
-            mode_info_buf.as_mut_ptr() as *mut c_void,
-        );
-        if EfiStatus::from(status) == EfiStatus::Success {
-            let info: &EfiGraphicsOutputModeInformation =
-                unsafe { &*(mode_info_buf.as_ptr() as *const EfiGraphicsOutputModeInformation) };
-            petroleum::serial::_print(format_args!(
-                "GOP: Mode {}: {}x{}, format: {}\n",
-                mode_num,
-                info.horizontal_resolution,
-                info.vertical_resolution,
-                info.pixel_format as u32
-            ));
-
-            // Prefer 1024x768 with AddRgb, or highest resolution if not available
-            if info.horizontal_resolution == 1024
-                && info.vertical_resolution == 768
-                && info.pixel_format
-                    == EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
-            {
-                target_mode = Some(mode_num as usize);
-                break;
-            }
-            if info.horizontal_resolution >= 1024
-                && info.vertical_resolution >= 768
-                && info.pixel_format
-                    == EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
-            {
-                let resolution =
-                    info.horizontal_resolution as u64 * info.vertical_resolution as u64;
-                if resolution > best_resolution {
-                    best_resolution = resolution;
-                    target_mode = Some(mode_num as usize);
-                }
-            }
-        }
-    }
-
-    // Set the target mode if different from current
-    if let Some(mode_num) = target_mode {
-        let current_mode = mode_ref.mode as usize;
-        if mode_num != current_mode {
-            petroleum::serial::_print(format_args!(
-                "GOP: Setting mode {} (currently {})\n",
-                mode_num, current_mode
-            ));
-            let status = (gop_ref.set_mode)(gop, mode_num as u32);
-            if EfiStatus::from(status) != EfiStatus::Success {
-                petroleum::serial::_print(format_args!(
-                    "GOP: Failed to set mode, status: {:#x}\n",
-                    status
-                ));
-            } else {
-                petroleum::serial::_print(format_args!("GOP: Mode set successfully\n"));
-            }
         } else {
-            petroleum::serial::_print(format_args!("GOP: Mode {} already set\n", mode_num));
+            petroleum::serial::_print(format_args!("GOP: Mode set successfully\n"));
         }
     } else {
-        petroleum::serial::_print(format_args!("GOP: No suitable mode found\n"));
+        petroleum::serial::_print(format_args!("GOP: Mode {} already set\n", target_mode));
     }
 
     let mode_ref = unsafe { &*gop_ref.mode };
@@ -279,8 +210,9 @@ fn init_gop(st: &EfiSystemTable) {
         address: fb_addr as u64,
         width: info.horizontal_resolution,
         height: info.vertical_resolution,
-        stride: info.pixels_per_scan_line,
         pixel_format: info.pixel_format,
+        bpp: 32, // Assuming 32bpp for supported modes. More robust handling is needed for other formats.
+        stride: info.pixels_per_scan_line,
     });
 
     let config_ptr = Box::leak(config);
@@ -311,10 +243,4 @@ fn init_gop(st: &EfiSystemTable) {
         info.horizontal_resolution, info.vertical_resolution, fb_addr
     ));
     petroleum::serial::_print(format_args!("GOP: Framebuffer initialized and cleared\n"));
-}
-
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    petroleum::handle_panic(info)
 }

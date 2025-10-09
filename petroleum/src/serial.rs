@@ -103,11 +103,6 @@ impl<S: SerialPortOps> fmt::Write for SerialPort<S> {
 pub static SERIAL_PORT_WRITER: Mutex<SerialPort<Com1Ports>> =
     Mutex::new(SerialPort::new(Com1Ports));
 
-/// Initializes the global serial port writer.
-pub fn serial_init() {
-    SERIAL_PORT_WRITER.lock().init();
-}
-
 pub struct UefiWriter {
     con_out: *mut EfiSimpleTextOutput,
 }
@@ -241,6 +236,15 @@ pub fn _print(args: fmt::Arguments) {
         .write_fmt(args)
         .expect("Serial write failed");
 }
+
+
+
+/// Initializes the global serial port writer.
+pub fn serial_init() {
+    SERIAL_PORT_WRITER.lock().init();
+}
+
+
 
 #[cfg(test)]
 mod tests {
