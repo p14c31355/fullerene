@@ -32,6 +32,7 @@ use petroleum::common::{
     FullereneFramebufferConfig, VgaFramebufferConfig,
 };
 use petroleum::page_table::EfiMemoryDescriptor;
+use petroleum::graphics::init_vga_text_mode;
 use petroleum::write_serial_bytes;
 use spin::Once;
 use x86_64::instructions::hlt;
@@ -127,72 +128,7 @@ pub extern "efiapi" fn efi_main(
     debug_print_str("Starting VGA setup\n");
 
     // Setup VGA text mode registers (UEFI leaves it in graphics mode)
-    unsafe {
-        use x86_64::instructions::port::Port;
-
-        // Misc output register: enable RAM, select 25.175 MHz clock
-        Port::new(0x3C2).write(0x63u8);
-
-        // Sequencer registers
-        Port::new(0x3C4).write(0x00u8); Port::new(0x3C5).write(0x03u8); // Reset
-        Port::new(0x3C4).write(0x01u8); Port::new(0x3C5).write(0x00u8); // Clocking
-        Port::new(0x3C4).write(0x02u8); Port::new(0x3C5).write(0x03u8); // Plane access
-        Port::new(0x3C4).write(0x03u8); Port::new(0x3C5).write(0x00u8); // Character map
-        Port::new(0x3C4).write(0x04u8); Port::new(0x3C5).write(0x02u8); // Memory mode
-
-        // CRTC unlock protection bit
-        Port::new(0x3D4).write(0x11u8); Port::new(0x3D5).write(0x0Eu8);
-
-        // CRTC registers for 80x25 text mode
-        Port::new(0x3D4).write(0x00u8); Port::new(0x3D5).write(0x5Fu8); // H total
-        Port::new(0x3D4).write(0x01u8); Port::new(0x3D5).write(0x4Fu8); // H display end
-        Port::new(0x3D4).write(0x02u8); Port::new(0x3D5).write(0x50u8); // H blank start
-        Port::new(0x3D4).write(0x03u8); Port::new(0x3D5).write(0x82u8); // H blank end
-        Port::new(0x3D4).write(0x04u8); Port::new(0x3D5).write(0x55u8); // H retrace start
-        Port::new(0x3D4).write(0x05u8); Port::new(0x3D5).write(0x81u8); // H retrace end
-        Port::new(0x3D4).write(0x06u8); Port::new(0x3D5).write(0xBFu8); // V total
-        Port::new(0x3D4).write(0x07u8); Port::new(0x3D5).write(0x1Fu8); // Overflow
-        Port::new(0x3D4).write(0x08u8); Port::new(0x3D5).write(0x00u8); // Preset row scan
-        Port::new(0x3D4).write(0x09u8); Port::new(0x3D5).write(0x4Fu8); // Max scan line
-        Port::new(0x3D4).write(0x10u8); Port::new(0x3D5).write(0x9Cu8); // V retrace start
-        Port::new(0x3D4).write(0x11u8); Port::new(0x3D5).write(0x8Eu8); // V retrace end
-        Port::new(0x3D4).write(0x12u8); Port::new(0x3D5).write(0x8Fu8); // V display end
-        Port::new(0x3D4).write(0x13u8); Port::new(0x3D5).write(0x28u8); // Offset
-        Port::new(0x3D4).write(0x14u8); Port::new(0x3D5).write(0x1Fu8); // Underline location
-        Port::new(0x3D4).write(0x15u8); Port::new(0x3D5).write(0x96u8); // V blank start
-        Port::new(0x3D4).write(0x16u8); Port::new(0x3D5).write(0xB9u8); // V blank end
-        Port::new(0x3D4).write(0x17u8); Port::new(0x3D5).write(0xA3u8); // CRTC mode control
-
-        // Graphics registers for text mode
-        Port::new(0x3CE).write(0x05u8); Port::new(0x3CF).write(0x10u8); // Graphics mode
-        Port::new(0x3CE).write(0x06u8); Port::new(0x3CF).write(0x0Eu8); // Misc graphics
-
-        // Attribute controller setup (reset flip-flop first)
-        Port::<u8>::new(0x3DA).read(); // Reset flip-flop
-        Port::new(0x3C0).write(0x00u8); Port::new(0x3C0).write(0x00u8); // Palette 0
-        Port::new(0x3C0).write(0x01u8); Port::new(0x3C0).write(0x01u8); // Palette 1
-        Port::new(0x3C0).write(0x02u8); Port::new(0x3C0).write(0x02u8); // Palette 2
-        Port::new(0x3C0).write(0x03u8); Port::new(0x3C0).write(0x03u8); // Palette 3
-        Port::new(0x3C0).write(0x04u8); Port::new(0x3C0).write(0x04u8); // Palette 4
-        Port::new(0x3C0).write(0x05u8); Port::new(0x3C0).write(0x05u8); // Palette 5
-        Port::new(0x3C0).write(0x06u8); Port::new(0x3C0).write(0x06u8); // Palette 6
-        Port::new(0x3C0).write(0x07u8); Port::new(0x3C0).write(0x07u8); // Palette 7
-        Port::new(0x3C0).write(0x08u8); Port::new(0x3C0).write(0x10u8); // Palette 8
-        Port::new(0x3C0).write(0x09u8); Port::new(0x3C0).write(0x11u8); // Palette 9
-        Port::new(0x3C0).write(0x0Au8); Port::new(0x3C0).write(0x12u8); // Palette 10
-        Port::new(0x3C0).write(0x0Bu8); Port::new(0x3C0).write(0x13u8); // Palette 11
-        Port::new(0x3C0).write(0x0Cu8); Port::new(0x3C0).write(0x14u8); // Palette 12
-        Port::new(0x3C0).write(0x0Du8); Port::new(0x3C0).write(0x15u8); // Palette 13
-        Port::new(0x3C0).write(0x0Eu8); Port::new(0x3C0).write(0x16u8); // Palette 14
-        Port::new(0x3C0).write(0x0Fu8); Port::new(0x3C0).write(0x17u8); // Palette 15
-        Port::new(0x3C0).write(0x10u8); Port::new(0x3C0).write(0x0Cu8); // Mode control
-        Port::new(0x3C0).write(0x11u8); Port::new(0x3C0).write(0x00u8); // Overscan
-        Port::new(0x3C0).write(0x12u8); Port::new(0x3C0).write(0x0Fu8); // Plane enable
-        Port::new(0x3C0).write(0x13u8); Port::new(0x3C0).write(0x00u8); // Pixel padding
-        Port::new(0x3C0).write(0x14u8); Port::new(0x3C0).write(0x00u8); // Color select
-        Port::new(0x3C0).write(0x20u8); // Enable video output
-    }
-
+    init_vga_text_mode();
     debug_print_str("VGA setup done\n");
 
     // Early VGA text output to ensure visible output on screen

@@ -77,9 +77,6 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     debug_print_str("Main: After Heap initialized print.\n");
     petroleum::println!("Bellows: Heap OK.");
     debug_print_str("Main: After Heap OK println.\n");
-    // debug_print_str("Main: About to call init_gop.\n");
-    // init_gop(st);
-    // debug_print_str("Main: init_gop returned.\n");
     petroleum::serial::_print(format_args!("GOP initialized successfully.\n"));
     petroleum::println!("Bellows: GOP initialized."); // Debug print after GOP initialization
 
@@ -214,13 +211,7 @@ fn init_gop(st: &EfiSystemTable) {
         width: info.horizontal_resolution,
         height: info.vertical_resolution,
         pixel_format: info.pixel_format,
-        bpp: match info.pixel_format {
-            EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor => 32,
-            EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor => 32,
-            EfiGraphicsPixelFormat::PixelBitMask => 32,
-            EfiGraphicsPixelFormat::PixelBltOnly => 32,
-            EfiGraphicsPixelFormat::PixelFormatMax => 32,
-        },
+        bpp: 32, // Assuming 32bpp for supported modes. More robust handling is needed for other formats.
         stride: info.pixels_per_scan_line,
     });
 

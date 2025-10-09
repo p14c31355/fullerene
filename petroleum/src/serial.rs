@@ -251,14 +251,12 @@ pub fn _serial_log(args: fmt::Arguments) {
         .expect("Serial write failed");
 }
 
-/// Provides a global singleton for the serial port writer.
-pub static SERIAL_PORT_WRITER_GLOBAL: Mutex<SerialPort<Com1Ports>> =
-    Mutex::new(SerialPort::new(Com1Ports));
-
 /// Initializes the global serial port writer.
 pub fn serial_init() {
-    SERIAL_PORT_WRITER_GLOBAL.lock().init();
+    SERIAL_PORT_WRITER.lock().init();
 }
+
+
 
 #[cfg(test)]
 mod tests {
