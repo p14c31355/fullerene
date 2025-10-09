@@ -251,7 +251,7 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     let memory_map = *MEMORY_MAP.get().unwrap();
 
     petroleum::serial::serial_log(format_args!("Reinitializing page table with offset: "));
-    petroleum::serial::serial_log(format_args!("{}", alloc::format!("{:#x}\n", physical_memory_offset.as_u64())));
+    petroleum::serial::serial_log(format_args!("{:#x}\n", physical_memory_offset.as_u64()));
 
     // Allocate a new level 4 page table
     let level_4_frame = frame_allocator
