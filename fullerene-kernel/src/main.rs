@@ -16,7 +16,7 @@ extern crate alloc;
 use core::panic::PanicInfo;
 
 // use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, serial_log};
-use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, debug_print_hex, debug_print_str_to_com1 as debug_print_str};
+use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
 use core::ffi::c_void;
 use petroleum::common::{
@@ -26,7 +26,7 @@ use petroleum::common::{
 use petroleum::page_table::EfiMemoryDescriptor;
 use petroleum::write_serial_bytes;
 use spin::Once;
-use x86_64::VirtAddr;
+use x86_64::{VirtAddr, PhysAddr};
 use x86_64::instructions::hlt;
 
 // Macro to reduce repetitive serial logging
@@ -207,37 +207,44 @@ pub extern "efiapi" fn efi_main(
         if config.address == 0 {
             panic!("Framebuffer address 0 - check bootloader GOP install");
         } else {
+            let fb_phys = PhysAddr::new(config.address);
+            let fb_size = (config.width * config.height * 4) as usize;
+            let fb_virt = heap::allocate_heap_from_map(fb_phys, fb_size);
+            unsafe {
+                let mut mapper = heap::MAPPER.get().unwrap().lock();
+                let mut frame_alloc = heap::FRAME_ALLOCATOR.get().unwrap().lock();
+                heap::map_physical_range(
+                    &mut *mapper,
+                    fb_phys,
+                    fb_phys + fb_size as u64,
+                    fb_virt,
+                    x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
+                    &mut *frame_alloc,
+                );
+            }
+            let modified_config = FullereneFramebufferConfig {
+                address: fb_virt.as_u64(),
+                width: config.width,
+                height: config.height,
+                stride: config.stride,
+                pixel_format: config.pixel_format,
+            };
             let _ = core::fmt::write(
                 &mut *SERIAL1.lock(),
                 format_args!("  Address: {:#x}, Width: {}, Height: {}, Stride: {}\n",
                     config.address, config.width, config.height, config.stride),
             );
             print_kernel("Kernel: about to init graphics.\n");
-            graphics::init(config);
+            graphics::init(&modified_config);
             print_kernel("Kernel: graphics init done.\n");
             kernel_log!("Graphics initialized successfully.");
+            println!("Hello QEMU by FullereneOS");
         }
     } else {
-        kernel_log!("Fullerene Framebuffer Config Table not found. GOP may not be installed in bootloader.");
-        let config_entries = unsafe {
-            core::slice::from_raw_parts(
-                system_table.configuration_table,
-                system_table.number_of_table_entries,
-            )
-        };
-        for (i, entry) in config_entries.iter().enumerate() {
-            let guid = entry.vendor_guid;
-            kernel_log!("Config table {}: Vendor GUID={:x}{:x}{:x}{:x}", i, guid[0], guid[1], guid[2], guid[3]);
-        }
+        petroleum::serial::serial_log(format_args!("GOP config missing - fallback to VGA text"));
+        vga::vga_init();
+        vga::log("Hello QEMU by FullereneOS (VGA fallback)");
     }
-
-    // Also initialize VGA text mode for reliable output
-    vga::vga_init();
-    print_kernel("Kernel: VGA init done.\n");
-
-    // Main loop
-    print_kernel("Kernel: about to print hello.\n");
-    println!("Hello QEMU by FullereneOS");
 
     // Exit QEMU instead of infinite halt
     print_kernel("Kernel: exiting QEMU...\n");
@@ -278,7 +285,7 @@ fn init_common() {
     gdt::init(heap_start_addr); // Pass the actual heap start address
     interrupts::init(); // Initialize IDT
     // Heap already initialized
-    serial_init(); // Initialize serial early for debugging
+    petroleum::serial::serial_init(); // Initialize serial early for debugging
 }
 
 #[cfg(not(target_os = "uefi"))]

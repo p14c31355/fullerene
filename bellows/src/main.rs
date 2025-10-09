@@ -21,7 +21,7 @@ use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_
 
 use petroleum::common::{
     EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputModeInformation, EfiGraphicsOutputProtocol,
-    EfiStatus, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
+    EfiGraphicsPixelFormat, EfiStatus, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
 };
 
 /// Main entry point of the bootloader.
@@ -197,12 +197,12 @@ fn init_gop(st: &EfiSystemTable) {
                 info.pixel_format as u32
             ));
 
-            // Prefer 1024x768, or highest resolution if not available
-            if info.horizontal_resolution == 1024 && info.vertical_resolution == 768 {
+            // Prefer 1024x768 with AddRgb, or highest resolution if not available
+            if info.horizontal_resolution == 1024 && info.vertical_resolution == 768 && info.pixel_format == EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor {
                 target_mode = Some(mode_num as usize);
                 break;
             }
-            if info.horizontal_resolution >= 1024 && info.vertical_resolution >= 768 {
+            if info.horizontal_resolution >= 1024 && info.vertical_resolution >= 768 && info.pixel_format == EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor {
                 let resolution = info.horizontal_resolution as u64 * info.vertical_resolution as u64;
                 if resolution > best_resolution {
                     best_resolution = resolution;
@@ -292,6 +292,7 @@ fn init_gop(st: &EfiSystemTable) {
         core::ptr::write_bytes(fb_addr as *mut u8, 0x00, fb_size as usize);
     }
 
+    petroleum::serial::serial_log(format_args!("GOP set: {}x{} @ {:#x}", info.horizontal_resolution, info.vertical_resolution, fb_addr));
     petroleum::serial::_print(format_args!("GOP: Framebuffer initialized and cleared\n"));
 }
 

@@ -3,7 +3,7 @@
 use crate::gdt;
 use core::fmt::Write;
 use lazy_static::lazy_static;
-use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_log};
+use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1};
 use petroleum::init_io_apic;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 use x86_64::instructions::port::Port;
@@ -144,15 +144,15 @@ lazy_static! {
 // Initialize IDT and optionally APIC
 pub fn init() {
     IDT.load();
-    serial_log("IDT loaded with exception handlers.\n");
+    petroleum::serial::serial_log(format_args!("IDT loaded with exception handlers.\n"));
 }
 
 pub fn init_apic() {
-    serial_log("Initializing APIC...\n");
+    petroleum::serial::serial_log(format_args!("Initializing APIC...\n"));
 
     // Disable legacy PIC
     disable_legacy_pic();
-    serial_log("Legacy PIC disabled.\n");
+    petroleum::serial::serial_log(format_args!("Legacy PIC disabled.\n"));
 
     // Get APIC base address
     let base_addr = get_apic_base().unwrap_or(0xFEE00000); // Default local APIC address

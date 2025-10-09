@@ -4,7 +4,7 @@ use x86_64::instructions::tables::load_tss;
 use x86_64::registers::segmentation::{CS, Segment};
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
-use petroleum::serial::{serial_log, debug_print_hex, debug_print_str_to_com1 as debug_print_str};
+use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 pub const TIMER_IST_INDEX: u16 = 1;
@@ -18,7 +18,7 @@ static GDT_INITIALIZED: Once<()> = Once::new();
 pub fn init(heap_start: VirtAddr) -> VirtAddr {
     // If already initialized, just return the heap start (don't modify)
     if GDT_INITIALIZED.is_completed() {
-        serial_log("GDT: Already initialized, skipping\n");
+        petroleum::serial::serial_log(format_args!("GDT: Already initialized, skipping\n"));
         return heap_start;
     }
 
