@@ -21,7 +21,7 @@ use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, debug_print_hex, debug_pr
 use core::ffi::c_void;
 use petroleum::common::{
     EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
-    FullereneFramebufferConfig,
+    FullereneFramebufferConfig, VgaFramebufferConfig,
 };
 use petroleum::page_table::EfiMemoryDescriptor;
 use petroleum::write_serial_bytes;
@@ -196,55 +196,18 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Heap initialized.");
     kernel_log!("Serial initialized.");
 
-    kernel_log!("Entering efi_main...");
-    kernel_log!("Searching for framebuffer config table...");
-
-    let config_entries_num = unsafe { system_table.number_of_table_entries };
-    kernel_log!("System table has {} configuration table entries.", config_entries_num);
-
-    if let Some(config) = find_framebuffer_config(system_table) {
-        kernel_log!("Found framebuffer config.");
-        if config.address == 0 {
-            panic!("Framebuffer address 0 - check bootloader GOP install");
-        } else {
-            let fb_phys = PhysAddr::new(config.address);
-            let fb_size = (config.width * config.height * 4) as usize;
-            let fb_virt = heap::allocate_heap_from_map(fb_phys, fb_size);
-            unsafe {
-                let mut mapper = heap::MAPPER.get().unwrap().lock();
-                let mut frame_alloc = heap::FRAME_ALLOCATOR.get().unwrap().lock();
-                heap::map_physical_range(
-                    &mut *mapper,
-                    fb_phys,
-                    fb_phys + fb_size as u64,
-                    fb_virt,
-                    x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
-                    &mut *frame_alloc,
-                );
-            }
-            let modified_config = FullereneFramebufferConfig {
-                address: fb_virt.as_u64(),
-                width: config.width,
-                height: config.height,
-                stride: config.stride,
-                pixel_format: config.pixel_format,
-            };
-            let _ = core::fmt::write(
-                &mut *SERIAL1.lock(),
-                format_args!("  Address: {:#x}, Width: {}, Height: {}, Stride: {}\n",
-                    config.address, config.width, config.height, config.stride),
-            );
-            print_kernel("Kernel: about to init graphics.\n");
-            graphics::init(&modified_config);
-            print_kernel("Kernel: graphics init done.\n");
-            kernel_log!("Graphics initialized successfully.");
-            println!("Hello QEMU by FullereneOS");
-        }
-    } else {
-        petroleum::serial::serial_log(format_args!("GOP config missing - fallback to VGA text"));
-        vga::vga_init();
-        vga::log("Hello QEMU by FullereneOS (VGA fallback)");
-    }
+    // Initialize VGA graphics mode
+    let vga_config = VgaFramebufferConfig {
+        address: 0xA0000,
+        width: 320,
+        height: 200,
+        bpp: 8,
+    };
+    print_kernel("Kernel: about to init VGA graphics.\n");
+    graphics::init_vga(&vga_config);
+    print_kernel("Kernel: VGA graphics init done.\n");
+    kernel_log!("VGA graphics initialized successfully.");
+    println!("Hello QEMU by FullereneOS");
 
     // Exit QEMU instead of infinite halt
     print_kernel("Kernel: exiting QEMU...\n");

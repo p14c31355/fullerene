@@ -76,7 +76,6 @@ macro_rules! write_vga_register {
 use alloc::boxed::Box; // Import Box
 use core::fmt::{self, Write};
 use core::marker::{Send, Sync};
-#[cfg(not(target_os = "uefi"))]
 use petroleum::common::VgaFramebufferConfig;
 use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig}; // Import missing types
 use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
@@ -176,21 +175,12 @@ impl ColorScheme {
     };
 }
 
-#[cfg(target_os = "uefi")]
 struct FramebufferInfo {
     address: u64,
     width: u32,
     height: u32,
     stride: u32,
-    pixel_format: EfiGraphicsPixelFormat,
-    colors: ColorScheme,
-}
-
-#[cfg(not(target_os = "uefi"))]
-struct FramebufferInfo {
-    address: u64,
-    width: u32,
-    height: u32,
+    pixel_format: Option<EfiGraphicsPixelFormat>,
     colors: ColorScheme,
 }
 
@@ -218,17 +208,11 @@ impl FramebufferInfo {
     }
 
     fn bytes_per_pixel(&self) -> u32 {
-        #[cfg(target_os = "uefi")]
-        {
-            match self.pixel_format {
-                EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
-                | EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor => 4,
-                _ => panic!("Unsupported pixel format"),
-            }
-        }
-        #[cfg(not(target_os = "uefi"))]
-        {
-            1
+        match self.pixel_format {
+            Some(EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor)
+            | Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor) => 4,
+            Some(_) => panic!("Unsupported pixel format"),
+            None => 1, // VGA
         }
     }
 }
@@ -241,19 +225,20 @@ impl FramebufferInfo {
             width: fb_config.width,
             height: fb_config.height,
             stride: fb_config.stride,
-            pixel_format: fb_config.pixel_format,
+            pixel_format: Some(fb_config.pixel_format),
             colors: ColorScheme::UEFI_WHITE_ON_BLACK,
         }
     }
 }
 
-#[cfg(not(target_os = "uefi"))]
 impl FramebufferInfo {
-    fn new(config: &VgaFramebufferConfig) -> Self {
+    fn new_vga(config: &VgaFramebufferConfig) -> Self {
         Self {
             address: config.address,
             width: config.width,
             height: config.height,
+            stride: config.width,
+            pixel_format: None,
             colors: ColorScheme::VGA_WHITE_ON_BLACK,
         }
     }
@@ -423,7 +408,6 @@ impl VgaPorts {
     const SEQUENCER_DATA: u16 = 0x3C5;
 }
 
-#[cfg(not(target_os = "uefi"))]
 /// Initializes VGA graphics mode 13h (320x200, 256 colors).
 ///
 /// This function configures the VGA controller registers to switch to the specified
@@ -435,8 +419,11 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
     setup_attribute_controller();
     setup_palette();
 
-    let writer = FramebufferWriter::<u8>::new(FramebufferInfo::new(config));
+    let writer = FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(config));
     writer.clear_screen();
+    #[cfg(target_os = "uefi")]
+    WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer)));
+    #[cfg(not(target_os = "uefi"))]
     WRITER_BIOS.call_once(|| Mutex::new(Box::new(writer)));
 }
 
