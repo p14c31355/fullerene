@@ -97,6 +97,17 @@ pub extern "efiapi" fn efi_main(
     // Early debug print to confirm kernel entry point is reached using direct port access
     write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main entered.\n");
 
+    // Early VGA text output to ensure visible output on screen
+    {
+        let vga_buffer = unsafe { &mut *(0xb8000 as *mut [[u16; 80]; 25]) };
+        let hello = b"UEFI Kernel Starting...";
+        for (i, &byte) in hello.iter().enumerate() {
+            if i < 80 {
+                vga_buffer[0][i] = (0x0F00 as u16) | (byte as u16); // White on black
+            }
+        }
+    }
+
     // Helper function for kernel debug prints
     fn print_kernel(msg: &str) {
         write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
@@ -276,7 +287,7 @@ pub unsafe extern "C" fn _start() -> ! {
     use petroleum::common::VgaFramebufferConfig;
 
     init_common();
-    kernel_log!("Entering _start...");
+    kernel_log!("Entering _start (BIOS mode)...");
 
     // Graphics initialization for VGA framebuffer (graphics mode)
     let vga_config = VgaFramebufferConfig {
@@ -287,10 +298,18 @@ pub unsafe extern "C" fn _start() -> ! {
     };
     graphics::init_vga(&vga_config);
 
-    kernel_log!("VGA graphics mode initialized.");
+    kernel_log!("VGA graphics mode initialized (BIOS mode).");
 
     // Main loop
     println!("Hello QEMU by FullereneOS");
+
+    // Exit QEMU instead of infinite halt
+    kernel_log!("BIOS boot complete, exiting QEMU...");
+    unsafe {
+        // Write 0x1 to port 0xf4 to exit QEMU
+        x86_64::instructions::port::Port::new(0xf4).write(0x1u32);
+    }
+    // If we get here (which we won't), halt
     hlt_loop();
 }
 
