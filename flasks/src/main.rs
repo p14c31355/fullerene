@@ -48,6 +48,8 @@ fn main() -> io::Result<()> {
                 "+nightly",
                 "build",
                 "-Zbuild-std=core,alloc",
+                "--features",
+                "debug_loader",
                 "--package",
                 "bellows",
                 "--target",
