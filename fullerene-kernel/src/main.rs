@@ -190,12 +190,13 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Kernel: basic init complete");
 
     // Common initialization for both UEFI and BIOS
+    // Initialize IDT before enabling interrupts
+    interrupts::init();
+    print_kernel("Kernel: IDT init done.\n");
+
+    // Common initialization (enables interrupts)
     init_common();
     print_kernel("Kernel: init_common done.\n");
-
-    // Initialize IDT after alloc is available
-    interrupts::init();
-    print_kernel("Kernel: IDT init done after init_common.\n");
 
     kernel_log!("Kernel: efi_main entered (via serial_log).");
     kernel_log!("GDT initialized.");
