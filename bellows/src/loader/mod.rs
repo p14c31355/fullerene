@@ -131,39 +131,37 @@ pub fn exit_boot_services_and_jump(
 
     let map_ptr = map_phys_addr as *mut c_void;
 
-    // Install skipped for debugging
-    // let mm_config = FullereneMemoryMap {
-    //     physical_address: map_phys_addr as u64,
-    //     size: map_size,
-    // };
-    // let mm_config_ptr = Box::into_raw(Box::new(mm_config));
-    // unsafe {
-    //     let status = (bs.install_configuration_table)(
-    //         FULLERENE_MEMORY_MAP_CONFIG_TABLE_GUID.as_ptr() as *const u8,
-    //         mm_config_ptr as *mut c_void,
-    //     );
-    //     if EfiStatus::from(status) != EfiStatus::Success {
-    //         debug_print_str("Error: Failed to install memory map config table: status=");
-    //         debug_print_hex(status as usize);
-    //         debug_print_str("\n");
-    //         return Err(BellowsError::InvalidState("Failed to install memory map config table."));
-    //     }
-    // }
+    let mm_config = FullereneMemoryMap {
+        physical_address: map_phys_addr as u64,
+        size: map_size,
+    };
+    let mm_config_ptr = Box::into_raw(Box::new(mm_config));
+    unsafe {
+        let status = (bs.install_configuration_table)(
+            FULLERENE_MEMORY_MAP_CONFIG_TABLE_GUID.as_ptr() as *const u8,
+            mm_config_ptr as *mut c_void,
+        );
+        if EfiStatus::from(status) != EfiStatus::Success {
+            debug_print_str("Error: Failed to install memory map config table: status=");
+            debug_print_hex(status as usize);
+            debug_print_str("\n");
+            return Err(BellowsError::InvalidState("Failed to install memory map config table."));
+        }
+    }
 
-    // // Skip exit boot services for debugging
-    // let exit_status = (bs.exit_boot_services)(image_handle, map_key);
-    // match EfiStatus::from(exit_status) {
-    //     EfiStatus::Success => {
-    //         debug_print_str("Exit boot services succeeded.\n");
-    //         debug_print_str("About to jump.\n");
-    //     }
-    //     _ => {
-    //         debug_print_str("Error: Failed to exit boot services: status=");
-    //         debug_print_hex(exit_status);
-    //         debug_print_str("\n");
-    //         return Err(BellowsError::InvalidState("Failed to exit boot services."));
-    //     }
-    // }
+    let exit_status = (bs.exit_boot_services)(image_handle, map_key);
+    match EfiStatus::from(exit_status) {
+        EfiStatus::Success => {
+            debug_print_str("Exit boot services succeeded.\n");
+            debug_print_str("About to jump.\n");
+        }
+        _ => {
+            debug_print_str("Error: Failed to exit boot services: status=");
+            debug_print_hex(exit_status);
+            debug_print_str("\n");
+            return Err(BellowsError::InvalidState("Failed to exit boot services."));
+        }
+    }
 
     // Note: The memory map buffer at `map_phys_addr` is intentionally not freed here
     // because after `exit_boot_services` is called, the boot services are no longer

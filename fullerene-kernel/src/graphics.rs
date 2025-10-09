@@ -388,9 +388,7 @@ impl VgaPorts {
 /// The initialization is broken down into smaller helper functions for clarity.
 pub fn init_vga(config: &VgaFramebufferConfig) {
     setup_misc_output();
-    setup_sequencer();
-    setup_crtc(); // Must be done before other registers
-    setup_graphics_controller();
+    setup_registers_from_configs(); // Consolidated setup for sequencer, crtc, graphics
     setup_attribute_controller();
     setup_palette();
 
@@ -578,18 +576,7 @@ fn setup_registers_from_configs() {
     );
 }
 
-/// Legacy functions for compatibility (now just wrappers)
-fn setup_sequencer() {
-    write_port_sequence!(SEQUENCER_CONFIG, VgaPorts::SEQUENCER_INDEX, VgaPorts::SEQUENCER_DATA);
-}
 
-fn setup_crtc() {
-    write_port_sequence!(CRTC_CONFIG, VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA);
-}
-
-fn setup_graphics_controller() {
-    write_port_sequence!(GRAPHICS_CONFIG, VgaPorts::GRAPHICS_INDEX, VgaPorts::GRAPHICS_DATA);
-}
 
 // VGA Attribute Controller registers configuration for mode 13h
 // These control color mapping and screen display attributes

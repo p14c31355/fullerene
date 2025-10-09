@@ -9,10 +9,15 @@ edition = "2024"
 name = "bellows"
 path = "src/main.rs"
 
+[features]
+debug_loader = []
+
 [profile.dev]
 panic = "abort"
 
 [profile.release]
+codegen-units = 1
+rustflags = ["-C", "target-feature=-red-zone"]
 panic = "abort"
 
 [dependencies]

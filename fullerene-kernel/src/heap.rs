@@ -315,24 +315,17 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
 
 // Allocate heap from memory map (find virtual address from physical)
 pub fn allocate_heap_from_map(phys_start: PhysAddr, _size: usize) -> VirtAddr {
-    #[cfg(target_os = "uefi")]
-    // In UEFI, virtual = physical (identity mapping before exit_boot_services)
-    return VirtAddr::new(phys_start.as_u64());
-
-    #[cfg(not(target_os = "uefi"))]
-    {
-        let memory_map = *MEMORY_MAP.get().unwrap();
-        for desc in memory_map {
-            let start = desc.physical_start;
-            let end = start + desc.number_of_pages * 4096;
-            if phys_start.as_u64() >= start && phys_start.as_u64() < end {
-                let offset_in_desc = phys_start.as_u64() - start;
-                return VirtAddr::new(desc.virtual_start + offset_in_desc);
-            }
+    let memory_map = *MEMORY_MAP.get().unwrap();
+    for desc in memory_map {
+        let start = desc.physical_start;
+        let end = start + desc.number_of_pages * 4096;
+        if phys_start.as_u64() >= start && phys_start.as_u64() < end {
+            let offset_in_desc = phys_start.as_u64() - start;
+            return VirtAddr::new(desc.virtual_start + offset_in_desc);
         }
-        panic!(
-            "Could not find virtual address for physical address {:#x}",
-            phys_start
-        );
     }
+    panic!(
+        "Could not find virtual address for physical address {:#x}",
+        phys_start
+    );
 }

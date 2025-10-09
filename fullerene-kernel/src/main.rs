@@ -147,71 +147,44 @@ pub extern "efiapi" fn efi_main(
     };
     MEMORY_MAP.call_once(|| unsafe { &*(descriptors as *const _) });
 
-    #[cfg(not(target_os = "uefi"))]
-    {
-        // Calculate physical_memory_offset from kernel's location in memory map
-        let kernel_virt_addr = efi_main as u64;
-        let mut physical_memory_offset = VirtAddr::new(0);
-        let mut kernel_phys_start = x86_64::PhysAddr::new(0);
+    // Calculate physical_memory_offset from kernel's location in memory map
+    let kernel_virt_addr = efi_main as u64;
+    let mut physical_memory_offset = VirtAddr::new(0);
+    let mut kernel_phys_start = x86_64::PhysAddr::new(0);
 
-        // Find physical_memory_offset and kernel_phys_start
-        for desc in descriptors {
-            let virt_start = desc.virtual_start;
-            let virt_end = virt_start + desc.number_of_pages * 4096;
-            if kernel_virt_addr >= virt_start && kernel_virt_addr < virt_end {
-                physical_memory_offset = VirtAddr::new(desc.virtual_start - desc.physical_start);
-                if desc.type_ == EfiMemoryType::EfiLoaderCode {
-                    kernel_phys_start = x86_64::PhysAddr::new(desc.physical_start);
-                }
+    // Find physical_memory_offset and kernel_phys_start
+    for desc in descriptors {
+        let virt_start = desc.virtual_start;
+        let virt_end = virt_start + desc.number_of_pages * 4096;
+        if kernel_virt_addr >= virt_start && kernel_virt_addr < virt_end {
+            physical_memory_offset = VirtAddr::new(desc.virtual_start - desc.physical_start);
+            if desc.type_ == EfiMemoryType::EfiLoaderCode {
+                kernel_phys_start = x86_64::PhysAddr::new(desc.physical_start);
             }
         }
-
-        if kernel_phys_start.is_null() {
-            panic!("Could not determine kernel's physical start address.");
-        }
-
-        print_kernel("Kernel: phys offset found.\n");
-        kernel_log!("Kernel: memory map parsed, kernel_phys_start found");
-        kernel_log!("Starting heap frame allocator init...");
-
-        heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
-        print_kernel("Kernel: frame allocator init done.\n");
-        heap::init_page_table(physical_memory_offset);
-        print_kernel("Kernel: page table init done.\n");
-
-        #[cfg(target_os = "bios")]
-        {
-            heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
-            print_kernel("Kernel: page table reinit done.\n");
-        }
     }
 
-    #[cfg(target_os = "uefi")]
-    {
-        kernel_log!("UEFI mode - using UEFI page tables, no reinit");
+    if kernel_phys_start.is_null() {
+        panic!("Could not determine kernel's physical start address.");
     }
 
-    // Initialize serial immediately after entry (before any complex initialization)
-    serial_init();
-    print_kernel("Kernel: serial_init done.\n");
+    print_kernel("Kernel: phys offset found.\n");
+    kernel_log!("Kernel: memory map parsed, kernel_phys_start found");
+    kernel_log!("Starting heap frame allocator init...");
 
-    // Confirm ExitBootServices has been called by bootloader (it should have)
-    // The bootloader already calls ExitBootServices before jumping to kernel
-    kernel_log!("UEFI ExitBootServices assumed called by bootloader");
+    heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
+    print_kernel("Kernel: frame allocator init done.\n");
+    heap::init_page_table(physical_memory_offset);
+    print_kernel("Kernel: page table init done.\n");
 
-    // Debugging: print CR3 before page table operations
-    use x86_64::registers::control::Cr3;
-    kernel_log!("CR3 before page table init:");
-    let cr3_before = unsafe { Cr3::read() };
-    debug_print_str("  CR3: ");
-    debug_print_hex(cr3_before.0.start_address().as_u64() as usize);
-    debug_print_str("\n");
+    heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
+    print_kernel("Kernel: page table reinit done.\n");
 
-    // Initialize GDT after page tables are initialized, but before heap operations
-    // For now, keep temp heap - we'll reinitialize later with proper heap
-    let temp_heap_start = VirtAddr::new(0x1000000); // Use 16MB temporarily
-    let temp_heap_start = gdt::init(temp_heap_start);
-    print_kernel("Kernel: GDT init done (temp).\n");
+    // Initialize GDT with proper heap address
+    let heap_phys_start = find_heap_start(descriptors);
+    let heap_start = heap::allocate_heap_from_map(heap_phys_start, heap::HEAP_SIZE);
+    gdt::init(heap_start);
+    print_kernel("Kernel: GDT init done.\n");
 
     // Early serial log works now
     kernel_log!("Kernel: basic init complete");
@@ -274,10 +247,9 @@ fn init_common() {
     let descriptors = *MEMORY_MAP.get().unwrap();
     let heap_phys_start = find_heap_start(descriptors);
     let heap_start = heap::allocate_heap_from_map(heap_phys_start, heap::HEAP_SIZE);
-    let heap_start = gdt::init(heap_start); // Initialize GDT with proper heap location
     heap::init(heap_start, heap::HEAP_SIZE); // Initialize heap
 
-    kernel_log!("Kernel: heap and GDT fully initialized");
+    kernel_log!("Kernel: heap initialized");
 
     // Now safe to initialize APIC and enable interrupts (after stable page tables and heap)
     interrupts::init_apic();
