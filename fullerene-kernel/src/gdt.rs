@@ -4,7 +4,7 @@ use x86_64::instructions::tables::load_tss;
 use x86_64::registers::segmentation::{CS, Segment};
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
-use petroleum::serial::serial_log;
+use petroleum::serial::{serial_log, debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 pub const TIMER_IST_INDEX: u16 = 1;
@@ -22,8 +22,9 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
         return heap_start;
     }
 
-    serial_log("GDT: Initializing with heap at ");
-    serial_log(&alloc::format!("{:#x}\n", heap_start.as_u64()));
+    debug_print_str("GDT: Initializing with heap at ");
+    debug_print_hex(heap_start.as_u64() as usize);
+    debug_print_str("\n");
 
     const STACK_SIZE: usize = 4096 * 5;
     let double_fault_ist = heap_start + STACK_SIZE as u64;
@@ -52,7 +53,7 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
     unsafe {
         CS::set_reg(*CODE_SELECTOR.get().unwrap());
         load_tss(*TSS_SELECTOR.get().unwrap());
-        serial_log("GDT: Loaded and segments set\n");
+        debug_print_str("GDT: Loaded and segments set\n");
     }
 
     // Mark as initialized

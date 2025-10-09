@@ -169,10 +169,6 @@ pub extern "efiapi" fn efi_main(
     let temp_heap_start = gdt::init(temp_heap_start);
     print_kernel("Kernel: GDT init done (temp).\n");
 
-    // Initialize IDT early with exception handlers
-    interrupts::init();
-    print_kernel("Kernel: IDT init done.\n");
-
     // Early serial log works now
     kernel_log!("Kernel: basic init complete");
 
@@ -229,6 +225,10 @@ pub extern "efiapi" fn efi_main(
     // Common initialization for both UEFI and BIOS
     init_common();
     print_kernel("Kernel: init_common done.\n");
+
+    // Initialize IDT after alloc is available
+    interrupts::init();
+    print_kernel("Kernel: IDT init done after init_common.\n");
 
     kernel_log!("Kernel: efi_main entered (via serial_log).");
     kernel_log!("GDT initialized.");
