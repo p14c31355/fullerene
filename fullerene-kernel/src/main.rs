@@ -223,7 +223,6 @@ pub extern "efiapi" fn efi_main(
 fn init_common() {
     // Now safe to initialize APIC and enable interrupts (after stable page tables and heap)
     interrupts::init_apic();
-    interrupts::init_hardware_interrupts();
     kernel_log!("Kernel: APIC initialized and interrupts enabled");
 
     // Test interrupt handling - should not panic or crash if APIC is working

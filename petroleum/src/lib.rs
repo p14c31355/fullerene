@@ -75,7 +75,7 @@ pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
         let _ = writer.write_string_heapless("\n");
     }
 
-    // Also output to VGA buffer if available
+    // Also output to VGA buffer if available - heapless formatting
     #[cfg(feature = "vga_panic")]
     {
         // Import VGA module here to avoid dependency issues
@@ -88,18 +88,58 @@ pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
             buffer: unsafe { &mut *(0xb8000 as *mut vga_buffer::Buffer) },
         };
 
-        for (i, line) in format_args!("PANIC: {}", info).to_string().lines().enumerate() {
-            if i >= BUFFER_HEIGHT {
-                break;
-            }
-            for (j, byte) in line.bytes().enumerate() {
-                if j >= BUFFER_WIDTH {
-                    break;
+        // Write "PANIC: " header
+        let header = b"PANIC: ";
+        for &byte in header {
+            writer.write_byte(byte);
+        }
+
+        // Write location if available
+        if let Some(loc) = info.location() {
+            let loc_str = loc.file();
+            for byte in loc_str.bytes() {
+                if byte == b'\n' {
+                    writer.new_line();
+                } else if byte.is_ascii_graphic() || byte == b' ' || byte == b'.' || byte == b'/' || byte == b'\\' {
+                    writer.write_byte(byte);
                 }
+            }
+            let colons = b":";
+            for &byte in colons {
+                writer.write_byte(byte);
+            }
+            let mut line_buf = [0u8; 10];
+            let line_str = u32_to_str_heapless(loc.line(), &mut line_buf);
+            for byte in line_str.bytes() {
+                writer.write_byte(byte);
+            }
+            for &byte in colons {
+                writer.write_byte(byte);
+            }
+            let mut col_buf = [0u8; 10];
+            let col_str = u32_to_str_heapless(loc.column(), &mut col_buf);
+            for byte in col_str.bytes() {
                 writer.write_byte(byte);
             }
             writer.new_line();
         }
+
+        // Write message
+        if let Some(msg) = info.message().as_str() {
+            for byte in msg.bytes() {
+                if byte == b'\n' {
+                    writer.new_line();
+                } else if byte.is_ascii_graphic() || byte == b' ' {
+                    writer.write_byte(byte);
+                }
+            }
+        } else {
+            let msg_failed = b"(message formatting failed)";
+            for &byte in msg_failed {
+                writer.write_byte(byte);
+            }
+        }
+        writer.new_line();
     }
 
     // For QEMU debugging, halt the CPU

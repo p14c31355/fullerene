@@ -1,6 +1,3 @@
-// bellows/src/loader/mod.rs
-
-use alloc::boxed::Box;
 use core::ffi::c_void;
 use core::ptr;
 use petroleum::common::{

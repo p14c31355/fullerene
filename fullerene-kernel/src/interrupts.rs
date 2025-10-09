@@ -5,9 +5,7 @@ use core::fmt::Write;
 use lazy_static::lazy_static;
 use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_log};
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
-use x86_64::structures::DescriptorTablePointer;
 use x86_64::instructions::port::Port;
-use x86_64::instructions::tables::{self, sgdt, sidt};
 use spin::Mutex;
 
 // APIC register definitions
@@ -129,7 +127,14 @@ lazy_static! {
                 .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
         }
 
-        // Hardware interrupts - APIC based (using raw register setup)
+        // Set up hardware interrupt handlers
+        unsafe {
+            idt[TIMER_INTERRUPT_INDEX as u8]
+                .set_handler_fn(timer_handler)
+                .set_stack_index(gdt::TIMER_IST_INDEX);
+        }
+        idt[KEYBOARD_INTERRUPT_INDEX as u8].set_handler_fn(keyboard_handler);
+        idt[MOUSE_INTERRUPT_INDEX as u8].set_handler_fn(mouse_handler);
 
         idt
     };
@@ -246,33 +251,5 @@ fn send_eoi() {
         unsafe {
             apic.write(APIC_EOI, 0);
         }
-    }
-}
-
-// Raw IDT entry setup for hardware interrupts
-fn set_interrupt_gate(vector: u8, handler_addr: u64, ist: u8) {
-    let dtp = tables::sidt();
-    let idt_base = dtp.base.as_u64() as usize as *mut u64;
-    let code_selector = 0x8 as u64; // Kernel code segment GDT selector
-    let type_attr = 0x8E; // Interrupt gate, DPL 0, present
-    let ist_64 = ist as u64;
-    let low16 = handler_addr & 0xffff;
-    let mid16 = (handler_addr >> 16) & 0xffff;
-    let high32 = handler_addr >> 32;
-    let entry_low = low16 | (code_selector << 16) | (ist_64 << 32) | (type_attr << 40);
-    let entry_high = mid16 | (high32 << 16);
-    unsafe {
-        let entry_low_ptr = idt_base.add((vector as usize * 2) as usize);
-        *entry_low_ptr = entry_low as u64;
-        let entry_high_ptr = entry_low_ptr.add(1);
-        *entry_high_ptr = entry_high as u64;
-    }
-}
-
-pub fn init_hardware_interrupts() {
-    unsafe {
-        set_interrupt_gate(TIMER_INTERRUPT_INDEX as u8, timer_handler as u64, gdt::TIMER_IST_INDEX as u8);
-        set_interrupt_gate(KEYBOARD_INTERRUPT_INDEX as u8, keyboard_handler as u64, 0);
-        set_interrupt_gate(MOUSE_INTERRUPT_INDEX as u8, mouse_handler as u64, 0);
     }
 }
