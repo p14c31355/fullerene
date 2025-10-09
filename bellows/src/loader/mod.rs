@@ -160,13 +160,14 @@ pub fn exit_boot_services_and_jump(
             }
         }
         _ => {
+            let _ = (bs.free_pages)(map_phys_addr, map_pages);
             #[cfg(feature = "debug_loader")] {
                 debug_print_str("Error: Failed to exit boot services: status=");
                 debug_print_hex(exit_status);
                 debug_print_str("\n");
             }
             return Err(BellowsError::InvalidState("Failed to exit boot services."));
-}
+        }
     }
 
     // Note: The memory map buffer at `map_phys_addr` is intentionally not freed here

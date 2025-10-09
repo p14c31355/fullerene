@@ -221,15 +221,9 @@ pub extern "efiapi" fn efi_main(
 
 #[cfg(target_os = "uefi")]
 fn init_common() {
-    let descriptors = *MEMORY_MAP.get().unwrap();
-    let heap_phys_start = find_heap_start(descriptors);
-    let heap_start = heap::allocate_heap_from_map(heap_phys_start, heap::HEAP_SIZE);
-    heap::init(heap_start, heap::HEAP_SIZE); // Initialize heap
-
-    kernel_log!("Kernel: heap initialized");
-
     // Now safe to initialize APIC and enable interrupts (after stable page tables and heap)
     interrupts::init_apic();
+    interrupts::init_hardware_interrupts();
     kernel_log!("Kernel: APIC initialized and interrupts enabled");
 
     // Test interrupt handling - should not panic or crash if APIC is working
