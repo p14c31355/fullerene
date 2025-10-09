@@ -16,7 +16,7 @@ pub mod pe;
 pub fn exit_boot_services_and_jump(
     image_handle: usize,
     system_table: *mut EfiSystemTable,
-    entry: extern "efiapi" fn(usize, *mut EfiSystemTable) -> !,
+    entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
 ) -> petroleum::common::Result<!> {
     debug_print_str("Inside exit_boot_services_and_jump.\n");
     debug_print_str("system_table = ");
@@ -103,23 +103,27 @@ pub fn exit_boot_services_and_jump(
 
         match EfiStatus::from(status) {
             EfiStatus::Success => {
-                petroleum::serial::_print(format_args!(
-                    "Memory map acquired after {} attempts. Size: {}\n",
-                    attempts, map_size
-                ));
+                debug_print_str("Memory map acquired after ");
+                debug_print_hex(attempts);
+                debug_print_str(" attempts. Size: ");
+                debug_print_hex(map_size);
+                debug_print_str(", map_key: ");
+                debug_print_hex(map_key);
+                debug_print_str("\n");
                 break;
             }
             EfiStatus::BufferTooSmall => {
-                petroleum::serial::_print(format_args!("Buffer too small (size now {}), retrying...\n", map_size));
+                debug_print_str("Buffer too small (size now ");
+                debug_print_hex(map_size);
+                debug_print_str("), retrying...\n");
                 // Continue with enlarged map_size (updated by the call)
                 continue;
             }
             _ => {
                 (bs.free_pages)(map_phys_addr, map_pages);
-                petroleum::serial::_print(format_args!(
-                    "Error: Failed to get memory map: {:?}\n",
-                    EfiStatus::from(status)
-                ));
+                debug_print_str("Error: Failed to get memory map: status=");
+                debug_print_hex(status);
+                debug_print_str("\n");
                 return Err(BellowsError::InvalidState("Failed to get memory map."));
             }
         }
@@ -127,34 +131,39 @@ pub fn exit_boot_services_and_jump(
 
     let map_ptr = map_phys_addr as *mut c_void;
 
-    // Install the memory map into the configuration table
-    let mm_config = FullereneMemoryMap {
-        physical_address: map_phys_addr as u64,
-        size: map_size,
-    };
-    let mm_config_ptr = Box::into_raw(Box::new(mm_config));
-    unsafe {
-        let status = (bs.install_configuration_table)(
-            FULLERENE_MEMORY_MAP_CONFIG_TABLE_GUID.as_ptr() as *const u8,
-            mm_config_ptr as *mut c_void,
-        );
-        if EfiStatus::from(status) != EfiStatus::Success {
-            petroleum::println!("Failed to install memory map config table");
-            return Err(BellowsError::InvalidState(
-                "Failed to install memory map config table.",
-            ));
-        }
-    }
+    // Install skipped for debugging
+    // let mm_config = FullereneMemoryMap {
+    //     physical_address: map_phys_addr as u64,
+    //     size: map_size,
+    // };
+    // let mm_config_ptr = Box::into_raw(Box::new(mm_config));
+    // unsafe {
+    //     let status = (bs.install_configuration_table)(
+    //         FULLERENE_MEMORY_MAP_CONFIG_TABLE_GUID.as_ptr() as *const u8,
+    //         mm_config_ptr as *mut c_void,
+    //     );
+    //     if EfiStatus::from(status) != EfiStatus::Success {
+    //         debug_print_str("Error: Failed to install memory map config table: status=");
+    //         debug_print_hex(status as usize);
+    //         debug_print_str("\n");
+    //         return Err(BellowsError::InvalidState("Failed to install memory map config table."));
+    //     }
+    // }
 
-    // Exit boot services. This call must succeed.
-    let exit_status = (bs.exit_boot_services)(image_handle, map_key);
-    if EfiStatus::from(exit_status) != EfiStatus::Success {
-        petroleum::serial::_print(format_args!(
-            "Error: Failed to exit boot services: {:?}\n",
-            EfiStatus::from(exit_status)
-        ));
-        return Err(BellowsError::InvalidState("Failed to exit boot services."));
-    }
+    // // Skip exit boot services for debugging
+    // let exit_status = (bs.exit_boot_services)(image_handle, map_key);
+    // match EfiStatus::from(exit_status) {
+    //     EfiStatus::Success => {
+    //         debug_print_str("Exit boot services succeeded.\n");
+    //         debug_print_str("About to jump.\n");
+    //     }
+    //     _ => {
+    //         debug_print_str("Error: Failed to exit boot services: status=");
+    //         debug_print_hex(exit_status);
+    //         debug_print_str("\n");
+    //         return Err(BellowsError::InvalidState("Failed to exit boot services."));
+    //     }
+    // }
 
     // Note: The memory map buffer at `map_phys_addr` is intentionally not freed here
     // because after `exit_boot_services` is called, the boot services are no longer
@@ -165,10 +174,13 @@ pub fn exit_boot_services_and_jump(
     // This is the point of no return. We are calling the kernel entry point,
     // passing the memory map and other data. The validity of the `entry`
     // function pointer is assumed based on the successful PE file loading.
-    petroleum::serial::_print(format_args!(
-        "Jumping to kernel at {:#x} with map at {:#x} size {}\n",
-        entry as usize, map_phys_addr, map_size
-    ));
+    debug_print_str("Jumping to kernel at ");
+    debug_print_hex(entry as usize);
+    debug_print_str(" with map at ");
+    debug_print_hex(map_phys_addr);
+    debug_print_str(" size ");
+    debug_print_hex(map_size);
+    debug_print_str("\n");
     debug_print_str("About to call kernel entry.\n");
-    entry(image_handle, system_table);
+    entry(image_handle, system_table, map_ptr, map_size);
 }

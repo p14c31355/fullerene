@@ -15,7 +15,8 @@ extern crate alloc;
 
 use core::panic::PanicInfo;
 
-use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, serial_log};
+// use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, serial_log};
+use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, serial_log, debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
 use core::ffi::c_void;
 use petroleum::common::{
@@ -100,6 +101,8 @@ fn panic(info: &PanicInfo) -> ! {
 pub extern "efiapi" fn efi_main(
     _image_handle: usize,
     system_table: *mut EfiSystemTable,
+    memory_map: *mut c_void,
+    memory_map_size: usize,
 ) -> ! {
     // Early debug print to confirm kernel entry point is reached using direct port access
     use x86_64::instructions::port::Port;
@@ -128,18 +131,18 @@ pub extern "efiapi" fn efi_main(
 
     // Verify our own address as sanity check for PE relocation
     let self_addr = efi_main as u64;
-    serial_log("Kernel: efi_main located at ");
-    serial_log(&alloc::format!("{:#x}", self_addr));
+    debug_print_str("Kernel: efi_main located at ");
+    debug_print_hex(self_addr as usize);
+    debug_print_str("\n");
 
     // Cast system_table to reference
     let system_table = unsafe { &*system_table };
 
-    // Get memory map from config table
-    let memory_map_config = find_memory_map_config(system_table).expect("Memory map config not found");
+    // Use the passed memory map
     let descriptors = unsafe {
         core::slice::from_raw_parts(
-            memory_map_config.physical_address as *const EfiMemoryDescriptor,
-            memory_map_config.size / core::mem::size_of::<EfiMemoryDescriptor>(),
+            memory_map as *const EfiMemoryDescriptor,
+            memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>(),
         )
     };
     MEMORY_MAP.call_once(|| unsafe { &*(descriptors as *const _) });
@@ -156,8 +159,9 @@ pub extern "efiapi" fn efi_main(
     use x86_64::registers::control::Cr3;
     kernel_log!("CR3 before page table init:");
     let cr3_before = unsafe { Cr3::read() };
-    serial_log("  CR3: ");
-    serial_log(&alloc::format!("{:#x}", cr3_before.0.start_address().as_u64()));
+    debug_print_str("  CR3: ");
+    debug_print_hex(cr3_before.0.start_address().as_u64() as usize);
+    debug_print_str("\n");
 
     // Initialize GDT after page tables are initialized, but before heap operations
     // For now, keep temp heap - we'll reinitialize later with proper heap
@@ -217,8 +221,9 @@ pub extern "efiapi" fn efi_main(
         // Print CR3 after init to compare
         use x86_64::registers::control::Cr3;
         let cr3_after = unsafe { Cr3::read() };
-        serial_log("  CR3 after init: ");
-        serial_log(&alloc::format!("{:#x}", cr3_after.0.start_address().as_u64()));
+        debug_print_str("  CR3 after init: ");
+        debug_print_hex(cr3_after.0.start_address().as_u64() as usize);
+        debug_print_str("\n");
     }
 
     // Common initialization for both UEFI and BIOS

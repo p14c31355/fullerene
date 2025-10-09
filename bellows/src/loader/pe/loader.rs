@@ -51,7 +51,7 @@ pub fn load_efi_image(
     st: &EfiSystemTable,
     file: &[u8],
 ) -> petroleum::common::Result<
-    extern "efiapi" fn(usize, *mut EfiSystemTable) -> !,
+    extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
 > {
     let bs = unsafe { &*st.boot_services };
 
@@ -420,7 +420,7 @@ pub fn load_efi_image(
     debug_print_hex(entry_point_addr);
     debug_print_str("\n");
 
-    let entry: extern "efiapi" fn(usize, *mut EfiSystemTable) -> ! =
+    let entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> ! =
         unsafe { mem::transmute(entry_point_addr) };
 
     debug_print_str("PE: load_efi_image completed successfully.\n");
