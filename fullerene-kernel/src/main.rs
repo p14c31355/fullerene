@@ -17,6 +17,7 @@ extern crate alloc;
 use petroleum::serial::{
     SERIAL_PORT_WRITER as SERIAL1, debug_print_hex, debug_print_str_to_com1 as debug_print_str,
 };
+use petroleum::graphics::VgaPorts;
 
 #[cfg(not(test))]
 #[panic_handler]
@@ -60,20 +61,22 @@ fn write_vga_registers(index_port: u16, data_port: u16, configs: &[(u8, u8)]) {
 fn setup_vga_attributes() {
     unsafe {
         // Reset flip-flop first
-        Port::<u8>::new(0x3DA).read();
-        let mut attr_port = Port::<u8>::new(0x3C0);
-        // Palette setup (0-15)
-        for i in 0..16 {
-            attr_port.write(i);
-            attr_port.write(i);
-        }
-        // Mode control and others
-        attr_port.write(0x10); attr_port.write(0x0C); // Mode control
-        attr_port.write(0x11); attr_port.write(0x00); // Overscan
-        attr_port.write(0x12); attr_port.write(0x0F); // Plane enable
-        attr_port.write(0x13); attr_port.write(0x00); // Pixel padding
-        attr_port.write(0x14); attr_port.write(0x00); // Color select
-        attr_port.write(0x20); // Enable video output
+        Port::<u8>::new(VgaPorts::STATUS).read();
+        // Attribute registers configuration
+        let attr_configs = [
+            (0x00, 0x00), (0x01, 0x01), (0x02, 0x02), (0x03, 0x03),
+            (0x04, 0x04), (0x05, 0x05), (0x06, 0x06), (0x07, 0x07),
+            (0x08, 0x08), (0x09, 0x09), (0x0A, 0x0A), (0x0B, 0x0B),
+            (0x0C, 0x0C), (0x0D, 0x0D), (0x0E, 0x0E), (0x0F, 0x0F), // Palette setup
+            (0x10, 0x0C), // Mode control
+            (0x11, 0x00), // Overscan
+            (0x12, 0x0F), // Plane enable
+            (0x13, 0x00), // Pixel padding
+            (0x14, 0x00), // Color select
+        ];
+        write_vga_registers(VgaPorts::ATTRIBUTE_INDEX, VgaPorts::ATTRIBUTE_INDEX, &attr_configs);
+        // Enable video output by writing index 0x20 (no data needed)
+        Port::<u8>::new(VgaPorts::ATTRIBUTE_INDEX).write(0x20);
     }
 }
 
@@ -81,7 +84,7 @@ fn setup_vga_attributes() {
 fn vga_text_mode_setup() {
     unsafe {
         // Misc output register
-        Port::<u8>::new(0x3C2).write(0x63);
+        Port::<u8>::new(VgaPorts::MISC_OUTPUT).write(0x63);
 
         // Sequencer registers
         let seq_configs = [
@@ -91,10 +94,10 @@ fn vga_text_mode_setup() {
             (0x03, 0x00), // Character map
             (0x04, 0x02), // Memory mode
         ];
-        write_vga_registers(0x3C4, 0x3C5, &seq_configs);
+        write_vga_registers(VgaPorts::SEQUENCER_INDEX, VgaPorts::SEQUENCER_DATA, &seq_configs);
 
         // Unlock CRTC protection
-        write_vga_registers(0x3D4, 0x3D5, &[(0x11, 0x0E)]);
+        write_vga_registers(VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA, &[(0x11, 0x0E)]);
 
         // CRTC registers
         let crtc_configs = [
@@ -104,13 +107,13 @@ fn vga_text_mode_setup() {
             (0x12, 0x8F), (0x13, 0x28), (0x14, 0x1F), (0x15, 0x96),
             (0x16, 0xB9), (0x17, 0xA3),
         ];
-        write_vga_registers(0x3D4, 0x3D5, &crtc_configs);
+        write_vga_registers(VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA, &crtc_configs);
 
         // Graphics registers
         let graphics_configs = [
             (0x05, 0x10), (0x06, 0x0E),
         ];
-        write_vga_registers(0x3CE, 0x3CF, &graphics_configs);
+        write_vga_registers(VgaPorts::GRAPHICS_INDEX, VgaPorts::GRAPHICS_DATA, &graphics_configs);
 
         // Attribute controller setup
         setup_vga_attributes();
