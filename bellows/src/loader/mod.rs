@@ -161,27 +161,22 @@ pub fn exit_boot_services_and_jump(
                     }
                 }
             }
-            EfiStatus::BufferTooSmall => {
+                        EfiStatus::BufferTooSmall => {
                 #[cfg(feature = "debug_loader")]
                 {
-                    debug_print_str("Buffer too small, size now ");
+                    debug_print_str("Buffer too small, required size is now ");
                     debug_print_hex(map_size);
                     debug_print_str(" bytes\n");
                 }
-                // If our fixed buffer is too small, this is a serious issue - the map is larger than expected
-                if map_size > map_buffer_size {
-                    let _ = (bs.free_pages)(map_phys_addr, alloc_pages); // Cleanup
-                    petroleum::serial::_print(format_args!(
-                        "Error: Memory map size {} exceeds buffer capacity {}\n",
-                        map_size, map_buffer_size
-                    ));
-                    return Err(BellowsError::InvalidState(
-                        "Memory map too large for buffer.",
-                    ));
-                }
-                // Reset map_size for next attempt (it was updated by get_memory_map)
-                map_size = map_buffer_size;
-                continue;
+                // If our fixed buffer is too small, this is a fatal error.
+                let _ = (bs.free_pages)(map_phys_addr, alloc_pages); // Cleanup
+                petroleum::serial::_print(format_args!(
+                    "Error: Memory map size {} exceeds fixed buffer capacity {}\n",
+                    map_size, map_buffer_size
+                ));
+                return Err(BellowsError::InvalidState(
+                    "Memory map too large for buffer.",
+                ));
             }
             _ => {
                 let _ = (bs.free_pages)(map_phys_addr, alloc_pages); // Cleanup
