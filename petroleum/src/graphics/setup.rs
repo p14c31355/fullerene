@@ -78,21 +78,29 @@ pub fn setup_vga_attributes() {
     unsafe {
         // Reset flip-flop first
         Port::<u8>::new(VgaPorts::STATUS).read();
+
+        let mut attr_port = Port::new(VgaPorts::ATTRIBUTE_INDEX);
         // Attribute registers configuration
-        let attr_configs = [
+        let attr_configs: [(u8, u8); 21] = [
             (0x00, 0x00), (0x01, 0x01), (0x02, 0x02), (0x03, 0x03),
             (0x04, 0x04), (0x05, 0x05), (0x06, 0x06), (0x07, 0x07),
             (0x08, 0x08), (0x09, 0x09), (0x0A, 0x0A), (0x0B, 0x0B),
             (0x0C, 0x0C), (0x0D, 0x0D), (0x0E, 0x0E), (0x0F, 0x0F), // Palette setup
-            (0x10, 0x0C), // Mode control
+            (0x10, 0x41), // Mode control - enable 8-bit color, graphics mode, blinking on
             (0x11, 0x00), // Overscan
             (0x12, 0x0F), // Plane enable
             (0x13, 0x00), // Pixel padding
             (0x14, 0x00), // Color select
         ];
-        write_vga_registers(VgaPorts::ATTRIBUTE_INDEX, VgaPorts::ATTRIBUTE_INDEX, &attr_configs);
-        // Enable video output by writing index 0x20 (no data needed)
-        Port::<u8>::new(VgaPorts::ATTRIBUTE_INDEX).write(0x20);
+
+        // Write each index/data pair for attribute registers
+        for &(reg_index, reg_value) in &attr_configs {
+            attr_port.write(reg_index);
+            attr_port.write(reg_value);
+        }
+
+        // Enable video output
+        attr_port.write(0x20);
     }
 }
 
@@ -100,6 +108,9 @@ pub fn setup_vga_attributes() {
 /// Sets up VGA for standard 80x25 text mode.
 pub fn init_vga_text_mode() {
     unsafe {
+        // Debug: Log start of VGA text mode setup
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"VGA text mode setup: Starting misc output\n");
+
         // Misc output register - enable VGA, use color mode, low page, sync polarities
         Port::<u8>::new(VgaPorts::MISC_OUTPUT).write(0x63);
 
@@ -139,6 +150,8 @@ pub fn init_vga_text_mode() {
         ];
         write_vga_registers(VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA, &crtc_configs);
 
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"VGA text mode setup: CRTC done\n");
+
         // Graphics registers for text mode
         let graphics_configs = [
             (0x05, 0x10), // Graphics mode register - read mode 0, write mode 0
@@ -146,8 +159,12 @@ pub fn init_vga_text_mode() {
         ];
         write_vga_registers(VgaPorts::GRAPHICS_INDEX, VgaPorts::GRAPHICS_DATA, &graphics_configs);
 
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"VGA text mode setup: Graphics done\n");
+
         // Attribute controller setup
         setup_vga_attributes();
+
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"VGA text mode setup: Attributes done\n");
     }
 }
 

@@ -138,17 +138,27 @@ pub extern "efiapi" fn efi_main(
     init_vga_text_mode();
 
     debug_print_str("VGA setup done\n");
+    kernel_log!("VGA text mode setup function returned");
 
     // Early VGA text output to ensure visible output on screen
+    kernel_log!("About to write to VGA buffer at 0xb8000");
     {
         let vga_buffer = unsafe { &mut *(VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]) };
-        let hello = b"UEFI Kernel Starting...";
+        // Clear screen first
+        for row in 0..25 {
+            for col in 0..80 {
+                vga_buffer[row][col] = VGA_COLOR_GREEN_ON_BLACK | b' ' as u16;
+            }
+        }
+        // Write hello message
+        let hello = b"Hello from UEFI Kernel!";
         for (i, &byte) in hello.iter().enumerate() {
-            if i < 80 {
-                vga_buffer[0][i] = VGA_COLOR_GREEN_ON_BLACK | (byte as u16); // Green on black
+            if i < hello.len() {
+                vga_buffer[0][i] = VGA_COLOR_GREEN_ON_BLACK | (byte as u16);
             }
         }
     }
+    kernel_log!("VGA buffer write completed");
 
     // Use the passed memory map
     let descriptors = unsafe {
