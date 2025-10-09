@@ -154,8 +154,13 @@ pub extern "efiapi" fn efi_main(
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(descriptors);
     let heap_start = heap::allocate_heap_from_map(heap_phys_start, heap::HEAP_SIZE);
-    gdt::init(heap_start);
+    let heap_start_after_gdt = gdt::init(heap_start);
     print_kernel("Kernel: GDT init done.\n");
+
+    // Initialize heap with the remaining memory
+    let gdt_mem_usage = heap_start_after_gdt - heap_start;
+    heap::init(heap_start_after_gdt, heap::HEAP_SIZE - gdt_mem_usage as usize);
+    kernel_log!("Kernel: heap initialized");
 
     // Early serial log works now
     kernel_log!("Kernel: basic init complete");
