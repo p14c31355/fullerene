@@ -16,7 +16,7 @@ extern crate alloc;
 use core::panic::PanicInfo;
 
 // use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, serial_log};
-use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, serial_log, debug_print_hex, debug_print_str_to_com1 as debug_print_str};
+use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
 use core::ffi::c_void;
 use petroleum::common::{
@@ -31,8 +31,9 @@ use x86_64::instructions::hlt;
 
 // Macro to reduce repetitive serial logging
 macro_rules! kernel_log {
-    ($msg:expr) => {
-        serial_log(concat!($msg, "\n"));
+    ($($arg:tt)*) => {
+        let _ = core::fmt::write(&mut *SERIAL1.lock(), format_args!($($arg)*));
+        let _ = core::fmt::write(&mut *SERIAL1.lock(), format_args!("\n"));
     };
 }
 
@@ -45,7 +46,10 @@ fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&FullereneFr
         )
     };
     for entry in config_table_entries {
+        let guid = entry.vendor_guid;
+        kernel_log!("Checking config table entry: GUID={:x}{:x}{:x}{:x}", guid[0], guid[1], guid[2], guid[3]);
         if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
+            kernel_log!("Found matching Fullerene framebuffer config GUID");
             return unsafe { Some(&*(entry.vendor_table as *const FullereneFramebufferConfig)) };
         }
     }
@@ -184,21 +188,36 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Entering efi_main...");
     kernel_log!("Searching for framebuffer config table...");
 
+    let config_entries_num = unsafe { system_table.number_of_table_entries };
+    kernel_log!("System table has {} configuration table entries.", config_entries_num);
+
     if let Some(config) = find_framebuffer_config(system_table) {
+        kernel_log!("Found framebuffer config.");
         if config.address == 0 {
             panic!("Framebuffer address 0 - check bootloader GOP install");
         } else {
             let _ = core::fmt::write(
                 &mut *SERIAL1.lock(),
-                format_args!("  Address: {:#x}\n", config.address),
+                format_args!("  Address: {:#x}, Width: {}, Height: {}, Stride: {}\n",
+                    config.address, config.width, config.height, config.stride),
             );
             print_kernel("Kernel: about to init graphics.\n");
             graphics::init(config);
             print_kernel("Kernel: graphics init done.\n");
-            kernel_log!("Graphics initialized.");
+            kernel_log!("Graphics initialized successfully.");
         }
     } else {
-        kernel_log!("Fullerene Framebuffer Config Table not found.");
+        kernel_log!("Fullerene Framebuffer Config Table not found. GOP may not be installed in bootloader.");
+        let config_entries = unsafe {
+            core::slice::from_raw_parts(
+                system_table.configuration_table,
+                system_table.number_of_table_entries,
+            )
+        };
+        for (i, entry) in config_entries.iter().enumerate() {
+            let guid = entry.vendor_guid;
+            kernel_log!("Config table {}: Vendor GUID={:x}{:x}{:x}{:x}", i, guid[0], guid[1], guid[2], guid[3]);
+        }
     }
 
     // Also initialize VGA text mode for reliable output
