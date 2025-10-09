@@ -1,21 +1,13 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
-use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
+use petroleum::page_table::BootInfoFrameAllocator;
 use petroleum::serial;
 use spin::Mutex;
 use x86_64::registers::control::Cr3Flags;
 use x86_64::structures::paging::{
-    FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags as Flags, PhysFrame,
-    Size4KiB,
+    FrameAllocator, Mapper, OffsetPageTable, Page, PageTableFlags as Flags, PhysFrame, Size4KiB,
 };
 use x86_64::{PhysAddr, VirtAddr};
-
-// Macro to reduce repetitive unsafe node operations
-macro_rules! with_node {
-    ($node_ptr:expr, $body:expr) => {
-        unsafe { $body(&mut *$node_ptr) }
-    };
-}
 
 // Helper function to iterate over memory descriptors with a specific type
 fn for_each_memory_descriptor<F>(

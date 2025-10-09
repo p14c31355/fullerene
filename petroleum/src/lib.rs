@@ -11,7 +11,7 @@ pub mod serial;
 pub use graphics::{Color, ColorCode, ScreenChar, TextBufferOperations};
 pub use serial::{Com1Ops, SerialPort, SerialPortOps};
 
-use core::{arch::asm, fmt::Write};
+use core::arch::asm;
 use spin::Mutex;
 
 use crate::common::EfiSystemTable;
@@ -45,9 +45,6 @@ pub fn u32_to_str_heapless(n: u32, buffer: &mut [u8]) -> &str {
 
 /// Panic handler implementation that can be used by binaries
 pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
-    use alloc::format;
-
-    // Print the panic message using the refactored serial module.
     if let Some(st_ptr) = UEFI_SYSTEM_TABLE.lock().as_ref() {
         let st_ref = unsafe { &*st_ptr.0 };
         crate::serial::UEFI_WRITER.lock().init(st_ref.con_out);
@@ -167,16 +164,20 @@ pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u
     let shift_bytes = 8u64 * bytes_per_line as u64;
     let fb_ptr = address as *mut u8;
     let total_bytes = height as u64 * bytes_per_line as u64;
-    core::ptr::copy(
-        fb_ptr.add(shift_bytes as usize),
-        fb_ptr,
-        (total_bytes - shift_bytes) as usize,
-    );
+    unsafe {
+        core::ptr::copy(
+            fb_ptr.add(shift_bytes as usize),
+            fb_ptr,
+            (total_bytes - shift_bytes) as usize,
+        );
+    }
     // Clear last 8 lines
     let clear_offset = (height - 8) as usize * bytes_per_line as usize;
     let clear_ptr = (address + clear_offset as u64) as *mut T;
     let clear_count = 8 * stride as usize;
-    core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color);
+    unsafe {
+        core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color);
+    }
 }
 
 /// Generic function to clear a raw pixel buffer
@@ -184,5 +185,7 @@ pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u
 pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
     let fb_ptr = address as *mut T;
     let count = (stride * height) as usize;
-    core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color);
+    unsafe {
+        core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color);
+    }
 }

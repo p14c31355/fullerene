@@ -10,12 +10,10 @@ name = "bellows"
 path = "src/main.rs"
 
 [profile.dev]
-codegen-units = 1
-rustflags = ["-C", "target-feature=-red-zone"]
+panic = "abort"
 
 [profile.release]
-codegen-units = 1
-rustflags = ["-C", "target-feature=-red-zone"]
+panic = "abort"
 
 [dependencies]
 linked_list_allocator = "0.10.5"
