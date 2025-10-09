@@ -48,13 +48,9 @@ fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&FullereneFr
         )
     };
     for entry in config_table_entries {
-        let guid = entry.vendor_guid;
         kernel_log!(
-            "Checking config table entry: GUID={:x}{:x}{:x}{:x}",
-            guid[0],
-            guid[1],
-            guid[2],
-            guid[3]
+            "Checking config table entry: GUID={:?}",
+            entry.vendor_guid
         );
         if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
             kernel_log!("Found matching Fullerene framebuffer config GUID");
