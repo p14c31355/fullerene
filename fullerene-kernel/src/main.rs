@@ -311,8 +311,6 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Searching for framebuffer config table...");
     if let Some(config) = find_framebuffer_config(system_table) {
         if config.address != 0 {
-            // Skip graphics init when running in text mode
-            // graphics::init(config);
             kernel_log!("GOP graphics initialization skipped (text mode).");
         } else {
             kernel_log!("Framebuffer address is 0, VGA will handle display.");
