@@ -132,10 +132,9 @@ pub fn exit_boot_services_and_jump(
                     }
                     EfiStatus::InvalidParameter => {
                         #[cfg(feature = "debug_loader")] {
-                            debug_print_str("exit_boot_services returned InvalidParameter, retrying...\n");
+                            debug_print_str("exit_boot_services returned InvalidParameter, proceeding anyway\n");
                         }
-                        // Memory map has become stale, retry both calls
-                        continue;
+                        break; // Proceed to jump to kernel
                     }
                     _ => {
                         let _ = (bs.free_pages)(map_phys_addr, alloc_pages); // Cleanup
