@@ -68,9 +68,9 @@ impl<S: SerialPortOps> SerialPort<S> {
 }
 
 /// COM1 implementation
-pub struct Com1Ops;
+pub struct Com1Ports;
 
-impl SerialPortOps for Com1Ops {
+impl SerialPortOps for Com1Ports {
     fn data_port(&self) -> Port<u8> {
         Port::new(0x3F8)
     }
@@ -99,7 +99,8 @@ impl<S: SerialPortOps> fmt::Write for SerialPort<S> {
 }
 
 // Provides a global singleton for the serial port
-pub static SERIAL_PORT_WRITER: Mutex<SerialPort<Com1Ops>> = Mutex::new(SerialPort::new(Com1Ops));
+// Provides a global singleton for the serial port
+pub static SERIAL_PORT_WRITER: Mutex<SerialPort<Com1Ports>> = Mutex::new(SerialPort::new(Com1Ports));
 
 /// Initializes the global serial port writer.
 pub fn serial_init() {

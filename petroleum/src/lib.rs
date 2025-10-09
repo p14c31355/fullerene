@@ -11,7 +11,7 @@ pub mod page_table;
 pub mod serial;
 pub use apic::{init_io_apic, IoApic, IoApicRedirectionEntry};
 pub use graphics::{Color, ColorCode, ScreenChar, TextBufferOperations};
-pub use serial::{Com1Ops, SerialPort, SerialPortOps};
+pub use serial::{Com1Ports, SerialPort, SerialPortOps};
 
 use core::arch::asm;
 use spin::Mutex;

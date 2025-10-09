@@ -1,30 +1,73 @@
-// Helper traits and macros for reducing repetition
+// Generic port writer struct to reduce unsafe block repetition and improve type safety
+pub struct PortWriter<T> {
+    port: Port<T>,
+}
+
+impl<T> PortWriter<T> {
+    pub fn new(port_addr: u16) -> Self {
+        Self {
+            port: Port::new(port_addr),
+        }
+    }
+
+    pub unsafe fn write(&mut self, value: T)
+    where
+        T: x86_64::instructions::port::PortWrite,
+    {
+        self.port.write(value);
+    }
+
+    pub unsafe fn read(&mut self) -> T
+    where
+        T: x86_64::instructions::port::PortRead,
+    {
+        self.port.read()
+    }
+}
+
+// Specialized VGA port operations
+struct VgaPortOps {
+    index_writer: PortWriter<u8>,
+    data_writer: PortWriter<u8>,
+}
+
+impl VgaPortOps {
+    fn new(index_port: u16, data_port: u16) -> Self {
+        Self {
+            index_writer: PortWriter::new(index_port),
+            data_writer: PortWriter::new(data_port),
+        }
+    }
+
+    fn write_register(&mut self, index: u8, value: u8) {
+        unsafe {
+            self.index_writer.write(index);
+            self.data_writer.write(value);
+        }
+    }
+
+    fn write_sequence(&mut self, configs: &[RegisterConfig]) {
+        for reg in configs {
+            self.write_register(reg.index, reg.value);
+        }
+    }
+}
+
+// Enhanced macro for writing port sequences with automatic port management
 macro_rules! write_port_sequence {
-    ($($config:expr, $index_port:expr, $data_port:expr);*) => {{
+    ($($config:expr, $index_port:expr, $data_port:expr);*$(;)?) => {{
         $(
-            let regs = $config;
-            for reg in regs {
-                unsafe {
-                    let mut idx_port = Port::<u8>::new($index_port);
-                    let mut data_port = Port::<u8>::new($data_port);
-                    idx_port.write(reg.index);
-                    data_port.write(reg.value);
-                }
-            }
+            let mut vga_ports = VgaPortOps::new($index_port, $data_port);
+            vga_ports.write_sequence($config);
         )*
     }};
 }
 
-
-
-macro_rules! write_vga_index {
+// Simplified macro for single register writes
+macro_rules! write_vga_register {
     ($index_port:expr, $data_port:expr, $index:expr, $data:expr) => {{
-        unsafe {
-            let mut idx_port = Port::<u8>::new($index_port);
-            let mut data_port = Port::<u8>::new($data_port);
-            idx_port.write($index);
-            data_port.write($data);
-        }
+        let mut vga_ports = VgaPortOps::new($index_port, $data_port);
+        vga_ports.write_register($index, $data);
     }};
 }
 
@@ -692,7 +735,7 @@ fn setup_attribute_controller() {
 
 /// Sets up a simple grayscale palette for the 256-color mode.
 fn setup_palette() {
-    write_vga_index!(VgaPorts::DAC_INDEX, VgaPorts::DAC_DATA, 0x00, 0x00); // Start at color index 0
+    write_vga_register!(VgaPorts::DAC_INDEX, VgaPorts::DAC_DATA, 0x00, 0x00); // Start at color index 0
 
     for i in 0..256 {
         let val = (i * 63 / 255) as u8;

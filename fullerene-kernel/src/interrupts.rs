@@ -36,13 +36,38 @@ pub const TIMER_INTERRUPT_INDEX: u32 = 32;
 pub const KEYBOARD_INTERRUPT_INDEX: u32 = 33;
 pub const MOUSE_INTERRUPT_INDEX: u32 = 44;
 
-// PIC ports (for disabling legacy PIC)
-const PIC1_COMMAND: u16 = 0x20;
-const PIC1_DATA: u16 = 0x21;
-const PIC2_COMMAND: u16 = 0xA0;
-const PIC2_DATA: u16 = 0xA1;
+// PIC configuration structs and macros to reduce repetitive port writes
+struct PicPorts {
+    command: u16,
+    data: u16,
+}
+
+const PIC1: PicPorts = PicPorts {
+    command: 0x20,
+    data: 0x21,
+};
+
+const PIC2: PicPorts = PicPorts {
+    command: 0xA0,
+    data: 0xA1,
+};
+
 const ICW1_INIT: u8 = 0x10;
 const ICW4_8086: u8 = 0x01;
+
+macro_rules! init_pic {
+    ($pic:expr, $vector_offset:expr, $slave_on:expr) => {{
+        unsafe {
+            let mut cmd_port = Port::<u8>::new($pic.command);
+            let mut data_port = Port::<u8>::new($pic.data);
+
+            cmd_port.write(ICW1_INIT | ICW4_8086);
+            data_port.write($vector_offset); // ICW2: vector offset
+            data_port.write($slave_on); // ICW3: slave configuration
+            data_port.write(ICW4_8086);
+        }
+    }};
+}
 
 // APIC structure for register access
 struct Apic {
@@ -69,22 +94,16 @@ static APIC: Mutex<Option<Apic>> = Mutex::new(None);
 
 // Helper functions for APIC setup
 fn disable_legacy_pic() {
+    // Remap and initialize PICs
+    init_pic!(PIC1, 0x20, 4); // PIC1: vectors 32-39, slave on IR2
+    init_pic!(PIC2, 0x28, 2); // PIC2: vectors 40-47, slave identity 2
+
+    // Mask all interrupts
     unsafe {
-        // Remap PIC1 to vectors 32-39
-        Port::<u8>::new(PIC1_COMMAND).write(ICW1_INIT | ICW4_8086);
-        Port::<u8>::new(PIC1_DATA).write(0x20); // ICW2: vector offset 32
-        Port::<u8>::new(PIC1_DATA).write(4); // ICW3: slave on IR2
-        Port::<u8>::new(PIC1_DATA).write(ICW4_8086);
-
-        // Remap PIC2 to vectors 40-47
-        Port::<u8>::new(PIC2_COMMAND).write(ICW1_INIT | ICW4_8086);
-        Port::<u8>::new(PIC2_DATA).write(0x28); // ICW2: vector offset 40
-        Port::<u8>::new(PIC2_DATA).write(2); // ICW3: slave identity 2
-        Port::<u8>::new(PIC2_DATA).write(ICW4_8086);
-
-        // Mask all interrupts
-        Port::<u8>::new(PIC1_DATA).write(0xFF);
-        Port::<u8>::new(PIC2_DATA).write(0xFF);
+        let mut pic1_data = Port::<u8>::new(PIC1.data);
+        let mut pic2_data = Port::<u8>::new(PIC2.data);
+        pic1_data.write(0xFF);
+        pic2_data.write(0xFF);
     }
 }
 
