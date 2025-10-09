@@ -9,6 +9,18 @@ use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, Pag
 use x86_64::instructions::port::Port;
 use spin::Mutex;
 
+static TICK_COUNTER: Mutex<u64> = Mutex::new(0);
+
+// Input handling structures
+static KEYBOARD_BUFFER: Mutex<[u8; 256]> = Mutex::new([0; 256]);
+static KEYBOARD_BUFFER_HEAD: Mutex<usize> = Mutex::new(0);
+static KEYBOARD_BUFFER_TAIL: Mutex<usize> = Mutex::new(0);
+static MOUSE_X: Mutex<i16> = Mutex::new(0);
+static MOUSE_Y: Mutex<i16> = Mutex::new(0);
+static MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
+static MOUSE_PACKET: Mutex<[u8; 3]> = Mutex::new([0; 3]);
+static MOUSE_PACKET_IDX: Mutex<usize> = Mutex::new(0);
+
 // APIC register definitions
 const APIC_BASE_MSR: u32 = 0x1B;
 const APIC_BASE_ADDR_MASK: u64 = !0xFFF;
@@ -234,25 +246,50 @@ pub extern "x86-interrupt" fn double_fault_handler(
 // Hardware interrupt handlers
 pub extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
     // Timer interrupt - handle timer ticks
-    // TODO: Implement timer logic (increment tick counter, schedule tasks, etc.)
+    *TICK_COUNTER.lock() += 1;
+    // Basic scheduling: could schedule tasks here in future, but for now just tick
     send_eoi();
 }
 
 pub extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
     // Keyboard interrupt - handle keyboard input
-    // TODO: Read scancode from keyboard controller and process
     let mut port = Port::<u8>::new(0x60);
-    let _scancode = unsafe { port.read() };
-    // TODO: Process scancode and add to input buffer
+    let scancode = unsafe { port.read() };
+    // Process scancode and add to input buffer
+    let mut buffer = KEYBOARD_BUFFER.lock();
+    let head = *KEYBOARD_BUFFER_HEAD.lock();
+    let mut tail = *KEYBOARD_BUFFER_TAIL.lock();
+    let next_tail = (tail + 1) % 256;
+    if next_tail != head {  // Not full
+        buffer[tail] = scancode;
+        *KEYBOARD_BUFFER_TAIL.lock() = next_tail;
+    }
+    // If full, drop the input for simplicity
     send_eoi();
 }
 
 pub extern "x86-interrupt" fn mouse_handler(_stack_frame: InterruptStackFrame) {
     // Mouse interrupt - handle mouse input
-    // TODO: Read mouse packet from controller and process
     let mut port = Port::<u8>::new(0x60);
-    let _packet = unsafe { port.read() };
-    // TODO: Process mouse packet and update cursor position
+    let byte = unsafe { port.read() };
+    let mut idx = *MOUSE_PACKET_IDX.lock();
+    let mut packet = MOUSE_PACKET.lock();
+    packet[idx] = byte;
+    idx += 1;
+    if idx == 3 {
+        // Full packet received, process
+        let status = packet[0];
+        let dx = packet[1] as i8 as i16;
+        let dy = packet[2] as i8 as i16;
+        *MOUSE_X.lock() += dx;
+        *MOUSE_Y.lock() += dy;
+        *MOUSE_BUTTONS.lock() = status & 0x07;  // Left, right, middle bits
+        idx = 0;  // Reset for next packet
+        packet[0] = 0;
+        packet[1] = 0;
+        packet[2] = 0;
+    }
+    *MOUSE_PACKET_IDX.lock() = idx;
     send_eoi();
 }
 

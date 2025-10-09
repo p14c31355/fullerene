@@ -11,4 +11,8 @@ path = "src/main.rs"
 name = "unit_tests"
 path = "tests/unit_tests.rs"
 
+[lib]
+name = "toluene"
+path = "src/lib.rs"
+
 [dependencies]
