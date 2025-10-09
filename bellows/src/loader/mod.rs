@@ -138,9 +138,11 @@ pub fn exit_boot_services_and_jump(
                     }
                     EfiStatus::InvalidParameter => {
                         #[cfg(feature = "debug_loader")] {
-                            debug_print_str("exit_boot_services returned InvalidParameter, proceeding anyway\n");
+                            debug_print_str("exit_boot_services returned InvalidParameter, retrying get_memory_map...\n");
                         }
-                        break; // Proceed to jump to kernel
+                        // The map key is stale. Loop again to get a new memory map and key.
+                        map_size = map_buffer_size;
+                        continue;
                     }
                     _ => {
                         let _ = (bs.free_pages)(map_phys_addr, alloc_pages); // Cleanup
