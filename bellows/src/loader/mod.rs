@@ -15,34 +15,35 @@ pub fn exit_boot_services_and_jump(
     system_table: *mut EfiSystemTable,
     entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
 ) -> petroleum::common::Result<!> {
-    // Immediate debug prints on entry to pinpoint exact hang location
-    debug_print_str("ENTER\n");
-    debug_print_str("system_table=");
-    debug_print_hex(system_table as usize);
-    debug_print_str("\n");
-
+        // Immediate debug prints on entry to pinpoint exact hang location
     #[cfg(feature = "debug_loader")]
     {
+        debug_print_str("ENTER\n");
+        debug_print_str("system_table=");
+        debug_print_hex(system_table as usize);
+        debug_print_str("\n");
         debug_print_str("Inside exit_boot_services_and_jump.\n");
         debug_print_str("system_table = ");
         debug_print_hex(system_table as usize);
         debug_print_str("\n");
     }
 
+    #[cfg(feature = "debug_loader")]
     debug_print_str("About to get boot_services ptr\n");
     let bs = unsafe { &*(*system_table).boot_services };
+    #[cfg(feature = "debug_loader")]
     debug_print_str("Got boot_services ptr\n");
 
     #[cfg(feature = "debug_loader")]
     {
         debug_print_str("bs obtained.\n");
         debug_print_str("About to set up memory map vars.\n");
+        debug_print_str("About to setup buffer vars\n");
     }
-
-    debug_print_str("About to setup buffer vars\n");
     // Pre-allocate buffer before loop to include it in map key
     let map_buffer_size: usize = 128 * 1024; // 128 KiB
     let alloc_pages = map_buffer_size.div_ceil(4096).max(1);
+    #[cfg(feature = "debug_loader")]
     debug_print_str("Buffer vars setup\n");
 
     #[cfg(feature = "debug_loader")]
