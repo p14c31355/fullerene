@@ -4,6 +4,7 @@ use crate::gdt;
 use core::fmt::Write;
 use lazy_static::lazy_static;
 use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_log};
+use petroleum::init_io_apic;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 use x86_64::instructions::port::Port;
 use spin::Mutex;
@@ -167,18 +168,11 @@ pub fn init_apic() {
         apic.write(APIC_TMRINITCNT, 1000000); // Initial count for ~100ms at 10MHz
     }
 
-    // Configure keyboard interrupt (IRQ 1 -> vector 33)
-    unsafe {
-        apic.write(APIC_LVT_LINT0, KEYBOARD_INTERRUPT_INDEX);
-    }
-
-    // Configure mouse interrupt (IRQ 12 -> vector 44)
-    unsafe {
-        apic.write(APIC_LVT_LINT1, MOUSE_INTERRUPT_INDEX);
-    }
-
     // Store APIC instance
     *APIC.lock() = Some(apic);
+
+    // Initialize I/O APIC for legacy interrupts (keyboard, mouse, etc.)
+    init_io_apic(base_addr);
 
     // Enable interrupts
     x86_64::instructions::interrupts::enable();

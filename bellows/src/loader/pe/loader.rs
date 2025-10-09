@@ -87,7 +87,7 @@ pub fn load_efi_image(
                 as *const u32,
         )
     } as usize;
-    let pages_needed = (image_size.max(address_of_entry_point + 4096)).div_ceil(4096);
+    let pages_needed = (image_size.max(address_of_entry_point + 4096)).div_ceil(4096); // Ensure the entire page containing the entry point is allocated
     let mut phys_addr: usize = 0;
     let mut preferred_base = {
         let offset = offset_of!(ImageNtHeaders64, optional_header)
