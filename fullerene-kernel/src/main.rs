@@ -258,6 +258,14 @@ pub extern "efiapi" fn efi_main(
     // Main loop
     print_kernel("Kernel: about to print hello.\n");
     println!("Hello QEMU by FullereneOS");
+
+    // Exit QEMU instead of infinite halt
+    print_kernel("Kernel: exiting QEMU...\n");
+    unsafe {
+        // Write 0x1 to port 0xf4 to exit QEMU
+        x86_64::instructions::port::Port::new(0xf4).write(0x1u32);
+    }
+    // If we get here (which we won't), halt
     hlt_loop();
 }
 
