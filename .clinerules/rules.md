@@ -10,3 +10,5 @@
 - To check the changes, use the `cargo clean && cargo run -p flasks` command.
 
 - Use helper functions, helper macros, structures, and type generics wherever possible to keep the number of lines of code low.
+
+- Let's move forward by integrating redundant .rs files with extremely few lines of code into appropriate locations.
