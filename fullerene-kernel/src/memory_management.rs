@@ -14,6 +14,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 use x86_64::structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB};
+use x86_64::structures::paging::page_table::PageTableEntry;
 use x86_64::structures::paging::{Mapper, Page, PageTableFlags};
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -46,8 +47,20 @@ pub fn create_process_page_table(physical_memory_offset: VirtAddr) -> Option<Pro
     // Clear the page table
     pml4.zero();
 
-    // Copy kernel page table mappings
-    // This is simplified - in practice we'd copy kernel space mappings
+    // Copy kernel page table mappings (higher half of virtual address space)
+    let (current_frame, _) = x86_64::registers::control::Cr3::read();
+    let current_pml4_virt = physical_memory_offset + current_frame.start_address().as_u64();
+    let current_pml4 = unsafe { &*(current_pml4_virt.as_mut_ptr() as *const PageTable) };
+
+    // Copy kernel mappings (entries 256-511 correspond to virtual addresses >= 0xFFFF800000000000)
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            (current_pml4 as *const PageTable as *const PageTableEntry as *const u64).offset(256),
+            (pml4 as *mut PageTable as *mut PageTableEntry as *mut u64).offset(256),
+            256,
+        );
+    }
+
     let mapper = unsafe { OffsetPageTable::new(pml4, physical_memory_offset) };
 
     Some(ProcessPageTable { pml4_frame, mapper })

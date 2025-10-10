@@ -200,6 +200,7 @@ lazy_static! {
         }
         idt[KEYBOARD_INTERRUPT_INDEX as u8].set_handler_fn(keyboard_handler);
         idt[MOUSE_INTERRUPT_INDEX as u8].set_handler_fn(mouse_handler);
+        idt[0x80].set_handler_fn(syscall_handler);
 
         idt
     };

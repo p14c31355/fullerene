@@ -122,12 +122,25 @@ fn load_segment(ph: &ProgramHeader, image_data: &[u8]) -> Result<(), LoadError> 
     // Allocate memory for segment (for now, just copy to a fixed virtual address)
     // In a real system, we'd allocate proper virtual memory pages
 
-    // Validate that the virtual address range is in user space
+    // Validate that the virtual address range is in user space and no overflow
     use crate::memory_management::{is_user_address, is_kernel_address};
     use x86_64::VirtAddr;
 
-    let start_addr = VirtAddr::new(vaddr as u64);
-    let end_addr = VirtAddr::new((vaddr + mem_size) as u64 - 1);
+    let vaddr_u64 = vaddr as u64;
+    let mem_size_u64 = mem_size as u64;
+
+    // Check for overflow in address calculation
+    if vaddr_u64.checked_add(mem_size_u64).is_none() {
+        return Err(LoadError::InvalidFormat);
+    }
+
+    // Ensure mem_size >= file_size
+    if mem_size < file_size {
+        return Err(LoadError::InvalidFormat);
+    }
+
+    let start_addr = VirtAddr::new(vaddr_u64);
+    let end_addr = VirtAddr::new(vaddr_u64 + mem_size_u64 - 1);
 
     if !is_user_address(start_addr) || !is_user_address(end_addr) {
         return Err(LoadError::UnsupportedArchitecture); // Address not in user space
