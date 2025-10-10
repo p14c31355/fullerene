@@ -30,7 +30,17 @@ struct KeyboardModifiers {
     scroll_lock: bool,
 }
 
-static MODIFIERS: Mutex<KeyboardModifiers> = Mutex::new(KeyboardModifiers::default());
+static MODIFIERS: Mutex<KeyboardModifiers> = Mutex::new(KeyboardModifiers {
+    lshift: false,
+    rshift: false,
+    lctrl: false,
+    rctrl: false,
+    lalt: false,
+    ralt: false,
+    caps_lock: false,
+    num_lock: false,
+    scroll_lock: false,
+});
 
 /// Scancode set 1 to ASCII conversion
 /// This is a simplified mapping - in a real system you'd handle extended codes

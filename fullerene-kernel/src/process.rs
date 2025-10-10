@@ -83,12 +83,16 @@ pub struct Process {
     pub state: ProcessState,
     /// CPU context for context switching
     pub context: ProcessContext,
-    /// Process memory mapping
-    pub page_table: PhysAddr,
+    /// Process page table (physical address of level 4 page table)
+    pub page_table_phys_addr: PhysAddr,
+    /// Process page table mapper
+    pub page_table: Option<crate::memory_management::ProcessPageTable>,
     /// Stack pointer for kernel stack
     pub kernel_stack: VirtAddr,
-    /// Entry point function
-    pub entry_point: fn(),
+    /// User-space stack pointer
+    pub user_stack: VirtAddr,
+    /// Program entry point
+    pub entry_point: VirtAddr,
     /// Exit code
     pub exit_code: Option<i32>,
 }
@@ -105,9 +109,11 @@ impl Process {
             name,
             state: ProcessState::Ready,
             context: ProcessContext::default(),
-            page_table: PhysAddr::new(0), // Will be set when allocated
+            page_table_phys_addr: PhysAddr::new(0), // Will be set when allocated
+            page_table: None,
             kernel_stack: VirtAddr::new(0), // Will be set when allocated
-            entry_point,
+            user_stack: VirtAddr::new(0), // Will be set when allocated
+            entry_point: VirtAddr::new(entry_point as usize as u64),
             exit_code: None,
         }
     }
@@ -118,7 +124,7 @@ impl Process {
         // Set RIP to entry point through a trampoline that calls the function
         self.context.rip = process_trampoline as u64;
         // Store entry point in RAX for trampoline
-        self.context.rax = self.entry_point as u64;
+        self.context.rax = self.entry_point.as_u64();
         self.kernel_stack = kernel_stack_top;
     }
 }

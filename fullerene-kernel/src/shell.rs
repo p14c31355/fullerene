@@ -5,12 +5,17 @@
 
 #![no_std]
 
+//! Basic shell/command line interface for Fullerene OS
+
+#![no_std]
+
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::boxed::Box;
 use core::fmt::Write;
 use crate::keyboard;
 use crate::syscall;
+use petroleum::print;
 
 /// Shell prompt
 const PROMPT: &str = "fullerene> ";
@@ -65,14 +70,14 @@ static COMMANDS: &[CommandEntry] = &[
 
 // Shell main loop
 pub fn shell_main() {
-    print("Welcome to Fullerene OS Shell");
-    print("\n");
-    print("Type 'help' for available commands.");
-    print("\n\n");
+    print!("Welcome to Fullerene OS Shell");
+    print!("\n");
+    print!("Type 'help' for available commands.");
+    print!("\n\n");
 
     loop {
         // Print prompt
-        print!("{}", PROMPT);
+        print!("fullerene> ");
 
         // Read line from keyboard
         let mut input_buffer = [0u8; 256];
@@ -252,18 +257,7 @@ fn exit_command(_args: &[&str]) -> i32 {
 }
 
 // Helper to print to stdout (since we can't use println! in kernel)
-fn print<S: AsRef<str>>(s: S) {
-    let s = s.as_ref();
-    unsafe {
-        crate::syscall::handle_syscall(
-            4, // SYS_WRITE
-            1, // stdout
-            s.as_bytes().as_ptr() as u64,
-            s.len() as u64,
-            0, 0
-        );
-    }
-}
+// fn print implementation removed in favor of petroleum::print macro
 
 // Initialize shell module
 pub fn init() {

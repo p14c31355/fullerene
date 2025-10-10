@@ -8,6 +8,7 @@
 
 #![no_std]
 
+use crate::heap::FRAME_ALLOCATOR;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -29,11 +30,11 @@ pub struct ProcessPageTable {
 /// Create a new page table for a process
 pub fn create_process_page_table(physical_memory_offset: VirtAddr) -> Option<ProcessPageTable> {
     // Allocate a new level 4 page table frame
-    let frame = crate::heap::allocate_frame().expect("Frame allocator not initialized");
+    let pml4_frame = FRAME_ALLOCATOR.get().unwrap().lock().allocate_frame().expect("Frame allocator not initialized");
 
     // Initialize the page table with kernel mappings
     let pml4: &mut PageTable = unsafe {
-        &mut *(physical_memory_offset + pml4_frame.start_address()).as_mut_ptr()
+        &mut *(physical_memory_offset + pml4_frame.start_address().as_u64()).as_mut_ptr()
     };
 
     // Clear the page table
@@ -60,7 +61,7 @@ pub fn map_user_page(
     let frame = PhysFrame::<Size4KiB>::containing_address(physical_addr);
 
     unsafe {
-        page_table.mapper.map_to(page, frame, flags, FRAME_ALLOCATOR.lock().unwrap().as_mut().unwrap())
+        page_table.mapper.map_to(page, frame, flags, &mut *FRAME_ALLOCATOR.get().unwrap().lock())
             .map_err(|_| MapError::MappingFailed)?
             .flush();
     }
@@ -82,7 +83,7 @@ pub fn allocate_user_memory(
     size_bytes: usize,
 ) -> Result<VirtAddr, AllocError> {
     let num_pages = (size_bytes + 4095) / 4096; // Round up to page size
-    let frame_allocator = FRAME_ALLOCATOR.lock().unwrap().as_mut().unwrap();
+    let frame_allocator = &mut *FRAME_ALLOCATOR.get().unwrap().lock();
 
     // Find a free virtual address range in user space (addresses below kernel space)
     // Kernel space typically starts at 0xFFFF_8000_0000_0000 in x86_64
@@ -117,7 +118,7 @@ pub fn free_user_memory(
     let num_pages = (size_bytes + 4095) / 4096;
 
     for i in 0..num_pages {
-        let page_addr = addr + (i * 4096);
+        let page_addr = addr + ((i * 4096) as u64);
         unmap_user_page(page_table, page_addr)?;
     }
 
@@ -164,16 +165,36 @@ pub enum AllocError {
     MappingFailed,
 }
 
+impl From<MapError> for AllocError {
+    fn from(error: MapError) -> Self {
+        match error {
+            MapError::MappingFailed => AllocError::MappingFailed,
+            MapError::UnmappingFailed => AllocError::MappingFailed,
+            MapError::FrameAllocationFailed => AllocError::OutOfMemory,
+        }
+    }
+}
+
 /// Memory free error
 #[derive(Debug, Clone, Copy)]
 pub enum FreeError {
     UnmappingFailed,
 }
 
+impl From<MapError> for FreeError {
+    fn from(error: MapError) -> Self {
+        match error {
+            MapError::MappingFailed => FreeError::UnmappingFailed,
+            MapError::UnmappingFailed => FreeError::UnmappingFailed,
+            MapError::FrameAllocationFailed => FreeError::UnmappingFailed,
+        }
+    }
+}
+
 /// Initialize virtual memory system
 pub fn init() {
     // Initialize global frame allocator if not done
-    if FRAME_ALLOCATOR.lock().is_none() {
+    if FRAME_ALLOCATOR.get().is_none() {
         // This would need the memory map - assume it's initialized elsewhere
     }
 }
