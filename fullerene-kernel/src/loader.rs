@@ -135,7 +135,7 @@ fn load_segment(ph: &ProgramHeader, image_data: &[u8]) -> Result<(), LoadError> 
 
     // Copy file data
     let src = &image_data[file_offset..file_offset + file_size];
-    let dest = (PROGRAM_LOAD_BASE as usize + vaddr) as *mut u8;
+    let dest = vaddr as *mut u8;
 
     unsafe {
         ptr::copy_nonoverlapping(src.as_ptr(), dest, file_size);
