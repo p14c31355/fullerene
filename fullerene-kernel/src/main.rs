@@ -3,6 +3,7 @@
 #![no_std]
 #![no_main]
 
+// Kernel modules
 pub(crate) mod font;
 mod gdt; // Add GDT module
 mod graphics;
@@ -10,6 +11,12 @@ mod heap;
 mod interrupts;
 // mod serial; // Removed, now using petroleum
 mod vga;
+// Kernel modules
+mod process;        // Process management
+mod context_switch; // Context switching
+mod syscall;        // System calls
+mod fs;             // Basic filesystem
+mod loader;         // Program loader
 
 extern crate alloc;
 
@@ -258,6 +265,26 @@ fn init_common() {
     interrupts::init_apic();
     kernel_log!("Kernel: APIC initialized and interrupts enabled");
 
+    // Initialize process management
+    process::init();
+    kernel_log!("Kernel: Process management initialized");
+
+    // Initialize system calls
+    syscall::init();
+    kernel_log!("Kernel: System calls initialized");
+
+    // Initialize filesystem
+    fs::init();
+    kernel_log!("Kernel: Filesystem initialized");
+
+    // Initialize program loader
+    loader::init();
+    kernel_log!("Kernel: Program loader initialized");
+
+    // Create a test user process
+    let test_pid = process::create_process("test_process", test_process_main);
+    kernel_log!("Kernel: Created test process with PID {}", test_pid);
+
     // Test interrupt handling - should not panic or crash if APIC is working
     kernel_log!("Testing interrupt handling with int3...");
     unsafe {
@@ -317,5 +344,43 @@ pub unsafe extern "C" fn _start() -> ! {
 pub fn hlt_loop() -> ! {
     loop {
         hlt();
+    }
+}
+
+// Test process main function
+fn test_process_main() {
+    // Simple test process that demonstrates system calls
+    // Write to stdout via syscall
+    unsafe {
+        // Simulate write syscall: write(fd=1, "Hello from user process!\n", len)
+        let message = b"Hello from test user process!\n";
+        // The syscall would normally be called via int 0x80
+        // For now, we'll call our syscall handler directly
+        crate::syscall::handle_syscall(
+            4, // SYS_WRITE
+            1, // fd (stdout)
+            message.as_ptr() as u64,
+            message.len() as u64,
+            0, 0
+        );
+    }
+
+    // Get PID via syscall
+    unsafe {
+        let pid = crate::syscall::handle_syscall(20, 0, 0, 0, 0, 0);
+        let pid_msg = b"My PID is: \n";
+        crate::syscall::handle_syscall(4, 1, pid_msg.as_ptr() as u64, pid_msg.len() as u64, 0, 0);
+        // For simplicity, we won't print the actual PID number
+    }
+
+    // Sleep a bit
+    unsafe {
+        crate::syscall::handle_syscall(22, 0, 0, 0, 0, 0); // SYS_YIELD
+        crate::syscall::handle_syscall(22, 0, 0, 0, 0, 0); // SYS_YIELD
+    }
+
+    // Exit
+    unsafe {
+        crate::syscall::handle_syscall(1, 0, 0, 0, 0, 0); // SYS_EXIT
     }
 }

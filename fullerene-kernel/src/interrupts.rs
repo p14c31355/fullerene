@@ -9,6 +9,9 @@ use spin::Mutex;
 use x86_64::instructions::port::Port;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
+// Include our new modules
+use crate::process;
+
 static TICK_COUNTER: Mutex<u64> = Mutex::new(0);
 
 // Input handling structures
@@ -285,9 +288,14 @@ macro_rules! define_input_interrupt_handler {
 
 // Hardware interrupt handlers
 pub extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
-    // Timer interrupt - handle timer ticks
+    // Timer interrupt - handle timer ticks and scheduling
     *TICK_COUNTER.lock() += 1;
-    // Basic scheduling: could schedule tasks here in future, but for now just tick
+
+    // Perform context switching if multiple processes exist
+    // This is a simple preemptive scheduling trigger
+    // In a real system, we'd check quantum expiration, etc.
+    process::schedule_next();
+
     send_eoi();
 }
 
@@ -328,4 +336,20 @@ fn send_eoi() {
             apic.write(ApicOffsets::EOI, 0);
         }
     }
+}
+
+// System call interrupt handler (vector 0x80)
+pub extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) {
+    // System call arguments:
+    // RAX contains syscall number
+    // RBX, RCX, RDX, RSI, RDI contain arguments
+
+    // Save caller-saved registers to avoid overwriting
+    // The syscall handler will use RAX for return value
+
+    // For now, this is a placeholder - real syscall handling would
+    // involve retrieving arguments from registers and dispatching
+    // to syscall::handle_syscall()
+
+    // This is a software interrupt and doesn't need EOI
 }
