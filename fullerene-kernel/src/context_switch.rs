@@ -24,18 +24,77 @@ pub unsafe fn switch_context(
     new_context: &crate::process::ProcessContext,
 ) {
     // We need to save the old context if provided, then load the new context
-    // Since we can't directly modify the stack pointer in Rust,
-    // this needs to be done in assembly
+    // Using inline assembly to save/load all registers including RFLAGS and RIP
 
-    // TODO: Implement proper context switching
-    // For now, this is a placeholder that doesn't actually switch contexts
-    // due to inline assembly limitations with registers used by LLVM
-
-    // Just update context pointers without actual register manipulation
     if let Some(old_ctx) = old_context {
-        // In a real implementation, we would save current register state here
-        // For now, we'll just mark that we don't implement this yet
-        todo!("Context saving is not yet implemented.");
+        // Save current context
+        core::arch::asm!(
+            // Save all general purpose registers
+            "mov [{0} + 0*8], rax",
+            "mov [{0} + 1*8], rbx",
+            "mov [{0} + 2*8], rcx",
+            "mov [{0} + 3*8], rdx",
+            "mov [{0} + 4*8], rsi",
+            "mov [{0} + 5*8], rdi",
+            "mov [{0} + 6*8], rbp",
+            "mov [{0} + 7*8], rsp",
+            "mov [{0} + 8*8], r8",
+            "mov [{0} + 9*8], r9",
+            "mov [{0} + 10*8], r10",
+            "mov [{0} + 11*8], r11",
+            "mov [{0} + 12*8], r12",
+            "mov [{0} + 13*8], r13",
+            "mov [{0} + 14*8], r14",
+            "mov [{0} + 15*8], r15",
+            // Save RFLAGS
+            "pushfq",
+            "pop rax",
+            "mov [{0} + 16*8], rax",
+            // Save RIP (return address)
+            "mov rax, [rsp]",
+            "mov [{0} + 17*8], rax",
+            // Save segment registers
+            "mov [{0} + 18*8], cs",
+            "mov [{0} + 19*8], ss",
+            "mov [{0} + 20*8], ds",
+            "mov [{0} + 21*8], es",
+            "mov [{0} + 22*8], fs",
+            "mov [{0} + 23*8], gs",
+            in(reg) old_ctx,
+            out("rax") _,
+        );
+    }
+
+    // Restore new context
+    unsafe {
+        core::arch::asm!(
+            // Restore all general purpose registers
+            "mov rax, [{0} + 0*8]",
+            "mov rbx, [{0} + 1*8]",
+            "mov rcx, [{0} + 2*8]",
+            "mov rdx, [{0} + 3*8]",
+            "mov rsi, [{0} + 4*8]",
+            "mov rdi, [{0} + 5*8]",
+            "mov rbp, [{0} + 6*8]",
+            "mov rsp, [{0} + 7*8]",
+            "mov r8, [{0} + 8*8]",
+            "mov r9, [{0} + 9*8]",
+            "mov r10, [{0} + 10*8]",
+            "mov r11, [{0} + 11*8]",
+            "mov r12, [{0} + 12*8]",
+            "mov r13, [{0} + 13*8]",
+            "mov r14, [{0} + 14*8]",
+            "mov r15, [{0} + 15*8]",
+            // Restore RFLAGS
+            "mov rax, [{0} + 16*8]",
+            "push rax",
+            "popfq",
+            // Restore RIP (return to new process)
+            "mov rax, [{0} + 17*8]",
+            "jmp rax",
+            in(reg) new_context,
+            out("rax") _
+        );
     }
 }
 

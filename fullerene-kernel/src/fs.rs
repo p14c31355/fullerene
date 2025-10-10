@@ -63,14 +63,13 @@ pub fn create_file(name: &str, data: &[u8]) -> Result<(), FsError> {
 
 /// Open a file and return file descriptor
 pub fn open_file(name: &str) -> Result<FileDescriptor, FsError> {
-    let mut open_files = OPEN_FILES.lock();
-    {
-        let fs = FILESYSTEM.lock();
-        if !fs.contains_key(name) {
-            return Err(FsError::FileNotFound);
-        }
+    // Acquire locks in consistent order: FILESYSTEM then OPEN_FILES then NEXT_FD
+    let mut fs = FILESYSTEM.lock();
+    if !fs.contains_key(name) {
+        return Err(FsError::FileNotFound);
     }
 
+    let mut open_files = OPEN_FILES.lock();
     let fd = {
         let mut next_fd = NEXT_FD.lock();
         let fd = *next_fd;

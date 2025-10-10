@@ -3,6 +3,8 @@
 //! This module provides process creation, scheduling, and context switching
 //! capabilities for user-space programs.
 
+#![feature(naked_functions)]
+
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
@@ -136,18 +138,12 @@ static CURRENT_PROCESS: Mutex<Option<ProcessId>> = Mutex::new(None);
 const KERNEL_STACK_SIZE: usize = 4096;
 
 /// Trampoline function to call process entry point
+#[unsafe(naked)]
 extern "C" fn process_trampoline() {
     // The entry point function pointer is stored in RAX by context switch
-    // We can't use unsafe extern "C" fn() from naked fn, so this is a placeholder
-    // Actual implementation will need assembly trampoline
-
-    unsafe {
-        // This will be replaced with proper assembly
-        asm!(
-            "call rax", // Call the function in RAX
-            options(noreturn)
-        );
-    }
+    core::arch::naked_asm!(
+        "call rax" // Call the function in RAX
+    );
 }
 
 /// Initialize process management system

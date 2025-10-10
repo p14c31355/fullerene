@@ -42,6 +42,9 @@ static MODIFIERS: Mutex<KeyboardModifiers> = Mutex::new(KeyboardModifiers {
     scroll_lock: false,
 });
 
+/// Flag for extended scancode handling
+static EXTENDED_SCANCODE: Mutex<bool> = Mutex::new(false);
+
 /// Scancode set 1 to ASCII conversion
 /// This is a simplified mapping - in a real system you'd handle extended codes
 fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> {
@@ -130,19 +133,41 @@ fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> 
 
 /// Handle keyboard interrupt and process scancodes
 pub fn handle_keyboard_scancode(scancode: u8) {
+    // Check if this is an extended scancode prefix
+    if scancode == 0xE0 {
+        *EXTENDED_SCANCODE.lock() = true;
+        return;
+    }
+
+    let is_extended = *EXTENDED_SCANCODE.lock();
+    *EXTENDED_SCANCODE.lock() = false; // Reset for next
+
     let mut modifiers = MODIFIERS.lock();
 
     // Handle key press/release
-    match scancode {
-        // Key releases have high bit set (0x80 + scancode)
-        0x81..=0xFF => {
-            let released_code = scancode & 0x7F;
-            handle_key_release(released_code, &mut modifiers);
+    if is_extended {
+        // Handle extended scancode
+        match scancode {
+            0x81..=0xFF => {
+                let released_code = scancode & 0x7F;
+                handle_extended_key_release(released_code, &mut modifiers);
+            }
+            _ => {
+                handle_extended_key_press(scancode, &mut modifiers);
+            }
         }
+    } else {
+        match scancode {
+            // Key releases have high bit set (0x80 + scancode)
+            0x81..=0xFF => {
+                let released_code = scancode & 0x7F;
+                handle_key_release(released_code, &mut modifiers);
+            }
 
-        // Key presses
-        _ => {
-            handle_key_press(scancode, &mut modifiers);
+            // Key presses
+            _ => {
+                handle_key_press(scancode, &mut modifiers);
+            }
         }
     }
 }
@@ -194,6 +219,23 @@ fn handle_key_release(scancode: u8, modifiers: &mut KeyboardModifiers) {
         0xE0 => modifiers.rctrl = false, // Right Ctrl release (extended)
         0x38 => modifiers.lalt = false,
         _ => {} // Other keys don't need release handling
+    }
+}
+
+fn handle_extended_key_press(scancode: u8, modifiers: &mut KeyboardModifiers) {
+    match scancode {
+        0x1D => modifiers.rctrl = true, // Right Ctrl
+        0x38 => modifiers.ralt = true,  // Right Alt
+        // Add more extended keys as needed (arrows, etc.)
+        _ => {} // Ignore unrecognized extended keys
+    }
+}
+
+fn handle_extended_key_release(scancode: u8, modifiers: &mut KeyboardModifiers) {
+    match scancode {
+        0x1D => modifiers.rctrl = false, // Right Ctrl
+        0x38 => modifiers.ralt = false,  // Right Alt
+        _ => {}
     }
 }
 
