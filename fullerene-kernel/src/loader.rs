@@ -122,23 +122,23 @@ fn load_segment(ph: &ProgramHeader, image_data: &[u8]) -> Result<(), LoadError> 
     // Allocate memory for segment (for now, just copy to a fixed virtual address)
     // In a real system, we'd allocate proper virtual memory pages
 
+    // Validate that the virtual address range is in user space
+    use crate::memory_management::{is_user_address, is_kernel_address};
+    use x86_64::VirtAddr;
+
+    let start_addr = VirtAddr::new(vaddr as u64);
+    let end_addr = VirtAddr::new((vaddr + mem_size) as u64 - 1);
+
+    if !is_user_address(start_addr) || !is_user_address(end_addr) {
+        return Err(LoadError::UnsupportedArchitecture); // Address not in user space
+    }
+
     // Copy file data
     let src = &image_data[file_offset..file_offset + file_size];
     let dest = (PROGRAM_LOAD_BASE as usize + vaddr) as *mut u8;
 
-    // For now, we'll simulate memory allocation by just checking if the destination
-    // is accessible. In practice, this needs proper virtual memory management.
-
-    // TODO: Replace with proper memory allocation once virtual memory is implemented
     unsafe {
-        // Check if we think this memory is available (very simplistic check)
-        // In real kernel, this would involve page table checks
-        if dest as usize >= 0x100000 {
-            // Above 1MB should be safer
-            ptr::copy_nonoverlapping(src.as_ptr(), dest, file_size);
-        } else {
-            return Err(LoadError::OutOfMemory);
-        }
+        ptr::copy_nonoverlapping(src.as_ptr(), dest, file_size);
     }
 
     // Zero out remaining memory if mem_size > file_size

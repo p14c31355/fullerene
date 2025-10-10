@@ -35,7 +35,7 @@ pub unsafe fn switch_context(
     if let Some(old_ctx) = old_context {
         // In a real implementation, we would save current register state here
         // For now, we'll just mark that we don't implement this yet
-        *old_ctx = ProcessContext::default();
+        todo!("Context saving is not yet implemented.");
     }
 }
 

@@ -226,8 +226,29 @@ impl<T: PixelType> DrawTarget for FramebufferWriter<T> {
                 let x = coord.x as u32;
                 let y = coord.y as u32;
                 if x < self.info.width && y < self.info.height {
-                    let rgb_color = ((color.r() as u32) << 16) | ((color.g() as u32) << 8) | (color.b() as u32);
-                    self.put_pixel(x, y, rgb_color);
+                    // Convert Rgb888 to the framebuffer pixel format
+                    let pixel_color = match self.info.pixel_format {
+                        Some(EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor) => {
+                            // RGB format: R in high byte, G, B, X
+                            ((color.r() as u32) << 16) | ((color.g() as u32) << 8) | (color.b() as u32)
+                        }
+                        Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor) => {
+                            // BGR format: B in high byte, G, R, X
+                            ((color.b() as u32) << 16) | ((color.g() as u32) << 8) | (color.r() as u32)
+                        }
+                        Some(_) => {
+                            // Unsupported format, use RGB as fallback
+                            ((color.r() as u32) << 16) | ((color.g() as u32) << 8) | (color.b() as u32)
+                        }
+                        None => {
+                            // VGA mode, use a simple color mapping
+                            // For VGA mode, we're using u8 pixels, so convert to index or intensity
+                            // Simple conversion: use grayscale intensity
+                            let intensity = (color.r() as u32 * 77 + color.g() as u32 * 150 + color.b() as u32 * 29) / 256;
+                            intensity.min(255)
+                        }
+                    };
+                    self.put_pixel(x, y, pixel_color);
                 }
             }
         }

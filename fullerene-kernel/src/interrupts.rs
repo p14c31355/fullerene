@@ -381,14 +381,28 @@ macro_rules! define_input_interrupt_handler {
 }
 
 // Hardware interrupt handlers
-pub extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
+pub extern "x86-interrupt" fn timer_handler(stack_frame: InterruptStackFrame) {
     // Timer interrupt - handle timer ticks and scheduling
     *TICK_COUNTER.lock() += 1;
 
-    // Perform context switching if multiple processes exist
-    // This is a simple preemptive scheduling trigger
-    // In a real system, we'd check quantum expiration, etc.
-    process::schedule_next();
+    // Perform preemptive scheduling
+    unsafe {
+        // Get current process before scheduling
+        let old_pid = process::current_pid();
+
+        // Schedule next process
+        process::schedule_next();
+
+        // Get new process after scheduling
+        let new_pid = process::current_pid();
+
+        if let (Some(old_pid), Some(new_pid)) = (old_pid, new_pid) {
+            if old_pid != new_pid {
+                // Perform context switch
+                process::context_switch(Some(old_pid), new_pid);
+            }
+        }
+    }
 
     send_eoi();
 }
@@ -427,16 +441,43 @@ fn send_eoi() {
 
 // System call interrupt handler (vector 0x80)
 pub extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) {
-    // System call arguments:
+    use crate::syscall;
+
+    // System call arguments (x86-64 ABI):
     // RAX contains syscall number
-    // RBX, RCX, RDX, RSI, RDI contain arguments
+    // RDI, RSI, RDX, R10, R8, R9 contain arguments
 
-    // Save caller-saved registers to avoid overwriting
-    // The syscall handler will use RAX for return value
+    let syscall_num: u64;
+    let arg1: u64;
+    let arg2: u64;
+    let arg3: u64;
+    let arg4: u64;
+    let arg5: u64;
 
-    // For now, this is a placeholder - real syscall handling would
-    // involve retrieving arguments from registers and dispatching
-    // to syscall::handle_syscall()
+    unsafe {
+        core::arch::asm!(
+            "mov {}, rax",
+            "mov {}, rdi",
+            "mov {}, rsi",
+            "mov {}, rdx",
+            "mov {}, r10",
+            "mov {}, r8",
+            out(reg) syscall_num,
+            out(reg) arg1,
+            out(reg) arg2,
+            out(reg) arg3,
+            out(reg) arg4,
+            out(reg) arg5,
+        );
+    }
+
+    // Dispatch to syscall handler
+    let result = unsafe { syscall::handle_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5) };
+
+    // Return result in RAX
+    unsafe {
+        core::arch::asm!("mov rax, {}", in(reg) result);
+    }
 
     // This is a software interrupt and doesn't need EOI
 }

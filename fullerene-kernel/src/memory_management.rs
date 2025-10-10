@@ -11,6 +11,7 @@
 use crate::heap::FRAME_ALLOCATOR;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 use x86_64::structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB};
 use x86_64::structures::paging::{Mapper, Page, PageTableFlags};
@@ -105,26 +106,23 @@ pub fn allocate_user_memory(
     let base_addr = VirtAddr::new(0x200000); // 2MB base for user programs
 
     // For now, allocate sequentially (simple bump allocator)
-    static mut NEXT_USER_ADDR: u64 = 0x200000;
+    static NEXT_USER_ADDR: AtomicU64 = AtomicU64::new(0x200000);
 
-    unsafe {
-        let start_addr = NEXT_USER_ADDR;
-        NEXT_USER_ADDR += (num_pages * 4096) as u64;
+    let start_addr = NEXT_USER_ADDR.fetch_add((num_pages * 4096) as u64, Ordering::Relaxed);
 
-        let flags =
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    let flags =
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
 
-        for i in 0..num_pages {
-            let page_addr = VirtAddr::new(start_addr + (i * 4096) as u64);
-            let frame = frame_allocator
-                .allocate_frame()
-                .ok_or(AllocError::OutOfMemory)?;
+    for i in 0..num_pages {
+        let page_addr = VirtAddr::new(start_addr + (i * 4096) as u64);
+        let frame = frame_allocator
+            .allocate_frame()
+            .ok_or(AllocError::OutOfMemory)?;
 
-            map_user_page(page_table, page_addr, frame.start_address(), flags)?;
-        }
-
-        Ok(VirtAddr::new(start_addr))
+        map_user_page(page_table, page_addr, frame.start_address(), flags)?;
     }
+
+    Ok(VirtAddr::new(start_addr))
 }
 
 /// Free user-space memory

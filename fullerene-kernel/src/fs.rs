@@ -63,9 +63,12 @@ pub fn create_file(name: &str, data: &[u8]) -> Result<(), FsError> {
 
 /// Open a file and return file descriptor
 pub fn open_file(name: &str) -> Result<FileDescriptor, FsError> {
-    let mut fs = FILESYSTEM.lock();
-    if !fs.contains_key(name) {
-        return Err(FsError::FileNotFound);
+    let mut open_files = OPEN_FILES.lock();
+    {
+        let fs = FILESYSTEM.lock();
+        if !fs.contains_key(name) {
+            return Err(FsError::FileNotFound);
+        }
     }
 
     let fd = {
@@ -75,7 +78,6 @@ pub fn open_file(name: &str) -> Result<FileDescriptor, FsError> {
         fd
     };
 
-    let mut open_files = OPEN_FILES.lock();
     open_files.insert(fd, String::from(name));
 
     Ok(fd)

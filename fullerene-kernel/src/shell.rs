@@ -5,10 +5,6 @@
 
 #![no_std]
 
-//! Basic shell/command line interface for Fullerene OS
-
-#![no_std]
-
 use crate::keyboard;
 use crate::syscall;
 use alloc::boxed::Box;

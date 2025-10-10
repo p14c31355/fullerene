@@ -54,10 +54,16 @@ fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> 
 
     match scancode {
         // Numbers row
-        0x02..=0x0B => {
-            let chars = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
-            Some(chars[(scancode - 0x02) as usize] as u8)
-        }
+        0x02 => Some(if shift_pressed { b'!' } else { b'1' }),
+        0x03 => Some(if shift_pressed { b'@' } else { b'2' }),
+        0x04 => Some(if shift_pressed { b'#' } else { b'3' }),
+        0x05 => Some(if shift_pressed { b'$' } else { b'4' }),
+        0x06 => Some(if shift_pressed { b'%' } else { b'5' }),
+        0x07 => Some(if shift_pressed { b'^' } else { b'6' }),
+        0x08 => Some(if shift_pressed { b'&' } else { b'7' }),
+        0x09 => Some(if shift_pressed { b'*' } else { b'8' }),
+        0x0A => Some(if shift_pressed { b'(' } else { b'9' }),
+        0x0B => Some(if shift_pressed { b')' } else { b'0' }),
 
         // QWERTY row
         0x10..=0x1C => {
@@ -197,8 +203,12 @@ pub fn read_char() -> Option<u8> {
     buffer.pop_front()
 }
 
-/// Read a line from keyboard input (blocking until newline)
-pub fn read_line(buffer: &mut [u8]) -> usize {
+/// Drain the current line buffer (non-blocking)
+/// This function copies the contents of the internal string buffer (accumulated
+/// characters until newline) to the provided buffer and clears it.
+/// Note: This does not block waiting for input - it drains whatever is available.
+/// For blocking line reading, use keyboard::read_char() in a loop.
+pub fn drain_line_buffer(buffer: &mut [u8]) -> usize {
     let mut str_buffer = INPUT_STRING_BUFFER.lock();
     let mut chars_copied = 0;
 

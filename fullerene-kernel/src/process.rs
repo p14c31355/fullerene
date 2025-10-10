@@ -256,6 +256,28 @@ pub fn yield_current() {
     // For now, this just moves to next process in the list
 }
 
+/// Perform context switch between two processes
+pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
+    use crate::context_switch::switch_context;
+
+    // Find indices and perform switch in one lock
+    let mut process_list = PROCESS_LIST.lock();
+
+    let old_index = old_pid.and_then(|pid| {
+        process_list.iter().position(|p| p.id == pid)
+    });
+
+    let new_index = process_list.iter().position(|p| p.id == new_pid);
+
+    if let Some(new_idx) = new_index {
+        // Clone contexts to avoid borrow conflicts
+        let mut old_context = old_index.map(|idx| process_list[idx].context);
+        let new_context = process_list[new_idx].context;
+
+        switch_context(old_context.as_mut(), &new_context);
+    }
+}
+
 /// Block current process
 pub fn block_current() {
     let current_pid = current_pid().unwrap();

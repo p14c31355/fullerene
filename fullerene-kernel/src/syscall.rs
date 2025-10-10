@@ -150,6 +150,22 @@ fn syscall_write(fd: c_int, buffer: *const u8, count: usize) -> SyscallResult {
         return Ok(0);
     }
 
+    // Validate that the entire buffer range is in user-space
+    use crate::memory_management::{is_user_address};
+    use x86_64::VirtAddr;
+
+    let start_addr = VirtAddr::new(buffer as u64);
+    if !is_user_address(start_addr) {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    if count > 0 {
+        let end_addr = VirtAddr::new(buffer as u64 + count as u64 - 1);
+        if !is_user_address(end_addr) {
+            return Err(SyscallError::InvalidArgument);
+        }
+    }
+
     // Create a slice from the buffer pointer
     let data = unsafe { core::slice::from_raw_parts(buffer, count) };
 
