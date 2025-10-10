@@ -11,4 +11,4 @@
 
 - Use helper functions, helper macros, structures, and type generics wherever possible to keep the number of lines of code low.
 
-- Let's move forward by integrating redundant .rs files with extremely few lines of code into appropriate locations.
+- Integrate redundant `.rs` files with minimal code into appropriate locations.
