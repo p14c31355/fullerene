@@ -38,18 +38,18 @@ impl TextPosition {
     }
 
     fn new_line(&mut self, fb: &mut impl FramebufferLike) {
-        self.y += 8; // Font height
+        self.y += 4; // Scaled font height
         self.x = 0;
-        if self.y >= self.height {
+        if self.y + 4 > self.height {
             fb.scroll_up();
-            self.y -= 8;
+            self.y -= 4;
         }
         fb.set_position(self.x, self.y);
     }
 
     fn advance_char(&mut self, fb: &mut impl FramebufferLike) {
-        self.x += 8;
-        if self.x + 8 > self.width {
+        self.x += 4; // Scaled font width
+        if self.x + 4 > self.width {
             self.new_line(fb);
         } else {
             fb.set_position(self.x, self.y);
@@ -58,6 +58,7 @@ impl TextPosition {
 }
 
 /// Generic function to draw a character on any framebuffer
+/// Scaled down to 4x4 pixels for smaller text
 fn draw_char(fb: &impl FramebufferLike, c: char, x: u32, y: u32) {
     let char_idx = c as usize;
     if char_idx < 128 && c.is_ascii() {
@@ -65,9 +66,13 @@ fn draw_char(fb: &impl FramebufferLike, c: char, x: u32, y: u32) {
         let fg = fb.get_fg_color();
         let bg = fb.get_bg_color();
 
-        for (row, &byte) in font_char.iter().enumerate() {
-            for col in 0..8 {
-                let color = if byte & (0x80 >> col) != 0 { fg } else { bg };
+        for row in 0..4 {
+            let original_row = row * 2;
+            let byte = font_char[original_row];
+            for col in 0..4 {
+                let original_col = col * 2;
+                let bit_position = 7 - original_col; // Leftmost bit is 7
+                let color = if byte & (1 << bit_position) != 0 { fg } else { bg };
                 fb.put_pixel(x + col as u32, y + row as u32, color);
             }
         }
