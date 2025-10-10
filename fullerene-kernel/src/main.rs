@@ -361,7 +361,7 @@ fn test_process_main() {
         // The syscall would normally be called via int 0x80
         // For now, we'll call our syscall handler directly
         crate::syscall::handle_syscall(
-            4, // SYS_WRITE
+            crate::syscall::SyscallNumber::Write as u64,
             1, // fd (stdout)
             message.as_ptr() as u64,
             message.len() as u64,
