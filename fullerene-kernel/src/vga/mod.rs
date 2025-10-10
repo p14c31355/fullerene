@@ -1,6 +1,3 @@
-use spin::{Mutex, Once};
-use x86_64::instructions::port::Port;
-
 pub use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations};
 
 const BUFFER_HEIGHT: usize = 25;

@@ -6,6 +6,7 @@ edition = "2024"
 [features]
 default = []
 std = []
+vga_panic = []
 
 [dependencies]
 spin = { version = "0.10.0", default-features = false, features = [

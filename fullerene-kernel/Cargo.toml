@@ -20,6 +20,10 @@ lazy_static = { version = "1.5.0", default-features = false, features = [
 
 petroleum = { path = "../petroleum" }
 
+[features]
+default = []
+user_space = []
+
 [profile.dev]
 debug = true
 split-debuginfo = "packed"

@@ -3,9 +3,6 @@
 //! This module provides process creation, scheduling, and context switching
 //! capabilities for user-space programs.
 
-#![no_std]
-#![feature(asm)]
-
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
@@ -13,7 +10,6 @@ use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
-use petroleum::common::{EfiMemoryDescriptor, EfiMemoryType};
 
 /// Process ID type
 pub type ProcessId = u64;

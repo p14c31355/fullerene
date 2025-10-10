@@ -5,11 +5,8 @@
 
 #![no_std]
 
-use alloc::string::String;
-use alloc::vec::Vec;
 use core::ffi::c_int;
 use crate::process;
-use crate::fs;
 
 /// Helper function for serial port writes (from main.rs)
 unsafe fn write_serial_bytes(port: u16, status_port: u16, bytes: &[u8]) {

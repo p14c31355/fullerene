@@ -1,8 +1,4 @@
-// PortWriter, VgaPortOps, and related macros are now in petroleum crate
 use petroleum::graphics::init_vga_graphics;
-use petroleum::common::*;
-
-// Helper functions for color operations
 
 use alloc::boxed::Box; // Import Box
 use core::fmt::{self, Write};
