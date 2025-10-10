@@ -255,11 +255,11 @@ pub mod user {
     #[inline(always)]
     pub unsafe fn syscall(syscall_num: SyscallNumber, arg1: u64, arg2: u64, arg3: u64) -> u64 {
         let mut result: u64;
-        asm!(
+        core::arch::asm!(
             "int 0x80",
             in("rax") syscall_num as u64,
-            in("rbx") arg1,
-            in("rcx") arg2,
+            in("rdi") arg1,
+            in("rsi") arg2,
             in("rdx") arg3,
             lateout("rax") result,
         );
