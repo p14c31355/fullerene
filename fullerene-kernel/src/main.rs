@@ -12,11 +12,14 @@ mod interrupts;
 // mod serial; // Removed, now using petroleum
 mod vga;
 // Kernel modules
-mod process;        // Process management
-mod context_switch; // Context switching
-mod syscall;        // System calls
-mod fs;             // Basic filesystem
-mod loader;         // Program loader
+mod process;           // Process management
+mod context_switch;    // Context switching
+mod syscall;           // System calls
+mod fs;                // Basic filesystem
+mod loader;            // Program loader
+mod memory_management; // Virtual memory management
+mod keyboard;          // Keyboard input driver
+mod shell;             // Shell/CLI interface
 
 extern crate alloc;
 

@@ -257,13 +257,94 @@ pub extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
+    use x86_64::registers::control::Cr2;
+
+    // Get the faulting address
+    let fault_addr = Cr2::read().unwrap_or_else(|_| x86_64::VirtAddr::new(0));
+
+    petroleum::serial::serial_log(format_args!(
+        "\nEXCEPTION: PAGE FAULT at address {:#x}\nError Code: {:?}\n",
+        fault_addr.as_u64(),
+        error_code
+    ));
+
+    // Page fault handling logic
+    handle_page_fault(fault_addr, error_code, stack_frame);
+
+    // After handling, execution can continue
+}
+
+fn handle_page_fault(
+    fault_addr: x86_64::VirtAddr,
+    error_code: PageFaultErrorCode,
+    stack_frame: InterruptStackFrame,
+) {
+    use crate::memory_management;
+    use x86_64::registers::control::Cr2;
+
+    // Basic analysis of fault
+    let is_present = error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION);
+    let is_write = error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
+    let is_user = error_code.contains(PageFaultErrorCode::USER_MODE);
+
     let mut writer = SERIAL1.lock();
-    writeln!(
-        writer,
-        "\nEXCEPTION: PAGE FAULT\n{:#?}\nError Code: {:?}",
-        stack_frame, error_code
-    )
-    .ok();
+    write!(writer, "Page fault analysis: ").ok();
+    if is_present {
+        write!(writer, "Protection violation ").ok();
+    } else {
+        write!(writer, "Page not present ").ok();
+    }
+    if is_write {
+        write!(writer, "(write access) ").ok();
+    }
+    if is_user {
+        write!(writer, "(user mode)").ok();
+    }
+    writeln!(writer).ok();
+
+    // For now, we handle only user-space page faults
+    // Kernel page faults indicate serious errors
+
+    if !is_user {
+        // Kernel page fault - this is critical
+        panic!("Kernel page fault at {:#x}: {:?}", fault_addr.as_u64(), error_code);
+    }
+
+    if is_present {
+        // Protection violation in user space
+        // This might be write to read-only page, etc.
+        // For now, terminate the current process
+        write!(writer, "Protection violation in user space - terminating process\n").ok();
+
+        if let Some(pid) = crate::process::current_pid() {
+            crate::process::terminate_process(pid, 1); // Exit code 1 for page fault
+        }
+
+    } else {
+        // Page not present - need to handle demand paging or stack growth
+        write!(writer, "Page not present - attempting to handle\n").ok();
+
+        // For now, try to allocate a new page if it's in valid user space
+        if memory_management::is_user_address(fault_addr) {
+            // This is a simplified page fault handler
+            // In a real system, we'd check if this is a valid allocation request
+            // and allocate pages accordingly
+
+            // For stack growth or heap allocation, we might allocate here
+            // But current process doesn't have ProcessPageTable integration yet
+
+            write!(writer, "Cannot handle page fault - terminating process\n").ok();
+            if let Some(pid) = crate::process::current_pid() {
+                crate::process::terminate_process(pid, 1);
+            }
+        } else {
+            // Invalid user address
+            write!(writer, "Invalid user address - terminating process\n").ok();
+            if let Some(pid) = crate::process::current_pid() {
+                crate::process::terminate_process(pid, 1);
+            }
+        }
+    }
 }
 
 pub extern "x86-interrupt" fn double_fault_handler(
@@ -300,15 +381,8 @@ pub extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
 }
 
 define_input_interrupt_handler!(keyboard_handler, 0x60, |scancode: u8| {
-    let mut keyboard_queue = KEYBOARD_QUEUE.lock();
-    let head = keyboard_queue.head;
-    let tail = keyboard_queue.tail;
-    let next_tail = (tail + 1) % 256;
-    if next_tail != head {
-        // Not full
-        keyboard_queue.buffer[tail] = scancode;
-        keyboard_queue.tail = next_tail;
-    }
+    // Use new keyboard driver
+    crate::keyboard::handle_keyboard_scancode(scancode);
 });
 
 define_input_interrupt_handler!(mouse_handler, 0x60, |byte: u8| {
