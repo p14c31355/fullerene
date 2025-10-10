@@ -9,7 +9,6 @@ mod gdt; // Add GDT module
 mod graphics;
 mod heap;
 mod interrupts;
-// mod serial; // Removed, now using petroleum
 mod vga;
 // Kernel modules
 mod context_switch; // Context switching
@@ -265,7 +264,7 @@ pub extern "efiapi" fn efi_main(
 
 #[cfg(target_os = "uefi")]
 fn init_common() {
-    crate::vga::vga_init();
+    crate::vga::init_vga();
     // Now safe to initialize APIC and enable interrupts (after stable page tables and heap)
     interrupts::init_apic();
     kernel_log!("Kernel: APIC initialized and interrupts enabled");
@@ -315,7 +314,7 @@ fn init_common() {
     interrupts::init(); // Initialize IDT
     // Heap already initialized
     petroleum::serial::serial_init(); // Initialize serial early for debugging
-    crate::vga::vga_init();
+    crate::vga::init_vga();
 }
 
 #[cfg(not(target_os = "uefi"))]
