@@ -1,6 +1,4 @@
-// A standard 8x8 PC screen font (Code Page 437)
-// Source: https://github.com/rust-osdev/bootloader/blob/master/bootloader-font/src/lib.rs
-// (Adapted for direct inclusion)
+// Font data compatible with embedded-graphics style
 
 pub const FONT_8X8: [[u8; 8]; 128] = [
     // 0x00 - 0x1F: Control characters (mostly empty)

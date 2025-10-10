@@ -7,91 +7,71 @@ use petroleum::common::VgaFramebufferConfig;
 use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig}; // Import missing types
 use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
 use spin::{Mutex, Once};
-use x86_64::instructions::port::Port;
+use embedded_graphics::{
+    geometry::{Point, Size},
+    mono_font::{ascii::FONT_6X10, MonoTextStyle},
+    pixelcolor::Rgb888,
+    prelude::*,
+    text::Text,
+};
 
-use crate::font::FONT_8X8;
+// Optimized text rendering using embedded-graphics
+// Batcher processing for efficiency and reduced code complexity
+fn write_text<W: FramebufferLike + DrawTarget<Color = Rgb888>>(writer: &mut W, s: &str) -> core::fmt::Result {
+    let fg_color = Rgb888::new(
+        ((writer.get_fg_color() >> 16) & 0xFF) as u8,
+        ((writer.get_fg_color() >> 8) & 0xFF) as u8,
+        (writer.get_fg_color() & 0xFF) as u8,
+    );
 
-// A simple 8x8 PC screen font (Code Page 437).
-static FONT: [[u8; 8]; 128] = FONT_8X8;
+    let style = MonoTextStyle::new(&FONT_6X10, fg_color);
+    let mut lines = s.split_inclusive('\n');
+    let mut current_pos = Point::new(
+        writer.get_position().0 as i32,
+        writer.get_position().1 as i32,
+    );
 
-// Helper struct to reduce position update boilerplate
-struct TextPosition {
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-}
-
-impl TextPosition {
-    fn new(fb: &impl FramebufferLike) -> Self {
-        let (x, y) = fb.get_position();
-        Self {
-            x,
-            y,
-            width: fb.get_width(),
-            height: fb.get_height(),
-        }
-    }
-
-    fn new_line(&mut self, fb: &mut impl FramebufferLike) {
-        self.y += 4; // Scaled font height
-        self.x = 0;
-        if self.y + 4 > self.height {
-            fb.scroll_up();
-            self.y -= 4;
-        }
-        fb.set_position(self.x, self.y);
-    }
-
-    fn advance_char(&mut self, fb: &mut impl FramebufferLike) {
-        self.x += 4; // Scaled font width
-        if self.x + 4 > self.width {
-            self.new_line(fb);
+    for line_with_newline in lines {
+        // Handle the line (including newline if present)
+        let has_newline = line_with_newline.ends_with('\n');
+        let line_content = if has_newline {
+            &line_with_newline[..line_with_newline.len() - 1]
         } else {
-            fb.set_position(self.x, self.y);
+            line_with_newline
+        };
+
+        // Render the entire line at once for efficiency
+        if !line_content.is_empty() {
+            let text = Text::new(line_content, current_pos, style);
+            text.draw(writer).ok();
+
+            // Advance position by the rendered text width
+            current_pos.x += (6 * line_content.chars().count()) as i32;
         }
-    }
-}
 
-/// Generic function to draw a character on any framebuffer using the full font data
-fn draw_char(fb: &impl FramebufferLike, c: char, x: u32, y: u32) {
-    let char_idx = c as usize;
-    if char_idx >= 128 {
-        return; // Character not in our font
-    }
+        if has_newline {
+            current_pos.x = 0;
+            current_pos.y += 10; // Font height
 
-    let font_char = &FONT[char_idx];
-    let fg = fb.get_fg_color();
-    let bg = fb.get_bg_color();
-
-    for row in 0..8u32 {
-        // Full height of font character
-        let byte = font_char[row as usize];
-        for col in 0..8u32 {
-            // Full width of font character
-            let bit_position = col as usize; // Leftmost bit corresponds to leftmost pixel
-            let color = if (byte & (1 << (7 - bit_position))) != 0 {
-                fg
-            } else {
-                bg
-            };
-            fb.put_pixel(x + col, y + row, color);
-        }
-    }
-}
-
-// Updated write_text to ensure it uses the font data properly
-fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result {
-    let mut pos = TextPosition::new(writer);
-
-    for c in s.chars() {
-        if c == '\n' {
-            pos.new_line(writer);
+            // Handle scrolling if needed
+            if current_pos.y + 10 > writer.get_height() as i32 {
+                writer.scroll_up();
+                current_pos.y -= 10;
+            }
         } else {
-            draw_char(writer, c, pos.x, pos.y);
-            pos.advance_char(writer);
+            // Handle line wrapping for lines without explicit newlines
+            if current_pos.x >= writer.get_width() as i32 {
+                current_pos.x = 0;
+                current_pos.y += 10;
+                if current_pos.y + 10 > writer.get_height() as i32 {
+                    writer.scroll_up();
+                    current_pos.y -= 10;
+                }
+            }
         }
     }
+
+    writer.set_position(current_pos.x as u32, current_pos.y as u32);
     Ok(())
 }
 
@@ -230,6 +210,35 @@ struct FramebufferWriter<T: PixelType> {
     x_pos: u32,
     y_pos: u32,
     _phantom: core::marker::PhantomData<T>,
+}
+
+impl<T: PixelType> DrawTarget for FramebufferWriter<T> {
+    type Color = Rgb888;
+
+    type Error = core::convert::Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Pixel<Self::Color>>,
+    {
+        for Pixel(coord, color) in pixels {
+            if coord.x >= 0 && coord.y >= 0 {
+                let x = coord.x as u32;
+                let y = coord.y as u32;
+                if x < self.info.width && y < self.info.height {
+                    let rgb_color = ((color.r() as u32) << 16) | ((color.g() as u32) << 8) | (color.b() as u32);
+                    self.put_pixel(x, y, rgb_color);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<T: PixelType> OriginDimensions for FramebufferWriter<T> {
+    fn size(&self) -> Size {
+        Size::new(self.info.width, self.info.height)
+    }
 }
 
 impl<T: PixelType> FramebufferWriter<T> {
