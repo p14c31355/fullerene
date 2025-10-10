@@ -57,28 +57,28 @@ impl TextPosition {
     }
 }
 
-/// Generic function to draw a character on any framebuffer
-/// Scaled down to 4x4 pixels for smaller text
+/// Generic function to draw a character on any framebuffer using the full font data
 fn draw_char(fb: &impl FramebufferLike, c: char, x: u32, y: u32) {
     let char_idx = c as usize;
-    if char_idx < 128 && c.is_ascii() {
-        let font_char = &FONT[char_idx];
-        let fg = fb.get_fg_color();
-        let bg = fb.get_bg_color();
+    if char_idx >= 128 {
+        return; // Character not in our font
+    }
 
-        for row in 0..4 {
-            let original_row = row * 2;
-            let byte = font_char[original_row];
-            for col in 0..4 {
-                let original_col = col * 2;
-                let bit_position = 7 - original_col; // Leftmost bit is 7
-                let color = if byte & (1 << bit_position) != 0 { fg } else { bg };
-                fb.put_pixel(x + col as u32, y + row as u32, color);
-            }
+    let font_char = &FONT[char_idx];
+    let fg = fb.get_fg_color();
+    let bg = fb.get_bg_color();
+
+    for row in 0..8u32 {  // Full height of font character
+        let byte = font_char[row as usize];
+        for col in 0..8u32 {  // Full width of font character
+            let bit_position = col as usize; // Leftmost bit corresponds to leftmost pixel
+            let color = if (byte & (1 << (7 - bit_position))) != 0 { fg } else { bg };
+            fb.put_pixel(x + col, y + row, color);
         }
     }
 }
 
+// Updated write_text to ensure it uses the font data properly
 fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result {
     let mut pos = TextPosition::new(writer);
 
