@@ -64,11 +64,17 @@ fn draw_char(fb: &impl FramebufferLike, c: char, x: u32, y: u32) {
     let fg = fb.get_fg_color();
     let bg = fb.get_bg_color();
 
-    for row in 0..8u32 {  // Full height of font character
+    for row in 0..8u32 {
+        // Full height of font character
         let byte = font_char[row as usize];
-        for col in 0..8u32 {  // Full width of font character
+        for col in 0..8u32 {
+            // Full width of font character
             let bit_position = col as usize; // Leftmost bit corresponds to leftmost pixel
-            let color = if (byte & (1 << (7 - bit_position))) != 0 { fg } else { bg };
+            let color = if (byte & (1 << (7 - bit_position))) != 0 {
+                fg
+            } else {
+                bg
+            };
             fb.put_pixel(x + col, y + row, color);
         }
     }

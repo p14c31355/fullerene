@@ -13,7 +13,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use spin::Mutex;
 use x86_64::structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB};
-use x86_64::structures::paging::{Page, PageTableFlags, Mapper};
+use x86_64::structures::paging::{Mapper, Page, PageTableFlags};
 use x86_64::{PhysAddr, VirtAddr};
 
 /// Page table for each process
@@ -30,7 +30,12 @@ pub struct ProcessPageTable {
 /// Create a new page table for a process
 pub fn create_process_page_table(physical_memory_offset: VirtAddr) -> Option<ProcessPageTable> {
     // Allocate a new level 4 page table frame
-    let pml4_frame = FRAME_ALLOCATOR.get().unwrap().lock().allocate_frame().expect("Frame allocator not initialized");
+    let pml4_frame = FRAME_ALLOCATOR
+        .get()
+        .unwrap()
+        .lock()
+        .allocate_frame()
+        .expect("Frame allocator not initialized");
 
     // Initialize the page table with kernel mappings
     let pml4: &mut PageTable = unsafe {
@@ -44,10 +49,7 @@ pub fn create_process_page_table(physical_memory_offset: VirtAddr) -> Option<Pro
     // This is simplified - in practice we'd copy kernel space mappings
     let mapper = unsafe { OffsetPageTable::new(pml4, physical_memory_offset) };
 
-    Some(ProcessPageTable {
-        pml4_frame,
-        mapper,
-    })
+    Some(ProcessPageTable { pml4_frame, mapper })
 }
 
 /// Map user-space virtual address to physical frame
@@ -61,7 +63,14 @@ pub fn map_user_page(
     let frame = PhysFrame::<Size4KiB>::containing_address(physical_addr);
 
     unsafe {
-        page_table.mapper.map_to(page, frame, flags, &mut *FRAME_ALLOCATOR.get().unwrap().lock())
+        page_table
+            .mapper
+            .map_to(
+                page,
+                frame,
+                flags,
+                &mut *FRAME_ALLOCATOR.get().unwrap().lock(),
+            )
             .map_err(|_| MapError::MappingFailed)?
             .flush();
     }
@@ -70,10 +79,16 @@ pub fn map_user_page(
 }
 
 /// Unmap user-space virtual address
-pub fn unmap_user_page(page_table: &mut ProcessPageTable, virtual_addr: VirtAddr) -> Result<(), MapError> {
+pub fn unmap_user_page(
+    page_table: &mut ProcessPageTable,
+    virtual_addr: VirtAddr,
+) -> Result<(), MapError> {
     let page = Page::<Size4KiB>::containing_address(virtual_addr);
 
-    page_table.mapper.unmap(page).map_err(|_| MapError::UnmappingFailed)?;
+    page_table
+        .mapper
+        .unmap(page)
+        .map_err(|_| MapError::UnmappingFailed)?;
     Ok(())
 }
 
@@ -96,11 +111,14 @@ pub fn allocate_user_memory(
         let start_addr = NEXT_USER_ADDR;
         NEXT_USER_ADDR += (num_pages * 4096) as u64;
 
-        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+        let flags =
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
 
         for i in 0..num_pages {
             let page_addr = VirtAddr::new(start_addr + (i * 4096) as u64);
-            let frame = frame_allocator.allocate_frame().ok_or(AllocError::OutOfMemory)?;
+            let frame = frame_allocator
+                .allocate_frame()
+                .ok_or(AllocError::OutOfMemory)?;
 
             map_user_page(page_table, page_addr, frame.start_address(), flags)?;
         }

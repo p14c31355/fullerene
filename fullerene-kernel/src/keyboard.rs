@@ -57,7 +57,7 @@ fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> 
         0x02..=0x0B => {
             let chars = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
             Some(chars[(scancode - 0x02) as usize] as u8)
-        },
+        }
 
         // QWERTY row
         0x10..=0x1C => {
@@ -70,7 +70,7 @@ fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> 
                 return Some(ch as u8 & 0x1F); // Ctrl modifies ASCII
             }
             Some(ch as u8)
-        },
+        }
 
         // ASDF row
         0x1E..=0x28 => {
@@ -83,7 +83,7 @@ fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> 
                 return Some(ch as u8 & 0x1F);
             }
             Some(ch as u8)
-        },
+        }
 
         // ZXCV row
         0x2C..=0x32 => {
@@ -96,7 +96,7 @@ fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> 
                 return Some(ch as u8 & 0x1F);
             }
             Some(ch as u8)
-        },
+        }
 
         // Space
         0x39 => Some(b' '),
@@ -132,23 +132,23 @@ pub fn handle_keyboard_scancode(scancode: u8) {
         0x81..=0xFF => {
             let released_code = scancode & 0x7F;
             handle_key_release(released_code, &mut modifiers);
-        },
+        }
 
         // Key presses
         _ => {
             handle_key_press(scancode, &mut modifiers);
-        },
+        }
     }
 }
 
 fn handle_key_press(scancode: u8, modifiers: &mut KeyboardModifiers) {
     match scancode {
         // Modifier keys
-        0x2A => modifiers.lshift = true,    // Left Shift
-        0x36 => modifiers.rshift = true,    // Right Shift
-        0x1D => modifiers.lctrl = true,     // Left Ctrl
-        0xE0 => modifiers.rctrl = true,     // Right Ctrl (extended)
-        0x38 => modifiers.lalt = true,      // Left Alt
+        0x2A => modifiers.lshift = true, // Left Shift
+        0x36 => modifiers.rshift = true, // Right Shift
+        0x1D => modifiers.lctrl = true,  // Left Ctrl
+        0xE0 => modifiers.rctrl = true,  // Right Ctrl (extended)
+        0x38 => modifiers.lalt = true,   // Left Alt
 
         // Lock keys (toggle on press)
         0x3A => modifiers.caps_lock = !modifiers.caps_lock,
@@ -160,7 +160,8 @@ fn handle_key_press(scancode: u8, modifiers: &mut KeyboardModifiers) {
             if let Some(ascii) = scancode_to_ascii(scancode, modifiers) {
                 // Add to input buffer
                 let mut buffer = INPUT_BUFFER.lock();
-                if buffer.len() < 256 { // Buffer size limit
+                if buffer.len() < 256 {
+                    // Buffer size limit
                     buffer.push_back(ascii);
                 }
 
@@ -184,7 +185,7 @@ fn handle_key_release(scancode: u8, modifiers: &mut KeyboardModifiers) {
         0x2A => modifiers.lshift = false,
         0x36 => modifiers.rshift = false,
         0x1D => modifiers.lctrl = false,
-        0xE0 => modifiers.rctrl = false,   // Right Ctrl release (extended)
+        0xE0 => modifiers.rctrl = false, // Right Ctrl release (extended)
         0x38 => modifiers.lalt = false,
         _ => {} // Other keys don't need release handling
     }

@@ -6,7 +6,9 @@ mod tests {
     use alloc::vec::Vec; // Import the vec! macro and Vec type
 
     // Bring in necessary types and constants
-    use crate::vga::{BUFFER_HEIGHT, BUFFER_WIDTH, Color, ColorCode, ScreenChar, TextBufferOperations};
+    use crate::vga::{
+        BUFFER_HEIGHT, BUFFER_WIDTH, Color, ColorCode, ScreenChar, TextBufferOperations,
+    };
 
     // Mock VgaBuffer that uses a Vec for testing
     struct MockVgaBuffer {

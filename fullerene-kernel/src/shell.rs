@@ -9,12 +9,12 @@
 
 #![no_std]
 
-use alloc::string::String;
-use alloc::vec::Vec;
-use alloc::boxed::Box;
-use core::fmt::Write;
 use crate::keyboard;
 use crate::syscall;
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt::Write;
 use petroleum::print;
 
 /// Shell prompt
@@ -119,19 +119,25 @@ fn read_line(buffer: &mut [u8]) -> Result<usize, &'static str> {
                     print!("\n");
                     break;
                 }
-                0x08 => { // Backspace
+                0x08 => {
+                    // Backspace
                     if pos > 0 {
                         pos -= 1;
                         // Echo backspace
                         unsafe {
                             crate::syscall::handle_syscall(
-                                4, 1, &[0x08, b' ', 0x08] as *const _ as u64,
-                                3, 0, 0
+                                4,
+                                1,
+                                &[0x08, b' ', 0x08] as *const _ as u64,
+                                3,
+                                0,
+                                0,
                             );
                         }
                     }
                 }
-                0x1B => { // Escape sequences - skip for now
+                0x1B => {
+                    // Escape sequences - skip for now
                     // Would handle arrow keys, etc. in full implementation
                     continue;
                 }

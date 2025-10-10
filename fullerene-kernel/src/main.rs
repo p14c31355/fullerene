@@ -12,22 +12,22 @@ mod interrupts;
 // mod serial; // Removed, now using petroleum
 mod vga;
 // Kernel modules
-mod process;           // Process management
-mod context_switch;    // Context switching
-mod syscall;           // System calls
-mod fs;                // Basic filesystem
-mod loader;            // Program loader
+mod context_switch; // Context switching
+mod fs; // Basic filesystem
+mod keyboard; // Keyboard input driver
+mod loader; // Program loader
 mod memory_management; // Virtual memory management
-mod keyboard;          // Keyboard input driver
-mod shell;             // Shell/CLI interface
+mod process; // Process management
+mod shell;
+mod syscall; // System calls // Shell/CLI interface
 
 extern crate alloc;
 
 // use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, serial_log};
+use petroleum::graphics::init_vga_text_mode;
 use petroleum::serial::{
     SERIAL_PORT_WRITER as SERIAL1, debug_print_hex, debug_print_str_to_com1 as debug_print_str,
 };
-use petroleum::graphics::init_vga_text_mode;
 
 #[cfg(not(test))]
 #[panic_handler]
@@ -57,19 +57,21 @@ macro_rules! kernel_log {
     };
 }
 
-
-
 // Helper function for early debug prints to serial
 fn print_kernel(msg: &str) {
     write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
 }
 
 // Generic helper for searching memory descriptors
-fn find_memory_descriptor_address<F>(descriptors: &[EfiMemoryDescriptor], predicate: F) -> Option<usize>
+fn find_memory_descriptor_address<F>(
+    descriptors: &[EfiMemoryDescriptor],
+    predicate: F,
+) -> Option<usize>
 where
     F: Fn(&EfiMemoryDescriptor) -> bool,
 {
-    descriptors.iter()
+    descriptors
+        .iter()
         .find(|desc| predicate(desc))
         .map(|desc| desc.physical_start as usize)
 }
@@ -93,17 +95,17 @@ fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&FullereneFr
 // Helper function to find heap start from memory map (using generic)
 fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> x86_64::PhysAddr {
     // First, try to find EfiLoaderData
-    if let Some(addr) = find_memory_descriptor_address(descriptors, |desc|
+    if let Some(addr) = find_memory_descriptor_address(descriptors, |desc| {
         desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0
-    ) {
+    }) {
         return x86_64::PhysAddr::new(addr as u64);
     }
     // If not found, find EfiConventionalMemory large enough
     let required_pages = (heap::HEAP_SIZE + 4095) / 4096;
-    if let Some(addr) = find_memory_descriptor_address(descriptors, |desc|
+    if let Some(addr) = find_memory_descriptor_address(descriptors, |desc| {
         desc.type_ == EfiMemoryType::EfiConventionalMemory
-        && desc.number_of_pages >= required_pages as u64
-    ) {
+            && desc.number_of_pages >= required_pages as u64
+    }) {
         return x86_64::PhysAddr::new(addr as u64);
     }
     panic!("No suitable memory region found for heap");
@@ -364,7 +366,8 @@ fn test_process_main() {
             1, // fd (stdout)
             message.as_ptr() as u64,
             message.len() as u64,
-            0, 0
+            0,
+            0,
         );
     }
 

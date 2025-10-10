@@ -5,10 +5,10 @@
 
 #![no_std]
 
+use crate::process;
 use alloc::vec::Vec;
 use core::ptr;
 use x86_64::{PhysAddr, VirtAddr};
-use crate::process;
 
 pub const PROGRAM_LOAD_BASE: u64 = 0x400000; // 4MB base address for user programs
 
@@ -56,15 +56,16 @@ const ELFMAG: [u8; 4] = [0x7F, b'E', b'L', b'F'];
 const PT_LOAD: u32 = 1;
 
 /// Load a program from raw bytes and create a process for it
-pub fn load_program(image_data: &[u8], name: &'static str) -> Result<process::ProcessId, LoadError> {
+pub fn load_program(
+    image_data: &[u8],
+    name: &'static str,
+) -> Result<process::ProcessId, LoadError> {
     // Parse ELF header
     if image_data.len() < core::mem::size_of::<ElfHeader>() {
         return Err(LoadError::InvalidFormat);
     }
 
-    let elf_header = unsafe {
-        &*(image_data.as_ptr() as *const ElfHeader)
-    };
+    let elf_header = unsafe { &*(image_data.as_ptr() as *const ElfHeader) };
 
     // Verify ELF magic
     if elf_header.magic != ELFMAG {
@@ -72,7 +73,8 @@ pub fn load_program(image_data: &[u8], name: &'static str) -> Result<process::Pr
     }
 
     // Verify this is an executable
-    if elf_header.elf_type != 2 { // ET_EXEC
+    if elf_header.elf_type != 2 {
+        // ET_EXEC
         return Err(LoadError::NotExecutable);
     }
 
@@ -88,9 +90,7 @@ pub fn load_program(image_data: &[u8], name: &'static str) -> Result<process::Pr
             return Err(LoadError::InvalidFormat);
         }
 
-        let ph = unsafe {
-            &*(image_data.as_ptr().add(ph_offset) as *const ProgramHeader)
-        };
+        let ph = unsafe { &*(image_data.as_ptr().add(ph_offset) as *const ProgramHeader) };
 
         // Only load PT_LOAD segments
         if ph.p_type == PT_LOAD {
@@ -99,9 +99,7 @@ pub fn load_program(image_data: &[u8], name: &'static str) -> Result<process::Pr
     }
 
     // Find entry point
-    let entry_point: fn() = unsafe {
-        core::mem::transmute(elf_header.entry_point as usize)
-    };
+    let entry_point: fn() = unsafe { core::mem::transmute(elf_header.entry_point as usize) };
 
     // Create process with the loaded program
     let pid = process::create_process(name, entry_point);
@@ -135,7 +133,8 @@ fn load_segment(ph: &ProgramHeader, image_data: &[u8]) -> Result<(), LoadError> 
     unsafe {
         // Check if we think this memory is available (very simplistic check)
         // In real kernel, this would involve page table checks
-        if dest as usize >= 0x100000 { // Above 1MB should be safer
+        if dest as usize >= 0x100000 {
+            // Above 1MB should be safer
             ptr::copy_nonoverlapping(src.as_ptr(), dest, file_size);
         } else {
             return Err(LoadError::OutOfMemory);

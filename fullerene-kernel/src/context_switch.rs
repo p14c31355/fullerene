@@ -19,8 +19,10 @@ use crate::process::ProcessContext;
 /// The function uses inline assembly to save and restore CPU registers
 /// in the exact order defined by ProcessContext structure.
 #[inline(never)]
-pub unsafe fn switch_context(old_context: Option<&mut crate::process::ProcessContext>,
-                            new_context: &crate::process::ProcessContext) {
+pub unsafe fn switch_context(
+    old_context: Option<&mut crate::process::ProcessContext>,
+    new_context: &crate::process::ProcessContext,
+) {
     // We need to save the old context if provided, then load the new context
     // Since we can't directly modify the stack pointer in Rust,
     // this needs to be done in assembly
@@ -50,9 +52,7 @@ pub fn init() {
 #[macro_export]
 macro_rules! switch_to_process {
     ($old:expr, $new:expr) => {
-        unsafe {
-            $crate::context_switch::switch_context($old, $new)
-        }
+        unsafe { $crate::context_switch::switch_context($old, $new) }
     };
 }
 
@@ -67,7 +67,7 @@ mod tests {
         assert_eq!(ctx.rax, 0);
         assert_eq!(ctx.rbx, 0);
         assert_eq!(ctx.rflags, 0x0202); // IF flag
-        assert_eq!(ctx.cs, 0x08);       // Kernel code segment
-        assert_eq!(ctx.ss, 0x10);       // Kernel data segment
+        assert_eq!(ctx.cs, 0x08); // Kernel code segment
+        assert_eq!(ctx.ss, 0x10); // Kernel data segment
     }
 }

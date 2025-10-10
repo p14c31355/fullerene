@@ -67,8 +67,6 @@ pub struct ProcessContext {
     pub tss: u64,
 }
 
-
-
 /// Process structure
 pub struct Process {
     /// Unique process ID
@@ -108,7 +106,7 @@ impl Process {
             page_table_phys_addr: PhysAddr::new(0), // Will be set when allocated
             page_table: None,
             kernel_stack: VirtAddr::new(0), // Will be set when allocated
-            user_stack: VirtAddr::new(0), // Will be set when allocated
+            user_stack: VirtAddr::new(0),   // Will be set when allocated
             entry_point: VirtAddr::new(entry_point as usize as u64),
             exit_code: None,
         }

@@ -164,7 +164,10 @@ fn enable_apic(apic: &mut Apic) {
     unsafe {
         // Enable APIC by setting bit 8 in spurious vector register
         let spurious = apic.read(ApicOffsets::SPURIOUS_VECTOR);
-        apic.write(ApicOffsets::SPURIOUS_VECTOR, spurious | ApicFlags::SW_ENABLE | 0xFF);
+        apic.write(
+            ApicOffsets::SPURIOUS_VECTOR,
+            spurious | ApicFlags::SW_ENABLE | 0xFF,
+        );
     }
 }
 
@@ -224,7 +227,10 @@ pub fn init_apic() {
 
     // Configure timer interrupt
     unsafe {
-        apic.write(ApicOffsets::LVT_TIMER, TIMER_INTERRUPT_INDEX | ApicFlags::TIMER_PERIODIC);
+        apic.write(
+            ApicOffsets::LVT_TIMER,
+            TIMER_INTERRUPT_INDEX | ApicFlags::TIMER_PERIODIC,
+        );
         apic.write(ApicOffsets::TMRDIV, 0x3); // Divide by 16
         apic.write(ApicOffsets::TMRINITCNT, 1000000); // Initial count for ~100ms at 10MHz
     }
@@ -307,19 +313,26 @@ fn handle_page_fault(
 
     if !is_user {
         // Kernel page fault - this is critical
-        panic!("Kernel page fault at {:#x}: {:?}", fault_addr.as_u64(), error_code);
+        panic!(
+            "Kernel page fault at {:#x}: {:?}",
+            fault_addr.as_u64(),
+            error_code
+        );
     }
 
     if is_present {
         // Protection violation in user space
         // This might be write to read-only page, etc.
         // For now, terminate the current process
-        write!(writer, "Protection violation in user space - terminating process\n").ok();
+        write!(
+            writer,
+            "Protection violation in user space - terminating process\n"
+        )
+        .ok();
 
         if let Some(pid) = crate::process::current_pid() {
             crate::process::terminate_process(pid, 1); // Exit code 1 for page fault
         }
-
     } else {
         // Page not present - need to handle demand paging or stack growth
         write!(writer, "Page not present - attempting to handle\n").ok();

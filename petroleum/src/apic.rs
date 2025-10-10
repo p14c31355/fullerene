@@ -171,8 +171,7 @@ pub fn configure_io_apic_for_legacy_irqs(io_apic: &mut IoApic, local_apic_id: u8
     io_apic.write_rte(1, keyboard_rte);
 
     // Configure mouse (IRQ 12) -> vector 44
-    let mouse_rte =
-        IoApicRedirectionEntry::new(44, 0, false, false, false, false, local_apic_id);
+    let mouse_rte = IoApicRedirectionEntry::new(44, 0, false, false, false, false, local_apic_id);
     io_apic.write_rte(12, mouse_rte);
 
     // Note: Other IRQs can be configured similarly as needed

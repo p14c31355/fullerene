@@ -1,9 +1,7 @@
 use x86_64::instructions::port::Port;
 
-use super::ports::{VgaPorts};
+use super::ports::VgaPorts;
 use super::registers::{ATTRIBUTE_CONFIG, CRTC_CONFIG, GRAPHICS_CONFIG, SEQUENCER_CONFIG};
-
-
 
 /// Configures the Miscellaneous Output Register.
 pub fn setup_misc_output() {
@@ -54,7 +52,8 @@ pub fn setup_palette() {
         let mut dac_data_port = Port::<u8>::new(VgaPorts::DAC_DATA);
         for i in 0..256 {
             let val = (i * 63 / 255) as u8;
-            for _ in 0..3 { // RGB
+            for _ in 0..3 {
+                // RGB
                 dac_data_port.write(val);
             }
         }
@@ -82,10 +81,22 @@ pub fn setup_vga_attributes() {
         let mut attr_port = Port::new(VgaPorts::ATTRIBUTE_INDEX);
         // Attribute registers configuration
         let attr_configs: [(u8, u8); 21] = [
-            (0x00, 0x00), (0x01, 0x01), (0x02, 0x02), (0x03, 0x03),
-            (0x04, 0x04), (0x05, 0x05), (0x06, 0x06), (0x07, 0x07),
-            (0x08, 0x08), (0x09, 0x09), (0x0A, 0x0A), (0x0B, 0x0B),
-            (0x0C, 0x0C), (0x0D, 0x0D), (0x0E, 0x0E), (0x0F, 0x0F), // Palette setup
+            (0x00, 0x00),
+            (0x01, 0x01),
+            (0x02, 0x02),
+            (0x03, 0x03),
+            (0x04, 0x04),
+            (0x05, 0x05),
+            (0x06, 0x06),
+            (0x07, 0x07),
+            (0x08, 0x08),
+            (0x09, 0x09),
+            (0x0A, 0x0A),
+            (0x0B, 0x0B),
+            (0x0C, 0x0C),
+            (0x0D, 0x0D),
+            (0x0E, 0x0E),
+            (0x0F, 0x0F), // Palette setup
             (0x10, 0x41), // Mode control - enable 8-bit color, graphics mode, blinking on
             (0x11, 0x00), // Overscan
             (0x12, 0x0F), // Plane enable
@@ -122,7 +133,11 @@ pub fn init_vga_text_mode() {
             (0x03, 0x00), // Character map select - select character set A and B
             (0x04, 0x02), // Memory mode - extended memory, sequential addressing, text mode
         ];
-        write_vga_registers(VgaPorts::SEQUENCER_INDEX, VgaPorts::SEQUENCER_DATA, &seq_configs);
+        write_vga_registers(
+            VgaPorts::SEQUENCER_INDEX,
+            VgaPorts::SEQUENCER_DATA,
+            &seq_configs,
+        );
 
         // Unlock CRTC registers - disable write protection on CRTC registers 0-7
         write_vga_registers(VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA, &[(0x11, 0x0E)]);
@@ -157,7 +172,11 @@ pub fn init_vga_text_mode() {
             (0x05, 0x10), // Graphics mode register - read mode 0, write mode 0
             (0x06, 0x0E), // Miscellaneous register - text mode, 0xB8000 base, alpha disabled
         ];
-        write_vga_registers(VgaPorts::GRAPHICS_INDEX, VgaPorts::GRAPHICS_DATA, &graphics_configs);
+        write_vga_registers(
+            VgaPorts::GRAPHICS_INDEX,
+            VgaPorts::GRAPHICS_DATA,
+            &graphics_configs,
+        );
 
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"VGA text mode setup: Graphics done\n");
 

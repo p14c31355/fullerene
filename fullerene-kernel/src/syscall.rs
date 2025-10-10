@@ -5,8 +5,8 @@
 
 #![no_std]
 
-use core::ffi::c_int;
 use crate::process;
+use core::ffi::c_int;
 
 /// Helper function for serial port writes (from main.rs)
 unsafe fn write_serial_bytes(port: u16, status_port: u16, bytes: &[u8]) {
@@ -175,13 +175,14 @@ fn syscall_open(filename: *const u8, _flags: c_int, _mode: u32) -> SyscallResult
     unsafe {
         while *filename.add(len) != 0 {
             len += 1;
-            if len > 256 { // Reasonable limit
+            if len > 256 {
+                // Reasonable limit
                 return Err(SyscallError::InvalidArgument);
             }
         }
         let filename_slice = core::slice::from_raw_parts(filename, len);
-        let filename_str = core::str::from_utf8(filename_slice)
-            .map_err(|_| SyscallError::InvalidArgument)?;
+        let filename_str =
+            core::str::from_utf8(filename_slice).map_err(|_| SyscallError::InvalidArgument)?;
     }
 
     // For now, always fail (no filesystem yet)

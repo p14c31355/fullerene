@@ -237,14 +237,10 @@ pub fn _print(args: fmt::Arguments) {
         .expect("Serial write failed");
 }
 
-
-
 /// Initializes the global serial port writer.
 pub fn serial_init() {
     SERIAL_PORT_WRITER.lock().init();
 }
-
-
 
 #[cfg(test)]
 mod tests {
