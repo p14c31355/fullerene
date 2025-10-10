@@ -267,7 +267,7 @@ pub extern "x86-interrupt" fn page_fault_handler(
     use x86_64::registers::control::Cr2;
 
     // Get the faulting address
-    let fault_addr = Cr2::read().unwrap_or_else(|_| x86_64::VirtAddr::new(0));
+    let fault_addr = Cr2::read();
 
     petroleum::serial::serial_log(format_args!(
         "\nEXCEPTION: PAGE FAULT at address {:#x}\nError Code: {:?}\n",
