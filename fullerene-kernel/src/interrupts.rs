@@ -490,7 +490,7 @@ pub extern "C" fn syscall_entry() {
     }
 
     // Dispatch to syscall handler
-    let result = unsafe { syscall::handle_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5) };
+    let result = unsafe { syscall::handle_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6) };
 
     // Return result in RAX and return via sysret
     unsafe {
