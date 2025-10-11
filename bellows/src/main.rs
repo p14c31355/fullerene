@@ -167,30 +167,33 @@ fn init_gop(st: &EfiSystemTable) {
     let target_mode = 0;
     let current_mode = mode_ref.mode as usize;
     if target_mode != current_mode {
-        petroleum::serial::_print(format_args!(
-            "GOP: Setting mode {} (graphics mode) (currently {})\n",
-            target_mode, current_mode
-        ));
-        let status = (gop_ref.set_mode)(gop, target_mode as u32);
-        if EfiStatus::from(status) != EfiStatus::Success {
+                let modes_to_try = [target_mode as u32, 1];
+        let mut mode_set_successfully = false;
+
+        for &mode in &modes_to_try {
             petroleum::serial::_print(format_args!(
-                "GOP: Failed to set mode, status: {:#x}, trying next mode.\n",
-                status
+                "GOP: Attempting to set mode {} (graphics mode) (currently {})
+",
+                mode, current_mode
             ));
-            // Try mode 1 as fallback
-            let fallback_mode = 1;
-            let status = (gop_ref.set_mode)(gop, fallback_mode as u32);
-            if EfiStatus::from(status) != EfiStatus::Success {
-                petroleum::serial::_print(format_args!(
-                    "GOP: Failed to set fallback mode, status: {:#x}, skipping GOP initialization.\n",
-                    status
-                ));
-                return; // Early return on mode setting failure
+            let status = (gop_ref.set_mode)(gop, mode);
+            if EfiStatus::from(status) == EfiStatus::Success {
+                petroleum::serial::_print(format_args!("GOP: Mode {} set successfully.\n", mode));
+                mode_set_successfully = true;
+                break;
             } else {
-                petroleum::serial::_print(format_args!("GOP: Fallback mode set successfully\n"));
+                petroleum::serial::_print(format_args!(
+                    "GOP: Failed to set mode {}, status: {:#x}.\n",
+                    mode, status
+                ));
             }
-        } else {
-            petroleum::serial::_print(format_args!("GOP: Mode set successfully\n"));
+        }
+
+        if !mode_set_successfully {
+            petroleum::serial::_print(format_args!(
+                "GOP: Failed to set any graphics mode, skipping GOP initialization.\n"
+            ));
+            return;
         }
     } else {
         petroleum::serial::_print(format_args!("GOP: Mode {} already set\n", target_mode));
