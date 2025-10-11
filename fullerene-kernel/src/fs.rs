@@ -137,13 +137,11 @@ pub fn write_file(fd: FileDescriptor, data: &[u8]) -> Result<usize, FsError> {
 
 /// Seek in file
 pub fn seek_file(fd: FileDescriptor, position: usize) -> Result<(), FsError> {
-    let open_files = OPEN_FILES.lock();
-    let filename = open_files.get(&fd).ok_or(FsError::InvalidFileDescriptor)?;
-    let filename = filename.clone(); // Clone the filename for use after lock is released
-    drop(open_files); // Release the lock before acquiring FILESYSTEM lock
-
     let mut fs = FILESYSTEM.lock();
-    let file = fs.get_mut(&filename).ok_or(FsError::FileNotFound)?;
+    let open_files = OPEN_FILES.lock();
+
+    let filename = open_files.get(&fd).ok_or(FsError::InvalidFileDescriptor)?;
+    let file = fs.get_mut(filename).ok_or(FsError::FileNotFound)?;
 
     if position > file.data.len() {
         return Err(FsError::InvalidSeek);
