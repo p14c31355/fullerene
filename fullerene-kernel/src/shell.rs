@@ -191,11 +191,15 @@ fn help_command(_args: &[&str]) -> i32 {
 
 fn ps_command(_args: &[&str]) -> i32 {
     print!("Process list:\n");
-    print!("PID    Name\n");
-    // In a full implementation, we'd list all processes
-    // For now, just show idle process
-    print!("001    idle\n");
-    print!("002    shell\n");
+    print!("PID    State      Name\n");
+    print!("--------------------------\n");
+    let process_list = crate::process::PROCESS_LIST.lock();
+    for proc in process_list.iter() {
+        print!(
+            "{:<6} {:<10?} {}\n",
+            proc.id, proc.state, proc.name
+        );
+    }
     0
 }
 
