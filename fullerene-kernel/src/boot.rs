@@ -1,7 +1,7 @@
 //! Boot module containing UEFI and BIOS entry points and boot-specific logic
 
 use petroleum::graphics::init_vga_text_mode;
-use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, debug_print_hex, debug_print_str_to_com1 as debug_print_str};
+use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, debug_print_str_to_com1 as debug_print_str};
 use petroleum::write_serial_bytes;
 
 use alloc::boxed::Box;
