@@ -80,9 +80,7 @@ pub extern "efiapi" fn efi_main(
         // Write hello message
         let hello = b"Hello from UEFI Kernel!";
         for (i, &byte) in hello.iter().enumerate() {
-            if i < hello.len() {
-                vga_buffer[0][i] = super::VGA_COLOR_GREEN_ON_BLACK | (byte as u16);
-            }
+            vga_buffer[0][i] = super::VGA_COLOR_GREEN_ON_BLACK | (byte as u16);
         }
     }
     kernel_log!("VGA buffer write completed");
