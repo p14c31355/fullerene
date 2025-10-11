@@ -220,7 +220,7 @@ pub fn init(heap_start: VirtAddr, heap_size: usize) {
 
 pub fn init_page_table(physical_memory_offset: VirtAddr) {
     PHYSICAL_MEMORY_OFFSET.call_once(|| physical_memory_offset);
-    let mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
+    let mapper = unsafe { petroleum::page_table::init(VirtAddr::new(0)) };
     MAPPER.call_once(|| Mutex::new(mapper));
 }
 
@@ -267,50 +267,40 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     petroleum::serial::serial_log(format_args!("Reinitializing page table with offset: "));
     petroleum::serial::serial_log(format_args!("{:#x}\n", physical_memory_offset.as_u64()));
 
-    petroleum::serial::serial_log(format_args!("About to allocate level 4 frame\n"));
+    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"Before allocate\n") };
 
     // Allocate a new level 4 page table
     let level_4_frame = frame_allocator
         .allocate_frame()
         .expect("Failed to allocate level 4 frame");
-    petroleum::serial::serial_log(format_args!(
-        "Level 4 frame allocated at {:#x}\n",
-        level_4_frame.start_address().as_u64()
-    ));
+    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"Allocated level 4\n") };
 
-    let level_4_table = unsafe { &mut *(level_4_frame.start_address().as_u64() as *mut PageTable) };
-    petroleum::serial::serial_log(format_args!("Level 4 table pointer created\n"));
+    // Since UEFI mapping is identity, access the new table at its physical address
+    let level_4_table_addr = level_4_frame.start_address().as_u64();
+    let level_4_table = unsafe { &mut *(level_4_table_addr as *mut PageTable) };
+    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"Table ptr\n") };
 
     // Zero the table
-    petroleum::serial::serial_log(format_args!("About to zero level 4 table\n"));
     level_4_table.zero();
-    petroleum::serial::serial_log(format_args!("Level 4 table zeroed\n"));
-
-    petroleum::serial::serial_log(format_args!("About to create new mapper\n"));
+    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"Zeroed\n") };
 
     // Create a mapper for the new page table
     let mut new_mapper = unsafe { OffsetPageTable::new(level_4_table, VirtAddr::new(0)) };
-    petroleum::serial::serial_log(format_args!("New mapper created\n"));
+    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"Mapper created\n") };
 
     // Map usable memory regions from the memory map (simplified - only map essential regions)
     use petroleum::common::EfiMemoryType::*;
-    petroleum::serial::serial_log(format_args!("About to map memory regions\n"));
-    let mut region_count = 0;
-    for desc in memory_map.iter().filter(|desc| {
-        [EfiLoaderCode, EfiLoaderData, EfiBootServicesCode, EfiBootServicesData, EfiRuntimeServicesCode, EfiRuntimeServicesData, EfiConventionalMemory].iter().any(|&t| desc.type_ == t) && desc.number_of_pages > 0
-    }).take(50) {
-        region_count += 1;
+    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"About to map\n") };
+    let memory_types = [EfiLoaderCode, EfiLoaderData, EfiBootServicesCode, EfiBootServicesData, EfiRuntimeServicesCode, EfiRuntimeServicesData, EfiConventionalMemory];
+    let descriptors = memory_map.iter().filter(|desc| {
+        memory_types.iter().any(|&t| desc.type_ == t) && desc.number_of_pages > 0
+    }).take(50); // Increase to ensure kernel descriptor is included
+    for desc in descriptors {
+        unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"Mapping one\n") };
         let start_phys = PhysAddr::new(desc.physical_start);
         let end_phys = start_phys + (desc.number_of_pages * 4096);
-        let start_virt = VirtAddr::new(desc.virtual_start);
-        petroleum::serial::serial_log(format_args!(
-            "Mapping region {}: phys 0x{:x}-0x{:x} to virt 0x{:x}\n",
-            region_count,
-            start_phys.as_u64(),
-            end_phys.as_u64(),
-            start_virt.as_u64()
-        ));
-        // Map to the correct virtual addresses from memory map
+        let start_virt = VirtAddr::new(desc.physical_start); // Identity map
+        // Map to identity virtual addresses
         unsafe {
             map_physical_range(
                 &mut new_mapper,
@@ -322,38 +312,16 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
             );
         }
     }
-    petroleum::serial::serial_log(format_args!("Mapped {} memory regions\n", region_count));
-
-    // Skip higher-half kernel mapping for now to isolate issues - use identity mapping only
-    petroleum::serial::serial_log(format_args!(
-        "Skipping higher-half kernel mapping for debugging\n"
-    ));
-    /*
-    // Add kernel code/data mapping (higher-half)
-    let kernel_virt_start = VirtAddr::new(0xffff_0000_1000_0000);
-    let kernel_size = 0x200000; // Assume 2MB for kernel
-    let kernel_end_phys = kernel_phys_start + kernel_size;
-
-    unsafe {
-        map_physical_range(
-            &mut new_mapper,
-            kernel_phys_start,
-            kernel_end_phys,
-            kernel_virt_start,
-            Flags::PRESENT | Flags::WRITABLE,
-            &mut frame_allocator,
-        );
-    }
-    */
+    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"Mapped all\n") };
 
     // Set the new CR3
     unsafe { Cr3::write(level_4_frame, Cr3Flags::empty()) };
+    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"CR3 set\n") };
 
     // Reinitialize the mapper with new CR3
     let mapper = unsafe { petroleum::page_table::init(VirtAddr::new(0)) };
     *MAPPER.get().unwrap().lock() = mapper;
 
-    petroleum::serial::serial_log(format_args!("Page table reinitialized.\n"));
     unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"REINIT DONE\n") };
 }
 
