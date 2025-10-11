@@ -19,6 +19,36 @@ unsafe fn write_serial_bytes(port: u16, status_port: u16, bytes: &[u8]) {
     }
 }
 
+/// Helper function to validate user buffer access
+fn validate_user_buffer(ptr: usize, count: usize, allow_kernel: bool) -> Result<(), SyscallError> {
+    use crate::memory_management::is_user_address;
+    use x86_64::VirtAddr;
+
+    if ptr == 0 && count == 0 {
+        return Ok(());
+    }
+
+    let start = VirtAddr::new(ptr as u64);
+    if !allow_kernel && !is_user_address(start) {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    if count == 0 {
+        return Ok(());
+    }
+
+    if let Some(end_ptr) = ptr.checked_add(count - 1) {
+        let end = VirtAddr::new(end_ptr as u64);
+        if !allow_kernel && !is_user_address(end) {
+            return Err(SyscallError::InvalidArgument);
+        }
+    } else {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    Ok(())
+}
+
 /// System call numbers
 #[repr(u64)]
 #[derive(Debug, Clone, Copy)]
@@ -154,33 +184,17 @@ fn syscall_read(fd: c_int, buffer: *mut u8, count: usize) -> SyscallResult {
         return Err(SyscallError::InvalidArgument);
     }
 
+    if buffer.is_null() {
+        return Err(SyscallError::InvalidArgument);
+    }
+
     // POSIX: reading 0 bytes should return 0 immediately
     if count == 0 {
         return Ok(0);
     }
 
-    if buffer.is_null() {
-        return Err(SyscallError::InvalidArgument);
-    }
-
     // Check if buffer is valid for user space
-    use crate::memory_management::is_user_address;
-    use x86_64::VirtAddr;
-
-    let start_addr = VirtAddr::new(buffer as u64);
-    if !is_user_address(start_addr) {
-        return Err(SyscallError::InvalidArgument);
-    }
-
-    // Check for overflow in end address calculation
-    if let Some(end_u64) = (buffer as u64).checked_add(count as u64 - 1) {
-        let end_addr = VirtAddr::new(end_u64);
-        if !is_user_address(end_addr) {
-            return Err(SyscallError::InvalidArgument);
-        }
-    } else {
-        return Err(SyscallError::InvalidArgument);
-    }
+    validate_user_buffer(buffer as usize, count, false)?;
 
     // For now, only support reading from stdin (fd 0)
     if fd == 0 {
@@ -215,29 +229,13 @@ fn syscall_write(fd: c_int, buffer: *const u8, count: usize) -> SyscallResult {
         return Err(SyscallError::InvalidArgument);
     }
 
-    // Check if buffer is valid
     if count == 0 {
         return Ok(0);
     }
 
     // Validate that the buffer range is valid; allow kernel pointers for stdout/stderr
-    use crate::memory_management::is_user_address;
-    use x86_64::VirtAddr;
-
-    let start_addr = VirtAddr::new(buffer as u64);
-    if !is_user_address(start_addr) && fd != 1 && fd != 2 {
-        return Err(SyscallError::InvalidArgument);
-    }
-
-    // Check for overflow in end address calculation
-    if let Some(end_u64) = (buffer as u64).checked_add(count as u64 - 1) {
-        let end_addr = VirtAddr::new(end_u64);
-        if !is_user_address(end_addr) && fd != 1 && fd != 2 {
-            return Err(SyscallError::InvalidArgument);
-        }
-    } else {
-        return Err(SyscallError::InvalidArgument);
-    }
+    let allow_kernel = fd == 1 || fd == 2;
+    validate_user_buffer(buffer as usize, count, allow_kernel)?;
 
     // Create a slice from the buffer pointer
     let data = unsafe { core::slice::from_raw_parts(buffer, count) };
@@ -372,23 +370,7 @@ fn syscall_get_process_name(buffer: *mut u8, size: usize) -> SyscallResult {
     }
 
     // Check if buffer is valid for user space
-    use crate::memory_management::is_user_address;
-    use x86_64::VirtAddr;
-
-    let start_addr = VirtAddr::new(buffer as u64);
-    if !is_user_address(start_addr) {
-        return Err(SyscallError::InvalidArgument);
-    }
-
-    // Check for overflow in buffer size
-    if let Some(end_u64) = (buffer as u64).checked_add(size as u64 - 1) {
-        let end_addr = VirtAddr::new(end_u64);
-        if !is_user_address(end_addr) {
-            return Err(SyscallError::InvalidArgument);
-        }
-    } else {
-        return Err(SyscallError::InvalidArgument);
-    }
+    validate_user_buffer(buffer as usize, size, false)?;
 
     let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 

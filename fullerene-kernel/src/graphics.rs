@@ -101,6 +101,18 @@ impl ColorScheme {
     };
 }
 
+fn rgb_pixel(r: u8, g: u8, b: u8) -> u32 {
+    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+}
+
+fn grayscale_intensity(color: Rgb888) -> u32 {
+    ((color.r() as u32 * 77 + color.g() as u32 * 150 + color.b() as u32 * 29) / 256).min(255)
+}
+
+fn unsupported_pixel_format_log() {
+    petroleum::serial::serial_log(format_args!("Warning: Pixel format not supported, using RGB fallback\n"));
+}
+
 struct FramebufferInfo {
     address: u64,
     width: u32,
@@ -262,66 +274,15 @@ impl<T: PixelType> FramebufferWriter<T> {
     }
 
     fn rbg888_to_pixel_format(&self, color: Rgb888) -> u32 {
+        let rgb = || rgb_pixel(color.r(), color.g(), color.b());
+        let bgr = || rgb_pixel(color.b(), color.g(), color.r());
+        let fallback = || { unsupported_pixel_format_log(); rgb() };
         #[allow(non_exhaustive_omitted_patterns)]
         match self.info.pixel_format {
-            Some(EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor) => {
-                // RGB format: R in high byte, G, B, X
-                ((color.r() as u32) << 16)
-                    | ((color.g() as u32) << 8)
-                    | (color.b() as u32)
-            }
-            Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor) => {
-                // BGR format: B in high byte, G, R, X
-                ((color.b() as u32) << 16)
-                    | ((color.g() as u32) << 8)
-                    | (color.r() as u32)
-            }
-            Some(EfiGraphicsPixelFormat::PixelBitMask) => {
-                // PixelBitMask format - not implemented, use RGB fallback
-                petroleum::serial::serial_log(format_args!(
-                    "Warning: PixelBitMask pixel format not supported, using RGB fallback\n"
-                ));
-                ((color.r() as u32) << 16)
-                    | ((color.g() as u32) << 8)
-                    | (color.b() as u32)
-            }
-            Some(EfiGraphicsPixelFormat::PixelBltOnly) => {
-                // PixelBltOnly format - not supported, use RGB fallback
-                petroleum::serial::serial_log(format_args!(
-                    "Warning: PixelBltOnly pixel format not supported, using RGB fallback\n"
-                ));
-                ((color.r() as u32) << 16)
-                    | ((color.g() as u32) << 8)
-                    | (color.b() as u32)
-            }
-            Some(EfiGraphicsPixelFormat::PixelFormatMax) => {
-                // Invalid format - use RGB fallback
-                petroleum::serial::serial_log(format_args!(
-                    "Warning: Invalid pixel format, using RGB fallback\n"
-                ));
-                ((color.r() as u32) << 16)
-                    | ((color.g() as u32) << 8)
-                    | (color.b() as u32)
-            }
-            None => {
-                // VGA mode, use grayscale intensity
-                let intensity = (color.r() as u32 * 77
-                    + color.g() as u32 * 150
-                    + color.b() as u32 * 29)
-                    / 256;
-                intensity.min(255)
-            }
-        }
-    }
-
-    fn scroll_up(&self) {
-        unsafe {
-            scroll_buffer_pixels::<T>(
-                self.info.address,
-                self.info.width_or_stride(),
-                self.info.height,
-                T::from_u32(self.info.colors.bg),
-            );
+            Some(EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor) => rgb(),
+            Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor) => bgr(),
+            Some(_) => fallback(),
+            None => grayscale_intensity(color),
         }
     }
 }
@@ -375,7 +336,7 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
 
     fn scroll_up(&self) {
         unsafe {
-            petroleum::scroll_buffer_pixels::<T>(
+            scroll_buffer_pixels::<T>(
                 self.info.address,
                 self.info.width_or_stride(),
                 self.info.height,
