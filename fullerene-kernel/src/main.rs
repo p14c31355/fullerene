@@ -372,15 +372,15 @@ fn test_process_main() {
 
     // Get PID via syscall and print the actual PID
     unsafe {
-        let pid = crate::syscall::handle_syscall(20, 0, 0, 0, 0, 0);
+                let pid = crate::syscall::handle_syscall(crate::syscall::SyscallNumber::GetPid as u64, 0, 0, 0, 0, 0);
         let pid_msg = b"My PID is: ";
-        crate::syscall::handle_syscall(4, 1, pid_msg.as_ptr() as u64, pid_msg.len() as u64, 0, 0);
+        crate::syscall::handle_syscall(crate::syscall::SyscallNumber::Write as u64, 1, pid_msg.as_ptr() as u64, pid_msg.len() as u64, 0, 0);
 
         // Convert PID to string and print it
         let pid_str = alloc::format!("{}\n", pid);
         let pid_bytes = pid_str.as_bytes();
         crate::syscall::handle_syscall(
-            4,
+            crate::syscall::SyscallNumber::Write as u64,
             1,
             pid_bytes.as_ptr() as u64,
             pid_bytes.len() as u64,
@@ -391,12 +391,12 @@ fn test_process_main() {
 
     // Sleep a bit
     unsafe {
-        crate::syscall::handle_syscall(22, 0, 0, 0, 0, 0); // SYS_YIELD
-        crate::syscall::handle_syscall(22, 0, 0, 0, 0, 0); // SYS_YIELD
+        crate::syscall::handle_syscall(crate::syscall::SyscallNumber::Yield as u64, 0, 0, 0, 0, 0); // SYS_YIELD
+        crate::syscall::handle_syscall(crate::syscall::SyscallNumber::Yield as u64, 0, 0, 0, 0, 0); // SYS_YIELD
     }
 
     // Exit
     unsafe {
-        crate::syscall::handle_syscall(1, 0, 0, 0, 0, 0); // SYS_EXIT
+        crate::syscall::handle_syscall(crate::syscall::SyscallNumber::Exit as u64, 0, 0, 0, 0, 0); // SYS_EXIT
     }
 }
