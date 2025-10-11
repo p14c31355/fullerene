@@ -135,14 +135,14 @@ fn main() -> io::Result<()> {
         "1",
         "-machine",
         "pc,smm=off",
-        // Use more compatible Cirrus VGA for text mode
+        // Try different VGA options for better UEFI graphics support
         "-vga",
-        "cirrus",
+        "vmware",
         "-display",
         "gtk",
-        // Don't use virtio-gpu-pci as it conflicts with standard VGA
-        // "-device",
-        // "virtio-gpu-pci",
+        // Add virtio-gpu for better UEFI graphics support
+        "-device",
+        "virtio-gpu-pci",
         "-serial",
         "mon:stdio",
         "-monitor",
@@ -150,7 +150,7 @@ fn main() -> io::Result<()> {
         "-accel",
         "tcg,thread=single",
         "-d",
-        "guest_errors",
+        "guest_errors,int",
         // Don't trace UEFI as it may cause issues
         // "-trace",
         // "uefi_*",

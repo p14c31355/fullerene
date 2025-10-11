@@ -251,12 +251,14 @@ pub extern "efiapi" fn efi_main(
 
     kernel_log!("Searching for framebuffer config table...");
     if let Some(config) = find_framebuffer_config(system_table) {
+        kernel_log!("Found framebuffer config table: address={:x}, width={}, height={}",
+                   config.address, config.width, config.height);
         if config.address != 0 {
-            kernel_log!("Initializing graphics mode...");
+            kernel_log!("Initializing UEFI graphics mode...");
             graphics::init(config);
-            kernel_log!("Graphics mode initialized");
-            // Don't clear for now, let graphics module handle
+            kernel_log!("UEFI graphics mode initialized, calling draw_os_desktop...");
             graphics::draw_os_desktop();
+            kernel_log!("UEFI graphics desktop drawn");
         } else {
             kernel_log!("Framebuffer address is 0, defaulting to VGA graphics mode");
             let vga_config = VgaFramebufferConfig {
@@ -265,9 +267,11 @@ pub extern "efiapi" fn efi_main(
                 height: 200,
                 bpp: 8,
             };
+            kernel_log!("Initializing VGA graphics mode...");
             graphics::init_vga(&vga_config);
-            kernel_log!("VGA graphics mode initialized");
+            kernel_log!("VGA graphics mode initialized, calling draw_os_desktop...");
             graphics::draw_os_desktop();
+            kernel_log!("VGA graphics desktop drawn");
         }
     } else {
         kernel_log!("Fullerene Framebuffer Config Table not found, defaulting to VGA graphics mode");
@@ -277,9 +281,11 @@ pub extern "efiapi" fn efi_main(
             height: 200,
             bpp: 8,
         };
+        kernel_log!("Initializing VGA graphics mode...");
         graphics::init_vga(&vga_config);
-        kernel_log!("VGA graphics mode initialized");
+        kernel_log!("VGA graphics mode initialized, calling draw_os_desktop...");
         graphics::draw_os_desktop();
+        kernel_log!("VGA graphics desktop drawn");
     }
 
     kernel_log!("Kernel: running in main loop");

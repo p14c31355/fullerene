@@ -424,41 +424,52 @@ macro_rules! print {
 }
 
 // Draw OS-like desktop interface
+#[cfg(target_os = "uefi")]
 pub fn draw_os_desktop() {
-    #[cfg(target_os = "uefi")]
-    {
-        debug_print_str("debug: draw_os_desktop called\n");
+    print!("Graphics: draw_os_desktop() called\n");
+    debug_print_str("Graphics: draw_os_desktop() started\n");
 
-        if let Some(fb_writer) = FRAMEBUFFER_UEFI.get() {
-            let mut fb_writer = fb_writer.lock();
+    debug_print_str("Graphics: checking UEFI framebuffer...\n");
+    if let Some(fb_writer) = FRAMEBUFFER_UEFI.get() {
+        debug_print_str("Graphics: Obtained UEFI framebuffer writer\n");
+        let mut fb_writer = fb_writer.lock();
+        debug_print_str("Graphics: Framebuffer writer locked\n");
 
-            debug_print_str("debug: framebuffer writer obtained, filling background\n");
+        // Fill background with dark blue color (BGR: 0x008000 RGB)
+        let bg_color = 0x800000u32;
+        debug_print_str("Graphics: Filling background...\n");
+        fill_background(&mut *fb_writer, bg_color);
+        debug_print_str("Graphics: Background filled\n");
 
-            // Fill background with dark blue color (BGR: 0x008000 RGB)
-            let bg_color = 0x800000u32;
-            fill_background(&mut *fb_writer, bg_color);
+        // Draw window frame
+        debug_print_str("Graphics: Drawing window frame...\n");
+        draw_window(&mut *fb_writer, 50, 50, 400, 200, 0xFFFFFFu32, 0x008080u32);
+        debug_print_str("Graphics: Window frame drawn\n");
 
-            debug_print_str("debug: background filled, drawing window\n");
+        // Draw taskbar at bottom
+        debug_print_str("Graphics: Drawing taskbar...\n");
+        draw_taskbar(&mut *fb_writer, 0xC0C0C0u32);
+        debug_print_str("Graphics: Taskbar drawn\n");
 
-            // Draw window frame
-            draw_window(&mut *fb_writer, 50, 50, 400, 200, 0xFFFFFFu32, 0x008080u32);
+        // Draw some icons
+        debug_print_str("Graphics: Drawing icons...\n");
+        draw_icon(&mut *fb_writer, 100, 100, "Terminal", 0x008000u32);
+        draw_icon(&mut *fb_writer, 100, 150, "Settings", 0xFFA500u32);
+        debug_print_str("Graphics: Icons drawn\n");
 
-            debug_print_str("debug: window drawn, drawing taskbar\n");
-
-            // Draw taskbar at bottom
-            draw_taskbar(&mut *fb_writer, 0xC0C0C0u32);
-
-            debug_print_str("debug: taskbar drawn, drawing icons\n");
-
-            // Draw some icons
-            draw_icon(&mut *fb_writer, 100, 100, "Terminal", 0x008000u32);
-            draw_icon(&mut *fb_writer, 100, 150, "Settings", 0xFFA500u32);
-
-            debug_print_str("debug: draw_os_desktop completed\n");
-        } else {
-            debug_print_str("debug: FRAMEBUFFER_UEFI not initialized\n");
-        }
+        print!("Graphics: UEFI desktop drawing completed\n");
+        debug_print_str("Graphics: UEFI desktop drawing completed\n");
+    } else {
+        print!("Graphics: ERROR - FRAMEBUFFER_UEFI not initialized\n");
+        debug_print_str("Graphics: ERROR - FRAMEBUFFER_UEFI not initialized\n");
     }
+}
+
+#[cfg(not(target_os = "uefi"))]
+pub fn draw_os_desktop() {
+    print!("Graphics: draw_os_desktop() called in BIOS mode\n");
+    debug_print_str("Graphics: BIOS mode draw_os_desktop() started\n");
+    debug_print_str("Graphics: BIOS mode desktop setup completed\n");
 }
 
 fn fill_background<W: FramebufferLike>(writer: &mut W, color: u32) {
