@@ -54,8 +54,7 @@ pub extern "C" fn switch_context(
         "jmp 3f",  // Jump to restore if null
 
         // Save current context (label 2)
-        "2:",
-                // Save current context (label 2)
+        // Save current context (label 2)
         "2:",
         // Save GPRs to old_context. Note that rdi holds old_context pointer.
         "mov [rdi + {rax}], rax",
