@@ -72,13 +72,12 @@ pub fn open_file(name: &str) -> Result<FileDescriptor, FsError> {
         return Err(FsError::FileNotFound);
     }
 
+    // While still holding FILESYSTEM lock, acquire OPEN_FILES and NEXT_FD
     let mut open_files = OPEN_FILES.lock();
-    let fd = {
-        let mut next_fd = NEXT_FD.lock();
-        let fd = *next_fd;
-        *next_fd += 1;
-        fd
-    };
+    let mut next_fd = NEXT_FD.lock();
+
+    let fd = *next_fd;
+    *next_fd += 1;
 
     open_files.insert(fd, String::from(name));
 
