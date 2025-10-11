@@ -253,12 +253,28 @@ pub extern "efiapi" fn efi_main(
             // Don't clear for now, let graphics module handle
             graphics::draw_os_desktop();
         } else {
-            kernel_log!("Framebuffer address is 0, VGA will handle display");
-            println!("Hello QEMU by FullereneOS");
+            kernel_log!("Framebuffer address is 0, defaulting to VGA graphics mode");
+            let vga_config = VgaFramebufferConfig {
+                address: 0xA0000,
+                width: 320,
+                height: 200,
+                bpp: 8,
+            };
+            graphics::init_vga(&vga_config);
+            kernel_log!("VGA graphics mode initialized");
+            graphics::draw_os_desktop();
         }
     } else {
-        kernel_log!("Fullerene Framebuffer Config Table not found");
-        println!("Hello QEMU by FullereneOS");
+        kernel_log!("Fullerene Framebuffer Config Table not found, defaulting to VGA graphics mode");
+        let vga_config = VgaFramebufferConfig {
+            address: 0xA0000,
+            width: 320,
+            height: 200,
+            bpp: 8,
+        };
+        graphics::init_vga(&vga_config);
+        kernel_log!("VGA graphics mode initialized");
+        graphics::draw_os_desktop();
     }
 
     kernel_log!("Kernel: running in main loop");
