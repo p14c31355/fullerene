@@ -15,8 +15,22 @@ pub extern "C" fn main() -> i32 {
     let pid_msg2 = b"\n";
     let _ = user::write(1, pid_msg1);
 
-    // Simple PID conversion to string (for demo)
-    let pid_bytes = &[b'0' + (pid % 10) as u8];
+    // Convert PID to string to display it
+    let mut pid_buffer = [0u8; 20];
+    let mut len = 0;
+    if pid == 0 {
+        pid_buffer[0] = b'0';
+        len = 1;
+    } else {
+        let mut n = pid;
+        while n > 0 {
+            pid_buffer[len] = b'0' + (n % 10) as u8;
+            n /= 10;
+            len += 1;
+        }
+        pid_buffer[..len].reverse();
+    }
+    let pid_bytes = &pid_buffer[..len];
     let _ = user::write(1, pid_bytes);
     let _ = user::write(1, pid_msg2);
 

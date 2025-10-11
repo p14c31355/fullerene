@@ -121,6 +121,12 @@ impl Process {
         self.context.rip = process_trampoline as u64;
         // Store entry point in RAX for trampoline
         self.context.rax = self.entry_point.as_u64();
+        self.context.rflags = 0x202; // Set Interrupt Enable flag
+
+        // TODO: Use GDT constants instead of magic numbers
+        self.context.cs = 0x1B; // User code selector with RPL=3
+        self.context.ss = 0x23; // User data selector with RPL=3
+
         self.kernel_stack = kernel_stack_top;
     }
 }

@@ -215,7 +215,6 @@ fn handle_key_release(scancode: u8, modifiers: &mut KeyboardModifiers) {
         0x2A => modifiers.lshift = false,
         0x36 => modifiers.rshift = false,
         0x1D => modifiers.lctrl = false,
-        0xE0 => modifiers.rctrl = false, // Right Ctrl release (extended)
         0x38 => modifiers.lalt = false,
         _ => {} // Other keys don't need release handling
     }

@@ -1,36 +1,37 @@
 //! Context switching implementation for Fullerene OS
 
 use crate::process::ProcessContext;
+use memoffset::offset_of;
 
 /// Offsets for ProcessContext fields in the assembly code
 struct ContextOffsets;
 
 /// Context field offsets (in bytes, assuming 8-byte alignment)
 impl ContextOffsets {
-    const RAX: usize = 0;
-    const RBX: usize = 1 * 8;
-    const RCX: usize = 2 * 8;
-    const RDX: usize = 3 * 8;
-    const RSI: usize = 4 * 8;
-    const RDI: usize = 5 * 8;
-    const RBP: usize = 6 * 8;
-    const RSP: usize = 7 * 8;
-    const R8: usize = 8 * 8;
-    const R9: usize = 9 * 8;
-    const R10: usize = 10 * 8;
-    const R11: usize = 11 * 8;
-    const R12: usize = 12 * 8;
-    const R13: usize = 13 * 8;
-    const R14: usize = 14 * 8;
-    const R15: usize = 15 * 8;
-    const RFLAGS: usize = 16 * 8;
-    const RIP: usize = 17 * 8;
-    const CS: usize = 18 * 8;
-    const SS: usize = 19 * 8;
-    const DS: usize = 20 * 8;
-    const ES: usize = 21 * 8;
-    const FS: usize = 22 * 8;
-    const GS: usize = 23 * 8;
+    const RAX: usize = offset_of!(ProcessContext, rax);
+    const RBX: usize = offset_of!(ProcessContext, rbx);
+    const RCX: usize = offset_of!(ProcessContext, rcx);
+    const RDX: usize = offset_of!(ProcessContext, rdx);
+    const RSI: usize = offset_of!(ProcessContext, rsi);
+    const RDI: usize = offset_of!(ProcessContext, rdi);
+    const RBP: usize = offset_of!(ProcessContext, rbp);
+    const RSP: usize = offset_of!(ProcessContext, rsp);
+    const R8: usize = offset_of!(ProcessContext, r8);
+    const R9: usize = offset_of!(ProcessContext, r9);
+    const R10: usize = offset_of!(ProcessContext, r10);
+    const R11: usize = offset_of!(ProcessContext, r11);
+    const R12: usize = offset_of!(ProcessContext, r12);
+    const R13: usize = offset_of!(ProcessContext, r13);
+    const R14: usize = offset_of!(ProcessContext, r14);
+    const R15: usize = offset_of!(ProcessContext, r15);
+    const RFLAGS: usize = offset_of!(ProcessContext, rflags);
+    const RIP: usize = offset_of!(ProcessContext, rip);
+    const CS: usize = offset_of!(ProcessContext, cs);
+    const SS: usize = offset_of!(ProcessContext, ss);
+    const DS: usize = offset_of!(ProcessContext, ds);
+    const ES: usize = offset_of!(ProcessContext, es);
+    const FS: usize = offset_of!(ProcessContext, fs);
+    const GS: usize = offset_of!(ProcessContext, gs);
 }
 
 /// Save current process context and switch to next
