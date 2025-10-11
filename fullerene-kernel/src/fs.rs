@@ -69,8 +69,9 @@ pub fn open_file(name: &str) -> Result<FileDescriptor, FsError> {
     // Acquire locks in consistent order: FILESYSTEM then OPEN_FILES then NEXT_FD
     let fs = FILESYSTEM.lock();
     let file_arc = fs.get(name).ok_or(FsError::FileNotFound)?.clone();
+    drop(fs); // Release FILESYSTEM lock early to prevent deadlocks
 
-    // While still holding FILESYSTEM lock, acquire OPEN_FILES and NEXT_FD
+    // Now acquire OPEN_FILES and NEXT_FD
     let mut open_files = OPEN_FILES.lock();
     let mut next_fd = NEXT_FD.lock();
 
@@ -78,11 +79,6 @@ pub fn open_file(name: &str) -> Result<FileDescriptor, FsError> {
     *next_fd += 1;
 
     open_files.insert(fd, Arc::clone(&file_arc));
-
-    // Explicitly drop locks in reverse order (optional but good practice)
-    drop(next_fd);
-    drop(open_files);
-    drop(fs);
 
     Ok(fd)
 }

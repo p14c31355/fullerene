@@ -99,7 +99,7 @@ impl Default for ProcessContext {
             rflags: 0x0202, // IF flag set
             rip: 0,
             cs: crate::gdt::kernel_code_selector().0 as u64,
-            ss: crate::gdt::user_data_selector().0 as u64, // Use kernel data? Wait, for kernel processes.
+            ss: crate::gdt::kernel_code_selector().0 as u64, // Kernel data same as code for ring 0
             // But since init_context overrides, and Default may be used sparingly, keep existing.
             ds: 0,
             es: 0,

@@ -51,6 +51,9 @@ struct ProgramHeader {
 // ELF constants
 const ELFMAG: [u8; 4] = [0x7F, b'E', b'L', b'F'];
 const PT_LOAD: u32 = 1;
+const PF_R: u32 = 0x4;
+const PF_W: u32 = 0x2;
+const PF_X: u32 = 0x1;
 
 /// Load a program from raw bytes and create a process for it
 pub fn load_program(
@@ -170,9 +173,14 @@ fn load_segment(
             .ok_or(LoadError::OutOfMemory)?;
 
         // Map the virtual page to the physical frame
-        use x86_64::structures::paging::PageTableFlags;
-        let flags =
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+        use x86_64::structures::paging::{PageTableFlags};
+        let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+        if ph.flags & PF_W != 0 {
+            flags |= PageTableFlags::WRITABLE;
+        }
+        if ph.flags & PF_X == 0 {
+            flags |= PageTableFlags::NO_EXECUTE;
+        }
 
         map_user_page(page_table, page_vaddr, frame.start_address(), flags)?;
     }

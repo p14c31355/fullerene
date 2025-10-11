@@ -239,9 +239,14 @@ fn copy_user_string(ptr: *const u8, max_len: usize) -> Result<String, SyscallErr
 fn syscall_open(filename: *const u8, _flags: c_int, _mode: u32) -> SyscallResult {
     // Safely copy the filename from user space
     let filename_str = copy_user_string(filename, 256)?;
-    // user.rs
-    // For now, always fail (no filesystem yet)
-    Err(SyscallError::FileNotFound)
+
+    // TODO: Use flags to determine open mode (read, write, create, etc.)
+    // For now, attempt to open existing file
+    match crate::fs::open_file(&filename_str) {
+        Ok(fd) => Ok(fd as u64),
+        Err(crate::fs::FsError::FileNotFound) => Err(SyscallError::FileNotFound),
+        Err(_) => Err(SyscallError::PermissionDenied),
+    }
 }
 
 /// Close system call
@@ -298,7 +303,15 @@ pub mod user {
 
     /// Make a system call (user space wrapper)
     #[inline(always)]
-    pub unsafe fn syscall(syscall_num: SyscallNumber, arg1: u64, arg2: u64, arg3: u64) -> u64 {
+    pub unsafe fn syscall(
+        syscall_num: SyscallNumber,
+        arg1: u64,
+        arg2: u64,
+        arg3: u64,
+        arg4: u64,
+        arg5: u64,
+        arg6: u64,
+    ) -> u64 {
         let mut result: u64;
         core::arch::asm!(
             "syscall",
@@ -306,6 +319,9 @@ pub mod user {
             in("rdi") arg1,
             in("rsi") arg2,
             in("rdx") arg3,
+            in("r10") arg4,
+            in("r8") arg5,
+            in("r9") arg6,
             lateout("rax") result,
             // syscall clobbers rcx and r11
             out("rcx") _,
@@ -316,7 +332,7 @@ pub mod user {
 
     /// Exit wrapper
     pub fn exit(code: i32) -> ! {
-        unsafe { syscall(SyscallNumber::Exit, code as u64, 0, 0) };
+        unsafe { syscall(SyscallNumber::Exit, code as u64, 0, 0, 0, 0, 0) };
         loop {} // Should not reach here
     }
 
@@ -328,13 +344,16 @@ pub mod user {
                 fd as u64,
                 buf.as_ptr() as u64,
                 buf.len() as u64,
+                0,
+                0,
+                0,
             ) as i64
         }
     }
 
     /// Get PID wrapper
     pub fn getpid() -> u64 {
-        unsafe { syscall(SyscallNumber::GetPid, 0, 0, 0) }
+        unsafe { syscall(SyscallNumber::GetPid, 0, 0, 0, 0, 0, 0) }
     }
 }
 

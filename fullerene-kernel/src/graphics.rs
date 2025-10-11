@@ -251,10 +251,28 @@ impl<T: PixelType> DrawTarget for FramebufferWriter<T> {
                                 | ((color.g() as u32) << 8)
                                 | (color.r() as u32)
                         }
-                        Some(_) => {
-                            // Unsupported format or PixelBitMask - use RGB as fallback
+                        Some(EfiGraphicsPixelFormat::PixelBitMask) => {
+                            // PixelBitMask format - not implemented, use RGB fallback
                             petroleum::serial::serial_log(format_args!(
-                                "Warning: Pixel format not fully supported, using RGB fallback\n"
+                                "Warning: PixelBitMask pixel format not supported, using RGB fallback\n"
+                            ));
+                            ((color.r() as u32) << 16)
+                                | ((color.g() as u32) << 8)
+                                | (color.b() as u32)
+                        }
+                        Some(EfiGraphicsPixelFormat::PixelBltOnly) => {
+                            // PixelBltOnly format - not supported, use RGB fallback
+                            petroleum::serial::serial_log(format_args!(
+                                "Warning: PixelBltOnly pixel format not supported, using RGB fallback\n"
+                            ));
+                            ((color.r() as u32) << 16)
+                                | ((color.g() as u32) << 8)
+                                | (color.b() as u32)
+                        }
+                        Some(EfiGraphicsPixelFormat::PixelFormatMax) => {
+                            // Invalid format - use RGB fallback
+                            petroleum::serial::serial_log(format_args!(
+                                "Warning: Invalid pixel format, using RGB fallback\n"
                             ));
                             ((color.r() as u32) << 16)
                                 | ((color.g() as u32) << 8)

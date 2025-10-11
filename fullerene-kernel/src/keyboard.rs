@@ -124,6 +124,8 @@ fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> 
         // Special keys - we handle a few important ones
         0x1C => Some(b'\n'), // Enter
         0x0E => Some(0x08),  // Backspace
+        0x0F => Some(b'\t'), // Tab
+        0x01 => Some(27),    // Escape
 
         _ => None,
     }

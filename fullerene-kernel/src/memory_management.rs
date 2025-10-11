@@ -195,6 +195,7 @@ pub fn free_user_memory(
         let page_addr = addr + ((i * 4096) as u64);
         unmap_user_page(page_table, page_addr)?;
         // TODO: Deallocate the physical frame - BootInfoFrameAllocator does not support deallocation
+        // For now, we can't deallocate, so leaking memory for user processes
     }
 
     Ok(())
