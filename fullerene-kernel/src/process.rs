@@ -31,7 +31,7 @@ pub enum ProcessState {
 
 /// Process context for context switching
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct ProcessContext {
     /// General purpose registers
     pub rax: u64,
