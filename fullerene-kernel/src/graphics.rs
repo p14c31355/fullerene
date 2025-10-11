@@ -282,13 +282,14 @@ impl<T: PixelType> FramebufferWriter<T> {
     fn rbg888_to_pixel_format(&self, color: Rgb888) -> u32 {
         let rgb = || rgb_pixel(color.r(), color.g(), color.b());
         let bgr = || rgb_pixel(color.b(), color.g(), color.r());
-        let fallback = || { unsupported_pixel_format_log(); rgb() };
         #[allow(non_exhaustive_omitted_patterns)]
         match self.info.pixel_format {
             Some(EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor) => rgb(),
             Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor) => bgr(),
-            Some(_) => fallback(),
-            None => grayscale_intensity(color),
+            // Cirrus VGA commonly reports PixelBitMask but expects RGB format
+            Some(EfiGraphicsPixelFormat::PixelBitMask) |
+            Some(_) => rgb(), // Treat all unknown formats as RGB
+            None => rgb(), // UEFI mode shouldn't be using grayscale
         }
     }
 }
@@ -373,6 +374,8 @@ pub static WRITER_BIOS: Once<Mutex<Box<dyn core::fmt::Write + Send + Sync>>> = O
 
 #[cfg(target_os = "uefi")]
 pub fn init(config: &FullereneFramebufferConfig) {
+    petroleum::serial::serial_log(format_args!("Graphics: Initializing UEFI framebuffer: {}x{}, stride: {}, pixel_format: {:?}\n",
+        config.width, config.height, config.stride, config.pixel_format));
     let writer = FramebufferWriter::<u32>::new(FramebufferInfo::new(config));
     let fb_writer = FramebufferWriter::<u32>::new(FramebufferInfo::new(config));
     WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer)));
@@ -440,11 +443,19 @@ pub fn draw_os_desktop() {
         let mut fb_writer = fb_writer.lock();
         debug_print_str("Graphics: Framebuffer writer locked\n");
 
+        petroleum::serial::serial_log(format_args!("Graphics: Framebuffer size: {}x{}, stride: {}\n",
+            fb_writer.info.width, fb_writer.info.height, fb_writer.info.stride));
+
         // Fill background with dark gray (suitable for VGA grayscale)
         let bg_color = 32u32; // Dark gray
         debug_print_str("Graphics: Filling background...\n");
         fill_background(&mut *fb_writer, bg_color);
         debug_print_str("Graphics: Background filled\n");
+
+        // Test: Draw a bright red rectangle in the corner
+        debug_print_str("Graphics: Drawing test red rectangle...\n");
+        draw_window(&mut *fb_writer, 10, 10, 50, 50, 0xFF0000u32, 0xFFFFFFu32); // Bright red, white border
+        debug_print_str("Graphics: Test red rectangle drawn\n");
 
         // Draw window frame
         debug_print_str("Graphics: Drawing window frame...\n");
