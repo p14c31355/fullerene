@@ -158,9 +158,7 @@ pub fn setup_memory_maps(
             }
         }
         if kernel_phys_start.is_null() {
-            kernel_log!("Still null, setting kernel_phys_start to 0");
-            kernel_phys_start = PhysAddr::new(0);
-        }
+            panic!("Could not determine kernel's physical start address from any EfiLoaderCode descriptor.");
     }
 
     // Assume identity mapping for now
