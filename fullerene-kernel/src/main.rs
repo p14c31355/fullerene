@@ -180,9 +180,12 @@ pub extern "efiapi" fn efi_main(
     };
     debug_print_str("Memory map slice created\n");
     kernel_log!("Memory map slice size: {}, descriptor count: {}", memory_map_size, descriptors.len());
-    for (i, desc) in descriptors.iter().enumerate() {
-        kernel_log!("Memory descriptor {}: type={:#x}, phys_start=0x{:x}, virt_start=0x{:x}, pages=0x{:x}",
-                   i, desc.type_ as u32, desc.physical_start, desc.virtual_start, desc.number_of_pages);
+    // Reduce log verbosity for faster boot
+    if descriptors.len() < 20 {
+        for (i, desc) in descriptors.iter().enumerate() {
+            kernel_log!("Memory descriptor {}: type={:#x}, phys_start=0x{:x}, virt_start=0x{:x}, pages=0x{:x}",
+                       i, desc.type_ as u32, desc.physical_start, desc.virtual_start, desc.number_of_pages);
+        }
     }
     kernel_log!("Memory map parsing: finished descriptor dump");
     MEMORY_MAP.call_once(|| unsafe { &*(descriptors as *const _) });
@@ -201,8 +204,6 @@ pub extern "efiapi" fn efi_main(
     for (i, desc) in descriptors.iter().enumerate() {
         let virt_start = desc.virtual_start;
         let virt_end = virt_start + desc.number_of_pages * 4096;
-        kernel_log!("Checking descriptor {}: virt_start=0x{:x}, virt_end=0x{:x}, type={:#x}",
-                   i, virt_start, virt_end, desc.type_ as u32);
         if kernel_virt_addr >= virt_start && kernel_virt_addr < virt_end {
             physical_memory_offset = VirtAddr::new(desc.virtual_start - desc.physical_start);
             found_in_descriptor = true;
@@ -213,6 +214,7 @@ pub extern "efiapi" fn efi_main(
                 kernel_log!("Kernel is in EfiLoaderCode, phys_start=0x{:x}",
                            kernel_phys_start.as_u64());
             }
+            break; // Found it, no need to continue scanning
         }
     }
 
@@ -259,7 +261,6 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Calling heap::reinit_page_table with offset 0x{:x} and kernel_phys_start 0x{:x}",
                physical_memory_offset.as_u64(), kernel_phys_start.as_u64());
     heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
-    kernel_log!("Page table reinit completed - this is where crash likely occurs");
     kernel_log!("Page table reinit completed successfully");
 
     // Set physical memory offset for process management
@@ -298,17 +299,30 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Heap initialized");
     kernel_log!("Serial initialized");
 
-    let vga_config = VgaFramebufferConfig {
-        address: 0xA0000,
-        width: 320,
-        height: 200,
-        bpp: 8,
-    };
-    kernel_log!("Initializing VGA graphics mode...");
-    graphics::init_vga(&vga_config);
-    kernel_log!("VGA graphics mode initialized, calling draw_os_desktop...");
-    graphics::draw_os_desktop();
-    kernel_log!("VGA graphics desktop drawn - if you see this, draw_os_desktop completed");
+    // Check if framebuffer config is available from UEFI bootloader
+    kernel_log!("Checking framebuffer config from UEFI bootloader...");
+    if let Some(fb_config) = find_framebuffer_config(system_table) {
+        kernel_log!("Found framebuffer config: {}x{} @ {:#x}",
+                   fb_config.width, fb_config.height, fb_config.address);
+        kernel_log!("Initializing UEFI graphics mode...");
+        graphics::init(&fb_config);
+        kernel_log!("UEFI graphics mode initialized, calling draw_os_desktop...");
+        graphics::draw_os_desktop();
+        kernel_log!("UEFI graphics desktop drawn - if you see this, draw_os_desktop completed");
+    } else {
+        kernel_log!("No framebuffer config found, falling back to VGA mode");
+        let vga_config = VgaFramebufferConfig {
+            address: 0xA0000,
+            width: 320,
+            height: 200,
+            bpp: 8,
+        };
+        kernel_log!("Initializing VGA graphics mode...");
+        graphics::init_vga(&vga_config);
+        kernel_log!("VGA graphics mode initialized, calling draw_os_desktop...");
+        graphics::draw_os_desktop();
+        kernel_log!("VGA graphics desktop drawn - if you see this, draw_os_desktop completed");
+    }
 
     kernel_log!("Kernel: running in main loop");
     kernel_log!("FullereneOS kernel is now running");

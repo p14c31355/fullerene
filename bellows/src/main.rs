@@ -163,21 +163,32 @@ fn init_gop(st: &EfiSystemTable) {
     let mode_ref = unsafe { &*gop_ref.mode };
 
     // Set GOP to graphics mode if not already
-    // Try mode 1 (typically 640x480 or similar graphics mode)
-    let target_mode = 1;
+    // Try mode 0 (typically 1024x768 or similar graphics mode)
+    let target_mode = 0;
     let current_mode = mode_ref.mode as usize;
     if target_mode != current_mode {
         petroleum::serial::_print(format_args!(
-            "GOP: Setting mode {} (text mode) (currently {})\n",
+            "GOP: Setting mode {} (graphics mode) (currently {})\n",
             target_mode, current_mode
         ));
         let status = (gop_ref.set_mode)(gop, target_mode as u32);
         if EfiStatus::from(status) != EfiStatus::Success {
             petroleum::serial::_print(format_args!(
-                "GOP: Failed to set mode, status: {:#x}, skipping GOP initialization.\n",
+                "GOP: Failed to set mode, status: {:#x}, trying next mode.\n",
                 status
             ));
-            return; // Early return on mode setting failure
+            // Try mode 1 as fallback
+            let fallback_mode = 1;
+            let status = (gop_ref.set_mode)(gop, fallback_mode as u32);
+            if EfiStatus::from(status) != EfiStatus::Success {
+                petroleum::serial::_print(format_args!(
+                    "GOP: Failed to set fallback mode, status: {:#x}, skipping GOP initialization.\n",
+                    status
+                ));
+                return; // Early return on mode setting failure
+            } else {
+                petroleum::serial::_print(format_args!("GOP: Fallback mode set successfully\n"));
+            }
         } else {
             petroleum::serial::_print(format_args!("GOP: Mode set successfully\n"));
         }

@@ -135,9 +135,9 @@ fn main() -> io::Result<()> {
         "1",
         "-machine",
         "pc,smm=off",
-        // Use Cirrus VGA for UEFI graphics
+        // Use std VGA for UEFI graphics compatibility
         "-vga",
-        "cirrus",
+        "std",
         "-display",
         "gtk",
         "-serial",
