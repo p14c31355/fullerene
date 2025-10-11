@@ -160,6 +160,7 @@ pub fn setup_memory_maps(
         if kernel_phys_start.is_null() {
             panic!("Could not determine kernel's physical start address from any EfiLoaderCode descriptor.");
     }
+    }
 
     // Assume identity mapping for now
     if !found_in_descriptor {
