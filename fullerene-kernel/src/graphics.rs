@@ -254,7 +254,7 @@ impl<T: PixelType> DrawTarget for FramebufferWriter<T> {
                 let x = coord.x as u32;
                 let y = coord.y as u32;
                 if x < self.info.width && y < self.info.height {
-                    let pixel_color = self.rbg888_to_pixel_format(color);
+                    let pixel_color = self.rgb888_to_pixel_format(color);
                     self.put_pixel(x, y, pixel_color);
                 }
             }
@@ -279,7 +279,7 @@ impl<T: PixelType> FramebufferWriter<T> {
         }
     }
 
-    fn rbg888_to_pixel_format(&self, color: Rgb888) -> u32 {
+        fn rgb888_to_pixel_format(&self, color: Rgb888) -> u32 {
         let rgb = || rgb_pixel(color.r(), color.g(), color.b());
         let bgr = || rgb_pixel(color.b(), color.g(), color.r());
         #[allow(non_exhaustive_omitted_patterns)]
@@ -289,7 +289,7 @@ impl<T: PixelType> FramebufferWriter<T> {
             // Cirrus VGA commonly reports PixelBitMask but expects RGB format
             Some(EfiGraphicsPixelFormat::PixelBitMask) |
             Some(_) => rgb(), // Treat all unknown formats as RGB
-            None => rgb(), // UEFI mode shouldn't be using grayscale
+            None => grayscale_intensity(color), // UEFI mode shouldn't be using grayscale
         }
     }
 }
