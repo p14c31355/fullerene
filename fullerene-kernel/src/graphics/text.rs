@@ -3,7 +3,7 @@ use alloc::boxed::Box; // Import Box
 use embedded_graphics::{
     geometry::Point,
     mono_font::{MonoTextStyle, ascii::FONT_6X10},
-    pixelcolor::Rgb888,
+    pixelcolor::*,
     prelude::*,
     text::Text,
 };
@@ -24,7 +24,7 @@ fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result 
     const CHAR_WIDTH: i32 = FONT_6X10.character_size.width as i32;
     const CHAR_HEIGHT: i32 = FONT_6X10.character_size.height as i32;
 
-    let fg_color = u32_to_rgb888(writer.get_fg_color());
+    let fg_color = super::u32_to_rgb888(writer.get_fg_color());
 
     let style = MonoTextStyle::new(&FONT_6X10, fg_color);
     let mut lines = s.split_inclusive('\n');
@@ -75,35 +75,6 @@ fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result 
 
     writer.set_position(current_pos.x as u32, current_pos.y as u32);
     Ok(())
-}
-
-#[derive(Clone, Copy)]
-struct ColorScheme {
-    fg: u32,
-    bg: u32,
-}
-
-impl ColorScheme {
-    const UEFI_GREEN_ON_BLACK: Self = Self {
-        fg: 0x00FF00u32,
-        bg: 0x000000u32,
-    };
-    const VGA_GREEN_ON_BLACK: Self = Self {
-        fg: 0x02u32,
-        bg: 0x00u32,
-    };
-}
-
-fn rgb_pixel(r: u8, g: u8, b: u8) -> u32 {
-    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
-}
-
-pub fn u32_to_rgb888(color: u32) -> Rgb888 {
-    Rgb888::new(
-        ((color >> 16) & 0xFF) as u8,
-        ((color >> 8) & 0xFF) as u8,
-        (color & 0xFF) as u8,
-    )
 }
 
 fn unsupported_pixel_format_log() {

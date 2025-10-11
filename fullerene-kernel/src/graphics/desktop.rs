@@ -79,7 +79,7 @@ fn draw_desktop_internal(fb_writer: &mut impl FramebufferLike, mode: &str) {
 }
 
 fn fill_background(writer: &mut impl FramebufferLike, color: u32) {
-    let color_rgb = super::text::u32_to_rgb888(color);
+    let color_rgb = super::u32_to_rgb888(color);
     let style = PrimitiveStyleBuilder::new().fill_color(color_rgb).build();
     let rect = Rectangle::new(
         embedded_graphics::geometry::Point::new(0, 0),
@@ -97,8 +97,8 @@ fn draw_window<W: FramebufferLike>(
     bg_color: u32,
     border_color: u32,
 ) {
-    let bg_rgb = super::text::u32_to_rgb888(bg_color);
-    let border_rgb = super::text::u32_to_rgb888(border_color);
+    let bg_rgb = super::u32_to_rgb888(bg_color);
+    let border_rgb = super::u32_to_rgb888(border_color);
     let style = PrimitiveStyleBuilder::new()
         .fill_color(bg_rgb)
         .stroke_color(border_rgb)
@@ -112,7 +112,7 @@ fn draw_taskbar<W: FramebufferLike>(writer: &mut W, color: u32) {
     let height = writer.get_height();
     let taskbar_height = 40;
 
-    let color_rgb = super::text::u32_to_rgb888(color);
+    let color_rgb = super::u32_to_rgb888(color);
     let style = PrimitiveStyleBuilder::new().fill_color(color_rgb).build();
     let rect = Rectangle::new(
         embedded_graphics::geometry::Point::new(0, (height - taskbar_height) as i32),
@@ -134,7 +134,7 @@ fn draw_taskbar<W: FramebufferLike>(writer: &mut W, color: u32) {
 
 fn draw_icon<W: FramebufferLike>(writer: &mut W, x: u32, y: u32, _label: &str, color: u32) {
     const ICON_SIZE: u32 = 48;
-    let color_rgb = super::text::u32_to_rgb888(color);
+    let color_rgb = super::u32_to_rgb888(color);
     let style = PrimitiveStyleBuilder::new().fill_color(color_rgb).build();
     let rect = Rectangle::new(
         embedded_graphics::geometry::Point::new(x as i32, y as i32),
