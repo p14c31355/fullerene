@@ -55,10 +55,7 @@ macro_rules! kernel_log {
     };
 }
 
-// Helper function for early debug prints to serial
-fn print_kernel(msg: &str) {
-    write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
-}
+// Removved helper function, use write_serial_bytes! directly
 
 // Generic helper for searching memory descriptors
 fn find_memory_descriptor_address<F>(
@@ -134,7 +131,7 @@ pub extern "efiapi" fn efi_main(
     debug_print_hex(memory_map_size);
     debug_print_str("\n");
 
-    print_kernel("Kernel: starting to parse parameters.\n");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: starting to parse parameters.\n");
 
     // Verify our own address as sanity check for PE relocation
     let self_addr = efi_main as u64;

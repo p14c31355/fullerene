@@ -7,17 +7,8 @@ use crate::process;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::c_int;
+use petroleum::write_serial_bytes;
 use x86_64::VirtAddr;
-
-/// Helper function for serial port writes (from main.rs)
-unsafe fn write_serial_bytes(port: u16, status_port: u16, bytes: &[u8]) {
-    for &byte in bytes {
-        // Wait for the serial port to be ready
-        while (core::ptr::read_volatile(status_port as *const u8) & 0x20) == 0 {}
-        // Write the byte
-        core::ptr::write_volatile(port as *mut u8, byte);
-    }
-}
 
 /// Helper function to validate user buffer access
 fn validate_user_buffer(ptr: usize, count: usize, allow_kernel: bool) -> Result<(), SyscallError> {

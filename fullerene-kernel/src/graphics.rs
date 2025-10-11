@@ -54,7 +54,7 @@ fn write_text<W: FramebufferLike + DrawTarget<Color = Rgb888>>(
             text.draw(writer).ok();
 
             // Advance position by the rendered text width
-            current_pos.x += (CHAR_WIDTH * line_content.chars().count() as i32);
+            current_pos.x += CHAR_WIDTH * line_content.chars().count() as i32;
         }
 
         if has_newline {

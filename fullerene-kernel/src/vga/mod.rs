@@ -106,55 +106,7 @@ impl TextBufferOperations for VgaBuffer {
     }
 }
 
-// Additional methods
-impl VgaBuffer {
-    fn write_string(&mut self, s: &str) {
-        for byte in s.bytes() {
-            if byte == b'\n' {
-                self.new_line();
-            } else {
-                if self.column_position >= BUFFER_WIDTH {
-                    self.new_line();
-                }
-                let row = self.row_position;
-                let col = self.column_position;
-                let screen_char = ScreenChar {
-                    ascii_character: byte,
-                    color_code: self.color_code,
-                };
-                self.set_char_at(row, col, screen_char);
-                self.column_position += 1;
-            }
-        }
-    }
 
-    fn new_line(&mut self) {
-        if self.row_position < BUFFER_HEIGHT - 1 {
-            self.row_position += 1;
-        } else {
-            self.scroll_up();
-        }
-        self.column_position = 0;
-    }
-
-    fn clear_row(&mut self, row: usize) {
-        let blank = ScreenChar {
-            ascii_character: b' ',
-            color_code: self.color_code,
-        };
-        for col in 0..BUFFER_WIDTH {
-            self.set_char_at(row, col, blank);
-        }
-    }
-
-    fn clear_screen(&mut self) {
-        for row in 0..BUFFER_HEIGHT {
-            self.clear_row(row);
-        }
-        self.row_position = 0;
-        self.column_position = 0;
-    }
-}
 
 // Global singleton
 pub static VGA_BUFFER: Once<Mutex<VgaBuffer>> = Once::new();
@@ -257,67 +209,6 @@ mod tests {
                 height,
                 width,
             }
-        }
-
-        fn write_byte(&mut self, byte: u8) {
-            match byte {
-                b'\n' => self.new_line(),
-                byte => {
-                    if self.column_position >= self.width {
-                        self.new_line();
-                    }
-                    let index = self.row_position * self.width + self.column_position;
-                    self.buffer[index] = ScreenChar {
-                        ascii_character: byte,
-                        color_code: self.color_code,
-                    };
-                    self.column_position += 1;
-                }
-            }
-        }
-
-        fn write_string(&mut self, s: &str) {
-            for byte in s.bytes() {
-                match byte {
-                    0x20..=0x7e | b'\n' => self.write_byte(byte),
-                    _ => self.write_byte(0xfe),
-                }
-            }
-        }
-
-        fn new_line(&mut self) {
-            self.column_position = 0;
-            if self.row_position < self.height - 1 {
-                self.row_position += 1;
-            } else {
-                for row in 1..self.height {
-                    for col in 0..self.width {
-                        let src_index = row * self.width + col;
-                        let dest_index = (row - 1) * self.width + col;
-                        self.buffer[dest_index] = self.buffer[src_index];
-                    }
-                }
-                self.clear_row(self.height - 1);
-            }
-        }
-
-        fn clear_row(&mut self, row: usize) {
-            let blank_char = ScreenChar {
-                ascii_character: b' ',
-                color_code: self.color_code,
-            };
-            for col in 0..self.width {
-                let index = row * self.width + col;
-                self.buffer[index] = blank_char;
-            }
-        }
-
-        fn clear_screen(&mut self) {
-            for row in 0..self.height {
-                self.clear_row(row);
-            }
-            self.column_position = 0;
-            self.row_position = 0;
         }
 
         fn get_char(&self, row: usize, col: usize) -> Option<ScreenChar> {
