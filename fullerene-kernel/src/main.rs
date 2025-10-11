@@ -247,14 +247,19 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Searching for framebuffer config table...");
     if let Some(config) = find_framebuffer_config(system_table) {
         if config.address != 0 {
-            kernel_log!("GOP graphics initialization skipped (text mode)");
+            kernel_log!("Initializing graphics mode...");
+            graphics::init(config);
+            kernel_log!("Graphics mode initialized");
+            // Don't clear for now, let graphics module handle
+            graphics::draw_os_desktop();
         } else {
             kernel_log!("Framebuffer address is 0, VGA will handle display");
+            println!("Hello QEMU by FullereneOS");
         }
     } else {
         kernel_log!("Fullerene Framebuffer Config Table not found");
+        println!("Hello QEMU by FullereneOS");
     }
-    println!("Hello QEMU by FullereneOS");
 
     kernel_log!("Kernel: running in main loop");
     kernel_log!("FullereneOS kernel is now running");

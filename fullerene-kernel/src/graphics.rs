@@ -185,7 +185,7 @@ impl FramebufferInfo {
 }
 
 // Generic pixel type trait for type safety
-trait PixelType: Copy {
+trait PixelType: Copy + Send + Sync {
     fn bytes_per_pixel() -> u32;
     fn from_u32(color: u32) -> Self;
     fn to_generic(color: u32) -> u32;
@@ -215,7 +215,7 @@ impl PixelType for u8 {
     }
 }
 
-trait FramebufferLike {
+trait FramebufferLike: Send + Sync {
     fn put_pixel(&self, x: u32, y: u32, color: u32);
     fn clear_screen(&self);
     fn get_width(&self) -> u32;
@@ -359,14 +359,18 @@ impl<T: PixelType> core::fmt::Write for FramebufferWriter<T> {
 #[cfg(target_os = "uefi")]
 pub static WRITER_UEFI: Once<Mutex<Box<dyn core::fmt::Write + Send + Sync>>> = Once::new();
 
+#[cfg(target_os = "uefi")]
+pub static FRAMEBUFFER_UEFI: Once<Mutex<FramebufferWriter<u32>>> = Once::new();
+
 #[cfg(not(target_os = "uefi"))]
 pub static WRITER_BIOS: Once<Mutex<Box<dyn core::fmt::Write + Send + Sync>>> = Once::new();
 
 #[cfg(target_os = "uefi")]
 pub fn init(config: &FullereneFramebufferConfig) {
     let writer = FramebufferWriter::<u32>::new(FramebufferInfo::new(config));
-    writer.clear_screen();
+    let fb_writer = FramebufferWriter::<u32>::new(FramebufferInfo::new(config));
     WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer)));
+    FRAMEBUFFER_UEFI.call_once(|| Mutex::new(fb_writer));
 }
 
 // VgaPorts is imported from petroleum
@@ -416,6 +420,94 @@ pub fn _print(args: fmt::Arguments) {
 #[macro_export]
 macro_rules! print {
     ($($arg:tt)*) => ($crate::graphics::_print(format_args!($($arg)*)));
+}
+
+// Draw OS-like desktop interface
+pub fn draw_os_desktop() {
+    #[cfg(target_os = "uefi")]
+    {
+        if let Some(fb_writer) = FRAMEBUFFER_UEFI.get() {
+            let mut fb_writer = fb_writer.lock();
+
+        // Fill background with dark blue color (BGR: 0x008000 RGB)
+        let bg_color = 0x800000u32;
+            fill_background(&mut *fb_writer, bg_color);
+
+            // Draw window frame
+            draw_window(&mut *fb_writer, 50, 50, 400, 200, 0xFFFFFFu32, 0x008080u32);
+
+            // Draw taskbar at bottom
+            draw_taskbar(&mut *fb_writer, 0xC0C0C0u32);
+
+            // Draw some icons
+            draw_icon(&mut *fb_writer, 100, 100, "Terminal", 0x008000u32);
+            draw_icon(&mut *fb_writer, 100, 150, "Settings", 0xFFA500u32);
+        }
+    }
+}
+
+fn fill_background<W: FramebufferLike>(writer: &mut W, color: u32) {
+    let width = writer.get_width();
+    let height = writer.get_height();
+    for y in 0..height {
+        for x in 0..width {
+            writer.put_pixel(x, y, color);
+        }
+    }
+}
+
+fn draw_window<W: FramebufferLike>(
+    writer: &mut W,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    bg_color: u32,
+    border_color: u32,
+) {
+    // Fill background
+    for dy in 1..h - 1 {
+        for dx in 1..w - 1 {
+            writer.put_pixel(x + dx, y + dy, bg_color);
+        }
+    }
+
+    // Draw border
+    for dx in 0..w {
+        writer.put_pixel(x + dx, y, border_color);
+        writer.put_pixel(x + dx, y + h - 1, border_color);
+    }
+    for dy in 0..h {
+        writer.put_pixel(x, y + dy, border_color);
+        writer.put_pixel(x + w - 1, y + dy, border_color);
+    }
+}
+
+fn draw_taskbar<W: FramebufferLike>(writer: &mut W, color: u32) {
+    let width = writer.get_width();
+    let height = writer.get_height();
+    let taskbar_height = 40;
+
+    for y in height - taskbar_height..height {
+        for x in 0..width {
+            writer.put_pixel(x, y, color);
+        }
+    }
+
+    // Simple start button
+    draw_window(writer, 0, height - taskbar_height + 5, 80, 30, 0xE0E0E0u32, 0x000000u32);
+}
+
+fn draw_icon<W: FramebufferLike>(writer: &mut W, x: u32, y: u32, _label: &str, color: u32) {
+    // Draw a simple solid-colored square icon
+    const ICON_SIZE: u32 = 48;
+    for dy in 0..ICON_SIZE {
+        for dx in 0..ICON_SIZE {
+            if x + dx < writer.get_width() && y + dy < writer.get_height() {
+                writer.put_pixel(x + dx, y + dy, color);
+            }
+        }
+    }
 }
 
 #[macro_export]
