@@ -401,7 +401,7 @@ pub extern "x86-interrupt" fn timer_handler(stack_frame: InterruptStackFrame) {
     // Timer interrupt - handle timer ticks and scheduling
     *TICK_COUNTER.lock() += 1;
 
-    // Perform preemptive scheduling
+    // Perform preemptive scheduling with context switching
     unsafe {
         let old_pid = process::current_pid();
         process::schedule_next();
@@ -409,15 +409,8 @@ pub extern "x86-interrupt" fn timer_handler(stack_frame: InterruptStackFrame) {
 
         if let (Some(old_pid_val), Some(new_pid_val)) = (old_pid, new_pid) {
             if old_pid_val != new_pid_val {
-                // Save current process state from interrupt stack frame
-                save_current_context(old_pid_val, &stack_frame);
-
-                // Signal that context switch occurred - the interrupt return will
-                // restore the new process's state through cooperative switching
-                // Note: Full preemptive context switching requires manipulating
-                // the interrupt stack frame directly, which is complex. For now,
-                // we rely on the scheduler setting the next process and cooperative
-                // yields to switch between processes.
+                // Perform actual context switch to new process
+                process::context_switch(old_pid, new_pid_val);
             }
         }
     }
