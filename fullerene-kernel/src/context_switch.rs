@@ -84,7 +84,7 @@ pub unsafe fn switch_context(
             // Save RIP and RSP. This assumes a stack frame with a base pointer (rbp).
             "mov rax, [rbp + 8]",      // Get return address from stack frame.
             "mov [{0} + {rip}], rax",
-            "lea rax, [rbp]",          // Get current stack frame base as caller's RSP.
+            "lea rax, [rbp + 16]",      // Get caller's stack pointer.
             "mov [{0} + {rsp}], rax",
             // Save segment registers
             "mov ax, cs",
