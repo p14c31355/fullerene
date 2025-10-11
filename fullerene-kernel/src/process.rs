@@ -292,23 +292,22 @@ pub fn yield_current() {
 pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
     use crate::context_switch::switch_context;
 
-    // Get raw pointers to contexts to avoid holding lock during switch
     let mut process_list = PROCESS_LIST.lock();
 
     let old_proc_ptr = old_pid
         .and_then(|pid| process_list.iter_mut().find(|p| p.id == pid))
-        .map(|p| &mut **p as *mut Process);
+        .map(|p| p.as_mut() as *mut Process);
 
     let new_proc_ptr = process_list
         .iter()
         .find(|p| p.id == new_pid)
-        .map(|p| &**p as *const Process);
+        .map(|p| p.as_ref() as *const Process);
 
     if let Some(new_ptr) = new_proc_ptr {
         let old_context = old_proc_ptr.map(|p| &mut (*p).context);
         let new_context = &(*new_ptr).context;
 
-        // Drop the lock before the context switch to prevent deadlocks during timer interrupts
+        // Drop the lock before the context switch to prevent deadlocks.
         drop(process_list);
 
         switch_context(old_context, new_context);
