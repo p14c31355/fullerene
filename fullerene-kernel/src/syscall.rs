@@ -121,12 +121,32 @@ fn syscall_exit(exit_code: i32) -> SyscallResult {
 }
 
 fn syscall_fork() -> SyscallResult {
-    // Clone the current process (not implemented yet)
-    // For now, create a new process with a dummy entry point
-    // TODO: Implement actual process cloning
-    let dummy_entry = VirtAddr::new(0); // Will cause kernel panic, replace with actual cloning
-    let pid = process::create_process("forked_child", dummy_entry);
-    Ok(pid)
+    let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
+
+    let process_list = crate::process::PROCESS_LIST.lock();
+    let parent_process = process_list.iter().find(|p| p.id == current_pid)
+        .ok_or(SyscallError::NoSuchProcess)?;
+
+    // Clone the parent process name (use parent name for now, full clone later)
+    let child_name = "fork_child"; // Use static string to avoid lifetime issues
+
+    // For now, create a basic child process
+    // In a full implementation, we would:
+    // 1. Clone the process memory space
+    // 2. Copy the page tables
+    // 3. Set up the child context to return 0 from fork
+    // 4. Set up the parent to return the child PID
+
+    let child_entry = parent_process.entry_point; // Same entry point for now
+    drop(process_list); // Release lock
+
+    let child_pid = process::create_process(child_name, child_entry);
+
+    // TODO: Implement full process cloning with memory copying
+    // For now, we return the child PID from fork (should return 0 in child, child_pid in parent)
+    // This is a significant simplification - a real fork would require context switching
+
+    Ok(child_pid)
 }
 
 /// Read system call
@@ -135,9 +155,50 @@ fn syscall_read(fd: c_int, buffer: *mut u8, count: usize) -> SyscallResult {
         return Err(SyscallError::InvalidArgument);
     }
 
+    // Check if buffer is valid for user space
+    use crate::memory_management::is_user_address;
+    use x86_64::VirtAddr;
+
+    let start_addr = VirtAddr::new(buffer as u64);
+    if !is_user_address(start_addr) {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Check for overflow in end address calculation
+    if let Some(end_u64) = (buffer as u64).checked_add(count as u64 - 1) {
+        let end_addr = VirtAddr::new(end_u64);
+        if !is_user_address(end_addr) {
+            return Err(SyscallError::InvalidArgument);
+        }
+    } else {
+        return Err(SyscallError::InvalidArgument);
+    }
+
     // For now, only support reading from stdin (fd 0)
-    // Return 0 (EOF) for simplicity
-    Ok(0)
+    if fd == 0 {
+        // Read from keyboard input buffer
+        let data = unsafe { core::slice::from_raw_parts_mut(buffer, count) };
+        let bytes_read = crate::keyboard::drain_line_buffer(data);
+
+        // Convert line ending if present
+        if bytes_read > 0 && bytes_read <= count {
+            let last_idx = bytes_read - 1;
+            if data[last_idx] == b'\n' && last_idx + 1 < count {
+                data[last_idx + 1] = b'\0'; // Add null terminator for C strings
+            }
+        }
+
+        Ok(bytes_read as u64)
+    } else {
+        // Attempt to read from the file descriptor using fs module
+        let data = unsafe { core::slice::from_raw_parts_mut(buffer, count) };
+        match crate::fs::read_file(fd, data) {
+            Ok(bytes_read) => Ok(bytes_read as u64),
+            Err(crate::fs::FsError::InvalidFileDescriptor) => Err(SyscallError::BadFileDescriptor),
+            Err(crate::fs::FsError::PermissionDenied) => Err(SyscallError::PermissionDenied),
+            Err(_) => Err(SyscallError::FileNotFound),
+        }
+    }
 }
 
 /// Write system call
@@ -250,16 +311,45 @@ fn syscall_open(filename: *const u8, _flags: c_int, _mode: u32) -> SyscallResult
 }
 
 /// Close system call
-fn syscall_close(_fd: c_int) -> SyscallResult {
-    // For now, always succeed
-    Ok(0)
+fn syscall_close(fd: c_int) -> SyscallResult {
+    if fd < 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Attempt to close the file descriptor using fs module
+    match crate::fs::close_file(fd) {
+        Ok(()) => Ok(0),
+        Err(crate::fs::FsError::InvalidFileDescriptor) => Err(SyscallError::BadFileDescriptor),
+        Err(_) => Err(SyscallError::InvalidArgument),
+    }
 }
 
 /// Wait system call
-fn syscall_wait(_pid: u64) -> SyscallResult {
-    // For now, just yield
-    process::yield_current();
-    Ok(0)
+fn syscall_wait(pid: u64) -> SyscallResult {
+    if pid == 0 {
+        // Wait for any child process (not implemented yet)
+        // For now, just yield
+        process::yield_current();
+        Ok(0)
+    } else {
+        // Wait for specific process to finish
+        // Check if the process exists and is a child (simplified check)
+        let process_list = crate::process::PROCESS_LIST.lock();
+        if let Some(process) = process_list.iter().find(|p| p.id == pid) {
+            if process.state == crate::process::ProcessState::Terminated {
+                // Process has already finished, return exit code
+                let exit_code = process.exit_code.unwrap_or(0);
+                Ok(exit_code as u64)
+            } else {
+                // Process is still running, block current process
+                drop(process_list); // Release lock
+                crate::process::block_current();
+                Ok(0)
+            }
+        } else {
+            Err(SyscallError::NoSuchProcess)
+        }
+    }
 }
 
 /// Get process ID
@@ -273,8 +363,43 @@ fn syscall_get_process_name(buffer: *mut u8, size: usize) -> SyscallResult {
         return Err(SyscallError::InvalidArgument);
     }
 
-    // For now, return empty string
-    Ok(0)
+    // Check if buffer is valid for user space
+    use crate::memory_management::is_user_address;
+    use x86_64::VirtAddr;
+
+    let start_addr = VirtAddr::new(buffer as u64);
+    if !is_user_address(start_addr) {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Check for overflow in buffer size
+    if let Some(end_u64) = (buffer as u64).checked_add(size as u64 - 1) {
+        let end_addr = VirtAddr::new(end_u64);
+        if !is_user_address(end_addr) {
+            return Err(SyscallError::InvalidArgument);
+        }
+    } else {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
+
+    let process_list = crate::process::PROCESS_LIST.lock();
+    if let Some(process) = process_list.iter().find(|p| p.id == current_pid) {
+        let name_bytes = process.name.as_bytes();
+        let copy_len = name_bytes.len().min(size - 1); // Leave room for null terminator
+
+        // Copy the process name to user buffer
+        unsafe {
+            core::ptr::copy_nonoverlapping(name_bytes.as_ptr(), buffer, copy_len);
+            // Add null terminator
+            *buffer.add(copy_len) = 0;
+        }
+
+        Ok(copy_len as u64)
+    } else {
+        Err(SyscallError::NoSuchProcess)
+    }
 }
 
 /// Yield system call
