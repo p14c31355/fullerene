@@ -236,57 +236,7 @@ impl<T: PixelType> DrawTarget for FramebufferWriter<T> {
                 let x = coord.x as u32;
                 let y = coord.y as u32;
                 if x < self.info.width && y < self.info.height {
-                    // Convert Rgb888 to the framebuffer pixel format
-                    #[allow(non_exhaustive_omitted_patterns)]
-                    let pixel_color = match self.info.pixel_format {
-                        Some(EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor) => {
-                            // RGB format: R in high byte, G, B, X
-                            ((color.r() as u32) << 16)
-                                | ((color.g() as u32) << 8)
-                                | (color.b() as u32)
-                        }
-                        Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor) => {
-                            // BGR format: B in high byte, G, R, X
-                            ((color.b() as u32) << 16)
-                                | ((color.g() as u32) << 8)
-                                | (color.r() as u32)
-                        }
-                        Some(EfiGraphicsPixelFormat::PixelBitMask) => {
-                            // PixelBitMask format - not implemented, use RGB fallback
-                            petroleum::serial::serial_log(format_args!(
-                                "Warning: PixelBitMask pixel format not supported, using RGB fallback\n"
-                            ));
-                            ((color.r() as u32) << 16)
-                                | ((color.g() as u32) << 8)
-                                | (color.b() as u32)
-                        }
-                        Some(EfiGraphicsPixelFormat::PixelBltOnly) => {
-                            // PixelBltOnly format - not supported, use RGB fallback
-                            petroleum::serial::serial_log(format_args!(
-                                "Warning: PixelBltOnly pixel format not supported, using RGB fallback\n"
-                            ));
-                            ((color.r() as u32) << 16)
-                                | ((color.g() as u32) << 8)
-                                | (color.b() as u32)
-                        }
-                        Some(EfiGraphicsPixelFormat::PixelFormatMax) => {
-                            // Invalid format - use RGB fallback
-                            petroleum::serial::serial_log(format_args!(
-                                "Warning: Invalid pixel format, using RGB fallback\n"
-                            ));
-                            ((color.r() as u32) << 16)
-                                | ((color.g() as u32) << 8)
-                                | (color.b() as u32)
-                        }
-                        None => {
-                            // VGA mode, use grayscale intensity
-                            let intensity = (color.r() as u32 * 77
-                                + color.g() as u32 * 150
-                                + color.b() as u32 * 29)
-                                / 256;
-                            intensity.min(255)
-                        }
-                    };
+                    let pixel_color = self.rbg888_to_pixel_format(color);
                     self.put_pixel(x, y, pixel_color);
                 }
             }
@@ -308,6 +258,59 @@ impl<T: PixelType> FramebufferWriter<T> {
             x_pos: 0,
             y_pos: 0,
             _phantom: core::marker::PhantomData,
+        }
+    }
+
+    fn rbg888_to_pixel_format(&self, color: Rgb888) -> u32 {
+        #[allow(non_exhaustive_omitted_patterns)]
+        match self.info.pixel_format {
+            Some(EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor) => {
+                // RGB format: R in high byte, G, B, X
+                ((color.r() as u32) << 16)
+                    | ((color.g() as u32) << 8)
+                    | (color.b() as u32)
+            }
+            Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor) => {
+                // BGR format: B in high byte, G, R, X
+                ((color.b() as u32) << 16)
+                    | ((color.g() as u32) << 8)
+                    | (color.r() as u32)
+            }
+            Some(EfiGraphicsPixelFormat::PixelBitMask) => {
+                // PixelBitMask format - not implemented, use RGB fallback
+                petroleum::serial::serial_log(format_args!(
+                    "Warning: PixelBitMask pixel format not supported, using RGB fallback\n"
+                ));
+                ((color.r() as u32) << 16)
+                    | ((color.g() as u32) << 8)
+                    | (color.b() as u32)
+            }
+            Some(EfiGraphicsPixelFormat::PixelBltOnly) => {
+                // PixelBltOnly format - not supported, use RGB fallback
+                petroleum::serial::serial_log(format_args!(
+                    "Warning: PixelBltOnly pixel format not supported, using RGB fallback\n"
+                ));
+                ((color.r() as u32) << 16)
+                    | ((color.g() as u32) << 8)
+                    | (color.b() as u32)
+            }
+            Some(EfiGraphicsPixelFormat::PixelFormatMax) => {
+                // Invalid format - use RGB fallback
+                petroleum::serial::serial_log(format_args!(
+                    "Warning: Invalid pixel format, using RGB fallback\n"
+                ));
+                ((color.r() as u32) << 16)
+                    | ((color.g() as u32) << 8)
+                    | (color.b() as u32)
+            }
+            None => {
+                // VGA mode, use grayscale intensity
+                let intensity = (color.r() as u32 * 77
+                    + color.g() as u32 * 150
+                    + color.b() as u32 * 29)
+                    / 256;
+                intensity.min(255)
+            }
         }
     }
 

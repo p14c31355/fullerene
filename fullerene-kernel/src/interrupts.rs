@@ -108,28 +108,33 @@ macro_rules! init_pic {
     }};
 }
 
-// APIC structure for register access
-struct Apic {
+// Generic APIC structure for register access using const generics
+struct Apic<const OFFSET: u32>;
+
+impl<const OFFSET: u32> Apic<OFFSET> {
+    fn new(base_addr: u64) -> ApicRaw {
+        ApicRaw { base_addr }
+    }
+}
+
+// Helper structure for dynamic register access
+struct ApicRaw {
     base_addr: u64,
 }
 
-impl Apic {
-    fn new(base_addr: u64) -> Self {
-        Self { base_addr }
-    }
-
-    unsafe fn read(&self, offset: u32) -> u32 {
+impl ApicRaw {
+    fn read(&self, offset: u32) -> u32 {
         let addr = (self.base_addr + offset as u64) as *mut u32;
         unsafe { addr.read_volatile() }
     }
 
-    unsafe fn write(&self, offset: u32, value: u32) {
+    fn write(&self, offset: u32, value: u32) {
         let addr = (self.base_addr + offset as u64) as *mut u32;
         unsafe { addr.write_volatile(value) }
     }
 }
 
-static APIC: Mutex<Option<Apic>> = Mutex::new(None);
+static APIC: Mutex<Option<ApicRaw>> = Mutex::new(None);
 
 // Helper functions for APIC setup
 fn disable_legacy_pic() {
@@ -158,15 +163,13 @@ fn get_apic_base() -> Option<u64> {
     }
 }
 
-fn enable_apic(apic: &mut Apic) {
-    unsafe {
-        // Enable APIC by setting bit 8 in spurious vector register
-        let spurious = apic.read(ApicOffsets::SPURIOUS_VECTOR);
-        apic.write(
-            ApicOffsets::SPURIOUS_VECTOR,
-            spurious | ApicFlags::SW_ENABLE | 0xFF,
-        );
-    }
+fn enable_apic(apic: &mut ApicRaw) {
+    // Enable APIC by setting bit 8 in spurious vector register
+    let spurious = apic.read(ApicOffsets::SPURIOUS_VECTOR);
+    apic.write(
+        ApicOffsets::SPURIOUS_VECTOR,
+        spurious | ApicFlags::SW_ENABLE | 0xFF,
+    );
 }
 
 // Macro to reduce repetitive IDT handler setup
@@ -221,7 +224,7 @@ pub fn init_apic() {
     let base_addr = get_apic_base().unwrap_or(0xFEE00000); // Default local APIC address
 
     // Initialize APIC
-    let mut apic = Apic::new(base_addr);
+    let mut apic = ApicRaw { base_addr };
     enable_apic(&mut apic);
 
     // Configure timer interrupt

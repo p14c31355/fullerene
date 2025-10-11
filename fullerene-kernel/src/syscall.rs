@@ -112,7 +112,7 @@ pub unsafe extern "C" fn handle_syscall(
     }
 }
 
-/// Exit system call
+// Exit system call
 fn syscall_exit(exit_code: i32) -> SyscallResult {
     let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
     process::terminate_process(pid, exit_code);

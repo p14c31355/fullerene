@@ -3,36 +3,25 @@
 use crate::process::ProcessContext;
 use memoffset::offset_of;
 
-/// Offsets for ProcessContext fields in the assembly code
-struct ContextOffsets;
+// Generate register offset constants using macro to reduce duplicative code
+macro_rules! define_register_offsets {
+    ($($reg:ident),*) => {
+        #[derive(Clone, Copy)]
+        pub struct ContextOffsets;
 
-/// Context field offsets (in bytes, assuming 8-byte alignment)
-impl ContextOffsets {
-    const RAX: usize = offset_of!(ProcessContext, rax);
-    const RBX: usize = offset_of!(ProcessContext, rbx);
-    const RCX: usize = offset_of!(ProcessContext, rcx);
-    const RDX: usize = offset_of!(ProcessContext, rdx);
-    const RSI: usize = offset_of!(ProcessContext, rsi);
-    const RDI: usize = offset_of!(ProcessContext, rdi);
-    const RBP: usize = offset_of!(ProcessContext, rbp);
-    const RSP: usize = offset_of!(ProcessContext, rsp);
-    const R8: usize = offset_of!(ProcessContext, r8);
-    const R9: usize = offset_of!(ProcessContext, r9);
-    const R10: usize = offset_of!(ProcessContext, r10);
-    const R11: usize = offset_of!(ProcessContext, r11);
-    const R12: usize = offset_of!(ProcessContext, r12);
-    const R13: usize = offset_of!(ProcessContext, r13);
-    const R14: usize = offset_of!(ProcessContext, r14);
-    const R15: usize = offset_of!(ProcessContext, r15);
-    const RFLAGS: usize = offset_of!(ProcessContext, rflags);
-    const RIP: usize = offset_of!(ProcessContext, rip);
-    const CS: usize = offset_of!(ProcessContext, cs);
-    const SS: usize = offset_of!(ProcessContext, ss);
-    const DS: usize = offset_of!(ProcessContext, ds);
-    const ES: usize = offset_of!(ProcessContext, es);
-    const FS: usize = offset_of!(ProcessContext, fs);
-    const GS: usize = offset_of!(ProcessContext, gs);
+        impl ContextOffsets {
+            $(
+                const $reg: usize = offset_of!(ProcessContext, $reg);
+            )*
+        }
+    };
 }
+
+define_register_offsets!(
+    rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp,
+    r8, r9, r10, r11, r12, r13, r14, r15,
+    rflags, rip, cs, ss, ds, es, fs, gs
+);
 
 /// Save current process context and switch to next
 ///
@@ -176,29 +165,29 @@ pub extern "C" fn switch_context(
         "jmp rax",
 
         // Compile-time constants for offsets
-        rip = const ContextOffsets::RIP,
-        rsp = const ContextOffsets::RSP,
-        rbp = const ContextOffsets::RBP,
-        rflags = const ContextOffsets::RFLAGS,
-        cs = const ContextOffsets::CS,
-        ss = const ContextOffsets::SS,
-        ds = const ContextOffsets::DS,
-        es = const ContextOffsets::ES,
-        fs = const ContextOffsets::FS,
-        gs = const ContextOffsets::GS,
-        rax = const ContextOffsets::RAX,
-        rbx = const ContextOffsets::RBX,
-        rcx = const ContextOffsets::RCX,
-        rdx = const ContextOffsets::RDX,
-        rdi = const ContextOffsets::RDI,
-        r8 = const ContextOffsets::R8,
-        r9 = const ContextOffsets::R9,
-        r10 = const ContextOffsets::R10,
-        r11 = const ContextOffsets::R11,
-        r12 = const ContextOffsets::R12,
-        r13 = const ContextOffsets::R13,
-        r14 = const ContextOffsets::R14,
-        r15 = const ContextOffsets::R15,
+        rip = const ContextOffsets::rip,
+        rsp = const ContextOffsets::rsp,
+        rbp = const ContextOffsets::rbp,
+        rflags = const ContextOffsets::rflags,
+        cs = const ContextOffsets::cs,
+        ss = const ContextOffsets::ss,
+        ds = const ContextOffsets::ds,
+        es = const ContextOffsets::es,
+        fs = const ContextOffsets::fs,
+        gs = const ContextOffsets::gs,
+        rax = const ContextOffsets::rax,
+        rbx = const ContextOffsets::rbx,
+        rcx = const ContextOffsets::rcx,
+        rdx = const ContextOffsets::rdx,
+        rdi = const ContextOffsets::rdi,
+        r8 = const ContextOffsets::r8,
+        r9 = const ContextOffsets::r9,
+        r10 = const ContextOffsets::r10,
+        r11 = const ContextOffsets::r11,
+        r12 = const ContextOffsets::r12,
+        r13 = const ContextOffsets::r13,
+        r14 = const ContextOffsets::r14,
+        r15 = const ContextOffsets::r15,
     );
 }
 
