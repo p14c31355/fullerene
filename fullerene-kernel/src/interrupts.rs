@@ -295,7 +295,7 @@ pub extern "x86-interrupt" fn page_fault_handler(
 fn handle_page_fault(
     fault_addr: x86_64::VirtAddr,
     error_code: PageFaultErrorCode,
-    stack_frame: InterruptStackFrame,
+    _stack_frame: InterruptStackFrame,
 ) {
     use crate::memory_management;
     use x86_64::registers::control::Cr2;
