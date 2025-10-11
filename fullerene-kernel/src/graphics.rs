@@ -10,6 +10,7 @@ use embedded_graphics::{
     mono_font::{MonoTextStyle, ascii::FONT_6X10},
     pixelcolor::Rgb888,
     prelude::*,
+    primitives::{PrimitiveStyleBuilder, Rectangle},
     text::Text,
 };
 use petroleum::common::VgaFramebufferConfig;
@@ -27,11 +28,7 @@ fn write_text<W: FramebufferLike + DrawTarget<Color = Rgb888>>(
     const CHAR_WIDTH: i32 = FONT_6X10.character_size.width as i32;
     const CHAR_HEIGHT: i32 = FONT_6X10.character_size.height as i32;
 
-    let fg_color = Rgb888::new(
-        ((writer.get_fg_color() >> 16) & 0xFF) as u8,
-        ((writer.get_fg_color() >> 8) & 0xFF) as u8,
-        (writer.get_fg_color() & 0xFF) as u8,
-    );
+    let fg_color = u32_to_rgb888(writer.get_fg_color());
 
     let style = MonoTextStyle::new(&FONT_6X10, fg_color);
     let mut lines = s.split_inclusive('\n');
@@ -104,6 +101,14 @@ impl ColorScheme {
 
 fn rgb_pixel(r: u8, g: u8, b: u8) -> u32 {
     ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+}
+
+fn u32_to_rgb888(color: u32) -> Rgb888 {
+    Rgb888::new(
+        ((color >> 16) & 0xFF) as u8,
+        ((color >> 8) & 0xFF) as u8,
+        (color & 0xFF) as u8,
+    )
 }
 
 fn grayscale_intensity(color: Rgb888) -> u32 {
@@ -472,17 +477,14 @@ pub fn draw_os_desktop() {
     debug_print_str("Graphics: BIOS mode desktop setup completed\n");
 }
 
-fn fill_background<W: FramebufferLike>(writer: &mut W, color: u32) {
-    let width = writer.get_width();
-    let height = writer.get_height();
-    for y in 0..height {
-        for x in 0..width {
-            writer.put_pixel(x, y, color);
-        }
-    }
+fn fill_background<W: FramebufferLike + DrawTarget<Color = Rgb888>>(writer: &mut W, color: u32) {
+    let color_rgb = u32_to_rgb888(color);
+    let style = PrimitiveStyleBuilder::new().fill_color(color_rgb).build();
+    let rect = Rectangle::new(Point::new(0, 0), Size::new(writer.get_width(), writer.get_height()));
+    rect.into_styled(style).draw(writer).ok();
 }
 
-fn draw_window<W: FramebufferLike>(
+fn draw_window<W: FramebufferLike + DrawTarget<Color = Rgb888>>(
     writer: &mut W,
     x: u32,
     y: u32,
@@ -491,49 +493,36 @@ fn draw_window<W: FramebufferLike>(
     bg_color: u32,
     border_color: u32,
 ) {
-    // Fill background
-    for dy in 1..h - 1 {
-        for dx in 1..w - 1 {
-            writer.put_pixel(x + dx, y + dy, bg_color);
-        }
-    }
-
-    // Draw border
-    for dx in 0..w {
-        writer.put_pixel(x + dx, y, border_color);
-        writer.put_pixel(x + dx, y + h - 1, border_color);
-    }
-    for dy in 0..h {
-        writer.put_pixel(x, y + dy, border_color);
-        writer.put_pixel(x + w - 1, y + dy, border_color);
-    }
+    let bg_rgb = u32_to_rgb888(bg_color);
+    let border_rgb = u32_to_rgb888(border_color);
+    let style = PrimitiveStyleBuilder::new()
+        .fill_color(bg_rgb)
+        .stroke_color(border_rgb)
+        .stroke_width(1)
+        .build();
+    let rect = Rectangle::new(Point::new(x as i32, y as i32), Size::new(w, h));
+    rect.into_styled(style).draw(writer).ok();
 }
 
-fn draw_taskbar<W: FramebufferLike>(writer: &mut W, color: u32) {
-    let width = writer.get_width();
+fn draw_taskbar<W: FramebufferLike + DrawTarget<Color = Rgb888>>(writer: &mut W, color: u32) {
     let height = writer.get_height();
     let taskbar_height = 40;
 
-    for y in height - taskbar_height..height {
-        for x in 0..width {
-            writer.put_pixel(x, y, color);
-        }
-    }
+    let color_rgb = u32_to_rgb888(color);
+    let style = PrimitiveStyleBuilder::new().fill_color(color_rgb).build();
+    let rect = Rectangle::new(Point::new(0, (height - taskbar_height) as i32), Size::new(writer.get_width(), taskbar_height));
+    rect.into_styled(style).draw(writer).ok();
 
     // Simple start button
     draw_window(writer, 0, height - taskbar_height + 5, 80, 30, 0xE0E0E0u32, 0x000000u32);
 }
 
-fn draw_icon<W: FramebufferLike>(writer: &mut W, x: u32, y: u32, _label: &str, color: u32) {
-    // Draw a simple solid-colored square icon
+fn draw_icon<W: FramebufferLike + DrawTarget<Color = Rgb888>>(writer: &mut W, x: u32, y: u32, _label: &str, color: u32) {
     const ICON_SIZE: u32 = 48;
-    for dy in 0..ICON_SIZE {
-        for dx in 0..ICON_SIZE {
-            if x + dx < writer.get_width() && y + dy < writer.get_height() {
-                writer.put_pixel(x + dx, y + dy, color);
-            }
-        }
-    }
+    let color_rgb = u32_to_rgb888(color);
+    let style = PrimitiveStyleBuilder::new().fill_color(color_rgb).build();
+    let rect = Rectangle::new(Point::new(x as i32, y as i32), Size::new(ICON_SIZE, ICON_SIZE));
+    rect.into_styled(style).draw(writer).ok();
 }
 
 #[macro_export]
