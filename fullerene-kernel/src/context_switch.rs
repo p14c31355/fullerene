@@ -146,6 +146,15 @@ pub unsafe fn switch_context(
             "mov r13, [{0} + {r13}]",
             "mov r14, [{0} + {r14}]",
             "mov r15, [{0} + {r15}]",
+            // Restore segment registers
+            "mov rax, [{0} + {ds}]",
+            "mov ds, ax",
+            "mov rax, [{0} + {es}]",
+            "mov es, ax",
+            "mov rax, [{0} + {fs}]",
+            "mov fs, ax",
+            "mov rax, [{0} + {gs}]",
+            "mov gs, ax",
             // Restore RFLAGS
             "mov rax, [{0} + {rflags}]",
             "push rax",
@@ -170,9 +179,13 @@ pub unsafe fn switch_context(
             r13 = const ContextOffsets::R13,
             r14 = const ContextOffsets::R14,
             r15 = const ContextOffsets::R15,
+            ds = const ContextOffsets::DS,
+            es = const ContextOffsets::ES,
+            fs = const ContextOffsets::FS,
+            gs = const ContextOffsets::GS,
             rflags = const ContextOffsets::RFLAGS,
             rip = const ContextOffsets::RIP,
-            out("rax") _
+            options(noreturn)
         );
     }
 }

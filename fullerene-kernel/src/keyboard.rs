@@ -6,8 +6,6 @@
 //! - Input buffer management
 //! - Blocking/non-blocking input
 
-#![no_std]
-
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use spin::Mutex;
@@ -180,7 +178,6 @@ fn handle_key_press(scancode: u8, modifiers: &mut KeyboardModifiers) {
         0x2A => modifiers.lshift = true, // Left Shift
         0x36 => modifiers.rshift = true, // Right Shift
         0x1D => modifiers.lctrl = true,  // Left Ctrl
-        0xE0 => modifiers.rctrl = true,  // Right Ctrl (extended)
         0x38 => modifiers.lalt = true,   // Left Alt
 
         // Lock keys (toggle on press)

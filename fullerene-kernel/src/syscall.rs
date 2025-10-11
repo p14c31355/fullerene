@@ -297,12 +297,15 @@ pub mod user {
     pub unsafe fn syscall(syscall_num: SyscallNumber, arg1: u64, arg2: u64, arg3: u64) -> u64 {
         let mut result: u64;
         core::arch::asm!(
-            "int 0x80",
+            "syscall",
             in("rax") syscall_num as u64,
             in("rdi") arg1,
             in("rsi") arg2,
             in("rdx") arg3,
             lateout("rax") result,
+            // syscall clobbers rcx and r11
+            out("rcx") _,
+            out("r11") _,
         );
         result
     }

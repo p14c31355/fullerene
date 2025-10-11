@@ -126,7 +126,7 @@ impl Process {
 }
 
 /// Global process list
-static PROCESS_LIST: Mutex<Vec<Box<Process>>> = Mutex::new(Vec::new());
+pub static PROCESS_LIST: Mutex<Vec<Box<Process>>> = Mutex::new(Vec::new());
 
 /// Next process to schedule (for round-robin)
 static CURRENT_PROCESS_INDEX: Mutex<usize> = Mutex::new(0);
@@ -139,11 +139,9 @@ const KERNEL_STACK_SIZE: usize = 4096;
 
 /// Trampoline function to call process entry point
 #[unsafe(naked)]
-extern "C" fn process_trampoline() {
+extern "C" fn process_trampoline() -> ! {
     // The entry point function pointer is stored in RAX by context switch
-    core::arch::naked_asm!(
-        "call rax" // Call the function in RAX
-    );
+    core::arch::naked_asm!("call rax");
 }
 
 /// Initialize process management system

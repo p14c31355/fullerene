@@ -88,8 +88,9 @@ pub fn load_program(
 
     // Get the process's page table (assume it's created in create_process)
     // For now, we skip loading segments due to page table integration not implemented yet
-    /*
-    let process_page_table = &mut process_list.iter_mut().find(|p| p.id == pid).unwrap().page_table.as_mut().unwrap();
+    let mut process_list_locked = process::PROCESS_LIST.lock();
+    let process = process_list_locked.iter_mut().find(|p| p.id == pid).unwrap();
+    let process_page_table = &mut process.page_table.as_mut().unwrap();
 
     // Load program segments
     for i in 0..ph_count {
@@ -105,7 +106,6 @@ pub fn load_program(
             load_segment(ph, image_data, process_page_table)?;
         }
     }
-    */
 
     // Note: Program segment loading is currently simplified due to page table integration
     // not being fully implemented. In a complete implementation, we'd load each PT_LOAD

@@ -79,6 +79,11 @@ pub fn open_file(name: &str) -> Result<FileDescriptor, FsError> {
 
     open_files.insert(fd, String::from(name));
 
+    // Explicitly drop locks in reverse order (optional but good practice)
+    drop(next_fd);
+    drop(open_files);
+    drop(fs);
+
     Ok(fd)
 }
 

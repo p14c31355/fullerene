@@ -21,6 +21,9 @@ fn write_text<W: FramebufferLike + DrawTarget<Color = Rgb888>>(
     writer: &mut W,
     s: &str,
 ) -> core::fmt::Result {
+    const CHAR_WIDTH: i32 = FONT_6X10.character_size.width as i32;
+    const CHAR_HEIGHT: i32 = FONT_6X10.character_size.height as i32;
+
     let fg_color = Rgb888::new(
         ((writer.get_fg_color() >> 16) & 0xFF) as u8,
         ((writer.get_fg_color() >> 8) & 0xFF) as u8,
@@ -49,26 +52,26 @@ fn write_text<W: FramebufferLike + DrawTarget<Color = Rgb888>>(
             text.draw(writer).ok();
 
             // Advance position by the rendered text width
-            current_pos.x += (6 * line_content.chars().count()) as i32;
+            current_pos.x += (CHAR_WIDTH * line_content.chars().count() as i32);
         }
 
         if has_newline {
             current_pos.x = 0;
-            current_pos.y += 10; // Font height
+            current_pos.y += CHAR_HEIGHT; // Font height
 
             // Handle scrolling if needed
-            if current_pos.y + 10 > writer.get_height() as i32 {
+            if current_pos.y + CHAR_HEIGHT > writer.get_height() as i32 {
                 writer.scroll_up();
-                current_pos.y -= 10;
+                current_pos.y -= CHAR_HEIGHT;
             }
         } else {
             // Handle line wrapping for lines without explicit newlines
             if current_pos.x >= writer.get_width() as i32 {
                 current_pos.x = 0;
-                current_pos.y += 10;
-                if current_pos.y + 10 > writer.get_height() as i32 {
+                current_pos.y += CHAR_HEIGHT;
+                if current_pos.y + CHAR_HEIGHT > writer.get_height() as i32 {
                     writer.scroll_up();
-                    current_pos.y -= 10;
+                    current_pos.y -= CHAR_HEIGHT;
                 }
             }
         }
