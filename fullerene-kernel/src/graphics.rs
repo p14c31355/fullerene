@@ -521,9 +521,9 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
     {
         WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer)));
         FRAMEBUFFER_UEFI.call_once(|| {
-            Mutex::new(UefiFramebuffer::Vga8(FramebufferWriter::<u8>::new(
-                FramebufferInfo::new_vga(config),
-            )))
+            let fb_writer = FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(config));
+            fb_writer.clear_screen();
+            Mutex::new(UefiFramebuffer::Vga8(fb_writer))
         });
     }
     #[cfg(not(target_os = "uefi"))]
