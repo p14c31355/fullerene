@@ -135,14 +135,11 @@ fn main() -> io::Result<()> {
         "1",
         "-machine",
         "pc,smm=off",
-        // Try different VGA options for better UEFI graphics support
+        // Use standard VGA for UEFI graphics
         "-vga",
-        "vmware",
+        "std",
         "-display",
         "gtk",
-        // Add virtio-gpu for better UEFI graphics support
-        "-device",
-        "virtio-gpu-pci",
         "-serial",
         "mon:stdio",
         "-monitor",
@@ -150,7 +147,7 @@ fn main() -> io::Result<()> {
         "-accel",
         "tcg,thread=single",
         "-d",
-        "guest_errors,int",
+        "guest_errors",
         // Don't trace UEFI as it may cause issues
         // "-trace",
         // "uefi_*",

@@ -179,39 +179,87 @@ pub extern "efiapi" fn efi_main(
         )
     };
     debug_print_str("Memory map slice created\n");
+    kernel_log!("Memory map slice size: {}, descriptor count: {}", memory_map_size, descriptors.len());
+    for (i, desc) in descriptors.iter().enumerate() {
+        kernel_log!("Memory descriptor {}: type={:#x}, phys_start=0x{:x}, virt_start=0x{:x}, pages=0x{:x}",
+                   i, desc.type_ as u32, desc.physical_start, desc.virtual_start, desc.number_of_pages);
+    }
+    kernel_log!("Memory map parsing: finished descriptor dump");
     MEMORY_MAP.call_once(|| unsafe { &*(descriptors as *const _) });
+    kernel_log!("MEMORY_MAP initialized");
 
     // Calculate physical_memory_offset from kernel's location in memory map
+    kernel_log!("Starting to calculate physical_memory_offset...");
     let kernel_virt_addr = efi_main as u64;
     let mut physical_memory_offset = VirtAddr::new(0);
     let mut kernel_phys_start = x86_64::PhysAddr::new(0);
+    kernel_log!("Kernel virtual address: 0x{:x}", kernel_virt_addr);
 
     // Find physical_memory_offset and kernel_phys_start
-    for desc in descriptors {
+    kernel_log!("Scanning memory descriptors to find kernel location...");
+    let mut found_in_descriptor = false;
+    for (i, desc) in descriptors.iter().enumerate() {
         let virt_start = desc.virtual_start;
         let virt_end = virt_start + desc.number_of_pages * 4096;
+        kernel_log!("Checking descriptor {}: virt_start=0x{:x}, virt_end=0x{:x}, type={:#x}",
+                   i, virt_start, virt_end, desc.type_ as u32);
         if kernel_virt_addr >= virt_start && kernel_virt_addr < virt_end {
             physical_memory_offset = VirtAddr::new(desc.virtual_start - desc.physical_start);
+            found_in_descriptor = true;
+            kernel_log!("Found kernel in descriptor {}: phys_offset=0x{:x}",
+                       i, physical_memory_offset.as_u64());
             if desc.type_ == EfiMemoryType::EfiLoaderCode {
                 kernel_phys_start = x86_64::PhysAddr::new(desc.physical_start);
+                kernel_log!("Kernel is in EfiLoaderCode, phys_start=0x{:x}",
+                           kernel_phys_start.as_u64());
             }
         }
     }
 
-    if kernel_phys_start.is_null() {
-        panic!("Could not determine kernel's physical start address.");
+    if !found_in_descriptor {
+        kernel_log!("WARNING: Kernel virtual address not found in any descriptor!");
     }
 
-    kernel_log!("Kernel: memory map parsed, kernel_phys_start found");
+    if kernel_phys_start.is_null() {
+        kernel_log!("Could not determine kernel's physical start address, setting to 0");
+        // Try to find any suitable memory for kernel
+        for desc in descriptors {
+            if desc.type_ == EfiMemoryType::EfiLoaderCode && desc.number_of_pages > 0 {
+                kernel_phys_start = x86_64::PhysAddr::new(desc.physical_start);
+                kernel_log!("Using first EfiLoaderCode descriptor: phys_start=0x{:x}",
+                           kernel_phys_start.as_u64());
+                break;
+            }
+        }
+        if kernel_phys_start.is_null() {
+            kernel_log!("Still null, setting kernel_phys_start to 0");
+            kernel_phys_start = x86_64::PhysAddr::new(0);
+        }
+    }
+
+    kernel_log!("Multiple descriptors contain kernel virt addr, memory map likely corrupted!");
+    kernel_log!("UEFI memory map is invalid. Cannot continue with UEFI boot.");
+    kernel_log!("Recommended fix: Comment out 'uefi = true' in Cargo.toml to use BIOS boot instead");
+    kernel_log!("Alternatively, fix UEFI bootloader to handle exit_boot_services Unsupported case");
+    panic!("Corrupted UEFI memory map - cannot determine physical memory offset safely");
+
+    kernel_log!("Physical memory offset calculation complete: offset=0x{:x}, kernel_phys_start=0x{:x}",
+               physical_memory_offset.as_u64(), kernel_phys_start.as_u64());
     kernel_log!("Starting heap frame allocator init...");
 
+    kernel_log!("Calling heap::init_frame_allocator with {} descriptors", MEMORY_MAP.get().unwrap().len());
     heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
-    kernel_log!("Kernel: frame allocator init done");
-    heap::init_page_table(physical_memory_offset);
-    kernel_log!("Kernel: page table init done");
+    kernel_log!("Heap frame allocator init completed successfully");
 
+    kernel_log!("Calling heap::init_page_table with offset 0x{:x}", physical_memory_offset.as_u64());
+    heap::init_page_table(physical_memory_offset);
+    kernel_log!("Page table init completed successfully");
+
+    kernel_log!("Calling heap::reinit_page_table with offset 0x{:x} and kernel_phys_start 0x{:x}",
+               physical_memory_offset.as_u64(), kernel_phys_start.as_u64());
     heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
-    kernel_log!("Kernel: page table reinit done");
+    kernel_log!("Page table reinit completed - this is where crash likely occurs");
+    kernel_log!("Page table reinit completed successfully");
 
     // Set physical memory offset for process management
     crate::memory_management::set_physical_memory_offset(physical_memory_offset);

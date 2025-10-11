@@ -266,26 +266,41 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     petroleum::serial::serial_log(format_args!("Reinitializing page table with offset: "));
     petroleum::serial::serial_log(format_args!("{:#x}\n", physical_memory_offset.as_u64()));
 
+    petroleum::serial::serial_log(format_args!("About to allocate level 4 frame\n"));
+
     // Allocate a new level 4 page table
     let level_4_frame = frame_allocator
         .allocate_frame()
         .expect("Failed to allocate level 4 frame");
+    petroleum::serial::serial_log(format_args!("Level 4 frame allocated at {:#x}\n", level_4_frame.start_address().as_u64()));
+
     let level_4_table = unsafe { &mut *(level_4_frame.start_address().as_u64() as *mut PageTable) };
+    petroleum::serial::serial_log(format_args!("Level 4 table pointer created\n"));
 
     // Zero the table
+    petroleum::serial::serial_log(format_args!("About to zero level 4 table\n"));
     level_4_table.zero();
+    petroleum::serial::serial_log(format_args!("Level 4 table zeroed\n"));
+
+    petroleum::serial::serial_log(format_args!("About to create new mapper\n"));
 
     // Create a mapper for the new page table
     let mut new_mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
+    petroleum::serial::serial_log(format_args!("New mapper created\n"));
 
-    // Map usable memory regions from the memory map
+    // Map usable memory regions from the memory map (simplified - only map essential regions)
     use petroleum::common::EfiMemoryType::*;
+    petroleum::serial::serial_log(format_args!("About to map memory regions\n"));
+    let mut region_count = 0;
     for_each_memory_descriptor(
         memory_map,
         &[EfiConventionalMemory, EfiLoaderData, EfiRuntimeServicesData],
         |desc| {
+            region_count += 1;
             let start_phys = PhysAddr::new(desc.physical_start);
             let end_phys = start_phys + (desc.number_of_pages * 4096);
+            petroleum::serial::serial_log(format_args!("Mapping region {}: phys 0x{:x}-0x{:x}\n",
+                       region_count, start_phys.as_u64(), end_phys.as_u64()));
             // Map to identity-mapped virtual addresses for simplicity
             unsafe {
                 map_physical_range(
@@ -299,7 +314,11 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
             }
         },
     );
+    petroleum::serial::serial_log(format_args!("Mapped {} memory regions\n", region_count));
 
+    // Skip higher-half kernel mapping for now to isolate issues - use identity mapping only
+    petroleum::serial::serial_log(format_args!("Skipping higher-half kernel mapping for debugging\n"));
+    /*
     // Add kernel code/data mapping (higher-half)
     let kernel_virt_start = VirtAddr::new(0xffff_0000_1000_0000);
     let kernel_size = 0x200000; // Assume 2MB for kernel
@@ -315,6 +334,7 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
             &mut frame_allocator,
         );
     }
+    */
 
     // Set the new CR3
     unsafe { Cr3::write(level_4_frame, Cr3Flags::empty()) };

@@ -75,6 +75,10 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     debug_print_str("Main: After Heap initialized print.\n");
     petroleum::println!("Bellows: Heap OK.");
     debug_print_str("Main: After Heap OK println.\n");
+
+    // Initialize GOP for framebuffer setup
+    petroleum::serial::_print(format_args!("Attempting to initialize GOP...\n"));
+    init_gop(st);
     petroleum::serial::_print(format_args!("GOP initialized successfully.\n"));
     petroleum::println!("Bellows: GOP initialized."); // Debug print after GOP initialization
 
@@ -158,8 +162,9 @@ fn init_gop(st: &EfiSystemTable) {
 
     let mode_ref = unsafe { &*gop_ref.mode };
 
-    // Set GOP to text mode (mode 0)
-    let target_mode = 0;
+    // Set GOP to graphics mode if not already
+    // Try mode 1 (typically 640x480 or similar graphics mode)
+    let target_mode = 1;
     let current_mode = mode_ref.mode as usize;
     if target_mode != current_mode {
         petroleum::serial::_print(format_args!(
