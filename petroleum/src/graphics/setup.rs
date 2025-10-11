@@ -97,7 +97,7 @@ pub fn setup_vga_attributes() {
             (0x0D, 0x0D),
             (0x0E, 0x0E),
             (0x0F, 0x0F), // Palette setup
-            (0x10, 0x41), // Mode control - enable 8-bit color, graphics mode, blinking off
+            (0x10, 0x01), // Mode control - text mode, 8-bit characters, blinking off
             (0x11, 0x00), // Overscan
             (0x12, 0x0F), // Plane enable
             (0x13, 0x00), // Pixel padding
