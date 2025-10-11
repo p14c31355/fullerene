@@ -8,7 +8,8 @@
 
 use crate::heap::FRAME_ALLOCATOR;
 use alloc::vec::Vec;
-static FREE_FRAMES: spin::Mutex<Vec<x86_64::structures::paging::PhysFrame>> = spin::Mutex::new(Vec::new());
+static FREE_FRAMES: spin::Mutex<Vec<x86_64::structures::paging::PhysFrame>> =
+    spin::Mutex::new(Vec::new());
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
@@ -30,7 +31,9 @@ pub fn allocate_page_frame() -> Option<PhysFrame> {
     if let Some(frame) = FREE_FRAMES.lock().pop() {
         Some(frame)
     } else {
-        FRAME_ALLOCATOR.get().and_then(|a| a.lock().allocate_frame())
+        FRAME_ALLOCATOR
+            .get()
+            .and_then(|a| a.lock().allocate_frame())
     }
 }
 
@@ -65,13 +68,13 @@ fn copy_kernel_page_table_entries(
             to_table[i] = from_table[i].clone();
         } else {
             // Allocate a new frame for the next level table
-            let new_frame = allocate_page_frame()
-                .expect("Frame allocation failed");
+            let new_frame = allocate_page_frame().expect("Frame allocation failed");
 
             // Zero the new frame to avoid interpreting stale data as valid page table entries
             unsafe {
                 ptr::write_bytes(
-                    (physical_memory_offset + new_frame.start_address().as_u64()).as_mut_ptr::<u8>(),
+                    (physical_memory_offset + new_frame.start_address().as_u64())
+                        .as_mut_ptr::<u8>(),
                     0,
                     4096,
                 );
@@ -84,12 +87,20 @@ fn copy_kernel_page_table_entries(
 
             if level > 1 {
                 // Recurse to copy the next level
-                let from_next_level_ptr = (physical_memory_offset + from_table[i].addr().as_u64()).as_u64() as *const PageTable;
+                let from_next_level_ptr = (physical_memory_offset + from_table[i].addr().as_u64())
+                    .as_u64() as *const PageTable;
                 let from_next_level = unsafe { &*from_next_level_ptr };
-                let to_next_level_ptr = (physical_memory_offset + new_frame.start_address().as_u64()).as_u64() as *mut PageTable;
+                let to_next_level_ptr = (physical_memory_offset
+                    + new_frame.start_address().as_u64())
+                .as_u64() as *mut PageTable;
                 let to_next_level = unsafe { &mut *to_next_level_ptr };
 
-                copy_kernel_page_table_entries(from_next_level, to_next_level, physical_memory_offset, level - 1);
+                copy_kernel_page_table_entries(
+                    from_next_level,
+                    to_next_level,
+                    physical_memory_offset,
+                    level - 1,
+                );
             }
         }
     }
@@ -98,8 +109,7 @@ fn copy_kernel_page_table_entries(
 /// Create a new page table for a process
 pub fn create_process_page_table(physical_memory_offset: VirtAddr) -> Option<ProcessPageTable> {
     // Allocate a new level 4 page table frame
-    let pml4_frame = allocate_page_frame()
-        .expect("Frame allocator not initialized");
+    let pml4_frame = allocate_page_frame().expect("Frame allocator not initialized");
 
     // Initialize the page table with kernel mappings
     let pml4: &mut PageTable = unsafe {
@@ -297,8 +307,9 @@ fn deallocate_page_table_recursively(frame: PhysFrame, level: usize) {
     // Recursively deallocate lower level page tables
     if level > 0 {
         for entry in table.iter() {
-            if entry.flags().contains(PageTableFlags::PRESENT) &&
-               !entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            if entry.flags().contains(PageTableFlags::PRESENT)
+                && !entry.flags().contains(PageTableFlags::HUGE_PAGE)
+            {
                 let next_frame = PhysFrame::containing_address(entry.addr());
                 deallocate_page_table_recursively(next_frame, level - 1);
             }

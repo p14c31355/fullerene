@@ -1,18 +1,17 @@
-name: Post-Merge Integration
+name: CI
 
 on:
+  push:
+    branches: [ main, master ]
   pull_request:
-    types: [closed]
+    branches: [ main, master ]
 
 jobs:
-  merge:
-    if: github.event.pull_request.merged == true
+  ci:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout merged branch
+      - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -23,18 +22,28 @@ jobs:
         run: rustup component add rust-src --toolchain nightly
 
       - name: Install x86_64-unknown-uefi target
-        run: rustup component add x86_64-unknown-uefi --toolchain nightly
+        run: rustup target add x86_64-unknown-uefi --toolchain nightly
+
+      - name: Install additional tools
+        run: rustup component add clippy rustfmt --toolchain nightly
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./ -> target"
 
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
-      - name: Clear cache and run flasks
-        run: cargo clean && cargo run -p flasks
+      - name: Run clippy
+        run: |
+          cargo clippy -- -D warnings
+          cargo clippy --all-targets -- -D warnings
 
-      - name: Run comprehensive tests
+      - name: Build workspace (check only)
+        run: cargo check --workspace
+
+      - name: Run tests
         run: |
           cargo test --package toluene --verbose
           cargo test --package flasks --verbose

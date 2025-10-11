@@ -119,12 +119,8 @@ impl IoApic {
         let reg_addr = (self.base_addr) as *mut u32;
         let value_addr = (self.base_addr + 0x10) as *mut u32;
 
-        unsafe {
-            ptr::write_volatile(reg_addr, reg as u32);
-        }
-        unsafe {
-            ptr::write_volatile(value_addr, value);
-        }
+        unsafe { ptr::write_volatile(reg_addr, reg as u32) };
+        unsafe { ptr::write_volatile(value_addr, value) };
     }
 
     /// Read redirection table entry
@@ -178,16 +174,14 @@ pub fn configure_io_apic_for_legacy_irqs(io_apic: &mut IoApic, local_apic_id: u8
 }
 
 /// Get local APIC ID from the LAPIC
-pub fn get_local_apic_id(lapic_base: u64) -> u8 {
-    unsafe {
-        let lapic_id_reg = (lapic_base + 0x20) as *const u32;
-        unsafe { (ptr::read_volatile(lapic_id_reg) >> 24) as u8 }
-    }
+pub unsafe fn get_local_apic_id(lapic_base: u64) -> u8 {
+    let lapic_id_reg = (lapic_base + 0x20) as *const u32;
+    (unsafe { ptr::read_volatile(lapic_id_reg) } >> 24) as u8
 }
 
 /// Initialize I/O APIC for legacy interrupts
 pub fn init_io_apic(lapic_base: u64) {
-    let local_apic_id = get_local_apic_id(lapic_base);
+    let local_apic_id = unsafe { get_local_apic_id(lapic_base) };
     let io_apic_base = find_io_apic_base();
     let mut io_apic = IoApic::new(io_apic_base);
 

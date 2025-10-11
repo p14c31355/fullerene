@@ -13,8 +13,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
-
-
 /// Process ID type
 pub type ProcessId = u64;
 
@@ -211,7 +209,9 @@ pub fn create_process(name: &'static str, entry_point_address: VirtAddr) -> Proc
     let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
 
     // Create page table for the process
-    let offset = crate::memory_management::PHYSICAL_MEMORY_OFFSET.lock().expect("Physical memory offset not set");
+    let offset = crate::memory_management::PHYSICAL_MEMORY_OFFSET
+        .lock()
+        .expect("Physical memory offset not set");
     let process_page_table = crate::memory_management::create_process_page_table(offset)
         .expect("Failed to create page table");
 
@@ -257,7 +257,9 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
         // Free resources
         let kernel_stack_base = process.kernel_stack.as_u64() - KERNEL_STACK_SIZE as u64;
         let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
-        unsafe { alloc::alloc::dealloc(kernel_stack_base as *mut u8, layout); }
+        unsafe {
+            alloc::alloc::dealloc(kernel_stack_base as *mut u8, layout);
+        }
 
         // Properly free page table frames recursively
         if let Some(page_table) = process.page_table.take() {

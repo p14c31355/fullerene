@@ -12,6 +12,9 @@ impl<T> PortWriter<T> {
         }
     }
 
+    /// # Safety
+    /// Writing to I/O ports can cause undefined behavior if the port address is invalid
+    /// or if the data written has unexpected effects on hardware.
     pub unsafe fn write(&mut self, value: T)
     where
         T: x86_64::instructions::port::PortWrite,
@@ -21,6 +24,9 @@ impl<T> PortWriter<T> {
         }
     }
 
+    /// # Safety
+    /// Reading from I/O ports can cause undefined behavior if the port address is invalid
+    /// or if reading from the port has unexpected effects on hardware.
     pub unsafe fn read(&mut self) -> T
     where
         T: x86_64::instructions::port::PortRead,

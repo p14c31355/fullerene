@@ -1,6 +1,6 @@
 use x86_64::instructions::port::Port;
 
-use super::ports::{RegisterConfig, VgaPorts};
+use super::ports::VgaPorts;
 use super::registers::{ATTRIBUTE_CONFIG, CRTC_CONFIG, GRAPHICS_CONFIG, SEQUENCER_CONFIG};
 
 // Helper macros to reduce repetitive serial logging in init functions
@@ -27,25 +27,51 @@ pub fn setup_vga_text_mode() {
 
     // Sequencer setup - reduced from separate function call
     let seq_configs = [
-        (0x00, 0x03), (0x01, 0x00), (0x02, 0x03), (0x03, 0x00), (0x04, 0x02),
+        (0x00, 0x03),
+        (0x01, 0x00),
+        (0x02, 0x03),
+        (0x03, 0x00),
+        (0x04, 0x02),
     ];
-    write_vga_registers(VgaPorts::SEQUENCER_INDEX, VgaPorts::SEQUENCER_DATA, &seq_configs);
+    write_vga_registers(
+        VgaPorts::SEQUENCER_INDEX,
+        VgaPorts::SEQUENCER_DATA,
+        &seq_configs,
+    );
 
     // CRTC unlock
     write_vga_registers(VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA, &[(0x11, 0x0E)]);
 
     // CRTC main configuration
     let crtc_configs = [
-        (0x00, 0x5F), (0x01, 0x4F), (0x02, 0x50), (0x03, 0x82), (0x04, 0x55),
-        (0x05, 0x81), (0x06, 0xBF), (0x07, 0x1F), (0x08, 0x00), (0x09, 0x4F),
-        (0x10, 0x9C), (0x11, 0x8E), (0x12, 0x8F), (0x13, 0x28), (0x14, 0x1F),
-        (0x15, 0x96), (0x16, 0xB9), (0x17, 0xA3),
+        (0x00, 0x5F),
+        (0x01, 0x4F),
+        (0x02, 0x50),
+        (0x03, 0x82),
+        (0x04, 0x55),
+        (0x05, 0x81),
+        (0x06, 0xBF),
+        (0x07, 0x1F),
+        (0x08, 0x00),
+        (0x09, 0x4F),
+        (0x10, 0x9C),
+        (0x11, 0x8E),
+        (0x12, 0x8F),
+        (0x13, 0x28),
+        (0x14, 0x1F),
+        (0x15, 0x96),
+        (0x16, 0xB9),
+        (0x17, 0xA3),
     ];
     write_vga_registers(VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA, &crtc_configs);
 
     // Graphics configuration
     let graphics_configs = [(0x05, 0x10), (0x06, 0x0E)];
-    write_vga_registers(VgaPorts::GRAPHICS_INDEX, VgaPorts::GRAPHICS_DATA, &graphics_configs);
+    write_vga_registers(
+        VgaPorts::GRAPHICS_INDEX,
+        VgaPorts::GRAPHICS_DATA,
+        &graphics_configs,
+    );
 
     // Attribute controller with inlined setup
     setup_vga_attributes();

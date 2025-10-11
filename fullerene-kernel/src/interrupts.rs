@@ -108,8 +108,6 @@ macro_rules! init_pic {
     }};
 }
 
-
-
 // Helper structure for dynamic register access
 struct ApicRaw {
     base_addr: u64,
@@ -411,8 +409,6 @@ pub extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
     send_eoi();
 }
 
-
-
 define_input_interrupt_handler!(keyboard_handler, 0x60, |scancode: u8| {
     // Use new keyboard driver
     crate::keyboard::handle_keyboard_scancode(scancode);
@@ -458,27 +454,22 @@ pub extern "C" fn syscall_entry() {
         // rdi, rsi, rdx, r10, r8, r9 = arguments (syscall ABI)
 
         // Save registers that syscall handler might clobber
-        "push rcx",         // Save return RIP
-        "push r11",         // Save return RFLAGS
-
+        "push rcx", // Save return RIP
+        "push r11", // Save return RFLAGS
         // Shuffle arguments from syscall ABI to function call ABI
         // syscall ABI: rdi, rsi, rdx, r10, r8, r9
         // function ABI: rdi, rsi, rdx, rcx, r8, r9
         // So we move r10 to rcx (4th argument)
         "mov rcx, r10",
-
         // Save rax (syscall number) on stack temporarily
         "push rax",
-
         // Call the syscall handler (handle_syscall expects: num, arg1, arg2, arg3, arg4, arg5, arg6)
         "call handle_syscall",
-
         // Result is now in rax
         // Restore the saved registers
-        "pop r10",          // Restore original syscall number (but not needed)
-        "pop r11",          // Restore return RFLAGS
-        "pop rcx",          // Restore return RIP
-
+        "pop r10", // Restore original syscall number (but not needed)
+        "pop r11", // Restore return RFLAGS
+        "pop rcx", // Restore return RIP
         // Return via sysretq (result in rax, rcx/rip and r11/rflags preserved)
         "sysretq"
     );

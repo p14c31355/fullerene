@@ -18,9 +18,8 @@ macro_rules! define_register_offsets {
 }
 
 define_register_offsets!(
-    rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp,
-    r8, r9, r10, r11, r12, r13, r14, r15,
-    rflags, rip, cs, ss, ds, es, fs, gs
+    rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8, r9, r10, r11, r12, r13, r14, r15, rflags, rip, cs,
+    ss, ds, es, fs, gs
 );
 
 /// Save current process context and switch to next

@@ -3,7 +3,7 @@ use core::ptr;
 use petroleum::common::{
     BellowsError, EFI_FILE_INFO_GUID, EfiBootServices, EfiFile, EfiFileInfo, EfiStatus,
 };
-use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
+use petroleum::serial::debug_print_str_to_com1 as debug_print_str;
 
 const EFI_FILE_MODE_READ: u64 = 0x1;
 const KERNEL_PATH: &str = r"EFI\BOOT\KERNEL.EFI";

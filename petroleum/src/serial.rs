@@ -3,8 +3,10 @@ pub unsafe fn write_serial_bytes(port_addr: u16, status_port_addr: u16, bytes: &
     let mut port = Port::<u8>::new(port_addr);
     let mut status_port = Port::<u8>::new(status_port_addr);
     for &byte in bytes {
-        while (status_port.read() & 0x20) == 0 {}
-        port.write(byte);
+        unsafe {
+            while (status_port.read() & 0x20) == 0 {}
+            port.write(byte);
+        }
     }
 }
 
