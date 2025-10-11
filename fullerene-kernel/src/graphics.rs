@@ -21,7 +21,7 @@ use spin::{Mutex, Once};
 
 // Optimized text rendering using embedded-graphics
 // Batcher processing for efficiency and reduced code complexity
-fn write_text<W: FramebufferLike + DrawTarget<Color = Rgb888>>(
+fn write_text<W: FramebufferLike>(
     writer: &mut W,
     s: &str,
 ) -> core::fmt::Result {
@@ -221,7 +221,7 @@ impl PixelType for u8 {
     }
 }
 
-trait FramebufferLike: Send + Sync {
+trait FramebufferLike: DrawTarget<Color = Rgb888, Error = core::convert::Infallible> + Send + Sync {
     fn put_pixel(&self, x: u32, y: u32, color: u32);
     fn clear_screen(&self);
     fn get_width(&self) -> u32;
@@ -231,6 +231,116 @@ trait FramebufferLike: Send + Sync {
     fn set_position(&mut self, x: u32, y: u32);
     fn get_position(&self) -> (u32, u32);
     fn scroll_up(&self);
+    fn get_stride(&self) -> u32;
+    fn is_vga(&self) -> bool;
+}
+
+enum UefiFramebuffer {
+    Uefi32(FramebufferWriter<u32>),
+    Vga8(FramebufferWriter<u8>),
+}
+
+impl DrawTarget for UefiFramebuffer {
+    type Color = Rgb888;
+    type Error = core::convert::Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Pixel<Self::Color>>,
+    {
+        match self {
+            UefiFramebuffer::Uefi32(fb) => fb.draw_iter(pixels),
+            UefiFramebuffer::Vga8(fb) => fb.draw_iter(pixels),
+        }
+    }
+}
+
+impl OriginDimensions for UefiFramebuffer {
+    fn size(&self) -> Size {
+        match self {
+            UefiFramebuffer::Uefi32(fb) => fb.size(),
+            UefiFramebuffer::Vga8(fb) => fb.size(),
+        }
+    }
+}
+
+impl FramebufferLike for UefiFramebuffer {
+    fn put_pixel(&self, x: u32, y: u32, color: u32) {
+        match self {
+            UefiFramebuffer::Uefi32(fb) => fb.put_pixel(x, y, color),
+            UefiFramebuffer::Vga8(fb) => fb.put_pixel(x, y, color),
+        }
+    }
+
+    fn clear_screen(&self) {
+        match self {
+            UefiFramebuffer::Uefi32(fb) => fb.clear_screen(),
+            UefiFramebuffer::Vga8(fb) => fb.clear_screen(),
+        }
+    }
+
+    fn get_width(&self) -> u32 {
+        match self {
+            UefiFramebuffer::Uefi32(fb) => fb.get_width(),
+            UefiFramebuffer::Vga8(fb) => fb.get_width(),
+        }
+    }
+
+    fn get_height(&self) -> u32 {
+        match self {
+            UefiFramebuffer::Uefi32(fb) => fb.get_height(),
+            UefiFramebuffer::Vga8(fb) => fb.get_height(),
+        }
+    }
+
+    fn get_fg_color(&self) -> u32 {
+        match self {
+            UefiFramebuffer::Uefi32(fb) => fb.get_fg_color(),
+            UefiFramebuffer::Vga8(fb) => fb.get_fg_color(),
+        }
+    }
+
+    fn get_bg_color(&self) -> u32 {
+        match self {
+            UefiFramebuffer::Uefi32(fb) => fb.get_bg_color(),
+            UefiFramebuffer::Vga8(fb) => fb.get_bg_color(),
+        }
+    }
+
+    fn set_position(&mut self, x: u32, y: u32) {
+        match self {
+            UefiFramebuffer::Uefi32(fb) => fb.set_position(x, y),
+            UefiFramebuffer::Vga8(fb) => fb.set_position(x, y),
+        }
+    }
+
+    fn get_position(&self) -> (u32, u32) {
+        match self {
+            UefiFramebuffer::Uefi32(fb) => fb.get_position(),
+            UefiFramebuffer::Vga8(fb) => fb.get_position(),
+        }
+    }
+
+    fn scroll_up(&self) {
+        match self {
+            UefiFramebuffer::Uefi32(fb) => fb.scroll_up(),
+            UefiFramebuffer::Vga8(fb) => fb.scroll_up(),
+        }
+    }
+
+    fn get_stride(&self) -> u32 {
+        match self {
+            UefiFramebuffer::Uefi32(fb) => fb.get_stride(),
+            UefiFramebuffer::Vga8(fb) => fb.get_stride(),
+        }
+    }
+
+    fn is_vga(&self) -> bool {
+        match self {
+            UefiFramebuffer::Uefi32(fb) => fb.is_vga(),
+            UefiFramebuffer::Vga8(fb) => fb.is_vga(),
+        }
+    }
 }
 
 struct FramebufferWriter<T: PixelType> {
@@ -351,6 +461,14 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
             );
         }
     }
+
+    fn get_stride(&self) -> u32 {
+        self.info.stride
+    }
+
+    fn is_vga(&self) -> bool {
+        self.info.pixel_format.is_none()
+    }
 }
 
 // Convenience type aliases
@@ -367,7 +485,7 @@ impl<T: PixelType> core::fmt::Write for FramebufferWriter<T> {
 pub static WRITER_UEFI: Once<Mutex<Box<dyn core::fmt::Write + Send + Sync>>> = Once::new();
 
 #[cfg(target_os = "uefi")]
-pub static FRAMEBUFFER_UEFI: Once<Mutex<FramebufferWriter<u32>>> = Once::new();
+pub static FRAMEBUFFER_UEFI: Once<Mutex<UefiFramebuffer>> = Once::new();
 
 #[cfg(not(target_os = "uefi"))]
 pub static WRITER_BIOS: Once<Mutex<Box<dyn core::fmt::Write + Send + Sync>>> = Once::new();
@@ -382,7 +500,7 @@ pub fn init(config: &FullereneFramebufferConfig) {
     let writer = FramebufferWriter::<u32>::new(FramebufferInfo::new(config));
     let fb_writer = FramebufferWriter::<u32>::new(FramebufferInfo::new(config));
     WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer)));
-    FRAMEBUFFER_UEFI.call_once(|| Mutex::new(fb_writer));
+    FRAMEBUFFER_UEFI.call_once(|| Mutex::new(UefiFramebuffer::Uefi32(fb_writer)));
 }
 
 // VgaPorts is imported from petroleum
@@ -400,6 +518,7 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
     #[cfg(target_os = "uefi")]
     {
         WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer)));
+        FRAMEBUFFER_UEFI.call_once(|| Mutex::new(UefiFramebuffer::Vga8(FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(config)))));
     }
     #[cfg(not(target_os = "uefi"))]
     {
@@ -446,45 +565,12 @@ macro_rules! print {
 pub fn draw_os_desktop() {
     print!("Graphics: draw_os_desktop() called\n");
     debug_print_str("Graphics: draw_os_desktop() started\n");
-
     debug_print_str("Graphics: checking UEFI framebuffer...\n");
     if let Some(fb_writer) = FRAMEBUFFER_UEFI.get() {
         debug_print_str("Graphics: Obtained UEFI framebuffer writer\n");
-        let mut fb_writer = fb_writer.lock();
+        let mut locked = fb_writer.lock();
         debug_print_str("Graphics: Framebuffer writer locked\n");
-
-        petroleum::serial::serial_log(format_args!("Graphics: Framebuffer size: {}x{}, stride: {}\n",
-            fb_writer.info.width, fb_writer.info.height, fb_writer.info.stride));
-
-        // Fill background with dark gray (suitable for VGA grayscale)
-        let bg_color = 32u32; // Dark gray
-        debug_print_str("Graphics: Filling background...\n");
-        fill_background(&mut *fb_writer, bg_color);
-        debug_print_str("Graphics: Background filled\n");
-
-        // Test: Draw a bright red rectangle in the corner
-        debug_print_str("Graphics: Drawing test red rectangle...\n");
-        draw_window(&mut *fb_writer, 10, 10, 50, 50, 0xFF0000u32, 0xFFFFFFu32); // Bright red, white border
-        debug_print_str("Graphics: Test red rectangle drawn\n");
-
-        // Draw window frame
-        debug_print_str("Graphics: Drawing window frame...\n");
-        draw_window(&mut *fb_writer, 50, 50, 220, 120, 255u32, 64u32); // White window, gray border
-        debug_print_str("Graphics: Window frame drawn\n");
-
-        // Draw taskbar at bottom
-        debug_print_str("Graphics: Drawing taskbar...\n");
-        draw_taskbar(&mut *fb_writer, 128u32); // Medium gray taskbar
-        debug_print_str("Graphics: Taskbar drawn\n");
-
-        // Draw some icons
-        debug_print_str("Graphics: Drawing icons...\n");
-        draw_icon(&mut *fb_writer, 65, 60, "Terminal", 96u32); // Medium gray icon
-        draw_icon(&mut *fb_writer, 65, 80, "Settings", 160u32); // Light gray icon
-        debug_print_str("Graphics: Icons drawn\n");
-
-        print!("Graphics: UEFI desktop drawing completed\n");
-        debug_print_str("Graphics: UEFI desktop drawing completed\n");
+        draw_desktop_internal(&mut *locked, "UEFI");
     } else {
         print!("Graphics: ERROR - FRAMEBUFFER_UEFI not initialized\n");
         debug_print_str("Graphics: ERROR - FRAMEBUFFER_UEFI not initialized\n");
@@ -495,59 +581,54 @@ pub fn draw_os_desktop() {
 pub fn draw_os_desktop() {
     print!("Graphics: draw_os_desktop() called in BIOS mode\n");
     debug_print_str("Graphics: BIOS mode draw_os_desktop() started\n");
-
     debug_print_str("Graphics: checking BIOS framebuffer...\n");
     if let Some(fb_writer) = FRAMEBUFFER_BIOS.get() {
         debug_print_str("Graphics: Obtained BIOS framebuffer writer\n");
-        let mut fb_writer = fb_writer.lock();
+        let mut locked = fb_writer.lock();
         debug_print_str("Graphics: Framebuffer writer locked\n");
-
-        petroleum::serial::serial_log(format_args!("Graphics: Framebuffer size: {}x{}, VGA mode\n",
-            fb_writer.info.width, fb_writer.info.height));
-
-        // Fill background with dark gray (suitable for VGA grayscale)
-        let bg_color = 32u32; // Dark gray
-        debug_print_str("Graphics: Filling background...\n");
-        fill_background(&mut *fb_writer, bg_color);
-        debug_print_str("Graphics: Background filled\n");
-
-        // Test: Draw a bright red rectangle in the corner
-        debug_print_str("Graphics: Drawing test red rectangle...\n");
-        draw_window(&mut *fb_writer, 10, 10, 50, 50, 0xFF0000u32, 0xFFFFFFu32); // Bright red, white border
-        debug_print_str("Graphics: Test red rectangle drawn\n");
-
-        // Draw window frame
-        debug_print_str("Graphics: Drawing window frame...\n");
-        draw_window(&mut *fb_writer, 50, 50, 220, 120, 255u32, 64u32); // White window, gray border
-        debug_print_str("Graphics: Window frame drawn\n");
-
-        // Draw taskbar at bottom
-        debug_print_str("Graphics: Drawing taskbar...\n");
-        draw_taskbar(&mut *fb_writer, 128u32); // Medium gray taskbar
-        debug_print_str("Graphics: Taskbar drawn\n");
-
-        // Draw some icons
-        debug_print_str("Graphics: Drawing icons...\n");
-        draw_icon(&mut *fb_writer, 65, 60, "Terminal", 96u32); // Medium gray icon
-        draw_icon(&mut *fb_writer, 65, 80, "Settings", 160u32); // Light gray icon
-        debug_print_str("Graphics: Icons drawn\n");
-
-        print!("Graphics: BIOS desktop drawing completed\n");
-        debug_print_str("Graphics: BIOS desktop drawing completed\n");
+        draw_desktop_internal(&mut *locked, "BIOS");
     } else {
         print!("Graphics: ERROR - BIOS framebuffer not initialized\n");
         debug_print_str("Graphics: ERROR - BIOS framebuffer not initialized\n");
     }
 }
 
-fn fill_background<T: PixelType>(writer: &mut FramebufferWriter<T>, color: u32) {
+fn draw_desktop_internal(fb_writer: &mut impl FramebufferLike, mode: &str) {
+    let is_vga = fb_writer.is_vga();
+    if is_vga {
+        petroleum::serial::serial_log(format_args!("Graphics: Framebuffer size: {}x{}, VGA mode\n", fb_writer.get_width(), fb_writer.get_height()));
+    } else {
+        petroleum::serial::serial_log(format_args!("Graphics: Framebuffer size: {}x{}, stride: {}\n", fb_writer.get_width(), fb_writer.get_height(), fb_writer.get_stride()));
+    }
+    let bg_color = 32u32; // Dark gray
+    debug_print_str("Graphics: Filling background...\n");
+    fill_background(fb_writer, bg_color);
+    debug_print_str("Graphics: Background filled\n");
+    debug_print_str("Graphics: Drawing test red rectangle...\n");
+    draw_window(fb_writer, 10, 10, 50, 50, 0xFF0000u32, 0xFFFFFFu32);
+    debug_print_str("Graphics: Test red rectangle drawn\n");
+    debug_print_str("Graphics: Drawing window frame...\n");
+    draw_window(fb_writer, 50, 50, 220, 120, 255u32, 64u32);
+    debug_print_str("Graphics: Window frame drawn\n");
+    debug_print_str("Graphics: Drawing taskbar...\n");
+    draw_taskbar(fb_writer, 128u32);
+    debug_print_str("Graphics: Taskbar drawn\n");
+    debug_print_str("Graphics: Drawing icons...\n");
+    draw_icon(fb_writer, 65, 60, "Terminal", 96u32);
+    draw_icon(fb_writer, 65, 80, "Settings", 160u32);
+    debug_print_str("Graphics: Icons drawn\n");
+    print!("Graphics: {} desktop drawing completed\n", mode);
+    debug_print_str("Graphics: desktop drawing completed\n");
+}
+
+fn fill_background(writer: &mut impl FramebufferLike, color: u32) {
     let color_rgb = u32_to_rgb888(color);
     let style = PrimitiveStyleBuilder::new().fill_color(color_rgb).build();
     let rect = Rectangle::new(Point::new(0, 0), Size::new(writer.get_width(), writer.get_height()));
     rect.into_styled(style).draw(writer).ok();
 }
 
-fn draw_window<W: FramebufferLike + DrawTarget<Color = Rgb888>>(
+fn draw_window<W: FramebufferLike>(
     writer: &mut W,
     x: u32,
     y: u32,
@@ -567,7 +648,7 @@ fn draw_window<W: FramebufferLike + DrawTarget<Color = Rgb888>>(
     rect.into_styled(style).draw(writer).ok();
 }
 
-fn draw_taskbar<W: FramebufferLike + DrawTarget<Color = Rgb888>>(writer: &mut W, color: u32) {
+fn draw_taskbar<W: FramebufferLike>(writer: &mut W, color: u32) {
     let height = writer.get_height();
     let taskbar_height = 40;
 
@@ -580,7 +661,7 @@ fn draw_taskbar<W: FramebufferLike + DrawTarget<Color = Rgb888>>(writer: &mut W,
     draw_window(writer, 0, height - taskbar_height + 5, 80, 30, 0xE0E0E0u32, 0x000000u32);
 }
 
-fn draw_icon<W: FramebufferLike + DrawTarget<Color = Rgb888>>(writer: &mut W, x: u32, y: u32, _label: &str, color: u32) {
+fn draw_icon<W: FramebufferLike>(writer: &mut W, x: u32, y: u32, _label: &str, color: u32) {
     const ICON_SIZE: u32 = 48;
     let color_rgb = u32_to_rgb888(color);
     let style = PrimitiveStyleBuilder::new().fill_color(color_rgb).build();
