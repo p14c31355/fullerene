@@ -38,13 +38,25 @@ where
 
 // Helper function to find framebuffer config (using generic)
 pub fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&FullereneFramebufferConfig> {
+    petroleum::serial::serial_log(format_args!(
+        "find_framebuffer_config: System table has {} configuration table entries\n",
+        system_table.number_of_table_entries
+    ));
+
     let config_table_entries = unsafe {
         core::slice::from_raw_parts(
             system_table.configuration_table,
             system_table.number_of_table_entries,
         )
     };
-    for entry in config_table_entries {
+
+    for (i, entry) in config_table_entries.iter().enumerate() {
+        petroleum::serial::serial_log(format_args!(
+            "Config table {}: table={:#x}, checking for GOP GUID\n",
+            i,
+            entry.vendor_table as usize
+        ));
+
         if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
             return unsafe { Some(&*(entry.vendor_table as *const FullereneFramebufferConfig)) };
         }

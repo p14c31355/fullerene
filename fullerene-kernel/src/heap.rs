@@ -273,7 +273,7 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
         .expect("Failed to allocate level 4 frame");
 
     // Temporarily map the new level 4 table to an unused virtual address
-    let temp_virt_page = Page::<Size4KiB>::containing_address(VirtAddr::new(0x8000000000000000));
+    let temp_virt_page = Page::<Size4KiB>::containing_address(VirtAddr::new(0x4000)); // Use a safe temporary address
     {
         let mut current_mapper = MAPPER.get().unwrap().lock();
         unsafe {
@@ -281,74 +281,76 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
         }
     }
 
-    let level_4_table = unsafe { &mut *(0x8000000000000000 as *mut PageTable) };
+    let level_4_table = unsafe { &mut *(0x4000 as *mut PageTable) };
 
     // Zero the table
     level_4_table.zero();
 
-    // Create a mapper for the new page table
-    // For identity mapping, use offset 0
-    let mut new_mapper = unsafe { OffsetPageTable::new(level_4_table, VirtAddr::new(0)) };
+    // Create a mapper for the new page table using the same offset as the original mapping
+    let mut new_mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
 
     petroleum::serial::serial_log(format_args!("reinit_page_table: New mapper created\n"));
 
-    // Map usable memory regions from the memory map (simplified - only map essential regions)
-    use petroleum::common::EfiMemoryType::*;
-    let memory_types = [EfiLoaderCode, EfiLoaderData, EfiBootServicesCode, EfiBootServicesData, EfiRuntimeServicesCode, EfiRuntimeServicesData, EfiConventionalMemory];
-    let descriptors_iter = memory_map.iter().filter(|desc| {
-        memory_types.iter().any(|&t| desc.type_ == t) && desc.number_of_pages > 0
-    });
-    let mut descriptor_count = 0;
-    for desc in descriptors_iter {
-        descriptor_count += 1;
-    }
-    petroleum::serial::serial_log(format_args!("reinit_page_table: Found {} memory descriptors to map\n", descriptor_count));
-    let descriptors_iter = memory_map.iter().filter(|desc| {
-        memory_types.iter().any(|&t| desc.type_ == t) && desc.number_of_pages > 0
-    });
-    for desc in descriptors_iter {
-        petroleum::serial::serial_log(format_args!("Mapping descriptor: pstart=0x{:x}, pages=0x{:x}\n", desc.physical_start, desc.number_of_pages));
+    // Map global memory regions using the UEFI virtual addresses from the memory map
+    petroleum::serial::serial_log(format_args!("reinit_page_table: Mapping memory regions\n"));
+
+    for desc in memory_map {
+        // Map UEFI runtime regions and our kernel to the same virtual addresses
         let start_phys = PhysAddr::new(desc.physical_start);
         let end_phys = start_phys + (desc.number_of_pages * 4096);
-        let start_virt = VirtAddr::new(desc.physical_start); // Identity map
-        // Map to identity virtual addresses
+        let start_virt = VirtAddr::new(desc.virtual_start); // Use UEFI's virtual address
+
+        // Only map known essential memory types
+        use petroleum::common::EfiMemoryType::*;
+        let should_map = matches!(desc.type_,
+            EfiLoaderCode | EfiLoaderData | EfiBootServicesCode | EfiBootServicesData |
+            EfiRuntimeServicesCode | EfiRuntimeServicesData | EfiConventionalMemory
+        ) && desc.number_of_pages > 0;
+
+        if !should_map {
+            continue;
+        }
+
+        // Limit mapping to avoid excessive time and potential hangs
+        let max_pages = 1024; // Limit to 4MB per descriptor to prevent hangs
+        let actual_pages = desc.number_of_pages.min(max_pages);
+        let actual_end_phys = start_phys + (actual_pages * 4096);
+
         unsafe {
             map_physical_range(
                 &mut new_mapper,
                 start_phys,
-                end_phys,
+                actual_end_phys,
                 start_virt,
                 Flags::PRESENT | Flags::WRITABLE,
                 &mut frame_allocator,
             );
         }
-        petroleum::serial::serial_log(format_args!("Mapped descriptor: pstart=0x{:x}\n", desc.physical_start));
+
+        if desc.number_of_pages > max_pages {
+            petroleum::serial::serial_log(format_args!("Limited mapping: pstart=0x{:x}, limited pages 0x{:x} of 0x{:x}\n",
+                desc.physical_start, max_pages, desc.number_of_pages));
+        }
     }
 
-    // Map the kernel to a higher-half address
-    const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000;
-    let kernel_virt_start = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE);
-    let kernel_size = 0x200000; // 2MB
-    let kernel_end_phys = kernel_phys_start + kernel_size;
-
-    unsafe {
-        map_physical_range(
-            &mut new_mapper,
-            kernel_phys_start,
-            kernel_end_phys,
-            kernel_virt_start,
-            Flags::PRESENT | Flags::WRITABLE,
-            &mut *frame_allocator,
-        );
+    // Unmap the temporary mapping
+    {
+        let mut current_mapper = MAPPER.get().unwrap().lock();
+        unsafe {
+            current_mapper.unmap(temp_virt_page).expect("Failed to unmap temp").1.flush();
+        }
     }
 
     // Set the new CR3
     unsafe { Cr3::write(level_4_frame, Cr3Flags::empty()) };
 
-    // Reinitialize the mapper with new CR3
-    // Change: Use the passed physical_memory_offset instead of VirtAddr::new(0)
+    petroleum::serial::serial_log(format_args!("reinit_page_table: CR3 updated\n"));
+
+    // Reinitialize the mapper with new CR3 using the same physical_memory_offset
     let mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
     *MAPPER.get().unwrap().lock() = mapper;
+
+    petroleum::serial::serial_log(format_args!("reinit_page_table: Completed successfully\n"));
 }
 
 // Allocate heap from memory map (find virtual address from physical)
