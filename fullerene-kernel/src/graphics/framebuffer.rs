@@ -9,6 +9,7 @@ use spin::Mutex;
 use petroleum::common::VgaFramebufferConfig;
 use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig};
 use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
+use petroleum::graphics::{rgb_pixel, u32_to_rgb888, grayscale_intensity};
 
 #[derive(Clone, Copy)]
 pub struct ColorScheme {
@@ -381,20 +382,4 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
     fn is_vga(&self) -> bool {
         self.info.pixel_format.is_none()
     }
-}
-
-fn rgb_pixel(r: u8, g: u8, b: u8) -> u32 {
-    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
-}
-
-fn u32_to_rgb888(color: u32) -> Rgb888 {
-    Rgb888::new(
-        ((color >> 16) & 0xFF) as u8,
-        ((color >> 8) & 0xFF) as u8,
-        (color & 0xFF) as u8,
-    )
-}
-
-fn grayscale_intensity(color: Rgb888) -> u32 {
-    ((color.r() as u32 * 77 + color.g() as u32 * 150 + color.b() as u32 * 29) / 256).min(255)
 }

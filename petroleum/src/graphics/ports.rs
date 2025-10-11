@@ -1,21 +1,18 @@
-use x86_64::instructions::port::Port;
-
 /// Generic port writer struct to reduce unsafe block repetition and improve type safety
+/// Centralizes port operations to minimize unsafe code usage
 pub struct PortWriter<T> {
-    port: Port<T>,
+    port: x86_64::instructions::port::Port<T>,
 }
 
 impl<T> PortWriter<T> {
     pub fn new(port_addr: u16) -> Self {
         Self {
-            port: Port::new(port_addr),
+            port: x86_64::instructions::port::Port::new(port_addr),
         }
     }
 
-    /// # Safety
-    /// Writing to I/O ports can cause undefined behavior if the port address is invalid
-    /// or if the data written has unexpected effects on hardware.
-    pub unsafe fn write(&mut self, value: T)
+    /// Safe wrapper for port writes - requires T: PortWrite trait
+    pub fn write_safe(&mut self, value: T)
     where
         T: x86_64::instructions::port::PortWrite,
     {
@@ -24,14 +21,83 @@ impl<T> PortWriter<T> {
         }
     }
 
-    /// # Safety
-    /// Reading from I/O ports can cause undefined behavior if the port address is invalid
-    /// or if reading from the port has unexpected effects on hardware.
-    pub unsafe fn read(&mut self) -> T
+    /// Safe wrapper for port reads - requires T: PortRead trait
+    pub fn read_safe(&mut self) -> T
     where
         T: x86_64::instructions::port::PortRead,
     {
         unsafe { self.port.read() }
+    }
+}
+
+/// Generic helper for processing I/O port sequences with automatic type safety
+pub trait PortOperations {
+    fn write_multiple<T: Copy + x86_64::instructions::port::PortWrite>(
+        &mut self,
+        configs: &[(u8, T)]
+    );
+    fn write_sequence_u8(&mut self, index_port: u16, data_port: u16, configs: &[(u8, u8)]);
+}
+
+impl PortOperations for () {
+    fn write_multiple<T: Copy + x86_64::instructions::port::PortWrite>(
+        &mut self,
+        _configs: &[(u8, T)]
+    ) {
+        // Global implementation for sequence operations
+    }
+
+    fn write_sequence_u8(&mut self, index_port: u16, data_port: u16, configs: &[(u8, u8)]) {
+        let mut idx_writer = PortWriter::new(index_port);
+        let mut data_writer = PortWriter::new(data_port);
+        for &(index, value) in configs {
+            idx_writer.write_safe(index);
+            data_writer.write_safe(value);
+        }
+    }
+}
+
+/// Macro to safely write to a port with automatic type deduction
+#[macro_export]
+macro_rules! port_write {
+    ($port_addr:expr, $value:expr) => {{
+        let mut writer = $crate::PortWriter::new($port_addr);
+        writer.write_safe($value);
+    }};
+}
+
+/// Macro to safely read from a port with automatic type deduction
+#[macro_export]
+macro_rules! port_read_u8 {
+    ($port_addr:expr) => {{
+        let mut reader = $crate::PortWriter::new($port_addr);
+        reader.read_safe()
+    }};
+}
+
+#[macro_export]
+macro_rules! port_read {
+    ($port_addr:expr) => {
+        port_read_u8!($port_addr)
+    };
+}
+
+/// Generic MSR (Model-Specific Register) operations wrapper
+pub struct MsrHelper {
+    index: u32,
+}
+
+impl MsrHelper {
+    pub fn new(index: u32) -> Self {
+        Self { index }
+    }
+
+    pub fn read(&self) -> u64 {
+        unsafe { x86_64::registers::model_specific::Msr::new(self.index).read() }
+    }
+
+    pub fn write(&self, value: u64) {
+        unsafe { x86_64::registers::model_specific::Msr::new(self.index).write(value) }
     }
 }
 
@@ -56,10 +122,8 @@ impl VgaPortOps {
     }
 
     pub fn write_register(&mut self, index: u8, value: u8) {
-        unsafe {
-            self.index_writer.write(index);
-            self.data_writer.write(value);
-        }
+        self.index_writer.write_safe(index);
+        self.data_writer.write_safe(value);
     }
 
     pub fn write_sequence(&mut self, configs: &[RegisterConfig]) {

@@ -1,5 +1,5 @@
 use petroleum::graphics::ports::VgaPorts;
-use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations};
+use petroleum::{port_write, Color, ColorCode, ScreenChar, TextBufferOperations};
 use spin::{Mutex, Once};
 use x86_64::instructions::port::Port;
 
@@ -36,14 +36,10 @@ impl VgaBuffer {
     /// Updates the hardware cursor position.
     pub fn update_cursor(&self) {
         let pos = self.row_position * BUFFER_WIDTH + self.column_position;
-        unsafe {
-            let mut command_port = Port::new(VgaPorts::CRTC_INDEX);
-            let mut data_port = Port::new(VgaPorts::CRTC_DATA);
-            command_port.write(CURSOR_POS_LOW_REG);
-            data_port.write((pos & 0xFF) as u8);
-            command_port.write(CURSOR_POS_HIGH_REG);
-            data_port.write(((pos >> 8) & 0xFF) as u8);
-        }
+        port_write!(VgaPorts::CRTC_INDEX, CURSOR_POS_LOW_REG);
+        port_write!(VgaPorts::CRTC_DATA, (pos & 0xFF) as u8);
+        port_write!(VgaPorts::CRTC_INDEX, CURSOR_POS_HIGH_REG);
+        port_write!(VgaPorts::CRTC_DATA, ((pos >> 8) & 0xFF) as u8);
     }
 }
 
