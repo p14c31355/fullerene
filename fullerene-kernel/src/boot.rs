@@ -11,6 +11,7 @@ use petroleum::common::{
     EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
     VgaFramebufferConfig,
 };
+use x86_64::PhysAddr;
 use petroleum::page_table::EfiMemoryDescriptor;
 
 use crate::memory::{find_framebuffer_config, find_heap_start, init_memory_management, setup_memory_maps};
@@ -120,17 +121,34 @@ pub extern "efiapi" fn efi_main(
 
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(*MEMORY_MAP.get().unwrap());
-    let heap_start = heap::allocate_heap_from_map(heap_phys_start, heap::HEAP_SIZE);
-    let heap_start_after_gdt = gdt::init(heap_start);
-    kernel_log!("Kernel: GDT init done");
+    kernel_log!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());
+    if heap_phys_start.as_u64() < 0x1000 {
+        kernel_log!("Kernel: ERROR - Invalid heap_phys_start, using fallback 0x100000");
+        let fallback_start = PhysAddr::new(0x100000);
+        let heap_start = heap::allocate_heap_from_map(fallback_start, heap::HEAP_SIZE);
+        kernel_log!("Kernel: heap_start=0x{:x}", heap_start.as_u64());
+        let heap_start_after_gdt = gdt::init(heap_start);
+        kernel_log!("Kernel: heap_start_after_gdt=0x{:x}", heap_start_after_gdt.as_u64());
+        kernel_log!("Kernel: GDT init done");
 
-    // Initialize heap with the remaining memory
-    let gdt_mem_usage = heap_start_after_gdt - heap_start;
-    heap::init(
-        heap_start_after_gdt,
-        heap::HEAP_SIZE - gdt_mem_usage as usize,
-    );
-    kernel_log!("Kernel: heap initialized");
+        // Initialize heap with fallback
+        let heap_size_remaining = heap::HEAP_SIZE - ((heap_start_after_gdt - heap_start) as usize);
+        heap::init(heap_start_after_gdt, heap_size_remaining);
+        kernel_log!("Kernel: heap initialized with fallback");
+    } else {
+        let heap_start = heap::allocate_heap_from_map(heap_phys_start, heap::HEAP_SIZE);
+        kernel_log!("Kernel: heap_start=0x{:x}", heap_start.as_u64());
+        let heap_start_after_gdt = gdt::init(heap_start);
+        kernel_log!("Kernel: heap_start_after_gdt=0x{:x}", heap_start_after_gdt.as_u64());
+        kernel_log!("Kernel: GDT init done");
+
+        // Initialize heap with the remaining memory
+        let gdt_mem_usage = heap_start_after_gdt - heap_start;
+        kernel_log!("Kernel: gdt_mem_usage=0x{:x}", gdt_mem_usage);
+        let heap_size_remaining = heap::HEAP_SIZE - gdt_mem_usage as usize;
+        heap::init(heap_start_after_gdt, heap_size_remaining);
+        kernel_log!("Kernel: heap initialized");
+    }
 
     // Early serial log works now
     kernel_log!("Kernel: basic init complete");
