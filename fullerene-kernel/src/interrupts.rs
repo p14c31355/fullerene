@@ -390,7 +390,7 @@ macro_rules! define_input_interrupt_handler {
 }
 
 // Hardware interrupt handlers
-pub extern "x86-interrupt" fn timer_handler(stack_frame: InterruptStackFrame) {
+pub extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
     // Timer interrupt - handle timer ticks and scheduling
     *TICK_COUNTER.lock() += 1;
 
