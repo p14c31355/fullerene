@@ -71,8 +71,8 @@ fn draw_desktop_internal(fb_writer: &mut impl FramebufferLike, mode: &str) {
     draw_taskbar(fb_writer, 128u32);
     debug_print_str("Graphics: Taskbar drawn\n");
     debug_print_str("Graphics: Drawing icons...\n");
-    draw_icon(fb_writer, 65, 60, "Terminal", 96u32);
-    draw_icon(fb_writer, 65, 80, "Settings", 160u32);
+    draw_icon(fb_writer, 65, 60, 96u32);
+    draw_icon(fb_writer, 65, 80, 160u32);
     debug_print_str("Graphics: Icons drawn\n");
     crate::graphics::_print(format_args!("Graphics: {} desktop drawing completed\n", mode));
     debug_print_str("Graphics: desktop drawing completed\n");
