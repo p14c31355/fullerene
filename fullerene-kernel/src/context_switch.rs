@@ -55,31 +55,32 @@ pub extern "C" fn switch_context(
 
         // Save current context (label 2)
         "2:",
-        // Push all callee-saved registers and some caller-saved
-        "push rax",
-        "push rbx",
-        "push rcx",
-        "push rdx",
-        "push rsi",  // actually rdi points to old_context
-        "push r8",
-        "push r9",
-        "push r10",
-        "push r11",
-        "push r12",
-        "push r13",
-        "push r14",
-        "push r15",
-
-        // Get RIP and RSP manually by inspecting the stack
-        // At this point, the stack has return address at [rsp+80] and saved rbp at some offset
-        // We need to be very careful here
-        "mov rax, [rsp + 80]",  // This is approximate - return address location
-        "mov [rdi + {rip}], rax",
-        "lea rax, [rsp + 88]",   // Approximate caller stack pointer
-        "mov [rdi + {rsp}], rax",
-
-        // Save RBP
+                // Save current context (label 2)
+        "2:",
+        // Save GPRs to old_context. Note that rdi holds old_context pointer.
+        "mov [rdi + {rax}], rax",
+        "mov [rdi + {rbx}], rbx",
+        "mov [rdi + {rcx}], rcx",
+        "mov [rdi + {rdx}], rdx",
+        "mov [rdi + {rsi}], rsi",
         "mov [rdi + {rbp}], rbp",
+        "mov [rdi + {r8}], r8",
+        "mov [rdi + {r9}], r9",
+        "mov [rdi + {r10}], r10",
+        "mov [rdi + {r11}], r11",
+        "mov [rdi + {r12}], r12",
+        "mov [rdi + {r13}], r13",
+        "mov [rdi + {r14}], r14",
+        "mov [rdi + {r15}], r15",
+
+        // The original rdi of the process was overwritten by the first argument.
+        // This is a known issue with this approach. For now, we save the current rdi.
+        "mov [rdi + {rdi}], rdi",
+
+        // Save RIP and RSP.
+        "mov rax, [rsp]", // Get return address from stack.
+        "mov [rdi + {rip}], rax",
+        "mov [rdi + {rsp}], rsp", // Save current stack pointer.
 
         // Save RFLAGS
         "pushfq",
@@ -106,20 +107,7 @@ pub extern "C" fn switch_context(
         "movzx rax, ax",
         "mov [rdi + {gs}], rax",
 
-        // Restore the registers we pushed
-        "pop r15",
-        "pop r14",
-        "pop r13",
-        "pop r12",
-        "pop r11",
-        "pop r10",
-        "pop r9",
-        "pop r8",
-        "pop rsi",
-        "pop rdx",
-        "pop rcx",
-        "pop rbx",
-        "pop rax",
+        "jmp 3f",
 
         // Restore context (label 3)
         "3:",
@@ -179,6 +167,7 @@ pub extern "C" fn switch_context(
         rbx = const ContextOffsets::rbx,
         rcx = const ContextOffsets::rcx,
         rdx = const ContextOffsets::rdx,
+        rsi = const ContextOffsets::rsi,
         rdi = const ContextOffsets::rdi,
         r8 = const ContextOffsets::r8,
         r9 = const ContextOffsets::r9,

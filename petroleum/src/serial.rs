@@ -1,12 +1,10 @@
-pub unsafe fn write_serial_bytes(port: u16, status_port_addr: u16, bytes: &[u8]) {
+pub unsafe fn write_serial_bytes(port_addr: u16, status_port_addr: u16, bytes: &[u8]) {
     use x86_64::instructions::port::Port;
-    unsafe {
-        let mut po = Port::<u8>::new(port);
-        let mut status_po = Port::<u8>::new(status_port_addr);
-        for &byte in bytes {
-            while (status_po.read() & 0x20) == 0 {}
-            po.write(byte);
-        }
+    let mut port = Port::<u8>::new(port_addr);
+    let mut status_port = Port::<u8>::new(status_port_addr);
+    for &byte in bytes {
+        while (status_port.read() & 0x20) == 0 {}
+        port.write(byte);
     }
 }
 
