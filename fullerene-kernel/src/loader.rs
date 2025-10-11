@@ -9,6 +9,7 @@ use crate::process;
 use alloc::vec::Vec;
 use core::ptr;
 use x86_64::{PhysAddr, VirtAddr};
+use x86_64::structures::paging::FrameAllocator;
 
 pub const PROGRAM_LOAD_BASE: u64 = 0x400000; // 4MB base address for user programs
 

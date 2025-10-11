@@ -282,12 +282,12 @@ pub extern "x86-interrupt" fn page_fault_handler(
 
     petroleum::serial::serial_log(format_args!(
         "\nEXCEPTION: PAGE FAULT at address {:#x}\nError Code: {:?}\n",
-        fault_addr_unwrapped.as_u64(),
+        fault_addr.as_u64(),
         error_code
     ));
 
     // Page fault handling logic
-    handle_page_fault(fault_addr_unwrapped, error_code, stack_frame);
+    handle_page_fault(fault_addr, error_code, stack_frame);
 
     // After handling, execution can continue
 }

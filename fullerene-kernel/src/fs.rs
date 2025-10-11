@@ -97,11 +97,13 @@ pub fn close_file(fd: FileDescriptor) -> Result<(), FsError> {
 
 /// Read from file
 pub fn read_file(fd: FileDescriptor, buffer: &mut [u8]) -> Result<usize, FsError> {
-    let mut fs = FILESYSTEM.lock();
     let open_files = OPEN_FILES.lock();
     let filename = open_files.get(&fd).ok_or(FsError::InvalidFileDescriptor)?;
+    let filename = filename.clone(); // Clone the filename for use after lock is released
+    drop(open_files); // Release the lock before acquiring FILESYSTEM lock
 
-    let file = fs.get_mut(filename).ok_or(FsError::FileNotFound)?;
+    let mut fs = FILESYSTEM.lock();
+    let file = fs.get_mut(&filename).ok_or(FsError::FileNotFound)?;
 
     if !file.permissions.read {
         return Err(FsError::PermissionDenied);
@@ -118,11 +120,13 @@ pub fn read_file(fd: FileDescriptor, buffer: &mut [u8]) -> Result<usize, FsError
 
 /// Write to file
 pub fn write_file(fd: FileDescriptor, data: &[u8]) -> Result<usize, FsError> {
-    let mut fs = FILESYSTEM.lock();
     let open_files = OPEN_FILES.lock();
     let filename = open_files.get(&fd).ok_or(FsError::InvalidFileDescriptor)?;
+    let filename = filename.clone(); // Clone the filename for use after lock is released
+    drop(open_files); // Release the lock before acquiring FILESYSTEM lock
 
-    let file = fs.get_mut(filename).ok_or(FsError::FileNotFound)?;
+    let mut fs = FILESYSTEM.lock();
+    let file = fs.get_mut(&filename).ok_or(FsError::FileNotFound)?;
 
     if !file.permissions.write {
         return Err(FsError::PermissionDenied);
@@ -135,11 +139,13 @@ pub fn write_file(fd: FileDescriptor, data: &[u8]) -> Result<usize, FsError> {
 
 /// Seek in file
 pub fn seek_file(fd: FileDescriptor, position: usize) -> Result<(), FsError> {
-    let mut fs = FILESYSTEM.lock();
     let open_files = OPEN_FILES.lock();
     let filename = open_files.get(&fd).ok_or(FsError::InvalidFileDescriptor)?;
+    let filename = filename.clone(); // Clone the filename for use after lock is released
+    drop(open_files); // Release the lock before acquiring FILESYSTEM lock
 
-    let file = fs.get_mut(filename).ok_or(FsError::FileNotFound)?;
+    let mut fs = FILESYSTEM.lock();
+    let file = fs.get_mut(&filename).ok_or(FsError::FileNotFound)?;
 
     if position > file.data.len() {
         return Err(FsError::InvalidSeek);
