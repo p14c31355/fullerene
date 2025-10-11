@@ -51,11 +51,11 @@ pub struct ProcessContext {
     pub r14: u64,
     pub r15: u64,
 
-    /// Instruction pointer
-    pub rip: u64,
-
     /// CPU flags
     pub rflags: u64,
+
+    /// Instruction pointer
+    pub rip: u64,
 
     /// Segment registers
     pub cs: u64,
