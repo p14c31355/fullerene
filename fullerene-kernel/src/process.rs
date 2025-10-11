@@ -132,6 +132,8 @@ pub struct Process {
     pub entry_point: VirtAddr,
     /// Exit code
     pub exit_code: Option<i32>,
+    /// Parent process ID (for wait() mechanism)
+    pub parent_id: Option<ProcessId>,
 }
 
 impl Process {
@@ -152,6 +154,7 @@ impl Process {
             user_stack: VirtAddr::new(0),   // Will be set when allocated
             entry_point,
             exit_code: None,
+            parent_id: None, // Will be set by fork
         }
     }
 
@@ -230,6 +233,26 @@ pub fn create_process(name: &'static str, entry_point_address: VirtAddr) -> Proc
     pid
 }
 
+/// Unblock parent processes that are waiting for this child process
+fn unblock_waiting_parents(child_pid: ProcessId) {
+    let process_list = PROCESS_LIST.lock();
+
+    // Find the parent of the terminated process
+    if let Some(terminated_proc) = process_list.iter().find(|p| p.id == child_pid) {
+        if let Some(parent_id) = terminated_proc.parent_id {
+            // Find the parent process and unblock it if it's blocked waiting
+            if let Some(parent) = process_list.iter().find(|p| p.id == parent_id) {
+                if parent.state == ProcessState::Blocked {
+                    // Note: In a full implementation, we'd signal that the child has terminated
+                    // For now, just unblock the parent so it can continue executing
+                    drop(process_list);
+                    unblock_process(parent_id);
+                }
+            }
+        }
+    }
+}
+
 /// Terminate a process
 pub fn terminate_process(pid: ProcessId, exit_code: i32) {
     let mut process_list = PROCESS_LIST.lock();
@@ -242,8 +265,12 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
         let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
         unsafe { alloc::alloc::dealloc(kernel_stack_base as *mut u8, layout); }
 
-        // Drop page table to free frames
-        drop(process.page_table.take());
+        // TODO: Properly free page table frames recursively
+        // For now, we just drop the page table mapper - the physical frames are leaked
+        // This is a known issue that should be addressed
+
+        // Unblock parent processes waiting for this child
+        unblock_waiting_parents(pid);
     }
 
     // If current process is terminating, schedule next
