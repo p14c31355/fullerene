@@ -301,7 +301,7 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
         .expect("Failed to allocate level 4 frame");
 
     // Temporarily map the new level 4 table to an unused virtual address
-    let temp_virt_page = Page::<Size4KiB>::containing_address(VirtAddr::new(0x4000)); // Use a safe temporary address
+    let temp_virt_page = Page::<Size4KiB>::containing_address(VirtAddr::new(0xFFFF_F000_0000_0000)); // Use a high virtual address for temporary mapping
     {
         let mut current_mapper = MAPPER.get().unwrap().lock();
         unsafe {
