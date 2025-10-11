@@ -526,7 +526,7 @@ pub fn setup_syscall() {
     // For now, we don't have user segments set up properly in GDT,
     // so we'll use kernel segments for both kernel and user.
     // In a full implementation, we'd add userland descriptors to GDT.
-    let star_value = (0x08u64 << 48) | (0x10u64 << 32) | (0x08u64 << 16) | 0x10u64;
+    let star_value = (0x18_u64 << 48) | (0x08_u64 << 32); // TODO: Replace 0x18 with a proper user code segment selector base.
     unsafe {
         let mut star = Msr::new(0xC0000081); // STAR MSR
         star.write(star_value);
