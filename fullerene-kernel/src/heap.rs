@@ -256,7 +256,7 @@ pub(crate) unsafe fn map_physical_range(
     }
 }
 
-pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: PhysAddr) {
+pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: PhysAddr, framebuffer_addr: Option<u64>) {
     use x86_64::registers::control::Cr3;
     use x86_64::structures::paging::{PageTable, PageTableFlags as Flags};
 
@@ -311,25 +311,15 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
             continue;
         }
 
-        // Limit mapping to avoid excessive time and potential hangs
-        let max_pages = 1024; // Limit to 4MB per descriptor to prevent hangs
-        let actual_pages = desc.number_of_pages.min(max_pages);
-        let actual_end_phys = start_phys + (actual_pages * 4096);
-
         unsafe {
             map_physical_range(
                 &mut new_mapper,
                 start_phys,
-                actual_end_phys,
+                end_phys,
                 start_virt,
                 Flags::PRESENT | Flags::WRITABLE,
                 &mut frame_allocator,
             );
-        }
-
-        if desc.number_of_pages > max_pages {
-            petroleum::serial::serial_log(format_args!("Limited mapping: pstart=0x{:x}, limited pages 0x{:x} of 0x{:x}\n",
-                desc.physical_start, max_pages, desc.number_of_pages));
         }
     }
 

@@ -192,6 +192,6 @@ pub fn init_memory_management(
         physical_memory_offset.as_u64(),
         kernel_phys_start.as_u64()
     );
-    heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
+    heap::reinit_page_table(physical_memory_offset, kernel_phys_start, None);
     kernel_log!("Page table reinit completed successfully");
 }

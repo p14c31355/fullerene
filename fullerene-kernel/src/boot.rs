@@ -17,45 +17,10 @@ use crate::memory::{find_framebuffer_config, find_heap_start, init_memory_manage
 use crate::{gdt, graphics, heap, interrupts, MEMORY_MAP};
 use crate::graphics::framebuffer::FramebufferLike;
 
-// GOP (Graphics Output Protocol) related structures
-#[repr(C)]
-struct EfiGraphicsOutputProtocol {
-    query_mode: usize,
-    set_mode: usize,
-    blt: usize,
-    mode: *const EfiGraphicsOutputProtocolMode,
-}
-
-#[repr(C)]
-struct EfiGraphicsOutputProtocolMode {
-    max_mode: u32,
-    mode: u32,
-    info: *const EfiGraphicsOutputModeInformation,
-    size_of_info: usize,
-    framebuffer_base: u64,
-    framebuffer_size: usize,
-}
-
-#[repr(C)]
-struct EfiGraphicsOutputModeInformation {
-    version: u32,
-    horizontal_resolution: u32,
-    vertical_resolution: u32,
-    pixel_format: petroleum::common::EfiGraphicsPixelFormat,
-    pixel_information: EfiPixelBitmask,
-    pixels_per_scan_line: u32,
-}
-
-#[repr(C)]
-struct EfiPixelBitmask {
-    red_mask: u32,
-    green_mask: u32,
-    blue_mask: u32,
-    reserved_mask: u32,
-}
-
-// GOP GUID: 9042A9DE-23DC-4A38-96FB-7ADED080516A
-const EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID: [u8; 16] = petroleum::common::EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
+use petroleum::common::{
+    EfiGraphicsOutputProtocol, EfiGraphicsOutputProtocolMode, EfiGraphicsOutputModeInformation,
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
+};
 
 // Macro to reduce repetitive serial logging
 macro_rules! kernel_log {
@@ -147,8 +112,8 @@ pub extern "efiapi" fn efi_main(
     heap::init_page_table(physical_memory_offset);
     kernel_log!("Page table init completed successfully");
 
-    // Skip page table reinit for now as UEFI provides adequate mappings for graphics
-    kernel_log!("Skipping page table reinit - using UEFI mappings");
+    // Graphics work with UEFI page tables, but kernel should eventually reinit
+    kernel_log!("Will use UEFI page tables for graphics compatibility");
 
     // Set physical memory offset for process management
     crate::memory_management::set_physical_memory_offset(physical_memory_offset);
@@ -181,86 +146,22 @@ pub extern "efiapi" fn efi_main(
     x86_64::instructions::interrupts::disable();
     kernel_log!("Interrupts disabled for graphics initialization");
 
-    // Check if framebuffer config is available from UEFI bootloader
-    kernel_log!("Checking framebuffer config from UEFI bootloader...");
-    if let Some(fb_config) = find_framebuffer_config(system_table) {
-        kernel_log!(
-            "Found framebuffer config: {}x{} @ {:#x}, stride: {}, pixel_format: {:?}",
-            fb_config.width,
-            fb_config.height,
-            fb_config.address,
-            fb_config.stride,
-            fb_config.pixel_format
-        );
-        kernel_log!("Initializing UEFI graphics mode...");
-        graphics::init(fb_config);
+    // Initialize graphics with framebuffer config
+    let framebuffer_initialized = initialize_graphics_with_config(system_table);
 
-        // Verify the framebuffer was initialized
-        if let Some(fb_writer) = unsafe { graphics::text::FRAMEBUFFER_UEFI.get() } {
-            let fb_info = fb_writer.lock();
-            kernel_log!("UEFI framebuffer initialized successfully - width: {}, height: {}", fb_info.get_width(), fb_info.get_height());
-
-            // Test direct pixel write to verify access
-            let test_addr_before = fb_config.address as *mut u32;
-            kernel_log!("Testing framebuffer access - pre-write check...");
-            unsafe { fb_writer.lock().put_pixel(100, 100, 0xFF0000) };
-            kernel_log!("Direct pixel write test completed");
-
-        } else {
-            kernel_log!("ERROR: UEFI framebuffer initialization failed!");
-        }
-
-        kernel_log!("UEFI graphics mode initialized, calling draw_os_desktop...");
+    if !framebuffer_initialized {
+        kernel_log!("No UEFI framebuffer available, falling back to VGA mode");
+        let vga_config = VgaFramebufferConfig {
+            address: 0xA0000,
+            width: 320,
+            height: 200,
+            bpp: 8,
+        };
+        kernel_log!("Initializing VGA graphics mode...");
+        graphics::init_vga(&vga_config);
+        kernel_log!("VGA graphics mode initialized, calling draw_os_desktop...");
         graphics::draw_os_desktop();
-        kernel_log!("UEFI graphics desktop drawn - if you see this, draw_os_desktop completed");
-        petroleum::serial::serial_log(format_args!("Desktop should be visible now!\n"));
-    } else {
-        kernel_log!("No custom framebuffer config found, trying standard UEFI GOP...");
-
-        // Try to find GOP (Graphics Output Protocol) from UEFI
-        if let Some(gop_config) = find_gop_framebuffer(system_table) {
-            kernel_log!(
-                "Found GOP framebuffer config: {}x{} @ {:#x}, stride: {}, pixel_format: {:?}",
-                gop_config.width,
-                gop_config.height,
-                gop_config.address,
-                gop_config.stride,
-                gop_config.pixel_format
-            );
-            kernel_log!("Initializing UEFI graphics mode via GOP...");
-            graphics::init(&gop_config);
-
-            // Verify the framebuffer was initialized
-            if let Some(fb_writer) = unsafe { graphics::text::FRAMEBUFFER_UEFI.get() } {
-                let fb_info = fb_writer.lock();
-                kernel_log!("UEFI GOP framebuffer initialized successfully - width: {}, height: {}", fb_info.get_width(), fb_info.get_height());
-
-                // Test direct pixel write to verify access
-                kernel_log!("Testing GOP framebuffer access...");
-                unsafe { fb_writer.lock().put_pixel(100, 100, 0xFF0000) };
-                kernel_log!("Direct GOP pixel write test completed");
-            } else {
-                kernel_log!("ERROR: UEFI GOP framebuffer initialization failed!");
-            }
-
-            kernel_log!("UEFI GOP graphics mode initialized, calling draw_os_desktop...");
-            graphics::draw_os_desktop();
-            kernel_log!("UEFI GOP graphics desktop drawn - if you see this, draw_os_desktop completed");
-            petroleum::serial::serial_log(format_args!("Desktop should be visible now!\n"));
-        } else {
-            kernel_log!("No UEFI framebuffer available, falling back to VGA mode");
-            let vga_config = VgaFramebufferConfig {
-                address: 0xA0000,
-                width: 320,
-                height: 200,
-                bpp: 8,
-            };
-            kernel_log!("Initializing VGA graphics mode...");
-            graphics::init_vga(&vga_config);
-            kernel_log!("VGA graphics mode initialized, calling draw_os_desktop...");
-            graphics::draw_os_desktop();
-            kernel_log!("VGA graphics desktop drawn - if you see this, draw_os_desktop completed");
-        }
+        kernel_log!("VGA graphics desktop drawn - if you see this, draw_os_desktop completed");
     }
 
     // Now it's safe to initialize processes and enable interrupts
@@ -313,7 +214,7 @@ fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFrameb
     }
 
     let gop_mode = unsafe { &*gop.mode };
-    let address = gop_mode.framebuffer_base;
+    let address = gop_mode.frame_buffer_base;
 
     if address == 0 {
         petroleum::serial::serial_log(format_args!("find_gop_framebuffer: Framebuffer base is 0\n"));
@@ -345,6 +246,84 @@ fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFrameb
         petroleum::serial::serial_log(format_args!("find_gop_framebuffer: GOP mode info is null\n"));
         None
     }
+}
+
+/// Helper function to initialize graphics with framebuffer configuration
+/// Returns true if graphics were successfully initialized and drawn
+fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
+    // Check if framebuffer config is available from UEFI bootloader
+    kernel_log!("Checking framebuffer config from UEFI bootloader...");
+    if let Some(fb_config) = find_framebuffer_config(system_table) {
+        kernel_log!(
+            "Found framebuffer config: {}x{} @ {:#x}, stride: {}, pixel_format: {:?}",
+            fb_config.width,
+            fb_config.height,
+            fb_config.address,
+            fb_config.stride,
+            fb_config.pixel_format
+        );
+        kernel_log!("Initializing UEFI graphics mode...");
+        graphics::init(fb_config);
+
+        // Verify the framebuffer was initialized
+        if let Some(fb_writer) = unsafe { graphics::text::FRAMEBUFFER_UEFI.get() } {
+            let fb_info = fb_writer.lock();
+            kernel_log!("UEFI framebuffer initialized successfully - width: {}, height: {}", fb_info.get_width(), fb_info.get_height());
+
+            // Test direct pixel write to verify access
+            let test_addr_before = fb_config.address as *mut u32;
+            kernel_log!("Testing framebuffer access - pre-write check...");
+            unsafe { fb_writer.lock().put_pixel(100, 100, 0xFF0000) };
+            kernel_log!("Direct pixel write test completed");
+        } else {
+            kernel_log!("ERROR: UEFI framebuffer initialization failed!");
+            return false;
+        }
+
+        kernel_log!("UEFI graphics mode initialized, calling draw_os_desktop...");
+        graphics::draw_os_desktop();
+        kernel_log!("UEFI graphics desktop drawn - if you see this, draw_os_desktop completed");
+        petroleum::serial::serial_log(format_args!("Desktop should be visible now!\n"));
+        return true;
+    }
+
+    kernel_log!("No custom framebuffer config found, trying standard UEFI GOP...");
+
+    // Try to find GOP (Graphics Output Protocol) from UEFI
+    if let Some(gop_config) = find_gop_framebuffer(system_table) {
+        kernel_log!(
+            "Found GOP framebuffer config: {}x{} @ {:#x}, stride: {}, pixel_format: {:?}",
+            gop_config.width,
+            gop_config.height,
+            gop_config.address,
+            gop_config.stride,
+            gop_config.pixel_format
+        );
+        kernel_log!("Initializing UEFI graphics mode via GOP...");
+        graphics::init(&gop_config);
+
+        // Verify the framebuffer was initialized
+        if let Some(fb_writer) = unsafe { graphics::text::FRAMEBUFFER_UEFI.get() } {
+            let fb_info = fb_writer.lock();
+            kernel_log!("UEFI GOP framebuffer initialized successfully - width: {}, height: {}", fb_info.get_width(), fb_info.get_height());
+
+            // Test direct pixel write to verify access
+            kernel_log!("Testing GOP framebuffer access...");
+            unsafe { fb_writer.lock().put_pixel(100, 100, 0xFF0000) };
+            kernel_log!("Direct GOP pixel write test completed");
+        } else {
+            kernel_log!("ERROR: UEFI GOP framebuffer initialization failed!");
+            return false;
+        }
+
+        kernel_log!("UEFI GOP graphics mode initialized, calling draw_os_desktop...");
+        graphics::draw_os_desktop();
+        kernel_log!("UEFI GOP graphics desktop drawn - if you see this, draw_os_desktop completed");
+        petroleum::serial::serial_log(format_args!("Desktop should be visible now!\n"));
+        return true;
+    }
+
+    false
 }
 
 #[cfg(not(target_os = "uefi"))]
