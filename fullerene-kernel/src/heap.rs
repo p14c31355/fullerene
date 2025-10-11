@@ -272,7 +272,10 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     let level_4_frame = frame_allocator
         .allocate_frame()
         .expect("Failed to allocate level 4 frame");
-    petroleum::serial::serial_log(format_args!("Level 4 frame allocated at {:#x}\n", level_4_frame.start_address().as_u64()));
+    petroleum::serial::serial_log(format_args!(
+        "Level 4 frame allocated at {:#x}\n",
+        level_4_frame.start_address().as_u64()
+    ));
 
     let level_4_table = unsafe { &mut *(level_4_frame.start_address().as_u64() as *mut PageTable) };
     petroleum::serial::serial_log(format_args!("Level 4 table pointer created\n"));
@@ -299,8 +302,12 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
             region_count += 1;
             let start_phys = PhysAddr::new(desc.physical_start);
             let end_phys = start_phys + (desc.number_of_pages * 4096);
-            petroleum::serial::serial_log(format_args!("Mapping region {}: phys 0x{:x}-0x{:x}\n",
-                       region_count, start_phys.as_u64(), end_phys.as_u64()));
+            petroleum::serial::serial_log(format_args!(
+                "Mapping region {}: phys 0x{:x}-0x{:x}\n",
+                region_count,
+                start_phys.as_u64(),
+                end_phys.as_u64()
+            ));
             // Map to identity-mapped virtual addresses for simplicity
             unsafe {
                 map_physical_range(
@@ -317,7 +324,9 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     petroleum::serial::serial_log(format_args!("Mapped {} memory regions\n", region_count));
 
     // Skip higher-half kernel mapping for now to isolate issues - use identity mapping only
-    petroleum::serial::serial_log(format_args!("Skipping higher-half kernel mapping for debugging\n"));
+    petroleum::serial::serial_log(format_args!(
+        "Skipping higher-half kernel mapping for debugging\n"
+    ));
     /*
     // Add kernel code/data mapping (higher-half)
     let kernel_virt_start = VirtAddr::new(0xffff_0000_1000_0000);

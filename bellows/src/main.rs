@@ -167,7 +167,7 @@ fn init_gop(st: &EfiSystemTable) {
     let target_mode = 0;
     let current_mode = mode_ref.mode as usize;
     if target_mode != current_mode {
-                let modes_to_try = [target_mode as u32, 1];
+        let modes_to_try = [target_mode as u32, 1];
         let mut mode_set_successfully = false;
 
         for &mode in &modes_to_try {

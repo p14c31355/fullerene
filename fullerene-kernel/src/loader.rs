@@ -92,7 +92,10 @@ pub fn load_program(
     // Get the process's page table (assume it's created in create_process)
     // For now, we skip loading segments due to page table integration not implemented yet
     let mut process_list_locked = process::PROCESS_LIST.lock();
-    let process = process_list_locked.iter_mut().find(|p| p.id == pid).unwrap();
+    let process = process_list_locked
+        .iter_mut()
+        .find(|p| p.id == pid)
+        .unwrap();
     let process_page_table = &mut process.page_table.as_mut().unwrap();
 
     // Load program segments
@@ -140,8 +143,8 @@ fn load_segment(
 
     // Validate that the virtual address range is in user space
     use crate::memory_management::{AllocError, is_user_address, map_user_page};
-    use x86_64::{PhysAddr, VirtAddr};
     use x86_64::structures::paging::Translate;
+    use x86_64::{PhysAddr, VirtAddr};
 
     let start_addr = VirtAddr::new(vaddr);
     let end_addr = VirtAddr::new(vaddr + mem_size as u64 - 1);
@@ -173,7 +176,7 @@ fn load_segment(
             .ok_or(LoadError::OutOfMemory)?;
 
         // Map the virtual page to the physical frame
-        use x86_64::structures::paging::{PageTableFlags};
+        use x86_64::structures::paging::PageTableFlags;
         let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
         if ph.flags & PF_W != 0 {
             flags |= PageTableFlags::WRITABLE;
@@ -187,7 +190,7 @@ fn load_segment(
 
     // Now copy the file data to the allocated virtual memory
     // We need to switch to this process's page table to access the memory
-        // Now copy the file data to the allocated virtual memory.
+    // Now copy the file data to the allocated virtual memory.
     // We use a guard to safely switch to the process's page table and back.
     struct Cr3SwitchGuard {
         original_cr3: x86_64::structures::paging::PhysFrame,
@@ -198,7 +201,10 @@ fn load_segment(
         unsafe fn new(page_table: &crate::memory_management::ProcessPageTable) -> Self {
             let (original_cr3, original_cr3_flags) = x86_64::registers::control::Cr3::read();
             crate::memory_management::switch_to_page_table(page_table);
-            Self { original_cr3, original_cr3_flags }
+            Self {
+                original_cr3,
+                original_cr3_flags,
+            }
         }
     }
 

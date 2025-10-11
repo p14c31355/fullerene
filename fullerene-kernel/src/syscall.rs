@@ -144,7 +144,9 @@ fn syscall_fork() -> SyscallResult {
     let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
     let process_list = crate::process::PROCESS_LIST.lock();
-    let parent_process = process_list.iter().find(|p| p.id == current_pid)
+    let parent_process = process_list
+        .iter()
+        .find(|p| p.id == current_pid)
         .ok_or(SyscallError::NoSuchProcess)?;
 
     // Clone the parent process name (use parent name for now, full clone later)

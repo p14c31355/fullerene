@@ -21,10 +21,7 @@ use spin::{Mutex, Once};
 
 // Optimized text rendering using embedded-graphics
 // Batcher processing for efficiency and reduced code complexity
-fn write_text<W: FramebufferLike>(
-    writer: &mut W,
-    s: &str,
-) -> core::fmt::Result {
+fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result {
     const CHAR_WIDTH: i32 = FONT_6X10.character_size.width as i32;
     const CHAR_HEIGHT: i32 = FONT_6X10.character_size.height as i32;
 
@@ -116,7 +113,9 @@ fn grayscale_intensity(color: Rgb888) -> u32 {
 }
 
 fn unsupported_pixel_format_log() {
-    petroleum::serial::serial_log(format_args!("Warning: Pixel format not supported, using RGB fallback\n"));
+    petroleum::serial::serial_log(format_args!(
+        "Warning: Pixel format not supported, using RGB fallback\n"
+    ));
 }
 
 struct FramebufferInfo {
@@ -221,7 +220,9 @@ impl PixelType for u8 {
     }
 }
 
-trait FramebufferLike: DrawTarget<Color = Rgb888, Error = core::convert::Infallible> + Send + Sync {
+trait FramebufferLike:
+    DrawTarget<Color = Rgb888, Error = core::convert::Infallible> + Send + Sync
+{
     fn put_pixel(&self, x: u32, y: u32, color: u32);
     fn clear_screen(&self);
     fn get_width(&self) -> u32;
@@ -389,7 +390,7 @@ impl<T: PixelType> FramebufferWriter<T> {
         }
     }
 
-        fn rgb888_to_pixel_format(&self, color: Rgb888) -> u32 {
+    fn rgb888_to_pixel_format(&self, color: Rgb888) -> u32 {
         let rgb = || rgb_pixel(color.r(), color.g(), color.b());
         let bgr = || rgb_pixel(color.b(), color.g(), color.r());
         #[allow(non_exhaustive_omitted_patterns)]
@@ -397,8 +398,7 @@ impl<T: PixelType> FramebufferWriter<T> {
             Some(EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor) => rgb(),
             Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor) => bgr(),
             // Cirrus VGA commonly reports PixelBitMask but expects RGB format
-            Some(EfiGraphicsPixelFormat::PixelBitMask) |
-            Some(_) => rgb(), // Treat all unknown formats as RGB
+            Some(EfiGraphicsPixelFormat::PixelBitMask) | Some(_) => rgb(), // Treat all unknown formats as RGB
             None => grayscale_intensity(color), // UEFI mode shouldn't be using grayscale
         }
     }
@@ -495,8 +495,10 @@ pub static FRAMEBUFFER_BIOS: Once<Mutex<FramebufferWriter<u8>>> = Once::new();
 
 #[cfg(target_os = "uefi")]
 pub fn init(config: &FullereneFramebufferConfig) {
-    petroleum::serial::serial_log(format_args!("Graphics: Initializing UEFI framebuffer: {}x{}, stride: {}, pixel_format: {:?}\n",
-        config.width, config.height, config.stride, config.pixel_format));
+    petroleum::serial::serial_log(format_args!(
+        "Graphics: Initializing UEFI framebuffer: {}x{}, stride: {}, pixel_format: {:?}\n",
+        config.width, config.height, config.stride, config.pixel_format
+    ));
     let writer = FramebufferWriter::<u32>::new(FramebufferInfo::new(config));
     let fb_writer = FramebufferWriter::<u32>::new(FramebufferInfo::new(config));
     WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer)));
@@ -518,7 +520,11 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
     #[cfg(target_os = "uefi")]
     {
         WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer)));
-        FRAMEBUFFER_UEFI.call_once(|| Mutex::new(UefiFramebuffer::Vga8(FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(config)))));
+        FRAMEBUFFER_UEFI.call_once(|| {
+            Mutex::new(UefiFramebuffer::Vga8(FramebufferWriter::<u8>::new(
+                FramebufferInfo::new_vga(config),
+            )))
+        });
     }
     #[cfg(not(target_os = "uefi"))]
     {
@@ -596,9 +602,18 @@ pub fn draw_os_desktop() {
 fn draw_desktop_internal(fb_writer: &mut impl FramebufferLike, mode: &str) {
     let is_vga = fb_writer.is_vga();
     if is_vga {
-        petroleum::serial::serial_log(format_args!("Graphics: Framebuffer size: {}x{}, VGA mode\n", fb_writer.get_width(), fb_writer.get_height()));
+        petroleum::serial::serial_log(format_args!(
+            "Graphics: Framebuffer size: {}x{}, VGA mode\n",
+            fb_writer.get_width(),
+            fb_writer.get_height()
+        ));
     } else {
-        petroleum::serial::serial_log(format_args!("Graphics: Framebuffer size: {}x{}, stride: {}\n", fb_writer.get_width(), fb_writer.get_height(), fb_writer.get_stride()));
+        petroleum::serial::serial_log(format_args!(
+            "Graphics: Framebuffer size: {}x{}, stride: {}\n",
+            fb_writer.get_width(),
+            fb_writer.get_height(),
+            fb_writer.get_stride()
+        ));
     }
     let bg_color = 32u32; // Dark gray
     debug_print_str("Graphics: Filling background...\n");
@@ -624,7 +639,10 @@ fn draw_desktop_internal(fb_writer: &mut impl FramebufferLike, mode: &str) {
 fn fill_background(writer: &mut impl FramebufferLike, color: u32) {
     let color_rgb = u32_to_rgb888(color);
     let style = PrimitiveStyleBuilder::new().fill_color(color_rgb).build();
-    let rect = Rectangle::new(Point::new(0, 0), Size::new(writer.get_width(), writer.get_height()));
+    let rect = Rectangle::new(
+        Point::new(0, 0),
+        Size::new(writer.get_width(), writer.get_height()),
+    );
     rect.into_styled(style).draw(writer).ok();
 }
 
@@ -654,18 +672,32 @@ fn draw_taskbar<W: FramebufferLike>(writer: &mut W, color: u32) {
 
     let color_rgb = u32_to_rgb888(color);
     let style = PrimitiveStyleBuilder::new().fill_color(color_rgb).build();
-    let rect = Rectangle::new(Point::new(0, (height - taskbar_height) as i32), Size::new(writer.get_width(), taskbar_height));
+    let rect = Rectangle::new(
+        Point::new(0, (height - taskbar_height) as i32),
+        Size::new(writer.get_width(), taskbar_height),
+    );
     rect.into_styled(style).draw(writer).ok();
 
     // Simple start button
-    draw_window(writer, 0, height - taskbar_height + 5, 80, 30, 0xE0E0E0u32, 0x000000u32);
+    draw_window(
+        writer,
+        0,
+        height - taskbar_height + 5,
+        80,
+        30,
+        0xE0E0E0u32,
+        0x000000u32,
+    );
 }
 
 fn draw_icon<W: FramebufferLike>(writer: &mut W, x: u32, y: u32, _label: &str, color: u32) {
     const ICON_SIZE: u32 = 48;
     let color_rgb = u32_to_rgb888(color);
     let style = PrimitiveStyleBuilder::new().fill_color(color_rgb).build();
-    let rect = Rectangle::new(Point::new(x as i32, y as i32), Size::new(ICON_SIZE, ICON_SIZE));
+    let rect = Rectangle::new(
+        Point::new(x as i32, y as i32),
+        Size::new(ICON_SIZE, ICON_SIZE),
+    );
     rect.into_styled(style).draw(writer).ok();
 }
 

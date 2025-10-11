@@ -195,10 +195,7 @@ fn ps_command(_args: &[&str]) -> i32 {
     print!("--------------------------\n");
     let process_list = crate::process::PROCESS_LIST.lock();
     for proc in process_list.iter() {
-        print!(
-            "{:<6} {:<10?} {}\n",
-            proc.id, proc.state, proc.name
-        );
+        print!("{:<6} {:<10?} {}\n", proc.id, proc.state, proc.name);
     }
     0
 }

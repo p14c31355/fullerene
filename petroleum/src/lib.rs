@@ -19,8 +19,10 @@ pub use serial::{Com1Ports, SerialPort, SerialPortOps};
 use core::arch::asm;
 use spin::Mutex;
 
-use crate::common::{EfiGraphicsOutputProtocol, EfiSystemTable, EfiStatus, FullereneFramebufferConfig};
 use crate::common::{EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID};
+use crate::common::{
+    EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable, FullereneFramebufferConfig,
+};
 
 #[derive(Clone, Copy)]
 pub struct UefiSystemTablePtr(pub *mut EfiSystemTable);
@@ -123,7 +125,9 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
 
     if EfiStatus::from(status) != EfiStatus::Success {
         let _ = unsafe { Box::from_raw(config_ptr) };
-        serial::_print(format_args!("Failed to install framebuffer config table.\n"));
+        serial::_print(format_args!(
+            "Failed to install framebuffer config table.\n"
+        ));
         return None;
     }
 

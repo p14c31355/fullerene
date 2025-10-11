@@ -119,12 +119,8 @@ impl IoApic {
         let reg_addr = (self.base_addr) as *mut u32;
         let value_addr = (self.base_addr + 0x10) as *mut u32;
 
-        unsafe {
-            ptr::write_volatile(reg_addr, reg as u32);
-        }
-        unsafe {
-            ptr::write_volatile(value_addr, value);
-        }
+        ptr::write_volatile(reg_addr, reg as u32);
+        ptr::write_volatile(value_addr, value);
     }
 
     /// Read redirection table entry

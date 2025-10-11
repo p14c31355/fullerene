@@ -1,7 +1,7 @@
 use petroleum::graphics::ports::VgaPorts;
 use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations};
-use x86_64::instructions::port::Port;
 use spin::{Mutex, Once};
+use x86_64::instructions::port::Port;
 
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
@@ -105,8 +105,6 @@ impl TextBufferOperations for VgaBuffer {
         self.clear_row(BUFFER_HEIGHT - 1);
     }
 }
-
-
 
 // Global singleton
 pub static VGA_BUFFER: Once<Mutex<VgaBuffer>> = Once::new();

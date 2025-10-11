@@ -33,11 +33,11 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     petroleum::handle_panic(info)
 }
 
+use core::ffi::c_void;
 use petroleum::common::{
     EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
     FullereneFramebufferConfig, VgaFramebufferConfig,
 };
-use core::ffi::c_void;
 use petroleum::page_table::EfiMemoryDescriptor;
 use petroleum::write_serial_bytes;
 use spin::Once;
@@ -179,12 +179,22 @@ pub extern "efiapi" fn efi_main(
         )
     };
     debug_print_str("Memory map slice created\n");
-    kernel_log!("Memory map slice size: {}, descriptor count: {}", memory_map_size, descriptors.len());
+    kernel_log!(
+        "Memory map slice size: {}, descriptor count: {}",
+        memory_map_size,
+        descriptors.len()
+    );
     // Reduce log verbosity for faster boot
     if descriptors.len() < 20 {
         for (i, desc) in descriptors.iter().enumerate() {
-            kernel_log!("Memory descriptor {}: type={:#x}, phys_start=0x{:x}, virt_start=0x{:x}, pages=0x{:x}",
-                       i, desc.type_ as u32, desc.physical_start, desc.virtual_start, desc.number_of_pages);
+            kernel_log!(
+                "Memory descriptor {}: type={:#x}, phys_start=0x{:x}, virt_start=0x{:x}, pages=0x{:x}",
+                i,
+                desc.type_ as u32,
+                desc.physical_start,
+                desc.virtual_start,
+                desc.number_of_pages
+            );
         }
     }
     kernel_log!("Memory map parsing: finished descriptor dump");
@@ -207,12 +217,17 @@ pub extern "efiapi" fn efi_main(
         if kernel_virt_addr >= virt_start && kernel_virt_addr < virt_end {
             physical_memory_offset = VirtAddr::new(desc.virtual_start - desc.physical_start);
             found_in_descriptor = true;
-            kernel_log!("Found kernel in descriptor {}: phys_offset=0x{:x}",
-                       i, physical_memory_offset.as_u64());
+            kernel_log!(
+                "Found kernel in descriptor {}: phys_offset=0x{:x}",
+                i,
+                physical_memory_offset.as_u64()
+            );
             if desc.type_ == EfiMemoryType::EfiLoaderCode {
                 kernel_phys_start = x86_64::PhysAddr::new(desc.physical_start);
-                kernel_log!("Kernel is in EfiLoaderCode, phys_start=0x{:x}",
-                           kernel_phys_start.as_u64());
+                kernel_log!(
+                    "Kernel is in EfiLoaderCode, phys_start=0x{:x}",
+                    kernel_phys_start.as_u64()
+                );
             }
             break; // Found it, no need to continue scanning
         }
@@ -228,8 +243,10 @@ pub extern "efiapi" fn efi_main(
         for desc in descriptors {
             if desc.type_ == EfiMemoryType::EfiLoaderCode && desc.number_of_pages > 0 {
                 kernel_phys_start = x86_64::PhysAddr::new(desc.physical_start);
-                kernel_log!("Using first EfiLoaderCode descriptor: phys_start=0x{:x}",
-                           kernel_phys_start.as_u64());
+                kernel_log!(
+                    "Using first EfiLoaderCode descriptor: phys_start=0x{:x}",
+                    kernel_phys_start.as_u64()
+                );
                 break;
             }
         }
@@ -242,23 +259,37 @@ pub extern "efiapi" fn efi_main(
     // Assume identity mapping for now
     if !found_in_descriptor {
         physical_memory_offset = VirtAddr::new(0);
-        kernel_log!("WARNING: Kernel virtual address not found, assuming identity mapping (offset=0)");
+        kernel_log!(
+            "WARNING: Kernel virtual address not found, assuming identity mapping (offset=0)"
+        );
     }
 
-    kernel_log!("Physical memory offset calculation complete: offset=0x{:x}, kernel_phys_start=0x{:x}",
-               physical_memory_offset.as_u64(), kernel_phys_start.as_u64());
+    kernel_log!(
+        "Physical memory offset calculation complete: offset=0x{:x}, kernel_phys_start=0x{:x}",
+        physical_memory_offset.as_u64(),
+        kernel_phys_start.as_u64()
+    );
     kernel_log!("Starting heap frame allocator init...");
 
-    kernel_log!("Calling heap::init_frame_allocator with {} descriptors", MEMORY_MAP.get().unwrap().len());
+    kernel_log!(
+        "Calling heap::init_frame_allocator with {} descriptors",
+        MEMORY_MAP.get().unwrap().len()
+    );
     heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
     kernel_log!("Heap frame allocator init completed successfully");
 
-    kernel_log!("Calling heap::init_page_table with offset 0x{:x}", physical_memory_offset.as_u64());
+    kernel_log!(
+        "Calling heap::init_page_table with offset 0x{:x}",
+        physical_memory_offset.as_u64()
+    );
     heap::init_page_table(physical_memory_offset);
     kernel_log!("Page table init completed successfully");
 
-    kernel_log!("Calling heap::reinit_page_table with offset 0x{:x} and kernel_phys_start 0x{:x}",
-               physical_memory_offset.as_u64(), kernel_phys_start.as_u64());
+    kernel_log!(
+        "Calling heap::reinit_page_table with offset 0x{:x} and kernel_phys_start 0x{:x}",
+        physical_memory_offset.as_u64(),
+        kernel_phys_start.as_u64()
+    );
     heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
     kernel_log!("Page table reinit completed successfully");
 
@@ -301,8 +332,12 @@ pub extern "efiapi" fn efi_main(
     // Check if framebuffer config is available from UEFI bootloader
     kernel_log!("Checking framebuffer config from UEFI bootloader...");
     if let Some(fb_config) = find_framebuffer_config(system_table) {
-        kernel_log!("Found framebuffer config: {}x{} @ {:#x}",
-                   fb_config.width, fb_config.height, fb_config.address);
+        kernel_log!(
+            "Found framebuffer config: {}x{} @ {:#x}",
+            fb_config.width,
+            fb_config.height,
+            fb_config.address
+        );
         kernel_log!("Initializing UEFI graphics mode...");
         graphics::init(&fb_config);
         kernel_log!("UEFI graphics mode initialized, calling draw_os_desktop...");
@@ -421,7 +456,15 @@ pub fn hlt_loop() -> ! {
 // Test process main function
 fn test_process_main() {
     // Simple test process that demonstrates system calls using proper syscall instruction
-    unsafe fn syscall(num: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64, arg5: u64, arg6: u64) -> u64 {
+    unsafe fn syscall(
+        num: u64,
+        arg1: u64,
+        arg2: u64,
+        arg3: u64,
+        arg4: u64,
+        arg5: u64,
+        arg6: u64,
+    ) -> u64 {
         let result: u64;
         core::arch::asm!(
             "syscall",
@@ -454,7 +497,15 @@ fn test_process_main() {
 
     // Get PID via syscall and print the actual PID
     unsafe {
-        let pid = syscall(crate::syscall::SyscallNumber::GetPid as u64, 0, 0, 0, 0, 0, 0);
+        let pid = syscall(
+            crate::syscall::SyscallNumber::GetPid as u64,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
         let pid_msg = b"My PID is: ";
         syscall(
             crate::syscall::SyscallNumber::Write as u64,
@@ -482,8 +533,24 @@ fn test_process_main() {
 
     // Yield a bit
     unsafe {
-        syscall(crate::syscall::SyscallNumber::Yield as u64, 0, 0, 0, 0, 0, 0); // SYS_YIELD
-        syscall(crate::syscall::SyscallNumber::Yield as u64, 0, 0, 0, 0, 0, 0); // SYS_YIELD
+        syscall(
+            crate::syscall::SyscallNumber::Yield as u64,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ); // SYS_YIELD
+        syscall(
+            crate::syscall::SyscallNumber::Yield as u64,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ); // SYS_YIELD
     }
 
     // Exit
