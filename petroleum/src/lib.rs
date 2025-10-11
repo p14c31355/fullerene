@@ -19,7 +19,8 @@ pub use serial::{Com1Ports, SerialPort, SerialPortOps};
 use core::arch::asm;
 use spin::Mutex;
 
-use crate::common::EfiSystemTable;
+use crate::common::{EfiGraphicsOutputProtocol, EfiSystemTable, EfiStatus, FullereneFramebufferConfig};
+use crate::common::{EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID};
 
 #[derive(Clone, Copy)]
 pub struct UefiSystemTablePtr(pub *mut EfiSystemTable);
@@ -28,6 +29,111 @@ unsafe impl Send for UefiSystemTablePtr {}
 unsafe impl Sync for UefiSystemTablePtr {}
 
 pub static UEFI_SYSTEM_TABLE: Mutex<Option<UefiSystemTablePtr>> = Mutex::new(None);
+
+/// Helper to initialize UEFI system table
+pub fn init_uefi_system_table(system_table: *mut EfiSystemTable) {
+    let _ = UEFI_SYSTEM_TABLE
+        .lock()
+        .insert(UefiSystemTablePtr(system_table));
+}
+
+/// Helper to initialize serial for bootloader
+pub unsafe fn write_serial_bytes(port: u16, status_port: u16, bytes: &[u8]) {
+    serial::write_serial_bytes(port, status_port, bytes);
+}
+
+/// macro for bootloader serial logging
+#[macro_export]
+macro_rules! write_serial_bytes {
+    ($port:expr, $status:expr, $bytes:expr) => {
+        unsafe {
+            $crate::write_serial_bytes($port, $status, $bytes);
+        }
+    };
+}
+
+type EfiGraphicsOutputProtocolPtr = EfiGraphicsOutputProtocol;
+
+/// Helper to find GOP and init framebuffer
+pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
+    use core::ffi::c_void;
+    use core::ptr;
+
+    let bs = unsafe { &*system_table.boot_services };
+    let mut gop: *mut EfiGraphicsOutputProtocolPtr = ptr::null_mut();
+
+    let status = (bs.locate_protocol)(
+        &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID as *const _ as *const u8,
+        ptr::null_mut(),
+        &mut gop as *mut _ as *mut *mut c_void,
+    );
+
+    if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
+        serial::_print(format_args!("Failed to locate GOP protocol.\n"));
+        return None;
+    }
+
+    let gop_ref = unsafe { &*gop };
+    if gop_ref.mode.is_null() {
+        serial::_print(format_args!("GOP mode pointer is null.\n"));
+        return None;
+    }
+
+    let mode_ref = unsafe { &*gop_ref.mode };
+
+    // Set GOP to graphics mode (mode 0)
+    if mode_ref.mode != 0 {
+        let status = (gop_ref.set_mode)(gop, 0);
+        if EfiStatus::from(status) != EfiStatus::Success {
+            serial::_print(format_args!("Failed to set GOP mode.\n"));
+            return None;
+        }
+    }
+
+    if mode_ref.info.is_null() {
+        serial::_print(format_args!("GOP mode info pointer is null.\n"));
+        return None;
+    }
+
+    let info = unsafe { &*mode_ref.info };
+
+    let fb_addr = mode_ref.frame_buffer_base;
+    let fb_size = mode_ref.frame_buffer_size;
+
+    if fb_addr == 0 || fb_size == 0 {
+        serial::_print(format_args!("GOP framebuffer info is invalid.\n"));
+        return None;
+    }
+
+    let config = FullereneFramebufferConfig {
+        address: fb_addr as u64,
+        width: info.horizontal_resolution,
+        height: info.vertical_resolution,
+        pixel_format: info.pixel_format,
+        bpp: 32,
+        stride: info.pixels_per_scan_line,
+    };
+
+    let config_ptr = Box::leak(Box::new(config));
+
+    let status = (bs.install_configuration_table)(
+        &FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID as *const _ as *const u8,
+        config_ptr as *const _ as *mut c_void,
+    );
+
+    if EfiStatus::from(status) != EfiStatus::Success {
+        let _ = unsafe { Box::from_raw(config_ptr) };
+        serial::_print(format_args!("Failed to install framebuffer config table.\n"));
+        return None;
+    }
+
+    // Clear screen
+    unsafe {
+        ptr::write_bytes(fb_addr as *mut u8, 0x00, fb_size as usize);
+    }
+
+    Some(*config_ptr)
+}
 
 // Helper function to convert u32 to string without heap allocation
 pub fn u32_to_str_heapless(n: u32, buffer: &mut [u8]) -> &str {
@@ -65,6 +171,7 @@ pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
             let _ = writer.write_string_heapless(loc.file());
             let _ = writer.write_string_heapless(":");
             let _ = writer.write_string_heapless(u32_to_str_heapless(loc.line(), &mut line_buf));
+            let _ = writer.write_string_heapless(":");
             let _ = writer.write_string_heapless(":");
             let _ = writer.write_string_heapless(u32_to_str_heapless(loc.column(), &mut col_buf));
             let _ = writer.write_string_heapless("\n");
@@ -239,3 +346,5 @@ pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u3
         core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color);
     }
 }
+
+use alloc::boxed::Box;

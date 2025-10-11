@@ -8,3 +8,7 @@
 - Do not execute the same command three or more times consecutively. A "command" refers to any executable operation, including shell commands, function calls, or macro invocations. Avoid long, repetitive sequences of similar operations. For example, a long series of identical `port.write()` calls, as seen in `graphics.rs`, should be refactored for clarity and conciseness, perhaps by using constants or helper functions.
 
 - To check the changes, use the `cargo clean && cargo run -p flasks` command.
+
+- Use helper functions, helper macros, structures, and type generics wherever possible to keep the number of lines of code low.
+
+- Integrate redundant `.rs` files with minimal code into appropriate locations.

@@ -1,90 +1,85 @@
-// PortWriter, VgaPortOps, and related macros are now in petroleum crate
-use petroleum::graphics::init_vga_graphics;
-use petroleum::common::*;
+#![feature(non_exhaustive_omitted_patterns_lint)]
 
-// Helper functions for color operations
+use petroleum::graphics::init_vga_graphics;
 
 use alloc::boxed::Box; // Import Box
 use core::fmt::{self, Write};
 use core::marker::{Send, Sync};
+use embedded_graphics::{
+    geometry::{Point, Size},
+    mono_font::{MonoTextStyle, ascii::FONT_6X10},
+    pixelcolor::Rgb888,
+    prelude::*,
+    text::Text,
+};
 use petroleum::common::VgaFramebufferConfig;
 use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig}; // Import missing types
 use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
 use spin::{Mutex, Once};
-use x86_64::instructions::port::Port;
 
-use crate::font::FONT_8X8;
+// Optimized text rendering using embedded-graphics
+// Batcher processing for efficiency and reduced code complexity
+fn write_text<W: FramebufferLike + DrawTarget<Color = Rgb888>>(
+    writer: &mut W,
+    s: &str,
+) -> core::fmt::Result {
+    const CHAR_WIDTH: i32 = FONT_6X10.character_size.width as i32;
+    const CHAR_HEIGHT: i32 = FONT_6X10.character_size.height as i32;
 
-// A simple 8x8 PC screen font (Code Page 437).
-static FONT: [[u8; 8]; 128] = FONT_8X8;
+    let fg_color = Rgb888::new(
+        ((writer.get_fg_color() >> 16) & 0xFF) as u8,
+        ((writer.get_fg_color() >> 8) & 0xFF) as u8,
+        (writer.get_fg_color() & 0xFF) as u8,
+    );
 
-// Helper struct to reduce position update boilerplate
-struct TextPosition {
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-}
+    let style = MonoTextStyle::new(&FONT_6X10, fg_color);
+    let mut lines = s.split_inclusive('\n');
+    let mut current_pos = Point::new(
+        writer.get_position().0 as i32,
+        writer.get_position().1 as i32,
+    );
 
-impl TextPosition {
-    fn new(fb: &impl FramebufferLike) -> Self {
-        let (x, y) = fb.get_position();
-        Self {
-            x,
-            y,
-            width: fb.get_width(),
-            height: fb.get_height(),
-        }
-    }
-
-    fn new_line(&mut self, fb: &mut impl FramebufferLike) {
-        self.y += 8; // Font height
-        self.x = 0;
-        if self.y >= self.height {
-            fb.scroll_up();
-            self.y -= 8;
-        }
-        fb.set_position(self.x, self.y);
-    }
-
-    fn advance_char(&mut self, fb: &mut impl FramebufferLike) {
-        self.x += 8;
-        if self.x + 8 > self.width {
-            self.new_line(fb);
+    for line_with_newline in lines {
+        // Handle the line (including newline if present)
+        let has_newline = line_with_newline.ends_with('\n');
+        let line_content = if has_newline {
+            &line_with_newline[..line_with_newline.len() - 1]
         } else {
-            fb.set_position(self.x, self.y);
+            line_with_newline
+        };
+
+        // Render the entire line at once for efficiency
+        if !line_content.is_empty() {
+            let text = Text::new(line_content, current_pos, style);
+            text.draw(writer).ok();
+
+            // Advance position by the rendered text width
+            current_pos.x += (CHAR_WIDTH * line_content.chars().count() as i32);
         }
-    }
-}
 
-/// Generic function to draw a character on any framebuffer
-fn draw_char(fb: &impl FramebufferLike, c: char, x: u32, y: u32) {
-    let char_idx = c as usize;
-    if char_idx < 128 && c.is_ascii() {
-        let font_char = &FONT[char_idx];
-        let fg = fb.get_fg_color();
-        let bg = fb.get_bg_color();
+        if has_newline {
+            current_pos.x = 0;
+            current_pos.y += CHAR_HEIGHT; // Font height
 
-        for (row, &byte) in font_char.iter().enumerate() {
-            for col in 0..8 {
-                let color = if byte & (0x80 >> col) != 0 { fg } else { bg };
-                fb.put_pixel(x + col as u32, y + row as u32, color);
+            // Handle scrolling if needed
+            if current_pos.y + CHAR_HEIGHT > writer.get_height() as i32 {
+                writer.scroll_up();
+                current_pos.y -= CHAR_HEIGHT;
+            }
+        } else {
+            // Handle line wrapping for lines without explicit newlines
+            if current_pos.x >= writer.get_width() as i32 {
+                current_pos.x = 0;
+                current_pos.y += CHAR_HEIGHT;
+                if current_pos.y + CHAR_HEIGHT > writer.get_height() as i32 {
+                    writer.scroll_up();
+                    current_pos.y -= CHAR_HEIGHT;
+                }
             }
         }
     }
-}
 
-fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result {
-    let mut pos = TextPosition::new(writer);
-
-    for c in s.chars() {
-        if c == '\n' {
-            pos.new_line(writer);
-        } else {
-            draw_char(writer, c, pos.x, pos.y);
-            pos.advance_char(writer);
-        }
-    }
+    writer.set_position(current_pos.x as u32, current_pos.y as u32);
     Ok(())
 }
 
@@ -104,6 +99,18 @@ impl ColorScheme {
         fg: 0x02u32,
         bg: 0x00u32,
     };
+}
+
+fn rgb_pixel(r: u8, g: u8, b: u8) -> u32 {
+    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+}
+
+fn grayscale_intensity(color: Rgb888) -> u32 {
+    ((color.r() as u32 * 77 + color.g() as u32 * 150 + color.b() as u32 * 29) / 256).min(255)
+}
+
+fn unsupported_pixel_format_log() {
+    petroleum::serial::serial_log(format_args!("Warning: Pixel format not supported, using RGB fallback\n"));
 }
 
 struct FramebufferInfo {
@@ -141,8 +148,10 @@ impl FramebufferInfo {
     fn bytes_per_pixel(&self) -> u32 {
         match self.pixel_format {
             Some(EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor)
-            | Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor) => 4,
-            Some(_) => panic!("Unsupported pixel format"),
+            | Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor)
+            | Some(EfiGraphicsPixelFormat::PixelBitMask) => 4,
+            Some(EfiGraphicsPixelFormat::PixelBltOnly)
+            | Some(EfiGraphicsPixelFormat::PixelFormatMax) => 0, // Invalid for direct access
             None => 1, // VGA
         }
     }
@@ -225,6 +234,35 @@ struct FramebufferWriter<T: PixelType> {
     _phantom: core::marker::PhantomData<T>,
 }
 
+impl<T: PixelType> DrawTarget for FramebufferWriter<T> {
+    type Color = Rgb888;
+
+    type Error = core::convert::Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Pixel<Self::Color>>,
+    {
+        for Pixel(coord, color) in pixels {
+            if coord.x >= 0 && coord.y >= 0 {
+                let x = coord.x as u32;
+                let y = coord.y as u32;
+                if x < self.info.width && y < self.info.height {
+                    let pixel_color = self.rbg888_to_pixel_format(color);
+                    self.put_pixel(x, y, pixel_color);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<T: PixelType> OriginDimensions for FramebufferWriter<T> {
+    fn size(&self) -> Size {
+        Size::new(self.info.width, self.info.height)
+    }
+}
+
 impl<T: PixelType> FramebufferWriter<T> {
     fn new(info: FramebufferInfo) -> Self {
         Self {
@@ -235,14 +273,16 @@ impl<T: PixelType> FramebufferWriter<T> {
         }
     }
 
-    fn scroll_up(&self) {
-        unsafe {
-            scroll_buffer_pixels::<T>(
-                self.info.address,
-                self.info.width_or_stride(),
-                self.info.height,
-                T::from_u32(self.info.colors.bg),
-            );
+    fn rbg888_to_pixel_format(&self, color: Rgb888) -> u32 {
+        let rgb = || rgb_pixel(color.r(), color.g(), color.b());
+        let bgr = || rgb_pixel(color.b(), color.g(), color.r());
+        let fallback = || { unsupported_pixel_format_log(); rgb() };
+        #[allow(non_exhaustive_omitted_patterns)]
+        match self.info.pixel_format {
+            Some(EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor) => rgb(),
+            Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor) => bgr(),
+            Some(_) => fallback(),
+            None => grayscale_intensity(color),
         }
     }
 }
@@ -296,7 +336,7 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
 
     fn scroll_up(&self) {
         unsafe {
-            petroleum::scroll_buffer_pixels::<T>(
+            scroll_buffer_pixels::<T>(
                 self.info.address,
                 self.info.width_or_stride(),
                 self.info.height,

@@ -13,7 +13,13 @@ static TSS: Once<TaskStateSegment> = Once::new();
 static GDT: Once<GlobalDescriptorTable> = Once::new();
 static CODE_SELECTOR: Once<SegmentSelector> = Once::new();
 static TSS_SELECTOR: Once<SegmentSelector> = Once::new();
+static USER_DATA_SELECTOR: Once<SegmentSelector> = Once::new();
+static USER_CODE_SELECTOR: Once<SegmentSelector> = Once::new();
 static GDT_INITIALIZED: Once<()> = Once::new();
+
+pub fn kernel_code_selector() -> SegmentSelector {
+    *CODE_SELECTOR.get().expect("GDT not initialized")
+}
 
 pub fn init(heap_start: VirtAddr) -> VirtAddr {
     // If already initialized, just return the heap start (don't modify)
@@ -41,10 +47,17 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
     let gdt = GDT.call_once(|| {
         let mut gdt = GlobalDescriptorTable::new();
         let code_selector = gdt.append(Descriptor::kernel_code_segment());
+        // Add user data segment (ring 3)
+        let user_data_selector = gdt.append(Descriptor::user_data_segment());
+        // Add user code segment (ring 3)
+        let user_code_selector = gdt.append(Descriptor::user_code_segment());
         let tss_selector = gdt.append(Descriptor::tss_segment(tss));
 
         CODE_SELECTOR.call_once(|| code_selector);
         TSS_SELECTOR.call_once(|| tss_selector);
+
+        USER_DATA_SELECTOR.call_once(|| user_data_selector);
+        USER_CODE_SELECTOR.call_once(|| user_code_selector);
         gdt
     });
 
@@ -59,4 +72,12 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
     // Mark as initialized
     GDT_INITIALIZED.call_once(|| {});
     new_heap_start
+}
+
+pub fn user_code_selector() -> SegmentSelector {
+    *USER_CODE_SELECTOR.get().expect("GDT not initialized")
+}
+
+pub fn user_data_selector() -> SegmentSelector {
+    *USER_DATA_SELECTOR.get().expect("GDT not initialized")
 }

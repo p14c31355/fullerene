@@ -1,4 +1,48 @@
-fn main() {
-    println!("Hello from toluene!");
-    println!("This is a simple executable crate.");
+#![no_std]
+#![no_main]
+
+mod user;
+
+#[no_mangle]
+pub extern "C" fn main() -> i32 {
+    // Write to stdout
+    let message = b"Hello from toluene user program!\n";
+    let _ = user::write(1, message);
+
+    // Get our PID and display it
+    let pid = user::getpid();
+    let pid_msg1 = b"My PID is: ";
+    let pid_msg2 = b"\n";
+    let _ = user::write(1, pid_msg1);
+
+    // Convert PID to string to display it
+    let mut pid_buffer = [0u8; 20];
+    let mut len = 0;
+    if pid == 0 {
+        pid_buffer[0] = b'0';
+        len = 1;
+    } else {
+        let mut n = pid;
+        while n > 0 {
+            pid_buffer[len] = b'0' + (n % 10) as u8;
+            n /= 10;
+            len += 1;
+        }
+        pid_buffer[..len].reverse();
+    }
+    let pid_bytes = &pid_buffer[..len];
+    let _ = user::write(1, pid_bytes);
+    let _ = user::write(1, pid_msg2);
+
+    // Sleep a bit to simulate work
+    for _ in 0..10 {
+        user::sleep();
+    }
+
+    // Write final message
+    let message2 = b"Toluene program finished executing.\n";
+    let _ = user::write(1, message2);
+
+    // Exit gracefully
+    user::exit(0);
 }

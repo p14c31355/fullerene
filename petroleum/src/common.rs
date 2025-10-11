@@ -24,8 +24,9 @@ pub enum EfiGraphicsPixelFormat {
     PixelFormatMax = 4,
 }
 
-// The structure passed from the bootloader to the kernel (UEFI).
+/// The structure passed from the bootloader to the kernel (UEFI).
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct FullereneFramebufferConfig {
     pub address: u64,
     pub width: u32,
@@ -33,17 +34,6 @@ pub struct FullereneFramebufferConfig {
     pub pixel_format: EfiGraphicsPixelFormat,
     pub bpp: u32, // Bits per pixel
     pub stride: u32,
-}
-
-/// The structure passed from the bootloader to the kernel (UEFI).
-#[repr(C)]
-pub struct EfiMemoryDescriptor {
-    pub type_: EfiMemoryType,
-    pub pad: u32,
-    pub physical_start: u64,
-    pub virtual_start: u64,
-    pub number_of_pages: u64,
-    pub attribute: u64,
 }
 
 /// The structure passed from the bootloader to the kernel (UEFI) for memory map.

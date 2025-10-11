@@ -1,5 +1,3 @@
-// fullerene-kernel/src/interrupts.rs
-
 use crate::gdt;
 use core::fmt::Write;
 use lazy_static::lazy_static;
@@ -8,6 +6,9 @@ use petroleum::serial::SERIAL_PORT_WRITER as SERIAL1;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+
+// Include our new modules
+use crate::process;
 
 static TICK_COUNTER: Mutex<u64> = Mutex::new(0);
 
@@ -107,28 +108,25 @@ macro_rules! init_pic {
     }};
 }
 
-// APIC structure for register access
-struct Apic {
+
+
+// Helper structure for dynamic register access
+struct ApicRaw {
     base_addr: u64,
 }
 
-impl Apic {
-    fn new(base_addr: u64) -> Self {
-        Self { base_addr }
-    }
-
+impl ApicRaw {
     unsafe fn read(&self, offset: u32) -> u32 {
         let addr = (self.base_addr + offset as u64) as *mut u32;
-        unsafe { addr.read_volatile() }
+        addr.read_volatile()
     }
-
     unsafe fn write(&self, offset: u32, value: u32) {
         let addr = (self.base_addr + offset as u64) as *mut u32;
-        unsafe { addr.write_volatile(value) }
+        addr.write_volatile(value)
     }
 }
 
-static APIC: Mutex<Option<Apic>> = Mutex::new(None);
+static APIC: Mutex<Option<ApicRaw>> = Mutex::new(None);
 
 // Helper functions for APIC setup
 fn disable_legacy_pic() {
@@ -157,11 +155,14 @@ fn get_apic_base() -> Option<u64> {
     }
 }
 
-fn enable_apic(apic: &mut Apic) {
+fn enable_apic(apic: &mut ApicRaw) {
+    // Enable APIC by setting bit 8 in spurious vector register
+    let spurious = unsafe { apic.read(ApicOffsets::SPURIOUS_VECTOR) };
     unsafe {
-        // Enable APIC by setting bit 8 in spurious vector register
-        let spurious = apic.read(ApicOffsets::SPURIOUS_VECTOR);
-        apic.write(ApicOffsets::SPURIOUS_VECTOR, spurious | ApicFlags::SW_ENABLE | 0xFF);
+        apic.write(
+            ApicOffsets::SPURIOUS_VECTOR,
+            spurious | ApicFlags::SW_ENABLE | 0xFF,
+        );
     }
 }
 
@@ -194,6 +195,7 @@ lazy_static! {
         }
         idt[KEYBOARD_INTERRUPT_INDEX as u8].set_handler_fn(keyboard_handler);
         idt[MOUSE_INTERRUPT_INDEX as u8].set_handler_fn(mouse_handler);
+        // Remove int 0x80 syscall handler - we now use the syscall instruction with LSTAR MSR
 
         idt
     };
@@ -216,12 +218,15 @@ pub fn init_apic() {
     let base_addr = get_apic_base().unwrap_or(0xFEE00000); // Default local APIC address
 
     // Initialize APIC
-    let mut apic = Apic::new(base_addr);
+    let mut apic = ApicRaw { base_addr };
     enable_apic(&mut apic);
 
     // Configure timer interrupt
     unsafe {
-        apic.write(ApicOffsets::LVT_TIMER, TIMER_INTERRUPT_INDEX | ApicFlags::TIMER_PERIODIC);
+        apic.write(
+            ApicOffsets::LVT_TIMER,
+            TIMER_INTERRUPT_INDEX | ApicFlags::TIMER_PERIODIC,
+        );
         apic.write(ApicOffsets::TMRDIV, 0x3); // Divide by 16
         apic.write(ApicOffsets::TMRINITCNT, 1000000); // Initial count for ~100ms at 10MHz
     }
@@ -231,6 +236,9 @@ pub fn init_apic() {
 
     // Initialize I/O APIC for legacy interrupts (keyboard, mouse, etc.)
     init_io_apic(base_addr);
+
+    // Set up fast system call mechanism
+    setup_syscall();
 
     // Enable interrupts
     x86_64::instructions::interrupts::enable();
@@ -254,13 +262,111 @@ pub extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
+    use x86_64::registers::control::Cr2;
+
+    // Get the faulting address
+    let fault_addr = Cr2::read();
+
+    let fault_addr = match fault_addr {
+        Ok(addr) => addr,
+        Err(_) => {
+            petroleum::serial::serial_log(format_args!(
+                "\nEXCEPTION: PAGE FAULT but CR2 is invalid.\n"
+            ));
+            return;
+        }
+    };
+
+    petroleum::serial::serial_log(format_args!(
+        "\nEXCEPTION: PAGE FAULT at address {:#x}\nError Code: {:?}\n",
+        fault_addr.as_u64(),
+        error_code
+    ));
+
+    // Page fault handling logic
+    handle_page_fault(fault_addr, error_code, stack_frame);
+
+    // After handling, execution can continue
+}
+
+fn handle_page_fault(
+    fault_addr: x86_64::VirtAddr,
+    error_code: PageFaultErrorCode,
+    _stack_frame: InterruptStackFrame,
+) {
+    use crate::memory_management;
+    use x86_64::registers::control::Cr2;
+
+    // Basic analysis of fault
+    let is_present = error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION);
+    let is_write = error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
+    let is_user = error_code.contains(PageFaultErrorCode::USER_MODE);
+
     let mut writer = SERIAL1.lock();
-    writeln!(
-        writer,
-        "\nEXCEPTION: PAGE FAULT\n{:#?}\nError Code: {:?}",
-        stack_frame, error_code
-    )
-    .ok();
+    write!(writer, "Page fault analysis: ").ok();
+    if is_present {
+        write!(writer, "Protection violation ").ok();
+    } else {
+        write!(writer, "Page not present ").ok();
+    }
+    if is_write {
+        write!(writer, "(write access) ").ok();
+    }
+    if is_user {
+        write!(writer, "(user mode)").ok();
+    }
+    writeln!(writer).ok();
+
+    // For now, we handle only user-space page faults
+    // Kernel page faults indicate serious errors
+
+    if !is_user {
+        // Kernel page fault - this is critical
+        panic!(
+            "Kernel page fault at {:#x}: {:?}",
+            fault_addr.as_u64(),
+            error_code
+        );
+    }
+
+    if is_present {
+        // Protection violation in user space
+        // This might be write to read-only page, etc.
+        // For now, terminate the current process
+        write!(
+            writer,
+            "Protection violation in user space - terminating process\n"
+        )
+        .ok();
+
+        if let Some(pid) = crate::process::current_pid() {
+            crate::process::terminate_process(pid, 1); // Exit code 1 for page fault
+        }
+    } else {
+        // Page not present - need to handle demand paging or stack growth
+        write!(writer, "Page not present - attempting to handle\n").ok();
+
+        // For now, try to allocate a new page if it's in valid user space
+        if memory_management::is_user_address(fault_addr) {
+            // This is a simplified page fault handler
+            // In a real system, we'd check if this is a valid allocation request
+            // and allocate pages accordingly
+
+            // For stack growth or heap allocation, we might allocate here
+            // But current process doesn't have ProcessPageTable integration yet
+
+            write!(writer, "Cannot handle page fault - terminating process\n").ok();
+            if let Some(pid) = crate::process::current_pid() {
+                crate::process::terminate_process(pid, 1);
+            }
+        } else {
+            // Invalid user address
+            write!(writer, "Invalid user address - terminating process\n").ok();
+            if let Some(pid) = crate::process::current_pid() {
+                crate::process::terminate_process(pid, 1);
+            }
+        }
+    }
 }
 
 pub extern "x86-interrupt" fn double_fault_handler(
@@ -285,22 +391,31 @@ macro_rules! define_input_interrupt_handler {
 
 // Hardware interrupt handlers
 pub extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
-    // Timer interrupt - handle timer ticks
+    // Timer interrupt - handle timer ticks and scheduling
     *TICK_COUNTER.lock() += 1;
-    // Basic scheduling: could schedule tasks here in future, but for now just tick
+
+    // Perform preemptive scheduling with context switching
+    unsafe {
+        let old_pid = process::current_pid();
+        process::schedule_next();
+        let new_pid = process::current_pid();
+
+        if let (Some(old_pid_val), Some(new_pid_val)) = (old_pid, new_pid) {
+            if old_pid_val != new_pid_val {
+                // Perform actual context switch to new process
+                process::context_switch(old_pid, new_pid_val);
+            }
+        }
+    }
+
     send_eoi();
 }
 
+
+
 define_input_interrupt_handler!(keyboard_handler, 0x60, |scancode: u8| {
-    let mut keyboard_queue = KEYBOARD_QUEUE.lock();
-    let head = keyboard_queue.head;
-    let tail = keyboard_queue.tail;
-    let next_tail = (tail + 1) % 256;
-    if next_tail != head {
-        // Not full
-        keyboard_queue.buffer[tail] = scancode;
-        keyboard_queue.tail = next_tail;
-    }
+    // Use new keyboard driver
+    crate::keyboard::handle_keyboard_scancode(scancode);
 });
 
 define_input_interrupt_handler!(mouse_handler, 0x60, |byte: u8| {
@@ -328,4 +443,87 @@ fn send_eoi() {
             apic.write(ApicOffsets::EOI, 0);
         }
     }
+}
+
+// System call entry point (called via syscall instruction, not interrupt)
+#[unsafe(naked)]
+pub extern "C" fn syscall_entry() {
+    // Naked function to manually handle syscall ABI, preserve RCX/R11,
+    // and convert to function call ABI
+    core::arch::naked_asm!(
+        // Entry point: syscall instruction puts:
+        // rax = syscall number
+        // rcx = return rip (must be preserved for sysret)
+        // r11 = return rflags (must be preserved for sysret)
+        // rdi, rsi, rdx, r10, r8, r9 = arguments (syscall ABI)
+
+        // Save registers that syscall handler might clobber
+        "push rcx",         // Save return RIP
+        "push r11",         // Save return RFLAGS
+
+        // Shuffle arguments from syscall ABI to function call ABI
+        // syscall ABI: rdi, rsi, rdx, r10, r8, r9
+        // function ABI: rdi, rsi, rdx, rcx, r8, r9
+        // So we move r10 to rcx (4th argument)
+        "mov rcx, r10",
+
+        // Save rax (syscall number) on stack temporarily
+        "push rax",
+
+        // Call the syscall handler (handle_syscall expects: num, arg1, arg2, arg3, arg4, arg5, arg6)
+        "call handle_syscall",
+
+        // Result is now in rax
+        // Restore the saved registers
+        "pop r10",          // Restore original syscall number (but not needed)
+        "pop r11",          // Restore return RFLAGS
+        "pop rcx",          // Restore return RIP
+
+        // Return via sysretq (result in rax, rcx/rip and r11/rflags preserved)
+        "sysretq"
+    );
+}
+
+// Set up the syscall instruction to use the Fast System Call mechanism
+pub fn setup_syscall() {
+    use x86_64::registers::model_specific::{Efer, EferFlags, Msr};
+    use x86_64::registers::model_specific::{LStar, SFMask, Star};
+    use x86_64::registers::rflags::RFlags;
+
+    // Enable syscall/sysret instructions by setting SCE bit in EFER
+    unsafe {
+        let mut efer = Msr::new(0xC0000080); // EFER MSR
+        let current = efer.read();
+        efer.write(current | (1 << 0)); // Set SCE (System Call Extension) bit
+    }
+
+    // Set the syscall entry point
+    let entry_addr = syscall_entry as u64;
+    unsafe {
+        let mut lstar = Msr::new(0xC0000082); // LSTAR MSR
+        lstar.write(entry_addr);
+    }
+
+    // Set STAR MSR for sysret/syscall
+    // STAR[63:48] = User CS | User SS (but SS is User CS + 8)
+    // STAR[47:32] = Kernel CS | Kernel SS (but SS is Kernel CS + 8)
+    let user_code_sel = crate::gdt::user_code_selector().0 as u64;
+    let kernel_code_sel = crate::gdt::kernel_code_selector().0 as u64;
+    let star_value = (user_code_sel << 48) | (kernel_code_sel << 32);
+    unsafe {
+        let mut star = Msr::new(0xC0000081); // STAR MSR
+        star.write(star_value);
+    }
+
+    // Mask RFLAGS during syscall (clear interrupt flag, etc.)
+    // This masks bits that could be problematic during syscall
+    unsafe {
+        let mut sfmask = Msr::new(0xC0000084); // SFMASK MSR
+        sfmask.write(RFlags::INTERRUPT_FLAG.bits() | RFlags::TRAP_FLAG.bits()); // Clear IF and TF
+    }
+
+    petroleum::serial::serial_log(format_args!(
+        "Fast syscall mechanism initialized with LSTAR set to {:#x}\n",
+        entry_addr
+    ));
 }

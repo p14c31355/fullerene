@@ -49,9 +49,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
         panic!("Invalid image_handle");
     }
 
-    let _ = petroleum::UEFI_SYSTEM_TABLE
-        .lock()
-        .insert(petroleum::UefiSystemTablePtr(system_table));
+    petroleum::init_uefi_system_table(system_table);
     petroleum::serial::_print(format_args!("Bellows: UEFI_SYSTEM_TABLE initialized.\n"));
     let st = unsafe { &*system_table };
     let bs = unsafe { &*st.boot_services };

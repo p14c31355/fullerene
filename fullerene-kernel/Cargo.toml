@@ -19,6 +19,12 @@ lazy_static = { version = "1.5.0", default-features = false, features = [
 ] }
 
 petroleum = { path = "../petroleum" }
+embedded-graphics = { version = "0.8", default-features = false }
+memoffset = { version = "0.9", default-features = false }
+
+[features]
+default = []
+user_space = []
 
 [profile.dev]
 debug = true

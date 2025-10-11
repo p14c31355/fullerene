@@ -6,6 +6,7 @@ edition = "2024"
 [features]
 default = []
 std = []
+vga_panic = []
 
 [dependencies]
 spin = { version = "0.10.0", default-features = false, features = [
@@ -17,6 +18,7 @@ x86_64 = { version = "0.15.2", default-features = false, features = [
   "instructions",
   "abi_x86_interrupt",
 ] }
+linked_list_allocator = "0.10"
 
 [lib]
 name = "petroleum"

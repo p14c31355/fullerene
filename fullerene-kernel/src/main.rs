@@ -3,21 +3,29 @@
 #![no_std]
 #![no_main]
 
-pub(crate) mod font;
+// Kernel modules
 mod gdt; // Add GDT module
 mod graphics;
 mod heap;
 mod interrupts;
-// mod serial; // Removed, now using petroleum
 mod vga;
+// Kernel modules
+mod context_switch; // Context switching
+mod fs; // Basic filesystem
+mod keyboard; // Keyboard input driver
+mod loader; // Program loader
+mod memory_management; // Virtual memory management
+mod process; // Process management
+mod shell;
+mod syscall; // System calls // Shell/CLI interface
 
 extern crate alloc;
 
 // use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, serial_init, serial_log};
+use petroleum::graphics::init_vga_text_mode;
 use petroleum::serial::{
     SERIAL_PORT_WRITER as SERIAL1, debug_print_hex, debug_print_str_to_com1 as debug_print_str,
 };
-use petroleum::graphics::init_vga_text_mode;
 
 #[cfg(not(test))]
 #[panic_handler]
@@ -25,11 +33,11 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     petroleum::handle_panic(info)
 }
 
-use core::ffi::c_void;
 use petroleum::common::{
     EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
     FullereneFramebufferConfig, VgaFramebufferConfig,
 };
+use core::ffi::c_void;
 use petroleum::page_table::EfiMemoryDescriptor;
 use petroleum::write_serial_bytes;
 use spin::Once;
@@ -47,19 +55,21 @@ macro_rules! kernel_log {
     };
 }
 
-
-
 // Helper function for early debug prints to serial
 fn print_kernel(msg: &str) {
     write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
 }
 
 // Generic helper for searching memory descriptors
-fn find_memory_descriptor_address<F>(descriptors: &[EfiMemoryDescriptor], predicate: F) -> Option<usize>
+fn find_memory_descriptor_address<F>(
+    descriptors: &[EfiMemoryDescriptor],
+    predicate: F,
+) -> Option<usize>
 where
     F: Fn(&EfiMemoryDescriptor) -> bool,
 {
-    descriptors.iter()
+    descriptors
+        .iter()
         .find(|desc| predicate(desc))
         .map(|desc| desc.physical_start as usize)
 }
@@ -83,17 +93,17 @@ fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&FullereneFr
 // Helper function to find heap start from memory map (using generic)
 fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> x86_64::PhysAddr {
     // First, try to find EfiLoaderData
-    if let Some(addr) = find_memory_descriptor_address(descriptors, |desc|
+    if let Some(addr) = find_memory_descriptor_address(descriptors, |desc| {
         desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0
-    ) {
+    }) {
         return x86_64::PhysAddr::new(addr as u64);
     }
     // If not found, find EfiConventionalMemory large enough
     let required_pages = (heap::HEAP_SIZE + 4095) / 4096;
-    if let Some(addr) = find_memory_descriptor_address(descriptors, |desc|
+    if let Some(addr) = find_memory_descriptor_address(descriptors, |desc| {
         desc.type_ == EfiMemoryType::EfiConventionalMemory
-        && desc.number_of_pages >= required_pages as u64
-    ) {
+            && desc.number_of_pages >= required_pages as u64
+    }) {
         return x86_64::PhysAddr::new(addr as u64);
     }
     panic!("No suitable memory region found for heap");
@@ -138,17 +148,27 @@ pub extern "efiapi" fn efi_main(
     init_vga_text_mode();
 
     debug_print_str("VGA setup done\n");
+    kernel_log!("VGA text mode setup function returned");
 
     // Early VGA text output to ensure visible output on screen
+    kernel_log!("About to write to VGA buffer at 0xb8000");
     {
         let vga_buffer = unsafe { &mut *(VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]) };
-        let hello = b"UEFI Kernel Starting...";
+        // Clear screen first
+        for row in 0..25 {
+            for col in 0..80 {
+                vga_buffer[row][col] = VGA_COLOR_GREEN_ON_BLACK | b' ' as u16;
+            }
+        }
+        // Write hello message
+        let hello = b"Hello from UEFI Kernel!";
         for (i, &byte) in hello.iter().enumerate() {
-            if i < 80 {
-                vga_buffer[0][i] = VGA_COLOR_GREEN_ON_BLACK | (byte as u16); // Green on black
+            if i < hello.len() {
+                vga_buffer[0][i] = VGA_COLOR_GREEN_ON_BLACK | (byte as u16);
             }
         }
     }
+    kernel_log!("VGA buffer write completed");
 
     // Use the passed memory map
     let descriptors = unsafe {
@@ -190,6 +210,9 @@ pub extern "efiapi" fn efi_main(
 
     heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
     kernel_log!("Kernel: page table reinit done");
+
+    // Set physical memory offset for process management
+    crate::memory_management::set_physical_memory_offset(physical_memory_offset);
 
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(descriptors);
@@ -243,10 +266,31 @@ pub extern "efiapi" fn efi_main(
 
 #[cfg(target_os = "uefi")]
 fn init_common() {
-    crate::vga::vga_init();
+    crate::vga::init_vga();
     // Now safe to initialize APIC and enable interrupts (after stable page tables and heap)
     interrupts::init_apic();
     kernel_log!("Kernel: APIC initialized and interrupts enabled");
+
+    // Initialize process management
+    process::init();
+    kernel_log!("Kernel: Process management initialized");
+
+    // Initialize system calls
+    syscall::init();
+    kernel_log!("Kernel: System calls initialized");
+
+    // Initialize filesystem
+    fs::init();
+    kernel_log!("Kernel: Filesystem initialized");
+
+    // Initialize program loader
+    loader::init();
+    kernel_log!("Kernel: Program loader initialized");
+
+    // Create a test user process
+    let test_entry = x86_64::VirtAddr::new(test_process_main as usize as u64);
+    let test_pid = process::create_process("test_process", test_entry);
+    kernel_log!("Kernel: Created test process with PID {}", test_pid);
 
     // Test interrupt handling - should not panic or crash if APIC is working
     kernel_log!("Testing interrupt handling with int3...");
@@ -273,7 +317,7 @@ fn init_common() {
     interrupts::init(); // Initialize IDT
     // Heap already initialized
     petroleum::serial::serial_init(); // Initialize serial early for debugging
-    crate::vga::vga_init();
+    crate::vga::init_vga();
 }
 
 #[cfg(not(target_os = "uefi"))]
@@ -307,5 +351,79 @@ pub unsafe extern "C" fn _start() -> ! {
 pub fn hlt_loop() -> ! {
     loop {
         hlt();
+    }
+}
+
+// Test process main function
+fn test_process_main() {
+    // Simple test process that demonstrates system calls using proper syscall instruction
+    unsafe fn syscall(num: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64, arg5: u64, arg6: u64) -> u64 {
+        let result: u64;
+        core::arch::asm!(
+            "syscall",
+            in("rax") num,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("rdx") arg3,
+            in("r10") arg4,
+            in("r8") arg5,
+            in("r9") arg6,
+            lateout("rax") result,
+            out("rcx") _, out("r11") _,
+        );
+        result
+    }
+
+    // Write to stdout via syscall
+    let message = b"Hello from test user process!\n";
+    unsafe {
+        syscall(
+            crate::syscall::SyscallNumber::Write as u64,
+            1, // fd (stdout)
+            message.as_ptr() as u64,
+            message.len() as u64,
+            0,
+            0,
+            0,
+        );
+    }
+
+    // Get PID via syscall and print the actual PID
+    unsafe {
+        let pid = syscall(crate::syscall::SyscallNumber::GetPid as u64, 0, 0, 0, 0, 0, 0);
+        let pid_msg = b"My PID is: ";
+        syscall(
+            crate::syscall::SyscallNumber::Write as u64,
+            1,
+            pid_msg.as_ptr() as u64,
+            pid_msg.len() as u64,
+            0,
+            0,
+            0,
+        );
+
+        // Convert PID to string and print it
+        let pid_str = alloc::format!("{}\n", pid);
+        let pid_bytes = pid_str.as_bytes();
+        syscall(
+            crate::syscall::SyscallNumber::Write as u64,
+            1,
+            pid_bytes.as_ptr() as u64,
+            pid_bytes.len() as u64,
+            0,
+            0,
+            0,
+        );
+    }
+
+    // Yield a bit
+    unsafe {
+        syscall(crate::syscall::SyscallNumber::Yield as u64, 0, 0, 0, 0, 0, 0); // SYS_YIELD
+        syscall(crate::syscall::SyscallNumber::Yield as u64, 0, 0, 0, 0, 0, 0); // SYS_YIELD
+    }
+
+    // Exit
+    unsafe {
+        syscall(crate::syscall::SyscallNumber::Exit as u64, 0, 0, 0, 0, 0, 0); // SYS_EXIT
     }
 }
