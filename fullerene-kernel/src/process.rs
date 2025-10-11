@@ -136,7 +136,7 @@ pub struct Process {
 
 impl Process {
     /// Create a new process
-    pub fn new(name: &'static str, entry_point: fn()) -> Self {
+    pub fn new(name: &'static str, entry_point: VirtAddr) -> Self {
         static NEXT_PID: AtomicU64 = AtomicU64::new(1);
 
         let id = NEXT_PID.fetch_add(1, Ordering::Relaxed);
@@ -150,7 +150,7 @@ impl Process {
             page_table: None,
             kernel_stack: VirtAddr::new(0), // Will be set when allocated
             user_stack: VirtAddr::new(0),   // Will be set when allocated
-            entry_point: VirtAddr::new(entry_point as usize as u64),
+            entry_point,
             exit_code: None,
         }
     }
@@ -193,7 +193,8 @@ extern "C" fn process_trampoline() -> ! {
 /// Initialize process management system
 pub fn init() {
     // Create idle process
-    let mut idle_process = Process::new("idle", idle_loop);
+    let idle_addr = VirtAddr::new(idle_loop as usize as u64);
+    let mut idle_process = Process::new("idle", idle_addr);
     idle_process.state = ProcessState::Running;
 
     let mut process_list = PROCESS_LIST.lock();
@@ -204,8 +205,8 @@ pub fn init() {
 }
 
 /// Create a new process and add it to the process list
-pub fn create_process(name: &'static str, entry_point: fn()) -> ProcessId {
-    let mut process = Process::new(name, entry_point);
+pub fn create_process(name: &'static str, entry_point_address: VirtAddr) -> ProcessId {
+    let mut process = Process::new(name, entry_point_address);
 
     // Allocate kernel stack for the process
     let stack_layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
@@ -235,6 +236,14 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
     if let Some(process) = process_list.iter_mut().find(|p| p.id == pid) {
         process.state = ProcessState::Terminated;
         process.exit_code = Some(exit_code);
+
+        // Free resources
+        let kernel_stack_base = process.kernel_stack.as_u64() - KERNEL_STACK_SIZE as u64;
+        let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
+        unsafe { alloc::alloc::dealloc(kernel_stack_base as *mut u8, layout); }
+
+        // Drop page table to free frames
+        drop(process.page_table.take());
     }
 
     // If current process is terminating, schedule next
@@ -358,7 +367,8 @@ mod tests {
 
     #[test]
     fn test_process_creation() {
-        let mut proc = Process::new("test", || {});
+        let addr = VirtAddr::new(0);
+        let mut proc = Process::new("test", addr);
         assert_eq!(proc.name, "test");
         assert_eq!(proc.state, ProcessState::Ready);
     }

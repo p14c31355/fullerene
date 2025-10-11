@@ -81,10 +81,10 @@ pub fn load_program(
     let ph_entry_size = elf_header.program_header_entry_size as usize;
 
     // Find entry point
-    let entry_point: fn() = unsafe { core::mem::transmute(elf_header.entry_point as usize) };
+    let entry_point_address = x86_64::VirtAddr::new(elf_header.entry_point);
 
     // Create process with the loaded program
-    let pid = process::create_process(name, entry_point);
+    let pid = process::create_process(name, entry_point_address);
 
     // Get the process's page table (assume it's created in create_process)
     // For now, we skip loading segments due to page table integration not implemented yet

@@ -120,15 +120,12 @@ fn syscall_exit(exit_code: i32) -> SyscallResult {
     Ok(0)
 }
 
-/// Fork system call - creates a new process
-/// For simplicity, this creates a new process with the same entry point
 fn syscall_fork() -> SyscallResult {
-    // In a real implementation, this would clone the current process
-    // For now, create a dummy process
-    let pid = process::create_process("forked_process", || {
-        // Dummy entry point - just exit
-        process::terminate_process(process::current_pid().unwrap_or(0), 0);
-    });
+    // Clone the current process (not implemented yet)
+    // For now, create a new process with a dummy entry point
+    // TODO: Implement actual process cloning
+    let dummy_entry = VirtAddr::new(0); // Will cause kernel panic, replace with actual cloning
+    let pid = process::create_process("forked_child", dummy_entry);
     Ok(pid)
 }
 
@@ -288,23 +285,10 @@ pub fn init() {
     // For now, assume it's handled there
 }
 
-/// Kernel syscall call using syscall instruction
-/// This allows kernel code to call syscalls just like user space does
+/// Kernel syscall call - calls syscall handler directly without syscall overhead
+/// This allows kernel code to call syscalls without the unnecessary hardware syscall overhead
 pub fn kernel_syscall(syscall_num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
-    let mut result: u64;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") syscall_num,
-            in("rdi") arg1,
-            in("rsi") arg2,
-            in("rdx") arg3,
-            lateout("rax") result,
-            out("rcx") _,
-            out("r11") _,
-        );
-    }
-    result
+    unsafe { handle_syscall(syscall_num, arg1, arg2, arg3, 0, 0, 0) }
 }
 
 /// Syscall helper macros for user space (would be in user-space library)

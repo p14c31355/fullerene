@@ -52,6 +52,15 @@ fn copy_kernel_page_table_entries(
                 .allocate_frame()
                 .expect("Frame allocation failed");
 
+            // Zero the new frame to avoid interpreting stale data as valid page table entries
+            unsafe {
+                ptr::write_bytes(
+                    (physical_memory_offset + new_frame.start_address().as_u64()).as_mut_ptr::<u8>(),
+                    0,
+                    4096,
+                );
+            }
+
             // Create a new entry with the new frame address and same flags
             let mut new_entry = PageTableEntry::new();
             new_entry.set_addr(new_frame.start_address(), from_table[i].flags());
@@ -185,9 +194,7 @@ pub fn free_user_memory(
     for i in 0..num_pages {
         let page_addr = addr + ((i * 4096) as u64);
         unmap_user_page(page_table, page_addr)?;
-        // Note: BootInfoFrameAllocator does not support frame deallocation.
-        // This is a memory leak in the current implementation.
-        // To properly manage physical memory, a different frame allocator is needed.
+        // TODO: Deallocate the physical frame - BootInfoFrameAllocator does not support deallocation
     }
 
     Ok(())

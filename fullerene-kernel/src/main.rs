@@ -288,7 +288,8 @@ fn init_common() {
     kernel_log!("Kernel: Program loader initialized");
 
     // Create a test user process
-    let test_pid = process::create_process("test_process", test_process_main);
+    let test_entry = x86_64::VirtAddr::new(test_process_main as usize as u64);
+    let test_pid = process::create_process("test_process", test_entry);
     kernel_log!("Kernel: Created test process with PID {}", test_pid);
 
     // Test interrupt handling - should not panic or crash if APIC is working
