@@ -69,7 +69,6 @@ pub unsafe fn switch_context(
             "mov [{0} + {rsi}], rsi",
             "mov [{0} + {rdi}], rdi",
             "mov [{0} + {rbp}], rbp",
-            "mov [{0} + {rsp}], rsp",
             "mov [{0} + {r8}], r8",
             "mov [{0} + {r9}], r9",
             "mov [{0} + {r10}], r10",
@@ -82,9 +81,11 @@ pub unsafe fn switch_context(
             "pushfq",
             "pop rax",
             "mov [{0} + {rflags}], rax",
-            // Save RIP (return address)
-            "mov rax, [rsp]",
+            // Save RIP and RSP. This assumes a stack frame with a base pointer (rbp).
+            "mov rax, [rbp + 8]",      // Get return address from stack frame.
             "mov [{0} + {rip}], rax",
+            "lea rax, [rbp + 16]",     // Get caller's stack pointer.
+            "mov [{0} + {rsp}], rax",
             // Save segment registers
             "mov rax, cs",
             "mov [{0} + {cs}], rax",
