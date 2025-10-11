@@ -372,6 +372,9 @@ pub static FRAMEBUFFER_UEFI: Once<Mutex<FramebufferWriter<u32>>> = Once::new();
 #[cfg(not(target_os = "uefi"))]
 pub static WRITER_BIOS: Once<Mutex<Box<dyn core::fmt::Write + Send + Sync>>> = Once::new();
 
+#[cfg(not(target_os = "uefi"))]
+pub static FRAMEBUFFER_BIOS: Once<Mutex<FramebufferWriter<u8>>> = Once::new();
+
 #[cfg(target_os = "uefi")]
 pub fn init(config: &FullereneFramebufferConfig) {
     petroleum::serial::serial_log(format_args!("Graphics: Initializing UEFI framebuffer: {}x{}, stride: {}, pixel_format: {:?}\n",
@@ -395,9 +398,16 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
     let writer = FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(config));
     writer.clear_screen();
     #[cfg(target_os = "uefi")]
-    WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer)));
+    {
+        WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer)));
+    }
     #[cfg(not(target_os = "uefi"))]
-    WRITER_BIOS.call_once(|| Mutex::new(Box::new(writer)));
+    {
+        let text_writer = FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(config));
+        let fb_writer = FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(config));
+        WRITER_BIOS.call_once(|| Mutex::new(Box::new(text_writer)));
+        FRAMEBUFFER_BIOS.call_once(|| Mutex::new(fb_writer));
+    }
 }
 
 // All VGA setup is handled by petroleum's init_vga_graphics
@@ -485,10 +495,52 @@ pub fn draw_os_desktop() {
 pub fn draw_os_desktop() {
     print!("Graphics: draw_os_desktop() called in BIOS mode\n");
     debug_print_str("Graphics: BIOS mode draw_os_desktop() started\n");
-    debug_print_str("Graphics: BIOS mode desktop setup completed\n");
+
+    debug_print_str("Graphics: checking BIOS framebuffer...\n");
+    if let Some(fb_writer) = FRAMEBUFFER_BIOS.get() {
+        debug_print_str("Graphics: Obtained BIOS framebuffer writer\n");
+        let mut fb_writer = fb_writer.lock();
+        debug_print_str("Graphics: Framebuffer writer locked\n");
+
+        petroleum::serial::serial_log(format_args!("Graphics: Framebuffer size: {}x{}, VGA mode\n",
+            fb_writer.info.width, fb_writer.info.height));
+
+        // Fill background with dark gray (suitable for VGA grayscale)
+        let bg_color = 32u32; // Dark gray
+        debug_print_str("Graphics: Filling background...\n");
+        fill_background(&mut *fb_writer, bg_color);
+        debug_print_str("Graphics: Background filled\n");
+
+        // Test: Draw a bright red rectangle in the corner
+        debug_print_str("Graphics: Drawing test red rectangle...\n");
+        draw_window(&mut *fb_writer, 10, 10, 50, 50, 0xFF0000u32, 0xFFFFFFu32); // Bright red, white border
+        debug_print_str("Graphics: Test red rectangle drawn\n");
+
+        // Draw window frame
+        debug_print_str("Graphics: Drawing window frame...\n");
+        draw_window(&mut *fb_writer, 50, 50, 220, 120, 255u32, 64u32); // White window, gray border
+        debug_print_str("Graphics: Window frame drawn\n");
+
+        // Draw taskbar at bottom
+        debug_print_str("Graphics: Drawing taskbar...\n");
+        draw_taskbar(&mut *fb_writer, 128u32); // Medium gray taskbar
+        debug_print_str("Graphics: Taskbar drawn\n");
+
+        // Draw some icons
+        debug_print_str("Graphics: Drawing icons...\n");
+        draw_icon(&mut *fb_writer, 65, 60, "Terminal", 96u32); // Medium gray icon
+        draw_icon(&mut *fb_writer, 65, 80, "Settings", 160u32); // Light gray icon
+        debug_print_str("Graphics: Icons drawn\n");
+
+        print!("Graphics: BIOS desktop drawing completed\n");
+        debug_print_str("Graphics: BIOS desktop drawing completed\n");
+    } else {
+        print!("Graphics: ERROR - BIOS framebuffer not initialized\n");
+        debug_print_str("Graphics: ERROR - BIOS framebuffer not initialized\n");
+    }
 }
 
-fn fill_background<W: FramebufferLike + DrawTarget<Color = Rgb888>>(writer: &mut W, color: u32) {
+fn fill_background<T: PixelType>(writer: &mut FramebufferWriter<T>, color: u32) {
     let color_rgb = u32_to_rgb888(color);
     let style = PrimitiveStyleBuilder::new().fill_color(color_rgb).build();
     let rect = Rectangle::new(Point::new(0, 0), Size::new(writer.get_width(), writer.get_height()));

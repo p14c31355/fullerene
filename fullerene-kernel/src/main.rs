@@ -308,7 +308,7 @@ pub extern "efiapi" fn efi_main(
     graphics::init_vga(&vga_config);
     kernel_log!("VGA graphics mode initialized, calling draw_os_desktop...");
     graphics::draw_os_desktop();
-    kernel_log!("VGA graphics desktop drawn");
+    kernel_log!("VGA graphics desktop drawn - if you see this, draw_os_desktop completed");
 
     kernel_log!("Kernel: running in main loop");
     kernel_log!("FullereneOS kernel is now running");

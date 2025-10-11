@@ -174,9 +174,10 @@ fn init_gop(st: &EfiSystemTable) {
         let status = (gop_ref.set_mode)(gop, target_mode as u32);
         if EfiStatus::from(status) != EfiStatus::Success {
             petroleum::serial::_print(format_args!(
-                "GOP: Failed to set mode, status: {:#x}\n",
+                "GOP: Failed to set mode, status: {:#x}, skipping GOP initialization.\n",
                 status
             ));
+            return; // Early return on mode setting failure
         } else {
             petroleum::serial::_print(format_args!("GOP: Mode set successfully\n"));
         }
