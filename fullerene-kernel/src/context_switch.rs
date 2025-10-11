@@ -96,7 +96,7 @@ pub unsafe fn switch_context(
             "mov rax, fs",
             "mov [{0} + {fs}], rax",
             "mov rax, gs",
-            "mov [{0} + {gs}], gs",
+            "mov [{0} + {gs}], rax",
             in(reg) old_ctx,
             rax = const ContextOffsets::RAX,
             rbx = const ContextOffsets::RBX,
