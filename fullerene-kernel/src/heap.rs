@@ -299,7 +299,7 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     let memory_types = [EfiLoaderCode, EfiLoaderData, EfiBootServicesCode, EfiBootServicesData, EfiRuntimeServicesCode, EfiRuntimeServicesData, EfiConventionalMemory];
     let descriptors = memory_map.iter().filter(|desc| {
         memory_types.iter().any(|&t| desc.type_ == t) && desc.number_of_pages > 0
-    }).take(50); // Increase to ensure kernel descriptor is included
+    }); // Increase to ensure kernel descriptor is included
     for desc in descriptors {
         unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"Mapping one\n") };
         let start_phys = PhysAddr::new(desc.physical_start);
