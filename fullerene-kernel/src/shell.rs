@@ -120,8 +120,7 @@ fn read_line(buffer: &mut [u8]) -> Result<usize, &'static str> {
                     if pos > 0 {
                         pos -= 1;
                         // Echo backspace - keeping the syscall for kernel output
-                        let backspace_seq = [0x08, b' ', 0x08];
-                        kernel_syscall(4, 1, backspace_seq.as_ptr() as u64, 3);
+                        print!("\x08 \x08");
                     }
                 }
                 0x1B => {
