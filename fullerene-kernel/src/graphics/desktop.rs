@@ -104,7 +104,7 @@ fn draw_window<W: FramebufferLike>(
         .stroke_color(border_rgb)
         .stroke_width(1)
         .build();
-    let rect = Rectangle::new(embedded_graphics::geometry::Point::new(x as i32, y as i32), embedded_graphics::geometry::Size::new(w, h));
+    let rect = Rectangle::new(Point::new(x as i32, y as i32), Size::new(w, h));
     rect.into_styled(style).draw(writer).ok();
 }
 
