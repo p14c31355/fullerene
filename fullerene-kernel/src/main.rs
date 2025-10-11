@@ -242,9 +242,8 @@ pub extern "efiapi" fn efi_main(
     // Assume identity mapping for now
     if !found_in_descriptor {
         physical_memory_offset = VirtAddr::new(0);
-        kernel_log!("WARNING: Kernel virtual address not found, assuming identity mapping");
+        kernel_log!("WARNING: Kernel virtual address not found, assuming identity mapping (offset=0)");
     }
-    kernel_log!("Continuing with assumed offset=0");
 
     kernel_log!("Physical memory offset calculation complete: offset=0x{:x}, kernel_phys_start=0x{:x}",
                physical_memory_offset.as_u64(), kernel_phys_start.as_u64());
