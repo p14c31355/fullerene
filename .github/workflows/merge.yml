@@ -31,6 +31,9 @@ jobs:
           workspaces: "./ -> target"
 
 
+      - name: Clear cache and run flasks
+        run: cargo clean && cargo run -p flasks
+
       - name: Run comprehensive tests
         run: |
           cargo test --package toluene --verbose
