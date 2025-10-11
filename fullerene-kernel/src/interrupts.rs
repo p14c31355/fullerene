@@ -1,7 +1,8 @@
 use crate::gdt;
 use core::fmt::Write;
 use lazy_static::lazy_static;
-use petroleum::init_io_apic;
+use petroleum::graphics::ports::{MsrHelper, PortWriter};
+use petroleum::{init_io_apic, port_write, port_read_u8};
 use petroleum::serial::SERIAL_PORT_WRITER as SERIAL1;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
@@ -108,8 +109,6 @@ macro_rules! init_pic {
     }};
 }
 
-
-
 // Helper structure for dynamic register access
 struct ApicRaw {
     base_addr: u64,
@@ -135,12 +134,8 @@ fn disable_legacy_pic() {
     init_pic!(PIC2, 0x28, 2); // PIC2: vectors 40-47, slave identity 2
 
     // Mask all interrupts
-    unsafe {
-        let mut pic1_data = Port::<u8>::new(PIC1.data);
-        let mut pic2_data = Port::<u8>::new(PIC2.data);
-        pic1_data.write(0xFF);
-        pic2_data.write(0xFF);
-    }
+    port_write!(PIC1.data, 0xFFu8);
+    port_write!(PIC2.data, 0xFFu8);
 }
 
 fn get_apic_base() -> Option<u64> {
@@ -381,8 +376,7 @@ macro_rules! define_input_interrupt_handler {
     ($handler_name:ident, $port:expr, $process_input:expr) => {
         pub extern "x86-interrupt" fn $handler_name(_stack_frame: InterruptStackFrame) {
             // Common input handling pattern
-            let mut port = Port::<u8>::new($port);
-            let data = unsafe { port.read() };
+            let data = port_read_u8!($port);
             $process_input(data);
             send_eoi();
         }
@@ -410,8 +404,6 @@ pub extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
 
     send_eoi();
 }
-
-
 
 define_input_interrupt_handler!(keyboard_handler, 0x60, |scancode: u8| {
     // Use new keyboard driver
@@ -458,27 +450,22 @@ pub extern "C" fn syscall_entry() {
         // rdi, rsi, rdx, r10, r8, r9 = arguments (syscall ABI)
 
         // Save registers that syscall handler might clobber
-        "push rcx",         // Save return RIP
-        "push r11",         // Save return RFLAGS
-
+        "push rcx", // Save return RIP
+        "push r11", // Save return RFLAGS
         // Shuffle arguments from syscall ABI to function call ABI
         // syscall ABI: rdi, rsi, rdx, r10, r8, r9
         // function ABI: rdi, rsi, rdx, rcx, r8, r9
         // So we move r10 to rcx (4th argument)
         "mov rcx, r10",
-
         // Save rax (syscall number) on stack temporarily
         "push rax",
-
         // Call the syscall handler (handle_syscall expects: num, arg1, arg2, arg3, arg4, arg5, arg6)
         "call handle_syscall",
-
         // Result is now in rax
         // Restore the saved registers
-        "pop r10",          // Restore original syscall number (but not needed)
-        "pop r11",          // Restore return RFLAGS
-        "pop rcx",          // Restore return RIP
-
+        "pop r10", // Restore original syscall number (but not needed)
+        "pop r11", // Restore return RFLAGS
+        "pop rcx", // Restore return RIP
         // Return via sysretq (result in rax, rcx/rip and r11/rflags preserved)
         "sysretq"
     );

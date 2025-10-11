@@ -135,18 +135,13 @@ fn main() -> io::Result<()> {
         "1",
         "-machine",
         "pc,smm=off",
-        // Use more compatible Cirrus VGA for text mode
+        // Use std VGA for UEFI graphics compatibility
         "-vga",
-        "cirrus",
+        "std",
         "-display",
         "gtk",
-        // Don't use virtio-gpu-pci as it conflicts with standard VGA
-        // "-device",
-        // "virtio-gpu-pci",
         "-serial",
-        "mon:stdio",
-        "-monitor",
-        "telnet:localhost:1234,server,nowait",
+        "stdio",
         "-accel",
         "tcg,thread=single",
         "-d",
