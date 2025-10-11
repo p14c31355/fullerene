@@ -370,9 +370,23 @@ fn test_process_main() {
 
     // Get PID via syscall and print the actual PID
     unsafe {
-                let pid = crate::syscall::handle_syscall(crate::syscall::SyscallNumber::GetPid as u64, 0, 0, 0, 0, 0);
+        let pid = crate::syscall::handle_syscall(
+            crate::syscall::SyscallNumber::GetPid as u64,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
         let pid_msg = b"My PID is: ";
-        crate::syscall::handle_syscall(crate::syscall::SyscallNumber::Write as u64, 1, pid_msg.as_ptr() as u64, pid_msg.len() as u64, 0, 0);
+        crate::syscall::handle_syscall(
+            crate::syscall::SyscallNumber::Write as u64,
+            1,
+            pid_msg.as_ptr() as u64,
+            pid_msg.len() as u64,
+            0,
+            0,
+        );
 
         // Convert PID to string and print it
         let pid_str = alloc::format!("{}\n", pid);

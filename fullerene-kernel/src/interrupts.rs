@@ -275,7 +275,9 @@ pub extern "x86-interrupt" fn page_fault_handler(
     let fault_addr = match fault_addr {
         Ok(addr) => addr,
         Err(_) => {
-            petroleum::serial::serial_log(format_args!("\nEXCEPTION: PAGE FAULT but CR2 is invalid.\n"));
+            petroleum::serial::serial_log(format_args!(
+                "\nEXCEPTION: PAGE FAULT but CR2 is invalid.\n"
+            ));
             return;
         }
     };

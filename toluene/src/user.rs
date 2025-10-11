@@ -4,7 +4,15 @@
 
 /// Simple system call wrapper (for user space programs)
 #[inline]
-unsafe fn syscall(syscall_num: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64, arg5: u64, arg6: u64) -> u64 {
+unsafe fn syscall(
+    syscall_num: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+    arg4: u64,
+    arg5: u64,
+    arg6: u64,
+) -> u64 {
     let result: u64;
     // Use syscall instruction with System V ABI (x86-64)
     // RAX = syscall number, RDI/RSI/RDX/R10/R8/R9 = arguments
