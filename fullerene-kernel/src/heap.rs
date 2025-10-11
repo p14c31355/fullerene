@@ -220,7 +220,7 @@ pub fn init(heap_start: VirtAddr, heap_size: usize) {
 
 pub fn init_page_table(physical_memory_offset: VirtAddr) {
     PHYSICAL_MEMORY_OFFSET.call_once(|| physical_memory_offset);
-    let mapper = unsafe { petroleum::page_table::init(VirtAddr::new(0)) };
+    let mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
     MAPPER.call_once(|| Mutex::new(mapper));
 }
 
@@ -264,9 +264,6 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     let mut frame_allocator = FRAME_ALLOCATOR.get().unwrap().lock();
     let memory_map = *MEMORY_MAP.get().unwrap();
 
-    petroleum::serial::serial_log(format_args!("Reinitializing page table with offset: "));
-    petroleum::serial::serial_log(format_args!("{:#x}\n", physical_memory_offset.as_u64()));
-
     unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"Before allocate\n") };
 
     // Allocate a new level 4 page table
@@ -275,9 +272,17 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
         .expect("Failed to allocate level 4 frame");
     unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"Allocated level 4\n") };
 
-    // Since UEFI mapping is identity, access the new table at its physical address
-    let level_4_table_addr = level_4_frame.start_address().as_u64();
-    let level_4_table = unsafe { &mut *(level_4_table_addr as *mut PageTable) };
+    // Temporarily map the new level 4 table to an unused virtual address
+    let temp_virt_page = Page::<Size4KiB>::containing_address(VirtAddr::new(0x8000000000000000));
+    {
+        let mut current_mapper = MAPPER.get().unwrap().lock();
+        unsafe {
+            current_mapper.map_to(temp_virt_page, level_4_frame, Flags::PRESENT | Flags::WRITABLE, &mut *frame_allocator).expect("Failed to map temp");
+        }
+    }
+    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"Mapped temp\n") };
+
+    let level_4_table = unsafe { &mut *(0x8000000000000000 as *mut PageTable) };
     unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"Table ptr\n") };
 
     // Zero the table
