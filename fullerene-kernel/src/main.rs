@@ -120,6 +120,9 @@ pub extern "efiapi" fn efi_main(
     // Early debug print to confirm kernel entry point is reached using direct port access
     write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main entered.\n");
 
+    // Initialize serial early for debug logging
+    petroleum::serial::serial_init();
+
     debug_print_str("Early VGA write done\n");
 
     // Debug parameter values
@@ -168,12 +171,14 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("VGA buffer write completed");
 
     // Use the passed memory map
+    debug_print_str("About to create memory map slice\n");
     let descriptors = unsafe {
         core::slice::from_raw_parts(
             memory_map as *const EfiMemoryDescriptor,
             memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>(),
         )
     };
+    debug_print_str("Memory map slice created\n");
     MEMORY_MAP.call_once(|| unsafe { &*(descriptors as *const _) });
 
     // Calculate physical_memory_offset from kernel's location in memory map
