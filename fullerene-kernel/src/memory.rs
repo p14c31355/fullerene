@@ -9,6 +9,9 @@ use crate::MEMORY_MAP;
 use core::ffi::c_void;
 use x86_64::{PhysAddr, VirtAddr};
 
+// Add a constant for the higher-half kernel virtual base address
+const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000; // Common higher-half address
+
 // Macro to reduce repetitive serial logging - local copy since we moved function here
 use petroleum::serial::SERIAL_PORT_WRITER as SERIAL1;
 
@@ -108,67 +111,39 @@ pub fn setup_memory_maps(
     });
     kernel_log!("MEMORY_MAP initialized");
 
-    // Calculate physical_memory_offset from kernel's location in memory map
-    kernel_log!("Starting to calculate physical_memory_offset...");
     let mut physical_memory_offset = VirtAddr::new(0);
     let mut kernel_phys_start = PhysAddr::new(0);
-    kernel_log!("Kernel virtual address: 0x{:x}", kernel_virt_addr);
 
-    // Find physical_memory_offset and kernel_phys_start
     kernel_log!("Scanning memory descriptors to find kernel location...");
-    let mut found_in_descriptor = false;
-    let memory_map_ref = *MEMORY_MAP.get().unwrap(); // Deref the && to &
+    let mut found_kernel_descriptor = false;
+    let memory_map_ref = *MEMORY_MAP.get().unwrap();
     for (i, desc) in memory_map_ref.iter().enumerate() {
         let virt_start = desc.virtual_start;
         let virt_end = virt_start + desc.number_of_pages * 4096;
+
+        // Check if the kernel's entry point (efi_main) falls within this descriptor's virtual range
         if kernel_virt_addr >= virt_start && kernel_virt_addr < virt_end {
-            physical_memory_offset = VirtAddr::new(desc.virtual_start - desc.physical_start);
-            found_in_descriptor = true;
+            // This descriptor contains the kernel.
+            // The physical start of this descriptor is the kernel's physical base address.
+            kernel_phys_start = PhysAddr::new(desc.physical_start);
+            found_kernel_descriptor = true;
             kernel_log!(
-                "Found kernel in descriptor {}: phys_offset=0x{:x}",
+                "Found kernel in descriptor {}: phys_start=0x{:x}, virt_start=0x{:x}",
                 i,
-                physical_memory_offset.as_u64()
+                kernel_phys_start.as_u64(),
+                virt_start
             );
-            if desc.type_ == EfiMemoryType::EfiLoaderCode {
-                kernel_phys_start = PhysAddr::new(desc.physical_start);
-                kernel_log!(
-                    "Kernel is in EfiLoaderCode, phys_start=0x{:x}",
-                    kernel_phys_start.as_u64()
-                );
-            }
-            break; // Found it, no need to continue scanning
+            break; // Found the kernel's descriptor, no need to continue
         }
     }
 
-    if !found_in_descriptor {
-        kernel_log!("WARNING: Kernel virtual address not found in any descriptor!");
+    if !found_kernel_descriptor {
+        panic!("Could not find the memory descriptor containing the kernel's entry point (efi_main).");
     }
 
-    if kernel_phys_start.is_null() {
-        kernel_log!("Could not determine kernel's physical start address, setting to 0");
-        // Try to find any suitable memory for kernel
-        for desc in *MEMORY_MAP.get().unwrap() {
-            if desc.type_ == EfiMemoryType::EfiLoaderCode && desc.number_of_pages > 0 {
-                kernel_phys_start = PhysAddr::new(desc.physical_start);
-                kernel_log!(
-                    "Using first EfiLoaderCode descriptor: phys_start=0x{:x}",
-                    kernel_phys_start.as_u64()
-                );
-                break;
-            }
-        }
-        if kernel_phys_start.is_null() {
-            panic!("Could not determine kernel's physical start address from any EfiLoaderCode descriptor.");
-    }
-    }
-
-    // Assume identity mapping for now
-    if !found_in_descriptor {
-        physical_memory_offset = VirtAddr::new(0);
-        kernel_log!(
-            "WARNING: Kernel virtual address not found, assuming identity mapping (offset=0)"
-        );
-    }
+    // Calculate the physical_memory_offset for the higher-half kernel mapping.
+    // This offset is such that physical_address + offset = higher_half_virtual_address.
+    physical_memory_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE - kernel_phys_start.as_u64());
 
     kernel_log!(
         "Physical memory offset calculation complete: offset=0x{:x}, kernel_phys_start=0x{:x}",

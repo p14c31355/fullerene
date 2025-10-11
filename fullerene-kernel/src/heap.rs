@@ -290,7 +290,8 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"Zeroed\n") };
 
     // Create a mapper for the new page table
-    let mut new_mapper = unsafe { OffsetPageTable::new(level_4_table, VirtAddr::new(0)) };
+    // Change: Use the passed physical_memory_offset instead of VirtAddr::new(0)
+    let mut new_mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
     unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"Mapper created\n") };
 
     // Map usable memory regions from the memory map (simplified - only map essential regions)
@@ -324,7 +325,8 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"CR3 set\n") };
 
     // Reinitialize the mapper with new CR3
-    let mapper = unsafe { petroleum::page_table::init(VirtAddr::new(0)) };
+    // Change: Use the passed physical_memory_offset instead of VirtAddr::new(0)
+    let mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
     *MAPPER.get().unwrap().lock() = mapper;
 
     unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"REINIT DONE\n") };
