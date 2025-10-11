@@ -82,7 +82,7 @@ fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> 
         }
 
         // ASDF row
-        0x1E..=0x28 => {
+        0x1E..=0x26 => {
             let base_chars = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'];
             let mut ch = base_chars[(scancode - 0x1E) as usize];
             if shift_pressed ^ caps_lock {
