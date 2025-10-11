@@ -25,6 +25,51 @@ pub struct ProcessPageTable {
 /// Global frame allocator for physical memory
 /// Use heap::FRAME_ALLOCATOR instead for consistency
 
+/// Copy kernel page table entries recursively
+fn copy_kernel_page_table_entries(
+    from_table: &PageTable,
+    to_table: &mut PageTable,
+    physical_memory_offset: VirtAddr,
+    level: usize,
+) {
+    use x86_64::structures::paging::page_table::PageTableLevel;
+
+    // For each kernel entry (256-511)
+    for i in 256..512 {
+        if from_table[i].is_unused() {
+            continue;
+        }
+
+        if from_table[i].flags().contains(PageTableFlags::HUGE_PAGE) {
+            // Copy huge pages directly
+            to_table[i] = from_table[i].clone();
+        } else {
+            // Allocate a new frame for the next level table
+            let new_frame = FRAME_ALLOCATOR
+                .get()
+                .unwrap()
+                .lock()
+                .allocate_frame()
+                .expect("Frame allocation failed");
+
+            // Create a new entry with the new frame address and same flags
+            let mut new_entry = PageTableEntry::new();
+            new_entry.set_addr(new_frame.start_address(), from_table[i].flags());
+            to_table[i] = new_entry;
+
+            if level > 1 {
+                // Recurse to copy the next level
+                let from_next_level_ptr = (physical_memory_offset + from_table[i].addr().as_u64()).as_u64() as *const PageTable;
+                let from_next_level = unsafe { &*from_next_level_ptr };
+                let to_next_level_ptr = (physical_memory_offset + new_frame.start_address().as_u64()).as_u64() as *mut PageTable;
+                let to_next_level = unsafe { &mut *to_next_level_ptr };
+
+                copy_kernel_page_table_entries(from_next_level, to_next_level, physical_memory_offset, level - 1);
+            }
+        }
+    }
+}
+
 /// Create a new page table for a process
 pub fn create_process_page_table(physical_memory_offset: VirtAddr) -> Option<ProcessPageTable> {
     // Allocate a new level 4 page table frame
@@ -48,17 +93,8 @@ pub fn create_process_page_table(physical_memory_offset: VirtAddr) -> Option<Pro
     let current_pml4_virt = physical_memory_offset + current_frame.start_address().as_u64();
     let current_pml4 = unsafe { &*(current_pml4_virt.as_mut_ptr() as *const PageTable) };
 
-    // Copy kernel mappings (entries 256-511 correspond to virtual addresses >= 0xFFFF800000000000)
-    // We need to recursively copy all kernel page table entries, not just the top level
-    unsafe {
-        // Copy all entries directly using raw pointer operations
-        // PageTableEntry is essentially a u64 wrapper, so this is safe
-        ptr::copy_nonoverlapping(
-            (current_pml4 as *const PageTable as *const PageTableEntry as *const u64).offset(256),
-            (pml4 as *mut PageTable as *mut PageTableEntry as *mut u64).offset(256),
-            256,
-        );
-    }
+    // Recursively copy kernel mappings to ensure proper isolation
+    copy_kernel_page_table_entries(current_pml4, pml4, physical_memory_offset, 4);
 
     let mapper = unsafe { OffsetPageTable::new(pml4, physical_memory_offset) };
 

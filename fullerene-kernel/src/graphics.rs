@@ -1,3 +1,5 @@
+#![feature(non_exhaustive_omitted_patterns_lint)]
+
 use petroleum::graphics::init_vga_graphics;
 
 use alloc::boxed::Box; // Import Box
@@ -134,8 +136,10 @@ impl FramebufferInfo {
     fn bytes_per_pixel(&self) -> u32 {
         match self.pixel_format {
             Some(EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor)
-            | Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor) => 4,
-            Some(_) => panic!("Unsupported pixel format"),
+            | Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor)
+            | Some(EfiGraphicsPixelFormat::PixelBitMask) => 4,
+            Some(EfiGraphicsPixelFormat::PixelBltOnly)
+            | Some(EfiGraphicsPixelFormat::PixelFormatMax) => 0, // Invalid for direct access
             None => 1, // VGA
         }
     }
@@ -233,6 +237,7 @@ impl<T: PixelType> DrawTarget for FramebufferWriter<T> {
                 let y = coord.y as u32;
                 if x < self.info.width && y < self.info.height {
                     // Convert Rgb888 to the framebuffer pixel format
+                    #[allow(non_exhaustive_omitted_patterns)]
                     let pixel_color = match self.info.pixel_format {
                         Some(EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor) => {
                             // RGB format: R in high byte, G, B, X
@@ -247,18 +252,16 @@ impl<T: PixelType> DrawTarget for FramebufferWriter<T> {
                                 | (color.r() as u32)
                         }
                         Some(_) => {
-                            // Unsupported format - log error and use RGB as fallback
+                            // Unsupported format or PixelBitMask - use RGB as fallback
                             petroleum::serial::serial_log(format_args!(
-                                "Warning: Unsupported pixel format encountered, using RGB fallback\n"
+                                "Warning: Pixel format not fully supported, using RGB fallback\n"
                             ));
                             ((color.r() as u32) << 16)
                                 | ((color.g() as u32) << 8)
                                 | (color.b() as u32)
                         }
                         None => {
-                            // VGA mode, use a simple color mapping
-                            // For VGA mode, we're using u8 pixels, so convert to index or intensity
-                            // Simple conversion: use grayscale intensity
+                            // VGA mode, use grayscale intensity
                             let intensity = (color.r() as u32 * 77
                                 + color.g() as u32 * 150
                                 + color.b() as u32 * 29)

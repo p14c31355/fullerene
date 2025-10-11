@@ -138,6 +138,7 @@ fn load_segment(
     // Validate that the virtual address range is in user space
     use crate::memory_management::{AllocError, is_user_address, map_user_page};
     use x86_64::{PhysAddr, VirtAddr};
+    use x86_64::structures::paging::Translate;
 
     let start_addr = VirtAddr::new(vaddr);
     let end_addr = VirtAddr::new(vaddr + mem_size as u64 - 1);
@@ -147,6 +148,14 @@ fn load_segment(
     }
 
     let num_pages = ((mem_size + 4095) / 4096) as u64; // Round up to page size
+
+    // Check that the virtual address range is not already mapped
+    for page_idx in 0..num_pages {
+        let page_vaddr = VirtAddr::new(vaddr + page_idx * 4096);
+        if page_table.mapper.translate_addr(page_vaddr).is_some() {
+            return Err(LoadError::AddressAlreadyMapped);
+        }
+    }
 
     // For each page needed by the segment, allocate a physical frame and map it
     for page_idx in 0..num_pages {
@@ -207,6 +216,7 @@ pub enum LoadError {
     OutOfMemory,
     UnsupportedArchitecture,
     MappingFailed,
+    AddressAlreadyMapped,
 }
 
 impl From<crate::memory_management::AllocError> for LoadError {
