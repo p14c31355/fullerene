@@ -1,16 +1,13 @@
-#[macro_export]
-macro_rules! write_serial_bytes {
-    ($port_addr:expr, $status_addr:expr, $bytes:expr) => {{
-        use x86_64::instructions::port::Port;
-        unsafe {
-            let mut port = Port::<u8>::new($port_addr);
-            let mut status_port = Port::<u8>::new($status_addr);
-            for &byte in $bytes {
-                while (status_port.read() & 0x20) == 0 {}
-                port.write(byte);
-            }
+pub unsafe fn write_serial_bytes(port: u16, status_port_addr: u16, bytes: &[u8]) {
+    use x86_64::instructions::port::Port;
+    unsafe {
+        let mut po = Port::<u8>::new(port);
+        let mut status_po = Port::<u8>::new(status_port_addr);
+        for &byte in bytes {
+            while (status_po.read() & 0x20) == 0 {}
+            po.write(byte);
         }
-    }};
+    }
 }
 
 use crate::common::{EfiSimpleTextOutput, EfiStatus};
@@ -182,7 +179,9 @@ macro_rules! println {
 /// Writes a string to the COM1 serial port.
 /// This is a very early debug function for use beforeUEFI writers are available.
 pub fn debug_print_str_to_com1(s: &str) {
-    write_serial_bytes!(0x3F8, 0x3FD, s.as_bytes());
+    unsafe {
+        write_serial_bytes(0x3F8, 0x3FD, s.as_bytes());
+    }
 }
 
 pub fn serial_log(args: core::fmt::Arguments) {

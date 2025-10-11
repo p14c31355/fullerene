@@ -1,7 +1,66 @@
 use x86_64::instructions::port::Port;
 
-use super::ports::VgaPorts;
+use super::ports::{RegisterConfig, VgaPorts};
 use super::registers::{ATTRIBUTE_CONFIG, CRTC_CONFIG, GRAPHICS_CONFIG, SEQUENCER_CONFIG};
+
+// Helper macros to reduce repetitive serial logging in init functions
+macro_rules! log_step {
+    ($msg:expr) => {
+        crate::write_serial_bytes!(0x3F8, 0x3FD, $msg.as_bytes());
+    };
+}
+
+// Enhanced setup function with better organization
+pub fn setup_vga_mode_13h() {
+    log_step!("VGA setup: Starting mode 13h initialization\n");
+    setup_misc_output();
+    setup_registers_from_configs();
+    setup_attribute_controller();
+    setup_palette();
+    log_step!("VGA setup: Mode 13h initialization complete\n");
+}
+
+// Unified text mode initialization function
+pub fn setup_vga_text_mode() {
+    log_step!("VGA text mode setup: Starting\n");
+    setup_misc_output();
+
+    // Sequencer setup - reduced from separate function call
+    let seq_configs = [
+        (0x00, 0x03), (0x01, 0x00), (0x02, 0x03), (0x03, 0x00), (0x04, 0x02),
+    ];
+    write_vga_registers(VgaPorts::SEQUENCER_INDEX, VgaPorts::SEQUENCER_DATA, &seq_configs);
+
+    // CRTC unlock
+    write_vga_registers(VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA, &[(0x11, 0x0E)]);
+
+    // CRTC main configuration
+    let crtc_configs = [
+        (0x00, 0x5F), (0x01, 0x4F), (0x02, 0x50), (0x03, 0x82), (0x04, 0x55),
+        (0x05, 0x81), (0x06, 0xBF), (0x07, 0x1F), (0x08, 0x00), (0x09, 0x4F),
+        (0x10, 0x9C), (0x11, 0x8E), (0x12, 0x8F), (0x13, 0x28), (0x14, 0x1F),
+        (0x15, 0x96), (0x16, 0xB9), (0x17, 0xA3),
+    ];
+    write_vga_registers(VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA, &crtc_configs);
+
+    // Graphics configuration
+    let graphics_configs = [(0x05, 0x10), (0x06, 0x0E)];
+    write_vga_registers(VgaPorts::GRAPHICS_INDEX, VgaPorts::GRAPHICS_DATA, &graphics_configs);
+
+    // Attribute controller with inlined setup
+    setup_vga_attributes();
+
+    log_step!("VGA text mode setup: Complete\n");
+}
+
+// Legacy functions for backward compatibility
+pub fn init_vga_graphics() {
+    setup_vga_mode_13h();
+}
+
+pub fn init_vga_text_mode() {
+    setup_vga_text_mode();
+}
 
 /// Configures the Miscellaneous Output Register.
 pub fn setup_misc_output() {
@@ -110,90 +169,6 @@ pub fn setup_vga_attributes() {
             attr_port.write(reg_value);
         }
 
-        // Enable video output
-        attr_port.write(0x20);
+        attr_port.write(0x20); // Enable video output
     }
-}
-
-// Initializes VGA text mode.
-/// Sets up VGA for standard 80x25 text mode.
-pub fn init_vga_text_mode() {
-    unsafe {
-        // Debug: Log start of VGA text mode setup
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"VGA text mode setup: Starting misc output\n");
-
-        // Misc output register - enable VGA, use color mode, low page, sync polarities
-        Port::<u8>::new(VgaPorts::MISC_OUTPUT).write(0x63);
-
-        // Sequencer registers for text mode
-        let seq_configs = [
-            (0x00, 0x03), // Synchronous reset - acquire access for CPU to video memory
-            (0x01, 0x00), // Clocking mode - 25 MHz dot clock, 9 dots per character
-            (0x02, 0x03), // Map mask register - enable writes to all planes
-            (0x03, 0x00), // Character map select - select character set A and B
-            (0x04, 0x02), // Memory mode - extended memory, sequential addressing, text mode
-        ];
-        write_vga_registers(
-            VgaPorts::SEQUENCER_INDEX,
-            VgaPorts::SEQUENCER_DATA,
-            &seq_configs,
-        );
-
-        // Unlock CRTC registers - disable write protection on CRTC registers 0-7
-        write_vga_registers(VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA, &[(0x11, 0x0E)]);
-
-        // CRTC registers - standard values for 80x25 text mode
-        let crtc_configs = [
-            (0x00, 0x5F), // Horizontal total (79 + 1)
-            (0x01, 0x4F), // Horizontal display end (79)
-            (0x02, 0x50), // Start horizontal blanking (79 + 1)
-            (0x03, 0x82), // End horizontal blanking (15 chars wide, compatibility mode)
-            (0x04, 0x55), // Start horizontal sync pulse (after 85 chars)
-            (0x05, 0x81), // End horizontal sync pulse (5 chars wide)
-            (0x06, 0xBF), // Vertical total (400 - 1 = 399)
-            (0x07, 0x1F), // Overflow register - all bits low
-            (0x08, 0x00), // Preset row scan
-            (0x09, 0x4F), // Maximum scan line (8 pixel high chars + 1 space)
-            (0x10, 0x9C), // Start vertical sync pulse (after 412 lines)
-            (0x11, 0x8E), // End vertical sync pulse (2 lines wide, write protection disabled)
-            (0x12, 0x8F), // Vertical display end (400 - 1 = 399)
-            (0x13, 0x28), // Offset register - 40 bytes per scan line (80 chars * 2 bytes/char)
-            (0x14, 0x1F), // Underline location - scan line 0, move to D0 on overflow
-            (0x15, 0x96), // Start vertical blanking (after 400 + 12 lines)
-            (0x16, 0xB9), // End vertical blanking (25 lines blank)
-            (0x17, 0xA3), // CRTC mode control - byte mode, enable video, every other line
-        ];
-        write_vga_registers(VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA, &crtc_configs);
-
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"VGA text mode setup: CRTC done\n");
-
-        // Graphics registers for text mode
-        let graphics_configs = [
-            (0x05, 0x10), // Graphics mode register - read mode 0, write mode 0
-            (0x06, 0x0E), // Miscellaneous register - text mode, 0xB8000 base, alpha disabled
-        ];
-        write_vga_registers(
-            VgaPorts::GRAPHICS_INDEX,
-            VgaPorts::GRAPHICS_DATA,
-            &graphics_configs,
-        );
-
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"VGA text mode setup: Graphics done\n");
-
-        // Attribute controller setup
-        setup_vga_attributes();
-
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"VGA text mode setup: Attributes done\n");
-    }
-}
-
-// Initializes VGA graphics mode 13h (320x200, 256 colors).
-/// This function configures the VGA controller registers to switch to the specified
-/// graphics mode. It is a complex process involving multiple sets of registers.
-/// The initialization is broken down into smaller helper functions for clarity.
-pub fn init_vga_graphics() {
-    setup_misc_output();
-    setup_registers_from_configs(); // Consolidated setup for sequencer, crtc, graphics
-    setup_attribute_controller();
-    setup_palette();
 }
