@@ -200,7 +200,7 @@ lazy_static! {
         }
         idt[KEYBOARD_INTERRUPT_INDEX as u8].set_handler_fn(keyboard_handler);
         idt[MOUSE_INTERRUPT_INDEX as u8].set_handler_fn(mouse_handler);
-        idt[0x80].set_handler_fn(syscall_handler);
+        // Remove int 0x80 syscall handler - we now use the syscall instruction with LSTAR MSR
 
         idt
     };
@@ -241,6 +241,9 @@ pub fn init_apic() {
 
     // Initialize I/O APIC for legacy interrupts (keyboard, mouse, etc.)
     init_io_apic(base_addr);
+
+    // Set up fast system call mechanism
+    setup_syscall();
 
     // Enable interrupts
     x86_64::instructions::interrupts::enable();
@@ -442,13 +445,14 @@ fn send_eoi() {
     }
 }
 
-// System call interrupt handler (vector 0x80)
-pub extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) {
+// System call entry point (called via syscall instruction, not interrupt)
+#[unsafe(no_mangle)]
+pub extern "C" fn syscall_entry() {
     use crate::syscall;
 
-    // System call arguments (x86-64 ABI):
+    // System call arguments (x86-64 System V ABI for syscall):
     // RAX contains syscall number
-    // RDI, RSI, RDX, R10, R8, R9 contain arguments
+    // RDI, RSI, RDX, R10, R8, R9 contain arguments 1-6
 
     let syscall_num: u64;
     let arg1: u64;
@@ -456,6 +460,7 @@ pub extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) 
     let arg3: u64;
     let arg4: u64;
     let arg5: u64;
+    let arg6: u64;
 
     unsafe {
         core::arch::asm!(
@@ -465,22 +470,69 @@ pub extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) 
             "mov {}, rdx",
             "mov {}, r10",
             "mov {}, r8",
+            "mov {}, r9",
             out(reg) syscall_num,
             out(reg) arg1,
             out(reg) arg2,
             out(reg) arg3,
             out(reg) arg4,
             out(reg) arg5,
+            out(reg) arg6,
         );
     }
 
     // Dispatch to syscall handler
     let result = unsafe { syscall::handle_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5) };
 
-    // Return result in RAX
+    // Return result in RAX and return via sysret
     unsafe {
-        core::arch::asm!("mov rax, {}", in(reg) result);
+        core::arch::asm!(
+            "mov rax, {}",
+            "sysretq", // Return from syscall
+            in(reg) result,
+            options(noreturn)
+        );
+    }
+}
+
+// Set up the syscall instruction to use the Fast System Call mechanism
+pub fn setup_syscall() {
+    use x86_64::registers::model_specific::{Efer, EferFlags, Msr};
+    use x86_64::registers::model_specific::{LStar, SFMask, Star};
+    use x86_64::registers::rflags::RFlags;
+
+    // Enable syscall/sysret instructions by setting SCE bit in EFER
+    unsafe {
+        let mut efer = Msr::new(0xC0000080); // EFER MSR
+        let current = efer.read();
+        efer.write(current | (1 << 0)); // Set SCE (System Call Extension) bit
     }
 
-    // This is a software interrupt and doesn't need EOI
+    // Set the syscall entry point
+    let entry_addr = syscall_entry as u64;
+    unsafe {
+        let mut lstar = Msr::new(0xC0000082); // LSTAR MSR
+        lstar.write(entry_addr);
+    }
+
+    // For now, we don't have user segments set up properly in GDT,
+    // so we'll use kernel segments for both kernel and user.
+    // In a full implementation, we'd add userland descriptors to GDT.
+    let star_value = (0x08u64 << 48) | (0x10u64 << 32) | (0x08u64 << 16) | 0x10u64;
+    unsafe {
+        let mut star = Msr::new(0xC0000081); // STAR MSR
+        star.write(star_value);
+    }
+
+    // Mask RFLAGS during syscall (clear interrupt flag, etc.)
+    // This masks bits that could be problematic during syscall
+    unsafe {
+        let mut sfmask = Msr::new(0xC0000084); // SFMASK MSR
+        sfmask.write(RFlags::INTERRUPT_FLAG.bits() | RFlags::TRAP_FLAG.bits()); // Clear IF and TF
+    }
+
+    petroleum::serial::serial_log(format_args!(
+        "Fast syscall mechanism initialized with LSTAR set to {:#x}\n",
+        entry_addr
+    ));
 }

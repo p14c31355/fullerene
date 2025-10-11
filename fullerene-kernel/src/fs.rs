@@ -36,7 +36,10 @@ static OPEN_FILES: Mutex<BTreeMap<FileDescriptor, String>> = Mutex::new(BTreeMap
 /// Initialize filesystem
 pub fn init() {
     // Create some basic files if needed
-    // For now, start with empty filesystem
+    // For now, start with empty filesystem, which is good for test isolation.
+    FILESYSTEM.lock().clear();
+    *NEXT_FD.lock() = 3;
+    OPEN_FILES.lock().clear();
 }
 
 /// Create a new file
@@ -64,7 +67,7 @@ pub fn create_file(name: &str, data: &[u8]) -> Result<(), FsError> {
 /// Open a file and return file descriptor
 pub fn open_file(name: &str) -> Result<FileDescriptor, FsError> {
     // Acquire locks in consistent order: FILESYSTEM then OPEN_FILES then NEXT_FD
-    let mut fs = FILESYSTEM.lock();
+    let fs = FILESYSTEM.lock();
     if !fs.contains_key(name) {
         return Err(FsError::FileNotFound);
     }

@@ -134,13 +134,15 @@ fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> 
 /// Handle keyboard interrupt and process scancodes
 pub fn handle_keyboard_scancode(scancode: u8) {
     // Check if this is an extended scancode prefix
+    let mut extended_flag = EXTENDED_SCANCODE.lock();
     if scancode == 0xE0 {
-        *EXTENDED_SCANCODE.lock() = true;
+        *extended_flag = true;
         return;
     }
 
-    let is_extended = *EXTENDED_SCANCODE.lock();
-    *EXTENDED_SCANCODE.lock() = false; // Reset for next
+    let is_extended = *extended_flag;
+    *extended_flag = false; // Reset for next
+    drop(extended_flag); // Release lock
 
     let mut modifiers = MODIFIERS.lock();
 

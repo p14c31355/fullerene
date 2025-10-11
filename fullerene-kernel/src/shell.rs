@@ -119,7 +119,7 @@ fn read_line(buffer: &mut [u8]) -> Result<usize, &'static str> {
                     // Backspace
                     if pos > 0 {
                         pos -= 1;
-                        // Echo backspace
+                        // Echo backspace - keep using syscall for kernel output
                         unsafe {
                             crate::syscall::handle_syscall(
                                 4,

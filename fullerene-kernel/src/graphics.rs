@@ -3,21 +3,24 @@ use petroleum::graphics::init_vga_graphics;
 use alloc::boxed::Box; // Import Box
 use core::fmt::{self, Write};
 use core::marker::{Send, Sync};
-use petroleum::common::VgaFramebufferConfig;
-use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig}; // Import missing types
-use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
-use spin::{Mutex, Once};
 use embedded_graphics::{
     geometry::{Point, Size},
-    mono_font::{ascii::FONT_6X10, MonoTextStyle},
+    mono_font::{MonoTextStyle, ascii::FONT_6X10},
     pixelcolor::Rgb888,
     prelude::*,
     text::Text,
 };
+use petroleum::common::VgaFramebufferConfig;
+use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig}; // Import missing types
+use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
+use spin::{Mutex, Once};
 
 // Optimized text rendering using embedded-graphics
 // Batcher processing for efficiency and reduced code complexity
-fn write_text<W: FramebufferLike + DrawTarget<Color = Rgb888>>(writer: &mut W, s: &str) -> core::fmt::Result {
+fn write_text<W: FramebufferLike + DrawTarget<Color = Rgb888>>(
+    writer: &mut W,
+    s: &str,
+) -> core::fmt::Result {
     let fg_color = Rgb888::new(
         ((writer.get_fg_color() >> 16) & 0xFF) as u8,
         ((writer.get_fg_color() >> 8) & 0xFF) as u8,
@@ -230,21 +233,33 @@ impl<T: PixelType> DrawTarget for FramebufferWriter<T> {
                     let pixel_color = match self.info.pixel_format {
                         Some(EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor) => {
                             // RGB format: R in high byte, G, B, X
-                            ((color.r() as u32) << 16) | ((color.g() as u32) << 8) | (color.b() as u32)
+                            ((color.r() as u32) << 16)
+                                | ((color.g() as u32) << 8)
+                                | (color.b() as u32)
                         }
                         Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor) => {
                             // BGR format: B in high byte, G, R, X
-                            ((color.b() as u32) << 16) | ((color.g() as u32) << 8) | (color.r() as u32)
+                            ((color.b() as u32) << 16)
+                                | ((color.g() as u32) << 8)
+                                | (color.r() as u32)
                         }
                         Some(_) => {
-                            // Unsupported format, use RGB as fallback
-                            ((color.r() as u32) << 16) | ((color.g() as u32) << 8) | (color.b() as u32)
+                            // Unsupported format - log error and use RGB as fallback
+                            petroleum::serial::serial_log(format_args!(
+                                "Warning: Unsupported pixel format encountered, using RGB fallback\n"
+                            ));
+                            ((color.r() as u32) << 16)
+                                | ((color.g() as u32) << 8)
+                                | (color.b() as u32)
                         }
                         None => {
                             // VGA mode, use a simple color mapping
                             // For VGA mode, we're using u8 pixels, so convert to index or intensity
                             // Simple conversion: use grayscale intensity
-                            let intensity = (color.r() as u32 * 77 + color.g() as u32 * 150 + color.b() as u32 * 29) / 256;
+                            let intensity = (color.r() as u32 * 77
+                                + color.g() as u32 * 150
+                                + color.b() as u32 * 29)
+                                / 256;
                             intensity.min(255)
                         }
                     };

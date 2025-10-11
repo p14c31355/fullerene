@@ -13,8 +13,8 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
-use x86_64::structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB};
 use x86_64::structures::paging::page_table::PageTableEntry;
+use x86_64::structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB};
 use x86_64::structures::paging::{Mapper, Page, PageTableFlags};
 use x86_64::{PhysAddr, VirtAddr};
 

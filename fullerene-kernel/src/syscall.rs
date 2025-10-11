@@ -6,7 +6,10 @@
 #![no_std]
 
 use crate::process;
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::ffi::c_int;
+use x86_64::VirtAddr;
 
 /// Helper function for serial port writes (from main.rs)
 unsafe fn write_serial_bytes(port: u16, status_port: u16, bytes: &[u8]) {
@@ -151,7 +154,7 @@ fn syscall_write(fd: c_int, buffer: *const u8, count: usize) -> SyscallResult {
     }
 
     // Validate that the entire buffer range is in user-space and no overflow
-    use crate::memory_management::{is_user_address};
+    use crate::memory_management::is_user_address;
     use x86_64::VirtAddr;
 
     let start_addr = VirtAddr::new(buffer as u64);
@@ -183,27 +186,62 @@ fn syscall_write(fd: c_int, buffer: *const u8, count: usize) -> SyscallResult {
     }
 }
 
-/// Open system call
-fn syscall_open(filename: *const u8, _flags: c_int, _mode: u32) -> SyscallResult {
-    if filename.is_null() {
+/// Helper function to safely copy a null-terminated string from user space
+/// Returns the string if successful, or an error if validation fails
+fn copy_user_string(ptr: *const u8, max_len: usize) -> Result<String, SyscallError> {
+    if ptr.is_null() {
         return Err(SyscallError::InvalidArgument);
     }
 
-    // Convert filename to string
-    let mut len = 0;
-    unsafe {
-        while *filename.add(len) != 0 {
-            len += 1;
-            if len > 256 {
-                // Reasonable limit
-                return Err(SyscallError::InvalidArgument);
-            }
-        }
-        let filename_slice = core::slice::from_raw_parts(filename, len);
-        let filename_str =
-            core::str::from_utf8(filename_slice).map_err(|_| SyscallError::InvalidArgument)?;
+    // Validate that the initial pointer range is in user space
+    use crate::memory_management::is_user_address;
+    let start_addr = VirtAddr::new(ptr as u64);
+    if !is_user_address(start_addr) {
+        return Err(SyscallError::InvalidArgument);
     }
 
+    // Note: In a real implementation, we would need to handle page faults
+    // when accessing user memory from kernel mode. For now, assume the memory
+    // is mapped and accessible.
+
+    let mut len = 0;
+    let mut buffer = Vec::new();
+
+    // Copy bytes one by one, validating each address
+    while len < max_len {
+        // Check if current pointer is in user space
+        if let Some(next_addr) = (ptr as u64).checked_add(len as u64) {
+            let addr = VirtAddr::new(next_addr);
+            if !is_user_address(addr) {
+                return Err(SyscallError::InvalidArgument);
+            }
+        } else {
+            return Err(SyscallError::InvalidArgument);
+        }
+
+        // Read the byte safely
+        let byte = unsafe { ptr.add(len).read() };
+        if byte == 0 {
+            break; // Null terminator found
+        }
+        buffer.push(byte);
+        len += 1;
+
+        // Prevent infinite loops on malformed strings
+        if len >= max_len {
+            return Err(SyscallError::InvalidArgument);
+        }
+    }
+
+    // Convert bytes to string
+    String::from_utf8(buffer).map_err(|_| SyscallError::InvalidArgument)
+}
+
+/// Open system call
+fn syscall_open(filename: *const u8, _flags: c_int, _mode: u32) -> SyscallResult {
+    // Safely copy the filename from user space
+    let filename_str = copy_user_string(filename, 256)?;
+    // user.rs
     // For now, always fail (no filesystem yet)
     Err(SyscallError::FileNotFound)
 }

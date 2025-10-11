@@ -110,54 +110,77 @@ pub fn load_program(
     }
     */
 
-    // TODO: Load segments after page table integration
+    // Note: Program segment loading is currently simplified due to page table integration
+    // not being fully implemented. In a complete implementation, we'd load each PT_LOAD
+    // segment to the appropriate virtual addresses and set up the process page table.
 
     Ok(pid)
 }
 
 /// Load a program segment into memory
-fn load_segment(ph: &ProgramHeader, image_data: &[u8], page_table: &mut crate::memory_management::ProcessPageTable) -> Result<(), LoadError> {
+fn load_segment(
+    ph: &ProgramHeader,
+    image_data: &[u8],
+    page_table: &mut crate::memory_management::ProcessPageTable,
+) -> Result<(), LoadError> {
     let file_offset = ph.offset as usize;
     let file_size = ph.file_size as usize;
     let mem_size = ph.mem_size as usize;
-    let vaddr = ph.vaddr as usize;
+    let vaddr = ph.vaddr as u64;
 
     // Bounds check
     if file_offset + file_size > image_data.len() {
         return Err(LoadError::InvalidFormat);
     }
 
-    // Validate that the virtual address range is in user space and no overflow
-    use crate::memory_management::{is_user_address, allocate_user_memory};
-    use x86_64::VirtAddr;
-
-    let vaddr_u64 = vaddr as u64;
-    let mem_size_u64 = mem_size as u64;
-
-    // Check for overflow in address calculation
-    if vaddr_u64.checked_add(mem_size_u64).is_none() {
+    // Ensure mem_size >= file_size and check for overflow
+    if mem_size < file_size || vaddr.checked_add(mem_size as u64).is_none() {
         return Err(LoadError::InvalidFormat);
     }
 
-    // Ensure mem_size >= file_size
-    if mem_size < file_size {
-        return Err(LoadError::InvalidFormat);
-    }
+    // Validate that the virtual address range is in user space
+    use crate::memory_management::{AllocError, is_user_address, map_user_page};
+    use x86_64::{PhysAddr, VirtAddr};
 
-    let start_addr = VirtAddr::new(vaddr_u64);
+    let start_addr = VirtAddr::new(vaddr);
+    let end_addr = VirtAddr::new(vaddr + mem_size as u64 - 1);
 
-    if !is_user_address(start_addr) {
+    if !is_user_address(start_addr) || !is_user_address(end_addr) {
         return Err(LoadError::UnsupportedArchitecture);
     }
 
-    // Allocate user memory for the segment at the specified virtual address
-    // Note: For now, we ignore the specified vaddr and let allocate_user_memory choose
-    // In a full implementation, we'd allocate at the fixed vaddr
-    let allocated_start = allocate_user_memory(page_table, mem_size)?;
+    let num_pages = ((mem_size + 4095) / 4096) as u64; // Round up to page size
 
-    // Copy file data (now that memory is allocated)
+    // For each page needed by the segment, allocate a physical frame and map it
+    for page_idx in 0..num_pages {
+        let page_vaddr = VirtAddr::new(vaddr + page_idx * 4096);
+
+        // Allocate a physical frame for this page
+        let frame = crate::heap::FRAME_ALLOCATOR
+            .get()
+            .unwrap()
+            .lock()
+            .allocate_frame()
+            .ok_or(LoadError::OutOfMemory)?;
+
+        // Map the virtual page to the physical frame
+        use x86_64::structures::paging::PageTableFlags;
+        let flags =
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+
+        map_user_page(page_table, page_vaddr, frame.start_address(), flags)?;
+    }
+
+    // Now copy the file data to the allocated virtual memory
+    // We need to switch to this process's page table to access the memory
+    let original_cr3 = x86_64::registers::control::Cr3::read().0;
+    unsafe {
+        crate::memory_management::switch_to_page_table(page_table);
+    }
+
+    // Copy file data
     let src = &image_data[file_offset..file_offset + file_size];
-    let dest = allocated_start.as_u64() as usize as *mut u8;
+    let dest = vaddr as usize as *mut u8;
 
     unsafe {
         ptr::copy_nonoverlapping(src.as_ptr(), dest, file_size);
@@ -168,6 +191,12 @@ fn load_segment(ph: &ProgramHeader, image_data: &[u8], page_table: &mut crate::m
         unsafe {
             ptr::write_bytes(dest.add(file_size), 0, mem_size - file_size);
         }
+    }
+
+    // Switch back to the original page table
+    unsafe {
+        use x86_64::registers::control::Cr3;
+        Cr3::write(original_cr3, Cr3::read().1);
     }
 
     Ok(())
@@ -188,6 +217,16 @@ impl From<crate::memory_management::AllocError> for LoadError {
         match error {
             crate::memory_management::AllocError::OutOfMemory => LoadError::OutOfMemory,
             crate::memory_management::AllocError::MappingFailed => LoadError::MappingFailed,
+        }
+    }
+}
+
+impl From<crate::memory_management::MapError> for LoadError {
+    fn from(error: crate::memory_management::MapError) -> Self {
+        match error {
+            crate::memory_management::MapError::MappingFailed => LoadError::MappingFailed,
+            crate::memory_management::MapError::UnmappingFailed => LoadError::MappingFailed,
+            crate::memory_management::MapError::FrameAllocationFailed => LoadError::OutOfMemory,
         }
     }
 }
