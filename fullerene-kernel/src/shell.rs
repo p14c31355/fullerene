@@ -3,14 +3,9 @@
 //! This module provides a simple command-line interface that allows users
 //! to interact with the operating system through text commands.
 
-#![no_std]
-
 use crate::keyboard;
 use crate::syscall::{self, kernel_syscall};
-use alloc::boxed::Box;
-use alloc::string::String;
 use alloc::vec::Vec;
-use core::fmt::Write;
 use petroleum::print;
 
 /// Shell prompt
