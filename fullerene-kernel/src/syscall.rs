@@ -91,6 +91,7 @@ pub unsafe extern "C" fn handle_syscall(
     arg3: u64,
     _arg4: u64,
     _arg5: u64,
+    _arg6: u64,
 ) -> u64 {
     let result = match syscall_num {
         1 => syscall_exit(arg1 as i32),

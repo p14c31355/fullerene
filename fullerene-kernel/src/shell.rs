@@ -121,14 +121,15 @@ fn read_line(buffer: &mut [u8]) -> Result<usize, &'static str> {
                         pos -= 1;
                         // Echo backspace - keep using syscall for kernel output
                         unsafe {
-                            crate::syscall::handle_syscall(
-                                4,
-                                1,
-                                &[0x08, b' ', 0x08] as *const _ as u64,
-                                3,
-                                0,
-                                0,
-                            );
+                        crate::syscall::handle_syscall(
+                            4,
+                            1,
+                            &[0x08, b' ', 0x08] as *const _ as u64,
+                            3,
+                            0,
+                            0,
+                            0,
+                        );
                         }
                     }
                 }
@@ -144,7 +145,7 @@ fn read_line(buffer: &mut [u8]) -> Result<usize, &'static str> {
 
                     // Echo character
                     unsafe {
-                        crate::syscall::handle_syscall(4, 1, &ch as *const _ as u64, 1, 0, 0);
+                        crate::syscall::handle_syscall(4, 1, &ch as *const _ as u64, 1, 0, 0, 0);
                     }
                 }
                 _ => {} // Ignore other characters
@@ -153,7 +154,7 @@ fn read_line(buffer: &mut [u8]) -> Result<usize, &'static str> {
 
         // Yield to allow other processes
         unsafe {
-            crate::syscall::handle_syscall(22, 0, 0, 0, 0, 0); // SYS_YIELD
+            crate::syscall::handle_syscall(22, 0, 0, 0, 0, 0, 0); // SYS_YIELD
         }
     }
 

@@ -1,5 +1,3 @@
-// fullerene-kernel/src/interrupts.rs
-
 use crate::gdt;
 use core::fmt::Write;
 use lazy_static::lazy_static;
@@ -175,34 +173,6 @@ fn enable_apic(apic: &mut Apic) {
 macro_rules! setup_idt_handler {
     ($idt:expr, $field:ident, $handler:ident) => {
         $idt.$field.set_handler_fn($handler);
-    };
-}
-
-lazy_static! {
-    // The Interrupt Descriptor Table (IDT)
-    static ref IDT: InterruptDescriptorTable = {
-        let mut idt = InterruptDescriptorTable::new();
-
-        // Set up handlers for CPU exceptions
-        setup_idt_handler!(idt, breakpoint, breakpoint_handler);
-        setup_idt_handler!(idt, page_fault, page_fault_handler);
-        unsafe {
-            idt.double_fault
-                .set_handler_fn(double_fault_handler)
-                .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
-        }
-
-        // Set up hardware interrupt handlers
-        unsafe {
-            idt[TIMER_INTERRUPT_INDEX as u8]
-                .set_handler_fn(timer_handler)
-                .set_stack_index(gdt::TIMER_IST_INDEX);
-        }
-        idt[KEYBOARD_INTERRUPT_INDEX as u8].set_handler_fn(keyboard_handler);
-        idt[MOUSE_INTERRUPT_INDEX as u8].set_handler_fn(mouse_handler);
-        // Remove int 0x80 syscall handler - we now use the syscall instruction with LSTAR MSR
-
-        idt
     };
 }
 
@@ -543,4 +513,32 @@ pub fn setup_syscall() {
         "Fast syscall mechanism initialized with LSTAR set to {:#x}\n",
         entry_addr
     ));
+}
+
+lazy_static! {
+    // The Interrupt Descriptor Table (IDT)
+    static ref IDT: InterruptDescriptorTable = {
+        let mut idt = InterruptDescriptorTable::new();
+
+        // Set up handlers for CPU exceptions
+        setup_idt_handler!(idt, breakpoint, breakpoint_handler);
+        setup_idt_handler!(idt, page_fault, page_fault_handler);
+        unsafe {
+            idt.double_fault
+                .set_handler_fn(double_fault_handler)
+                .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
+        }
+
+        // Set up hardware interrupt handlers
+        unsafe {
+            idt[TIMER_INTERRUPT_INDEX as u8]
+                .set_handler_fn(timer_handler)
+                .set_stack_index(gdt::TIMER_IST_INDEX);
+        }
+        idt[KEYBOARD_INTERRUPT_INDEX as u8].set_handler_fn(keyboard_handler);
+        idt[MOUSE_INTERRUPT_INDEX as u8].set_handler_fn(mouse_handler);
+        // Remove int 0x80 syscall handler - we now use the syscall instruction with LSTAR MSR
+
+        idt
+    };
 }

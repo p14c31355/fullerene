@@ -34,39 +34,71 @@ pub enum ProcessState {
 #[derive(Debug, Clone, Copy)]
 pub struct ProcessContext {
     /// General purpose registers
-    pub rax: u64,
-    pub rbx: u64,
-    pub rcx: u64,
-    pub rdx: u64,
-    pub rsi: u64,
-    pub rdi: u64,
-    pub rbp: u64,
-    pub rsp: u64,
-    pub r8: u64,
-    pub r9: u64,
-    pub r10: u64,
-    pub r11: u64,
-    pub r12: u64,
-    pub r13: u64,
-    pub r14: u64,
-    pub r15: u64,
+    pub(crate) rax: u64,
+    pub(crate) rbx: u64,
+    pub(crate) rcx: u64,
+    pub(crate) rdx: u64,
+    pub(crate) rsi: u64,
+    pub(crate) rdi: u64,
+    pub(crate) rbp: u64,
+    pub(crate) rsp: u64,
+    pub(crate) r8: u64,
+    pub(crate) r9: u64,
+    pub(crate) r10: u64,
+    pub(crate) r11: u64,
+    pub(crate) r12: u64,
+    pub(crate) r13: u64,
+    pub(crate) r14: u64,
+    pub(crate) r15: u64,
 
     /// CPU flags
-    pub rflags: u64,
+    pub(crate) rflags: u64,
 
     /// Instruction pointer
-    pub rip: u64,
+    pub(crate) rip: u64,
 
     /// Segment registers
-    pub cs: u64,
-    pub ss: u64,
-    pub ds: u64,
-    pub es: u64,
-    pub fs: u64,
-    pub gs: u64,
+    pub(crate) cs: u64,
+    pub(crate) ss: u64,
+    pub(crate) ds: u64,
+    pub(crate) es: u64,
+    pub(crate) fs: u64,
+    pub(crate) gs: u64,
 
     /// Task State Segment
-    pub tss: u64,
+    pub(crate) tss: u64,
+}
+
+impl Default for ProcessContext {
+    fn default() -> Self {
+        Self {
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            rbp: 0,
+            rsp: 0,
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            rflags: 0x0202, // IF flag set
+            rip: 0,
+            cs: 0x08, // Kernel code segment
+            ss: 0x10, // Kernel data segment
+            ds: 0,
+            es: 0,
+            fs: 0,
+            gs: 0,
+            tss: 0,
+        }
+    }
 }
 
 /// Process structure
