@@ -2,8 +2,6 @@
 //!
 //! Currently implements a simple RAM-based filesystem for basic file operations.
 
-#![no_std]
-
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;

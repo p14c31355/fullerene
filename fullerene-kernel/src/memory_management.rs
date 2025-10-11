@@ -6,14 +6,9 @@
 //! - Page fault handling
 //! - Memory allocation and deallocation
 
-#![no_std]
-
 use crate::heap::FRAME_ALLOCATOR;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
 use x86_64::structures::paging::page_table::PageTableEntry;
 use x86_64::structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB};
 use x86_64::structures::paging::{Mapper, Page, PageTableFlags};

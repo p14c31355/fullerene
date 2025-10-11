@@ -4,7 +4,6 @@
 #![no_main]
 
 // Kernel modules
-pub(crate) mod font;
 mod gdt; // Add GDT module
 mod graphics;
 mod heap;
@@ -34,7 +33,6 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     petroleum::handle_panic(info)
 }
 
-use core::ffi::c_void;
 use petroleum::common::{
     EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
     FullereneFramebufferConfig, VgaFramebufferConfig,
