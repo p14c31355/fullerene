@@ -135,7 +135,7 @@ fn read_line(buffer: &mut [u8]) -> Result<usize, &'static str> {
                     pos += 1;
 
                     // Echo character
-                    kernel_syscall(4, 1, (&ch as *const _ as u64), 1);
+                    print!("{}", ch as char);
                 }
                 _ => {} // Ignore other characters
             }
