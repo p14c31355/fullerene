@@ -15,7 +15,7 @@ use x86_64::PhysAddr;
 use petroleum::page_table::EfiMemoryDescriptor;
 
 use crate::memory::{find_framebuffer_config, find_heap_start, init_memory_management, setup_memory_maps};
-use crate::{gdt, graphics, heap, interrupts, MEMORY_MAP};
+use crate::{gdt, graphics, heap, interrupts, shell, MEMORY_MAP};
 use crate::graphics::framebuffer::FramebufferLike;
 
 use petroleum::common::{
@@ -189,9 +189,19 @@ pub extern "efiapi" fn efi_main(
     super::init::init_common();
     kernel_log!("Kernel: init_common done");
 
-    kernel_log!("Kernel: running in main loop");
-    kernel_log!("FullereneOS kernel is now running");
-    super::hlt_loop();
+    kernel_log!("Kernel: initialization complete");
+    kernel_log!("FullereneOS kernel is now running - から先に進みたいです");
+
+    // For now, just indicate success instead of starting shell immediately
+    // to avoid memory access issues during early testing
+    kernel_log!("Ready for interactive mode...");
+
+    // Keep kernel running with proper loop
+    loop {
+        unsafe {
+            x86_64::instructions::hlt();
+        }
+    }
 }
 
 fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {

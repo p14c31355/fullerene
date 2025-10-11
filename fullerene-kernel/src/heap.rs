@@ -212,9 +212,37 @@ static MEMORY_MAP: spin::Once<&'static [petroleum::page_table::EfiMemoryDescript
     spin::Once::new();
 
 pub fn init(heap_start: VirtAddr, heap_size: usize) {
+    // Map heap pages to virtual addresses in the current page table
+    let mut mapper = MAPPER.get().unwrap().lock();
+    let mut frame_allocator = FRAME_ALLOCATOR.get().unwrap().lock();
+    let physical_memory_offset = *PHYSICAL_MEMORY_OFFSET.get().unwrap();
+
+    let start_page = Page::<Size4KiB>::containing_address(heap_start);
+    let end_address = heap_start + heap_size as u64;
+    let end_page = Page::<Size4KiB>::containing_address(end_address - 1);
+
+    let mut current_page = start_page;
+    while current_page <= end_page {
+        let page_start_virt = current_page.start_address();
+        let page_start_phys = PhysAddr::new(page_start_virt.as_u64() - physical_memory_offset.as_u64());
+        let frame = PhysFrame::<Size4KiB>::containing_address(page_start_phys);
+
+        unsafe {
+            mapper
+                .map_to(current_page, frame, Flags::PRESENT | Flags::WRITABLE, &mut *frame_allocator)
+                .unwrap()
+                .flush();
+        }
+
+        current_page = current_page + 1;
+    }
+
+    drop(frame_allocator);
+    drop(mapper);
+
     unsafe {
-        let heap_start = heap_start.as_mut_ptr::<u8>();
-        ALLOCATOR.lock().init(heap_start, heap_size);
+        let heap_start_ptr = heap_start.as_mut_ptr::<u8>();
+        ALLOCATOR.lock().init(heap_start_ptr, heap_size);
     }
 }
 
@@ -345,17 +373,10 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
 
 // Allocate heap from memory map (find virtual address from physical)
 pub fn allocate_heap_from_map(phys_start: PhysAddr, _size: usize) -> VirtAddr {
-    let memory_map = *MEMORY_MAP.get().unwrap();
-    for desc in memory_map {
-        let start = desc.physical_start;
-        let end = start + desc.number_of_pages * 4096;
-        if phys_start.as_u64() >= start && phys_start.as_u64() < end {
-            let offset_in_desc = phys_start.as_u64() - start;
-            return VirtAddr::new(desc.virtual_start + offset_in_desc);
-        }
+    // Use higher-half virtual address for heap
+    if let Some(offset) = PHYSICAL_MEMORY_OFFSET.get() {
+        VirtAddr::new(offset.as_u64() + phys_start.as_u64())
+    } else {
+        panic!("Physical memory offset not initialized");
     }
-    panic!(
-        "Could not find virtual address for physical address {:#x}",
-        phys_start
-    );
 }
