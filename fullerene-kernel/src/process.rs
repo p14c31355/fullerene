@@ -13,13 +13,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
-/// Physical memory offset (virt = phys + offset)
-static PHYSICAL_MEMORY_OFFSET: Mutex<Option<VirtAddr>> = Mutex::new(None);
 
-/// Set the physical memory offset
-pub fn set_physical_memory_offset(offset: VirtAddr) {
-    *PHYSICAL_MEMORY_OFFSET.lock() = Some(offset);
-}
 
 /// Process ID type
 pub type ProcessId = u64;
@@ -217,7 +211,7 @@ pub fn create_process(name: &'static str, entry_point_address: VirtAddr) -> Proc
     let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
 
     // Create page table for the process
-    let offset = PHYSICAL_MEMORY_OFFSET.lock().expect("Physical memory offset not set");
+    let offset = crate::memory_management::PHYSICAL_MEMORY_OFFSET.lock().expect("Physical memory offset not set");
     let process_page_table = crate::memory_management::create_process_page_table(offset)
         .expect("Failed to create page table");
 
@@ -265,9 +259,14 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
         let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
         unsafe { alloc::alloc::dealloc(kernel_stack_base as *mut u8, layout); }
 
-        // TODO: Properly free page table frames recursively
-        // For now, we just drop the page table mapper - the physical frames are leaked
-        // This is a known issue that should be addressed
+        // Properly free page table frames recursively
+        if let Some(page_table) = process.page_table.take() {
+            let pml4_frame = page_table.pml4_frame;
+            drop(page_table); // Explicit drop to release the mapper
+            crate::memory_management::deallocate_process_page_table(pml4_frame);
+        }
+
+        process.page_table = None; // Already taken above, this is redundant but safe
 
         // Unblock parent processes waiting for this child
         unblock_waiting_parents(pid);

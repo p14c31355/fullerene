@@ -212,7 +212,7 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Kernel: page table reinit done");
 
     // Set physical memory offset for process management
-    crate::process::set_physical_memory_offset(physical_memory_offset);
+    crate::memory_management::set_physical_memory_offset(physical_memory_offset);
 
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(descriptors);
@@ -356,14 +356,28 @@ pub fn hlt_loop() -> ! {
 
 // Test process main function
 fn test_process_main() {
-    // Simple test process that demonstrates system calls
+    // Simple test process that demonstrates system calls using proper syscall instruction
+    unsafe fn syscall(num: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64, arg5: u64, arg6: u64) -> u64 {
+        let result: u64;
+        core::arch::asm!(
+            "syscall",
+            in("rax") num,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("rdx") arg3,
+            in("r10") arg4,
+            in("r8") arg5,
+            in("r9") arg6,
+            lateout("rax") result,
+            out("rcx") _, out("r11") _,
+        );
+        result
+    }
+
     // Write to stdout via syscall
+    let message = b"Hello from test user process!\n";
     unsafe {
-        // Simulate write syscall: write(fd=1, "Hello from user process!\n", len)
-        let message = b"Hello from test user process!\n";
-        // The syscall would normally be called via int 0x80
-        // For now, we'll call our syscall handler directly
-        crate::syscall::handle_syscall(
+        syscall(
             crate::syscall::SyscallNumber::Write as u64,
             1, // fd (stdout)
             message.as_ptr() as u64,
@@ -376,17 +390,9 @@ fn test_process_main() {
 
     // Get PID via syscall and print the actual PID
     unsafe {
-        let pid = crate::syscall::handle_syscall(
-            crate::syscall::SyscallNumber::GetPid as u64,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        );
+        let pid = syscall(crate::syscall::SyscallNumber::GetPid as u64, 0, 0, 0, 0, 0, 0);
         let pid_msg = b"My PID is: ";
-        crate::syscall::handle_syscall(
+        syscall(
             crate::syscall::SyscallNumber::Write as u64,
             1,
             pid_msg.as_ptr() as u64,
@@ -399,7 +405,7 @@ fn test_process_main() {
         // Convert PID to string and print it
         let pid_str = alloc::format!("{}\n", pid);
         let pid_bytes = pid_str.as_bytes();
-        crate::syscall::handle_syscall(
+        syscall(
             crate::syscall::SyscallNumber::Write as u64,
             1,
             pid_bytes.as_ptr() as u64,
@@ -410,14 +416,14 @@ fn test_process_main() {
         );
     }
 
-    // Sleep a bit
+    // Yield a bit
     unsafe {
-        crate::syscall::handle_syscall(crate::syscall::SyscallNumber::Yield as u64, 0, 0, 0, 0, 0, 0); // SYS_YIELD
-        crate::syscall::handle_syscall(crate::syscall::SyscallNumber::Yield as u64, 0, 0, 0, 0, 0, 0); // SYS_YIELD
+        syscall(crate::syscall::SyscallNumber::Yield as u64, 0, 0, 0, 0, 0, 0); // SYS_YIELD
+        syscall(crate::syscall::SyscallNumber::Yield as u64, 0, 0, 0, 0, 0, 0); // SYS_YIELD
     }
 
     // Exit
     unsafe {
-        crate::syscall::handle_syscall(crate::syscall::SyscallNumber::Exit as u64, 0, 0, 0, 0, 0, 0); // SYS_EXIT
+        syscall(crate::syscall::SyscallNumber::Exit as u64, 0, 0, 0, 0, 0, 0); // SYS_EXIT
     }
 }

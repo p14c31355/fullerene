@@ -9,10 +9,19 @@
 use crate::heap::FRAME_ALLOCATOR;
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
+use spin::Mutex;
 use x86_64::structures::paging::page_table::PageTableEntry;
 use x86_64::structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB};
 use x86_64::structures::paging::{Mapper, Page, PageTableFlags};
 use x86_64::{PhysAddr, VirtAddr};
+
+/// Physical memory offset (virt = phys + offset)
+pub static PHYSICAL_MEMORY_OFFSET: Mutex<Option<VirtAddr>> = Mutex::new(None);
+
+/// Set the physical memory offset
+pub fn set_physical_memory_offset(offset: VirtAddr) {
+    *PHYSICAL_MEMORY_OFFSET.lock() = Some(offset);
+}
 
 /// Page table for each process
 pub struct ProcessPageTable {
@@ -265,6 +274,43 @@ impl From<MapError> for FreeError {
             MapError::FrameAllocationFailed => FreeError::UnmappingFailed,
         }
     }
+}
+
+/// Deallocate a process page table recursively
+pub fn deallocate_process_page_table(pml4_frame: PhysFrame) {
+    deallocate_page_table_recursively(pml4_frame, 4);
+}
+
+fn deallocate_page_table_recursively(frame: PhysFrame, level: usize) {
+    let physical_memory_offset = (*PHYSICAL_MEMORY_OFFSET.lock()).unwrap_or(VirtAddr::new(0));
+    if physical_memory_offset.as_u64() == 0 {
+        // Offset not set, can't deallocate safely
+        return;
+    }
+
+    let table_virt = physical_memory_offset + frame.start_address().as_u64();
+    let table: &PageTable = unsafe { &*(table_virt.as_ptr()) };
+
+    // Recursively deallocate lower level page tables
+    if level > 0 {
+        for entry in table.iter() {
+            if entry.flags().contains(PageTableFlags::PRESENT) &&
+               !entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                let next_frame = PhysFrame::containing_address(entry.addr());
+                deallocate_page_table_recursively(next_frame, level - 1);
+            }
+        }
+    }
+
+    // Note: The current BootInfoFrameAllocator doesn't support deallocation,
+    // so the physical frames are still leaked. This is a limitation that
+    // should be addressed by implementing proper frame deallocation.
+    // For now, we just log that we would deallocate
+    // TODO: Implement frame deallocation when a deallocatable frame allocator is available
+    petroleum::serial::serial_log(format_args!(
+        "Would deallocate frame at {:#x}\n",
+        frame.start_address().as_u64()
+    ));
 }
 
 /// Initialize virtual memory system

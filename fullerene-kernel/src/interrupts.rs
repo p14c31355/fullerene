@@ -108,14 +108,7 @@ macro_rules! init_pic {
     }};
 }
 
-// Generic APIC structure for register access using const generics
-struct Apic<const OFFSET: u32>;
 
-impl<const OFFSET: u32> Apic<OFFSET> {
-    fn new(base_addr: u64) -> ApicRaw {
-        ApicRaw { base_addr }
-    }
-}
 
 // Helper structure for dynamic register access
 struct ApicRaw {
@@ -418,40 +411,7 @@ pub extern "x86-interrupt" fn timer_handler(stack_frame: InterruptStackFrame) {
     send_eoi();
 }
 
-/// Save the current process context when switching away due to interrupt
-unsafe fn save_current_context(pid: process::ProcessId, stack_frame: &InterruptStackFrame) {
-    let mut process_list = process::PROCESS_LIST.lock();
 
-    if let Some(process) = process_list.iter_mut().find(|p| p.id == pid) {
-        // Skip saving if process is terminating
-        if process.state == process::ProcessState::Terminated {
-            return;
-        }
-
-        let ctx = &mut process.context;
-
-        // Save the interrupt stack frame values
-        ctx.rip = stack_frame.instruction_pointer.as_u64();
-        ctx.cs = stack_frame.code_segment.0 as u64;
-        ctx.rflags = stack_frame.cpu_flags.bits() as u64;
-        ctx.rsp = stack_frame.stack_pointer.as_u64();
-        ctx.ss = stack_frame.stack_segment.0 as u64;
-
-        // Save a minimal set of additional registers that are preserved across interrupts
-        // Using core functions instead of extensive assembly per project rules
-        unsafe {
-            core::arch::asm!(
-                "mov [{0} + 8], rbx",   // Save RBX (callee-saved)
-                "mov [{0} + 48], rbp",  // Save RBP (frame pointer)
-                "mov [{0} + 96], r12",  // Save R12 (callee-saved)
-                "mov [{0} + 104], r13", // Save R13 (callee-saved)
-                "mov [{0} + 112], r14", // Save R14 (callee-saved)
-                "mov [{0} + 120], r15", // Save R15 (callee-saved)
-                in(reg) ctx as *mut crate::process::ProcessContext
-            );
-        }
-    }
-}
 
 define_input_interrupt_handler!(keyboard_handler, 0x60, |scancode: u8| {
     // Use new keyboard driver
