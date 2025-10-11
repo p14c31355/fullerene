@@ -132,13 +132,13 @@ fn draw_taskbar<W: FramebufferLike>(writer: &mut W, color: u32) {
     );
 }
 
-fn draw_icon<W: FramebufferLike>(writer: &mut W, x: u32, y: u32, _label: &str, color: u32) {
+fn draw_icon<W: FramebufferLike>(writer: &mut W, x: u32, y: u32, color: u32) {
     const ICON_SIZE: u32 = 48;
     let color_rgb = super::u32_to_rgb888(color);
     let style = PrimitiveStyleBuilder::new().fill_color(color_rgb).build();
     let rect = Rectangle::new(
-        embedded_graphics::geometry::Point::new(x as i32, y as i32),
-        embedded_graphics::geometry::Size::new(ICON_SIZE, ICON_SIZE),
+        Point::new(x as i32, y as i32),
+        Size::new(ICON_SIZE, ICON_SIZE),
     );
     rect.into_styled(style).draw(writer).ok();
 }
