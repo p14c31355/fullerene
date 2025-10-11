@@ -72,8 +72,7 @@ pub extern "C" fn switch_context(
         "mov [rdi + {r14}], r14",
         "mov [rdi + {r15}], r15",
 
-        // The original rdi of the process was overwritten by the first argument.
-        // This is a known issue with this approach. For now, we save the current rdi.
+        // The current rdi (old_context pointer) is saved as the process's rdi
         "mov [rdi + {rdi}], rdi",
 
         // Save RIP and RSP.
@@ -128,6 +127,7 @@ pub extern "C" fn switch_context(
         "mov r13, [rsi + {r13}]",
         "mov r14, [rsi + {r14}]",
         "mov r15, [rsi + {r15}]",
+        "mov rsi, [rsi + {rsi}]",
 
         // Restore stack pointer and switch stacks
         "mov rsp, [rsi + {rsp}]",

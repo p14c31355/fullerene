@@ -7,6 +7,8 @@
 //! - Memory allocation and deallocation
 
 use crate::heap::FRAME_ALLOCATOR;
+use alloc::vec::Vec;
+static FREE_FRAMES: spin::Mutex<Vec<x86_64::structures::paging::PhysFrame>> = spin::Mutex::new(Vec::new());
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
@@ -21,6 +23,15 @@ pub static PHYSICAL_MEMORY_OFFSET: Mutex<Option<VirtAddr>> = Mutex::new(None);
 /// Set the physical memory offset
 pub fn set_physical_memory_offset(offset: VirtAddr) {
     *PHYSICAL_MEMORY_OFFSET.lock() = Some(offset);
+}
+
+/// Allocate a page frame, preferring recycled frames
+pub fn allocate_page_frame() -> Option<PhysFrame> {
+    if let Some(frame) = FREE_FRAMES.lock().pop() {
+        Some(frame)
+    } else {
+        FRAME_ALLOCATOR.get().and_then(|a| a.lock().allocate_frame())
+    }
 }
 
 /// Page table for each process
@@ -54,11 +65,7 @@ fn copy_kernel_page_table_entries(
             to_table[i] = from_table[i].clone();
         } else {
             // Allocate a new frame for the next level table
-            let new_frame = FRAME_ALLOCATOR
-                .get()
-                .unwrap()
-                .lock()
-                .allocate_frame()
+            let new_frame = allocate_page_frame()
                 .expect("Frame allocation failed");
 
             // Zero the new frame to avoid interpreting stale data as valid page table entries
@@ -91,11 +98,7 @@ fn copy_kernel_page_table_entries(
 /// Create a new page table for a process
 pub fn create_process_page_table(physical_memory_offset: VirtAddr) -> Option<ProcessPageTable> {
     // Allocate a new level 4 page table frame
-    let pml4_frame = FRAME_ALLOCATOR
-        .get()
-        .unwrap()
-        .lock()
-        .allocate_frame()
+    let pml4_frame = allocate_page_frame()
         .expect("Frame allocator not initialized");
 
     // Initialize the page table with kernel mappings
@@ -302,15 +305,8 @@ fn deallocate_page_table_recursively(frame: PhysFrame, level: usize) {
         }
     }
 
-    // Note: The current BootInfoFrameAllocator doesn't support deallocation,
-    // so the physical frames are still leaked. This is a limitation that
-    // should be addressed by implementing proper frame deallocation.
-    // For now, we just log that we would deallocate
-    // TODO: Implement frame deallocation when a deallocatable frame allocator is available
-    petroleum::serial::serial_log(format_args!(
-        "Would deallocate frame at {:#x}\n",
-        frame.start_address().as_u64()
-    ));
+    // Recycle the frame for future allocations
+    FREE_FRAMES.lock().push(frame);
 }
 
 /// Initialize virtual memory system
