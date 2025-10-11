@@ -269,7 +269,13 @@ pub extern "x86-interrupt" fn page_fault_handler(
     // Get the faulting address
     let fault_addr = Cr2::read();
 
-    let fault_addr_unwrapped = fault_addr.expect("Invalid fault address");
+    let fault_addr = match fault_addr {
+        Ok(addr) => addr,
+        Err(_) => {
+            petroleum::serial::serial_log(format_args!("\nEXCEPTION: PAGE FAULT but CR2 is invalid.\n"));
+            return;
+        }
+    };
 
     petroleum::serial::serial_log(format_args!(
         "\nEXCEPTION: PAGE FAULT at address {:#x}\nError Code: {:?}\n",
