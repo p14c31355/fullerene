@@ -179,14 +179,34 @@ fn load_segment(
 
     // Now copy the file data to the allocated virtual memory
     // We need to switch to this process's page table to access the memory
-    let original_cr3 = x86_64::registers::control::Cr3::read().0;
-    unsafe {
-        crate::memory_management::switch_to_page_table(page_table);
+        // Now copy the file data to the allocated virtual memory.
+    // We use a guard to safely switch to the process's page table and back.
+    struct Cr3SwitchGuard {
+        original_cr3: x86_64::structures::paging::PhysFrame,
+        original_cr3_flags: x86_64::registers::control::Cr3Flags,
     }
+
+    impl Cr3SwitchGuard {
+        unsafe fn new(page_table: &crate::memory_management::ProcessPageTable) -> Self {
+            let (original_cr3, original_cr3_flags) = x86_64::registers::control::Cr3::read();
+            crate::memory_management::switch_to_page_table(page_table);
+            Self { original_cr3, original_cr3_flags }
+        }
+    }
+
+    impl Drop for Cr3SwitchGuard {
+        fn drop(&mut self) {
+            unsafe {
+                x86_64::registers::control::Cr3::write(self.original_cr3, self.original_cr3_flags);
+            }
+        }
+    }
+
+    let _cr3_guard = unsafe { Cr3SwitchGuard::new(page_table) };
 
     // Copy file data
     let src = &image_data[file_offset..file_offset + file_size];
-    let dest = vaddr as usize as *mut u8;
+    let dest = vaddr as *mut u8;
 
     unsafe {
         ptr::copy_nonoverlapping(src.as_ptr(), dest, file_size);
@@ -197,12 +217,6 @@ fn load_segment(
         unsafe {
             ptr::write_bytes(dest.add(file_size), 0, mem_size - file_size);
         }
-    }
-
-    // Switch back to the original page table
-    unsafe {
-        use x86_64::registers::control::Cr3;
-        Cr3::write(original_cr3, Cr3::read().1);
     }
 
     Ok(())
