@@ -260,8 +260,12 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     use x86_64::registers::control::Cr3;
     use x86_64::structures::paging::{PageTable, PageTableFlags as Flags};
 
+    petroleum::serial::serial_log(format_args!("reinit_page_table: Starting with offset 0x{:x}\n", physical_memory_offset.as_u64()));
+
     let mut frame_allocator = FRAME_ALLOCATOR.get().unwrap().lock();
     let memory_map = *MEMORY_MAP.get().unwrap();
+
+    petroleum::serial::serial_log(format_args!("reinit_page_table: Allocated new L4 frame\n"));
 
     // Allocate a new level 4 page table
     let level_4_frame = frame_allocator
@@ -283,16 +287,27 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     level_4_table.zero();
 
     // Create a mapper for the new page table
-    // Change: Use the passed physical_memory_offset instead of VirtAddr::new(0)
-    let mut new_mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
+    // For identity mapping, use offset 0
+    let mut new_mapper = unsafe { OffsetPageTable::new(level_4_table, VirtAddr::new(0)) };
+
+    petroleum::serial::serial_log(format_args!("reinit_page_table: New mapper created\n"));
 
     // Map usable memory regions from the memory map (simplified - only map essential regions)
     use petroleum::common::EfiMemoryType::*;
     let memory_types = [EfiLoaderCode, EfiLoaderData, EfiBootServicesCode, EfiBootServicesData, EfiRuntimeServicesCode, EfiRuntimeServicesData, EfiConventionalMemory];
-    let descriptors = memory_map.iter().filter(|desc| {
+    let descriptors_iter = memory_map.iter().filter(|desc| {
         memory_types.iter().any(|&t| desc.type_ == t) && desc.number_of_pages > 0
     });
-    for desc in descriptors {
+    let mut descriptor_count = 0;
+    for desc in descriptors_iter {
+        descriptor_count += 1;
+    }
+    petroleum::serial::serial_log(format_args!("reinit_page_table: Found {} memory descriptors to map\n", descriptor_count));
+    let descriptors_iter = memory_map.iter().filter(|desc| {
+        memory_types.iter().any(|&t| desc.type_ == t) && desc.number_of_pages > 0
+    });
+    for desc in descriptors_iter {
+        petroleum::serial::serial_log(format_args!("Mapping descriptor: pstart=0x{:x}, pages=0x{:x}\n", desc.physical_start, desc.number_of_pages));
         let start_phys = PhysAddr::new(desc.physical_start);
         let end_phys = start_phys + (desc.number_of_pages * 4096);
         let start_virt = VirtAddr::new(desc.physical_start); // Identity map
@@ -307,6 +322,7 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
                 &mut frame_allocator,
             );
         }
+        petroleum::serial::serial_log(format_args!("Mapped descriptor: pstart=0x{:x}\n", desc.physical_start));
     }
 
     // Map the kernel to a higher-half address

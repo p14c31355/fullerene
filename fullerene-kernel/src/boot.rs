@@ -89,7 +89,31 @@ pub extern "efiapi" fn efi_main(
     let (physical_memory_offset, kernel_phys_start) = setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
 
     // Initialize memory management components (heap, page tables, etc.)
-    init_memory_management(*MEMORY_MAP.get().unwrap(), physical_memory_offset, kernel_phys_start);
+    // Comment out reinit for now to allow desktop drawing
+    kernel_log!("Starting heap frame allocator init...");
+
+    kernel_log!(
+        "Calling heap::init_frame_allocator with {} descriptors",
+        MEMORY_MAP.get().unwrap().len()
+    );
+    heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
+    kernel_log!("Heap frame allocator init completed successfully");
+
+    kernel_log!(
+        "Calling heap::init_page_table with offset 0x{:x}",
+        physical_memory_offset.as_u64()
+    );
+    heap::init_page_table(physical_memory_offset);
+    kernel_log!("Page table init completed successfully");
+
+    // Skip reinit for now
+    // kernel_log!(
+    //     "Calling heap::reinit_page_table with offset 0x{:x} and kernel_phys_start 0x{:x}",
+    //     physical_memory_offset.as_u64(),
+    //     kernel_phys_start.as_u64()
+    // );
+    // heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
+    // kernel_log!("Page table reinit completed successfully");
 
     // Set physical memory offset for process management
     crate::memory_management::set_physical_memory_offset(physical_memory_offset);
@@ -141,6 +165,7 @@ pub extern "efiapi" fn efi_main(
         kernel_log!("UEFI graphics mode initialized, calling draw_os_desktop...");
         graphics::draw_os_desktop();
         kernel_log!("UEFI graphics desktop drawn - if you see this, draw_os_desktop completed");
+        petroleum::serial::serial_log(format_args!("Desktop should be visible now!\n"));
     } else {
         kernel_log!("No framebuffer config found, falling back to VGA mode");
         let vga_config = VgaFramebufferConfig {
