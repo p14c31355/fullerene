@@ -69,7 +69,7 @@ fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> 
         0x0B => Some(if shift_pressed { b')' } else { b'0' }),
 
         // QWERTY row
-        0x10..=0x1C => {
+        0x10..=0x19 => {
             let base_chars = ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'];
             let mut ch = base_chars[(scancode - 0x10) as usize];
             if shift_pressed ^ caps_lock {
