@@ -22,7 +22,7 @@ jobs:
         run: rustup component add rust-src --toolchain nightly
 
       - name: Install x86_64-unknown-uefi target
-        run: rustup component add x86_64-unknown-uefi --toolchain nightly
+        run: rustup target add x86_64-unknown-uefi --toolchain nightly
 
       - name: Install additional tools
         run: rustup component add clippy rustfmt --toolchain nightly
