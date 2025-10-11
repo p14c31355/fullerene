@@ -435,26 +435,26 @@ pub fn draw_os_desktop() {
         let mut fb_writer = fb_writer.lock();
         debug_print_str("Graphics: Framebuffer writer locked\n");
 
-        // Fill background with dark blue color (BGR: 0x008000 RGB)
-        let bg_color = 0x800000u32;
+        // Fill background with dark gray (suitable for VGA grayscale)
+        let bg_color = 32u32; // Dark gray
         debug_print_str("Graphics: Filling background...\n");
         fill_background(&mut *fb_writer, bg_color);
         debug_print_str("Graphics: Background filled\n");
 
         // Draw window frame
         debug_print_str("Graphics: Drawing window frame...\n");
-        draw_window(&mut *fb_writer, 50, 50, 400, 200, 0xFFFFFFu32, 0x008080u32);
+        draw_window(&mut *fb_writer, 50, 50, 220, 120, 255u32, 64u32); // White window, gray border
         debug_print_str("Graphics: Window frame drawn\n");
 
         // Draw taskbar at bottom
         debug_print_str("Graphics: Drawing taskbar...\n");
-        draw_taskbar(&mut *fb_writer, 0xC0C0C0u32);
+        draw_taskbar(&mut *fb_writer, 128u32); // Medium gray taskbar
         debug_print_str("Graphics: Taskbar drawn\n");
 
         // Draw some icons
         debug_print_str("Graphics: Drawing icons...\n");
-        draw_icon(&mut *fb_writer, 100, 100, "Terminal", 0x008000u32);
-        draw_icon(&mut *fb_writer, 100, 150, "Settings", 0xFFA500u32);
+        draw_icon(&mut *fb_writer, 65, 60, "Terminal", 96u32); // Medium gray icon
+        draw_icon(&mut *fb_writer, 65, 80, "Settings", 160u32); // Light gray icon
         debug_print_str("Graphics: Icons drawn\n");
 
         print!("Graphics: UEFI desktop drawing completed\n");
