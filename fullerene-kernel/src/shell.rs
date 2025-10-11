@@ -141,8 +141,10 @@ fn read_line(buffer: &mut [u8]) -> Result<usize, &'static str> {
             }
         }
 
-        // Yield to allow other processes
-        kernel_syscall(22, 0, 0, 0);
+        // Improved polling: yield multiple times to reduce CPU usage
+        for _ in 0..10 {
+            kernel_syscall(22, 0, 0, 0); // Yield
+        }
     }
 
     Ok(pos)

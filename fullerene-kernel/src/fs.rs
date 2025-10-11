@@ -130,8 +130,18 @@ pub fn write_file(fd: FileDescriptor, data: &[u8]) -> Result<usize, FsError> {
         return Err(FsError::PermissionDenied);
     }
 
-    // Simple append for now
-    file.data.extend_from_slice(data);
+    // Write at current position and update position
+    let write_pos = file.position;
+    let available_space = file.data.len().saturating_sub(write_pos);
+
+    if data.len() > available_space {
+        // Extend the file if needed
+        file.data.resize(write_pos + data.len(), 0);
+    }
+
+    file.data[write_pos..write_pos + data.len()].copy_from_slice(data);
+    file.position += data.len();
+
     Ok(data.len())
 }
 

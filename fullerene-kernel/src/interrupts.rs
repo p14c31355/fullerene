@@ -498,10 +498,12 @@ pub fn setup_syscall() {
         lstar.write(entry_addr);
     }
 
-    // For now, we don't have user segments set up properly in GDT,
-    // so we'll use kernel segments for both kernel and user.
-    // In a full implementation, we'd add userland descriptors to GDT.
-    let star_value = (0x18_u64 << 48) | (0x08_u64 << 32); // TODO: Replace 0x18 with a proper user code segment selector base.
+    // Set STAR MSR for sysret/syscall
+    // STAR[63:48] = User CS | User SS (but SS is User CS + 8)
+    // STAR[47:32] = Kernel CS | Kernel SS (but SS is Kernel CS + 8)
+    let user_code_sel = crate::gdt::user_code_selector().0 as u64;
+    let kernel_code_sel = crate::gdt::kernel_code_selector().0 as u64;
+    let star_value = (user_code_sel << 48) | (kernel_code_sel << 32);
     unsafe {
         let mut star = Msr::new(0xC0000081); // STAR MSR
         star.write(star_value);

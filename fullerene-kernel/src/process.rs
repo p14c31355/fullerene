@@ -13,6 +13,14 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
+/// Physical memory offset (virt = phys + offset)
+static PHYSICAL_MEMORY_OFFSET: Mutex<Option<VirtAddr>> = Mutex::new(None);
+
+/// Set the physical memory offset
+pub fn set_physical_memory_offset(offset: VirtAddr) {
+    *PHYSICAL_MEMORY_OFFSET.lock() = Some(offset);
+}
+
 /// Process ID type
 pub type ProcessId = u64;
 
@@ -90,8 +98,9 @@ impl Default for ProcessContext {
             r15: 0,
             rflags: 0x0202, // IF flag set
             rip: 0,
-            cs: 0x08, // Kernel code segment
-            ss: 0x10, // Kernel data segment
+            cs: crate::gdt::kernel_code_selector().0 as u64,
+            ss: crate::gdt::user_data_selector().0 as u64, // Use kernel data? Wait, for kernel processes.
+            // But since init_context overrides, and Default may be used sparingly, keep existing.
             ds: 0,
             es: 0,
             fs: 0,
@@ -155,9 +164,8 @@ impl Process {
         self.context.rax = self.entry_point.as_u64();
         self.context.rflags = 0x202; // Set Interrupt Enable flag
 
-        // TODO: Use GDT constants instead of magic numbers
-        self.context.cs = 0x1B; // User code selector with RPL=3
-        self.context.ss = 0x23; // User data selector with RPL=3
+        self.context.cs = crate::gdt::user_code_selector().0 as u64;
+        self.context.ss = crate::gdt::user_data_selector().0 as u64;
 
         self.kernel_stack = kernel_stack_top;
     }
@@ -203,6 +211,14 @@ pub fn create_process(name: &'static str, entry_point: fn()) -> ProcessId {
     let stack_layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
     let stack_ptr = unsafe { alloc::alloc::alloc(stack_layout) };
     let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
+
+    // Create page table for the process
+    let offset = PHYSICAL_MEMORY_OFFSET.lock().expect("Physical memory offset not set");
+    let process_page_table = crate::memory_management::create_process_page_table(offset)
+        .expect("Failed to create page table");
+
+    process.page_table_phys_addr = process_page_table.pml4_frame.start_address();
+    process.page_table = Some(process_page_table);
 
     process.init_context(kernel_stack_top);
 

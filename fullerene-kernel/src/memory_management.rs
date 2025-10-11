@@ -131,15 +131,15 @@ pub fn map_user_page(
 pub fn unmap_user_page(
     page_table: &mut ProcessPageTable,
     virtual_addr: VirtAddr,
-) -> Result<(), MapError> {
+) -> Result<PhysFrame, MapError> {
     let page = Page::<Size4KiB>::containing_address(virtual_addr);
 
-    let (_frame, flush) = page_table
+    let (frame, flush) = page_table
         .mapper
         .unmap(page)
         .map_err(|_| MapError::UnmappingFailed)?;
     flush.flush();
-    Ok(())
+    Ok(frame)
 }
 
 /// Allocate user-space memory for a process
@@ -185,6 +185,9 @@ pub fn free_user_memory(
     for i in 0..num_pages {
         let page_addr = addr + ((i * 4096) as u64);
         unmap_user_page(page_table, page_addr)?;
+        // Note: BootInfoFrameAllocator does not support frame deallocation.
+        // This is a memory leak in the current implementation.
+        // To properly manage physical memory, a different frame allocator is needed.
     }
 
     Ok(())

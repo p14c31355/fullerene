@@ -211,6 +211,9 @@ pub extern "efiapi" fn efi_main(
     heap::reinit_page_table(physical_memory_offset, kernel_phys_start);
     kernel_log!("Kernel: page table reinit done");
 
+    // Set physical memory offset for process management
+    crate::process::set_physical_memory_offset(physical_memory_offset);
+
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(descriptors);
     let heap_start = heap::allocate_heap_from_map(heap_phys_start, heap::HEAP_SIZE);
