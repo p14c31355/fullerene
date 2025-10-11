@@ -457,53 +457,42 @@ fn send_eoi() {
 }
 
 // System call entry point (called via syscall instruction, not interrupt)
-#[unsafe(no_mangle)]
+#[unsafe(naked)]
 pub extern "C" fn syscall_entry() {
-    use crate::syscall;
+    // Naked function to manually handle syscall ABI, preserve RCX/R11,
+    // and convert to function call ABI
+    core::arch::naked_asm!(
+        // Entry point: syscall instruction puts:
+        // rax = syscall number
+        // rcx = return rip (must be preserved for sysret)
+        // r11 = return rflags (must be preserved for sysret)
+        // rdi, rsi, rdx, r10, r8, r9 = arguments (syscall ABI)
 
-    // System call arguments (x86-64 System V ABI for syscall):
-    // RAX contains syscall number
-    // RDI, RSI, RDX, R10, R8, R9 contain arguments 1-6
+        // Save registers that syscall handler might clobber
+        "push rcx",         // Save return RIP
+        "push r11",         // Save return RFLAGS
 
-    let syscall_num: u64;
-    let arg1: u64;
-    let arg2: u64;
-    let arg3: u64;
-    let arg4: u64;
-    let arg5: u64;
-    let arg6: u64;
+        // Shuffle arguments from syscall ABI to function call ABI
+        // syscall ABI: rdi, rsi, rdx, r10, r8, r9
+        // function ABI: rdi, rsi, rdx, rcx, r8, r9
+        // So we move r10 to rcx (4th argument)
+        "mov rcx, r10",
 
-    unsafe {
-        core::arch::asm!(
-            "mov {}, rax",
-            "mov {}, rdi",
-            "mov {}, rsi",
-            "mov {}, rdx",
-            "mov {}, r10",
-            "mov {}, r8",
-            "mov {}, r9",
-            out(reg) syscall_num,
-            out(reg) arg1,
-            out(reg) arg2,
-            out(reg) arg3,
-            out(reg) arg4,
-            out(reg) arg5,
-            out(reg) arg6,
-        );
-    }
+        // Save rax (syscall number) on stack temporarily
+        "push rax",
 
-    // Dispatch to syscall handler
-    let result = unsafe { syscall::handle_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6) };
+        // Call the syscall handler (handle_syscall expects: num, arg1, arg2, arg3, arg4, arg5, arg6)
+        "call handle_syscall",
 
-    // Return result in RAX and return via sysret
-    unsafe {
-        core::arch::asm!(
-            "mov rax, {}",
-            "sysretq", // Return from syscall
-            in(reg) result,
-            options(noreturn)
-        );
-    }
+        // Result is now in rax
+        // Restore the saved registers
+        "pop r10",          // Restore original syscall number (but not needed)
+        "pop r11",          // Restore return RFLAGS
+        "pop rcx",          // Restore return RIP
+
+        // Return via sysretq (result in rax, rcx/rip and r11/rflags preserved)
+        "sysretq"
+    );
 }
 
 // Set up the syscall instruction to use the Fast System Call mechanism

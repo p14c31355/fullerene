@@ -187,7 +187,7 @@ const KERNEL_STACK_SIZE: usize = 4096;
 #[unsafe(naked)]
 extern "C" fn process_trampoline() -> ! {
     // The entry point function pointer is stored in RAX by context switch
-    core::arch::asm!("jmp rax", options(noreturn));
+    core::arch::naked_asm!("jmp rax");
 }
 
 /// Initialize process management system

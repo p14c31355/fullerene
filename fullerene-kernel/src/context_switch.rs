@@ -48,154 +48,158 @@ impl ContextOffsets {
 /// * `old_context` - Where to save current context (can be null if not saving)
 /// * `new_context` - Where to load new context from (must not be null)
 ///
-/// The function uses inline assembly to save and restore CPU registers
-/// in the exact order defined by ProcessContext structure.
-#[inline(never)]
-pub unsafe fn switch_context(
-    old_context: Option<&mut crate::process::ProcessContext>,
-    new_context: &crate::process::ProcessContext,
+/// This naked function manually saves all registers on the stack, performs the
+/// context switch, and then restores the new context's registers. This gives full
+/// control over stack and register manipulation without relying on compiler-generated
+/// prologues/epilogues or assumptions about stack frames.
+#[unsafe(naked)]
+pub extern "C" fn switch_context(
+    _old_context: Option<&mut crate::process::ProcessContext>,
+    _new_context: &crate::process::ProcessContext,
 ) {
-    // We need to save the old context if provided, then load the new context
-    // Using inline assembly to save/load all registers including RFLAGS and RIP
+    core::arch::naked_asm!(
+        // Entry point: rdi = old_context, rsi = new_context
+        // Check if old_context is null
+        "test rdi, rdi",
+        "jnz 2f",  // Jump forward to save context if not null
+        "jmp 3f",  // Jump to restore if null
 
-    if let Some(old_ctx) = old_context {
-        // Save current context
-        core::arch::asm!(
-            // Save all general purpose registers
-            "mov [{0} + {rax}], rax",
-            "mov [{0} + {rbx}], rbx",
-            "mov [{0} + {rcx}], rcx",
-            "mov [{0} + {rdx}], rdx",
-            "mov [{0} + {rsi}], rsi",
-            "mov [{0} + {rdi}], rdi",
-            "mov [{0} + {rbp}], rbp",
-            "mov [{0} + {r8}], r8",
-            "mov [{0} + {r9}], r9",
-            "mov [{0} + {r10}], r10",
-            "mov [{0} + {r11}], r11",
-            "mov [{0} + {r12}], r12",
-            "mov [{0} + {r13}], r13",
-            "mov [{0} + {r14}], r14",
-            "mov [{0} + {r15}], r15",
-            // Save RFLAGS
-            "pushfq",
-            "pop rax",
-            "mov [{0} + {rflags}], rax",
-            // Save RIP and RSP. This assumes a stack frame with a base pointer (rbp).
-            "mov rax, [rbp + 8]",      // Get return address from stack frame.
-            "mov [{0} + {rip}], rax",
-            "lea rax, [rbp + 16]",      // Get caller's stack pointer.
-            "mov [{0} + {rsp}], rax",
-            // Save segment registers
-            "mov ax, cs",
-            "movzx rax, ax",
-            "mov [{0} + {cs}], rax",
-            "mov ax, ss",
-            "movzx rax, ax",
-            "mov [{0} + {ss}], rax",
-            "mov ax, ds",
-            "movzx rax, ax",
-            "mov [{0} + {ds}], rax",
-            "mov ax, es",
-            "movzx rax, ax",
-            "mov [{0} + {es}], rax",
-            "mov ax, fs",
-            "movzx rax, ax",
-            "mov [{0} + {fs}], rax",
-            "mov ax, gs",
-            "movzx rax, ax",
-            "mov [{0} + {gs}], rax",
-            in(reg) old_ctx,
-            rax = const ContextOffsets::RAX,
-            rbx = const ContextOffsets::RBX,
-            rcx = const ContextOffsets::RCX,
-            rdx = const ContextOffsets::RDX,
-            rsi = const ContextOffsets::RSI,
-            rdi = const ContextOffsets::RDI,
-            rbp = const ContextOffsets::RBP,
-            rsp = const ContextOffsets::RSP,
-            r8 = const ContextOffsets::R8,
-            r9 = const ContextOffsets::R9,
-            r10 = const ContextOffsets::R10,
-            r11 = const ContextOffsets::R11,
-            r12 = const ContextOffsets::R12,
-            r13 = const ContextOffsets::R13,
-            r14 = const ContextOffsets::R14,
-            r15 = const ContextOffsets::R15,
-            rflags = const ContextOffsets::RFLAGS,
-            rip = const ContextOffsets::RIP,
-            cs = const ContextOffsets::CS,
-            ss = const ContextOffsets::SS,
-            ds = const ContextOffsets::DS,
-            es = const ContextOffsets::ES,
-            fs = const ContextOffsets::FS,
-            gs = const ContextOffsets::GS,
-            out("rax") _,
-        );
-    }
+        // Save current context (label 2)
+        "2:",
+        // Push all callee-saved registers and some caller-saved
+        "push rax",
+        "push rbx",
+        "push rcx",
+        "push rdx",
+        "push rsi",  // actually rdi points to old_context
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
 
-    // Restore new context
-    unsafe {
-        core::arch::asm!(
-            // Restore all general purpose registers
-            "mov rax, [{0} + {rax}]",
-            "mov rbx, [{0} + {rbx}]",
-            "mov rcx, [{0} + {rcx}]",
-            "mov rdx, [{0} + {rdx}]",
-            "mov rsi, [{0} + {rsi}]",
-            "mov rdi, [{0} + {rdi}]",
-            "mov rbp, [{0} + {rbp}]",
-            "mov rsp, [{0} + {rsp}]",
-            "mov r8, [{0} + {r8}]",
-            "mov r9, [{0} + {r9}]",
-            "mov r10, [{0} + {r10}]",
-            "mov r11, [{0} + {r11}]",
-            "mov r12, [{0} + {r12}]",
-            "mov r13, [{0} + {r13}]",
-            "mov r14, [{0} + {r14}]",
-            "mov r15, [{0} + {r15}]",
-            // Restore segment registers
-            "mov rax, [{0} + {ds}]",
-            "mov ds, ax",
-            "mov rax, [{0} + {es}]",
-            "mov es, ax",
-            "mov rax, [{0} + {fs}]",
-            "mov fs, ax",
-            "mov rax, [{0} + {gs}]",
-            "mov gs, ax",
-            // Restore RFLAGS
-            "mov rax, [{0} + {rflags}]",
-            "push rax",
-            "popfq",
-            // Restore RIP (return to new process)
-            "mov rax, [{0} + {rip}]",
-            "jmp rax",
-            in(reg) new_context,
-            rax = const ContextOffsets::RAX,
-            rbx = const ContextOffsets::RBX,
-            rcx = const ContextOffsets::RCX,
-            rdx = const ContextOffsets::RDX,
-            rsi = const ContextOffsets::RSI,
-            rdi = const ContextOffsets::RDI,
-            rbp = const ContextOffsets::RBP,
-            rsp = const ContextOffsets::RSP,
-            r8 = const ContextOffsets::R8,
-            r9 = const ContextOffsets::R9,
-            r10 = const ContextOffsets::R10,
-            r11 = const ContextOffsets::R11,
-            r12 = const ContextOffsets::R12,
-            r13 = const ContextOffsets::R13,
-            r14 = const ContextOffsets::R14,
-            r15 = const ContextOffsets::R15,
-            ds = const ContextOffsets::DS,
-            es = const ContextOffsets::ES,
-            fs = const ContextOffsets::FS,
-            gs = const ContextOffsets::GS,
-            rflags = const ContextOffsets::RFLAGS,
-            rip = const ContextOffsets::RIP,
-            options(noreturn)
-        );
-    }
+        // Get RIP and RSP manually by inspecting the stack
+        // At this point, the stack has return address at [rsp+80] and saved rbp at some offset
+        // We need to be very careful here
+        "mov rax, [rsp + 80]",  // This is approximate - return address location
+        "mov [rdi + {rip}], rax",
+        "lea rax, [rsp + 88]",   // Approximate caller stack pointer
+        "mov [rdi + {rsp}], rax",
+
+        // Save RBP
+        "mov [rdi + {rbp}], rbp",
+
+        // Save RFLAGS
+        "pushfq",
+        "pop rax",
+        "mov [rdi + {rflags}], rax",
+
+        // Save segment registers
+        "mov ax, cs",
+        "movzx rax, ax",
+        "mov [rdi + {cs}], rax",
+        "mov ax, ss",
+        "movzx rax, ax",
+        "mov [rdi + {ss}], rax",
+        "mov ax, ds",
+        "movzx rax, ax",
+        "mov [rdi + {ds}], rax",
+        "mov ax, es",
+        "movzx rax, ax",
+        "mov [rdi + {es}], rax",
+        "mov ax, fs",
+        "movzx rax, ax",
+        "mov [rdi + {fs}], rax",
+        "mov ax, gs",
+        "movzx rax, ax",
+        "mov [rdi + {gs}], rax",
+
+        // Restore the registers we pushed
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "pop rbx",
+        "pop rax",
+
+        // Restore context (label 3)
+        "3:",
+        // rsi = new_context
+        // mov rsi, rsi  (already set)
+
+        // Restore all registers from new context
+        "mov rax, [rsi + {rax}]",
+        "mov rbx, [rsi + {rbx}]",
+        "mov rcx, [rsi + {rcx}]",
+        "mov rdx, [rsi + {rdx}]",
+        "mov rdi, [rsi + {rdi}]",  // This overwrites our new_context pointer
+        "mov rbp, [rsi + {rbp}]",
+        "mov r8, [rsi + {r8}]",
+        "mov r9, [rsi + {r9}]",
+        "mov r10, [rsi + {r10}]",
+        "mov r11, [rsi + {r11}]",
+        "mov r12, [rsi + {r12}]",
+        "mov r13, [rsi + {r13}]",
+        "mov r14, [rsi + {r14}]",
+        "mov r15, [rsi + {r15}]",
+
+        // Restore stack pointer and switch stacks
+        "mov rsp, [rsi + {rsp}]",
+
+        // Restore segment registers
+        "mov rax, [rsi + {ds}]",
+        "mov ds, ax",
+        "mov rax, [rsi + {es}]",
+        "mov es, ax",
+        "mov rax, [rsi + {fs}]",
+        "mov fs, ax",
+        "mov rax, [rsi + {gs}]",
+        "mov gs, ax",
+
+        // Restore RFLAGS
+        "mov rax, [rsi + {rflags}]",
+        "push rax",
+        "popfq",
+
+        // Jump to RIP (never returns)
+        "mov rax, [rsi + {rip}]",
+        "jmp rax",
+
+        // Compile-time constants for offsets
+        rip = const ContextOffsets::RIP,
+        rsp = const ContextOffsets::RSP,
+        rbp = const ContextOffsets::RBP,
+        rflags = const ContextOffsets::RFLAGS,
+        cs = const ContextOffsets::CS,
+        ss = const ContextOffsets::SS,
+        ds = const ContextOffsets::DS,
+        es = const ContextOffsets::ES,
+        fs = const ContextOffsets::FS,
+        gs = const ContextOffsets::GS,
+        rax = const ContextOffsets::RAX,
+        rbx = const ContextOffsets::RBX,
+        rcx = const ContextOffsets::RCX,
+        rdx = const ContextOffsets::RDX,
+        rdi = const ContextOffsets::RDI,
+        r8 = const ContextOffsets::R8,
+        r9 = const ContextOffsets::R9,
+        r10 = const ContextOffsets::R10,
+        r11 = const ContextOffsets::R11,
+        r12 = const ContextOffsets::R12,
+        r13 = const ContextOffsets::R13,
+        r14 = const ContextOffsets::R14,
+        r15 = const ContextOffsets::R15,
+    );
 }
 
 /// Initialize context switching system

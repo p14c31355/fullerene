@@ -3,8 +3,6 @@
 //! This module provides the interface between user-space programs and kernel services.
 //! System calls are invoked using interrupt 0x80 with the syscall number in EAX.
 
-#![no_std]
-
 use crate::process;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -84,6 +82,7 @@ pub enum SyscallError {
 ///
 /// # Returns
 /// Result of the system call in EAX
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn handle_syscall(
     syscall_num: u64,
     arg1: u64,
@@ -151,7 +150,16 @@ fn syscall_fork() -> SyscallResult {
 
 /// Read system call
 fn syscall_read(fd: c_int, buffer: *mut u8, count: usize) -> SyscallResult {
-    if fd < 0 || buffer.is_null() {
+    if fd < 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // POSIX: reading 0 bytes should return 0 immediately
+    if count == 0 {
+        return Ok(0);
+    }
+
+    if buffer.is_null() {
         return Err(SyscallError::InvalidArgument);
     }
 
