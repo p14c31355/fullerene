@@ -154,19 +154,19 @@ fn syscall_write(fd: c_int, buffer: *const u8, count: usize) -> SyscallResult {
         return Ok(0);
     }
 
-    // Validate that the entire buffer range is in user-space and no overflow
+    // Validate that the buffer range is valid; allow kernel pointers for stdout/stderr
     use crate::memory_management::is_user_address;
     use x86_64::VirtAddr;
 
     let start_addr = VirtAddr::new(buffer as u64);
-    if !is_user_address(start_addr) {
+    if !is_user_address(start_addr) && fd != 1 && fd != 2 {
         return Err(SyscallError::InvalidArgument);
     }
 
     // Check for overflow in end address calculation
     if let Some(end_u64) = (buffer as u64).checked_add(count as u64 - 1) {
         let end_addr = VirtAddr::new(end_u64);
-        if !is_user_address(end_addr) {
+        if !is_user_address(end_addr) && fd != 1 && fd != 2 {
             return Err(SyscallError::InvalidArgument);
         }
     } else {
@@ -286,6 +286,25 @@ pub fn init() {
     // Add syscall interrupt handler to IDT
     // This would normally be done in interrupts::init()
     // For now, assume it's handled there
+}
+
+/// Kernel syscall call using syscall instruction
+/// This allows kernel code to call syscalls just like user space does
+pub fn kernel_syscall(syscall_num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
+    let mut result: u64;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") syscall_num,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("rdx") arg3,
+            lateout("rax") result,
+            out("rcx") _,
+            out("r11") _,
+        );
+    }
+    result
 }
 
 /// Syscall helper macros for user space (would be in user-space library)

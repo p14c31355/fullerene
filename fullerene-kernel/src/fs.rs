@@ -4,6 +4,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::Mutex;
 
@@ -27,9 +28,9 @@ pub struct File {
 }
 
 /// Global filesystem state
-static FILESYSTEM: Mutex<BTreeMap<String, File>> = Mutex::new(BTreeMap::new());
+static FILESYSTEM: Mutex<BTreeMap<String, Arc<Mutex<File>>>> = Mutex::new(BTreeMap::new());
 static NEXT_FD: Mutex<FileDescriptor> = Mutex::new(3); // 0,1,2 are reserved for stdio
-static OPEN_FILES: Mutex<BTreeMap<FileDescriptor, String>> = Mutex::new(BTreeMap::new());
+static OPEN_FILES: Mutex<BTreeMap<FileDescriptor, Arc<Mutex<File>>>> = Mutex::new(BTreeMap::new());
 
 /// Initialize filesystem
 pub fn init() {
@@ -58,7 +59,8 @@ pub fn create_file(name: &str, data: &[u8]) -> Result<(), FsError> {
         position: 0,
     };
 
-    fs.insert(String::from(name), file);
+    let file_arc = Arc::new(Mutex::new(file));
+    fs.insert(String::from(name), Arc::clone(&file_arc));
     Ok(())
 }
 
@@ -66,9 +68,7 @@ pub fn create_file(name: &str, data: &[u8]) -> Result<(), FsError> {
 pub fn open_file(name: &str) -> Result<FileDescriptor, FsError> {
     // Acquire locks in consistent order: FILESYSTEM then OPEN_FILES then NEXT_FD
     let fs = FILESYSTEM.lock();
-    if !fs.contains_key(name) {
-        return Err(FsError::FileNotFound);
-    }
+    let file_arc = fs.get(name).ok_or(FsError::FileNotFound)?.clone();
 
     // While still holding FILESYSTEM lock, acquire OPEN_FILES and NEXT_FD
     let mut open_files = OPEN_FILES.lock();
@@ -77,7 +77,7 @@ pub fn open_file(name: &str) -> Result<FileDescriptor, FsError> {
     let fd = *next_fd;
     *next_fd += 1;
 
-    open_files.insert(fd, String::from(name));
+    open_files.insert(fd, Arc::clone(&file_arc));
 
     // Explicitly drop locks in reverse order (optional but good practice)
     drop(next_fd);
@@ -99,11 +99,11 @@ pub fn close_file(fd: FileDescriptor) -> Result<(), FsError> {
 
 /// Read from file
 pub fn read_file(fd: FileDescriptor, buffer: &mut [u8]) -> Result<usize, FsError> {
-    let mut fs = FILESYSTEM.lock();
     let open_files = OPEN_FILES.lock();
 
-    let filename = open_files.get(&fd).ok_or(FsError::InvalidFileDescriptor)?;
-    let file = fs.get_mut(filename).ok_or(FsError::FileNotFound)?;
+    let file_mutex = open_files.get(&fd).ok_or(FsError::InvalidFileDescriptor)?;
+
+    let mut file = file_mutex.lock();
 
     if !file.permissions.read {
         return Err(FsError::PermissionDenied);
@@ -120,11 +120,11 @@ pub fn read_file(fd: FileDescriptor, buffer: &mut [u8]) -> Result<usize, FsError
 
 /// Write to file
 pub fn write_file(fd: FileDescriptor, data: &[u8]) -> Result<usize, FsError> {
-    let mut fs = FILESYSTEM.lock();
     let open_files = OPEN_FILES.lock();
 
-    let filename = open_files.get(&fd).ok_or(FsError::InvalidFileDescriptor)?;
-    let file = fs.get_mut(filename).ok_or(FsError::FileNotFound)?;
+    let file_mutex = open_files.get(&fd).ok_or(FsError::InvalidFileDescriptor)?;
+
+    let mut file = file_mutex.lock();
 
     if !file.permissions.write {
         return Err(FsError::PermissionDenied);
@@ -137,11 +137,11 @@ pub fn write_file(fd: FileDescriptor, data: &[u8]) -> Result<usize, FsError> {
 
 /// Seek in file
 pub fn seek_file(fd: FileDescriptor, position: usize) -> Result<(), FsError> {
-    let mut fs = FILESYSTEM.lock();
     let open_files = OPEN_FILES.lock();
 
-    let filename = open_files.get(&fd).ok_or(FsError::InvalidFileDescriptor)?;
-    let file = fs.get_mut(filename).ok_or(FsError::FileNotFound)?;
+    let file_mutex = open_files.get(&fd).ok_or(FsError::InvalidFileDescriptor)?;
+
+    let mut file = file_mutex.lock();
 
     if position > file.data.len() {
         return Err(FsError::InvalidSeek);

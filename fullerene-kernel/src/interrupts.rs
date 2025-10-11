@@ -381,9 +381,14 @@ pub extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
         let new_pid = process::current_pid();
 
         if let (Some(old_pid), Some(new_pid)) = (old_pid, new_pid) {
+            // Check if old process was terminated
+            let is_old_terminated = crate::process::PROCESS_LIST.lock().iter().find(|p| p.id == old_pid).map(|p| p.state == crate::process::ProcessState::Terminated).unwrap_or(false);
+
+            let old_context = if is_old_terminated { None } else { Some(old_pid) };
+
             if old_pid != new_pid {
                 // Perform context switch
-                process::context_switch(Some(old_pid), new_pid);
+                process::context_switch(old_context, new_pid);
             }
         }
     }

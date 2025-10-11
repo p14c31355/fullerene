@@ -6,7 +6,7 @@
 #![no_std]
 
 use crate::keyboard;
-use crate::syscall;
+use crate::syscall::{self, kernel_syscall};
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -119,18 +119,9 @@ fn read_line(buffer: &mut [u8]) -> Result<usize, &'static str> {
                     // Backspace
                     if pos > 0 {
                         pos -= 1;
-                        // Echo backspace - keep using syscall for kernel output
-                        unsafe {
-                        crate::syscall::handle_syscall(
-                            4,
-                            1,
-                            &[0x08, b' ', 0x08] as *const _ as u64,
-                            3,
-                            0,
-                            0,
-                            0,
-                        );
-                        }
+                        // Echo backspace - keeping the syscall for kernel output
+                        let backspace_seq = [0x08, b' ', 0x08];
+                        kernel_syscall(4, 1, backspace_seq.as_ptr() as u64, 3);
                     }
                 }
                 0x1B => {
@@ -144,18 +135,14 @@ fn read_line(buffer: &mut [u8]) -> Result<usize, &'static str> {
                     pos += 1;
 
                     // Echo character
-                    unsafe {
-                        crate::syscall::handle_syscall(4, 1, &ch as *const _ as u64, 1, 0, 0, 0);
-                    }
+                    kernel_syscall(4, 1, (&ch as *const _ as u64), 1);
                 }
                 _ => {} // Ignore other characters
             }
         }
 
         // Yield to allow other processes
-        unsafe {
-            crate::syscall::handle_syscall(22, 0, 0, 0, 0, 0, 0); // SYS_YIELD
-        }
+        kernel_syscall(22, 0, 0, 0);
     }
 
     Ok(pos)
