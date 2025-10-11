@@ -144,9 +144,8 @@ pub fn init(config: &FullereneFramebufferConfig) {
         config.width, config.height, config.stride, config.pixel_format
     ));
     let writer = FramebufferWriter::<u32>::new(super::framebuffer::FramebufferInfo::new(config));
-    let fb_writer = FramebufferWriter::<u32>::new(super::framebuffer::FramebufferInfo::new(config));
-    WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer)));
-    FRAMEBUFFER_UEFI.call_once(|| Mutex::new(super::framebuffer::UefiFramebuffer::Uefi32(fb_writer)));
+    WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer.clone())));
+    FRAMEBUFFER_UEFI.call_once(|| Mutex::new(super::framebuffer::UefiFramebuffer::Uefi32(writer)));
 }
 
 // VgaPorts is imported from petroleum
@@ -161,23 +160,19 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
 
     let writer = FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(config));
     writer.clear_screen();
+
     #[cfg(target_os = "uefi")]
     {
-        WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer)));
+        WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer.clone())));
         FRAMEBUFFER_UEFI.call_once(|| {
-            let fb_writer = FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(config));
-            fb_writer.clear_screen();
-            Mutex::new(super::framebuffer::UefiFramebuffer::Vga8(fb_writer))
+            Mutex::new(super::framebuffer::UefiFramebuffer::Vga8(writer))
         });
     }
+
     #[cfg(not(target_os = "uefi"))]
     {
-        let text_writer = FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(config));
-        text_writer.clear_screen();
-        let fb_writer = FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(config));
-        fb_writer.clear_screen();
-        WRITER_BIOS.call_once(|| Mutex::new(Box::new(text_writer)));
-        FRAMEBUFFER_BIOS.call_once(|| Mutex::new(fb_writer));
+        WRITER_BIOS.call_once(|| Mutex::new(Box::new(writer.clone())));
+        FRAMEBUFFER_BIOS.call_once(|| Mutex::new(writer));
     }
 }
 
