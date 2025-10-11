@@ -188,8 +188,6 @@ fn load_segment(
         map_user_page(page_table, page_vaddr, frame.start_address(), flags)?;
     }
 
-    // Now copy the file data to the allocated virtual memory
-    // We need to switch to this process's page table to access the memory
     // Now copy the file data to the allocated virtual memory.
     // We use a guard to safely switch to the process's page table and back.
     struct Cr3SwitchGuard {
