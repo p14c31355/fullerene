@@ -123,14 +123,13 @@ struct ApicRaw {
 }
 
 impl ApicRaw {
-    fn read(&self, offset: u32) -> u32 {
+    unsafe fn read(&self, offset: u32) -> u32 {
         let addr = (self.base_addr + offset as u64) as *mut u32;
-        unsafe { addr.read_volatile() }
+        addr.read_volatile()
     }
-
-    fn write(&self, offset: u32, value: u32) {
+    unsafe fn write(&self, offset: u32, value: u32) {
         let addr = (self.base_addr + offset as u64) as *mut u32;
-        unsafe { addr.write_volatile(value) }
+        addr.write_volatile(value)
     }
 }
 
@@ -165,11 +164,13 @@ fn get_apic_base() -> Option<u64> {
 
 fn enable_apic(apic: &mut ApicRaw) {
     // Enable APIC by setting bit 8 in spurious vector register
-    let spurious = apic.read(ApicOffsets::SPURIOUS_VECTOR);
-    apic.write(
-        ApicOffsets::SPURIOUS_VECTOR,
-        spurious | ApicFlags::SW_ENABLE | 0xFF,
-    );
+    let spurious = unsafe { apic.read(ApicOffsets::SPURIOUS_VECTOR) };
+    unsafe {
+        apic.write(
+            ApicOffsets::SPURIOUS_VECTOR,
+            spurious | ApicFlags::SW_ENABLE | 0xFF,
+        );
+    }
 }
 
 // Macro to reduce repetitive IDT handler setup
