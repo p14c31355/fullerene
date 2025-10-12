@@ -264,13 +264,42 @@ fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFrameb
             width: mode_info.horizontal_resolution,
             height: mode_info.vertical_resolution,
             pixel_format: mode_info.pixel_format,
-            bpp: 32, // Assume 32-bit for UEFI GOP
+            bpp: petroleum::common::get_bpp_from_pixel_format(mode_info.pixel_format),
             stride: mode_info.pixels_per_scan_line,
         })
     } else {
         petroleum::serial::serial_log(format_args!("find_gop_framebuffer: GOP mode info is null\n"));
         None
     }
+}
+
+/// Helper function to try initializing graphics with a framebuffer config.
+/// Returns true if graphics were successfully initialized and drawn.
+/// source_name is used for logging purposes (e.g., "UEFI custom" or "GOP").
+#[cfg(target_os = "uefi")]
+fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str) -> bool {
+    kernel_log!("Initializing {} graphics mode...", source_name);
+    graphics::text::init(config);
+
+    // Verify the framebuffer was initialized
+    if let Some(fb_writer) = unsafe { graphics::text::FRAMEBUFFER_UEFI.get() } {
+        let fb_info = fb_writer.lock();
+        kernel_log!("{} framebuffer initialized successfully - width: {}, height: {}", source_name, fb_info.get_width(), fb_info.get_height());
+
+        // Test direct pixel write to verify access
+        kernel_log!("Testing {} framebuffer access...", source_name);
+        unsafe { fb_writer.lock().put_pixel(100, 100, 0xFF0000) };
+        kernel_log!("Direct {} pixel write test completed", source_name);
+    } else {
+        kernel_log!("ERROR: {} framebuffer initialization failed!", source_name);
+        return false;
+    }
+
+    kernel_log!("{} graphics mode initialized, calling draw_os_desktop...", source_name);
+    graphics::draw_os_desktop();
+    kernel_log!("{} graphics desktop drawn - if you see this, draw_os_desktop completed", source_name);
+    petroleum::serial::serial_log(format_args!("Desktop should be visible now!\n"));
+    true
 }
 
 /// Helper function to initialize graphics with framebuffer configuration
@@ -288,29 +317,7 @@ fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
             fb_config.stride,
             fb_config.pixel_format
         );
-        kernel_log!("Initializing UEFI graphics mode...");
-        graphics::text::init(&fb_config);
-
-        // Verify the framebuffer was initialized
-        if let Some(fb_writer) = unsafe { graphics::text::FRAMEBUFFER_UEFI.get() } {
-            let fb_info = fb_writer.lock();
-            kernel_log!("UEFI framebuffer initialized successfully - width: {}, height: {}", fb_info.get_width(), fb_info.get_height());
-
-            // Test direct pixel write to verify access
-            let test_addr_before = fb_config.address as *mut u32;
-            kernel_log!("Testing framebuffer access - pre-write check...");
-            unsafe { fb_writer.lock().put_pixel(100, 100, 0xFF0000) };
-            kernel_log!("Direct pixel write test completed");
-        } else {
-            kernel_log!("ERROR: UEFI framebuffer initialization failed!");
-            return false;
-        }
-
-        kernel_log!("UEFI graphics mode initialized, calling draw_os_desktop...");
-        graphics::draw_os_desktop();
-        kernel_log!("UEFI graphics desktop drawn - if you see this, draw_os_desktop completed");
-        petroleum::serial::serial_log(format_args!("Desktop should be visible now!\n"));
-        return true;
+        return try_init_graphics(&fb_config, "UEFI custom");
     }
 
     kernel_log!("No custom framebuffer config found, trying standard UEFI GOP...");
@@ -325,28 +332,7 @@ fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
             gop_config.stride,
             gop_config.pixel_format
         );
-        kernel_log!("Initializing UEFI graphics mode via GOP...");
-        graphics::text::init(&gop_config);
-
-        // Verify the framebuffer was initialized
-        if let Some(fb_writer) = unsafe { graphics::text::FRAMEBUFFER_UEFI.get() } {
-            let fb_info = fb_writer.lock();
-            kernel_log!("UEFI GOP framebuffer initialized successfully - width: {}, height: {}", fb_info.get_width(), fb_info.get_height());
-
-            // Test direct pixel write to verify access
-            kernel_log!("Testing GOP framebuffer access...");
-            unsafe { fb_writer.lock().put_pixel(100, 100, 0xFF0000) };
-            kernel_log!("Direct GOP pixel write test completed");
-        } else {
-            kernel_log!("ERROR: UEFI GOP framebuffer initialization failed!");
-            return false;
-        }
-
-        kernel_log!("UEFI GOP graphics mode initialized, calling draw_os_desktop...");
-        graphics::draw_os_desktop();
-        kernel_log!("UEFI GOP graphics desktop drawn - if you see this, draw_os_desktop completed");
-        petroleum::serial::serial_log(format_args!("Desktop should be visible now!\n"));
-        return true;
+        return try_init_graphics(&gop_config, "UEFI GOP");
     }
 
     false

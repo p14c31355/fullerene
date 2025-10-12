@@ -114,6 +114,22 @@ impl From<usize> for EfiStatus {
     }
 }
 
+/// Get bits per pixel from UEFI graphics pixel format.
+/// Returns 32 for RGB/BGR formats, 0 for unsupported formats.
+pub fn get_bpp_from_pixel_format(pixel_format: EfiGraphicsPixelFormat) -> u32 {
+    match pixel_format {
+        EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor |
+        EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor => 32,
+        EfiGraphicsPixelFormat::PixelBitMask => {
+            // For PixelBitMask, we would need to parse the mask, but for now assume 32
+            // as it's not commonly used and the format is complex
+            32
+        }
+        EfiGraphicsPixelFormat::PixelBltOnly => 0, // Software rendering only
+        _ => 0,
+    }
+}
+
 /// Minimal subset of UEFI memory types (only those we need)
 #[repr(usize)]
 #[derive(Clone, Copy, PartialEq)]
