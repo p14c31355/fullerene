@@ -5,7 +5,7 @@ use crate::{
 };
 use crate::graphics::framebuffer::FramebufferLike;
 use petroleum::common::{
-    EfiSystemTable, FullereneFramebufferConfig, VgaFramebufferConfig,
+    EfiSystemTable, FullereneFramebufferConfig,
 };
 use petroleum::common::EfiGraphicsOutputProtocol;
 use crate::init::init_vga_text_mode;
