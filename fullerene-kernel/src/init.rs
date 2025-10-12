@@ -54,58 +54,63 @@ const VGA_ATTRIBUTE_COLOR_PLANE_ENABLE: u8 = 0x12;
 const VGA_STATUS_REGISTER: u16 = 0x3da;
 const VGA_ATTRIBUTE_ENABLE_VIDEO: u8 = 0x20;
 
-unsafe fn init_vga_text_mode() {
+pub unsafe fn init_vga_text_mode() {
     // Miscellaneous Output Register: Enable color mode, 0x3D4 map active
     let mut misc = Port::new(VGA_MISC_OUTPUT);
-    misc.write(VGA_MISC_ENABLE_COLOR_MODE);
+    unsafe { misc.write(VGA_MISC_ENABLE_COLOR_MODE); }
 
     // Sequencer: Reset and configure for alphanumeric mode
     let mut seq_idx = Port::new(VGA_SEQUENCER_INDEX);
     let mut seq_data = Port::new(VGA_SEQUENCER_DATA);
-    seq_idx.write(VGA_SEQ_RESET); seq_data.write(0x01u8);  // Reset
-    seq_idx.write(VGA_SEQ_CLOCKING_MODE); seq_data.write(0x01u8);  // 9/8 Dot Mode=0
-    seq_idx.write(VGA_SEQ_CHARACTER_MAP); seq_data.write(0x00u8);  // Character Map Select
-    seq_idx.write(VGA_SEQ_MEMORY_MODE); seq_data.write(0x03u8);  // Memory Mode: Alpha mode, Odd/Even disabled
+    unsafe { seq_idx.write(VGA_SEQ_RESET); }
+    unsafe { seq_data.write(0x01u8); } // Reset
+    unsafe { seq_idx.write(VGA_SEQ_CLOCKING_MODE); }
+    unsafe { seq_data.write(0x01u8); } // 9/8 Dot Mode=0
+    unsafe { seq_idx.write(VGA_SEQ_CHARACTER_MAP); }
+    unsafe { seq_data.write(0x00u8); } // Character Map Select
+    unsafe { seq_idx.write(VGA_SEQ_MEMORY_MODE); }
+    unsafe { seq_data.write(0x03u8); } // Memory Mode: Alpha mode, Odd/Even disabled
 
     // CRTC: Configure 80x25 timing (unlock first)
     let mut crtc_idx = Port::new(VGA_CRTC_INDEX);
     let mut crtc_data = Port::new(VGA_CRTC_DATA);
-    let current_reg11 = crtc_data.read();
-    crtc_idx.write(VGA_CRTC_UNLOCK); crtc_data.write(VGA_CRTC_UNLOCK_MASK & current_reg11);  // Unlock (clear bit7)
+    let current_reg11;
+    unsafe { current_reg11 = crtc_data.read(); }
+    unsafe { crtc_idx.write(VGA_CRTC_UNLOCK); crtc_data.write(VGA_CRTC_UNLOCK_MASK & current_reg11); } // Unlock (clear bit7)
     // Horizontal timing
-    crtc_idx.write(VGA_CRTC_HORIZONTAL_TOTAL); crtc_data.write(0x5fu8);  // Total
-    crtc_idx.write(VGA_CRTC_HORIZONTAL_DISPLAY_END); crtc_data.write(0x4fu8);  // Display End
-    crtc_idx.write(VGA_CRTC_HORIZONTAL_BLANK_START); crtc_data.write(0x50u8);  // Blank Start
-    crtc_idx.write(VGA_CRTC_HORIZONTAL_BLANK_END); crtc_data.write(0x82u8);  // Blank End
-    crtc_idx.write(VGA_CRTC_HORIZONTAL_RETRACE_START); crtc_data.write(0x55u8);  // Retrace Start
-    crtc_idx.write(VGA_CRTC_HORIZONTAL_RETRACE_END); crtc_data.write(0x81u8);  // Retrace End
+    unsafe { crtc_idx.write(VGA_CRTC_HORIZONTAL_TOTAL); crtc_data.write(0x5fu8); } // Total
+    unsafe { crtc_idx.write(VGA_CRTC_HORIZONTAL_DISPLAY_END); crtc_data.write(0x4fu8); } // Display End
+    unsafe { crtc_idx.write(VGA_CRTC_HORIZONTAL_BLANK_START); crtc_data.write(0x50u8); } // Blank Start
+    unsafe { crtc_idx.write(VGA_CRTC_HORIZONTAL_BLANK_END); crtc_data.write(0x82u8); } // Blank End
+    unsafe { crtc_idx.write(VGA_CRTC_HORIZONTAL_RETRACE_START); crtc_data.write(0x55u8); } // Retrace Start
+    unsafe { crtc_idx.write(VGA_CRTC_HORIZONTAL_RETRACE_END); crtc_data.write(0x81u8); } // Retrace End
     // Vertical timing
-    crtc_idx.write(VGA_CRTC_VERTICAL_TOTAL); crtc_data.write(0xbfu8);  // Total
-    crtc_idx.write(VGA_CRTC_OVERFLOW); crtc_data.write(0x1fu8);  // Overflow
-    crtc_idx.write(VGA_CRTC_MAXIMUM_SCAN_LINE); crtc_data.write(0x4fu8);  // Max Scan Line
-    crtc_idx.write(VGA_CRTC_VERTICAL_RETRACE_START); crtc_data.write(0x9cu8);  // V Retrace Start
-    crtc_idx.write(VGA_CRTC_VERTICAL_RETRACE_END); crtc_data.write(0x8eu8);  // V Retrace End
-    crtc_idx.write(VGA_CRTC_VERTICAL_DISPLAY_END); crtc_data.write(0x8fu8);  // V Display End
-    crtc_idx.write(VGA_CRTC_OFFSET); crtc_data.write(0x28u8);  // Offset
-    crtc_idx.write(VGA_CRTC_VERTICAL_BLANK_START); crtc_data.write(0x96u8);  // V Blank Start
-    crtc_idx.write(VGA_CRTC_VERTICAL_BLANK_END); crtc_data.write(0xb9u8);  // V Blank End
-    crtc_idx.write(VGA_CRTC_MODE_CONTROL); crtc_data.write(0xa3u8);  // Mode Control
+    unsafe { crtc_idx.write(VGA_CRTC_VERTICAL_TOTAL); crtc_data.write(0xbfu8); } // Total
+    unsafe { crtc_idx.write(VGA_CRTC_OVERFLOW); crtc_data.write(0x1fu8); } // Overflow
+    unsafe { crtc_idx.write(VGA_CRTC_MAXIMUM_SCAN_LINE); crtc_data.write(0x4fu8); } // Max Scan Line
+    unsafe { crtc_idx.write(VGA_CRTC_VERTICAL_RETRACE_START); crtc_data.write(0x9cu8); } // V Retrace Start
+    unsafe { crtc_idx.write(VGA_CRTC_VERTICAL_RETRACE_END); crtc_data.write(0x8eu8); } // V Retrace End
+    unsafe { crtc_idx.write(VGA_CRTC_VERTICAL_DISPLAY_END); crtc_data.write(0x8fu8); } // V Display End
+    unsafe { crtc_idx.write(VGA_CRTC_OFFSET); crtc_data.write(0x28u8); } // Offset
+    unsafe { crtc_idx.write(VGA_CRTC_VERTICAL_BLANK_START); crtc_data.write(0x96u8); } // V Blank Start
+    unsafe { crtc_idx.write(VGA_CRTC_VERTICAL_BLANK_END); crtc_data.write(0xb9u8); } // V Blank End
+    unsafe { crtc_idx.write(VGA_CRTC_MODE_CONTROL); crtc_data.write(0xa3u8); } // Mode Control
 
     // Attribute Controller: Simple reset and setup
     let mut attr = Port::new(VGA_ATTRIBUTE_INDEX);
     // Reset flip-flop to expect index
-    x86_64::instructions::port::Port::<u8>::new(VGA_STATUS_REGISTER).read();
+    unsafe { x86_64::instructions::port::Port::<u8>::new(VGA_STATUS_REGISTER).read(); }
 
     // Set Mode Control Register (text mode, blinking enabled)
-    attr.write(VGA_ATTRIBUTE_MODE_CONTROL);
-    attr.write(0x0C);
+    unsafe { attr.write(VGA_ATTRIBUTE_MODE_CONTROL); }
+    unsafe { attr.write(0x0C); }
 
     // Set Color Plane Enable Register
-    attr.write(VGA_ATTRIBUTE_COLOR_PLANE_ENABLE);
-    attr.write(0x0F);
+    unsafe { attr.write(VGA_ATTRIBUTE_COLOR_PLANE_ENABLE); }
+    unsafe { attr.write(0x0F); }
 
     // Enable video output
-    attr.write(VGA_ATTRIBUTE_ENABLE_VIDEO);
+    unsafe { attr.write(VGA_ATTRIBUTE_ENABLE_VIDEO); }
 }
 
 #[cfg(target_os = "uefi")]

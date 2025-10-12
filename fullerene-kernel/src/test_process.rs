@@ -13,7 +13,7 @@ pub fn test_process_main() {
         arg6: u64,
     ) -> u64 {
         let result: u64;
-        core::arch::asm!(
+        unsafe { core::arch::asm!(
             "syscall",
             in("rax") num,
             in("rdi") arg1,
@@ -24,7 +24,7 @@ pub fn test_process_main() {
             in("r9") arg6,
             lateout("rax") result,
             out("rcx") _, out("r11") _,
-        );
+        ); }
         result
     }
 

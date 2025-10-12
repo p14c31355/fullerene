@@ -284,9 +284,7 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
 /// Idle process loop
 fn idle_loop() {
     loop {
-        unsafe {
-            x86_64::instructions::hlt();
-        }
+        unsafe { x86_64::instructions::hlt(); }
     }
 }
 

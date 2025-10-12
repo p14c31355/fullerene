@@ -68,7 +68,6 @@ pub fn find_framebuffer_config(
     None
 }
 
-// Helper function to find heap start from memory map (using generic)
 pub fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> PhysAddr {
     // Find the largest suitable memory region from EfiLoaderData or EfiConventionalMemory and use its physical start for heap
     let mut largest_addr = None;
@@ -131,8 +130,8 @@ pub fn setup_memory_maps(
     });
     kernel_log!("MEMORY_MAP initialized");
 
-    let mut physical_memory_offset = VirtAddr::new(0);
-    let mut kernel_phys_start = PhysAddr::new(0);
+    let physical_memory_offset;
+    let kernel_phys_start;
 
     kernel_log!("Scanning memory descriptors to find kernel location...");
 

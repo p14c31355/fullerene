@@ -114,7 +114,7 @@ pub fn init_vga() {
     writer.write_string("This is output directly to VGA.\n");
     writer.update_cursor();
     // Force display refresh by reading status register
-    let _: u8 = petroleum::port_read!(petroleum::graphics::ports::VgaPorts::STATUS);
+    let _: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::STATUS);
 }
 
 #[cfg(test)]

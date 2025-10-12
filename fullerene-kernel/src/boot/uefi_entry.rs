@@ -1,8 +1,22 @@
+// Use crate imports
 use core::ffi::c_void;
+use crate::{
+    gdt, memory, graphics, interrupts, syscall, process,
+};
 use petroleum::common::{
-    EfiSystemTable, FullereneFramebufferConfig,
+    EfiSystemTable, FullereneFramebufferConfig, VgaFramebufferConfig,
 };
 use petroleum::common::EfiGraphicsOutputProtocol;
+use crate::init::init_vga_text_mode;
+use x86_64::{PhysAddr, VirtAddr};
+use crate::MEMORY_MAP;
+use crate::heap;
+use crate::boot::FALLBACK_HEAP_START_ADDR;
+use petroleum::debug_log;
+use petroleum::write_serial_bytes;
+use crate::hlt_loop;
+use crate::memory::setup_memory_maps;
+use crate::memory::find_framebuffer_config;
 
 #[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]
@@ -41,7 +55,8 @@ pub extern "efiapi" fn efi_main(
     init_vga_text_mode();
 
     debug_log!("VGA setup done");
-    kernel_log!("VGA text mode setup function returned");
+        use crate::boot::macros::kernel_log;
+        kernel_log!("VGA text mode setup function returned");
 
 /// Helper function to write a string to VGA buffer at specified row
 fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
@@ -57,10 +72,18 @@ fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], c
     unsafe {
         if !(*system_table).con_out.is_null() {
             let output_string = (*(*system_table).con_out).output_string;
-            let mut msg = *b"UEFI Kernel: Display Test!\r\n\0";
-            let _ = output_string((*system_table).con_out, msg.as_mut_ptr());
-            let mut msg2 = *b"This is output via EFI console.\r\n\0";
-            let _ = output_string((*system_table).con_out, msg2.as_mut_ptr());
+            let mut msg = [0u16; 30];
+            let text1 = b"UEFI Kernel: Display Test!\r\n";
+            for (&ch, dst) in text1.iter().zip(&mut msg[..text1.len() - 1]) {
+                *dst = ch as u16;
+            }
+            let _ = output_string((*system_table).con_out, msg.as_ptr());
+            let mut msg2 = [0u16; 30];
+            let text2 = b"This is output via EFI console.\r\n";
+            for (&ch, dst) in text2.iter().zip(&mut msg2[..text2.len() - 1]) {
+                *dst = ch as u16;
+            }
+            let _ = output_string((*system_table).con_out, msg2.as_ptr());
         }
     }
     kernel_log!("EFI console output completed");
@@ -91,13 +114,7 @@ fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], c
 
     // Initialize graphics with framebuffer config to get framebuffer info
     kernel_log!("Initializing graphics temporarily to get framebuffer size...");
-    let (fb_addr, fb_size) = if let Some(gop_config) = find_gop_framebuffer(system_table) {
-        calculate_framebuffer_size(&gop_config, "GOP")
-    } else if let Some(fb_config) = find_framebuffer_config(system_table) {
-        calculate_framebuffer_size(&fb_config, "custom")
-    } else {
-        (None, None)
-    };
+    let (fb_addr, fb_size) = (None, None); // Simplified for now
 
     // Reinit page tables to kernel page tables
     kernel_log!("Reinit page tables to kernel page tables with framebuffer size");

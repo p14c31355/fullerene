@@ -198,7 +198,7 @@ fn load_segment(
     impl Cr3SwitchGuard {
         unsafe fn new(page_table: &crate::memory_management::ProcessPageTable) -> Self {
             let (original_cr3, original_cr3_flags) = x86_64::registers::control::Cr3::read();
-            crate::memory_management::switch_to_page_table(page_table);
+            unsafe { crate::memory_management::switch_to_page_table(page_table); }
             Self {
                 original_cr3,
                 original_cr3_flags,
