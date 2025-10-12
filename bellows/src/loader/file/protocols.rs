@@ -47,7 +47,7 @@ pub fn get_loaded_image_protocol(
     debug_print_str("File: Trying handle_protocol\n");
     let status_h = (bs.handle_protocol)(
         image_handle,
-        &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
+        EFI_LOADED_IMAGE_PROTOCOL_GUID.as_ptr(),
         &mut loaded_image as *mut _ as *mut *mut c_void,
     );
     if EfiStatus::from(status_h) == EfiStatus::Success {
@@ -61,7 +61,7 @@ pub fn get_loaded_image_protocol(
     let mut handles: *mut usize = ptr::null_mut();
     let status = (bs.locate_handle_buffer)(
         2, // ByProtocol
-        &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
+        EFI_LOADED_IMAGE_PROTOCOL_GUID.as_ptr(),
         ptr::null_mut(),
         &mut handle_count,
         &mut handles,
@@ -71,7 +71,7 @@ pub fn get_loaded_image_protocol(
         (bs.free_pool)(handles as *mut c_void);
         let status = (bs.open_protocol)(
             loaded_handle,
-            &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
+            EFI_LOADED_IMAGE_PROTOCOL_GUID.as_ptr(),
             &mut loaded_image as *mut _ as *mut *mut c_void,
             0,
             0,
@@ -86,7 +86,7 @@ pub fn get_loaded_image_protocol(
     debug_print_str("File: Trying global locate_protocol for LoadedImage\n");
     let mut global_loaded: *mut EfiLoadedImageProtocol = ptr::null_mut();
     let loc_status = (bs.locate_protocol)(
-        &EFI_LOADED_IMAGE_PROTOCOL_GUID as *const _ as *const u8,
+        EFI_LOADED_IMAGE_PROTOCOL_GUID.as_ptr(),
         ptr::null_mut(),
         &mut global_loaded as *mut _ as *mut *mut core::ffi::c_void,
     );
@@ -117,7 +117,7 @@ pub fn get_simple_file_system(
     // First try locate_protocol (global)
     let mut fs_proto_ptr: *mut EfiSimpleFileSystem = ptr::null_mut();
     let status = (bs.locate_protocol)(
-        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID.as_ptr(),
         ptr::null_mut(),
         &mut fs_proto_ptr as *mut _ as *mut *mut c_void,
     );
@@ -130,7 +130,7 @@ pub fn get_simple_file_system(
     let mut handles: *mut usize = ptr::null_mut();
     let status = (bs.locate_handle_buffer)(
         2, // ByProtocol
-        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID.as_ptr(),
         ptr::null_mut(),
         &mut handle_count,
         &mut handles,
@@ -146,7 +146,7 @@ pub fn get_simple_file_system(
         let proto = open_protocol::<EfiSimpleFileSystem>(
             bs,
             fs_handle,
-            &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+            EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID.as_ptr(),
             image_handle,
             1,
         )?;
@@ -157,7 +157,7 @@ pub fn get_simple_file_system(
     let mut proto_ptr: *mut EfiSimpleFileSystem = ptr::null_mut();
     let status = (bs.handle_protocol)(
         device_handle,
-        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID.as_ptr(),
         &mut proto_ptr as *mut _ as *mut *mut c_void,
     );
     debug_print_str("File: device_handle protocol status=");
@@ -171,7 +171,7 @@ pub fn get_simple_file_system(
     if let Ok(proto) = open_protocol::<EfiSimpleFileSystem>(
         bs,
         device_handle,
-        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID as *const _ as *const u8,
+        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID.as_ptr(),
         image_handle,
         1,
     ) {
