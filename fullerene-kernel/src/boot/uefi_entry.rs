@@ -130,41 +130,29 @@ pub extern "efiapi" fn efi_main(
 
     // Find framebuffer configuration before reiniting page tables
     kernel_log!("Finding framebuffer config for page table mapping...");
-    let (fb_addr, fb_size) = match find_framebuffer_config(system_table) {
-        Some(config) => {
-            let fb_size_bytes = (config.width as usize * config.height as usize * config.bpp as usize) / 8;
-            kernel_log!(
-                "Found framebuffer config: {}x{} @ {:#x}, size: {}",
-                config.width,
-                config.height,
-                config.address,
-                fb_size_bytes
-            );
-            (
-                Some(config.address as u64),
-                Some(fb_size_bytes as u64),
-            )
-        }
-        None => match find_gop_framebuffer(system_table) {
-            Some(config) => {
-                let fb_size_bytes = (config.width as usize * config.height as usize * config.bpp as usize) / 8;
-                kernel_log!(
-                    "Found GOP framebuffer config: {}x{} @ {:#x}, size: {}",
-                    config.width,
-                    config.height,
-                    config.address,
-                    fb_size_bytes
-                );
-                (
-                    Some(config.address as u64),
-                    Some(fb_size_bytes as u64),
-                )
-            }
-            None => {
-                kernel_log!("No framebuffer config found, using None");
-                (None, None)
-            }
-        },
+    let (fb_addr, fb_size) = if let Some(config) = find_framebuffer_config(system_table) {
+        let fb_size_bytes = (config.width as usize * config.height as usize * config.bpp as usize) / 8;
+        kernel_log!(
+            "Found framebuffer config: {}x{} @ {:#x}, size: {}",
+            config.width,
+            config.height,
+            config.address,
+            fb_size_bytes
+        );
+        (Some(config.address as u64), Some(fb_size_bytes as u64))
+    } else if let Some(config) = find_gop_framebuffer(system_table) {
+        let fb_size_bytes = (config.width as usize * config.height as usize * config.bpp as usize) / 8;
+        kernel_log!(
+            "Found GOP framebuffer config: {}x{} @ {:#x}, size: {}",
+            config.width,
+            config.height,
+            config.address,
+            fb_size_bytes
+        );
+        (Some(config.address as u64), Some(fb_size_bytes as u64))
+    } else {
+        kernel_log!("No framebuffer config found, using None");
+        (None, None)
     };
 
     // Reinit page tables to kernel page tables with framebuffer size
