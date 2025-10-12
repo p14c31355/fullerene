@@ -143,7 +143,7 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
         let mut info: *mut crate::common::EfiGraphicsOutputModeInformation = ptr::null_mut();
 
         let query_status = (gop_ref.query_mode)(gop, mode_num, &mut size_of_info, ptr::null_mut());
-        if query_status == 0 { // EFI_BUFFER_TOO_SMALL or similar
+        if EfiStatus::from(query_status) == EfiStatus::BufferTooSmall {
             // Allocate buffer for mode info
             let mut info_buf = vec![0u8; size_of_info];
             info = info_buf.as_mut_ptr() as *mut _;
