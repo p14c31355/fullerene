@@ -162,6 +162,30 @@ pub extern "efiapi" fn efi_main(
     interrupts::init();
     kernel_log!("Kernel: IDT init done");
 
+       kernel_log!("Kernel: Jumping straight to graphics testing");
+
+    // CRITICAL: Disable interrupts during graphics initialization to avoid process switching issues
+    x86_64::instructions::interrupts::disable();
+    kernel_log!("Interrupts disabled for graphics initialization");
+
+    // Initialize graphics with framebuffer config
+    let framebuffer_initialized = initialize_graphics_with_config(system_table);
+
+    if !framebuffer_initialized {
+        kernel_log!("No UEFI framebuffer available, falling back to VGA mode");
+        let vga_config = VgaFramebufferConfig {
+            address: 0xA0000,
+            width: 320,
+            height: 200,
+            bpp: 8,
+        };
+        kernel_log!("Initializing VGA graphics mode...");
+        graphics::init_vga(&vga_config);
+        kernel_log!("VGA graphics mode initialized, calling draw_os_desktop...");
+        graphics::draw_os_desktop();
+        kernel_log!("VGA graphics desktop drawn - if you see this, draw_os_desktop completed");
+    }
+
     kernel_log!("Initializing graphics and shell...");
 
     // Initialize graphics with framebuffer configuration
