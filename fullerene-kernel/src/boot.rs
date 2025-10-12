@@ -1,5 +1,7 @@
 //! Boot module containing UEFI and BIOS entry points and boot-specific logic
 
+pub const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
+
 use petroleum::graphics::init_vga_text_mode;
 use petroleum::serial::SERIAL_PORT_WRITER as SERIAL1;
 use petroleum::{debug_log, serial, write_serial_bytes};
@@ -145,7 +147,7 @@ pub extern "efiapi" fn efi_main(
 
     // Reinit page tables to kernel page tables
     kernel_log!("Reinit page tables to kernel page tables with framebuffer size");
-    heap::reinit_page_table(original_offset, kernel_phys_start, fb_addr, fb_size);
+    heap::reinit_page_table(physical_memory_offset, kernel_phys_start, fb_addr, fb_size);
     kernel_log!("Page table reinit completed successfully");
 
     // Set physical memory offset for process management
