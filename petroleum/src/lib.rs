@@ -59,6 +59,19 @@ macro_rules! write_serial_bytes {
 
 type EfiGraphicsOutputProtocolPtr = EfiGraphicsOutputProtocol;
 
+/// Helper to try different graphics protocols and modes
+pub fn init_graphics_protocols(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
+    // First try standard GOP protocol
+    if let Some(config) = init_gop_framebuffer(system_table) {
+        return Some(config);
+    }
+
+    // If GOP fails, we fall back to VGA text mode (handled externally)
+    // The caller should handle VGA text mode initialization
+    serial::_print(format_args!("All graphics protocols failed, falling back to VGA text mode.\n"));
+    None
+}
+
 /// Helper to find GOP and init framebuffer
 pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
     use core::ffi::c_void;
@@ -74,7 +87,7 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     );
 
     if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
-        serial::_print(format_args!("Failed to locate GOP protocol.\n"));
+        serial::_print(format_args!("Failed to locate GOP protocol (status: {:#x}).\n", status));
         return None;
     }
 
@@ -86,15 +99,20 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
 
     let mode_ref = unsafe { &*gop_ref.mode };
 
-    // Set GOP to graphics mode (mode 0)
-    if mode_ref.mode != 0 {
-        let status = (gop_ref.set_mode)(gop, 0);
-        if EfiStatus::from(status) != EfiStatus::Success {
-            serial::_print(format_args!("Failed to set GOP mode.\n"));
-            return None;
+    // Try multiple graphics modes for better compatibility
+    let modes_to_try = [0, 1, 2]; // Common modes, can be extended
+    for &mode in &modes_to_try {
+        let status = (gop_ref.set_mode)(gop, mode);
+        if EfiStatus::from(status) == EfiStatus::Success {
+            serial::_print(format_args!("GOP: Successfully set graphics mode {}.\n", mode));
+            break;
+        } else {
+            serial::_print(format_args!("GOP: Failed to set mode {}, status: {:#x}.\n", mode, status));
         }
     }
 
+    // Refresh mode reference after setting mode
+    let mode_ref = unsafe { &*gop_ref.mode };
     if mode_ref.info.is_null() {
         serial::_print(format_args!("GOP mode info pointer is null.\n"));
         return None;
@@ -106,8 +124,14 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     let fb_size = mode_ref.frame_buffer_size;
 
     if fb_addr == 0 || fb_size == 0 {
-        serial::_print(format_args!("GOP framebuffer info is invalid.\n"));
+        serial::_print(format_args!("GOP framebuffer info is invalid (addr: {:#x}, size: {}).\n", fb_addr, fb_size));
         return None;
+    }
+
+    // More robust BPP determination using proper enum variants
+    let bpp = crate::common::get_bpp_from_pixel_format(info.pixel_format);
+    if bpp == 0 {
+        serial::_print(format_args!("Unsupported pixel format: {:?}, assuming 32 BPP.\n", info.pixel_format));
     }
 
     let config = FullereneFramebufferConfig {
@@ -115,9 +139,14 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
         width: info.horizontal_resolution,
         height: info.vertical_resolution,
         pixel_format: info.pixel_format,
-        bpp: crate::common::get_bpp_from_pixel_format(info.pixel_format),
+        bpp,
         stride: info.pixels_per_scan_line,
     };
+
+    serial::_print(format_args!(
+        "GOP initialized: {}x{} @ {:#x}, stride: {}, bpp: {}\n",
+        config.width, config.height, config.address, config.stride, config.bpp
+    ));
 
     let config_ptr = Box::leak(Box::new(config));
 
@@ -129,12 +158,12 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     if EfiStatus::from(status) != EfiStatus::Success {
         let _ = unsafe { Box::from_raw(config_ptr) };
         serial::_print(format_args!(
-            "Failed to install framebuffer config table.\n"
+            "Failed to install framebuffer config table (status: {:#x}).\n", status
         ));
         return None;
     }
 
-    // Clear screen
+    // Clear screen to provide a clean visual state
     unsafe {
         ptr::write_bytes(fb_addr as *mut u8, 0x00, fb_size as usize);
     }

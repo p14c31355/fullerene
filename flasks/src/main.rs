@@ -138,7 +138,7 @@ fn main() -> io::Result<()> {
         "-display",
         "gtk",
         "-vga",
-        "cirrus",
+        "std",
         "-serial",
         "stdio",
         "-accel",
