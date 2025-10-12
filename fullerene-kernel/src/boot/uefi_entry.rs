@@ -203,6 +203,7 @@ pub extern "efiapi" fn efi_main(
         kernel_log!("Graphics initialization failed, entering idle loop");
     }
 
+    hlt_loop();
 }
 
 pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
