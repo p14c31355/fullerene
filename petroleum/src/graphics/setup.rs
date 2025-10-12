@@ -38,7 +38,6 @@ pub fn detect_vga_hardware_type() -> VgaHardwareType {
     // For now, we rely on empirical detection or fallback to generic VGA
 
     // Try to read VGA registers and determine type
-    unsafe {
         // Check graphics controller register (index 0x0F) for identification
         let mut index_writer = PortWriter::<u8>::new(VgaPorts::GRAPHICS_INDEX);
         let mut data_reader = PortWriter::<u8>::new(VgaPorts::GRAPHICS_DATA);
@@ -62,7 +61,6 @@ pub fn detect_vga_hardware_type() -> VgaHardwareType {
                 VgaHardwareType::Unknown
             }
         }
-    }
 }
 
 // Unified text mode initialization function

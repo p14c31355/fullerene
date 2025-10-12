@@ -1,7 +1,6 @@
 use petroleum::graphics::ports::VgaPorts;
 use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations, port_write};
 use spin::{Mutex, Once};
-use x86_64::instructions::port::Port;
 
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
@@ -119,9 +118,8 @@ pub fn init_vga() {
 #[cfg(test)]
 mod tests {
     use super::{
-        BUFFER_HEIGHT, BUFFER_WIDTH, Color, ColorCode, ScreenChar, TextBufferOperations, VgaBuffer,
+        BUFFER_HEIGHT, BUFFER_WIDTH, Color, ColorCode, ScreenChar, TextBufferOperations,
     };
-    use alloc::string::String;
     use alloc::vec;
     use alloc::vec::Vec;
 

@@ -1,7 +1,5 @@
-use crate::process;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::ffi::c_int;
 use x86_64::VirtAddr;
 
 /// System call result type
