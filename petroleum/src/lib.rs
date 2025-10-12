@@ -67,9 +67,9 @@ type EfiUniversalGraphicsAdapterProtocolPtr = isize; // Placeholder for UGA prot
 
 /// Helper to try Universal Graphics Adapter (UGA) protocol
 pub fn init_uga_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
-    let uga_guid = [
-        0x98, 0x2c, 0x29, 0x8b, 0xf4, 0xfa, 0x41, 0xcb, 0xb8, 0x38, 0x77, 0x7b, 0xa2, 0x48, 0x21, 0x13,
-    ];
+    // This GUID should be moved to a constant, e.g., in `petroleum/src/common/uefi.rs`
+    // pub const EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID: [u8; 16] = [...];
+    let uga_guid = crate::common::EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID;
     let bs = unsafe { &*system_table.boot_services };
     let mut uga: *mut EfiUniversalGraphicsAdapterProtocolPtr = ptr::null_mut();
 
