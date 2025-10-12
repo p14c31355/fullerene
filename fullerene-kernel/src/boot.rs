@@ -122,9 +122,10 @@ pub extern "efiapi" fn efi_main(
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(*MEMORY_MAP.get().unwrap());
     kernel_log!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());
+    const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
         let start_addr = if heap_phys_start.as_u64() < 0x1000 {
-        kernel_log!("Kernel: ERROR - Invalid heap_phys_start, using fallback 0x100000");
-        PhysAddr::new(0x100000)
+        kernel_log!("Kernel: ERROR - Invalid heap_phys_start, using fallback 0x{:x}", FALLBACK_HEAP_START_ADDR);
+        PhysAddr::new(FALLBACK_HEAP_START_ADDR)
     } else {
         heap_phys_start
     };
