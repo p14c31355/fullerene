@@ -87,7 +87,7 @@ pub fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> PhysAddr {
         PhysAddr::new(addr)
     } else {
         // Fallback if no suitable memory found
-        PhysAddr::new(0x100000)
+        PhysAddr::new(crate::boot::FALLBACK_HEAP_START_ADDR)
     }
 }
 
