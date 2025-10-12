@@ -3,6 +3,7 @@ use core::ffi::c_void;
 use crate::{
     gdt, memory, graphics, interrupts, syscall, process,
 };
+use crate::graphics::framebuffer::FramebufferLike;
 use petroleum::common::{
     EfiSystemTable, FullereneFramebufferConfig, VgaFramebufferConfig,
 };
@@ -52,11 +53,10 @@ pub extern "efiapi" fn efi_main(
     // Cast system_table to reference
     let system_table = unsafe { &*system_table };
 
-    init_vga_text_mode();
+    unsafe { init_vga_text_mode() };
 
     debug_log!("VGA setup done");
-        use crate::boot::macros::kernel_log;
-        kernel_log!("VGA text mode setup function returned");
+    kernel_log!("VGA text mode setup function returned");
 
 /// Helper function to write a string to VGA buffer at specified row
 fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
@@ -90,7 +90,7 @@ fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], c
 
     // Setup memory maps and initialize memory management
     let kernel_virt_addr = efi_main as u64;
-    let (higher_half_offset, kernel_phys_start) =
+    let (_higher_half_offset, kernel_phys_start) =
         setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
     let physical_memory_offset = VirtAddr::new(0); // UEFI identity maps initially, offset handled by higher-half in reinit_page_table
 
@@ -125,7 +125,7 @@ fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], c
     crate::memory_management::set_physical_memory_offset(physical_memory_offset);
 
     // Initialize GDT with proper heap address
-    let heap_phys_start = find_heap_start(*MEMORY_MAP.get().unwrap());
+    let heap_phys_start = memory::find_heap_start(*MEMORY_MAP.get().unwrap());
     kernel_log!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());
     let start_addr = if heap_phys_start.as_u64() < 0x1000 {
         kernel_log!(
