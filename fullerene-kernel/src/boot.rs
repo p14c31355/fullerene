@@ -118,7 +118,12 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Initializing graphics temporarily to get framebuffer size...");
     let (fb_addr, fb_size) = if let Some(gop_config) = find_gop_framebuffer(system_table) {
         let size_pixels = gop_config.width as u64 * gop_config.height as u64;
-        let size_bytes = size_pixels * (gop_config.bpp as u64 / 8);
+        let size_bytes = if gop_config.bpp >= 8 {
+            size_pixels * (gop_config.bpp as u64 / 8)
+        } else {
+            kernel_log!("Warning: Invalid bpp ({}) in GOP config.", gop_config.bpp);
+            0
+        };
         kernel_log!(
             "Calculated framebuffer size: {} bytes from {}x{} @ {} bpp",
             size_bytes,
