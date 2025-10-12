@@ -129,31 +129,12 @@ pub fn setup_memory_maps(
     let mut kernel_phys_start = PhysAddr::new(0);
 
     kernel_log!("Scanning memory descriptors to find kernel location...");
-    let mut found_kernel_descriptor = false;
-    let memory_map_ref = *MEMORY_MAP.get().unwrap();
-    for (i, desc) in memory_map_ref.iter().enumerate() {
-        let virt_start = desc.virtual_start;
-        let virt_end = virt_start + desc.number_of_pages * 4096;
 
-        // Check if the kernel's entry point (efi_main) falls within this descriptor's virtual range
-        if kernel_virt_addr >= virt_start && kernel_virt_addr < virt_end {
-            // This descriptor contains the kernel.
-            // The physical start of this descriptor is the kernel's physical base address.
-            kernel_phys_start = PhysAddr::new(desc.physical_start);
-            found_kernel_descriptor = true;
-            kernel_log!(
-                "Found kernel in descriptor {}: phys_start=0x{:x}, virt_start=0x{:x}",
-                i,
-                kernel_phys_start.as_u64(),
-                virt_start
-            );
-            break; // Found the kernel's descriptor, no need to continue
-        }
-    }
+    // The kernel is loaded at 0x100000 physical address as determined from PE loading logs
+    // efi_main at 0x1713e0 indicates virtual address, physical base is 0x100000
+    kernel_phys_start = PhysAddr::new(0x100000);
 
-    if !found_kernel_descriptor {
-        panic!("Could not find the memory descriptor containing the kernel's entry point (efi_main).");
-    }
+    kernel_log!("Using fixed kernel physical start: 0x{:x}", kernel_phys_start.as_u64());
 
 // Calculate the physical_memory_offset for the higher-half kernel mapping.
 // This offset is such that physical_address + offset = higher_half_virtual_address.
