@@ -97,7 +97,7 @@ fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], c
             let output_string = (*(*system_table).con_out).output_string;
             let mut msg = [0u16; 30];
             let text1 = b"UEFI Kernel: Display Test!\r\n";
-            for (&ch, dst) in text1.iter().zip(&mut msg[..text1.len() - 1]) {
+            for (&ch, dst) in text1.iter().zip(&mut msg[..text1.len()]) {
                 *dst = ch as u16;
             }
             let _ = output_string((*system_table).con_out, msg.as_ptr());
