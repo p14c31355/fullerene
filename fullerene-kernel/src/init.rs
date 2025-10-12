@@ -65,7 +65,7 @@ unsafe fn init_vga_text_mode() {
     seq_idx.write(VGA_SEQ_RESET); seq_data.write(0x01u8);  // Reset
     seq_idx.write(VGA_SEQ_CLOCKING_MODE); seq_data.write(0x01u8);  // 9/8 Dot Mode=0
     seq_idx.write(VGA_SEQ_CHARACTER_MAP); seq_data.write(0x00u8);  // Character Map Select
-    seq_idx.write(VGA_SEQ_MEMORY_MODE); seq_data.write(0x07u8);  // Memory Mode: Odd/Even=1, Chain4=0
+    seq_idx.write(VGA_SEQ_MEMORY_MODE); seq_data.write(0x03u8);  // Memory Mode: Alpha mode, Odd/Even disabled
 
     // CRTC: Configure 80x25 timing (unlock first)
     let mut crtc_idx = Port::new(VGA_CRTC_INDEX);
