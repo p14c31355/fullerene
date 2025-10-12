@@ -169,7 +169,7 @@ pub extern "efiapi" fn efi_main(
     interrupts::init();
     kernel_log!("Kernel: IDT init done");
 
-kernel_log!("Kernel: Jumping straight to graphics testing");
+    kernel_log!("Kernel: Jumping straight to graphics testing");
 
     // CRITICAL: Disable interrupts during graphics initialization to avoid process switching issues
     x86_64::instructions::interrupts::disable();
