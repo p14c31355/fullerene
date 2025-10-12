@@ -241,7 +241,6 @@ pub extern "efiapi" fn efi_main(
     }
 
     hlt_loop();
-
 }
 
 pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
