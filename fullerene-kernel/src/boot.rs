@@ -11,11 +11,11 @@ use petroleum::common::{
     EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
     VgaFramebufferConfig,
 };
-use x86_64::PhysAddr;
+use x86_64::{PhysAddr, VirtAddr};
 use petroleum::page_table::EfiMemoryDescriptor;
 
 use crate::memory::{find_framebuffer_config, find_heap_start, init_memory_management, setup_memory_maps};
-use crate::{gdt, graphics, heap, interrupts, shell, MEMORY_MAP};
+use crate::{gdt, graphics, heap, interrupts, keyboard, process, shell, syscall, MEMORY_MAP};
 use crate::graphics::framebuffer::{FramebufferLike, UefiFramebuffer};
 
 use petroleum::common::{
@@ -93,7 +93,10 @@ pub extern "efiapi" fn efi_main(
 
     // Setup memory maps and initialize memory management
     let kernel_virt_addr = efi_main as u64;
-    let (physical_memory_offset, kernel_phys_start) = setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
+    let (original_offset, kernel_phys_start) = setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
+    // For UEFI, use identity mapping to avoid page table issues
+    let offset_value = if cfg!(target_os = "uefi") { 0 } else { original_offset.as_u64() };
+    let physical_memory_offset = VirtAddr::new(offset_value);
 
     // Initialize memory management components (heap, page tables, etc.)
     // Comment out reinit for now to allow desktop drawing
@@ -140,17 +143,16 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Kernel: GDT init done");
 
     // Initialize heap with the remaining memory
-    // Comment out heap init to avoid page fault during boot
-    // let gdt_mem_usage = heap_start_after_gdt - heap_start;
-    // let heap_size_remaining = heap::HEAP_SIZE - gdt_mem_usage as usize;
-    // heap::init(heap_start_after_gdt, heap_size_remaining);
-    //
-    // if heap_phys_start.as_u64() < 0x1000 {
-    //     kernel_log!("Kernel: heap initialized with fallback");
-    // } else {
-    //     kernel_log!("Kernel: gdt_mem_usage=0x{:x}", gdt_mem_usage);
-    //     kernel_log!("Kernel: heap initialized");
-    // }
+    let gdt_mem_usage = heap_start_after_gdt - heap_start;
+    let heap_size_remaining = heap::HEAP_SIZE - gdt_mem_usage as usize;
+    heap::init(heap_start_after_gdt, heap_size_remaining);
+
+    if heap_phys_start.as_u64() < 0x1000 {
+        kernel_log!("Kernel: heap initialized with fallback");
+    } else {
+        kernel_log!("Kernel: gdt_mem_usage=0x{:x}", gdt_mem_usage);
+        kernel_log!("Kernel: heap initialized");
+    }
 
     // Early serial log works now
     kernel_log!("Kernel: basic init complete");
@@ -160,10 +162,35 @@ pub extern "efiapi" fn efi_main(
     interrupts::init();
     kernel_log!("Kernel: IDT init done");
 
-    kernel_log!("Kernel: Jumping straight to graphics testing");
+    kernel_log!("Initializing graphics and shell...");
 
-    // Skip graphics initialization to avoid crashes
-    kernel_log!("Kernel: initialization complete, entering idle loop");
+    // Initialize graphics with framebuffer configuration
+    if initialize_graphics_with_config(system_table) {
+        kernel_log!("Graphics initialized successfully");
+
+        // Initialize keyboard input driver
+        crate::keyboard::init();
+        kernel_log!("Keyboard initialized");
+
+        // Initialize syscall handling
+        crate::syscall::init();
+        kernel_log!("Syscalls initialized");
+
+        // Initialize process management
+        crate::process::init();
+        kernel_log!("Process management initialized");
+
+        // Start the shell as the main interface
+        kernel_log!("Starting shell...");
+        crate::shell::shell_main();
+        // shell_main should never return in normal operation
+
+        kernel_log!("Shell exited unexpectedly, entering idle loop");
+
+    } else {
+        kernel_log!("Graphics initialization failed, entering idle loop");
+    }
+
     super::hlt_loop();
 }
 
