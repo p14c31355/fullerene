@@ -61,8 +61,6 @@ macro_rules! write_serial_bytes {
     };
 }
 
-type EfiGraphicsOutputProtocolPtr = EfiGraphicsOutputProtocol;
-
 type EfiUniversalGraphicsAdapterProtocolPtr = isize; // Placeholder for UGA protocol type
 
 /// Helper to try Universal Graphics Adapter (UGA) protocol
@@ -112,100 +110,77 @@ pub fn init_graphics_protocols(system_table: &EfiSystemTable) -> Option<Fulleren
 /// Helper to find GOP and init framebuffer
 pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
     let bs = unsafe { &*system_table.boot_services };
-    let mut gop: *mut EfiGraphicsOutputProtocolPtr = ptr::null_mut();
+    let mut gop: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
 
-    let status = (bs.locate_protocol)(
+    serial::_print(format_args!("GOP: Attempting to locate Graphics Output Protocol...\n"));
+    let status = unsafe { (bs.locate_protocol)(
         EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
         ptr::null_mut(),
         &mut gop as *mut _ as *mut *mut c_void,
-    );
+    ) };
 
     if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
-        serial::_print(format_args!("Failed to locate GOP protocol (status: {:#x}).\n", status));
+        serial::_print(format_args!("GOP: Failed to locate GOP protocol (status: {:#x}).\n", status));
         return None;
     }
 
+    serial::_print(format_args!("GOP: Protocol located successfully at {:#p}.\n", gop));
+
     let gop_ref = unsafe { &*gop };
     if gop_ref.mode.is_null() {
-        serial::_print(format_args!("GOP mode pointer is null.\n"));
+        serial::_print(format_args!("GOP: Mode pointer is null.\n"));
         return None;
     }
 
     let mode_ref = unsafe { &*gop_ref.mode };
+    let current_mode = mode_ref.mode as usize;
     let max_mode = mode_ref.max_mode;
 
-    // Enumerate all available modes for better debugging and selection
-    serial::_print(format_args!("GOP: Enumerating {} available modes...\n", max_mode));
-    let mut valid_modes = Vec::new();
+    serial::_print(format_args!("GOP: Current mode: {}, Max mode: {}.\n", current_mode, max_mode));
 
-    for mode_num in 0..max_mode {
-        let mut size_of_info: usize = 0;
-        // let mut info: *mut crate::common::EfiGraphicsOutputModeInformation = ptr::null_mut();
-
-        let query_status = unsafe { (gop_ref.query_mode)(gop, mode_num, &mut size_of_info, ptr::null_mut()) };
-        if EfiStatus::from(query_status) == EfiStatus::BufferTooSmall {
-            // Allocate buffer for mode info
-            let mut info_buf = vec![0u8; size_of_info];
-            let info: *mut crate::common::EfiGraphicsOutputModeInformation = info_buf.as_mut_ptr() as *mut _;
-
-            let query_status = unsafe { (gop_ref.query_mode)(gop, mode_num, &mut size_of_info, info as *mut c_void) };
-            if EfiStatus::from(query_status) == EfiStatus::Success && !info.is_null() {
-                let mode_info = unsafe { &*info };
-                valid_modes.push((mode_num, mode_info.horizontal_resolution, mode_info.vertical_resolution));
-                serial::_print(format_args!("GOP: Mode {}: {}x{}\n", mode_num, mode_info.horizontal_resolution, mode_info.vertical_resolution));
-            }
-        }
-    }
-
-    // Select only from validated modes - don't try arbitrary modes
-    if valid_modes.is_empty() {
-        serial::_print(format_args!("GOP: No valid modes found.\n"));
-        return None;
-    }
-
-    // Sort modes by resolution (area) in descending order.
-    let mut sorted_modes = valid_modes;
-    sorted_modes.sort_unstable_by_key(|&(_, w, h)| w * h);
-
+    // Try to use current mode first, then mode 0
     let mut mode_set_successfully = false;
-    for &(mode, _, _) in sorted_modes.iter().rev() {
-        let status = unsafe { (gop_ref.set_mode)(gop, mode) };
-        if EfiStatus::from(status) == EfiStatus::Success {
-            serial::_print(format_args!("GOP: Successfully set graphics mode {}.\n", mode));
+    let target_modes = [current_mode as u32, 0];
+
+    for &mode in &target_modes {
+        if mode >= max_mode {
+            continue;
+        }
+
+        serial::_print(format_args!("GOP: Attempting to set mode {}...\n", mode));
+        let set_status = unsafe { (gop_ref.set_mode)(gop, mode) };
+        if EfiStatus::from(set_status) == EfiStatus::Success {
+            serial::_print(format_args!("GOP: Successfully set mode {}.\n", mode));
             mode_set_successfully = true;
             break;
         } else {
-            serial::_print(format_args!("GOP: Failed to set mode {}, status: {:#x}.\n", mode, status));
+            serial::_print(format_args!("GOP: Failed to set mode {}, status: {:#x}.\n", mode, set_status));
         }
     }
 
     if !mode_set_successfully {
-        serial::_print(format_args!("GOP: Failed to set any valid graphics mode.\n"));
+        serial::_print(format_args!("GOP: Failed to set any graphics mode.\n"));
         return None;
     }
 
     // Refresh mode reference after setting mode
     let mode_ref = unsafe { &*gop_ref.mode };
     if mode_ref.info.is_null() {
-        serial::_print(format_args!("GOP mode info pointer is null.\n"));
+        serial::_print(format_args!("GOP: Mode info pointer is null after setting mode.\n"));
         return None;
     }
 
     let info = unsafe { &*mode_ref.info };
-
     let fb_addr = mode_ref.frame_buffer_base;
     let fb_size = mode_ref.frame_buffer_size;
 
-    if fb_addr == 0 || fb_size == 0 {
-        serial::_print(format_args!("GOP framebuffer info is invalid (addr: {:#x}, size: {}).\n", fb_addr, fb_size));
-        return None;
-    }
+    serial::_print(format_args!("GOP: Framebuffer addr: {:#x}, size: {}KB\n", fb_addr, fb_size / 1024));
+    serial::_print(format_args!("GOP: Resolution: {}x{}, stride: {}\n",
+        info.horizontal_resolution, info.vertical_resolution, info.pixels_per_scan_line));
 
-    // More robust BPP determination using proper enum variants
-    let mut bpp = crate::common::get_bpp_from_pixel_format(info.pixel_format);
-    if bpp == 0 {
-        serial::_print(format_args!("Unsupported pixel format: {:?}, assuming 32 BPP.\n", info.pixel_format));
-        bpp = 32;
+    if fb_addr == 0 || fb_size == 0 {
+        serial::_print(format_args!("GOP: Invalid framebuffer.\n"));
+        return None;
     }
 
     let config = FullereneFramebufferConfig {
@@ -213,35 +188,36 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
         width: info.horizontal_resolution,
         height: info.vertical_resolution,
         pixel_format: info.pixel_format,
-        bpp,
+        bpp: 32, // Assuming 32bpp for supported modes
         stride: info.pixels_per_scan_line,
     };
 
     serial::_print(format_args!(
-        "GOP initialized: {}x{} @ {:#x}, stride: {}, bpp: {}\n",
-        config.width, config.height, config.address, config.stride, config.bpp
+        "GOP: Framebuffer ready: {}x{} @ {:#x}, {} BPP, stride {}\n",
+        config.width, config.height, config.address, config.bpp, config.stride
     ));
 
     let config_ptr = Box::leak(Box::new(config));
 
-    let status = (bs.install_configuration_table)(
+    let install_status = unsafe { (bs.install_configuration_table)(
         FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
         config_ptr as *const _ as *mut c_void,
-    );
+    ) };
 
-    if EfiStatus::from(status) != EfiStatus::Success {
+    if EfiStatus::from(install_status) != EfiStatus::Success {
         let _ = unsafe { Box::from_raw(config_ptr) };
-        serial::_print(format_args!(
-            "Failed to install framebuffer config table (status: {:#x}).\n", status
-        ));
+        serial::_print(format_args!("GOP: Failed to install config table (status: {:#x}).\n", install_status));
         return None;
     }
 
-    // Clear screen to provide a clean visual state
+    serial::_print(format_args!("GOP: Configuration table installed successfully.\n"));
+
+    // Clear screen for clean state
     unsafe {
         ptr::write_bytes(fb_addr as *mut u8, 0x00, fb_size as usize);
     }
 
+    serial::_print(format_args!("GOP: Framebuffer cleared.\n"));
     Some(*config_ptr)
 }
 
