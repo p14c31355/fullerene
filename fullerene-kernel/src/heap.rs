@@ -309,7 +309,7 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
         }
     }
 
-    let level_4_table = unsafe { &mut *(0x4000 as *mut PageTable) };
+    let level_4_table = unsafe { &mut *temp_virt_page.start_address().as_mut_ptr() };
 
     // Zero the table
     level_4_table.zero();
