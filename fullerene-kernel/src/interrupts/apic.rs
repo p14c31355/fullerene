@@ -59,7 +59,7 @@ impl ApicRaw {
     /// Write to APIC register
     unsafe fn write(&self, offset: u32, value: u32) {
         let addr = (self.base_addr + offset as u64) as *mut u32;
-        unsafe { addr.write_volatile(value) }
+        addr.write_volatile(value)
     }
 }
 
