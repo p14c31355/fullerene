@@ -293,7 +293,7 @@ pub(crate) unsafe fn map_physical_range(
 
 pub fn reinit_page_table(
     physical_memory_offset: VirtAddr,
-    kernel_phys_start: PhysAddr,
+    _kernel_phys_start: PhysAddr,
     framebuffer_addr: Option<u64>,
     framebuffer_size: Option<u64>,
 ) {
