@@ -1,0 +1,1 @@
+pub const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
