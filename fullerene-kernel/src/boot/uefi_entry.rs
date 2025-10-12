@@ -34,13 +34,11 @@ fn efi_print(system_table: &EfiSystemTable, text: &[u8]) {
         if !(*system_table).con_out.is_null() {
             let output_string = (*(*system_table).con_out).output_string;
             let mut buffer = [0u16; 128];
-            let len = text.len().min(buffer.len());
+            let len = text.len().min(buffer.len() - 1);
             for (i, &byte) in text.iter().take(len).enumerate() {
                 buffer[i] = byte as u16;
             }
-            if len < buffer.len() {
-                buffer[len] = 0;
-            }
+            buffer[len] = 0;
             let _ = output_string((*system_table).con_out, buffer.as_ptr());
         }
     }
@@ -88,7 +86,7 @@ pub extern "efiapi" fn efi_main(
     // Direct VGA buffer test - write to hardware buffer directly
     kernel_log!("Direct VGA buffer write test...");
     unsafe {
-        let vga_buffer = &mut *(0xb8000 as *mut [[u16; 80]; 25]);
+        let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
         write_vga_string(vga_buffer, 0, b"Kernel boot", 0x1F00);
     }
     kernel_log!("Direct VGA write test completed");
@@ -134,30 +132,32 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Finding framebuffer config for page table mapping...");
     let (fb_addr, fb_size) = match find_framebuffer_config(system_table) {
         Some(config) => {
+            let fb_size_bytes = (config.width as usize * config.height as usize * config.bpp as usize) / 8;
             kernel_log!(
                 "Found framebuffer config: {}x{} @ {:#x}, size: {}",
                 config.width,
                 config.height,
                 config.address,
-                (config.width as usize * config.height as usize * config.bpp as usize) / 8
+                fb_size_bytes
             );
             (
                 Some(config.address as u64),
-                Some(((config.width as usize * config.height as usize * config.bpp as usize) / 8) as u64),
+                Some(fb_size_bytes as u64),
             )
         }
         None => match find_gop_framebuffer(system_table) {
             Some(config) => {
+                let fb_size_bytes = (config.width as usize * config.height as usize * config.bpp as usize) / 8;
                 kernel_log!(
                     "Found GOP framebuffer config: {}x{} @ {:#x}, size: {}",
                     config.width,
                     config.height,
                     config.address,
-                    (config.width as usize * config.height as usize * config.bpp as usize) / 8
+                    fb_size_bytes
                 );
                 (
                     Some(config.address as u64),
-                    Some(((config.width as usize * config.height as usize * config.bpp as usize) / 8) as u64),
+                    Some(fb_size_bytes as u64),
                 )
             }
             None => {
@@ -377,7 +377,7 @@ pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str)
 #[cfg(target_os = "uefi")]
 fn backup_vga_text_buffer() -> [[u16; 80]; 25] {
     unsafe {
-        let vga_ptr = 0xb8000 as *const [[u16; 80]; 25];
+        let vga_ptr = crate::VGA_BUFFER_ADDRESS as *const [[u16; 80]; 25];
         *vga_ptr
     }
 }
@@ -386,7 +386,7 @@ fn backup_vga_text_buffer() -> [[u16; 80]; 25] {
 #[cfg(target_os = "uefi")]
 fn restore_vga_text_buffer(buffer: [[u16; 80]; 25]) {
     unsafe {
-        let vga_ptr = 0xb8000 as *mut [[u16; 80]; 25];
+        let vga_ptr = crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25];
         *vga_ptr = buffer;
     }
 }
