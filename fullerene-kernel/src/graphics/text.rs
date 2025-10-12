@@ -3,6 +3,7 @@ use alloc::boxed::Box; // Import Box
 use embedded_graphics::{
     geometry::Point,
     mono_font::{MonoTextStyle, ascii::FONT_6X10},
+    pixelcolor::Rgb888,
     prelude::*,
     text::Text,
 };

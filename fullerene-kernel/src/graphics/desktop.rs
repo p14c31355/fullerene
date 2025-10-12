@@ -1,6 +1,7 @@
 use petroleum::serial::debug_print_str_to_com1 as debug_print_str;
 use super::framebuffer::FramebufferLike;
 use embedded_graphics::{
+    pixelcolor::Rgb888,
     prelude::*,
     primitives::{PrimitiveStyleBuilder, Rectangle},
 };
