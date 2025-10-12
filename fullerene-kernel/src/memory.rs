@@ -70,11 +70,12 @@ pub fn find_framebuffer_config(
 
 // Helper function to find heap start from memory map (using generic)
 pub fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> PhysAddr {
-    // Find the largest EfiConventionalMemory descriptor and use its physical start for heap
+    // Find the largest suitable memory region from EfiLoaderData or EfiConventionalMemory and use its physical start for heap
     let mut largest_addr = None;
     let mut largest_pages = 0u64;
     for desc in descriptors {
-        if desc.type_ == EfiMemoryType::EfiConventionalMemory && desc.number_of_pages >= 4 {
+        if (desc.type_ == EfiMemoryType::EfiLoaderData || desc.type_ == EfiMemoryType::EfiConventionalMemory)
+            && desc.number_of_pages >= 4 {
             // at least 16KB
             if desc.number_of_pages > largest_pages {
                 largest_pages = desc.number_of_pages;
@@ -85,7 +86,7 @@ pub fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> PhysAddr {
     if let Some(addr) = largest_addr {
         PhysAddr::new(addr)
     } else {
-        // Fallback if no conventional memory found
+        // Fallback if no suitable memory found
         PhysAddr::new(0x100000)
     }
 }

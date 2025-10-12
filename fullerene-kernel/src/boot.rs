@@ -33,6 +33,25 @@ macro_rules! kernel_log {
     };
 }
 
+// Helper function to calculate framebuffer size with bpp validation and logging
+fn calculate_framebuffer_size(config: &FullereneFramebufferConfig, source: &str) -> (Option<u64>, Option<u64>) {
+    if config.bpp < 8 {
+        kernel_log!("Warning: Invalid bpp ({}) in {} config.", config.bpp, source);
+        return (None, None);
+    }
+    let size_pixels = config.width as u64 * config.height as u64;
+    let size_bytes = size_pixels * (config.bpp as u64 / 8);
+    kernel_log!(
+        "Calculated {} framebuffer size: {} bytes from {}x{} @ {} bpp",
+        source,
+        size_bytes,
+        config.width,
+        config.height,
+        config.bpp
+    );
+    (Some(config.address), Some(size_bytes))
+}
+
 #[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]
 #[unsafe(link_section = ".text.efi_main")]
@@ -117,32 +136,9 @@ pub extern "efiapi" fn efi_main(
     // Initialize graphics with framebuffer config to get framebuffer info
     kernel_log!("Initializing graphics temporarily to get framebuffer size...");
     let (fb_addr, fb_size) = if let Some(gop_config) = find_gop_framebuffer(system_table) {
-        let size_pixels = gop_config.width as u64 * gop_config.height as u64;
-        let size_bytes = if gop_config.bpp >= 8 {
-            size_pixels * (gop_config.bpp as u64 / 8)
-        } else {
-            kernel_log!("Warning: Invalid bpp ({}) in GOP config.", gop_config.bpp);
-            0
-        };
-        kernel_log!(
-            "Calculated framebuffer size: {} bytes from {}x{} @ {} bpp",
-            size_bytes,
-            gop_config.width,
-            gop_config.height,
-            gop_config.bpp
-        );
-        (Some(gop_config.address), Some(size_bytes))
+        calculate_framebuffer_size(&gop_config, "GOP")
     } else if let Some(fb_config) = find_framebuffer_config(system_table) {
-        let size_pixels = fb_config.width as u64 * fb_config.height as u64;
-        let size_bytes = size_pixels * (fb_config.bpp as u64 / 8);
-        kernel_log!(
-            "Calculated custom framebuffer size: {} bytes from {}x{} @ {} bpp",
-            size_bytes,
-            fb_config.width,
-            fb_config.height,
-            fb_config.bpp
-        );
-        (Some(fb_config.address), Some(size_bytes))
+        calculate_framebuffer_size(&fb_config, "custom")
     } else {
         (None, None)
     };
