@@ -41,13 +41,12 @@ fn try_allocate_pages(
             pages, // Start with 1 for testing
             &mut phys_addr_local,
         );
-        debug_log!("Heap: Exited allocate_pages call. phys_addr={:x}, raw_status=0x{:x}", phys_addr, status);
+        debug_log!("Heap: Exited allocate_pages call. phys_addr_local={:x}, raw_status=0x{:x}", phys_addr_local, status);
 
-        // Immediate validation: check if phys_addr is page-aligned (avoid invalid reads)
-        if phys_addr != 0 && !phys_addr.is_multiple_of(4096) {
-            debug_log!("Heap: WARNING: phys_addr not page-aligned!");
-            let _ = (bs.free_pages)(phys_addr, pages); // Ignore status on free
-            phys_addr = 0;
+        // Immediate validation: check if phys_addr_local is page-aligned (avoid invalid reads)
+        if phys_addr_local != 0 && !phys_addr_local.is_multiple_of(4096) {
+            debug_log!("Heap: WARNING: phys_addr_local not page-aligned!");
+            let _ = (bs.free_pages)(phys_addr_local, pages); // Ignore status on free
             continue;
         }
 
@@ -65,11 +64,10 @@ fn try_allocate_pages(
             continue; // Ignore Conventional memory type
         }
 
-        if status_efi == EfiStatus::Success && phys_addr != 0 {
+        if status_efi == EfiStatus::Success && phys_addr_local != 0 {
             debug_log!("Heap: Allocated at address, aligned OK.");
-            return Ok(phys_addr);
+            return Ok(phys_addr_local);
         }
-        phys_addr = 0;
     }
 
     Err(BellowsError::AllocationFailed(
