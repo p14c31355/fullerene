@@ -43,7 +43,9 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     // For UEFI, just loop forever on panic
     loop {
-        unsafe { x86_64::instructions::hlt(); }
+        unsafe {
+            x86_64::instructions::hlt();
+        }
     }
 }
 

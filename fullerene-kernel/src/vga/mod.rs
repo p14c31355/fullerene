@@ -1,5 +1,5 @@
 use petroleum::graphics::ports::VgaPorts;
-use petroleum::{port_write, Color, ColorCode, ScreenChar, TextBufferOperations};
+use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations, port_write};
 use spin::{Mutex, Once};
 use x86_64::instructions::port::Port;
 

@@ -58,7 +58,9 @@ macro_rules! common_panic {
                     let msg = b"PANIC!\0";
                     let mut wide_msg = [0u16; 16];
                     for (i, &b) in msg.iter().enumerate() {
-                        if b == 0 { break; }
+                        if b == 0 {
+                            break;
+                        }
                         wide_msg[i] = b as u16;
                     }
                     if let Some(con_out) = st_ref.con_out.as_mut() {
@@ -67,7 +69,9 @@ macro_rules! common_panic {
                 }
             }
             loop {
-                unsafe { x86_64::instructions::hlt(); }
+                unsafe {
+                    x86_64::instructions::hlt();
+                }
             }
         }
         #[cfg(not(any(target_os = "uefi", test)))]
@@ -227,8 +231,8 @@ impl From<usize> for EfiStatus {
 /// Returns 32 for RGB/BGR formats, 0 for unsupported formats.
 pub fn get_bpp_from_pixel_format(pixel_format: EfiGraphicsPixelFormat) -> u32 {
     match pixel_format {
-        EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor |
-        EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor => 32,
+        EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
+        | EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor => 32,
         EfiGraphicsPixelFormat::PixelBitMask => {
             // For PixelBitMask, we would need to parse the mask, but for now assume 32
             // as it's not commonly used and the format is complex
@@ -337,23 +341,23 @@ pub struct EfiBootServices {
     _unused17: usize,                                        // fn17
     pub locate_handle:
         extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut usize) -> usize, // fn18
-    _unused19: usize,                                         // fn19
+    _unused19: usize,                                        // fn19
     pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize, // fn20
     _unused21: usize,                                        // fn21
     _unused22: usize,                                        // fn22
-    _unused23: usize,                                       // fn23
+    _unused23: usize,                                        // fn23
     _unused24: usize,                                        // fn24
     pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize, // fn25
     _unused26: usize,                                        // fn26
-    pub stall: extern "efiapi" fn(usize) -> usize,          // fn27
+    pub stall: extern "efiapi" fn(usize) -> usize,           // fn27
     _unused28: usize,                                        // fn28
     _unused29: usize,                                        // fn29
-    _unused30: usize,                                       // fn30
+    _unused30: usize,                                        // fn30
     pub open_protocol:
         extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, // fn31
-    _unused32: usize,                                       // fn32
-    _unused33: usize,                                       // fn33
-    _unused34: usize,                                       // fn34
+    _unused32: usize,                                        // fn32
+    _unused33: usize,                                        // fn33
+    _unused34: usize,                                        // fn34
     pub locate_handle_buffer:
         extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut *mut usize) -> usize, // fn35
     pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize, // fn36

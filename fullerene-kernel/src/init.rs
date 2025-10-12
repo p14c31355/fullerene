@@ -53,12 +53,15 @@ pub fn init_common() {
     use core::mem::MaybeUninit;
 
     // Static heap for BIOS
-    static mut HEAP: [MaybeUninit<u8>; crate::heap::HEAP_SIZE] = [MaybeUninit::uninit(); crate::heap::HEAP_SIZE];
+    static mut HEAP: [MaybeUninit<u8>; crate::heap::HEAP_SIZE] =
+        [MaybeUninit::uninit(); crate::heap::HEAP_SIZE];
     let heap_start_addr: x86_64::VirtAddr;
     unsafe {
         let heap_start_ptr: *mut u8 = core::ptr::addr_of_mut!(HEAP) as *mut u8;
         heap_start_addr = x86_64::VirtAddr::from_ptr(heap_start_ptr);
-        crate::heap::ALLOCATOR.lock().init(heap_start_ptr, crate::heap::HEAP_SIZE);
+        crate::heap::ALLOCATOR
+            .lock()
+            .init(heap_start_ptr, crate::heap::HEAP_SIZE);
     }
 
     crate::gdt::init(heap_start_addr); // Pass the actual heap start address

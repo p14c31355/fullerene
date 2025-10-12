@@ -28,10 +28,17 @@ fn try_allocate_pages(
             EfiMemoryType::EfiConventionalMemory => "Conventional",
             _ => "Other",
         };
-        debug_log!("Heap: About to call allocate_pages (type AnyPages, mem {}))", type_str);
+        debug_log!(
+            "Heap: About to call allocate_pages (type AnyPages, mem {}))",
+            type_str
+        );
 
         let mut phys_addr_local: usize = 0;
-        debug_log!("Heap: Calling allocate_pages with pages={:x}, mem_type={:x}", pages, mem_type as usize);
+        debug_log!(
+            "Heap: Calling allocate_pages with pages={:x}, mem_type={:x}",
+            pages,
+            mem_type as usize
+        );
         debug_log!("Heap: Entering allocate_pages call...");
         // Use AllocateAnyPages (0) for any mem
         let alloc_type = 0usize; // AllocateAnyPages
@@ -41,7 +48,11 @@ fn try_allocate_pages(
             pages, // Start with 1 for testing
             &mut phys_addr_local,
         );
-        debug_log!("Heap: Exited allocate_pages call. phys_addr_local={:x}, raw_status=0x{:x}", phys_addr_local, status);
+        debug_log!(
+            "Heap: Exited allocate_pages call. phys_addr_local={:x}, raw_status=0x{:x}",
+            phys_addr_local,
+            status
+        );
 
         // Immediate validation: check if phys_addr_local is page-aligned (avoid invalid reads)
         if phys_addr_local != 0 && !phys_addr_local.is_multiple_of(4096) {

@@ -10,10 +10,10 @@ pub mod graphics;
 pub mod page_table;
 pub mod serial;
 pub use apic::{IoApic, IoApicRedirectionEntry, init_io_apic};
+pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 pub use graphics::{
     Color, ColorCode, ScreenChar, TextBufferOperations, VgaPortOps, VgaPorts, init_vga_graphics,
 };
-pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 pub use serial::{Com1Ports, SerialPort, SerialPortOps};
 
 use core::arch::asm;

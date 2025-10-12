@@ -225,12 +225,18 @@ pub fn init(heap_start: VirtAddr, heap_size: usize) {
     let mut current_page = start_page;
     while current_page <= end_page {
         let page_start_virt = current_page.start_address();
-        let page_start_phys = PhysAddr::new(page_start_virt.as_u64() - physical_memory_offset.as_u64());
+        let page_start_phys =
+            PhysAddr::new(page_start_virt.as_u64() - physical_memory_offset.as_u64());
         let frame = PhysFrame::<Size4KiB>::containing_address(page_start_phys);
 
         unsafe {
             mapper
-                .map_to(current_page, frame, Flags::PRESENT | Flags::WRITABLE, &mut *frame_allocator)
+                .map_to(
+                    current_page,
+                    frame,
+                    Flags::PRESENT | Flags::WRITABLE,
+                    &mut *frame_allocator,
+                )
                 .unwrap()
                 .flush();
         }
@@ -285,11 +291,20 @@ pub(crate) unsafe fn map_physical_range(
     }
 }
 
-pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: PhysAddr, framebuffer_addr: Option<u64>, framebuffer_size: Option<u64>) {
+pub fn reinit_page_table(
+    physical_memory_offset: VirtAddr,
+    kernel_phys_start: PhysAddr,
+    framebuffer_addr: Option<u64>,
+    framebuffer_size: Option<u64>,
+) {
     use x86_64::registers::control::Cr3;
     use x86_64::structures::paging::PageTable;
 
-    petroleum::serial::serial_log(format_args!("reinit_page_table: Starting with offset 0x{:x}, kernel_start 0x{:x}\n", physical_memory_offset.as_u64(), kernel_phys_start.as_u64()));
+    petroleum::serial::serial_log(format_args!(
+        "reinit_page_table: Starting with offset 0x{:x}, kernel_start 0x{:x}\n",
+        physical_memory_offset.as_u64(),
+        kernel_phys_start.as_u64()
+    ));
 
     let mut frame_allocator = FRAME_ALLOCATOR.get().unwrap().lock();
     let memory_map = *MEMORY_MAP.get().unwrap();
@@ -298,19 +313,31 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     let level_4_frame = frame_allocator
         .allocate_frame()
         .expect("Failed to allocate level 4 frame");
-    petroleum::serial::serial_log(format_args!("reinit_page_table: Allocated L4 frame at 0x{:x}\n", level_4_frame.start_address().as_u64()));
+    petroleum::serial::serial_log(format_args!(
+        "reinit_page_table: Allocated L4 frame at 0x{:x}\n",
+        level_4_frame.start_address().as_u64()
+    ));
 
     // Temporarily map the new level 4 table to an unused virtual address for initialization
     let temp_virt_page = Page::<Size4KiB>::containing_address(VirtAddr::new(0xFFFF_FF00_0000_F000)); // Example high canonical address
     {
         let mut current_mapper = MAPPER.get().unwrap().lock();
         unsafe {
-            current_mapper.map_to(temp_virt_page, level_4_frame, Flags::PRESENT | Flags::WRITABLE, &mut *frame_allocator).expect("Failed to map temp").flush();
+            current_mapper
+                .map_to(
+                    temp_virt_page,
+                    level_4_frame,
+                    Flags::PRESENT | Flags::WRITABLE,
+                    &mut *frame_allocator,
+                )
+                .expect("Failed to map temp")
+                .flush();
         }
     }
     petroleum::serial::serial_log(format_args!("reinit_page_table: Temp mapped L4 table\n"));
 
-    let level_4_table: &mut PageTable = unsafe { &mut *temp_virt_page.start_address().as_mut_ptr() };
+    let level_4_table: &mut PageTable =
+        unsafe { &mut *temp_virt_page.start_address().as_mut_ptr() };
     level_4_table.zero();
     petroleum::serial::serial_log(format_args!("reinit_page_table: Zeroed L4 table\n"));
 
@@ -319,20 +346,22 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     let mut new_mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
     petroleum::serial::serial_log(format_args!("reinit_page_table: Created new mapper\n"));
 
-    // Map all memory regions appropriately
+    // Map usable memory types to higher-half kernel space
+    let higher_half_types = [
+        petroleum::common::EfiMemoryType::EfiConventionalMemory,
+        petroleum::common::EfiMemoryType::EfiLoaderCode,
+        petroleum::common::EfiMemoryType::EfiLoaderData,
+        petroleum::common::EfiMemoryType::EfiBootServicesCode,
+        petroleum::common::EfiMemoryType::EfiBootServicesData,
+    ];
     for desc in memory_map {
-        if desc.number_of_pages == 0 {
+        if desc.number_of_pages == 0 || !higher_half_types.contains(&desc.type_) {
             continue;
         }
-
         let start_phys = PhysAddr::new(desc.physical_start);
         let end_phys = start_phys + (desc.number_of_pages * 4096);
-
-        // All physical memory is mapped to the higher half.
         let start_virt = physical_memory_offset + desc.physical_start;
-
-        let flags = Flags::PRESENT | Flags::WRITABLE; // Make writable for now, can be refined later
-
+        let flags = Flags::PRESENT | Flags::WRITABLE;
         unsafe {
             map_physical_range(
                 &mut new_mapper,
@@ -344,14 +373,51 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
             );
         }
     }
-    petroleum::serial::serial_log(format_args!("reinit_page_table: Mapped memory to higher half\n"));
+    petroleum::serial::serial_log(format_args!(
+        "reinit_page_table: Mapped usable memory to higher half\n"
+    ));
+
+    // Identity-map UEFI runtime services for compatibility
+    let runtime_types = [
+        petroleum::common::EfiMemoryType::EfiRuntimeServicesCode,
+        petroleum::common::EfiMemoryType::EfiRuntimeServicesData,
+    ];
+    for desc in memory_map {
+        if desc.number_of_pages == 0 || !runtime_types.contains(&desc.type_) {
+            continue;
+        }
+        let start_phys = PhysAddr::new(desc.physical_start);
+        let end_phys = start_phys + (desc.number_of_pages * 4096);
+        let start_virt = VirtAddr::new(desc.physical_start); // Identity mapping
+        let flags = if desc.type_ == petroleum::common::EfiMemoryType::EfiRuntimeServicesCode {
+            Flags::PRESENT // Executable for runtime code
+        } else {
+            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE // Writable, non-executable for runtime data
+        };
+        unsafe {
+            map_physical_range(
+                &mut new_mapper,
+                start_phys,
+                end_phys,
+                start_virt,
+                flags,
+                &mut frame_allocator,
+            );
+        }
+    }
+    petroleum::serial::serial_log(format_args!(
+        "reinit_page_table: Identity-mapped UEFI runtime services\n"
+    ));
 
     // Set the higher half offset
     HIGHER_HALF_OFFSET.call_once(|| physical_memory_offset);
 
     // Map framebuffer if provided (identity-mapped)
     if let Some(fb_addr) = framebuffer_addr {
-        petroleum::serial::serial_log(format_args!("reinit_page_table: Mapping framebuffer at 0x{:x}\n", fb_addr));
+        petroleum::serial::serial_log(format_args!(
+            "reinit_page_table: Mapping framebuffer at 0x{:x}\n",
+            fb_addr
+        ));
         let fb_start = PhysAddr::new(fb_addr);
         let fb_size = framebuffer_size.unwrap_or(0x400000); // Fallback to 4MB
         let fb_end = fb_start + fb_size;
@@ -366,25 +432,36 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
                 &mut frame_allocator,
             );
         }
-        petroleum::serial::serial_log(format_args!("reinit_page_table: Mapped framebuffer of size 0x{:x}\n", fb_size));
+        petroleum::serial::serial_log(format_args!(
+            "reinit_page_table: Mapped framebuffer of size 0x{:x}\n",
+            fb_size
+        ));
     }
 
     // Unmap temporary mapping
     {
         let mut current_mapper = MAPPER.get().unwrap().lock();
-        current_mapper.unmap(temp_virt_page).expect("Failed to unmap temp").1.flush();
+        current_mapper
+            .unmap(temp_virt_page)
+            .expect("Failed to unmap temp")
+            .1
+            .flush();
     }
     petroleum::serial::serial_log(format_args!("reinit_page_table: Unmapped temp\n"));
 
     petroleum::serial::serial_log(format_args!("reinit_page_table: About to write CR3\n"));
     // Switch to new page table
     unsafe { Cr3::write(level_4_frame, Cr3Flags::empty()) };
-    petroleum::serial::serial_log(format_args!("reinit_page_table: CR3 written, switched to new page table\n"));
+    petroleum::serial::serial_log(format_args!(
+        "reinit_page_table: CR3 written, switched to new page table\n"
+    ));
 
     // Reinitialize global mapper with the new page table and correct offset
     let mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
     *MAPPER.get().unwrap().lock() = mapper;
-    petroleum::serial::serial_log(format_args!("reinit_page_table: Global mapper reinitialized\n"));
+    petroleum::serial::serial_log(format_args!(
+        "reinit_page_table: Global mapper reinitialized\n"
+    ));
 
     petroleum::serial::serial_log(format_args!("reinit_page_table: Completed successfully\n"));
 }

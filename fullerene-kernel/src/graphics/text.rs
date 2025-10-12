@@ -1,5 +1,5 @@
-use core::fmt::{self, Write};
 use alloc::boxed::Box; // Import Box
+use core::fmt::{self, Write};
 use embedded_graphics::{
     geometry::Point,
     mono_font::{MonoTextStyle, ascii::FONT_6X10},
@@ -8,13 +8,13 @@ use embedded_graphics::{
     text::Text,
 };
 
-use petroleum::common::VgaFramebufferConfig;
 use petroleum::common::FullereneFramebufferConfig;
+use petroleum::common::VgaFramebufferConfig;
 use petroleum::graphics::init_vga_graphics;
 use spin::{Mutex, Once};
 
 // Imports from other modules
-use super::framebuffer::{FramebufferLike, FramebufferWriter, FramebufferInfo};
+use super::framebuffer::{FramebufferInfo, FramebufferLike, FramebufferWriter};
 
 // Optimized text rendering using embedded-graphics
 // Batcher processing for efficiency and reduced code complexity
@@ -133,9 +133,8 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
     #[cfg(target_os = "uefi")]
     {
         WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer.clone())));
-        FRAMEBUFFER_UEFI.call_once(|| {
-            Mutex::new(super::framebuffer::UefiFramebuffer::Vga8(writer))
-        });
+        FRAMEBUFFER_UEFI
+            .call_once(|| Mutex::new(super::framebuffer::UefiFramebuffer::Vga8(writer)));
     }
 
     #[cfg(not(target_os = "uefi"))]

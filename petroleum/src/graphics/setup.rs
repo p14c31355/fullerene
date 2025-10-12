@@ -24,30 +24,117 @@ pub fn setup_vga_text_mode() {
     setup_misc_output();
 
     // Sequencer, CRTC, and Graphics setup using centralized macros
-    use super::ports::{RegisterConfig};
+    use super::ports::RegisterConfig;
     let seq_configs: [RegisterConfig; 5] = [
-        RegisterConfig { index: 0x00, value: 0x03 },
-        RegisterConfig { index: 0x01, value: 0x00 },
-        RegisterConfig { index: 0x02, value: 0x03 },
-        RegisterConfig { index: 0x03, value: 0x00 },
-        RegisterConfig { index: 0x04, value: 0x02 },
+        RegisterConfig {
+            index: 0x00,
+            value: 0x03,
+        },
+        RegisterConfig {
+            index: 0x01,
+            value: 0x00,
+        },
+        RegisterConfig {
+            index: 0x02,
+            value: 0x03,
+        },
+        RegisterConfig {
+            index: 0x03,
+            value: 0x00,
+        },
+        RegisterConfig {
+            index: 0x04,
+            value: 0x02,
+        },
     ];
 
-    let crtc_unlock = [RegisterConfig { index: 0x11, value: 0x0E }];
+    let crtc_unlock = [RegisterConfig {
+        index: 0x11,
+        value: 0x0E,
+    }];
     let crtc_configs: [RegisterConfig; 18] = [
-        RegisterConfig { index: 0x00, value: 0x5F }, RegisterConfig { index: 0x01, value: 0x4F },
-        RegisterConfig { index: 0x02, value: 0x50 }, RegisterConfig { index: 0x03, value: 0x82 },
-        RegisterConfig { index: 0x04, value: 0x55 }, RegisterConfig { index: 0x05, value: 0x81 },
-        RegisterConfig { index: 0x06, value: 0xBF }, RegisterConfig { index: 0x07, value: 0x1F },
-        RegisterConfig { index: 0x08, value: 0x00 }, RegisterConfig { index: 0x09, value: 0x4F },
-        RegisterConfig { index: 0x10, value: 0x9C }, RegisterConfig { index: 0x11, value: 0x8E },
-        RegisterConfig { index: 0x12, value: 0x8F }, RegisterConfig { index: 0x13, value: 0x28 },
-        RegisterConfig { index: 0x14, value: 0x1F }, RegisterConfig { index: 0x15, value: 0x96 },
-        RegisterConfig { index: 0x16, value: 0xB9 }, RegisterConfig { index: 0x17, value: 0xA3 },
+        RegisterConfig {
+            index: 0x00,
+            value: 0x5F,
+        },
+        RegisterConfig {
+            index: 0x01,
+            value: 0x4F,
+        },
+        RegisterConfig {
+            index: 0x02,
+            value: 0x50,
+        },
+        RegisterConfig {
+            index: 0x03,
+            value: 0x82,
+        },
+        RegisterConfig {
+            index: 0x04,
+            value: 0x55,
+        },
+        RegisterConfig {
+            index: 0x05,
+            value: 0x81,
+        },
+        RegisterConfig {
+            index: 0x06,
+            value: 0xBF,
+        },
+        RegisterConfig {
+            index: 0x07,
+            value: 0x1F,
+        },
+        RegisterConfig {
+            index: 0x08,
+            value: 0x00,
+        },
+        RegisterConfig {
+            index: 0x09,
+            value: 0x4F,
+        },
+        RegisterConfig {
+            index: 0x10,
+            value: 0x9C,
+        },
+        RegisterConfig {
+            index: 0x11,
+            value: 0x8E,
+        },
+        RegisterConfig {
+            index: 0x12,
+            value: 0x8F,
+        },
+        RegisterConfig {
+            index: 0x13,
+            value: 0x28,
+        },
+        RegisterConfig {
+            index: 0x14,
+            value: 0x1F,
+        },
+        RegisterConfig {
+            index: 0x15,
+            value: 0x96,
+        },
+        RegisterConfig {
+            index: 0x16,
+            value: 0xB9,
+        },
+        RegisterConfig {
+            index: 0x17,
+            value: 0xA3,
+        },
     ];
     let graphics_configs: [RegisterConfig; 2] = [
-        RegisterConfig { index: 0x05, value: 0x10 },
-        RegisterConfig { index: 0x06, value: 0x0E },
+        RegisterConfig {
+            index: 0x05,
+            value: 0x10,
+        },
+        RegisterConfig {
+            index: 0x06,
+            value: 0x0E,
+        },
     ];
 
     write_port_sequence!(
@@ -99,7 +186,7 @@ pub fn write_attribute_registers() {
         attr_ops.write_register(reg.index, reg.value);
     }
 
-    PortWriter::new(VgaPorts::ATTRIBUTE_INDEX).write_safe(0x20); // Enable video output
+    PortWriter::<u8>::new(VgaPorts::ATTRIBUTE_INDEX).write_safe(0x20u8); // Enable video output
 }
 
 /// Configures the VGA Attribute Controller registers.
@@ -141,10 +228,22 @@ pub fn setup_vga_attributes() {
 
     // Attribute registers configuration
     let attr_configs = [
-        (0x00, 0x00), (0x01, 0x01), (0x02, 0x02), (0x03, 0x03),
-        (0x04, 0x04), (0x05, 0x05), (0x06, 0x06), (0x07, 0x07),
-        (0x08, 0x08), (0x09, 0x09), (0x0A, 0x0A), (0x0B, 0x0B),
-        (0x0C, 0x0C), (0x0D, 0x0D), (0x0E, 0x0E), (0x0F, 0x0F), // Palette setup
+        (0x00, 0x00),
+        (0x01, 0x01),
+        (0x02, 0x02),
+        (0x03, 0x03),
+        (0x04, 0x04),
+        (0x05, 0x05),
+        (0x06, 0x06),
+        (0x07, 0x07),
+        (0x08, 0x08),
+        (0x09, 0x09),
+        (0x0A, 0x0A),
+        (0x0B, 0x0B),
+        (0x0C, 0x0C),
+        (0x0D, 0x0D),
+        (0x0E, 0x0E),
+        (0x0F, 0x0F), // Palette setup
         (0x10, 0x01), // Mode control - text mode, 8-bit characters, blinking off
         (0x11, 0x00), // Overscan
         (0x12, 0x0F), // Plane enable
@@ -157,5 +256,5 @@ pub fn setup_vga_attributes() {
         attr_ops.write_register(reg_index, reg_value);
     }
 
-    PortWriter::new(VgaPorts::ATTRIBUTE_INDEX).write_safe(0x20); // Enable video output
+    PortWriter::<u8>::new(VgaPorts::ATTRIBUTE_INDEX).write_safe(0x20u8); // Enable video output
 }

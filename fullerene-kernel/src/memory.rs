@@ -1,7 +1,10 @@
 //! Memory management module containing memory map parsing and initialization
 
 use crate::heap;
-use petroleum::common::{EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig};
+use petroleum::common::{
+    EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
+    FullereneFramebufferConfig,
+};
 use petroleum::page_table::EfiMemoryDescriptor;
 
 use crate::MEMORY_MAP;
@@ -37,7 +40,9 @@ where
 }
 
 // Helper function to find framebuffer config (using generic)
-pub fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&FullereneFramebufferConfig> {
+pub fn find_framebuffer_config(
+    system_table: &EfiSystemTable,
+) -> Option<&FullereneFramebufferConfig> {
     petroleum::serial::serial_log(format_args!(
         "find_framebuffer_config: System table has {} configuration table entries\n",
         system_table.number_of_table_entries
@@ -53,8 +58,7 @@ pub fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&Fullere
     for (i, entry) in config_table_entries.iter().enumerate() {
         petroleum::serial::serial_log(format_args!(
             "Config table {}: table={:#x}, checking for GOP GUID\n",
-            i,
-            entry.vendor_table as usize
+            i, entry.vendor_table as usize
         ));
 
         if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
@@ -70,7 +74,8 @@ pub fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> PhysAddr {
     let mut largest_addr = None;
     let mut largest_pages = 0u64;
     for desc in descriptors {
-        if desc.type_ == EfiMemoryType::EfiConventionalMemory && desc.number_of_pages >= 4 { // at least 16KB
+        if desc.type_ == EfiMemoryType::EfiConventionalMemory && desc.number_of_pages >= 4 {
+            // at least 16KB
             if desc.number_of_pages > largest_pages {
                 largest_pages = desc.number_of_pages;
                 largest_addr = Some(desc.physical_start);
@@ -130,23 +135,27 @@ pub fn setup_memory_maps(
 
     kernel_log!("Scanning memory descriptors to find kernel location...");
 
-    // Find the memory descriptor containing the kernel (efi_main is virtual address, 
+    // Find the memory descriptor containing the kernel (efi_main is virtual address,
     // but UEFI uses identity mapping initially, so check physical range containing kernel_virt_addr)
     // Since UEFI identity-maps initially, kernel_virt_addr should equal its physical address
     if kernel_virt_addr >= 0x1000 {
         kernel_phys_start = PhysAddr::new(kernel_virt_addr);
-        kernel_log!("Using identity-mapped kernel physical start: 0x{:x}", kernel_phys_start.as_u64());
+        kernel_log!(
+            "Using identity-mapped kernel physical start: 0x{:x}",
+            kernel_phys_start.as_u64()
+        );
     } else {
-        kernel_log!("Warning: Invalid kernel address 0x{:x}, falling back to hardcoded value", kernel_virt_addr);
+        kernel_log!(
+            "Warning: Invalid kernel address 0x{:x}, falling back to hardcoded value",
+            kernel_virt_addr
+        );
         kernel_phys_start = PhysAddr::new(0x100000);
     }
 
-// Calculate the physical_memory_offset for the higher-half kernel mapping.
-// This offset is such that physical_address + offset = higher_half_virtual_address.
-physical_memory_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE - kernel_phys_start.as_u64());
-
-// Store the higher-half offset for heap allocation
-crate::heap::HIGHER_HALF_OFFSET.call_once(|| physical_memory_offset);
+    // Calculate the physical_memory_offset for the higher-half kernel mapping.
+    // This offset is such that physical_address + offset = higher_half_virtual_address.
+    physical_memory_offset =
+        VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE - kernel_phys_start.as_u64());
 
     kernel_log!(
         "Physical memory offset calculation complete: offset=0x{:x}, kernel_phys_start=0x{:x}",

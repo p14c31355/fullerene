@@ -1,13 +1,9 @@
 use core::marker::{Send, Sync};
-use embedded_graphics::{
-    geometry::Size,
-    pixelcolor::Rgb888,
-    prelude::*,
-};
+use embedded_graphics::{geometry::Size, pixelcolor::Rgb888, prelude::*};
 use petroleum::common::VgaFramebufferConfig;
 use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig};
+use petroleum::graphics::{grayscale_intensity, rgb_pixel};
 use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
-use petroleum::graphics::{rgb_pixel, grayscale_intensity};
 
 #[derive(Clone, Copy)]
 pub struct ColorScheme {
