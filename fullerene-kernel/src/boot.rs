@@ -217,9 +217,9 @@ fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFrameb
     // Use locate_protocol to find GOP (simpler than locate_handle)
     let mut gop_handle: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
     let status = (boot_services.locate_protocol)(
-        &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID as *const u8,
-        ptr::null_mut(),
-        &mut gop_handle as *mut *mut EfiGraphicsOutputProtocol as *mut *mut c_void,
+        &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID as *const _ as *const u8,
+        core::ptr::null_mut(),
+        core::ptr::addr_of_mut!(gop_handle) as *mut *mut c_void,
     );
 
     if status != 0 {
