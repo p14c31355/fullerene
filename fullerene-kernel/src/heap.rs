@@ -204,7 +204,8 @@ unsafe impl GlobalAlloc for Locked<Heap> {
 #[global_allocator]
 pub static ALLOCATOR: Locked<Heap> = Locked::new(Heap::empty());
 
-static PHYSICAL_MEMORY_OFFSET: spin::Once<VirtAddr> = spin::Once::new();
+pub static PHYSICAL_MEMORY_OFFSET: spin::Once<VirtAddr> = spin::Once::new();
+pub static HIGHER_HALF_OFFSET: spin::Once<VirtAddr> = spin::Once::new();
 pub(crate) static MAPPER: spin::Once<Mutex<OffsetPageTable<'static>>> = spin::Once::new();
 pub(crate) static FRAME_ALLOCATOR: spin::Once<Mutex<BootInfoFrameAllocator<'static>>> =
     spin::Once::new();
@@ -339,23 +340,19 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
 
     petroleum::serial::serial_log(format_args!("reinit_page_table: New mapper created\n"));
 
-    // Map global memory regions using the UEFI virtual addresses from the memory map
-    petroleum::serial::serial_log(format_args!("reinit_page_table: Mapping memory regions\n"));
+    // For UEFI with identity mapping (offset = 0), use identity mapping consistently
+    // Do not use UEFI virtual addresses as they may not be properly set
+    petroleum::serial::serial_log(format_args!("reinit_page_table: Mapping memory regions with identity mapping\n"));
 
     for desc in memory_map {
-        // Map UEFI runtime regions and our kernel to the same virtual addresses
         let start_phys = PhysAddr::new(desc.physical_start);
         let end_phys = start_phys + (desc.number_of_pages * 4096);
-        let start_virt = VirtAddr::new(desc.virtual_start); // Use UEFI's virtual address
+        let start_virt = VirtAddr::new(desc.physical_start); // Identity mapping: virt = phys
 
-        // Only map known essential memory types
-        use petroleum::common::EfiMemoryType::*;
-        let should_map_low = matches!(desc.type_,
-            EfiLoaderCode | EfiLoaderData | EfiBootServicesCode | EfiBootServicesData |
-            EfiRuntimeServicesCode | EfiRuntimeServicesData | EfiConventionalMemory
-        ) && desc.number_of_pages > 0;
+        // Map all memory types using identity mapping - VESA/VGA buffers may be in unmapped regions
+        let should_map = desc.number_of_pages > 0;
 
-        if should_map_low {
+        if should_map {
             unsafe {
                 map_physical_range(
                     &mut new_mapper,
@@ -367,21 +364,21 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
                 );
             }
         }
+    }
 
-        // Additionally, map conventional memory regions to higher-half virtual addresses
-        if desc.type_ == petroleum::common::EfiMemoryType::EfiConventionalMemory {
-            let start_virt_high = VirtAddr::new(desc.physical_start + physical_memory_offset.as_u64());
-            unsafe {
-                map_physical_range(
-                    &mut new_mapper,
-                    start_phys,
-                    end_phys,
-                    start_virt_high,
-                    Flags::PRESENT | Flags::WRITABLE,
-                    &mut frame_allocator,
-                );
-            }
-        }
+    // Ensure VGA buffer region is mapped (0xA0000 - 0xC0000)
+    let vga_start = PhysAddr::new(0xA0000);
+    let vga_end = PhysAddr::new(0xC0000);
+    let vga_virt = VirtAddr::new(0xA0000);
+    unsafe {
+        map_physical_range(
+            &mut new_mapper,
+            vga_start,
+            vga_end,
+            vga_virt,
+            Flags::PRESENT | Flags::WRITABLE,
+            &mut frame_allocator,
+        );
     }
 
     // Unmap the temporary mapping
@@ -405,9 +402,9 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
 // Allocate heap from memory map (find virtual address from physical)
 pub fn allocate_heap_from_map(phys_start: PhysAddr, _size: usize) -> VirtAddr {
     // Use higher-half virtual address for heap
-    if let Some(offset) = PHYSICAL_MEMORY_OFFSET.get() {
+    if let Some(offset) = HIGHER_HALF_OFFSET.get() {
         VirtAddr::new(offset.as_u64() + phys_start.as_u64())
     } else {
-        panic!("Physical memory offset not initialized");
+        panic!("Higher half offset not initialized");
     }
 }

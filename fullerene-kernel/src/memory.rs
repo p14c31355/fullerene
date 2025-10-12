@@ -155,9 +155,12 @@ pub fn setup_memory_maps(
         panic!("Could not find the memory descriptor containing the kernel's entry point (efi_main).");
     }
 
-    // Calculate the physical_memory_offset for the higher-half kernel mapping.
-    // This offset is such that physical_address + offset = higher_half_virtual_address.
-    physical_memory_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE - kernel_phys_start.as_u64());
+// Calculate the physical_memory_offset for the higher-half kernel mapping.
+// This offset is such that physical_address + offset = higher_half_virtual_address.
+physical_memory_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE - kernel_phys_start.as_u64());
+
+// Store the higher-half offset for heap allocation
+crate::heap::HIGHER_HALF_OFFSET.call_once(|| physical_memory_offset);
 
     kernel_log!(
         "Physical memory offset calculation complete: offset=0x{:x}, kernel_phys_start=0x{:x}",

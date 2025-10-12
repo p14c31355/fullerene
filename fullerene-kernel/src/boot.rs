@@ -109,10 +109,9 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Page table init completed successfully");
 
     // Reinit page tables to kernel page tables
-    // Comment out reinit to avoid page fault during boot
-    // kernel_log!("Reinit page tables to kernel page tables");
-    // heap::reinit_page_table(physical_memory_offset, kernel_phys_start, None);
-    // kernel_log!("Page table reinit completed successfully");
+    kernel_log!("Reinit page tables to kernel page tables");
+    heap::reinit_page_table(physical_memory_offset, kernel_phys_start, None);
+    kernel_log!("Page table reinit completed successfully");
 
     // Set physical memory offset for process management
     crate::memory_management::set_physical_memory_offset(physical_memory_offset);
