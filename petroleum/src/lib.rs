@@ -14,7 +14,8 @@ pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig}
 pub use graphics::{
     Color, ColorCode, ScreenChar, TextBufferOperations, VgaPortOps, VgaPorts, init_vga_graphics,
 };
-pub use serial::{Com1Ports, SerialPort, SerialPortOps};
+pub use serial::{Com1Ports, SerialPort, SerialPortOps, SERIAL_PORT_WRITER};
+pub use serial::SERIAL_PORT_WRITER as SERIAL1;
 
 use core::arch::asm;
 use spin::Mutex;
