@@ -317,21 +317,23 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     // Create a mapper for the new page table using the same offset as the original mapping
     let mut new_mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
 
-    // Identity map all physical memory in the new page table to allow page table allocations
+    // Identity map conventional memory in the new page table to allow page table allocations
     for desc in memory_map {
-        let start_phys = PhysAddr::new(desc.physical_start);
-        let end_phys = start_phys + (desc.number_of_pages * 4096);
-        let start_virt = VirtAddr::new(desc.physical_start); // identity mapping
+        if desc.type_ == petroleum::common::EfiMemoryType::EfiConventionalMemory {
+            let start_phys = PhysAddr::new(desc.physical_start);
+            let end_phys = start_phys + (desc.number_of_pages * 4096);
+            let start_virt = VirtAddr::new(desc.physical_start); // identity mapping
 
-        unsafe {
-            map_physical_range(
-                &mut new_mapper,
-                start_phys,
-                end_phys,
-                start_virt,
-                Flags::PRESENT | Flags::WRITABLE,
-                &mut frame_allocator,
-            );
+            unsafe {
+                map_physical_range(
+                    &mut new_mapper,
+                    start_phys,
+                    end_phys,
+                    start_virt,
+                    Flags::PRESENT | Flags::WRITABLE,
+                    &mut frame_allocator,
+                );
+            }
         }
     }
 
@@ -366,17 +368,19 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
             }
         }
 
-        // Additionally, map all memory regions to higher-half virtual addresses
-        let start_virt_high = VirtAddr::new(desc.physical_start + physical_memory_offset.as_u64());
-        unsafe {
-            map_physical_range(
-                &mut new_mapper,
-                start_phys,
-                end_phys,
-                start_virt_high,
-                Flags::PRESENT | Flags::WRITABLE,
-                &mut frame_allocator,
-            );
+        // Additionally, map conventional memory regions to higher-half virtual addresses
+        if desc.type_ == petroleum::common::EfiMemoryType::EfiConventionalMemory {
+            let start_virt_high = VirtAddr::new(desc.physical_start + physical_memory_offset.as_u64());
+            unsafe {
+                map_physical_range(
+                    &mut new_mapper,
+                    start_phys,
+                    end_phys,
+                    start_virt_high,
+                    Flags::PRESENT | Flags::WRITABLE,
+                    &mut frame_allocator,
+                );
+            }
         }
     }
 

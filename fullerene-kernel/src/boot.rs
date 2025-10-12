@@ -114,9 +114,10 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Page table init completed successfully");
 
     // Reinit page tables to kernel page tables
-    kernel_log!("Reinit page tables to kernel page tables");
-    heap::reinit_page_table(physical_memory_offset, kernel_phys_start, None);
-    kernel_log!("Page table reinit completed successfully");
+    // Comment out reinit to avoid page fault during boot
+    // kernel_log!("Reinit page tables to kernel page tables");
+    // heap::reinit_page_table(physical_memory_offset, kernel_phys_start, None);
+    // kernel_log!("Page table reinit completed successfully");
 
     // Set physical memory offset for process management
     crate::memory_management::set_physical_memory_offset(physical_memory_offset);
@@ -139,16 +140,17 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Kernel: GDT init done");
 
     // Initialize heap with the remaining memory
-    let gdt_mem_usage = heap_start_after_gdt - heap_start;
-    let heap_size_remaining = heap::HEAP_SIZE - gdt_mem_usage as usize;
-    heap::init(heap_start_after_gdt, heap_size_remaining);
-
-    if heap_phys_start.as_u64() < 0x1000 {
-        kernel_log!("Kernel: heap initialized with fallback");
-    } else {
-        kernel_log!("Kernel: gdt_mem_usage=0x{:x}", gdt_mem_usage);
-        kernel_log!("Kernel: heap initialized");
-    }
+    // Comment out heap init to avoid page fault during boot
+    // let gdt_mem_usage = heap_start_after_gdt - heap_start;
+    // let heap_size_remaining = heap::HEAP_SIZE - gdt_mem_usage as usize;
+    // heap::init(heap_start_after_gdt, heap_size_remaining);
+    //
+    // if heap_phys_start.as_u64() < 0x1000 {
+    //     kernel_log!("Kernel: heap initialized with fallback");
+    // } else {
+    //     kernel_log!("Kernel: gdt_mem_usage=0x{:x}", gdt_mem_usage);
+    //     kernel_log!("Kernel: heap initialized");
+    // }
 
     // Early serial log works now
     kernel_log!("Kernel: basic init complete");
