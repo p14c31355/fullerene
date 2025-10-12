@@ -419,7 +419,8 @@ pub fn reinit_page_table(
             fb_addr
         ));
         let fb_start = PhysAddr::new(fb_addr);
-        let fb_size = framebuffer_size.unwrap_or(0x400000); // Fallback to 4MB
+        const FALLBACK_FRAMEBUFFER_SIZE: u64 = 4 * 1024 * 1024; // 4MB
+        let fb_size = framebuffer_size.unwrap_or(FALLBACK_FRAMEBUFFER_SIZE);
         let fb_end = fb_start + fb_size;
         let fb_virt = VirtAddr::new(fb_addr); // Identity mapping for framebuffer
         unsafe {
