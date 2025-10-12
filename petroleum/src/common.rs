@@ -346,7 +346,7 @@ pub struct EfiBootServices {
     pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize, // fn25
     _unused26: usize,                                        // fn26
     pub stall: extern "efiapi" fn(usize) -> usize,          // fn27
-    _unused28: usize,                                        // fn29
+    _unused28: usize,                                        // fn28
     _unused29: usize,                                        // fn29
     _unused30: usize,                                       // fn30
     pub open_protocol:
