@@ -8,7 +8,6 @@ use petroleum::common::{
     EfiSystemTable, FullereneFramebufferConfig,
 };
 use petroleum::common::EfiGraphicsOutputProtocol;
-use crate::init::init_vga_text_mode;
 use x86_64::{PhysAddr, VirtAddr};
 use crate::MEMORY_MAP;
 use crate::heap;
@@ -53,7 +52,7 @@ pub extern "efiapi" fn efi_main(
     // Cast system_table to reference
     let system_table = unsafe { &*system_table };
 
-    unsafe { init_vga_text_mode() };
+    petroleum::graphics::init_vga_text_mode();
 
     debug_log!("VGA setup done");
     kernel_log!("VGA text mode setup function returned");
@@ -201,7 +200,7 @@ fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], c
     if !framebuffer_initialized {
         kernel_log!("No UEFI framebuffer available, falling back to VGA mode");
         // Re-initialize VGA text mode after graphics initialization to ensure text remains visible
-        unsafe { init_vga_text_mode() };
+        petroleum::graphics::init_vga_text_mode();
         crate::vga::init_vga(); // Re-write text to VGA buffer
         kernel_log!("VGA text mode reinitialized and text restored");
     }
@@ -349,7 +348,7 @@ pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str)
         kernel_log!("ERROR: {} framebuffer initialization failed!", source_name);
         // Restore VGA text buffer if graphics init failed
         restore_vga_text_buffer(vga_backup);
-        unsafe { init_vga_text_mode() };
+        petroleum::graphics::init_vga_text_mode();
         crate::vga::init_vga();
         return false;
     }

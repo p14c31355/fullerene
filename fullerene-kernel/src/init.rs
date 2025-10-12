@@ -1,7 +1,5 @@
 //! Initialization module containing common initialization logic for both UEFI and BIOS boot
 
-use x86_64::instructions::port::Port;
-
 use crate::{fs, graphics, interrupts, loader, process, syscall, vga};
 
 // Macro to reduce repetitive serial logging - local copy since we moved function here
@@ -14,110 +12,9 @@ macro_rules! kernel_log {
     };
 }
 
-// VGA port constants
-const VGA_MISC_OUTPUT: u16 = 0x3c2;
-const VGA_MISC_ENABLE_COLOR_MODE: u8 = 0x67;  // bit0=1 for color mode, Clock Select=1
-
-const VGA_SEQUENCER_INDEX: u16 = 0x3c4;
-const VGA_SEQUENCER_DATA: u16 = 0x3c5;
-const VGA_SEQ_RESET: u8 = 0x00;
-const VGA_SEQ_CLOCKING_MODE: u8 = 0x01;
-const VGA_SEQ_MAP_MASK: u8 = 0x02;
-const VGA_SEQ_CHARACTER_MAP: u8 = 0x03;
-const VGA_SEQ_MEMORY_MODE: u8 = 0x04;
-
-const VGA_CRTC_INDEX: u16 = 0x3d4;
-const VGA_CRTC_DATA: u16 = 0x3d5;
-const VGA_CRTC_HORIZONTAL_TOTAL: u8 = 0x00;
-const VGA_CRTC_HORIZONTAL_DISPLAY_END: u8 = 0x01;
-const VGA_CRTC_HORIZONTAL_BLANK_START: u8 = 0x02;
-const VGA_CRTC_HORIZONTAL_BLANK_END: u8 = 0x03;
-const VGA_CRTC_HORIZONTAL_RETRACE_START: u8 = 0x04;
-const VGA_CRTC_HORIZONTAL_RETRACE_END: u8 = 0x05;
-const VGA_CRTC_VERTICAL_TOTAL: u8 = 0x06;
-const VGA_CRTC_OVERFLOW: u8 = 0x07;
-const VGA_CRTC_MAXIMUM_SCAN_LINE: u8 = 0x09;
-const VGA_CRTC_VERTICAL_RETRACE_START: u8 = 0x10;
-const VGA_CRTC_VERTICAL_RETRACE_END: u8 = 0x11;
-const VGA_CRTC_VERTICAL_DISPLAY_END: u8 = 0x12;
-const VGA_CRTC_OFFSET: u8 = 0x13;
-const VGA_CRTC_VERTICAL_BLANK_START: u8 = 0x15;
-const VGA_CRTC_VERTICAL_BLANK_END: u8 = 0x16;
-const VGA_CRTC_MODE_CONTROL: u8 = 0x17;
-const VGA_CRTC_LINE_COMPARE: u8 = 0x18;
-const VGA_CRTC_UNLOCK: u8 = 0x11;
-const VGA_CRTC_UNLOCK_MASK: u8 = 0x7f;
-
-const VGA_ATTRIBUTE_INDEX: u16 = 0x3c0;
-const VGA_ATTRIBUTE_MODE_CONTROL: u8 = 0x10;
-const VGA_ATTRIBUTE_COLOR_PLANE_ENABLE: u8 = 0x12;
-const VGA_STATUS_REGISTER: u16 = 0x3da;
-const VGA_ATTRIBUTE_ENABLE_VIDEO: u8 = 0x20;
-
-pub unsafe fn init_vga_text_mode() {
-    // Miscellaneous Output Register: Enable color mode, 0x3D4 map active
-    let mut misc = Port::new(VGA_MISC_OUTPUT);
-    unsafe { misc.write(VGA_MISC_ENABLE_COLOR_MODE); }
-
-    // Sequencer: Reset and configure for alphanumeric mode
-    let mut seq_idx = Port::new(VGA_SEQUENCER_INDEX);
-    let mut seq_data = Port::new(VGA_SEQUENCER_DATA);
-    unsafe { seq_idx.write(VGA_SEQ_RESET); }
-    unsafe { seq_data.write(0x01u8); } // Reset
-    unsafe { seq_idx.write(VGA_SEQ_CLOCKING_MODE); }
-    unsafe { seq_data.write(0x01u8); } // 9/8 Dot Mode=0
-    unsafe { seq_idx.write(VGA_SEQ_CHARACTER_MAP); }
-    unsafe { seq_data.write(0x00u8); } // Character Map Select
-    unsafe { seq_idx.write(VGA_SEQ_MEMORY_MODE); }
-    unsafe { seq_data.write(0x03u8); } // Memory Mode: Alpha mode, Odd/Even disabled
-
-    // CRTC: Configure 80x25 timing (unlock first)
-    let mut crtc_idx = Port::new(VGA_CRTC_INDEX);
-    let mut crtc_data = Port::new(VGA_CRTC_DATA);
-    let current_reg11;
-    unsafe { current_reg11 = crtc_data.read(); }
-    unsafe { crtc_idx.write(VGA_CRTC_UNLOCK); crtc_data.write(VGA_CRTC_UNLOCK_MASK & current_reg11); } // Unlock (clear bit7)
-    // Horizontal timing
-    unsafe { crtc_idx.write(VGA_CRTC_HORIZONTAL_TOTAL); crtc_data.write(0x5fu8); } // Total
-    unsafe { crtc_idx.write(VGA_CRTC_HORIZONTAL_DISPLAY_END); crtc_data.write(0x4fu8); } // Display End
-    unsafe { crtc_idx.write(VGA_CRTC_HORIZONTAL_BLANK_START); crtc_data.write(0x50u8); } // Blank Start
-    unsafe { crtc_idx.write(VGA_CRTC_HORIZONTAL_BLANK_END); crtc_data.write(0x82u8); } // Blank End
-    unsafe { crtc_idx.write(VGA_CRTC_HORIZONTAL_RETRACE_START); crtc_data.write(0x55u8); } // Retrace Start
-    unsafe { crtc_idx.write(VGA_CRTC_HORIZONTAL_RETRACE_END); crtc_data.write(0x81u8); } // Retrace End
-    // Vertical timing
-    unsafe { crtc_idx.write(VGA_CRTC_VERTICAL_TOTAL); crtc_data.write(0xbfu8); } // Total
-    unsafe { crtc_idx.write(VGA_CRTC_OVERFLOW); crtc_data.write(0x1fu8); } // Overflow
-    unsafe { crtc_idx.write(VGA_CRTC_MAXIMUM_SCAN_LINE); crtc_data.write(0x4fu8); } // Max Scan Line
-    unsafe { crtc_idx.write(VGA_CRTC_VERTICAL_RETRACE_START); crtc_data.write(0x9cu8); } // V Retrace Start
-    unsafe { crtc_idx.write(VGA_CRTC_VERTICAL_RETRACE_END); crtc_data.write(0x8eu8); } // V Retrace End
-    unsafe { crtc_idx.write(VGA_CRTC_VERTICAL_DISPLAY_END); crtc_data.write(0x8fu8); } // V Display End
-    unsafe { crtc_idx.write(VGA_CRTC_OFFSET); crtc_data.write(0x28u8); } // Offset
-    unsafe { crtc_idx.write(VGA_CRTC_VERTICAL_BLANK_START); crtc_data.write(0x96u8); } // V Blank Start
-    unsafe { crtc_idx.write(VGA_CRTC_VERTICAL_BLANK_END); crtc_data.write(0xb9u8); } // V Blank End
-    unsafe { crtc_idx.write(VGA_CRTC_MODE_CONTROL); crtc_data.write(0xa3u8); } // Mode Control
-
-    // Attribute Controller: Simple reset and setup
-    let mut attr = Port::new(VGA_ATTRIBUTE_INDEX);
-    // Reset flip-flop to expect index
-    unsafe { x86_64::instructions::port::Port::<u8>::new(VGA_STATUS_REGISTER).read(); }
-
-    // Set Mode Control Register (text mode, blinking enabled)
-    unsafe { attr.write(VGA_ATTRIBUTE_MODE_CONTROL); }
-    unsafe { attr.write(0x0C); }
-
-    // Set Color Plane Enable Register
-    unsafe { attr.write(VGA_ATTRIBUTE_COLOR_PLANE_ENABLE); }
-    unsafe { attr.write(0x0F); }
-
-    // Enable video output
-    unsafe { attr.write(VGA_ATTRIBUTE_ENABLE_VIDEO); }
-}
-
 #[cfg(target_os = "uefi")]
 pub fn init_common() {
-    unsafe {
-        init_vga_text_mode();
-    }
+    petroleum::graphics::init_vga_text_mode();
     crate::vga::init_vga();
     // Now safe to initialize APIC and enable interrupts (after stable page tables and heap)
     interrupts::init_apic();
