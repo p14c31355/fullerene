@@ -41,7 +41,9 @@ pub fn init_uefi_system_table(system_table: *mut EfiSystemTable) {
 
 /// Helper to initialize serial for bootloader
 pub unsafe fn write_serial_bytes(port: u16, status_port: u16, bytes: &[u8]) {
-    serial::write_serial_bytes(port, status_port, bytes);
+    unsafe {
+        serial::write_serial_bytes(port, status_port, bytes);
+    }
 }
 
 /// macro for bootloader serial logging

@@ -16,7 +16,7 @@ use petroleum::page_table::EfiMemoryDescriptor;
 
 use crate::memory::{find_framebuffer_config, find_heap_start, init_memory_management, setup_memory_maps};
 use crate::{gdt, graphics, heap, interrupts, shell, MEMORY_MAP};
-use crate::graphics::framebuffer::FramebufferLike;
+use crate::graphics::framebuffer::{FramebufferLike, UefiFramebuffer};
 
 use petroleum::common::{
     EfiGraphicsOutputProtocol, EfiGraphicsOutputProtocolMode, EfiGraphicsOutputModeInformation,
@@ -275,6 +275,7 @@ fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFrameb
 
 /// Helper function to initialize graphics with framebuffer configuration
 /// Returns true if graphics were successfully initialized and drawn
+#[cfg(target_os = "uefi")]
 fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
     // Check if framebuffer config is available from UEFI bootloader
     kernel_log!("Checking framebuffer config from UEFI bootloader...");
@@ -288,7 +289,7 @@ fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
             fb_config.pixel_format
         );
         kernel_log!("Initializing UEFI graphics mode...");
-        graphics::init(fb_config);
+        graphics::text::init(&fb_config);
 
         // Verify the framebuffer was initialized
         if let Some(fb_writer) = unsafe { graphics::text::FRAMEBUFFER_UEFI.get() } {
@@ -325,7 +326,7 @@ fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
             gop_config.pixel_format
         );
         kernel_log!("Initializing UEFI graphics mode via GOP...");
-        graphics::init(&gop_config);
+        graphics::text::init(&gop_config);
 
         // Verify the framebuffer was initialized
         if let Some(fb_writer) = unsafe { graphics::text::FRAMEBUFFER_UEFI.get() } {
