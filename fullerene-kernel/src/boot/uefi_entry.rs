@@ -103,7 +103,7 @@ fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], c
             let _ = output_string((*system_table).con_out, msg.as_ptr());
             let mut msg2 = [0u16; 30];
             let text2 = b"This is output via EFI console.\r\n";
-            for (&ch, dst) in text2.iter().zip(&mut msg2[..text2.len() - 1]) {
+            for (&ch, dst) in text2.iter().zip(&mut msg2[..text2.len()]) {
                 *dst = ch as u16;
             }
             let _ = output_string((*system_table).con_out, msg2.as_ptr());
