@@ -169,7 +169,7 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
 
     let mut mode_set_successfully = false;
     for &(mode, _, _) in sorted_modes.iter().rev() {
-        let status = (gop_ref.set_mode)(gop, mode);
+        let status = unsafe { (gop_ref.set_mode)(gop, mode) };
         if EfiStatus::from(status) == EfiStatus::Success {
             serial::_print(format_args!("GOP: Successfully set graphics mode {}.\n", mode));
             mode_set_successfully = true;
