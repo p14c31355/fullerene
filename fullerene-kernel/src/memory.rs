@@ -130,21 +130,14 @@ pub fn setup_memory_maps(
 
     kernel_log!("Scanning memory descriptors to find kernel location...");
 
-    // Find the memory descriptor containing efi_main to determine physical start address
-    if let Some(addr) = find_memory_descriptor_address(descriptors, |desc| {
-        let end_addr = desc.physical_start + desc.number_of_pages * 4096;
-        desc.physical_start <= kernel_virt_addr && kernel_virt_addr < end_addr
-    }) {
-        if addr >= 0x1000 {
-            kernel_phys_start = PhysAddr::new(addr);
-            kernel_log!("Using dynamic kernel physical start: 0x{:x} from descriptor containing efi_main at 0x{:x}", kernel_phys_start.as_u64(), kernel_virt_addr);
-        } else {
-            kernel_log!("Warning: Found invalid physical start 0x{:x}, falling back to hardcoded value", addr);
-            kernel_phys_start = PhysAddr::new(0x100000);
-        }
+    // Find the memory descriptor containing the kernel (efi_main is virtual address, 
+    // but UEFI uses identity mapping initially, so check physical range containing kernel_virt_addr)
+    // Since UEFI identity-maps initially, kernel_virt_addr should equal its physical address
+    if kernel_virt_addr >= 0x1000 {
+        kernel_phys_start = PhysAddr::new(kernel_virt_addr);
+        kernel_log!("Using identity-mapped kernel physical start: 0x{:x}", kernel_phys_start.as_u64());
     } else {
-        // Fallback if not found
-        kernel_log!("Warning: Could not find memory descriptor for efi_main, falling back to hardcoded value");
+        kernel_log!("Warning: Invalid kernel address 0x{:x}, falling back to hardcoded value", kernel_virt_addr);
         kernel_phys_start = PhysAddr::new(0x100000);
     }
 

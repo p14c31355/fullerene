@@ -86,9 +86,7 @@ pub extern "efiapi" fn efi_main(
     // Setup memory maps and initialize memory management
     let kernel_virt_addr = efi_main as u64;
     let (original_offset, kernel_phys_start) = setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
-    // For UEFI, use identity mapping to avoid page table issues
-    let offset_value = if cfg!(target_os = "uefi") { 0 } else { original_offset.as_u64() };
-    let physical_memory_offset = VirtAddr::new(offset_value);
+    let physical_memory_offset = VirtAddr::new(0); // UEFI identity maps initially, offset handled by higher-half in reinit_page_table
 
     // Initialize memory management components (heap, page tables, etc.)
     // Comment out reinit for now to allow desktop drawing

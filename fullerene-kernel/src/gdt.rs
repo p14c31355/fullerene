@@ -69,16 +69,15 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
 
     serial_log(format_args!("GDT: GDT built\n"));
 
-    // Skip loading GDT to prevent hang in UEFI environment
-    // gdt.load();
-
-    serial_log(format_args!("GDT: GDT loading skipped\n"));
+    // Load GDT - required for proper segmentation in both BIOS and UEFI
+    gdt.load();
+    serial_log(format_args!("GDT: GDT loaded\n"));
 
     unsafe {
-        // CS::set_reg(*CODE_SELECTOR.get().unwrap());
-        serial_log(format_args!("GDT: CS set skipped\n"));
-        // load_tss(*TSS_SELECTOR.get().unwrap());
-        serial_log(format_args!("GDT: TSS loading skipped\n"));
+        CS::set_reg(*CODE_SELECTOR.get().unwrap());
+        serial_log(format_args!("GDT: CS set\n"));
+        load_tss(*TSS_SELECTOR.get().unwrap());
+        serial_log(format_args!("GDT: TSS loaded\n"));
         debug_print_str("GDT: Loaded and segments set\n");
     }
 

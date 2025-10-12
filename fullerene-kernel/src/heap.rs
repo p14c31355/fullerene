@@ -471,10 +471,7 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
 
 // Allocate heap from memory map (find virtual address from physical)
 pub fn allocate_heap_from_map(phys_start: PhysAddr, _size: usize) -> VirtAddr {
-    // Use higher-half virtual address for heap
-    if let Some(offset) = HIGHER_HALF_OFFSET.get() {
-        VirtAddr::new(offset.as_u64() + phys_start.as_u64())
-    } else {
-        panic!("Higher half offset not initialized");
-    }
+    // Use higher-half virtual address for heap - physical address directly mapped to higher half
+    // Higher half mapping: physical + 0xFFFF_8000_0000_0000 = higher half virtual
+    VirtAddr::new(0xFFFF_8000_0000_0000 + phys_start.as_u64())
 }

@@ -6,7 +6,6 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
-use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
@@ -180,7 +179,7 @@ const KERNEL_STACK_SIZE: usize = 4096;
 #[unsafe(naked)]
 extern "C" fn process_trampoline() -> ! {
     // The entry point function pointer is stored in RAX by context switch
-    core::arch::naked_asm!("jmp rax");
+    unsafe { core::arch::naked_asm!("jmp rax") };
 }
 
 /// Initialize process management system
