@@ -203,9 +203,10 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     }
 
     // More robust BPP determination using proper enum variants
-    let bpp = crate::common::get_bpp_from_pixel_format(info.pixel_format);
+    let mut bpp = crate::common::get_bpp_from_pixel_format(info.pixel_format);
     if bpp == 0 {
         serial::_print(format_args!("Unsupported pixel format: {:?}, assuming 32 BPP.\n", info.pixel_format));
+        bpp = 32;
     }
 
     let config = FullereneFramebufferConfig {
