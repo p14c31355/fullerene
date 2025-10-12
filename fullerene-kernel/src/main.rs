@@ -1,4 +1,7 @@
+// Fullerene OS Kernel
+// Spacer in main.rs due to Rust unstable features
 #![feature(abi_x86_interrupt)]
+#![feature(non_exhaustive_omitted_patterns_lint)]
 // fullerene-kernel/src/main.rs
 #![no_std]
 #![no_main]
@@ -27,7 +30,6 @@ mod test_process;
 
 extern crate alloc;
 
-use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1};
 use spin::Once;
 
 #[cfg(all(not(test), not(target_os = "uefi")))]

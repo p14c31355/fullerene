@@ -3,16 +3,13 @@ use alloc::boxed::Box; // Import Box
 use embedded_graphics::{
     geometry::Point,
     mono_font::{MonoTextStyle, ascii::FONT_6X10},
-    pixelcolor::*,
     prelude::*,
     text::Text,
 };
 
 use petroleum::common::VgaFramebufferConfig;
-use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig};
-use petroleum::serial::debug_print_str_to_com1 as debug_print_str;
+use petroleum::common::FullereneFramebufferConfig;
 use petroleum::graphics::init_vga_graphics;
-use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
 use spin::{Mutex, Once};
 
 // Imports from other modules
@@ -27,7 +24,7 @@ fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result 
     let fg_color = super::u32_to_rgb888(writer.get_fg_color());
 
     let style = MonoTextStyle::new(&FONT_6X10, fg_color);
-    let mut lines = s.split_inclusive('\n');
+    let lines = s.split_inclusive('\n');
     let mut current_pos = Point::new(
         writer.get_position().0 as i32,
         writer.get_position().1 as i32,

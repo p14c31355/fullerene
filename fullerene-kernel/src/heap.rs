@@ -139,7 +139,7 @@ impl Heap {
 
     fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
         let size = layout.size();
-        let block_start = ptr as usize;
+        let _block_start = ptr as usize;
 
         unsafe {
             // Create a new free node
@@ -286,7 +286,7 @@ pub(crate) unsafe fn map_physical_range(
 
 pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: PhysAddr, framebuffer_addr: Option<u64>) {
     use x86_64::registers::control::Cr3;
-    use x86_64::structures::paging::{PageTable, PageTableFlags as Flags};
+    use x86_64::structures::paging::PageTable;
 
     petroleum::serial::serial_log(format_args!("reinit_page_table: Starting with offset 0x{:x}\n", physical_memory_offset.as_u64()));
 
@@ -309,7 +309,7 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
         }
     }
 
-    let level_4_table = unsafe { &mut *temp_virt_page.start_address().as_mut_ptr() };
+    let level_4_table: &mut PageTable = unsafe { &mut *temp_virt_page.start_address().as_mut_ptr() };
 
     // Zero the table
     level_4_table.zero();
@@ -354,9 +354,7 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     // Unmap the temporary mapping
     {
         let mut current_mapper = MAPPER.get().unwrap().lock();
-        unsafe {
             current_mapper.unmap(temp_virt_page).expect("Failed to unmap temp").1.flush();
-        }
     }
 
     // Set the new CR3

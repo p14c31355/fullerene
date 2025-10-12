@@ -3,8 +3,6 @@
 //! This module provides process creation, scheduling, and context switching
 //! capabilities for user-space programs.
 
-#![feature(naked_functions)]
-
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;

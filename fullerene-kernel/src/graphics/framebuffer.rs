@@ -4,12 +4,10 @@ use embedded_graphics::{
     pixelcolor::Rgb888,
     prelude::*,
 };
-use alloc::boxed::Box;
-use spin::Mutex;
 use petroleum::common::VgaFramebufferConfig;
 use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig};
 use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
-use petroleum::graphics::{rgb_pixel, u32_to_rgb888, grayscale_intensity};
+use petroleum::graphics::{rgb_pixel, grayscale_intensity};
 
 #[derive(Clone, Copy)]
 pub struct ColorScheme {
