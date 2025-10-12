@@ -128,7 +128,7 @@ pub extern "efiapi" fn efi_main(
 
     // Reinit page tables to kernel page tables
     kernel_log!("Reinit page tables to kernel page tables with framebuffer size");
-    heap::reinit_page_table(physical_memory_offset, kernel_phys_start, fb_addr, fb_size);
+    heap::reinit_page_table(original_offset, kernel_phys_start, fb_addr, fb_size);
     kernel_log!("Page table reinit completed successfully");
 
     // Set physical memory offset for process management
