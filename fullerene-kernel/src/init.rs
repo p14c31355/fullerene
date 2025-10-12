@@ -93,9 +93,19 @@ unsafe fn init_vga_text_mode() {
 
     // Attribute Controller: Simple reset and setup
     let mut attr = Port::new(VGA_ATTRIBUTE_INDEX);
-    x86_64::instructions::port::Port::<u8>::new(VGA_STATUS_REGISTER).read();  // Flip-flop reset
-    attr.write(VGA_ATTRIBUTE_MODE_CONTROL);  // Mode Control: Text mode
-    attr.write(VGA_ATTRIBUTE_COLOR_PLANE_ENABLE);  // Color Plane Enable: All
+    // Reset flip-flop to expect index
+    x86_64::instructions::port::Port::<u8>::new(VGA_STATUS_REGISTER).read();
+
+    // Set Mode Control Register (text mode, blinking enabled)
+    attr.write(VGA_ATTRIBUTE_MODE_CONTROL);
+    attr.write(0x0C);
+
+    // Set Color Plane Enable Register
+    attr.write(VGA_ATTRIBUTE_COLOR_PLANE_ENABLE);
+    attr.write(0x0F);
+
+    // Enable video output
+    attr.write(VGA_ATTRIBUTE_ENABLE_VIDEO);
 }
 
 #[cfg(target_os = "uefi")]
