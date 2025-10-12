@@ -1,9 +1,10 @@
-use petroleum::serial::SERIAL_PORT_WRITER as SERIAL1;
+use petroleum::serial::SERIAL_PORT_WRITER;
 
 // Macro to reduce repetitive serial logging
 macro_rules! kernel_log {
-    ($($arg:tt)*) => {
-        let _ = core::fmt::write(&mut *SERIAL1.lock(), format_args!($($arg)*));
-        let _ = core::fmt::write(&mut *SERIAL1.lock(), format_args!("\n"));
-    };
+    ($($arg:tt)*) => {{
+        use core::fmt::Write;
+        // Use a single lock to prevent potential deadlocks and improve efficiency.
+        let _ = writeln!(&mut *petroleum::serial::SERIAL_PORT_WRITER.lock(), $($arg)*);
+    }};
 }

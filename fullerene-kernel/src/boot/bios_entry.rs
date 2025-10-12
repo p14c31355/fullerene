@@ -6,8 +6,6 @@ use crate::hlt_loop;
 #[cfg(not(target_os = "uefi"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start() -> ! {
-    use petroleum::common::VgaFramebufferConfig;
-
     crate::init::init_common();
     kernel_log!("Entering _start (BIOS mode)...");
 

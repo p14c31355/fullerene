@@ -2,6 +2,7 @@
 //!
 //! This module provides APIC initialization and management functions.
 
+use super::pic::disable_legacy_pic;
 use core::ptr;
 use petroleum::init_io_apic;
 use petroleum::port_write;
@@ -64,44 +65,6 @@ impl ApicRaw {
 
 /// Global APIC instance
 pub static APIC: Mutex<Option<ApicRaw>> = Mutex::new(None);
-
-/// Disable legacy PIC (from pic module, but needed here)
-pub fn disable_legacy_pic() {
-    use super::pic::{PicPorts, ICW1_INIT, ICW4_8086};
-
-    // PIC ports
-    struct Pic {
-        command: u16,
-        data: u16,
-    }
-    const PIC1: Pic = Pic {
-        command: PicPorts::MASTER_COMMAND,
-        data: PicPorts::MASTER_DATA,
-    };
-    const PIC2: Pic = Pic {
-        command: PicPorts::SLAVE_COMMAND,
-        data: PicPorts::SLAVE_DATA,
-    };
-
-    macro_rules! init_pic {
-        ($pic:expr, $vector_offset:expr, $slave_on:expr) => {{
-            unsafe {
-                let mut cmd_port = Port::<u8>::new($pic.command);
-                let mut data_port = Port::<u8>::new($pic.data);
-
-                cmd_port.write(ICW1_INIT);
-                data_port.write($vector_offset);
-                data_port.write($slave_on);
-                data_port.write(ICW4_8086);
-            }
-        }};
-    }
-
-    init_pic!(PIC1, 0x20, 4);
-    init_pic!(PIC2, 0x28, 2);
-    port_write!(PIC1.data, 0xFFu8);
-    port_write!(PIC2.data, 0xFFu8);
-}
 
 /// Get APIC base address
 fn get_apic_base() -> Option<u64> {

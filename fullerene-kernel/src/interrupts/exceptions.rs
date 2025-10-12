@@ -3,13 +3,6 @@
 //! This module provides handlers for CPU exceptions like page faults,
 //! breakpoints, and double faults.
 
-macro_rules! lock_and_write {
-    ($serial:expr, $writer:ident, $code:block) => {
-        let mut $writer = $serial.lock();
-        $code
-    };
-}
-
 use core::fmt::Write;
 use crate::memory_management;
 use crate::process;
@@ -21,7 +14,7 @@ use x86_64::structures::idt::PageFaultErrorCode;
 /// Breakpoint exception handler
 #[unsafe(no_mangle)]
 pub extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
-    lock_and_write!(petroleum::SERIAL1, writer, {
+    petroleum::lock_and_modify!(petroleum::SERIAL1, writer, {
         writeln!(writer, "\nEXCEPTION: BREAKPOINT\n{:#?}", stack_frame).ok();
     });
 }
@@ -55,7 +48,7 @@ pub fn handle_page_fault(
     let is_write = error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
     let is_user = error_code.contains(PageFaultErrorCode::USER_MODE);
 
-    lock_and_write!(petroleum::SERIAL1, writer, {
+    petroleum::lock_and_modify!(petroleum::SERIAL1, writer, {
         write!(writer, "Page fault analysis: ").ok();
         if is_present {
             write!(writer, "Protection violation ").ok();
@@ -82,7 +75,7 @@ pub fn handle_page_fault(
 
     if is_present {
         // Protection violation in user space
-        lock_and_write!(petroleum::SERIAL1, writer, {
+        petroleum::lock_and_modify!(petroleum::SERIAL1, writer, {
             write!(writer, "Protection violation in user space - terminating process\n").ok();
         });
 
@@ -91,13 +84,13 @@ pub fn handle_page_fault(
         }
     } else {
         // Page not present - attempt demand paging
-        lock_and_write!(petroleum::SERIAL1, writer, {
+        petroleum::lock_and_modify!(petroleum::SERIAL1, writer, {
             write!(writer, "Page not present - attempting to handle\n").ok();
         });
 
         if memory_management::is_user_address(fault_addr) {
             // For now, terminate process
-            lock_and_write!(petroleum::SERIAL1, writer, {
+            petroleum::lock_and_modify!(petroleum::SERIAL1, writer, {
                 write!(writer, "Cannot handle page fault - terminating process\n").ok();
             });
             if let Some(pid) = crate::process::current_pid() {
@@ -105,7 +98,7 @@ pub fn handle_page_fault(
             }
         } else {
             // Invalid user address
-            lock_and_write!(petroleum::SERIAL1, writer, {
+            petroleum::lock_and_modify!(petroleum::SERIAL1, writer, {
                 write!(writer, "Invalid user address - terminating process\n").ok();
             });
             if let Some(pid) = crate::process::current_pid() {
