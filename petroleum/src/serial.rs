@@ -11,7 +11,7 @@ pub unsafe fn write_serial_bytes(port_addr: u16, status_port_addr: u16, bytes: &
 }
 
 use crate::common::{EfiSimpleTextOutput, EfiStatus};
-use core::fmt;
+use core::fmt::{self, Write};
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
@@ -226,14 +226,19 @@ fn format_hex(writer: &mut impl core::fmt::Write, value: usize) -> core::fmt::Re
 
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
-    use core::fmt::Write;
-    // By using a Mutex, we ensure safe access to the global writer,
-    // even though we expect single-threaded execution in the bootloader.
-    // This is safer and more idiomatic than using a `static mut`.
-    UEFI_WRITER
-        .lock()
-        .write_fmt(args)
-        .expect("Serial write failed");
+    (&mut *SERIAL_PORT_WRITER.lock()).write_fmt(args).ok();
+    (&mut *UEFI_WRITER.lock()).write_fmt(args).ok();
+}
+
+/// Macro to reduce repetitive debug serial output
+#[macro_export]
+macro_rules! debug_log {
+    ($msg:expr) => {{
+        $crate::serial::debug_print_str_to_com1($msg);
+    }};
+    ($fmt:expr, $($arg:tt)*) => {{
+        $crate::serial::serial_log(format_args!($fmt, $($arg)*));
+    }};
 }
 
 /// Initializes the global serial port writer.

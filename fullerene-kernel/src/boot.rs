@@ -1,8 +1,8 @@
 //! Boot module containing UEFI and BIOS entry points and boot-specific logic
 
 use petroleum::graphics::init_vga_text_mode;
-use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, debug_print_str_to_com1 as debug_print_str, debug_print_hex};
-use petroleum::write_serial_bytes;
+use petroleum::serial::SERIAL_PORT_WRITER as SERIAL1;
+use petroleum::{debug_log, write_serial_bytes, serial};
 
 use alloc::boxed::Box;
 
@@ -46,31 +46,23 @@ pub extern "efiapi" fn efi_main(
     // Initialize serial early for debug logging
     petroleum::serial::serial_init();
 
-    debug_print_str("Early VGA write done\n");
+    debug_log!("Early VGA write done");
 
     // Debug parameter values
-    debug_print_str("Parameters: system_table=");
-    debug_print_hex(system_table as usize);
-    debug_print_str(" memory_map=");
-    debug_print_hex(memory_map as usize);
-    debug_print_str(" memory_map_size=");
-    debug_print_hex(memory_map_size);
-    debug_print_str("\n");
+    debug_log!("Parameters: system_table={:x} memory_map={:x} memory_map_size={:x}", system_table as usize, memory_map as usize, memory_map_size);
 
     write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: starting to parse parameters.\n");
 
     // Verify our own address as sanity check for PE relocation
     let self_addr = efi_main as u64;
-    debug_print_str("Kernel: efi_main located at ");
-    debug_print_hex(self_addr as usize);
-    debug_print_str("\n");
+    debug_log!("Kernel: efi_main located at {:x}", self_addr as usize);
 
     // Cast system_table to reference
     let system_table = unsafe { &*system_table };
 
     init_vga_text_mode();
 
-    debug_print_str("VGA setup done\n");
+    debug_log!("VGA setup done");
     kernel_log!("VGA text mode setup function returned");
 
     // Early VGA text output to ensure visible output on screen
