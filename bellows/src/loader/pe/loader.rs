@@ -5,26 +5,6 @@ use super::headers::*;
 use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 use petroleum::write_serial_bytes;
 
-/// Dummy kernel entry point for testing
-extern "efiapi" fn dummy_kernel_entry(
-    _image_handle: usize,
-    _system_table: *mut EfiSystemTable,
-    _memory_map: *mut c_void,
-    _memory_map_size: usize,
-) -> ! {
-    // Print multiple messages to show the kernel was called
-    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: Entry point reached!\n");
-    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: Parameters received\n");
-    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: Halting CPU...\n");
-
-    // Halt the CPU
-    loop {
-        unsafe {
-            x86_64::instructions::hlt();
-        }
-    }
-}
-
 pub fn load_efi_image(
     st: &EfiSystemTable,
     file: &[u8],
