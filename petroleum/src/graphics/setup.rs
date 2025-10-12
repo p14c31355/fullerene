@@ -193,6 +193,10 @@ pub fn setup_vga_text_mode() {
         &graphics_configs, VgaPorts::GRAPHICS_INDEX, VgaPorts::GRAPHICS_DATA
     );
 
+    // Set cursor start and end registers for hardware cursor to be visible
+    write_vga_register!(VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA, 0x0A, 0x0E); // cursor start
+    write_vga_register!(VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA, 0x0B, 0x0F); // cursor end
+
     // Attribute controller with inlined setup
     setup_vga_attributes();
 

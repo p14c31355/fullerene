@@ -1,26 +1,8 @@
-// use super::macros::kernel_log;
-use super::utils::calculate_framebuffer_size;
-use super::constants::FALLBACK_HEAP_START_ADDR;
-use crate::{VGA_BUFFER_ADDRESS, VGA_COLOR_GREEN_ON_BLACK, hlt_loop, MEMORY_MAP};
-use alloc::boxed::Box;
 use core::ffi::c_void;
 use petroleum::common::{
-    EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
-    VgaFramebufferConfig,
+    EfiSystemTable, FullereneFramebufferConfig,
 };
-use petroleum::page_table::EfiMemoryDescriptor;
-use x86_64::{PhysAddr, VirtAddr};
-use petroleum::graphics::init_vga_text_mode;
-use petroleum::{debug_log, serial, write_serial_bytes};
-use crate::graphics::framebuffer::{FramebufferLike, UefiFramebuffer};
-use crate::memory::{
-    find_framebuffer_config, find_heap_start, init_memory_management, setup_memory_maps,
-};
-use crate::{gdt, graphics, heap, interrupts, keyboard, process, shell, syscall};
-use petroleum::common::{
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputModeInformation, EfiGraphicsOutputProtocol,
-    EfiGraphicsOutputProtocolMode,
-};
+use petroleum::common::EfiGraphicsOutputProtocol;
 
 #[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]
@@ -70,21 +52,18 @@ fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], c
     }
 }
 
-    // Early VGA text output to ensure visible output on screen
-    kernel_log!("About to write to VGA buffer at 0xb8000");
-    {
-        let vga_buffer = unsafe { &mut *(VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]) };
-        // Clear screen first
-        for row in 0..25 {
-            for col in 0..80 {
-                vga_buffer[row][col] = VGA_COLOR_GREEN_ON_BLACK | b' ' as u16;
-            }
+    // Early text output using EFI console to ensure visible output on screen
+    kernel_log!("About to output to EFI console");
+    unsafe {
+        if !(*system_table).con_out.is_null() {
+            let output_string = (*(*system_table).con_out).output_string;
+            let mut msg = *b"UEFI Kernel: Display Test!\r\n\0";
+            let _ = output_string((*system_table).con_out, msg.as_mut_ptr());
+            let mut msg2 = *b"This is output via EFI console.\r\n\0";
+            let _ = output_string((*system_table).con_out, msg2.as_mut_ptr());
         }
-        // Write modified hello message
-        write_vga_string(vga_buffer, 0, b"UEFI Kernel: Display Test!", VGA_COLOR_GREEN_ON_BLACK);
-        write_vga_string(vga_buffer, 1, b"This should be visible.", VGA_COLOR_GREEN_ON_BLACK);
     }
-    kernel_log!("VGA buffer write completed");
+    kernel_log!("EFI console output completed");
 
     // Setup memory maps and initialize memory management
     let kernel_virt_addr = efi_main as u64;
