@@ -1,22 +1,20 @@
-use core::fmt::{self, Write};
 use alloc::boxed::Box; // Import Box
+use core::fmt::{self, Write};
 use embedded_graphics::{
     geometry::Point,
     mono_font::{MonoTextStyle, ascii::FONT_6X10},
-    pixelcolor::*,
+    pixelcolor::Rgb888,
     prelude::*,
     text::Text,
 };
 
+use petroleum::common::FullereneFramebufferConfig;
 use petroleum::common::VgaFramebufferConfig;
-use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig};
-use petroleum::serial::debug_print_str_to_com1 as debug_print_str;
 use petroleum::graphics::init_vga_graphics;
-use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
 use spin::{Mutex, Once};
 
 // Imports from other modules
-use super::framebuffer::{FramebufferLike, FramebufferWriter, FramebufferInfo};
+use super::framebuffer::{FramebufferInfo, FramebufferLike, FramebufferWriter};
 
 // Optimized text rendering using embedded-graphics
 // Batcher processing for efficiency and reduced code complexity
@@ -27,7 +25,7 @@ fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result 
     let fg_color = super::u32_to_rgb888(writer.get_fg_color());
 
     let style = MonoTextStyle::new(&FONT_6X10, fg_color);
-    let mut lines = s.split_inclusive('\n');
+    let lines = s.split_inclusive('\n');
     let mut current_pos = Point::new(
         writer.get_position().0 as i32,
         writer.get_position().1 as i32,
@@ -135,9 +133,8 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
     #[cfg(target_os = "uefi")]
     {
         WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer.clone())));
-        FRAMEBUFFER_UEFI.call_once(|| {
-            Mutex::new(super::framebuffer::UefiFramebuffer::Vga8(writer))
-        });
+        FRAMEBUFFER_UEFI
+            .call_once(|| Mutex::new(super::framebuffer::UefiFramebuffer::Vga8(writer)));
     }
 
     #[cfg(not(target_os = "uefi"))]

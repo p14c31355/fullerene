@@ -1,11 +1,11 @@
 // Syscall submodules
-pub mod interface;
 pub mod handlers;
+pub mod interface;
 pub mod user;
 
 // Re-export public API
-pub use interface::*;
 pub use handlers::*;
+pub use interface::*;
 
 #[cfg(test)]
 mod tests {

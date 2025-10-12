@@ -1,10 +1,10 @@
-use petroleum::serial::debug_print_str_to_com1 as debug_print_str;
-use super::framebuffer::{FramebufferLike, UefiFramebuffer};
+use super::framebuffer::FramebufferLike;
 use embedded_graphics::{
     pixelcolor::Rgb888,
     prelude::*,
     primitives::{PrimitiveStyleBuilder, Rectangle},
 };
+use petroleum::serial::debug_print_str_to_com1 as debug_print_str;
 
 use super::text; // For re-exporting statics or accessing
 
@@ -20,14 +20,18 @@ pub fn draw_os_desktop() {
         debug_print_str("Graphics: Framebuffer writer locked\n");
         draw_desktop_internal(&mut *locked, "UEFI");
     } else {
-        crate::graphics::_print(format_args!("Graphics: ERROR - FRAMEBUFFER_UEFI not initialized\n"));
+        crate::graphics::_print(format_args!(
+            "Graphics: ERROR - FRAMEBUFFER_UEFI not initialized\n"
+        ));
         debug_print_str("Graphics: ERROR - FRAMEBUFFER_UEFI not initialized\n");
     }
 }
 
 #[cfg(not(target_os = "uefi"))]
 pub fn draw_os_desktop() {
-    crate::graphics::_print(format_args!("Graphics: draw_os_desktop() called in BIOS mode\n"));
+    crate::graphics::_print(format_args!(
+        "Graphics: draw_os_desktop() called in BIOS mode\n"
+    ));
     debug_print_str("Graphics: BIOS mode draw_os_desktop() started\n");
     debug_print_str("Graphics: checking BIOS framebuffer...\n");
     if let Some(fb_writer) = text::FRAMEBUFFER_BIOS.get() {
@@ -36,7 +40,9 @@ pub fn draw_os_desktop() {
         debug_print_str("Graphics: Framebuffer writer locked\n");
         draw_desktop_internal(&mut *locked, "BIOS");
     } else {
-        crate::graphics::_print(format_args!("Graphics: ERROR - BIOS framebuffer not initialized\n"));
+        crate::graphics::_print(format_args!(
+            "Graphics: ERROR - BIOS framebuffer not initialized\n"
+        ));
         debug_print_str("Graphics: ERROR - BIOS framebuffer not initialized\n");
     }
 }
@@ -74,7 +80,10 @@ fn draw_desktop_internal(fb_writer: &mut impl FramebufferLike, mode: &str) {
     draw_icon(fb_writer, 65, 60, 96u32);
     draw_icon(fb_writer, 65, 80, 160u32);
     debug_print_str("Graphics: Icons drawn\n");
-    crate::graphics::_print(format_args!("Graphics: {} desktop drawing completed\n", mode));
+    crate::graphics::_print(format_args!(
+        "Graphics: {} desktop drawing completed\n",
+        mode
+    ));
     debug_print_str("Graphics: desktop drawing completed\n");
 }
 

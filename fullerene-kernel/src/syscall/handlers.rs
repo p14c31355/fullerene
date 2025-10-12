@@ -1,4 +1,6 @@
-use super::interface::{SyscallResult, SyscallError, validate_user_buffer, copy_user_string, SyscallNumber};
+use super::interface::{
+    SyscallError, SyscallNumber, SyscallResult, copy_user_string, validate_user_buffer,
+};
 use crate::process;
 use petroleum::write_serial_bytes;
 

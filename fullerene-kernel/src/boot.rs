@@ -1,8 +1,10 @@
 //! Boot module containing UEFI and BIOS entry points and boot-specific logic
 
+pub const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
+
 use petroleum::graphics::init_vga_text_mode;
-use petroleum::serial::{SERIAL_PORT_WRITER as SERIAL1, debug_print_str_to_com1 as debug_print_str, debug_print_hex};
-use petroleum::write_serial_bytes;
+use petroleum::serial::SERIAL_PORT_WRITER as SERIAL1;
+use petroleum::{debug_log, serial, write_serial_bytes};
 
 use alloc::boxed::Box;
 
@@ -11,16 +13,18 @@ use petroleum::common::{
     EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
     VgaFramebufferConfig,
 };
-use x86_64::PhysAddr;
 use petroleum::page_table::EfiMemoryDescriptor;
+use x86_64::{PhysAddr, VirtAddr};
 
-use crate::memory::{find_framebuffer_config, find_heap_start, init_memory_management, setup_memory_maps};
-use crate::{gdt, graphics, heap, interrupts, shell, MEMORY_MAP};
 use crate::graphics::framebuffer::{FramebufferLike, UefiFramebuffer};
+use crate::memory::{
+    find_framebuffer_config, find_heap_start, init_memory_management, setup_memory_maps,
+};
+use crate::{MEMORY_MAP, gdt, graphics, heap, interrupts, keyboard, process, shell, syscall};
 
 use petroleum::common::{
-    EfiGraphicsOutputProtocol, EfiGraphicsOutputProtocolMode, EfiGraphicsOutputModeInformation,
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputModeInformation, EfiGraphicsOutputProtocol,
+    EfiGraphicsOutputProtocolMode,
 };
 
 // Macro to reduce repetitive serial logging
@@ -29,6 +33,25 @@ macro_rules! kernel_log {
         let _ = core::fmt::write(&mut *SERIAL1.lock(), format_args!($($arg)*));
         let _ = core::fmt::write(&mut *SERIAL1.lock(), format_args!("\n"));
     };
+}
+
+// Helper function to calculate framebuffer size with bpp validation and logging
+fn calculate_framebuffer_size(config: &FullereneFramebufferConfig, source: &str) -> (Option<u64>, Option<u64>) {
+    if config.bpp < 8 {
+        kernel_log!("Warning: Invalid bpp ({}) in {} config.", config.bpp, source);
+        return (None, None);
+    }
+    let size_pixels = config.width as u64 * config.height as u64;
+    let size_bytes = size_pixels * (config.bpp as u64 / 8);
+    kernel_log!(
+        "Calculated {} framebuffer size: {} bytes from {}x{} @ {} bpp",
+        source,
+        size_bytes,
+        config.width,
+        config.height,
+        config.bpp
+    );
+    (Some(config.address), Some(size_bytes))
 }
 
 #[cfg(target_os = "uefi")]
@@ -46,31 +69,28 @@ pub extern "efiapi" fn efi_main(
     // Initialize serial early for debug logging
     petroleum::serial::serial_init();
 
-    debug_print_str("Early VGA write done\n");
+    debug_log!("Early VGA write done");
 
     // Debug parameter values
-    debug_print_str("Parameters: system_table=");
-    debug_print_hex(system_table as usize);
-    debug_print_str(" memory_map=");
-    debug_print_hex(memory_map as usize);
-    debug_print_str(" memory_map_size=");
-    debug_print_hex(memory_map_size);
-    debug_print_str("\n");
+    debug_log!(
+        "Parameters: system_table={:x} memory_map={:x} memory_map_size={:x}",
+        system_table as usize,
+        memory_map as usize,
+        memory_map_size
+    );
 
     write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: starting to parse parameters.\n");
 
     // Verify our own address as sanity check for PE relocation
     let self_addr = efi_main as u64;
-    debug_print_str("Kernel: efi_main located at ");
-    debug_print_hex(self_addr as usize);
-    debug_print_str("\n");
+    debug_log!("Kernel: efi_main located at {:x}", self_addr as usize);
 
     // Cast system_table to reference
     let system_table = unsafe { &*system_table };
 
     init_vga_text_mode();
 
-    debug_print_str("VGA setup done\n");
+    debug_log!("VGA setup done");
     kernel_log!("VGA text mode setup function returned");
 
     // Early VGA text output to ensure visible output on screen
@@ -93,7 +113,9 @@ pub extern "efiapi" fn efi_main(
 
     // Setup memory maps and initialize memory management
     let kernel_virt_addr = efi_main as u64;
-    let (physical_memory_offset, kernel_phys_start) = setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
+    let (higher_half_offset, kernel_phys_start) =
+        setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
+    let physical_memory_offset = VirtAddr::new(0); // UEFI identity maps initially, offset handled by higher-half in reinit_page_table
 
     // Initialize memory management components (heap, page tables, etc.)
     // Comment out reinit for now to allow desktop drawing
@@ -113,8 +135,20 @@ pub extern "efiapi" fn efi_main(
     heap::init_page_table(physical_memory_offset);
     kernel_log!("Page table init completed successfully");
 
-    // Graphics work with UEFI page tables, but kernel should eventually reinit
-    kernel_log!("Will use UEFI page tables for graphics compatibility");
+    // Initialize graphics with framebuffer config to get framebuffer info
+    kernel_log!("Initializing graphics temporarily to get framebuffer size...");
+    let (fb_addr, fb_size) = if let Some(gop_config) = find_gop_framebuffer(system_table) {
+        calculate_framebuffer_size(&gop_config, "GOP")
+    } else if let Some(fb_config) = find_framebuffer_config(system_table) {
+        calculate_framebuffer_size(&fb_config, "custom")
+    } else {
+        (None, None)
+    };
+
+    // Reinit page tables to kernel page tables
+    kernel_log!("Reinit page tables to kernel page tables with framebuffer size");
+    heap::reinit_page_table(physical_memory_offset, kernel_phys_start, fb_addr, fb_size);
+    kernel_log!("Page table reinit completed successfully");
 
     // Set physical memory offset for process management
     crate::memory_management::set_physical_memory_offset(physical_memory_offset);
@@ -123,8 +157,11 @@ pub extern "efiapi" fn efi_main(
     let heap_phys_start = find_heap_start(*MEMORY_MAP.get().unwrap());
     kernel_log!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());
     const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
-        let start_addr = if heap_phys_start.as_u64() < 0x1000 {
-        kernel_log!("Kernel: ERROR - Invalid heap_phys_start, using fallback 0x{:x}", FALLBACK_HEAP_START_ADDR);
+    let start_addr = if heap_phys_start.as_u64() < 0x1000 {
+        kernel_log!(
+            "Kernel: ERROR - Invalid heap_phys_start, using fallback 0x{:x}",
+            FALLBACK_HEAP_START_ADDR
+        );
         PhysAddr::new(FALLBACK_HEAP_START_ADDR)
     } else {
         heap_phys_start
@@ -133,7 +170,10 @@ pub extern "efiapi" fn efi_main(
     let heap_start = heap::allocate_heap_from_map(start_addr, heap::HEAP_SIZE);
     kernel_log!("Kernel: heap_start=0x{:x}", heap_start.as_u64());
     let heap_start_after_gdt = gdt::init(heap_start);
-    kernel_log!("Kernel: heap_start_after_gdt=0x{:x}", heap_start_after_gdt.as_u64());
+    kernel_log!(
+        "Kernel: heap_start_after_gdt=0x{:x}",
+        heap_start_after_gdt.as_u64()
+    );
     kernel_log!("Kernel: GDT init done");
 
     // Initialize heap with the remaining memory
@@ -180,36 +220,49 @@ pub extern "efiapi" fn efi_main(
         kernel_log!("VGA graphics desktop drawn - if you see this, draw_os_desktop completed");
     }
 
-    // Now it's safe to initialize processes and enable interrupts
-    kernel_log!("Graphics initialization complete, now initializing common subsystems...");
+    kernel_log!("Initializing graphics and shell...");
 
-    // Common initialization (enables interrupts)
-    super::init::init_common();
-    kernel_log!("Kernel: init_common done");
+    // Initialize graphics with framebuffer configuration
+    if initialize_graphics_with_config(system_table) {
+        kernel_log!("Graphics initialized successfully");
 
-    kernel_log!("Kernel: initialization complete");
-    kernel_log!("FullereneOS kernel is now running - から先に進みたいです");
+        // Initialize keyboard input driver
+        crate::keyboard::init();
+        kernel_log!("Keyboard initialized");
 
-    // For now, just indicate success instead of starting shell immediately
-    // to avoid memory access issues during early testing
-    kernel_log!("Ready for interactive mode...");
+        // Initialize syscall handling
+        crate::syscall::init();
+        kernel_log!("Syscalls initialized");
 
-    // Keep kernel running with proper loop
-    loop {
-        unsafe {
-            x86_64::instructions::hlt();
-        }
+        // Initialize process management
+        crate::process::init();
+        kernel_log!("Process management initialized");
+
+        // Start the shell as the main interface
+        kernel_log!("Starting shell...");
+        crate::shell::shell_main();
+        // shell_main should never return in normal operation
+
+        kernel_log!("Shell exited unexpectedly, entering idle loop");
+    } else {
+        kernel_log!("Graphics initialization failed, entering idle loop");
     }
+
+    super::hlt_loop();
 }
 
 fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
-    use petroleum::common::{EfiBootServices, EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID};
     use core::ptr;
+    use petroleum::common::{EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiBootServices};
 
-    petroleum::serial::serial_log(format_args!("find_gop_framebuffer: Looking for GOP protocol\n"));
+    petroleum::serial::serial_log(format_args!(
+        "find_gop_framebuffer: Looking for GOP protocol\n"
+    ));
 
     if system_table.boot_services.is_null() {
-        petroleum::serial::serial_log(format_args!("find_gop_framebuffer: Boot services is null\n"));
+        petroleum::serial::serial_log(format_args!(
+            "find_gop_framebuffer: Boot services is null\n"
+        ));
         return None;
     }
 
@@ -224,7 +277,10 @@ fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFrameb
     );
 
     if status != 0 {
-        petroleum::serial::serial_log(format_args!("find_gop_framebuffer: locate_protocol failed with status 0x{:x}\n", status));
+        petroleum::serial::serial_log(format_args!(
+            "find_gop_framebuffer: locate_protocol failed with status 0x{:x}\n",
+            status
+        ));
         return None;
     }
 
@@ -243,7 +299,9 @@ fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFrameb
     let address = gop_mode.frame_buffer_base;
 
     if address == 0 {
-        petroleum::serial::serial_log(format_args!("find_gop_framebuffer: Framebuffer base is 0\n"));
+        petroleum::serial::serial_log(format_args!(
+            "find_gop_framebuffer: Framebuffer base is 0\n"
+        ));
         return None;
     }
 
@@ -269,7 +327,9 @@ fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFrameb
             stride: mode_info.pixels_per_scan_line,
         })
     } else {
-        petroleum::serial::serial_log(format_args!("find_gop_framebuffer: GOP mode info is null\n"));
+        petroleum::serial::serial_log(format_args!(
+            "find_gop_framebuffer: GOP mode info is null\n"
+        ));
         None
     }
 }
@@ -285,7 +345,12 @@ fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str) -> 
     // Verify the framebuffer was initialized
     if let Some(fb_writer) = unsafe { graphics::text::FRAMEBUFFER_UEFI.get() } {
         let fb_info = fb_writer.lock();
-        kernel_log!("{} framebuffer initialized successfully - width: {}, height: {}", source_name, fb_info.get_width(), fb_info.get_height());
+        kernel_log!(
+            "{} framebuffer initialized successfully - width: {}, height: {}",
+            source_name,
+            fb_info.get_width(),
+            fb_info.get_height()
+        );
 
         // Test direct pixel write to verify access
         kernel_log!("Testing {} framebuffer access...", source_name);
@@ -296,9 +361,15 @@ fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str) -> 
         return false;
     }
 
-    kernel_log!("{} graphics mode initialized, calling draw_os_desktop...", source_name);
+    kernel_log!(
+        "{} graphics mode initialized, calling draw_os_desktop...",
+        source_name
+    );
     graphics::draw_os_desktop();
-    kernel_log!("{} graphics desktop drawn - if you see this, draw_os_desktop completed", source_name);
+    kernel_log!(
+        "{} graphics desktop drawn - if you see this, draw_os_desktop completed",
+        source_name
+    );
     petroleum::serial::serial_log(format_args!("Desktop should be visible now!\n"));
     true
 }

@@ -1,7 +1,10 @@
 //! Memory management module containing memory map parsing and initialization
 
 use crate::heap;
-use petroleum::common::{EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig};
+use petroleum::common::{
+    EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
+    FullereneFramebufferConfig,
+};
 use petroleum::page_table::EfiMemoryDescriptor;
 
 use crate::MEMORY_MAP;
@@ -26,18 +29,20 @@ macro_rules! kernel_log {
 fn find_memory_descriptor_address<F>(
     descriptors: &[EfiMemoryDescriptor],
     predicate: F,
-) -> Option<usize>
+) -> Option<u64>
 where
     F: Fn(&EfiMemoryDescriptor) -> bool,
 {
     descriptors
         .iter()
         .find(|desc| predicate(desc))
-        .map(|desc| desc.physical_start as usize)
+        .map(|desc| desc.physical_start)
 }
 
 // Helper function to find framebuffer config (using generic)
-pub fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&FullereneFramebufferConfig> {
+pub fn find_framebuffer_config(
+    system_table: &EfiSystemTable,
+) -> Option<&FullereneFramebufferConfig> {
     petroleum::serial::serial_log(format_args!(
         "find_framebuffer_config: System table has {} configuration table entries\n",
         system_table.number_of_table_entries
@@ -53,8 +58,7 @@ pub fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&Fullere
     for (i, entry) in config_table_entries.iter().enumerate() {
         petroleum::serial::serial_log(format_args!(
             "Config table {}: table={:#x}, checking for GOP GUID\n",
-            i,
-            entry.vendor_table as usize
+            i, entry.vendor_table as usize
         ));
 
         if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
@@ -66,21 +70,25 @@ pub fn find_framebuffer_config(system_table: &EfiSystemTable) -> Option<&Fullere
 
 // Helper function to find heap start from memory map (using generic)
 pub fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> PhysAddr {
-    // First, try to find EfiLoaderData
-    if let Some(addr) = find_memory_descriptor_address(descriptors, |desc| {
-        desc.type_ == EfiMemoryType::EfiLoaderData && desc.number_of_pages > 0
-    }) {
-        return PhysAddr::new(addr as u64);
+    // Find the largest suitable memory region from EfiLoaderData or EfiConventionalMemory and use its physical start for heap
+    let mut largest_addr = None;
+    let mut largest_pages = 0u64;
+    for desc in descriptors {
+        if (desc.type_ == EfiMemoryType::EfiLoaderData || desc.type_ == EfiMemoryType::EfiConventionalMemory)
+            && desc.number_of_pages >= 4 {
+            // at least 16KB
+            if desc.number_of_pages > largest_pages {
+                largest_pages = desc.number_of_pages;
+                largest_addr = Some(desc.physical_start);
+            }
+        }
     }
-    // If not found, find EfiConventionalMemory large enough
-    let required_pages = (heap::HEAP_SIZE + 4095) / 4096;
-    if let Some(addr) = find_memory_descriptor_address(descriptors, |desc| {
-        desc.type_ == EfiMemoryType::EfiConventionalMemory
-            && desc.number_of_pages >= required_pages as u64
-    }) {
-        return PhysAddr::new(addr as u64);
+    if let Some(addr) = largest_addr {
+        PhysAddr::new(addr)
+    } else {
+        // Fallback if no suitable memory found
+        PhysAddr::new(crate::boot::FALLBACK_HEAP_START_ADDR)
     }
-    panic!("No suitable memory region found for heap");
 }
 
 pub fn setup_memory_maps(
@@ -127,35 +135,28 @@ pub fn setup_memory_maps(
     let mut kernel_phys_start = PhysAddr::new(0);
 
     kernel_log!("Scanning memory descriptors to find kernel location...");
-    let mut found_kernel_descriptor = false;
-    let memory_map_ref = *MEMORY_MAP.get().unwrap();
-    for (i, desc) in memory_map_ref.iter().enumerate() {
-        let virt_start = desc.virtual_start;
-        let virt_end = virt_start + desc.number_of_pages * 4096;
 
-        // Check if the kernel's entry point (efi_main) falls within this descriptor's virtual range
-        if kernel_virt_addr >= virt_start && kernel_virt_addr < virt_end {
-            // This descriptor contains the kernel.
-            // The physical start of this descriptor is the kernel's physical base address.
-            kernel_phys_start = PhysAddr::new(desc.physical_start);
-            found_kernel_descriptor = true;
-            kernel_log!(
-                "Found kernel in descriptor {}: phys_start=0x{:x}, virt_start=0x{:x}",
-                i,
-                kernel_phys_start.as_u64(),
-                virt_start
-            );
-            break; // Found the kernel's descriptor, no need to continue
-        }
-    }
-
-    if !found_kernel_descriptor {
-        panic!("Could not find the memory descriptor containing the kernel's entry point (efi_main).");
+    // Find the memory descriptor containing the kernel (efi_main is virtual address,
+    // but UEFI uses identity mapping initially, so check physical range containing kernel_virt_addr)
+    // Since UEFI identity-maps initially, kernel_virt_addr should equal its physical address
+    if kernel_virt_addr >= 0x1000 {
+        kernel_phys_start = PhysAddr::new(kernel_virt_addr);
+        kernel_log!(
+            "Using identity-mapped kernel physical start: 0x{:x}",
+            kernel_phys_start.as_u64()
+        );
+    } else {
+        kernel_log!(
+            "Warning: Invalid kernel address 0x{:x}, falling back to hardcoded value",
+            kernel_virt_addr
+        );
+        kernel_phys_start = PhysAddr::new(0x100000);
     }
 
     // Calculate the physical_memory_offset for the higher-half kernel mapping.
     // This offset is such that physical_address + offset = higher_half_virtual_address.
-    physical_memory_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE - kernel_phys_start.as_u64());
+    physical_memory_offset =
+        VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE - kernel_phys_start.as_u64());
 
     kernel_log!(
         "Physical memory offset calculation complete: offset=0x{:x}, kernel_phys_start=0x{:x}",
@@ -192,6 +193,6 @@ pub fn init_memory_management(
         physical_memory_offset.as_u64(),
         kernel_phys_start.as_u64()
     );
-    heap::reinit_page_table(physical_memory_offset, kernel_phys_start, None);
+    heap::reinit_page_table(physical_memory_offset, kernel_phys_start, None, None);
     kernel_log!("Page table reinit completed successfully");
 }

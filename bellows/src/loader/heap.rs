@@ -2,8 +2,8 @@
 
 use linked_list_allocator::LockedHeap;
 use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus};
-
-use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
+use petroleum::debug_log;
+use petroleum::serial::debug_print_hex;
 
 /// Size of the heap we will allocate for `alloc` usage (bytes).
 const HEAP_SIZE: usize = 32 * 1024; // 32 KiB
@@ -23,20 +23,23 @@ fn try_allocate_pages(
     let types_to_try = [preferred_type, EfiMemoryType::EfiConventionalMemory];
 
     for mem_type in types_to_try {
-        debug_print_str("Heap: About to call allocate_pages (type AnyPages, mem ");
-        match mem_type {
-            EfiMemoryType::EfiLoaderData => debug_print_str("LoaderData)...\n"),
-            EfiMemoryType::EfiConventionalMemory => debug_print_str("Conventional)...\n"),
-            _ => debug_print_str("Other)...\n"),
+        let type_str = match mem_type {
+            EfiMemoryType::EfiLoaderData => "LoaderData",
+            EfiMemoryType::EfiConventionalMemory => "Conventional",
+            _ => "Other",
         };
+        debug_log!(
+            "Heap: About to call allocate_pages (type AnyPages, mem {}))",
+            type_str
+        );
 
         let mut phys_addr_local: usize = 0;
-        debug_print_str("Heap: Calling allocate_pages with pages=");
-        debug_print_hex(pages);
-        debug_print_str(", mem_type=");
-        debug_print_hex(mem_type as usize);
-        debug_print_str("\n");
-        debug_print_str("Heap: Entering allocate_pages call...\n");
+        debug_log!(
+            "Heap: Calling allocate_pages with pages={:x}, mem_type={:x}",
+            pages,
+            mem_type as usize
+        );
+        debug_log!("Heap: Entering allocate_pages call...");
         // Use AllocateAnyPages (0) for any mem
         let alloc_type = 0usize; // AllocateAnyPages
         let status = (bs.allocate_pages)(
@@ -45,42 +48,37 @@ fn try_allocate_pages(
             pages, // Start with 1 for testing
             &mut phys_addr_local,
         );
-        debug_print_str("Heap: Exited allocate_pages call.\n"); // Marker after call
-        phys_addr = phys_addr_local;
-        debug_print_str("Heap: allocate_pages returned, phys_addr=");
-        debug_print_hex(phys_addr);
-        debug_print_str(", raw_status=0x");
-        debug_print_hex(status); // Print raw status as hex
-        debug_print_str("\n");
+        debug_log!(
+            "Heap: Exited allocate_pages call. phys_addr_local={:x}, raw_status=0x{:x}",
+            phys_addr_local,
+            status
+        );
 
-        // Immediate validation: check if phys_addr is page-aligned (avoid invalid reads)
-        if phys_addr != 0 && !phys_addr.is_multiple_of(4096) {
-            debug_print_str("Heap: WARNING: phys_addr not page-aligned!\n");
-            let _ = (bs.free_pages)(phys_addr, pages); // Ignore status on free
-            phys_addr = 0;
+        // Immediate validation: check if phys_addr_local is page-aligned (avoid invalid reads)
+        if phys_addr_local != 0 && !phys_addr_local.is_multiple_of(4096) {
+            debug_log!("Heap: WARNING: phys_addr_local not page-aligned!");
+            let _ = (bs.free_pages)(phys_addr_local, pages); // Ignore status on free
             continue;
         }
 
         let status_efi = EfiStatus::from(status);
-        debug_print_str("Heap: Status: ");
-        debug_print_str(match status_efi {
+        let status_str = match status_efi {
             EfiStatus::Success => "Success",
             EfiStatus::OutOfResources => "OutOfResources",
             EfiStatus::InvalidParameter => "InvalidParameter",
             _ => "Other",
-        });
-        debug_print_str("\n");
+        };
+        debug_log!("Heap: Status: {}", status_str);
 
         if status_efi == EfiStatus::InvalidParameter {
-            debug_print_str("Heap: -> Skipping invalid type.\n");
+            debug_log!("Heap: -> Skipping invalid type.");
             continue; // Ignore Conventional memory type
         }
 
-        if status_efi == EfiStatus::Success && phys_addr != 0 {
-            debug_print_str("Heap: Allocated at address, aligned OK.\n");
-            return Ok(phys_addr);
+        if status_efi == EfiStatus::Success && phys_addr_local != 0 {
+            debug_log!("Heap: Allocated at address, aligned OK.");
+            return Ok(phys_addr_local);
         }
-        phys_addr = 0;
     }
 
     Err(BellowsError::AllocationFailed(
@@ -89,15 +87,13 @@ fn try_allocate_pages(
 }
 
 pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
-    debug_print_str("Heap: Allocating pages for heap...\n");
+    debug_log!("Heap: Allocating pages for heap...");
     let heap_pages = HEAP_SIZE.div_ceil(4096);
-    debug_print_str("Heap: Requesting ");
-    debug_print_hex(heap_pages);
-    debug_print_str(" pages for heap.\n");
+    debug_log!("Heap: Requesting {:x} pages for heap.", heap_pages);
     let heap_phys = try_allocate_pages(bs, heap_pages, EfiMemoryType::EfiLoaderData)?; // 固定
 
     if heap_phys == 0 {
-        debug_print_str("Heap: Allocated heap address is null!\n");
+        debug_log!("Heap: Allocated heap address is null!");
         return Err(BellowsError::AllocationFailed(
             "Allocated heap address is null.",
         ));
@@ -108,17 +104,16 @@ pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
     // In a more robust implementation, we'd modify try_allocate_pages to return the actual size
     let actual_heap_size = heap_pages * 4096;
 
-    debug_print_str("Heap: Initializing allocator...\n");
+    debug_log!("Heap: Initializing allocator...");
     // Safety:
     // We have successfully allocated a valid, non-zero memory region.
     // The `init` function correctly initializes the allocator with this region.
-    debug_print_str("Heap: About to init ALLOCATOR...\n");
+    debug_log!("Heap: About to init ALLOCATOR...");
     unsafe {
         ALLOCATOR
             .lock()
             .init(heap_phys as *mut u8, actual_heap_size);
     }
-    debug_print_str("Heap: ALLOCATOR init done.\n");
-    debug_print_str("Heap: Returning Ok(()).\n");
+    debug_log!("Heap: ALLOCATOR init done. Returning Ok(()).");
     Ok(())
 }

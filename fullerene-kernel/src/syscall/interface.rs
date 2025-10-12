@@ -53,7 +53,11 @@ pub enum SyscallNumber {
 }
 
 /// Helper function to validate user buffer access
-pub fn validate_user_buffer(ptr: usize, count: usize, allow_kernel: bool) -> Result<(), SyscallError> {
+pub fn validate_user_buffer(
+    ptr: usize,
+    count: usize,
+    allow_kernel: bool,
+) -> Result<(), SyscallError> {
     use crate::memory_management::is_user_address;
     use x86_64::VirtAddr;
 

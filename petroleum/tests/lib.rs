@@ -1,3 +1,5 @@
+// petroleum/tests/lib.rs (integrated tests to reduce redundancy)
+
 #[cfg(feature = "std")]
 mod tests_with_std {
 
@@ -28,5 +30,22 @@ mod tests_with_std {
         // Test that we can create basic structures without panicking
         let ptr = crate::UefiSystemTablePtr(core::ptr::null_mut());
         assert!(ptr.0.is_null());
+    }
+
+    // Integrated tests from toluene to reduce redundant test files
+    mod toluene_integration {
+        extern crate toluene;
+
+        #[test]
+        fn test_add_positive() {
+            assert_eq!(toluene::add(2, 3), 5);
+            assert_eq!(toluene::add(0, 0), 0);
+            assert_eq!(toluene::add(-1, 1), 0);
+        }
+
+        #[test]
+        fn test_add_negative() {
+            assert_eq!(toluene::add(-2, -3), -5);
+        }
     }
 }
