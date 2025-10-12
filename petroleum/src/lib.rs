@@ -73,11 +73,11 @@ pub fn init_uga_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     let bs = unsafe { &*system_table.boot_services };
     let mut uga: *mut EfiUniversalGraphicsAdapterProtocolPtr = ptr::null_mut();
 
-    let status = (bs.locate_protocol)(
+    let status = unsafe { (bs.locate_protocol)(
         uga_guid.as_ptr(),
         ptr::null_mut(),
         &mut uga as *mut _ as *mut *mut c_void,
-    );
+    ) };
 
     if EfiStatus::from(status) != EfiStatus::Success || uga.is_null() {
         serial::_print(format_args!(
