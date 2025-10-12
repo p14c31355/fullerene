@@ -188,7 +188,7 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
         width: info.horizontal_resolution,
         height: info.vertical_resolution,
         pixel_format: info.pixel_format,
-        bpp: 32, // Assuming 32bpp for supported modes
+        bpp: crate::common::get_bpp_from_pixel_format(info.pixel_format),
         stride: info.pixels_per_scan_line,
     };
 
