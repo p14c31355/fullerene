@@ -148,7 +148,7 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
             let mut info_buf = vec![0u8; size_of_info];
             let info: *mut crate::common::EfiGraphicsOutputModeInformation = info_buf.as_mut_ptr() as *mut _;
 
-            let query_status = (gop_ref.query_mode)(gop, mode_num, &mut size_of_info, info as *mut c_void);
+            let query_status = unsafe { (gop_ref.query_mode)(gop, mode_num, &mut size_of_info, info as *mut c_void) };
             if EfiStatus::from(query_status) == EfiStatus::Success && !info.is_null() {
                 let mode_info = unsafe { &*info };
                 valid_modes.push((mode_num, mode_info.horizontal_resolution, mode_info.vertical_resolution));
