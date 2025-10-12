@@ -72,8 +72,8 @@ impl Heap {
                     let remaining = node.end_addr() - alloc_end;
                     if remaining > core::mem::size_of::<ListNode>() {
                         let new_node = alloc_end as *mut ListNode;
-                        unsafe { *new_node = ListNode::new(remaining); }
-                        unsafe { (*new_node).next = node.next; }
+                        *new_node = ListNode::new(remaining);
+                        (*new_node).next = node.next;
                         node.next = new_node;
                     }
                     node.size = padding;
