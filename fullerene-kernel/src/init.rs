@@ -1,6 +1,6 @@
-use x86_64::instructions::port::Port;
+//! Initialization module containing common initialization logic for both UEFI and BIOS boot
 
-/// Initialization module containing common initialization logic for both UEFI and BIOS boot
+use x86_64::instructions::port::Port;
 
 use crate::{fs, graphics, interrupts, loader, process, syscall, vga};
 
