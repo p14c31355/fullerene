@@ -376,15 +376,15 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
             vga_start,
             vga_end,
             vga_virt,
-            Flags::PRESENT | Flags::WRITABLE,
+        Flags::PRESENT | Flags::WRITABLE,
             &mut frame_allocator,
-        );
+    );
     }
 
     // Unmap the temporary mapping
     {
         let mut current_mapper = MAPPER.get().unwrap().lock();
-            current_mapper.unmap(temp_virt_page).expect("Failed to unmap temp").1.flush();
+        current_mapper.unmap(temp_virt_page).expect("Failed to unmap temp").1.flush();
     }
 
     // Set the new CR3
