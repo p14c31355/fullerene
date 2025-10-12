@@ -135,6 +135,16 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     }
 }
 
+fn init_basic_vga_text_mode() {
+    petroleum::serial::_print(format_args!("Basic VGA text mode initialization...\n"));
+
+    // Simply call the existing petroleum VGA setup function
+    // This will handle the text mode setup properly
+    petroleum::graphics::init_vga_text_mode();
+
+    petroleum::serial::_print(format_args!("Basic VGA text mode initialized as fallback.\n"));
+}
+
 /// Initializes the Graphics Output Protocol (GOP) for framebuffer access.
 fn init_gop(st: &EfiSystemTable) {
     debug_print_str("GOP: init_gop entered.\n");
@@ -153,8 +163,17 @@ fn init_gop(st: &EfiSystemTable) {
 
     if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
         petroleum::serial::_print(format_args!(
-            "Failed to locate GOP protocol, continuing without it.\n"
+            "Failed to locate GOP protocol (status: {:#x}), trying alternative methods.\n", status
         ));
+
+        // Try to find other graphics protocols or set up basic VGA text mode
+        petroleum::serial::_print(format_args!("No GOP available, attempting basic VGA text mode...\n"));
+
+        // Initialize basic VGA text mode as fallback
+        // We'll set up minimum graphics support for text output
+        init_basic_vga_text_mode();
+
+        petroleum::serial::_print(format_args!("Basic VGA text mode initialized as fallback.\n"));
         return;
     }
 
