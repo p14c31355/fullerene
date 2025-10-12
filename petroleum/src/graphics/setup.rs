@@ -99,7 +99,7 @@ pub fn write_attribute_registers() {
         attr_ops.write_register(reg.index, reg.value);
     }
 
-    attr_ops.write_register(0x20, 0x00); // Enable video output
+    PortWriter::new(VgaPorts::ATTRIBUTE_INDEX).write_safe(0x20); // Enable video output
 }
 
 /// Configures the VGA Attribute Controller registers.
