@@ -168,14 +168,21 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     if best_mode != 0 { modes_to_try.push(0); }
     modes_to_try.extend([1, 2]); // Lower priority modes
 
+    let mut mode_set_successfully = false;
     for &mode in &modes_to_try {
         let status = (gop_ref.set_mode)(gop, mode);
         if EfiStatus::from(status) == EfiStatus::Success {
             serial::_print(format_args!("GOP: Successfully set graphics mode {}.\n", mode));
+            mode_set_successfully = true;
             break;
         } else {
             serial::_print(format_args!("GOP: Failed to set mode {}, status: {:#x}.\n", mode, status));
         }
+    }
+
+    if !mode_set_successfully {
+        serial::_print(format_args!("GOP: Failed to set any valid graphics mode.\n"));
+        return None;
     }
 
     // Refresh mode reference after setting mode
