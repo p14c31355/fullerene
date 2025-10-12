@@ -135,11 +135,10 @@ fn main() -> io::Result<()> {
         "1",
         "-machine",
         "pc,smm=off",
-        // Use virtio-gpu device for reliable UEFI GOP support
-        "-device",
-        "virtio-gpu-pci",
         "-display",
         "gtk",
+        "-vga",
+        "cirrus",
         "-serial",
         "stdio",
         "-accel",

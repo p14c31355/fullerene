@@ -71,10 +71,14 @@ pub extern "efiapi" fn efi_main(
                 vga_buffer[row][col] = VGA_COLOR_GREEN_ON_BLACK | b' ' as u16;
             }
         }
-        // Write hello message
-        let hello = b"Hello from UEFI Kernel!";
+        // Write modified hello message
+        let hello = b"UEFI Kernel: Display Test!";
         for (i, &byte) in hello.iter().enumerate() {
             vga_buffer[0][i] = VGA_COLOR_GREEN_ON_BLACK | (byte as u16);
+        }
+        let hello2 = b"This should be visible.";
+        for (i, &byte) in hello2.iter().enumerate() {
+            vga_buffer[1][i] = VGA_COLOR_GREEN_ON_BLACK | (byte as u16);
         }
     }
     kernel_log!("VGA buffer write completed");
