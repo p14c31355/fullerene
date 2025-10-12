@@ -111,7 +111,7 @@ pub extern "efiapi" fn efi_main(
 
     // Setup memory maps and initialize memory management
     let kernel_virt_addr = efi_main as u64;
-    let (original_offset, kernel_phys_start) =
+    let (higher_half_offset, kernel_phys_start) =
         setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
     let physical_memory_offset = VirtAddr::new(0); // UEFI identity maps initially, offset handled by higher-half in reinit_page_table
 
