@@ -108,9 +108,27 @@ pub extern "efiapi" fn efi_main(
     heap::init_page_table(physical_memory_offset);
     kernel_log!("Page table init completed successfully");
 
+    // Initialize graphics with framebuffer config to get framebuffer info
+    kernel_log!("Initializing graphics temporarily to get framebuffer size...");
+    let (fb_addr, fb_size) = if let Some(gop_config) = find_gop_framebuffer(system_table) {
+        let size_pixels = gop_config.width as u64 * gop_config.height as u64;
+        let size_bytes = size_pixels * (gop_config.bpp as u64 / 8);
+        kernel_log!("Calculated framebuffer size: {} bytes from {}x{} @ {} bpp",
+                   size_bytes, gop_config.width, gop_config.height, gop_config.bpp);
+        (Some(gop_config.address), Some(size_bytes))
+    } else if let Some(fb_config) = find_framebuffer_config(system_table) {
+        let size_pixels = fb_config.width as u64 * fb_config.height as u64;
+        let size_bytes = size_pixels * (fb_config.bpp as u64 / 8);
+        kernel_log!("Calculated custom framebuffer size: {} bytes from {}x{} @ {} bpp",
+                   size_bytes, fb_config.width, fb_config.height, fb_config.bpp);
+        (Some(fb_config.address), Some(size_bytes))
+    } else {
+        (None, None)
+    };
+
     // Reinit page tables to kernel page tables
-    kernel_log!("Reinit page tables to kernel page tables");
-    heap::reinit_page_table(physical_memory_offset, kernel_phys_start, None);
+    kernel_log!("Reinit page tables to kernel page tables with framebuffer size");
+    heap::reinit_page_table(physical_memory_offset, kernel_phys_start, fb_addr, fb_size);
     kernel_log!("Page table reinit completed successfully");
 
     // Set physical memory offset for process management

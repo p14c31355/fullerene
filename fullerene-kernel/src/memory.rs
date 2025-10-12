@@ -26,14 +26,14 @@ macro_rules! kernel_log {
 fn find_memory_descriptor_address<F>(
     descriptors: &[EfiMemoryDescriptor],
     predicate: F,
-) -> Option<usize>
+) -> Option<u64>
 where
     F: Fn(&EfiMemoryDescriptor) -> bool,
 {
     descriptors
         .iter()
         .find(|desc| predicate(desc))
-        .map(|desc| desc.physical_start as usize)
+        .map(|desc| desc.physical_start)
 }
 
 // Helper function to find framebuffer config (using generic)
@@ -130,11 +130,23 @@ pub fn setup_memory_maps(
 
     kernel_log!("Scanning memory descriptors to find kernel location...");
 
-    // The kernel is loaded at 0x100000 physical address as determined from PE loading logs
-    // efi_main at 0x1713e0 indicates virtual address, physical base is 0x100000
-    kernel_phys_start = PhysAddr::new(0x100000);
-
-    kernel_log!("Using fixed kernel physical start: 0x{:x}", kernel_phys_start.as_u64());
+    // Find the memory descriptor containing efi_main to determine physical start address
+    if let Some(addr) = find_memory_descriptor_address(descriptors, |desc| {
+        let end_addr = desc.physical_start + desc.number_of_pages * 4096;
+        desc.physical_start <= kernel_virt_addr && kernel_virt_addr < end_addr
+    }) {
+        if addr >= 0x1000 {
+            kernel_phys_start = PhysAddr::new(addr);
+            kernel_log!("Using dynamic kernel physical start: 0x{:x} from descriptor containing efi_main at 0x{:x}", kernel_phys_start.as_u64(), kernel_virt_addr);
+        } else {
+            kernel_log!("Warning: Found invalid physical start 0x{:x}, falling back to hardcoded value", addr);
+            kernel_phys_start = PhysAddr::new(0x100000);
+        }
+    } else {
+        // Fallback if not found
+        kernel_log!("Warning: Could not find memory descriptor for efi_main, falling back to hardcoded value");
+        kernel_phys_start = PhysAddr::new(0x100000);
+    }
 
 // Calculate the physical_memory_offset for the higher-half kernel mapping.
 // This offset is such that physical_address + offset = higher_half_virtual_address.
@@ -178,6 +190,6 @@ pub fn init_memory_management(
         physical_memory_offset.as_u64(),
         kernel_phys_start.as_u64()
     );
-    heap::reinit_page_table(physical_memory_offset, kernel_phys_start, None);
+    heap::reinit_page_table(physical_memory_offset, kernel_phys_start, None, None);
     kernel_log!("Page table reinit completed successfully");
 }

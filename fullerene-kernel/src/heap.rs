@@ -285,7 +285,7 @@ pub(crate) unsafe fn map_physical_range(
     }
 }
 
-pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: PhysAddr, framebuffer_addr: Option<u64>) {
+pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: PhysAddr, framebuffer_addr: Option<u64>, framebuffer_size: Option<u64>) {
     use x86_64::registers::control::Cr3;
     use x86_64::structures::paging::PageTable;
 
@@ -409,8 +409,9 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     if let Some(fb_addr) = framebuffer_addr {
         petroleum::serial::serial_log(format_args!("reinit_page_table: Mapping framebuffer at 0x{:x}\n", fb_addr));
         let fb_start = PhysAddr::new(fb_addr);
-        // Assume framebuffer size (this is a simplification; ideally get actual size)
-        let fb_end = fb_start + 0x400000; // 4MB framebuffer size assumption
+        // Calculate actual framebuffer size or use provided size, fallback to 4MB
+        let fb_size = framebuffer_size.unwrap_or(0x400000);
+        let fb_end = fb_start + fb_size;
         let fb_virt = VirtAddr::new(fb_addr); // Identity mapping for framebuffer
         unsafe {
             map_physical_range(
@@ -422,6 +423,7 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
                 &mut frame_allocator,
             );
         }
+        petroleum::serial::serial_log(format_args!("reinit_page_table: Mapped framebuffer of size 0x{:x}\n", fb_size));
     } else {
         petroleum::serial::serial_log(format_args!("reinit_page_table: No framebuffer to map\n"));
     }
