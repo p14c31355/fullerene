@@ -54,7 +54,6 @@ pub static KEYBOARD_QUEUE: Mutex<KeyboardQueue> = Mutex::new(KeyboardQueue::new(
 pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState::new());
 
 /// Macro to create input device interrupt handlers
-#[macro_export]
 macro_rules! define_input_interrupt_handler {
     ($handler_name:ident, $port:expr, $process_input:expr) => {
         #[unsafe(no_mangle)]

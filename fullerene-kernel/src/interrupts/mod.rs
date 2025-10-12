@@ -25,7 +25,6 @@ lazy_static! {
 pub use apic::{init_apic, APIC};
 pub use exceptions::{handle_page_fault, page_fault_handler};
 pub use idt::init;
-pub use crate::define_input_interrupt_handler;
 pub use input::{KEYBOARD_QUEUE, MOUSE_STATE, keyboard_handler, mouse_handler, timer_handler};
 pub use pic::disable_legacy_pic;
 pub use syscall::setup_syscall;

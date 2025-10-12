@@ -14,15 +14,6 @@ macro_rules! delegate_call {
     };
 }
 
-macro_rules! delegate_call_mut {
-    ($self:expr, $method:ident $(, $args:expr)*) => {
-        match $self {
-            UefiFramebuffer::Uefi32(fb) => fb.$method($($args),*),
-            UefiFramebuffer::Vga8(fb) => fb.$method($($args),*),
-        }
-    };
-}
-
 #[derive(Clone, Copy)]
 pub struct ColorScheme {
     fg: u32,
@@ -215,7 +206,7 @@ impl FramebufferLike for UefiFramebuffer {
     }
 
     fn set_position(&mut self, x: u32, y: u32) {
-        delegate_call_mut!(self, set_position, x, y);
+        delegate_call!(self, set_position, x, y);
     }
 
     fn get_position(&self) -> (u32, u32) {
