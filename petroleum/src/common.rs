@@ -75,6 +75,38 @@ macro_rules! common_panic {
     }};
 }
 
+// Common initialization pattern with logging
+#[macro_export]
+macro_rules! init_with_log {
+    ($name:expr, $block:block) => {{
+        $crate::serial::serial_log(format_args!("Initializing {}\n", $name));
+        $block;
+        $crate::serial::serial_log(format_args!("{} initialized successfully\n", $name));
+    }};
+}
+
+// Helper macro for common PIC port write patterns
+#[macro_export]
+macro_rules! write_pic_register {
+    ($pic_idx:expr, $icw1:expr, $icw2:expr, $icw3:expr) => {{
+        use x86_64::instructions::port::Port;
+        unsafe {
+            let mut command_port = Port::<u8>::new(0x20 + $pic_idx * 0x80);
+            let mut data_port = Port::<u8>::new(0x21 + $pic_idx * 0x80);
+
+            command_port.write($icw1);
+            data_port.write($icw2);
+            data_port.write($icw3);
+            data_port.write(0x01); // ICW4
+        }
+    }};
+}
+
+// Common VGA mode setup helper to avoid code duplication
+pub fn setup_vga_mode_common() {
+    crate::graphics::setup::setup_vga_mode_13h();
+}
+
 // petroleum/src/common.rs
 
 use core::ffi::c_void;
