@@ -1,3 +1,80 @@
+// Helper macros to reduce code duplication across the project
+
+/// Macro for common Mutex.lock() pattern to reduce line count
+#[macro_export]
+macro_rules! lock_and_modify {
+    ($mutex:expr, $ident:ident, $body:block) => {
+        let mut $ident = $mutex.lock();
+        $body
+    };
+}
+
+/// Macro for read-only lock access
+#[macro_export]
+macro_rules! lock_and_read {
+    ($mutex:expr, $ident:ident, $body:expr) => {{
+        let $ident = $mutex.lock();
+        $body
+    }};
+}
+
+/// Macro for common print pattern in kernel/shell code
+#[macro_export]
+macro_rules! kernel_print {
+    ($($arg:tt)*) => {{
+        use core::fmt::Write;
+        if let Some(writer) = $crate::graphics::WRITER_UEFI.get() {
+            let mut writer = writer.lock();
+            let _ = write!(writer, $($arg)*);
+        }
+    }};
+}
+
+#[macro_export]
+macro_rules! kernel_println {
+    () => ($crate::kernel_print!("\n"));
+    ($($arg:tt)*) => ($crate::kernel_print!("{}\n", format_args!($($arg)*)));
+}
+
+// Helper for repeated initialization patterns
+#[macro_export]
+macro_rules! init_once {
+    ($once:expr, $init:expr) => {
+        $once.call_once(|| $init)
+    };
+}
+
+// Simplified panic handler to avoid code duplication
+#[macro_export]
+macro_rules! common_panic {
+    ($info:expr) => {{
+        #[cfg(any(target_os = "uefi", test))]
+        {
+            use core::fmt::Write;
+            // For UEFI, try to output to serial/console then loop
+            if let Some(st_ptr) = $crate::UEFI_SYSTEM_TABLE.lock().as_ref() {
+                let st_ref = unsafe { &*st_ptr.0 };
+                unsafe {
+                    let msg = b"PANIC!\0";
+                    let mut wide_msg = [0u16; 16];
+                    for (i, &b) in msg.iter().enumerate() {
+                        if b == 0 { break; }
+                        wide_msg[i] = b as u16;
+                    }
+                    if let Some(con_out) = st_ref.con_out.as_mut() {
+                        let _ = ((*con_out).output_string)(con_out, wide_msg.as_ptr());
+                    }
+                }
+            }
+            loop {
+                unsafe { x86_64::instructions::hlt(); }
+            }
+        }
+        #[cfg(not(any(target_os = "uefi", test)))]
+        $crate::handle_panic($info)
+    }};
+}
+
 // petroleum/src/common.rs
 
 use core::ffi::c_void;
@@ -228,23 +305,23 @@ pub struct EfiBootServices {
     _unused17: usize,                                        // fn17
     pub locate_handle:
         extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut usize) -> usize, // fn18
-    _unused19: usize,                                        // fn19
+    _unused19: usize,                                         // fn19
     pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize, // fn20
     _unused21: usize,                                        // fn21
     _unused22: usize,                                        // fn22
-    _unused23: usize,                                        // fn23
+    _unused23: usize,                                       // fn23
     _unused24: usize,                                        // fn24
     pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize, // fn25
     _unused26: usize,                                        // fn26
-    pub stall: extern "efiapi" fn(usize) -> usize,           // fn27
-    _unused28: usize,                                        // fn28
+    pub stall: extern "efiapi" fn(usize) -> usize,          // fn27
+    _unused28: usize,                                        // fn29
     _unused29: usize,                                        // fn29
-    _unused30: usize,                                        // fn30
+    _unused30: usize,                                       // fn30
     pub open_protocol:
         extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, // fn31
-    _unused32: usize,                                        // fn32
-    _unused33: usize,                                        // fn33
-    _unused34: usize,                                        // fn34
+    _unused32: usize,                                       // fn32
+    _unused33: usize,                                       // fn33
+    _unused34: usize,                                       // fn34
     pub locate_handle_buffer:
         extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut *mut usize) -> usize, // fn35
     pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize, // fn36

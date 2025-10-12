@@ -190,11 +190,14 @@ pub fn init() {
     let mut idle_process = Process::new("idle", idle_addr);
     idle_process.state = ProcessState::Running;
 
-    let mut process_list = PROCESS_LIST.lock();
-    process_list.push(Box::new(idle_process));
+    petroleum::lock_and_modify!(PROCESS_LIST, process_list, {
+        process_list.push(Box::new(idle_process));
+    });
 
     // Set current process
-    *CURRENT_PROCESS.lock() = Some(1);
+    petroleum::lock_and_modify!(CURRENT_PROCESS, current_proc, {
+        *current_proc = Some(1);
+    });
 }
 
 /// Create a new process and add it to the process list
@@ -329,7 +332,7 @@ pub fn schedule_next() {
 
 /// Get current process ID
 pub fn current_pid() -> Option<ProcessId> {
-    *CURRENT_PROCESS.lock()
+    petroleum::lock_and_read!(CURRENT_PROCESS, proc, *proc)
 }
 
 /// Yield current process
