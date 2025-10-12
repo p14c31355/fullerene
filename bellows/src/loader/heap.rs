@@ -17,7 +17,6 @@ fn try_allocate_pages(
     pages: usize,
     preferred_type: EfiMemoryType,
 ) -> Result<usize, BellowsError> {
-    let _phys_addr: usize = 0;
     // Try LoaderData first, then Conventional (skip if invalid)
     let types_to_try = [preferred_type, EfiMemoryType::EfiConventionalMemory];
 

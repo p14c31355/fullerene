@@ -27,6 +27,25 @@ pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8
     }
 }
 
+/// Helper function to print text to EFI console
+#[cfg(target_os = "uefi")]
+fn efi_print(system_table: &EfiSystemTable, text: &[u8]) {
+    unsafe {
+        if !(*system_table).con_out.is_null() {
+            let output_string = (*(*system_table).con_out).output_string;
+            let mut buffer = [0u16; 128];
+            let len = text.len().min(buffer.len());
+            for (i, &byte) in text.iter().take(len).enumerate() {
+                buffer[i] = byte as u16;
+            }
+            if len < buffer.len() {
+                buffer[len] = 0;
+            }
+            let _ = output_string((*system_table).con_out, buffer.as_ptr());
+        }
+    }
+}
+
 #[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]
 #[unsafe(link_section = ".text.efi_main")]
@@ -83,23 +102,8 @@ pub extern "efiapi" fn efi_main(
 
     // Early text output using EFI console to ensure visible output on screen
     kernel_log!("About to output to EFI console");
-    unsafe {
-        if !(*system_table).con_out.is_null() {
-            let output_string = (*(*system_table).con_out).output_string;
-            let mut msg = [0u16; 31]; // Increased size to prevent buffer overflow
-            let text1 = b"UEFI Kernel: Display Test!\r\n\0"; // Null-terminated
-            for (&ch, dst) in text1.iter().zip(&mut msg[..text1.len()]) {
-                *dst = ch as u16;
-            }
-            let _ = output_string((*system_table).con_out, msg.as_ptr());
-            let mut msg2 = [0u16; 31]; // Increased size to prevent buffer overflow
-            let text2 = b"This is output via EFI console.\r\n\0"; // Null-terminated
-            for (&ch, dst) in text2.iter().zip(&mut msg2[..text2.len()]) {
-                *dst = ch as u16;
-            }
-            let _ = output_string((*system_table).con_out, msg2.as_ptr());
-        }
-    }
+    efi_print(system_table, b"UEFI Kernel: Display Test!\r\n");
+    efi_print(system_table, b"This is output via EFI console.\r\n");
     kernel_log!("EFI console output completed");
 
     // Setup memory maps and initialize memory management
@@ -126,12 +130,45 @@ pub extern "efiapi" fn efi_main(
     heap::init_page_table(physical_memory_offset);
     kernel_log!("Page table init completed successfully");
 
-    // Initialize graphics with framebuffer config to get framebuffer info
-    kernel_log!("Initializing graphics temporarily to get framebuffer size...");
-    let (fb_addr, fb_size) = (None, None); // Simplified for now
+    // Find framebuffer configuration before reiniting page tables
+    kernel_log!("Finding framebuffer config for page table mapping...");
+    let (fb_addr, fb_size) = match find_framebuffer_config(system_table) {
+        Some(config) => {
+            kernel_log!(
+                "Found framebuffer config: {}x{} @ {:#x}, size: {}",
+                config.width,
+                config.height,
+                config.address,
+                (config.width as usize * config.height as usize * config.bpp as usize) / 8
+            );
+            (
+                Some(config.address as u64),
+                Some(((config.width as usize * config.height as usize * config.bpp as usize) / 8) as u64),
+            )
+        }
+        None => match find_gop_framebuffer(system_table) {
+            Some(config) => {
+                kernel_log!(
+                    "Found GOP framebuffer config: {}x{} @ {:#x}, size: {}",
+                    config.width,
+                    config.height,
+                    config.address,
+                    (config.width as usize * config.height as usize * config.bpp as usize) / 8
+                );
+                (
+                    Some(config.address as u64),
+                    Some(((config.width as usize * config.height as usize * config.bpp as usize) / 8) as u64),
+                )
+            }
+            None => {
+                kernel_log!("No framebuffer config found, using None");
+                (None, None)
+            }
+        },
+    };
 
-    // Reinit page tables to kernel page tables
-    kernel_log!("Reinit page tables to kernel page tables with framebuffer size");
+    // Reinit page tables to kernel page tables with framebuffer size
+    kernel_log!("Reinit page tables to kernel page tables with framebuffer info");
     heap::reinit_page_table(physical_memory_offset, kernel_phys_start, fb_addr, fb_size);
     kernel_log!("Page table reinit completed successfully");
 
@@ -202,6 +239,8 @@ pub extern "efiapi" fn efi_main(
     } else {
         kernel_log!("Graphics initialization failed, entering idle loop");
     }
+
+    hlt_loop();
 
 }
 
