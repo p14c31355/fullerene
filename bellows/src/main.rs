@@ -182,9 +182,10 @@ fn try_uga_protocol(st: &EfiSystemTable) -> bool {
     true
 }
 
-/// Initializes the Graphics Output Protocol (GOP) for framebuffer access.
+// Note: This function is unused as GOP initialization is now handled by petroleum::init_graphics_protocols
+// Removing to reduce dead code and improve maintainability
+/*
 fn init_gop(st: &EfiSystemTable) {
-    debug_print_str("GOP: init_gop entered.\n");
     let bs = unsafe { &*st.boot_services };
     let mut gop: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
 
@@ -328,3 +329,4 @@ fn init_gop(st: &EfiSystemTable) {
     ));
     petroleum::serial::_print(format_args!("GOP: Framebuffer initialized and cleared\n"));
 }
+*/

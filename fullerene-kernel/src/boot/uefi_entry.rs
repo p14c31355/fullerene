@@ -1,7 +1,8 @@
 // Use crate imports
 use core::ffi::c_void;
+use alloc::boxed::Box;
 use crate::{
-    gdt, memory, graphics, interrupts, syscall, process,
+    gdt, memory, graphics, interrupts,
 };
 use crate::graphics::framebuffer::FramebufferLike;
 use petroleum::common::{
@@ -130,20 +131,12 @@ pub extern "efiapi" fn efi_main(
 
     // Find framebuffer configuration before reiniting page tables
     kernel_log!("Finding framebuffer config for page table mapping...");
-    let (fb_addr, fb_size) = if let Some(config) = find_framebuffer_config(system_table) {
+    let framebuffer_config = find_framebuffer_config(system_table);
+    let config = framebuffer_config.as_ref();
+    let (fb_addr, fb_size) = if let Some(config) = config {
         let fb_size_bytes = (config.width as usize * config.height as usize * config.bpp as usize) / 8;
         kernel_log!(
             "Found framebuffer config: {}x{} @ {:#x}, size: {}",
-            config.width,
-            config.height,
-            config.address,
-            fb_size_bytes
-        );
-        (Some(config.address as u64), Some(fb_size_bytes as u64))
-    } else if let Some(config) = find_gop_framebuffer(system_table) {
-        let fb_size_bytes = (config.width as usize * config.height as usize * config.bpp as usize) / 8;
-        kernel_log!(
-            "Found GOP framebuffer config: {}x{} @ {:#x}, size: {}",
             config.width,
             config.height,
             config.address,
@@ -320,13 +313,19 @@ pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
 #[cfg(target_os = "uefi")]
 pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str) -> bool {
     // Save current VGA buffer content before attempting graphics initialization
-    let vga_backup = backup_vga_text_buffer();
+    let vga_backup = match create_vga_backup() {
+        Some(backup) => backup,
+        None => {
+            kernel_log!("Failed to allocate VGA backup buffer");
+            return false;
+        }
+    };
 
     kernel_log!("Initializing {} graphics mode...", source_name);
     graphics::text::init(config);
 
     // Verify the framebuffer was initialized
-    if let Some(fb_writer) = unsafe { graphics::text::FRAMEBUFFER_UEFI.get() } {
+    if let Some(fb_writer) = graphics::text::FRAMEBUFFER_UEFI.get() {
         let fb_info = fb_writer.lock();
         kernel_log!(
             "{} framebuffer initialized successfully - width: {}, height: {}",
@@ -337,12 +336,12 @@ pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str)
 
         // Test direct pixel write to verify access
         kernel_log!("Testing {} framebuffer access...", source_name);
-        unsafe { fb_writer.lock().put_pixel(100, 100, 0xFF0000) };
+        fb_writer.lock().put_pixel(100, 100, 0xFF0000);
         kernel_log!("Direct {} pixel write test completed", source_name);
     } else {
         kernel_log!("ERROR: {} framebuffer initialization failed!", source_name);
         // Restore VGA text buffer if graphics init failed
-        restore_vga_text_buffer(vga_backup);
+        restore_vga_text_buffer(&vga_backup);
         petroleum::graphics::init_vga_text_mode();
         crate::vga::init_vga();
         return false;
@@ -363,19 +362,27 @@ pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str)
 
 /// Helper function to backup VGA text buffer content
 #[cfg(target_os = "uefi")]
-fn backup_vga_text_buffer() -> [[u16; 80]; 25] {
+fn backup_vga_text_buffer(buffer: &mut [[u16; 80]; 25]) {
     unsafe {
         let vga_ptr = crate::VGA_BUFFER_ADDRESS as *const [[u16; 80]; 25];
-        *vga_ptr
+        *buffer = *vga_ptr;
     }
+}
+
+/// Helper function to allocate a buffer for VGA backup
+#[cfg(target_os = "uefi")]
+fn create_vga_backup() -> Option<Box<[[u16; 80]; 25]>> {
+    let mut buffer = Box::new([[0u16; 80]; 25]);
+    backup_vga_text_buffer(&mut buffer);
+    Some(buffer)
 }
 
 /// Helper function to restore VGA text buffer content
 #[cfg(target_os = "uefi")]
-fn restore_vga_text_buffer(buffer: [[u16; 80]; 25]) {
+fn restore_vga_text_buffer(buffer: &Box<[[u16; 80]; 25]>) {
     unsafe {
         let vga_ptr = crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25];
-        *vga_ptr = buffer;
+        *vga_ptr = **buffer;
     }
 }
 
