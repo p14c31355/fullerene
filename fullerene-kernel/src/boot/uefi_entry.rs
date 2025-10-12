@@ -58,6 +58,29 @@ pub extern "efiapi" fn efi_main(
     debug_log!("VGA setup done");
     kernel_log!("VGA text mode setup function returned");
 
+    // Direct VGA buffer test - write to hardware buffer directly
+    kernel_log!("Direct VGA buffer write test...");
+    unsafe {
+        let vga_buffer = 0xb8000 as *mut [[u16; 80]; 25];
+        (*vga_buffer)[0][0] = 0x1F00 | b'K' as u16; // Bright white on blue 'K'
+        (*vga_buffer)[0][1] = 0x1F00 | b'e' as u16;
+        (*vga_buffer)[0][2] = 0x1F00 | b'r' as u16;
+        (*vga_buffer)[0][3] = 0x1F00 | b'n' as u16;
+        (*vga_buffer)[0][4] = 0x1F00 | b'e' as u16;
+        (*vga_buffer)[0][5] = 0x1F00 | b'l' as u16;
+        (*vga_buffer)[0][6] = 0x1F00 | b' ' as u16;
+        (*vga_buffer)[0][7] = 0x1F00 | b'b' as u16;
+        (*vga_buffer)[0][8] = 0x1F00 | b'o' as u16;
+        (*vga_buffer)[0][9] = 0x1F00 | b'o' as u16;
+        (*vga_buffer)[0][10] = 0x1F00 | b't' as u16;
+    }
+    kernel_log!("Direct VGA write test completed");
+
+    // Initialize VGA buffer writer and write welcome message BEFORE any graphics ops
+    kernel_log!("Initializing VGA writer early...");
+    crate::vga::init_vga();
+    kernel_log!("VGA writer initialized - text should be visible now");
+
 /// Helper function to write a string to VGA buffer at specified row
 fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
     for (i, &byte) in text.iter().enumerate() {
@@ -177,17 +200,10 @@ fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], c
 
     if !framebuffer_initialized {
         kernel_log!("No UEFI framebuffer available, falling back to VGA mode");
-        let vga_config = VgaFramebufferConfig {
-            address: 0xA0000,
-            width: 320,
-            height: 200,
-            bpp: 8,
-        };
-        kernel_log!("Initializing VGA graphics mode...");
-        graphics::init_vga(&vga_config);
-        kernel_log!("VGA graphics mode initialized, calling draw_os_desktop...");
-        graphics::draw_os_desktop();
-        kernel_log!("VGA graphics desktop drawn - if you see this, draw_os_desktop completed");
+        // Re-initialize VGA text mode after graphics initialization to ensure text remains visible
+        unsafe { init_vga_text_mode() };
+        crate::vga::init_vga(); // Re-write text to VGA buffer
+        kernel_log!("VGA text mode reinitialized and text restored");
     }
 
     kernel_log!("Initializing graphics and shell...");
@@ -309,6 +325,9 @@ pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
 /// source_name is used for logging purposes (e.g., "UEFI custom" or "GOP").
 #[cfg(target_os = "uefi")]
 pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str) -> bool {
+    // Save current VGA buffer content before attempting graphics initialization
+    let vga_backup = backup_vga_text_buffer();
+
     kernel_log!("Initializing {} graphics mode...", source_name);
     graphics::text::init(config);
 
@@ -328,6 +347,10 @@ pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str)
         kernel_log!("Direct {} pixel write test completed", source_name);
     } else {
         kernel_log!("ERROR: {} framebuffer initialization failed!", source_name);
+        // Restore VGA text buffer if graphics init failed
+        restore_vga_text_buffer(vga_backup);
+        unsafe { init_vga_text_mode() };
+        crate::vga::init_vga();
         return false;
     }
 
@@ -342,6 +365,24 @@ pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str)
     );
     petroleum::serial::serial_log(format_args!("Desktop should be visible now!\n"));
     true
+}
+
+/// Helper function to backup VGA text buffer content
+#[cfg(target_os = "uefi")]
+fn backup_vga_text_buffer() -> [[u16; 80]; 25] {
+    unsafe {
+        let vga_ptr = 0xb8000 as *const [[u16; 80]; 25];
+        *vga_ptr
+    }
+}
+
+/// Helper function to restore VGA text buffer content
+#[cfg(target_os = "uefi")]
+fn restore_vga_text_buffer(buffer: [[u16; 80]; 25]) {
+    unsafe {
+        let vga_ptr = 0xb8000 as *mut [[u16; 80]; 25];
+        *vga_ptr = buffer;
+    }
 }
 
 /// Helper function to initialize graphics with framebuffer configuration
