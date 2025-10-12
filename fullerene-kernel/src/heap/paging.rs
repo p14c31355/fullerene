@@ -62,7 +62,7 @@ pub fn init(heap_start: VirtAddr, heap_size: usize) {
     drop(frame_allocator);
     drop(mapper);
 
-    use super::allocator::{ALLOCATOR, HEAP_SIZE};
+    use super::allocator::ALLOCATOR;
     unsafe {
         let heap_start_ptr = heap_start.as_mut_ptr::<u8>();
         ALLOCATOR.lock().init(heap_start_ptr, heap_size);
