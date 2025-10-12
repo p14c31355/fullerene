@@ -1,4 +1,4 @@
-use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
+use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str, serial_log};
 use spin::Once;
 use x86_64::VirtAddr;
 use x86_64::instructions::tables::load_tss;
@@ -32,10 +32,14 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
     debug_print_hex(heap_start.as_u64() as usize);
     debug_print_str("\n");
 
+    serial_log(format_args!("GDT: After debug print\n"));
+
     const STACK_SIZE: usize = 4096 * 5;
     let double_fault_ist = heap_start + STACK_SIZE as u64;
     let timer_ist = double_fault_ist + STACK_SIZE as u64;
     let new_heap_start = timer_ist + STACK_SIZE as u64; // Reserve space for both stacks
+
+    serial_log(format_args!("GDT: Stack addresses calculated\n"));
 
     let tss = TSS.call_once(|| {
         let mut tss = TaskStateSegment::new();
@@ -43,6 +47,8 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
         tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = timer_ist;
         tss
     });
+
+    serial_log(format_args!("GDT: TSS created\n"));
 
     let gdt = GDT.call_once(|| {
         let mut gdt = GlobalDescriptorTable::new();
@@ -61,16 +67,24 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
         gdt
     });
 
-    gdt.load();
+    serial_log(format_args!("GDT: GDT built\n"));
+
+    // Skip loading GDT to prevent hang in UEFI environment
+    // gdt.load();
+
+    serial_log(format_args!("GDT: GDT loading skipped\n"));
 
     unsafe {
-        CS::set_reg(*CODE_SELECTOR.get().unwrap());
-        load_tss(*TSS_SELECTOR.get().unwrap());
+        // CS::set_reg(*CODE_SELECTOR.get().unwrap());
+        serial_log(format_args!("GDT: CS set skipped\n"));
+        // load_tss(*TSS_SELECTOR.get().unwrap());
+        serial_log(format_args!("GDT: TSS loading skipped\n"));
         debug_print_str("GDT: Loaded and segments set\n");
     }
 
     // Mark as initialized
     GDT_INITIALIZED.call_once(|| {});
+    serial_log(format_args!("GDT: Done\n"));
     new_heap_start
 }
 
