@@ -156,9 +156,7 @@ fn init_basic_vga_text_mode() {
 /// Attempts to initialize the Universal Graphics Adapter (UGA) protocol as a fallback.
 fn try_uga_protocol(st: &EfiSystemTable) -> bool {
     // UGA GUID: {982c298b-f4fa-41cb-b838-777ba2482113}
-    let uga_guid = [
-        0x98, 0x2c, 0x29, 0x8b, 0xf4, 0xfa, 0x41, 0xcb, 0xb8, 0x38, 0x77, 0x7b, 0xa2, 0x48, 0x21, 0x13,
-    ];
+    let uga_guid = petroleum::common::EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID;
 
     let bs = unsafe { &*st.boot_services };
     let mut uga: *mut c_void = ptr::null_mut();
