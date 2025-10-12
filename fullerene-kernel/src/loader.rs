@@ -168,7 +168,7 @@ fn load_segment(
         let page_vaddr = VirtAddr::new(vaddr + page_idx * 4096);
 
         // Allocate a physical frame for this page
-        let frame = crate::heap::FRAME_ALLOCATOR
+        let frame = crate::heap::paging::FRAME_ALLOCATOR
             .get()
             .unwrap()
             .lock()

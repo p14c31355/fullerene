@@ -146,22 +146,21 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
 
 // All VGA setup is handled by petroleum's init_vga_graphics
 
+fn print_to_graphics(args: &fmt::Arguments) {
+    #[cfg(target_os = "uefi")]
+    let writer_option = WRITER_UEFI.get();
+    #[cfg(not(target_os = "uefi"))]
+    let writer_option = WRITER_BIOS.get();
+
+    if let Some(writer) = writer_option {
+        let mut writer = writer.lock();
+        writer.write_fmt(*args).ok();
+    }
+}
+
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
-    #[cfg(target_os = "uefi")]
-    {
-        if let Some(writer) = WRITER_UEFI.get() {
-            let mut writer = writer.lock();
-            writer.write_fmt(args).ok();
-        }
-    }
-    #[cfg(not(target_os = "uefi"))]
-    {
-        if let Some(writer) = WRITER_BIOS.get() {
-            let mut writer = writer.lock();
-            writer.write_fmt(args).ok();
-        }
-    }
+    print_to_graphics(&args);
     // Also output to VGA text buffer for reliable visibility
     if let Some(vga) = crate::vga::VGA_BUFFER.get() {
         let mut vga_writer = vga.lock();

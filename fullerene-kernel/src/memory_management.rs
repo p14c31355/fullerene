@@ -6,7 +6,7 @@
 //! - Page fault handling
 //! - Memory allocation and deallocation
 
-use crate::heap::FRAME_ALLOCATOR;
+use crate::heap::paging::FRAME_ALLOCATOR;
 use alloc::vec::Vec;
 static FREE_FRAMES: spin::Mutex<Vec<x86_64::structures::paging::PhysFrame>> =
     spin::Mutex::new(Vec::new());

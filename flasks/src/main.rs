@@ -135,11 +135,9 @@ fn main() -> io::Result<()> {
         "1",
         "-machine",
         "pc,smm=off",
-        // Disable VGA for pure UEFI graphics
-        "-vga",
-        "none",
+        // Use virtio-gpu device for reliable UEFI GOP support
         "-device",
-        "virtio-vga,max_outputs=1",
+        "virtio-gpu-pci",
         "-display",
         "gtk",
         "-serial",

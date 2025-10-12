@@ -1,13 +1,8 @@
-//! Boot module containing UEFI and BIOS entry points and boot-specific logic
-
-pub const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
-
-use petroleum::graphics::init_vga_text_mode;
-use petroleum::serial::SERIAL_PORT_WRITER as SERIAL1;
-use petroleum::{debug_log, serial, write_serial_bytes};
-
+// use super::macros::kernel_log;
+use super::utils::calculate_framebuffer_size;
+use super::constants::FALLBACK_HEAP_START_ADDR;
+use crate::{VGA_BUFFER_ADDRESS, VGA_COLOR_GREEN_ON_BLACK, hlt_loop, MEMORY_MAP};
 use alloc::boxed::Box;
-
 use core::ffi::c_void;
 use petroleum::common::{
     EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
@@ -15,44 +10,17 @@ use petroleum::common::{
 };
 use petroleum::page_table::EfiMemoryDescriptor;
 use x86_64::{PhysAddr, VirtAddr};
-
+use petroleum::graphics::init_vga_text_mode;
+use petroleum::{debug_log, serial, write_serial_bytes};
 use crate::graphics::framebuffer::{FramebufferLike, UefiFramebuffer};
 use crate::memory::{
     find_framebuffer_config, find_heap_start, init_memory_management, setup_memory_maps,
 };
-use crate::{MEMORY_MAP, gdt, graphics, heap, interrupts, keyboard, process, shell, syscall};
-
+use crate::{gdt, graphics, heap, interrupts, keyboard, process, shell, syscall};
 use petroleum::common::{
     EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputModeInformation, EfiGraphicsOutputProtocol,
     EfiGraphicsOutputProtocolMode,
 };
-
-// Macro to reduce repetitive serial logging
-macro_rules! kernel_log {
-    ($($arg:tt)*) => {
-        let _ = core::fmt::write(&mut *SERIAL1.lock(), format_args!($($arg)*));
-        let _ = core::fmt::write(&mut *SERIAL1.lock(), format_args!("\n"));
-    };
-}
-
-// Helper function to calculate framebuffer size with bpp validation and logging
-fn calculate_framebuffer_size(config: &FullereneFramebufferConfig, source: &str) -> (Option<u64>, Option<u64>) {
-    if config.bpp < 8 {
-        kernel_log!("Warning: Invalid bpp ({}) in {} config.", config.bpp, source);
-        return (None, None);
-    }
-    let size_pixels = config.width as u64 * config.height as u64;
-    let size_bytes = size_pixels * (config.bpp as u64 / 8);
-    kernel_log!(
-        "Calculated {} framebuffer size: {} bytes from {}x{} @ {} bpp",
-        source,
-        size_bytes,
-        config.width,
-        config.height,
-        config.bpp
-    );
-    (Some(config.address), Some(size_bytes))
-}
 
 #[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]
@@ -96,17 +64,17 @@ pub extern "efiapi" fn efi_main(
     // Early VGA text output to ensure visible output on screen
     kernel_log!("About to write to VGA buffer at 0xb8000");
     {
-        let vga_buffer = unsafe { &mut *(super::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]) };
+        let vga_buffer = unsafe { &mut *(VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]) };
         // Clear screen first
         for row in 0..25 {
             for col in 0..80 {
-                vga_buffer[row][col] = super::VGA_COLOR_GREEN_ON_BLACK | b' ' as u16;
+                vga_buffer[row][col] = VGA_COLOR_GREEN_ON_BLACK | b' ' as u16;
             }
         }
         // Write hello message
         let hello = b"Hello from UEFI Kernel!";
         for (i, &byte) in hello.iter().enumerate() {
-            vga_buffer[0][i] = super::VGA_COLOR_GREEN_ON_BLACK | (byte as u16);
+            vga_buffer[0][i] = VGA_COLOR_GREEN_ON_BLACK | (byte as u16);
         }
     }
     kernel_log!("VGA buffer write completed");
@@ -156,7 +124,6 @@ pub extern "efiapi" fn efi_main(
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(*MEMORY_MAP.get().unwrap());
     kernel_log!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());
-    const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
     let start_addr = if heap_phys_start.as_u64() < 0x1000 {
         kernel_log!(
             "Kernel: ERROR - Invalid heap_phys_start, using fallback 0x{:x}",
@@ -248,10 +215,10 @@ pub extern "efiapi" fn efi_main(
         kernel_log!("Graphics initialization failed, entering idle loop");
     }
 
-    super::hlt_loop();
+    hlt_loop();
 }
 
-fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
+pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
     use core::ptr;
     use petroleum::common::{EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiBootServices};
 
@@ -271,7 +238,7 @@ fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFrameb
     // Use locate_protocol to find GOP (simpler than locate_handle)
     let mut gop_handle: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
     let status = (boot_services.locate_protocol)(
-        &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID as *const _ as *const u8,
+        EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
         core::ptr::null_mut(),
         core::ptr::addr_of_mut!(gop_handle) as *mut *mut c_void,
     );
@@ -338,7 +305,7 @@ fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFrameb
 /// Returns true if graphics were successfully initialized and drawn.
 /// source_name is used for logging purposes (e.g., "UEFI custom" or "GOP").
 #[cfg(target_os = "uefi")]
-fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str) -> bool {
+pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str) -> bool {
     kernel_log!("Initializing {} graphics mode...", source_name);
     graphics::text::init(config);
 
@@ -377,7 +344,7 @@ fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str) -> 
 /// Helper function to initialize graphics with framebuffer configuration
 /// Returns true if graphics were successfully initialized and drawn
 #[cfg(target_os = "uefi")]
-fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
+pub fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
     // Check if framebuffer config is available from UEFI bootloader
     kernel_log!("Checking framebuffer config from UEFI bootloader...");
     if let Some(fb_config) = find_framebuffer_config(system_table) {
@@ -408,31 +375,4 @@ fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
     }
 
     false
-}
-
-#[cfg(not(target_os = "uefi"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn _start() -> ! {
-    use petroleum::common::VgaFramebufferConfig;
-
-    super::init::init_common();
-    kernel_log!("Entering _start (BIOS mode)...");
-
-    // Graphics initialization for VGA framebuffer (graphics mode)
-    let vga_config = VgaFramebufferConfig {
-        address: 0xA0000,
-        width: 320,
-        height: 200,
-        bpp: 8,
-    };
-    graphics::init_vga(&vga_config);
-
-    kernel_log!("VGA graphics mode initialized (BIOS mode).");
-
-    // Main loop
-    crate::graphics::_print(format_args!("Hello QEMU by FullereneOS\n"));
-
-    // Keep kernel running instead of exiting
-    kernel_log!("BIOS boot complete, kernel running...");
-    super::hlt_loop();
 }

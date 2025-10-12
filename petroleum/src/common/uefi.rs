@@ -1,121 +1,6 @@
-// Helper macros to reduce code duplication across the project
-
-/// Macro for common Mutex.lock() pattern to reduce line count
-#[macro_export]
-macro_rules! lock_and_modify {
-    ($mutex:expr, $ident:ident, $body:block) => {
-        let mut $ident = $mutex.lock();
-        $body
-    };
-}
-
-/// Macro for read-only lock access
-#[macro_export]
-macro_rules! lock_and_read {
-    ($mutex:expr, $ident:ident, $body:expr) => {{
-        let $ident = $mutex.lock();
-        $body
-    }};
-}
-
-/// Macro for common print pattern in kernel/shell code
-#[macro_export]
-macro_rules! kernel_print {
-    ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        if let Some(writer) = $crate::graphics::WRITER_UEFI.get() {
-            let mut writer = writer.lock();
-            let _ = write!(writer, $($arg)*);
-        }
-    }};
-}
-
-#[macro_export]
-macro_rules! kernel_println {
-    () => ($crate::kernel_print!("\n"));
-    ($($arg:tt)*) => ($crate::kernel_print!("{}\n", format_args!($($arg)*)));
-}
-
-// Helper for repeated initialization patterns
-#[macro_export]
-macro_rules! init_once {
-    ($once:expr, $init:expr) => {
-        $once.call_once(|| $init)
-    };
-}
-
-// Simplified panic handler to avoid code duplication
-#[macro_export]
-macro_rules! common_panic {
-    ($info:expr) => {{
-        #[cfg(any(target_os = "uefi", test))]
-        {
-            use core::fmt::Write;
-            // For UEFI, try to output to serial/console then loop
-            if let Some(st_ptr) = $crate::UEFI_SYSTEM_TABLE.lock().as_ref() {
-                let st_ref = unsafe { &*st_ptr.0 };
-                unsafe {
-                    let msg = b"PANIC!\0";
-                    let mut wide_msg = [0u16; 16];
-                    for (i, &b) in msg.iter().enumerate() {
-                        if b == 0 {
-                            break;
-                        }
-                        wide_msg[i] = b as u16;
-                    }
-                    if let Some(con_out) = st_ref.con_out.as_mut() {
-                        let _ = ((*con_out).output_string)(con_out, wide_msg.as_ptr());
-                    }
-                }
-            }
-            loop {
-                unsafe {
-                    x86_64::instructions::hlt();
-                }
-            }
-        }
-        #[cfg(not(any(target_os = "uefi", test)))]
-        $crate::handle_panic($info)
-    }};
-}
-
-// Common initialization pattern with logging
-#[macro_export]
-macro_rules! init_with_log {
-    ($name:expr, $block:block) => {{
-        $crate::serial::serial_log(format_args!("Initializing {}\n", $name));
-        $block;
-        $crate::serial::serial_log(format_args!("{} initialized successfully\n", $name));
-    }};
-}
-
-// Helper macro for common PIC port write patterns
-#[macro_export]
-macro_rules! write_pic_register {
-    ($pic_idx:expr, $icw1:expr, $icw2:expr, $icw3:expr) => {{
-        use x86_64::instructions::port::Port;
-        unsafe {
-            let mut command_port = Port::<u8>::new(0x20 + $pic_idx * 0x80);
-            let mut data_port = Port::<u8>::new(0x21 + $pic_idx * 0x80);
-
-            command_port.write($icw1);
-            data_port.write($icw2);
-            data_port.write($icw3);
-            data_port.write(0x01); // ICW4
-        }
-    }};
-}
-
-// Common VGA mode setup helper to avoid code duplication
-pub fn setup_vga_mode_common() {
-    crate::graphics::setup::setup_vga_mode_13h();
-}
-
-// petroleum/src/common.rs
+// Common definitions for UEFI and BIOS modes.
 
 use core::ffi::c_void;
-
-// Common definitions for UEFI and BIOS modes.
 
 /// GUID for FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID (UEFI only)
 pub const FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID: [u8; 16] = [
@@ -154,15 +39,6 @@ pub struct FullereneFramebufferConfig {
 pub struct FullereneMemoryMap {
     pub physical_address: u64,
     pub size: usize,
-}
-
-/// BIOS VGA config (fixed for mode 13h).
-#[repr(C)]
-pub struct VgaFramebufferConfig {
-    pub address: u64,
-    pub width: u32,
-    pub height: u32,
-    pub bpp: u32, // Bits per pixel
 }
 
 #[repr(usize)]
@@ -224,22 +100,6 @@ impl From<usize> for EfiStatus {
             22 => EfiStatus::IcalFailed,
             _ => EfiStatus::Unsupported, // Fallback for unknown status codes
         }
-    }
-}
-
-/// Get bits per pixel from UEFI graphics pixel format.
-/// Returns 32 for RGB/BGR formats, 0 for unsupported formats.
-pub fn get_bpp_from_pixel_format(pixel_format: EfiGraphicsPixelFormat) -> u32 {
-    match pixel_format {
-        EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
-        | EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor => 32,
-        EfiGraphicsPixelFormat::PixelBitMask => {
-            // For PixelBitMask, we would need to parse the mask, but for now assume 32
-            // as it's not commonly used and the format is complex
-            32
-        }
-        EfiGraphicsPixelFormat::PixelBltOnly => 0, // Software rendering only
-        _ => 0,
     }
 }
 
@@ -439,21 +299,18 @@ pub struct EfiGraphicsOutputModeInformation {
     pub pixels_per_scan_line: u32,
 }
 
-/// A custom error type for the bootloader (UEFI/BIOS).
-#[derive(Debug, Clone, Copy)]
-pub enum BellowsError {
-    Efi { status: EfiStatus },
-    FileIo(&'static str),
-    PeParse(&'static str),
-    AllocationFailed(&'static str),
-    InvalidState(&'static str),
-    ProtocolNotFound(&'static str),
-}
-
-impl From<EfiStatus> for BellowsError {
-    fn from(status: EfiStatus) -> Self {
-        Self::Efi { status }
+/// Get bits per pixel from UEFI graphics pixel format.
+/// Returns 32 for RGB/BGR formats, 0 for unsupported formats.
+pub fn get_bpp_from_pixel_format(pixel_format: EfiGraphicsPixelFormat) -> u32 {
+    match pixel_format {
+        EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
+        | EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor => 32,
+        EfiGraphicsPixelFormat::PixelBitMask => {
+            // For PixelBitMask, we would need to parse the mask, but for now assume 32
+            // as it's not commonly used and the format is complex
+            32
+        }
+        EfiGraphicsPixelFormat::PixelBltOnly => 0, // Software rendering only
+        _ => 0,
     }
 }
-
-pub type Result<T> = core::result::Result<T, BellowsError>;

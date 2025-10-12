@@ -80,7 +80,7 @@ pub fn read_file_to_memory(
     let status = unsafe {
         ((*file.file).get_info)(
             file.file,
-            &EFI_FILE_INFO_GUID as *const _ as *const u8,
+            EFI_FILE_INFO_GUID.as_ptr(),
             &mut file_info_buffer_size,
             ptr::null_mut(),
         )
@@ -99,7 +99,7 @@ pub fn read_file_to_memory(
     let status = unsafe {
         ((*file.file).get_info)(
             file.file,
-            &EFI_FILE_INFO_GUID as *const _ as *const u8,
+            EFI_FILE_INFO_GUID.as_ptr(),
             &mut file_info_buffer_size,
             file_info_buffer.as_mut_ptr() as *mut c_void,
         )

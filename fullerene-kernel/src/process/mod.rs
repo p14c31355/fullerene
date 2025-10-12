@@ -170,7 +170,7 @@ pub static PROCESS_LIST: Mutex<Vec<Box<Process>>> = Mutex::new(Vec::new());
 static CURRENT_PROCESS_INDEX: Mutex<usize> = Mutex::new(0);
 
 /// Current running process
-static CURRENT_PROCESS: Mutex<Option<ProcessId>> = Mutex::new(None);
+pub static CURRENT_PROCESS: Mutex<Option<ProcessId>> = Mutex::new(None);
 
 /// Kernel stack size per process (4KB)
 const KERNEL_STACK_SIZE: usize = 4096;

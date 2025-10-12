@@ -8,42 +8,27 @@ use petroleum::serial::debug_print_str_to_com1 as debug_print_str;
 
 use super::text; // For re-exporting statics or accessing
 
-// Draw OS-like desktop interface
-#[cfg(target_os = "uefi")]
 pub fn draw_os_desktop() {
+    let mode = if cfg!(target_os = "uefi") { "UEFI" } else { "BIOS" };
     crate::graphics::_print(format_args!("Graphics: draw_os_desktop() called\n"));
     debug_print_str("Graphics: draw_os_desktop() started\n");
-    debug_print_str("Graphics: checking UEFI framebuffer...\n");
-    if let Some(fb_writer) = text::FRAMEBUFFER_UEFI.get() {
-        debug_print_str("Graphics: Obtained UEFI framebuffer writer\n");
-        let mut locked = fb_writer.lock();
-        debug_print_str("Graphics: Framebuffer writer locked\n");
-        draw_desktop_internal(&mut *locked, "UEFI");
-    } else {
-        crate::graphics::_print(format_args!(
-            "Graphics: ERROR - FRAMEBUFFER_UEFI not initialized\n"
-        ));
-        debug_print_str("Graphics: ERROR - FRAMEBUFFER_UEFI not initialized\n");
-    }
-}
+    debug_print_str("Graphics: checking framebuffer...\n");
 
-#[cfg(not(target_os = "uefi"))]
-pub fn draw_os_desktop() {
-    crate::graphics::_print(format_args!(
-        "Graphics: draw_os_desktop() called in BIOS mode\n"
-    ));
-    debug_print_str("Graphics: BIOS mode draw_os_desktop() started\n");
-    debug_print_str("Graphics: checking BIOS framebuffer...\n");
-    if let Some(fb_writer) = text::FRAMEBUFFER_BIOS.get() {
-        debug_print_str("Graphics: Obtained BIOS framebuffer writer\n");
+    #[cfg(target_os = "uefi")]
+    let fb_option = text::FRAMEBUFFER_UEFI.get();
+    #[cfg(not(target_os = "uefi"))]
+    let fb_option = text::FRAMEBUFFER_BIOS.get();
+
+    if let Some(fb_writer) = fb_option {
+        debug_print_str("Graphics: Obtained framebuffer writer\n");
         let mut locked = fb_writer.lock();
         debug_print_str("Graphics: Framebuffer writer locked\n");
-        draw_desktop_internal(&mut *locked, "BIOS");
+        draw_desktop_internal(&mut *locked, mode);
     } else {
         crate::graphics::_print(format_args!(
-            "Graphics: ERROR - BIOS framebuffer not initialized\n"
+            "Graphics: ERROR - {} framebuffer not initialized\n", mode
         ));
-        debug_print_str("Graphics: ERROR - BIOS framebuffer not initialized\n");
+        debug_print_str("Graphics: ERROR - framebuffer not initialized\n");
     }
 }
 
