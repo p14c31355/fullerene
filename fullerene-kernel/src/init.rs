@@ -1,4 +1,6 @@
-//! Initialization module containing common initialization logic for both UEFI and BIOS boot
+use x86_64::instructions::port::Port;
+
+/// Initialization module containing common initialization logic for both UEFI and BIOS boot
 
 use crate::{fs, graphics, interrupts, loader, process, syscall, vga};
 
@@ -12,8 +14,55 @@ macro_rules! kernel_log {
     };
 }
 
+unsafe fn init_vga_text_mode() {
+    // Miscellaneous Output Register (0x3C2): 色モード, 0x3D4マップ有効
+    let mut misc = Port::new(0x3c2 as u16);
+    misc.write(0x67u8);  // bit0=1 for mono/color, Clock Select=1
+
+    // Sequencer (0x3C4/0x3C5): アルファベットモード
+    let mut seq_idx = Port::new(0x3c4 as u16);
+    let mut seq_data = Port::new(0x3c5 as u16);
+    seq_idx.write(0x00u8); seq_data.write(0x01u8);  // Reset 0
+    seq_idx.write(0x01u8); seq_data.write(0x01u8);  // Reset 1 (9/8 Dot Mode=0)
+    seq_idx.write(0x03u8); seq_data.write(0x00u8);  // Char Map Select
+    seq_idx.write(0x04u8); seq_data.write(0x07u8);  // Memory Mode: Odd/Even=1, Chain4=0
+
+    // CRTC (0x3D4/0x3D5): 80x25タイミング (unlock first)
+    let mut crtc_idx = Port::new(0x3d4 as u16);
+    let mut crtc_data = Port::new(0x3d5 as u16);
+    let current_reg11 = crtc_data.read();
+    crtc_idx.write(0x11u8); crtc_data.write(0x7fu8 & current_reg11);  // Unlock (clear bit7)
+    // Horizontal
+    crtc_idx.write(0x00u8); crtc_data.write(0x5fu8);  // Total
+    crtc_idx.write(0x01u8); crtc_data.write(0x4fu8);  // Display End
+    crtc_idx.write(0x02u8); crtc_data.write(0x50u8);  // Blank Start
+    crtc_idx.write(0x03u8); crtc_data.write(0x82u8);  // Blank End
+    crtc_idx.write(0x04u8); crtc_data.write(0x55u8);  // Retrace Start
+    crtc_idx.write(0x05u8); crtc_data.write(0x81u8);  // Retrace End
+    // Vertical
+    crtc_idx.write(0x06u8); crtc_data.write(0xbFu8);  // Total
+    crtc_idx.write(0x07u8); crtc_data.write(0x1Fu8);  // Overflow
+    crtc_idx.write(0x09u8); crtc_data.write(0x4Fu8);  // Max Scan Line
+    crtc_idx.write(0x10u8); crtc_data.write(0x9Cu8);  // V Retrace Start
+    crtc_idx.write(0x11u8); crtc_data.write(0x8Eu8);  // V Retrace End
+    crtc_idx.write(0x12u8); crtc_data.write(0x8Fu8);  // V Display End
+    crtc_idx.write(0x13u8); crtc_data.write(0x28u8);  // Offset
+    crtc_idx.write(0x15u8); crtc_data.write(0x96u8);  // V Blank Start
+    crtc_idx.write(0x16u8); crtc_data.write(0xb9u8);  // V Blank End
+    crtc_idx.write(0x17u8); crtc_data.write(0xa3u8);  // Mode Control
+
+    // Attribute Controller (0x3C0): 簡易リセット
+    let mut attr = Port::new(0x3c0 as u16);
+    x86_64::instructions::port::Port::<u8>::new(0x3da as u16).read();  // Flip-flop reset
+    attr.write(0x10u8);  // Mode Control: Text mode
+    attr.write(0x12u8);  // Color Plane Enable: All
+}
+
 #[cfg(target_os = "uefi")]
 pub fn init_common() {
+    unsafe {
+        init_vga_text_mode();
+    }
     crate::vga::init_vga();
     // Now safe to initialize APIC and enable interrupts (after stable page tables and heap)
     interrupts::init_apic();
