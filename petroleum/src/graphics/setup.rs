@@ -18,9 +18,46 @@ pub fn setup_vga_mode_13h() {
     log_step!("VGA setup: Mode 13h initialization complete\n");
 }
 
+// Detect VGA hardware type (attempt to identify Cirrus VGA vs standard VGA)
+pub fn detect_vga_hardware_type() -> &'static str {
+    // Read PCI configuration space method - requires MMIO or PCI access
+    // For now, we rely on empirical detection or fallback to generic VGA
+
+    // Try to read VGA registers and determine type
+    unsafe {
+        // Check graphics controller register (index 0x0F) for identification
+        let mut index_writer = PortWriter::<u8>::new(VgaPorts::GRAPHICS_INDEX);
+        let mut data_reader = PortWriter::<u8>::new(VgaPorts::GRAPHICS_DATA);
+
+        index_writer.write_safe(0x0F);
+        let id_value = data_reader.read_safe();
+
+        // Cirrus Logic VGA chips often have specific signatures
+        // This is a simple heuristic - not comprehensive
+        match id_value {
+            0xBC | 0xBD | 0xBE | 0xBF => {
+                log_step!("Detected Cirrus VGA hardware\n");
+                "cirrus"
+            }
+            0x00 | 0x01 => {
+                log_step!("Detected basic VGA hardware\n");
+                "basic"
+            }
+            _ => {
+                log_step!("Detected unknown VGA hardware, assuming basic\n");
+                "basic"
+            }
+        }
+    }
+}
+
 // Unified text mode initialization function
 pub fn setup_vga_text_mode() {
     log_step!("VGA text mode setup: Starting\n");
+
+    // Detect hardware before setup
+    let _vga_type = detect_vga_hardware_type();
+
     setup_misc_output();
 
     // Sequencer, CRTC, and Graphics setup using centralized macros

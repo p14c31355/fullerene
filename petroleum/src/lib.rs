@@ -18,7 +18,11 @@ pub use serial::{Com1Ports, SerialPort, SerialPortOps, SERIAL_PORT_WRITER};
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
 
 use core::arch::asm;
+use core::ffi::c_void;
+use core::ptr;
 use spin::Mutex;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use crate::common::{EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID};
 use crate::common::{
@@ -59,24 +63,54 @@ macro_rules! write_serial_bytes {
 
 type EfiGraphicsOutputProtocolPtr = EfiGraphicsOutputProtocol;
 
+type EfiUniversalGraphicsAdapterProtocolPtr = isize; // Placeholder for UGA protocol type
+
+/// Helper to try Universal Graphics Adapter (UGA) protocol
+pub fn init_uga_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
+    let uga_guid = [
+        0x98, 0x2c, 0x29, 0x8b, 0xf4, 0xfa, 0x41, 0xcb, 0xb8, 0x38, 0x77, 0x7b, 0xa2, 0x48, 0x21, 0x13,
+    ];
+    let bs = unsafe { &*system_table.boot_services };
+    let mut uga: *mut EfiUniversalGraphicsAdapterProtocolPtr = ptr::null_mut();
+
+    let status = (bs.locate_protocol)(
+        uga_guid.as_ptr(),
+        ptr::null_mut(),
+        &mut uga as *mut _ as *mut *mut c_void,
+    );
+
+    if EfiStatus::from(status) != EfiStatus::Success || uga.is_null() {
+        serial::_print(format_args!(
+            "UGA protocol not available (status: {:#x})\n", status
+        ));
+        return None;
+    }
+
+    serial::_print(format_args!("UGA protocol found, but UGA implementation incomplete.\n"));
+    // UGA is deprecated; for now, we don't initialize since it's complex and rarely used
+    None
+}
+
 /// Helper to try different graphics protocols and modes
 pub fn init_graphics_protocols(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
-    // First try standard GOP protocol
+    // First try standard GOP protocol with enhanced mode enumeration
     if let Some(config) = init_gop_framebuffer(system_table) {
         return Some(config);
     }
 
-    // If GOP fails, we fall back to VGA text mode (handled externally)
-    // The caller should handle VGA text mode initialization
+    // If GOP fails, try UGA (Universal Graphics Adapter) - though deprecated
+    serial::_print(format_args!("GOP not available, trying UGA protocol...\n"));
+    if let Some(config) = init_uga_framebuffer(system_table) {
+        return Some(config);
+    }
+
+    // If all graphics protocols fail, we fall back to VGA text mode (handled externally)
     serial::_print(format_args!("All graphics protocols failed, falling back to VGA text mode.\n"));
     None
 }
 
 /// Helper to find GOP and init framebuffer
 pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
-    use core::ffi::c_void;
-    use core::ptr;
-
     let bs = unsafe { &*system_table.boot_services };
     let mut gop: *mut EfiGraphicsOutputProtocolPtr = ptr::null_mut();
 
@@ -98,9 +132,42 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     }
 
     let mode_ref = unsafe { &*gop_ref.mode };
+    let max_mode = mode_ref.max_mode;
 
-    // Try multiple graphics modes for better compatibility
-    let modes_to_try = [0, 1, 2]; // Common modes, can be extended
+    // Enumerate all available modes for better debugging and selection
+    serial::_print(format_args!("GOP: Enumerating {} available modes...\n", max_mode));
+    let mut valid_modes = Vec::new();
+
+    for mode_num in 0..max_mode {
+        let mut size_of_info: usize = 0;
+        let mut info: *mut crate::common::EfiGraphicsOutputModeInformation = ptr::null_mut();
+
+        let query_status = (gop_ref.query_mode)(gop, mode_num, &mut size_of_info, ptr::null_mut());
+        if query_status == 0 { // EFI_BUFFER_TOO_SMALL or similar
+            // Allocate buffer for mode info
+            let mut info_buf = vec![0u8; size_of_info];
+            info = info_buf.as_mut_ptr() as *mut _;
+
+            let query_status = (gop_ref.query_mode)(gop, mode_num, &mut size_of_info, info as *mut c_void);
+            if EfiStatus::from(query_status) == EfiStatus::Success && !info.is_null() {
+                let mode_info = unsafe { &*info };
+                valid_modes.push((mode_num, mode_info.horizontal_resolution, mode_info.vertical_resolution));
+                serial::_print(format_args!("GOP: Mode {}: {}x{}\n", mode_num, mode_info.horizontal_resolution, mode_info.vertical_resolution));
+            }
+        }
+    }
+
+    // Try to select the best mode (largest resolution) or fallback to mode 0
+    let best_mode = valid_modes.iter()
+        .max_by_key(|(_, w, h)| w * h)
+        .map(|(mode, _, _)| *mode)
+        .unwrap_or(0u32);
+
+    // Try multiple graphics modes for better compatibility, prioritizing higher resolution
+    let mut modes_to_try = vec![best_mode];
+    if best_mode != 0 { modes_to_try.push(0); }
+    modes_to_try.extend([1, 2]); // Lower priority modes
+
     for &mode in &modes_to_try {
         let status = (gop_ref.set_mode)(gop, mode);
         if EfiStatus::from(status) == EfiStatus::Success {
