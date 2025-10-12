@@ -301,7 +301,7 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     petroleum::serial::serial_log(format_args!("reinit_page_table: Allocated L4 frame at 0x{:x}\n", level_4_frame.start_address().as_u64()));
 
     // Temporarily map the new level 4 table to an unused virtual address for initialization
-    let temp_virt_page = Page::<Size4KiB>::containing_address(VirtAddr::new(0xFFFF_F000));
+    let temp_virt_page = Page::<Size4KiB>::containing_address(VirtAddr::new(0xFFFF_FF00_0000_F000)); // Example high canonical address
     {
         let mut current_mapper = MAPPER.get().unwrap().lock();
         unsafe {
