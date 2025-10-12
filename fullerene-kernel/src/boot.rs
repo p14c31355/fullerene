@@ -11,10 +11,17 @@ use petroleum::common::{
     EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
     VgaFramebufferConfig,
 };
+use x86_64::PhysAddr;
 use petroleum::page_table::EfiMemoryDescriptor;
 
 use crate::memory::{find_framebuffer_config, find_heap_start, init_memory_management, setup_memory_maps};
-use crate::{gdt, graphics, heap, interrupts, MEMORY_MAP};
+use crate::{gdt, graphics, heap, interrupts, shell, MEMORY_MAP};
+use crate::graphics::framebuffer::{FramebufferLike, UefiFramebuffer};
+
+use petroleum::common::{
+    EfiGraphicsOutputProtocol, EfiGraphicsOutputProtocolMode, EfiGraphicsOutputModeInformation,
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
+};
 
 // Macro to reduce repetitive serial logging
 macro_rules! kernel_log {
@@ -89,24 +96,57 @@ pub extern "efiapi" fn efi_main(
     let (physical_memory_offset, kernel_phys_start) = setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
 
     // Initialize memory management components (heap, page tables, etc.)
-    init_memory_management(*MEMORY_MAP.get().unwrap(), physical_memory_offset, kernel_phys_start);
+    // Comment out reinit for now to allow desktop drawing
+    kernel_log!("Starting heap frame allocator init...");
+
+    kernel_log!(
+        "Calling heap::init_frame_allocator with {} descriptors",
+        MEMORY_MAP.get().unwrap().len()
+    );
+    heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
+    kernel_log!("Heap frame allocator init completed successfully");
+
+    kernel_log!(
+        "Calling heap::init_page_table with offset 0x{:x}",
+        physical_memory_offset.as_u64()
+    );
+    heap::init_page_table(physical_memory_offset);
+    kernel_log!("Page table init completed successfully");
+
+    // Graphics work with UEFI page tables, but kernel should eventually reinit
+    kernel_log!("Will use UEFI page tables for graphics compatibility");
 
     // Set physical memory offset for process management
     crate::memory_management::set_physical_memory_offset(physical_memory_offset);
 
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(*MEMORY_MAP.get().unwrap());
-    let heap_start = heap::allocate_heap_from_map(heap_phys_start, heap::HEAP_SIZE);
+    kernel_log!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());
+    const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
+        let start_addr = if heap_phys_start.as_u64() < 0x1000 {
+        kernel_log!("Kernel: ERROR - Invalid heap_phys_start, using fallback 0x{:x}", FALLBACK_HEAP_START_ADDR);
+        PhysAddr::new(FALLBACK_HEAP_START_ADDR)
+    } else {
+        heap_phys_start
+    };
+
+    let heap_start = heap::allocate_heap_from_map(start_addr, heap::HEAP_SIZE);
+    kernel_log!("Kernel: heap_start=0x{:x}", heap_start.as_u64());
     let heap_start_after_gdt = gdt::init(heap_start);
+    kernel_log!("Kernel: heap_start_after_gdt=0x{:x}", heap_start_after_gdt.as_u64());
     kernel_log!("Kernel: GDT init done");
 
     // Initialize heap with the remaining memory
     let gdt_mem_usage = heap_start_after_gdt - heap_start;
-    heap::init(
-        heap_start_after_gdt,
-        heap::HEAP_SIZE - gdt_mem_usage as usize,
-    );
-    kernel_log!("Kernel: heap initialized");
+    let heap_size_remaining = heap::HEAP_SIZE - gdt_mem_usage as usize;
+    heap::init(heap_start_after_gdt, heap_size_remaining);
+
+    if heap_phys_start.as_u64() < 0x1000 {
+        kernel_log!("Kernel: heap initialized with fallback");
+    } else {
+        kernel_log!("Kernel: gdt_mem_usage=0x{:x}", gdt_mem_usage);
+        kernel_log!("Kernel: heap initialized");
+    }
 
     // Early serial log works now
     kernel_log!("Kernel: basic init complete");
@@ -116,33 +156,17 @@ pub extern "efiapi" fn efi_main(
     interrupts::init();
     kernel_log!("Kernel: IDT init done");
 
-    // Common initialization (enables interrupts)
-    super::init::init_common();
-    kernel_log!("Kernel: init_common done");
+    kernel_log!("Kernel: Jumping straight to graphics testing");
 
-    kernel_log!("Kernel: efi_main entered");
-    kernel_log!("GDT initialized");
-    kernel_log!("IDT initialized");
-    kernel_log!("APIC initialized");
-    kernel_log!("Heap initialized");
-    kernel_log!("Serial initialized");
+    // CRITICAL: Disable interrupts during graphics initialization to avoid process switching issues
+    x86_64::instructions::interrupts::disable();
+    kernel_log!("Interrupts disabled for graphics initialization");
 
-    // Check if framebuffer config is available from UEFI bootloader
-    kernel_log!("Checking framebuffer config from UEFI bootloader...");
-    if let Some(fb_config) = find_framebuffer_config(system_table) {
-        kernel_log!(
-            "Found framebuffer config: {}x{} @ {:#x}",
-            fb_config.width,
-            fb_config.height,
-            fb_config.address
-        );
-        kernel_log!("Initializing UEFI graphics mode...");
-        graphics::init(fb_config);
-        kernel_log!("UEFI graphics mode initialized, calling draw_os_desktop...");
-        graphics::draw_os_desktop();
-        kernel_log!("UEFI graphics desktop drawn - if you see this, draw_os_desktop completed");
-    } else {
-        kernel_log!("No framebuffer config found, falling back to VGA mode");
+    // Initialize graphics with framebuffer config
+    let framebuffer_initialized = initialize_graphics_with_config(system_table);
+
+    if !framebuffer_initialized {
+        kernel_log!("No UEFI framebuffer available, falling back to VGA mode");
         let vga_config = VgaFramebufferConfig {
             address: 0xA0000,
             width: 320,
@@ -156,9 +180,163 @@ pub extern "efiapi" fn efi_main(
         kernel_log!("VGA graphics desktop drawn - if you see this, draw_os_desktop completed");
     }
 
-    kernel_log!("Kernel: running in main loop");
-    kernel_log!("FullereneOS kernel is now running");
-    super::hlt_loop();
+    // Now it's safe to initialize processes and enable interrupts
+    kernel_log!("Graphics initialization complete, now initializing common subsystems...");
+
+    // Common initialization (enables interrupts)
+    super::init::init_common();
+    kernel_log!("Kernel: init_common done");
+
+    kernel_log!("Kernel: initialization complete");
+    kernel_log!("FullereneOS kernel is now running - から先に進みたいです");
+
+    // For now, just indicate success instead of starting shell immediately
+    // to avoid memory access issues during early testing
+    kernel_log!("Ready for interactive mode...");
+
+    // Keep kernel running with proper loop
+    loop {
+        unsafe {
+            x86_64::instructions::hlt();
+        }
+    }
+}
+
+fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
+    use petroleum::common::{EfiBootServices, EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID};
+    use core::ptr;
+
+    petroleum::serial::serial_log(format_args!("find_gop_framebuffer: Looking for GOP protocol\n"));
+
+    if system_table.boot_services.is_null() {
+        petroleum::serial::serial_log(format_args!("find_gop_framebuffer: Boot services is null\n"));
+        return None;
+    }
+
+    let boot_services = unsafe { &*system_table.boot_services };
+
+    // Use locate_protocol to find GOP (simpler than locate_handle)
+    let mut gop_handle: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
+    let status = (boot_services.locate_protocol)(
+        &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID as *const _ as *const u8,
+        core::ptr::null_mut(),
+        core::ptr::addr_of_mut!(gop_handle) as *mut *mut c_void,
+    );
+
+    if status != 0 {
+        petroleum::serial::serial_log(format_args!("find_gop_framebuffer: locate_protocol failed with status 0x{:x}\n", status));
+        return None;
+    }
+
+    if gop_handle.is_null() {
+        petroleum::serial::serial_log(format_args!("find_gop_framebuffer: GOP handle is null\n"));
+        return None;
+    }
+
+    let gop = unsafe { &*gop_handle };
+    if gop.mode.is_null() {
+        petroleum::serial::serial_log(format_args!("find_gop_framebuffer: GOP mode is null\n"));
+        return None;
+    }
+
+    let gop_mode = unsafe { &*gop.mode };
+    let address = gop_mode.frame_buffer_base;
+
+    if address == 0 {
+        petroleum::serial::serial_log(format_args!("find_gop_framebuffer: Framebuffer base is 0\n"));
+        return None;
+    }
+
+    // Get current mode info - we already have the mode info from gop_mode.info
+    if !gop_mode.info.is_null() {
+        let mode_info = unsafe { &*gop_mode.info };
+
+        petroleum::serial::serial_log(format_args!(
+            "find_gop_framebuffer: Found GOP framebuffer {}x{} @ 0x{:x}, stride: {}, format: {:?}\n",
+            mode_info.horizontal_resolution,
+            mode_info.vertical_resolution,
+            address,
+            mode_info.pixels_per_scan_line,
+            mode_info.pixel_format
+        ));
+
+        Some(FullereneFramebufferConfig {
+            address,
+            width: mode_info.horizontal_resolution,
+            height: mode_info.vertical_resolution,
+            pixel_format: mode_info.pixel_format,
+            bpp: petroleum::common::get_bpp_from_pixel_format(mode_info.pixel_format),
+            stride: mode_info.pixels_per_scan_line,
+        })
+    } else {
+        petroleum::serial::serial_log(format_args!("find_gop_framebuffer: GOP mode info is null\n"));
+        None
+    }
+}
+
+/// Helper function to try initializing graphics with a framebuffer config.
+/// Returns true if graphics were successfully initialized and drawn.
+/// source_name is used for logging purposes (e.g., "UEFI custom" or "GOP").
+#[cfg(target_os = "uefi")]
+fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str) -> bool {
+    kernel_log!("Initializing {} graphics mode...", source_name);
+    graphics::text::init(config);
+
+    // Verify the framebuffer was initialized
+    if let Some(fb_writer) = unsafe { graphics::text::FRAMEBUFFER_UEFI.get() } {
+        let fb_info = fb_writer.lock();
+        kernel_log!("{} framebuffer initialized successfully - width: {}, height: {}", source_name, fb_info.get_width(), fb_info.get_height());
+
+        // Test direct pixel write to verify access
+        kernel_log!("Testing {} framebuffer access...", source_name);
+        unsafe { fb_writer.lock().put_pixel(100, 100, 0xFF0000) };
+        kernel_log!("Direct {} pixel write test completed", source_name);
+    } else {
+        kernel_log!("ERROR: {} framebuffer initialization failed!", source_name);
+        return false;
+    }
+
+    kernel_log!("{} graphics mode initialized, calling draw_os_desktop...", source_name);
+    graphics::draw_os_desktop();
+    kernel_log!("{} graphics desktop drawn - if you see this, draw_os_desktop completed", source_name);
+    petroleum::serial::serial_log(format_args!("Desktop should be visible now!\n"));
+    true
+}
+
+/// Helper function to initialize graphics with framebuffer configuration
+/// Returns true if graphics were successfully initialized and drawn
+#[cfg(target_os = "uefi")]
+fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
+    // Check if framebuffer config is available from UEFI bootloader
+    kernel_log!("Checking framebuffer config from UEFI bootloader...");
+    if let Some(fb_config) = find_framebuffer_config(system_table) {
+        kernel_log!(
+            "Found framebuffer config: {}x{} @ {:#x}, stride: {}, pixel_format: {:?}",
+            fb_config.width,
+            fb_config.height,
+            fb_config.address,
+            fb_config.stride,
+            fb_config.pixel_format
+        );
+        return try_init_graphics(&fb_config, "UEFI custom");
+    }
+
+    kernel_log!("No custom framebuffer config found, trying standard UEFI GOP...");
+
+    // Try to find GOP (Graphics Output Protocol) from UEFI
+    if let Some(gop_config) = find_gop_framebuffer(system_table) {
+        kernel_log!(
+            "Found GOP framebuffer config: {}x{} @ {:#x}, stride: {}, pixel_format: {:?}",
+            gop_config.width,
+            gop_config.height,
+            gop_config.address,
+            gop_config.stride,
+            gop_config.pixel_format
+        );
+        return try_init_graphics(&gop_config, "UEFI GOP");
+    }
+
+    false
 }
 
 #[cfg(not(target_os = "uefi"))]

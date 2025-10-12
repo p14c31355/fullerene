@@ -177,6 +177,8 @@ impl OriginDimensions for UefiFramebuffer {
     }
 }
 
+// Implemented using individual match statements for clarity
+// Could be macro-ized in future but delegation complexity justifies explicit handling
 impl FramebufferLike for UefiFramebuffer {
     fn put_pixel(&self, x: u32, y: u32, color: u32) {
         match self {

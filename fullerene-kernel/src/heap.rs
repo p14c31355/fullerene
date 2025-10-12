@@ -212,9 +212,37 @@ static MEMORY_MAP: spin::Once<&'static [petroleum::page_table::EfiMemoryDescript
     spin::Once::new();
 
 pub fn init(heap_start: VirtAddr, heap_size: usize) {
+    // Map heap pages to virtual addresses in the current page table
+    let mut mapper = MAPPER.get().unwrap().lock();
+    let mut frame_allocator = FRAME_ALLOCATOR.get().unwrap().lock();
+    let physical_memory_offset = *PHYSICAL_MEMORY_OFFSET.get().unwrap();
+
+    let start_page = Page::<Size4KiB>::containing_address(heap_start);
+    let end_address = heap_start + heap_size as u64;
+    let end_page = Page::<Size4KiB>::containing_address(end_address - 1);
+
+    let mut current_page = start_page;
+    while current_page <= end_page {
+        let page_start_virt = current_page.start_address();
+        let page_start_phys = PhysAddr::new(page_start_virt.as_u64() - physical_memory_offset.as_u64());
+        let frame = PhysFrame::<Size4KiB>::containing_address(page_start_phys);
+
+        unsafe {
+            mapper
+                .map_to(current_page, frame, Flags::PRESENT | Flags::WRITABLE, &mut *frame_allocator)
+                .unwrap()
+                .flush();
+        }
+
+        current_page = current_page + 1;
+    }
+
+    drop(frame_allocator);
+    drop(mapper);
+
     unsafe {
-        let heap_start = heap_start.as_mut_ptr::<u8>();
-        ALLOCATOR.lock().init(heap_start, heap_size);
+        let heap_start_ptr = heap_start.as_mut_ptr::<u8>();
+        ALLOCATOR.lock().init(heap_start_ptr, heap_size);
     }
 }
 
@@ -256,12 +284,16 @@ pub(crate) unsafe fn map_physical_range(
     }
 }
 
-pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: PhysAddr) {
+pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: PhysAddr, framebuffer_addr: Option<u64>) {
     use x86_64::registers::control::Cr3;
     use x86_64::structures::paging::{PageTable, PageTableFlags as Flags};
 
+    petroleum::serial::serial_log(format_args!("reinit_page_table: Starting with offset 0x{:x}\n", physical_memory_offset.as_u64()));
+
     let mut frame_allocator = FRAME_ALLOCATOR.get().unwrap().lock();
     let memory_map = *MEMORY_MAP.get().unwrap();
+
+    petroleum::serial::serial_log(format_args!("reinit_page_table: Allocated new L4 frame\n"));
 
     // Allocate a new level 4 page table
     let level_4_frame = frame_allocator
@@ -269,7 +301,7 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
         .expect("Failed to allocate level 4 frame");
 
     // Temporarily map the new level 4 table to an unused virtual address
-    let temp_virt_page = Page::<Size4KiB>::containing_address(VirtAddr::new(0x8000000000000000));
+    let temp_virt_page = Page::<Size4KiB>::containing_address(VirtAddr::new(0xFFFF_F000_0000_0000)); // Use a high virtual address for temporary mapping
     {
         let mut current_mapper = MAPPER.get().unwrap().lock();
         unsafe {
@@ -277,26 +309,36 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
         }
     }
 
-    let level_4_table = unsafe { &mut *(0x8000000000000000 as *mut PageTable) };
+    let level_4_table = unsafe { &mut *temp_virt_page.start_address().as_mut_ptr() };
 
     // Zero the table
     level_4_table.zero();
 
-    // Create a mapper for the new page table
-    // Change: Use the passed physical_memory_offset instead of VirtAddr::new(0)
+    // Create a mapper for the new page table using the same offset as the original mapping
     let mut new_mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
 
-    // Map usable memory regions from the memory map (simplified - only map essential regions)
-    use petroleum::common::EfiMemoryType::*;
-    let memory_types = [EfiLoaderCode, EfiLoaderData, EfiBootServicesCode, EfiBootServicesData, EfiRuntimeServicesCode, EfiRuntimeServicesData, EfiConventionalMemory];
-    let descriptors = memory_map.iter().filter(|desc| {
-        memory_types.iter().any(|&t| desc.type_ == t) && desc.number_of_pages > 0
-    });
-    for desc in descriptors {
+    petroleum::serial::serial_log(format_args!("reinit_page_table: New mapper created\n"));
+
+    // Map global memory regions using the UEFI virtual addresses from the memory map
+    petroleum::serial::serial_log(format_args!("reinit_page_table: Mapping memory regions\n"));
+
+    for desc in memory_map {
+        // Map UEFI runtime regions and our kernel to the same virtual addresses
         let start_phys = PhysAddr::new(desc.physical_start);
         let end_phys = start_phys + (desc.number_of_pages * 4096);
-        let start_virt = VirtAddr::new(desc.physical_start); // Identity map
-        // Map to identity virtual addresses
+        let start_virt = VirtAddr::new(desc.virtual_start); // Use UEFI's virtual address
+
+        // Only map known essential memory types
+        use petroleum::common::EfiMemoryType::*;
+        let should_map = matches!(desc.type_,
+            EfiLoaderCode | EfiLoaderData | EfiBootServicesCode | EfiBootServicesData |
+            EfiRuntimeServicesCode | EfiRuntimeServicesData | EfiConventionalMemory
+        ) && desc.number_of_pages > 0;
+
+        if !should_map {
+            continue;
+        }
+
         unsafe {
             map_physical_range(
                 &mut new_mapper,
@@ -309,45 +351,32 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
         }
     }
 
-    // Map the kernel to a higher-half address
-    const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000;
-    let kernel_virt_start = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE);
-    let kernel_size = 0x200000; // 2MB
-    let kernel_end_phys = kernel_phys_start + kernel_size;
-
-    unsafe {
-        map_physical_range(
-            &mut new_mapper,
-            kernel_phys_start,
-            kernel_end_phys,
-            kernel_virt_start,
-            Flags::PRESENT | Flags::WRITABLE,
-            &mut *frame_allocator,
-        );
+    // Unmap the temporary mapping
+    {
+        let mut current_mapper = MAPPER.get().unwrap().lock();
+        unsafe {
+            current_mapper.unmap(temp_virt_page).expect("Failed to unmap temp").1.flush();
+        }
     }
 
     // Set the new CR3
     unsafe { Cr3::write(level_4_frame, Cr3Flags::empty()) };
 
-    // Reinitialize the mapper with new CR3
-    // Change: Use the passed physical_memory_offset instead of VirtAddr::new(0)
+    petroleum::serial::serial_log(format_args!("reinit_page_table: CR3 updated\n"));
+
+    // Reinitialize the mapper with new CR3 using the same physical_memory_offset
     let mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
     *MAPPER.get().unwrap().lock() = mapper;
+
+    petroleum::serial::serial_log(format_args!("reinit_page_table: Completed successfully\n"));
 }
 
 // Allocate heap from memory map (find virtual address from physical)
 pub fn allocate_heap_from_map(phys_start: PhysAddr, _size: usize) -> VirtAddr {
-    let memory_map = *MEMORY_MAP.get().unwrap();
-    for desc in memory_map {
-        let start = desc.physical_start;
-        let end = start + desc.number_of_pages * 4096;
-        if phys_start.as_u64() >= start && phys_start.as_u64() < end {
-            let offset_in_desc = phys_start.as_u64() - start;
-            return VirtAddr::new(desc.virtual_start + offset_in_desc);
-        }
+    // Use higher-half virtual address for heap
+    if let Some(offset) = PHYSICAL_MEMORY_OFFSET.get() {
+        VirtAddr::new(offset.as_u64() + phys_start.as_u64())
+    } else {
+        panic!("Physical memory offset not initialized");
     }
-    panic!(
-        "Could not find virtual address for physical address {:#x}",
-        phys_start
-    );
 }

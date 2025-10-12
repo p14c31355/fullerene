@@ -135,9 +135,11 @@ fn main() -> io::Result<()> {
         "1",
         "-machine",
         "pc,smm=off",
-        // Use std VGA for UEFI graphics compatibility
+        // Disable VGA for pure UEFI graphics
         "-vga",
-        "std",
+        "none",
+        "-device",
+        "virtio-vga,max_outputs=1",
         "-display",
         "gtk",
         "-serial",
