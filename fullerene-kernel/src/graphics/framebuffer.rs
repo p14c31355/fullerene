@@ -5,6 +5,24 @@ use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig};
 use petroleum::graphics::{grayscale_intensity, rgb_pixel};
 use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
 
+macro_rules! delegate_call {
+    ($self:expr, $method:ident $(, $args:expr)*) => {
+        match $self {
+            UefiFramebuffer::Uefi32(fb) => fb.$method($($args),*),
+            UefiFramebuffer::Vga8(fb) => fb.$method($($args),*),
+        }
+    };
+}
+
+macro_rules! delegate_call_mut {
+    ($self:expr, $method:ident $(, $args:expr)*) => {
+        match $self {
+            UefiFramebuffer::Uefi32(fb) => fb.$method($($args),*),
+            UefiFramebuffer::Vga8(fb) => fb.$method($($args),*),
+        }
+    };
+}
+
 #[derive(Clone, Copy)]
 pub struct ColorScheme {
     fg: u32,
@@ -171,84 +189,49 @@ impl OriginDimensions for UefiFramebuffer {
     }
 }
 
-// Implemented using individual match statements for clarity
-// Could be macro-ized in future but delegation complexity justifies explicit handling
 impl FramebufferLike for UefiFramebuffer {
     fn put_pixel(&self, x: u32, y: u32, color: u32) {
-        match self {
-            UefiFramebuffer::Uefi32(fb) => fb.put_pixel(x, y, color),
-            UefiFramebuffer::Vga8(fb) => fb.put_pixel(x, y, color),
-        }
+        delegate_call!(self, put_pixel, x, y, color);
     }
 
     fn clear_screen(&self) {
-        match self {
-            UefiFramebuffer::Uefi32(fb) => fb.clear_screen(),
-            UefiFramebuffer::Vga8(fb) => fb.clear_screen(),
-        }
+        delegate_call!(self, clear_screen);
     }
 
     fn get_width(&self) -> u32 {
-        match self {
-            UefiFramebuffer::Uefi32(fb) => fb.get_width(),
-            UefiFramebuffer::Vga8(fb) => fb.get_width(),
-        }
+        delegate_call!(self, get_width)
     }
 
     fn get_height(&self) -> u32 {
-        match self {
-            UefiFramebuffer::Uefi32(fb) => fb.get_height(),
-            UefiFramebuffer::Vga8(fb) => fb.get_height(),
-        }
+        delegate_call!(self, get_height)
     }
 
     fn get_fg_color(&self) -> u32 {
-        match self {
-            UefiFramebuffer::Uefi32(fb) => fb.get_fg_color(),
-            UefiFramebuffer::Vga8(fb) => fb.get_fg_color(),
-        }
+        delegate_call!(self, get_fg_color)
     }
 
     fn get_bg_color(&self) -> u32 {
-        match self {
-            UefiFramebuffer::Uefi32(fb) => fb.get_bg_color(),
-            UefiFramebuffer::Vga8(fb) => fb.get_bg_color(),
-        }
+        delegate_call!(self, get_bg_color)
     }
 
     fn set_position(&mut self, x: u32, y: u32) {
-        match self {
-            UefiFramebuffer::Uefi32(fb) => fb.set_position(x, y),
-            UefiFramebuffer::Vga8(fb) => fb.set_position(x, y),
-        }
+        delegate_call_mut!(self, set_position, x, y);
     }
 
     fn get_position(&self) -> (u32, u32) {
-        match self {
-            UefiFramebuffer::Uefi32(fb) => fb.get_position(),
-            UefiFramebuffer::Vga8(fb) => fb.get_position(),
-        }
+        delegate_call!(self, get_position)
     }
 
     fn scroll_up(&self) {
-        match self {
-            UefiFramebuffer::Uefi32(fb) => fb.scroll_up(),
-            UefiFramebuffer::Vga8(fb) => fb.scroll_up(),
-        }
+        delegate_call!(self, scroll_up);
     }
 
     fn get_stride(&self) -> u32 {
-        match self {
-            UefiFramebuffer::Uefi32(fb) => fb.get_stride(),
-            UefiFramebuffer::Vga8(fb) => fb.get_stride(),
-        }
+        delegate_call!(self, get_stride)
     }
 
     fn is_vga(&self) -> bool {
-        match self {
-            UefiFramebuffer::Uefi32(fb) => fb.is_vga(),
-            UefiFramebuffer::Vga8(fb) => fb.is_vga(),
-        }
+        delegate_call!(self, is_vga)
     }
 }
 
