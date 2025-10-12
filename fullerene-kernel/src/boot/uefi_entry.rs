@@ -61,6 +61,15 @@ pub extern "efiapi" fn efi_main(
     debug_log!("VGA setup done");
     kernel_log!("VGA text mode setup function returned");
 
+/// Helper function to write a string to VGA buffer at specified row
+fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
+    for (i, &byte) in text.iter().enumerate() {
+        if i < 80 {
+            vga_buffer[row][i] = color | (byte as u16);
+        }
+    }
+}
+
     // Early VGA text output to ensure visible output on screen
     kernel_log!("About to write to VGA buffer at 0xb8000");
     {
@@ -72,14 +81,8 @@ pub extern "efiapi" fn efi_main(
             }
         }
         // Write modified hello message
-        let hello = b"UEFI Kernel: Display Test!";
-        for (i, &byte) in hello.iter().enumerate() {
-            vga_buffer[0][i] = VGA_COLOR_GREEN_ON_BLACK | (byte as u16);
-        }
-        let hello2 = b"This should be visible.";
-        for (i, &byte) in hello2.iter().enumerate() {
-            vga_buffer[1][i] = VGA_COLOR_GREEN_ON_BLACK | (byte as u16);
-        }
+        write_vga_string(vga_buffer, 0, b"UEFI Kernel: Display Test!", VGA_COLOR_GREEN_ON_BLACK);
+        write_vga_string(vga_buffer, 1, b"This should be visible.", VGA_COLOR_GREEN_ON_BLACK);
     }
     kernel_log!("VGA buffer write completed");
 

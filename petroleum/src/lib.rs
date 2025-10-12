@@ -157,19 +157,25 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
         }
     }
 
-    // Try to select the best mode (largest resolution) or fallback to mode 0
+    // Select only from validated modes - don't try arbitrary modes
+    if valid_modes.is_empty() {
+        serial::_print(format_args!("GOP: No valid modes found.\n"));
+        return None;
+    }
+
+    // Try to select the best mode (largest resolution) from validated modes
     let best_mode = valid_modes.iter()
         .max_by_key(|(_, w, h)| w * h)
         .map(|(mode, _, _)| *mode)
-        .unwrap_or(0u32);
+        .unwrap();
 
-    // Try multiple graphics modes for better compatibility, prioritizing higher resolution
-    let mut modes_to_try = vec![best_mode];
-    if best_mode != 0 { modes_to_try.push(0); }
-    modes_to_try.extend([1, 2]); // Lower priority modes
+    // Only try modes that we know are valid from enumeration
+    let sorted_modes = valid_modes.iter()
+        .map(|(mode, _, _)| *mode)
+        .collect::<Vec<_>>();
 
     let mut mode_set_successfully = false;
-    for &mode in &modes_to_try {
+    for &mode in &sorted_modes {
         let status = (gop_ref.set_mode)(gop, mode);
         if EfiStatus::from(status) == EfiStatus::Success {
             serial::_print(format_args!("GOP: Successfully set graphics mode {}.\n", mode));

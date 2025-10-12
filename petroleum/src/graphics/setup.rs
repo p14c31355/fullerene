@@ -18,8 +18,22 @@ pub fn setup_vga_mode_13h() {
     log_step!("VGA setup: Mode 13h initialization complete\n");
 }
 
+// VGA hardware type enum for better type safety
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum VgaHardwareType {
+    Cirrus,
+    Basic,
+    Unknown,
+}
+
+// Cirrus Logic VGA identification constants
+const CIRRUS_ID_BC: u8 = 0xBC;
+const CIRRUS_ID_BD: u8 = 0xBD;
+const CIRRUS_ID_BE: u8 = 0xBE;
+const CIRRUS_ID_BF: u8 = 0xBF;
+
 // Detect VGA hardware type (attempt to identify Cirrus VGA vs standard VGA)
-pub fn detect_vga_hardware_type() -> &'static str {
+pub fn detect_vga_hardware_type() -> VgaHardwareType {
     // Read PCI configuration space method - requires MMIO or PCI access
     // For now, we rely on empirical detection or fallback to generic VGA
 
@@ -35,17 +49,17 @@ pub fn detect_vga_hardware_type() -> &'static str {
         // Cirrus Logic VGA chips often have specific signatures
         // This is a simple heuristic - not comprehensive
         match id_value {
-            0xBC | 0xBD | 0xBE | 0xBF => {
+            CIRRUS_ID_BC | CIRRUS_ID_BD | CIRRUS_ID_BE | CIRRUS_ID_BF => {
                 log_step!("Detected Cirrus VGA hardware\n");
-                "cirrus"
+                VgaHardwareType::Cirrus
             }
             0x00 | 0x01 => {
                 log_step!("Detected basic VGA hardware\n");
-                "basic"
+                VgaHardwareType::Basic
             }
             _ => {
                 log_step!("Detected unknown VGA hardware, assuming basic\n");
-                "basic"
+                VgaHardwareType::Unknown
             }
         }
     }

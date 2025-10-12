@@ -14,48 +14,88 @@ macro_rules! kernel_log {
     };
 }
 
+// VGA port constants
+const VGA_MISC_OUTPUT: u16 = 0x3c2;
+const VGA_MISC_ENABLE_COLOR_MODE: u8 = 0x67;  // bit0=1 for color mode, Clock Select=1
+
+const VGA_SEQUENCER_INDEX: u16 = 0x3c4;
+const VGA_SEQUENCER_DATA: u16 = 0x3c5;
+const VGA_SEQ_RESET: u8 = 0x00;
+const VGA_SEQ_CLOCKING_MODE: u8 = 0x01;
+const VGA_SEQ_MAP_MASK: u8 = 0x02;
+const VGA_SEQ_CHARACTER_MAP: u8 = 0x03;
+const VGA_SEQ_MEMORY_MODE: u8 = 0x04;
+
+const VGA_CRTC_INDEX: u16 = 0x3d4;
+const VGA_CRTC_DATA: u16 = 0x3d5;
+const VGA_CRTC_HORIZONTAL_TOTAL: u8 = 0x00;
+const VGA_CRTC_HORIZONTAL_DISPLAY_END: u8 = 0x01;
+const VGA_CRTC_HORIZONTAL_BLANK_START: u8 = 0x02;
+const VGA_CRTC_HORIZONTAL_BLANK_END: u8 = 0x03;
+const VGA_CRTC_HORIZONTAL_RETRACE_START: u8 = 0x04;
+const VGA_CRTC_HORIZONTAL_RETRACE_END: u8 = 0x05;
+const VGA_CRTC_VERTICAL_TOTAL: u8 = 0x06;
+const VGA_CRTC_OVERFLOW: u8 = 0x07;
+const VGA_CRTC_MAXIMUM_SCAN_LINE: u8 = 0x09;
+const VGA_CRTC_VERTICAL_RETRACE_START: u8 = 0x10;
+const VGA_CRTC_VERTICAL_RETRACE_END: u8 = 0x11;
+const VGA_CRTC_VERTICAL_DISPLAY_END: u8 = 0x12;
+const VGA_CRTC_OFFSET: u8 = 0x13;
+const VGA_CRTC_VERTICAL_BLANK_START: u8 = 0x15;
+const VGA_CRTC_VERTICAL_BLANK_END: u8 = 0x16;
+const VGA_CRTC_MODE_CONTROL: u8 = 0x17;
+const VGA_CRTC_LINE_COMPARE: u8 = 0x18;
+const VGA_CRTC_UNLOCK: u8 = 0x11;
+const VGA_CRTC_UNLOCK_MASK: u8 = 0x7f;
+
+const VGA_ATTRIBUTE_INDEX: u16 = 0x3c0;
+const VGA_ATTRIBUTE_MODE_CONTROL: u8 = 0x10;
+const VGA_ATTRIBUTE_COLOR_PLANE_ENABLE: u8 = 0x12;
+const VGA_STATUS_REGISTER: u16 = 0x3da;
+const VGA_ATTRIBUTE_ENABLE_VIDEO: u8 = 0x20;
+
 unsafe fn init_vga_text_mode() {
-    // Miscellaneous Output Register (0x3C2): 色モード, 0x3D4マップ有効
-    let mut misc = Port::new(0x3c2 as u16);
-    misc.write(0x67u8);  // bit0=1 for mono/color, Clock Select=1
+    // Miscellaneous Output Register: Enable color mode, 0x3D4 map active
+    let mut misc = Port::new(VGA_MISC_OUTPUT);
+    misc.write(VGA_MISC_ENABLE_COLOR_MODE);
 
-    // Sequencer (0x3C4/0x3C5): アルファベットモード
-    let mut seq_idx = Port::new(0x3c4 as u16);
-    let mut seq_data = Port::new(0x3c5 as u16);
-    seq_idx.write(0x00u8); seq_data.write(0x01u8);  // Reset 0
-    seq_idx.write(0x01u8); seq_data.write(0x01u8);  // Reset 1 (9/8 Dot Mode=0)
-    seq_idx.write(0x03u8); seq_data.write(0x00u8);  // Char Map Select
-    seq_idx.write(0x04u8); seq_data.write(0x07u8);  // Memory Mode: Odd/Even=1, Chain4=0
+    // Sequencer: Reset and configure for alphanumeric mode
+    let mut seq_idx = Port::new(VGA_SEQUENCER_INDEX);
+    let mut seq_data = Port::new(VGA_SEQUENCER_DATA);
+    seq_idx.write(VGA_SEQ_RESET); seq_data.write(0x01u8);  // Reset
+    seq_idx.write(VGA_SEQ_CLOCKING_MODE); seq_data.write(0x01u8);  // 9/8 Dot Mode=0
+    seq_idx.write(VGA_SEQ_CHARACTER_MAP); seq_data.write(0x00u8);  // Character Map Select
+    seq_idx.write(VGA_SEQ_MEMORY_MODE); seq_data.write(0x07u8);  // Memory Mode: Odd/Even=1, Chain4=0
 
-    // CRTC (0x3D4/0x3D5): 80x25タイミング (unlock first)
-    let mut crtc_idx = Port::new(0x3d4 as u16);
-    let mut crtc_data = Port::new(0x3d5 as u16);
+    // CRTC: Configure 80x25 timing (unlock first)
+    let mut crtc_idx = Port::new(VGA_CRTC_INDEX);
+    let mut crtc_data = Port::new(VGA_CRTC_DATA);
     let current_reg11 = crtc_data.read();
-    crtc_idx.write(0x11u8); crtc_data.write(0x7fu8 & current_reg11);  // Unlock (clear bit7)
-    // Horizontal
-    crtc_idx.write(0x00u8); crtc_data.write(0x5fu8);  // Total
-    crtc_idx.write(0x01u8); crtc_data.write(0x4fu8);  // Display End
-    crtc_idx.write(0x02u8); crtc_data.write(0x50u8);  // Blank Start
-    crtc_idx.write(0x03u8); crtc_data.write(0x82u8);  // Blank End
-    crtc_idx.write(0x04u8); crtc_data.write(0x55u8);  // Retrace Start
-    crtc_idx.write(0x05u8); crtc_data.write(0x81u8);  // Retrace End
-    // Vertical
-    crtc_idx.write(0x06u8); crtc_data.write(0xbFu8);  // Total
-    crtc_idx.write(0x07u8); crtc_data.write(0x1Fu8);  // Overflow
-    crtc_idx.write(0x09u8); crtc_data.write(0x4Fu8);  // Max Scan Line
-    crtc_idx.write(0x10u8); crtc_data.write(0x9Cu8);  // V Retrace Start
-    crtc_idx.write(0x11u8); crtc_data.write(0x8Eu8);  // V Retrace End
-    crtc_idx.write(0x12u8); crtc_data.write(0x8Fu8);  // V Display End
-    crtc_idx.write(0x13u8); crtc_data.write(0x28u8);  // Offset
-    crtc_idx.write(0x15u8); crtc_data.write(0x96u8);  // V Blank Start
-    crtc_idx.write(0x16u8); crtc_data.write(0xb9u8);  // V Blank End
-    crtc_idx.write(0x17u8); crtc_data.write(0xa3u8);  // Mode Control
+    crtc_idx.write(VGA_CRTC_UNLOCK); crtc_data.write(VGA_CRTC_UNLOCK_MASK & current_reg11);  // Unlock (clear bit7)
+    // Horizontal timing
+    crtc_idx.write(VGA_CRTC_HORIZONTAL_TOTAL); crtc_data.write(0x5fu8);  // Total
+    crtc_idx.write(VGA_CRTC_HORIZONTAL_DISPLAY_END); crtc_data.write(0x4fu8);  // Display End
+    crtc_idx.write(VGA_CRTC_HORIZONTAL_BLANK_START); crtc_data.write(0x50u8);  // Blank Start
+    crtc_idx.write(VGA_CRTC_HORIZONTAL_BLANK_END); crtc_data.write(0x82u8);  // Blank End
+    crtc_idx.write(VGA_CRTC_HORIZONTAL_RETRACE_START); crtc_data.write(0x55u8);  // Retrace Start
+    crtc_idx.write(VGA_CRTC_HORIZONTAL_RETRACE_END); crtc_data.write(0x81u8);  // Retrace End
+    // Vertical timing
+    crtc_idx.write(VGA_CRTC_VERTICAL_TOTAL); crtc_data.write(0xbfu8);  // Total
+    crtc_idx.write(VGA_CRTC_OVERFLOW); crtc_data.write(0x1fu8);  // Overflow
+    crtc_idx.write(VGA_CRTC_MAXIMUM_SCAN_LINE); crtc_data.write(0x4fu8);  // Max Scan Line
+    crtc_idx.write(VGA_CRTC_VERTICAL_RETRACE_START); crtc_data.write(0x9cu8);  // V Retrace Start
+    crtc_idx.write(VGA_CRTC_VERTICAL_RETRACE_END); crtc_data.write(0x8eu8);  // V Retrace End
+    crtc_idx.write(VGA_CRTC_VERTICAL_DISPLAY_END); crtc_data.write(0x8fu8);  // V Display End
+    crtc_idx.write(VGA_CRTC_OFFSET); crtc_data.write(0x28u8);  // Offset
+    crtc_idx.write(VGA_CRTC_VERTICAL_BLANK_START); crtc_data.write(0x96u8);  // V Blank Start
+    crtc_idx.write(VGA_CRTC_VERTICAL_BLANK_END); crtc_data.write(0xb9u8);  // V Blank End
+    crtc_idx.write(VGA_CRTC_MODE_CONTROL); crtc_data.write(0xa3u8);  // Mode Control
 
-    // Attribute Controller (0x3C0): 簡易リセット
-    let mut attr = Port::new(0x3c0 as u16);
-    x86_64::instructions::port::Port::<u8>::new(0x3da as u16).read();  // Flip-flop reset
-    attr.write(0x10u8);  // Mode Control: Text mode
-    attr.write(0x12u8);  // Color Plane Enable: All
+    // Attribute Controller: Simple reset and setup
+    let mut attr = Port::new(VGA_ATTRIBUTE_INDEX);
+    x86_64::instructions::port::Port::<u8>::new(VGA_STATUS_REGISTER).read();  // Flip-flop reset
+    attr.write(VGA_ATTRIBUTE_MODE_CONTROL);  // Mode Control: Text mode
+    attr.write(VGA_ATTRIBUTE_COLOR_PLANE_ENABLE);  // Color Plane Enable: All
 }
 
 #[cfg(target_os = "uefi")]
