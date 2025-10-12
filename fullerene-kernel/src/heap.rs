@@ -301,7 +301,7 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
         .expect("Failed to allocate level 4 frame");
 
     // Temporarily map the new level 4 table to an unused virtual address
-    let temp_virt_page = Page::<Size4KiB>::containing_address(VirtAddr::new(0xFFFF_F000_0000_0000)); // Use a high virtual address for temporary mapping
+    let temp_virt_page = Page::<Size4KiB>::containing_address(VirtAddr::new(0xFFFF_F000)); // Use a low virtual address for temporary mapping
     {
         let mut current_mapper = MAPPER.get().unwrap().lock();
         unsafe {
@@ -317,6 +317,24 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
     // Create a mapper for the new page table using the same offset as the original mapping
     let mut new_mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
 
+    // Identity map all physical memory in the new page table to allow page table allocations
+    for desc in memory_map {
+        let start_phys = PhysAddr::new(desc.physical_start);
+        let end_phys = start_phys + (desc.number_of_pages * 4096);
+        let start_virt = VirtAddr::new(desc.physical_start); // identity mapping
+
+        unsafe {
+            map_physical_range(
+                &mut new_mapper,
+                start_phys,
+                end_phys,
+                start_virt,
+                Flags::PRESENT | Flags::WRITABLE,
+                &mut frame_allocator,
+            );
+        }
+    }
+
     petroleum::serial::serial_log(format_args!("reinit_page_table: New mapper created\n"));
 
     // Map global memory regions using the UEFI virtual addresses from the memory map
@@ -330,21 +348,32 @@ pub fn reinit_page_table(physical_memory_offset: VirtAddr, kernel_phys_start: Ph
 
         // Only map known essential memory types
         use petroleum::common::EfiMemoryType::*;
-        let should_map = matches!(desc.type_,
+        let should_map_low = matches!(desc.type_,
             EfiLoaderCode | EfiLoaderData | EfiBootServicesCode | EfiBootServicesData |
             EfiRuntimeServicesCode | EfiRuntimeServicesData | EfiConventionalMemory
         ) && desc.number_of_pages > 0;
 
-        if !should_map {
-            continue;
+        if should_map_low {
+            unsafe {
+                map_physical_range(
+                    &mut new_mapper,
+                    start_phys,
+                    end_phys,
+                    start_virt,
+                    Flags::PRESENT | Flags::WRITABLE,
+                    &mut frame_allocator,
+                );
+            }
         }
 
+        // Additionally, map all memory regions to higher-half virtual addresses
+        let start_virt_high = VirtAddr::new(desc.physical_start + physical_memory_offset.as_u64());
         unsafe {
             map_physical_range(
                 &mut new_mapper,
                 start_phys,
                 end_phys,
-                start_virt,
+                start_virt_high,
                 Flags::PRESENT | Flags::WRITABLE,
                 &mut frame_allocator,
             );

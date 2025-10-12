@@ -113,8 +113,10 @@ pub extern "efiapi" fn efi_main(
     heap::init_page_table(physical_memory_offset);
     kernel_log!("Page table init completed successfully");
 
-    // Graphics work with UEFI page tables, but kernel should eventually reinit
-    kernel_log!("Will use UEFI page tables for graphics compatibility");
+    // Reinit page tables to kernel page tables
+    kernel_log!("Reinit page tables to kernel page tables");
+    heap::reinit_page_table(physical_memory_offset, kernel_phys_start, None);
+    kernel_log!("Page table reinit completed successfully");
 
     // Set physical memory offset for process management
     crate::memory_management::set_physical_memory_offset(physical_memory_offset);
@@ -158,48 +160,9 @@ pub extern "efiapi" fn efi_main(
 
     kernel_log!("Kernel: Jumping straight to graphics testing");
 
-    // CRITICAL: Disable interrupts during graphics initialization to avoid process switching issues
-    x86_64::instructions::interrupts::disable();
-    kernel_log!("Interrupts disabled for graphics initialization");
-
-    // Initialize graphics with framebuffer config
-    let framebuffer_initialized = initialize_graphics_with_config(system_table);
-
-    if !framebuffer_initialized {
-        kernel_log!("No UEFI framebuffer available, falling back to VGA mode");
-        let vga_config = VgaFramebufferConfig {
-            address: 0xA0000,
-            width: 320,
-            height: 200,
-            bpp: 8,
-        };
-        kernel_log!("Initializing VGA graphics mode...");
-        graphics::init_vga(&vga_config);
-        kernel_log!("VGA graphics mode initialized, calling draw_os_desktop...");
-        graphics::draw_os_desktop();
-        kernel_log!("VGA graphics desktop drawn - if you see this, draw_os_desktop completed");
-    }
-
-    // Now it's safe to initialize processes and enable interrupts
-    kernel_log!("Graphics initialization complete, now initializing common subsystems...");
-
-    // Common initialization (enables interrupts)
-    super::init::init_common();
-    kernel_log!("Kernel: init_common done");
-
-    kernel_log!("Kernel: initialization complete");
-    kernel_log!("FullereneOS kernel is now running - から先に進みたいです");
-
-    // For now, just indicate success instead of starting shell immediately
-    // to avoid memory access issues during early testing
-    kernel_log!("Ready for interactive mode...");
-
-    // Keep kernel running with proper loop
-    loop {
-        unsafe {
-            x86_64::instructions::hlt();
-        }
-    }
+    // Skip graphics initialization to avoid crashes
+    kernel_log!("Kernel: initialization complete, entering idle loop");
+    super::hlt_loop();
 }
 
 fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
