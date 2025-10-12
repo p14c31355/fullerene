@@ -142,10 +142,14 @@ fn init_gop(st: &EfiSystemTable) {
     let mut gop: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
 
     let status = (bs.locate_protocol)(
-        &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID as *const _ as *const u8,
+        EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
         ptr::null_mut(),
         &mut gop as *mut _ as *mut *mut c_void,
     );
+
+    debug_print_str("GOP locate_protocol status: 0x");
+    debug_print_hex(status as usize);
+    debug_print_str("\n");
 
     if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
         petroleum::serial::_print(format_args!(
@@ -236,7 +240,7 @@ fn init_gop(st: &EfiSystemTable) {
     let config_ptr = Box::leak(config);
 
     let status = (bs.install_configuration_table)(
-        &FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID as *const _ as *const u8,
+        FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
         config_ptr as *const _ as *mut c_void,
     );
 
