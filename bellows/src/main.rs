@@ -90,7 +90,6 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     petroleum::serial::_print(format_args!("Graphics initialization complete.\n"));
     petroleum::println!("Bellows: Graphics initialized."); // Debug print after graphics initialization
 
-    petroleum::println!("Bellows: Reading kernel from embedded binary...");
     let efi_image_file = KERNEL_BINARY;
     let efi_image_size = KERNEL_BINARY.len();
 

@@ -67,8 +67,7 @@ pub fn detect_vga_hardware_type() -> VgaHardwareType {
 pub fn setup_vga_text_mode() {
     log_step!("VGA text mode setup: Starting\n");
 
-    // Detect hardware before setup
-    let _vga_type = detect_vga_hardware_type();
+
 
     setup_misc_output();
 

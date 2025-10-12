@@ -21,8 +21,8 @@ use core::arch::asm;
 use core::ffi::c_void;
 use core::ptr;
 use spin::Mutex;
-use alloc::vec;
-use alloc::vec::Vec;
+// use alloc::vec;
+// use alloc::vec::Vec;
 
 use crate::common::{EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID};
 use crate::common::{
@@ -276,8 +276,8 @@ pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
     // Also output to VGA buffer if available - heapless formatting
     #[cfg(feature = "vga_panic")]
     {
-        // Import VGA module here to avoid dependency issues
-        extern crate vga_buffer;
+// // Import VGA module here to avoid dependency issues
+// extern crate vga_buffer;
         use vga_buffer::{BUFFER_HEIGHT, BUFFER_WIDTH, Color, ColorCode, Writer};
 
         let mut writer = Writer {

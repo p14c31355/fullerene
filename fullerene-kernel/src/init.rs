@@ -14,7 +14,6 @@ macro_rules! kernel_log {
 
 #[cfg(target_os = "uefi")]
 pub fn init_common() {
-    petroleum::graphics::init_vga_text_mode();
     crate::vga::init_vga();
     // Now safe to initialize APIC and enable interrupts (after stable page tables and heap)
     interrupts::init_apic();

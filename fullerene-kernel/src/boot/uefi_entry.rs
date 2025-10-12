@@ -18,6 +18,15 @@ use crate::hlt_loop;
 use crate::memory::setup_memory_maps;
 use crate::memory::find_framebuffer_config;
 
+/// Helper function to write a string to VGA buffer at specified row
+pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
+    for (i, &byte) in text.iter().enumerate() {
+        if i < 80 {
+            vga_buffer[row][i] = color | (byte as u16);
+        }
+    }
+}
+
 #[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]
 #[unsafe(link_section = ".text.efi_main")]
@@ -60,18 +69,8 @@ pub extern "efiapi" fn efi_main(
     // Direct VGA buffer test - write to hardware buffer directly
     kernel_log!("Direct VGA buffer write test...");
     unsafe {
-        let vga_buffer = 0xb8000 as *mut [[u16; 80]; 25];
-        (*vga_buffer)[0][0] = 0x1F00 | b'K' as u16; // Bright white on blue 'K'
-        (*vga_buffer)[0][1] = 0x1F00 | b'e' as u16;
-        (*vga_buffer)[0][2] = 0x1F00 | b'r' as u16;
-        (*vga_buffer)[0][3] = 0x1F00 | b'n' as u16;
-        (*vga_buffer)[0][4] = 0x1F00 | b'e' as u16;
-        (*vga_buffer)[0][5] = 0x1F00 | b'l' as u16;
-        (*vga_buffer)[0][6] = 0x1F00 | b' ' as u16;
-        (*vga_buffer)[0][7] = 0x1F00 | b'b' as u16;
-        (*vga_buffer)[0][8] = 0x1F00 | b'o' as u16;
-        (*vga_buffer)[0][9] = 0x1F00 | b'o' as u16;
-        (*vga_buffer)[0][10] = 0x1F00 | b't' as u16;
+        let vga_buffer = &mut *(0xb8000 as *mut [[u16; 80]; 25]);
+        write_vga_string(vga_buffer, 0, b"Kernel boot", 0x1F00);
     }
     kernel_log!("Direct VGA write test completed");
 
@@ -80,28 +79,21 @@ pub extern "efiapi" fn efi_main(
     crate::vga::init_vga();
     kernel_log!("VGA writer initialized - text should be visible now");
 
-/// Helper function to write a string to VGA buffer at specified row
-fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
-    for (i, &byte) in text.iter().enumerate() {
-        if i < 80 {
-            vga_buffer[row][i] = color | (byte as u16);
-        }
-    }
-}
+
 
     // Early text output using EFI console to ensure visible output on screen
     kernel_log!("About to output to EFI console");
     unsafe {
         if !(*system_table).con_out.is_null() {
             let output_string = (*(*system_table).con_out).output_string;
-            let mut msg = [0u16; 30];
-            let text1 = b"UEFI Kernel: Display Test!\r\n";
+            let mut msg = [0u16; 31]; // Increased size to prevent buffer overflow
+            let text1 = b"UEFI Kernel: Display Test!\r\n\0"; // Null-terminated
             for (&ch, dst) in text1.iter().zip(&mut msg[..text1.len()]) {
                 *dst = ch as u16;
             }
             let _ = output_string((*system_table).con_out, msg.as_ptr());
-            let mut msg2 = [0u16; 30];
-            let text2 = b"This is output via EFI console.\r\n";
+            let mut msg2 = [0u16; 31]; // Increased size to prevent buffer overflow
+            let text2 = b"This is output via EFI console.\r\n\0"; // Null-terminated
             for (&ch, dst) in text2.iter().zip(&mut msg2[..text2.len()]) {
                 *dst = ch as u16;
             }
@@ -190,22 +182,8 @@ fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], c
 
     kernel_log!("Kernel: Jumping straight to graphics testing");
 
-    // CRITICAL: Disable interrupts during graphics initialization to avoid process switching issues
-    x86_64::instructions::interrupts::disable();
-    kernel_log!("Interrupts disabled for graphics initialization");
-
-    // Initialize graphics with framebuffer config
-    let framebuffer_initialized = initialize_graphics_with_config(system_table);
-
-    if !framebuffer_initialized {
-        kernel_log!("No UEFI framebuffer available, falling back to VGA mode");
-        // Re-initialize VGA text mode after graphics initialization to ensure text remains visible
-        petroleum::graphics::init_vga_text_mode();
-        crate::vga::init_vga(); // Re-write text to VGA buffer
-        kernel_log!("VGA text mode reinitialized and text restored");
-    }
-
-    kernel_log!("Initializing graphics and shell...");
+    // Initialize interrupts and other components call init_common here
+    crate::init::init_common();
 
     // Initialize graphics with framebuffer configuration
     if initialize_graphics_with_config(system_table) {
@@ -214,14 +192,6 @@ fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], c
         // Initialize keyboard input driver
         crate::keyboard::init();
         kernel_log!("Keyboard initialized");
-
-        // Initialize syscall handling
-        crate::syscall::init();
-        kernel_log!("Syscalls initialized");
-
-        // Initialize process management
-        crate::process::init();
-        kernel_log!("Process management initialized");
 
         // Start the shell as the main interface
         kernel_log!("Starting shell...");
@@ -233,7 +203,6 @@ fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], c
         kernel_log!("Graphics initialization failed, entering idle loop");
     }
 
-    hlt_loop();
 }
 
 pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {

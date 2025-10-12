@@ -91,14 +91,15 @@ pub fn exit_boot_services_and_jump(
         }
 
         // Call get_memory_map with pre-allocated buffer
-        let status = 
+        let status = unsafe {
             (bs.get_memory_map)(
                 &mut map_size,
                 map_ptr,
                 &mut map_key,
                 &mut descriptor_size,
                 &mut descriptor_version,
-            );
+            )
+        };
 
         match EfiStatus::from(status) {
             EfiStatus::Success => {
