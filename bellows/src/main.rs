@@ -163,11 +163,11 @@ fn try_uga_protocol(st: &EfiSystemTable) -> bool {
     let bs = unsafe { &*st.boot_services };
     let mut uga: *mut c_void = ptr::null_mut();
 
-    let status = (bs.locate_protocol)(
+    let status = unsafe { (bs.locate_protocol)(
         uga_guid.as_ptr(),
         ptr::null_mut(),
         &mut uga,
-    );
+    ) };
 
     if EfiStatus::from(status) != EfiStatus::Success || uga.is_null() {
         petroleum::serial::_print(format_args!(
