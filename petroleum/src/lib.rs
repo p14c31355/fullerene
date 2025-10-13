@@ -1100,6 +1100,7 @@ pub mod graphics_alternatives {
 
     #[derive(Debug, Clone, Copy)]
     pub struct PciDevice {
+        pub handle: usize, // EFI_HANDLE
         pub vendor_id: u16,
         pub device_id: u16,
         pub class_code: u8,
