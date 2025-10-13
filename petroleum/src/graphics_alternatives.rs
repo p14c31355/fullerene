@@ -338,29 +338,20 @@ pub mod graphics_alternatives {
     }
 
     /// Probe virtio-gpu device for linear framebuffer capability
-    fn probe_virtio_gpu_framebuffer(
+        fn probe_virtio_gpu_framebuffer(
         device: &PciDevice,
         bs: &EfiBootServices,
     ) -> Option<crate::common::FullereneFramebufferConfig> {
-        let handle = device.handle;
-
-        let mut pci_io: *mut core::ffi::c_void = core::ptr::null_mut();
-        let status = (bs.open_protocol)(
-            handle,
-            EFI_PCI_IO_PROTOCOL_GUID.as_ptr(),
-            &mut pci_io,
-            0,    // AgentHandle
-            0,    // ControllerHandle
-            0x01, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
-        );
-
-        if EfiStatus::from(status) != EfiStatus::Success || pci_io.is_null() {
-            _print(format_args!(
-                "[GOP-ALT] Failed to open PCI_IO protocol for virtio-gpu: {:#x}\n",
-                status
-            ));
-            return None;
-        }
+        let guard = match PciIoGuard::new(bs, device.handle) {
+            Ok(g) => g,
+            Err(status) => {
+                _print(format_args!(
+                    "[GOP-ALT] Failed to open PCI_IO protocol for virtio-gpu: {:#x}\n",
+                    status as usize
+                ));
+                return None;
+            }
+        };
 
         _print(format_args!(
             "[GOP-ALT] Successfully opened PCI_IO protocol\n"
@@ -370,10 +361,10 @@ pub mod graphics_alternatives {
         let mut config_buf = [0u32; 6]; // First 24 bytes (6 dwords) contain BAR0-BAR5
 
         // Create a reference to the protocol for calling methods
-        let pci_io_ref = unsafe { &*(pci_io as *mut crate::common::EfiPciIoProtocol) };
+        let pci_io_ref = unsafe { &*guard.protocol };
 
         let read_result = (pci_io_ref.pci_read)(
-            pci_io as *mut crate::common::EfiPciIoProtocol,
+            guard.protocol,
             2,    // Dword width
             0x10, // Offset - BAR0 offset (0x10)
             6,    // Count - 6 BARs
@@ -385,7 +376,6 @@ pub mod graphics_alternatives {
                 "[GOP-ALT] Failed to read PCI BARs: {:#x}\n",
                 read_result
             ));
-           (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0);
             return None;
         }
 
@@ -397,7 +387,6 @@ pub mod graphics_alternatives {
             _print(format_args!(
                 "[GOP-ALT] BAR0 is zero - invalid MMIO region\n"
             ));
-           (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0);
             return None;
         }
 
@@ -407,7 +396,6 @@ pub mod graphics_alternatives {
                 "[GOP-ALT] BAR0 is I/O space (type: {}), expected memory space\n",
                 bar0_type
             ));
-           (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0);
             return None;
         }
 
@@ -446,9 +434,6 @@ pub mod graphics_alternatives {
                     width, height, fb_base_addr
                 ));
 
-                // Close PCI_IO protocol
-               (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0);
-
                 return Some(crate::common::FullereneFramebufferConfig {
                     address: fb_base_addr,
                     width: *width,
@@ -467,9 +452,6 @@ pub mod graphics_alternatives {
         _print(format_args!(
             "[GOP-ALT] Could not determine virtio-gpu framebuffer configuration\n"
         ));
-
-        // Close PCI_IO protocol
-       (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0);
 
         None
     }
