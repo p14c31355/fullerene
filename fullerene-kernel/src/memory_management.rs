@@ -7,6 +7,15 @@ use crate::*;
 use alloc::collections::BTreeMap;
 use spin::Mutex;
 
+// Import the types we need from the crate root
+use crate::{
+    SystemResult, SystemError, PageFlags, MemoryManager, ProcessMemoryManager,
+    PageTableHelper, FrameAllocator, Initializable, ErrorLogging
+};
+
+// Import logging macros (these are exported at crate root due to #[macro_export])
+use crate::{log_info, log_warning, log_error};
+
 // Memory management error types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapError {
@@ -1144,12 +1153,8 @@ pub fn init_memory_manager(memory_map: &'static [petroleum::page_table::EfiMemor
 }
 
 /// Get a reference to the global memory manager
-pub fn get_memory_manager() -> Option<&'static Mutex<UnifiedMemoryManager>> {
-    unsafe {
-        let manager_ref = MEMORY_MANAGER.lock().as_ref()? as *const UnifiedMemoryManager;
-        let manager_ptr = manager_ref as *const Mutex<UnifiedMemoryManager>;
-        Some(&*manager_ptr)
-    }
+pub fn get_memory_manager() -> &'static Mutex<Option<UnifiedMemoryManager>> {
+    &MEMORY_MANAGER
 }
 
 /// Convenience functions for memory management

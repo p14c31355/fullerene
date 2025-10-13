@@ -215,13 +215,9 @@ pub fn init_device_manager() -> SystemResult<()> {
 }
 
 /// Get a reference to the global device manager
-pub fn get_device_manager() -> &'static spin::Mutex<DeviceManager> {
+pub fn get_device_manager() -> &'static spin::Mutex<Option<DeviceManager>> {
     // This is safe because we initialize the device manager early in system startup
-    unsafe {
-        let device_manager_ref = DEVICE_MANAGER.lock().as_ref().unwrap() as *const DeviceManager;
-        let device_manager_ptr = device_manager_ref as *const spin::Mutex<DeviceManager>;
-        &*device_manager_ptr
-    }
+    &DEVICE_MANAGER
 }
 
 /// Register a device globally

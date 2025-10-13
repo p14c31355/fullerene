@@ -113,6 +113,26 @@ impl PciConfigSpace {
         }
     }
 
+    /// Read a dword from PCI configuration space
+    fn read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
+        let address = 0x80000000u32
+            | ((bus as u32) << 16)
+            | ((device as u32) << 11)
+            | ((function as u32) << 8)
+            | (offset as u32 & 0xFC);
+
+        // Write address to CONFIG_ADDRESS port
+        unsafe {
+            petroleum::port_write!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS, address);
+            // Read four bytes and combine them
+            let byte0: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 3) as u16);
+            let byte1: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + ((offset + 1) & 3) as u16);
+            let byte2: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + ((offset + 2) & 3) as u16);
+            let byte3: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + ((offset + 3) & 3) as u16);
+            (byte3 as u32) << 24 | (byte2 as u32) << 16 | (byte1 as u32) << 8 | (byte0 as u32)
+        }
+    }
+
     /// Write a byte to PCI configuration space
     pub fn write_config_byte(&mut self, bus: u8, device: u8, function: u8, offset: u8, value: u8) {
         let address = 0x80000000u32
@@ -229,7 +249,7 @@ impl PciDevice {
     pub fn get_bar(&self, bar_index: usize) -> u32 {
         if bar_index < 6 {
             let offset = 0x10 + (bar_index * 4);
-            PciConfigSpace::read_config_word(self.bus, self.device, self.function, offset as u8) as u32
+            PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset as u8)
         } else {
             0
         }
@@ -239,7 +259,9 @@ impl PciDevice {
     pub fn set_bar(&mut self, bar_index: usize, value: u32) {
         if bar_index < 6 {
             let offset = 0x10 + (bar_index * 4);
-            self.config.write_config_word(self.bus, self.device, self.function, offset as u8, value as u16);
+            // Write as two 16-bit words to handle 32-bit BAR properly
+            self.config.write_config_word(self.bus, self.device, self.function, offset as u8, (value & 0xFFFF) as u16);
+            self.config.write_config_word(self.bus, self.device, self.function, (offset + 2) as u8, ((value >> 16) & 0xFFFF) as u16);
         }
     }
 }
@@ -407,12 +429,8 @@ pub fn init_pci_scanner() -> SystemResult<()> {
 }
 
 /// Get a reference to the global PCI scanner
-pub fn get_pci_scanner() -> Option<&'static Mutex<PciScanner>> {
-    unsafe {
-        let scanner_ref = PCI_SCANNER.lock().as_ref()? as *const PciScanner;
-        let scanner_ptr = scanner_ref as *const Mutex<PciScanner>;
-        Some(&*scanner_ptr)
-    }
+pub fn get_pci_scanner() -> &'static Mutex<Option<PciScanner>> {
+    &PCI_SCANNER
 }
 
 /// Register all discovered PCI devices with the device manager

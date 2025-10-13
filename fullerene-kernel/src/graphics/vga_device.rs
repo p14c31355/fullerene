@@ -11,6 +11,8 @@ use spin::Mutex;
 pub struct VgaDevice {
     enabled: bool,
     color_code: ColorCode,
+    cursor_row: usize,
+    cursor_col: usize,
 }
 
 impl VgaDevice {
@@ -19,6 +21,8 @@ impl VgaDevice {
         Self {
             enabled: false,
             color_code: ColorCode::new(Color::Green, Color::Black),
+            cursor_row: 0,
+            cursor_col: 0,
         }
     }
 
