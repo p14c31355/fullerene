@@ -38,6 +38,7 @@ pub fn allocate_page_frame() -> Option<PhysFrame> {
 }
 
 /// Page table for each process
+#[derive(Debug)]
 pub struct ProcessPageTable {
     /// Physical address of the level 4 page table
     pub pml4_frame: PhysFrame,

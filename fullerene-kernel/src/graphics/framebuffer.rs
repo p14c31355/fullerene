@@ -282,7 +282,11 @@ impl<T: PixelType> FramebufferWriter<T> {
             Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor) => bgr(),
             // Cirrus VGA commonly reports PixelBitMask but expects RGB format
             Some(EfiGraphicsPixelFormat::PixelBitMask) | Some(_) => rgb(), // Treat all unknown formats as RGB
-            None => grayscale_intensity(color), // UEFI mode shouldn't be using grayscale
+            None => {
+                // VGA mode (8-bit indexed color) - convert RGB to VGA palette index
+                // Simple palette approximation: map RGB to closest VGA color
+                vga_color_index(color.r(), color.g(), color.b())
+            }
         }
     }
 }
@@ -352,4 +356,45 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
     fn is_vga(&self) -> bool {
         self.info.pixel_format.is_none()
     }
+}
+
+/// Convert RGB888 color to VGA palette index (8-bit indexed color)
+/// This is a simple approximation that maps common colors to their closest VGA equivalents
+pub fn vga_color_index(r: u8, g: u8, b: u8) -> u32 {
+    // Standard 16-color EGA/VGA palette with their approximate RGB values.
+    const PALETTE: [(u8, u8, u8, u32); 16] = [
+        (0, 0, 0, 0),       // Black
+        (0, 0, 170, 1),     // Blue
+        (0, 170, 0, 2),     // Green
+        (0, 170, 170, 3),   // Cyan
+        (170, 0, 0, 4),     // Red
+        (170, 0, 170, 5),   // Magenta
+        (170, 85, 0, 6),    // Brown
+        (170, 170, 170, 7), // Light Gray
+        (85, 85, 85, 8),    // Dark Gray
+        (85, 85, 255, 9),   // Light Blue
+        (85, 255, 85, 10),  // Light Green
+        (85, 255, 255, 11), // Light Cyan
+        (255, 85, 85, 12),  // Light Red
+        (255, 85, 255, 13), // Light Magenta
+        (255, 255, 85, 14), // Yellow
+        (255, 255, 255, 15), // White
+    ];
+
+    let mut min_dist_sq = u32::MAX;
+    let mut best_index = 0;
+
+    for &(pr, pg, pb, index) in &PALETTE {
+        let dr = r as i32 - pr as i32;
+        let dg = g as i32 - pg as i32;
+        let db = b as i32 - pb as i32;
+        let dist_sq = (dr * dr + dg * dg + db * db) as u32;
+
+        if dist_sq < min_dist_sq {
+            min_dist_sq = dist_sq;
+            best_index = index;
+        }
+    }
+
+    best_index
 }

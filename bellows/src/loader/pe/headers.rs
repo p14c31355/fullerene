@@ -86,11 +86,5 @@ pub struct ImageBaseRelocation {
 #[repr(u16)]
 pub enum ImageRelBasedType {
     Absolute = 0,
-    High = 1,
-    Low = 2,
-    HighLow = 3,
-    HighAdj = 4,
-    MachineSpecific1 = 5,
-    Reserved = 6,
     Dir64 = 10,
 }

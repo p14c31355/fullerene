@@ -21,12 +21,15 @@ use core::arch::asm;
 use core::ffi::c_void;
 use core::ptr;
 use spin::Mutex;
-// use alloc::vec;
-// use alloc::vec::Vec;
 
-use crate::common::{EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID};
+use crate::common::{
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID,
+    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, EFI_LOADED_IMAGE_PROTOCOL_GUID,
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID
+};
 use crate::common::{
     EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable, FullereneFramebufferConfig,
+    EfiConfigurationTable,
 };
 
 #[derive(Clone, Copy)]
@@ -89,8 +92,83 @@ pub fn init_uga_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     None
 }
 
+/// Helper to enumerate and log all available UEFI configuration table GUIDs for debugging
+pub fn log_configuration_table_guids(system_table: &EfiSystemTable) {
+    serial::_print(format_args!("CONFIG: Enumerating configuration tables ({} total):\n", system_table.number_of_table_entries));
+
+    let config_tables = unsafe {
+        core::slice::from_raw_parts(
+            system_table.configuration_table,
+            system_table.number_of_table_entries
+        )
+    };
+
+    for (i, table) in config_tables.iter().enumerate() {
+        let guid_bytes = &table.vendor_guid;
+        serial::_print(format_args!("CONFIG[{}]: GUID {{ ", i));
+        // Log GUID as hex bytes for debugging
+        for (j, &byte) in guid_bytes.iter().enumerate() {
+            serial::_print(format_args!("{:02x}", byte));
+            if j < guid_bytes.len() - 1 {
+                serial::_print(format_args!("-"));
+            }
+        }
+        serial::_print(format_args!(" }}\n"));
+    }
+}
+
+/// Helper function to test if a protocol GUID is available on any handle
+pub fn test_protocol_availability(system_table: &EfiSystemTable, guid: &[u8; 16], name: &str) {
+    let bs = unsafe { &*system_table.boot_services };
+
+    // Try to locate any handles that support this protocol
+    let mut handle_count: usize = 0;
+    let mut handles: *mut usize = ptr::null_mut();
+
+    let status = unsafe {
+        (bs.locate_handle_buffer)(
+            2, // ByProtocol (correct value is 2, not 3)
+            guid.as_ptr(),
+            ptr::null_mut(),
+            &mut handle_count as *mut usize,
+            &mut handles as *mut *mut usize,
+        )
+    };
+
+    if EfiStatus::from(status) == EfiStatus::Success && handle_count > 0 {
+        serial::_print(format_args!("PROTOCOL: {} - Available on {} handles\n", name, handle_count));
+        // Free the buffer
+        if !handles.is_null() {
+            unsafe { (bs.free_pool)(handles as *mut c_void) };
+        }
+    } else {
+        serial::_print(format_args!("PROTOCOL: {} - NOT FOUND (status: {:#x})\n", name, status));
+    }
+}
+
 /// Helper to try different graphics protocols and modes
 pub fn init_graphics_protocols(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
+    // Verify system table integrity before proceeding
+    if system_table.boot_services.is_null() {
+        serial::_print(format_args!("GOP: System table boot services pointer is null.\n"));
+        return None;
+    }
+
+    // Print basic system information to help diagnose GOP availability
+    serial::_print(format_args!("GOP: Initializing graphics protocols...\n"));
+    serial::_print(format_args!("GOP: Configuration table count: {}\n", system_table.number_of_table_entries));
+
+    // Log all configuration table GUIDs for debugging
+    log_configuration_table_guids(system_table);
+
+    // Test common graphics protocols for availability
+    test_protocol_availability(system_table, &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, "EFI_GRAPHICS_OUTPUT_PROTOCOL");
+    test_protocol_availability(system_table, &EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID, "EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL");
+
+
+    test_protocol_availability(system_table, &EFI_LOADED_IMAGE_PROTOCOL_GUID, "EFI_LOADED_IMAGE_PROTOCOL");
+    test_protocol_availability(system_table, &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, "EFI_SIMPLE_FILE_SYSTEM_PROTOCOL");
+
     // First try standard GOP protocol with enhanced mode enumeration
     if let Some(config) = init_gop_framebuffer(system_table) {
         return Some(config);
@@ -102,8 +180,13 @@ pub fn init_graphics_protocols(system_table: &EfiSystemTable) -> Option<Fulleren
         return Some(config);
     }
 
-    // If all graphics protocols fail, we fall back to VGA text mode (handled externally)
+    // If all graphics protocols fail, try alternative VESA detection approaches
+    serial::_print(format_args!("All graphics protocols failed, trying alternative VESA detection...\n"));
+    let _ = graphics_alternatives::detect_vesa_graphics(unsafe { &*system_table.boot_services });
+
+    // Fall back to VGA text mode (handled externally)
     serial::_print(format_args!("All graphics protocols failed, falling back to VGA text mode.\n"));
+    serial::_print(format_args!("NOTE: GOP protocol typically requires UEFI-compatible video hardware (e.g., QEMU with -vga qxl or virtio-gpu).\n"));
     None
 }
 
@@ -113,11 +196,15 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     let mut gop: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
 
     serial::_print(format_args!("GOP: Attempting to locate Graphics Output Protocol...\n"));
-    let status = unsafe { (bs.locate_protocol)(
+
+    // Add memory barrier before protocol call for safety
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+    let status = (bs.locate_protocol)(
         EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
         ptr::null_mut(),
         &mut gop as *mut _ as *mut *mut c_void,
-    ) };
+    );
 
     if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
         serial::_print(format_args!("GOP: Failed to locate GOP protocol (status: {:#x}).\n", status));
@@ -133,21 +220,31 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     }
 
     let mode_ref = unsafe { &*gop_ref.mode };
-    let current_mode = mode_ref.mode as usize;
-    let max_mode = mode_ref.max_mode;
+    let current_mode = mode_ref.mode;
+
+    // Get max_mode safely with bounds checking
+    let max_mode_u32 = mode_ref.max_mode;
+    if max_mode_u32 == 0 {
+        serial::_print(format_args!("GOP: Max mode is 0, skipping.\n"));
+        return None;
+    }
+    let max_mode = max_mode_u32 as usize;
 
     serial::_print(format_args!("GOP: Current mode: {}, Max mode: {}.\n", current_mode, max_mode));
 
-    // Try to use current mode first, then mode 0
+    // Try to use current mode first, then mode 0, then try other modes
     let mut mode_set_successfully = false;
-    let target_modes = [current_mode as u32, 0];
+    let target_modes = [
+        current_mode as u32,
+        0,
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, // Try common modes
+    ];
 
-    for &mode in &target_modes {
-        if mode >= max_mode {
-            continue;
-        }
-
-        serial::_print(format_args!("GOP: Attempting to set mode {}...\n", mode));
+    for &mode in &target_modes[0..target_modes.len().min(max_mode as usize)] {
+    if mode as u32 >= max_mode_u32 {
+        continue;
+    }
+    serial::_print(format_args!("GOP: Attempting to set mode {}...\n", mode));
         let set_status = unsafe { (gop_ref.set_mode)(gop, mode) };
         if EfiStatus::from(set_status) == EfiStatus::Success {
             serial::_print(format_args!("GOP: Successfully set mode {}.\n", mode));
@@ -434,3 +531,58 @@ pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u3
 }
 
 use alloc::boxed::Box;
+
+/// Alternative graphics detection methods when GOP is unavailable
+pub mod graphics_alternatives {
+    use super::*;
+    use alloc::vec::Vec;
+    use crate::common::{EfiBootServices, EfiStatus};
+    use crate::println;
+    use crate::serial::_print;
+
+    #[derive(Debug, Clone, Copy)]
+    struct PciDevice {
+        vendor_id: u16,
+        device_id: u16,
+        class_code: u8,
+        bus: u8,
+        device: u8,
+        function: u8,
+    }
+
+    /// Try to detect VESA-compatible graphics hardware using ACPI tables
+    /// Returns information about available graphics devices
+    pub fn detect_vesa_graphics(bs: &EfiBootServices) -> Result<(), EfiStatus> {
+        _print(format_args!("[GOP-ALT] Detecting VESA graphics hardware...\n"));
+
+        // PCI enumeration removed - would need proper EFI_PCI_IO_PROTOCOL implementation
+        _print(format_args!("[GOP-ALT] PCI enumeration not yet implemented - skipping VESA graphics detection\n"));
+
+        Err(EfiStatus::NotFound)
+    }
+
+
+
+    /// Try to detect VESA VBE (VESA BIOS Extensions) support
+    fn detect_vesa_vbe(bs: &EfiBootServices) -> Result<(), EfiStatus> {
+        _print(format_args!("[GOP-ALT] Attempting VESA VBE detection...\n"));
+
+        // Check for VBE signature in BIOS memory
+        // VBE typically lives at 0xC0000-0xD0000 in real mode memory
+
+        // Try to call VBE functions through BIOS calls or memory scanning
+        // This is highly system-specific and may not work in UEFI environment
+
+        _print(format_args!("[GOP-ALT] VESA VBE detection not implemented yet - requires BIOS interrupt calls\n"));
+        _print(format_args!("[GOP-ALT] Consider implementing linear framebuffer detection or ACPI-based graphics\n"));
+
+        Err(EfiStatus::Unsupported)
+    }
+
+    /// Read from PCI configuration space (simplified - needs proper implementation)
+    unsafe fn port_read(port: u16) -> u32 {
+        // This is a placeholder - real PCI access needs proper protocols
+        // In UEFI, use EFI_PCI_IO_PROTOCOL instead
+        0xFFFF_FFFF // Invalid read
+    }
+}

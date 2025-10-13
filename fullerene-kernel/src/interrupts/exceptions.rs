@@ -4,12 +4,9 @@
 //! breakpoints, and double faults.
 
 use core::fmt::Write;
-use crate::memory_management;
-use crate::process;
-use x86_64::instructions::port::Port;
 use x86_64::registers::control::Cr2;
-use x86_64::structures::idt::InterruptStackFrame;
-use x86_64::structures::idt::PageFaultErrorCode;
+use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
+use crate::memory_management;
 
 /// Breakpoint exception handler
 #[unsafe(no_mangle)]
@@ -49,7 +46,7 @@ pub fn handle_page_fault(
     let is_user = error_code.contains(PageFaultErrorCode::USER_MODE);
 
     petroleum::lock_and_modify!(petroleum::SERIAL1, writer, {
-        write!(writer, "Page fault analysis: ").ok();
+        write!(writer, "Page fault at {:x}: ", fault_addr.as_u64()).ok();
         if is_present {
             write!(writer, "Protection violation ").ok();
         } else {
@@ -62,6 +59,7 @@ pub fn handle_page_fault(
             write!(writer, "(user mode)").ok();
         }
         writeln!(writer).ok();
+        writeln!(writer, "Error code: {:?}", error_code).ok();
     });
 
     if !is_user {
