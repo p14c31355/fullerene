@@ -796,7 +796,10 @@ pub mod bare_metal_pci {
         let class_code = pci_config_read_byte(bus, device, function, PCI_CLASS_CODE_OFFSET);
         let subclass = pci_config_read_byte(bus, device, function, PCI_SUBCLASS_OFFSET);
 
+        let handle = crate::bare_metal_pci::build_pci_config_address(bus, device, function, 0) as usize;
+
         Some(crate::graphics_alternatives::PciDevice {
+            handle,
             vendor_id,
             device_id,
             class_code,
@@ -844,10 +847,7 @@ pub mod bare_metal_pci {
                     }
                 }
             }
-            // Performance optimization: if bus 0 has devices, likely no more buses exist
-            if !devices.is_empty() && bus == 0 {
-                break;
-            }
+            // Scan all buses - optimization removed as it may miss devices on secondary buses
         }
 
         devices
@@ -1362,6 +1362,7 @@ pub mod graphics_alternatives {
 
         if EfiStatus::from(location_status) == EfiStatus::Success {
             Some(PciDevice {
+                handle,
                 vendor_id,
                 device_id,
                 class_code,

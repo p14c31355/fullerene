@@ -312,7 +312,7 @@ pub struct EfiPciIoProtocol {
     /// poll_io(This, Width, BarIndex, Offset, Mask, Value) -> EFI_STATUS
     pub poll_io: usize, // fn1 - not used
     /// mem(ReadWrite, Width, BarIndex, Offset, Count, Buffer) -> EFI_STATUS
-    pub mem: extern "efiapi" fn(*mut EfiPciIoProtocol, u8, u8) -> usize, // fn2 - partial, use pci_read/pci_write instead
+    pub mem: usize, // fn2 - not used, use pci_read/pci_write instead
     /// io(ReadWrite, Width, BarIndex, Offset, Count, Buffer) -> EFI_STATUS
     pub io: usize, // fn3 - not used
     /// pci(ReadWrite, Width, Offset, Count, Buffer) -> EFI_STATUS
