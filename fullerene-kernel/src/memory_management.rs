@@ -1008,17 +1008,17 @@ impl PageTableManager {
 impl PageTableHelper for PageTableManager {
     fn map_page(
         &mut self,
-        _virtual_addr: usize,
-        _physical_addr: usize,
-        _flags: PageFlags,
+        virtual_addr: usize,
+        physical_addr: usize,
+        flags: PageFlags,
     ) -> SystemResult<()> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
 
-        // In a real implementation, this would modify the page tables
+        // TODO: Implement actual page table manipulation
         // For now, just log the operation
-        log_info!("Mapping virtual address to physical address");
+        log_info!("Mapping page");
         Ok(())
     }
 

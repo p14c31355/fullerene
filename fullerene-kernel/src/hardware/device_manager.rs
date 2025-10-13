@@ -28,10 +28,16 @@ impl DeviceInfo {
     }
 }
 
+/// Device information structure with device
+#[derive(Debug)]
+pub struct DeviceEntry {
+    pub device: alloc::boxed::Box<dyn HardwareDevice + Send>,
+    pub info: DeviceInfo,
+}
+
 /// Device manager for handling hardware devices
 pub struct DeviceManager {
-    devices: Mutex<BTreeMap<&'static str, alloc::boxed::Box<dyn HardwareDevice + Send>>>,
-    device_info: Mutex<BTreeMap<&'static str, DeviceInfo>>,
+    devices: Mutex<BTreeMap<&'static str, DeviceEntry>>,
 }
 
 impl DeviceManager {
@@ -39,7 +45,6 @@ impl DeviceManager {
     pub const fn new() -> Self {
         Self {
             devices: Mutex::new(BTreeMap::new()),
-            device_info: Mutex::new(BTreeMap::new()),
         }
     }
 

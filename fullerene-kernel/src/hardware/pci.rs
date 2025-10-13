@@ -54,23 +54,24 @@ impl PciConfigSpace {
         let mut config = Self::new();
 
         // Read vendor and device ID first to verify device exists
-        config.vendor_id = Self::read_config_word(bus, device, function, 0);
-        if config.vendor_id == 0xFFFF {
+        let vendor_id_value = Self::read_config_word(bus, device, function, 0);
+        if vendor_id_value == 0xFFFF {
             return None;
         }
+        config.vendor_id = vendor_id_value;
 
         // Read the rest of the configuration space
-        config.device_id = Self::read_config_word(bus, device, function, 2);
-        config.command = Self::read_config_word(bus, device, function, 4);
-        config.status = Self::read_config_word(bus, device, function, 6);
-        config.revision_id = Self::read_config_byte(bus, device, function, 8);
-        config.prog_if = Self::read_config_byte(bus, device, function, 9);
-        config.subclass = Self::read_config_byte(bus, device, function, 10);
-        config.class_code = Self::read_config_byte(bus, device, function, 11);
-        config.cache_line_size = Self::read_config_byte(bus, device, function, 12);
-        config.latency_timer = Self::read_config_byte(bus, device, function, 13);
-        config.header_type = Self::read_config_byte(bus, device, function, 14);
-        config.bist = Self::read_config_byte(bus, device, function, 15);
+        unsafe { core::ptr::write_unaligned(&mut config.device_id, Self::read_config_word(bus, device, function, 2)) };
+        unsafe { core::ptr::write_unaligned(&mut config.command, Self::read_config_word(bus, device, function, 4)) };
+        unsafe { core::ptr::write_unaligned(&mut config.status, Self::read_config_word(bus, device, function, 6)) };
+        unsafe { core::ptr::write_unaligned(&mut config.revision_id, Self::read_config_byte(bus, device, function, 8)) };
+        unsafe { core::ptr::write_unaligned(&mut config.prog_if, Self::read_config_byte(bus, device, function, 9)) };
+        unsafe { core::ptr::write_unaligned(&mut config.subclass, Self::read_config_byte(bus, device, function, 10)) };
+        unsafe { core::ptr::write_unaligned(&mut config.class_code, Self::read_config_byte(bus, device, function, 11)) };
+        unsafe { core::ptr::write_unaligned(&mut config.cache_line_size, Self::read_config_byte(bus, device, function, 12)) };
+        unsafe { core::ptr::write_unaligned(&mut config.latency_timer, Self::read_config_byte(bus, device, function, 13)) };
+        unsafe { core::ptr::write_unaligned(&mut config.header_type, Self::read_config_byte(bus, device, function, 14)) };
+        unsafe { core::ptr::write_unaligned(&mut config.bist, Self::read_config_byte(bus, device, function, 15)) };
 
         Some(config)
     }
@@ -113,7 +114,7 @@ impl PciConfigSpace {
     }
 
     /// Read a dword from PCI configuration space
-        fn read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
+    pub fn read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
         let address = 0x80000000u32
             | ((bus as u32) << 16)
             | ((device as u32) << 11)
@@ -186,6 +187,28 @@ impl PciConfigSpace {
             );
         }
     }
+
+    /// Write a dword to PCI configuration space
+    pub fn write_config_dword(&mut self, bus: u8, device: u8, function: u8, offset: u8, value: u32) {
+        let address = 0x80000000u32
+            | ((bus as u32) << 16)
+            | ((device as u32) << 11)
+            | ((function as u32) << 8)
+            | (offset as u32 & 0xFC);
+
+        // Write address to CONFIG_ADDRESS port
+        unsafe {
+            petroleum::port_write!(
+                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS,
+                address
+            );
+            // Write the 32-bit value to the data port
+            petroleum::port_write!(
+                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA,
+                value
+            );
+        }
+    }
 }
 
 /// PCI Device abstraction
@@ -228,58 +251,48 @@ impl PciDevice {
     /// Get device vendor ID
     pub fn vendor_id(&self) -> u16 {
         // Copy field to avoid unaligned access with packed struct
-        let vendor_id = self.config.vendor_id;
-        vendor_id
+        unsafe { core::ptr::read_unaligned(&self.config.vendor_id) }
     }
 
     /// Get device ID
     pub fn device_id(&self) -> u16 {
-        let device_id = self.config.device_id;
-        device_id
+        unsafe { core::ptr::read_unaligned(&self.config.device_id) }
     }
 
     /// Get device class code
     pub fn class_code(&self) -> u8 {
-        let class_code = self.config.class_code;
-        class_code
+        unsafe { core::ptr::read_unaligned(&self.config.class_code) }
     }
 
     /// Get device subclass
     pub fn subclass(&self) -> u8 {
-        let subclass = self.config.subclass;
-        subclass
+        unsafe { core::ptr::read_unaligned(&self.config.subclass) }
     }
 
     /// Get device revision ID
     pub fn revision_id(&self) -> u8 {
-        let revision_id = self.config.revision_id;
-        revision_id
+        unsafe { core::ptr::read_unaligned(&self.config.revision_id) }
     }
 
     /// Enable memory space access
     pub fn enable_memory_space(&mut self) {
-        let mut command = self.config.command;
-        command |= 0x2; // Enable memory space bit
-        self.config.command = command;
+        let command = unsafe { core::ptr::read_unaligned(&self.config.command) } | 0x2; // Enable memory space bit
         self.config.write_config_word(self.bus, self.device, self.function, 4, command);
+        unsafe { core::ptr::write_unaligned(&mut self.config.command, command) };
     }
 
     /// Enable I/O space access
     pub fn enable_io_space(&mut self) {
-        let mut command = self.config.command;
-        command |= 0x1; // Enable I/O space bit
-        self.config.command = command;
-        self.config
-            .write_config_word(self.bus, self.device, self.function, 4, command);
+        let command = unsafe { core::ptr::read_unaligned(&self.config.command) } | 0x1; // Enable I/O space bit
+        self.config.write_config_word(self.bus, self.device, self.function, 4, command);
+        unsafe { core::ptr::write_unaligned(&mut self.config.command, command) };
     }
 
     /// Enable bus mastering
     pub fn enable_bus_master(&mut self) {
-        let mut command = self.config.command;
-        command |= 0x4; // Enable bus master bit
-        self.config.command = command;
-        self.config
-            .write_config_word(self.bus, self.device, self.function, 4, command);
+        let command = unsafe { core::ptr::read_unaligned(&self.config.command) } | 0x4; // Enable bus master bit
+        self.config.write_config_word(self.bus, self.device, self.function, 4, command);
+        unsafe { core::ptr::write_unaligned(&mut self.config.command, command) };
     }
 
     /// Get base address register value
@@ -296,21 +309,7 @@ impl PciDevice {
     pub fn set_bar(&mut self, bar_index: usize, value: u32) {
         if bar_index < 6 {
             let offset = 0x10 + (bar_index * 4);
-            // Write as two 16-bit words to handle 32-bit BAR properly
-            self.config.write_config_word(
-                self.bus,
-                self.device,
-                self.function,
-                offset as u8,
-                (value & 0xFFFF) as u16,
-            );
-            self.config.write_config_word(
-                self.bus,
-                self.device,
-                self.function,
-                (offset + 2) as u8,
-                ((value >> 16) & 0xFFFF) as u16,
-            );
+            self.config.write_config_dword(self.bus, self.device, self.function, offset as u8, value);
         }
     }
 }
@@ -363,11 +362,9 @@ impl HardwareDevice for PciDevice {
     }
 
     fn disable(&mut self) -> SystemResult<()> {
-        let mut command = self.config.command;
-        command &= !0x7; // Disable memory, I/O, and bus master bits
-        self.config.command = command;
-        self.config
-            .write_config_word(self.bus, self.device, self.function, 4, command);
+        let command = unsafe { core::ptr::read_unaligned(&self.config.command) } & !0x7; // Disable memory, I/O, and bus master bits
+        unsafe { core::ptr::write_unaligned(&mut self.config.command, command) };
+        self.config.write_config_word(self.bus, self.device, self.function, 4, command);
         self.enabled = false;
         log_info!("PCI device disabled");
         Ok(())

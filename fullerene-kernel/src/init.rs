@@ -1,6 +1,7 @@
 //! Initialization module containing common initialization logic for both UEFI and BIOS boot
 
 use crate::interrupts;
+use petroleum::SERIAL1;
 
 // Macro to reduce repetitive serial logging - local copy since we moved function here
 
@@ -19,24 +20,24 @@ pub fn init_common() {
     kernel_log!("Kernel: APIC initialized and interrupts enabled");
 
     // Initialize process management
-    process::init();
+    crate::process::init();
     kernel_log!("Kernel: Process management initialized");
 
     // Initialize system calls
-    syscall::init();
+    crate::syscall::init();
     kernel_log!("Kernel: System calls initialized");
 
     // Initialize filesystem
-    fs::init();
+    crate::fs::init();
     kernel_log!("Kernel: Filesystem initialized");
 
     // Initialize program loader
-    loader::init();
+    crate::loader::init();
     kernel_log!("Kernel: Program loader initialized");
 
     // Create a test user process
     let test_entry = x86_64::VirtAddr::new(crate::test_process::test_process_main as usize as u64);
-    let test_pid = process::create_process("test_process", test_entry);
+    let test_pid = crate::process::create_process("test_process", test_entry);
     kernel_log!("Kernel: Created test process with PID {}", test_pid);
 
     // Test interrupt handling - should not panic or crash if APIC is working
