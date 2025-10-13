@@ -111,9 +111,31 @@ pub fn init(config: &FullereneFramebufferConfig) {
         "Graphics: Initializing UEFI framebuffer: {}x{}, stride: {}, pixel_format: {:?}\n",
         config.width, config.height, config.stride, config.pixel_format
     ));
-    let writer = FramebufferWriter::<u32>::new(super::framebuffer::FramebufferInfo::new(config));
-    WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer.clone())));
-    FRAMEBUFFER_UEFI.call_once(|| Mutex::new(super::framebuffer::UefiFramebuffer::Uefi32(writer)));
+
+    // Check pixel format to determine whether to use 32-bit or 8-bit writer
+    let (writer, fb_enum) = match config.pixel_format {
+        petroleum::common::EfiGraphicsPixelFormat::PixelFormatMax => {
+            // Special marker for VGA mode
+            petroleum::serial::serial_log(format_args!("Graphics: Using VGA 8-bit mode for UEFI\n"));
+            let vga_config = petroleum::common::VgaFramebufferConfig {
+                address: config.address,
+                width: config.width,
+                height: config.height,
+                bpp: 8,
+            };
+            let writer = FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(&vga_config));
+            (Box::new(writer.clone()) as Box<dyn core::fmt::Write + Send + Sync>, super::framebuffer::UefiFramebuffer::Vga8(writer))
+        }
+        _ => {
+            // Standard UEFI graphics mode (32-bit)
+            petroleum::serial::serial_log(format_args!("Graphics: Using 32-bit UEFI graphics mode\n"));
+            let writer = FramebufferWriter::<u32>::new(super::framebuffer::FramebufferInfo::new(config));
+            (Box::new(writer.clone()) as Box<dyn core::fmt::Write + Send + Sync>, super::framebuffer::UefiFramebuffer::Uefi32(writer))
+        }
+    };
+
+    WRITER_UEFI.call_once(|| Mutex::new(writer));
+    FRAMEBUFFER_UEFI.call_once(|| Mutex::new(fb_enum));
 }
 
 // VgaPorts is imported from petroleum

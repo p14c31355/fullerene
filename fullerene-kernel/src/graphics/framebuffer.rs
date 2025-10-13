@@ -273,7 +273,7 @@ impl<T: PixelType> FramebufferWriter<T> {
         }
     }
 
-    pub fn rgb888_to_pixel_format(&self, color: Rgb888) -> u32 {
+        pub fn rgb888_to_pixel_format(&self, color: Rgb888) -> u32 {
         let rgb = || rgb_pixel(color.r(), color.g(), color.b());
         let bgr = || rgb_pixel(color.b(), color.g(), color.r());
         #[allow(non_exhaustive_omitted_patterns)]
@@ -282,7 +282,11 @@ impl<T: PixelType> FramebufferWriter<T> {
             Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor) => bgr(),
             // Cirrus VGA commonly reports PixelBitMask but expects RGB format
             Some(EfiGraphicsPixelFormat::PixelBitMask) | Some(_) => rgb(), // Treat all unknown formats as RGB
-            None => grayscale_intensity(color), // UEFI mode shouldn't be using grayscale
+            None => {
+                // VGA mode (8-bit indexed color) - convert RGB to VGA palette index
+                // Simple palette approximation: map RGB to closest VGA color
+                vga_color_index(color.r(), color.g(), color.b())
+            }
         }
     }
 }
@@ -351,5 +355,38 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
 
     fn is_vga(&self) -> bool {
         self.info.pixel_format.is_none()
+    }
+}
+
+/// Convert RGB888 color to VGA palette index (8-bit indexed color)
+/// This is a simple approximation that maps common colors to their closest VGA equivalents
+pub fn vga_color_index(r: u8, g: u8, b: u8) -> u32 {
+    // VGA palette has 256 colors but we're approximating with basic colors
+    // For now, use simple RGB intensity mapping for monochrome-like output
+    // In a full implementation, you'd use proper VGA palette lookup
+
+    // Simple grayscale mapping for now - can be enhanced later
+    let gray = (r as u32 * 77 + g as u32 * 150 + b as u32 * 29) / 256;
+
+    // Map to basic VGA colors (0-15 are the standard EGA colors)
+    match gray {
+        0..=15 => 0,          // Black
+        16..=23 => 8,         // Dark Gray
+        24..=39 => 7,         // Light Gray
+        40..=55 => 15,        // White
+        56..=71 => 14,        // Yellow
+        72..=87 => 12,        // Light Red
+        88..=103 => 10,       // Light Green
+        104..=119 => 9,       // Light Blue
+        120..=135 => 11,      // Light Cyan
+        136..=151 => 13,      // Light Magenta
+        152..=167 => 6,       // Brown
+        168..=183 => 4,       // Red
+        184..=199 => 2,       // Green
+        200..=215 => 1,       // Blue
+        216..=231 => 3,       // Cyan
+        232..=247 => 5,       // Magenta
+        248..=255 => 15,      // Bright White
+        _ => 15,              // Default to bright white for any overflow
     }
 }
