@@ -1022,28 +1022,22 @@ pub mod graphics_alternatives {
             return None;
         }
 
-        // Read PCI configuration header using PCI_IO functions
-        // The PCI_IO protocol has specific function indices:
-        // Index 0: ConfigSpaceRead function
+        // Read PCI configuration header using PCI_IO protocol
+        let pci_io_ref = unsafe { &*(pci_io as *mut crate::common::EfiPciIoProtocol) };
 
-        let pci_io_functions = pci_io as *mut usize;
-        let config_space_read_fn: unsafe extern "efiapi" fn(
-            *mut core::ffi::c_void,  // PciIo
-            u8,      // Width (0=byte, 1=word, 2=dword, 3=qword)
-            u32,     // Offset
-            usize,   // Count
-            *mut core::ffi::c_void  // Buffer
-        ) -> usize = unsafe { core::mem::transmute(*pci_io_functions) };
+        // Read PCI configuration header using the proper protocol functions
+        let mut vendor_id: u16 = 0;
+        let mut device_id: u16 = 0;
+        let mut class_code: u8 = 0;
+        let mut subclass: u8 = 0;
 
-        // Read the first 64 bytes (16 dwords) of PCI config space
-        let mut config_buf = [0u32; 16];
         let read_status = unsafe {
-            config_space_read_fn(
-                pci_io,
-                2, // Dword width
+            (pci_io_ref.pci_read)(
+                pci_io as *mut crate::common::EfiPciIoProtocol,
+                1, // Word width for vendor_id
                 0, // Offset 0
-                16, // 16 dwords
-                config_buf.as_mut_ptr() as *mut core::ffi::c_void
+                1, // 1 word
+                &mut vendor_id as *mut u16 as *mut core::ffi::c_void
             )
         };
 
@@ -1052,37 +1046,67 @@ pub mod graphics_alternatives {
             return None;
         }
 
-        // Parse PCI configuration header
-        let vendor_id = (config_buf[0] & 0xFFFF) as u16;
-        let device_id = ((config_buf[0] >> 16) & 0xFFFF) as u16;
-
         // Skip invalid devices
         if vendor_id == 0xFFFF || vendor_id == 0 {
             unsafe { (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0) };
             return None;
         }
 
-        let class_code = ((config_buf[2] >> 24) & 0xFF) as u8;
-        let subclass = ((config_buf[2] >> 16) & 0xFF) as u8;
+        let read_status = unsafe {
+            (pci_io_ref.pci_read)(
+                pci_io as *mut crate::common::EfiPciIoProtocol,
+                1, // Word width for device_id
+                2, // Offset 2
+                1, // 1 word
+                &mut device_id as *mut u16 as *mut core::ffi::c_void
+            )
+        };
+
+        if EfiStatus::from(read_status) != EfiStatus::Success {
+            unsafe { (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0) };
+            return None;
+        }
+
+        let read_status = unsafe {
+            (pci_io_ref.pci_read)(
+                pci_io as *mut crate::common::EfiPciIoProtocol,
+                0, // Byte width for class_code
+                0xB, // Offset 0xB
+                1, // 1 byte
+                &mut class_code as *mut u8 as *mut core::ffi::c_void
+            )
+        };
+
+        if EfiStatus::from(read_status) != EfiStatus::Success {
+            unsafe { (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0) };
+            return None;
+        }
+
+        let read_status = unsafe {
+            (pci_io_ref.pci_read)(
+                pci_io as *mut crate::common::EfiPciIoProtocol,
+                0, // Byte width for subclass
+                0xA, // Offset 0xA
+                1, // 1 byte
+                &mut subclass as *mut u8 as *mut core::ffi::c_void
+            )
+        };
+
+        if EfiStatus::from(read_status) != EfiStatus::Success {
+            unsafe { (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0) };
+            return None;
+        }
 
         // Now we need to get bus/device/function info
-        // Use GetLocation function (index 6 in PCI_IO)
-        let get_location_fn: unsafe extern "efiapi" fn(
-            *mut core::ffi::c_void,  // PciIo
-            *mut u32,                // SegmentNumber
-            *mut u32,                // BusNumber
-            *mut u32,                // DeviceNumber
-            *mut u32                 // FunctionNumber
-        ) -> usize = unsafe { core::mem::transmute(*pci_io_functions.add(6)) };
-
+        // Use GetLocation function from the protocol
         let mut segment_num: u32 = 0;
         let mut bus_num: u32 = 0;
         let mut dev_num: u32 = 0;
         let mut func_num: u32 = 0;
 
         let location_status = unsafe {
-            get_location_fn(
-                pci_io,
+            (pci_io_ref.get_location)(
+                pci_io as *mut crate::common::EfiPciIoProtocol,
                 &mut segment_num as *mut u32,
                 &mut bus_num as *mut u32,
                 &mut dev_num as *mut u32,
@@ -1167,25 +1191,20 @@ pub mod graphics_alternatives {
         // Read PCI configuration to get BAR information
         let mut config_buf = [0u32; 6]; // First 24 bytes (6 dwords) contain BAR0-BAR5
 
-        let read_result = unsafe {
-            let pci_io_read: unsafe extern "efiapi" fn(
-                *mut core::ffi::c_void,
-                u8,  // Width (2=dword)
-                u8,  // Offset
-                usize, // Count
-                *mut core::ffi::c_void
-            ) -> usize = core::mem::transmute(*((pci_io as *mut usize).add(1)));
+        // Create a reference to the protocol for calling methods
+        let pci_io_ref = unsafe { &*(pci_io as *mut crate::common::EfiPciIoProtocol) };
 
-            pci_io_read(
-                pci_io,
-                2, // Dword
-                0x10, // BAR0 offset (0x10)
-                6, // 6 BARs
+        let read_result = unsafe {
+            (pci_io_ref.pci_read)(
+                pci_io as *mut crate::common::EfiPciIoProtocol,
+                2, // Dword width
+                0x10, // Offset - BAR0 offset (0x10)
+                6, // Count - 6 BARs
                 config_buf.as_mut_ptr() as *mut core::ffi::c_void
             )
         };
 
-        if read_result != 0 {
+        if EfiStatus::from(read_result) != EfiStatus::Success {
             _print(format_args!("[GOP-ALT] Failed to read PCI BARs: {:#x}\n", read_result));
             unsafe { (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0) };
             return None;
@@ -1217,7 +1236,8 @@ pub mod graphics_alternatives {
             bar0 as u64
         };
 
-        _print(format_args!("[GOP-ALT] BAR0: {:#x}, type: {}, fb_base: {:#x}, 64-bit: {}\n",
+            // Fix logging - remove protocol debug since it's already converted to status
+            _print(format_args!("[GOP-ALT] BAR0: {:#x}, type: {}, fb_base: {:#x}, 64-bit: {}\n",
             bar0, bar0_type, fb_base_addr, is_64bit));
 
         // For virtio-gpu, we need to initialize the device first
