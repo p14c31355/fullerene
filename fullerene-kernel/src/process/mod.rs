@@ -119,9 +119,9 @@ pub struct Process {
     pub user_stack: VirtAddr,
     /// Program entry point
     pub entry_point: VirtAddr,
-    /// Exit code
+    /// Exit code - used for signaling ChildProcessExited signal
     pub exit_code: Option<i32>,
-    /// Parent process ID (for wait() mechanism)
+    /// Parent process ID (for wait() and signal propagation)
     pub parent_id: Option<ProcessId>,
 }
 
