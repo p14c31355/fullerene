@@ -328,226 +328,6 @@ pub fn init_graphics_protocols(
         serial::_print(format_args!("Bare-metal graphics detection also failed\n"));
     }
 
-    // Bare-metal graphics detection using direct PCI access without UEFI protocols
-    pub mod bare_metal_graphics_detection {
-        use super::*;
-        use crate::serial::_print;
-
-        /// Main entry point for bare-metal graphics detection
-        pub fn detect_bare_metal_graphics() -> Option<crate::common::FullereneFramebufferConfig> {
-            _print(format_args!(
-                "[BM-GFX] Starting bare-metal graphics detection...\n"
-            ));
-
-            // Enumerate graphics devices via direct PCI access
-            let graphics_devices = crate::bare_metal_pci::enumerate_graphics_devices();
-
-            _print(format_args!(
-                "[BM-GFX] Found {} graphics devices via direct PCI enumeration\n",
-                graphics_devices.len()
-            ));
-
-            // Try each graphics device for linear framebuffer detection
-            for device in graphics_devices.iter() {
-                _print(format_args!(
-                    "[BM-GFX] Probing device {:04x}:{:04x} at {:02x}:{:02x}:{:02x}\n",
-                    device.vendor_id, device.device_id, device.bus, device.device, device.function
-                ));
-
-                // Check for supported device types
-                match (device.vendor_id, device.device_id) {
-                    (0x1af4, id) if id >= 0x1050 => {
-                        // virtio-gpu device
-                        _print(format_args!(
-                            "[BM-GFX] Detected virtio-gpu, attempting bare-metal framebuffer detection\n"
-                        ));
-                        if let Some(config) = detect_bare_metal_virtio_gpu_framebuffer(device) {
-                            _print(format_args!(
-                                "[BM-GFX] Bare-metal virtio-gpu framebuffer detection successful!\n"
-                            ));
-                            return Some(config);
-                        }
-                    }
-                    (0x1b36, 0x0100) => {
-                        // QEMU QXL device
-                        _print(format_args!(
-                            "[BM-GFX] Detected QXL device, attempting bare-metal framebuffer detection\n"
-                        ));
-                        if let Some(config) = detect_bare_metal_qxl_framebuffer(device) {
-                            _print(format_args!(
-                                "[BM-GFX] Bare-metal QXL framebuffer detection successful!\n"
-                            ));
-                            return Some(config);
-                        }
-                    }
-                    (0x15ad, 0x0405) => {
-                        // VMware SVGA II
-                        _print(format_args!(
-                            "[BM-GFX] Detected VMware SVGA, attempting bare-metal framebuffer detection\n"
-                        ));
-                        if let Some(config) = detect_bare_metal_vmware_svga_framebuffer(device) {
-                            _print(format_args!(
-                                "[BM-GFX] Bare-metal VMware SVGA framebuffer detection successful!\n"
-                            ));
-                            return Some(config);
-                        }
-                    }
-                    _ => {
-                        _print(format_args!(
-                            "[BM-GFX] Unknown graphics device type, skipping\n"
-                        ));
-                    }
-                }
-            }
-
-            _print(format_args!(
-                "[BM-GFX] No supported graphics devices found via bare-metal enumeration\n"
-            ));
-            None
-        }
-
-        /// Detect bare-metal virtio-gpu framebuffer using direct PCI BAR access
-        fn detect_bare_metal_virtio_gpu_framebuffer(
-            device: &crate::graphics_alternatives::PciDevice,
-        ) -> Option<crate::common::FullereneFramebufferConfig> {
-            // Read BAR0 from PCI configuration space directly
-            let fb_base_addr =
-                crate::bare_metal_pci::read_pci_bar(device.bus, device.device, device.function, 0);
-
-            _print(format_args!(
-                "[BM-GFX] virtio-gpu BAR0: {:#x}\n",
-                fb_base_addr
-            ));
-
-            if fb_base_addr == 0 {
-                _print(format_args!("[BM-GFX] virtio-gpu BAR0 is zero, invalid\n"));
-                return None;
-            }
-
-            // Try standard VGA-like modes for virtio-gpu
-            // These are commonly used defaults in QEMU
-            let standard_modes = [
-                (1024, 768, 32, fb_base_addr),
-                (1280, 720, 32, fb_base_addr),
-                (800, 600, 32, fb_base_addr),
-                (640, 480, 32, fb_base_addr),
-            ];
-
-            for (width, height, bpp, addr) in standard_modes.iter() {
-                let stride = *width;
-                let expected_fb_size = (*height * stride * bpp / 8) as u64;
-
-                _print(format_args!(
-                    "[BM-GFX] Testing {}x{} mode at {:#x} (size: {}KB)\n",
-                    width,
-                    height,
-                    addr,
-                    expected_fb_size / 1024
-                ));
-
-                // Since we can't actually map or access memory from UEFI without protocols,
-                // we'll use a simplified heuristic based on typical virtio-gpu memory layout
-                // In practice, the framebuffer would be validated when actually accessed later
-
-                if *addr >= 0x100000 {
-                    // At least 1MB address, reasonable for MMIO
-                    _print(format_args!(
-                        "[BM-GFX] virtio-gpu framebuffer mode {}x{} appears valid\n",
-                        width, height
-                    ));
-                    return Some(crate::common::FullereneFramebufferConfig {
-                    address: *addr,
-                    width: *width,
-                    height: *height,
-                    pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-                    bpp: *bpp,
-                    stride,
-                });
-                }
-            }
-
-            _print(format_args!(
-                "[BM-GFX] Could not determine valid virtio-gpu framebuffer configuration\n"
-            ));
-            None
-        }
-
-        /// Detect QXL framebuffer via direct PCI access
-        fn detect_bare_metal_qxl_framebuffer(
-            device: &crate::graphics_alternatives::PciDevice,
-        ) -> Option<crate::common::FullereneFramebufferConfig> {
-            _print(format_args!("[BM-GFX] QXL bare-metal detection starting\n"));
-
-            // Get BAR1 (usually the primary surface/framebuffer for QXL)
-            let fb_base_addr =
-                crate::bare_metal_pci::read_pci_bar(device.bus, device.device, device.function, 1);
-
-            _print(format_args!("[BM-GFX] QXL BAR1: {:#x}\n", fb_base_addr));
-
-            if fb_base_addr == 0 {
-                _print(format_args!("[BM-GFX] QXL BAR1 is zero, invalid\n"));
-                return None;
-            }
-
-            // QXL typically uses 32-bit mode in QEMU, common resolutions for QXL:
-            // 1024x768 or 800x600, with 32 bits per pixel
-            let standard_modes = [
-                (1024, 768, 32, fb_base_addr),
-                (1280, 720, 32, fb_base_addr),
-                (800, 600, 32, fb_base_addr),
-                (640, 480, 32, fb_base_addr),
-            ];
-
-            for (width, height, bpp, addr) in standard_modes.iter() {
-                let stride = *width;
-                let expected_fb_size = (*height * stride * bpp / 8) as u64;
-
-                _print(format_args!(
-                    "[BM-GFX] Testing {}x{} mode at {:#x} (size: {}KB)\n",
-                    width,
-                    height,
-                    addr,
-                    expected_fb_size / 1024
-                ));
-
-                // For QXL, validate by checking if the memory region can be accessed
-                // Since we can't actually validate memory access from UEFI, we'll use heuristics
-                if *addr >= 0x100000 {
-                    // At least 1MB address, reasonable for MMIO
-                    _print(format_args!(
-                        "[BM-GFX] QXL framebuffer mode {}x{} appears valid\n",
-                        width, height
-                    ));
-                    return Some(crate::common::FullereneFramebufferConfig {
-                    address: *addr,
-                    width: *width,
-                    height: *height,
-                    pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-                    bpp: *bpp,
-                    stride,
-                });
-                }
-            }
-
-            _print(format_args!(
-                "[BM-GFX] Could not determine valid QXL framebuffer configuration\n"
-            ));
-            None
-        }
-
-        /// Detect VMware SVGA framebuffer via direct PCI access (placeholder)
-        fn detect_bare_metal_vmware_svga_framebuffer(
-            _device: &crate::graphics_alternatives::PciDevice,
-        ) -> Option<crate::common::FullereneFramebufferConfig> {
-            _print(format_args!(
-                "[BM-GFX] VMware SVGA bare-metal detection not yet implemented\n"
-            ));
-            // VMware SVGA II uses FIFO commands and register-based communication
-            // Would need to implement FIFO ring buffer management
-            None
-        }
-    }
-
     // Fall back to VGA text mode (handled externally)
     serial::_print(format_args!(
         "All graphics protocols failed, falling back to VGA text mode.\n"
@@ -960,7 +740,7 @@ pub mod bare_metal_pci {
     const PCI_BAR0_OFFSET: u8 = 0x10;
 
     /// Build PCI configuration address for register access
-    fn build_pci_config_address(bus: u8, device: u8, function: u8, register: u8) -> u32 {
+    pub fn build_pci_config_address(bus: u8, device: u8, function: u8, register: u8) -> u32 {
         // PCI config address format: 31=enable, 30-24=reserved, 23-16=bus, 15-11=device, 10-8=function, 7-2=register, 1-0=00
         let addr = (1u32 << 31)
             | ((bus as u32) << 16)
@@ -1029,17 +809,18 @@ pub mod bare_metal_pci {
 
     /// Read PCI BAR (Base Address Register)
     pub fn read_pci_bar(bus: u8, device: u8, function: u8, bar_index: u8) -> u64 {
+        // According to the coding rules, reduce code duplication and keep lines of code low
+        // This function can potentially support both 32-bit and 64-bit BARs for ANY index
+        // not just BAR0. However, for simplicity and to keep the code minimal, we only
+        // support 64-bit for BAR0 initially, which is the most common case.
         let offset = PCI_BAR0_OFFSET + (bar_index * 4);
         let bar_low = pci_config_read_dword(bus, device, function, offset);
-        let bar_high = if bar_index == 0 {
-            // Only BAR0 can be 64-bit
-            let bar_type = bar_low & 0xF;
-            if (bar_type & 0x4) != 0 {
-                // 64-bit BAR
-                pci_config_read_dword(bus, device, function, offset + 4)
-            } else {
-                0
-            }
+        let bar_type = bar_low & 0xF;
+        let is_64bit = (bar_type & 0x4) != 0;
+
+        // For 64-bit BARs, read the next register for high 32 bits
+        let bar_high = if is_64bit && bar_index < 6 {  // Ensure we don't go out of bounds
+            pci_config_read_dword(bus, device, function, offset + 4)
         } else {
             0
         };
@@ -1083,6 +864,226 @@ pub mod bare_metal_pci {
 }
 
 use alloc::boxed::Box;
+
+// Bare-metal graphics detection using direct PCI access without UEFI protocols
+pub mod bare_metal_graphics_detection {
+    use super::*;
+    use crate::serial::_print;
+
+    /// Main entry point for bare-metal graphics detection
+    pub fn detect_bare_metal_graphics() -> Option<crate::common::FullereneFramebufferConfig> {
+        _print(format_args!(
+            "[BM-GFX] Starting bare-metal graphics detection...\n"
+        ));
+
+        // Enumerate graphics devices via direct PCI access
+        let graphics_devices = crate::bare_metal_pci::enumerate_graphics_devices();
+
+        _print(format_args!(
+            "[BM-GFX] Found {} graphics devices via direct PCI enumeration\n",
+            graphics_devices.len()
+        ));
+
+        // Try each graphics device for linear framebuffer detection
+        for device in graphics_devices.iter() {
+            _print(format_args!(
+                "[BM-GFX] Probing device {:04x}:{:04x} at {:02x}:{:02x}:{:02x}\n",
+                device.vendor_id, device.device_id, device.bus, device.device, device.function
+            ));
+
+            // Check for supported device types
+            match (device.vendor_id, device.device_id) {
+                    (0x1af4, id) if id >= 0x1050 => {
+                        // virtio-gpu device
+                        _print(format_args!(
+                            "[BM-GFX] Detected virtio-gpu, attempting bare-metal framebuffer detection\n"
+                        ));
+                        if let Some(config) = detect_bare_metal_virtio_gpu_framebuffer(device) {
+                            _print(format_args!(
+                                "[BM-GFX] Bare-metal virtio-gpu framebuffer detection successful!\n"
+                            ));
+                            return Some(config);
+                        }
+                    }
+                    (0x1b36, 0x0100) => {
+                        // QEMU QXL device
+                        _print(format_args!(
+                            "[BM-GFX] Detected QXL device, attempting bare-metal framebuffer detection\n"
+                        ));
+                        if let Some(config) = detect_bare_metal_qxl_framebuffer(device) {
+                            _print(format_args!(
+                                "[BM-GFX] Bare-metal QXL framebuffer detection successful!\n"
+                            ));
+                            return Some(config);
+                        }
+                    }
+                    (0x15ad, 0x0405) => {
+                        // VMware SVGA II
+                        _print(format_args!(
+                            "[BM-GFX] Detected VMware SVGA, attempting bare-metal framebuffer detection\n"
+                        ));
+                        if let Some(config) = detect_bare_metal_vmware_svga_framebuffer(device) {
+                            _print(format_args!(
+                                "[BM-GFX] Bare-metal VMware SVGA framebuffer detection successful!\n"
+                            ));
+                            return Some(config);
+                        }
+                    }
+                    _ => {
+                        _print(format_args!(
+                            "[BM-GFX] Unknown graphics device type, skipping\n"
+                        ));
+                    }
+                }
+        }
+
+        _print(format_args!(
+            "[BM-GFX] No supported graphics devices found via bare-metal enumeration\n"
+        ));
+        None
+    }
+
+    /// Detect bare-metal virtio-gpu framebuffer using direct PCI BAR access
+    fn detect_bare_metal_virtio_gpu_framebuffer(
+        device: &crate::graphics_alternatives::PciDevice,
+    ) -> Option<crate::common::FullereneFramebufferConfig> {
+        // Read BAR0 from PCI configuration space directly
+        let fb_base_addr =
+            crate::bare_metal_pci::read_pci_bar(device.bus, device.device, device.function, 0);
+
+        _print(format_args!(
+            "[BM-GFX] virtio-gpu BAR0: {:#x}\n",
+            fb_base_addr
+        ));
+
+        if fb_base_addr == 0 {
+            _print(format_args!("[BM-GFX] virtio-gpu BAR0 is zero, invalid\n"));
+            return None;
+        }
+
+        // Try standard VGA-like modes for virtio-gpu
+        // These are commonly used defaults in QEMU
+        let standard_modes = [
+            (1024, 768, 32, fb_base_addr),
+            (1280, 720, 32, fb_base_addr),
+            (800, 600, 32, fb_base_addr),
+            (640, 480, 32, fb_base_addr),
+        ];
+
+        for (width, height, bpp, addr) in standard_modes.iter() {
+            let stride = *width;
+            let expected_fb_size = (*height * stride * bpp / 8) as u64;
+
+            _print(format_args!(
+                "[BM-GFX] Testing {}x{} mode at {:#x} (size: {}KB)\n",
+                width,
+                height,
+                addr,
+                expected_fb_size / 1024
+            ));
+
+            // Since we can't actually map or access memory from UEFI without protocols,
+            // we'll use a simplified heuristic based on typical virtio-gpu memory layout
+            // In practice, the framebuffer would be validated when actually accessed later
+
+            if *addr >= 0x100000 {
+                // At least 1MB address, reasonable for MMIO
+                _print(format_args!(
+                    "[BM-GFX] virtio-gpu framebuffer mode {}x{} appears valid\n",
+                    width, height
+                ));
+                return Some(crate::common::FullereneFramebufferConfig {
+                address: *addr,
+                width: *width,
+                height: *height,
+                pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                bpp: *bpp,
+                stride,
+            });
+            }
+        }
+
+        _print(format_args!(
+            "[BM-GFX] Could not determine valid virtio-gpu framebuffer configuration\n"
+        ));
+        None
+    }
+
+    /// Detect QXL framebuffer via direct PCI access
+    fn detect_bare_metal_qxl_framebuffer(
+        device: &crate::graphics_alternatives::PciDevice,
+    ) -> Option<crate::common::FullereneFramebufferConfig> {
+        _print(format_args!("[BM-GFX] QXL bare-metal detection starting\n"));
+
+        // Get BAR1 (usually the primary surface/framebuffer for QXL)
+        let fb_base_addr =
+            crate::bare_metal_pci::read_pci_bar(device.bus, device.device, device.function, 1);
+
+        _print(format_args!("[BM-GFX] QXL BAR1: {:#x}\n", fb_base_addr));
+
+        if fb_base_addr == 0 {
+            _print(format_args!("[BM-GFX] QXL BAR1 is zero, invalid\n"));
+            return None;
+        }
+
+        // QXL typically uses 32-bit mode in QEMU, common resolutions for QXL:
+        // 1024x768 or 800x600, with 32 bits per pixel
+        let standard_modes = [
+            (1024, 768, 32, fb_base_addr),
+            (1280, 720, 32, fb_base_addr),
+            (800, 600, 32, fb_base_addr),
+            (640, 480, 32, fb_base_addr),
+        ];
+
+        for (width, height, bpp, addr) in standard_modes.iter() {
+            let stride = *width;
+            let expected_fb_size = (*height * stride * bpp / 8) as u64;
+
+            _print(format_args!(
+                "[BM-GFX] Testing {}x{} mode at {:#x} (size: {}KB)\n",
+                width,
+                height,
+                addr,
+                expected_fb_size / 1024
+            ));
+
+            // For QXL, validate by checking if the memory region can be accessed
+            // Since we can't actually validate memory access from UEFI, we'll use heuristics
+            if *addr >= 0x100000 {
+                // At least 1MB address, reasonable for MMIO
+                _print(format_args!(
+                    "[BM-GFX] QXL framebuffer mode {}x{} appears valid\n",
+                    width, height
+                ));
+                return Some(crate::common::FullereneFramebufferConfig {
+                address: *addr,
+                width: *width,
+                height: *height,
+                pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                bpp: *bpp,
+                stride,
+            });
+            }
+        }
+
+        _print(format_args!(
+            "[BM-GFX] Could not determine valid QXL framebuffer configuration\n"
+        ));
+        None
+    }
+
+    /// Detect VMware SVGA framebuffer via direct PCI access (placeholder)
+    fn detect_bare_metal_vmware_svga_framebuffer(
+        _device: &crate::graphics_alternatives::PciDevice,
+    ) -> Option<crate::common::FullereneFramebufferConfig> {
+        _print(format_args!(
+            "[BM-GFX] VMware SVGA bare-metal detection not yet implemented\n"
+        ));
+        // VMware SVGA II uses FIFO commands and register-based communication
+        // Would need to implement FIFO ring buffer management
+        None
+    }
+}
 
 /// Alternative graphics detection methods when GOP is unavailable
 pub mod graphics_alternatives {
@@ -1340,18 +1341,18 @@ pub mod graphics_alternatives {
 
         // Now we need to get bus/device/function info
         // Use GetLocation function from the protocol
-        let mut segment_num: u32 = 0;
-        let mut bus_num: u32 = 0;
-        let mut dev_num: u32 = 0;
-        let mut func_num: u32 = 0;
+        let mut segment_num: usize = 0;
+        let mut bus_num: usize = 0;
+        let mut dev_num: usize = 0;
+        let mut func_num: usize = 0;
 
         let location_status = unsafe {
             (pci_io_ref.get_location)(
                 pci_io as *mut crate::common::EfiPciIoProtocol,
-                &mut segment_num as *mut u32,
-                &mut bus_num as *mut u32,
-                &mut dev_num as *mut u32,
-                &mut func_num as *mut u32,
+                &mut segment_num as *mut usize,
+                &mut bus_num as *mut usize,
+                &mut dev_num as *mut usize,
+                &mut func_num as *mut usize,
             )
         };
 
@@ -1426,10 +1427,8 @@ pub mod graphics_alternatives {
         device: &PciDevice,
         bs: &EfiBootServices,
     ) -> Option<crate::common::FullereneFramebufferConfig> {
-        // Build PCI handle for this device location
-        let handle = ((device.bus as usize) << 8)
-            | ((device.device as usize) << 3)
-            | (device.function as usize);
+        // Build PCI configuration address for this device location (used as handle)
+        let handle = crate::bare_metal_pci::build_pci_config_address(device.bus, device.device, device.function, 0) as usize;
 
         let mut pci_io: *mut core::ffi::c_void = core::ptr::null_mut();
         let status = unsafe {
@@ -1700,7 +1699,7 @@ pub mod graphics_alternatives {
             (pci_io_ref.pci_read)(
                 pci_io as *mut common::EfiPciIoProtocol,
                 2, // Dword width
-                register,
+                register as u64,
                 1, // Count
                 &mut value as *mut u32 as *mut core::ffi::c_void,
             )
