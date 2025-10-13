@@ -21,11 +21,14 @@ use core::arch::asm;
 use core::ffi::c_void;
 use core::ptr;
 use spin::Mutex;
-use alloc::vec;
 
-use crate::common::{EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID};
+use crate::common::{
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID,
+    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID
+};
 use crate::common::{
     EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable, FullereneFramebufferConfig,
+    EfiConfigurationTable,
 };
 
 #[derive(Clone, Copy)]
@@ -88,6 +91,60 @@ pub fn init_uga_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     None
 }
 
+/// Helper to enumerate and log all available UEFI configuration table GUIDs for debugging
+pub fn log_configuration_table_guids(system_table: &EfiSystemTable) {
+    serial::_print(format_args!("CONFIG: Enumerating configuration tables ({} total):\n", system_table.number_of_table_entries));
+
+    let config_tables = unsafe {
+        core::slice::from_raw_parts(
+            system_table.configuration_table,
+            system_table.number_of_table_entries
+        )
+    };
+
+    for (i, table) in config_tables.iter().enumerate() {
+        let guid_bytes = &table.vendor_guid;
+        serial::_print(format_args!("CONFIG[{}]: GUID {{ ", i));
+        // Log GUID as hex bytes for debugging
+        for (j, &byte) in guid_bytes.iter().enumerate() {
+            serial::_print(format_args!("{:02x}", byte));
+            if j < guid_bytes.len() - 1 {
+                serial::_print(format_args!("-"));
+            }
+        }
+        serial::_print(format_args!(" }}\n"));
+    }
+}
+
+/// Helper function to test if a protocol GUID is available on any handle
+pub fn test_protocol_availability(system_table: &EfiSystemTable, guid: &[u8; 16], name: &str) {
+    let bs = unsafe { &*system_table.boot_services };
+
+    // Try to locate any handles that support this protocol
+    let mut handle_count: usize = 0;
+    let mut handles: *mut usize = ptr::null_mut();
+
+    let status = unsafe {
+        (bs.locate_handle_buffer)(
+            3, // ByProtocol
+            guid.as_ptr(),
+            ptr::null_mut(),
+            &mut handle_count as *mut usize,
+            &mut handles as *mut *mut usize,
+        )
+    };
+
+    if EfiStatus::from(status) == EfiStatus::Success && handle_count > 0 {
+        serial::_print(format_args!("PROTOCOL: {} - Available on {} handles\n", name, handle_count));
+        // Free the buffer
+        if !handles.is_null() {
+            unsafe { (bs.free_pool)(handles as *mut c_void) };
+        }
+    } else {
+        serial::_print(format_args!("PROTOCOL: {} - NOT FOUND (status: {:#x})\n", name, status));
+    }
+}
+
 /// Helper to try different graphics protocols and modes
 pub fn init_graphics_protocols(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
     // Verify system table integrity before proceeding
@@ -99,6 +156,23 @@ pub fn init_graphics_protocols(system_table: &EfiSystemTable) -> Option<Fulleren
     // Print basic system information to help diagnose GOP availability
     serial::_print(format_args!("GOP: Initializing graphics protocols...\n"));
     serial::_print(format_args!("GOP: Configuration table count: {}\n", system_table.number_of_table_entries));
+
+    // Log all configuration table GUIDs for debugging
+    log_configuration_table_guids(system_table);
+
+    // Test common graphics protocols for availability
+    test_protocol_availability(system_table, &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, "EFI_GRAPHICS_OUTPUT_PROTOCOL");
+    test_protocol_availability(system_table, &EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID, "EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL");
+
+    // Add some relevant UEFI protocol GUIDs for comparison
+    let efi_loaded_image_protocol_guid = [
+        0xa1, 0x31, 0x1b, 0x5b, 0x62, 0x95, 0xd2, 0x11, 0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
+    ];
+    let efi_simple_file_system_protocol_guid = [
+        0x22, 0x5b, 0x4e, 0x96, 0x59, 0x64, 0xd2, 0x11, 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
+    ];
+    test_protocol_availability(system_table, &efi_loaded_image_protocol_guid, "EFI_LOADED_IMAGE_PROTOCOL");
+    test_protocol_availability(system_table, &efi_simple_file_system_protocol_guid, "EFI_SIMPLE_FILE_SYSTEM_PROTOCOL");
 
     // First try standard GOP protocol with enhanced mode enumeration
     if let Some(config) = init_gop_framebuffer(system_table) {
