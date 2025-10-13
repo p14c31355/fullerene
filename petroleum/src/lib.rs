@@ -797,9 +797,10 @@ pub mod bare_metal_pci {
 
     /// Read 16-bit value from PCI configuration space
     pub fn pci_config_read_word(bus: u8, device: u8, function: u8, register: u8) -> u16 {
-        let dword = pci_config_read_dword(bus, device, function, register & !0x2); // Align to 32-bit boundary
-        let offset = register & 0x2;
-        (dword >> (offset * 8)) as u16
+        let aligned_register = register & !0x2; // Align to 32-bit boundary
+        let dword = pci_config_read_dword(bus, device, function, aligned_register);
+        let offset_in_dword = register & 0x2; // 0 or 2
+        (dword >> (offset_in_dword * 8)) as u16
     }
 
     /// Read 8-bit value from PCI configuration space
@@ -1301,7 +1302,7 @@ pub mod graphics_alternatives {
 
         // Try reading first few bytes to see if memory is accessible
         // We need to do this very carefully to avoid crashes
-        let ptr = address as *const u8;
+        let _ptr = address as *const u8;
 
         // Check if the address looks valid (not null, not too high)
         if address == 0 || address >= 0xFFFFFFFFFFFFF000 {
@@ -1350,10 +1351,73 @@ pub mod graphics_alternatives {
         Err(EfiStatus::Unsupported)
     }
 
+    /// Read PCI configuration register using EFI_PCI_IO_PROTOCOL
+    /// This function maps bus:device:function:register addressing to protocol calls
+    pub fn pci_config_read_u32(bus: u8, device: u8, function: u8, register: u8) -> Result<u32, EfiStatus> {
+        // Get UEFI system table
+        let system_table_ptr = UEFI_SYSTEM_TABLE.lock().as_ref().cloned();
+        let system_table = match system_table_ptr {
+            Some(ptr) => unsafe { &*ptr.0 },
+            None => {
+                serial::_print(format_args!("PCI: UEFI system table not initialized\n"));
+                return Err(EfiStatus::NotInReadyState);
+            }
+        };
+
+        let bs = unsafe { &*system_table.boot_services };
+
+        // Build PCI handle for this device location
+        let handle = ((bus as usize) << 8) | ((device as usize) << 3) | (function as usize);
+
+        let mut pci_io: *mut core::ffi::c_void = core::ptr::null_mut();
+        let status = unsafe {
+            (bs.open_protocol)(
+                handle,
+                graphics_alternatives::EFI_PCI_IO_PROTOCOL_GUID.as_ptr(),
+                &mut pci_io,
+                0, // AgentHandle
+                0, // ControllerHandle
+                0x01, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
+            )
+        };
+
+        if EfiStatus::from(status) != EfiStatus::Success || pci_io.is_null() {
+            serial::_print(format_args!("PCI: Failed to open PCI_IO protocol for {:02x}:{:02x}:{:02x}: {:#x}\n",
+                bus, device, function, status));
+            return Err(EfiStatus::from(status));
+        }
+
+        // Read using PCI_IO protocol
+        let pci_io_ref = unsafe { &*(pci_io as *mut common::EfiPciIoProtocol) };
+        let mut value: u32 = 0;
+
+        let read_status = unsafe {
+            (pci_io_ref.pci_read)(
+                pci_io as *mut common::EfiPciIoProtocol,
+                2, // Dword width
+                register,
+                1, // Count
+                &mut value as *mut u32 as *mut core::ffi::c_void,
+            )
+        };
+
+        // Close protocol
+        unsafe { (bs.close_protocol)(handle, graphics_alternatives::EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0) };
+
+        if EfiStatus::from(read_status) == EfiStatus::Success {
+            Ok(value)
+        } else {
+            serial::_print(format_args!("PCI: Read failed for {:02x}:{:02x}:{:02x}:{:02x}: {:#x}\n",
+                bus, device, function, register, read_status));
+            Err(EfiStatus::from(read_status))
+        }
+    }
+
     /// Read from PCI configuration space (simplified - needs proper implementation)
     unsafe fn _port_read(_port: u16) -> u32 {
-        // This is a placeholder - real PCI access needs proper protocols
-        // In UEFI, use EFI_PCI_IO_PROTOCOL instead
+        // This function is deprecated in UEFI context
+        // Use pci_config_read_u32() instead for proper UEFI PCI access
+        // For bare-metal compatibility, return invalid
         0xFFFF_FFFF // Invalid read
     }
 }
