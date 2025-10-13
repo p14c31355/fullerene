@@ -6,6 +6,7 @@
 use core::fmt::Write;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
+use crate::memory_management;
 
 /// Breakpoint exception handler
 #[unsafe(no_mangle)]
@@ -40,8 +41,6 @@ pub fn handle_page_fault(
     error_code: PageFaultErrorCode,
     _stack_frame: InterruptStackFrame,
 ) {
-    use crate::memory_management;
-
     let is_present = error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION);
     let is_write = error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
     let is_user = error_code.contains(PageFaultErrorCode::USER_MODE);

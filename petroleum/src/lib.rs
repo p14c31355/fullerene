@@ -560,64 +560,13 @@ pub mod graphics_alternatives {
     pub fn detect_vesa_graphics(bs: &EfiBootServices) -> Result<(), EfiStatus> {
         _print(format_args!("[GOP-ALT] Detecting VESA graphics hardware...\n"));
 
-        // First, enumerate PCI devices to find graphics adapters
-        match enumerate_pci_graphics_devices(bs) {
-            Ok(devices) => {
-                _print(format_args!("[GOP-ALT] Found {} PCI graphics devices\n", devices.len()));
-                for (i, dev) in devices.iter().enumerate() {
-                    _print(format_args!(
-                        "[GOP-ALT] Graphics device {}: Vendor={:04x}, Device={:04x}, Class={:02x}\n",
-                        i, dev.vendor_id, dev.device_id, dev.class_code
-                    ));
-                }
-
-                if !devices.is_empty() {
-                    // Try to initialize VESA VBE for the first found device
-                    return detect_vesa_vbe(bs);
-                }
-            }
-            Err(e) => {
-                _print(format_args!("[GOP-ALT] PCI enumeration failed: {:?}\n", e));
-            }
-        }
+        // PCI enumeration removed - would need proper EFI_PCI_IO_PROTOCOL implementation
+        _print(format_args!("[GOP-ALT] PCI enumeration not yet implemented - skipping VESA graphics detection\n"));
 
         Err(EfiStatus::NotFound)
     }
 
-    /// Enumerate PCI devices looking for graphics adapters
-    fn enumerate_pci_graphics_devices(bs: &EfiBootServices) -> Result<Vec<PciDevice>, EfiStatus> {
-        // In UEFI, we need to use the EFI_PCI_IO_PROTOCOL or scan configuration space
-        // For now, we'll implement a simple PCI configuration space scan
-        let mut graphics_devices = Vec::new();
 
-        // Simple PCI scan - look for display class devices (class 3)
-        for bus in 0..256 {
-            for device in 0..32 {
-                for function in 0..8 {
-                    let config_addr = ((bus as u32) << 16) | ((device as u32) << 11) | ((function as u32) << 8);
-
-                    // Read PCI configuration space for device/vendor ID and class code
-                    // Note: This is a simplified implementation - real PCI scanning needs proper protocol usage
-                    let vendor_id = unsafe { port_read(0xCFC) } as u16; // Simplified - would need proper PCI access
-                    let device_id = unsafe { port_read(0xCFE) } as u16;
-                    let class_code = unsafe { port_read(0xCFB) } as u8 & 0xFF;
-
-                    if vendor_id != 0xFFFF && class_code == 0x03 { // Display class
-                        graphics_devices.push(PciDevice {
-                            vendor_id,
-                            device_id,
-                            class_code,
-                            bus: bus as u8,
-                            device: device as u8,
-                            function: function as u8,
-                        });
-                    }
-                }
-            }
-        }
-
-        Ok(graphics_devices)
-    }
 
     /// Try to detect VESA VBE (VESA BIOS Extensions) support
     fn detect_vesa_vbe(bs: &EfiBootServices) -> Result<(), EfiStatus> {
