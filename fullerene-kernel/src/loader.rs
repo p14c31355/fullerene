@@ -7,7 +7,7 @@ use crate::{
     memory_management::{is_user_address, map_user_page, ProcessPageTable},
     process,
 };
-use fullerene_kernel::{
+use super::{
     SystemError,
     PageTableHelper,
     PageFlags,
