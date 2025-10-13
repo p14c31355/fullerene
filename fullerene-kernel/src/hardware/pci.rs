@@ -124,11 +124,11 @@ impl PciConfigSpace {
         // Write address to CONFIG_ADDRESS port
         unsafe {
             petroleum::port_write!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS, address);
-            // Read four bytes and combine them
-            let byte0: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 3) as u16);
-            let byte1: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + ((offset + 1) & 3) as u16);
-            let byte2: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + ((offset + 2) & 3) as u16);
-            let byte3: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + ((offset + 3) & 3) as u16);
+            // Read four bytes and combine them into a 32-bit dword
+            let byte0: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA);
+            let byte1: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + 1);
+            let byte2: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + 2);
+            let byte3: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + 3);
             (byte3 as u32) << 24 | (byte2 as u32) << 16 | (byte1 as u32) << 8 | (byte0 as u32)
         }
     }

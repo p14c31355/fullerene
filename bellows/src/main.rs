@@ -210,29 +210,36 @@ fn install_vga_framebuffer_config(st: &EfiSystemTable) {
         stride: 800,      // Match width for VGA modes
     };
 
-    petroleum::serial::_print(format_args!(
-        "VGA: Created config - address: {:#x}, width: {}, height: {}, bpp: {}\n",
-        config.address, config.width, config.height, config.bpp
-    ));
+    #[cfg(debug_assertions)]
+petroleum::serial::_print(format_args!(
+    "VGA: Created config - address: {:#x}, width: {}, height: {}, bpp: {}\n",
+    config.address, config.width, config.height, config.bpp
+));
 
-    let config_ptr = Box::leak(Box::new(config));
+let config_ptr = Box::leak(Box::new(config));
 
-    petroleum::serial::_print(format_args!("VGA: Config boxed and leaked\n"));
+#[cfg(debug_assertions)]
+petroleum::serial::_print(format_args!("VGA: Config boxed and leaked\n"));
 
-    let bs = unsafe { &*st.boot_services };
-    petroleum::serial::_print(format_args!("VGA: Got boot services\n"));
+let bs = unsafe { &*st.boot_services };
+#[cfg(debug_assertions)]
+petroleum::serial::_print(format_args!("VGA: Got boot services\n"));
 
-    let status = unsafe {
-        petroleum::serial::_print(format_args!("VGA: About to call install_configuration_table\n"));
-        petroleum::serial::_print(format_args!("VGA: GUID: {:x?}\n", FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID));
-        petroleum::serial::_print(format_args!("VGA: Config ptr: {:p}\n", config_ptr));
-        let result = (bs.install_configuration_table)(
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
-            config_ptr as *const _ as *mut c_void,
-        );
-        petroleum::serial::_print(format_args!("VGA: install_configuration_table returned {:#x}\n", result));
-        result
-    };
+let status = unsafe {
+    #[cfg(debug_assertions)]
+    petroleum::serial::_print(format_args!("VGA: About to call install_configuration_table\n"));
+    #[cfg(debug_assertions)]
+    petroleum::serial::_print(format_args!("VGA: GUID: {:x?}\n", FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID));
+    #[cfg(debug_assertions)]
+    petroleum::serial::_print(format_args!("VGA: Config ptr: {:p}\n", config_ptr));
+    let result = (bs.install_configuration_table)(
+        FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
+        config_ptr as *const _ as *mut c_void,
+    );
+    #[cfg(debug_assertions)]
+    petroleum::serial::_print(format_args!("VGA: install_configuration_table returned {:#x}\n", result));
+    result
+};
 
     petroleum::serial::_print(format_args!("VGA: Checking status...\n"));
 
