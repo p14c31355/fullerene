@@ -629,9 +629,10 @@ impl ErrorLogging for UnifiedMemoryManager {
 
 // Helper methods for UnifiedMemoryManager
 impl UnifiedMemoryManager {
-    /// Find a free virtual address range
     fn find_free_virtual_address(&self, size: usize) -> SystemResult<usize> {
-        Ok(0xFFFF_FFFF_8000_0000 + size) // Start from high memory
+        // TODO: Implement a proper kernel virtual address space allocator.
+        // For now, using a corrected base address.
+        Ok(0xFFFF_8000_0000_0000 + size) // Start from the beginning of kernel space
     }
 
     /// Copy data from user space to kernel space
