@@ -107,8 +107,8 @@ impl PciConfigSpace {
         unsafe {
             petroleum::port_write!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS, address);
             // Read two bytes and combine them
-            let low_byte = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 2) as u16);
-            let high_byte = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 2 + 1) as u16);
+            let low_byte: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 2) as u16);
+            let high_byte: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 2 + 1) as u16);
             (high_byte as u16) << 8 | (low_byte as u16)
         }
     }

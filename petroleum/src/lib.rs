@@ -31,7 +31,7 @@ pub unsafe fn clear_buffer_pixels<T: Copy>(
 ) {
     let fb_ptr = address as *mut T;
     let count = (stride * height) as usize;
-    core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color);
+    unsafe { core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color) };
 }
 
 /// Generic framebuffer buffer scroll up operation
@@ -46,16 +46,18 @@ pub unsafe fn scroll_buffer_pixels<T: Copy>(
     let shift_bytes = 8u64 * bytes_per_line as u64;
     let fb_ptr = address as *mut u8;
     let total_bytes = height as u64 * bytes_per_line as u64;
-    core::ptr::copy(
-        fb_ptr.add(shift_bytes as usize),
-        fb_ptr,
-        (total_bytes - shift_bytes) as usize,
-    );
+    unsafe {
+        core::ptr::copy(
+            fb_ptr.add(shift_bytes as usize),
+            fb_ptr,
+            (total_bytes - shift_bytes) as usize,
+        );
+    }
     // Clear last 8 lines
     let clear_offset = ((height - 8) as u32 * bytes_per_line) as usize;
     let clear_ptr = (address + clear_offset as u64) as *mut T;
     let clear_count = 8 * stride as usize;
-    core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color);
+    unsafe { core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color) };
 }
 
 use alloc::boxed::Box;

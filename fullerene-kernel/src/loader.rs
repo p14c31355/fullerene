@@ -264,6 +264,14 @@ impl From<crate::memory_management::MapError> for LoadError {
     }
 }
 
+impl From<crate::memory_management::FreeError> for LoadError {
+    fn from(error: crate::memory_management::FreeError) -> Self {
+        match error {
+            crate::memory_management::FreeError::UnmappingFailed => LoadError::MappingFailed,
+        }
+    }
+}
+
 /// Initialize the loader
 pub fn init() {
     // For now, nothing to initialize

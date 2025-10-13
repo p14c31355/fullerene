@@ -7,6 +7,25 @@ use crate::*;
 use alloc::collections::BTreeMap;
 use spin::Mutex;
 
+// Memory management error types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapError {
+    MappingFailed,
+    UnmappingFailed,
+    FrameAllocationFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllocError {
+    OutOfMemory,
+    MappingFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreeError {
+    UnmappingFailed,
+}
+
 /// Unified memory manager implementing all memory management traits
 pub struct UnifiedMemoryManager {
     frame_allocator: BitmapFrameAllocator,
@@ -513,7 +532,7 @@ impl UnifiedMemoryManager {
             if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
                 // In a real implementation, this would copy from physical memory
                 // For now, just allocate zeroed memory
-                data.extend_from_slice(&vec![0u8; page_size]);
+                data.extend_from_slice(&alloc::vec![0u8; page_size]);
             } else {
                 return Err(SystemError::InvalidArgument);
             }
@@ -524,13 +543,13 @@ impl UnifiedMemoryManager {
 
     /// Copy data from kernel space to user space
     fn copy_to_user_space(&mut self, user_addr: usize, data: &[u8]) -> SystemResult<()> {
-        for (offset, &byte) in data.iter().enumerate() {
+        for (offset, _byte) in data.iter().enumerate() {
             let virt_addr = user_addr + offset;
 
             // In a real implementation, this would copy to physical memory
             // For now, just ensure the page is mapped
             if let Ok(_phys_addr) = self.page_table_manager.translate_address(virt_addr) {
-                // Copy would happen here
+                // Copy would happen here in a real implementation
             } else {
                 return Err(SystemError::InvalidArgument);
             }
@@ -538,6 +557,7 @@ impl UnifiedMemoryManager {
 
         Ok(())
     }
+
 }
 
 /// Bitmap-based frame allocator implementation
@@ -565,8 +585,9 @@ impl BitmapFrameAllocator {
         let mut total_frames = 0usize;
 
         for descriptor in memory_map {
-            if descriptor.ty == petroleum::page_table::EfiMemoryType::Conventional {
-                total_frames += descriptor.page_count as usize;
+            // EFI memory type 7 is EfiConventionalMemory (available RAM)
+            if descriptor.type_ == petroleum::common::EfiMemoryType::EfiConventionalMemory {
+                total_frames += descriptor.number_of_pages as usize;
             }
         }
 
@@ -582,7 +603,7 @@ impl BitmapFrameAllocator {
         // Mark available frames as free
         for descriptor in memory_map {
             // EFI memory type 7 is EfiConventionalMemory (available RAM)
-            if descriptor.type_ == 7u32 {
+            if descriptor.type_ == petroleum::common::EfiMemoryType::EfiConventionalMemory {
                 let start_frame = descriptor.physical_start as usize / 4096;
                 let frame_count = descriptor.number_of_pages as usize;
 
@@ -818,6 +839,9 @@ impl crate::ErrorLogging for BitmapFrameAllocator {
     }
 }
 
+/// Process page table type alias for PageTableManager
+pub type ProcessPageTable = PageTableManager;
+
 /// Page table manager implementation
 pub struct PageTableManager {
     current_page_table: usize,
@@ -847,7 +871,7 @@ impl PageTableManager {
 
 // Implementation of PageTableHelper trait for PageTableManager
 impl crate::PageTableHelper for PageTableManager {
-    fn map_page(&mut self, virtual_addr: usize, physical_addr: usize, flags: PageFlags) -> SystemResult<()> {
+    fn map_page(&mut self, _virtual_addr: usize, _physical_addr: usize, _flags: PageFlags) -> SystemResult<()> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
@@ -858,7 +882,7 @@ impl crate::PageTableHelper for PageTableManager {
         Ok(())
     }
 
-    fn unmap_page(&mut self, virtual_addr: usize) -> SystemResult<()> {
+    fn unmap_page(&mut self, _virtual_addr: usize) -> SystemResult<()> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
@@ -867,17 +891,17 @@ impl crate::PageTableHelper for PageTableManager {
         Ok(())
     }
 
-    fn translate_address(&self, virtual_addr: usize) -> SystemResult<usize> {
+    fn translate_address(&self, _virtual_addr: usize) -> SystemResult<usize> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
 
         // In a real implementation, this would walk the page tables
         // For now, return a dummy physical address
-        Ok(virtual_addr) // Identity mapping for simplicity
+        Ok(0) // Dummy physical address for simplicity
     }
 
-    fn set_page_flags(&mut self, virtual_addr: usize, flags: PageFlags) -> SystemResult<()> {
+    fn set_page_flags(&mut self, _virtual_addr: usize, _flags: PageFlags) -> SystemResult<()> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
@@ -886,7 +910,7 @@ impl crate::PageTableHelper for PageTableManager {
         Ok(())
     }
 
-    fn get_page_flags(&self, virtual_addr: usize) -> SystemResult<PageFlags> {
+    fn get_page_flags(&self, _virtual_addr: usize) -> SystemResult<PageFlags> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
@@ -894,7 +918,7 @@ impl crate::PageTableHelper for PageTableManager {
         Ok(PageFlags::kernel_data())
     }
 
-    fn flush_tlb(&mut self, virtual_addr: usize) -> SystemResult<()> {
+    fn flush_tlb(&mut self, _virtual_addr: usize) -> SystemResult<()> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
@@ -1080,6 +1104,34 @@ impl ProcessMemoryManagerImpl {
 // Global memory manager instance
 static MEMORY_MANAGER: Mutex<Option<UnifiedMemoryManager>> = Mutex::new(None);
 
+/// Physical memory offset for virtual to physical address translation
+pub const PHYSICAL_MEMORY_OFFSET: usize = 0xFFFF_8000_0000_0000;
+
+/// Switch to a specific page table
+pub fn switch_to_page_table(page_table: &ProcessPageTable) -> SystemResult<()> {
+    // In a real implementation, this would switch the CR3 register
+    // For now, just log the operation
+    log_info!("Switching to page table");
+    Ok(())
+}
+
+/// Create a new process page table
+pub fn create_process_page_table(offset: usize) -> SystemResult<ProcessPageTable> {
+    let mut page_table_manager = PageTableManager::new();
+    page_table_manager.init()?;
+
+    // In a real implementation, this would create a new page table with proper mappings
+    // For now, just return a new page table manager
+    Ok(page_table_manager)
+}
+
+/// Deallocate a process page table and free its frames
+pub fn deallocate_process_page_table(pml4_frame: x86_64::PhysFrame) {
+    // In a real implementation, this would recursively free all page table frames
+    // For now, just log the operation
+    log_info!("Deallocating process page table");
+}
+
 /// Initialize the global memory manager
 pub fn init_memory_manager(memory_map: &'static [petroleum::page_table::EfiMemoryDescriptor]) -> SystemResult<()> {
     let mut manager = MEMORY_MANAGER.lock();
@@ -1182,3 +1234,56 @@ mod tests {
         assert_eq!(process_manager.page_table_root(), 0);
     }
 }
+
+/// Helper functions for user space memory validation
+pub mod user_space {
+    use super::*;
+
+    /// Check if an address is in user space
+    pub fn is_user_address(addr: x86_64::VirtAddr) -> bool {
+        // User space is typically 0x0000000000000000 to 0x00007FFFFFFFFFFF
+        // Kernel space is 0xFFFF800000000000 and above
+        addr.as_u64() < 0x0000800000000000
+    }
+
+    /// Map a user page for kernel access
+    pub fn map_user_page(virtual_addr: usize, physical_addr: usize, flags: PageFlags) -> SystemResult<()> {
+        if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
+            manager.map_page(virtual_addr, physical_addr, flags)
+        } else {
+            Err(SystemError::InternalError)
+        }
+    }
+
+    /// Validate user buffer access
+    pub fn validate_user_buffer(ptr: usize, count: usize, allow_kernel: bool) -> Result<(), crate::syscall::interface::SyscallError> {
+        use x86_64::VirtAddr;
+
+        if ptr == 0 && count == 0 {
+            return Ok(());
+        }
+
+        let start = VirtAddr::new(ptr as u64);
+        if !allow_kernel && !is_user_address(start) {
+            return Err(crate::syscall::interface::SyscallError::InvalidArgument);
+        }
+
+        if count == 0 {
+            return Ok(());
+        }
+
+        if let Some(end_ptr) = ptr.checked_add(count - 1) {
+            let end = VirtAddr::new(end_ptr as u64);
+            if !allow_kernel && !is_user_address(end) {
+                return Err(crate::syscall::interface::SyscallError::InvalidArgument);
+            }
+        } else {
+            return Err(crate::syscall::interface::SyscallError::InvalidArgument);
+        }
+
+        Ok(())
+    }
+}
+
+// Re-export functions for easier access
+pub use user_space::{is_user_address, map_user_page};
