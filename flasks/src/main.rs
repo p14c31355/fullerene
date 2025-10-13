@@ -137,7 +137,7 @@ fn main() -> io::Result<()> {
         "q35",
 
         "-vga",
-        "cirrus",
+        "qxl",
         // --- GOP REGISTRATION TESTING CONCLUSION ---
         // All standard QEMU video devices tested fail to register GOP with current OVMF firmware:
         // -device virtio-gpu-pci: FAILED (no GOP registration)

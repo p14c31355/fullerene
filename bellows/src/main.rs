@@ -87,6 +87,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             init_basic_vga_text_mode();
             // For UEFI fallback, try to install a basic VGA framebuffer config for kernel use
             install_vga_framebuffer_config(st);
+            petroleum::println!("Bellows: VGA framebuffer config installed, continuing with kernel load.");
         }
     }
     petroleum::serial::_print(format_args!("Graphics initialization complete.\n"));
@@ -188,6 +189,7 @@ fn try_uga_protocol(st: &EfiSystemTable) -> bool {
 /// Provides a fallback framebuffer configuration that the kernel can use.
 fn install_vga_framebuffer_config(st: &EfiSystemTable) {
     petroleum::println!("Installing VGA framebuffer config table for UEFI...");
+    petroleum::serial::_print(format_args!("VGA: About to create config...\n"));
 
     // Create a basic VGA-compatible framebuffer config
     // Standard VGA resolution: 320x200, 8-bit color
@@ -200,13 +202,19 @@ fn install_vga_framebuffer_config(st: &EfiSystemTable) {
         stride: 320,
     };
 
+    petroleum::serial::_print(format_args!("VGA: Config created, creating box...\n"));
     let config_ptr = Box::leak(Box::new(config));
+    petroleum::serial::_print(format_args!("VGA: Box allocated at {:#p}, calling install_configuration_table...\n", config_ptr));
 
     let bs = unsafe { &*st.boot_services };
     let status = unsafe { (bs.install_configuration_table)(
         FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
         config_ptr as *const _ as *mut c_void,
     ) };
+
+    petroleum::serial::_print(format_args!("VGA: install_configuration_table returned status: {:#x}\n", status));
+    debug_print_hex(status as usize);
+    debug_print_str("\n");
 
     if EfiStatus::from(status) == EfiStatus::Success {
         petroleum::println!("VGA framebuffer config table installed successfully.");
