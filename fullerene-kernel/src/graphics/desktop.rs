@@ -80,7 +80,13 @@ pub fn draw_os_desktop() {
         debug_print_str("Graphics: Obtained framebuffer writer\n");
         let mut locked = fb_writer.lock();
         debug_print_str("Graphics: Framebuffer writer locked\n");
-        draw_desktop_internal(&mut *locked, mode);
+        if locked.is_vga() {
+            // VGA text mode - don't draw pixel graphics, just log
+            crate::graphics::_print(format_args!("Graphics: VGA text mode active, desktop drawing skipped\n"));
+            debug_print_str("Graphics: VGA text mode - no desktop drawing\n");
+        } else {
+            draw_desktop_internal(&mut *locked, mode);
+        }
     } else {
         crate::graphics::_print(format_args!(
             "Graphics: ERROR - {} framebuffer not initialized\n", mode

@@ -126,7 +126,7 @@ pub fn test_protocol_availability(system_table: &EfiSystemTable, guid: &[u8; 16]
 
     let status = unsafe {
         (bs.locate_handle_buffer)(
-            3, // ByProtocol
+            2, // ByProtocol (correct value is 2, not 3)
             guid.as_ptr(),
             ptr::null_mut(),
             &mut handle_count as *mut usize,
@@ -187,7 +187,7 @@ pub fn init_graphics_protocols(system_table: &EfiSystemTable) -> Option<Fulleren
 
     // If all graphics protocols fail, try alternative VESA detection approaches
     serial::_print(format_args!("All graphics protocols failed, trying alternative VESA detection...\n"));
-    graphics_alternatives::detect_vesa_graphics(unsafe { &*system_table.boot_services });
+    let _ = graphics_alternatives::detect_vesa_graphics(unsafe { &*system_table.boot_services });
 
     // Fall back to VGA text mode (handled externally)
     serial::_print(format_args!("All graphics protocols failed, falling back to VGA text mode.\n"));
