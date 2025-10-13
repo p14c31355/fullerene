@@ -28,7 +28,7 @@ use petroleum::common::{
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    petroleum::handle_panic(info)
+    petroleum::uefi_helpers::handle_panic(info)
 }
 
 /// Main entry point of the bootloader.
@@ -77,16 +77,28 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     debug_print_str("Main: After Heap OK println.\n");
 
     // Initialize graphics protocols for framebuffer setup
-    petroleum::serial::_print(format_args!("Attempting to initialize graphics protocols...\n"));
+    petroleum::serial::_print(format_args!(
+        "Attempting to initialize graphics protocols...\n"
+    ));
     match petroleum::init_graphics_protocols(st) {
         Some(config) => {
-            petroleum::println!("Bellows: Graphics framebuffer initialized at {:#x} ({}x{}).", config.address, config.width, config.height);
+            petroleum::println!(
+                "Bellows: Graphics framebuffer initialized at {:#x} ({}x{}).",
+                config.address,
+                config.width,
+                config.height
+            );
         }
         None => {
-            petroleum::println!("Bellows: No graphics protocols found, initializing VGA text mode.");
+            petroleum::println!(
+                "Bellows: No graphics protocols found, initializing VGA text mode."
+            );
             init_basic_vga_text_mode();
             // For UEFI fallback, try to install a basic VGA framebuffer config for kernel use
             install_vga_framebuffer_config(st);
+            petroleum::println!(
+                "Bellows: VGA framebuffer config installed, continuing with kernel load."
+            );
         }
     }
     petroleum::serial::_print(format_args!("Graphics initialization complete.\n"));
@@ -147,11 +159,12 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 fn init_basic_vga_text_mode() {
     petroleum::serial::_print(format_args!("Basic VGA text mode initialization...\n"));
 
-    // Simply call the existing petroleum VGA setup function
-    // This will handle the text mode setup properly
-    petroleum::graphics::init_vga_text_mode();
+    // Detect and initialize VGA graphics for Cirrus devices
+    petroleum::graphics::detect_and_init_vga_graphics();
 
-    petroleum::serial::_print(format_args!("Basic VGA text mode initialized as fallback.\n"));
+    petroleum::serial::_print(format_args!(
+        "Basic VGA text mode initialized as fallback.\n"
+    ));
 }
 
 /// Attempts to initialize the Universal Graphics Adapter (UGA) protocol as a fallback.
@@ -162,20 +175,19 @@ fn try_uga_protocol(st: &EfiSystemTable) -> bool {
     let bs = unsafe { &*st.boot_services };
     let mut uga: *mut c_void = ptr::null_mut();
 
-    let status = unsafe { (bs.locate_protocol)(
-        uga_guid.as_ptr(),
-        ptr::null_mut(),
-        &mut uga,
-    ) };
+    let status = unsafe { (bs.locate_protocol)(uga_guid.as_ptr(), ptr::null_mut(), &mut uga) };
 
     if EfiStatus::from(status) != EfiStatus::Success || uga.is_null() {
         petroleum::serial::_print(format_args!(
-            "UGA protocol not available (status: {:#x})\n", status
+            "UGA protocol not available (status: {:#x})\n",
+            status
         ));
         return false;
     }
 
-    petroleum::serial::_print(format_args!("UGA protocol found, attempting to initialize...\n"));
+    petroleum::serial::_print(format_args!(
+        "UGA protocol found, attempting to initialize...\n"
+    ));
 
     // Note: UGA protocol is deprecated, but some older EFI implementations might support it
     // For now, we'll just return true if found, and let the kernel handle it
@@ -188,6 +200,7 @@ fn try_uga_protocol(st: &EfiSystemTable) -> bool {
 /// Provides a fallback framebuffer configuration that the kernel can use.
 fn install_vga_framebuffer_config(st: &EfiSystemTable) {
     petroleum::println!("Installing VGA framebuffer config table for UEFI...");
+    petroleum::serial::_print(format_args!("VGA: About to create config...\n"));
 
     // Create a basic VGA-compatible framebuffer config
     // Standard VGA resolution: 320x200, 8-bit color
@@ -203,18 +216,29 @@ fn install_vga_framebuffer_config(st: &EfiSystemTable) {
     let config_ptr = Box::leak(Box::new(config));
 
     let bs = unsafe { &*st.boot_services };
-    let status = unsafe { (bs.install_configuration_table)(
-        FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
-        config_ptr as *const _ as *mut c_void,
-    ) };
+    let status = unsafe {
+        (bs.install_configuration_table)(
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
+            config_ptr as *const _ as *mut c_void,
+        )
+    };
 
     if EfiStatus::from(status) == EfiStatus::Success {
         petroleum::println!("VGA framebuffer config table installed successfully.");
-        petroleum::serial::_print(format_args!("VGA: Framebuffer config table installed successfully at {:#x}, {}x{}, {} BPP.\n", config.address, config.width, config.height, config.bpp));
+        petroleum::serial::_print(format_args!(
+            "VGA: Framebuffer config table installed successfully at {:#x}, {}x{}, {} BPP.\n",
+            config.address, config.width, config.height, config.bpp
+        ));
     } else {
         let _ = unsafe { Box::from_raw(config_ptr) };
-        petroleum::println!("Failed to install VGA framebuffer config table (status: {:#x})", status);
-        petroleum::serial::_print(format_args!("VGA: Failed to install config table, status: {:#x}.\n", status));
+        petroleum::println!(
+            "Failed to install VGA framebuffer config table (status: {:#x})",
+            status
+        );
+        petroleum::serial::_print(format_args!(
+            "VGA: Failed to install config table, status: {:#x}.\n",
+            status
+        ));
     }
 }
 

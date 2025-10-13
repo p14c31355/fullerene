@@ -2,10 +2,10 @@
 //!
 //! This module provides IDT initialization and handler setup.
 
-use crate::gdt;
 use super::apic::{KEYBOARD_INTERRUPT_INDEX, MOUSE_INTERRUPT_INDEX, TIMER_INTERRUPT_INDEX};
 use super::exceptions::{breakpoint_handler, double_fault_handler, page_fault_handler};
 use super::input::{keyboard_handler, mouse_handler, timer_handler};
+use crate::gdt;
 use lazy_static::lazy_static;
 use x86_64::structures::idt::InterruptDescriptorTable;
 

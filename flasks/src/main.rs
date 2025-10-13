@@ -135,19 +135,10 @@ fn main() -> io::Result<()> {
         "1",
         "-M",
         "q35",
-
         "-vga",
         "cirrus",
-        // --- GOP REGISTRATION TESTING CONCLUSION ---
-        // All standard QEMU video devices tested fail to register GOP with current OVMF firmware:
-        // -device virtio-gpu-pci: FAILED (no GOP registration)
-        // -device virtio-gpu: FAILED (no GOP registration)
-        // Default VGA: FAILED (no GOP registration)
-        // -vga std: FAILED (no GOP registration) - falls back to VGA text mode
-        // -vga vmware: FAILED (no GOP registration) - same as std, falls back to VGA text mode
-        // -vga qxl + -device VGA: FAILED (no GOP registration) - same behavior, falls back to VGA text mode
-        // CONCLUSION: Standard QEMU video devices do not register GOP with OVMF firmware
-        // NEXT STEPS: Research alternative approaches - document findings, implement VESA detection fallback
+        "-display",
+        "gtk,gl=on,window-close=on",
         "-serial",
         "stdio",
         "-accel",
@@ -158,9 +149,6 @@ fn main() -> io::Result<()> {
         "qemu_log.txt",
         "-monitor",
         "none",
-        // Don't trace UEFI as it may cause issues
-        // "-trace",
-        // "uefi_*",
         "-drive",
         &ovmf_fd_drive,
         "-drive",

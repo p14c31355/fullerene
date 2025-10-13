@@ -1,10 +1,10 @@
-use alloc::string::{String, ToString};
 use super::framebuffer::FramebufferLike;
+use alloc::string::{String, ToString};
 use embedded_graphics::{
+    mono_font::{MonoTextStyle, ascii::FONT_6X10},
     prelude::*,
     primitives::{PrimitiveStyleBuilder, Rectangle},
     text::Text,
-    mono_font::{MonoTextStyle, ascii::FONT_6X10},
 };
 use petroleum::serial::debug_print_str_to_com1 as debug_print_str;
 
@@ -25,9 +25,12 @@ pub struct Button {
 impl Button {
     pub fn new(x: u32, y: u32, width: u32, height: u32, text: &str) -> Self {
         Self {
-            x, y, width, height,
+            x,
+            y,
+            width,
+            height,
             text: text.to_string(),
-            bg_color: 0xE0E0E0, // Light gray
+            bg_color: 0xE0E0E0,   // Light gray
             text_color: 0x000000, // Black
         }
     }
@@ -42,7 +45,7 @@ impl Button {
             .build();
         let rect = Rectangle::new(
             Point::new(self.x as i32, self.y as i32),
-            Size::new(self.width, self.height)
+            Size::new(self.width, self.height),
         );
         rect.into_styled(style).draw(writer).ok();
 
@@ -53,9 +56,9 @@ impl Button {
             &self.text,
             Point::new(
                 self.x as i32 + (self.width as i32 / 2) - ((self.text.len() as i32 * 6) / 2), // Center text
-                self.y as i32 + (self.height as i32 / 2) - 5 // Vertically center
+                self.y as i32 + (self.height as i32 / 2) - 5, // Vertically center
             ),
-            text_style
+            text_style,
         );
         text.draw(writer).ok();
     }
@@ -66,7 +69,11 @@ impl Button {
 }
 
 pub fn draw_os_desktop() {
-    let mode = if cfg!(target_os = "uefi") { "UEFI" } else { "BIOS" };
+    let mode = if cfg!(target_os = "uefi") {
+        "UEFI"
+    } else {
+        "BIOS"
+    };
     crate::graphics::_print(format_args!("Graphics: draw_os_desktop() called\n"));
     debug_print_str("Graphics: draw_os_desktop() started\n");
     debug_print_str("Graphics: checking framebuffer...\n");
@@ -82,14 +89,17 @@ pub fn draw_os_desktop() {
         debug_print_str("Graphics: Framebuffer writer locked\n");
         if locked.is_vga() {
             // VGA text mode - don't draw pixel graphics, just log
-            crate::graphics::_print(format_args!("Graphics: VGA text mode active, desktop drawing skipped\n"));
+            crate::graphics::_print(format_args!(
+                "Graphics: VGA text mode active, desktop drawing skipped\n"
+            ));
             debug_print_str("Graphics: VGA text mode - no desktop drawing\n");
         } else {
             draw_desktop_internal(&mut *locked, mode);
         }
     } else {
         crate::graphics::_print(format_args!(
-            "Graphics: ERROR - {} framebuffer not initialized\n", mode
+            "Graphics: ERROR - {} framebuffer not initialized\n",
+            mode
         ));
         debug_print_str("Graphics: ERROR - framebuffer not initialized\n");
     }
@@ -214,10 +224,7 @@ fn draw_menu_bar<W: FramebufferLike>(writer: &mut W) {
     // Draw menu bar background (light blue)
     let bg_rgb = super::u32_to_rgb888(0xADD8E6);
     let style = PrimitiveStyleBuilder::new().fill_color(bg_rgb).build();
-    let rect = Rectangle::new(
-        Point::new(0, 0),
-        Size::new(writer.get_width(), menu_height),
-    );
+    let rect = Rectangle::new(Point::new(0, 0), Size::new(writer.get_width(), menu_height));
     rect.into_styled(style).draw(writer).ok();
 
     // Draw menu text "Fullerene OS"
@@ -226,18 +233,14 @@ fn draw_menu_bar<W: FramebufferLike>(writer: &mut W) {
     let text = Text::new(
         "Fullerene OS",
         Point::new(10, 8), // Left side, centered in bar
-        text_style
+        text_style,
     );
     text.draw(writer).ok();
 
     // Draw menu items
     let time_text = "12:34"; // Would be actual time in real implementation
     let time_x = (writer.get_width() - (time_text.len() as u32 * 6) - 10) as i32;
-    let time_text = Text::new(
-        time_text,
-        Point::new(time_x, 8),
-        text_style
-    );
+    let time_text = Text::new(time_text, Point::new(time_x, 8), text_style);
     time_text.draw(writer).ok();
 }
 
@@ -266,7 +269,14 @@ fn draw_taskbar_with_buttons<W: FramebufferLike>(writer: &mut W) {
     task_button2.draw(writer);
 }
 
-fn draw_app_window<W: FramebufferLike>(writer: &mut W, x: u32, y: u32, width: u32, height: u32, title: &str) {
+fn draw_app_window<W: FramebufferLike>(
+    writer: &mut W,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    title: &str,
+) {
     // Window background
     let bg_rgb = super::u32_to_rgb888(0xFFFFFF);
     let style = PrimitiveStyleBuilder::new()
@@ -280,29 +290,29 @@ fn draw_app_window<W: FramebufferLike>(writer: &mut W, x: u32, y: u32, width: u3
     // Title bar (darker background for title)
     let title_height = 25;
     let title_bg_rgb = super::u32_to_rgb888(0xA0A0A0);
-    let title_style = PrimitiveStyleBuilder::new().fill_color(title_bg_rgb).build();
+    let title_style = PrimitiveStyleBuilder::new()
+        .fill_color(title_bg_rgb)
+        .build();
     let title_rect = Rectangle::new(
         Point::new(x as i32, y as i32),
-        Size::new(width, title_height)
+        Size::new(width, title_height),
     );
     title_rect.into_styled(title_style).draw(writer).ok();
 
     // Window title
     let text_rgb = super::u32_to_rgb888(0x000000);
     let text_style = MonoTextStyle::new(&FONT_6X10, text_rgb);
-    let text = Text::new(
-        title,
-        Point::new(x as i32 + 10, y as i32 + 8),
-        text_style
-    );
+    let text = Text::new(title, Point::new(x as i32 + 10, y as i32 + 8), text_style);
     text.draw(writer).ok();
 
     // Content area
     let content_bg_rgb = super::u32_to_rgb888(0xF8F8F8);
-    let content_style = PrimitiveStyleBuilder::new().fill_color(content_bg_rgb).build();
+    let content_style = PrimitiveStyleBuilder::new()
+        .fill_color(content_bg_rgb)
+        .build();
     let content_rect = Rectangle::new(
         Point::new(x as i32 + 5, y as i32 + title_height as i32 + 5),
-        Size::new(width - 10, height - title_height - 10)
+        Size::new(width - 10, height - title_height - 10),
     );
     content_rect.into_styled(content_style).draw(writer).ok();
 }
@@ -318,7 +328,7 @@ fn draw_shell_window<W: FramebufferLike>(writer: &mut W, x: u32, y: u32, width: 
     let prompt = Text::new(
         "fullerene> ",
         Point::new(x as i32 + 15, prompt_y as i32),
-        text_style
+        text_style,
     );
     prompt.draw(writer).ok();
 
@@ -326,7 +336,7 @@ fn draw_shell_window<W: FramebufferLike>(writer: &mut W, x: u32, y: u32, width: 
     let output = Text::new(
         "Welcome to Fullerene OS Shell",
         Point::new(x as i32 + 15, output_y as i32),
-        text_style
+        text_style,
     );
     output.draw(writer).ok();
 }

@@ -3,10 +3,10 @@
 //! This module provides handlers for CPU exceptions like page faults,
 //! breakpoints, and double faults.
 
+use crate::memory_management;
 use core::fmt::Write;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
-use crate::memory_management;
 
 /// Breakpoint exception handler
 #[unsafe(no_mangle)]
@@ -74,7 +74,11 @@ pub fn handle_page_fault(
     if is_present {
         // Protection violation in user space
         petroleum::lock_and_modify!(petroleum::SERIAL1, writer, {
-            write!(writer, "Protection violation in user space - terminating process\n").ok();
+            write!(
+                writer,
+                "Protection violation in user space - terminating process\n"
+            )
+            .ok();
         });
 
         if let Some(pid) = crate::process::current_pid() {

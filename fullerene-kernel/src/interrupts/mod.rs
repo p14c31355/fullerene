@@ -22,7 +22,7 @@ lazy_static! {
 }
 
 // Re-export public functions and structures
-pub use apic::{init_apic, APIC};
+pub use apic::{APIC, init_apic};
 pub use exceptions::{handle_page_fault, page_fault_handler};
 pub use idt::init;
 pub use input::{KEYBOARD_QUEUE, MOUSE_STATE, keyboard_handler, mouse_handler, timer_handler};

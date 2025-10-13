@@ -5,31 +5,72 @@
 extern crate alloc;
 
 pub mod apic;
+pub mod bare_metal_graphics_detection;
+pub mod bare_metal_pci;
 pub mod common;
 pub mod graphics;
+pub mod graphics_alternatives;
 pub mod page_table;
 pub mod serial;
+pub mod uefi_helpers;
 pub use apic::{IoApic, IoApicRedirectionEntry, init_io_apic};
 pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 pub use graphics::{
     Color, ColorCode, ScreenChar, TextBufferOperations, VgaPortOps, VgaPorts, init_vga_graphics,
 };
-pub use serial::{Com1Ports, SerialPort, SerialPortOps, SERIAL_PORT_WRITER};
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
+pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 
+/// Generic framebuffer buffer clear operation
+pub unsafe fn clear_buffer_pixels<T: Copy>(
+    address: u64,
+    stride: u32,
+    height: u32,
+    bg_color: T,
+) {
+    let fb_ptr = address as *mut T;
+    let count = (stride * height) as usize;
+    core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color);
+}
+
+/// Generic framebuffer buffer scroll up operation
+pub unsafe fn scroll_buffer_pixels<T: Copy>(
+    address: u64,
+    stride: u32,
+    height: u32,
+    bg_color: T,
+) {
+    let bytes_per_pixel = core::mem::size_of::<T>() as u32;
+    let bytes_per_line = stride * bytes_per_pixel;
+    let shift_bytes = 8u64 * bytes_per_line as u64;
+    let fb_ptr = address as *mut u8;
+    let total_bytes = height as u64 * bytes_per_line as u64;
+    core::ptr::copy(
+        fb_ptr.add(shift_bytes as usize),
+        fb_ptr,
+        (total_bytes - shift_bytes) as usize,
+    );
+    // Clear last 8 lines
+    let clear_offset = ((height - 8) as u32 * bytes_per_line) as usize;
+    let clear_ptr = (address + clear_offset as u64) as *mut T;
+    let clear_count = 8 * stride as usize;
+    core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color);
+}
+
+use alloc::boxed::Box;
 use core::arch::asm;
 use core::ffi::c_void;
 use core::ptr;
 use spin::Mutex;
 
 use crate::common::{
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID,
-    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, EFI_LOADED_IMAGE_PROTOCOL_GUID,
-    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EFI_LOADED_IMAGE_PROTOCOL_GUID,
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID,
+    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
 };
 use crate::common::{
-    EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable, FullereneFramebufferConfig,
-    EfiConfigurationTable,
+    EfiConfigurationTable, EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable,
+    FullereneFramebufferConfig,
 };
 
 #[derive(Clone, Copy)]
@@ -66,152 +107,250 @@ macro_rules! write_serial_bytes {
 
 type EfiUniversalGraphicsAdapterProtocolPtr = isize; // Placeholder for UGA protocol type
 
+/// Generic protocol locator for UEFI protocols
+struct ProtocolLocator<'a> {
+    guid: &'a [u8; 16],
+    system_table: &'a EfiSystemTable,
+}
+
+impl<'a> ProtocolLocator<'a> {
+    fn new(guid: &'a [u8; 16], system_table: &'a EfiSystemTable) -> Self {
+        Self { guid, system_table }
+    }
+
+    fn locate<T>(&self, protocol_out: &mut *mut T) -> Result<(), EfiStatus> {
+        let bs = unsafe { &*self.system_table.boot_services };
+        let mut protocol: *mut c_void = ptr::null_mut();
+
+        let status = unsafe {
+            (bs.locate_protocol)(
+                self.guid.as_ptr(),
+                ptr::null_mut(),
+                &mut protocol,
+            )
+        };
+
+        let efi_status = EfiStatus::from(status);
+        if efi_status != EfiStatus::Success || protocol.is_null() {
+            *protocol_out = ptr::null_mut();
+            Err(efi_status)
+        } else {
+            *protocol_out = protocol as *mut T;
+            Ok(())
+        }
+    }
+}
+
+/// Framebuffer configuration installer
+struct FramebufferInstaller<'a> {
+    system_table: &'a EfiSystemTable,
+}
+
+impl<'a> FramebufferInstaller<'a> {
+    fn new(system_table: &'a EfiSystemTable) -> Self {
+        Self { system_table }
+    }
+
+    fn install(&self, config: FullereneFramebufferConfig) -> Result<(), EfiStatus> {
+        let config_ptr = Box::leak(Box::new(config));
+        let bs = unsafe { &*self.system_table.boot_services };
+
+        let status = unsafe {
+            (bs.install_configuration_table)(
+                FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
+                config_ptr as *const _ as *mut c_void,
+            )
+        };
+
+        let efi_status = EfiStatus::from(status);
+        if efi_status != EfiStatus::Success {
+            let _ = unsafe { Box::from_raw(config_ptr) };
+            Err(efi_status)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn install_and_clear(&self, mut config: FullereneFramebufferConfig) -> Result<FullereneFramebufferConfig, EfiStatus> {
+        self.install(config)?;
+
+        // Clear screen for clean state
+        unsafe {
+            ptr::write_bytes(
+                config.address as *mut u8,
+                0x00,
+                (config.height as u64 * config.stride as u64 * (config.bpp as u64 / 8)) as usize,
+            );
+        }
+
+        Ok(config)
+    }
+}
+
+/// Generic framebuffer buffer operations
+pub trait FramebufferOps<T> {
+    unsafe fn scroll_up(&self, address: u64, stride: u32, height: u32, bg_color: T);
+    unsafe fn clear(&self, address: u64, stride: u32, height: u32, bg_color: T);
+}
+
+impl<T: Copy> FramebufferOps<T> for () {
+    unsafe fn scroll_up(&self, address: u64, stride: u32, height: u32, bg_color: T) {
+        let bytes_per_pixel = core::mem::size_of::<T>() as u32;
+        let bytes_per_line = stride * bytes_per_pixel;
+        let shift_bytes = 8u64 * bytes_per_line as u64;
+        let fb_ptr = address as *mut u8;
+        let total_bytes = height as u64 * bytes_per_line as u64;
+        unsafe {
+            core::ptr::copy(
+                fb_ptr.add(shift_bytes as usize),
+                fb_ptr,
+                (total_bytes - shift_bytes) as usize,
+            );
+        }
+        // Clear last 8 lines
+        let clear_offset = (height - 8) as usize * bytes_per_line as usize;
+        let clear_ptr = (address + clear_offset as u64) as *mut T;
+        let clear_count = 8 * stride as usize;
+        unsafe {
+            core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color);
+        }
+    }
+
+    unsafe fn clear(&self, address: u64, stride: u32, height: u32, bg_color: T) {
+        let fb_ptr = address as *mut T;
+        let count = (stride * height) as usize;
+        unsafe {
+            core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color);
+        }
+    }
+}
+
+/// Configuration table GUID logger
+struct ConfigTableLogger<'a> {
+    system_table: &'a EfiSystemTable,
+}
+
+impl<'a> ConfigTableLogger<'a> {
+    fn new(system_table: &'a EfiSystemTable) -> Self {
+        Self { system_table }
+    }
+
+    fn log_all(&self) {
+        serial::_print(format_args!(
+            "CONFIG: Enumerating configuration tables ({} total):\n",
+            self.system_table.number_of_table_entries
+        ));
+
+        let config_tables = unsafe {
+            core::slice::from_raw_parts(
+                self.system_table.configuration_table,
+                self.system_table.number_of_table_entries,
+            )
+        };
+
+        for (i, table) in config_tables.iter().enumerate() {
+            let guid_bytes = &table.vendor_guid;
+            serial::_print(format_args!("CONFIG[{}]: GUID {{ ", i));
+            for (j, &byte) in guid_bytes.iter().enumerate() {
+                serial::_print(format_args!("{:02x}", byte));
+                if j < guid_bytes.len() - 1 {
+                    serial::_print(format_args!("-"));
+                }
+            }
+            serial::_print(format_args!(" }}\n"));
+        }
+    }
+}
+
+/// Protocol availability tester
+struct ProtocolTester<'a> {
+    system_table: &'a EfiSystemTable,
+}
+
+impl<'a> ProtocolTester<'a> {
+    fn new(system_table: &'a EfiSystemTable) -> Self {
+        Self { system_table }
+    }
+
+    fn test_availability(&self, guid: &[u8; 16], name: &str) {
+        let bs = unsafe { &*self.system_table.boot_services };
+
+        let mut handle_count: usize = 0;
+        let mut handles: *mut usize = ptr::null_mut();
+
+        let status = unsafe {
+            (bs.locate_handle_buffer)(
+                2, // ByProtocol
+                guid.as_ptr(),
+                ptr::null_mut(),
+                &mut handle_count,
+                &mut handles,
+            )
+        };
+
+        if EfiStatus::from(status) == EfiStatus::Success && handle_count > 0 {
+            serial::_print(format_args!(
+                "PROTOCOL: {} - Available on {} handles\n",
+                name, handle_count
+            ));
+            if !handles.is_null() {
+                unsafe { (bs.free_pool)(handles as *mut c_void) };
+            }
+        } else {
+            serial::_print(format_args!(
+                "PROTOCOL: {} - NOT FOUND (status: {:#x})\n",
+                name, status
+            ));
+        }
+    }
+}
+
 /// Helper to try Universal Graphics Adapter (UGA) protocol
 pub fn init_uga_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
-    // This GUID should be moved to a constant, e.g., in `petroleum/src/common/uefi.rs`
-    // pub const EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID: [u8; 16] = [...];
-    let uga_guid = crate::common::EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID;
-    let bs = unsafe { &*system_table.boot_services };
+    let locator = ProtocolLocator::new(&EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID, system_table);
     let mut uga: *mut EfiUniversalGraphicsAdapterProtocolPtr = ptr::null_mut();
 
-    let status = unsafe { (bs.locate_protocol)(
-        uga_guid.as_ptr(),
-        ptr::null_mut(),
-        &mut uga as *mut _ as *mut *mut c_void,
-    ) };
-
-    if EfiStatus::from(status) != EfiStatus::Success || uga.is_null() {
-        serial::_print(format_args!(
-            "UGA protocol not available (status: {:#x})\n", status
-        ));
-        return None;
-    }
-
-    serial::_print(format_args!("UGA protocol found, but UGA implementation incomplete.\n"));
-    // UGA is deprecated; for now, we don't initialize since it's complex and rarely used
-    None
-}
-
-/// Helper to enumerate and log all available UEFI configuration table GUIDs for debugging
-pub fn log_configuration_table_guids(system_table: &EfiSystemTable) {
-    serial::_print(format_args!("CONFIG: Enumerating configuration tables ({} total):\n", system_table.number_of_table_entries));
-
-    let config_tables = unsafe {
-        core::slice::from_raw_parts(
-            system_table.configuration_table,
-            system_table.number_of_table_entries
-        )
-    };
-
-    for (i, table) in config_tables.iter().enumerate() {
-        let guid_bytes = &table.vendor_guid;
-        serial::_print(format_args!("CONFIG[{}]: GUID {{ ", i));
-        // Log GUID as hex bytes for debugging
-        for (j, &byte) in guid_bytes.iter().enumerate() {
-            serial::_print(format_args!("{:02x}", byte));
-            if j < guid_bytes.len() - 1 {
-                serial::_print(format_args!("-"));
-            }
+    match locator.locate(&mut uga) {
+        Ok(_) => {
+            serial::_print(format_args!(
+                "UGA protocol found, but UGA implementation incomplete.\n"
+            ));
+            None
         }
-        serial::_print(format_args!(" }}\n"));
-    }
-}
-
-/// Helper function to test if a protocol GUID is available on any handle
-pub fn test_protocol_availability(system_table: &EfiSystemTable, guid: &[u8; 16], name: &str) {
-    let bs = unsafe { &*system_table.boot_services };
-
-    // Try to locate any handles that support this protocol
-    let mut handle_count: usize = 0;
-    let mut handles: *mut usize = ptr::null_mut();
-
-    let status = unsafe {
-        (bs.locate_handle_buffer)(
-            2, // ByProtocol (correct value is 2, not 3)
-            guid.as_ptr(),
-            ptr::null_mut(),
-            &mut handle_count as *mut usize,
-            &mut handles as *mut *mut usize,
-        )
-    };
-
-    if EfiStatus::from(status) == EfiStatus::Success && handle_count > 0 {
-        serial::_print(format_args!("PROTOCOL: {} - Available on {} handles\n", name, handle_count));
-        // Free the buffer
-        if !handles.is_null() {
-            unsafe { (bs.free_pool)(handles as *mut c_void) };
+        Err(status) => {
+            serial::_print(format_args!(
+                "UGA protocol not available (status: {:#x})\n",
+                status as u32
+            ));
+            None
         }
-    } else {
-        serial::_print(format_args!("PROTOCOL: {} - NOT FOUND (status: {:#x})\n", name, status));
     }
 }
 
-/// Helper to try different graphics protocols and modes
-pub fn init_graphics_protocols(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
-    // Verify system table integrity before proceeding
-    if system_table.boot_services.is_null() {
-        serial::_print(format_args!("GOP: System table boot services pointer is null.\n"));
-        return None;
-    }
-
-    // Print basic system information to help diagnose GOP availability
-    serial::_print(format_args!("GOP: Initializing graphics protocols...\n"));
-    serial::_print(format_args!("GOP: Configuration table count: {}\n", system_table.number_of_table_entries));
-
-    // Log all configuration table GUIDs for debugging
-    log_configuration_table_guids(system_table);
-
-    // Test common graphics protocols for availability
-    test_protocol_availability(system_table, &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, "EFI_GRAPHICS_OUTPUT_PROTOCOL");
-    test_protocol_availability(system_table, &EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID, "EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL");
-
-
-    test_protocol_availability(system_table, &EFI_LOADED_IMAGE_PROTOCOL_GUID, "EFI_LOADED_IMAGE_PROTOCOL");
-    test_protocol_availability(system_table, &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, "EFI_SIMPLE_FILE_SYSTEM_PROTOCOL");
-
-    // First try standard GOP protocol with enhanced mode enumeration
-    if let Some(config) = init_gop_framebuffer(system_table) {
-        return Some(config);
-    }
-
-    // If GOP fails, try UGA (Universal Graphics Adapter) - though deprecated
-    serial::_print(format_args!("GOP not available, trying UGA protocol...\n"));
-    if let Some(config) = init_uga_framebuffer(system_table) {
-        return Some(config);
-    }
-
-    // If all graphics protocols fail, try alternative VESA detection approaches
-    serial::_print(format_args!("All graphics protocols failed, trying alternative VESA detection...\n"));
-    let _ = graphics_alternatives::detect_vesa_graphics(unsafe { &*system_table.boot_services });
-
-    // Fall back to VGA text mode (handled externally)
-    serial::_print(format_args!("All graphics protocols failed, falling back to VGA text mode.\n"));
-    serial::_print(format_args!("NOTE: GOP protocol typically requires UEFI-compatible video hardware (e.g., QEMU with -vga qxl or virtio-gpu).\n"));
-    None
-}
-
-/// Helper to find GOP and init framebuffer
+/// Helper to initialize GOP and framebuffer
 pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
-    let bs = unsafe { &*system_table.boot_services };
+    let locator = ProtocolLocator::new(&EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, system_table);
     let mut gop: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
 
-    serial::_print(format_args!("GOP: Attempting to locate Graphics Output Protocol...\n"));
+    serial::_print(format_args!(
+        "GOP: Attempting to locate Graphics Output Protocol...\n"
+    ));
 
-    // Add memory barrier before protocol call for safety
-    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-
-    let status = (bs.locate_protocol)(
-        EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
-        ptr::null_mut(),
-        &mut gop as *mut _ as *mut *mut c_void,
-    );
-
-    if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
-        serial::_print(format_args!("GOP: Failed to locate GOP protocol (status: {:#x}).\n", status));
-        return None;
+    match locator.locate(&mut gop) {
+        Err(status) => {
+            serial::_print(format_args!(
+                "GOP: Failed to locate GOP protocol (status: {:#x}).\n",
+                status as u32
+            ));
+            return None;
+        }
+        Ok(_) => {
+            serial::_print(format_args!(
+                "GOP: Protocol located successfully at {:#p}.\n",
+                gop
+            ));
+        }
     }
-
-    serial::_print(format_args!("GOP: Protocol located successfully at {:#p}.\n", gop));
 
     let gop_ref = unsafe { &*gop };
     if gop_ref.mode.is_null() {
@@ -222,7 +361,6 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     let mode_ref = unsafe { &*gop_ref.mode };
     let current_mode = mode_ref.mode;
 
-    // Get max_mode safely with bounds checking
     let max_mode_u32 = mode_ref.max_mode;
     if max_mode_u32 == 0 {
         serial::_print(format_args!("GOP: Max mode is 0, skipping.\n"));
@@ -230,40 +368,42 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     }
     let max_mode = max_mode_u32 as usize;
 
-    serial::_print(format_args!("GOP: Current mode: {}, Max mode: {}.\n", current_mode, max_mode));
+    serial::_print(format_args!(
+        "GOP: Current mode: {}, Max mode: {}.\n",
+        current_mode, max_mode
+    ));
 
-    // Try to use current mode first, then mode 0, then try other modes
-    let mut mode_set_successfully = false;
+    let mode_setter = GopModeSetter::new(gop);
     let target_modes = [
         current_mode as u32,
         0,
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, // Try common modes
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
     ];
 
-    for &mode in &target_modes[0..target_modes.len().min(max_mode as usize)] {
-    if mode as u32 >= max_mode_u32 {
-        continue;
-    }
-    serial::_print(format_args!("GOP: Attempting to set mode {}...\n", mode));
-        let set_status = unsafe { (gop_ref.set_mode)(gop, mode) };
-        if EfiStatus::from(set_status) == EfiStatus::Success {
-            serial::_print(format_args!("GOP: Successfully set mode {}.\n", mode));
-            mode_set_successfully = true;
-            break;
-        } else {
-            serial::_print(format_args!("GOP: Failed to set mode {}, status: {:#x}.\n", mode, set_status));
-        }
-    }
-
-    if !mode_set_successfully {
+    if mode_setter.try_modes(&target_modes, max_mode_u32).is_err() {
         serial::_print(format_args!("GOP: Failed to set any graphics mode.\n"));
         return None;
     }
 
-    // Refresh mode reference after setting mode
     let mode_ref = unsafe { &*gop_ref.mode };
     if mode_ref.info.is_null() {
-        serial::_print(format_args!("GOP: Mode info pointer is null after setting mode.\n"));
+        serial::_print(format_args!(
+            "GOP: Mode info pointer is null after setting mode.\n"
+        ));
         return None;
     }
 
@@ -271,9 +411,15 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     let fb_addr = mode_ref.frame_buffer_base;
     let fb_size = mode_ref.frame_buffer_size;
 
-    serial::_print(format_args!("GOP: Framebuffer addr: {:#x}, size: {}KB\n", fb_addr, fb_size / 1024));
-    serial::_print(format_args!("GOP: Resolution: {}x{}, stride: {}\n",
-        info.horizontal_resolution, info.vertical_resolution, info.pixels_per_scan_line));
+    serial::_print(format_args!(
+        "GOP: Framebuffer addr: {:#x}, size: {}KB\n",
+        fb_addr,
+        fb_size / 1024
+    ));
+    serial::_print(format_args!(
+        "GOP: Resolution: {}x{}, stride: {}\n",
+        info.horizontal_resolution, info.vertical_resolution, info.pixels_per_scan_line
+    ));
 
     if fb_addr == 0 || fb_size == 0 {
         serial::_print(format_args!("GOP: Invalid framebuffer.\n"));
@@ -294,295 +440,214 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
         config.width, config.height, config.address, config.bpp, config.stride
     ));
 
-    let config_ptr = Box::leak(Box::new(config));
+    let installer = FramebufferInstaller::new(system_table);
+    match installer.install_and_clear(config) {
+        Ok(final_config) => {
+            serial::_print(format_args!(
+                "GOP: Configuration table installed successfully.\n"
+            ));
+            Some(final_config)
+        }
+        Err(status) => {
+            serial::_print(format_args!(
+                "GOP: Failed to install config table (status: {:#x}).\n",
+                status as u32
+            ));
+            None
+        }
+    }
+}
 
-    let install_status = unsafe { (bs.install_configuration_table)(
-        FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
-        config_ptr as *const _ as *mut c_void,
-    ) };
-
-    if EfiStatus::from(install_status) != EfiStatus::Success {
-        let _ = unsafe { Box::from_raw(config_ptr) };
-        serial::_print(format_args!("GOP: Failed to install config table (status: {:#x}).\n", install_status));
+/// Main entry point for graphics protocol initialization
+pub fn init_graphics_protocols(
+    system_table: &EfiSystemTable,
+) -> Option<FullereneFramebufferConfig> {
+    if system_table.boot_services.is_null() {
+        serial::_print(format_args!(
+            "GOP: System table boot services pointer is null.\n"
+        ));
         return None;
     }
 
-    serial::_print(format_args!("GOP: Configuration table installed successfully.\n"));
+    serial::_print(format_args!("GOP: Initializing graphics protocols...\n"));
+    serial::_print(format_args!(
+        "GOP: Configuration table count: {}\n",
+        system_table.number_of_table_entries
+    ));
 
-    // Clear screen for clean state
-    unsafe {
-        ptr::write_bytes(fb_addr as *mut u8, 0x00, fb_size as usize);
+    let logger = ConfigTableLogger::new(system_table);
+    logger.log_all();
+
+    let tester = ProtocolTester::new(system_table);
+    tester.test_availability(
+        &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
+        "EFI_GRAPHICS_OUTPUT_PROTOCOL",
+    );
+    tester.test_availability(
+        &EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID,
+        "EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL",
+    );
+    tester.test_availability(
+        &EFI_LOADED_IMAGE_PROTOCOL_GUID,
+        "EFI_LOADED_IMAGE_PROTOCOL",
+    );
+    tester.test_availability(
+        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,
+        "EFI_SIMPLE_FILE_SYSTEM_PROTOCOL",
+    );
+
+    if let Some(config) = init_gop_framebuffer(system_table) {
+        return Some(config);
     }
 
-    serial::_print(format_args!("GOP: Framebuffer cleared.\n"));
-    Some(*config_ptr)
-}
-
-// Helper function to convert u32 to string without heap allocation
-pub fn u32_to_str_heapless(n: u32, buffer: &mut [u8]) -> &str {
-    let mut i = buffer.len();
-    let mut n = n;
-    if n == 0 {
-        buffer[i - 1] = b'0';
-        return core::str::from_utf8(&buffer[i - 1..i]).unwrap_or("ERR");
-    }
-    loop {
-        i -= 1;
-        buffer[i] = (n % 10) as u8 + b'0';
-        n /= 10;
-        if n == 0 || i == 0 {
-            break;
-        }
-    }
-    core::str::from_utf8(&buffer[i..]).unwrap_or("ERR")
-}
-
-/// Panic handler implementation that can be used by binaries
-pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
-    if let Some(st_ptr) = UEFI_SYSTEM_TABLE.lock().as_ref() {
-        let st_ref = unsafe { &*st_ptr.0 };
-        crate::serial::UEFI_WRITER.lock().init(st_ref.con_out);
-
-        // Use write_string_heapless for panic messages to avoid heap allocation initially
-        let mut writer = crate::serial::UEFI_WRITER.lock();
-        let _ = writer.write_string_heapless("PANIC!\n");
-
-        if let Some(loc) = info.location() {
-            let mut line_buf = [0u8; 10];
-            let mut col_buf = [0u8; 10];
-            let _ = writer.write_string_heapless("Location: ");
-            let _ = writer.write_string_heapless(loc.file());
-            let _ = writer.write_string_heapless(":");
-            let _ = writer.write_string_heapless(u32_to_str_heapless(loc.line(), &mut line_buf));
-            let _ = writer.write_string_heapless(":");
-            let _ = writer.write_string_heapless(":");
-            let _ = writer.write_string_heapless(u32_to_str_heapless(loc.column(), &mut col_buf));
-            let _ = writer.write_string_heapless("\n");
-        }
-
-        let _ = writer.write_string_heapless("Message: ");
-        // Try to write the message as a string slice if possible
-        if let Some(msg) = info.message().as_str() {
-            let _ = writer.write_string_heapless(msg);
-        } else {
-            let _ = writer.write_string_heapless("(message formatting failed)");
-        }
-        let _ = writer.write_string_heapless("\n");
+    serial::_print(format_args!("GOP not available, trying UGA protocol...\n"));
+    if let Some(config) = init_uga_framebuffer(system_table) {
+        return Some(config);
     }
 
-    // Also output to VGA buffer if available - heapless formatting
-    #[cfg(feature = "vga_panic")]
-    {
-        // Import VGA module here to avoid dependency issues
-        extern crate vga_buffer;
-        use vga_buffer::{BUFFER_HEIGHT, BUFFER_WIDTH, Color, ColorCode, Writer};
+    serial::_print(format_args!(
+        "All graphics protocols failed, trying alternative VESA detection...\n"
+    ));
 
-        let mut writer = Writer {
-            column_position: 0,
-            color_code: ColorCode::new(Color::Red, Color::Black),
-            buffer: unsafe { &mut *(0xb8000 as *mut vga_buffer::Buffer) },
+    if let Some(config) = graphics_alternatives::detect_vesa_graphics(unsafe { &*system_table.boot_services }) {
+        serial::_print(format_args!(
+            "EFI PCI enumeration succeeded, installing config table\n"
+        ));
+
+        let config_ptr = Box::leak(Box::new(config));
+
+        let boot_services = unsafe { &*system_table.boot_services };
+        let install_status = unsafe {
+            (boot_services.install_configuration_table)(
+                FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
+                config_ptr as *const _ as *mut c_void,
+            )
         };
 
-        // Write "PANIC: " header
-        let header = b"PANIC: ";
-        for &byte in header {
-            writer.write_byte(byte);
+        if EfiStatus::from(install_status) != EfiStatus::Success {
+            let _ = unsafe { Box::from_raw(config_ptr) };
+            serial::_print(format_args!(
+                "EFI: Failed to install config table (status: {:#x}).\n",
+                install_status
+            ));
+            return None;
         }
 
-        // Write location if available
-        if let Some(loc) = info.location() {
-            let loc_str = loc.file();
-            for byte in loc_str.bytes() {
-                if byte == b'\n' {
-                    writer.new_line();
-                } else if byte.is_ascii_graphic()
-                    || byte == b' '
-                    || byte == b'.'
-                    || byte == b'/'
-                    || byte == b'\\'
-                {
-                    writer.write_byte(byte);
-                }
-            }
-            let colons = b":";
-            for &byte in colons {
-                writer.write_byte(byte);
-            }
-            let mut line_buf = [0u8; 10];
-            let line_str = u32_to_str_heapless(loc.line(), &mut line_buf);
-            for byte in line_str.bytes() {
-                writer.write_byte(byte);
-            }
-            for &byte in colons {
-                writer.write_byte(byte);
-            }
-            let mut col_buf = [0u8; 10];
-            let col_str = u32_to_str_heapless(loc.column(), &mut col_buf);
-            for byte in col_str.bytes() {
-                writer.write_byte(byte);
-            }
-            writer.new_line();
-        }
+        serial::_print(format_args!(
+            "EFI: Configuration table installed successfully.\n"
+        ));
+        serial::_print(format_args!(
+            "EFI: Framebuffer ready: {}x{} @ {:#x}, {} BPP, stride {}\n",
+            config_ptr.width,
+            config_ptr.height,
+            config_ptr.address,
+            config_ptr.bpp,
+            config_ptr.stride
+        ));
 
-        // Write message
-        if let Some(msg) = info.message().as_str() {
-            for byte in msg.bytes() {
-                if byte == b'\n' {
-                    writer.new_line();
-                } else if byte.is_ascii_graphic() || byte == b' ' {
-                    writer.write_byte(byte);
-                }
-            }
-        } else {
-            let msg_failed = b"(message formatting failed)";
-            for &byte in msg_failed {
-                writer.write_byte(byte);
-            }
-        }
-        writer.new_line();
-    }
-
-    // For QEMU debugging, halt the CPU
-    unsafe {
-        asm!("hlt");
-    }
-    loop {} // Panics must diverge
-}
-
-/// Alloc error handler required when using `alloc` in no_std.
-#[cfg(all(panic = "unwind", not(feature = "std"), not(test)))]
-#[alloc_error_handler]
-fn alloc_error(_layout: core::alloc::Layout) -> ! {
-    // Avoid recursive panics by directly looping
-    loop {
-        // Optionally, try to print a message using the heap-less writer if possible
-        if let Some(st_ptr) = UEFI_SYSTEM_TABLE.lock().as_ref() {
-            let st_ref = unsafe { &*st_ptr.0 };
-            crate::serial::UEFI_WRITER.lock().init(st_ref.con_out);
-            crate::serial::UEFI_WRITER
-                .lock()
-                .write_string_heapless("Allocation error!\n")
-                .ok();
-        }
         unsafe {
-            asm!("hlt"); // For QEMU debugging
+            ptr::write_bytes(
+                config_ptr.address as *mut u8,
+                0x00,
+                (config_ptr.height as u64 * config_ptr.stride as u64 * (config_ptr.bpp as u64 / 8))
+                    as usize,
+            );
+        }
+
+        serial::_print(format_args!("EFI: Framebuffer cleared.\n"));
+        return Some(*config_ptr);
+    }
+
+    serial::_print(format_args!(
+        "EFI PCI enumeration failed, trying bare-metal detection\n"
+    ));
+
+    if let Some(config) = bare_metal_graphics_detection::detect_bare_metal_graphics() {
+        let config_ptr = Box::leak(Box::new(config));
+
+        let install_status = unsafe {
+            ((*system_table.boot_services).install_configuration_table)(
+                FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
+                config_ptr as *const _ as *mut c_void,
+            )
+        };
+
+        if EfiStatus::from(install_status) != EfiStatus::Success {
+            let _ = unsafe { Box::from_raw(config_ptr) };
+            serial::_print(format_args!(
+                "Bare-metal: Failed to install config table (status: {:#x}).\n",
+                install_status
+            ));
+            return None;
+        }
+
+        serial::_print(format_args!(
+            "Bare-metal: Configuration table installed successfully.\n"
+        ));
+        serial::_print(format_args!(
+            "Bare-metal: Framebuffer ready: {}x{} @ {:#x}, {} BPP, stride {}\n",
+            config_ptr.width,
+            config_ptr.height,
+            config_ptr.address,
+            config_ptr.bpp,
+            config_ptr.stride
+        ));
+
+        unsafe {
+            ptr::write_bytes(
+                config_ptr.address as *mut u8,
+                0x00,
+                (config_ptr.height as u64 * config_ptr.stride as u64 * (config_ptr.bpp as u64 / 8))
+                    as usize,
+            );
+        }
+
+        serial::_print(format_args!("Bare-metal: Framebuffer cleared.\n"));
+        return Some(*config_ptr);
+    } else {
+        serial::_print(format_args!("Bare-metal graphics detection also failed\n"));
+    }
+
+    serial::_print(format_args!(
+        "All graphics protocols failed, falling back to VGA text mode.\n"
+    ));
+    serial::_print(format_args!(
+        "NOTE: GOP protocol typically requires UEFI-compatible video hardware (e.g., QEMU with -vga qxl or virtio-gpu).\n"
+    ));
+    None
+}
+
+/// Generic GOP mode setter
+struct GopModeSetter<'a> {
+    gop: *mut EfiGraphicsOutputProtocol,
+    _phantom: core::marker::PhantomData<&'a ()>,
+}
+
+impl<'a> GopModeSetter<'a> {
+    fn new(gop: *mut EfiGraphicsOutputProtocol) -> Self {
+        Self {
+            gop,
+            _phantom: core::marker::PhantomData,
         }
     }
-}
 
-/// Test harness for no_std environment
-#[cfg(test)]
-pub trait Testable {
-    fn run(&self);
-}
-
-#[cfg(test)]
-impl<T> Testable for T
-where
-    T: Fn(),
-{
-    fn run(&self) {
-        println!("{}...\t", core::any::type_name::<T>());
-        self();
-        println!("[ok]");
-    }
-}
-
-#[cfg(test)]
-pub fn test_runner(tests: &[&dyn Testable]) {
-    println!("Running {} tests", tests.len());
-    for test in tests {
-        test.run();
-    }
-}
-
-/// Generic function to safely and efficiently scroll a raw pixel buffer up
-/// Reduces code duplication in buffer management
-pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
-    let bytes_per_pixel = core::mem::size_of::<T>() as u32;
-    let bytes_per_line = stride * bytes_per_pixel;
-    let shift_bytes = 8u64 * bytes_per_line as u64;
-    let fb_ptr = address as *mut u8;
-    let total_bytes = height as u64 * bytes_per_line as u64;
-    unsafe {
-        core::ptr::copy(
-            fb_ptr.add(shift_bytes as usize),
-            fb_ptr,
-            (total_bytes - shift_bytes) as usize,
-        );
-    }
-    // Clear last 8 lines
-    let clear_offset = (height - 8) as usize * bytes_per_line as usize;
-    let clear_ptr = (address + clear_offset as u64) as *mut T;
-    let clear_count = 8 * stride as usize;
-    unsafe {
-        core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color);
-    }
-}
-
-/// Generic function to clear a raw pixel buffer
-/// Reduces code duplication in buffer initialization
-pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
-    let fb_ptr = address as *mut T;
-    let count = (stride * height) as usize;
-    unsafe {
-        core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color);
-    }
-}
-
-use alloc::boxed::Box;
-
-/// Alternative graphics detection methods when GOP is unavailable
-pub mod graphics_alternatives {
-    use super::*;
-    use alloc::vec::Vec;
-    use crate::common::{EfiBootServices, EfiStatus};
-    use crate::println;
-    use crate::serial::_print;
-
-    #[derive(Debug, Clone, Copy)]
-    struct PciDevice {
-        vendor_id: u16,
-        device_id: u16,
-        class_code: u8,
-        bus: u8,
-        device: u8,
-        function: u8,
-    }
-
-    /// Try to detect VESA-compatible graphics hardware using ACPI tables
-    /// Returns information about available graphics devices
-    pub fn detect_vesa_graphics(bs: &EfiBootServices) -> Result<(), EfiStatus> {
-        _print(format_args!("[GOP-ALT] Detecting VESA graphics hardware...\n"));
-
-        // PCI enumeration removed - would need proper EFI_PCI_IO_PROTOCOL implementation
-        _print(format_args!("[GOP-ALT] PCI enumeration not yet implemented - skipping VESA graphics detection\n"));
-
-        Err(EfiStatus::NotFound)
-    }
-
-
-
-    /// Try to detect VESA VBE (VESA BIOS Extensions) support
-    fn detect_vesa_vbe(bs: &EfiBootServices) -> Result<(), EfiStatus> {
-        _print(format_args!("[GOP-ALT] Attempting VESA VBE detection...\n"));
-
-        // Check for VBE signature in BIOS memory
-        // VBE typically lives at 0xC0000-0xD0000 in real mode memory
-
-        // Try to call VBE functions through BIOS calls or memory scanning
-        // This is highly system-specific and may not work in UEFI environment
-
-        _print(format_args!("[GOP-ALT] VESA VBE detection not implemented yet - requires BIOS interrupt calls\n"));
-        _print(format_args!("[GOP-ALT] Consider implementing linear framebuffer detection or ACPI-based graphics\n"));
-
-        Err(EfiStatus::Unsupported)
-    }
-
-    /// Read from PCI configuration space (simplified - needs proper implementation)
-    unsafe fn port_read(port: u16) -> u32 {
-        // This is a placeholder - real PCI access needs proper protocols
-        // In UEFI, use EFI_PCI_IO_PROTOCOL instead
-        0xFFFF_FFFF // Invalid read
+    fn try_modes(&self, target_modes: &[u32], max_mode: u32) -> Result<(), ()> {
+        for &mode in target_modes {
+            if mode >= max_mode {
+                continue;
+            }
+            serial::_print(format_args!("GOP: Attempting to set mode {}...\n", mode));
+            let set_status = unsafe { ((*self.gop).set_mode)(self.gop, mode) };
+            if EfiStatus::from(set_status) == EfiStatus::Success {
+                serial::_print(format_args!("GOP: Successfully set mode {}.\n", mode));
+                return Ok(());
+            } else {
+                serial::_print(format_args!(
+                    "GOP: Failed to set mode {}, status: {:#x}.\n",
+                    mode, set_status
+                ));
+            }
+        }
+        Err(())
     }
 }

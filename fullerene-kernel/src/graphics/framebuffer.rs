@@ -2,7 +2,7 @@ use core::marker::{Send, Sync};
 use embedded_graphics::{geometry::Size, pixelcolor::Rgb888, prelude::*};
 use petroleum::common::VgaFramebufferConfig;
 use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig};
-use petroleum::graphics::{grayscale_intensity, rgb_pixel};
+use petroleum::graphics::rgb_pixel;
 use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
 
 macro_rules! delegate_call {
@@ -363,21 +363,21 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
 pub fn vga_color_index(r: u8, g: u8, b: u8) -> u32 {
     // Standard 16-color EGA/VGA palette with their approximate RGB values.
     const PALETTE: [(u8, u8, u8, u32); 16] = [
-        (0, 0, 0, 0),       // Black
-        (0, 0, 170, 1),     // Blue
-        (0, 170, 0, 2),     // Green
-        (0, 170, 170, 3),   // Cyan
-        (170, 0, 0, 4),     // Red
-        (170, 0, 170, 5),   // Magenta
-        (170, 85, 0, 6),    // Brown
-        (170, 170, 170, 7), // Light Gray
-        (85, 85, 85, 8),    // Dark Gray
-        (85, 85, 255, 9),   // Light Blue
-        (85, 255, 85, 10),  // Light Green
-        (85, 255, 255, 11), // Light Cyan
-        (255, 85, 85, 12),  // Light Red
-        (255, 85, 255, 13), // Light Magenta
-        (255, 255, 85, 14), // Yellow
+        (0, 0, 0, 0),        // Black
+        (0, 0, 170, 1),      // Blue
+        (0, 170, 0, 2),      // Green
+        (0, 170, 170, 3),    // Cyan
+        (170, 0, 0, 4),      // Red
+        (170, 0, 170, 5),    // Magenta
+        (170, 85, 0, 6),     // Brown
+        (170, 170, 170, 7),  // Light Gray
+        (85, 85, 85, 8),     // Dark Gray
+        (85, 85, 255, 9),    // Light Blue
+        (85, 255, 85, 10),   // Light Green
+        (85, 255, 255, 11),  // Light Cyan
+        (255, 85, 85, 12),   // Light Red
+        (255, 85, 255, 13),  // Light Magenta
+        (255, 255, 85, 14),  // Yellow
         (255, 255, 255, 15), // White
     ];
 

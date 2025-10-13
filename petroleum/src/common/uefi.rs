@@ -220,7 +220,7 @@ pub struct EfiBootServices {
     _unused30: usize,                                        // fn30
     pub open_protocol:
         extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, // fn31
-    _unused32: usize,                                        // fn32
+    pub close_protocol: extern "efiapi" fn(usize, *const u8, usize, usize) -> usize, // fn32
     _unused33: usize,                                        // fn33
     _unused34: usize,                                        // fn34
     pub locate_handle_buffer:
@@ -302,6 +302,45 @@ pub struct EfiGraphicsOutputModeInformation {
     pub pixel_format: EfiGraphicsPixelFormat,
     _pad: [u8; 12],
     pub pixels_per_scan_line: u32,
+}
+
+/// Minimal EFI_PCI_IO_PROTOCOL (UEFI)
+#[repr(C)]
+pub struct EfiPciIoProtocol {
+    /// poll_mem(This, Width, BarIndex, Offset, Mask, Value) -> EFI_STATUS
+    pub poll_mem: usize, // fn0 - not used
+    /// poll_io(This, Width, BarIndex, Offset, Mask, Value) -> EFI_STATUS
+    pub poll_io: usize, // fn1 - not used
+    /// mem(ReadWrite, Width, BarIndex, Offset, Count, Buffer) -> EFI_STATUS
+    pub mem: usize, // fn2 - not used, use pci_read/pci_write instead
+    /// io(ReadWrite, Width, BarIndex, Offset, Count, Buffer) -> EFI_STATUS
+    pub io: usize, // fn3 - not used
+    /// pci(ReadWrite, Width, Offset, Count, Buffer) -> EFI_STATUS
+    pub pci_read: extern "efiapi" fn(*mut EfiPciIoProtocol, u8, u64, usize, *mut c_void) -> usize, // fn4
+    /// pci(ReadWrite, Width, Offset, Count, Buffer) -> EFI_STATUS
+    pub pci_write: extern "efiapi" fn(*mut EfiPciIoProtocol, u8, u64, usize, *mut c_void) -> usize, // fn5
+    /// copy_mem(ReadWrite, Width, DestBarIndex, DestOffset, SrcBarIndex, SrcOffset, Count) -> EFI_STATUS
+    pub copy_mem: usize, // fn6 - not used
+    /// map(This, Operation, HostAddress, NumberOfBytes, DeviceAddress, IoAddress) -> EFI_STATUS
+    pub map: usize, // fn7 - not used
+    /// unmap(This, Mapping) -> EFI_STATUS
+    pub unmap: usize, // fn8 - not used
+    /// allocate_buffer(PoolOrNot, Type, Pages, HostAddress) -> EFI_STATUS
+    pub allocate_buffer: usize, // fn9 - not used
+    /// free_buffer(This, Pages, HostAddress) -> EFI_STATUS
+    pub free_buffer: usize, // fn10 - not used
+    /// flush(This) -> EFI_STATUS
+    pub flush: usize, // fn11 - not used
+    /// get_location(This, SegmentNumber, BusNumber, DeviceNumber, FunctionNumber) -> EFI_STATUS
+    pub get_location:
+        extern "efiapi" fn(*mut EfiPciIoProtocol, *mut usize, *mut usize, *mut usize, *mut usize) -> usize, // fn12
+    /// attributes(This, Operation, Attributes, Result) -> EFI_STATUS
+    pub attributes: usize, // fn13 - not used
+    /// get_bar_attributes(This, BarIndex, Supports, Resources) -> EFI_STATUS
+    pub get_bar_attributes: usize, // fn14 - not used
+    /// set_bar_attributes(This, Attributes, BarIndex, Offset, Length) -> EFI_STATUS
+    pub set_bar_attributes: usize, // fn15 - not used
+                                   // More functions exist but we only define what we need
 }
 
 /// Get bits per pixel from UEFI graphics pixel format.

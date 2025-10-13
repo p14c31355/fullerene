@@ -9,8 +9,8 @@ use x86_64::structures::paging::{
 };
 use x86_64::{PhysAddr, VirtAddr};
 
-use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
 use petroleum::common::EfiMemoryType;
+use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
 
 /// Physical memory offset (higher half)
 pub static PHYSICAL_MEMORY_OFFSET: Once<VirtAddr> = Once::new();
@@ -115,7 +115,8 @@ pub fn reinit_page_table(
 
     // Calculate the physical_memory_offset for the higher-half kernel mapping
     const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000;
-    let physical_memory_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE - kernel_phys_start.as_u64());
+    let physical_memory_offset =
+        VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE - kernel_phys_start.as_u64());
 
     petroleum::serial::serial_log(format_args!(
         "reinit_page_table: Starting with offset 0x{:x}, kernel_start 0x{:x}\n",
