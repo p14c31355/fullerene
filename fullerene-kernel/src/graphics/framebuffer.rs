@@ -361,32 +361,40 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
 /// Convert RGB888 color to VGA palette index (8-bit indexed color)
 /// This is a simple approximation that maps common colors to their closest VGA equivalents
 pub fn vga_color_index(r: u8, g: u8, b: u8) -> u32 {
-    // VGA palette has 256 colors but we're approximating with basic colors
-    // For now, use simple RGB intensity mapping for monochrome-like output
-    // In a full implementation, you'd use proper VGA palette lookup
+    // Standard 16-color EGA/VGA palette with their approximate RGB values.
+    const PALETTE: [(u8, u8, u8, u32); 16] = [
+        (0, 0, 0, 0),       // Black
+        (0, 0, 170, 1),     // Blue
+        (0, 170, 0, 2),     // Green
+        (0, 170, 170, 3),   // Cyan
+        (170, 0, 0, 4),     // Red
+        (170, 0, 170, 5),   // Magenta
+        (170, 85, 0, 6),    // Brown
+        (170, 170, 170, 7), // Light Gray
+        (85, 85, 85, 8),    // Dark Gray
+        (85, 85, 255, 9),   // Light Blue
+        (85, 255, 85, 10),  // Light Green
+        (85, 255, 255, 11), // Light Cyan
+        (255, 85, 85, 12),  // Light Red
+        (255, 85, 255, 13), // Light Magenta
+        (255, 255, 85, 14), // Yellow
+        (255, 255, 255, 15), // White
+    ];
 
-    // Simple grayscale mapping for now - can be enhanced later
-    let gray = (r as u32 * 77 + g as u32 * 150 + b as u32 * 29) / 256;
+    let mut min_dist_sq = u32::MAX;
+    let mut best_index = 0;
 
-    // Map to basic VGA colors (0-15 are the standard EGA colors)
-    match gray {
-        0..=15 => 0,          // Black
-        16..=23 => 8,         // Dark Gray
-        24..=39 => 7,         // Light Gray
-        40..=55 => 15,        // White
-        56..=71 => 14,        // Yellow
-        72..=87 => 12,        // Light Red
-        88..=103 => 10,       // Light Green
-        104..=119 => 9,       // Light Blue
-        120..=135 => 11,      // Light Cyan
-        136..=151 => 13,      // Light Magenta
-        152..=167 => 6,       // Brown
-        168..=183 => 4,       // Red
-        184..=199 => 2,       // Green
-        200..=215 => 1,       // Blue
-        216..=231 => 3,       // Cyan
-        232..=247 => 5,       // Magenta
-        248..=255 => 15,      // Bright White
-        _ => 15,              // Default to bright white for any overflow
+    for &(pr, pg, pb, index) in &PALETTE {
+        let dr = r as i32 - pr as i32;
+        let dg = g as i32 - pg as i32;
+        let db = b as i32 - pb as i32;
+        let dist_sq = (dr * dr + dg * dg + db * db) as u32;
+
+        if dist_sq < min_dist_sq {
+            min_dist_sq = dist_sq;
+            best_index = index;
+        }
     }
+
+    best_index
 }
