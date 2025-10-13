@@ -14,7 +14,7 @@ impl<T> PortWriter<T> {
     /// Safe wrapper for port writes - requires T: PortWrite trait
     pub fn write_safe(&mut self, value: T)
     where
-        T: x86_64::instructions::port::PortWrite,
+        T: Copy + x86_64::instructions::port::PortWrite,
     {
         unsafe {
             self.port.write(value);
@@ -148,6 +148,10 @@ impl VgaPorts {
     pub const GRAPHICS_DATA: u16 = 0x3CF;
     pub const SEQUENCER_INDEX: u16 = 0x3C4;
     pub const SEQUENCER_DATA: u16 = 0x3C5;
+
+    // PCI Configuration Space ports
+    pub const PCI_CONFIG_ADDRESS: u16 = 0xCF8;
+    pub const PCI_CONFIG_DATA: u16 = 0xCFC;
 }
 
 // Enhanced macro for writing port sequences with automatic port management

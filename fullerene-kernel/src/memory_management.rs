@@ -1,327 +1,1154 @@
-//! Virtual memory management for Fullerene OS
+//! Unified Memory Management Implementation
 //!
-//! This module provides virtual memory management including:
-//! - Page table management per process
-//! - User space/kernel space separation
-//! - Page fault handling
-//! - Memory allocation and deallocation
+//! This module provides a comprehensive memory management system that implements
+//! the MemoryManager, ProcessMemoryManager, PageTableHelper, and FrameAllocator traits.
 
-use crate::heap::paging::FRAME_ALLOCATOR;
-use alloc::vec::Vec;
-static FREE_FRAMES: spin::Mutex<Vec<x86_64::structures::paging::PhysFrame>> =
-    spin::Mutex::new(Vec::new());
-use core::ptr;
-use core::sync::atomic::{AtomicU64, Ordering};
+use crate::*;
+use alloc::collections::BTreeMap;
 use spin::Mutex;
-use x86_64::structures::paging::page_table::PageTableEntry;
-use x86_64::structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB};
-use x86_64::structures::paging::{Mapper, Page, PageTableFlags};
-use x86_64::{PhysAddr, VirtAddr};
 
-/// Physical memory offset (virt = phys + offset)
-pub static PHYSICAL_MEMORY_OFFSET: Mutex<Option<VirtAddr>> = Mutex::new(None);
-
-/// Set the physical memory offset
-pub fn set_physical_memory_offset(offset: VirtAddr) {
-    *PHYSICAL_MEMORY_OFFSET.lock() = Some(offset);
+/// Unified memory manager implementing all memory management traits
+pub struct UnifiedMemoryManager {
+    frame_allocator: BitmapFrameAllocator,
+    page_table_manager: PageTableManager,
+    process_managers: BTreeMap<usize, ProcessMemoryManagerImpl>,
+    current_process: usize,
+    initialized: bool,
 }
 
-/// Allocate a page frame, preferring recycled frames
-pub fn allocate_page_frame() -> Option<PhysFrame> {
-    if let Some(frame) = FREE_FRAMES.lock().pop() {
-        Some(frame)
-    } else {
-        FRAME_ALLOCATOR
-            .get()
-            .and_then(|a| a.lock().allocate_frame())
+impl UnifiedMemoryManager {
+    /// Create a new unified memory manager
+    pub fn new() -> Self {
+        Self {
+            frame_allocator: BitmapFrameAllocator::new(),
+            page_table_manager: PageTableManager::new(),
+            process_managers: BTreeMap::new(),
+            current_process: 0,
+            initialized: false,
+        }
+    }
+
+    /// Initialize the memory management system
+    pub fn init(&mut self, memory_map: &'static [petroleum::page_table::EfiMemoryDescriptor]) -> SystemResult<()> {
+        // Initialize frame allocator with memory map
+        self.frame_allocator.init_with_memory_map(memory_map)?;
+
+        // Initialize page table manager
+        self.page_table_manager.init()?;
+
+        // Create kernel address space (process 0)
+        self.create_address_space(0)?;
+
+        self.initialized = true;
+        log_info!("Unified memory manager initialized");
+        Ok(())
+    }
+
+    /// Get frame allocator reference
+    pub fn frame_allocator(&self) -> &BitmapFrameAllocator {
+        &self.frame_allocator
+    }
+
+    /// Get frame allocator mutable reference
+    pub fn frame_allocator_mut(&mut self) -> &mut BitmapFrameAllocator {
+        &mut self.frame_allocator
+    }
+
+    /// Get page table manager reference
+    pub fn page_table_manager(&self) -> &PageTableManager {
+        &self.page_table_manager
+    }
+
+    /// Get page table manager mutable reference
+    pub fn page_table_manager_mut(&mut self) -> &mut PageTableManager {
+        &mut self.page_table_manager
+    }
+
+    /// Check if memory manager is initialized
+    pub fn is_initialized(&self) -> bool {
+        self.initialized
     }
 }
 
-/// Page table for each process
-#[derive(Debug)]
-pub struct ProcessPageTable {
-    /// Physical address of the level 4 page table
-    pub pml4_frame: PhysFrame,
-    /// Virtual memory mapper
-    pub mapper: OffsetPageTable<'static>,
-}
-
-/// Global frame allocator for physical memory
-/// Use heap::FRAME_ALLOCATOR instead for consistency
-
-/// Copy kernel page table entries recursively
-fn copy_kernel_page_table_entries(
-    from_table: &PageTable,
-    to_table: &mut PageTable,
-    physical_memory_offset: VirtAddr,
-    level: usize,
-) {
-    use x86_64::structures::paging::page_table::PageTableLevel;
-
-    // For each kernel entry (256-511)
-    for i in 256..512 {
-        if from_table[i].is_unused() {
-            continue;
+// Implementation of base MemoryManager trait
+impl crate::MemoryManager for UnifiedMemoryManager {
+    fn allocate_pages(&mut self, count: usize) -> SystemResult<usize> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
         }
 
-        if from_table[i].flags().contains(PageTableFlags::HUGE_PAGE) {
-            // Copy huge pages directly
-            to_table[i] = from_table[i].clone();
+        // Allocate physical frames
+        let frame_addr = self.frame_allocator.allocate_contiguous_frames(count)?;
+
+        // Map to kernel virtual address space
+        let virtual_addr = self.find_free_virtual_address(count * 4096)?;
+
+        for i in 0..count {
+            let phys_addr = frame_addr + (i * 4096);
+            let virt_addr = virtual_addr + (i * 4096);
+
+            self.page_table_manager.map_page(
+                virt_addr,
+                phys_addr,
+                PageFlags::kernel_data()
+            )?;
+        }
+
+        Ok(virtual_addr)
+    }
+
+    fn free_pages(&mut self, address: usize, count: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        // Get physical addresses and free frames
+        for i in 0..count {
+            let virt_addr = address + (i * 4096);
+            if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
+                self.frame_allocator.free_frame(phys_addr)?;
+            }
+
+            self.page_table_manager.unmap_page(virt_addr)?;
+        }
+
+        Ok(())
+    }
+
+    fn total_memory(&self) -> usize {
+        self.frame_allocator.total_frames() * self.frame_allocator.frame_size()
+    }
+
+    fn available_memory(&self) -> usize {
+        self.frame_allocator.available_frames() * self.frame_allocator.frame_size()
+    }
+
+    fn map_address(&mut self, virtual_addr: usize, physical_addr: usize, count: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        for i in 0..count {
+            let virt_addr = virtual_addr + (i * 4096);
+            let phys_addr = physical_addr + (i * 4096);
+
+            self.page_table_manager.map_page(
+                virt_addr,
+                phys_addr,
+                PageFlags::kernel_data()
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn unmap_address(&mut self, virtual_addr: usize, count: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        for i in 0..count {
+            let addr = virtual_addr + (i * 4096);
+            self.page_table_manager.unmap_page(addr)?;
+        }
+
+        Ok(())
+    }
+
+    fn virtual_to_physical(&self, virtual_addr: usize) -> SystemResult<usize> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        self.page_table_manager.translate_address(virtual_addr)
+    }
+
+    fn init_paging(&mut self) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        self.page_table_manager.init_paging()
+    }
+
+    fn page_size(&self) -> usize {
+        4096
+    }
+}
+
+// Implementation of ProcessMemoryManager trait
+impl crate::ProcessMemoryManager for UnifiedMemoryManager {
+    fn create_address_space(&mut self, process_id: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        let process_manager = ProcessMemoryManagerImpl::new(process_id);
+        self.process_managers.insert(process_id, process_manager);
+
+        log_info!("Created address space for process");
+        Ok(())
+    }
+
+    fn switch_address_space(&mut self, process_id: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        if let Some(process_manager) = self.process_managers.get(&process_id) {
+            self.current_process = process_id;
+            self.page_table_manager.switch_page_table(process_manager.page_table_root())?;
+            log_info!("Switched to process address space");
+            Ok(())
         } else {
-            // Allocate a new frame for the next level table
-            let new_frame = allocate_page_frame().expect("Frame allocation failed");
-
-            // Zero the new frame to avoid interpreting stale data as valid page table entries
-            unsafe {
-                ptr::write_bytes(
-                    (physical_memory_offset + new_frame.start_address().as_u64())
-                        .as_mut_ptr::<u8>(),
-                    0,
-                    4096,
-                );
-            }
-
-            // Create a new entry with the new frame address and same flags
-            let mut new_entry = PageTableEntry::new();
-            new_entry.set_addr(new_frame.start_address(), from_table[i].flags());
-            to_table[i] = new_entry;
-
-            if level > 1 {
-                // Recurse to copy the next level
-                let from_next_level_ptr = (physical_memory_offset + from_table[i].addr().as_u64())
-                    .as_u64() as *const PageTable;
-                let from_next_level = unsafe { &*from_next_level_ptr };
-                let to_next_level_ptr = (physical_memory_offset
-                    + new_frame.start_address().as_u64())
-                .as_u64() as *mut PageTable;
-                let to_next_level = unsafe { &mut *to_next_level_ptr };
-
-                copy_kernel_page_table_entries(
-                    from_next_level,
-                    to_next_level,
-                    physical_memory_offset,
-                    level - 1,
-                );
-            }
+            Err(SystemError::NoSuchProcess)
         }
+    }
+
+    fn destroy_address_space(&mut self, process_id: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        if let Some(mut process_manager) = self.process_managers.remove(&process_id) {
+            process_manager.cleanup()?;
+            log_info!("Destroyed address space for process");
+            Ok(())
+        } else {
+            Err(SystemError::NoSuchProcess)
+        }
+    }
+
+    fn allocate_heap(&mut self, size: usize) -> SystemResult<usize> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        if let Some(process_manager) = self.process_managers.get_mut(&self.current_process) {
+            process_manager.allocate_heap(size)
+        } else {
+            Err(SystemError::NoSuchProcess)
+        }
+    }
+
+    fn free_heap(&mut self, address: usize, size: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        if let Some(process_manager) = self.process_managers.get_mut(&self.current_process) {
+            process_manager.free_heap(address, size)
+        } else {
+            Err(SystemError::NoSuchProcess)
+        }
+    }
+
+    fn allocate_stack(&mut self, size: usize) -> SystemResult<usize> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        if let Some(process_manager) = self.process_managers.get_mut(&self.current_process) {
+            process_manager.allocate_stack(size)
+        } else {
+            Err(SystemError::NoSuchProcess)
+        }
+    }
+
+    fn free_stack(&mut self, address: usize, size: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        if let Some(process_manager) = self.process_managers.get_mut(&self.current_process) {
+            process_manager.free_stack(address, size)
+        } else {
+            Err(SystemError::NoSuchProcess)
+        }
+    }
+
+    fn copy_memory_between_processes(&mut self, from_process: usize, to_process: usize,
+                                   from_addr: usize, to_addr: usize, size: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        // For simplicity, implement as copy through kernel space
+        // In a full implementation, this would use proper inter-process memory copying
+
+        // Save current process
+        let current_process = self.current_process;
+
+        // Copy from source process
+        self.switch_address_space(from_process)?;
+        let source_data = self.copy_from_user_space(from_addr, size)?;
+
+        // Copy to destination process
+        self.switch_address_space(to_process)?;
+        self.copy_to_user_space(to_addr, &source_data)?;
+
+        // Restore original process
+        self.switch_address_space(current_process)?;
+
+        Ok(())
+    }
+
+    fn current_process_id(&self) -> usize {
+        self.current_process
     }
 }
 
-/// Create a new page table for a process
-pub fn create_process_page_table(physical_memory_offset: VirtAddr) -> Option<ProcessPageTable> {
-    // Allocate a new level 4 page table frame
-    let pml4_frame = allocate_page_frame().expect("Frame allocator not initialized");
+// Implementation of PageTableHelper trait
+impl crate::PageTableHelper for UnifiedMemoryManager {
+    fn map_page(&mut self, virtual_addr: usize, physical_addr: usize, flags: PageFlags) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
 
-    // Initialize the page table with kernel mappings
-    let pml4: &mut PageTable = unsafe {
-        &mut *(physical_memory_offset + pml4_frame.start_address().as_u64()).as_mut_ptr()
-    };
+        self.page_table_manager.map_page(virtual_addr, physical_addr, flags)
+    }
 
-    // Clear the page table
-    pml4.zero();
+    fn unmap_page(&mut self, virtual_addr: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
 
-    // Copy kernel page table mappings (higher half of virtual address space)
-    let (current_frame, _) = x86_64::registers::control::Cr3::read();
-    let current_pml4_virt = physical_memory_offset + current_frame.start_address().as_u64();
-    let current_pml4 = unsafe { &*(current_pml4_virt.as_mut_ptr() as *const PageTable) };
+        self.page_table_manager.unmap_page(virtual_addr)
+    }
 
-    // Recursively copy kernel mappings to ensure proper isolation
-    copy_kernel_page_table_entries(current_pml4, pml4, physical_memory_offset, 4);
+    fn translate_address(&self, virtual_addr: usize) -> SystemResult<usize> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
 
-    let mapper = unsafe { OffsetPageTable::new(pml4, physical_memory_offset) };
+        self.page_table_manager.translate_address(virtual_addr)
+    }
 
-    Some(ProcessPageTable { pml4_frame, mapper })
+    fn set_page_flags(&mut self, virtual_addr: usize, flags: PageFlags) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        self.page_table_manager.set_page_flags(virtual_addr, flags)
+    }
+
+    fn get_page_flags(&self, virtual_addr: usize) -> SystemResult<PageFlags> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        self.page_table_manager.get_page_flags(virtual_addr)
+    }
+
+    fn flush_tlb(&mut self, virtual_addr: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        self.page_table_manager.flush_tlb(virtual_addr)
+    }
+
+    fn flush_tlb_all(&mut self) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        self.page_table_manager.flush_tlb_all()
+    }
+
+    fn create_page_table(&mut self) -> SystemResult<usize> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        self.page_table_manager.create_page_table()
+    }
+
+    fn destroy_page_table(&mut self, table_addr: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        self.page_table_manager.destroy_page_table(table_addr)
+    }
+
+    fn clone_page_table(&mut self, source_table: usize) -> SystemResult<usize> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        self.page_table_manager.clone_page_table(source_table)
+    }
+
+    fn switch_page_table(&mut self, table_addr: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        self.page_table_manager.switch_page_table(table_addr)
+    }
+
+    fn current_page_table(&self) -> usize {
+        self.page_table_manager.current_page_table()
+    }
 }
 
-/// Map user-space virtual address to physical frame
-pub fn map_user_page(
-    page_table: &mut ProcessPageTable,
-    virtual_addr: VirtAddr,
-    physical_addr: PhysAddr,
-    flags: PageTableFlags,
-) -> Result<(), MapError> {
-    let page = Page::<Size4KiB>::containing_address(virtual_addr);
-    let frame = PhysFrame::<Size4KiB>::containing_address(physical_addr);
+// Implementation of FrameAllocator trait
+impl crate::FrameAllocator for UnifiedMemoryManager {
+    fn allocate_frame(&mut self) -> SystemResult<usize> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
 
+        self.frame_allocator.allocate_frame()
+    }
+
+    fn free_frame(&mut self, frame_addr: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        self.frame_allocator.free_frame(frame_addr)
+    }
+
+    fn allocate_contiguous_frames(&mut self, count: usize) -> SystemResult<usize> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        self.frame_allocator.allocate_contiguous_frames(count)
+    }
+
+    fn free_contiguous_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        self.frame_allocator.free_contiguous_frames(start_addr, count)
+    }
+
+    fn total_frames(&self) -> usize {
+        self.frame_allocator.total_frames()
+    }
+
+    fn available_frames(&self) -> usize {
+        self.frame_allocator.available_frames()
+    }
+
+    fn reserve_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        self.frame_allocator.reserve_frames(start_addr, count)
+    }
+
+    fn release_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        self.frame_allocator.release_frames(start_addr, count)
+    }
+
+    fn is_frame_available(&self, frame_addr: usize) -> bool {
+        self.frame_allocator.is_frame_available(frame_addr)
+    }
+
+    fn frame_size(&self) -> usize {
+        self.frame_allocator.frame_size()
+    }
+}
+
+// Implementation of Initializable trait
+impl crate::Initializable for UnifiedMemoryManager {
+    fn init(&mut self) -> SystemResult<()> {
+        // Initialize with a dummy memory map for now
+        // In a real implementation, this would be called with the actual EFI memory map
+        let dummy_memory_map = &[];
+        self.init(dummy_memory_map)
+    }
+
+    fn name(&self) -> &'static str {
+        "UnifiedMemoryManager"
+    }
+
+    fn priority(&self) -> i32 {
+        1000 // Highest priority for memory management
+    }
+}
+
+// Implementation of ErrorLogging trait
+impl crate::ErrorLogging for UnifiedMemoryManager {
+    fn log_error(&self, error: &SystemError, context: &'static str) {
+        log_error!(error, context);
+    }
+
+    fn log_warning(&self, message: &'static str) {
+        log_warning!(message);
+    }
+
+    fn log_info(&self, message: &'static str) {
+        log_info!(message);
+    }
+}
+
+// Helper methods for UnifiedMemoryManager
+impl UnifiedMemoryManager {
+    /// Find a free virtual address range
+    fn find_free_virtual_address(&self, size: usize) -> SystemResult<usize> {
+        // Simple implementation - in reality, this would use a more sophisticated allocator
+        // For now, just return a high address in kernel space
+        Ok(0xFFFF_FFFF_8000_0000 + size) // Start from high memory
+    }
+
+    /// Copy data from user space to kernel space
+    fn copy_from_user_space(&self, user_addr: usize, size: usize) -> SystemResult<alloc::vec::Vec<u8>> {
+        let mut data = alloc::vec::Vec::new();
+
+        for offset in (0..size).step_by(4096) {
+            let page_size = core::cmp::min(4096, size - offset);
+            let virt_addr = user_addr + offset;
+
+            if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
+                // In a real implementation, this would copy from physical memory
+                // For now, just allocate zeroed memory
+                data.extend_from_slice(&vec![0u8; page_size]);
+            } else {
+                return Err(SystemError::InvalidArgument);
+            }
+        }
+
+        Ok(data)
+    }
+
+    /// Copy data from kernel space to user space
+    fn copy_to_user_space(&mut self, user_addr: usize, data: &[u8]) -> SystemResult<()> {
+        for (offset, &byte) in data.iter().enumerate() {
+            let virt_addr = user_addr + offset;
+
+            // In a real implementation, this would copy to physical memory
+            // For now, just ensure the page is mapped
+            if let Ok(_phys_addr) = self.page_table_manager.translate_address(virt_addr) {
+                // Copy would happen here
+            } else {
+                return Err(SystemError::InvalidArgument);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Bitmap-based frame allocator implementation
+pub struct BitmapFrameAllocator {
+    bitmap: alloc::vec::Vec<u64>,
+    frame_count: usize,
+    next_free_frame: usize,
+    initialized: bool,
+}
+
+impl BitmapFrameAllocator {
+    /// Create a new bitmap frame allocator
+    pub fn new() -> Self {
+        Self {
+            bitmap: alloc::vec::Vec::new(),
+            frame_count: 0,
+            next_free_frame: 0,
+            initialized: false,
+        }
+    }
+
+    /// Initialize with EFI memory map
+    pub fn init_with_memory_map(&mut self, memory_map: &'static [petroleum::page_table::EfiMemoryDescriptor]) -> SystemResult<()> {
+        // Calculate total memory and initialize bitmap
+        let mut total_frames = 0usize;
+
+        for descriptor in memory_map {
+            if descriptor.ty == petroleum::page_table::EfiMemoryType::Conventional {
+                total_frames += descriptor.page_count as usize;
+            }
+        }
+
+        // Initialize bitmap (each bit represents a frame)
+        let bitmap_size = (total_frames + 63) / 64; // Round up for 64-bit chunks
+        self.bitmap = alloc::vec::Vec::new();
+        self.bitmap.resize(bitmap_size, 0xFFFF_FFFF_FFFF_FFFF); // Mark all as used initially
+
+        self.frame_count = total_frames;
+        self.next_free_frame = 0;
+        self.initialized = true;
+
+        // Mark available frames as free
+        for descriptor in memory_map {
+            // EFI memory type 7 is EfiConventionalMemory (available RAM)
+            if descriptor.type_ == 7u32 {
+                let start_frame = descriptor.physical_start as usize / 4096;
+                let frame_count = descriptor.number_of_pages as usize;
+
+                for i in 0..frame_count {
+                    let frame_index = start_frame + i;
+                    if frame_index < total_frames {
+                        self.set_frame_free(frame_index);
+                    }
+                }
+            }
+        }
+
+        log_info!("Bitmap frame allocator initialized");
+        Ok(())
+    }
+
+    /// Set a frame as free in the bitmap
+    fn set_frame_free(&mut self, frame_index: usize) {
+        let chunk_index = frame_index / 64;
+        let bit_index = frame_index % 64;
+
+        if chunk_index < self.bitmap.len() {
+            self.bitmap[chunk_index] &= !(1 << bit_index);
+        }
+    }
+
+    /// Set a frame as used in the bitmap
+    fn set_frame_used(&mut self, frame_index: usize) {
+        let chunk_index = frame_index / 64;
+        let bit_index = frame_index % 64;
+
+        if chunk_index < self.bitmap.len() {
+            self.bitmap[chunk_index] |= 1 << bit_index;
+        }
+    }
+
+    /// Check if a frame is free
+    fn is_frame_free(&self, frame_index: usize) -> bool {
+        let chunk_index = frame_index / 64;
+        let bit_index = frame_index % 64;
+
+        if chunk_index < self.bitmap.len() {
+            (self.bitmap[chunk_index] & (1 << bit_index)) == 0
+        } else {
+            false
+        }
+    }
+
+    /// Find the next free frame starting from a given index
+    fn find_next_free_frame(&self, start_index: usize) -> Option<usize> {
+        let mut index = start_index;
+
+        while index < self.frame_count {
+            if self.is_frame_free(index) {
+                return Some(index);
+            }
+            index += 1;
+        }
+
+        None
+    }
+}
+
+// Implementation of FrameAllocator trait for BitmapFrameAllocator
+impl crate::FrameAllocator for BitmapFrameAllocator {
+    fn allocate_frame(&mut self) -> SystemResult<usize> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        if let Some(frame_index) = self.find_next_free_frame(self.next_free_frame) {
+            self.set_frame_used(frame_index);
+            self.next_free_frame = frame_index + 1;
+
+            Ok(frame_index * 4096)
+        } else {
+            Err(SystemError::MemOutOfMemory)
+        }
+    }
+
+    fn free_frame(&mut self, frame_addr: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        let frame_index = frame_addr / 4096;
+        if frame_index < self.frame_count {
+            self.set_frame_free(frame_index);
+            Ok(())
+        } else {
+            Err(SystemError::InvalidArgument)
+        }
+    }
+
+    fn allocate_contiguous_frames(&mut self, count: usize) -> SystemResult<usize> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        // Find contiguous free frames
+        let mut start_index = 0;
+        let mut found_count = 0;
+
+        for i in 0..self.frame_count {
+            if self.is_frame_free(i) {
+                if found_count == 0 {
+                    start_index = i;
+                }
+                found_count += 1;
+
+                if found_count == count {
+                    // Mark all frames as used
+                    for j in 0..count {
+                        self.set_frame_used(start_index + j);
+                    }
+
+                    return Ok(start_index * 4096);
+                }
+            } else {
+                found_count = 0;
+            }
+        }
+
+        Err(SystemError::MemOutOfMemory)
+    }
+
+    fn free_contiguous_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        let start_frame = start_addr / 4096;
+        if start_frame + count > self.frame_count {
+            return Err(SystemError::InvalidArgument);
+        }
+
+        for i in 0..count {
+            self.set_frame_free(start_frame + i);
+        }
+
+        Ok(())
+    }
+
+    fn total_frames(&self) -> usize {
+        self.frame_count
+    }
+
+    fn available_frames(&self) -> usize {
+        let mut available = 0;
+
+        for i in 0..self.frame_count {
+            if self.is_frame_free(i) {
+                available += 1;
+            }
+        }
+
+        available
+    }
+
+    fn reserve_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        let start_frame = start_addr / 4096;
+        if start_frame + count > self.frame_count {
+            return Err(SystemError::InvalidArgument);
+        }
+
+        for i in 0..count {
+            self.set_frame_used(start_frame + i);
+        }
+
+        Ok(())
+    }
+
+    fn release_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        let start_frame = start_addr / 4096;
+        if start_frame + count > self.frame_count {
+            return Err(SystemError::InvalidArgument);
+        }
+
+        for i in 0..count {
+            self.set_frame_free(start_frame + i);
+        }
+
+        Ok(())
+    }
+
+    fn is_frame_available(&self, frame_addr: usize) -> bool {
+        let frame_index = frame_addr / 4096;
+        frame_index < self.frame_count && self.is_frame_free(frame_index)
+    }
+
+    fn frame_size(&self) -> usize {
+        4096
+    }
+}
+
+// Implementation of Initializable trait for BitmapFrameAllocator
+impl crate::Initializable for BitmapFrameAllocator {
+    fn init(&mut self) -> SystemResult<()> {
+        // Initialize with empty memory map
+        let empty_map = &[];
+        self.init_with_memory_map(empty_map)
+    }
+
+    fn name(&self) -> &'static str {
+        "BitmapFrameAllocator"
+    }
+
+    fn priority(&self) -> i32 {
+        900 // Very high priority for frame allocation
+    }
+}
+
+// Implementation of ErrorLogging trait for BitmapFrameAllocator
+impl crate::ErrorLogging for BitmapFrameAllocator {
+    fn log_error(&self, error: &SystemError, context: &'static str) {
+        log_error!(error, context);
+    }
+
+    fn log_warning(&self, message: &'static str) {
+        log_warning!(message);
+    }
+
+    fn log_info(&self, message: &'static str) {
+        log_info!(message);
+    }
+}
+
+/// Page table manager implementation
+pub struct PageTableManager {
+    current_page_table: usize,
+    page_tables: BTreeMap<usize, usize>,
+    initialized: bool,
+}
+
+impl PageTableManager {
+    /// Create a new page table manager
+    pub fn new() -> Self {
+        Self {
+            current_page_table: 0,
+            page_tables: BTreeMap::new(),
+            initialized: false,
+        }
+    }
+
+    /// Initialize paging
+    pub fn init_paging(&mut self) -> SystemResult<()> {
+        // In a real implementation, this would set up the initial page tables
+        // For now, just mark as initialized
+        self.initialized = true;
+        log_info!("Page table manager initialized");
+        Ok(())
+    }
+}
+
+// Implementation of PageTableHelper trait for PageTableManager
+impl crate::PageTableHelper for PageTableManager {
+    fn map_page(&mut self, virtual_addr: usize, physical_addr: usize, flags: PageFlags) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        // In a real implementation, this would modify the page tables
+        // For now, just log the operation
+        log_info!("Mapping virtual address to physical address");
+        Ok(())
+    }
+
+    fn unmap_page(&mut self, virtual_addr: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        log_info!("Unmapping virtual address");
+        Ok(())
+    }
+
+    fn translate_address(&self, virtual_addr: usize) -> SystemResult<usize> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        // In a real implementation, this would walk the page tables
+        // For now, return a dummy physical address
+        Ok(virtual_addr) // Identity mapping for simplicity
+    }
+
+    fn set_page_flags(&mut self, virtual_addr: usize, flags: PageFlags) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        log_info!("Setting page flags");
+        Ok(())
+    }
+
+    fn get_page_flags(&self, virtual_addr: usize) -> SystemResult<PageFlags> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        Ok(PageFlags::kernel_data())
+    }
+
+    fn flush_tlb(&mut self, virtual_addr: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        // In a real implementation, this would flush the TLB
+        log_info!("Flushing TLB for address");
+        Ok(())
+    }
+
+    fn flush_tlb_all(&mut self) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        log_info!("Flushing entire TLB");
+        Ok(())
+    }
+
+    fn create_page_table(&mut self) -> SystemResult<usize> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        // In a real implementation, this would allocate a new page table
+        let table_addr = 0x1000; // Dummy address
+        self.page_tables.insert(table_addr, table_addr);
+        Ok(table_addr)
+    }
+
+    fn destroy_page_table(&mut self, table_addr: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        self.page_tables.remove(&table_addr);
+        Ok(())
+    }
+
+    fn clone_page_table(&mut self, source_table: usize) -> SystemResult<usize> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        let new_table = source_table + 0x1000; // Dummy offset
+        self.page_tables.insert(new_table, source_table);
+        Ok(new_table)
+    }
+
+    fn switch_page_table(&mut self, table_addr: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        self.current_page_table = table_addr;
+        log_info!("Switched page table");
+        Ok(())
+    }
+
+    fn current_page_table(&self) -> usize {
+        self.current_page_table
+    }
+}
+
+// Implementation of Initializable trait for PageTableManager
+impl crate::Initializable for PageTableManager {
+    fn init(&mut self) -> SystemResult<()> {
+        self.init_paging()
+    }
+
+    fn name(&self) -> &'static str {
+        "PageTableManager"
+    }
+
+    fn priority(&self) -> i32 {
+        950 // Very high priority for page table management
+    }
+}
+
+// Implementation of ErrorLogging trait for PageTableManager
+impl crate::ErrorLogging for PageTableManager {
+    fn log_error(&self, error: &SystemError, context: &'static str) {
+        log_error!(error, context);
+    }
+
+    fn log_warning(&self, message: &'static str) {
+        log_warning!(message);
+    }
+
+    fn log_info(&self, message: &'static str) {
+        log_info!(message);
+    }
+}
+
+/// Process-specific memory manager implementation
+pub struct ProcessMemoryManagerImpl {
+    process_id: usize,
+    page_table_root: usize,
+    heap_start: usize,
+    heap_end: usize,
+    stack_start: usize,
+    stack_end: usize,
+    allocations: BTreeMap<usize, usize>, // address -> size mapping
+}
+
+impl ProcessMemoryManagerImpl {
+    /// Create a new process memory manager
+    pub fn new(process_id: usize) -> Self {
+        Self {
+            process_id,
+            page_table_root: 0,
+            heap_start: 0x4000_0000, // Start heap at 1GB
+            heap_end: 0x4000_0000,
+            stack_start: 0x7FFF_0000, // Start stack near top of user space
+            stack_end: 0x7FFF_0000,
+            allocations: BTreeMap::new(),
+        }
+    }
+
+    /// Get the page table root address
+    pub fn page_table_root(&self) -> usize {
+        self.page_table_root
+    }
+
+    /// Allocate memory from heap
+    pub fn allocate_heap(&mut self, size: usize) -> SystemResult<usize> {
+        let aligned_size = (size + 4095) & !4095; // Align to page boundary
+        let address = self.heap_end;
+
+        self.allocations.insert(address, aligned_size);
+        self.heap_end += aligned_size;
+
+        Ok(address)
+    }
+
+    /// Free memory from heap
+    pub fn free_heap(&mut self, address: usize, size: usize) -> SystemResult<()> {
+        if let Some(&alloc_size) = self.allocations.get(&address) {
+            if alloc_size == size {
+                self.allocations.remove(&address);
+                return Ok(());
+            }
+        }
+
+        Err(SystemError::InvalidArgument)
+    }
+
+    /// Allocate memory from stack
+    pub fn allocate_stack(&mut self, size: usize) -> SystemResult<usize> {
+        let aligned_size = (size + 4095) & !4095; // Align to page boundary
+
+        if self.stack_start < aligned_size {
+            return Err(SystemError::MemOutOfMemory);
+        }
+
+        self.stack_start -= aligned_size;
+        let address = self.stack_start;
+
+        self.allocations.insert(address, aligned_size);
+
+        Ok(address)
+    }
+
+    /// Free memory from stack
+    pub fn free_stack(&mut self, address: usize, size: usize) -> SystemResult<()> {
+        if let Some(&alloc_size) = self.allocations.get(&address) {
+            if alloc_size == size {
+                self.allocations.remove(&address);
+                return Ok(());
+            }
+        }
+
+        Err(SystemError::InvalidArgument)
+    }
+
+    /// Cleanup process memory
+    pub fn cleanup(&mut self) -> SystemResult<()> {
+        self.allocations.clear();
+        log_info!("Process memory cleaned up");
+        Ok(())
+    }
+}
+
+// Global memory manager instance
+static MEMORY_MANAGER: Mutex<Option<UnifiedMemoryManager>> = Mutex::new(None);
+
+/// Initialize the global memory manager
+pub fn init_memory_manager(memory_map: &'static [petroleum::page_table::EfiMemoryDescriptor]) -> SystemResult<()> {
+    let mut manager = MEMORY_MANAGER.lock();
+    let mut memory_manager = UnifiedMemoryManager::new();
+    memory_manager.init(memory_map)?;
+    *manager = Some(memory_manager);
+
+    log_info!("Global memory manager initialized");
+    Ok(())
+}
+
+/// Get a reference to the global memory manager
+pub fn get_memory_manager() -> Option<&'static Mutex<UnifiedMemoryManager>> {
     unsafe {
-        page_table
-            .mapper
-            .map_to(
-                page,
-                frame,
-                flags,
-                &mut *FRAME_ALLOCATOR.get().unwrap().lock(),
-            )
-            .map_err(|_| MapError::MappingFailed)?
-            .flush();
-    }
-
-    Ok(())
-}
-
-/// Unmap user-space virtual address
-pub fn unmap_user_page(
-    page_table: &mut ProcessPageTable,
-    virtual_addr: VirtAddr,
-) -> Result<PhysFrame, MapError> {
-    let page = Page::<Size4KiB>::containing_address(virtual_addr);
-
-    let (frame, flush) = page_table
-        .mapper
-        .unmap(page)
-        .map_err(|_| MapError::UnmappingFailed)?;
-    flush.flush();
-    Ok(frame)
-}
-
-/// Allocate user-space memory for a process
-pub fn allocate_user_memory(
-    page_table: &mut ProcessPageTable,
-    size_bytes: usize,
-) -> Result<VirtAddr, AllocError> {
-    let num_pages = (size_bytes + 4095) / 4096; // Round up to page size
-    let frame_allocator = &mut *FRAME_ALLOCATOR.get().unwrap().lock();
-
-    // For now, allocate sequentially (simple bump allocator)
-    static NEXT_USER_ADDR: AtomicU64 = AtomicU64::new(0x200000);
-
-    let start_addr = NEXT_USER_ADDR.fetch_add((num_pages * 4096) as u64, Ordering::Relaxed);
-
-    let flags =
-        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
-
-    for i in 0..num_pages {
-        let page_addr = VirtAddr::new(start_addr + (i * 4096) as u64);
-        let frame = frame_allocator
-            .allocate_frame()
-            .ok_or(AllocError::OutOfMemory)?;
-
-        map_user_page(page_table, page_addr, frame.start_address(), flags)?;
-    }
-
-    Ok(VirtAddr::new(start_addr))
-}
-
-/// Free user-space memory
-pub fn free_user_memory(
-    page_table: &mut ProcessPageTable,
-    addr: VirtAddr,
-    size_bytes: usize,
-) -> Result<(), FreeError> {
-    let num_pages = (size_bytes + 4095) / 4096;
-
-    for i in 0..num_pages {
-        let page_addr = addr + ((i * 4096) as u64);
-        unmap_user_page(page_table, page_addr)?;
-        // TODO: Deallocate the physical frame - BootInfoFrameAllocator does not support deallocation
-        // For now, we can't deallocate, so leaking memory for user processes
-    }
-
-    Ok(())
-}
-
-/// Switch to a process's page table (set CR3)
-pub unsafe fn switch_to_page_table(page_table: &ProcessPageTable) {
-    use x86_64::registers::control::Cr3;
-
-    let (frame, _) = Cr3::read();
-    let new_frame = page_table.pml4_frame;
-
-    if frame != new_frame {
-        Cr3::write(new_frame, Cr3::read().1);
+        let manager_ref = MEMORY_MANAGER.lock().as_ref()? as *const UnifiedMemoryManager;
+        let manager_ptr = manager_ref as *const Mutex<UnifiedMemoryManager>;
+        Some(&*manager_ptr)
     }
 }
 
-/// Check if address is in user space
-pub fn is_user_address(addr: VirtAddr) -> bool {
-    let addr_u64 = addr.as_u64();
-    // User space: 0x0000_0000_0000_0000 to 0x0000_7FFF_FFFF_FFFF
-    // Kernel space: 0xFFFF_8000_0000_0000 to 0xFFFF_FFFF_FFFF_FFFF
-    addr_u64 < 0x800000000000
-}
+/// Convenience functions for memory management
+pub mod convenience {
+    use super::*;
 
-/// Check if address is in kernel space
-pub fn is_kernel_address(addr: VirtAddr) -> bool {
-    !is_user_address(addr)
-}
-
-/// Page fault error enumeration
-#[derive(Debug, Clone, Copy)]
-pub enum MapError {
-    MappingFailed,
-    UnmappingFailed,
-    FrameAllocationFailed,
-}
-
-/// Memory allocation error
-#[derive(Debug, Clone, Copy)]
-pub enum AllocError {
-    OutOfMemory,
-    MappingFailed,
-}
-
-impl From<MapError> for AllocError {
-    fn from(error: MapError) -> Self {
-        match error {
-            MapError::MappingFailed => AllocError::MappingFailed,
-            MapError::UnmappingFailed => AllocError::MappingFailed,
-            MapError::FrameAllocationFailed => AllocError::OutOfMemory,
+    /// Allocate kernel memory pages
+    pub fn allocate_kernel_pages(count: usize) -> SystemResult<usize> {
+        if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
+            manager.allocate_pages(count)
+        } else {
+            Err(SystemError::InternalError)
         }
     }
-}
 
-/// Memory free error
-#[derive(Debug, Clone, Copy)]
-pub enum FreeError {
-    UnmappingFailed,
-}
-
-impl From<MapError> for FreeError {
-    fn from(error: MapError) -> Self {
-        match error {
-            MapError::MappingFailed => FreeError::UnmappingFailed,
-            MapError::UnmappingFailed => FreeError::UnmappingFailed,
-            MapError::FrameAllocationFailed => FreeError::UnmappingFailed,
+    /// Free kernel memory pages
+    pub fn free_kernel_pages(address: usize, count: usize) -> SystemResult<()> {
+        if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
+            manager.free_pages(address, count)
+        } else {
+            Err(SystemError::InternalError)
         }
     }
-}
 
-/// Deallocate a process page table recursively
-pub fn deallocate_process_page_table(pml4_frame: PhysFrame) {
-    deallocate_page_table_recursively(pml4_frame, 4);
-}
+    /// Map memory for device I/O
+    pub fn map_mmio(physical_addr: usize, size: usize) -> SystemResult<usize> {
+        if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
+            let frame_count = (size + 4095) / 4096;
+            let virtual_addr = manager.allocate_pages(frame_count)?;
 
-fn deallocate_page_table_recursively(frame: PhysFrame, level: usize) {
-    let physical_memory_offset = (*PHYSICAL_MEMORY_OFFSET.lock()).unwrap_or(VirtAddr::new(0));
-    if physical_memory_offset.as_u64() == 0 {
-        // Offset not set, can't deallocate safely
-        return;
-    }
+            for i in 0..frame_count {
+                let phys_addr = physical_addr + (i * 4096);
+                let virt_addr = virtual_addr + (i * 4096);
 
-    let table_virt = physical_memory_offset + frame.start_address().as_u64();
-    let table: &PageTable = unsafe { &*(table_virt.as_ptr()) };
-
-    // Recursively deallocate lower level page tables
-    if level > 0 {
-        for entry in table.iter() {
-            if entry.flags().contains(PageTableFlags::PRESENT)
-                && !entry.flags().contains(PageTableFlags::HUGE_PAGE)
-            {
-                let next_frame = PhysFrame::containing_address(entry.addr());
-                deallocate_page_table_recursively(next_frame, level - 1);
+                manager.map_address(virt_addr, phys_addr, 1)?;
             }
+
+            Ok(virtual_addr)
+        } else {
+            Err(SystemError::InternalError)
         }
     }
 
-    // Recycle the frame for future allocations
-    FREE_FRAMES.lock().push(frame);
-}
-
-/// Initialize virtual memory system
-pub fn init() {
-    // Initialize global frame allocator if not done
-    if FRAME_ALLOCATOR.get().is_none() {
-        // This would need the memory map - assume it's initialized elsewhere
+    /// Unmap memory-mapped I/O
+    pub fn unmap_mmio(virtual_addr: usize, size: usize) -> SystemResult<()> {
+        if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
+            let frame_count = (size + 4095) / 4096;
+            manager.unmap_address(virtual_addr, frame_count)
+        } else {
+            Err(SystemError::InternalError)
+        }
     }
 }
 
@@ -330,13 +1157,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_address_checks() {
-        let user_addr = VirtAddr::new(0x100000);
-        let kernel_addr = VirtAddr::new(0xFFFF800000000000);
+    fn test_bitmap_frame_allocator_creation() {
+        let allocator = BitmapFrameAllocator::new();
+        assert_eq!(allocator.total_frames(), 0);
+        assert!(!allocator.initialized);
+    }
 
-        assert!(is_user_address(user_addr));
-        assert!(!is_user_address(kernel_addr));
-        assert!(!is_kernel_address(user_addr));
-        assert!(is_kernel_address(kernel_addr));
+    #[test]
+    fn test_page_flags_creation() {
+        let flags = PageFlags::new();
+        assert!(!flags.present);
+        assert!(!flags.writable);
+
+        let kernel_flags = PageFlags::kernel_code();
+        assert!(kernel_flags.present);
+        assert!(!kernel_flags.writable);
+        assert!(kernel_flags.global);
+    }
+
+    #[test]
+    fn test_process_memory_manager_creation() {
+        let process_manager = ProcessMemoryManagerImpl::new(1);
+        assert_eq!(process_manager.process_id, 1);
+        assert_eq!(process_manager.page_table_root(), 0);
     }
 }

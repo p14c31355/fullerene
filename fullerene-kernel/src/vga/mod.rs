@@ -99,6 +99,69 @@ impl TextBufferOperations for VgaBuffer {
         }
         self.clear_row(BUFFER_HEIGHT - 1);
     }
+
+    fn write_byte(&mut self, byte: u8) {
+        match byte {
+            b'\n' => {
+                self.new_line();
+            }
+            byte => {
+                if self.column_position >= BUFFER_WIDTH {
+                    self.new_line();
+                }
+                if self.row_position >= BUFFER_HEIGHT {
+                    self.scroll_up();
+                    self.row_position = BUFFER_HEIGHT - 1;
+                }
+
+                let screen_char = ScreenChar {
+                    ascii_character: byte,
+                    color_code: self.color_code,
+                };
+                self.buffer[self.row_position][self.column_position] = screen_char;
+                self.column_position += 1;
+            }
+        }
+    }
+
+    fn write_string(&mut self, s: &str) {
+        for byte in s.bytes() {
+            self.write_byte(byte);
+        }
+    }
+
+    fn new_line(&mut self) {
+        self.column_position = 0;
+        if self.row_position < BUFFER_HEIGHT - 1 {
+            self.row_position += 1;
+        } else {
+            self.scroll_up();
+        }
+    }
+
+    fn clear_row(&mut self, row: usize) {
+        let blank = ScreenChar {
+            ascii_character: b' ',
+            color_code: self.color_code,
+        };
+        for col in 0..BUFFER_WIDTH {
+            self.buffer[row][col] = blank;
+        }
+    }
+
+    fn clear_screen(&mut self) {
+        let blank = ScreenChar {
+            ascii_character: b' ',
+            color_code: self.color_code,
+        };
+        for row in 0..BUFFER_HEIGHT {
+            for col in 0..BUFFER_WIDTH {
+                self.buffer[row][col] = blank;
+            }
+        }
+        self.column_position = 0;
+        self.row_position = 0;
+    }
 }
 
 // Global singleton
