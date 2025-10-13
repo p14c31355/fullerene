@@ -113,7 +113,7 @@ impl PciConfigSpace {
     }
 
     /// Read a dword from PCI configuration space
-    fn read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
+        fn read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
         let address = 0x80000000u32
             | ((bus as u32) << 16)
             | ((device as u32) << 11)
@@ -126,16 +126,10 @@ impl PciConfigSpace {
                 petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS,
                 address
             );
-            // Read four bytes and combine them into a 32-bit dword
-            let byte0: u8 =
-                petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA);
-            let byte1: u8 =
-                petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + 1);
-            let byte2: u8 =
-                petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + 2);
-            let byte3: u8 =
-                petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + 3);
-            (byte3 as u32) << 24 | (byte2 as u32) << 16 | (byte1 as u32) << 8 | (byte0 as u32)
+            // Read a single 32-bit dword from the data port
+            let mut data_reader: x86_64::instructions::port::Port<u32> =
+                x86_64::instructions::port::Port::new(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA);
+            data_reader.read()
         }
     }
 
@@ -267,8 +261,7 @@ impl PciDevice {
         let mut command = self.config.command;
         command |= 0x2; // Enable memory space bit
         self.config.command = command;
-        self.config
-            .write_config_word(self.bus, self.device, self.function, 4, command);
+        self.config.write_config_word(self.bus, self.device, self.function, 4, command);
     }
 
     /// Enable I/O space access

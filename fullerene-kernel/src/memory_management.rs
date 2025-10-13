@@ -989,17 +989,16 @@ impl PageTableManager {
     }
 
     /// Get the current page table
-    fn get_current_page_table(&self) -> Option<&mut x86_64::structures::paging::PageTable> {
+        fn get_current_page_table(&self) -> Option<&mut x86_64::structures::paging::PageTable> {
         use x86_64::structures::paging::PageTable;
-        use x86_64::PhysAddr;
 
         if !self.initialized {
             return None;
         }
 
-        let phys_addr = PhysAddr::new(self.current_page_table as u64);
-        // For identity mapping or direct access, use physical address directly
-        let virt_addr = phys_addr.as_u64() as usize as *mut PageTable;
+        let phys_addr = self.current_page_table;
+        // Use the physical memory offset to get the correct virtual address
+        let virt_addr = crate::memory_management::physical_to_virtual(phys_addr) as *mut PageTable;
         Some(unsafe { &mut *virt_addr })
     }
 }

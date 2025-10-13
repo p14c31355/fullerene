@@ -563,8 +563,10 @@ impl GlobalLogger {
 impl ErrorLogging for GlobalLogger {
     fn log_error(&self, error: &SystemError, context: &'static str) {
         if self.level >= LogLevel::Error {
-            // Use petroleum's serial logging for now
-            // Simplified logging without format_args for now
+            // A more robust formatting implementation would be ideal, but this provides basic visibility.
+            petroleum::serial::serial_log(format_args!("[ERROR] "));
+            petroleum::serial::serial_log(format_args!("{}", context));
+            petroleum::serial::serial_log(format_args!("\n"));
         }
     }
 

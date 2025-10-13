@@ -1,9 +1,8 @@
 //! Initialization module containing common initialization logic for both UEFI and BIOS boot
 
-use crate::{fs, graphics, interrupts, loader, process, syscall, vga};
+use crate::interrupts;
 
 // Macro to reduce repetitive serial logging - local copy since we moved function here
-use petroleum::serial::SERIAL_PORT_WRITER as SERIAL1;
 
 macro_rules! kernel_log {
     ($($arg:tt)*) => {
