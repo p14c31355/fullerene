@@ -28,7 +28,7 @@ use petroleum::common::{
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    petroleum::handle_panic(info)
+    petroleum::uefi_helpers::handle_panic(info)
 }
 
 /// Main entry point of the bootloader.
