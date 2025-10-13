@@ -81,6 +81,15 @@ pub extern "efiapi" fn efi_main(
     debug_log!("VGA setup done");
     kernel_log!("VGA text mode setup function returned");
 
+    // Try to initialize graphics mode for desktop display
+    kernel_log!("Attempting to initialize graphics mode for desktop display...");
+    if try_initialize_cirrus_graphics_mode() {
+        kernel_log!("Graphics mode initialized successfully, desktop should be visible");
+        // Desktop drawing will be handled by the graphics initialization
+    } else {
+        kernel_log!("Graphics mode initialization failed, continuing with text mode");
+    }
+
     // Direct VGA buffer test - write to hardware buffer directly
     kernel_log!("Direct VGA buffer write test...");
     unsafe {
@@ -370,6 +379,66 @@ fn restore_vga_text_buffer(buffer: &Box<[[u16; 80]; 25]>) {
     unsafe {
         let vga_ptr = crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25];
         *vga_ptr = **buffer;
+    }
+}
+
+/// Helper function to try initializing Cirrus graphics mode for desktop display
+/// Returns true if graphics mode was successfully initialized and desktop drawn
+#[cfg(target_os = "uefi")]
+pub fn try_initialize_cirrus_graphics_mode() -> bool {
+    kernel_log!("Trying to initialize Cirrus graphics mode...");
+
+    // Check if Cirrus VGA device was detected
+    if !petroleum::graphics::detect_cirrus_vga() {
+        kernel_log!("No Cirrus VGA device detected, cannot initialize graphics mode");
+        return false;
+    }
+
+    kernel_log!("Cirrus VGA device detected, setting up graphics mode...");
+
+    // Set up VGA mode 13h (320x200, 256 colors) for graphics
+    petroleum::graphics::setup_cirrus_vga_mode();
+
+    // Create a VGA framebuffer configuration for mode 13h
+    let vga_config = petroleum::common::VgaFramebufferConfig {
+        address: 0xA0000, // Standard VGA framebuffer address
+        width: 320,
+        height: 200,
+        bpp: 8,
+    };
+
+    kernel_log!("Initializing VGA framebuffer writer...");
+
+    // For UEFI target, we need to initialize VGA framebuffer in UEFI context
+    // Create VGA framebuffer configuration for UEFI
+    let uefi_vga_config = FullereneFramebufferConfig {
+        address: 0xA0000, // Standard VGA framebuffer address
+        width: 320,
+        height: 200,
+        pixel_format: petroleum::common::EfiGraphicsPixelFormat::PixelFormatMax, // Special marker for VGA mode
+        bpp: 8,
+        stride: 320, // 320 bytes per line in mode 13h
+    };
+
+    graphics::text::init(&uefi_vga_config);
+
+    // Verify the framebuffer was initialized
+    if let Some(fb_writer) = graphics::text::FRAMEBUFFER_UEFI.get() {
+        let fb_info = &mut fb_writer.lock();
+        kernel_log!(
+            "VGA framebuffer initialized successfully - width: {}, height: {}",
+            fb_info.get_width(),
+            fb_info.get_height()
+        );
+
+        kernel_log!("Drawing desktop on VGA graphics mode...");
+        graphics::draw_os_desktop();
+        kernel_log!("Desktop drawing completed - graphics mode should be visible");
+        petroleum::serial::serial_log(format_args!("Desktop should be visible now!\n"));
+        true
+    } else {
+        kernel_log!("ERROR: VGA framebuffer initialization failed!");
+        false
     }
 }
 
