@@ -24,7 +24,8 @@ use spin::Mutex;
 
 use crate::common::{
     EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID,
-    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID
+    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, EFI_LOADED_IMAGE_PROTOCOL_GUID,
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID
 };
 use crate::common::{
     EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable, FullereneFramebufferConfig,
@@ -164,15 +165,9 @@ pub fn init_graphics_protocols(system_table: &EfiSystemTable) -> Option<Fulleren
     test_protocol_availability(system_table, &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, "EFI_GRAPHICS_OUTPUT_PROTOCOL");
     test_protocol_availability(system_table, &EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID, "EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL");
 
-    // Add some relevant UEFI protocol GUIDs for comparison
-    let efi_loaded_image_protocol_guid = [
-        0xa1, 0x31, 0x1b, 0x5b, 0x62, 0x95, 0xd2, 0x11, 0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
-    ];
-    let efi_simple_file_system_protocol_guid = [
-        0x22, 0x5b, 0x4e, 0x96, 0x59, 0x64, 0xd2, 0x11, 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
-    ];
-    test_protocol_availability(system_table, &efi_loaded_image_protocol_guid, "EFI_LOADED_IMAGE_PROTOCOL");
-    test_protocol_availability(system_table, &efi_simple_file_system_protocol_guid, "EFI_SIMPLE_FILE_SYSTEM_PROTOCOL");
+
+    test_protocol_availability(system_table, &EFI_LOADED_IMAGE_PROTOCOL_GUID, "EFI_LOADED_IMAGE_PROTOCOL");
+    test_protocol_availability(system_table, &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, "EFI_SIMPLE_FILE_SYSTEM_PROTOCOL");
 
     // First try standard GOP protocol with enhanced mode enumeration
     if let Some(config) = init_gop_framebuffer(system_table) {
