@@ -202,9 +202,7 @@ fn install_vga_framebuffer_config(st: &EfiSystemTable) {
         stride: 320,
     };
 
-    petroleum::serial::_print(format_args!("VGA: Config created, creating box...\n"));
     let config_ptr = Box::leak(Box::new(config));
-    petroleum::serial::_print(format_args!("VGA: Box allocated at {:#p}, calling install_configuration_table...\n", config_ptr));
 
     let bs = unsafe { &*st.boot_services };
     let status = unsafe { (bs.install_configuration_table)(
@@ -212,9 +210,7 @@ fn install_vga_framebuffer_config(st: &EfiSystemTable) {
         config_ptr as *const _ as *mut c_void,
     ) };
 
-    petroleum::serial::_print(format_args!("VGA: install_configuration_table returned status: {:#x}\n", status));
-    debug_print_hex(status as usize);
-    debug_print_str("\n");
+
 
     if EfiStatus::from(status) == EfiStatus::Success {
         petroleum::println!("VGA framebuffer config table installed successfully.");
