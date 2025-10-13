@@ -136,11 +136,7 @@ fn main() -> io::Result<()> {
         "-M",
         "q35",
 
-        // "-vga", "vmware",
-        // Alternative configurations commented below for testing:
-        // "-device", "virtio-gpu,id=video0,max_outputs=1",
-        // "-vga", "none",
-        "-device", "secondary-vga",
+        "-vga", "qxl",
 
         // GOP TESTING: Different OVMF versions or additional ROM may be needed for GOP support
         // Current OVMF release may not include GOP drivers for QEMU devices
