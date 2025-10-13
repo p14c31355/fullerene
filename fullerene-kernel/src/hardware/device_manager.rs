@@ -73,9 +73,14 @@ impl DeviceManager {
 
     /// Enable a device by name
     pub fn enable_device(&self, name: &str) -> SystemResult<()> {
-        if let Some(device) = self.devices.lock().get_mut(name) {
+        // Lock devices and device_info in a consistent order to avoid deadlocks
+        // Always lock devices first, then device_info
+        let mut devices_lock = self.devices.lock();
+        let mut info_lock = self.device_info.lock();
+
+        if let Some(device) = devices_lock.get_mut(name) {
             device.enable()?;
-            if let Some(info) = self.device_info.lock().get_mut(name) {
+            if let Some(info) = info_lock.get_mut(name) {
                 info.enabled = true;
             }
             log_info!("Device enabled");

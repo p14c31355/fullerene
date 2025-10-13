@@ -978,11 +978,29 @@ impl PageTableManager {
 
     /// Initialize paging
     pub fn init_paging(&mut self) -> SystemResult<()> {
-        // In a real implementation, this would set up the initial page tables
-        // For now, just mark as initialized
+        // Get current CR3 (page table base)
+        let (frame, _) = x86_64::registers::control::Cr3::read();
+        self.current_page_table = frame.start_address().as_u64() as usize;
+        self.pml4_frame = frame;
+
         self.initialized = true;
         log_info!("Page table manager initialized");
         Ok(())
+    }
+
+    /// Get the current page table
+    fn get_current_page_table(&self) -> Option<&mut x86_64::structures::paging::PageTable> {
+        use x86_64::structures::paging::PageTable;
+        use x86_64::PhysAddr;
+
+        if !self.initialized {
+            return None;
+        }
+
+        let phys_addr = PhysAddr::new(self.current_page_table as u64);
+        // For identity mapping or direct access, use physical address directly
+        let virt_addr = phys_addr.as_u64() as usize as *mut PageTable;
+        Some(unsafe { &mut *virt_addr })
     }
 }
 
