@@ -819,7 +819,7 @@ pub mod bare_metal_pci {
         let is_64bit = (bar_type & 0x4) != 0;
 
         // For 64-bit BARs, read the next register for high 32 bits
-        let bar_high = if is_64bit && bar_index < 6 {  // Ensure we don't go out of bounds
+        let bar_high = if is_64bit && bar_index < 5 {  // A 64-bit BAR uses two slots, so the last possible start index is 4.
             pci_config_read_dword(bus, device, function, offset + 4)
         } else {
             0
