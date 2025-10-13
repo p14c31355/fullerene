@@ -6,6 +6,12 @@
 #![no_std]
 #![no_main]
 
+#![feature(abi_x86_interrupt)]
+#![feature(alloc_error_handler)]
+#![feature(slice_ptr_get)]
+#![feature(sync_unsafe_cell)]
+#![feature(vec_into_raw_parts)]
+
 // Re-export core types for convenience
 pub use core::result::Result;
 
@@ -619,28 +625,36 @@ pub fn initialize_system() -> SystemResult<()> {
 }
 
 // Kernel modules
-mod gdt; // Add GDT module
-mod graphics;
-mod hardware;
-mod heap;
-mod interrupts;
-mod vga;
+pub mod gdt; // Add GDT module
+pub mod graphics;
+pub mod hardware;
+pub mod heap;
+pub mod interrupts;
+pub mod vga;
 // Kernel modules
-mod context_switch; // Context switching
-mod fs; // Basic filesystem
-mod keyboard; // Keyboard input driver
-mod loader; // Program loader
-mod macros; // Logging and utility macros
-mod memory_management; // Virtual memory management
-mod process; // Process management
-mod shell;
-mod syscall; // System calls // Shell/CLI interface
+pub mod context_switch; // Context switching
+pub mod fs; // Basic filesystem
+pub mod keyboard; // Keyboard input driver
+pub mod loader; // Program loader
+pub mod macros; // Logging and utility macros
+pub mod memory_management; // Virtual memory management
+pub mod process; // Process management
+pub mod shell;
+pub mod syscall; // System calls // Shell/CLI interface
 
 // Submodules for modularizing main.rs
-mod boot;
-mod init;
-mod memory;
-mod test_process;
+pub mod boot;
+pub mod init;
+pub mod memory;
+pub mod test_process;
+
+// Re-export commonly used types for convenience
+pub use memory_management::{MapError, AllocError, FreeError, UnifiedMemoryManager, BitmapFrameAllocator, PageTableManager, ProcessPageTable, ProcessMemoryManagerImpl};
+pub use hardware::{device_manager::DeviceManager, ports::HardwarePorts, pci::{PciDevice, PciScanner, PciConfigSpace}};
+pub use graphics::vga_device::VgaDevice;
+pub use process::{Process, ProcessId, PROCESS_LIST};
+
+// Core types and traits are already defined above and accessible from submodules
 
 extern crate alloc;
 

@@ -3,7 +3,7 @@
 //! This module is responsible for loading executable programs into memory
 //! and creating processes to run them.
 
-use crate::{process, PageTableHelper};
+use crate::{process, memory_management::{is_user_address, map_user_page}};
 use core::ptr;
 use x86_64::structures::paging::FrameAllocator;
 
@@ -142,9 +142,8 @@ fn load_segment(
     }
 
     // Validate that the virtual address range is in user space
-    use crate::memory_management::{is_user_address, map_user_page, PageTableHelper};
+    use crate::memory_management::{is_user_address, map_user_page};
     use x86_64::VirtAddr;
-    use x86_64::structures::paging::Translate;
 
     let start_addr = VirtAddr::new(vaddr);
     let end_addr = VirtAddr::new(vaddr + mem_size as u64 - 1);
@@ -158,7 +157,7 @@ fn load_segment(
     // Check that the virtual address range is not already mapped
     for page_idx in 0..num_pages {
         let page_vaddr = VirtAddr::new(vaddr + page_idx * 4096);
-        if (&*page_table).translate_address(page_vaddr.as_u64() as usize).is_ok() {
+        if crate::PageTableHelper::translate_address(page_table, page_vaddr.as_u64() as usize).is_ok() {
             return Err(LoadError::AddressAlreadyMapped);
         }
     }
