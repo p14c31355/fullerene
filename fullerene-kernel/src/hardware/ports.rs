@@ -94,10 +94,8 @@ pub mod convenience {
 
     /// Write to VGA CRTC register
     pub fn write_vga_crtc(index: u8, value: u8) -> SystemResult<()> {
-        let mut writer = VgaRegisterWriter::new(
-            HardwarePorts::VGA_CRTC_INDEX,
-            HardwarePorts::VGA_CRTC_DATA,
-        );
+        let mut writer =
+            VgaRegisterWriter::new(HardwarePorts::VGA_CRTC_INDEX, HardwarePorts::VGA_CRTC_DATA);
         writer.write_register(index, value)
     }
 
@@ -121,7 +119,9 @@ pub mod convenience {
 
     /// Write PCI configuration address
     pub fn write_pci_config_address(address: u32) -> SystemResult<()> {
-        unsafe { petroleum::port_write!(HardwarePorts::PCI_CONFIG_ADDRESS, address); }
+        unsafe {
+            petroleum::port_write!(HardwarePorts::PCI_CONFIG_ADDRESS, address);
+        }
         Ok(())
     }
 
@@ -132,7 +132,9 @@ pub mod convenience {
 
     /// Write PCI configuration data byte
     pub fn write_pci_config_byte(offset: u16, value: u8) -> SystemResult<()> {
-        unsafe { petroleum::port_write!(HardwarePorts::PCI_CONFIG_DATA + offset, value); }
+        unsafe {
+            petroleum::port_write!(HardwarePorts::PCI_CONFIG_DATA + offset, value);
+        }
         Ok(())
     }
 }

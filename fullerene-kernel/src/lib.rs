@@ -5,7 +5,6 @@
 
 #![no_std]
 #![no_main]
-
 #![feature(abi_x86_interrupt)]
 #![feature(alloc_error_handler)]
 #![feature(slice_ptr_get)]
@@ -58,11 +57,17 @@ impl From<crate::syscall::interface::SyscallError> for SystemError {
     fn from(error: crate::syscall::interface::SyscallError) -> Self {
         match error {
             crate::syscall::interface::SyscallError::InvalidSyscall => SystemError::InvalidSyscall,
-            crate::syscall::interface::SyscallError::BadFileDescriptor => SystemError::BadFileDescriptor,
-            crate::syscall::interface::SyscallError::PermissionDenied => SystemError::PermissionDenied,
+            crate::syscall::interface::SyscallError::BadFileDescriptor => {
+                SystemError::BadFileDescriptor
+            }
+            crate::syscall::interface::SyscallError::PermissionDenied => {
+                SystemError::PermissionDenied
+            }
             crate::syscall::interface::SyscallError::FileNotFound => SystemError::FileNotFound,
             crate::syscall::interface::SyscallError::NoSuchProcess => SystemError::NoSuchProcess,
-            crate::syscall::interface::SyscallError::InvalidArgument => SystemError::InvalidArgument,
+            crate::syscall::interface::SyscallError::InvalidArgument => {
+                SystemError::InvalidArgument
+            }
             crate::syscall::interface::SyscallError::OutOfMemory => SystemError::SyscallOutOfMemory,
         }
     }
@@ -86,7 +91,9 @@ impl From<crate::memory_management::MapError> for SystemError {
         match error {
             crate::memory_management::MapError::MappingFailed => SystemError::MappingFailed,
             crate::memory_management::MapError::UnmappingFailed => SystemError::UnmappingFailed,
-            crate::memory_management::MapError::FrameAllocationFailed => SystemError::FrameAllocationFailed,
+            crate::memory_management::MapError::FrameAllocationFailed => {
+                SystemError::FrameAllocationFailed
+            }
         }
     }
 }
@@ -188,7 +195,12 @@ pub trait MemoryManager: Initializable + ErrorLogging {
     }
 
     /// Map virtual address to physical address
-    fn map_address(&mut self, virtual_addr: usize, physical_addr: usize, count: usize) -> SystemResult<()>;
+    fn map_address(
+        &mut self,
+        virtual_addr: usize,
+        physical_addr: usize,
+        count: usize,
+    ) -> SystemResult<()>;
 
     /// Unmap virtual address
     fn unmap_address(&mut self, virtual_addr: usize, count: usize) -> SystemResult<()>;
@@ -229,8 +241,14 @@ pub trait ProcessMemoryManager: MemoryManager {
     fn free_stack(&mut self, address: usize, size: usize) -> SystemResult<()>;
 
     /// Copy memory between different address spaces
-    fn copy_memory_between_processes(&mut self, from_process: usize, to_process: usize,
-                                   from_addr: usize, to_addr: usize, size: usize) -> SystemResult<()>;
+    fn copy_memory_between_processes(
+        &mut self,
+        from_process: usize,
+        to_process: usize,
+        from_addr: usize,
+        to_addr: usize,
+        size: usize,
+    ) -> SystemResult<()>;
 
     /// Get current process ID
     fn current_process_id(&self) -> usize;
@@ -239,7 +257,12 @@ pub trait ProcessMemoryManager: MemoryManager {
 // Page table helper trait for common page table operations
 pub trait PageTableHelper: Initializable + ErrorLogging {
     /// Map a virtual page to physical frame
-    fn map_page(&mut self, virtual_addr: usize, physical_addr: usize, flags: PageFlags) -> SystemResult<()>;
+    fn map_page(
+        &mut self,
+        virtual_addr: usize,
+        physical_addr: usize,
+        flags: PageFlags,
+    ) -> SystemResult<()>;
 
     /// Unmap a virtual page
     fn unmap_page(&mut self, virtual_addr: usize) -> SystemResult<()>;
@@ -391,16 +414,36 @@ impl PageFlags {
     pub fn to_arch_specific(&self) -> usize {
         let mut flags = 0;
 
-        if self.present { flags |= 1 << 0; }
-        if self.writable { flags |= 1 << 1; }
-        if self.user_accessible { flags |= 1 << 2; }
-        if self.write_through { flags |= 1 << 3; }
-        if self.cache_disabled { flags |= 1 << 4; }
-        if self.accessed { flags |= 1 << 5; }
-        if self.dirty { flags |= 1 << 6; }
-        if self.huge_page { flags |= 1 << 7; }
-        if self.global { flags |= 1 << 8; }
-        if self.no_execute { flags |= 1 << 63; } // NX bit in x86_64
+        if self.present {
+            flags |= 1 << 0;
+        }
+        if self.writable {
+            flags |= 1 << 1;
+        }
+        if self.user_accessible {
+            flags |= 1 << 2;
+        }
+        if self.write_through {
+            flags |= 1 << 3;
+        }
+        if self.cache_disabled {
+            flags |= 1 << 4;
+        }
+        if self.accessed {
+            flags |= 1 << 5;
+        }
+        if self.dirty {
+            flags |= 1 << 6;
+        }
+        if self.huge_page {
+            flags |= 1 << 7;
+        }
+        if self.global {
+            flags |= 1 << 8;
+        }
+        if self.no_execute {
+            flags |= 1 << 63;
+        } // NX bit in x86_64
 
         flags
     }
@@ -468,7 +511,11 @@ pub trait SyscallHandler: Initializable + ErrorLogging {
     fn handle_syscall(&mut self, number: u64, args: &[u64]) -> SystemResult<u64>;
 
     /// Register a system call handler
-    fn register_syscall(&mut self, number: u64, handler: fn(&[u64]) -> SystemResult<u64>) -> SystemResult<()>;
+    fn register_syscall(
+        &mut self,
+        number: u64,
+        handler: fn(&[u64]) -> SystemResult<u64>,
+    ) -> SystemResult<()>;
 
     /// Get supported system call numbers
     fn supported_syscalls(&self) -> &'static [u64];
@@ -596,7 +643,12 @@ impl SystemInitializer {
     /// Initialize all registered components in dependency order
     pub fn initialize_system(&mut self) -> SystemResult<()> {
         // Sort components by priority (higher priority first)
-        self.components.sort_by(|a: &alloc::boxed::Box<dyn Initializable + Send>, b: &alloc::boxed::Box<dyn Initializable + Send>| b.priority().cmp(&a.priority()));
+        self.components.sort_by(
+            |a: &alloc::boxed::Box<dyn Initializable + Send>,
+             b: &alloc::boxed::Box<dyn Initializable + Send>| {
+                b.priority().cmp(&a.priority())
+            },
+        );
 
         // TODO: Implement proper dependency resolution
         // For now, just initialize in priority order
@@ -616,12 +668,18 @@ static SYSTEM_INITIALIZER: spin::Once<Mutex<SystemInitializer>> = spin::Once::ne
 
 // Register a component globally
 pub fn register_system_component(component: alloc::boxed::Box<dyn Initializable + Send>) {
-    SYSTEM_INITIALIZER.call_once(|| Mutex::new(SystemInitializer::new())).lock().register_component(component);
+    SYSTEM_INITIALIZER
+        .call_once(|| Mutex::new(SystemInitializer::new()))
+        .lock()
+        .register_component(component);
 }
 
 // Initialize the entire system
 pub fn initialize_system() -> SystemResult<()> {
-    SYSTEM_INITIALIZER.call_once(|| Mutex::new(SystemInitializer::new())).lock().initialize_system()
+    SYSTEM_INITIALIZER
+        .call_once(|| Mutex::new(SystemInitializer::new()))
+        .lock()
+        .initialize_system()
 }
 
 // Kernel modules
@@ -649,10 +707,17 @@ pub mod memory;
 pub mod test_process;
 
 // Re-export commonly used types for convenience
-pub use memory_management::{MapError, AllocError, FreeError, UnifiedMemoryManager, BitmapFrameAllocator, PageTableManager, ProcessPageTable, ProcessMemoryManagerImpl};
-pub use hardware::{device_manager::DeviceManager, ports::HardwarePorts, pci::{PciDevice, PciScanner, PciConfigSpace}};
 pub use graphics::vga_device::VgaDevice;
-pub use process::{Process, ProcessId, PROCESS_LIST};
+pub use hardware::{
+    device_manager::DeviceManager,
+    pci::{PciConfigSpace, PciDevice, PciScanner},
+    ports::HardwarePorts,
+};
+pub use memory_management::{
+    AllocError, BitmapFrameAllocator, FreeError, MapError, PageTableManager,
+    ProcessMemoryManagerImpl, ProcessPageTable, UnifiedMemoryManager,
+};
+pub use process::{PROCESS_LIST, Process, ProcessId};
 
 // Core types and traits are already defined above and accessible from submodules
 

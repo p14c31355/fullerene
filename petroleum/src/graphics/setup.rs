@@ -28,7 +28,7 @@ pub fn setup_cirrus_vga_mode() {
     // Cirrus-specific register setup for better graphics mode support
     // Cirrus Logic 5446/5480 specific registers
     let mut index_writer = PortWriter::<u8>::new(0x3C4); // Sequencer index
-    let mut data_writer = PortWriter::<u8>::new(0x3C5);  // Sequencer data
+    let mut data_writer = PortWriter::<u8>::new(0x3C5); // Sequencer data
 
     // Enable extended memory and better graphics support
     index_writer.write_safe(0x06u8); // Unlock Cirrus registers
@@ -36,7 +36,7 @@ pub fn setup_cirrus_vga_mode() {
 
     // Set up Cirrus-specific graphics registers for better desktop display
     index_writer.write_safe(0x1Eu8); // Extended mode register
-    data_writer.write_safe(0x01u8);  // Enable extended memory
+    data_writer.write_safe(0x01u8); // Enable extended memory
 
     log_step!("Cirrus VGA: Cirrus-specific initialization complete\n");
 }
@@ -63,7 +63,8 @@ pub fn detect_cirrus_vga() -> bool {
     // Bus 0, Device 2, Function 0 is typically where VGA devices are located
     let vendor_id = crate::bare_metal_pci::pci_config_read_word(0, 2, 0, 0x00);
 
-    if vendor_id == 0x1013 { // Cirrus Logic vendor ID
+    if vendor_id == 0x1013 {
+        // Cirrus Logic vendor ID
         log_step!("VGA Detection: Cirrus VGA device found via PCI\n");
         return true;
     }
@@ -73,8 +74,11 @@ pub fn detect_cirrus_vga() -> bool {
         for device in 0..32 {
             let test_vendor = crate::bare_metal_pci::pci_config_read_word(bus, device, 0, 0x00);
             if test_vendor == 0x1013 {
-                crate::serial::_print(format_args!("VGA Detection: Cirrus VGA device found at bus:device = {}:{}
-", bus, device));
+                crate::serial::_print(format_args!(
+                    "VGA Detection: Cirrus VGA device found at bus:device = {}:{}
+",
+                    bus, device
+                ));
                 return true;
             }
         }

@@ -28,7 +28,9 @@ pub mod graphics_alternatives {
                 handle,
                 EFI_PCI_IO_PROTOCOL_GUID.as_ptr(),
                 &mut pci_io,
-                0, 0, 0x01,
+                0,
+                0,
+                0x01,
             );
 
             if EfiStatus::from(status) != EfiStatus::Success || pci_io.is_null() {
@@ -199,7 +201,7 @@ pub mod graphics_alternatives {
 
         // Free handle buffer
         if !handles.is_null() {
-           (bs.free_pool)(handles as *mut core::ffi::c_void);
+            (bs.free_pool)(handles as *mut core::ffi::c_void);
         }
 
         _print(format_args!(
@@ -354,7 +356,7 @@ pub mod graphics_alternatives {
     }
 
     /// Probe virtio-gpu device for linear framebuffer capability
-        fn probe_virtio_gpu_framebuffer(
+    fn probe_virtio_gpu_framebuffer(
         device: &PciDevice,
         bs: &EfiBootServices,
     ) -> Option<crate::common::FullereneFramebufferConfig> {
@@ -477,9 +479,7 @@ pub mod graphics_alternatives {
         device: &PciDevice,
         bs: &EfiBootServices,
     ) -> Option<crate::common::FullereneFramebufferConfig> {
-        _print(format_args!(
-            "[BM-GFX] QXL bare-metal detection starting\n"
-        ));
+        _print(format_args!("[BM-GFX] QXL bare-metal detection starting\n"));
 
         let guard = match PciIoGuard::new(bs, device.handle) {
             Ok(g) => g,
@@ -534,10 +534,7 @@ pub mod graphics_alternatives {
         }
 
         let fb_base_addr = bar1 as u64;
-        _print(format_args!(
-            "[BM-GFX] QXL BAR1: {:#x}\n",
-            fb_base_addr
-        ));
+        _print(format_args!("[BM-GFX] QXL BAR1: {:#x}\n", fb_base_addr));
 
         // Based on the log, 1024x768 mode was detected successfully
         // Use this as the default mode for QXL
@@ -548,7 +545,10 @@ pub mod graphics_alternatives {
 
         _print(format_args!(
             "[BM-GFX] Testing {}x{} mode at {:#x} (size: {}KB)\n",
-            width, height, fb_base_addr, (height * stride * bpp / 8) / 1024
+            width,
+            height,
+            fb_base_addr,
+            (height * stride * bpp / 8) / 1024
         ));
 
         // Validate framebuffer access
@@ -562,7 +562,8 @@ pub mod graphics_alternatives {
                 address: fb_base_addr,
                 width,
                 height,
-                pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                pixel_format:
+                    crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                 bpp,
                 stride,
             })
@@ -656,7 +657,7 @@ pub mod graphics_alternatives {
         let mut devices = Vec::new();
 
         let qxl_device = PciDevice {
-            handle: 0x1000, // Mock handle
+            handle: 0x1000,    // Mock handle
             vendor_id: 0x1b36, // QEMU QXL vendor ID
             device_id: 0x0100, // QXL device ID
             class_code: 0x03,  // Display controller
@@ -710,8 +711,6 @@ pub mod graphics_alternatives {
         ));
         true // Assume valid for now - real validation would need proper mem mapping
     }
-
-
 
     /// Read PCI configuration register using EFI_PCI_IO_PROTOCOL
     /// This function maps bus:device:function:register addressing to protocol calls
@@ -767,7 +766,7 @@ pub mod graphics_alternatives {
         );
 
         // Close protocol
-       (bs.close_protocol)(
+        (bs.close_protocol)(
             handle,
             graphics_alternatives::EFI_PCI_IO_PROTOCOL_GUID.as_ptr(),
             0,

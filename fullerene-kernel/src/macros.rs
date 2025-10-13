@@ -181,7 +181,7 @@ macro_rules! static_str {
 
 #[cfg(test)]
 mod tests {
-    
+
     use crate::*;
 
     #[test]
@@ -214,7 +214,13 @@ mod tests {
         let some_value = Some(42);
         let none_value: Option<i32> = None;
 
-        assert_eq!(option_to_result!(some_value, SystemError::FileNotFound), Ok(42));
-        assert_eq!(option_to_result!(none_value, SystemError::FileNotFound), Err(SystemError::FileNotFound));
+        assert_eq!(
+            option_to_result!(some_value, SystemError::FileNotFound),
+            Ok(42)
+        );
+        assert_eq!(
+            option_to_result!(none_value, SystemError::FileNotFound),
+            Err(SystemError::FileNotFound)
+        );
     }
 }

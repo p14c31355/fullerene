@@ -8,6 +8,8 @@ pub mod pci;
 pub mod ports;
 
 // Re-export commonly used types
-pub use device_manager::{DeviceManager, DeviceInfo, init_device_manager, register_device, register_vga_device};
-pub use pci::{PciDevice, PciConfigSpace};
+pub use device_manager::{
+    DeviceInfo, DeviceManager, init_device_manager, register_device, register_vga_device,
+};
+pub use pci::{PciConfigSpace, PciDevice};
 pub use ports::{HardwarePorts, VgaRegisterWriter, convenience};

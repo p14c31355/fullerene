@@ -44,7 +44,10 @@ impl DeviceManager {
     }
 
     /// Register a hardware device
-    pub fn register_device(&self, mut device: alloc::boxed::Box<dyn HardwareDevice + Send>) -> SystemResult<()> {
+    pub fn register_device(
+        &self,
+        mut device: alloc::boxed::Box<dyn HardwareDevice + Send>,
+    ) -> SystemResult<()> {
         let name = device.name();
 
         // Initialize the device
@@ -250,7 +253,10 @@ mod tests {
 
     impl MockDevice {
         fn new(name: &'static str) -> Self {
-            Self { name, enabled: false }
+            Self {
+                name,
+                enabled: false,
+            }
         }
     }
 

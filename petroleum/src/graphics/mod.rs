@@ -10,11 +10,8 @@ pub use color::*;
 pub use ports::{PortWriter, VgaPortOps, VgaPorts};
 // VGA graphics modes
 pub use setup::{
-    init_vga_graphics,
-    init_vga_text_mode,
+    detect_and_init_vga_graphics, detect_cirrus_vga, init_vga_graphics, init_vga_text_mode,
     setup_cirrus_vga_mode,
-    detect_and_init_vga_graphics,
-    detect_cirrus_vga
 };
 
 // VGA text operations

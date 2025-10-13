@@ -90,8 +90,13 @@ impl PciConfigSpace {
 
         // Write address to CONFIG_ADDRESS port
         unsafe {
-            petroleum::port_write!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS, address);
-            petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 3) as u16)
+            petroleum::port_write!(
+                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS,
+                address
+            );
+            petroleum::port_read_u8!(
+                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 3) as u16
+            )
         }
     }
 
@@ -105,10 +110,17 @@ impl PciConfigSpace {
 
         // Write address to CONFIG_ADDRESS port
         unsafe {
-            petroleum::port_write!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS, address);
+            petroleum::port_write!(
+                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS,
+                address
+            );
             // Read two bytes and combine them
-            let low_byte: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 2) as u16);
-            let high_byte: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 2 + 1) as u16);
+            let low_byte: u8 = petroleum::port_read_u8!(
+                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 2) as u16
+            );
+            let high_byte: u8 = petroleum::port_read_u8!(
+                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 2 + 1) as u16
+            );
             (high_byte as u16) << 8 | (low_byte as u16)
         }
     }
@@ -123,12 +135,19 @@ impl PciConfigSpace {
 
         // Write address to CONFIG_ADDRESS port
         unsafe {
-            petroleum::port_write!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS, address);
+            petroleum::port_write!(
+                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS,
+                address
+            );
             // Read four bytes and combine them into a 32-bit dword
-            let byte0: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA);
-            let byte1: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + 1);
-            let byte2: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + 2);
-            let byte3: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + 3);
+            let byte0: u8 =
+                petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA);
+            let byte1: u8 =
+                petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + 1);
+            let byte2: u8 =
+                petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + 2);
+            let byte3: u8 =
+                petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + 3);
             (byte3 as u32) << 24 | (byte2 as u32) << 16 | (byte1 as u32) << 8 | (byte0 as u32)
         }
     }
@@ -143,8 +162,14 @@ impl PciConfigSpace {
 
         // Write address to CONFIG_ADDRESS port
         unsafe {
-            petroleum::port_write!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS, address);
-            petroleum::port_write!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 3) as u16, value);
+            petroleum::port_write!(
+                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS,
+                address
+            );
+            petroleum::port_write!(
+                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 3) as u16,
+                value
+            );
         }
     }
 
@@ -158,9 +183,18 @@ impl PciConfigSpace {
 
         // Write address to CONFIG_ADDRESS port
         unsafe {
-            petroleum::port_write!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS, address);
-            petroleum::port_write!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 2) as u16, (value & 0xFF) as u8);
-            petroleum::port_write!(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 2 + 1) as u16, (value >> 8) as u8);
+            petroleum::port_write!(
+                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS,
+                address
+            );
+            petroleum::port_write!(
+                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 2) as u16,
+                (value & 0xFF) as u8
+            );
+            petroleum::port_write!(
+                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 2 + 1) as u16,
+                (value >> 8) as u8
+            );
         }
     }
 }
@@ -226,7 +260,8 @@ impl PciDevice {
         let mut command = self.config.command;
         command |= 0x2; // Enable memory space bit
         self.config.command = command;
-        self.config.write_config_word(self.bus, self.device, self.function, 4, command);
+        self.config
+            .write_config_word(self.bus, self.device, self.function, 4, command);
     }
 
     /// Enable I/O space access
@@ -234,7 +269,8 @@ impl PciDevice {
         let mut command = self.config.command;
         command |= 0x1; // Enable I/O space bit
         self.config.command = command;
-        self.config.write_config_word(self.bus, self.device, self.function, 4, command);
+        self.config
+            .write_config_word(self.bus, self.device, self.function, 4, command);
     }
 
     /// Enable bus mastering
@@ -242,7 +278,8 @@ impl PciDevice {
         let mut command = self.config.command;
         command |= 0x4; // Enable bus master bit
         self.config.command = command;
-        self.config.write_config_word(self.bus, self.device, self.function, 4, command);
+        self.config
+            .write_config_word(self.bus, self.device, self.function, 4, command);
     }
 
     /// Get base address register value
@@ -260,8 +297,20 @@ impl PciDevice {
         if bar_index < 6 {
             let offset = 0x10 + (bar_index * 4);
             // Write as two 16-bit words to handle 32-bit BAR properly
-            self.config.write_config_word(self.bus, self.device, self.function, offset as u8, (value & 0xFFFF) as u16);
-            self.config.write_config_word(self.bus, self.device, self.function, (offset + 2) as u8, ((value >> 16) & 0xFFFF) as u16);
+            self.config.write_config_word(
+                self.bus,
+                self.device,
+                self.function,
+                offset as u8,
+                (value & 0xFFFF) as u16,
+            );
+            self.config.write_config_word(
+                self.bus,
+                self.device,
+                self.function,
+                (offset + 2) as u8,
+                ((value >> 16) & 0xFFFF) as u16,
+            );
         }
     }
 }
@@ -317,7 +366,8 @@ impl HardwareDevice for PciDevice {
         let mut command = self.config.command;
         command &= !0x7; // Disable memory, I/O, and bus master bits
         self.config.command = command;
-        self.config.write_config_word(self.bus, self.device, self.function, 4, command);
+        self.config
+            .write_config_word(self.bus, self.device, self.function, 4, command);
         self.enabled = false;
         log_info!("PCI device disabled");
         Ok(())
@@ -439,7 +489,8 @@ pub fn register_pci_devices() -> SystemResult<()> {
         for device in scanner.get_devices() {
             // Create a boxed copy for registration
             if let Some(pci_device) = PciDevice::new(device.bus, device.device, device.function) {
-                let boxed_device: alloc::boxed::Box<dyn crate::Initializable + Send> = alloc::boxed::Box::new(pci_device);
+                let boxed_device: alloc::boxed::Box<dyn crate::Initializable + Send> =
+                    alloc::boxed::Box::new(pci_device);
                 crate::register_system_component(boxed_device);
             }
         }

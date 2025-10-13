@@ -3,18 +3,14 @@
 //! This module provides a comprehensive memory management system that implements
 //! the MemoryManager, ProcessMemoryManager, PageTableHelper, and FrameAllocator traits.
 
-use crate::*;
 use alloc::collections::BTreeMap;
 use spin::Mutex;
 
 // Import the types we need from the crate root
-use crate::{
-    SystemResult, SystemError, PageFlags, MemoryManager, ProcessMemoryManager,
-    PageTableHelper, FrameAllocator, Initializable, ErrorLogging
-};
+use crate::{PageFlags, SystemError, SystemResult};
 
 // Import logging macros (these are exported at crate root due to #[macro_export])
-use crate::{log_info, log_warning, log_error};
+use crate::{log_error, log_info, log_warning};
 
 // Memory management error types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +53,10 @@ impl UnifiedMemoryManager {
     }
 
     /// Initialize the memory management system
-    pub fn init(&mut self, memory_map: &'static [petroleum::page_table::EfiMemoryDescriptor]) -> SystemResult<()> {
+    pub fn init(
+        &mut self,
+        memory_map: &'static [petroleum::page_table::EfiMemoryDescriptor],
+    ) -> SystemResult<()> {
         // Initialize frame allocator with memory map
         self.frame_allocator.init_with_memory_map(memory_map)?;
 
@@ -99,7 +98,7 @@ impl UnifiedMemoryManager {
 }
 
 // Implementation of base MemoryManager trait
-impl crate::MemoryManager for UnifiedMemoryManager {
+impl MemoryManager for UnifiedMemoryManager {
     fn allocate_pages(&mut self, count: usize) -> SystemResult<usize> {
         if !self.initialized {
             return Err(SystemError::InternalError);
@@ -115,11 +114,8 @@ impl crate::MemoryManager for UnifiedMemoryManager {
             let phys_addr = frame_addr + (i * 4096);
             let virt_addr = virtual_addr + (i * 4096);
 
-            self.page_table_manager.map_page(
-                virt_addr,
-                phys_addr,
-                PageFlags::kernel_data()
-            )?;
+            self.page_table_manager
+                .map_page(virt_addr, phys_addr, PageFlags::kernel_data())?;
         }
 
         Ok(virtual_addr)
@@ -151,7 +147,12 @@ impl crate::MemoryManager for UnifiedMemoryManager {
         self.frame_allocator.available_frames() * self.frame_allocator.frame_size()
     }
 
-    fn map_address(&mut self, virtual_addr: usize, physical_addr: usize, count: usize) -> SystemResult<()> {
+    fn map_address(
+        &mut self,
+        virtual_addr: usize,
+        physical_addr: usize,
+        count: usize,
+    ) -> SystemResult<()> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
@@ -160,11 +161,8 @@ impl crate::MemoryManager for UnifiedMemoryManager {
             let virt_addr = virtual_addr + (i * 4096);
             let phys_addr = physical_addr + (i * 4096);
 
-            self.page_table_manager.map_page(
-                virt_addr,
-                phys_addr,
-                PageFlags::kernel_data()
-            )?;
+            self.page_table_manager
+                .map_page(virt_addr, phys_addr, PageFlags::kernel_data())?;
         }
 
         Ok(())
@@ -205,7 +203,10 @@ impl crate::MemoryManager for UnifiedMemoryManager {
 }
 
 // Implementation of ProcessMemoryManager trait
-impl crate::ProcessMemoryManager for UnifiedMemoryManager {
+impl crate::ProcessMemoryManager for UnifiedMemoryManager
+where
+    UnifiedMemoryManager: crate::MemoryManager,
+{
     fn create_address_space(&mut self, process_id: usize) -> SystemResult<()> {
         if !self.initialized {
             return Err(SystemError::InternalError);
@@ -225,7 +226,8 @@ impl crate::ProcessMemoryManager for UnifiedMemoryManager {
 
         if let Some(process_manager) = self.process_managers.get(&process_id) {
             self.current_process = process_id;
-            self.page_table_manager.switch_page_table(process_manager.page_table_root())?;
+            self.page_table_manager
+                .switch_page_table(process_manager.page_table_root())?;
             log_info!("Switched to process address space");
             Ok(())
         } else {
@@ -295,8 +297,14 @@ impl crate::ProcessMemoryManager for UnifiedMemoryManager {
         }
     }
 
-    fn copy_memory_between_processes(&mut self, from_process: usize, to_process: usize,
-                                   from_addr: usize, to_addr: usize, size: usize) -> SystemResult<()> {
+    fn copy_memory_between_processes(
+        &mut self,
+        from_process: usize,
+        to_process: usize,
+        from_addr: usize,
+        to_addr: usize,
+        size: usize,
+    ) -> SystemResult<()> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
@@ -328,12 +336,18 @@ impl crate::ProcessMemoryManager for UnifiedMemoryManager {
 
 // Implementation of PageTableHelper trait
 impl crate::PageTableHelper for UnifiedMemoryManager {
-    fn map_page(&mut self, virtual_addr: usize, physical_addr: usize, flags: PageFlags) -> SystemResult<()> {
+    fn map_page(
+        &mut self,
+        virtual_addr: usize,
+        physical_addr: usize,
+        flags: PageFlags,
+    ) -> SystemResult<()> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
 
-        self.page_table_manager.map_page(virtual_addr, physical_addr, flags)
+        self.page_table_manager
+            .map_page(virtual_addr, physical_addr, flags)
     }
 
     fn unmap_page(&mut self, virtual_addr: usize) -> SystemResult<()> {
@@ -452,7 +466,8 @@ impl crate::FrameAllocator for UnifiedMemoryManager {
             return Err(SystemError::InternalError);
         }
 
-        self.frame_allocator.free_contiguous_frames(start_addr, count)
+        self.frame_allocator
+            .free_contiguous_frames(start_addr, count)
     }
 
     fn total_frames(&self) -> usize {
@@ -531,7 +546,11 @@ impl UnifiedMemoryManager {
     }
 
     /// Copy data from user space to kernel space
-    fn copy_from_user_space(&self, user_addr: usize, size: usize) -> SystemResult<alloc::vec::Vec<u8>> {
+    fn copy_from_user_space(
+        &self,
+        user_addr: usize,
+        size: usize,
+    ) -> SystemResult<alloc::vec::Vec<u8>> {
         let mut data = alloc::vec::Vec::new();
 
         for offset in (0..size).step_by(4096) {
@@ -566,7 +585,6 @@ impl UnifiedMemoryManager {
 
         Ok(())
     }
-
 }
 
 /// Bitmap-based frame allocator implementation
@@ -589,7 +607,10 @@ impl BitmapFrameAllocator {
     }
 
     /// Initialize with EFI memory map
-    pub fn init_with_memory_map(&mut self, memory_map: &'static [petroleum::page_table::EfiMemoryDescriptor]) -> SystemResult<()> {
+    pub fn init_with_memory_map(
+        &mut self,
+        memory_map: &'static [petroleum::page_table::EfiMemoryDescriptor],
+    ) -> SystemResult<()> {
         // Calculate total memory and initialize bitmap
         let mut total_frames = 0usize;
 
@@ -880,7 +901,12 @@ impl PageTableManager {
 
 // Implementation of PageTableHelper trait for PageTableManager
 impl crate::PageTableHelper for PageTableManager {
-    fn map_page(&mut self, _virtual_addr: usize, _physical_addr: usize, _flags: PageFlags) -> SystemResult<()> {
+    fn map_page(
+        &mut self,
+        _virtual_addr: usize,
+        _physical_addr: usize,
+        _flags: PageFlags,
+    ) -> SystemResult<()> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
@@ -1114,7 +1140,7 @@ impl ProcessMemoryManagerImpl {
 static MEMORY_MANAGER: Mutex<Option<UnifiedMemoryManager>> = Mutex::new(None);
 
 /// Physical memory offset for virtual to physical address translation
-pub const PHYSICAL_MEMORY_OFFSET: usize = 0xFFFF_8000_0000_0000;
+pub const PHYSICAL_MEMORY_OFFSET_BASE: usize = 0xFFFF_8000_0000_0000;
 
 /// Switch to a specific page table
 pub fn switch_to_page_table(page_table: &ProcessPageTable) -> SystemResult<()> {
@@ -1142,7 +1168,9 @@ pub fn deallocate_process_page_table(pml4_frame: crate::heap::PhysFrame) {
 }
 
 /// Initialize the global memory manager
-pub fn init_memory_manager(memory_map: &'static [petroleum::page_table::EfiMemoryDescriptor]) -> SystemResult<()> {
+pub fn init_memory_manager(
+    memory_map: &'static [petroleum::page_table::EfiMemoryDescriptor],
+) -> SystemResult<()> {
     let mut manager = MEMORY_MANAGER.lock();
     let mut memory_manager = UnifiedMemoryManager::new();
     memory_manager.init(memory_map)?;
@@ -1252,7 +1280,11 @@ pub mod user_space {
     }
 
     /// Map a user page for kernel access
-    pub fn map_user_page(virtual_addr: usize, physical_addr: usize, flags: PageFlags) -> SystemResult<()> {
+    pub fn map_user_page(
+        virtual_addr: usize,
+        physical_addr: usize,
+        flags: PageFlags,
+    ) -> SystemResult<()> {
         if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
             manager.map_page(virtual_addr, physical_addr, flags)
         } else {
@@ -1261,7 +1293,11 @@ pub mod user_space {
     }
 
     /// Validate user buffer access
-    pub fn validate_user_buffer(ptr: usize, count: usize, allow_kernel: bool) -> Result<(), crate::syscall::interface::SyscallError> {
+    pub fn validate_user_buffer(
+        ptr: usize,
+        count: usize,
+        allow_kernel: bool,
+    ) -> Result<(), crate::syscall::interface::SyscallError> {
         use x86_64::VirtAddr;
 
         if ptr == 0 && count == 0 {
@@ -1292,3 +1328,26 @@ pub mod user_space {
 
 // Re-export functions for easier access
 pub use user_space::{is_user_address, map_user_page};
+
+/// Physical memory offset for virtual to physical address translation
+static PHYSICAL_MEMORY_OFFSET: spin::Mutex<usize> = spin::Mutex::new(0);
+
+/// Set the physical memory offset for virtual to physical address translation
+pub fn set_physical_memory_offset(offset: usize) {
+    *PHYSICAL_MEMORY_OFFSET.lock() = offset;
+}
+
+/// Get the physical memory offset for virtual to physical address translation
+pub fn get_physical_memory_offset() -> usize {
+    *PHYSICAL_MEMORY_OFFSET.lock()
+}
+
+/// Convert virtual address to physical address using the offset
+pub fn virtual_to_physical(virtual_addr: usize) -> usize {
+    virtual_addr - get_physical_memory_offset()
+}
+
+/// Convert physical address to virtual address using the offset
+pub fn physical_to_virtual(physical_addr: usize) -> usize {
+    physical_addr + get_physical_memory_offset()
+}
