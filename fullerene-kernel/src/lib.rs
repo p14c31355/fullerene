@@ -715,8 +715,10 @@ pub use hardware::{
 };
 pub use memory_management::{
     AllocError, BitmapFrameAllocator, FreeError, MapError, PageTableManager,
-    ProcessMemoryManagerImpl, ProcessPageTable, UnifiedMemoryManager,
+    ProcessMemoryManagerImpl, ProcessPageTable, UnifiedMemoryManager, convenience,
 };
+// Re-export critical types from memory_management module for internal use
+pub use memory_management::{get_memory_manager, init_memory_manager};
 pub use process::{PROCESS_LIST, Process, ProcessId};
 
 // Core types and traits are already defined above and accessible from submodules

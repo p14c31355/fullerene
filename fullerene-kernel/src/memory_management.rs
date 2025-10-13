@@ -3,16 +3,13 @@
 //! This module provides a comprehensive memory management system that implements
 //! the MemoryManager, ProcessMemoryManager, PageTableHelper, and FrameAllocator traits.
 
+// Explicitly import needed types from the crate root (lib.rs) for this module to compile
+use crate::{
+    ErrorLogging, FrameAllocator, Initializable, MemoryManager, PageFlags, PageTableHelper, ProcessMemoryManager, SystemError, SystemResult, log_error, log_info, log_warning
+};
 use alloc::collections::BTreeMap;
 use spin::Mutex;
 use core::ops::{Deref, DerefMut};
-
-// Import the types we need from the crate root
-use crate::{PageFlags, SystemError, SystemResult, MemoryManager, PageTableHelper, FrameAllocator, ProcessMemoryManager, Initializable, ErrorLogging, heap::PhysFrame};
-
-// Import logging macros (these are defined in macros.rs and exported at crate root)
-#[macro_use]
-use crate::{log_error, log_info, log_warning};
 
 // Helper macros for common operations
 macro_rules! check_initialized {
@@ -33,7 +30,7 @@ macro_rules! check_initialized_mut {
 
 macro_rules! log_operation {
     ($level:ident, $message:expr) => {
-        log_info($message);
+        println!($message);
     };
 }
 
@@ -175,7 +172,7 @@ impl UnifiedMemoryManager {
         self.frame_allocator.init_with_memory_map(memory_map)?;
 
         // Initialize page table manager
-        crate::Initializable::init(&mut self.page_table_manager)?;
+        Initializable::init(&mut self.page_table_manager)?;
 
         // Create kernel address space (process 0)
         self.create_address_space(0)?;
@@ -300,7 +297,7 @@ impl MemoryManager for UnifiedMemoryManager {
 }
 
 // Implementation of ProcessMemoryManager trait
-impl crate::ProcessMemoryManager for UnifiedMemoryManager {
+impl ProcessMemoryManager for UnifiedMemoryManager {
     fn create_address_space(&mut self, process_id: usize) -> SystemResult<()> {
         if !self.initialized {
             return Err(SystemError::InternalError);
@@ -429,7 +426,7 @@ impl crate::ProcessMemoryManager for UnifiedMemoryManager {
 }
 
 // Implementation of PageTableHelper trait
-impl crate::PageTableHelper for UnifiedMemoryManager {
+impl PageTableHelper for UnifiedMemoryManager {
     fn map_page(
         &mut self,
         virtual_addr: usize,
@@ -530,7 +527,7 @@ impl crate::PageTableHelper for UnifiedMemoryManager {
 }
 
 // Implementation of FrameAllocator trait
-impl crate::FrameAllocator for UnifiedMemoryManager {
+impl FrameAllocator for UnifiedMemoryManager {
     fn allocate_frame(&mut self) -> SystemResult<usize> {
         if !self.initialized {
             return Err(SystemError::InternalError);
@@ -598,7 +595,7 @@ impl crate::FrameAllocator for UnifiedMemoryManager {
 }
 
 // Implementation of Initializable trait
-impl crate::Initializable for UnifiedMemoryManager {
+impl Initializable for UnifiedMemoryManager {
     fn init(&mut self) -> SystemResult<()> {
         // Initialize with a dummy memory map for now
         // In a real implementation, this would be called with the actual EFI memory map
@@ -616,7 +613,7 @@ impl crate::Initializable for UnifiedMemoryManager {
 }
 
 // Implementation of ErrorLogging trait
-impl crate::ErrorLogging for UnifiedMemoryManager {
+impl ErrorLogging for UnifiedMemoryManager {
     fn log_error(&self, error: &SystemError, context: &'static str) {
         log_error!(error, context);
     }
@@ -1243,7 +1240,7 @@ pub fn switch_to_page_table(page_table: &ProcessPageTable) -> SystemResult<()> {
 /// Create a new process page table
 pub fn create_process_page_table(offset: usize) -> SystemResult<ProcessPageTable> {
     let mut page_table_manager = PageTableManager::new();
-    crate::Initializable::init(&mut page_table_manager)?;
+    Initializable::init(&mut page_table_manager)?;
 
     // In a real implementation, this would create a new page table with proper mappings
     // For now, just return a new page table manager

@@ -1,6 +1,5 @@
-use crate::*;
 use petroleum::{Color, ColorCode, ScreenChar};
-use spin::Mutex;
+use crate::{HardwareDevice, Initializable, SystemResult, SystemError, ErrorLogging, log_info, log_error, log_warning};
 
 // Constants to reduce magic numbers
 const VGA_WIDTH: usize = 80;
@@ -158,7 +157,7 @@ impl HardwareDevice for VgaDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::boxed::Box;
+    
 
     #[test]
     fn test_vga_device_creation() {
