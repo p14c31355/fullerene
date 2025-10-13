@@ -1126,7 +1126,7 @@ pub fn create_process_page_table(offset: usize) -> SystemResult<ProcessPageTable
 }
 
 /// Deallocate a process page table and free its frames
-pub fn deallocate_process_page_table(pml4_frame: x86_64::PhysFrame) {
+pub fn deallocate_process_page_table(pml4_frame: crate::heap::PhysFrame) {
     // In a real implementation, this would recursively free all page table frames
     // For now, just log the operation
     log_info!("Deallocating process page table");

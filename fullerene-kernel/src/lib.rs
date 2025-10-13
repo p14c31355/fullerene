@@ -528,34 +528,46 @@ impl ErrorLogging for GlobalLogger {
     }
 }
 
-static GLOBAL_LOGGER: Mutex<GlobalLogger> = Mutex::new();
+static GLOBAL_LOGGER: Mutex<Option<GlobalLogger>> = Mutex::new(None);
 
 // Initialize global logger
 pub fn init_global_logger() {
-    // Logger is already initialized as static
+    *GLOBAL_LOGGER.lock() = Some(GlobalLogger::new());
 }
 
 // Set global log level
 pub fn set_global_log_level(level: LogLevel) {
-    GLOBAL_LOGGER.lock().set_level(level);
+    if let Some(logger) = GLOBAL_LOGGER.lock().as_mut() {
+        logger.set_level(level);
+    }
 }
 
 // Get global log level
 pub fn get_global_log_level() -> LogLevel {
-    GLOBAL_LOGGER.lock().get_level()
+    if let Some(logger) = GLOBAL_LOGGER.lock().as_ref() {
+        logger.get_level()
+    } else {
+        LogLevel::Info // Default level
+    }
 }
 
 // Global error logging functions
 pub fn log_error(error: &SystemError, context: &'static str) {
-    GLOBAL_LOGGER.lock().log_error(error, context);
+    if let Some(logger) = GLOBAL_LOGGER.lock().as_ref() {
+        logger.log_error(error, context);
+    }
 }
 
 pub fn log_warning(message: &'static str) {
-    GLOBAL_LOGGER.lock().log_warning(message);
+    if let Some(logger) = GLOBAL_LOGGER.lock().as_ref() {
+        logger.log_warning(message);
+    }
 }
 
 pub fn log_info(message: &'static str) {
-    GLOBAL_LOGGER.lock().log_info(message);
+    if let Some(logger) = GLOBAL_LOGGER.lock().as_ref() {
+        logger.log_info(message);
+    }
 }
 
 // System initializer for managing component initialization

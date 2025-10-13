@@ -25,11 +25,8 @@ use petroleum::common::{
     FullereneFramebufferConfig,
 };
 
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    petroleum::uefi_helpers::handle_panic(info)
-}
+// Panic handler removed to avoid conflict with std panic handler
+// The std panic handler will be used instead
 
 /// Main entry point of the bootloader.
 ///

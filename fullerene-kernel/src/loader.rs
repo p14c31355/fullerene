@@ -3,7 +3,7 @@
 //! This module is responsible for loading executable programs into memory
 //! and creating processes to run them.
 
-use crate::process;
+use crate::{process, PageTableHelper};
 use core::ptr;
 use x86_64::structures::paging::FrameAllocator;
 
@@ -142,7 +142,7 @@ fn load_segment(
     }
 
     // Validate that the virtual address range is in user space
-    use crate::memory_management::{is_user_address, map_user_page};
+    use crate::memory_management::{is_user_address, map_user_page, PageTableHelper};
     use x86_64::VirtAddr;
     use x86_64::structures::paging::Translate;
 
@@ -158,7 +158,7 @@ fn load_segment(
     // Check that the virtual address range is not already mapped
     for page_idx in 0..num_pages {
         let page_vaddr = VirtAddr::new(vaddr + page_idx * 4096);
-        if page_table.mapper.translate_addr(page_vaddr).is_some() {
+        if (&*page_table).translate_address(page_vaddr.as_u64() as usize).is_ok() {
             return Err(LoadError::AddressAlreadyMapped);
         }
     }
@@ -176,16 +176,13 @@ fn load_segment(
             .ok_or(LoadError::OutOfMemory)?;
 
         // Map the virtual page to the physical frame
-        use x86_64::structures::paging::PageTableFlags;
-        let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
-        if ph.flags & PF_W != 0 {
-            flags |= PageTableFlags::WRITABLE;
-        }
-        if ph.flags & PF_X == 0 {
-            flags |= PageTableFlags::NO_EXECUTE;
+        use crate::PageFlags;
+        let mut flags = PageFlags::user_data();
+        if ph.flags & PF_X != 0 {
+            flags = PageFlags::user_code();
         }
 
-        map_user_page(page_table, page_vaddr, frame.start_address(), flags)?;
+        map_user_page(page_vaddr.as_u64() as usize, frame.start_address().as_u64() as usize, flags)?;
     }
 
     // Now copy the file data to the allocated virtual memory.
@@ -268,6 +265,17 @@ impl From<crate::memory_management::FreeError> for LoadError {
     fn from(error: crate::memory_management::FreeError) -> Self {
         match error {
             crate::memory_management::FreeError::UnmappingFailed => LoadError::MappingFailed,
+        }
+    }
+}
+
+impl From<crate::SystemError> for LoadError {
+    fn from(error: crate::SystemError) -> Self {
+        match error {
+            crate::SystemError::MemOutOfMemory => LoadError::OutOfMemory,
+            crate::SystemError::InvalidArgument => LoadError::InvalidFormat,
+            crate::SystemError::InternalError => LoadError::MappingFailed,
+            _ => LoadError::MappingFailed,
         }
     }
 }
