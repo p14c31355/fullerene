@@ -4,16 +4,10 @@ use crate::boot::FALLBACK_HEAP_START_ADDR;
 use crate::graphics::framebuffer::FramebufferLike;
 use crate::heap;
 use crate::hlt_loop;
-use crate::memory::find_framebuffer_config;
-use crate::memory::setup_memory_maps;
 use crate::{gdt, graphics, interrupts, memory};
-use alloc::boxed::Box;
 use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
-use petroleum::debug_log;
-use petroleum::write_serial_bytes;
-use x86_64::{PhysAddr, VirtAddr};
 
 /// Helper function to write a string to VGA buffer at specified row
 pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {

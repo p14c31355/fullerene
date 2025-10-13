@@ -329,9 +329,9 @@ impl PciScanner {
     pub fn scan_all_buses(&mut self) -> SystemResult<()> {
         self.devices.clear();
 
-        for bus in 0..256u8 {
-            for device in 0..32u8 {
-                for function in 0..8u8 {
+        for bus in 0..=255u8 {
+            for device in 0..=31u8 {
+                for function in 0..=7u8 {
                     if let Some(pci_device) = PciDevice::new(bus, device, function) {
                         self.devices.push(pci_device);
                     }

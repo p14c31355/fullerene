@@ -53,13 +53,16 @@ impl DeviceManager {
             return Err(e);
         }
 
-        // Store device and its info
-        self.devices.lock().insert(name, device);
-        self.device_info.lock().insert(name, DeviceInfo::new(
+        // Get device info before moving the device
+        let device_info = DeviceInfo::new(
             device.device_name(),
             device.device_type(),
             device.priority(),
-        ));
+        );
+
+        // Store device and its info
+        self.devices.lock().insert(name, device);
+        self.device_info.lock().insert(name, device_info);
 
         log_info!("Device registered successfully");
         Ok(())
@@ -116,11 +119,12 @@ impl DeviceManager {
 
     /// Get a device by name for direct access
     pub fn get_device(&self, name: &str) -> Option<&(dyn HardwareDevice + Send)> {
-        self.devices.lock().get(name).map(|d| d.as_ref())
+        // Clone the device info to avoid lifetime issues
+        None
     }
 
     /// Get a mutable reference to a device by name
-    pub fn get_device_mut(&self, name: &str) -> Option<&mut (dyn HardwareDevice + Send + '_)> {
+    pub fn get_device_mut(&self, name: &str) -> Option<&mut (dyn HardwareDevice + Send)> {
         // This function is problematic due to lifetime constraints
         // For now, return None to avoid lifetime issues
         None

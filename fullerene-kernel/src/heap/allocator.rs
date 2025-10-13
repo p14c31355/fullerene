@@ -50,7 +50,9 @@ impl Heap {
     /// Initialize heap with memory region
     pub unsafe fn init(&mut self, heap_start: *mut u8, heap_size: usize) {
         let node = heap_start as *mut ListNode;
-        *node = ListNode::new(heap_size);
+        unsafe {
+            *node = ListNode::new(heap_size);
+        }
         self.head = node;
     }
 

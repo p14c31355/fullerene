@@ -3,8 +3,6 @@
 //! This module provides convenient macros for logging and error handling
 //! throughout the kernel.
 
-#![no_std]
-
 /// Log an error message with context
 ///
 /// # Examples
@@ -183,7 +181,7 @@ macro_rules! static_str {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
     use crate::*;
 
     #[test]
