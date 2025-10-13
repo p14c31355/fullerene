@@ -316,9 +316,9 @@ pub struct EfiPciIoProtocol {
     /// io(ReadWrite, Width, BarIndex, Offset, Count, Buffer) -> EFI_STATUS
     pub io: usize, // fn3 - not used
     /// pci(ReadWrite, Width, Offset, Count, Buffer) -> EFI_STATUS
-    pub pci_read: extern "efiapi" fn(*mut EfiPciIoProtocol, u8, u8, usize, *mut c_void) -> usize, // fn4
+    pub pci_read: extern "efiapi" fn(*mut EfiPciIoProtocol, u8, u64, usize, *mut c_void) -> usize, // fn4
     /// pci(ReadWrite, Width, Offset, Count, Buffer) -> EFI_STATUS
-    pub pci_write: extern "efiapi" fn(*mut EfiPciIoProtocol, u8, u8, usize, *mut c_void) -> usize, // fn5
+    pub pci_write: extern "efiapi" fn(*mut EfiPciIoProtocol, u8, u64, usize, *mut c_void) -> usize, // fn5
     /// copy_mem(ReadWrite, Width, DestBarIndex, DestOffset, SrcBarIndex, SrcOffset, Count) -> EFI_STATUS
     pub copy_mem: usize, // fn6 - not used
     /// map(This, Operation, HostAddress, NumberOfBytes, DeviceAddress, IoAddress) -> EFI_STATUS
