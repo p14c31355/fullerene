@@ -1,6 +1,5 @@
 use super::framebuffer::FramebufferLike;
 use embedded_graphics::{
-    pixelcolor::Rgb888,
     prelude::*,
     primitives::{PrimitiveStyleBuilder, Rectangle},
 };
