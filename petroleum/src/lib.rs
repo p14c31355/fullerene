@@ -21,8 +21,7 @@ use core::arch::asm;
 use core::ffi::c_void;
 use core::ptr;
 use spin::Mutex;
-// use alloc::vec;
-// use alloc::vec::Vec;
+use alloc::vec;
 
 use crate::common::{EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID};
 use crate::common::{
@@ -133,21 +132,31 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     }
 
     let mode_ref = unsafe { &*gop_ref.mode };
-    let current_mode = mode_ref.mode as usize;
-    let max_mode = mode_ref.max_mode;
+    let current_mode = mode_ref.mode;
+
+    // Get max_mode safely with bounds checking
+    let max_mode_u32 = mode_ref.max_mode;
+    if max_mode_u32 == 0 {
+        serial::_print(format_args!("GOP: Max mode is 0, skipping.\n"));
+        return None;
+    }
+    let max_mode = max_mode_u32 as usize;
 
     serial::_print(format_args!("GOP: Current mode: {}, Max mode: {}.\n", current_mode, max_mode));
 
-    // Try to use current mode first, then mode 0
+    // Try to use current mode first, then mode 0, then try other modes
     let mut mode_set_successfully = false;
-    let target_modes = [current_mode as u32, 0];
+    let target_modes = [
+        current_mode as u32,
+        0,
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, // Try common modes
+    ];
 
-    for &mode in &target_modes {
-        if mode >= max_mode {
-            continue;
-        }
-
-        serial::_print(format_args!("GOP: Attempting to set mode {}...\n", mode));
+    for &mode in &target_modes[0..target_modes.len().min(max_mode as usize)] {
+    if mode as u32 >= max_mode_u32 {
+        continue;
+    }
+    serial::_print(format_args!("GOP: Attempting to set mode {}...\n", mode));
         let set_status = unsafe { (gop_ref.set_mode)(gop, mode) };
         if EfiStatus::from(set_status) == EfiStatus::Success {
             serial::_print(format_args!("GOP: Successfully set mode {}.\n", mode));
