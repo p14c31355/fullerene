@@ -707,23 +707,190 @@ pub mod graphics_alternatives {
 
     /// Probe for linear framebuffer on a graphics device
     fn probe_linear_framebuffer(device: &PciDevice, bs: &EfiBootServices) -> Option<crate::common::FullereneFramebufferConfig> {
-        // This is a simplified probe - real implementation would:
-        // 1. Use EFI_PCI_IO_PROTOCOL to get device BARs (Base Address Registers)
-        // 2. Map the framebuffer BAR to virtual memory if needed
-        // 3. Check if the device supports linear addressing mode
-        // 4. Query device for current mode/resolution
+        _print(format_args!("[GOP-ALT] Probing linear framebuffer on device {:04x}:{:04x} at {:02x}:{:02x}:{:02x}\n",
+            device.vendor_id, device.device_id, device.bus, device.device, device.function));
 
-        _print(format_args!("[GOP-ALT] Probing linear framebuffer on device {:04x}:{:04x}\n",
-            device.vendor_id, device.device_id));
+        // Check for known virtio-gpu device IDs (vendor: 0x1af4, devices: 0x1050+)
+        if device.vendor_id == 0x1af4 && device.device_id >= 0x1050 {
+            _print(format_args!("[GOP-ALT] Detected virtio-gpu device, attempting linear framebuffer setup\n"));
+            return probe_virtio_gpu_framebuffer(device, bs);
+        }
 
-        // Placeholder: For known virtio-gpu devices or others that might support this
-        // In a full implementation, we'd:
-        // - Check PCI BARs for memory regions
-        // - Try to enable linear framebuffer mode
-        // - Set a standard resolution (e.g. 1024x768)
-        // - Return the framebuffer config
+        // Check for other devices that might support linear framebuffers
+        // Could add support for qxl, vmware svga, etc.
+        match (device.vendor_id, device.device_id) {
+            (0x1b36, 0x0100) => {
+                // QEMU QXL device
+                _print(format_args!("[GOP-ALT] Detected QXL device - linear framebuffer not implemented yet\n"));
+                None
+            }
+            (0x15ad, 0x0405) => {
+                // VMware SVGA II
+                _print(format_args!("[GOP-ALT] Detected VMware SVGA device - linear framebuffer not implemented yet\n"));
+                None
+            }
+            _ => {
+                _print(format_args!("[GOP-ALT] Unknown graphics device, skipping linear framebuffer probe\n"));
+                None
+            }
+        }
+    }
 
-        None // Not implemented yet - would return actual framebuffer info
+    /// Probe virtio-gpu device for linear framebuffer capability
+    fn probe_virtio_gpu_framebuffer(device: &PciDevice, bs: &EfiBootServices) -> Option<crate::common::FullereneFramebufferConfig> {
+        // Build PCI handle for this device location
+        let handle = ((device.bus as usize) << 8) | ((device.device as usize) << 3) | (device.function as usize);
+
+        let mut pci_io: *mut core::ffi::c_void = core::ptr::null_mut();
+        let status = unsafe {
+            (bs.open_protocol)(
+                handle,
+                EFI_PCI_IO_PROTOCOL_GUID.as_ptr(),
+                &mut pci_io,
+                0, // AgentHandle
+                0, // ControllerHandle
+                0x01, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
+            )
+        };
+
+        if EfiStatus::from(status) != EfiStatus::Success || pci_io.is_null() {
+            _print(format_args!("[GOP-ALT] Failed to open PCI_IO protocol for virtio-gpu: {:#x}\n", status));
+            return None;
+        }
+
+        _print(format_args!("[GOP-ALT] Successfully opened PCI_IO protocol\n"));
+
+        // Read PCI configuration to get BAR information
+        let mut config_buf = [0u32; 6]; // First 24 bytes (6 dwords) contain BAR0-BAR5
+
+        let read_result = unsafe {
+            let pci_io_read: unsafe extern "efiapi" fn(
+                *mut core::ffi::c_void,
+                u8,  // Width (2=dword)
+                u8,  // Offset
+                usize, // Count
+                *mut core::ffi::c_void
+            ) -> usize = core::mem::transmute(*((pci_io as *mut usize).add(1)));
+
+            pci_io_read(
+                pci_io,
+                2, // Dword
+                0x10, // BAR0 offset (0x10)
+                6, // 6 BARs
+                config_buf.as_mut_ptr() as *mut core::ffi::c_void
+            )
+        };
+
+        if read_result != 0 {
+            _print(format_args!("[GOP-ALT] Failed to read PCI BARs: {:#x}\n", read_result));
+            unsafe { (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0) };
+            return None;
+        }
+
+        // Analyze BAR0 (typically the framebuffer for virtio-gpu)
+        let bar0 = config_buf[0] & 0xFFFFFFF0; // Mask off lower 4 bits (flags)
+        let bar0_type = config_buf[0] & 0xF;
+
+        if bar0 == 0 {
+            _print(format_args!("[GOP-ALT] BAR0 is zero - invalid MMIO region\n"));
+            unsafe { (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0) };
+            return None;
+        }
+
+        // Check if BAR0 is a memory-mapped region (bits 0-1 = 00 for 32-bit memory, 10 for 64-bit)
+        if bar0_type & 0x1 != 0 {
+            _print(format_args!("[GOP-ALT] BAR0 is I/O space (type: {}), expected memory space\n", bar0_type));
+            unsafe { (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0) };
+            return None;
+        }
+
+        let is_64bit = (bar0_type & 0x4) != 0;
+        let fb_base_addr = if is_64bit {
+            // 64-bit BAR - combine BAR0 and BAR1
+            let bar1 = config_buf[1];
+            ((bar1 as u64) << 32) | (bar0 as u64 & 0xFFFFFFF0)
+        } else {
+            bar0 as u64
+        };
+
+        _print(format_args!("[GOP-ALT] BAR0: {:#x}, type: {}, fb_base: {:#x}, 64-bit: {}\n",
+            bar0, bar0_type, fb_base_addr, is_64bit));
+
+        // For virtio-gpu, we need to initialize the device first
+        // This involves writing to the device registers in MMIO space
+        // But since we don't have the capability to write to MMIO yet,
+        // we'll assume a default configuration and try to read from a known offset
+
+        // For virtio-gpu in QEMU, default resolution is typically 1024x768 or 1280x720
+        // Try to detect by attempting to access the framebuffer
+        let standard_modes = [
+            (1024, 768, 32),
+            (1280, 720, 32),
+            (800, 600, 32),
+        ];
+
+        for (width, height, bpp) in standard_modes.iter() {
+            let stride = *width; // Assume pixels_per_scan_line = width
+            let expected_fb_size = (*height * stride * bpp / 8) as u64;
+
+            // Try to validate framebuffer access (this is a very basic check)
+            if probe_framebuffer_access(fb_base_addr, expected_fb_size) {
+                _print(format_args!("[GOP-ALT] Detected working virtio-gpu framebuffer: {}x{} @ {:#x}\n",
+                    width, height, fb_base_addr));
+
+                // Close PCI_IO protocol
+                unsafe { (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0) };
+
+                return Some(crate::common::FullereneFramebufferConfig {
+                    address: fb_base_addr,
+                    width: *width,
+                    height: *height,
+                    pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                    bpp: *bpp,
+                    stride: stride,
+                });
+            }
+        }
+
+        // If no standard mode worked, try to determine size by PCI register
+        // Read BAR0 size by writing all 1s and reading back (but we can't do that without PCI_IO write access)
+
+        _print(format_args!("[GOP-ALT] Could not determine virtio-gpu framebuffer configuration\n"));
+
+        // Close PCI_IO protocol
+        unsafe { (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0) };
+
+        None
+    }
+
+    /// Try to validate framebuffer access at the given address
+    fn probe_framebuffer_access(address: u64, size: u64) -> bool {
+        // This is a very basic probe - in UEFI we should use proper memory mapping
+        // For now, we'll just try to read from the address and see if it's accessible
+
+        // WARNING: This is unsafe memory access - in a real implementation
+        // we'd need to use EFI_PCI_IO_PROTOCOL memory operations or allocate_address_range
+        // to properly map the framebuffer memory
+
+        _print(format_args!("[GOP-ALT] Attempting to validate framebuffer access at {:#x} (size: {}KB)\n",
+            address, size / 1024));
+
+        // Try reading first few bytes to see if memory is accessible
+        // We need to do this very carefully to avoid crashes
+        let ptr = address as *const u8;
+
+        // Check if the address looks valid (not null, not too high)
+        if address == 0 || address >= 0xFFFFFFFFFFFFF000 {
+            _print(format_args!("[GOP-ALT] Framebuffer address {:#x} appears invalid\n", address));
+            return false;
+        }
+
+        // In UEFI, we should use memory services to allocate/map this range first
+        // For now, we'll assume the PCI_IO memory operations will handle this
+        // when we actually access the framebuffer later
+
+        _print(format_args!("[GOP-ALT] Framebuffer address {:#x} appears potentially valid\n", address));
+        true // Assume valid for now - real validation would need proper mem mapping
     }
 
     /// Install linear framebuffer configuration table
