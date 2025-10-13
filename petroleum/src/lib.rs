@@ -797,7 +797,7 @@ pub mod bare_metal_pci {
 
     /// Read 16-bit value from PCI configuration space
     pub fn pci_config_read_word(bus: u8, device: u8, function: u8, register: u8) -> u16 {
-        let aligned_register = register & !0x2; // Align to 32-bit boundary
+        let aligned_register = register & !3; // Align to 32-bit boundary
         let dword = pci_config_read_dword(bus, device, function, aligned_register);
         let offset_in_dword = register & 0x2; // 0 or 2
         (dword >> (offset_in_dword * 8)) as u16
