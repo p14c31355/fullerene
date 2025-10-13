@@ -386,7 +386,7 @@ pub mod bare_metal_graphics_detection {
             _print(format_args!("[BM-GFX] Testing {}x{} mode at {:#x} (size: {}KB)\n",
                 width, height, addr, expected_fb_size / 1024));
 
-            // For QXL, validate by checking if the będziemy can access the memory region
+            // For QXL, validate by checking if the memory region can be accessed
             // Since we can't actually validate memory access from UEFI, we'll use heuristics
             if *addr >= 0x100000 { // At least 1MB address, reasonable for MMIO
                 _print(format_args!("[BM-GFX] QXL framebuffer mode {}x{} appears valid\n", width, height));
