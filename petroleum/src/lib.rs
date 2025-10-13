@@ -184,9 +184,75 @@ pub fn init_graphics_protocols(system_table: &EfiSystemTable) -> Option<Fulleren
     serial::_print(format_args!("All graphics protocols failed, trying alternative VESA detection...\n"));
 
     // Try EFI-based PCI enumeration first
-    let efi_result = graphics_alternatives::detect_vesa_graphics(unsafe { &*system_table.boot_services });
+    if let Some(config) = graphics_alternatives::detect_vesa_graphics(unsafe { &*system_table.boot_services }) {
+        serial::_print(format_args!("EFI PCI enumeration succeeded, installing config table\n"));
 
-/// Bare-metal graphics detection using direct PCI access without UEFI protocols
+        // Install the configuration in the UEFI config table
+        let config_ptr = Box::leak(Box::new(config));
+
+        let boot_services = unsafe { &*system_table.boot_services };
+        let install_status = unsafe { (boot_services.install_configuration_table)(
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
+            config_ptr as *const _ as *mut c_void,
+        ) };
+
+        if EfiStatus::from(install_status) != EfiStatus::Success {
+            let _ = unsafe { Box::from_raw(config_ptr) };
+            serial::_print(format_args!("EFI: Failed to install config table (status: {:#x}).\n", install_status));
+            return None;
+        }
+
+        serial::_print(format_args!("EFI: Configuration table installed successfully.\n"));
+        serial::_print(format_args!(
+            "EFI: Framebuffer ready: {}x{} @ {:#x}, {} BPP, stride {}\n",
+            config_ptr.width, config_ptr.height, config_ptr.address, config_ptr.bpp, config_ptr.stride
+        ));
+
+        // Clear screen for clean state
+        unsafe {
+            ptr::write_bytes(config_ptr.address as *mut u8, 0x00, (config_ptr.height as u64 * config_ptr.stride as u64 * (config_ptr.bpp as u64 / 8)) as usize);
+        }
+
+        serial::_print(format_args!("EFI: Framebuffer cleared.\n"));
+        return Some(*config_ptr);
+    }
+
+    // If EFI PCI enumeration failed, try bare-metal PCI enumeration
+    serial::_print(format_args!("EFI PCI enumeration failed, trying bare-metal detection\n"));
+
+    if let Some(config) = bare_metal_graphics_detection::detect_bare_metal_graphics() {
+        // Install the configuration in the UEFI config table
+        let config_ptr = Box::leak(Box::new(config));
+
+        let install_status = unsafe { ((*system_table.boot_services).install_configuration_table)(
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
+            config_ptr as *const _ as *mut c_void,
+        ) };
+
+        if EfiStatus::from(install_status) != EfiStatus::Success {
+            let _ = unsafe { Box::from_raw(config_ptr) };
+            serial::_print(format_args!("Bare-metal: Failed to install config table (status: {:#x}).\n", install_status));
+            return None;
+        }
+
+        serial::_print(format_args!("Bare-metal: Configuration table installed successfully.\n"));
+        serial::_print(format_args!(
+            "Bare-metal: Framebuffer ready: {}x{} @ {:#x}, {} BPP, stride {}\n",
+            config_ptr.width, config_ptr.height, config_ptr.address, config_ptr.bpp, config_ptr.stride
+        ));
+
+        // Clear screen for clean state
+        unsafe {
+            ptr::write_bytes(config_ptr.address as *mut u8, 0x00, (config_ptr.height as u64 * config_ptr.stride as u64 * (config_ptr.bpp as u64 / 8)) as usize);
+        }
+
+        serial::_print(format_args!("Bare-metal: Framebuffer cleared.\n"));
+        return Some(*config_ptr);
+    } else {
+        serial::_print(format_args!("Bare-metal graphics detection also failed\n"));
+    }
+
+// Bare-metal graphics detection using direct PCI access without UEFI protocols
 pub mod bare_metal_graphics_detection {
     use super::*;
     use crate::serial::_print;
@@ -809,7 +875,7 @@ pub mod graphics_alternatives {
 
     /// Try to detect VESA-compatible graphics hardware using PCI enumeration
     /// Returns information about available graphics devices
-    pub fn detect_vesa_graphics(bs: &EfiBootServices) -> Result<(), EfiStatus> {
+    pub fn detect_vesa_graphics(bs: &EfiBootServices) -> Option<crate::common::FullereneFramebufferConfig> {
         _print(format_args!("[GOP-ALT] Detecting VESA graphics hardware...\n"));
 
         // Try PCI enumeration for graphics devices
@@ -823,22 +889,19 @@ pub mod graphics_alternatives {
                     // Check if this device supports linear framebuffer mode
                     if let Some(fb_info) = probe_linear_framebuffer(&device, bs) {
                         _print(format_args!("[GOP-ALT] Linear framebuffer found at {:#x}, {}x{}.\n", fb_info.address, fb_info.width, fb_info.height));
-                        if install_linear_framebuffer_config(bs, fb_info) {
-                            _print(format_args!("[GOP-ALT] Linear framebuffer config installed.\n"));
-                            return Ok(());
-                        }
+                        return Some(fb_info);
                     }
                 }
                 _print(format_args!("[GOP-ALT] No linear framebuffers found on graphics devices\n"));
-                Err(EfiStatus::NotFound)
+                None
             }
             Ok(_) => {
                 _print(format_args!("[GOP-ALT] No graphics devices found via PCI enumeration\n"));
-                Err(EfiStatus::NotFound)
+                None
             }
             Err(e) => {
                 _print(format_args!("[GOP-ALT] PCI enumeration failed: {:?}", e));
-                Err(e)
+                None
             }
         }
     }
