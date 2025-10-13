@@ -4,6 +4,7 @@
 //! for unified hardware management.
 
 use crate::*;
+use crate::hardware::register_device;
 use alloc::vec::Vec;
 use spin::Mutex;
 
@@ -184,22 +185,10 @@ impl PciConfigSpace {
                 petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS,
                 address
             );
-            // Write the modified dword
+            // Write the modified dword to the data port
             petroleum::port_write!(
                 petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA,
-                (new_dword & 0xFF) as u8
-            );
-            petroleum::port_write!(
-                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + 1,
-                ((new_dword >> 8) & 0xFF) as u8
-            );
-            petroleum::port_write!(
-                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + 2,
-                ((new_dword >> 16) & 0xFF) as u8
-            );
-            petroleum::port_write!(
-                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + 3,
-                ((new_dword >> 24) & 0xFF) as u8
+                new_dword
             );
         }
     }
@@ -507,9 +496,9 @@ pub fn register_pci_devices() -> SystemResult<()> {
         for device in scanner.get_devices() {
             // Create a boxed copy for registration by cloning
             let pci_device = device.clone(); // Assumes PciDevice implements Clone
-            let boxed_device: alloc::boxed::Box<dyn crate::Initializable + Send> =
+            let boxed_device: alloc::boxed::Box<dyn crate::HardwareDevice + Send> =
                 alloc::boxed::Box::new(pci_device);
-            crate::register_system_component(boxed_device);
+            register_device(boxed_device)?;
         }
     }
     log_info!("PCI devices registered");
