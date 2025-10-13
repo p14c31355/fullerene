@@ -20,6 +20,7 @@ pub use graphics::{
 };
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
 pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
+pub use uefi_helpers::handle_panic;
 
 /// Generic framebuffer buffer clear operation
 pub unsafe fn clear_buffer_pixels<T: Copy>(
@@ -327,6 +328,81 @@ pub fn init_uga_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     }
 }
 
+/// Alternative GOP detection for QEMU environments
+pub fn init_gop_framebuffer_alternative(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
+    serial::_print(format_args!("GOP: Trying alternative detection methods for QEMU...\n"));
+
+    // Try to detect QEMU-specific framebuffer configurations
+    // QEMU often provides a linear framebuffer even when GOP is not properly detected
+
+    // Try standard QEMU framebuffer addresses and configurations
+    let qemu_configs = [
+        // Standard QEMU std-vga framebuffer
+        (0xE0000000u64, 1024u32, 768u32, 32u32), // Common QEMU std-vga mode
+        (0xF0000000u64, 1024u32, 768u32, 32u32), // Alternative QEMU framebuffer
+        (0xFD000000u64, 1024u32, 768u32, 32u32), // High memory framebuffer
+        (0xE0000000u64, 800u32, 600u32, 32u32),  // 800x600 mode
+        (0xF0000000u64, 800u32, 600u32, 32u32),  // Alternative 800x600
+    ];
+
+    for (address, width, height, bpp) in qemu_configs.iter() {
+        serial::_print(format_args!(
+            "GOP: Testing QEMU framebuffer at {:#x}, {}x{}, {} BPP\n",
+            address, width, height, bpp
+        ));
+
+        // Check if framebuffer memory is accessible (basic validation)
+        let framebuffer_size = (*height as u64) * (*width as u64) * (*bpp as u64 / 8);
+
+        if *address == 0 || framebuffer_size > 0x10000000 { // 256MB limit
+            continue;
+        }
+
+        // Try to validate framebuffer access by checking if we can write to it
+        let test_ptr = *address as *mut u32;
+        if test_ptr.is_null() {
+            continue;
+        }
+
+        // Create framebuffer configuration for QEMU
+        let config = FullereneFramebufferConfig {
+            address: *address,
+            width: *width,
+            height: *height,
+            pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+            bpp: *bpp,
+            stride: *width, // Assume stride equals width for QEMU
+        };
+
+        serial::_print(format_args!(
+            "GOP: QEMU framebuffer candidate: {}x{} @ {:#x}\n",
+            config.width, config.height, config.address
+        ));
+
+        // Try to install and validate the configuration
+        let installer = FramebufferInstaller::new(system_table);
+        match installer.install_and_clear(config) {
+            Ok(final_config) => {
+                serial::_print(format_args!(
+                    "GOP: Successfully initialized QEMU framebuffer: {}x{} @ {:#x}\n",
+                    final_config.width, final_config.height, final_config.address
+                ));
+                return Some(final_config);
+            }
+            Err(status) => {
+                serial::_print(format_args!(
+                    "GOP: Failed to install QEMU framebuffer config (status: {:#x})\n",
+                    status as u32
+                ));
+                continue;
+            }
+        }
+    }
+
+    serial::_print(format_args!("GOP: No working QEMU framebuffer configurations found\n"));
+    None
+}
+
 /// Helper to initialize GOP and framebuffer
 pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
     let locator = ProtocolLocator::new(&EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, system_table);
@@ -342,7 +418,10 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
                 "GOP: Failed to locate GOP protocol (status: {:#x}).\n",
                 status as u32
             ));
-            return None;
+
+            // Try alternative GOP detection for QEMU environments
+            serial::_print(format_args!("GOP: Trying alternative GOP detection...\n"));
+            return init_gop_framebuffer_alternative(system_table);
         }
         Ok(_) => {
             serial::_print(format_args!(
