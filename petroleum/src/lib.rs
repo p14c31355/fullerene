@@ -90,6 +90,16 @@ pub fn init_uga_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
 
 /// Helper to try different graphics protocols and modes
 pub fn init_graphics_protocols(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
+    // Verify system table integrity before proceeding
+    if system_table.boot_services.is_null() {
+        serial::_print(format_args!("GOP: System table boot services pointer is null.\n"));
+        return None;
+    }
+
+    // Print basic system information to help diagnose GOP availability
+    serial::_print(format_args!("GOP: Initializing graphics protocols...\n"));
+    serial::_print(format_args!("GOP: Configuration table count: {}\n", system_table.number_of_table_entries));
+
     // First try standard GOP protocol with enhanced mode enumeration
     if let Some(config) = init_gop_framebuffer(system_table) {
         return Some(config);
@@ -103,6 +113,7 @@ pub fn init_graphics_protocols(system_table: &EfiSystemTable) -> Option<Fulleren
 
     // If all graphics protocols fail, we fall back to VGA text mode (handled externally)
     serial::_print(format_args!("All graphics protocols failed, falling back to VGA text mode.\n"));
+    serial::_print(format_args!("NOTE: GOP protocol typically requires UEFI-compatible video hardware (e.g., QEMU with -vga qxl or virtio-gpu).\n"));
     None
 }
 
@@ -112,11 +123,15 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     let mut gop: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
 
     serial::_print(format_args!("GOP: Attempting to locate Graphics Output Protocol...\n"));
-    let status = unsafe { (bs.locate_protocol)(
+
+    // Add memory barrier before protocol call for safety
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+    let status = (bs.locate_protocol)(
         EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
         ptr::null_mut(),
         &mut gop as *mut _ as *mut *mut c_void,
-    ) };
+    );
 
     if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
         serial::_print(format_args!("GOP: Failed to locate GOP protocol (status: {:#x}).\n", status));
