@@ -185,7 +185,11 @@ pub fn init_graphics_protocols(system_table: &EfiSystemTable) -> Option<Fulleren
         return Some(config);
     }
 
-    // If all graphics protocols fail, we fall back to VGA text mode (handled externally)
+    // If all graphics protocols fail, try alternative VESA detection approaches
+    serial::_print(format_args!("All graphics protocols failed, trying alternative VESA detection...\n"));
+    graphics_alternatives::detect_vesa_graphics(unsafe { &*system_table.boot_services });
+
+    // Fall back to VGA text mode (handled externally)
     serial::_print(format_args!("All graphics protocols failed, falling back to VGA text mode.\n"));
     serial::_print(format_args!("NOTE: GOP protocol typically requires UEFI-compatible video hardware (e.g., QEMU with -vga qxl or virtio-gpu).\n"));
     None
@@ -532,3 +536,109 @@ pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u3
 }
 
 use alloc::boxed::Box;
+
+/// Alternative graphics detection methods when GOP is unavailable
+pub mod graphics_alternatives {
+    use super::*;
+    use alloc::vec::Vec;
+    use crate::common::{EfiBootServices, EfiStatus};
+    use crate::println;
+    use crate::serial::_print;
+
+    #[derive(Debug, Clone, Copy)]
+    struct PciDevice {
+        vendor_id: u16,
+        device_id: u16,
+        class_code: u8,
+        bus: u8,
+        device: u8,
+        function: u8,
+    }
+
+    /// Try to detect VESA-compatible graphics hardware using ACPI tables
+    /// Returns information about available graphics devices
+    pub fn detect_vesa_graphics(bs: &EfiBootServices) -> Result<(), EfiStatus> {
+        _print(format_args!("[GOP-ALT] Detecting VESA graphics hardware...\n"));
+
+        // First, enumerate PCI devices to find graphics adapters
+        match enumerate_pci_graphics_devices(bs) {
+            Ok(devices) => {
+                _print(format_args!("[GOP-ALT] Found {} PCI graphics devices\n", devices.len()));
+                for (i, dev) in devices.iter().enumerate() {
+                    _print(format_args!(
+                        "[GOP-ALT] Graphics device {}: Vendor={:04x}, Device={:04x}, Class={:02x}\n",
+                        i, dev.vendor_id, dev.device_id, dev.class_code
+                    ));
+                }
+
+                if !devices.is_empty() {
+                    // Try to initialize VESA VBE for the first found device
+                    return detect_vesa_vbe(bs);
+                }
+            }
+            Err(e) => {
+                _print(format_args!("[GOP-ALT] PCI enumeration failed: {:?}\n", e));
+            }
+        }
+
+        Err(EfiStatus::NotFound)
+    }
+
+    /// Enumerate PCI devices looking for graphics adapters
+    fn enumerate_pci_graphics_devices(bs: &EfiBootServices) -> Result<Vec<PciDevice>, EfiStatus> {
+        // In UEFI, we need to use the EFI_PCI_IO_PROTOCOL or scan configuration space
+        // For now, we'll implement a simple PCI configuration space scan
+        let mut graphics_devices = Vec::new();
+
+        // Simple PCI scan - look for display class devices (class 3)
+        for bus in 0..256 {
+            for device in 0..32 {
+                for function in 0..8 {
+                    let config_addr = ((bus as u32) << 16) | ((device as u32) << 11) | ((function as u32) << 8);
+
+                    // Read PCI configuration space for device/vendor ID and class code
+                    // Note: This is a simplified implementation - real PCI scanning needs proper protocol usage
+                    let vendor_id = unsafe { port_read(0xCFC) } as u16; // Simplified - would need proper PCI access
+                    let device_id = unsafe { port_read(0xCFE) } as u16;
+                    let class_code = unsafe { port_read(0xCFB) } as u8 & 0xFF;
+
+                    if vendor_id != 0xFFFF && class_code == 0x03 { // Display class
+                        graphics_devices.push(PciDevice {
+                            vendor_id,
+                            device_id,
+                            class_code,
+                            bus: bus as u8,
+                            device: device as u8,
+                            function: function as u8,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(graphics_devices)
+    }
+
+    /// Try to detect VESA VBE (VESA BIOS Extensions) support
+    fn detect_vesa_vbe(bs: &EfiBootServices) -> Result<(), EfiStatus> {
+        _print(format_args!("[GOP-ALT] Attempting VESA VBE detection...\n"));
+
+        // Check for VBE signature in BIOS memory
+        // VBE typically lives at 0xC0000-0xD0000 in real mode memory
+
+        // Try to call VBE functions through BIOS calls or memory scanning
+        // This is highly system-specific and may not work in UEFI environment
+
+        _print(format_args!("[GOP-ALT] VESA VBE detection not implemented yet - requires BIOS interrupt calls\n"));
+        _print(format_args!("[GOP-ALT] Consider implementing linear framebuffer detection or ACPI-based graphics\n"));
+
+        Err(EfiStatus::Unsupported)
+    }
+
+    /// Read from PCI configuration space (simplified - needs proper implementation)
+    unsafe fn port_read(port: u16) -> u32 {
+        // This is a placeholder - real PCI access needs proper protocols
+        // In UEFI, use EFI_PCI_IO_PROTOCOL instead
+        0xFFFF_FFFF // Invalid read
+    }
+}
