@@ -212,7 +212,7 @@ pub fn create_process(name: &'static str, entry_point_address: VirtAddr) -> Proc
     let process_page_table = crate::memory_management::create_process_page_table(0)
         .expect("Failed to create page table");
 
-    process.page_table_phys_addr = PhysAddr::new(0); // Will be set properly when page table allocation is implemented
+    process.page_table_phys_addr = process_page_table.pml4_frame.start_address();
     process.page_table = Some(process_page_table);
 
     process.init_context(kernel_stack_top);
