@@ -159,9 +159,8 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
 fn init_basic_vga_text_mode() {
     petroleum::serial::_print(format_args!("Basic VGA text mode initialization...\n"));
 
-    // Simply call the existing petroleum VGA setup function
-    // This will handle the text mode setup properly
-    petroleum::graphics::init_vga_text_mode();
+    // Detect and initialize VGA graphics for Cirrus devices
+    petroleum::graphics::detect_and_init_vga_graphics();
 
     petroleum::serial::_print(format_args!(
         "Basic VGA text mode initialized as fallback.\n"

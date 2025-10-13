@@ -18,6 +18,71 @@ pub fn setup_vga_mode_13h() {
     log_step!("VGA setup: Mode 13h initialization complete\n");
 }
 
+// Cirrus VGA specific initialization for better compatibility
+pub fn setup_cirrus_vga_mode() {
+    log_step!("Cirrus VGA: Starting Cirrus-specific initialization\n");
+
+    // First set up standard VGA mode 13h
+    setup_vga_mode_13h();
+
+    // Cirrus-specific register setup for better graphics mode support
+    // Cirrus Logic 5446/5480 specific registers
+    let mut index_writer = PortWriter::<u8>::new(0x3C4); // Sequencer index
+    let mut data_writer = PortWriter::<u8>::new(0x3C5);  // Sequencer data
+
+    // Enable extended memory and better graphics support
+    index_writer.write_safe(0x06u8); // Unlock Cirrus registers
+    data_writer.write_safe(0x12u8);
+
+    // Set up Cirrus-specific graphics registers for better desktop display
+    index_writer.write_safe(0x1Eu8); // Extended mode register
+    data_writer.write_safe(0x01u8);  // Enable extended memory
+
+    log_step!("Cirrus VGA: Cirrus-specific initialization complete\n");
+}
+
+// VGA device detection and initialization
+pub fn detect_and_init_vga_graphics() {
+    log_step!("VGA Detection: Starting VGA device detection\n");
+
+    // Check if we have a Cirrus VGA device by checking PCI
+    if detect_cirrus_vga() {
+        log_step!("VGA Detection: Cirrus VGA device detected, initializing\n");
+        setup_cirrus_vga_mode();
+    } else {
+        log_step!("VGA Detection: Standard VGA device detected, using standard mode\n");
+        setup_vga_mode_13h();
+    }
+}
+
+// Detect Cirrus VGA device via PCI
+pub fn detect_cirrus_vga() -> bool {
+    log_step!("VGA Detection: Checking for Cirrus VGA device\n");
+
+    // Check PCI configuration for Cirrus device (vendor ID: 0x1013, device ID: various)
+    // Bus 0, Device 2, Function 0 is typically where VGA devices are located
+    let vendor_id = crate::bare_metal_pci::pci_config_read_word(0, 2, 0, 0x00);
+
+    if vendor_id == 0x1013 { // Cirrus Logic vendor ID
+        log_step!("VGA Detection: Cirrus VGA device found via PCI\n");
+        return true;
+    }
+
+    // Also check other common locations
+    for bus in 0..2 {
+        for device in 0..32 {
+            let test_vendor = crate::bare_metal_pci::pci_config_read_word(bus, device, 0, 0x00);
+            if test_vendor == 0x1013 {
+                log_step!("VGA Detection: Cirrus VGA device found at bus:device = ");
+                return true;
+            }
+        }
+    }
+
+    log_step!("VGA Detection: No Cirrus VGA device found, using standard VGA\n");
+    false
+}
+
 // Unified text mode initialization function
 pub fn setup_vga_text_mode() {
     log_step!("VGA text mode setup: Starting\n");

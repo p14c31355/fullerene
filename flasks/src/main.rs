@@ -135,18 +135,10 @@ fn main() -> io::Result<()> {
         "1",
         "-M",
         "q35",
-        // Enhanced graphics configuration for better GOP support
-        "-device",
-        "qxl-vga,vgamem_mb=128",
+        "-vga",
+        "cirrus",
         "-display",
         "gtk,gl=on,window-close=on",
-        // Alternative: Use SDL backend for better window control
-        // "-display", "sdl,gl=on",
-        // Alternative VGA configurations to try
-        // "-vga",
-        // "qxl",
-        // "-device",
-        // "VGA,vgamem_mb=64",
         "-serial",
         "stdio",
         "-accel",
@@ -157,9 +149,6 @@ fn main() -> io::Result<()> {
         "qemu_log.txt",
         "-monitor",
         "none",
-        // Don't trace UEFI as it may cause issues
-        // "-trace",
-        // "uefi_*",
         "-drive",
         &ovmf_fd_drive,
         "-drive",

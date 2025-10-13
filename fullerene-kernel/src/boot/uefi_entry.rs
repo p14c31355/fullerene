@@ -75,7 +75,8 @@ pub extern "efiapi" fn efi_main(
     // Cast system_table to reference
     let system_table = unsafe { &*system_table };
 
-    petroleum::graphics::init_vga_text_mode();
+    // Detect and initialize VGA graphics for Cirrus devices
+    petroleum::graphics::detect_and_init_vga_graphics();
 
     debug_log!("VGA setup done");
     kernel_log!("VGA text mode setup function returned");
