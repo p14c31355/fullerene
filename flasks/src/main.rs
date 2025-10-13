@@ -135,9 +135,8 @@ fn main() -> io::Result<()> {
         "1",
         "-M",
         "q35",
-
-        "-vga", "qxl",
-
+        "-vga",
+        "qxl",
         // GOP TESTING: Different OVMF versions or additional ROM may be needed for GOP support
         // Current OVMF release may not include GOP drivers for QEMU devices
         // Alternative: Use actual hardware or try GOP implementation in petroleum crate

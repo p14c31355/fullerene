@@ -73,8 +73,10 @@ pub fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> PhysAddr {
     let mut largest_addr = None;
     let mut largest_pages = 0u64;
     for desc in descriptors {
-        if (desc.type_ == EfiMemoryType::EfiLoaderData || desc.type_ == EfiMemoryType::EfiConventionalMemory)
-            && desc.number_of_pages >= 4 {
+        if (desc.type_ == EfiMemoryType::EfiLoaderData
+            || desc.type_ == EfiMemoryType::EfiConventionalMemory)
+            && desc.number_of_pages >= 4
+        {
             // at least 16KB
             if desc.number_of_pages > largest_pages {
                 largest_pages = desc.number_of_pages;

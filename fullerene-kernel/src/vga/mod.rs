@@ -119,9 +119,7 @@ pub fn init_vga() {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        BUFFER_HEIGHT, BUFFER_WIDTH, Color, ColorCode, ScreenChar, TextBufferOperations,
-    };
+    use super::{BUFFER_HEIGHT, BUFFER_WIDTH, Color, ColorCode, ScreenChar, TextBufferOperations};
     use alloc::vec;
     use alloc::vec::Vec;
 

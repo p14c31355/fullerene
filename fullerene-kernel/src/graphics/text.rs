@@ -116,7 +116,9 @@ pub fn init(config: &FullereneFramebufferConfig) {
     let (writer, fb_enum) = match config.pixel_format {
         petroleum::common::EfiGraphicsPixelFormat::PixelFormatMax => {
             // Special marker for VGA mode
-            petroleum::serial::serial_log(format_args!("Graphics: Using VGA 8-bit mode for UEFI\n"));
+            petroleum::serial::serial_log(format_args!(
+                "Graphics: Using VGA 8-bit mode for UEFI\n"
+            ));
             let vga_config = petroleum::common::VgaFramebufferConfig {
                 address: config.address,
                 width: config.width,
@@ -124,13 +126,22 @@ pub fn init(config: &FullereneFramebufferConfig) {
                 bpp: 8,
             };
             let writer = FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(&vga_config));
-            (Box::new(writer.clone()) as Box<dyn core::fmt::Write + Send + Sync>, super::framebuffer::UefiFramebuffer::Vga8(writer))
+            (
+                Box::new(writer.clone()) as Box<dyn core::fmt::Write + Send + Sync>,
+                super::framebuffer::UefiFramebuffer::Vga8(writer),
+            )
         }
         _ => {
             // Standard UEFI graphics mode (32-bit)
-            petroleum::serial::serial_log(format_args!("Graphics: Using 32-bit UEFI graphics mode\n"));
-            let writer = FramebufferWriter::<u32>::new(super::framebuffer::FramebufferInfo::new(config));
-            (Box::new(writer.clone()) as Box<dyn core::fmt::Write + Send + Sync>, super::framebuffer::UefiFramebuffer::Uefi32(writer))
+            petroleum::serial::serial_log(format_args!(
+                "Graphics: Using 32-bit UEFI graphics mode\n"
+            ));
+            let writer =
+                FramebufferWriter::<u32>::new(super::framebuffer::FramebufferInfo::new(config));
+            (
+                Box::new(writer.clone()) as Box<dyn core::fmt::Write + Send + Sync>,
+                super::framebuffer::UefiFramebuffer::Uefi32(writer),
+            )
         }
     };
 

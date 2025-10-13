@@ -1,7 +1,7 @@
-use petroleum::common::VgaFramebufferConfig;
 use crate::graphics;
-use crate::init::init_common;
 use crate::hlt_loop;
+use crate::init::init_common;
+use petroleum::common::VgaFramebufferConfig;
 
 #[cfg(not(target_os = "uefi"))]
 #[unsafe(no_mangle)]

@@ -143,8 +143,8 @@ fn load_segment(
 
     // Validate that the virtual address range is in user space
     use crate::memory_management::{is_user_address, map_user_page};
-    use x86_64::structures::paging::Translate;
     use x86_64::VirtAddr;
+    use x86_64::structures::paging::Translate;
 
     let start_addr = VirtAddr::new(vaddr);
     let end_addr = VirtAddr::new(vaddr + mem_size as u64 - 1);

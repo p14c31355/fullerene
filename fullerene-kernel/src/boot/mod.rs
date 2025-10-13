@@ -4,11 +4,11 @@
 pub mod constants;
 #[macro_use]
 pub mod macros;
-pub mod utils;
-pub mod uefi_entry;
 pub mod bios_entry;
+pub mod uefi_entry;
+pub mod utils;
 
 // Re-exports for compatibility
+pub use bios_entry::*;
 pub use constants::*;
 pub use uefi_entry::*;
-pub use bios_entry::*;

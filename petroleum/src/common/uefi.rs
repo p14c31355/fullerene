@@ -220,8 +220,7 @@ pub struct EfiBootServices {
     _unused30: usize,                                        // fn30
     pub open_protocol:
         extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, // fn31
-    pub close_protocol:
-        extern "efiapi" fn(usize, *const u8, usize, usize) -> usize, // fn32
+    pub close_protocol: extern "efiapi" fn(usize, *const u8, usize, usize) -> usize, // fn32
     _unused33: usize,                                        // fn33
     _unused34: usize,                                        // fn34
     pub locate_handle_buffer:
@@ -333,14 +332,15 @@ pub struct EfiPciIoProtocol {
     /// flush(This) -> EFI_STATUS
     pub flush: usize, // fn11 - not used
     /// get_location(This, SegmentNumber, BusNumber, DeviceNumber, FunctionNumber) -> EFI_STATUS
-    pub get_location: extern "efiapi" fn(*mut EfiPciIoProtocol, *mut u32, *mut u32, *mut u32, *mut u32) -> usize, // fn12
+    pub get_location:
+        extern "efiapi" fn(*mut EfiPciIoProtocol, *mut u32, *mut u32, *mut u32, *mut u32) -> usize, // fn12
     /// attributes(This, Operation, Attributes, Result) -> EFI_STATUS
     pub attributes: usize, // fn13 - not used
     /// get_bar_attributes(This, BarIndex, Supports, Resources) -> EFI_STATUS
     pub get_bar_attributes: usize, // fn14 - not used
     /// set_bar_attributes(This, Attributes, BarIndex, Offset, Length) -> EFI_STATUS
     pub set_bar_attributes: usize, // fn15 - not used
-    // More functions exist but we only define what we need
+                                   // More functions exist but we only define what we need
 }
 
 /// Get bits per pixel from UEFI graphics pixel format.

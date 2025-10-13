@@ -18,13 +18,9 @@ pub fn setup_vga_mode_13h() {
     log_step!("VGA setup: Mode 13h initialization complete\n");
 }
 
-
-
 // Unified text mode initialization function
 pub fn setup_vga_text_mode() {
     log_step!("VGA text mode setup: Starting\n");
-
-
 
     setup_misc_output();
 

@@ -1,23 +1,19 @@
 // Use crate imports
-use core::ffi::c_void;
-use alloc::boxed::Box;
-use crate::{
-    gdt, memory, graphics, interrupts,
-};
-use crate::graphics::framebuffer::FramebufferLike;
-use petroleum::common::{
-    EfiSystemTable, FullereneFramebufferConfig,
-};
-use petroleum::common::EfiGraphicsOutputProtocol;
-use x86_64::{PhysAddr, VirtAddr};
 use crate::MEMORY_MAP;
-use crate::heap;
 use crate::boot::FALLBACK_HEAP_START_ADDR;
+use crate::graphics::framebuffer::FramebufferLike;
+use crate::heap;
+use crate::hlt_loop;
+use crate::memory::find_framebuffer_config;
+use crate::memory::setup_memory_maps;
+use crate::{gdt, graphics, interrupts, memory};
+use alloc::boxed::Box;
+use core::ffi::c_void;
+use petroleum::common::EfiGraphicsOutputProtocol;
+use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
 use petroleum::debug_log;
 use petroleum::write_serial_bytes;
-use crate::hlt_loop;
-use crate::memory::setup_memory_maps;
-use crate::memory::find_framebuffer_config;
+use x86_64::{PhysAddr, VirtAddr};
 
 /// Helper function to write a string to VGA buffer at specified row
 pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
@@ -97,8 +93,6 @@ pub extern "efiapi" fn efi_main(
     crate::vga::init_vga();
     kernel_log!("VGA writer initialized - text should be visible now");
 
-
-
     // Early text output using EFI console to ensure visible output on screen
     kernel_log!("About to output to EFI console");
     efi_print(system_table, b"UEFI Kernel: Display Test!\r\n");
@@ -125,7 +119,8 @@ pub extern "efiapi" fn efi_main(
     let framebuffer_config = find_framebuffer_config(system_table);
     let config = framebuffer_config.as_ref();
     let (fb_addr, fb_size) = if let Some(config) = config {
-        let fb_size_bytes = (config.width as usize * config.height as usize * config.bpp as usize) / 8;
+        let fb_size_bytes =
+            (config.width as usize * config.height as usize * config.bpp as usize) / 8;
         kernel_log!(
             "Found framebuffer config: {}x{} @ {:#x}, size: {}",
             config.width,

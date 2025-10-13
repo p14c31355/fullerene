@@ -103,7 +103,9 @@ impl Heap {
     /// Insert node in sorted order
     unsafe fn insert_sorted(&mut self, new_node: *mut ListNode) {
         if self.head.is_null() || unsafe { (*new_node).start_addr() < (*self.head).start_addr() } {
-            unsafe { (*new_node).next = self.head; }
+            unsafe {
+                (*new_node).next = self.head;
+            }
             self.head = new_node;
             return;
         }

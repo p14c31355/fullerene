@@ -11,21 +11,21 @@ pub extern "C" fn syscall_entry() {
     unsafe {
         core::arch::naked_asm!(
             // Switch to kernel stack using swapgs
-            "swapgs",                    // Swap GS base to kernel GS base
-            "mov rsp, gs:0",            // Load kernel stack pointer from GS:0
+            "swapgs",        // Swap GS base to kernel GS base
+            "mov rsp, gs:0", // Load kernel stack pointer from GS:0
             // Entry: SYSCALL puts RIP in RCX, RFLAGS in R11
-            "push rcx",                 // Save return RIP
-            "push r11",                 // Save return RFLAGS
+            "push rcx", // Save return RIP
+            "push r11", // Save return RFLAGS
             // Shuffle arguments: syscall ABI (rdi,rsi,rdx,r10,r8,r9)
             // to C ABI (rdi,rsi,rdx,rcx,r8,r9)
             "mov rcx, r10",
-            "mov rdi, rax",             // Pass syscall number in rdi (first argument)
-            "push rsp",                 // Preserve stack pointer (for cleanup)
+            "mov rdi, rax", // Pass syscall number in rdi (first argument)
+            "push rsp",     // Preserve stack pointer (for cleanup)
             "call handle_syscall",
-            "add rsp, 8",               // Clean up stack (instead of pop r10)
-            "pop r11",                  // Restore RFLAGS
-            "pop rcx",                  // Restore RIP
-            "swapgs",                   // Restore user GS base
+            "add rsp, 8", // Clean up stack (instead of pop r10)
+            "pop r11",    // Restore RFLAGS
+            "pop rcx",    // Restore RIP
+            "swapgs",     // Restore user GS base
             "sysretq"
         );
     }

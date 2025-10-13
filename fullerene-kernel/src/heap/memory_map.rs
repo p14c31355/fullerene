@@ -2,8 +2,8 @@
 //!
 //! This module manages UEFI memory maps and frame allocation.
 
-use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
 use petroleum::common::EfiMemoryType;
+use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
 use spin::{Mutex, Once};
 
 /// Global memory map storage
