@@ -273,7 +273,7 @@ impl<T: PixelType> FramebufferWriter<T> {
         }
     }
 
-        pub fn rgb888_to_pixel_format(&self, color: Rgb888) -> u32 {
+    pub fn rgb888_to_pixel_format(&self, color: Rgb888) -> u32 {
         let rgb = || rgb_pixel(color.r(), color.g(), color.b());
         let bgr = || rgb_pixel(color.b(), color.g(), color.r());
         #[allow(non_exhaustive_omitted_patterns)]
