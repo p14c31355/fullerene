@@ -32,16 +32,16 @@ impl VgaDevice {
     }
 
     /// Write a string to the VGA buffer
-    pub fn write_string(&self, s: &str) {
+    pub fn write_string(&mut self, s: &str) {
         if self.enabled {
             let buffer = unsafe { &mut *(0xb8000 as *mut [[ScreenChar; 80]; 25]) };
             self.write_string_to_buffer(s, buffer);
         }
     }
 
-    fn write_string_to_buffer(&self, s: &str, buffer: &mut [[ScreenChar; 80]; 25]) {
-        let mut column = 0;
-        let mut row = 0;
+    fn write_string_to_buffer(&mut self, s: &str, buffer: &mut [[ScreenChar; 80]; 25]) {
+        let mut column = self.cursor_col;
+        let mut row = self.cursor_row;
 
         for byte in s.bytes() {
             match byte {
@@ -71,6 +71,9 @@ impl VgaDevice {
                 }
             }
         }
+
+        self.cursor_col = column;
+        self.cursor_row = row;
     }
 
     fn scroll_buffer(&self, buffer: &mut [[ScreenChar; 80]; 25]) {

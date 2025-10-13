@@ -102,26 +102,12 @@ impl PciConfigSpace {
 
     /// Read a word from PCI configuration space
     fn read_config_word(bus: u8, device: u8, function: u8, offset: u8) -> u16 {
-        let address = 0x80000000u32
-            | ((bus as u32) << 16)
-            | ((device as u32) << 11)
-            | ((function as u32) << 8)
-            | (offset as u32 & 0xFC);
-
-        // Write address to CONFIG_ADDRESS port
-        unsafe {
-            petroleum::port_write!(
-                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS,
-                address
-            );
-            // Read two bytes and combine them
-            let low_byte: u8 = petroleum::port_read_u8!(
-                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 2) as u16
-            );
-            let high_byte: u8 = petroleum::port_read_u8!(
-                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 2 + 1) as u16
-            );
-            (high_byte as u16) << 8 | (low_byte as u16)
+        let dword = Self::read_config_dword(bus, device, function, offset);
+        // The dword is read from the dword-aligned address. We need to select the correct word.
+        if offset % 4 < 2 {
+            (dword & 0xFFFF) as u16
+        } else {
+            (dword >> 16) as u16
         }
     }
 
@@ -175,6 +161,17 @@ impl PciConfigSpace {
 
     /// Write a word to PCI configuration space
     pub fn write_config_word(&mut self, bus: u8, device: u8, function: u8, offset: u8, value: u16) {
+        // Read the current dword first
+        let current_dword = Self::read_config_dword(bus, device, function, offset);
+
+        // Modify the appropriate word within the dword
+        let new_dword = if offset % 4 < 2 {
+            (current_dword & 0xFFFF0000) | (value as u32)
+        } else {
+            (current_dword & 0x0000FFFF) | ((value as u32) << 16)
+        };
+
+        // Write the address to CONFIG_ADDRESS port (for dword-aligned access)
         let address = 0x80000000u32
             | ((bus as u32) << 16)
             | ((device as u32) << 11)
@@ -187,13 +184,22 @@ impl PciConfigSpace {
                 petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS,
                 address
             );
+            // Write the modified dword
             petroleum::port_write!(
-                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 2) as u16,
-                (value & 0xFF) as u8
+                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA,
+                (new_dword & 0xFF) as u8
             );
             petroleum::port_write!(
-                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 2 + 1) as u16,
-                (value >> 8) as u8
+                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + 1,
+                ((new_dword >> 8) & 0xFF) as u8
+            );
+            petroleum::port_write!(
+                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + 2,
+                ((new_dword >> 16) & 0xFF) as u8
+            );
+            petroleum::port_write!(
+                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + 3,
+                ((new_dword >> 24) & 0xFF) as u8
             );
         }
     }
@@ -206,6 +212,18 @@ pub struct PciDevice {
     function: u8,
     config: PciConfigSpace,
     enabled: bool,
+}
+
+impl Clone for PciDevice {
+    fn clone(&self) -> Self {
+        Self {
+            bus: self.bus,
+            device: self.device,
+            function: self.function,
+            config: self.config,
+            enabled: self.enabled,
+        }
+    }
 }
 
 impl PciDevice {
@@ -487,12 +505,11 @@ pub fn get_pci_scanner() -> &'static Mutex<Option<PciScanner>> {
 pub fn register_pci_devices() -> SystemResult<()> {
     if let Some(scanner) = PCI_SCANNER.lock().as_mut() {
         for device in scanner.get_devices() {
-            // Create a boxed copy for registration
-            if let Some(pci_device) = PciDevice::new(device.bus, device.device, device.function) {
-                let boxed_device: alloc::boxed::Box<dyn crate::Initializable + Send> =
-                    alloc::boxed::Box::new(pci_device);
-                crate::register_system_component(boxed_device);
-            }
+            // Create a boxed copy for registration by cloning
+            let pci_device = device.clone(); // Assumes PciDevice implements Clone
+            let boxed_device: alloc::boxed::Box<dyn crate::Initializable + Send> =
+                alloc::boxed::Box::new(pci_device);
+            crate::register_system_component(boxed_device);
         }
     }
     log_info!("PCI devices registered");

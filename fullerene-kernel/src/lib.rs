@@ -390,7 +390,7 @@ impl PageFlags {
             dirty: false,
             huge_page: false,
             global: false,
-            no_execute: false,
+            no_execute: true,
         }
     }
 

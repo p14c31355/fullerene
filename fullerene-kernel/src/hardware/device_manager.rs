@@ -120,17 +120,20 @@ impl DeviceManager {
         self.device_info.lock().values().cloned().collect()
     }
 
-    /// Get a device by name for direct access
-    pub fn get_device(&self, name: &str) -> Option<&(dyn HardwareDevice + Send)> {
-        // Clone the device info to avoid lifetime issues
-        None
+    /// Get a device by name for direct access using a closure
+    pub fn with_device<F, R>(&self, name: &str, f: F) -> Option<R>
+    where
+        F: FnOnce(&(dyn HardwareDevice + Send)) -> R,
+    {
+        self.devices.lock().get(name).map(|d| f(d.as_ref()))
     }
 
-    /// Get a mutable reference to a device by name
-    pub fn get_device_mut(&self, name: &str) -> Option<&mut (dyn HardwareDevice + Send)> {
-        // This function is problematic due to lifetime constraints
-        // For now, return None to avoid lifetime issues
-        None
+    /// Get a mutable reference to a device by name using a closure
+    pub fn with_device_mut<F, R>(&self, name: &str, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut (dyn HardwareDevice + Send)) -> R,
+    {
+        self.devices.lock().get_mut(name).map(|d| f(d.as_mut()))
     }
 
     /// Initialize all registered devices in priority order
@@ -317,7 +320,10 @@ mod tests {
         let mock_device = Box::new(MockDevice::new("test_device"));
 
         assert!(manager.register_device(mock_device).is_ok());
-        assert!(manager.get_device("test_device").is_some());
+
+        // Test the new closure-based API
+        let device_name = manager.with_device("test_device", |device| device.device_name());
+        assert_eq!(device_name, Some("test_device"));
     }
 
     #[test]

@@ -181,9 +181,14 @@ fn load_segment(
 
         // Map the virtual page to the physical frame
         use crate::PageFlags;
-        let mut flags = PageFlags::user_data();
-        if ph.flags & PF_X != 0 {
-            flags = PageFlags::user_code();
+        let mut flags = PageFlags::new();
+        flags.present = true;
+        flags.user_accessible = true;
+        if ph.flags & PF_W != 0 {
+            flags.writable = true;
+        }
+        if ph.flags & PF_X == 0 {
+            flags.no_execute = true;
         }
 
         map_user_page(

@@ -258,9 +258,9 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
 
         // Properly free page table frames recursively
         if let Some(page_table) = process.page_table.take() {
+            let pml4_frame = page_table.pml4_frame;
             drop(page_table); // Explicit drop to release the mapper
-            // Note: deallocate_process_page_table would be called here with proper frame info
-            // crate::memory_management::deallocate_process_page_table(pml4_frame);
+            crate::memory_management::deallocate_process_page_table(pml4_frame);
         }
 
         process.page_table = None; // Already taken above, this is redundant but safe

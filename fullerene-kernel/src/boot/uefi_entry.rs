@@ -398,13 +398,7 @@ pub fn try_initialize_cirrus_graphics_mode() -> bool {
     // Set up VGA mode 13h (320x200, 256 colors) for graphics
     petroleum::graphics::setup_cirrus_vga_mode();
 
-    // Create a VGA framebuffer configuration for mode 13h
-    let vga_config = petroleum::common::VgaFramebufferConfig {
-        address: 0xA0000, // Standard VGA framebuffer address
-        width: 320,
-        height: 200,
-        bpp: 8,
-    };
+    // VGA framebuffer configuration is handled by uefi_vga_config below
 
     kernel_log!("Initializing VGA framebuffer writer...");
 

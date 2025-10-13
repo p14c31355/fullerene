@@ -877,6 +877,7 @@ pub struct PageTableManager {
     current_page_table: usize,
     page_tables: BTreeMap<usize, usize>,
     initialized: bool,
+    pub pml4_frame: crate::heap::PhysFrame,
 }
 
 impl PageTableManager {
@@ -886,6 +887,7 @@ impl PageTableManager {
             current_page_table: 0,
             page_tables: BTreeMap::new(),
             initialized: false,
+            pml4_frame: crate::heap::PhysFrame::containing_address(x86_64::PhysAddr::new(0)),
         }
     }
 
