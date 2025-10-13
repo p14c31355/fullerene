@@ -1,13 +1,14 @@
-//! VGA Device Implementation
-//!
-//! This module provides a VGA device that implements the HardwareDevice trait
-//! for unified hardware abstraction.
-
 use crate::*;
 use petroleum::{Color, ColorCode, ScreenChar};
 use spin::Mutex;
 
+// Constants to reduce magic numbers
+const VGA_WIDTH: usize = 80;
+const VGA_HEIGHT: usize = 25;
+const VGA_BUFFER_ADDR: usize = 0xb8000;
+
 /// VGA text mode device implementation
+#[derive(Clone)]
 pub struct VgaDevice {
     enabled: bool,
     color_code: ColorCode,
@@ -16,7 +17,6 @@ pub struct VgaDevice {
 }
 
 impl VgaDevice {
-    /// Create a new VGA device
     pub fn new() -> Self {
         Self {
             enabled: false,
@@ -26,82 +26,66 @@ impl VgaDevice {
         }
     }
 
-    /// Set the color code for text output
     pub fn set_color(&mut self, foreground: Color, background: Color) {
         self.color_code = ColorCode::new(foreground, background);
     }
 
-    /// Write a string to the VGA buffer
     pub fn write_string(&mut self, s: &str) {
         if self.enabled {
-            let buffer = unsafe { &mut *(0xb8000 as *mut [[ScreenChar; 80]; 25]) };
+            let buffer = unsafe { &mut *(VGA_BUFFER_ADDR as *mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) };
             self.write_string_to_buffer(s, buffer);
         }
     }
 
-    fn write_string_to_buffer(&mut self, s: &str, buffer: &mut [[ScreenChar; 80]; 25]) {
-        let mut column = self.cursor_col;
-        let mut row = self.cursor_row;
-
+    fn write_string_to_buffer(&mut self, s: &str, buffer: &mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) {
         for byte in s.bytes() {
             match byte {
-                b'\n' => {
-                    row += 1;
-                    column = 0;
-                    if row >= 25 {
-                        self.scroll_buffer(buffer);
-                        row = 24;
-                    }
-                }
-                byte => {
-                    if column >= 80 {
-                        row += 1;
-                        column = 0;
-                        if row >= 25 {
-                            self.scroll_buffer(buffer);
-                            row = 24;
-                        }
-                    }
-
-                    buffer[row][column] = ScreenChar {
-                        ascii_character: byte,
-                        color_code: self.color_code,
-                    };
-                    column += 1;
-                }
+                b'\n' => self.handle_newline(buffer),
+                byte => self.handle_character(byte, buffer),
             }
         }
-
-        self.cursor_col = column;
-        self.cursor_row = row;
     }
 
-    fn scroll_buffer(&self, buffer: &mut [[ScreenChar; 80]; 25]) {
-        for row in 1..25 {
-            for col in 0..80 {
+    fn handle_newline(&mut self, buffer: &mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) {
+        self.cursor_row += 1;
+        self.cursor_col = 0;
+        if self.cursor_row >= VGA_HEIGHT {
+            self.scroll_buffer(buffer);
+            self.cursor_row = VGA_HEIGHT - 1;
+        }
+    }
+
+    fn handle_character(&mut self, byte: u8, buffer: &mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) {
+        if self.cursor_col >= VGA_WIDTH {
+            self.handle_newline(buffer);
+        }
+
+        buffer[self.cursor_row][self.cursor_col] = ScreenChar {
+            ascii_character: byte,
+            color_code: self.color_code,
+        };
+        self.cursor_col += 1;
+    }
+
+    fn scroll_buffer(&self, buffer: &mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) {
+        for row in 1..VGA_HEIGHT {
+            for col in 0..VGA_WIDTH {
                 buffer[row - 1][col] = buffer[row][col];
             }
         }
+        self.clear_row(buffer, VGA_HEIGHT - 1);
+    }
 
-        // Clear the last row
-        let blank = ScreenChar {
-            ascii_character: b' ',
-            color_code: self.color_code,
-        };
-        for col in 0..80 {
-            buffer[24][col] = blank;
+    fn clear_row(&self, buffer: &mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT], row: usize) {
+        let blank = ScreenChar { ascii_character: b' ', color_code: self.color_code };
+        for col in 0..VGA_WIDTH {
+            buffer[row][col] = blank;
         }
     }
 
-    fn clear_buffer(&self, buffer: &mut [[ScreenChar; 80]; 25]) {
-        let blank = ScreenChar {
-            ascii_character: b' ',
-            color_code: self.color_code,
-        };
-        for row in 0..25 {
-            for col in 0..80 {
-                buffer[row][col] = blank;
-            }
+    fn clear_buffer(&self, buffer: &mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) {
+        for row in 0..VGA_HEIGHT {
+            self.clear_row(buffer, row);
         }
     }
 }
