@@ -182,7 +182,130 @@ pub fn init_graphics_protocols(system_table: &EfiSystemTable) -> Option<Fulleren
 
     // If all graphics protocols fail, try alternative VESA detection approaches
     serial::_print(format_args!("All graphics protocols failed, trying alternative VESA detection...\n"));
-    let _ = graphics_alternatives::detect_vesa_graphics(unsafe { &*system_table.boot_services });
+
+    // Try EFI-based PCI enumeration first
+    let efi_result = graphics_alternatives::detect_vesa_graphics(unsafe { &*system_table.boot_services });
+
+/// Bare-metal graphics detection using direct PCI access without UEFI protocols
+pub mod bare_metal_graphics_detection {
+    use super::*;
+    use crate::serial::_print;
+
+    /// Main entry point for bare-metal graphics detection
+    pub fn detect_bare_metal_graphics() -> Option<crate::common::FullereneFramebufferConfig> {
+        _print(format_args!("[BM-GFX] Starting bare-metal graphics detection...\n"));
+
+        // Enumerate graphics devices via direct PCI access
+        let graphics_devices = crate::bare_metal_pci::enumerate_graphics_devices();
+
+        _print(format_args!("[BM-GFX] Found {} graphics devices via direct PCI enumeration\n", graphics_devices.len()));
+
+        // Try each graphics device for linear framebuffer detection
+        for device in graphics_devices.iter() {
+            _print(format_args!("[BM-GFX] Probing device {:04x}:{:04x} at {:02x}:{:02x}:{:02x}\n",
+                device.vendor_id, device.device_id, device.bus, device.device, device.function));
+
+            // Check for supported device types
+            match (device.vendor_id, device.device_id) {
+                (0x1af4, id) if id >= 0x1050 => {
+                    // virtio-gpu device
+                    _print(format_args!("[BM-GFX] Detected virtio-gpu, attempting bare-metal framebuffer detection\n"));
+                    if let Some(config) = detect_bare_metal_virtio_gpu_framebuffer(device) {
+                        _print(format_args!("[BM-GFX] Bare-metal virtio-gpu framebuffer detection successful!\n"));
+                        return Some(config);
+                    }
+                }
+                (0x1b36, 0x0100) => {
+                    // QEMU QXL device
+                    _print(format_args!("[BM-GFX] Detected QXL device, attempting bare-metal framebuffer detection\n"));
+                    if let Some(config) = detect_bare_metal_qxl_framebuffer(device) {
+                        _print(format_args!("[BM-GFX] Bare-metal QXL framebuffer detection successful!\n"));
+                        return Some(config);
+                    }
+                }
+                (0x15ad, 0x0405) => {
+                    // VMware SVGA II
+                    _print(format_args!("[BM-GFX] Detected VMware SVGA, attempting bare-metal framebuffer detection\n"));
+                    if let Some(config) = detect_bare_metal_vmware_svga_framebuffer(device) {
+                        _print(format_args!("[BM-GFX] Bare-metal VMware SVGA framebuffer detection successful!\n"));
+                        return Some(config);
+                    }
+                }
+                _ => {
+                    _print(format_args!("[BM-GFX] Unknown graphics device type, skipping\n"));
+                }
+            }
+        }
+
+        _print(format_args!("[BM-GFX] No supported graphics devices found via bare-metal enumeration\n"));
+        None
+    }
+
+    /// Detect bare-metal virtio-gpu framebuffer using direct PCI BAR access
+    fn detect_bare_metal_virtio_gpu_framebuffer(device: &crate::graphics_alternatives::PciDevice) -> Option<crate::common::FullereneFramebufferConfig> {
+        // Read BAR0 from PCI configuration space directly
+        let fb_base_addr = crate::bare_metal_pci::read_pci_bar(device.bus, device.device, device.function, 0);
+
+        _print(format_args!("[BM-GFX] virtio-gpu BAR0: {:#x}\n", fb_base_addr));
+
+        if fb_base_addr == 0 {
+            _print(format_args!("[BM-GFX] virtio-gpu BAR0 is zero, invalid\n"));
+            return None;
+        }
+
+        // Try standard VGA-like modes for virtio-gpu
+        // These are commonly used defaults in QEMU
+        let standard_modes = [
+            (1024, 768, 32, fb_base_addr),
+            (1280, 720, 32, fb_base_addr),
+            (800, 600, 32, fb_base_addr),
+            (640, 480, 32, fb_base_addr),
+        ];
+
+        for (width, height, bpp, addr) in standard_modes.iter() {
+            let stride = *width;
+            let expected_fb_size = (*height * stride * bpp / 8) as u64;
+
+            _print(format_args!("[BM-GFX] Testing {}x{} mode at {:#x} (size: {}KB)\n",
+                width, height, addr, expected_fb_size / 1024));
+
+            // Since we can't actually map or access memory from UEFI without protocols,
+            // we'll use a simplified heuristic based on typical virtio-gpu memory layout
+            // In practice, the framebuffer would be validated when actually accessed later
+
+            if *addr >= 0x100000 { // At least 1MB address, reasonable for MMIO
+                _print(format_args!("[BM-GFX] virtio-gpu framebuffer mode {}x{} appears valid\n", width, height));
+                return Some(crate::common::FullereneFramebufferConfig {
+                    address: *addr,
+                    width: *width,
+                    height: *height,
+                    pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                    bpp: *bpp,
+                    stride,
+                });
+            }
+        }
+
+        _print(format_args!("[BM-GFX] Could not determine valid virtio-gpu framebuffer configuration\n"));
+        None
+    }
+
+    /// Detect QXL framebuffer via direct PCI access (placeholder)
+    fn detect_bare_metal_qxl_framebuffer(_device: &crate::graphics_alternatives::PciDevice) -> Option<crate::common::FullereneFramebufferConfig> {
+        _print(format_args!("[BM-GFX] QXL bare-metal detection not yet implemented\n"));
+        // QXL devices in QEMU typically have complex framebuffer setup
+        // Would need to implement QXL command submission and surface management
+        None
+    }
+
+    /// Detect VMware SVGA framebuffer via direct PCI access (placeholder)
+    fn detect_bare_metal_vmware_svga_framebuffer(_device: &crate::graphics_alternatives::PciDevice) -> Option<crate::common::FullereneFramebufferConfig> {
+        _print(format_args!("[BM-GFX] VMware SVGA bare-metal detection not yet implemented\n"));
+        // VMware SVGA II uses FIFO commands and register-based communication
+        // Would need to implement FIFO ring buffer management
+        None
+    }
+}
 
     // Fall back to VGA text mode (handled externally)
     serial::_print(format_args!("All graphics protocols failed, falling back to VGA text mode.\n"));
@@ -530,6 +653,134 @@ pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u3
     }
 }
 
+/// Generic PCI I/O port access helper functions for bare-metal PCI enumeration
+/// Minimizes unsafe code by wrapping port operations
+pub mod bare_metal_pci {
+    use super::*;
+    use crate::graphics::ports::{PortWriter, RegisterConfig, VgaPorts};
+    use crate::serial::_print;
+
+    /// PCI configuration space access addresses (x86 I/O ports)
+    const PCI_CONFIG_ADDR: u16 = 0xCF8;
+    const PCI_CONFIG_DATA: u16 = 0xCFC;
+
+    /// PCI configuration space register layout
+    const PCI_VENDOR_ID_OFFSET: u8 = 0x00;
+    const PCI_DEVICE_ID_OFFSET: u8 = 0x02;
+    const PCI_CLASS_CODE_OFFSET: u8 = 0x0B;
+    const PCI_SUBCLASS_OFFSET: u8 = 0x0A;
+    const PCI_BAR0_OFFSET: u8 = 0x10;
+
+    /// Build PCI configuration address for register access
+    fn build_pci_config_address(bus: u8, device: u8, function: u8, register: u8) -> u32 {
+        // PCI config address format: 31=enable, 30-24=reserved, 23-16=bus, 15-11=device, 10-8=function, 7-2=register, 1-0=00
+        let addr = (1u32 << 31) | ((bus as u32) << 16) | ((device as u32) << 11) | ((function as u32) << 8) | (register as u32);
+        addr & !0x3 // Clear bits 1-0 as they're alignment bits
+    }
+
+    /// Read 32-bit value from PCI configuration space
+    pub fn pci_config_read_dword(bus: u8, device: u8, function: u8, register: u8) -> u32 {
+        let addr = build_pci_config_address(bus, device, function, register);
+        let mut addr_writer = PortWriter::new(PCI_CONFIG_ADDR);
+        let mut data_reader = PortWriter::new(PCI_CONFIG_DATA);
+
+        addr_writer.write_safe(addr);
+        data_reader.read_safe()
+    }
+
+    /// Read 16-bit value from PCI configuration space
+    pub fn pci_config_read_word(bus: u8, device: u8, function: u8, register: u8) -> u16 {
+        let dword = pci_config_read_dword(bus, device, function, register & !0x2); // Align to 32-bit boundary
+        let offset = register & 0x2;
+        (dword >> (offset * 8)) as u16
+    }
+
+    /// Read 8-bit value from PCI configuration space
+    pub fn pci_config_read_byte(bus: u8, device: u8, function: u8, register: u8) -> u8 {
+        let dword = pci_config_read_dword(bus, device, function, register & !0x3); // Align to 32-bit boundary
+        let offset = register & 0x3;
+        (dword >> (offset * 8)) as u8
+    }
+
+    /// Check if PCI device exists (valid vendor ID)
+    pub fn pci_device_exists(bus: u8, device: u8, function: u8) -> bool {
+        let vendor_id = pci_config_read_word(bus, device, function, PCI_VENDOR_ID_OFFSET);
+        vendor_id != 0xFFFF
+    }
+
+    /// Read PCI device information
+    pub fn read_pci_device_info(bus: u8, device: u8, function: u8) -> Option<crate::graphics_alternatives::PciDevice> {
+        if !pci_device_exists(bus, device, function) {
+            return None;
+        }
+
+        let vendor_id = pci_config_read_word(bus, device, function, PCI_VENDOR_ID_OFFSET);
+        let device_id = pci_config_read_word(bus, device, function, PCI_DEVICE_ID_OFFSET);
+        let class_code = pci_config_read_byte(bus, device, function, PCI_CLASS_CODE_OFFSET);
+        let subclass = pci_config_read_byte(bus, device, function, PCI_SUBCLASS_OFFSET);
+
+        Some(crate::graphics_alternatives::PciDevice {
+            vendor_id,
+            device_id,
+            class_code,
+            subclass,
+            bus,
+            device,
+            function,
+        })
+    }
+
+    /// Read PCI BAR (Base Address Register)
+    pub fn read_pci_bar(bus: u8, device: u8, function: u8, bar_index: u8) -> u64 {
+        let offset = PCI_BAR0_OFFSET + (bar_index * 4);
+        let bar_low = pci_config_read_dword(bus, device, function, offset);
+        let bar_high = if bar_index == 0 { // Only BAR0 can be 64-bit
+            let bar_type = bar_low & 0xF;
+            if (bar_type & 0x4) != 0 { // 64-bit BAR
+                pci_config_read_dword(bus, device, function, offset + 4)
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        ((bar_high as u64) << 32) | ((bar_low as u64) & 0xFFFFFFF0)
+    }
+
+    /// Enumerate all PCI devices on all buses
+    pub fn enumerate_all_pci_devices() -> alloc::vec::Vec<crate::graphics_alternatives::PciDevice> {
+        let mut devices = alloc::vec::Vec::new();
+
+        // Scan all possible PCI devices (bus 0-255, device 0-31, function 0-7)
+        // In practice, most systems only use bus 0 and maybe a few bridges
+        for bus in 0..=255u8 {
+            for device in 0..32u8 {
+                for function in 0..8u8 {
+                    if let Some(pci_dev) = read_pci_device_info(bus, device, function) {
+                        if pci_dev.vendor_id != 0xFFFF {
+                            devices.push(pci_dev);
+                        }
+                    }
+                }
+            }
+            // Performance optimization: if bus 0 has devices, likely no more buses exist
+            if !devices.is_empty() && bus == 0 {
+                break;
+            }
+        }
+
+        devices
+    }
+
+    /// Find all graphics devices
+    pub fn enumerate_graphics_devices() -> alloc::vec::Vec<crate::graphics_alternatives::PciDevice> {
+        enumerate_all_pci_devices().into_iter()
+            .filter(|dev| dev.class_code == 0x03) // Display controller class
+            .collect()
+    }
+}
+
 use alloc::boxed::Box;
 
 /// Alternative graphics detection methods when GOP is unavailable
@@ -547,13 +798,13 @@ pub mod graphics_alternatives {
 
     #[derive(Debug, Clone, Copy)]
     pub struct PciDevice {
-        vendor_id: u16,
-        device_id: u16,
-        class_code: u8,
-        subclass: u8,
-        bus: u8,
-        device: u8,
-        function: u8,
+        pub vendor_id: u16,
+        pub device_id: u16,
+        pub class_code: u8,
+        pub subclass: u8,
+        pub bus: u8,
+        pub device: u8,
+        pub function: u8,
     }
 
     /// Try to detect VESA-compatible graphics hardware using PCI enumeration
@@ -594,31 +845,9 @@ pub mod graphics_alternatives {
 
     /// Enumerate PCI devices using EFI_PCI_IO_PROTOCOL
     fn enumerate_pci_graphics_devices(bs: &EfiBootServices) -> Result<Vec<PciDevice>, EfiStatus> {
-        let mut devices = Vec::new();
+        _print(format_args!("[GOP-ALT] Starting PCI device enumeration...\n"));
 
-        // Simple bus enumeration (0-255 buses, 0-31 devices, 0-7 functions per device)
-        for bus in 0..16u8 {  // Limit to reasonable range for typical systems
-            for device in 0..32u8 {
-                for function in 0..8u8 {
-                    if let Some(dev) = probe_pci_device(bs, bus, device, function) {
-                        // Check if it's a graphics device (Display controller class, 0x03)
-                        if dev.class_code == 0x03 {
-                            devices.push(dev);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(devices)
-    }
-
-    /// Probe a specific PCI device location
-    fn probe_pci_device(bs: &EfiBootServices, bus: u8, device: u8, function: u8) -> Option<PciDevice> {
-        // Use EFI_PCI_IO_PROTOCOL to read PCI configuration space
-        let mut pci_io: *mut core::ffi::c_void = core::ptr::null_mut();
-
-        // Try to locate PCI_IO protocol on handles (simplified - would need better handle enumeration)
+        // First, enumerate all PCI_IO handles
         let mut handle_count: usize = 0;
         let mut handles: *mut usize = core::ptr::null_mut();
 
@@ -632,68 +861,31 @@ pub mod graphics_alternatives {
             )
         };
 
-        if EfiStatus::from(status) != EfiStatus::Success || handles.is_null() || handle_count == 0 {
-            return None;
+        if EfiStatus::from(status) != EfiStatus::Success || handles.is_null() {
+            _print(format_args!("[GOP-ALT] Failed to locate PCI_IO handles: {:#x}\n", status));
+            return Err(EfiStatus::from(status));
         }
 
-        // Check each handle (simplified - should check all but we'll use first available)
+        _print(format_args!("[GOP-ALT] Found {} PCI_IO protocol handles\n", handle_count));
+
+        let mut devices = Vec::new();
+
+        // Process each PCI_IO handle
         for i in 0..handle_count {
             let handle = unsafe { *handles.add(i) };
-            let protocol_status = unsafe {
-                (bs.open_protocol)(
-                    handle,
-                    EFI_PCI_IO_PROTOCOL_GUID.as_ptr(),
-                    &mut pci_io,
-                    0, // AgentHandle (null for now)
-                    0, // ControllerHandle (null)
-                    0x01, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
-                )
-            };
+            _print(format_args!("[GOP-ALT] Checking PCI_IO handle {}: {:#x}\n", i, handle));
 
-            if EfiStatus::from(protocol_status) == EfiStatus::Success && !pci_io.is_null() {
-                // Read PCI configuration header
-                let mut config_buf = [0u32; 16]; // First 64 bytes of config space
-                let pci_io_read: unsafe extern "efiapi" fn(
-                    *mut core::ffi::c_void,
-                    u8,  // Width (0=byte, 1=word, 2=dword)
-                    u8,  // Offset
-                    usize, // Count
-                    *mut core::ffi::c_void
-                ) -> usize = unsafe { core::mem::transmute(*((pci_io as *mut usize).add(1))) }; // Read function
+            if let Some(dev) = probe_pci_device_on_handle(bs, handle) {
+                _print(format_args!("[GOP-ALT] Found PCI device: {:04x}:{:04x} at {:02x}:{:02x}:{:02x}, class {:02x}:{:02x}\n",
+                    dev.vendor_id, dev.device_id, dev.bus, dev.device, dev.function, dev.class_code, dev.subclass));
 
-                let read_status = unsafe {
-                    pci_io_read(
-                        pci_io,
-                        2, // Dword
-                        0, // Offset 0
-                        16, // 16 dwords
-                        config_buf.as_mut_ptr() as *mut core::ffi::c_void
-                    )
-                };
-
-                // Close protocol
-                unsafe {
-                    let _ = (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0);
+                // Check if it's a graphics device (Display controller class, 0x03)
+                if dev.class_code == 0x03 {
+                    _print(format_args!("[GOP-ALT] Added graphics device to list\n"));
+                    devices.push(dev);
                 }
-
-                if read_status == 0 { // Success
-                    let vendor_id = (config_buf[0] & 0xFFFF) as u16;
-                    let device_id = ((config_buf[0] >> 16) & 0xFFFF) as u16;
-                    let class_code = ((config_buf[2] >> 24) & 0xFF) as u8;
-                    let subclass = ((config_buf[2] >> 16) & 0xFF) as u8;
-
-                    if vendor_id != 0xFFFF && vendor_id != 0 { // Valid device
-                        return Some(PciDevice {
-                            vendor_id,
-                            device_id,
-                            class_code,
-                            subclass,
-                            bus,
-                            device,
-                            function,
-                        });
-                    }
-                }
+            } else {
+                _print(format_args!("[GOP-ALT] Failed to probe PCI device on handle {}\n", i));
             }
         }
 
@@ -702,7 +894,115 @@ pub mod graphics_alternatives {
             unsafe { (bs.free_pool)(handles as *mut core::ffi::c_void) };
         }
 
-        None
+        _print(format_args!("[GOP-ALT] PCI enumeration complete, found {} graphics devices\n", devices.len()));
+
+        Ok(devices)
+    }
+
+    /// Probe PCI device information from a given handle
+    fn probe_pci_device_on_handle(bs: &EfiBootServices, handle: usize) -> Option<PciDevice> {
+        let mut pci_io: *mut core::ffi::c_void = core::ptr::null_mut();
+
+        let protocol_status = unsafe {
+            (bs.open_protocol)(
+                handle,
+                EFI_PCI_IO_PROTOCOL_GUID.as_ptr(),
+                &mut pci_io,
+                0, // AgentHandle (null for now)
+                0, // ControllerHandle (null)
+                0x01, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
+            )
+        };
+
+        if EfiStatus::from(protocol_status) != EfiStatus::Success || pci_io.is_null() {
+            return None;
+        }
+
+        // Read PCI configuration header using PCI_IO functions
+        // The PCI_IO protocol has specific function indices:
+        // Index 0: ConfigSpaceRead function
+
+        let pci_io_functions = pci_io as *mut usize;
+        let config_space_read_fn: unsafe extern "efiapi" fn(
+            *mut core::ffi::c_void,  // PciIo
+            u8,      // Width (0=byte, 1=word, 2=dword, 3=qword)
+            u32,     // Offset
+            usize,   // Count
+            *mut core::ffi::c_void  // Buffer
+        ) -> usize = unsafe { core::mem::transmute(*pci_io_functions) };
+
+        // Read the first 64 bytes (16 dwords) of PCI config space
+        let mut config_buf = [0u32; 16];
+        let read_status = unsafe {
+            config_space_read_fn(
+                pci_io,
+                2, // Dword width
+                0, // Offset 0
+                16, // 16 dwords
+                config_buf.as_mut_ptr() as *mut core::ffi::c_void
+            )
+        };
+
+        if EfiStatus::from(read_status) != EfiStatus::Success {
+            unsafe { (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0) };
+            return None;
+        }
+
+        // Parse PCI configuration header
+        let vendor_id = (config_buf[0] & 0xFFFF) as u16;
+        let device_id = ((config_buf[0] >> 16) & 0xFFFF) as u16;
+
+        // Skip invalid devices
+        if vendor_id == 0xFFFF || vendor_id == 0 {
+            unsafe { (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0) };
+            return None;
+        }
+
+        let class_code = ((config_buf[2] >> 24) & 0xFF) as u8;
+        let subclass = ((config_buf[2] >> 16) & 0xFF) as u8;
+
+        // Now we need to get bus/device/function info
+        // Use GetLocation function (index 6 in PCI_IO)
+        let get_location_fn: unsafe extern "efiapi" fn(
+            *mut core::ffi::c_void,  // PciIo
+            *mut u32,                // SegmentNumber
+            *mut u32,                // BusNumber
+            *mut u32,                // DeviceNumber
+            *mut u32                 // FunctionNumber
+        ) -> usize = unsafe { core::mem::transmute(*pci_io_functions.add(6)) };
+
+        let mut segment_num: u32 = 0;
+        let mut bus_num: u32 = 0;
+        let mut dev_num: u32 = 0;
+        let mut func_num: u32 = 0;
+
+        let location_status = unsafe {
+            get_location_fn(
+                pci_io,
+                &mut segment_num as *mut u32,
+                &mut bus_num as *mut u32,
+                &mut dev_num as *mut u32,
+                &mut func_num as *mut u32,
+            )
+        };
+
+        // Close protocol before returning
+        unsafe { (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0) };
+
+        if EfiStatus::from(location_status) == EfiStatus::Success {
+            Some(PciDevice {
+                vendor_id,
+                device_id,
+                class_code,
+                subclass,
+                bus: bus_num as u8,
+                device: dev_num as u8,
+                function: func_num as u8,
+            })
+        } else {
+            _print(format_args!("[GOP-ALT] GetLocation failed: {:#x}\n", location_status));
+            None
+        }
     }
 
     /// Probe for linear framebuffer on a graphics device

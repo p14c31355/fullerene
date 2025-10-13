@@ -138,9 +138,9 @@ fn main() -> io::Result<()> {
 
         // "-vga", "vmware",
         // Alternative configurations commented below for testing:
-        "-device", "virtio-gpu,id=video0,max_outputs=1",
-        "-vga", "none",
-        // "-device", "secondary-vga",
+        // "-device", "virtio-gpu,id=video0,max_outputs=1",
+        // "-vga", "none",
+        "-device", "secondary-vga",
 
         // GOP TESTING: Different OVMF versions or additional ROM may be needed for GOP support
         // Current OVMF release may not include GOP drivers for QEMU devices
