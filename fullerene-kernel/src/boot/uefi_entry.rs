@@ -107,9 +107,7 @@ pub extern "efiapi" fn efi_main(
 
     // Setup memory maps and initialize memory management
     let kernel_virt_addr = efi_main as u64;
-    let (_higher_half_offset, kernel_phys_start) =
-        setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
-    let physical_memory_offset = VirtAddr::new(0); // UEFI identity maps initially, offset handled by higher-half in reinit_page_table
+    let kernel_phys_start = setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
 
     // Initialize memory management components (heap, page tables, etc.)
     // Comment out reinit for now to allow desktop drawing
@@ -121,13 +119,6 @@ pub extern "efiapi" fn efi_main(
     );
     heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
     kernel_log!("Heap frame allocator init completed successfully");
-
-    kernel_log!(
-        "Calling heap::init_page_table with offset 0x{:x}",
-        physical_memory_offset.as_u64()
-    );
-    heap::init_page_table(physical_memory_offset);
-    kernel_log!("Page table init completed successfully");
 
     // Find framebuffer configuration before reiniting page tables
     kernel_log!("Finding framebuffer config for page table mapping...");
@@ -150,7 +141,7 @@ pub extern "efiapi" fn efi_main(
 
     // Reinit page tables to kernel page tables with framebuffer size
     kernel_log!("Reinit page tables to kernel page tables with framebuffer info");
-    heap::reinit_page_table(physical_memory_offset, kernel_phys_start, fb_addr, fb_size);
+    let physical_memory_offset = heap::reinit_page_table(kernel_phys_start, fb_addr, fb_size);
     kernel_log!("Page table reinit completed successfully");
 
     // Set physical memory offset for process management
