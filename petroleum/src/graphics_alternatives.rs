@@ -330,8 +330,7 @@ pub mod graphics_alternatives {
         device: &PciDevice,
         bs: &EfiBootServices,
     ) -> Option<crate::common::FullereneFramebufferConfig> {
-        // Build PCI configuration address for this device location (used as handle)
-        let handle = crate::bare_metal_pci::build_pci_config_address(device.bus, device.device, device.function, 0) as usize;
+        let handle = device.handle;
 
         let mut pci_io: *mut core::ffi::c_void = core::ptr::null_mut();
         let status = (bs.open_protocol)(
