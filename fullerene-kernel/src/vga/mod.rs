@@ -1,7 +1,6 @@
 use petroleum::graphics::ports::VgaPorts;
 use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations, port_write};
 use spin::{Mutex, Once};
-use x86_64::instructions::port::Port;
 
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
@@ -114,14 +113,15 @@ pub fn init_vga() {
     writer.write_string("Hello QEMU by FullereneOS!\n");
     writer.write_string("This is output directly to VGA.\n");
     writer.update_cursor();
+    // Force display refresh by reading status register
+    let _: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::STATUS);
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        BUFFER_HEIGHT, BUFFER_WIDTH, Color, ColorCode, ScreenChar, TextBufferOperations, VgaBuffer,
+        BUFFER_HEIGHT, BUFFER_WIDTH, Color, ColorCode, ScreenChar, TextBufferOperations,
     };
-    use alloc::string::String;
     use alloc::vec;
     use alloc::vec::Vec;
 

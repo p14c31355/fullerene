@@ -106,13 +106,16 @@ pub fn allocate_heap_from_map(phys_start: PhysAddr, _size: usize) -> VirtAddr {
 
 /// Reinitialize page table for kernel mode
 pub fn reinit_page_table(
-    physical_memory_offset: VirtAddr,
     kernel_phys_start: PhysAddr,
     framebuffer_addr: Option<u64>,
     framebuffer_size: Option<u64>,
-) {
+) -> VirtAddr {
     use x86_64::registers::control::Cr3;
     use x86_64::structures::paging::PageTable;
+
+    // Calculate the physical_memory_offset for the higher-half kernel mapping
+    const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000;
+    let physical_memory_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE - kernel_phys_start.as_u64());
 
     petroleum::serial::serial_log(format_args!(
         "reinit_page_table: Starting with offset 0x{:x}, kernel_start 0x{:x}\n",
@@ -240,4 +243,6 @@ pub fn reinit_page_table(
     unsafe { Cr3::write(level_4_frame, Cr3Flags::empty()) };
     let mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
     *MAPPER.get().unwrap().lock() = mapper;
+
+    physical_memory_offset
 }

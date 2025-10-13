@@ -1,5 +1,3 @@
-use super::interface::SyscallNumber;
-
 /// Syscall helper macros for user space (would be in user-space library)
 #[cfg(feature = "user_space")]
 pub mod user {

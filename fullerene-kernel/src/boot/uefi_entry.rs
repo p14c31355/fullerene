@@ -1,26 +1,49 @@
-// use super::macros::kernel_log;
-use super::utils::calculate_framebuffer_size;
-use super::constants::FALLBACK_HEAP_START_ADDR;
-use crate::{VGA_BUFFER_ADDRESS, VGA_COLOR_GREEN_ON_BLACK, hlt_loop, MEMORY_MAP};
-use alloc::boxed::Box;
+// Use crate imports
 use core::ffi::c_void;
-use petroleum::common::{
-    EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
-    VgaFramebufferConfig,
+use alloc::boxed::Box;
+use crate::{
+    gdt, memory, graphics, interrupts,
 };
-use petroleum::page_table::EfiMemoryDescriptor;
+use crate::graphics::framebuffer::FramebufferLike;
+use petroleum::common::{
+    EfiSystemTable, FullereneFramebufferConfig,
+};
+use petroleum::common::EfiGraphicsOutputProtocol;
 use x86_64::{PhysAddr, VirtAddr};
-use petroleum::graphics::init_vga_text_mode;
-use petroleum::{debug_log, serial, write_serial_bytes};
-use crate::graphics::framebuffer::{FramebufferLike, UefiFramebuffer};
-use crate::memory::{
-    find_framebuffer_config, find_heap_start, init_memory_management, setup_memory_maps,
-};
-use crate::{gdt, graphics, heap, interrupts, keyboard, process, shell, syscall};
-use petroleum::common::{
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputModeInformation, EfiGraphicsOutputProtocol,
-    EfiGraphicsOutputProtocolMode,
-};
+use crate::MEMORY_MAP;
+use crate::heap;
+use crate::boot::FALLBACK_HEAP_START_ADDR;
+use petroleum::debug_log;
+use petroleum::write_serial_bytes;
+use crate::hlt_loop;
+use crate::memory::setup_memory_maps;
+use crate::memory::find_framebuffer_config;
+
+/// Helper function to write a string to VGA buffer at specified row
+pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
+    for (i, &byte) in text.iter().enumerate() {
+        if i < 80 {
+            vga_buffer[row][i] = color | (byte as u16);
+        }
+    }
+}
+
+/// Helper function to print text to EFI console
+#[cfg(target_os = "uefi")]
+fn efi_print(system_table: &EfiSystemTable, text: &[u8]) {
+    unsafe {
+        if !(*system_table).con_out.is_null() {
+            let output_string = (*(*system_table).con_out).output_string;
+            let mut buffer = [0u16; 128];
+            let len = text.len().min(buffer.len() - 1);
+            for (i, &byte) in text.iter().take(len).enumerate() {
+                buffer[i] = byte as u16;
+            }
+            buffer[len] = 0;
+            let _ = output_string((*system_table).con_out, buffer.as_ptr());
+        }
+    }
+}
 
 #[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]
@@ -56,34 +79,35 @@ pub extern "efiapi" fn efi_main(
     // Cast system_table to reference
     let system_table = unsafe { &*system_table };
 
-    init_vga_text_mode();
+    petroleum::graphics::init_vga_text_mode();
 
     debug_log!("VGA setup done");
     kernel_log!("VGA text mode setup function returned");
 
-    // Early VGA text output to ensure visible output on screen
-    kernel_log!("About to write to VGA buffer at 0xb8000");
-    {
-        let vga_buffer = unsafe { &mut *(VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]) };
-        // Clear screen first
-        for row in 0..25 {
-            for col in 0..80 {
-                vga_buffer[row][col] = VGA_COLOR_GREEN_ON_BLACK | b' ' as u16;
-            }
-        }
-        // Write hello message
-        let hello = b"Hello from UEFI Kernel!";
-        for (i, &byte) in hello.iter().enumerate() {
-            vga_buffer[0][i] = VGA_COLOR_GREEN_ON_BLACK | (byte as u16);
-        }
+    // Direct VGA buffer test - write to hardware buffer directly
+    kernel_log!("Direct VGA buffer write test...");
+    unsafe {
+        let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
+        write_vga_string(vga_buffer, 0, b"Kernel boot", 0x1F00);
     }
-    kernel_log!("VGA buffer write completed");
+    kernel_log!("Direct VGA write test completed");
+
+    // Initialize VGA buffer writer and write welcome message BEFORE any graphics ops
+    kernel_log!("Initializing VGA writer early...");
+    crate::vga::init_vga();
+    kernel_log!("VGA writer initialized - text should be visible now");
+
+
+
+    // Early text output using EFI console to ensure visible output on screen
+    kernel_log!("About to output to EFI console");
+    efi_print(system_table, b"UEFI Kernel: Display Test!\r\n");
+    efi_print(system_table, b"This is output via EFI console.\r\n");
+    kernel_log!("EFI console output completed");
 
     // Setup memory maps and initialize memory management
     let kernel_virt_addr = efi_main as u64;
-    let (higher_half_offset, kernel_phys_start) =
-        setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
-    let physical_memory_offset = VirtAddr::new(0); // UEFI identity maps initially, offset handled by higher-half in reinit_page_table
+    let kernel_phys_start = setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
 
     // Initialize memory management components (heap, page tables, etc.)
     // Comment out reinit for now to allow desktop drawing
@@ -96,33 +120,35 @@ pub extern "efiapi" fn efi_main(
     heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
     kernel_log!("Heap frame allocator init completed successfully");
 
-    kernel_log!(
-        "Calling heap::init_page_table with offset 0x{:x}",
-        physical_memory_offset.as_u64()
-    );
-    heap::init_page_table(physical_memory_offset);
-    kernel_log!("Page table init completed successfully");
-
-    // Initialize graphics with framebuffer config to get framebuffer info
-    kernel_log!("Initializing graphics temporarily to get framebuffer size...");
-    let (fb_addr, fb_size) = if let Some(gop_config) = find_gop_framebuffer(system_table) {
-        calculate_framebuffer_size(&gop_config, "GOP")
-    } else if let Some(fb_config) = find_framebuffer_config(system_table) {
-        calculate_framebuffer_size(&fb_config, "custom")
+    // Find framebuffer configuration before reiniting page tables
+    kernel_log!("Finding framebuffer config for page table mapping...");
+    let framebuffer_config = find_framebuffer_config(system_table);
+    let config = framebuffer_config.as_ref();
+    let (fb_addr, fb_size) = if let Some(config) = config {
+        let fb_size_bytes = (config.width as usize * config.height as usize * config.bpp as usize) / 8;
+        kernel_log!(
+            "Found framebuffer config: {}x{} @ {:#x}, size: {}",
+            config.width,
+            config.height,
+            config.address,
+            fb_size_bytes
+        );
+        (Some(config.address as u64), Some(fb_size_bytes as u64))
     } else {
+        kernel_log!("No framebuffer config found, using None");
         (None, None)
     };
 
-    // Reinit page tables to kernel page tables
-    kernel_log!("Reinit page tables to kernel page tables with framebuffer size");
-    heap::reinit_page_table(physical_memory_offset, kernel_phys_start, fb_addr, fb_size);
+    // Reinit page tables to kernel page tables with framebuffer size
+    kernel_log!("Reinit page tables to kernel page tables with framebuffer info");
+    let physical_memory_offset = heap::reinit_page_table(kernel_phys_start, fb_addr, fb_size);
     kernel_log!("Page table reinit completed successfully");
 
     // Set physical memory offset for process management
     crate::memory_management::set_physical_memory_offset(physical_memory_offset);
 
     // Initialize GDT with proper heap address
-    let heap_phys_start = find_heap_start(*MEMORY_MAP.get().unwrap());
+    let heap_phys_start = memory::find_heap_start(*MEMORY_MAP.get().unwrap());
     kernel_log!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());
     let start_addr = if heap_phys_start.as_u64() < 0x1000 {
         kernel_log!(
@@ -165,29 +191,8 @@ pub extern "efiapi" fn efi_main(
 
     kernel_log!("Kernel: Jumping straight to graphics testing");
 
-    // CRITICAL: Disable interrupts during graphics initialization to avoid process switching issues
-    x86_64::instructions::interrupts::disable();
-    kernel_log!("Interrupts disabled for graphics initialization");
-
-    // Initialize graphics with framebuffer config
-    let framebuffer_initialized = initialize_graphics_with_config(system_table);
-
-    if !framebuffer_initialized {
-        kernel_log!("No UEFI framebuffer available, falling back to VGA mode");
-        let vga_config = VgaFramebufferConfig {
-            address: 0xA0000,
-            width: 320,
-            height: 200,
-            bpp: 8,
-        };
-        kernel_log!("Initializing VGA graphics mode...");
-        graphics::init_vga(&vga_config);
-        kernel_log!("VGA graphics mode initialized, calling draw_os_desktop...");
-        graphics::draw_os_desktop();
-        kernel_log!("VGA graphics desktop drawn - if you see this, draw_os_desktop completed");
-    }
-
-    kernel_log!("Initializing graphics and shell...");
+    // Initialize interrupts and other components call init_common here
+    crate::init::init_common();
 
     // Initialize graphics with framebuffer configuration
     if initialize_graphics_with_config(system_table) {
@@ -196,14 +201,6 @@ pub extern "efiapi" fn efi_main(
         // Initialize keyboard input driver
         crate::keyboard::init();
         kernel_log!("Keyboard initialized");
-
-        // Initialize syscall handling
-        crate::syscall::init();
-        kernel_log!("Syscalls initialized");
-
-        // Initialize process management
-        crate::process::init();
-        kernel_log!("Process management initialized");
 
         // Start the shell as the main interface
         kernel_log!("Starting shell...");
@@ -306,11 +303,20 @@ pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
 /// source_name is used for logging purposes (e.g., "UEFI custom" or "GOP").
 #[cfg(target_os = "uefi")]
 pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str) -> bool {
+    // Save current VGA buffer content before attempting graphics initialization
+    let vga_backup = match create_vga_backup() {
+        Some(backup) => backup,
+        None => {
+            kernel_log!("Failed to allocate VGA backup buffer");
+            return false;
+        }
+    };
+
     kernel_log!("Initializing {} graphics mode...", source_name);
     graphics::text::init(config);
 
     // Verify the framebuffer was initialized
-    if let Some(fb_writer) = unsafe { graphics::text::FRAMEBUFFER_UEFI.get() } {
+    if let Some(fb_writer) = graphics::text::FRAMEBUFFER_UEFI.get() {
         let fb_info = fb_writer.lock();
         kernel_log!(
             "{} framebuffer initialized successfully - width: {}, height: {}",
@@ -321,10 +327,14 @@ pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str)
 
         // Test direct pixel write to verify access
         kernel_log!("Testing {} framebuffer access...", source_name);
-        unsafe { fb_writer.lock().put_pixel(100, 100, 0xFF0000) };
+        fb_writer.lock().put_pixel(100, 100, 0xFF0000);
         kernel_log!("Direct {} pixel write test completed", source_name);
     } else {
         kernel_log!("ERROR: {} framebuffer initialization failed!", source_name);
+        // Restore VGA text buffer if graphics init failed
+        restore_vga_text_buffer(&vga_backup);
+        petroleum::graphics::init_vga_text_mode();
+        crate::vga::init_vga();
         return false;
     }
 
@@ -339,6 +349,32 @@ pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str)
     );
     petroleum::serial::serial_log(format_args!("Desktop should be visible now!\n"));
     true
+}
+
+/// Helper function to backup VGA text buffer content
+#[cfg(target_os = "uefi")]
+fn backup_vga_text_buffer(buffer: &mut [[u16; 80]; 25]) {
+    unsafe {
+        let vga_ptr = crate::VGA_BUFFER_ADDRESS as *const [[u16; 80]; 25];
+        *buffer = *vga_ptr;
+    }
+}
+
+/// Helper function to allocate a buffer for VGA backup
+#[cfg(target_os = "uefi")]
+fn create_vga_backup() -> Option<Box<[[u16; 80]; 25]>> {
+    let mut buffer = Box::new([[0u16; 80]; 25]);
+    backup_vga_text_buffer(&mut buffer);
+    Some(buffer)
+}
+
+/// Helper function to restore VGA text buffer content
+#[cfg(target_os = "uefi")]
+fn restore_vga_text_buffer(buffer: &Box<[[u16; 80]; 25]>) {
+    unsafe {
+        let vga_ptr = crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25];
+        *vga_ptr = **buffer;
+    }
 }
 
 /// Helper function to initialize graphics with framebuffer configuration

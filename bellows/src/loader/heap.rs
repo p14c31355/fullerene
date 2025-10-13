@@ -3,7 +3,6 @@
 use linked_list_allocator::LockedHeap;
 use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus};
 use petroleum::debug_log;
-use petroleum::serial::debug_print_hex;
 
 /// Size of the heap we will allocate for `alloc` usage (bytes).
 const HEAP_SIZE: usize = 32 * 1024; // 32 KiB
@@ -18,7 +17,6 @@ fn try_allocate_pages(
     pages: usize,
     preferred_type: EfiMemoryType,
 ) -> Result<usize, BellowsError> {
-    let mut phys_addr: usize = 0;
     // Try LoaderData first, then Conventional (skip if invalid)
     let types_to_try = [preferred_type, EfiMemoryType::EfiConventionalMemory];
 

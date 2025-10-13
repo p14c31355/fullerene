@@ -68,7 +68,6 @@ pub fn find_framebuffer_config(
     None
 }
 
-// Helper function to find heap start from memory map (using generic)
 pub fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> PhysAddr {
     // Find the largest suitable memory region from EfiLoaderData or EfiConventionalMemory and use its physical start for heap
     let mut largest_addr = None;
@@ -95,7 +94,7 @@ pub fn setup_memory_maps(
     memory_map: *mut c_void,
     memory_map_size: usize,
     kernel_virt_addr: u64,
-) -> (VirtAddr, PhysAddr) {
+) -> PhysAddr {
     // Use the passed memory map
     petroleum::serial::debug_print_str_to_com1("About to create memory map slice\n");
     let descriptors = unsafe {
@@ -131,8 +130,8 @@ pub fn setup_memory_maps(
     });
     kernel_log!("MEMORY_MAP initialized");
 
-    let mut physical_memory_offset = VirtAddr::new(0);
-    let mut kernel_phys_start = PhysAddr::new(0);
+    let physical_memory_offset;
+    let kernel_phys_start;
 
     kernel_log!("Scanning memory descriptors to find kernel location...");
 
@@ -164,7 +163,7 @@ pub fn setup_memory_maps(
         kernel_phys_start.as_u64()
     );
 
-    (physical_memory_offset, kernel_phys_start)
+    kernel_phys_start
 }
 
 pub fn init_memory_management(
@@ -193,6 +192,6 @@ pub fn init_memory_management(
         physical_memory_offset.as_u64(),
         kernel_phys_start.as_u64()
     );
-    heap::reinit_page_table(physical_memory_offset, kernel_phys_start, None, None);
+    heap::reinit_page_table(kernel_phys_start, None, None);
     kernel_log!("Page table reinit completed successfully");
 }

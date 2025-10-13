@@ -76,13 +76,20 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     petroleum::println!("Bellows: Heap OK.");
     debug_print_str("Main: After Heap OK println.\n");
 
-    // Initialize GOP for framebuffer setup
-    petroleum::serial::_print(format_args!("Attempting to initialize GOP...\n"));
-    init_gop(st);
-    petroleum::serial::_print(format_args!("GOP initialized successfully.\n"));
-    petroleum::println!("Bellows: GOP initialized."); // Debug print after GOP initialization
+    // Initialize graphics protocols for framebuffer setup
+    petroleum::serial::_print(format_args!("Attempting to initialize graphics protocols...\n"));
+    match petroleum::init_graphics_protocols(st) {
+        Some(config) => {
+            petroleum::println!("Bellows: Graphics framebuffer initialized at {:#x} ({}x{}).", config.address, config.width, config.height);
+        }
+        None => {
+            petroleum::println!("Bellows: No graphics protocols found, initializing VGA text mode.");
+            init_basic_vga_text_mode();
+        }
+    }
+    petroleum::serial::_print(format_args!("Graphics initialization complete.\n"));
+    petroleum::println!("Bellows: Graphics initialized."); // Debug print after graphics initialization
 
-    petroleum::println!("Bellows: Reading kernel from embedded binary...");
     let efi_image_file = KERNEL_BINARY;
     let efi_image_size = KERNEL_BINARY.len();
 
@@ -135,9 +142,50 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     }
 }
 
-/// Initializes the Graphics Output Protocol (GOP) for framebuffer access.
+fn init_basic_vga_text_mode() {
+    petroleum::serial::_print(format_args!("Basic VGA text mode initialization...\n"));
+
+    // Simply call the existing petroleum VGA setup function
+    // This will handle the text mode setup properly
+    petroleum::graphics::init_vga_text_mode();
+
+    petroleum::serial::_print(format_args!("Basic VGA text mode initialized as fallback.\n"));
+}
+
+/// Attempts to initialize the Universal Graphics Adapter (UGA) protocol as a fallback.
+fn try_uga_protocol(st: &EfiSystemTable) -> bool {
+    // UGA GUID: {982c298b-f4fa-41cb-b838-777ba2482113}
+    let uga_guid = petroleum::common::EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID;
+
+    let bs = unsafe { &*st.boot_services };
+    let mut uga: *mut c_void = ptr::null_mut();
+
+    let status = unsafe { (bs.locate_protocol)(
+        uga_guid.as_ptr(),
+        ptr::null_mut(),
+        &mut uga,
+    ) };
+
+    if EfiStatus::from(status) != EfiStatus::Success || uga.is_null() {
+        petroleum::serial::_print(format_args!(
+            "UGA protocol not available (status: {:#x})\n", status
+        ));
+        return false;
+    }
+
+    petroleum::serial::_print(format_args!("UGA protocol found, attempting to initialize...\n"));
+
+    // Note: UGA protocol is deprecated, but some older EFI implementations might support it
+    // For now, we'll just return true if found, and let the kernel handle it
+    // This is a placeholder for future UGA implementation if needed
+
+    true
+}
+
+// Note: This function is unused as GOP initialization is now handled by petroleum::init_graphics_protocols
+// Removing to reduce dead code and improve maintainability
+/*
 fn init_gop(st: &EfiSystemTable) {
-    debug_print_str("GOP: init_gop entered.\n");
     let bs = unsafe { &*st.boot_services };
     let mut gop: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
 
@@ -153,8 +201,23 @@ fn init_gop(st: &EfiSystemTable) {
 
     if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
         petroleum::serial::_print(format_args!(
-            "Failed to locate GOP protocol, continuing without it.\n"
+            "Failed to locate GOP protocol (status: {:#x}), trying alternative methods.\n", status
         ));
+
+        // Try alternative graphics protocols or better GOP detection
+        petroleum::serial::_print(format_args!("GOP not found, trying alternative protocols...\n"));
+
+        // Attempt to find UGA (Universal Graphics Adapter) protocol as fallback
+        if try_uga_protocol(st) {
+            petroleum::serial::_print(format_args!("UGA protocol found and initialized.\n"));
+            return;
+        }
+
+        // If no graphics protocols available, fall back to basic VGA text mode
+        petroleum::serial::_print(format_args!("No graphics protocols available, using VGA text mode...\n"));
+        init_basic_vga_text_mode();
+
+        petroleum::serial::_print(format_args!("Basic VGA text mode initialized as fallback.\n"));
         return;
     }
 
@@ -266,3 +329,4 @@ fn init_gop(st: &EfiSystemTable) {
     ));
     petroleum::serial::_print(format_args!("GOP: Framebuffer initialized and cleared\n"));
 }
+*/

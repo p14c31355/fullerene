@@ -61,7 +61,7 @@ pub fn exit_boot_services_and_jump(
         ));
     }
 
-    let mut map_ptr: *mut c_void = map_phys_addr as *mut c_void;
+    let map_ptr: *mut c_void = map_phys_addr as *mut c_void;
 
     // Setup variables for memory map
     let mut map_size: usize = map_buffer_size; // Start with full buffer size

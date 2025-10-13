@@ -18,9 +18,14 @@ pub fn setup_vga_mode_13h() {
     log_step!("VGA setup: Mode 13h initialization complete\n");
 }
 
+
+
 // Unified text mode initialization function
 pub fn setup_vga_text_mode() {
     log_step!("VGA text mode setup: Starting\n");
+
+
+
     setup_misc_output();
 
     // Sequencer, CRTC, and Graphics setup using centralized macros
@@ -144,6 +149,10 @@ pub fn setup_vga_text_mode() {
         &graphics_configs, VgaPorts::GRAPHICS_INDEX, VgaPorts::GRAPHICS_DATA
     );
 
+    // Set cursor start and end registers for hardware cursor to be visible
+    write_vga_register!(VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA, 0x0A, 0x0E); // cursor start
+    write_vga_register!(VgaPorts::CRTC_INDEX, VgaPorts::CRTC_DATA, 0x0B, 0x0F); // cursor end
+
     // Attribute controller with inlined setup
     setup_vga_attributes();
 
@@ -244,7 +253,7 @@ pub fn setup_vga_attributes() {
         (0x0D, 0x0D),
         (0x0E, 0x0E),
         (0x0F, 0x0F), // Palette setup
-        (0x10, 0x01), // Mode control - text mode, 8-bit characters, blinking off
+        (0x10, 0x0C), // Mode control - text mode, blinking enabled
         (0x11, 0x00), // Overscan
         (0x12, 0x0F), // Plane enable
         (0x13, 0x00), // Pixel padding

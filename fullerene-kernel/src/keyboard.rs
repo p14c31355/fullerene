@@ -252,13 +252,11 @@ pub fn read_char() -> Option<u8> {
 /// For blocking line reading, use keyboard::read_char() in a loop.
 pub fn drain_line_buffer(buffer: &mut [u8]) -> usize {
     let mut str_buffer = INPUT_STRING_BUFFER.lock();
-    let mut chars_copied = 0;
-
     // Copy available characters
     let str_bytes = str_buffer.as_bytes();
     let copy_len = str_bytes.len().min(buffer.len());
     buffer[..copy_len].copy_from_slice(&str_bytes[..copy_len]);
-    chars_copied = copy_len;
+    let chars_copied = copy_len;
 
     // Clear the string buffer
     str_buffer.clear();

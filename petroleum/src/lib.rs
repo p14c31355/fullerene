@@ -18,7 +18,11 @@ pub use serial::{Com1Ports, SerialPort, SerialPortOps, SERIAL_PORT_WRITER};
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
 
 use core::arch::asm;
+use core::ffi::c_void;
+use core::ptr;
 use spin::Mutex;
+// use alloc::vec;
+// use alloc::vec::Vec;
 
 use crate::common::{EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID};
 use crate::common::{
@@ -57,56 +61,125 @@ macro_rules! write_serial_bytes {
     };
 }
 
-type EfiGraphicsOutputProtocolPtr = EfiGraphicsOutputProtocol;
+type EfiUniversalGraphicsAdapterProtocolPtr = isize; // Placeholder for UGA protocol type
 
-/// Helper to find GOP and init framebuffer
-pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
-    use core::ffi::c_void;
-    use core::ptr;
-
+/// Helper to try Universal Graphics Adapter (UGA) protocol
+pub fn init_uga_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
+    // This GUID should be moved to a constant, e.g., in `petroleum/src/common/uefi.rs`
+    // pub const EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID: [u8; 16] = [...];
+    let uga_guid = crate::common::EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID;
     let bs = unsafe { &*system_table.boot_services };
-    let mut gop: *mut EfiGraphicsOutputProtocolPtr = ptr::null_mut();
+    let mut uga: *mut EfiUniversalGraphicsAdapterProtocolPtr = ptr::null_mut();
 
-    let status = (bs.locate_protocol)(
-        EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
+    let status = unsafe { (bs.locate_protocol)(
+        uga_guid.as_ptr(),
         ptr::null_mut(),
-        &mut gop as *mut _ as *mut *mut c_void,
-    );
+        &mut uga as *mut _ as *mut *mut c_void,
+    ) };
 
-    if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
-        serial::_print(format_args!("Failed to locate GOP protocol.\n"));
+    if EfiStatus::from(status) != EfiStatus::Success || uga.is_null() {
+        serial::_print(format_args!(
+            "UGA protocol not available (status: {:#x})\n", status
+        ));
         return None;
     }
 
+    serial::_print(format_args!("UGA protocol found, but UGA implementation incomplete.\n"));
+    // UGA is deprecated; for now, we don't initialize since it's complex and rarely used
+    None
+}
+
+/// Helper to try different graphics protocols and modes
+pub fn init_graphics_protocols(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
+    // First try standard GOP protocol with enhanced mode enumeration
+    if let Some(config) = init_gop_framebuffer(system_table) {
+        return Some(config);
+    }
+
+    // If GOP fails, try UGA (Universal Graphics Adapter) - though deprecated
+    serial::_print(format_args!("GOP not available, trying UGA protocol...\n"));
+    if let Some(config) = init_uga_framebuffer(system_table) {
+        return Some(config);
+    }
+
+    // If all graphics protocols fail, we fall back to VGA text mode (handled externally)
+    serial::_print(format_args!("All graphics protocols failed, falling back to VGA text mode.\n"));
+    None
+}
+
+/// Helper to find GOP and init framebuffer
+pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
+    let bs = unsafe { &*system_table.boot_services };
+    let mut gop: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
+
+    serial::_print(format_args!("GOP: Attempting to locate Graphics Output Protocol...\n"));
+    let status = unsafe { (bs.locate_protocol)(
+        EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
+        ptr::null_mut(),
+        &mut gop as *mut _ as *mut *mut c_void,
+    ) };
+
+    if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
+        serial::_print(format_args!("GOP: Failed to locate GOP protocol (status: {:#x}).\n", status));
+        return None;
+    }
+
+    serial::_print(format_args!("GOP: Protocol located successfully at {:#p}.\n", gop));
+
     let gop_ref = unsafe { &*gop };
     if gop_ref.mode.is_null() {
-        serial::_print(format_args!("GOP mode pointer is null.\n"));
+        serial::_print(format_args!("GOP: Mode pointer is null.\n"));
         return None;
     }
 
     let mode_ref = unsafe { &*gop_ref.mode };
+    let current_mode = mode_ref.mode as usize;
+    let max_mode = mode_ref.max_mode;
 
-    // Set GOP to graphics mode (mode 0)
-    if mode_ref.mode != 0 {
-        let status = (gop_ref.set_mode)(gop, 0);
-        if EfiStatus::from(status) != EfiStatus::Success {
-            serial::_print(format_args!("Failed to set GOP mode.\n"));
-            return None;
+    serial::_print(format_args!("GOP: Current mode: {}, Max mode: {}.\n", current_mode, max_mode));
+
+    // Try to use current mode first, then mode 0
+    let mut mode_set_successfully = false;
+    let target_modes = [current_mode as u32, 0];
+
+    for &mode in &target_modes {
+        if mode >= max_mode {
+            continue;
+        }
+
+        serial::_print(format_args!("GOP: Attempting to set mode {}...\n", mode));
+        let set_status = unsafe { (gop_ref.set_mode)(gop, mode) };
+        if EfiStatus::from(set_status) == EfiStatus::Success {
+            serial::_print(format_args!("GOP: Successfully set mode {}.\n", mode));
+            mode_set_successfully = true;
+            break;
+        } else {
+            serial::_print(format_args!("GOP: Failed to set mode {}, status: {:#x}.\n", mode, set_status));
         }
     }
 
+    if !mode_set_successfully {
+        serial::_print(format_args!("GOP: Failed to set any graphics mode.\n"));
+        return None;
+    }
+
+    // Refresh mode reference after setting mode
+    let mode_ref = unsafe { &*gop_ref.mode };
     if mode_ref.info.is_null() {
-        serial::_print(format_args!("GOP mode info pointer is null.\n"));
+        serial::_print(format_args!("GOP: Mode info pointer is null after setting mode.\n"));
         return None;
     }
 
     let info = unsafe { &*mode_ref.info };
-
     let fb_addr = mode_ref.frame_buffer_base;
     let fb_size = mode_ref.frame_buffer_size;
 
+    serial::_print(format_args!("GOP: Framebuffer addr: {:#x}, size: {}KB\n", fb_addr, fb_size / 1024));
+    serial::_print(format_args!("GOP: Resolution: {}x{}, stride: {}\n",
+        info.horizontal_resolution, info.vertical_resolution, info.pixels_per_scan_line));
+
     if fb_addr == 0 || fb_size == 0 {
-        serial::_print(format_args!("GOP framebuffer info is invalid.\n"));
+        serial::_print(format_args!("GOP: Invalid framebuffer.\n"));
         return None;
     }
 
@@ -119,26 +192,32 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
         stride: info.pixels_per_scan_line,
     };
 
+    serial::_print(format_args!(
+        "GOP: Framebuffer ready: {}x{} @ {:#x}, {} BPP, stride {}\n",
+        config.width, config.height, config.address, config.bpp, config.stride
+    ));
+
     let config_ptr = Box::leak(Box::new(config));
 
-    let status = (bs.install_configuration_table)(
+    let install_status = unsafe { (bs.install_configuration_table)(
         FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
         config_ptr as *const _ as *mut c_void,
-    );
+    ) };
 
-    if EfiStatus::from(status) != EfiStatus::Success {
+    if EfiStatus::from(install_status) != EfiStatus::Success {
         let _ = unsafe { Box::from_raw(config_ptr) };
-        serial::_print(format_args!(
-            "Failed to install framebuffer config table.\n"
-        ));
+        serial::_print(format_args!("GOP: Failed to install config table (status: {:#x}).\n", install_status));
         return None;
     }
 
-    // Clear screen
+    serial::_print(format_args!("GOP: Configuration table installed successfully.\n"));
+
+    // Clear screen for clean state
     unsafe {
         ptr::write_bytes(fb_addr as *mut u8, 0x00, fb_size as usize);
     }
 
+    serial::_print(format_args!("GOP: Framebuffer cleared.\n"));
     Some(*config_ptr)
 }
 

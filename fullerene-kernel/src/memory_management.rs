@@ -181,10 +181,6 @@ pub fn allocate_user_memory(
     let num_pages = (size_bytes + 4095) / 4096; // Round up to page size
     let frame_allocator = &mut *FRAME_ALLOCATOR.get().unwrap().lock();
 
-    // Find a free virtual address range in user space (addresses below kernel space)
-    // Kernel space typically starts at 0xFFFF_8000_0000_0000 in x86_64
-    let base_addr = VirtAddr::new(0x200000); // 2MB base for user programs
-
     // For now, allocate sequentially (simple bump allocator)
     static NEXT_USER_ADDR: AtomicU64 = AtomicU64::new(0x200000);
 
