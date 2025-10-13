@@ -73,7 +73,8 @@ pub fn detect_cirrus_vga() -> bool {
         for device in 0..32 {
             let test_vendor = crate::bare_metal_pci::pci_config_read_word(bus, device, 0, 0x00);
             if test_vendor == 0x1013 {
-                log_step!("VGA Detection: Cirrus VGA device found at bus:device = ");
+                crate::serial::_print(format_args!("VGA Detection: Cirrus VGA device found at bus:device = {}:{}
+", bus, device));
                 return true;
             }
         }
