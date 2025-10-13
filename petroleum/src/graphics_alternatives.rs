@@ -14,6 +14,41 @@ pub mod graphics_alternatives {
         0x4d,
     ];
 
+    /// RAII guard for PCI_IO protocol that ensures close_protocol is always called
+    struct PciIoGuard<'a> {
+        bs: &'a EfiBootServices,
+        handle: usize,
+        protocol: *mut crate::common::EfiPciIoProtocol,
+    }
+
+    impl<'a> PciIoGuard<'a> {
+        fn new(bs: &'a EfiBootServices, handle: usize) -> Result<Self, EfiStatus> {
+            let mut pci_io: *mut core::ffi::c_void = core::ptr::null_mut();
+            let status = (bs.open_protocol)(
+                handle,
+                EFI_PCI_IO_PROTOCOL_GUID.as_ptr(),
+                &mut pci_io,
+                0, 0, 0x01,
+            );
+
+            if EfiStatus::from(status) != EfiStatus::Success || pci_io.is_null() {
+                Err(EfiStatus::from(status))
+            } else {
+                Ok(Self {
+                    bs,
+                    handle,
+                    protocol: pci_io as *mut _,
+                })
+            }
+        }
+    }
+
+    impl<'a> Drop for PciIoGuard<'a> {
+        fn drop(&mut self) {
+            (self.bs.close_protocol)(self.handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0);
+        }
+    }
+
     #[derive(Debug, Clone, Copy)]
     pub struct PciDevice {
         pub handle: usize, // EFI_HANDLE
@@ -161,23 +196,8 @@ pub mod graphics_alternatives {
 
     /// Probe PCI device information from a given handle
     fn probe_pci_device_on_handle(bs: &EfiBootServices, handle: usize) -> Option<PciDevice> {
-        let mut pci_io: *mut core::ffi::c_void = core::ptr::null_mut();
-
-        let protocol_status = (bs.open_protocol)(
-            handle,
-            EFI_PCI_IO_PROTOCOL_GUID.as_ptr(),
-            &mut pci_io,
-            0,    // AgentHandle (null for now)
-            0,    // ControllerHandle (null)
-            0x01, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
-        );
-
-        if EfiStatus::from(protocol_status) != EfiStatus::Success || pci_io.is_null() {
-            return None;
-        }
-
-        // Read PCI configuration header using PCI_IO protocol
-        let pci_io_ref = unsafe { &*(pci_io as *mut crate::common::EfiPciIoProtocol) };
+        let guard = PciIoGuard::new(bs, handle).ok()?;
+        let pci_io_ref = unsafe { &*guard.protocol };
 
         // Read PCI configuration header using the proper protocol functions
         let mut vendor_id: u16 = 0;
@@ -186,7 +206,7 @@ pub mod graphics_alternatives {
         let mut subclass: u8 = 0;
 
         let read_status = (pci_io_ref.pci_read)(
-            pci_io as *mut crate::common::EfiPciIoProtocol,
+            guard.protocol as *mut crate::common::EfiPciIoProtocol,
             1, // Word width for vendor_id
             0, // Offset 0
             1, // 1 word
@@ -194,18 +214,16 @@ pub mod graphics_alternatives {
         );
 
         if EfiStatus::from(read_status) != EfiStatus::Success {
-           (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0);
             return None;
         }
 
         // Skip invalid devices
         if vendor_id == 0xFFFF || vendor_id == 0 {
-           (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0);
             return None;
         }
 
         let read_status = (pci_io_ref.pci_read)(
-            pci_io as *mut crate::common::EfiPciIoProtocol,
+            guard.protocol as *mut crate::common::EfiPciIoProtocol,
             1, // Word width for device_id
             2, // Offset 2
             1, // 1 word
@@ -213,12 +231,11 @@ pub mod graphics_alternatives {
         );
 
         if EfiStatus::from(read_status) != EfiStatus::Success {
-           (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0);
             return None;
         }
 
         let read_status = (pci_io_ref.pci_read)(
-            pci_io as *mut crate::common::EfiPciIoProtocol,
+            guard.protocol as *mut crate::common::EfiPciIoProtocol,
             0,   // Byte width for class_code
             0xB, // Offset 0xB
             1,   // 1 byte
@@ -226,12 +243,11 @@ pub mod graphics_alternatives {
         );
 
         if EfiStatus::from(read_status) != EfiStatus::Success {
-           (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0);
             return None;
         }
 
         let read_status = (pci_io_ref.pci_read)(
-            pci_io as *mut crate::common::EfiPciIoProtocol,
+            guard.protocol as *mut crate::common::EfiPciIoProtocol,
             0,   // Byte width for subclass
             0xA, // Offset 0xA
             1,   // 1 byte
@@ -239,7 +255,6 @@ pub mod graphics_alternatives {
         );
 
         if EfiStatus::from(read_status) != EfiStatus::Success {
-           (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0);
             return None;
         }
 
@@ -251,15 +266,12 @@ pub mod graphics_alternatives {
         let mut func_num: usize = 0;
 
         let location_status = (pci_io_ref.get_location)(
-            pci_io as *mut crate::common::EfiPciIoProtocol,
+            guard.protocol as *mut crate::common::EfiPciIoProtocol,
             &mut segment_num as *mut usize,
             &mut bus_num as *mut usize,
             &mut dev_num as *mut usize,
             &mut func_num as *mut usize,
         );
-
-        // Close protocol before returning
-       (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0);
 
         if EfiStatus::from(location_status) == EfiStatus::Success {
             Some(PciDevice {
