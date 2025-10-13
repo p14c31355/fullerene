@@ -55,12 +55,6 @@ impl DeviceManager {
     ) -> SystemResult<()> {
         let name = device.name();
 
-        // Initialize the device
-        if let Err(e) = device.init() {
-            log_error!(e, "Failed to initialize device");
-            return Err(e);
-        }
-
         // Get device info before moving the device
         let device_info = DeviceInfo::new(
             device.device_name(),
@@ -69,8 +63,10 @@ impl DeviceManager {
         );
 
         // Store device and its info
-        self.devices.lock().insert(name, device);
-        self.device_info.lock().insert(name, device_info);
+        let mut devices = self.devices.lock();
+        let mut info_lock = self.device_info.lock();
+        devices.insert(name, DeviceEntry { device, info: device_info.clone() });
+        info_lock.insert(name, device_info);
 
         log_info!("Device registered successfully");
         Ok(())
@@ -152,10 +148,10 @@ impl DeviceManager {
         let mut device_list: Vec<_> = devices.values_mut().collect();
 
         // Sort by priority (higher priority first)
-        device_list.sort_by(|a, b| b.priority().cmp(&a.priority()));
+        device_list.sort_by(|a, b| b.device.priority().cmp(&a.device.priority()));
 
-        for device in device_list {
-            if let Err(e) = device.init() {
+        for device_entry in device_list {
+            if let Err(e) = device_entry.device.init() {
                 log_error!(e, "Failed to initialize device");
                 return Err(e);
             }
@@ -167,7 +163,7 @@ impl DeviceManager {
 
     /// Enable all registered devices
     pub fn enable_all_devices(&self) -> SystemResult<()> {
-        let device_names: Vec<_> = self.device_info.lock().keys().cloned().collect();
+        let device_names: Vec<_> = self.devices.lock().keys().cloned().collect();
 
         for name in device_names {
             self.enable_device(name)?;
@@ -179,7 +175,7 @@ impl DeviceManager {
 
     /// Disable all registered devices
     pub fn disable_all_devices(&self) -> SystemResult<()> {
-        let device_names: Vec<_> = self.device_info.lock().keys().cloned().collect();
+        let device_names: Vec<_> = self.devices.lock().keys().cloned().collect();
 
         for name in device_names.iter().rev() {
             self.disable_device(name)?;
@@ -187,6 +183,16 @@ impl DeviceManager {
 
         log_info!("All devices disabled");
         Ok(())
+    }
+
+    /// Get device information
+    pub fn get_device_info(&self, name: &str) -> Option<DeviceInfo> {
+        self.devices.lock().get(name).map(|entry| entry.info.clone())
+    }
+
+    /// List all registered devices
+    pub fn list_devices(&self) -> Vec<DeviceInfo> {
+        self.devices.lock().values().map(|entry| entry.info.clone()).collect()
     }
 }
 

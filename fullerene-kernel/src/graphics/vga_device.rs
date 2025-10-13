@@ -68,7 +68,9 @@ impl VgaDevice {
 
     fn scroll_buffer(&self, buffer: &mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) {
         for row in 1..VGA_HEIGHT {
-            buffer[row - 1] = buffer[row];
+            for col in 0..VGA_WIDTH {
+                buffer[row - 1][col] = buffer[row][col];
+            }
         }
         self.clear_row(buffer, VGA_HEIGHT - 1);
     }
@@ -142,6 +144,8 @@ impl HardwareDevice for VgaDevice {
         if self.enabled {
             let buffer = unsafe { &mut *(VGA_BUFFER_ADDR as *mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) };
             self.clear_buffer(buffer);
+            self.cursor_row = 0;
+            self.cursor_col = 0;
         }
         log_info!("VGA device reset");
         Ok(())

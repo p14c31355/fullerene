@@ -16,7 +16,7 @@ pub mod uefi_helpers;
 pub use apic::{IoApic, IoApicRedirectionEntry, init_io_apic};
 pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 pub use graphics::{
-    Color, ColorCode, ScreenChar, TextBufferOperations, VgaPortOps, VgaPorts, init_vga_graphics,
+    Color, ColorCode, ScreenChar, TextBufferOperations, VgaPortOps, HardwarePorts, init_vga_graphics,
 };
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
 pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};

@@ -1,4 +1,4 @@
-use petroleum::graphics::ports::VgaPorts;
+use petroleum::graphics::ports::HardwarePorts;
 use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations, port_write};
 use spin::{Mutex, Once};
 
@@ -35,10 +35,10 @@ impl VgaBuffer {
     /// Updates the hardware cursor position.
     pub fn update_cursor(&self) {
         let pos = self.row_position * BUFFER_WIDTH + self.column_position;
-        port_write!(VgaPorts::CRTC_INDEX, CURSOR_POS_LOW_REG);
-        port_write!(VgaPorts::CRTC_DATA, (pos & 0xFF) as u8);
-        port_write!(VgaPorts::CRTC_INDEX, CURSOR_POS_HIGH_REG);
-        port_write!(VgaPorts::CRTC_DATA, ((pos >> 8) & 0xFF) as u8);
+        port_write!(HardwarePorts::CRTC_INDEX, CURSOR_POS_LOW_REG);
+        port_write!(HardwarePorts::CRTC_DATA, (pos & 0xFF) as u8);
+        port_write!(HardwarePorts::CRTC_INDEX, CURSOR_POS_HIGH_REG);
+        port_write!(HardwarePorts::CRTC_DATA, ((pos >> 8) & 0xFF) as u8);
     }
 }
 
@@ -177,7 +177,7 @@ pub fn init_vga() {
     writer.write_string("This is output directly to VGA.\n");
     writer.update_cursor();
     // Force display refresh by reading status register
-    let _: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::STATUS);
+    let _: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::HardwarePorts::STATUS);
 }
 
 #[cfg(test)]

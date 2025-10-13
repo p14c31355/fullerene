@@ -58,20 +58,20 @@ impl PciConfigSpace {
         if vendor_id_value == 0xFFFF {
             return None;
         }
-        config.vendor_id = vendor_id_value;
+        unsafe { core::ptr::write_unaligned(core::ptr::addr_of_mut!(config.vendor_id), vendor_id_value) };
 
         // Read the rest of the configuration space
-        unsafe { core::ptr::write_unaligned(&mut config.device_id, Self::read_config_word(bus, device, function, 2)) };
-        unsafe { core::ptr::write_unaligned(&mut config.command, Self::read_config_word(bus, device, function, 4)) };
-        unsafe { core::ptr::write_unaligned(&mut config.status, Self::read_config_word(bus, device, function, 6)) };
-        unsafe { core::ptr::write_unaligned(&mut config.revision_id, Self::read_config_byte(bus, device, function, 8)) };
-        unsafe { core::ptr::write_unaligned(&mut config.prog_if, Self::read_config_byte(bus, device, function, 9)) };
-        unsafe { core::ptr::write_unaligned(&mut config.subclass, Self::read_config_byte(bus, device, function, 10)) };
-        unsafe { core::ptr::write_unaligned(&mut config.class_code, Self::read_config_byte(bus, device, function, 11)) };
-        unsafe { core::ptr::write_unaligned(&mut config.cache_line_size, Self::read_config_byte(bus, device, function, 12)) };
-        unsafe { core::ptr::write_unaligned(&mut config.latency_timer, Self::read_config_byte(bus, device, function, 13)) };
-        unsafe { core::ptr::write_unaligned(&mut config.header_type, Self::read_config_byte(bus, device, function, 14)) };
-        unsafe { core::ptr::write_unaligned(&mut config.bist, Self::read_config_byte(bus, device, function, 15)) };
+        unsafe { core::ptr::write_unaligned(core::ptr::addr_of_mut!(config.device_id), Self::read_config_word(bus, device, function, 2)) };
+        unsafe { core::ptr::write_unaligned(core::ptr::addr_of_mut!(config.command), Self::read_config_word(bus, device, function, 4)) };
+        unsafe { core::ptr::write_unaligned(core::ptr::addr_of_mut!(config.status), Self::read_config_word(bus, device, function, 6)) };
+        unsafe { core::ptr::write_unaligned(core::ptr::addr_of_mut!(config.revision_id), Self::read_config_byte(bus, device, function, 8)) };
+        unsafe { core::ptr::write_unaligned(core::ptr::addr_of_mut!(config.prog_if), Self::read_config_byte(bus, device, function, 9)) };
+        unsafe { core::ptr::write_unaligned(core::ptr::addr_of_mut!(config.subclass), Self::read_config_byte(bus, device, function, 10)) };
+        unsafe { core::ptr::write_unaligned(core::ptr::addr_of_mut!(config.class_code), Self::read_config_byte(bus, device, function, 11)) };
+        unsafe { core::ptr::write_unaligned(core::ptr::addr_of_mut!(config.cache_line_size), Self::read_config_byte(bus, device, function, 12)) };
+        unsafe { core::ptr::write_unaligned(core::ptr::addr_of_mut!(config.latency_timer), Self::read_config_byte(bus, device, function, 13)) };
+        unsafe { core::ptr::write_unaligned(core::ptr::addr_of_mut!(config.header_type), Self::read_config_byte(bus, device, function, 14)) };
+        unsafe { core::ptr::write_unaligned(core::ptr::addr_of_mut!(config.bist), Self::read_config_byte(bus, device, function, 15)) };
 
         Some(config)
     }
@@ -93,13 +93,15 @@ impl PciConfigSpace {
         // Write address to CONFIG_ADDRESS port
         unsafe {
             petroleum::port_write!(
-                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS,
+                petroleum::graphics::ports::HardwarePorts::PCI_CONFIG_ADDRESS,
                 address
             );
-            petroleum::port_read_u8!(
-                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 3) as u16
-            )
+            // Read a single 32-bit dword from the data port
+            let mut data_reader: x86_64::instructions::port::Port<u32> =
+                x86_64::instructions::port::Port::new(petroleum::graphics::ports::HardwarePorts::PCI_CONFIG_DATA);
+            (data_reader.read() & 0xFF) as u8
         }
+
     }
 
     /// Read a word from PCI configuration space
@@ -124,12 +126,12 @@ impl PciConfigSpace {
         // Write address to CONFIG_ADDRESS port
         unsafe {
             petroleum::port_write!(
-                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS,
+                petroleum::graphics::ports::HardwarePorts::PCI_CONFIG_ADDRESS,
                 address
             );
             // Read a single 32-bit dword from the data port
             let mut data_reader: x86_64::instructions::port::Port<u32> =
-                x86_64::instructions::port::Port::new(petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA);
+                x86_64::instructions::port::Port::new(petroleum::graphics::ports::HardwarePorts::PCI_CONFIG_DATA);
             data_reader.read()
         }
     }
@@ -145,11 +147,11 @@ impl PciConfigSpace {
         // Write address to CONFIG_ADDRESS port
         unsafe {
             petroleum::port_write!(
-                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS,
+                petroleum::graphics::ports::HardwarePorts::PCI_CONFIG_ADDRESS,
                 address
             );
             petroleum::port_write!(
-                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA + (offset & 3) as u16,
+                petroleum::graphics::ports::HardwarePorts::PCI_CONFIG_DATA + (offset & 3) as u16,
                 value
             );
         }
@@ -177,12 +179,12 @@ impl PciConfigSpace {
         // Write address to CONFIG_ADDRESS port
         unsafe {
             petroleum::port_write!(
-                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS,
+                petroleum::graphics::ports::HardwarePorts::PCI_CONFIG_ADDRESS,
                 address
             );
             // Write the modified dword to the data port
             petroleum::port_write!(
-                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA,
+                petroleum::graphics::ports::HardwarePorts::PCI_CONFIG_DATA,
                 new_dword
             );
         }
@@ -199,12 +201,12 @@ impl PciConfigSpace {
         // Write address to CONFIG_ADDRESS port
         unsafe {
             petroleum::port_write!(
-                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_ADDRESS,
+                petroleum::graphics::ports::HardwarePorts::PCI_CONFIG_ADDRESS,
                 address
             );
             // Write the 32-bit value to the data port
             petroleum::port_write!(
-                petroleum::graphics::ports::VgaPorts::PCI_CONFIG_DATA,
+                petroleum::graphics::ports::HardwarePorts::PCI_CONFIG_DATA,
                 value
             );
         }
@@ -251,48 +253,48 @@ impl PciDevice {
     /// Get device vendor ID
     pub fn vendor_id(&self) -> u16 {
         // Copy field to avoid unaligned access with packed struct
-        unsafe { core::ptr::read_unaligned(&self.config.vendor_id) }
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.config.vendor_id)) }
     }
 
     /// Get device ID
     pub fn device_id(&self) -> u16 {
-        unsafe { core::ptr::read_unaligned(&self.config.device_id) }
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.config.device_id)) }
     }
 
     /// Get device class code
     pub fn class_code(&self) -> u8 {
-        unsafe { core::ptr::read_unaligned(&self.config.class_code) }
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.config.class_code)) }
     }
 
     /// Get device subclass
     pub fn subclass(&self) -> u8 {
-        unsafe { core::ptr::read_unaligned(&self.config.subclass) }
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.config.subclass)) }
     }
 
     /// Get device revision ID
     pub fn revision_id(&self) -> u8 {
-        unsafe { core::ptr::read_unaligned(&self.config.revision_id) }
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.config.revision_id)) }
     }
 
     /// Enable memory space access
     pub fn enable_memory_space(&mut self) {
-        let command = unsafe { core::ptr::read_unaligned(&self.config.command) } | 0x2; // Enable memory space bit
+        let command = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.config.command)) } | 0x2; // Enable memory space bit
         self.config.write_config_word(self.bus, self.device, self.function, 4, command);
-        unsafe { core::ptr::write_unaligned(&mut self.config.command, command) };
+        unsafe { core::ptr::write_unaligned(core::ptr::addr_of_mut!(self.config.command), command) };
     }
 
     /// Enable I/O space access
     pub fn enable_io_space(&mut self) {
-        let command = unsafe { core::ptr::read_unaligned(&self.config.command) } | 0x1; // Enable I/O space bit
+        let command = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.config.command)) } | 0x1; // Enable I/O space bit
         self.config.write_config_word(self.bus, self.device, self.function, 4, command);
-        unsafe { core::ptr::write_unaligned(&mut self.config.command, command) };
+        unsafe { core::ptr::write_unaligned(core::ptr::addr_of_mut!(self.config.command), command) };
     }
 
     /// Enable bus mastering
     pub fn enable_bus_master(&mut self) {
-        let command = unsafe { core::ptr::read_unaligned(&self.config.command) } | 0x4; // Enable bus master bit
+        let command = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.config.command)) } | 0x4; // Enable bus master bit
         self.config.write_config_word(self.bus, self.device, self.function, 4, command);
-        unsafe { core::ptr::write_unaligned(&mut self.config.command, command) };
+        unsafe { core::ptr::write_unaligned(core::ptr::addr_of_mut!(self.config.command), command) };
     }
 
     /// Get base address register value
@@ -362,8 +364,8 @@ impl HardwareDevice for PciDevice {
     }
 
     fn disable(&mut self) -> SystemResult<()> {
-        let command = unsafe { core::ptr::read_unaligned(&self.config.command) } & !0x7; // Disable memory, I/O, and bus master bits
-        unsafe { core::ptr::write_unaligned(&mut self.config.command, command) };
+        let command = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.config.command)) } & !0x7; // Disable memory, I/O, and bus master bits
+        unsafe { core::ptr::write_unaligned(core::ptr::addr_of_mut!(self.config.command), command) };
         self.config.write_config_word(self.bus, self.device, self.function, 4, command);
         self.enabled = false;
         log_info!("PCI device disabled");
@@ -502,11 +504,13 @@ mod tests {
     #[test]
     fn test_pci_config_space_creation() {
         let config = PciConfigSpace::new();
-        // Copy fields to avoid unaligned access with packed struct
-        let vendor_id = config.vendor_id;
-        let device_id = config.device_id;
-        assert_eq!(vendor_id, 0);
-        assert_eq!(device_id, 0);
+        // Use safe methods to avoid unaligned access with packed struct
+        unsafe {
+            let vendor_id = core::ptr::read_unaligned(core::ptr::addr_of!(config.vendor_id));
+            let device_id = core::ptr::read_unaligned(core::ptr::addr_of!(config.device_id));
+            assert_eq!(vendor_id, 0);
+            assert_eq!(device_id, 0);
+        }
     }
 
     #[test]

@@ -133,10 +133,10 @@ impl VgaPortOps {
     }
 }
 
-// VGA port addresses
-pub struct VgaPorts;
+// Hardware port addresses - renamed from VgaPorts to HardwarePorts for generality
+pub struct HardwarePorts;
 
-impl VgaPorts {
+impl HardwarePorts {
     pub const MISC_OUTPUT: u16 = 0x3C2;
     pub const CRTC_INDEX: u16 = 0x3D4;
     pub const CRTC_DATA: u16 = 0x3D5;

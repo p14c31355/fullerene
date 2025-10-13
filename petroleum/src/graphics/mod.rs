@@ -7,7 +7,7 @@ pub mod text;
 
 // Re-exports for public API
 pub use color::*;
-pub use ports::{PortWriter, VgaPortOps, VgaPorts};
+pub use ports::{PortWriter, VgaPortOps, HardwarePorts};
 // VGA graphics modes
 pub use setup::{
     detect_and_init_vga_graphics, detect_cirrus_vga, init_vga_graphics, init_vga_text_mode,
