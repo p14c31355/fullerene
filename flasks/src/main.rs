@@ -135,11 +135,18 @@ fn main() -> io::Result<()> {
         "1",
         "-M",
         "q35",
-        "-vga",
-        "qxl",
-        // GOP TESTING: Different OVMF versions or additional ROM may be needed for GOP support
-        // Current OVMF release may not include GOP drivers for QEMU devices
-        // Alternative: Use actual hardware or try GOP implementation in petroleum crate
+        // Enhanced graphics configuration for better GOP support
+        "-device",
+        "qxl-vga,vgamem_mb=128",
+        "-display",
+        "gtk,gl=on,window-close=on",
+        // Alternative: Use SDL backend for better window control
+        // "-display", "sdl,gl=on",
+        // Alternative VGA configurations to try
+        // "-vga",
+        // "qxl",
+        // "-device",
+        // "VGA,vgamem_mb=64",
         "-serial",
         "stdio",
         "-accel",
