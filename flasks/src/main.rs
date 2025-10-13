@@ -148,6 +148,8 @@ fn main() -> io::Result<()> {
         // -vga qxl + -device VGA: FAILED (no GOP registration) - same behavior, falls back to VGA text mode
         // CONCLUSION: Standard QEMU video devices do not register GOP with OVMF firmware
         // NEXT STEPS: Research alternative approaches - document findings, implement VESA detection fallback
+        "-device",
+        "virtio-gpu-pci",
         "-serial",
         "stdio",
         "-accel",

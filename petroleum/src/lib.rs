@@ -540,31 +540,211 @@ pub mod graphics_alternatives {
     use crate::println;
     use crate::serial::_print;
 
+    const EFI_PCI_IO_PROTOCOL_GUID: [u8; 16] = [
+        0x4c, 0xf2, 0x39, 0x77, 0xd7, 0x93, 0xd4, 0x11,
+        0x9a, 0x3a, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d
+    ];
+
     #[derive(Debug, Clone, Copy)]
-    struct PciDevice {
+    pub struct PciDevice {
         vendor_id: u16,
         device_id: u16,
         class_code: u8,
+        subclass: u8,
         bus: u8,
         device: u8,
         function: u8,
     }
 
-    /// Try to detect VESA-compatible graphics hardware using ACPI tables
+    /// Try to detect VESA-compatible graphics hardware using PCI enumeration
     /// Returns information about available graphics devices
     pub fn detect_vesa_graphics(bs: &EfiBootServices) -> Result<(), EfiStatus> {
         _print(format_args!("[GOP-ALT] Detecting VESA graphics hardware...\n"));
 
-        // PCI enumeration removed - would need proper EFI_PCI_IO_PROTOCOL implementation
-        _print(format_args!("[GOP-ALT] PCI enumeration not yet implemented - skipping VESA graphics detection\n"));
+        // Try PCI enumeration for graphics devices
+        match enumerate_pci_graphics_devices(bs) {
+            Ok(devices) if !devices.is_empty() => {
+                _print(format_args!("[GOP-ALT] Found {} PCI graphics devices\n", devices.len()));
+                for device in devices {
+                    _print(format_args!("[GOP-ALT] Graphics device: {:04x}:{:04x}, class {:02x}.{:02x} at {:02x}:{:02x}:{:02x}\n",
+                        device.vendor_id, device.device_id, device.class_code, device.subclass, device.bus, device.device, device.function));
 
-        Err(EfiStatus::NotFound)
+                    // Check if this device supports linear framebuffer mode
+                    if let Some(fb_info) = probe_linear_framebuffer(&device, bs) {
+                        _print(format_args!("[GOP-ALT] Linear framebuffer found at {:#x}, {}x{}.\n", fb_info.address, fb_info.width, fb_info.height));
+                        if install_linear_framebuffer_config(bs, fb_info) {
+                            _print(format_args!("[GOP-ALT] Linear framebuffer config installed.\n"));
+                            return Ok(());
+                        }
+                    }
+                }
+                _print(format_args!("[GOP-ALT] No linear framebuffers found on graphics devices\n"));
+                Err(EfiStatus::NotFound)
+            }
+            Ok(_) => {
+                _print(format_args!("[GOP-ALT] No graphics devices found via PCI enumeration\n"));
+                Err(EfiStatus::NotFound)
+            }
+            Err(e) => {
+                _print(format_args!("[GOP-ALT] PCI enumeration failed: {:?}", e));
+                Err(e)
+            }
+        }
     }
 
+    /// Enumerate PCI devices using EFI_PCI_IO_PROTOCOL
+    fn enumerate_pci_graphics_devices(bs: &EfiBootServices) -> Result<Vec<PciDevice>, EfiStatus> {
+        let mut devices = Vec::new();
 
+        // Simple bus enumeration (0-255 buses, 0-31 devices, 0-7 functions per device)
+        for bus in 0..16u8 {  // Limit to reasonable range for typical systems
+            for device in 0..32u8 {
+                for function in 0..8u8 {
+                    if let Some(dev) = probe_pci_device(bs, bus, device, function) {
+                        // Check if it's a graphics device (Display controller class, 0x03)
+                        if dev.class_code == 0x03 {
+                            devices.push(dev);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(devices)
+    }
+
+    /// Probe a specific PCI device location
+    fn probe_pci_device(bs: &EfiBootServices, bus: u8, device: u8, function: u8) -> Option<PciDevice> {
+        // Use EFI_PCI_IO_PROTOCOL to read PCI configuration space
+        let mut pci_io: *mut core::ffi::c_void = core::ptr::null_mut();
+
+        // Try to locate PCI_IO protocol on handles (simplified - would need better handle enumeration)
+        let mut handle_count: usize = 0;
+        let mut handles: *mut usize = core::ptr::null_mut();
+
+        let status = unsafe {
+            (bs.locate_handle_buffer)(
+                2, // ByProtocol
+                EFI_PCI_IO_PROTOCOL_GUID.as_ptr(),
+                core::ptr::null_mut(),
+                &mut handle_count,
+                &mut handles,
+            )
+        };
+
+        if EfiStatus::from(status) != EfiStatus::Success || handles.is_null() || handle_count == 0 {
+            return None;
+        }
+
+        // Check each handle (simplified - should check all but we'll use first available)
+        for i in 0..handle_count {
+            let handle = unsafe { *handles.add(i) };
+            let protocol_status = unsafe {
+                (bs.open_protocol)(
+                    handle,
+                    EFI_PCI_IO_PROTOCOL_GUID.as_ptr(),
+                    &mut pci_io,
+                    0, // AgentHandle (null for now)
+                    0, // ControllerHandle (null)
+                    0x01, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
+                )
+            };
+
+            if EfiStatus::from(protocol_status) == EfiStatus::Success && !pci_io.is_null() {
+                // Read PCI configuration header
+                let mut config_buf = [0u32; 16]; // First 64 bytes of config space
+                let pci_io_read: unsafe extern "efiapi" fn(
+                    *mut core::ffi::c_void,
+                    u8,  // Width (0=byte, 1=word, 2=dword)
+                    u8,  // Offset
+                    usize, // Count
+                    *mut core::ffi::c_void
+                ) -> usize = unsafe { core::mem::transmute(*((pci_io as *mut usize).add(1))) }; // Read function
+
+                let read_status = unsafe {
+                    pci_io_read(
+                        pci_io,
+                        2, // Dword
+                        0, // Offset 0
+                        16, // 16 dwords
+                        config_buf.as_mut_ptr() as *mut core::ffi::c_void
+                    )
+                };
+
+                // Close protocol
+                unsafe {
+                    let _ = (bs.close_protocol)(handle, EFI_PCI_IO_PROTOCOL_GUID.as_ptr(), 0, 0);
+                }
+
+                if read_status == 0 { // Success
+                    let vendor_id = (config_buf[0] & 0xFFFF) as u16;
+                    let device_id = ((config_buf[0] >> 16) & 0xFFFF) as u16;
+                    let class_code = ((config_buf[2] >> 24) & 0xFF) as u8;
+                    let subclass = ((config_buf[2] >> 16) & 0xFF) as u8;
+
+                    if vendor_id != 0xFFFF && vendor_id != 0 { // Valid device
+                        return Some(PciDevice {
+                            vendor_id,
+                            device_id,
+                            class_code,
+                            subclass,
+                            bus,
+                            device,
+                            function,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Free handle buffer
+        if !handles.is_null() {
+            unsafe { (bs.free_pool)(handles as *mut core::ffi::c_void) };
+        }
+
+        None
+    }
+
+    /// Probe for linear framebuffer on a graphics device
+    fn probe_linear_framebuffer(device: &PciDevice, bs: &EfiBootServices) -> Option<crate::common::FullereneFramebufferConfig> {
+        // This is a simplified probe - real implementation would:
+        // 1. Use EFI_PCI_IO_PROTOCOL to get device BARs (Base Address Registers)
+        // 2. Map the framebuffer BAR to virtual memory if needed
+        // 3. Check if the device supports linear addressing mode
+        // 4. Query device for current mode/resolution
+
+        _print(format_args!("[GOP-ALT] Probing linear framebuffer on device {:04x}:{:04x}\n",
+            device.vendor_id, device.device_id));
+
+        // Placeholder: For known virtio-gpu devices or others that might support this
+        // In a full implementation, we'd:
+        // - Check PCI BARs for memory regions
+        // - Try to enable linear framebuffer mode
+        // - Set a standard resolution (e.g. 1024x768)
+        // - Return the framebuffer config
+
+        None // Not implemented yet - would return actual framebuffer info
+    }
+
+    /// Install linear framebuffer configuration table
+    fn install_linear_framebuffer_config(bs: &EfiBootServices, config: crate::common::FullereneFramebufferConfig) -> bool {
+        let config_ptr = Box::leak(Box::new(config));
+        let status = unsafe { (bs.install_configuration_table)(
+            crate::common::FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
+            config_ptr as *const _ as *mut core::ffi::c_void,
+        ) };
+
+        if EfiStatus::from(status) == EfiStatus::Success {
+            true
+        } else {
+            _print(format_args!("[GOP-ALT] Failed to install linear framebuffer config: {:#x}\n", status));
+            let _ = unsafe { Box::from_raw(config_ptr) };
+            false
+        }
+    }
 
     /// Try to detect VESA VBE (VESA BIOS Extensions) support
-    fn detect_vesa_vbe(bs: &EfiBootServices) -> Result<(), EfiStatus> {
+    fn detect_vesa_vbe(_bs: &EfiBootServices) -> Result<(), EfiStatus> {
         _print(format_args!("[GOP-ALT] Attempting VESA VBE detection...\n"));
 
         // Check for VBE signature in BIOS memory
@@ -580,7 +760,7 @@ pub mod graphics_alternatives {
     }
 
     /// Read from PCI configuration space (simplified - needs proper implementation)
-    unsafe fn port_read(port: u16) -> u32 {
+    unsafe fn _port_read(_port: u16) -> u32 {
         // This is a placeholder - real PCI access needs proper protocols
         // In UEFI, use EFI_PCI_IO_PROTOCOL instead
         0xFFFF_FFFF // Invalid read

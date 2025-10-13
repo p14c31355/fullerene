@@ -220,6 +220,8 @@ pub struct EfiBootServices {
     _unused30: usize,                                        // fn30
     pub open_protocol:
         extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, // fn31
+    pub close_protocol:
+        extern "efiapi" fn(usize, *const u8, usize, usize) -> usize, // fn37
     _unused32: usize,                                        // fn32
     _unused33: usize,                                        // fn33
     _unused34: usize,                                        // fn34
