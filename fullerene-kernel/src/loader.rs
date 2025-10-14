@@ -141,7 +141,8 @@ pub fn load_program(
                 }
             }
 
-            let _cr3_guard = unsafe { Cr3SwitchGuard::new(process_page_table.as_ref().ok_or(LoadError::InvalidFormat)?) };
+            let process_page_table = process_page_table.as_ref().ok_or(LoadError::InvalidFormat)?;
+            let _cr3_guard = unsafe { Cr3SwitchGuard::new(process_page_table) };
 
             // Copy file data
             let src = &image_data[file_offset..file_offset + file_size];
