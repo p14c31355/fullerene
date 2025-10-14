@@ -297,18 +297,21 @@ impl MemoryManager for UnifiedMemoryManager {
         count: usize,
     ) -> SystemResult<()> {
         memory_operation_mut!(self, {
-            for_each_page!(virtual_addr, count, |_virt_addr, _i| {
-                // Dummy implementation for now
-            });
+            for i in 0..count {
+                let vaddr = virtual_addr + (i * 4096);
+                let paddr = physical_addr + (i * 4096);
+                self.page_table_manager.map_page(vaddr, paddr, PageFlags::kernel_data())?;
+            }
             Ok(())
         })
     }
 
     fn unmap_address(&mut self, virtual_addr: usize, count: usize) -> SystemResult<()> {
         memory_operation_mut!(self, {
-            for_each_page!(virtual_addr, count, |_addr, _i| {
-                // Dummy implementation for now
-            });
+            for i in 0..count {
+                let vaddr = virtual_addr + (i * 4096);
+                self.page_table_manager.unmap_page(vaddr)?;
+            }
             Ok(())
         })
     }
@@ -687,14 +690,18 @@ impl UnifiedMemoryManager {
         user_addr: usize,
         size: usize,
     ) -> SystemResult<alloc::vec::Vec<u8>> {
-        let mut data = alloc::vec::Vec::new();
+        let mut data = alloc::vec::Vec::with_capacity(size);
 
         for offset in (0..size).step_by(4096) {
             let page_size = core::cmp::min(4096, size - offset);
             let virt_addr = user_addr + offset;
 
-            if let Ok(_phys_addr) = self.page_table_manager.translate_address(virt_addr) {
-                data.extend_from_slice(&alloc::vec![0u8; page_size]);
+            if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
+                unsafe {
+                    let phys_ptr = (phys_addr as *const u8).add(offset % 4096);
+                    let slice = core::slice::from_raw_parts(phys_ptr, page_size);
+                    data.extend_from_slice(slice);
+                }
             } else {
                 return Err(SystemError::InvalidArgument);
             }
@@ -705,11 +712,14 @@ impl UnifiedMemoryManager {
 
     /// Copy data from kernel space to user space
     fn copy_to_user_space(&mut self, user_addr: usize, data: &[u8]) -> SystemResult<()> {
-        for (offset, _byte) in data.iter().enumerate() {
+        for (offset, &byte) in data.iter().enumerate() {
             let virt_addr = user_addr + offset;
 
-            if let Ok(_phys_addr) = self.page_table_manager.translate_address(virt_addr) {
-                // Copy would happen here in a real implementation
+            if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
+                unsafe {
+                    let phys_ptr = (phys_addr as *mut u8).add(offset % 4096);
+                    *phys_ptr = byte;
+                }
             } else {
                 return Err(SystemError::InvalidArgument);
             }

@@ -145,6 +145,8 @@ pub extern "efiapi" fn efi_main(
     // Set physical memory offset for process management
     crate::memory_management::set_physical_memory_offset(physical_memory_offset.as_u64() as usize);
 
+    kernel_log!("Physical memory offset set to: 0x{:x}", physical_memory_offset.as_u64());
+
     // Initialize GDT with proper heap address
     let heap_phys_start = memory::find_heap_start(*MEMORY_MAP.get().unwrap());
     kernel_log!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());

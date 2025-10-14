@@ -87,14 +87,20 @@ impl PageTableHelper for PageTableManager {
         Ok(())
     }
 
-    fn translate_address(&self, _virtual_addr: usize) -> SystemResult<usize> {
+    fn translate_address(&self, virtual_addr: usize) -> SystemResult<usize> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
 
-        // In a real implementation, this would walk the page tables
-        // For now, return a dummy physical address
-        Ok(0) // Dummy physical address for simplicity
+        // Use petroleum's translate_addr function
+        let virt_addr = x86_64::VirtAddr::new(virtual_addr as u64);
+        let offset = x86_64::VirtAddr::new(get_physical_memory_offset() as u64);
+
+        if let Some(phys_addr) = unsafe { petroleum::page_table::translate_addr(virt_addr, offset) } {
+            Ok(phys_addr.as_u64() as usize)
+        } else {
+            Err(SystemError::InvalidArgument)
+        }
     }
 
     fn set_page_flags(&mut self, _virtual_addr: usize, _flags: PageFlags) -> SystemResult<()> {
