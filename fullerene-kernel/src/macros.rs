@@ -15,11 +15,11 @@ macro_rules! init_component {
     ($component:expr, $name:expr) => {{
         match $component.init() {
             Ok(()) => {
-                $crate::log_info(concat!($name, " initialized successfully"));
+                log::info!(concat!($name, " initialized successfully"));
                 Ok(())
             }
             Err(e) => {
-                $crate::log_error!(e, concat!("Failed to initialize ", $name));
+                log::error!("SystemError({}): Failed to initialize {}", (*$error) as u32, $name);
                 Err(e)
             }
         }

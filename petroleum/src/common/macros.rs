@@ -18,39 +18,42 @@ macro_rules! lock_and_read {
     }};
 }
 
-/// Convenient logging macros
+/// Convenient logging macros using log crate
 #[macro_export]
 macro_rules! log_error {
+    ($error:expr) => {
+        log::error!("SystemError({}):", (*$error) as u32)
+    };
     ($error:expr, $context:expr) => {
-        $crate::common::logging::log_error($error, $context)
+        log::error!("SystemError({}): {}", (*$error) as u32, $context)
     };
 }
 
 #[macro_export]
 macro_rules! log_warning {
     ($message:expr) => {
-        $crate::common::logging::log_warning($message)
+        log::warn!("{}", $message)
     };
 }
 
 #[macro_export]
 macro_rules! log_info {
     ($message:expr) => {
-        $crate::common::logging::log_info($message)
+        log::info!("{}", $message)
     };
 }
 
 #[macro_export]
 macro_rules! log_debug {
     ($message:expr) => {
-        $crate::common::logging::log_debug($message)
+        log::debug!("{}", $message)
     };
 }
 
 #[macro_export]
 macro_rules! log_trace {
     ($message:expr) => {
-        $crate::common::logging::log_trace($message)
+        log::trace!("{}", $message)
     };
 }
 

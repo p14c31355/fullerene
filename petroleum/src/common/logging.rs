@@ -1,28 +1,59 @@
 //! Consolidated logging system for the Fullerene project
 //!
-//! This module provides unified logging macros and functions
-//! for all sub-crates, reducing duplication and improving maintainability.
+//! This module provides unified logging macros and functions using the
+//! log crate for all sub-crates, reducing duplication and improving maintainability.
 
-/// Global logger instance
-#[derive(Clone)]
-pub struct Logger {
-    level: LogLevel,
+// Re-export log crate macros for easy access
+pub use log::{debug, error, info, trace, warn};
+
+/// Global logger instance using log crate
+pub struct FullereneLogger {
+    level: log::LevelFilter,
 }
 
-impl Logger {
+impl FullereneLogger {
     pub const fn new() -> Self {
         Self {
-            level: LogLevel::Info,
+            level: log::LevelFilter::Info,
+        }
+    }
+}
+
+impl log::Log for FullereneLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= self.level
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            use crate::serial;
+            serial::serial_log(format_args!("[{}] {}\n", record.level(), record.args()));
         }
     }
 
-    pub fn set_level(&mut self, level: LogLevel) {
-        self.level = level;
-    }
+    fn flush(&self) {}
+}
 
-    pub fn get_level(&self) -> LogLevel {
-        self.level
-    }
+// Store logger level
+static mut GLOBAL_LEVEL: log::LevelFilter = log::LevelFilter::Info;
+
+// Initialize global logger
+static LOGGER: FullereneLogger = FullereneLogger::new();
+
+pub fn init_global_logger() -> Result<(), log::SetLoggerError> {
+    log::set_logger(&LOGGER)?;
+    log::set_max_level(LOGGER.level);
+    Ok(())
+}
+
+/// Set global log level
+pub fn set_global_log_level(level: log::LevelFilter) {
+    log::set_max_level(level);
+}
+
+/// Get global log level
+pub fn get_global_log_level() -> log::LevelFilter {
+    LOGGER.level
 }
 
 /// Log levels for hierarchical logging control
@@ -67,6 +98,46 @@ pub enum SystemError {
     UnknownError = 23,
 }
 
+// Keep the old logging system for system error reporting with context
+// This provides compatibility with existing code that uses structured error logging
+
+impl FullereneLogger {
+    fn log_error(&self, error: &SystemError, context: &'static str) {
+        if log::Level::Error <= self.level {
+            use crate::serial;
+            serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context));
+        }
+    }
+
+    fn log_warning(&self, message: &'static str) {
+        if log::Level::Warn <= self.level {
+            use crate::serial;
+            serial::serial_log(format_args!("[WARNING] {}\n", message));
+        }
+    }
+
+    fn log_info(&self, message: &'static str) {
+        if log::Level::Info <= self.level {
+            use crate::serial;
+            serial::serial_log(format_args!("[INFO] {}\n", message));
+        }
+    }
+
+    fn log_debug(&self, message: &'static str) {
+        if log::Level::Debug <= self.level {
+            use crate::serial;
+            serial::serial_log(format_args!("[DEBUG] {}\n", message));
+        }
+    }
+
+    fn log_trace(&self, message: &'static str) {
+        if log::Level::Trace <= self.level {
+            use crate::serial;
+            serial::serial_log(format_args!("[TRACE] {}\n", message));
+        }
+    }
+}
+
 /// Logging trait for system errors with context
 pub trait ErrorLogging {
     fn log_error(&self, error: &SystemError, context: &'static str);
@@ -76,97 +147,29 @@ pub trait ErrorLogging {
     fn log_trace(&self, message: &'static str);
 }
 
-impl ErrorLogging for Logger {
+// Provide a compatibility layer that still allows structured error logging
+pub struct ErrorLogger;
+impl ErrorLogging for ErrorLogger {
     fn log_error(&self, error: &SystemError, context: &'static str) {
-        if self.level >= LogLevel::Error {
-            use crate::serial;
-            serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context));
-        }
+        log::error!("{}: {}", *error as u64, context);
     }
 
     fn log_warning(&self, message: &'static str) {
-        if self.level >= LogLevel::Warning {
-            use crate::serial;
-            serial::serial_log(format_args!("[WARNING] {}\n", message));
-        }
+        log::warn!("{}", message);
     }
 
     fn log_info(&self, message: &'static str) {
-        if self.level >= LogLevel::Info {
-            use crate::serial;
-            serial::serial_log(format_args!("[INFO] {}\n", message));
-        }
+        log::info!("{}", message);
     }
 
     fn log_debug(&self, message: &'static str) {
-        if self.level >= LogLevel::Debug {
-            use crate::serial;
-            serial::serial_log(format_args!("[DEBUG] {}\n", message));
-        }
+        log::debug!("{}", message);
     }
 
     fn log_trace(&self, message: &'static str) {
-        if self.level >= LogLevel::Trace {
-            use crate::serial;
-            serial::serial_log(format_args!("[TRACE] {}\n", message));
-        }
+        log::trace!("{}", message);
     }
 }
 
-static GLOBAL_LOGGER: spin::Mutex<Option<Logger>> = spin::Mutex::new(None);
-
-/// Initialize global logger
-pub fn init_global_logger() {
-    let mut logger = GLOBAL_LOGGER.lock();
-    *logger = Some(Logger::new());
-}
-
-/// Set global log level
-pub fn set_global_log_level(level: LogLevel) {
-    let mut logger = GLOBAL_LOGGER.lock();
-    if let Some(logger) = logger.as_mut() {
-        logger.set_level(level);
-    }
-}
-
-/// Get global log level
-pub fn get_global_log_level() -> LogLevel {
-    let logger = GLOBAL_LOGGER.lock();
-    logger.as_ref().map(|l| l.get_level()).unwrap_or(LogLevel::Info)
-}
-
-/// Global error logging functions
-pub fn log_error(error: &SystemError, context: &'static str) {
-    let logger = GLOBAL_LOGGER.lock();
-    if let Some(logger) = logger.as_ref() {
-        logger.log_error(error, context);
-    }
-}
-
-pub fn log_warning(message: &'static str) {
-    let logger = GLOBAL_LOGGER.lock();
-    if let Some(logger) = logger.as_ref() {
-        logger.log_warning(message);
-    }
-}
-
-pub fn log_info(message: &'static str) {
-    let logger = GLOBAL_LOGGER.lock();
-    if let Some(logger) = logger.as_ref() {
-        logger.log_info(message);
-    }
-}
-
-pub fn log_debug(message: &'static str) {
-    let logger = GLOBAL_LOGGER.lock();
-    if let Some(logger) = logger.as_ref() {
-        logger.log_debug(message);
-    }
-}
-
-pub fn log_trace(message: &'static str) {
-    let logger = GLOBAL_LOGGER.lock();
-    if let Some(logger) = logger.as_ref() {
-        logger.log_trace(message);
-    }
-}
+// Global instance for convenience
+pub static ERROR_LOGGER: ErrorLogger = ErrorLogger;

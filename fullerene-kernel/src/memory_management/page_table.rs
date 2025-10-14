@@ -133,7 +133,7 @@ impl PageTableHelper for PageTableManager {
                 .flush();
         }
 
-        logging::log_info("Mapped page successfully");
+        log::info!("Mapped page successfully");
         Ok(())
     }
 
@@ -142,7 +142,7 @@ impl PageTableHelper for PageTableManager {
             return Err(SystemError::InternalError);
         }
 
-        logging::log_info("Unmapping virtual address");
+        log::info!("Unmapping virtual address");
         Ok(())
     }
 
@@ -194,7 +194,7 @@ impl PageTableHelper for PageTableManager {
             return Err(SystemError::InternalError);
         }
 
-        logging::log_info("Setting page flags");
+        log::info!("Setting page flags");
         Ok(())
     }
 
@@ -212,7 +212,7 @@ impl PageTableHelper for PageTableManager {
         }
 
         // In a real implementation, this would flush the TLB
-        logging::log_info("Flushing TLB for address");
+        log::info!("Flushing TLB for address");
         Ok(())
     }
 
@@ -221,7 +221,7 @@ impl PageTableHelper for PageTableManager {
             return Err(SystemError::InternalError);
         }
 
-        logging::log_info("Flushing entire TLB");
+        log::info!("Flushing entire TLB");
         Ok(())
     }
 
@@ -261,7 +261,7 @@ impl PageTableHelper for PageTableManager {
         }
 
         self.current_page_table = table_addr;
-        logging::log_info("Switched page table");
+        log::info!("Switched page table");
         Ok(())
     }
 
@@ -288,22 +288,22 @@ impl Initializable for PageTableManager {
 // Implementation of ErrorLogging trait for PageTableManager
 impl ErrorLogging for PageTableManager {
     fn log_error(&self, error: &SystemError, context: &'static str) {
-        logging::log_error(error, context);
+        log::error!("SystemError({}): {}", (*error) as u32, context);
     }
 
     fn log_warning(&self, message: &'static str) {
-        logging::log_warning(message);
+        log::warn!("{}", message);
     }
 
     fn log_info(&self, message: &'static str) {
-        logging::log_info(message);
+        log::info!("{}", message);
     }
 
     fn log_debug(&self, message: &'static str) {
-        logging::log_debug(message);
+        log::debug!("{}", message);
     }
 
     fn log_trace(&self, message: &'static str) {
-        logging::log_trace(message);
+        log::trace!("{}", message);
     }
 }
