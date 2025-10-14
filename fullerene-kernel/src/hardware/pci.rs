@@ -150,9 +150,17 @@ impl PciConfigSpace {
                 petroleum::graphics::ports::HardwarePorts::PCI_CONFIG_ADDRESS,
                 address
             );
+            // Write to the correct byte position within the dword
+            let mut data_port = x86_64::instructions::port::Port::<u32>::new(
+                petroleum::graphics::ports::HardwarePorts::PCI_CONFIG_DATA
+            );
+            let current_dword = data_port.read();
+            let byte_offset = (offset & 3) as usize;
+            let mask = !(0xFFu32 << (byte_offset * 8));
+            let new_dword = (current_dword & mask) | ((value as u32) << (byte_offset * 8));
             petroleum::port_write!(
-                petroleum::graphics::ports::HardwarePorts::PCI_CONFIG_DATA + (offset & 3) as u16,
-                value
+                petroleum::graphics::ports::HardwarePorts::PCI_CONFIG_DATA,
+                new_dword
             );
         }
     }
@@ -300,7 +308,7 @@ impl PciDevice {
     /// Get base address register value
     pub fn get_bar(&self, bar_index: usize) -> u32 {
         if bar_index < 6 {
-            let offset = 0x10 + (bar_index * 4);
+            let offset = 0x10 + (bar_index << 2); // bar_index * 4 shifted left by 2
             PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset as u8)
         } else {
             0

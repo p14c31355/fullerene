@@ -4,13 +4,9 @@
 //! and creating processes to run them.
 
 use crate::{
-    memory_management::{is_user_address, map_user_page, ProcessPageTable},
+    memory_management::ProcessPageTable,
     process,
-};
-use super::{
-    SystemError,
-    PageTableHelper,
-    PageFlags,
+    PageFlags, PageTableHelper, SystemError,
 };
 use core::ptr;
 use x86_64::structures::paging::FrameAllocator;
@@ -134,7 +130,7 @@ pub fn load_program(
 fn load_segment(
     ph: &ProgramHeader,
     image_data: &[u8],
-    page_table: &mut crate::memory_management::ProcessPageTable,
+    page_table: &mut ProcessPageTable,
 ) -> Result<(), LoadError> {
     let file_offset = ph.offset as usize;
     let file_size = ph.file_size as usize;
@@ -167,9 +163,7 @@ fn load_segment(
     // Check that the virtual address range is not already mapped
     for page_idx in 0..num_pages {
         let page_vaddr = VirtAddr::new(vaddr + page_idx * 4096);
-        if PageTableHelper::translate_address(page_table, page_vaddr.as_u64() as usize)
-            .is_ok()
-        {
+        if (&*page_table).translate_address(page_vaddr.as_u64() as usize).is_ok() {
             return Err(LoadError::AddressAlreadyMapped);
         }
     }
@@ -212,7 +206,7 @@ fn load_segment(
     }
 
     impl Cr3SwitchGuard {
-        unsafe fn new(page_table: &crate::memory_management::ProcessPageTable) -> Self {
+        unsafe fn new(page_table: &ProcessPageTable) -> Self {
             let (original_cr3, original_cr3_flags) = x86_64::registers::control::Cr3::read();
             crate::memory_management::switch_to_page_table(page_table);
             Self {

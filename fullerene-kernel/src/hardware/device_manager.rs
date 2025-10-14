@@ -29,7 +29,6 @@ impl DeviceInfo {
 }
 
 /// Device information structure with device
-#[derive(Debug)]
 pub struct DeviceEntry {
     pub device: alloc::boxed::Box<dyn HardwareDevice + Send>,
     pub info: DeviceInfo,
@@ -51,7 +50,7 @@ impl DeviceManager {
     /// Register a hardware device
     pub fn register_device(
         &self,
-        mut device: alloc::boxed::Box<dyn HardwareDevice + Send>,
+        device: alloc::boxed::Box<dyn HardwareDevice + Send>,
     ) -> SystemResult<()> {
         let name = device.name();
 
@@ -64,9 +63,7 @@ impl DeviceManager {
 
         // Store device and its info
         let mut devices = self.devices.lock();
-        let mut info_lock = self.device_info.lock();
-        devices.insert(name, DeviceEntry { device, info: device_info.clone() });
-        info_lock.insert(name, device_info);
+        devices.insert(name, DeviceEntry { device, info: device_info });
 
         log_info!("Device registered successfully");
         Ok(())
@@ -74,16 +71,9 @@ impl DeviceManager {
 
     /// Enable a device by name
     pub fn enable_device(&self, name: &str) -> SystemResult<()> {
-        // Lock devices and device_info in a consistent order to avoid deadlocks
-        // Always lock devices first, then device_info
-        let mut devices_lock = self.devices.lock();
-        let mut info_lock = self.device_info.lock();
-
-        if let Some(device) = devices_lock.get_mut(name) {
-            device.enable()?;
-            if let Some(info) = info_lock.get_mut(name) {
-                info.enabled = true;
-            }
+        if let Some(device_entry) = self.devices.lock().get_mut(name) {
+            device_entry.device.enable()?;
+            device_entry.info.enabled = true;
             log_info!("Device enabled");
             Ok(())
         } else {
@@ -93,11 +83,9 @@ impl DeviceManager {
 
     /// Disable a device by name
     pub fn disable_device(&self, name: &str) -> SystemResult<()> {
-        if let Some(device) = self.devices.lock().get_mut(name) {
-            device.disable()?;
-            if let Some(info) = self.device_info.lock().get_mut(name) {
-                info.enabled = false;
-            }
+        if let Some(device_entry) = self.devices.lock().get_mut(name) {
+            device_entry.device.disable()?;
+            device_entry.info.enabled = false;
             log_info!("Device disabled");
             Ok(())
         } else {
@@ -107,8 +95,8 @@ impl DeviceManager {
 
     /// Reset a device by name
     pub fn reset_device(&self, name: &str) -> SystemResult<()> {
-        if let Some(device) = self.devices.lock().get_mut(name) {
-            device.reset()?;
+        if let Some(device_entry) = self.devices.lock().get_mut(name) {
+            device_entry.device.reset()?;
             log_info!("Device reset");
             Ok(())
         } else {
@@ -116,22 +104,12 @@ impl DeviceManager {
         }
     }
 
-    /// Get device information
-    pub fn get_device_info(&self, name: &str) -> Option<DeviceInfo> {
-        self.device_info.lock().get(name).cloned()
-    }
-
-    /// List all registered devices
-    pub fn list_devices(&self) -> Vec<DeviceInfo> {
-        self.device_info.lock().values().cloned().collect()
-    }
-
     /// Get a device by name for direct access using a closure
     pub fn with_device<F, R>(&self, name: &str, f: F) -> Option<R>
     where
         F: FnOnce(&(dyn HardwareDevice + Send)) -> R,
     {
-        self.devices.lock().get(name).map(|d| f(d.as_ref()))
+        self.devices.lock().get(name).map(|d| f(&*d.device))
     }
 
     /// Get a mutable reference to a device by name using a closure
@@ -139,7 +117,7 @@ impl DeviceManager {
     where
         F: FnOnce(&mut (dyn HardwareDevice + Send)) -> R,
     {
-        self.devices.lock().get_mut(name).map(|d| f(d.as_mut()))
+        self.devices.lock().get_mut(name).map(|d| f(&mut *d.device))
     }
 
     /// Initialize all registered devices in priority order

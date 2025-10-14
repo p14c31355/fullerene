@@ -107,14 +107,6 @@ impl From<crate::memory_management::AllocError> for SystemError {
     }
 }
 
-impl From<crate::memory_management::FreeError> for SystemError {
-    fn from(error: crate::memory_management::FreeError) -> Self {
-        match error {
-            crate::memory_management::FreeError::UnmappingFailed => SystemError::UnmappingFailed,
-        }
-    }
-}
-
 impl From<crate::loader::LoadError> for SystemError {
     fn from(error: crate::loader::LoadError) -> Self {
         match error {
@@ -563,22 +555,44 @@ impl GlobalLogger {
 impl ErrorLogging for GlobalLogger {
     fn log_error(&self, error: &SystemError, context: &'static str) {
         if self.level >= LogLevel::Error {
-            // A more robust formatting implementation would be ideal, but this provides basic visibility.
-            petroleum::serial::serial_log(format_args!("[ERROR] "));
-            petroleum::serial::serial_log(format_args!("{}", context));
-            petroleum::serial::serial_log(format_args!("\n"));
+            // Output error with code and context
+            match error {
+                SystemError::InvalidSyscall => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::BadFileDescriptor => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::PermissionDenied => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::FileNotFound => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::NoSuchProcess => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::InvalidArgument => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::SyscallOutOfMemory => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::FileExists => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::FsInvalidFileDescriptor => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::InvalidSeek => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::DiskFull => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::MappingFailed => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::UnmappingFailed => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::FrameAllocationFailed => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::MemOutOfMemory => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::InvalidFormat => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::LoadFailed => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::DeviceNotFound => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::DeviceError => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::PortError => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::NotImplemented => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::InternalError => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                SystemError::UnknownError => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+            }
         }
     }
 
     fn log_warning(&self, message: &'static str) {
         if self.level >= LogLevel::Warning {
-            // Simplified logging without format_args for now
+            petroleum::serial::serial_log(format_args!("[WARNING] {}\n", message));
         }
     }
 
     fn log_info(&self, message: &'static str) {
         if self.level >= LogLevel::Info {
-            // Simplified logging without format_args for now
+            petroleum::serial::serial_log(format_args!("[INFO] {}\n", message));
         }
     }
 }
@@ -592,8 +606,140 @@ pub fn init_global_logger() {
 
 // Set global log level
 pub fn set_global_log_level(level: LogLevel) {
-    if let Some(logger) = GLOBAL_LOGGER.lock().as_mut() {
-        logger.set_level(level);
+}
+
+#[macro_export]
+macro_rules! delegate_operation {
+    ($self:expr, $method:ident, $($arg:expr),*) => {
+        match $self {
+            _ => $self.$method($($arg),*),
+        }
+    };
+    ($self:expr, $method:ident) => {
+        match $self {
+            _ => $self.$method(),
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! buffered_write {
+    ($buffer:expr, $value:expr) => {
+        $buffer.write($value);
+    };
+    ($buffer:expr, $($values:expr),*) => {
+        $($buffer.write($values);)*
+    };
+}
+
+#[macro_export]
+macro_rules! generic_memory_operation {
+    ($self:expr, $operation:expr) => {
+        if !$self.is_initialized() {
+            return Err(SystemError::InternalError);
+        }
+        $operation
+    };
+}
+
+pub trait BufferOps<T> {
+    fn write_at(&mut self, index: usize, value: T);
+    fn read_at(&self, index: usize) -> Option<&T>;
+    fn clear_with(&mut self, value: T) where T: Clone;
+}
+
+impl<T: Clone> BufferOps<T> for [T] {
+    fn write_at(&mut self, index: usize, value: T) {
+        if index < self.len() {
+            self[index] = value;
+        }
+    }
+
+    fn read_at(&self, index: usize) -> Option<&T> {
+        self.get(index)
+    }
+
+    fn clear_with(&mut self, value: T) {
+        self.fill(value);
+    }
+}
+
+#[macro_export]
+macro_rules! resource_wrapper {
+    ($name:ident, $inner:ty, $($field:ident: $ftype:ty),*) => {
+        pub struct $name {
+            inner: $inner,
+            $($field: $ftype,)*
+            initialized: bool,
+        }
+
+        impl $name {
+            pub fn new(inner: $inner) -> Self {
+                Self {
+                    inner,
+                    $($field: Default::default(),)*
+                    initialized: false,
+                }
+            }
+
+            pub fn init(&mut self) -> SystemResult<()> {
+                self.initialized = true;
+                Ok(())
+            }
+
+            pub fn is_initialized(&self) -> bool {
+                self.initialized
+            }
+        }
+
+        impl core::ops::Deref for $name {
+            type Target = $inner;
+            fn deref(&self) -> &Self::Target {
+                &self.inner
+            }
+        }
+
+        impl core::ops::DerefMut for $name {
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                &mut self.inner
+            }
+        }
+    };
+}
+
+pub mod port_operations {
+    use x86_64::instructions::port::{Port, PortWrite};
+
+    pub trait PortWriter<T> {
+        fn write_sequence(&mut self, values: &[T]);
+    }
+
+    impl<T: Copy + PortWrite> PortWriter<T> for Port<T> {
+        fn write_sequence(&mut self, values: &[T]) {
+            for &value in values {
+                unsafe { self.write(value) };
+            }
+        }
+    }
+}
+
+pub mod memory_align {
+    pub const PAGE_SIZE: usize = 4096;
+
+    pub fn align_up(value: usize, alignment: usize) -> usize {
+        (value + alignment - 1) & !(alignment - 1)
+    }
+
+    pub fn align_down(value: usize, alignment: usize) -> usize {
+        value & !(alignment - 1)
+    }
+
+    pub fn page_align_up(value: usize) -> usize {
+        align_up(value, PAGE_SIZE)
+    }
+
+    pub fn page_align_down(value: usize) -> usize {
+        align_down(value, PAGE_SIZE)
     }
 }
 

@@ -12,7 +12,6 @@ mod graphics;
 mod heap;
 mod interrupts;
 mod vga;
-// Kernel modules
 mod context_switch; // Context switching
 mod fs; // Basic filesystem
 mod keyboard; // Keyboard input driver

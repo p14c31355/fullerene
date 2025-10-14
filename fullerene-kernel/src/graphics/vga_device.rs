@@ -1,4 +1,5 @@
 use petroleum::{Color, ColorCode, ScreenChar};
+
 use crate::{ErrorLogging, HardwareDevice, Initializable, SystemError, SystemResult, log_error, log_info, log_warning};
 
 // Constants to reduce magic numbers
