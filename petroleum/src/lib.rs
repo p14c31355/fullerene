@@ -27,7 +27,7 @@ pub use uefi_helpers::handle_panic;
 pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
     let fb_ptr = address as *mut T;
     let count = (stride * height) as usize;
-    unsafe { core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color) };
+    core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color);
 }
 
 /// Generic framebuffer buffer scroll up operation
