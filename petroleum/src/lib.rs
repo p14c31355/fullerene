@@ -346,7 +346,7 @@ pub fn init_gop_framebuffer_alternative(system_table: &EfiSystemTable) -> Option
     // QEMU often provides a linear framebuffer even when GOP is not properly detected
 
     // Try standard QEMU framebuffer addresses and configurations
-    let qemu_configs = [
+    const QEMU_CONFIGS: [QemuConfig; 5] = [
         // Standard QEMU std-vga framebuffer
         QemuConfig { address: 0xE0000000, width: 1024, height: 768, bpp: 32 }, // Common QEMU std-vga mode
         QemuConfig { address: 0xF0000000, width: 1024, height: 768, bpp: 32 }, // Alternative QEMU framebuffer
@@ -355,7 +355,7 @@ pub fn init_gop_framebuffer_alternative(system_table: &EfiSystemTable) -> Option
         QemuConfig { address: 0xF0000000, width: 800, height: 600, bpp: 32 },  // Alternative 800x600
     ];
 
-    for config in qemu_configs.iter() {
+    for config in QEMU_CONFIGS.iter() {
         let QemuConfig { address, width, height, bpp } = *config;
         serial::_print(format_args!(
             "GOP: Testing QEMU framebuffer at {:#x}, {}x{}, {} BPP\n",
