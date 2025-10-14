@@ -182,6 +182,15 @@ unsafe impl GlobalAlloc for Locked<Heap> {
 /// Heap size constant
 pub const HEAP_SIZE: usize = 100 * 1024; // 100 KiB
 
-/// Global heap allocator instance
+/// Global heap allocator instance (disabled to avoid conflicts with std allocator)
+#[cfg(feature = "no_std_global_allocator")]
 #[global_allocator]
+pub static ALLOCATOR: Locked<Heap> = Locked::new(Heap::empty());
+
+/// Alias for convenience in no_std mode
+#[cfg(feature = "no_std_global_allocator")]
+pub const GLOBAL_ALLOCATOR: Option<&Locked<Heap>> = Some(&ALLOCATOR);
+
+// Re-export ALLOCATOR for compatibility, conditionally
+#[cfg(not(feature = "no_std_global_allocator"))]
 pub static ALLOCATOR: Locked<Heap> = Locked::new(Heap::empty());

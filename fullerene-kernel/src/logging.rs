@@ -25,6 +25,18 @@ impl GlobalLogger {
     }
 }
 
+pub fn log_debug(message: &'static str) {
+    if let Some(logger) = GLOBAL_LOGGER.lock().as_ref() {
+        logger.log_debug(message);
+    }
+}
+
+pub fn log_trace(message: &'static str) {
+    if let Some(logger) = GLOBAL_LOGGER.lock().as_ref() {
+        logger.log_trace(message);
+    }
+}
+
 impl ErrorLogging for GlobalLogger {
     fn log_error(&self, error: &crate::errors::SystemError, context: &'static str) {
         if self.level >= LogLevel::Error {
@@ -69,6 +81,18 @@ impl ErrorLogging for GlobalLogger {
             petroleum::serial::serial_log(format_args!("[INFO] {}\n", message));
         }
     }
+
+    fn log_debug(&self, message: &'static str) {
+        if self.level >= LogLevel::Debug {
+            petroleum::serial::serial_log(format_args!("[DEBUG] {}\n", message));
+        }
+    }
+
+    fn log_trace(&self, message: &'static str) {
+        if self.level >= LogLevel::Trace {
+            petroleum::serial::serial_log(format_args!("[TRACE] {}\n", message));
+        }
+    }
 }
 
 static GLOBAL_LOGGER: Mutex<Option<GlobalLogger>> = Mutex::new(None);
@@ -80,6 +104,9 @@ pub fn init_global_logger() {
 
 // Set global log level
 pub fn set_global_log_level(level: LogLevel) {
+    if let Some(logger) = GLOBAL_LOGGER.lock().as_mut() {
+        logger.set_level(level);
+    }
 }
 
 // Get global log level

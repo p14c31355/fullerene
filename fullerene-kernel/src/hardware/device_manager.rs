@@ -58,7 +58,7 @@ impl DeviceManager {
         let device_info = DeviceInfo::new(
             device.device_name(),
             device.device_type(),
-            device.priority(),
+            50, // Default priority for hardware devices
         );
 
         // Store device and its info
@@ -126,7 +126,11 @@ impl DeviceManager {
         let mut device_list: Vec<_> = devices.values_mut().collect();
 
         // Sort by priority (higher priority first)
-        device_list.sort_by(|a, b| b.device.priority().cmp(&a.device.priority()));
+        device_list.sort_by(|a, b| {
+            let a_priority = <dyn HardwareDevice as traits::Initializable>::priority(&*a.device);
+            let b_priority = <dyn HardwareDevice as traits::Initializable>::priority(&*b.device);
+            b_priority.cmp(&a_priority)
+        });
 
         for device_entry in device_list {
             if let Err(e) = device_entry.device.init() {
@@ -201,6 +205,14 @@ impl ErrorLogging for DeviceManager {
     fn log_info(&self, message: &'static str) {
         log_info!(message);
     }
+
+    fn log_debug(&self, message: &'static str) {
+        log_debug!(message);
+    }
+
+    fn log_trace(&self, message: &'static str) {
+        log_trace!(message);
+    }
 }
 
 // Global device manager instance
@@ -265,12 +277,18 @@ mod tests {
         fn name(&self) -> &'static str {
             self.name
         }
+
+        fn priority(&self) -> i32 {
+            50 // Default priority for mock devices
+        }
     }
 
     impl ErrorLogging for MockDevice {
         fn log_error(&self, _error: &SystemError, _context: &'static str) {}
         fn log_warning(&self, _message: &'static str) {}
         fn log_info(&self, _message: &'static str) {}
+        fn log_debug(&self, _message: &'static str) {}
+        fn log_trace(&self, _message: &'static str) {}
     }
 
     impl HardwareDevice for MockDevice {
@@ -298,6 +316,10 @@ mod tests {
 
         fn is_enabled(&self) -> bool {
             self.enabled
+        }
+
+        fn priority(&self) -> i32 {
+            50 // Default priority for mock devices
         }
     }
 

@@ -37,6 +37,7 @@ pub mod context_switch; // Context switching
 pub mod fs; // Basic filesystem
 pub mod keyboard; // Keyboard input driver
 pub mod loader; // Program loader
+// Logging macros with #[macro_export] are available at crate root
 pub mod macros; // Logging and utility macros
 pub mod memory_management; // Virtual memory management
 pub mod process; // Process management
@@ -52,7 +53,7 @@ pub mod test_process;
 // Re-export key types and functions from submodules for convenience
 pub use errors::SystemError;
 pub use initializer::{initialize_system, register_system_component};
-pub use logging::{get_global_log_level, init_global_logger, log_error, log_info, log_warning};
+pub use logging::{get_global_log_level, init_global_logger, log_debug, log_error, log_info, log_trace, log_warning};
 pub use types::*;
 
 // Re-export commonly used types for convenience

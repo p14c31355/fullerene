@@ -31,22 +31,7 @@ extern crate alloc;
 
 use spin::Once;
 
-#[cfg(all(not(test), not(target_os = "uefi")))]
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    petroleum::handle_panic(info)
-}
-
-#[cfg(all(not(test), target_os = "uefi"))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    // For UEFI, just loop forever on panic
-    loop {
-        unsafe {
-            x86_64::instructions::hlt();
-        }
-    }
-}
+// Panic handlers removed to avoid conflicts with std::panic - handled by petroleum crate
 
 use petroleum::page_table::EfiMemoryDescriptor;
 

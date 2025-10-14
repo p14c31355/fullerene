@@ -50,11 +50,9 @@ macro_rules! log_info {
 /// ```
 #[macro_export]
 macro_rules! log_debug {
-    ($message:expr) => {
-        if $crate::get_global_log_level() >= $crate::LogLevel::Debug {
-            $crate::log_info($message)
-        }
-    };
+    ($message:expr) => {{
+        $crate::logging::log_debug($message)
+    }};
 }
 
 /// Log a trace message (only if trace level is enabled)
@@ -65,11 +63,9 @@ macro_rules! log_debug {
 /// ```
 #[macro_export]
 macro_rules! log_trace {
-    ($message:expr) => {
-        if $crate::get_global_log_level() >= $crate::LogLevel::Trace {
-            $crate::log_info($message)
-        }
-    };
+    ($message:expr) => {{
+        $crate::logging::log_trace($message)
+    }};
 }
 
 /// Initialize a component and log the result
