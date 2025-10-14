@@ -2,7 +2,7 @@
 //!
 //! This module defines the core types used throughout the Fullerene kernel system.
 
-use crate::*;
+use core::*;
 
 // Note: SystemError and SystemResult are re-exported at the crate root in lib.rs
 
