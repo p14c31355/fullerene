@@ -30,7 +30,7 @@ pub trait SyscallHandler {
 
 // Placeholder for logging-related traits that may need to be defined
 pub trait Logger {
-    fn log(&self, level: crate::LogLevel, message: &str);
+    fn log(&self, level: petroleum::common::logging::LogLevel, message: &str);
 }
 
 // Core system traits

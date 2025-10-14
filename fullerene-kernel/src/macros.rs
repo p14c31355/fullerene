@@ -13,7 +13,7 @@
 macro_rules! log_error {
     ($error:expr, $context:expr) => {{
         use petroleum::common::logging;
-        logging::log_error($error, $context)
+        crate::log_error_petroleum($error, $context)
     }};
 }
 
@@ -101,6 +101,15 @@ macro_rules! init_component {
 /// ```
 /// ensure!(ptr.is_some(), SystemError::InvalidArgument);
 /// ```
+#[macro_export]
+macro_rules! ensure {
+    ($condition:expr, $error:expr) => {
+        if !$condition {
+            $crate::log_error!($error, stringify!($condition));
+            return Err($error);
+        }
+    };
+}
 
 
 /// Ensure a condition is true with a custom error message
@@ -220,9 +229,6 @@ mod tests {
             option_to_result!(some_value, SystemError::FileNotFound),
             Ok(42)
         );
-        assert_eq!(
-            option_to_result!(none_value, SystemError::FileNotFound),
-            Err(SystemError::FileNotFound)
-        );
+        assert!(matches!(option_to_result!(none_value, SystemError::FileNotFound), Err(SystemError::FileNotFound)));
     }
 }

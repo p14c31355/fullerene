@@ -134,7 +134,7 @@ impl DeviceManager {
 
         for device_entry in device_list {
             if let Err(e) = device_entry.device.init() {
-                log_error!(e, "Failed to initialize device");
+                log_error!(&e, "Failed to initialize device");
                 return Err(e);
             }
         }

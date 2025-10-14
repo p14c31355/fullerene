@@ -682,8 +682,16 @@ impl ErrorLogging for UnifiedMemoryManager {
 impl UnifiedMemoryManager {
     fn find_free_virtual_address(&self, size: usize) -> SystemResult<usize> {
         // TODO: Implement a proper kernel virtual address space allocator.
-        // For now, using a corrected base address.
-        Ok(0xFFFF_8000_0000_0000 + size) // Start from the beginning of kernel space
+        // For now, using a simple bump allocator starting from kernel space base
+
+        // Use a static counter as a simple bump allocator
+        static mut KERNEL_VIRTUAL_BUMP: usize = 0xFFFF_8000_0000_0000;
+
+        unsafe {
+            let addr = KERNEL_VIRTUAL_BUMP;
+            KERNEL_VIRTUAL_BUMP += size;
+            Ok(addr)
+        }
     }
 
     /// Copy data from user space to kernel space

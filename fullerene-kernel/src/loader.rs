@@ -103,7 +103,7 @@ pub fn load_program(
     // let process_page_table = &mut process.page_table.as_mut().unwrap();
 
     // Get the process's page table
-    let mut process_list_locked = process::PROCESS_LIST.lock();
+    let process_list_locked = process::PROCESS_LIST.lock();
     let process = process_list_locked
         .iter()
         .find(|p| p.id == pid)
@@ -183,8 +183,15 @@ fn load_segment(
             .ok_or(LoadError::OutOfMemory)?;
 
         // Map the virtual page to the physical frame
-        // Use user_data flags for user-space programs
-        let flags = PageFlags::user_data();
+        use x86_64::structures::paging::PageTableFlags as X86Flags;
+        let mut page_flags = X86Flags::PRESENT | X86Flags::USER_ACCESSIBLE;
+        if ph.flags & PF_W != 0 {
+            page_flags |= X86Flags::WRITABLE;
+        }
+        if ph.flags & PF_X == 0 {
+            page_flags |= X86Flags::NO_EXECUTE;
+        }
+        let flags = PageFlags::new(page_flags.bits());
 
         map_user_page(
             page_vaddr.as_u64() as usize,

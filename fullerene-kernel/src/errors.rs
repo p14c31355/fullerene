@@ -16,7 +16,6 @@ pub enum SystemError {
 
     // File system errors
     FileExists = 17,
-    FsInvalidFileDescriptor = 25,
     InvalidSeek = 29,
     DiskFull = 28,
 
@@ -68,7 +67,7 @@ impl From<crate::fs::FsError> for SystemError {
             crate::fs::FsError::FileNotFound => SystemError::FileNotFound,
             crate::fs::FsError::FileExists => SystemError::FileExists,
             crate::fs::FsError::PermissionDenied => SystemError::PermissionDenied,
-            crate::fs::FsError::InvalidFileDescriptor => SystemError::FsInvalidFileDescriptor,
+            crate::fs::FsError::InvalidFileDescriptor => SystemError::BadFileDescriptor,
             crate::fs::FsError::InvalidSeek => SystemError::InvalidSeek,
             crate::fs::FsError::DiskFull => SystemError::DiskFull,
         }

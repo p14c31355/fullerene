@@ -56,8 +56,40 @@ pub mod test_process;
 pub use initializer::{initialize_system, register_system_component};
 pub use types::PageFlags;
 
+/// Helper function to log errors using petroleum's logging system
+pub fn log_error_petroleum(error: &SystemError, context: &'static str) {
+    // Convert our SystemError to petroleum's SystemError for logging
+    let petroleum_error = match error {
+        SystemError::InvalidSyscall => petroleum::common::logging::SystemError::InvalidSyscall,
+        SystemError::BadFileDescriptor => petroleum::common::logging::SystemError::BadFileDescriptor,
+        SystemError::PermissionDenied => petroleum::common::logging::SystemError::PermissionDenied,
+        SystemError::FileNotFound => petroleum::common::logging::SystemError::FileNotFound,
+        SystemError::NoSuchProcess => petroleum::common::logging::SystemError::NoSuchProcess,
+        SystemError::InvalidArgument => petroleum::common::logging::SystemError::InvalidArgument,
+        SystemError::SyscallOutOfMemory => petroleum::common::logging::SystemError::SyscallOutOfMemory,
+        SystemError::FileExists => petroleum::common::logging::SystemError::FileExists,
+        SystemError::BadFileDescriptor => petroleum::common::logging::SystemError::FsInvalidFileDescriptor,
+        SystemError::InvalidSeek => petroleum::common::logging::SystemError::InvalidSeek,
+        SystemError::DiskFull => petroleum::common::logging::SystemError::DiskFull,
+        SystemError::MappingFailed => petroleum::common::logging::SystemError::MappingFailed,
+        SystemError::UnmappingFailed => petroleum::common::logging::SystemError::UnmappingFailed,
+        SystemError::FrameAllocationFailed => petroleum::common::logging::SystemError::FrameAllocationFailed,
+        SystemError::MemOutOfMemory => petroleum::common::logging::SystemError::MemOutOfMemory,
+        SystemError::InvalidFormat => petroleum::common::logging::SystemError::InvalidFormat,
+        SystemError::LoadFailed => petroleum::common::logging::SystemError::LoadFailed,
+        SystemError::DeviceNotFound => petroleum::common::logging::SystemError::DeviceNotFound,
+        SystemError::DeviceError => petroleum::common::logging::SystemError::DeviceError,
+        SystemError::PortError => petroleum::common::logging::SystemError::PortError,
+        SystemError::NotImplemented => petroleum::common::logging::SystemError::NotImplemented,
+        SystemError::NotSupported => petroleum::common::logging::SystemError::NotSupported,
+        SystemError::InternalError => petroleum::common::logging::SystemError::InternalError,
+        SystemError::UnknownError => petroleum::common::logging::SystemError::UnknownError,
+    };
+    petroleum::common::logging::log_error(&petroleum_error, context);
+}
+
 // Re-export consolidated logging system from petroleum
-pub use petroleum::common::logging::*;
+pub use petroleum::common::logging::{log_info, log_warning, log_debug, log_trace, SystemError as PetroleumSystemError};
 
 // Re-export from errors module to avoid conflicts
 pub use errors::{SystemError, SystemResult};

@@ -6,12 +6,27 @@
 use super::*;
 
 // Import logging functions from crate namespace
-use crate::{log_error, log_warning, log_info, log_debug, log_trace};
+use petroleum::common::logging as logging;
 
 // Import needed types
 use alloc::collections::BTreeMap;
 use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
 use x86_64::{VirtAddr, PhysAddr, structures::paging::{PageTable, Page, PhysFrame, Mapper, FrameAllocator, Size4KiB, PageTableFlags as Flags, OffsetPageTable}};
+
+/// A dummy frame allocator for when we need to allocate pages for page tables
+pub struct DummyFrameAllocator {}
+
+impl DummyFrameAllocator {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+unsafe impl FrameAllocator<Size4KiB> for DummyFrameAllocator {
+    fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        None // For now, we don't support allocating new frames for page tables
+    }
+}
 
 /// Convert PageFlags to x86_64 PageTableFlags
 fn convert_to_x86_64_flags(flags: crate::PageFlags) -> Flags {
@@ -102,19 +117,21 @@ impl PageTableHelper for PageTableManager {
         // Get the active page table from CPU
         unsafe {
             let (current_level_4_table_frame, _) = x86_64::registers::control::Cr3::read();
+            let current_table_phys = current_level_4_table_frame.start_address().as_u64() as *mut x86_64::structures::paging::PageTable;
+
+            // Create mapper with physical memory offset
             let mut mapper = x86_64::structures::paging::OffsetPageTable::new(
-                &mut *self.get_current_page_table().unwrap(),
+                &mut *current_table_phys,
                 x86_64::VirtAddr::new(get_physical_memory_offset() as u64),
             );
 
-            // In current implementation, mapping doesn't require allocation
-            // We'll modify the page table directly if needed
-            // For now, just return success
-
-
+            // Map the page, creating intermediate tables if needed
+            mapper.map_to(page, frame, page_flags, &mut DummyFrameAllocator::new())
+                .map_err(|_| SystemError::MappingFailed)?
+                .flush();
         }
 
-        log_info!("Mapped page successfully");
+        logging::log_info("Mapped page successfully");
         Ok(())
     }
 
@@ -215,7 +232,7 @@ impl PageTableHelper for PageTableManager {
         }
 
         self.current_page_table = table_addr;
-        log_info("Switched page table");
+        log_info!("Switched page table");
         Ok(())
     }
 
