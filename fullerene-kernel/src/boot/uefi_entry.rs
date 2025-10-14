@@ -12,6 +12,7 @@ use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
 use petroleum::debug_log;
+use petroleum::graphics::{VGA_MODE13H_ADDRESS, VGA_MODE13H_WIDTH, VGA_MODE13H_HEIGHT, VGA_MODE13H_BPP, VGA_MODE13H_STRIDE};
 use petroleum::write_serial_bytes;
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -394,13 +395,7 @@ pub fn try_initialize_cirrus_graphics_mode() -> bool {
 
     // For UEFI target, we need to initialize VGA framebuffer in UEFI context
     // Create VGA framebuffer configuration for UEFI
-    // It's recommended to define these in a shared constants module, e.g., in `petroleum`.
-    const VGA_MODE13H_ADDRESS: u64 = 0xA0000;
-    const VGA_MODE13H_WIDTH: u32 = 320;
-    const VGA_MODE13H_HEIGHT: u32 = 200;
-    const VGA_MODE13H_BPP: u32 = 8;
-    const VGA_MODE13H_STRIDE: u32 = 320;
-
+    // VGA mode 13h constants are now defined in petroleum::graphics
     let uefi_vga_config = FullereneFramebufferConfig {
         address: VGA_MODE13H_ADDRESS, // Standard VGA framebuffer address
         width: VGA_MODE13H_WIDTH,

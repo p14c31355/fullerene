@@ -1,9 +1,13 @@
 pub mod color;
+pub mod constants;
 #[macro_use]
 pub mod ports;
 pub mod registers;
 pub mod setup;
 pub mod text;
+
+// VGA constants
+pub use constants::*;
 
 // Re-exports for public API
 pub use color::*;
