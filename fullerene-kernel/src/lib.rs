@@ -862,8 +862,7 @@ pub use hardware::{
     ports::HardwarePorts,
 };
 pub use memory_management::{
-    AllocError, BitmapFrameAllocator, FreeError, MapError, PageTableManager,
-    ProcessMemoryManagerImpl, ProcessPageTable, UnifiedMemoryManager, convenience,
+    AllocError, MapError,
 };
 // Re-export critical types from memory_management module for internal use
 pub use memory_management::{get_memory_manager, init_memory_manager};
