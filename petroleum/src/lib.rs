@@ -337,7 +337,7 @@ pub struct QemuConfig {
     pub bpp: u32,
 }
 
-pub fn init_gop_framebuffer_alternative(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
+fn init_gop_framebuffer_alternative(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
     const MAX_FRAMEBUFFER_SIZE: u64 = 0x10000000; // 256MB limit - named constant
 
     serial::_print(format_args!("GOP: Trying alternative detection methods for QEMU...\n"));
