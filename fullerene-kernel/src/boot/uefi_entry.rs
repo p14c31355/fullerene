@@ -11,15 +11,10 @@ use alloc::boxed::Box;
 use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
-<<<<<<< HEAD
 use petroleum::{debug_log, write_serial_bytes};
 use x86_64::PhysAddr;
-=======
-use petroleum::debug_log;
+
 use petroleum::graphics::{VGA_MODE13H_ADDRESS, VGA_MODE13H_WIDTH, VGA_MODE13H_HEIGHT, VGA_MODE13H_BPP, VGA_MODE13H_STRIDE};
-use petroleum::write_serial_bytes;
-use x86_64::{PhysAddr, VirtAddr};
->>>>>>> ab521d1cea0da591ecedcc6cc828ef32fbdfcb53
 
 /// Helper function to write a string to VGA buffer at specified row
 pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
@@ -396,11 +391,8 @@ pub fn try_initialize_cirrus_graphics_mode() -> bool {
     // Set up VGA mode 13h (320x200, 256 colors) for graphics
     petroleum::graphics::setup_cirrus_vga_mode();
 
-<<<<<<< HEAD
     // VGA framebuffer configuration is handled by uefi_vga_config below
 
-=======
->>>>>>> ab521d1cea0da591ecedcc6cc828ef32fbdfcb53
     kernel_log!("Initializing VGA framebuffer writer...");
 
     // For UEFI target, we need to initialize VGA framebuffer in UEFI context

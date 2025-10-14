@@ -25,11 +25,9 @@ use petroleum::common::{
     FullereneFramebufferConfig,
 };
 
-#[cfg(not(test))]
-#[cfg(target_os = "uefi")]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-petroleum::common_panic!(_info);
+    petroleum::common_panic!(_info);
 }
 
 /// Main entry point of the bootloader.
@@ -240,32 +238,6 @@ fn install_vga_framebuffer_config(st: &EfiSystemTable) {
     let bs = unsafe { &*st.boot_services };
     #[cfg(debug_assertions)]
     petroleum::serial::_print(format_args!("VGA: Got boot services\n"));
-
-    let status = unsafe {
-        #[cfg(debug_assertions)]
-        petroleum::serial::_print(format_args!(
-            "VGA: About to call install_configuration_table\n"
-        ));
-        #[cfg(debug_assertions)]
-        petroleum::serial::_print(format_args!(
-            "VGA: GUID: {:x?}\n",
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID
-        ));
-        #[cfg(debug_assertions)]
-        petroleum::serial::_print(format_args!("VGA: Config ptr: {:p}\n", config_ptr));
-        let result = (bs.install_configuration_table)(
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
-            config_ptr as *const _ as *mut c_void,
-        );
-        #[cfg(debug_assertions)]
-        petroleum::serial::_print(format_args!(
-            "VGA: install_configuration_table returned {:#x}\n",
-            result
-        ));
-        result
-    let config_ptr = Box::leak(Box::new(config));
-
-    let bs = unsafe { &*st.boot_services };
 
     let status = unsafe {
         (bs.install_configuration_table)(
