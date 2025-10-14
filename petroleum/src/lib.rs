@@ -329,7 +329,17 @@ pub fn init_uga_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
 }
 
 /// Alternative GOP detection for QEMU environments
+#[derive(Clone, Copy)]
+pub struct QemuConfig {
+    pub address: u64,
+    pub width: u32,
+    pub height: u32,
+    pub bpp: u32,
+}
+
 pub fn init_gop_framebuffer_alternative(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
+    const MAX_FRAMEBUFFER_SIZE: u64 = 0x10000000; // 256MB limit - named constant
+
     serial::_print(format_args!("GOP: Trying alternative detection methods for QEMU...\n"));
 
     // Try to detect QEMU-specific framebuffer configurations
@@ -338,40 +348,35 @@ pub fn init_gop_framebuffer_alternative(system_table: &EfiSystemTable) -> Option
     // Try standard QEMU framebuffer addresses and configurations
     let qemu_configs = [
         // Standard QEMU std-vga framebuffer
-        (0xE0000000u64, 1024u32, 768u32, 32u32), // Common QEMU std-vga mode
-        (0xF0000000u64, 1024u32, 768u32, 32u32), // Alternative QEMU framebuffer
-        (0xFD000000u64, 1024u32, 768u32, 32u32), // High memory framebuffer
-        (0xE0000000u64, 800u32, 600u32, 32u32),  // 800x600 mode
-        (0xF0000000u64, 800u32, 600u32, 32u32),  // Alternative 800x600
+        QemuConfig { address: 0xE0000000, width: 1024, height: 768, bpp: 32 }, // Common QEMU std-vga mode
+        QemuConfig { address: 0xF0000000, width: 1024, height: 768, bpp: 32 }, // Alternative QEMU framebuffer
+        QemuConfig { address: 0xFD000000, width: 1024, height: 768, bpp: 32 }, // High memory framebuffer
+        QemuConfig { address: 0xE0000000, width: 800, height: 600, bpp: 32 },  // 800x600 mode
+        QemuConfig { address: 0xF0000000, width: 800, height: 600, bpp: 32 },  // Alternative 800x600
     ];
 
-    for (address, width, height, bpp) in qemu_configs.iter() {
+    for config in qemu_configs.iter() {
+        let QemuConfig { address, width, height, bpp } = *config;
         serial::_print(format_args!(
             "GOP: Testing QEMU framebuffer at {:#x}, {}x{}, {} BPP\n",
             address, width, height, bpp
         ));
 
         // Check if framebuffer memory is accessible (basic validation)
-        let framebuffer_size = (*height as u64) * (*width as u64) * (*bpp as u64 / 8);
+        let framebuffer_size = (height as u64) * (width as u64) * (bpp as u64 / 8);
 
-        if *address == 0 || framebuffer_size > 0x10000000 { // 256MB limit
-            continue;
-        }
-
-        // Try to validate framebuffer access by checking if we can write to it
-        let test_ptr = *address as *mut u32;
-        if test_ptr.is_null() {
+        if address == 0 || framebuffer_size > MAX_FRAMEBUFFER_SIZE {
             continue;
         }
 
         // Create framebuffer configuration for QEMU
         let config = FullereneFramebufferConfig {
-            address: *address,
-            width: *width,
-            height: *height,
+            address,
+            width,
+            height,
             pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-            bpp: *bpp,
-            stride: *width, // Assume stride equals width for QEMU
+            bpp,
+            stride: width, // Assume stride equals width for QEMU
         };
 
         serial::_print(format_args!(

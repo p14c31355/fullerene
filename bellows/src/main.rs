@@ -200,7 +200,6 @@ fn try_uga_protocol(st: &EfiSystemTable) -> bool {
 /// Provides a fallback framebuffer configuration that the kernel can use.
 fn install_vga_framebuffer_config(st: &EfiSystemTable) {
     petroleum::println!("Installing VGA framebuffer config table for UEFI...");
-    petroleum::serial::_print(format_args!("VGA: About to create config...\n"));
 
     // Create an improved VGA-compatible framebuffer config
     // Use higher resolution VGA modes for better compatibility and to prevent logo scattering
@@ -213,49 +212,25 @@ fn install_vga_framebuffer_config(st: &EfiSystemTable) {
         stride: 800,      // Match width for VGA modes
     };
 
-    petroleum::serial::_print(format_args!(
-        "VGA: Created config - address: {:#x}, width: {}, height: {}, bpp: {}\n",
-        config.address, config.width, config.height, config.bpp
-    ));
-
     let config_ptr = Box::leak(Box::new(config));
 
-    petroleum::serial::_print(format_args!("VGA: Config boxed and leaked\n"));
-
     let bs = unsafe { &*st.boot_services };
-    petroleum::serial::_print(format_args!("VGA: Got boot services\n"));
 
     let status = unsafe {
-        petroleum::serial::_print(format_args!("VGA: About to call install_configuration_table\n"));
-        petroleum::serial::_print(format_args!("VGA: GUID: {:x?}\n", FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID));
-        petroleum::serial::_print(format_args!("VGA: Config ptr: {:p}\n", config_ptr));
-        let result = (bs.install_configuration_table)(
+        (bs.install_configuration_table)(
             FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
             config_ptr as *const _ as *mut c_void,
-        );
-        petroleum::serial::_print(format_args!("VGA: install_configuration_table returned {:#x}\n", result));
-        result
+        )
     };
-
-    petroleum::serial::_print(format_args!("VGA: Checking status...\n"));
 
     if EfiStatus::from(status) == EfiStatus::Success {
         petroleum::println!("VGA framebuffer config table installed successfully.");
-        petroleum::serial::_print(format_args!(
-            "VGA: Framebuffer config table installed successfully at {:#x}, {}x{}, {} BPP.\n",
-            config.address, config.width, config.height, config.bpp
-        ));
     } else {
-        petroleum::serial::_print(format_args!("VGA: Installation failed, recovering memory\n"));
         let _ = unsafe { Box::from_raw(config_ptr) };
         petroleum::println!(
             "Failed to install VGA framebuffer config table (status: {:#x})",
             status
         );
-        petroleum::serial::_print(format_args!(
-            "VGA: Failed to install config table, status: {:#x}.\n",
-            status
-        ));
     }
 }
 
