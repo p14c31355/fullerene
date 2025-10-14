@@ -8,7 +8,7 @@ use core::*;
 pub use x86_64::structures::paging::PageTableFlags as PageFlags;
 
 // Re-export traits
-pub use crate::traits::*;
+pub use fullerene_kernel::traits::*;
 
 // Re-export memory management types - only public ones
 pub use crate::memory_management::{

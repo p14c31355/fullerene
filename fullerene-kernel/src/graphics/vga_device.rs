@@ -1,7 +1,7 @@
 use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations};
 use petroleum::common::logging::{SystemError, SystemResult};
 
-use crate::traits::{HardwareDevice, Initializable, ErrorLogging};
+use fullerene_kernel::traits::{HardwareDevice, Initializable, ErrorLogging};
 
 // Constants to reduce magic numbers
 const VGA_WIDTH: usize = 80;

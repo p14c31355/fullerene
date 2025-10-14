@@ -9,7 +9,7 @@ use spin::Mutex;
 
 use static_assertions::assert_eq_size;
 
-use crate::traits::{
+use fullerene_kernel::traits::{
     ErrorLogging,
     FrameAllocator,
     Initializable,
@@ -17,8 +17,8 @@ use crate::traits::{
     PageTableHelper,
     ProcessMemoryManager,
 };
-use crate::PageFlags;
-use crate::{
+use fullerene_kernel::PageFlags;
+use fullerene_kernel::{
     SystemError,
     SystemResult,
 };
