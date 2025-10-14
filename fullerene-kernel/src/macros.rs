@@ -106,7 +106,7 @@ macro_rules! ensure {
     ($condition:expr, $error:expr) => {
         if !$condition {
             $crate::log_error!($error, stringify!($condition));
-            return Err($error);
+            return Err(*$error);
         }
     };
 }
@@ -123,7 +123,7 @@ macro_rules! ensure_with_msg {
     ($condition:expr, $error:expr, $msg:expr) => {
         if !$condition {
             $crate::log_error!($error, $msg);
-            return Err($error);
+            return Err(*$error);
         }
     };
 }
@@ -141,7 +141,7 @@ macro_rules! option_to_result {
             Some(value) => Ok(value),
             None => {
                 $crate::log_error!($error, "Option was None");
-                Err($error)
+                Err(*$error)
             }
         }
     };
@@ -209,14 +209,14 @@ mod tests {
     fn test_utility_macros() {
         // Test ensure macro
         let result: SystemResult<()> = (|| {
-            ensure!(true, SystemError::InvalidArgument);
+            ensure!(true, &SystemError::InvalidArgument);
             Ok(())
         })();
         assert!(result.is_ok());
 
         // Test ensure_with_msg macro
         let result: SystemResult<()> = (|| {
-            ensure_with_msg!(false, SystemError::InvalidArgument, "Test message");
+            ensure_with_msg!(false, &SystemError::InvalidArgument, "Test message");
             Ok(())
         })();
         assert!(result.is_err());
