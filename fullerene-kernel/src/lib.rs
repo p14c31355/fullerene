@@ -41,7 +41,7 @@ pub mod context_switch; // Context switching
 pub mod fs; // Basic filesystem
 pub mod keyboard; // Keyboard input driver
 pub mod loader; // Program loader
-// Logging macros with #[macro_export] are available at crate root
+// Let petroleum provide its logging macros
 #[macro_use]
 extern crate petroleum;
 

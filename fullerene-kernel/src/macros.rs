@@ -1,77 +1,7 @@
 //! Logging and utility macros for the Fullerene kernel
 //!
-//! This module provides convenient macros for logging and error handling
+//! This module provides convenient macros for error handling and logging
 //! throughout the kernel.
-
-/// Log an error message with context
-///
-/// # Examples
-/// ```
-/// log_error!(SystemError::InvalidArgument, "Failed to process syscall");
-/// ```
-#[macro_export]
-macro_rules! log_error {
-    ($error:expr, $context:expr) => {{
-        use petroleum::common::logging;
-        logging::log_error($error, $context)
-    }};
-}
-
-/// Log a warning message
-///
-/// # Examples
-/// ```
-/// log_warning!("This is a warning message");
-/// ```
-#[macro_export]
-macro_rules! log_warning {
-    ($message:expr) => {{
-        use petroleum::common::logging;
-        logging::log_warning($message)
-    }};
-}
-
-/// Log an info message
-///
-/// # Examples
-/// ```
-/// log_info!("System initialized successfully");
-/// ```
-#[macro_export]
-macro_rules! log_info {
-    ($message:expr) => {{
-        use petroleum::common::logging;
-        logging::log_info($message)
-    }};
-}
-
-/// Log a debug message (only if debug level is enabled)
-///
-/// # Examples
-/// ```
-/// log_debug!("Debug value: {}", some_value);
-/// ```
-#[macro_export]
-macro_rules! log_debug {
-    ($message:expr) => {{
-        use petroleum::common::logging;
-        logging::log_debug($message)
-    }};
-}
-
-/// Log a trace message (only if trace level is enabled)
-///
-/// # Examples
-/// ```
-/// log_trace!("Detailed trace information");
-/// ```
-#[macro_export]
-macro_rules! log_trace {
-    ($message:expr) => {{
-        use petroleum::common::logging;
-        logging::log_trace($message)
-    }};
-}
 
 /// Initialize a component and log the result
 ///
@@ -111,7 +41,6 @@ macro_rules! ensure {
         }
     };
 }
-
 
 /// Ensure a condition is true with a custom error message
 ///

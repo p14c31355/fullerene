@@ -22,7 +22,7 @@ macro_rules! lock_and_read {
 #[macro_export]
 macro_rules! log_error {
     ($error:expr, $context:expr) => {
-        $crate::common::logging::log_error(&$error, $context)
+        $crate::common::logging::log_error($error, $context)
     };
 }
 
@@ -53,6 +53,8 @@ macro_rules! log_trace {
         $crate::common::logging::log_trace($message)
     };
 }
+
+
 
 /// Macro for kernel-specific logging
 #[macro_export]

@@ -14,6 +14,8 @@ pub struct ProcessMemoryManagerImpl {
     allocations: BTreeMap<usize, usize>, // address -> size mapping
 }
 
+use crate::*;
+
 impl ProcessMemoryManagerImpl {
     /// Create a new process memory manager
     pub fn new(process_id: usize) -> Self {
@@ -87,7 +89,7 @@ impl ProcessMemoryManagerImpl {
     /// Cleanup process memory
     pub fn cleanup(&mut self) -> SystemResult<()> {
         self.allocations.clear();
-        crate::log_info!("Process memory cleaned up");
+        log_info!("Process memory cleaned up");
         Ok(())
     }
 }

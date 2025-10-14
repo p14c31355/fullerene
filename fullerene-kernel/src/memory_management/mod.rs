@@ -183,7 +183,7 @@ impl UnifiedMemoryManager {
         self.create_address_space(0)?;
 
         self.initialized = true;
-        crate::log_info!("Unified memory manager initialized");
+        log_info!("Unified memory manager initialized");
         Ok(())
     }
 
@@ -314,7 +314,7 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
         let process_manager = ProcessMemoryManagerImpl::new(process_id);
         self.process_managers.insert(process_id, process_manager);
 
-        crate::log_info!("Created address space for process");
+        log_info!("Created address space for process");
         Ok(())
     }
 
@@ -327,7 +327,7 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
             self.current_process = process_id;
             self.page_table_manager
                 .switch_page_table(process_manager.page_table_root())?;
-            crate::log_info!("Switched to process address space");
+            log_info!("Switched to process address space");
             Ok(())
         } else {
             Err(SystemError::NoSuchProcess)
@@ -341,7 +341,7 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
 
         if let Some(mut process_manager) = self.process_managers.remove(&process_id) {
             process_manager.cleanup()?;
-            crate::log_info!("Destroyed address space for process");
+            log_info!("Destroyed address space for process");
             Ok(())
         } else {
             Err(SystemError::NoSuchProcess)
@@ -623,23 +623,23 @@ impl Initializable for UnifiedMemoryManager {
 // Implementation of ErrorLogging trait
 impl ErrorLogging for UnifiedMemoryManager {
     fn log_error(&self, error: &SystemError, context: &'static str) {
-        crate::log_error!(error, context);
+        log_error!(error, context);
     }
 
     fn log_warning(&self, message: &'static str) {
-        crate::log_warning!(message);
+        log_warning!(message);
     }
 
     fn log_info(&self, message: &'static str) {
-        crate::log_info!(message);
+        log_info!(message);
     }
 
     fn log_debug(&self, message: &'static str) {
-        crate::log_debug!(message);
+        log_debug!(message);
     }
 
     fn log_trace(&self, message: &'static str) {
-        crate::log_trace!(message);
+        log_trace!(message);
     }
 }
 
@@ -740,7 +740,7 @@ pub const PHYSICAL_MEMORY_OFFSET_BASE: usize = 0xFFFF_8000_0000_0000;
 pub fn switch_to_page_table(page_table: &ProcessPageTable) -> SystemResult<()> {
     // In a real implementation, this would switch the CR3 register
     // For now, just log the operation
-    crate::log_info!("Switching to page table");
+    log_info!("Switching to page table");
     Ok(())
 }
 
@@ -764,7 +764,7 @@ pub fn deallocate_process_page_table(pml4_frame: x86_64::structures::paging::Phy
         // Free the frame containing the page table
         let _ = manager.free_frame(frame_addr);
 
-        crate::log_info!("Deallocated process page table");
+        log_info!("Deallocated process page table");
     }
 }
 
@@ -777,7 +777,7 @@ pub fn init_memory_manager(
     memory_manager.init(memory_map)?;
     *manager = Some(memory_manager);
 
-    crate::log_info!("Global memory manager initialized");
+    log_info!("Global memory manager initialized");
     Ok(())
 }
 
