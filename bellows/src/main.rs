@@ -263,16 +263,19 @@ fn install_vga_framebuffer_config(st: &EfiSystemTable) {
             result
         ));
         result
-    };
+    let config_ptr = Box::leak(Box::new(config));
 
-    petroleum::serial::_print(format_args!("VGA: Checking status...\n"));
+    let bs = unsafe { &*st.boot_services };
+
+    let status = unsafe {
+        (bs.install_configuration_table)(
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
+            config_ptr as *const _ as *mut c_void,
+        )
+    };
 
     if EfiStatus::from(status) == EfiStatus::Success {
         petroleum::println!("VGA framebuffer config table installed successfully.");
-        petroleum::serial::_print(format_args!(
-            "VGA: Framebuffer config table installed successfully at {:#x}, {}x{}, {} BPP.\n",
-            config.address, config.width, config.height, config.bpp
-        ));
     } else {
         petroleum::serial::_print(format_args!(
             "VGA: Installation failed, recovering memory\n"
@@ -282,10 +285,6 @@ fn install_vga_framebuffer_config(st: &EfiSystemTable) {
             "Failed to install VGA framebuffer config table (status: {:#x})",
             status
         );
-        petroleum::serial::_print(format_args!(
-            "VGA: Failed to install config table, status: {:#x}.\n",
-            status
-        ));
     }
 }
 

@@ -11,8 +11,15 @@ use alloc::boxed::Box;
 use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
+<<<<<<< HEAD
 use petroleum::{debug_log, write_serial_bytes};
 use x86_64::PhysAddr;
+=======
+use petroleum::debug_log;
+use petroleum::graphics::{VGA_MODE13H_ADDRESS, VGA_MODE13H_WIDTH, VGA_MODE13H_HEIGHT, VGA_MODE13H_BPP, VGA_MODE13H_STRIDE};
+use petroleum::write_serial_bytes;
+use x86_64::{PhysAddr, VirtAddr};
+>>>>>>> ab521d1cea0da591ecedcc6cc828ef32fbdfcb53
 
 /// Helper function to write a string to VGA buffer at specified row
 pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
@@ -77,15 +84,6 @@ pub extern "efiapi" fn efi_main(
 
     debug_log!("VGA setup done");
     kernel_log!("VGA text mode setup function returned");
-
-    // Try to initialize graphics mode for desktop display
-    kernel_log!("Attempting to initialize graphics mode for desktop display...");
-    if try_initialize_cirrus_graphics_mode() {
-        kernel_log!("Graphics mode initialized successfully, desktop should be visible");
-        // Desktop drawing will be handled by the graphics initialization
-    } else {
-        kernel_log!("Graphics mode initialization failed, continuing with text mode");
-    }
 
     // Direct VGA buffer test - write to hardware buffer directly
     kernel_log!("Direct VGA buffer write test...");
@@ -398,19 +396,23 @@ pub fn try_initialize_cirrus_graphics_mode() -> bool {
     // Set up VGA mode 13h (320x200, 256 colors) for graphics
     petroleum::graphics::setup_cirrus_vga_mode();
 
+<<<<<<< HEAD
     // VGA framebuffer configuration is handled by uefi_vga_config below
 
+=======
+>>>>>>> ab521d1cea0da591ecedcc6cc828ef32fbdfcb53
     kernel_log!("Initializing VGA framebuffer writer...");
 
     // For UEFI target, we need to initialize VGA framebuffer in UEFI context
     // Create VGA framebuffer configuration for UEFI
+    // VGA mode 13h constants are now defined in petroleum::graphics
     let uefi_vga_config = FullereneFramebufferConfig {
-        address: 0xA0000, // Standard VGA framebuffer address
-        width: 320,
-        height: 200,
+        address: VGA_MODE13H_ADDRESS, // Standard VGA framebuffer address
+        width: VGA_MODE13H_WIDTH,
+        height: VGA_MODE13H_HEIGHT,
         pixel_format: petroleum::common::EfiGraphicsPixelFormat::PixelFormatMax, // Special marker for VGA mode
-        bpp: 8,
-        stride: 320, // 320 bytes per line in mode 13h
+        bpp: VGA_MODE13H_BPP,
+        stride: VGA_MODE13H_STRIDE, // 320 bytes per line in mode 13h
     };
 
     graphics::text::init(&uefi_vga_config);
@@ -468,5 +470,8 @@ pub fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
         return try_init_graphics(&gop_config, "UEFI GOP");
     }
 
-    false
+    kernel_log!("No standard graphics modes found, trying Cirrus VGA fallback...");
+
+    // As a fallback, try Cirrus VGA graphics if the function exists
+    try_initialize_cirrus_graphics_mode()
 }
