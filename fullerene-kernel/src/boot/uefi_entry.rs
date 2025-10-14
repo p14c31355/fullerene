@@ -1,5 +1,6 @@
 // Use crate imports
 use crate::MEMORY_MAP;
+use petroleum::kernel_log;
 use crate::boot::FALLBACK_HEAP_START_ADDR;
 use crate::graphics::framebuffer::FramebufferLike;
 use crate::heap;

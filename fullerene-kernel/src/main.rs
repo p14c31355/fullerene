@@ -7,7 +7,6 @@
 #![no_main]
 
 // Kernel modules
-mod types;
 mod traits;
 mod gdt; // Add GDT module
 mod graphics;
@@ -36,21 +35,11 @@ use spin::Once;
 // Panic handlers removed to avoid conflicts with std::panic - handled by petroleum crate
 
 /// Panic handler for UEFI boot path
+#[cfg(not(test))]
 #[cfg(target_os = "uefi")]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
 petroleum::common_panic!(_info);
-}
-
-/// Panic handler for BIOS boot path
-#[cfg(not(target_os = "uefi"))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    // For BIOS, we can use serial output
-    petroleum::serial::serial_log(format_args!("PANIC!\n"));
-    loop {
-        x86_64::instructions::hlt();
-    }
 }
 
 /// Global allocator for no_std environment
