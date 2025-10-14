@@ -12,7 +12,6 @@
 #[macro_export]
 macro_rules! log_error {
     ($error:expr, $context:expr) => {{
-        use petroleum::common::logging;
         crate::log_error_petroleum($error, $context)
     }};
 }
@@ -198,7 +197,7 @@ mod tests {
     #[test]
     fn test_logging_macros() {
         // Test that macros compile correctly
-        log_error!(SystemError::InvalidArgument, "Test error");
+        log_error!(&SystemError::InvalidArgument, "Test error");
         log_warning!("Test warning");
         log_info!("Test info");
         log_debug!("Test debug");
@@ -226,9 +225,9 @@ mod tests {
         let none_value: Option<i32> = None;
 
         assert_eq!(
-            option_to_result!(some_value, SystemError::FileNotFound),
+            option_to_result!(some_value, &SystemError::FileNotFound),
             Ok(42)
         );
-        assert!(matches!(option_to_result!(none_value, SystemError::FileNotFound), Err(SystemError::FileNotFound)));
+        assert!(matches!(option_to_result!(none_value, &SystemError::FileNotFound), Err(SystemError::FileNotFound)));
     }
 }

@@ -68,7 +68,6 @@ pub fn log_error_petroleum(error: &SystemError, context: &'static str) {
         SystemError::InvalidArgument => petroleum::common::logging::SystemError::InvalidArgument,
         SystemError::SyscallOutOfMemory => petroleum::common::logging::SystemError::SyscallOutOfMemory,
         SystemError::FileExists => petroleum::common::logging::SystemError::FileExists,
-        SystemError::BadFileDescriptor => petroleum::common::logging::SystemError::FsInvalidFileDescriptor,
         SystemError::InvalidSeek => petroleum::common::logging::SystemError::InvalidSeek,
         SystemError::DiskFull => petroleum::common::logging::SystemError::DiskFull,
         SystemError::MappingFailed => petroleum::common::logging::SystemError::MappingFailed,
@@ -84,15 +83,17 @@ pub fn log_error_petroleum(error: &SystemError, context: &'static str) {
         SystemError::NotSupported => petroleum::common::logging::SystemError::NotSupported,
         SystemError::InternalError => petroleum::common::logging::SystemError::InternalError,
         SystemError::UnknownError => petroleum::common::logging::SystemError::UnknownError,
+        SystemError::FsInvalidFileDescriptor => petroleum::common::logging::SystemError::FsInvalidFileDescriptor,
+        SystemError::MemOutOfMemory => petroleum::common::logging::SystemError::MemOutOfMemory,
     };
     petroleum::common::logging::log_error(&petroleum_error, context);
 }
 
 // Re-export consolidated logging system from petroleum
-pub use petroleum::common::logging::{log_info, log_warning, log_debug, log_trace, SystemError as PetroleumSystemError};
+pub use petroleum::common::logging::{log_info, log_warning, log_debug, log_trace, log_error, SystemError as PetroleumSystemError, SystemResult as PetroleumSystemResult};
 
-// Re-export from errors module to avoid conflicts
-pub use errors::{SystemError, SystemResult};
+// Re-export from errors module to avoid conflicts - but prefer petroleum's for consistency
+pub use petroleum::common::logging::{SystemError, SystemResult};
 
 // Re-export traits with explicit imports to avoid conflicts
 #[macro_use]

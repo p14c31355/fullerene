@@ -13,30 +13,28 @@ use alloc::collections::BTreeMap;
 use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
 use x86_64::{VirtAddr, PhysAddr, structures::paging::{PageTable, Page, PhysFrame, Mapper, FrameAllocator, Size4KiB, PageTableFlags as Flags, OffsetPageTable}};
 
-/// A dummy frame allocator for when we need to allocate pages for page tables
-pub struct DummyFrameAllocator {}
+    /// A dummy frame allocator for when we need to allocate pages for page tables
+    pub struct DummyFrameAllocator {}
 
-impl DummyFrameAllocator {
-    pub fn new() -> Self {
-        Self {}
+    impl DummyFrameAllocator {
+        pub fn new() -> Self {
+            Self {}
+        }
     }
-}
 
-unsafe impl FrameAllocator<Size4KiB> for DummyFrameAllocator {
-    fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
-        None // For now, we don't support allocating new frames for page tables
+    unsafe impl FrameAllocator<Size4KiB> for DummyFrameAllocator {
+        fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+            None // For now, we don't support allocating new frames for page tables
+        }
     }
-}
 
-/// Convert PageFlags to x86_64 PageTableFlags
-fn convert_to_x86_64_flags(flags: crate::PageFlags) -> Flags {
+// TODO: Fix the import issue - for now using a direct conversion
+/// Convert u64 flags to x86_64 PageTableFlags
+fn convert_to_x86_64_flags(flags: u64) -> Flags {
     use x86_64::structures::paging::PageTableFlags as X86Flags;
 
-    // Convert from our PageFlags to x86_64 flags
-    let raw_flags = flags.as_u64();
-
     // Direct conversion assuming our flags match x86_64
-    X86Flags::from_bits_truncate(raw_flags)
+    X86Flags::from_bits_truncate(flags)
 }
 
 /// Process page table type alias for PageTableManager
@@ -107,12 +105,16 @@ impl PageTableHelper for PageTableManager {
             return Err(SystemError::InternalError);
         }
 
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
         // Convert parameters to x86_64 types
         let virtual_addr = x86_64::VirtAddr::new(virtual_addr as u64);
         let physical_addr = x86_64::PhysAddr::new(physical_addr as u64);
         let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virtual_addr);
         let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(physical_addr);
-        let page_flags = convert_to_x86_64_flags(flags);
+        let page_flags = convert_to_x86_64_flags(flags.as_u64());
 
         // Get the active page table from CPU
         unsafe {
@@ -126,7 +128,11 @@ impl PageTableHelper for PageTableManager {
             );
 
             // Map the page, creating intermediate tables if needed
-            mapper.map_to(page, frame, page_flags, &mut DummyFrameAllocator::new())
+            // Create a proper frame allocator for intermediate page tables
+            // Note: We need the actual memory map from boot, but for now use empty
+            // In production this should be initialized with the real EFI memory map
+            let mut frame_allocator = unsafe { petroleum::page_table::BootInfoFrameAllocator::init(&[]) };
+            mapper.map_to(page, frame, page_flags, &mut frame_allocator)
                 .map_err(|_| SystemError::MappingFailed)?
                 .flush();
         }
@@ -259,22 +265,22 @@ impl Initializable for PageTableManager {
 // Implementation of ErrorLogging trait for PageTableManager
 impl ErrorLogging for PageTableManager {
     fn log_error(&self, error: &SystemError, context: &'static str) {
-        log_error!(error, context);
+        logging::log_error(error, context);
     }
 
     fn log_warning(&self, message: &'static str) {
-        log_warning!(message);
+        logging::log_warning(message);
     }
 
     fn log_info(&self, message: &'static str) {
-        log_info!(message);
+        logging::log_info(message);
     }
 
     fn log_debug(&self, message: &'static str) {
-        log_debug!(message);
+        logging::log_debug(message);
     }
 
     fn log_trace(&self, message: &'static str) {
-        log_trace!(message);
+        logging::log_trace(message);
     }
 }
