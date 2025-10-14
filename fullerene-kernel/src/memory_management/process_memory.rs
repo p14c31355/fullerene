@@ -89,7 +89,7 @@ impl ProcessMemoryManagerImpl {
     /// Cleanup process memory
     pub fn cleanup(&mut self) -> SystemResult<()> {
         self.allocations.clear();
-        log_info!("Process memory cleaned up");
+        log::info!("Process memory cleaned up");
         Ok(())
     }
 }

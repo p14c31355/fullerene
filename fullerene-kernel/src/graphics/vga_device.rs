@@ -1,7 +1,7 @@
 use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations};
+use petroleum::common::logging::{SystemError, SystemResult};
 
 use crate::traits::{HardwareDevice, Initializable, ErrorLogging};
-use crate::{SystemError, SystemResult};
 
 // Constants to reduce magic numbers
 const VGA_WIDTH: usize = 80;
@@ -125,7 +125,7 @@ impl VgaDevice {
 impl Initializable for VgaDevice {
     fn init(&mut self) -> SystemResult<()> {
         // VGA buffer is accessed directly when needed
-        log_info!("VGA device initialized");
+        log::info!("VGA device initialized");
         Ok(())
     }
 
@@ -140,23 +140,23 @@ impl Initializable for VgaDevice {
 
 impl ErrorLogging for VgaDevice {
     fn log_error(&self, error: &SystemError, context: &'static str) {
-        log_error!(error, context);
+        log::error!("SystemError({}): {}", *error as u32, context);
     }
 
     fn log_warning(&self, message: &'static str) {
-        log_warning!(message);
+        log::warn!("{}", message);
     }
 
     fn log_info(&self, message: &'static str) {
-        log_info!(message);
+        log::info!("{}", message);
     }
 
     fn log_debug(&self, message: &'static str) {
-        log_debug!(message);
+        log::debug!("{}", message);
     }
 
     fn log_trace(&self, message: &'static str) {
-        log_trace!(message);
+        log::trace!("{}", message);
     }
 }
 
@@ -171,13 +171,13 @@ impl HardwareDevice for VgaDevice {
 
     fn enable(&mut self) -> SystemResult<()> {
         self.buffer.enabled = true;
-        log_info!("VGA device enabled");
+        log::info!("VGA device enabled");
         Ok(())
     }
 
     fn disable(&mut self) -> SystemResult<()> {
         self.buffer.enabled = false;
-        log_info!("VGA device disabled");
+        log::info!("VGA device disabled");
         Ok(())
     }
 
@@ -196,7 +196,7 @@ impl HardwareDevice for VgaDevice {
             self.buffer.cursor_row = 0;
             self.buffer.cursor_col = 0;
         }
-        log_info!("VGA device reset");
+        log::info!("VGA device reset");
         Ok(())
     }
 
