@@ -4,45 +4,8 @@
 
 use core::*;
 
-// Note: SystemError and SystemResult are re-exported at the crate root in lib.rs
-
-// Define PageFlags if not already defined
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PageFlags(u64);
-
-impl PageFlags {
-    pub fn kernel_data() -> Self {
-        use x86_64::structures::paging::PageTableFlags as Flags;
-        PageFlags((Flags::PRESENT | Flags::WRITABLE).bits())
-    }
-
-    pub fn user_data() -> Self {
-        use x86_64::structures::paging::PageTableFlags as Flags;
-        PageFlags((Flags::PRESENT | Flags::WRITABLE | Flags::USER_ACCESSIBLE).bits())
-    }
-
-    pub fn executable() -> Self {
-        use x86_64::structures::paging::PageTableFlags as Flags;
-        PageFlags((Flags::PRESENT | Flags::WRITABLE | Flags::USER_ACCESSIBLE | Flags::NO_EXECUTE).bits() ^ Flags::NO_EXECUTE.bits())
-    }
-
-    pub fn user_executable() -> Self {
-        use x86_64::structures::paging::PageTableFlags as Flags;
-        PageFlags((Flags::PRESENT | Flags::WRITABLE | Flags::USER_ACCESSIBLE).bits())
-    }
-
-    pub fn new(flags: u64) -> Self {
-        PageFlags(flags)
-    }
-
-    pub fn flags(&self) -> u64 {
-        self.0
-    }
-
-    pub fn as_u64(&self) -> u64 {
-        self.0
-    }
-}
+// Use x86_64's PageTableFlags directly to reduce code duplication
+pub use x86_64::structures::paging::PageTableFlags as PageFlags;
 
 // Re-export traits
 pub use crate::traits::*;

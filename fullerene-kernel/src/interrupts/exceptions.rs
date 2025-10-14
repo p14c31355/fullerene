@@ -41,9 +41,9 @@ pub fn handle_page_fault(
     error_code: PageFaultErrorCode,
     _stack_frame: InterruptStackFrame,
 ) {
-    let is_present = error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION);
-    let is_write = error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
-    let is_user = error_code.contains(PageFaultErrorCode::USER_MODE);
+    let is_present = error_code.intersects(PageFaultErrorCode::PROTECTION_VIOLATION);
+    let is_write = error_code.intersects(PageFaultErrorCode::CAUSED_BY_WRITE);
+    let is_user = error_code.intersects(PageFaultErrorCode::USER_MODE);
 
     petroleum::lock_and_modify!(petroleum::SERIAL1, writer, {
         write!(writer, "Page fault at {:x}: ", fault_addr.as_u64()).ok();

@@ -5,7 +5,7 @@
 
 use crate::memory_management::ProcessPageTable;
 use crate::process;
-use crate::errors::SystemError;
+use crate::errors::{SystemError, SystemResult};
 use crate::traits::PageTableHelper;
 use core::ptr;
 use x86_64::structures::paging::FrameAllocator;
@@ -191,6 +191,10 @@ fn load_segment(
         if ph.flags & PF_X == 0 {
             page_flags |= X86Flags::NO_EXECUTE;
         }
+        if ph.flags & PF_X != 0 {
+            // Clear NO_EXECUTE if executable
+            page_flags.remove(X86Flags::NO_EXECUTE);
+        }
 
         map_user_page(
             page_vaddr.as_u64() as usize,
@@ -289,6 +293,19 @@ impl From<SystemError> for LoadError {
             SystemError::MemOutOfMemory => LoadError::OutOfMemory,
             SystemError::InvalidArgument => LoadError::InvalidFormat,
             SystemError::InternalError => LoadError::MappingFailed,
+            _ => LoadError::MappingFailed,
+        }
+    }
+}
+
+impl From<petroleum::common::logging::SystemError> for LoadError {
+    fn from(error: petroleum::common::logging::SystemError) -> Self {
+        match error {
+            // Map petrochemical SystemError to kernel SystemError first
+            petroleum::common::logging::SystemError::MemOutOfMemory => LoadError::OutOfMemory,
+            petroleum::common::logging::SystemError::InvalidArgument => LoadError::InvalidFormat,
+            petroleum::common::logging::SystemError::InternalError => LoadError::MappingFailed,
+            petroleum::common::logging::SystemError::MappingFailed => LoadError::MappingFailed,
             _ => LoadError::MappingFailed,
         }
     }

@@ -28,12 +28,9 @@ use x86_64::{VirtAddr, PhysAddr, structures::paging::{PageTable, Page, PhysFrame
     }
 
 // TODO: Fix the import issue - for now using a direct conversion
-/// Convert u64 flags to x86_64 PageTableFlags
-fn convert_to_x86_64_flags(flags: u64) -> Flags {
-    use x86_64::structures::paging::PageTableFlags as X86Flags;
-
-    // Direct conversion assuming our flags match x86_64
-    X86Flags::from_bits_truncate(flags)
+/// Convert PageTableFlags to x86_64 PageTableFlags
+fn convert_to_x86_64_flags(flags: Flags) -> Flags {
+    flags
 }
 
 /// Process page table type alias for PageTableManager
@@ -113,7 +110,7 @@ impl PageTableHelper for PageTableManager {
         let physical_addr = x86_64::PhysAddr::new(physical_addr as u64);
         let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virtual_addr);
         let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(physical_addr);
-        let page_flags = convert_to_x86_64_flags(flags.as_u64());
+        let page_flags = convert_to_x86_64_flags(flags);
 
         // Get the active page table from CPU
         unsafe {
@@ -206,7 +203,7 @@ impl PageTableHelper for PageTableManager {
             return Err(SystemError::InternalError);
         }
 
-        Ok(PageFlags::kernel_data())
+        Ok(PageFlags::PRESENT | PageFlags::WRITABLE)
     }
 
     fn flush_tlb(&mut self, _virtual_addr: usize) -> SystemResult<()> {

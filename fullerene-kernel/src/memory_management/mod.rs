@@ -262,7 +262,7 @@ impl MemoryManager for UnifiedMemoryManager {
                 let phys_addr = frame_addr + (i * 4096);
                 let virt_addr = virtual_addr + (i * 4096);
                 self.page_table_manager
-                    .map_page(virt_addr, phys_addr, PageFlags::kernel_data())?;
+                    .map_page(virt_addr, phys_addr, PageFlags::PRESENT | PageFlags::WRITABLE)?;
             }
 
             Ok(virtual_addr)
@@ -302,7 +302,7 @@ impl MemoryManager for UnifiedMemoryManager {
             for i in 0..count {
                 let vaddr = virtual_addr + (i * 4096);
                 let paddr = physical_addr + (i * 4096);
-                self.page_table_manager.map_page(vaddr, paddr, PageFlags::kernel_data())?;
+                self.page_table_manager.map_page(vaddr, paddr, PageFlags::PRESENT | PageFlags::WRITABLE)?;
             }
             Ok(())
         })
@@ -742,7 +742,7 @@ impl UnifiedMemoryManager {
                 self.page_table_manager.map_page(
                     virt_addr,
                     frame,
-                    PageFlags::user_data(),
+                    PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER_ACCESSIBLE,
                 )?;
             }
 
