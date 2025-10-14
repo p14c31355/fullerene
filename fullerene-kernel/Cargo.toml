@@ -4,6 +4,10 @@ name = "fullerene-kernel"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "fullerene-kernel"
+path = "src/main.rs"
+
 [dependencies]
 x86_64 = { version = "0.15.2", default-features = false, features = [
   "instructions",
@@ -21,6 +25,7 @@ lazy_static = { version = "1.5.0", default-features = false, features = [
 petroleum = { path = "../petroleum" }
 embedded-graphics = { version = "0.8", default-features = false }
 memoffset = { version = "0.9", default-features = false }
+linked_list_allocator = { version = "0.10", default-features = false, features = ["alloc_ref"] }
 
 [features]
 default = []

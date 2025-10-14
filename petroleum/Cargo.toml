@@ -19,6 +19,7 @@ x86_64 = { version = "0.15.2", default-features = false, features = [
   "abi_x86_interrupt",
 ] }
 linked_list_allocator = "0.10"
+once_cell = { version = "1.19", default-features = false, features = ["alloc", "race"] }
 embedded-graphics = "0.8.1"
 
 [lib]

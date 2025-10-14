@@ -1,5 +1,4 @@
 use super::*;
-use core::ptr;
 
 /// Helper function to convert u32 to string without heap allocation
 pub fn u32_to_str_heapless(n: u32, buffer: &mut [u8]) -> &str {

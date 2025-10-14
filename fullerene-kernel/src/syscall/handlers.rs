@@ -1,5 +1,5 @@
 use super::interface::{
-    SyscallError, SyscallNumber, SyscallResult, copy_user_string, validate_user_buffer,
+    SyscallError, SyscallResult, copy_user_string, validate_user_buffer,
 };
 use crate::process;
 use petroleum::write_serial_bytes;

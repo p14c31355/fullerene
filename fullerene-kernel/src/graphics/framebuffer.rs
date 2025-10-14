@@ -5,6 +5,11 @@ use petroleum::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig};
 use petroleum::graphics::rgb_pixel;
 use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
 
+// Generic type aliases for cleaner code
+type FramebufferWriter32 = FramebufferWriter<u32>;
+type FramebufferWriter8 = FramebufferWriter<u8>;
+
+// Helper macro for delegate calls to reduce duplication
 macro_rules! delegate_call {
     ($self:expr, $method:ident $(, $args:expr)*) => {
         match $self {

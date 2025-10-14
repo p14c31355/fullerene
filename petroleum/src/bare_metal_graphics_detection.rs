@@ -1,9 +1,7 @@
-use super::*;
-use crate::serial::_print;
 
 /// Bare-metal graphics detection using direct PCI access without UEFI protocols
 pub mod bare_metal_graphics_detection {
-    use super::*;
+    
     use crate::serial::_print;
 
     /// Main entry point for bare-metal graphics detection
@@ -29,48 +27,48 @@ pub mod bare_metal_graphics_detection {
 
             // Check for supported device types
             match (device.vendor_id, device.device_id) {
-                    (0x1af4, id) if id >= 0x1050 => {
-                        // virtio-gpu device
+                (0x1af4, id) if id >= 0x1050 => {
+                    // virtio-gpu device
+                    _print(format_args!(
+                        "[BM-GFX] Detected virtio-gpu, attempting bare-metal framebuffer detection\n"
+                    ));
+                    if let Some(config) = detect_bare_metal_virtio_gpu_framebuffer(device) {
                         _print(format_args!(
-                            "[BM-GFX] Detected virtio-gpu, attempting bare-metal framebuffer detection\n"
+                            "[BM-GFX] Bare-metal virtio-gpu framebuffer detection successful!\n"
                         ));
-                        if let Some(config) = detect_bare_metal_virtio_gpu_framebuffer(device) {
-                            _print(format_args!(
-                                "[BM-GFX] Bare-metal virtio-gpu framebuffer detection successful!\n"
-                            ));
-                            return Some(config);
-                        }
-                    }
-                    (0x1b36, 0x0100) => {
-                        // QEMU QXL device
-                        _print(format_args!(
-                            "[BM-GFX] Detected QXL device, attempting bare-metal framebuffer detection\n"
-                        ));
-                        if let Some(config) = detect_bare_metal_qxl_framebuffer(device) {
-                            _print(format_args!(
-                                "[BM-GFX] Bare-metal QXL framebuffer detection successful!\n"
-                            ));
-                            return Some(config);
-                        }
-                    }
-                    (0x15ad, 0x0405) => {
-                        // VMware SVGA II
-                        _print(format_args!(
-                            "[BM-GFX] Detected VMware SVGA, attempting bare-metal framebuffer detection\n"
-                        ));
-                        if let Some(config) = detect_bare_metal_vmware_svga_framebuffer(device) {
-                            _print(format_args!(
-                                "[BM-GFX] Bare-metal VMware SVGA framebuffer detection successful!\n"
-                            ));
-                            return Some(config);
-                        }
-                    }
-                    _ => {
-                        _print(format_args!(
-                            "[BM-GFX] Unknown graphics device type, skipping\n"
-                        ));
+                        return Some(config);
                     }
                 }
+                (0x1b36, 0x0100) => {
+                    // QEMU QXL device
+                    _print(format_args!(
+                        "[BM-GFX] Detected QXL device, attempting bare-metal framebuffer detection\n"
+                    ));
+                    if let Some(config) = detect_bare_metal_qxl_framebuffer(device) {
+                        _print(format_args!(
+                            "[BM-GFX] Bare-metal QXL framebuffer detection successful!\n"
+                        ));
+                        return Some(config);
+                    }
+                }
+                (0x15ad, 0x0405) => {
+                    // VMware SVGA II
+                    _print(format_args!(
+                        "[BM-GFX] Detected VMware SVGA, attempting bare-metal framebuffer detection\n"
+                    ));
+                    if let Some(config) = detect_bare_metal_vmware_svga_framebuffer(device) {
+                        _print(format_args!(
+                            "[BM-GFX] Bare-metal VMware SVGA framebuffer detection successful!\n"
+                        ));
+                        return Some(config);
+                    }
+                }
+                _ => {
+                    _print(format_args!(
+                        "[BM-GFX] Unknown graphics device type, skipping\n"
+                    ));
+                }
+            }
         }
 
         _print(format_args!(
@@ -129,13 +127,14 @@ pub mod bare_metal_graphics_detection {
                     width, height
                 ));
                 return Some(crate::common::FullereneFramebufferConfig {
-                address: *addr,
-                width: *width,
-                height: *height,
-                pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-                bpp: *bpp,
-                stride,
-            });
+                    address: *addr,
+                    width: *width,
+                    height: *height,
+                    pixel_format:
+                        crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                    bpp: *bpp,
+                    stride,
+                });
             }
         }
 
@@ -192,13 +191,14 @@ pub mod bare_metal_graphics_detection {
                     width, height
                 ));
                 return Some(crate::common::FullereneFramebufferConfig {
-                address: *addr,
-                width: *width,
-                height: *height,
-                pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-                bpp: *bpp,
-                stride,
-            });
+                    address: *addr,
+                    width: *width,
+                    height: *height,
+                    pixel_format:
+                        crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                    bpp: *bpp,
+                    stride,
+                });
             }
         }
 

@@ -12,7 +12,6 @@ mod graphics;
 mod heap;
 mod interrupts;
 mod vga;
-// Kernel modules
 mod context_switch; // Context switching
 mod fs; // Basic filesystem
 mod keyboard; // Keyboard input driver
@@ -32,22 +31,29 @@ extern crate alloc;
 
 use spin::Once;
 
-#[cfg(all(not(test), not(target_os = "uefi")))]
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    petroleum::handle_panic(info)
-}
+// Panic handlers removed to avoid conflicts with std::panic - handled by petroleum crate
 
-#[cfg(all(not(test), target_os = "uefi"))]
+/// Panic handler for UEFI boot path
+#[cfg(target_os = "uefi")]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    // For UEFI, just loop forever on panic
+    common_panic!(_info);
+}
+
+/// Panic handler for BIOS boot path
+#[cfg(not(target_os = "uefi"))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    // For BIOS, we can use serial output
+    petroleum::serial::serial_log(format_args!("PANIC!\n"));
     loop {
-        unsafe {
-            x86_64::instructions::hlt();
-        }
+        x86_64::instructions::hlt();
     }
 }
+
+/// Global allocator for no_std environment
+#[global_allocator]
+static ALLOCATOR: linked_list_allocator::LockedHeap = linked_list_allocator::LockedHeap::empty();
 
 use petroleum::page_table::EfiMemoryDescriptor;
 

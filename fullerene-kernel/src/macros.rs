@@ -37,9 +37,10 @@ macro_rules! log_warning {
 /// ```
 #[macro_export]
 macro_rules! log_info {
-    ($message:expr) => {
-        $crate::log_info($message)
-    };
+    ($message:expr) => {{
+        use petroleum::common::logging;
+        logging::log_info($message)
+    }};
 }
 
 /// Log a debug message (only if debug level is enabled)
@@ -50,11 +51,10 @@ macro_rules! log_info {
 /// ```
 #[macro_export]
 macro_rules! log_debug {
-    ($message:expr) => {
-        if $crate::get_global_log_level() >= $crate::LogLevel::Debug {
-            $crate::log_info($message)
-        }
-    };
+    ($message:expr) => {{
+        use petroleum::common::logging;
+        logging::log_debug($message)
+    }};
 }
 
 /// Log a trace message (only if trace level is enabled)
@@ -65,11 +65,10 @@ macro_rules! log_debug {
 /// ```
 #[macro_export]
 macro_rules! log_trace {
-    ($message:expr) => {
-        if $crate::get_global_log_level() >= $crate::LogLevel::Trace {
-            $crate::log_info($message)
-        }
-    };
+    ($message:expr) => {{
+        use petroleum::common::logging;
+        logging::log_trace($message)
+    }};
 }
 
 /// Initialize a component and log the result
@@ -179,9 +178,19 @@ macro_rules! static_str {
     }};
 }
 
+/// Macro for debug logging in UEFI context
+#[macro_export]
+macro_rules! kernel_log {
+    ($($arg:tt)*) => {{
+        use core::fmt::Write;
+        // Use a single lock to prevent potential deadlocks and improve efficiency.
+        let _ = writeln!(&mut *petroleum::serial::SERIAL_PORT_WRITER.lock(), $($arg)*);
+    }};
+}
+
 #[cfg(test)]
 mod tests {
-    
+
     use crate::*;
 
     #[test]
@@ -214,7 +223,13 @@ mod tests {
         let some_value = Some(42);
         let none_value: Option<i32> = None;
 
-        assert_eq!(option_to_result!(some_value, SystemError::FileNotFound), Ok(42));
-        assert_eq!(option_to_result!(none_value, SystemError::FileNotFound), Err(SystemError::FileNotFound));
+        assert_eq!(
+            option_to_result!(some_value, SystemError::FileNotFound),
+            Ok(42)
+        );
+        assert_eq!(
+            option_to_result!(none_value, SystemError::FileNotFound),
+            Err(SystemError::FileNotFound)
+        );
     }
 }

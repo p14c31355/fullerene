@@ -28,10 +28,15 @@ impl DeviceInfo {
     }
 }
 
+/// Device information structure with device
+pub struct DeviceEntry {
+    pub device: alloc::boxed::Box<dyn HardwareDevice + Send>,
+    pub info: DeviceInfo,
+}
+
 /// Device manager for handling hardware devices
 pub struct DeviceManager {
-    devices: Mutex<BTreeMap<&'static str, alloc::boxed::Box<dyn HardwareDevice + Send>>>,
-    device_info: Mutex<BTreeMap<&'static str, DeviceInfo>>,
+    devices: Mutex<BTreeMap<&'static str, DeviceEntry>>,
 }
 
 impl DeviceManager {
@@ -39,30 +44,26 @@ impl DeviceManager {
     pub const fn new() -> Self {
         Self {
             devices: Mutex::new(BTreeMap::new()),
-            device_info: Mutex::new(BTreeMap::new()),
         }
     }
 
     /// Register a hardware device
-    pub fn register_device(&self, mut device: alloc::boxed::Box<dyn HardwareDevice + Send>) -> SystemResult<()> {
+    pub fn register_device(
+        &self,
+        device: alloc::boxed::Box<dyn HardwareDevice + Send>,
+    ) -> SystemResult<()> {
         let name = device.name();
-
-        // Initialize the device
-        if let Err(e) = device.init() {
-            log_error!(e, "Failed to initialize device");
-            return Err(e);
-        }
 
         // Get device info before moving the device
         let device_info = DeviceInfo::new(
             device.device_name(),
             device.device_type(),
-            device.priority(),
+            50, // Default priority for hardware devices
         );
 
         // Store device and its info
-        self.devices.lock().insert(name, device);
-        self.device_info.lock().insert(name, device_info);
+        let mut devices = self.devices.lock();
+        devices.insert(name, DeviceEntry { device, info: device_info });
 
         log_info!("Device registered successfully");
         Ok(())
@@ -70,11 +71,9 @@ impl DeviceManager {
 
     /// Enable a device by name
     pub fn enable_device(&self, name: &str) -> SystemResult<()> {
-        if let Some(device) = self.devices.lock().get_mut(name) {
-            device.enable()?;
-            if let Some(info) = self.device_info.lock().get_mut(name) {
-                info.enabled = true;
-            }
+        if let Some(device_entry) = self.devices.lock().get_mut(name) {
+            device_entry.device.enable()?;
+            device_entry.info.enabled = true;
             log_info!("Device enabled");
             Ok(())
         } else {
@@ -84,11 +83,9 @@ impl DeviceManager {
 
     /// Disable a device by name
     pub fn disable_device(&self, name: &str) -> SystemResult<()> {
-        if let Some(device) = self.devices.lock().get_mut(name) {
-            device.disable()?;
-            if let Some(info) = self.device_info.lock().get_mut(name) {
-                info.enabled = false;
-            }
+        if let Some(device_entry) = self.devices.lock().get_mut(name) {
+            device_entry.device.disable()?;
+            device_entry.info.enabled = false;
             log_info!("Device disabled");
             Ok(())
         } else {
@@ -98,8 +95,8 @@ impl DeviceManager {
 
     /// Reset a device by name
     pub fn reset_device(&self, name: &str) -> SystemResult<()> {
-        if let Some(device) = self.devices.lock().get_mut(name) {
-            device.reset()?;
+        if let Some(device_entry) = self.devices.lock().get_mut(name) {
+            device_entry.device.reset()?;
             log_info!("Device reset");
             Ok(())
         } else {
@@ -107,27 +104,20 @@ impl DeviceManager {
         }
     }
 
-    /// Get device information
-    pub fn get_device_info(&self, name: &str) -> Option<DeviceInfo> {
-        self.device_info.lock().get(name).cloned()
+    /// Get a device by name for direct access using a closure
+    pub fn with_device<F, R>(&self, name: &str, f: F) -> Option<R>
+    where
+        F: FnOnce(&(dyn HardwareDevice + Send)) -> R,
+    {
+        self.devices.lock().get(name).map(|d| f(&*d.device))
     }
 
-    /// List all registered devices
-    pub fn list_devices(&self) -> Vec<DeviceInfo> {
-        self.device_info.lock().values().cloned().collect()
-    }
-
-    /// Get a device by name for direct access
-    pub fn get_device(&self, name: &str) -> Option<&(dyn HardwareDevice + Send)> {
-        // Clone the device info to avoid lifetime issues
-        None
-    }
-
-    /// Get a mutable reference to a device by name
-    pub fn get_device_mut(&self, name: &str) -> Option<&mut (dyn HardwareDevice + Send)> {
-        // This function is problematic due to lifetime constraints
-        // For now, return None to avoid lifetime issues
-        None
+    /// Get a mutable reference to a device by name using a closure
+    pub fn with_device_mut<F, R>(&self, name: &str, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut (dyn HardwareDevice + Send)) -> R,
+    {
+        self.devices.lock().get_mut(name).map(|d| f(&mut *d.device))
     }
 
     /// Initialize all registered devices in priority order
@@ -136,10 +126,14 @@ impl DeviceManager {
         let mut device_list: Vec<_> = devices.values_mut().collect();
 
         // Sort by priority (higher priority first)
-        device_list.sort_by(|a, b| b.priority().cmp(&a.priority()));
+        device_list.sort_by(|a, b| {
+            let a_priority = <dyn HardwareDevice as traits::Initializable>::priority(&*a.device);
+            let b_priority = <dyn HardwareDevice as traits::Initializable>::priority(&*b.device);
+            b_priority.cmp(&a_priority)
+        });
 
-        for device in device_list {
-            if let Err(e) = device.init() {
+        for device_entry in device_list {
+            if let Err(e) = device_entry.device.init() {
                 log_error!(e, "Failed to initialize device");
                 return Err(e);
             }
@@ -151,7 +145,7 @@ impl DeviceManager {
 
     /// Enable all registered devices
     pub fn enable_all_devices(&self) -> SystemResult<()> {
-        let device_names: Vec<_> = self.device_info.lock().keys().cloned().collect();
+        let device_names: Vec<_> = self.devices.lock().keys().cloned().collect();
 
         for name in device_names {
             self.enable_device(name)?;
@@ -163,7 +157,7 @@ impl DeviceManager {
 
     /// Disable all registered devices
     pub fn disable_all_devices(&self) -> SystemResult<()> {
-        let device_names: Vec<_> = self.device_info.lock().keys().cloned().collect();
+        let device_names: Vec<_> = self.devices.lock().keys().cloned().collect();
 
         for name in device_names.iter().rev() {
             self.disable_device(name)?;
@@ -171,6 +165,16 @@ impl DeviceManager {
 
         log_info!("All devices disabled");
         Ok(())
+    }
+
+    /// Get device information
+    pub fn get_device_info(&self, name: &str) -> Option<DeviceInfo> {
+        self.devices.lock().get(name).map(|entry| entry.info.clone())
+    }
+
+    /// List all registered devices
+    pub fn list_devices(&self) -> Vec<DeviceInfo> {
+        self.devices.lock().values().map(|entry| entry.info.clone()).collect()
     }
 }
 
@@ -200,6 +204,14 @@ impl ErrorLogging for DeviceManager {
 
     fn log_info(&self, message: &'static str) {
         log_info!(message);
+    }
+
+    fn log_debug(&self, message: &'static str) {
+        log_debug!(message);
+    }
+
+    fn log_trace(&self, message: &'static str) {
+        log_trace!(message);
     }
 }
 
@@ -250,7 +262,10 @@ mod tests {
 
     impl MockDevice {
         fn new(name: &'static str) -> Self {
-            Self { name, enabled: false }
+            Self {
+                name,
+                enabled: false,
+            }
         }
     }
 
@@ -262,12 +277,18 @@ mod tests {
         fn name(&self) -> &'static str {
             self.name
         }
+
+        fn priority(&self) -> i32 {
+            50 // Default priority for mock devices
+        }
     }
 
     impl ErrorLogging for MockDevice {
         fn log_error(&self, _error: &SystemError, _context: &'static str) {}
         fn log_warning(&self, _message: &'static str) {}
         fn log_info(&self, _message: &'static str) {}
+        fn log_debug(&self, _message: &'static str) {}
+        fn log_trace(&self, _message: &'static str) {}
     }
 
     impl HardwareDevice for MockDevice {
@@ -296,6 +317,10 @@ mod tests {
         fn is_enabled(&self) -> bool {
             self.enabled
         }
+
+        fn priority(&self) -> i32 {
+            50 // Default priority for mock devices
+        }
     }
 
     #[test]
@@ -311,7 +336,10 @@ mod tests {
         let mock_device = Box::new(MockDevice::new("test_device"));
 
         assert!(manager.register_device(mock_device).is_ok());
-        assert!(manager.get_device("test_device").is_some());
+
+        // Test the new closure-based API
+        let device_name = manager.with_device("test_device", |device| device.device_name());
+        assert_eq!(device_name, Some("test_device"));
     }
 
     #[test]

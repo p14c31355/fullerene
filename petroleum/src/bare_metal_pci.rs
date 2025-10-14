@@ -1,6 +1,5 @@
 use super::*;
-use crate::graphics::ports::{PortWriter, RegisterConfig};
-use crate::serial::_print;
+use crate::graphics::ports::PortWriter;
 
 /// PCI configuration space access addresses (x86 I/O ports)
 const PCI_CONFIG_ADDR: u16 = 0xCF8;
@@ -96,7 +95,8 @@ pub fn read_pci_bar(bus: u8, device: u8, function: u8, bar_index: u8) -> u64 {
     let is_64bit = (bar_type & 0x4) != 0;
 
     // For 64-bit BARs, read the next register for high 32 bits
-    let bar_high = if is_64bit && bar_index < 5 {  // A 64-bit BAR uses two slots, so the last possible start index is 4.
+    let bar_high = if is_64bit && bar_index < 5 {
+        // A 64-bit BAR uses two slots, so the last possible start index is 4.
         pci_config_read_dword(bus, device, function, offset + 4)
     } else {
         0
