@@ -121,7 +121,7 @@ impl BitmapFrameAllocator {
 }
 
 // Implementation of FrameAllocator trait for BitmapFrameAllocator
-impl crate::FrameAllocator for BitmapFrameAllocator {
+impl FrameAllocator for BitmapFrameAllocator {
     fn allocate_frame(&mut self) -> crate::SystemResult<usize> {
         if !self.initialized {
             return Err(crate::SystemError::InternalError);
@@ -261,8 +261,8 @@ impl crate::FrameAllocator for BitmapFrameAllocator {
 }
 
  // Implementation of Initializable trait for BitmapFrameAllocator
-impl crate::Initializable for BitmapFrameAllocator {
-    fn init(&mut self) -> crate::SystemResult<()> {
+impl Initializable for BitmapFrameAllocator {
+    fn init(&mut self) -> SystemResult<()> {
         // Initialize with empty memory map
         let empty_map = &[];
         self.init_with_memory_map(empty_map)
