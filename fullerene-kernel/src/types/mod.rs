@@ -4,13 +4,12 @@
 
 use crate::*;
 
-// Re-export core types from errors module
-pub use crate::errors::SystemError;
-pub type SystemResult<T> = Result<T, SystemError>;
+// Note: SystemError and SystemResult are re-exported at the crate root in lib.rs
 
 // Define LogLevel if not already defined
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
 pub enum LogLevel {
+    Trace,
     Debug,
     Info,
     Warning,
@@ -24,6 +23,14 @@ pub struct PageFlags(u64);
 impl PageFlags {
     pub fn kernel_data() -> Self {
         PageFlags(0) // Placeholder implementation
+    }
+
+    pub fn new(flags: u64) -> Self {
+        PageFlags(flags)
+    }
+
+    pub fn flags(&self) -> u64 {
+        self.0
     }
 }
 

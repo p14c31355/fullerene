@@ -663,6 +663,14 @@ impl ErrorLogging for UnifiedMemoryManager {
     fn log_info(&self, message: &'static str) {
         crate::log_info!(message);
     }
+
+    fn log_debug(&self, message: &'static str) {
+        crate::log_debug!(message);
+    }
+
+    fn log_trace(&self, message: &'static str) {
+        crate::log_trace!(message);
+    }
 }
 
 // Helper methods for UnifiedMemoryManager

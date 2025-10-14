@@ -196,6 +196,7 @@ version = "0.1.0"
 dependencies = [
  "embedded-graphics",
  "lazy_static",
+ "linked_list_allocator",
  "memoffset",
  "petroleum",
  "spin 0.10.0",

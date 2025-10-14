@@ -12,6 +12,7 @@ pub trait HardwareDevice: Initializable + ErrorLogging {
     fn disable(&mut self) -> SystemResult<()>;
     fn reset(&mut self) -> SystemResult<()>;
     fn is_enabled(&self) -> bool;
+    fn priority(&self) -> i32;
     fn read(&mut self, address: usize, buffer: &mut [u8]) -> SystemResult<usize> {
         // Default implementation returns error - hardware-specific devices should override
         Err(SystemError::NotSupported)
@@ -43,6 +44,8 @@ pub trait ErrorLogging {
     fn log_error(&self, error: &SystemError, context: &'static str);
     fn log_warning(&self, message: &'static str);
     fn log_info(&self, message: &'static str);
+    fn log_debug(&self, message: &'static str);
+    fn log_trace(&self, message: &'static str);
 }
 
 pub trait MemoryManager {

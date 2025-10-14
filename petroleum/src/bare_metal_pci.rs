@@ -1,6 +1,5 @@
 use super::*;
-use crate::graphics::ports::{PortWriter, RegisterConfig};
-use crate::serial::_print;
+use crate::graphics::ports::PortWriter;
 
 /// PCI configuration space access addresses (x86 I/O ports)
 const PCI_CONFIG_ADDR: u16 = 0xCF8;

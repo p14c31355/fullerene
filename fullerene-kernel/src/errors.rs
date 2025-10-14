@@ -1,5 +1,7 @@
 //! System error types and conversions
 
+use core::result::Result;
+
 // Common error type for the entire system
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemError {
@@ -103,3 +105,6 @@ impl From<crate::loader::LoadError> for SystemError {
         }
     }
 }
+
+/// Common system result type alias
+pub type SystemResult<T> = Result<T, SystemError>;

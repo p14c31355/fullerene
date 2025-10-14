@@ -33,6 +33,28 @@ use spin::Once;
 
 // Panic handlers removed to avoid conflicts with std::panic - handled by petroleum crate
 
+/// Panic handler for UEFI boot path
+#[cfg(target_os = "uefi")]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    common_panic!(_info);
+}
+
+/// Panic handler for BIOS boot path
+#[cfg(not(target_os = "uefi"))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    // For BIOS, we can use serial output
+    petroleum::serial::serial_log(format_args!("PANIC!\n"));
+    loop {
+        x86_64::instructions::hlt();
+    }
+}
+
+/// Global allocator for no_std environment
+#[global_allocator]
+static ALLOCATOR: linked_list_allocator::LockedHeap = linked_list_allocator::LockedHeap::empty();
+
 use petroleum::page_table::EfiMemoryDescriptor;
 
 static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();

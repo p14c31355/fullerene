@@ -3,12 +3,11 @@
 //! This module is responsible for loading executable programs into memory
 //! and creating processes to run them.
 
-use crate::{
-    memory_management::ProcessPageTable,
-    process,
-    memory_management::SystemError,
-    types::PageFlags
-};
+use crate::memory_management::ProcessPageTable;
+use crate::process;
+use crate::SystemError;
+use crate::PageFlags;
+use crate::traits::PageTableHelper;
 use core::ptr;
 use x86_64::structures::paging::FrameAllocator;
 
@@ -164,7 +163,7 @@ fn load_segment(
     // Check that the virtual address range is not already mapped
     for page_idx in 0..num_pages {
         let page_vaddr = VirtAddr::new(vaddr + page_idx * 4096);
-        if crate::memory_management::PageTableHelper::translate_address((&*page_table), page_vaddr.as_u64() as usize).is_ok() {
+        if page_table.translate_address(page_vaddr.as_u64() as usize).is_ok() {
             return Err(LoadError::AddressAlreadyMapped);
         }
     }
@@ -183,7 +182,7 @@ fn load_segment(
 
         // Map the virtual page to the physical frame
         // For now, use kernel_data as default - needs proper flag setting implementation
-        let flags = crate::memory_management::PageFlags::kernel_data();
+        let flags = PageFlags::kernel_data();
 
         map_user_page(
             page_vaddr.as_u64() as usize,

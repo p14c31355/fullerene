@@ -1,6 +1,6 @@
 //! Global logging system
 
-use crate::types::{ErrorLogging, LogLevel, SystemResult};
+use crate::{types::ErrorLogging, LogLevel, SystemResult};
 use spin::Mutex;
 
 // Global logger instance

@@ -63,7 +63,7 @@ use crate::common::{
     FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
 };
 use crate::common::{
-    EfiConfigurationTable, EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable,
+    EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable,
     FullereneFramebufferConfig,
 };
 
@@ -162,7 +162,7 @@ impl<'a> FramebufferInstaller<'a> {
 
     fn install_and_clear(
         &self,
-        mut config: FullereneFramebufferConfig,
+        config: FullereneFramebufferConfig,
     ) -> Result<FullereneFramebufferConfig, EfiStatus> {
         self.install(config)?;
 

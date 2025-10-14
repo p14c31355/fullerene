@@ -4,15 +4,10 @@ use crate::boot::FALLBACK_HEAP_START_ADDR;
 use crate::graphics::framebuffer::FramebufferLike;
 use crate::heap;
 use crate::hlt_loop;
-use crate::memory::{find_framebuffer_config, setup_memory_maps};
-use crate::memory_management::set_physical_memory_offset;
-use crate::{gdt, graphics, interrupts, memory};
-use alloc::boxed::Box;
+use crate::{gdt, graphics, interrupts};
 use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
-use petroleum::{debug_log, write_serial_bytes};
-use x86_64::PhysAddr;
 
 /// Helper function to write a string to VGA buffer at specified row
 pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
@@ -54,8 +49,6 @@ pub extern "efiapi" fn efi_main(
 
     // Initialize serial early for debug logging
     petroleum::serial::serial_init();
-
-    debug_log!("Early VGA write done");
 
     // Debug parameter values
     debug_log!(
@@ -385,15 +378,15 @@ fn restore_vga_text_buffer(buffer: &Box<[[u16; 80]; 25]>) {
 /// Returns true if graphics mode was successfully initialized and desktop drawn
 #[cfg(target_os = "uefi")]
 pub fn try_initialize_cirrus_graphics_mode() -> bool {
-    kernel_log!("Trying to initialize Cirrus graphics mode...");
+    petroleum::serial::serial_log(format_args!("Trying to initialize Cirrus graphics mode...\n"));
 
     // Check if Cirrus VGA device was detected
     if !petroleum::graphics::detect_cirrus_vga() {
-        kernel_log!("No Cirrus VGA device detected, cannot initialize graphics mode");
+        petroleum::serial::serial_log(format_args!("No Cirrus VGA device detected, cannot initialize graphics mode\n"));
         return false;
     }
 
-    kernel_log!("Cirrus VGA device detected, setting up graphics mode...");
+    petroleum::serial::serial_log(format_args!("Cirrus VGA device detected, setting up graphics mode...\n"));
 
     // Set up VGA mode 13h (320x200, 256 colors) for graphics
     petroleum::graphics::setup_cirrus_vga_mode();

@@ -1,6 +1,6 @@
 use petroleum::{Color, ColorCode, ScreenChar};
 
-use crate::{ErrorLogging, HardwareDevice, Initializable, SystemError, SystemResult, log_error, log_info, log_warning};
+use crate::{ErrorLogging, HardwareDevice, Initializable, SystemError, SystemResult, log_debug, log_error, log_info, log_trace, log_warning};
 
 // Constants to reduce magic numbers
 const VGA_WIDTH: usize = 80;
@@ -118,6 +118,14 @@ impl ErrorLogging for VgaDevice {
     fn log_info(&self, message: &'static str) {
         log_info!(message);
     }
+
+    fn log_debug(&self, message: &'static str) {
+        log_debug!(message);
+    }
+
+    fn log_trace(&self, message: &'static str) {
+        log_trace!(message);
+    }
 }
 
 impl HardwareDevice for VgaDevice {
@@ -155,6 +163,10 @@ impl HardwareDevice for VgaDevice {
     fn is_enabled(&self) -> bool {
         self.enabled
     }
+
+    fn priority(&self) -> i32 {
+        <Self as Initializable>::priority(self)
+    }
 }
 
 #[cfg(test)]
@@ -176,7 +188,7 @@ mod tests {
         // Note: We can't actually test init() in unit tests due to unsafe code
         // This would require integration testing
         assert_eq!(device.name(), "VgaDevice");
-        assert_eq!(device.priority(), 10);
+        assert_eq!(<VgaDevice as Initializable>::priority(&device), 10);
     }
 
     #[test]

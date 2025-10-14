@@ -1,7 +1,5 @@
 use super::*;
 use crate::common::{EfiBootServices, EfiStatus};
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 
 /// Alternative graphics detection methods when GOP is unavailable
 pub mod graphics_alternatives {
@@ -587,7 +585,7 @@ pub mod graphics_alternatives {
         // Perform direct PCI enumeration to find graphics devices
         // Based on the log, we expect to find 1 graphics device
         let devices = match enumerate_bare_metal_pci_devices() {
-            Some(mut devices) if !devices.is_empty() => {
+            Some(devices) if !devices.is_empty() => {
                 _print(format_args!(
                     "[BM-GFX] Found {} graphics devices via direct PCI enumeration\n",
                     devices.len()

@@ -2,7 +2,13 @@
 //!
 //! This module provides page table operations and management using x86_64 structures.
 
+// Import from parent module instead of crate root
 use super::*;
+
+// Import logging functions from crate namespace
+use crate::{log_error, log_warning, log_info, log_debug, log_trace};
+
+use alloc::collections::BTreeMap;
 
 /// Process page table type alias for PageTableManager
 pub type ProcessPageTable = PageTableManager;
@@ -34,7 +40,8 @@ impl PageTableManager {
         self.pml4_frame = frame;
 
         self.initialized = true;
-        log_info!("Page table manager initialized");
+        // Logging disabled to avoid import issues
+        // crate::logging::log_info("Page table manager initialized");
         Ok(())
     }
 
@@ -67,7 +74,7 @@ impl PageTableHelper for PageTableManager {
 
         // TODO: Implement actual page table manipulation
         // For now, just log the operation
-        log_info!("Mapping page");
+        // super::log_info("Mapping page");
         Ok(())
     }
 
@@ -162,7 +169,7 @@ impl PageTableHelper for PageTableManager {
         }
 
         self.current_page_table = table_addr;
-        log_info!("Switched page table");
+        log_info("Switched page table");
         Ok(())
     }
 
@@ -198,5 +205,13 @@ impl ErrorLogging for PageTableManager {
 
     fn log_info(&self, message: &'static str) {
         log_info!(message);
+    }
+
+    fn log_debug(&self, message: &'static str) {
+        log_debug!(message);
+    }
+
+    fn log_trace(&self, message: &'static str) {
+        log_trace!(message);
     }
 }

@@ -51,10 +51,14 @@ pub mod memory;
 pub mod test_process;
 
 // Re-export key types and functions from submodules for convenience
-pub use errors::SystemError;
+pub use errors::{SystemError, SystemResult};
 pub use initializer::{initialize_system, register_system_component};
 pub use logging::{get_global_log_level, init_global_logger, log_debug, log_error, log_info, log_trace, log_warning};
 pub use types::*;
+pub use traits::*;
+
+// Re-export memory management types
+pub use memory_management::{FreeError, ProcessPageTable, UnifiedMemoryManager};
 
 // Re-export commonly used types for convenience
 pub use graphics::vga_device::VgaDevice;
