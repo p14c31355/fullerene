@@ -99,7 +99,9 @@ impl From<crate::loader::LoadError> for SystemError {
     fn from(error: crate::loader::LoadError) -> Self {
         match error {
             crate::loader::LoadError::InvalidFormat => SystemError::InvalidFormat,
-            // Map LoadFailed to LoadFailed error code
+            crate::loader::LoadError::OutOfMemory => SystemError::MemOutOfMemory,
+            crate::loader::LoadError::AddressAlreadyMapped => SystemError::MappingFailed,
+            crate::loader::LoadError::MappingFailed => SystemError::MappingFailed,
             _ => SystemError::LoadFailed,
         }
     }

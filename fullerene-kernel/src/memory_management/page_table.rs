@@ -96,11 +96,8 @@ impl PageTableHelper for PageTableManager {
         virtual_addr: usize,
         physical_addr: usize,
         flags: PageFlags,
+        frame_allocator: &mut impl FrameAllocator<Size4KiB>,
     ) -> SystemResult<()> {
-        if !self.initialized {
-            return Err(SystemError::InternalError);
-        }
-
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
@@ -124,11 +121,7 @@ impl PageTableHelper for PageTableManager {
             );
 
             // Map the page, creating intermediate tables if needed
-            // Create a proper frame allocator for intermediate page tables
-            // Note: We need the actual memory map from boot, but for now use empty
-            // In production this should be initialized with the real EFI memory map
-            let mut frame_allocator = unsafe { petroleum::page_table::BootInfoFrameAllocator::init(crate::MEMORY_MAP.get().expect("memory map not initialized")) };
-            mapper.map_to(page, frame, page_flags, &mut frame_allocator)
+            mapper.map_to(page, frame, page_flags, frame_allocator)
                 .map_err(|_| SystemError::MappingFailed)?
                 .flush();
         }

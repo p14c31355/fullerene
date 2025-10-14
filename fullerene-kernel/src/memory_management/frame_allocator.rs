@@ -4,6 +4,7 @@
 
 use super::*;
 use petroleum::common::logging::{SystemError, SystemResult};
+use x86_64::structures::paging::Size4KiB;
 
 
 
@@ -259,7 +260,19 @@ impl FrameAllocator for BitmapFrameAllocator {
     }
 }
 
- // Implementation of Initializable trait for BitmapFrameAllocator
+unsafe impl x86_64::structures::paging::FrameAllocator<Size4KiB> for BitmapFrameAllocator {
+    fn allocate_frame(&mut self) -> Option<x86_64::structures::paging::PhysFrame<Size4KiB>> {
+        <BitmapFrameAllocator as FrameAllocator>::allocate_frame(self)
+            .ok()
+            .and_then(|frame_addr| {
+                Some(x86_64::structures::paging::PhysFrame::containing_address(
+                    x86_64::PhysAddr::new(frame_addr as u64),
+                ))
+            })
+    }
+}
+
+// Implementation of Initializable trait for BitmapFrameAllocator
 impl Initializable for BitmapFrameAllocator {
     fn init(&mut self) -> SystemResult<()> {
         // Initialize with empty memory map

@@ -23,15 +23,7 @@ impl PicPorts {
     pub const SLAVE_DATA: u16 = 0xA1;
 }
 
-const PIC1: Pic = Pic {
-    command: PicPorts::MASTER_COMMAND,
-    data: PicPorts::MASTER_DATA,
-};
 
-const PIC2: Pic = Pic {
-    command: PicPorts::SLAVE_COMMAND,
-    data: PicPorts::SLAVE_DATA,
-};
 
 // PIC ICW commands
 pub const ICW1_INIT: u8 = 0x10;

@@ -18,7 +18,7 @@ use crate::traits::{
     ProcessMemoryManager,
 };
 use petroleum::common::logging::{SystemError, SystemResult};
-use x86_64::structures::paging::PageTableFlags as PageFlags;
+use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
 
 use frame_allocator::BitmapFrameAllocator;
 use process_memory::ProcessMemoryManagerImpl;
@@ -219,7 +219,7 @@ impl MemoryManager for UnifiedMemoryManager {
                 let phys_addr = frame_addr + (i * 4096);
                 let virt_addr = virtual_addr + (i * 4096);
                 self.page_table_manager
-                    .map_page(virt_addr, phys_addr, PageFlags::PRESENT | PageFlags::WRITABLE)?;
+                    .map_page(virt_addr, phys_addr, PageFlags::PRESENT | PageFlags::WRITABLE, &mut self.frame_allocator)?;
             }
 
             Ok(virtual_addr)
@@ -259,7 +259,7 @@ impl MemoryManager for UnifiedMemoryManager {
             for i in 0..count {
                 let vaddr = virtual_addr + (i * 4096);
                 let paddr = physical_addr + (i * 4096);
-                self.page_table_manager.map_page(vaddr, paddr, PageFlags::PRESENT | PageFlags::WRITABLE)?;
+                self.page_table_manager.map_page(vaddr, paddr, PageFlags::PRESENT | PageFlags::WRITABLE, &mut self.frame_allocator)?;
             }
             Ok(())
         })
@@ -432,13 +432,14 @@ impl PageTableHelper for UnifiedMemoryManager {
         virtual_addr: usize,
         physical_addr: usize,
         flags: PageFlags,
+        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
     ) -> SystemResult<()> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
 
         self.page_table_manager
-            .map_page(virtual_addr, physical_addr, flags)
+            .map_page(virtual_addr, physical_addr, flags, frame_allocator)
     }
 
     fn unmap_page(&mut self, virtual_addr: usize) -> SystemResult<()> {
@@ -700,6 +701,7 @@ impl UnifiedMemoryManager {
                     virt_addr,
                     frame,
                     PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER_ACCESSIBLE,
+                    &mut self.frame_allocator,
                 )?;
             }
 

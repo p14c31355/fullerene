@@ -4,7 +4,7 @@
 
 use crate::*;
 use petroleum::common::logging::{SystemError, SystemResult};
-use x86_64::structures::paging::PageTableFlags as PageFlags;
+use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
 
 // Placeholder for hardware-related traits that may need to be defined
 pub trait HardwareDevice: Initializable + ErrorLogging {
@@ -75,7 +75,7 @@ pub trait ProcessMemoryManager {
 }
 
 pub trait PageTableHelper {
-    fn map_page(&mut self, virtual_addr: usize, physical_addr: usize, flags: PageFlags) -> SystemResult<()>;
+    fn map_page(&mut self, virtual_addr: usize, physical_addr: usize, flags: PageFlags, frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>) -> SystemResult<()>;
     fn unmap_page(&mut self, virtual_addr: usize) -> SystemResult<()>;
     fn translate_address(&self, virtual_addr: usize) -> SystemResult<usize>;
     fn set_page_flags(&mut self, virtual_addr: usize, flags: PageFlags) -> SystemResult<()>;
