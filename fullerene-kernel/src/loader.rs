@@ -6,7 +6,7 @@
 use crate::{
     memory_management::ProcessPageTable,
     process,
-    PageFlags, PageTableHelper, SystemError,
+    memory_management::SystemError
 };
 use core::ptr;
 use x86_64::structures::paging::FrameAllocator;
@@ -163,7 +163,7 @@ fn load_segment(
     // Check that the virtual address range is not already mapped
     for page_idx in 0..num_pages {
         let page_vaddr = VirtAddr::new(vaddr + page_idx * 4096);
-        if (&*page_table).translate_address(page_vaddr.as_u64() as usize).is_ok() {
+        if crate::memory_management::PageTableHelper::translate_address((&*page_table), page_vaddr.as_u64() as usize).is_ok() {
             return Err(LoadError::AddressAlreadyMapped);
         }
     }
@@ -181,7 +181,7 @@ fn load_segment(
             .ok_or(LoadError::OutOfMemory)?;
 
         // Map the virtual page to the physical frame
-        let mut flags = PageFlags::new();
+        let mut flags = crate::memory_management::PageFlags::new();
         flags.present = true;
         flags.user_accessible = true;
         if ph.flags & PF_W != 0 {
