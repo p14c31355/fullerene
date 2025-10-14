@@ -4,13 +4,10 @@
 //! the MemoryManager, ProcessMemoryManager, PageTableHelper, and FrameAllocator traits.
 
 // Define macros before using super for overlay
-extern crate alloc;
-extern crate spin;
-extern crate core;
 use alloc::collections::BTreeMap;
 use spin::Mutex;
 
-use core::ops::{Deref, DerefMut};
+use static_assertions::assert_eq_size;
 
 use crate::traits::{
     ErrorLogging,
@@ -129,39 +126,7 @@ macro_rules! with_current_process_manager {
     };
 }
 
-// Generic wrapper for managed resources
-pub struct ManagedResource<T> {
-    inner: T,
-    initialized: bool,
-}
 
-impl<T> ManagedResource<T> {
-    pub fn new(inner: T) -> Self {
-        Self { inner, initialized: false }
-    }
-
-    pub fn init(&mut self) -> SystemResult<()> {
-        self.initialized = true;
-        Ok(())
-    }
-
-    pub fn is_initialized(&self) -> bool {
-        self.initialized
-    }
-}
-
-impl<T> Deref for ManagedResource<T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl<T> DerefMut for ManagedResource<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
-    }
-}
 
 // Memory management error types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -15,48 +15,33 @@ const PROMPT: &str = "fullerene> ";
 type CommandFn = fn(&[&str]) -> i32;
 
 /// Command entry
+#[derive(Debug)]
 struct CommandEntry {
     name: &'static str,
     description: &'static str,
     function: CommandFn,
 }
 
-static COMMANDS: &[CommandEntry] = &[
-    CommandEntry {
-        name: "help",
-        description: "Show available commands",
-        function: help_command,
-    },
-    CommandEntry {
-        name: "ps",
-        description: "Show process list",
-        function: ps_command,
-    },
-    CommandEntry {
-        name: "echo",
-        description: "Print text",
-        function: echo_command,
-    },
-    CommandEntry {
-        name: "clear",
-        description: "Clear screen",
-        function: clear_command,
-    },
-    CommandEntry {
-        name: "uname",
-        description: "Show system information",
-        function: uname_command,
-    },
-    CommandEntry {
-        name: "kill",
-        description: "Kill a process (usage: kill <pid>)",
-        function: kill_command,
-    },
-    CommandEntry {
-        name: "exit",
-        description: "Exit shell",
-        function: exit_command,
-    },
+macro_rules! create_commands_array {
+    ($(($name:expr, $desc:expr, $func:expr)),* $(,)?) => {
+        &[$(
+            CommandEntry {
+                name: $name,
+                description: $desc,
+                function: $func,
+            }
+        ),*]
+    };
+}
+
+static COMMANDS: &[CommandEntry] = create_commands_array![
+    ("help", "Show available commands", help_command),
+    ("ps", "Show process list", ps_command),
+    ("echo", "Print text", echo_command),
+    ("clear", "Clear screen", clear_command),
+    ("uname", "Show system information", uname_command),
+    ("kill", "Kill a process (usage: kill <pid>)", kill_command),
+    ("exit", "Exit shell", exit_command),
 ];
 
 // Shell main loop
@@ -174,6 +159,8 @@ fn process_command(line: &str) -> bool {
     print!("Type 'help' for available commands.\n");
     true
 }
+
+
 
 // Command implementations
 fn help_command(_args: &[&str]) -> i32 {

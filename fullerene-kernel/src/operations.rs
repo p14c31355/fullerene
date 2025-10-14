@@ -1,28 +1,5 @@
 //! Utility functions, macros, and operation helpers
 
-// Buffer operations trait
-pub trait BufferOps<T> {
-    fn write_at(&mut self, index: usize, value: T);
-    fn read_at(&self, index: usize) -> Option<&T>;
-    fn clear_with(&mut self, value: T) where T: Clone;
-}
-
-impl<T: Clone> BufferOps<T> for [T] {
-    fn write_at(&mut self, index: usize, value: T) {
-        if index < self.len() {
-            self[index] = value;
-        }
-    }
-
-    fn read_at(&self, index: usize) -> Option<&T> {
-        self.get(index)
-    }
-
-    fn clear_with(&mut self, value: T) {
-        self.fill(value);
-    }
-}
-
 pub mod port_operations {
     use x86_64::instructions::port::{Port, PortWrite};
 
