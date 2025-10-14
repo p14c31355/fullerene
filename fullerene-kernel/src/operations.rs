@@ -110,7 +110,7 @@ macro_rules! buffered_write {
 macro_rules! generic_memory_operation {
     ($self:expr, $operation:expr) => {
         if !$self.is_initialized() {
-            return Err(crate::errors::SystemError::InternalError);
+            return Err(SystemError::InternalError);
         }
         $operation
     };
