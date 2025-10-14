@@ -15,6 +15,10 @@ impl PageFlags {
         PageFlags(0) // Placeholder implementation
     }
 
+    pub fn user_data() -> Self {
+        PageFlags(0) // Placeholder implementation for user data
+    }
+
     pub fn new(flags: u64) -> Self {
         PageFlags(flags)
     }

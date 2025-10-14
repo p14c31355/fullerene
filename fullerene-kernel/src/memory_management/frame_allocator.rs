@@ -2,6 +2,7 @@
 //!
 //! This module provides physical frame allocation and deallocation using a bitmap-based approach.
 
+use super::*;
 use crate::*;
 
 use super::*;
@@ -33,7 +34,7 @@ impl BitmapFrameAllocator {
     pub fn init_with_memory_map(
         &mut self,
         memory_map: &'static [petroleum::page_table::EfiMemoryDescriptor],
-    ) -> crate::SystemResult<()> {
+    ) -> SystemResult<()> {
         // Calculate total memory and initialize bitmap
         let mut total_frames = 0usize;
 
@@ -122,9 +123,9 @@ impl BitmapFrameAllocator {
 
 // Implementation of FrameAllocator trait for BitmapFrameAllocator
 impl FrameAllocator for BitmapFrameAllocator {
-    fn allocate_frame(&mut self) -> crate::SystemResult<usize> {
+    fn allocate_frame(&mut self) -> SystemResult<usize> {
         if !self.initialized {
-            return Err(crate::SystemError::InternalError);
+            return Err(SystemError::InternalError);
         }
 
         if let Some(frame_index) = self.find_next_free_frame(self.next_free_frame) {
@@ -133,13 +134,13 @@ impl FrameAllocator for BitmapFrameAllocator {
 
             Ok(frame_index * 4096)
         } else {
-            Err(crate::SystemError::MemOutOfMemory)
+            Err(SystemError::MemOutOfMemory)
         }
     }
 
-    fn free_frame(&mut self, frame_addr: usize) -> crate::SystemResult<()> {
+    fn free_frame(&mut self, frame_addr: usize) -> SystemResult<()> {
         if !self.initialized {
-            return Err(crate::SystemError::InternalError);
+            return Err(SystemError::InternalError);
         }
 
         let frame_index = frame_addr / 4096;
@@ -147,13 +148,13 @@ impl FrameAllocator for BitmapFrameAllocator {
             self.set_frame_free(frame_index);
             Ok(())
         } else {
-            Err(crate::SystemError::InvalidArgument)
+            Err(SystemError::InvalidArgument)
         }
     }
 
-    fn allocate_contiguous_frames(&mut self, count: usize) -> crate::SystemResult<usize> {
+    fn allocate_contiguous_frames(&mut self, count: usize) -> SystemResult<usize> {
         if !self.initialized {
-            return Err(crate::SystemError::InternalError);
+            return Err(SystemError::InternalError);
         }
 
         // Find contiguous free frames
@@ -180,17 +181,17 @@ impl FrameAllocator for BitmapFrameAllocator {
             }
         }
 
-        Err(crate::SystemError::MemOutOfMemory)
+        Err(SystemError::MemOutOfMemory)
     }
 
-    fn free_contiguous_frames(&mut self, start_addr: usize, count: usize) -> crate::SystemResult<()> {
+    fn free_contiguous_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()> {
         if !self.initialized {
-            return Err(crate::SystemError::InternalError);
+            return Err(SystemError::InternalError);
         }
 
         let start_frame = start_addr / 4096;
         if start_frame + count > self.frame_count {
-            return Err(crate::SystemError::InvalidArgument);
+            return Err(SystemError::InvalidArgument);
         }
 
         for i in 0..count {
@@ -216,14 +217,14 @@ impl FrameAllocator for BitmapFrameAllocator {
         available
     }
 
-    fn reserve_frames(&mut self, start_addr: usize, count: usize) -> crate::SystemResult<()> {
+    fn reserve_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()> {
         if !self.initialized {
-            return Err(crate::SystemError::InternalError);
+            return Err(SystemError::InternalError);
         }
 
         let start_frame = start_addr / 4096;
         if start_frame + count > self.frame_count {
-            return Err(crate::SystemError::InvalidArgument);
+            return Err(SystemError::InvalidArgument);
         }
 
         for i in 0..count {
@@ -233,14 +234,14 @@ impl FrameAllocator for BitmapFrameAllocator {
         Ok(())
     }
 
-    fn release_frames(&mut self, start_addr: usize, count: usize) -> crate::SystemResult<()> {
+    fn release_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()> {
         if !self.initialized {
-            return Err(crate::SystemError::InternalError);
+            return Err(SystemError::InternalError);
         }
 
         let start_frame = start_addr / 4096;
         if start_frame + count > self.frame_count {
-            return Err(crate::SystemError::InvalidArgument);
+            return Err(SystemError::InvalidArgument);
         }
 
         for i in 0..count {

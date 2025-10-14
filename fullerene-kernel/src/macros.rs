@@ -12,7 +12,7 @@
 #[macro_export]
 macro_rules! log_error {
     ($error:expr, $context:expr) => {
-        $crate::log_error(&$error, $context)
+        $crate::petroleum::common::logging::log_error(&$error, $context)
     };
 }
 

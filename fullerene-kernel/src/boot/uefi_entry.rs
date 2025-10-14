@@ -4,12 +4,14 @@ use crate::boot::FALLBACK_HEAP_START_ADDR;
 use crate::graphics::framebuffer::FramebufferLike;
 use crate::heap;
 use crate::hlt_loop;
+use crate::memory::find_heap_start;
 use crate::{gdt, graphics, interrupts, memory};
 use alloc::boxed::Box;
 use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
 use petroleum::{debug_log, write_serial_bytes};
+use crate::kernel_log;
 use x86_64::PhysAddr;
 
 /// Helper function to write a string to VGA buffer at specified row

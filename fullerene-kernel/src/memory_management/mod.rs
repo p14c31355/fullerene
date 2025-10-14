@@ -12,14 +12,16 @@ use spin::Mutex;
 
 use core::ops::{Deref, DerefMut};
 
-use crate::{
+use crate::traits::{
     ErrorLogging,
     FrameAllocator,
     Initializable,
     MemoryManager,
-    PageFlags,
     PageTableHelper,
     ProcessMemoryManager,
+};
+use crate::PageFlags;
+use crate::{
     SystemError,
     SystemResult,
 };
@@ -712,13 +714,24 @@ impl UnifiedMemoryManager {
 
     /// Copy data from kernel space to user space
     fn copy_to_user_space(&mut self, user_addr: usize, data: &[u8]) -> SystemResult<()> {
-        for (offset, &byte) in data.iter().enumerate() {
+        for (i, chunk) in data.chunks(4096).enumerate() {
+            let offset = i * 4096;
             let virt_addr = user_addr + offset;
+
+            // Ensure page is mapped by allocating if necessary
+            if self.page_table_manager.translate_address(virt_addr).is_err() {
+                let frame = self.frame_allocator.allocate_frame()?;
+                self.page_table_manager.map_page(
+                    virt_addr,
+                    frame,
+                    PageFlags::user_data(),
+                )?;
+            }
 
             if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
                 unsafe {
                     let phys_ptr = (phys_addr as *mut u8).add(offset % 4096);
-                    *phys_ptr = byte;
+                    core::ptr::copy_nonoverlapping(chunk.as_ptr(), phys_ptr, chunk.len());
                 }
             } else {
                 return Err(SystemError::InvalidArgument);

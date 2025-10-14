@@ -59,8 +59,13 @@ pub use types::PageFlags;
 // Re-export consolidated logging system from petroleum
 pub use petroleum::common::logging::*;
 
+// Re-export from errors module to avoid conflicts
+pub use errors::{SystemError, SystemResult};
+
 // Re-export traits with explicit imports to avoid conflicts
-pub use traits::{HardwareDevice, SyscallHandler, MemoryManager, ProcessMemoryManager,
+#[macro_use]
+pub use traits::HardwareDevice;
+pub use traits::{SyscallHandler, MemoryManager, ProcessMemoryManager,
                  PageTableHelper, FrameAllocator, Initializable, ErrorLogging};
 
 // Re-export memory management types
