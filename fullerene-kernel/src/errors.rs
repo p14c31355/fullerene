@@ -35,6 +35,7 @@ pub enum SystemError {
 
     // General errors
     NotImplemented = 400,
+    NotSupported = 401,
     InternalError = 500,
     UnknownError = 999,
 }

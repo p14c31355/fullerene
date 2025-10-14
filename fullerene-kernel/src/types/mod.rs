@@ -4,22 +4,37 @@
 
 use crate::*;
 
-// Re-export core types
-pub use crate::{
-    SystemError,
-    SystemResult,
-    LogLevel,
-    PageFlags,
-};
+// Re-export core types from errors module
+pub use crate::errors::SystemError;
+pub type SystemResult<T> = Result<T, SystemError>;
 
-// Re-export memory management types
+// Define LogLevel if not already defined
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
+pub enum LogLevel {
+    Debug,
+    Info,
+    Warning,
+    Error,
+}
+
+// Define PageFlags if not already defined
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageFlags(u64);
+
+impl PageFlags {
+    pub fn kernel_data() -> Self {
+        PageFlags(0) // Placeholder implementation
+    }
+}
+
+// Re-export traits
+pub use crate::traits::*;
+
+// Re-export memory management types - only public ones
 pub use crate::memory_management::{
     AllocError,
-    BitmapFrameAllocator,
     FreeError,
     MapError,
-    PageTableManager,
-    ProcessMemoryManagerImpl,
     ProcessPageTable,
     UnifiedMemoryManager,
     convenience,

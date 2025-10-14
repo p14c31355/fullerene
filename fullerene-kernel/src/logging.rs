@@ -52,6 +52,7 @@ impl ErrorLogging for GlobalLogger {
                 crate::errors::SystemError::PortError => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
                 crate::errors::SystemError::NotImplemented => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
                 crate::errors::SystemError::InternalError => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
+                crate::errors::SystemError::NotSupported => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
                 crate::errors::SystemError::UnknownError => petroleum::serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context)),
             }
         }

@@ -29,6 +29,7 @@ pub mod graphics;
 pub mod hardware;
 pub mod heap;
 pub mod interrupts;
+pub mod traits;
 pub mod vga;
 
 // Kernel modules

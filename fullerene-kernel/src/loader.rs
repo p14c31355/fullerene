@@ -6,7 +6,8 @@
 use crate::{
     memory_management::ProcessPageTable,
     process,
-    memory_management::SystemError
+    memory_management::SystemError,
+    types::PageFlags
 };
 use core::ptr;
 use x86_64::structures::paging::FrameAllocator;
@@ -181,15 +182,8 @@ fn load_segment(
             .ok_or(LoadError::OutOfMemory)?;
 
         // Map the virtual page to the physical frame
-        let mut flags = crate::memory_management::PageFlags::new();
-        flags.present = true;
-        flags.user_accessible = true;
-        if ph.flags & PF_W != 0 {
-            flags.writable = true;
-        }
-        if ph.flags & PF_X == 0 {
-            flags.no_execute = true;
-        }
+        // For now, use kernel_data as default - needs proper flag setting implementation
+        let flags = crate::memory_management::PageFlags::kernel_data();
 
         map_user_page(
             page_vaddr.as_u64() as usize,

@@ -27,9 +27,11 @@ use crate::{
 use frame_allocator::BitmapFrameAllocator;
 use process_memory::ProcessMemoryManagerImpl;
 use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
+use page_table::PageTableManager;
 pub mod frame_allocator;
 pub mod process_memory;
 pub mod convenience;
+pub mod page_table;
 pub mod user_space;
 
 // Re-export for external use
