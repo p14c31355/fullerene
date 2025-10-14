@@ -36,7 +36,7 @@ macro_rules! init_component {
 macro_rules! ensure {
     ($condition:expr, $error:expr) => {
         if !$condition {
-            $crate::log_error!($error, stringify!($condition));
+            petroleum::log_error!($error, stringify!($condition));
             return Err(*$error);
         }
     };
@@ -52,7 +52,7 @@ macro_rules! ensure {
 macro_rules! ensure_with_msg {
     ($condition:expr, $error:expr, $msg:expr) => {
         if !$condition {
-            $crate::log_error!($error, $msg);
+            petroleum::log_error!($error, $msg);
             return Err(*$error);
         }
     };
@@ -70,7 +70,7 @@ macro_rules! option_to_result {
         match $option {
             Some(value) => Ok(value),
             None => {
-                $crate::log_error!($error, "Option was None");
+                petroleum::log_error!($error, "Option was None");
                 Err(*$error)
             }
         }
@@ -89,7 +89,7 @@ macro_rules! try_or_log {
         match $expr {
             Ok(value) => value,
             Err(e) => {
-                $crate::log_error!(e, $context);
+                petroleum::log_error!(e, $context);
                 return Err(e);
             }
         }

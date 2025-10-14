@@ -16,6 +16,10 @@ pub use petroleum::common::logging::{SystemError, SystemResult};
 
 // Remove ambiguous logging function imports to use macro-based logging exclusively
 
+// Let petroleum provide its logging macros
+#[macro_use]
+extern crate petroleum;
+
 extern crate alloc;
 
 use spin::Once;
@@ -41,9 +45,6 @@ pub mod context_switch; // Context switching
 pub mod fs; // Basic filesystem
 pub mod keyboard; // Keyboard input driver
 pub mod loader; // Program loader
-// Let petroleum provide its logging macros
-#[macro_use]
-extern crate petroleum;
 
 pub mod macros; // Logging and utility macros
 pub mod memory_management; // Virtual memory management
