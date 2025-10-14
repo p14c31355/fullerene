@@ -3,10 +3,12 @@
 //! This module provides a centralized device management system that handles
 //! device registration, discovery, and lifecycle management.
 
-use crate::*;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use spin::Mutex;
+
+use crate::traits::{ErrorLogging, HardwareDevice, Initializable};
+use crate::{SystemError, SystemResult};
 
 /// Device information structure
 #[derive(Debug, Clone)]
@@ -58,7 +60,7 @@ impl DeviceManager {
         let device_info = DeviceInfo::new(
             device.device_name(),
             device.device_type(),
-            traits::HardwareDevice::priority(&*device),
+            HardwareDevice::priority(&*device),
         );
 
         // Store device and its info
@@ -127,8 +129,8 @@ impl DeviceManager {
 
         // Sort by priority (higher priority first)
         device_list.sort_by(|a, b| {
-            let a_priority = <dyn HardwareDevice as traits::Initializable>::priority(&*a.device);
-            let b_priority = <dyn HardwareDevice as traits::Initializable>::priority(&*b.device);
+            let a_priority = <dyn HardwareDevice as Initializable>::priority(&*a.device);
+            let b_priority = <dyn HardwareDevice as Initializable>::priority(&*b.device);
             b_priority.cmp(&a_priority)
         });
 

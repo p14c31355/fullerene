@@ -25,9 +25,10 @@ macro_rules! log_error {
 /// ```
 #[macro_export]
 macro_rules! log_warning {
-    ($message:expr) => {
-        $crate::log_warning($message)
-    };
+    ($message:expr) => {{
+        use petroleum::common::logging;
+        logging::log_warning($message)
+    }};
 }
 
 /// Log an info message

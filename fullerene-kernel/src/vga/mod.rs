@@ -91,14 +91,7 @@ impl TextBufferOperations for VgaBuffer {
         }
     }
 
-    fn scroll_up(&mut self) {
-        for row in 1..BUFFER_HEIGHT {
-            for col in 0..BUFFER_WIDTH {
-                self.buffer[row - 1][col] = self.buffer[row][col];
-            }
-        }
-        self.clear_row(BUFFER_HEIGHT - 1);
-    }
+
 
     fn write_byte(&mut self, byte: u8) {
         match byte {
@@ -124,28 +117,12 @@ impl TextBufferOperations for VgaBuffer {
         }
     }
 
-    fn write_string(&mut self, s: &str) {
-        for byte in s.bytes() {
-            self.write_byte(byte);
-        }
-    }
-
     fn new_line(&mut self) {
         self.column_position = 0;
         if self.row_position < BUFFER_HEIGHT - 1 {
             self.row_position += 1;
         } else {
             self.scroll_up();
-        }
-    }
-
-    fn clear_row(&mut self, row: usize) {
-        let blank = ScreenChar {
-            ascii_character: b' ',
-            color_code: self.color_code,
-        };
-        for col in 0..BUFFER_WIDTH {
-            self.buffer[row][col] = blank;
         }
     }
 
@@ -245,6 +222,17 @@ mod tests {
                 }
             }
             self.clear_row(self.height - 1);
+        }
+
+        fn clear_row(&mut self, row: usize) {
+            let blank_char = ScreenChar {
+                ascii_character: b' ',
+                color_code: self.color_code,
+            };
+            for col in 0..self.width {
+                let index = row * self.width + col;
+                self.buffer[index] = blank_char;
+            }
         }
     }
 

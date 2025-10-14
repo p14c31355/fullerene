@@ -1,22 +1,23 @@
-use petroleum::{Color, ColorCode, ScreenChar};
+use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations};
 
-use crate::traits::{ErrorLogging, HardwareDevice, Initializable};
+use crate::traits::{HardwareDevice, Initializable, ErrorLogging};
+use crate::{SystemError, SystemResult};
 
 // Constants to reduce magic numbers
 const VGA_WIDTH: usize = 80;
 const VGA_HEIGHT: usize = 25;
 const VGA_BUFFER_ADDR: usize = 0xb8000;
 
-/// VGA text mode device implementation
 #[derive(Clone)]
-pub struct VgaDevice {
+/// VGA text mode buffer wrapper that implements TextBufferOperations
+pub struct VgaBuffer {
     enabled: bool,
     color_code: ColorCode,
     cursor_row: usize,
     cursor_col: usize,
 }
 
-impl VgaDevice {
+impl VgaBuffer {
     pub fn new() -> Self {
         Self {
             enabled: false,
@@ -26,68 +27,99 @@ impl VgaDevice {
         }
     }
 
-    pub fn set_color(&mut self, foreground: Color, background: Color) {
-        self.color_code = ColorCode::new(foreground, background);
-    }
-
-    pub fn write_string(&mut self, s: &str) {
+    pub fn get_buffer(&mut self) -> Option<&mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]> {
         if self.enabled {
-            let buffer = unsafe { &mut *(VGA_BUFFER_ADDR as *mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) };
-            self.write_string_to_buffer(s, buffer);
+            Some(unsafe { &mut *(VGA_BUFFER_ADDR as *mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) })
+        } else {
+            None
         }
     }
+}
 
-    fn write_string_to_buffer(&mut self, s: &str, buffer: &mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) {
-        for byte in s.bytes() {
-            match byte {
-                b'\n' => self.handle_newline(buffer),
-                byte => self.handle_character(byte, buffer),
+impl TextBufferOperations for VgaBuffer {
+    fn get_width(&self) -> usize {
+        VGA_WIDTH
+    }
+
+    fn get_height(&self) -> usize {
+        VGA_HEIGHT
+    }
+
+    fn get_color_code(&self) -> ColorCode {
+        self.color_code
+    }
+
+    fn get_position(&self) -> (usize, usize) {
+        (self.cursor_row, self.cursor_col)
+    }
+
+    fn set_position(&mut self, row: usize, col: usize) {
+        self.cursor_row = row;
+        self.cursor_col = col;
+    }
+
+    fn set_char_at(&mut self, row: usize, col: usize, chr: ScreenChar) {
+        if self.enabled {
+            if let Some(buffer) = self.get_buffer() {
+                buffer[row][col] = chr;
             }
         }
     }
 
-    fn handle_newline(&mut self, buffer: &mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) {
-        self.cursor_row += 1;
-        self.cursor_col = 0;
-        if self.cursor_row >= VGA_HEIGHT {
-            self.scroll_buffer(buffer);
-            self.cursor_row = VGA_HEIGHT - 1;
-        }
-    }
-
-    fn handle_character(&mut self, byte: u8, buffer: &mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) {
-        if self.cursor_col >= VGA_WIDTH {
-            self.handle_newline(buffer);
-        }
-
-        buffer[self.cursor_row][self.cursor_col] = ScreenChar {
-            ascii_character: byte,
-            color_code: self.color_code,
-        };
-        self.cursor_col += 1;
-    }
-
-    fn scroll_buffer(&self, buffer: &mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) {
-        for row in 1..VGA_HEIGHT {
-            for col in 0..VGA_WIDTH {
-                buffer[row - 1][col] = buffer[row][col];
+    fn get_char_at(&self, row: usize, col: usize) -> ScreenChar {
+        if self.enabled {
+            // Get buffer directly for immutable access
+            let buffer = unsafe { &*(VGA_BUFFER_ADDR as *const [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) };
+            buffer[row][col]
+        } else {
+            ScreenChar {
+                ascii_character: b' ',
+                color_code: self.color_code,
             }
         }
-        self.clear_row(buffer, VGA_HEIGHT - 1);
     }
 
-    fn clear_row(&self, buffer: &mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT], row: usize) {
-        let blank = ScreenChar { ascii_character: b' ', color_code: self.color_code };
-        for col in 0..VGA_WIDTH {
-            buffer[row][col] = blank;
+    fn scroll_up(&mut self) {
+        if let Some(buffer) = self.get_buffer() {
+            for row in 1..VGA_HEIGHT {
+                for col in 0..VGA_WIDTH {
+                    buffer[row - 1][col] = buffer[row][col];
+                }
+            }
+            self.clear_row(VGA_HEIGHT - 1);
         }
     }
 
-    fn clear_buffer(&self, buffer: &mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) {
-        for row in 0..VGA_HEIGHT {
-            self.clear_row(buffer, row);
+    fn clear_row(&mut self, row: usize) {
+        if self.enabled {
+            let color_code = self.color_code;
+            if let Some(buffer) = self.get_buffer() {
+                let blank = ScreenChar { ascii_character: b' ', color_code };
+                for col in 0..VGA_WIDTH {
+                    buffer[row][col] = blank;
+                }
+            }
         }
     }
+}
+
+/// VGA text mode device implementation
+#[derive(Clone)]
+pub struct VgaDevice {
+    buffer: VgaBuffer,
+}
+
+impl VgaDevice {
+    pub fn new() -> Self {
+        Self {
+            buffer: VgaBuffer::new(),
+        }
+    }
+
+    pub fn set_color(&mut self, foreground: Color, background: Color) {
+        self.buffer.color_code = ColorCode::new(foreground, background);
+    }
+
 }
 
 impl Initializable for VgaDevice {
@@ -138,30 +170,38 @@ impl HardwareDevice for VgaDevice {
     }
 
     fn enable(&mut self) -> SystemResult<()> {
-        self.enabled = true;
+        self.buffer.enabled = true;
         log_info!("VGA device enabled");
         Ok(())
     }
 
     fn disable(&mut self) -> SystemResult<()> {
-        self.enabled = false;
+        self.buffer.enabled = false;
         log_info!("VGA device disabled");
         Ok(())
     }
 
     fn reset(&mut self) -> SystemResult<()> {
-        if self.enabled {
-            let buffer = unsafe { &mut *(VGA_BUFFER_ADDR as *mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) };
-            self.clear_buffer(buffer);
-            self.cursor_row = 0;
-            self.cursor_col = 0;
+        if self.buffer.enabled {
+            // Clear the entire buffer
+            let color_code = self.buffer.color_code;
+            if let Some(buffer) = self.buffer.get_buffer() {
+                for row in 0..VGA_HEIGHT {
+                    let blank = ScreenChar { ascii_character: b' ', color_code };
+                    for col in 0..VGA_WIDTH {
+                        buffer[row][col] = blank;
+                    }
+                }
+            }
+            self.buffer.cursor_row = 0;
+            self.buffer.cursor_col = 0;
         }
         log_info!("VGA device reset");
         Ok(())
     }
 
     fn is_enabled(&self) -> bool {
-        self.enabled
+        self.buffer.enabled
     }
 
     fn priority(&self) -> i32 {

@@ -11,6 +11,11 @@
 #![feature(sync_unsafe_cell)]
 #![feature(vec_into_raw_parts)]
 
+// Re-export consolidated logging types from petroleum - must come before traits mod to be available in traits.rs
+pub use petroleum::common::logging::{SystemError, SystemResult};
+
+// Remove ambiguous logging function imports to use macro-based logging exclusively
+
 extern crate alloc;
 
 use spin::Once;
@@ -37,7 +42,8 @@ pub mod fs; // Basic filesystem
 pub mod keyboard; // Keyboard input driver
 pub mod loader; // Program loader
 // Logging macros with #[macro_export] are available at crate root
-// Logging macros with #[macro_export] are exported globally
+#[macro_use]
+extern crate petroleum;
 
 pub mod macros; // Logging and utility macros
 pub mod memory_management; // Virtual memory management
@@ -54,14 +60,6 @@ pub mod test_process;
 // Re-export key types and functions from submodules for convenience
 pub use initializer::{initialize_system, register_system_component};
 pub use types::PageFlags;
-
-
-
-// Re-export consolidated logging system from petroleum
-pub use petroleum::common::logging::{log_info, log_warning, log_debug, log_trace, log_error, SystemError as PetroleumSystemError, SystemResult as PetroleumSystemResult};
-
-// Re-export from errors module to avoid conflicts - but prefer petroleum's for consistency
-pub use petroleum::common::logging::{SystemError, SystemResult};
 
 // Re-export traits with explicit imports to avoid conflicts
 
