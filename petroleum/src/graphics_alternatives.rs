@@ -722,7 +722,7 @@ pub mod graphics_alternatives {
         register: u8,
     ) -> Result<u32, EfiStatus> {
         // Get UEFI system table
-        let system_table_ptr = UEFI_SYSTEM_TABLE.lock().as_ref().cloned();
+        let system_table_ptr = crate::UEFI_SYSTEM_TABLE.lock().as_ref().cloned();
         let system_table = match system_table_ptr {
             Some(ptr) => unsafe { &*ptr.0 },
             None => {

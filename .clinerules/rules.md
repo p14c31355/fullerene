@@ -12,3 +12,5 @@
 - Use helper functions, helper macros, structures, and type generics wherever possible to keep the number of lines of code low.
 
 - Integrate redundant `.rs` files with minimal code into appropriate locations.
+
+Consolidate all duplicated code between sub-crates into the petroleum sub-crate.

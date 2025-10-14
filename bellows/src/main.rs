@@ -200,22 +200,22 @@ fn try_uga_protocol(st: &EfiSystemTable) -> bool {
 /// Provides a fallback framebuffer configuration that the kernel can use.
 fn install_vga_framebuffer_config(st: &EfiSystemTable) {
     petroleum::println!("Installing VGA framebuffer config table for UEFI...");
-    petroleum::serial::_print(format_args!("VGA: About to create config...\n"));
 
-    // Create a basic VGA-compatible framebuffer config
-    // Standard VGA resolution: 320x200, 8-bit color
+    // Create an improved VGA-compatible framebuffer config
+    // Use higher resolution VGA modes for better compatibility and to prevent logo scattering
     let config = FullereneFramebufferConfig {
         address: 0xA0000, // Standard VGA memory address
-        width: 320,
-        height: 200,
+        width: 800,       // Higher resolution to prevent logo scattering
+        height: 600,      // Higher resolution for better display
         pixel_format: EfiGraphicsPixelFormat::PixelFormatMax, // Special marker for VGA mode
         bpp: 8,
-        stride: 320,
+        stride: 800,      // Match width for VGA modes
     };
 
     let config_ptr = Box::leak(Box::new(config));
 
     let bs = unsafe { &*st.boot_services };
+
     let status = unsafe {
         (bs.install_configuration_table)(
             FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
@@ -225,20 +225,12 @@ fn install_vga_framebuffer_config(st: &EfiSystemTable) {
 
     if EfiStatus::from(status) == EfiStatus::Success {
         petroleum::println!("VGA framebuffer config table installed successfully.");
-        petroleum::serial::_print(format_args!(
-            "VGA: Framebuffer config table installed successfully at {:#x}, {}x{}, {} BPP.\n",
-            config.address, config.width, config.height, config.bpp
-        ));
     } else {
         let _ = unsafe { Box::from_raw(config_ptr) };
         petroleum::println!(
             "Failed to install VGA framebuffer config table (status: {:#x})",
             status
         );
-        petroleum::serial::_print(format_args!(
-            "VGA: Failed to install config table, status: {:#x}.\n",
-            status
-        ));
     }
 }
 
