@@ -10,6 +10,7 @@ pub mod bare_metal_pci;
 pub mod common;
 pub mod graphics;
 pub mod graphics_alternatives;
+pub mod hardware;
 pub mod page_table;
 pub mod serial;
 pub mod uefi_helpers;
