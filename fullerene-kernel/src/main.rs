@@ -37,7 +37,7 @@ use spin::Once;
 #[cfg(target_os = "uefi")]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    common_panic!(_info);
+petroleum::common_panic!(_info);
 }
 
 /// Panic handler for BIOS boot path

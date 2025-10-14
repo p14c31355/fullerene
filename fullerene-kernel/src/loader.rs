@@ -5,7 +5,6 @@
 
 use crate::memory_management::ProcessPageTable;
 use crate::process;
-use crate::errors::{SystemError, SystemResult};
 use crate::traits::PageTableHelper;
 use core::ptr;
 use x86_64::structures::paging::FrameAllocator;
@@ -202,16 +201,7 @@ impl From<crate::memory_management::FreeError> for LoadError {
     }
 }
 
-impl From<SystemError> for LoadError {
-    fn from(error: SystemError) -> Self {
-        match error {
-            SystemError::MemOutOfMemory => LoadError::OutOfMemory,
-            SystemError::InvalidArgument => LoadError::InvalidFormat,
-            SystemError::InternalError => LoadError::MappingFailed,
-            _ => LoadError::MappingFailed,
-        }
-    }
-}
+
 
 impl From<petroleum::common::logging::SystemError> for LoadError {
     fn from(error: petroleum::common::logging::SystemError) -> Self {

@@ -1,7 +1,7 @@
 use crate::graphics;
 use crate::hlt_loop;
 use crate::init::init_common;
-use petroleum::serial::_print as kernel_log;
+use petroleum::kernel_log;
 use petroleum::common::VgaFramebufferConfig;
 
 #[cfg(not(target_os = "uefi"))]

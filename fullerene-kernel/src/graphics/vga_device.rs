@@ -1,8 +1,6 @@
 use petroleum::{Color, ColorCode, ScreenChar};
 
-use crate::SystemResult;
 use crate::traits::{ErrorLogging, HardwareDevice, Initializable};
-use crate::{log_debug, log_error, log_info, log_trace, log_warning, SystemError};
 
 // Constants to reduce magic numbers
 const VGA_WIDTH: usize = 80;

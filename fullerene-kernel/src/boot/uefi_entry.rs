@@ -11,7 +11,6 @@ use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
 use petroleum::{debug_log, write_serial_bytes};
-use crate::kernel_log;
 use x86_64::PhysAddr;
 
 /// Helper function to write a string to VGA buffer at specified row

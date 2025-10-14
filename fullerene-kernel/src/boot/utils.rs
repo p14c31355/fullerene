@@ -1,5 +1,4 @@
-use petroleum::common::FullereneFramebufferConfig;
-use crate::kernel_log;
+use petroleum::{common::FullereneFramebufferConfig, kernel_log};
 
 // Helper function to calculate framebuffer size with bpp validation and logging
 pub fn calculate_framebuffer_size(
