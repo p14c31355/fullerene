@@ -64,6 +64,8 @@ macro_rules! kernel_log {
     }};
 }
 
+
+
 // Removed kernel_print macros - moved to fullerene-kernel crate
 
 // Helper for repeated initialization patterns

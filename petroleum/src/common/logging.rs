@@ -39,7 +39,7 @@ pub enum LogLevel {
 pub type SystemResult<T> = Result<T, SystemError>;
 
 /// System error types
-#[derive(Clone, Copy, PartialOrd, PartialEq)]
+#[derive(Clone, Copy, PartialOrd, PartialEq, Debug)]
 pub enum SystemError {
     InvalidSyscall = 0,
     BadFileDescriptor = 1,

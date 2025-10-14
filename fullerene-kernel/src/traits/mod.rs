@@ -2,6 +2,8 @@
 //!
 //! This module defines the core traits used throughout the Fullerene kernel system.
 
+use crate::*;
+
 // Placeholder for hardware-related traits that may need to be defined
 pub trait HardwareDevice: Initializable + ErrorLogging {
     fn device_name(&self) -> &'static str;
