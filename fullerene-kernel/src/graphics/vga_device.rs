@@ -1,7 +1,7 @@
 use petroleum::{Color, ColorCode, ScreenChar};
 
 use crate::errors::SystemError;
-use errors::SystemResult;
+use crate::SystemResult;
 use crate::traits::{ErrorLogging, HardwareDevice, Initializable};
 use crate::{log_debug, log_error, log_info, log_trace, log_warning};
 
