@@ -102,8 +102,15 @@ pub fn load_program(
     //     .unwrap();
     // let process_page_table = &mut process.page_table.as_mut().unwrap();
 
-    // Load program segments - temporarily disabled due to compilation issues
-    /*
+    // Get the process's page table
+    let mut process_list_locked = process::PROCESS_LIST.lock();
+    let process = process_list_locked
+        .iter()
+        .find(|p| p.id == pid)
+        .ok_or(LoadError::InvalidFormat)?;
+    let process_page_table = &process.page_table;
+
+    // Load program segments
     for i in 0..ph_count {
         let ph_offset = ph_offset + i * ph_entry_size;
         if ph_offset + core::mem::size_of::<ProgramHeader>() > image_data.len() {
@@ -114,14 +121,9 @@ pub fn load_program(
 
         // Only load PT_LOAD segments
         if ph.p_type == PT_LOAD {
-            load_segment(ph, image_data, process_page_table)?;
+            load_segment(ph, image_data, process_page_table.as_ref().ok_or(LoadError::InvalidFormat)?)?;
         }
     }
-    */
-
-    // Note: Program segment loading is currently simplified due to page table integration
-    // not being fully implemented. In a complete implementation, we'd load each PT_LOAD
-    // segment to the appropriate virtual addresses and set up the process page table.
 
     Ok(pid)
 }
@@ -130,7 +132,7 @@ pub fn load_program(
 fn load_segment(
     ph: &ProgramHeader,
     image_data: &[u8],
-    page_table: &mut ProcessPageTable,
+    page_table: &ProcessPageTable,
 ) -> Result<(), LoadError> {
     let file_offset = ph.offset as usize;
     let file_size = ph.file_size as usize;
@@ -181,8 +183,8 @@ fn load_segment(
             .ok_or(LoadError::OutOfMemory)?;
 
         // Map the virtual page to the physical frame
-        // For now, use kernel_data as default - needs proper flag setting implementation
-        let flags = PageFlags::kernel_data();
+        // Use user_data flags for user-space programs
+        let flags = PageFlags::user_data();
 
         map_user_page(
             page_vaddr.as_u64() as usize,

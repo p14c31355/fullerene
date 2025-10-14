@@ -31,7 +31,7 @@ impl DeviceInfo {
 /// Device information structure with device
 pub struct DeviceEntry {
     pub device: alloc::boxed::Box<dyn HardwareDevice + Send>,
-    pub info: DeviceInfo,
+    pub device_info: DeviceInfo,
 }
 
 /// Device manager for handling hardware devices
@@ -63,7 +63,7 @@ impl DeviceManager {
 
         // Store device and its info
         let mut devices = self.devices.lock();
-        devices.insert(name, DeviceEntry { device, info: device_info });
+        devices.insert(name, DeviceEntry { device, device_info });
 
         log_info!("Device registered successfully");
         Ok(())
@@ -73,7 +73,7 @@ impl DeviceManager {
     pub fn enable_device(&self, name: &str) -> SystemResult<()> {
         if let Some(device_entry) = self.devices.lock().get_mut(name) {
             device_entry.device.enable()?;
-            device_entry.info.enabled = true;
+            device_entry.device_info.enabled = true;
             log_info!("Device enabled");
             Ok(())
         } else {
@@ -85,7 +85,7 @@ impl DeviceManager {
     pub fn disable_device(&self, name: &str) -> SystemResult<()> {
         if let Some(device_entry) = self.devices.lock().get_mut(name) {
             device_entry.device.disable()?;
-            device_entry.info.enabled = false;
+            device_entry.device_info.enabled = false;
             log_info!("Device disabled");
             Ok(())
         } else {
@@ -169,12 +169,12 @@ impl DeviceManager {
 
     /// Get device information
     pub fn get_device_info(&self, name: &str) -> Option<DeviceInfo> {
-        self.devices.lock().get(name).map(|entry| entry.info.clone())
+        self.devices.lock().get(name).map(|entry| entry.device_info.clone())
     }
 
     /// List all registered devices
     pub fn list_devices(&self) -> Vec<DeviceInfo> {
-        self.devices.lock().values().map(|entry| entry.info.clone()).collect()
+        self.devices.lock().values().map(|entry| entry.device_info.clone()).collect()
     }
 }
 

@@ -11,9 +11,10 @@
 /// ```
 #[macro_export]
 macro_rules! log_error {
-    ($error:expr, $context:expr) => {
-        $crate::petroleum::common::logging::log_error(&$error, $context)
-    };
+    ($error:expr, $context:expr) => {{
+        use petroleum::common::logging;
+        logging::log_error($error, $context)
+    }};
 }
 
 /// Log a warning message
@@ -100,15 +101,7 @@ macro_rules! init_component {
 /// ```
 /// ensure!(ptr.is_some(), SystemError::InvalidArgument);
 /// ```
-#[macro_export]
-macro_rules! ensure {
-    ($condition:expr, $error:expr) => {
-        if !$condition {
-            $crate::log_error!($error, stringify!($condition));
-            return Err($error);
-        }
-    };
-}
+
 
 /// Ensure a condition is true with a custom error message
 ///
