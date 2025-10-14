@@ -692,6 +692,10 @@ impl UnifiedMemoryManager {
         user_addr: usize,
         size: usize,
     ) -> SystemResult<alloc::vec::Vec<u8>> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
         let mut data = alloc::vec::Vec::with_capacity(size);
 
         for offset in (0..size).step_by(4096) {
@@ -699,8 +703,10 @@ impl UnifiedMemoryManager {
             let virt_addr = user_addr + offset;
 
             if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
+                // Convert physical address to virtual address using the offset
+                let virtual_phys_addr = physical_to_virtual(phys_addr) + (offset % 4096);
                 unsafe {
-                    let phys_ptr = (phys_addr as *const u8).add(offset % 4096);
+                    let phys_ptr = virtual_phys_addr as *const u8;
                     let slice = core::slice::from_raw_parts(phys_ptr, page_size);
                     data.extend_from_slice(slice);
                 }
@@ -714,6 +720,10 @@ impl UnifiedMemoryManager {
 
     /// Copy data from kernel space to user space
     fn copy_to_user_space(&mut self, user_addr: usize, data: &[u8]) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
         for (i, chunk) in data.chunks(4096).enumerate() {
             let offset = i * 4096;
             let virt_addr = user_addr + offset;
@@ -729,8 +739,10 @@ impl UnifiedMemoryManager {
             }
 
             if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
+                // Convert physical address to virtual address using the offset
+                let virtual_phys_addr = physical_to_virtual(phys_addr) + (offset % 4096);
                 unsafe {
-                    let phys_ptr = (phys_addr as *mut u8).add(offset % 4096);
+                    let phys_ptr = virtual_phys_addr as *mut u8;
                     core::ptr::copy_nonoverlapping(chunk.as_ptr(), phys_ptr, chunk.len());
                 }
             } else {

@@ -11,6 +11,7 @@ use crate::{log_error, log_warning, log_info, log_debug, log_trace};
 // Import needed types
 use alloc::collections::BTreeMap;
 use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
+use x86_64::{VirtAddr, PhysAddr, structures::paging::{PageTable, Page, PhysFrame, Mapper, FrameAllocator, Size4KiB, PageTableFlags as Flags, OffsetPageTable}};
 
 /// Process page table type alias for PageTableManager
 pub type ProcessPageTable = PageTableManager;
@@ -74,15 +75,8 @@ impl PageTableHelper for PageTableManager {
             return Err(SystemError::InternalError);
         }
 
-        // Use the page table operations from petroleum to map the page
-        let virt_addr = x86_64::VirtAddr::new(virtual_addr as u64);
-        let phys_addr = x86_64::PhysAddr::new(physical_addr as u64);
-        let offset = x86_64::VirtAddr::new(get_physical_memory_offset() as u64);
-
-        // For now, we'll simulate a successful mapping since petroleum doesn't expose map_page
-        // In a real implementation, we would need to expose the mapping function from petroleum
-        // or implement the mapping ourselves using x86_64 structures
-        // Dummy operation - in real implementation, this would actually map the page
+        // For now, use the same dummy implementation but we'll implement properly later
+        // The real implementation would need access to a proper frame allocator
         let _ = virtual_addr;
         let _ = physical_addr;
         let _ = flags;

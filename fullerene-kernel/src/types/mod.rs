@@ -12,11 +12,23 @@ pub struct PageFlags(u64);
 
 impl PageFlags {
     pub fn kernel_data() -> Self {
-        PageFlags(0) // Placeholder implementation
+        use x86_64::structures::paging::PageTableFlags as Flags;
+        PageFlags((Flags::PRESENT | Flags::WRITABLE).bits())
     }
 
     pub fn user_data() -> Self {
-        PageFlags(0) // Placeholder implementation for user data
+        use x86_64::structures::paging::PageTableFlags as Flags;
+        PageFlags((Flags::PRESENT | Flags::WRITABLE | Flags::USER_ACCESSIBLE).bits())
+    }
+
+    pub fn executable() -> Self {
+        use x86_64::structures::paging::PageTableFlags as Flags;
+        PageFlags((Flags::PRESENT | Flags::WRITABLE | Flags::USER_ACCESSIBLE | Flags::NO_EXECUTE).bits() ^ Flags::NO_EXECUTE.bits())
+    }
+
+    pub fn user_executable() -> Self {
+        use x86_64::structures::paging::PageTableFlags as Flags;
+        PageFlags((Flags::PRESENT | Flags::WRITABLE | Flags::USER_ACCESSIBLE).bits())
     }
 
     pub fn new(flags: u64) -> Self {
@@ -24,6 +36,10 @@ impl PageFlags {
     }
 
     pub fn flags(&self) -> u64 {
+        self.0
+    }
+
+    pub fn as_u64(&self) -> u64 {
         self.0
     }
 }
