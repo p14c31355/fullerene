@@ -1114,7 +1114,21 @@ impl ProcessMemoryManagerImpl {
 static MEMORY_MANAGER: Mutex<Option<UnifiedMemoryManager>> = Mutex::new(None);
 
 /// Physical memory offset for virtual to physical address translation
-pub const PHYSICAL_MEMORY_OFFSET: usize = 0xFFFF_8000_0000_0000;
+pub static mut PHYSICAL_MEMORY_OFFSET: usize = 0xFFFF_8000_0000_0000;
+
+/// Set the physical memory offset for virtual to physical address translation
+pub fn set_physical_memory_offset(offset: usize) {
+    unsafe {
+        PHYSICAL_MEMORY_OFFSET = offset;
+    }
+    // Log the setting, but without complex formatting for now
+    log_info!("Set physical memory offset");
+}
+
+/// Get the current physical memory offset
+pub fn get_physical_memory_offset() -> usize {
+    unsafe { PHYSICAL_MEMORY_OFFSET }
+}
 
 /// Switch to a specific page table
 pub fn switch_to_page_table(page_table: &ProcessPageTable) -> SystemResult<()> {

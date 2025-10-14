@@ -5,9 +5,12 @@ use crate::graphics::framebuffer::FramebufferLike;
 use crate::heap;
 use crate::hlt_loop;
 use crate::{gdt, graphics, interrupts, memory};
+use alloc::boxed::Box;
 use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
+use petroleum::{debug_log, write_serial_bytes};
+use x86_64::PhysAddr;
 
 /// Helper function to write a string to VGA buffer at specified row
 pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
@@ -105,7 +108,7 @@ pub extern "efiapi" fn efi_main(
 
     // Setup memory maps and initialize memory management
     let kernel_virt_addr = efi_main as u64;
-    let kernel_phys_start = setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
+    let kernel_phys_start = crate::memory::setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
 
     // Initialize memory management components (heap, page tables, etc.)
     // Comment out reinit for now to allow desktop drawing
@@ -120,7 +123,7 @@ pub extern "efiapi" fn efi_main(
 
     // Find framebuffer configuration before reiniting page tables
     kernel_log!("Finding framebuffer config for page table mapping...");
-    let framebuffer_config = find_framebuffer_config(system_table);
+    let framebuffer_config = crate::memory::find_framebuffer_config(system_table);
     let config = framebuffer_config.as_ref();
     let (fb_addr, fb_size) = if let Some(config) = config {
         let fb_size_bytes =
@@ -442,7 +445,7 @@ pub fn try_initialize_cirrus_graphics_mode() -> bool {
 pub fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
     // Check if framebuffer config is available from UEFI bootloader
     kernel_log!("Checking framebuffer config from UEFI bootloader...");
-    if let Some(fb_config) = find_framebuffer_config(system_table) {
+    if let Some(fb_config) = crate::memory::find_framebuffer_config(system_table) {
         kernel_log!(
             "Found framebuffer config: {}x{} @ {:#x}, stride: {}, pixel_format: {:?}",
             fb_config.width,
