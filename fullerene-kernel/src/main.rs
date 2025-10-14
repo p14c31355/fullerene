@@ -7,6 +7,8 @@
 #![no_main]
 
 // Kernel modules
+mod types;
+mod traits;
 mod gdt; // Add GDT module
 mod graphics;
 mod heap;

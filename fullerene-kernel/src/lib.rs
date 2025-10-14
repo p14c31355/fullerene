@@ -14,6 +14,9 @@
 // Re-export consolidated logging types from petroleum - must come before traits mod to be available in traits.rs
 pub use petroleum::common::logging::{SystemError, SystemResult};
 
+// Re-export x86_64 page table flags as PageFlags for kernel-wide use
+pub use x86_64::structures::paging::PageTableFlags as PageFlags;
+
 // Remove ambiguous logging function imports to use macro-based logging exclusively
 
 // Let petroleum provide its logging macros
@@ -29,8 +32,6 @@ use petroleum::page_table::EfiMemoryDescriptor;
 pub mod errors;
 pub mod initializer;
 pub mod operations;
-pub mod types;
-
 // Kernel modules
 pub mod gdt; // Add GDT module
 pub mod graphics;
@@ -60,7 +61,6 @@ pub mod test_process;
 
 // Re-export key types and functions from submodules for convenience
 pub use initializer::{initialize_system, register_system_component};
-pub use types::PageFlags;
 
 // Re-export traits with explicit imports to avoid conflicts
 

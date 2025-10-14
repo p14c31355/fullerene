@@ -3,7 +3,7 @@
 use alloc::{boxed::Box, vec::Vec};
 
 use crate::{
-    types::{Initializable, ProcessPageTable},
+    traits::Initializable,
     SystemResult
 };
 

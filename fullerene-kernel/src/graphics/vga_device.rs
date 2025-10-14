@@ -1,5 +1,5 @@
-use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations};
 use petroleum::common::logging::{SystemError, SystemResult};
+use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations};
 
 use crate::traits::{HardwareDevice, Initializable, ErrorLogging};
 
@@ -69,7 +69,8 @@ impl TextBufferOperations for VgaBuffer {
     fn get_char_at(&self, row: usize, col: usize) -> ScreenChar {
         if self.enabled {
             // Get buffer directly for immutable access
-            let buffer = unsafe { &*(VGA_BUFFER_ADDR as *const [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) };
+            let buffer =
+                unsafe { &*(VGA_BUFFER_ADDR as *const [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) };
             buffer[row][col]
         } else {
             ScreenChar {
@@ -94,7 +95,10 @@ impl TextBufferOperations for VgaBuffer {
         if self.enabled {
             let color_code = self.color_code;
             if let Some(buffer) = self.get_buffer() {
-                let blank = ScreenChar { ascii_character: b' ', color_code };
+                let blank = ScreenChar {
+                    ascii_character: b' ',
+                    color_code,
+                };
                 for col in 0..VGA_WIDTH {
                     buffer[row][col] = blank;
                 }
@@ -119,7 +123,6 @@ impl VgaDevice {
     pub fn set_color(&mut self, foreground: Color, background: Color) {
         self.buffer.color_code = ColorCode::new(foreground, background);
     }
-
 }
 
 impl Initializable for VgaDevice {
@@ -187,7 +190,10 @@ impl HardwareDevice for VgaDevice {
             let color_code = self.buffer.color_code;
             if let Some(buffer) = self.buffer.get_buffer() {
                 for row in 0..VGA_HEIGHT {
-                    let blank = ScreenChar { ascii_character: b' ', color_code };
+                    let blank = ScreenChar {
+                        ascii_character: b' ',
+                        color_code,
+                    };
                     for col in 0..VGA_WIDTH {
                         buffer[row][col] = blank;
                     }
@@ -212,7 +218,6 @@ impl HardwareDevice for VgaDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_vga_device_creation() {

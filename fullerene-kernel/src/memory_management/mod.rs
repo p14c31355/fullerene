@@ -17,11 +17,8 @@ use crate::traits::{
     PageTableHelper,
     ProcessMemoryManager,
 };
-use crate::types::PageFlags;
-use crate::{
-    SystemError,
-    SystemResult,
-};
+use petroleum::common::logging::{SystemError, SystemResult};
+use x86_64::structures::paging::PageTableFlags as PageFlags;
 
 use frame_allocator::BitmapFrameAllocator;
 use process_memory::ProcessMemoryManagerImpl;
@@ -65,11 +62,6 @@ macro_rules! check_initialized_mut {
     };
 }
 
-macro_rules! log_operation {
-    ($level:ident, $message:expr) => {
-        // Removed println! to avoid excessive debug noise
-    };
-}
 
 macro_rules! with_memory_manager {
     ($manager:expr, $operation:expr) => {
