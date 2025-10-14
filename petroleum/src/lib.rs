@@ -330,7 +330,7 @@ pub fn init_uga_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
 
 /// Alternative GOP detection for QEMU environments
 #[derive(Clone, Copy)]
-pub struct QemuConfig {
+struct QemuConfig {
     pub address: u64,
     pub width: u32,
     pub height: u32,
