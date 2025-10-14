@@ -349,6 +349,7 @@ version = "0.1.0"
 dependencies = [
  "embedded-graphics",
  "linked_list_allocator",
+ "once_cell",
  "spin 0.10.0",
  "x86_64",
 ]

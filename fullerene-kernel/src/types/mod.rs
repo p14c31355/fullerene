@@ -6,16 +6,6 @@ use crate::*;
 
 // Note: SystemError and SystemResult are re-exported at the crate root in lib.rs
 
-// Define LogLevel if not already defined
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
-pub enum LogLevel {
-    Trace,
-    Debug,
-    Info,
-    Warning,
-    Error,
-}
-
 // Define PageFlags if not already defined
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PageFlags(u64);
