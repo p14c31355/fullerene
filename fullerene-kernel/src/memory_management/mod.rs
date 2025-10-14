@@ -790,7 +790,7 @@ pub fn create_process_page_table(offset: usize) -> SystemResult<ProcessPageTable
 }
 
 /// Deallocate a process page table and free its frames
-pub fn deallocate_process_page_table(pml4_frame: crate::heap::PhysFrame) {
+pub fn deallocate_process_page_table(pml4_frame: x86_64::structures::paging::PhysFrame) {
     // Properly deallocate the page table and its frames
     if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
         // The pml4_frame contains the physical address of the page table
