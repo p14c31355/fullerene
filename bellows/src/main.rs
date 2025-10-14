@@ -25,6 +25,7 @@ use petroleum::common::{
     FullereneFramebufferConfig,
 };
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     petroleum::common_panic!(_info);
