@@ -25,8 +25,8 @@ use petroleum::common::{
     FullereneFramebufferConfig,
 };
 
-// Panic handler removed to avoid conflict with std panic handler
-// The std panic handler will be used instead
+// Panic handler is provided by a dependency (e.g., the `petroleum` crate)
+// to handle panics in this no_std environment.
 
 /// Main entry point of the bootloader.
 ///
