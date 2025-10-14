@@ -47,7 +47,7 @@ pub struct PageTableManager {
     current_page_table: usize,
     page_tables: BTreeMap<usize, usize>,
     initialized: bool,
-    pub pml4_frame: crate::heap::PhysFrame,
+    pub pml4_frame: x86_64::structures::paging::PhysFrame,
 }
 
 /// Get the physical memory offset for virtual to physical address translation
