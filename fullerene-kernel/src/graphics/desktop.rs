@@ -17,8 +17,8 @@ macro_rules! create_button {
     };
 }
 
-macro_rules! draw_primitive {
-    (filled_rect $writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $color:expr) => {{
+macro_rules! draw_filled_rect {
+    ($writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $color:expr) => {{
         use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
         let rect = Rectangle::new(Point::new($x, $y), Size::new($w, $h));
         let style = PrimitiveStyleBuilder::new()
@@ -26,28 +26,19 @@ macro_rules! draw_primitive {
             .build();
         rect.into_styled(style).draw($writer).ok();
     }};
-    (border_rect $writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $bg:expr, $border:expr, $stroke:expr) => {{
-        use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
-        let rect = Rectangle::new(Point::new($x, $y), Size::new($w, $h));
-        let style = PrimitiveStyleBuilder::new()
-            .fill_color(super::u32_to_rgb888($bg))
-            .stroke_color(super::u32_to_rgb888($border))
-            .stroke_width($stroke)
-            .build();
-        rect.into_styled(style).draw($writer).ok();
-    }};
-}
-
-macro_rules! draw_filled_rect {
-    ($writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $color:expr) => {
-        draw_primitive!(filled_rect $writer, $x, $y, $w, $h, $color);
-    };
 }
 
 macro_rules! draw_border_rect {
-    ($writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $bg:expr, $border:expr, $stroke:expr) => {
-        draw_primitive!(border_rect $writer, $x, $y, $w, $h, $bg, $border, $stroke);
-    };
+    ($writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $fill_color:expr, $stroke_color:expr, $stroke_width:expr) => {{
+        use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
+        let rect = Rectangle::new(Point::new($x, $y), Size::new($w, $h));
+        let style = PrimitiveStyleBuilder::new()
+            .fill_color(super::u32_to_rgb888($fill_color))
+            .stroke_color(super::u32_to_rgb888($stroke_color))
+            .stroke_width($stroke_width)
+            .build();
+        rect.into_styled(style).draw($writer).ok();
+    }};
 }
 
 // Common colors as constants
@@ -133,7 +124,7 @@ impl Button {
 
 impl WindowElement for Button {
     fn draw_element<W: FramebufferLike>(&self, writer: &mut W) {
-        draw_border_rect!(writer, self.x as i32, self.y as i32, self.width, self.height, self.bg_color, 0x808080, 2);
+        draw_filled_rect!(writer, self.x as i32, self.y as i32, self.width, self.height, self.bg_color);
         draw_centered_text(writer, &self.text, self.x as i32, self.y as i32 + (self.height as i32 / 2) - 5, self.width, self.text_color);
     }
 }
