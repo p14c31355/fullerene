@@ -73,7 +73,7 @@ impl PciConfigSpace {
 
         unsafe {
             addr_writer.write_safe(address);
-            let dword = data_reader.read_safe();
+            let dword: u32 = data_reader.read_safe();
             (dword >> ((offset & 3) * 8)) as u8
         }
     }
@@ -148,10 +148,10 @@ impl PciConfigSpace {
 
         unsafe {
             addr_writer.write_safe(address);
-            let current_dword = data_reader.read_safe();
+            let current_dword: u32 = data_reader.read_safe();
             let byte_offset = (offset & 3) as usize;
             let mask = !(0xFFu32 << (byte_offset * 8));
-            let new_dword = (current_dword & mask) | ((value as u32) << (byte_offset * 8));
+            let new_dword: u32 = (current_dword & mask) | ((value as u32) << (byte_offset * 8));
             data_writer.write_safe(new_dword);
         }
     }

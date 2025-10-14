@@ -858,8 +858,10 @@ pub mod test_process;
 pub use graphics::vga_device::VgaDevice;
 pub use hardware::{
     device_manager::DeviceManager,
-    pci::{PciConfigSpace, PciDevice, PciScanner},
-    ports::HardwarePorts,
+    PciConfigSpace,
+    PciDevice,
+    PciScanner,
+    HardwarePorts,
 };
 pub use memory_management::{
     AllocError, MapError,
