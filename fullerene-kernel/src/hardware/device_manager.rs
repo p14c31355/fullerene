@@ -7,8 +7,8 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use spin::Mutex;
 
-use fullerene_kernel::traits::{ErrorLogging, HardwareDevice, Initializable};
-use fullerene_kernel::{SystemError, SystemResult};
+use crate::traits::{ErrorLogging, HardwareDevice, Initializable};
+use crate::{SystemError, SystemResult};
 
 /// Device information structure
 #[derive(Debug, Clone)]

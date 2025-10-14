@@ -2,7 +2,10 @@
 
 use alloc::{boxed::Box, vec::Vec};
 
-use crate::{types::Initializable, SystemResult};
+use crate::{
+    types::{Initializable, ProcessPageTable},
+    SystemResult
+};
 
 // System initializer for managing component initialization
 pub struct SystemInitializer {
