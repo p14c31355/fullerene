@@ -81,15 +81,6 @@ pub extern "efiapi" fn efi_main(
     debug_log!("VGA setup done");
     kernel_log!("VGA text mode setup function returned");
 
-    // Try to initialize graphics mode for desktop display
-    kernel_log!("Attempting to initialize graphics mode for desktop display...");
-    if try_initialize_cirrus_graphics_mode() {
-        kernel_log!("Graphics mode initialized successfully, desktop should be visible");
-        // Desktop drawing will be handled by the graphics initialization
-    } else {
-        kernel_log!("Graphics mode initialization failed, continuing with text mode");
-    }
-
     // Direct VGA buffer test - write to hardware buffer directly
     kernel_log!("Direct VGA buffer write test...");
     unsafe {
@@ -474,5 +465,8 @@ pub fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
         return try_init_graphics(&gop_config, "UEFI GOP");
     }
 
-    false
+    kernel_log!("No standard graphics modes found, trying Cirrus VGA fallback...");
+
+    // As a fallback, try Cirrus VGA graphics if the function exists
+    try_initialize_cirrus_graphics_mode()
 }
