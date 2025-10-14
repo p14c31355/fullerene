@@ -403,19 +403,20 @@ pub fn try_initialize_cirrus_graphics_mode() -> bool {
 
     // For UEFI target, we need to initialize VGA framebuffer in UEFI context
     // Create VGA framebuffer configuration for UEFI
-    const VGA_FRAMEBUFFER_ADDRESS: u64 = 0xA0000;
-    const VGA_WIDTH: u32 = 320;
-    const VGA_HEIGHT: u32 = 200;
-    const VGA_BPP: u32 = 8;
-    const VGA_STRIDE: u32 = 320; // 320 bytes per line in mode 13h
+    // It's recommended to define these in a shared constants module, e.g., in `petroleum`.
+    const VGA_MODE13H_ADDRESS: u64 = 0xA0000;
+    const VGA_MODE13H_WIDTH: u32 = 320;
+    const VGA_MODE13H_HEIGHT: u32 = 200;
+    const VGA_MODE13H_BPP: u32 = 8;
+    const VGA_MODE13H_STRIDE: u32 = 320;
 
     let uefi_vga_config = FullereneFramebufferConfig {
-        address: VGA_FRAMEBUFFER_ADDRESS, // Standard VGA framebuffer address
-        width: VGA_WIDTH,
-        height: VGA_HEIGHT,
+        address: VGA_MODE13H_ADDRESS, // Standard VGA framebuffer address
+        width: VGA_MODE13H_WIDTH,
+        height: VGA_MODE13H_HEIGHT,
         pixel_format: petroleum::common::EfiGraphicsPixelFormat::PixelFormatMax, // Special marker for VGA mode
-        bpp: VGA_BPP,
-        stride: VGA_STRIDE, // 320 bytes per line in mode 13h
+        bpp: VGA_MODE13H_BPP,
+        stride: VGA_MODE13H_STRIDE, // 320 bytes per line in mode 13h
     };
 
     graphics::text::init(&uefi_vga_config);
