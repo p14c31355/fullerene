@@ -58,7 +58,7 @@ impl DeviceManager {
         let device_info = DeviceInfo::new(
             device.device_name(),
             device.device_type(),
-            traits::HardwareDevice::priority(&device),
+            traits::HardwareDevice::priority(&*device),
         );
 
         // Store device and its info
