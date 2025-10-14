@@ -13,4 +13,6 @@
 
 - Integrate redundant `.rs` files with minimal code into appropriate locations.
 
-Consolidate all duplicated code between sub-crates into the `petroleum` sub-crate
+- Consolidate all duplicated code between sub-crates into the `petroleum` sub-crate
+
+Get the most out of the `x86_64` crate's features

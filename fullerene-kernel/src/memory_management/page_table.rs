@@ -10,7 +10,6 @@ use petroleum::common::logging as logging;
 
 // Import needed types
 use alloc::collections::BTreeMap;
-use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
 use x86_64::{VirtAddr, PhysAddr, structures::paging::{PageTable, Page, PhysFrame, Mapper, FrameAllocator, Size4KiB, PageTableFlags as Flags, OffsetPageTable}};
 
     /// A dummy frame allocator for when we need to allocate pages for page tables
@@ -146,7 +145,7 @@ impl PageTableHelper for PageTableManager {
             return Err(SystemError::InternalError);
         }
 
-        log_info!("Unmapping virtual address");
+        logging::log_info("Unmapping virtual address");
         Ok(())
     }
 
@@ -155,15 +154,42 @@ impl PageTableHelper for PageTableManager {
             return Err(SystemError::InternalError);
         }
 
-        // Use petroleum's translate_addr function
-        let virt_addr = x86_64::VirtAddr::new(virtual_addr as u64);
-        let offset = x86_64::VirtAddr::new(get_physical_memory_offset() as u64);
+        use x86_64::registers::control::Cr3;
+        use x86_64::structures::paging::page_table::FrameError;
 
-        if let Some(phys_addr) = unsafe { petroleum::page_table::translate_addr(virt_addr, offset) } {
-            Ok(phys_addr.as_u64() as usize)
-        } else {
-            Err(SystemError::InvalidArgument)
+        // Read the active level 4 frame from CR3 register
+        let (level_4_table_frame, _) = Cr3::read();
+        let virt_addr = VirtAddr::new(virtual_addr as u64);
+        let offset = VirtAddr::new(get_physical_memory_offset() as u64);
+
+        let table_indexes = [
+            virt_addr.p4_index(),
+            virt_addr.p3_index(),
+            virt_addr.p2_index(),
+            virt_addr.p1_index(),
+        ];
+        let mut frame = level_4_table_frame;
+
+        // Traverse the multi-level page table
+        for &index in &table_indexes {
+            // Convert the frame into a page table reference
+            let virt = offset + frame.start_address().as_u64();
+            let table_ptr: *const PageTable = virt.as_ptr();
+            let table = unsafe { &*table_ptr };
+
+            // Read the page table entry and update `frame`
+            let entry = &table[index];
+            frame = match entry.frame() {
+                Ok(frame) => frame,
+                Err(FrameError::FrameNotPresent) => return Err(SystemError::InvalidArgument),
+                Err(FrameError::HugeFrame) => continue,
+            };
         }
+
+        // Calculate the physical address by adding the page offset
+        Some(frame.start_address() + u64::from(virt_addr.page_offset()))
+            .map(|addr| addr.as_u64() as usize)
+            .ok_or(SystemError::InvalidArgument)
     }
 
     fn set_page_flags(&mut self, _virtual_addr: usize, _flags: PageFlags) -> SystemResult<()> {
@@ -171,7 +197,7 @@ impl PageTableHelper for PageTableManager {
             return Err(SystemError::InternalError);
         }
 
-        log_info!("Setting page flags");
+        logging::log_info("Setting page flags");
         Ok(())
     }
 
@@ -189,7 +215,7 @@ impl PageTableHelper for PageTableManager {
         }
 
         // In a real implementation, this would flush the TLB
-        log_info!("Flushing TLB for address");
+        logging::log_info("Flushing TLB for address");
         Ok(())
     }
 
@@ -198,7 +224,7 @@ impl PageTableHelper for PageTableManager {
             return Err(SystemError::InternalError);
         }
 
-        log_info!("Flushing entire TLB");
+        logging::log_info("Flushing entire TLB");
         Ok(())
     }
 
@@ -238,7 +264,7 @@ impl PageTableHelper for PageTableManager {
         }
 
         self.current_page_table = table_addr;
-        log_info!("Switched page table");
+        logging::log_info("Switched page table");
         Ok(())
     }
 
