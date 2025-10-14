@@ -35,16 +35,14 @@ pub extern "C" fn syscall_entry() {
 pub fn setup_syscall() {
     // Enable SYSCALL/SYSRET with SCE bit in EFER
     unsafe {
-        let mut efer = Msr::new(0xC0000080);
-        let current = efer.read();
-        efer.write(current | (1 << 0)); // Set SCE bit
+        let current = Msr::new(0xC0000080).read();
+        Msr::new(0xC0000080).write(current | (1 << 0)); // Set SCE bit
     }
 
     // Set LSTAR MSR to syscall entry point
     let entry_addr = syscall_entry as u64;
     unsafe {
-        let mut lstar = Msr::new(0xC0000082);
-        lstar.write(entry_addr);
+        Msr::new(0xC0000082).write(entry_addr);
     }
 
     // Set STAR MSR for CS/SS switching
@@ -52,14 +50,12 @@ pub fn setup_syscall() {
     let kernel_cs = crate::gdt::kernel_code_selector().0 as u64;
     let star_value = (user_cs << 48) | (kernel_cs << 32);
     unsafe {
-        let mut star = Msr::new(0xC0000081);
-        star.write(star_value);
+        Msr::new(0xC0000081).write(star_value);
     }
 
     // Mask RFLAGS during syscall
     unsafe {
-        let mut sfmask = Msr::new(0xC0000084);
-        sfmask.write(RFlags::INTERRUPT_FLAG.bits() | RFlags::TRAP_FLAG.bits());
+        Msr::new(0xC0000084).write(RFlags::INTERRUPT_FLAG.bits() | RFlags::TRAP_FLAG.bits());
     }
 
     petroleum::serial::serial_log(format_args!(

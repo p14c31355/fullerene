@@ -3,7 +3,6 @@
 //! This module handles page table initialization, mapping, and higher-half addressing.
 
 use spin::{Mutex, Once};
-use x86_64::registers::control::Cr3Flags;
 use x86_64::structures::paging::{
     FrameAllocator, Mapper, OffsetPageTable, Page, PageTableFlags as Flags, PhysFrame, Size4KiB,
 };
@@ -110,7 +109,7 @@ pub fn reinit_page_table(
     framebuffer_addr: Option<u64>,
     framebuffer_size: Option<u64>,
 ) -> VirtAddr {
-    use x86_64::registers::control::Cr3;
+    use x86_64::registers::control::{Cr3, Cr3Flags};
     use x86_64::structures::paging::PageTable;
 
     // Calculate the physical_memory_offset for the higher-half kernel mapping

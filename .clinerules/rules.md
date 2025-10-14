@@ -15,4 +15,4 @@
 
 - Consolidate all duplicated code between sub-crates into the `petroleum` sub-crate
 
-Get the most out of the `x86_64` crate's features
+- Take full advantage of the `x86_64` crate's features to reduce lines of code

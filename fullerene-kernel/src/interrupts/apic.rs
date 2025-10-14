@@ -68,8 +68,7 @@ pub static APIC: Mutex<Option<ApicRaw>> = Mutex::new(None);
 
 /// Get APIC base address
 fn get_apic_base() -> Option<u64> {
-    let msr = Msr::new(ApicOffsets::BASE_MSR);
-    let value = unsafe { msr.read() };
+    let value = unsafe { Msr::new(ApicOffsets::BASE_MSR).read() };
     if value & (1 << 11) != 0 {
         Some(value & ApicOffsets::BASE_ADDR_MASK)
     } else {

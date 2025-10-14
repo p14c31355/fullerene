@@ -5,11 +5,11 @@
 
 use crate::memory_management::ProcessPageTable;
 use crate::process;
-use crate::SystemError;
-use crate::PageFlags;
+use crate::errors::SystemError;
 use crate::traits::PageTableHelper;
 use core::ptr;
 use x86_64::structures::paging::FrameAllocator;
+use x86_64::structures::paging::PageTableFlags as PageFlags;
 
 pub const PROGRAM_LOAD_BASE: u64 = 0x400000; // 4MB base address for user programs
 
@@ -191,12 +191,11 @@ fn load_segment(
         if ph.flags & PF_X == 0 {
             page_flags |= X86Flags::NO_EXECUTE;
         }
-        let flags = PageFlags::new(page_flags.bits());
 
         map_user_page(
             page_vaddr.as_u64() as usize,
             frame.start_address().as_u64() as usize,
-            flags,
+            page_flags,
         )?;
     }
 
