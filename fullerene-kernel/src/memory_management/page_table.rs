@@ -127,7 +127,7 @@ impl PageTableHelper for PageTableManager {
             // Create a proper frame allocator for intermediate page tables
             // Note: We need the actual memory map from boot, but for now use empty
             // In production this should be initialized with the real EFI memory map
-            let mut frame_allocator = unsafe { petroleum::page_table::BootInfoFrameAllocator::init(&[]) };
+            let mut frame_allocator = unsafe { petroleum::page_table::BootInfoFrameAllocator::init(crate::MEMORY_MAP.get().expect("memory map not initialized")) };
             mapper.map_to(page, frame, page_flags, &mut frame_allocator)
                 .map_err(|_| SystemError::MappingFailed)?
                 .flush();
