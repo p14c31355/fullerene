@@ -58,10 +58,32 @@ fn draw_centered_text<W: FramebufferLike>(
     color: u32,
 ) {
     let style = MonoTextStyle::new(&FONT_6X10, super::u32_to_rgb888(color));
-    let text_width = text.len() as i32 * 6; // Approximate char width
-    let text_x = x + (width as i32 / 2) - (text_width / 2);
+    // Calculate more precise text width considering proportional characters and kerning
+    let text_width = calc_text_width(text);
+    let text_x = x + (width as i32 / 2) - (text_width as i32 / 2);
     let text_obj = Text::new(text, Point::new(text_x, y), style);
     text_obj.draw(writer).ok();
+}
+
+// More accurate text width calculation
+fn calc_text_width(text: &str) -> i32 {
+    let mut width = 0;
+    for ch in text.chars() {
+        // Handle different character widths more accurately
+        width += match ch {
+            // Narrow characters
+            'i' | 'l' | 'j' | '!' | '.' | ',' | ':' | ';' | '|' | '1' | 'I' => 2,
+            // Wide characters
+            'W' | 'M' | '@' | '%' | '#' | '$' | '&' => 8,
+            // Medium characters
+            'w' | 'm' | 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' |
+            'H' | 'J' | 'K' | 'L' | 'N' | 'O' | 'P' | 'Q' | 'R' |
+            'S' | 'T' | 'U' | 'V' | 'X' | 'Y' | 'Z' => 6,
+            // Default monospaced width for digits and other characters
+            _ => 6,
+        };
+    }
+    width
 }
 
 // Generic window drawing trait
