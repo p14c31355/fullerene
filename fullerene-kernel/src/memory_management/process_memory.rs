@@ -1,6 +1,5 @@
-//! Process Memory Management Implementation
-//!
-//! This module provides per-process memory management functionality including heap and stack allocation.
+use alloc::collections::BTreeMap;
+use petroleum::common::logging::{SystemError, SystemResult};
 
 use super::*;
 
