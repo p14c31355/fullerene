@@ -37,9 +37,10 @@ macro_rules! log_warning {
 /// ```
 #[macro_export]
 macro_rules! log_info {
-    ($message:expr) => {
-        $crate::log_info($message)
-    };
+    ($message:expr) => {{
+        use petroleum::common::logging;
+        logging::log_info($message)
+    }};
 }
 
 /// Log a debug message (only if debug level is enabled)
@@ -51,7 +52,8 @@ macro_rules! log_info {
 #[macro_export]
 macro_rules! log_debug {
     ($message:expr) => {{
-        $crate::logging::log_debug($message)
+        use petroleum::common::logging;
+        logging::log_debug($message)
     }};
 }
 
@@ -64,7 +66,8 @@ macro_rules! log_debug {
 #[macro_export]
 macro_rules! log_trace {
     ($message:expr) => {{
-        $crate::logging::log_trace($message)
+        use petroleum::common::logging;
+        logging::log_trace($message)
     }};
 }
 

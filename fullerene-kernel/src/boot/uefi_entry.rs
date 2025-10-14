@@ -5,10 +5,14 @@ use crate::graphics::framebuffer::FramebufferLike;
 use crate::heap;
 use crate::hlt_loop;
 use crate::{gdt, graphics, interrupts};
+use crate::memory::*;
 use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
 use petroleum::{debug_log, write_serial_bytes};
+
+use x86_64::PhysAddr;
+use alloc::boxed::Box;
 
 /// Helper function to write a string to VGA buffer at specified row
 pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
@@ -148,7 +152,7 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Physical memory offset set to: 0x{:x}", physical_memory_offset.as_u64());
 
     // Initialize GDT with proper heap address
-    let heap_phys_start = memory::find_heap_start(*MEMORY_MAP.get().unwrap());
+    let heap_phys_start = find_heap_start(*MEMORY_MAP.get().unwrap());
     kernel_log!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());
     let start_addr = if heap_phys_start.as_u64() < 0x1000 {
         kernel_log!(

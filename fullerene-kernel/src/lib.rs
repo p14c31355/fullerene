@@ -5,6 +5,7 @@
 
 #![no_std]
 #![no_main]
+#![macro_use]
 #![feature(abi_x86_interrupt)]
 #![feature(alloc_error_handler)]
 #![feature(slice_ptr_get)]
@@ -37,6 +38,8 @@ pub mod fs; // Basic filesystem
 pub mod keyboard; // Keyboard input driver
 pub mod loader; // Program loader
 // Logging macros with #[macro_export] are available at crate root
+// Logging macros with #[macro_export] are exported globally
+#[macro_use]
 pub mod macros; // Logging and utility macros
 pub mod memory_management; // Virtual memory management
 pub mod process; // Process management
@@ -51,11 +54,14 @@ pub mod test_process;
 
 // Re-export key types and functions from submodules for convenience
 pub use initializer::{initialize_system, register_system_component};
-pub use types::*;
+pub use types::PageFlags;
 
 // Re-export consolidated logging system from petroleum
 pub use petroleum::common::logging::*;
-pub use traits::*;
+
+// Re-export traits with explicit imports to avoid conflicts
+pub use traits::{HardwareDevice, SyscallHandler, MemoryManager, ProcessMemoryManager,
+                 PageTableHelper, FrameAllocator, Initializable, ErrorLogging};
 
 // Re-export memory management types
 pub use memory_management::{FreeError, ProcessPageTable, UnifiedMemoryManager};
