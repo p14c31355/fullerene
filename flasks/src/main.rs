@@ -187,6 +187,27 @@ fn run_virtualbox(args: &Args) -> io::Result<()> {
         return Err(io::Error::other("Failed to attach ISO to VirtualBox VM"));
     }
 
+    // Power off VM if it's running, then set EFI firmware
+    let _ = Command::new("VBoxManage")
+        .args(["controlvm", &args.vm_name, "acpipowerbutton"])
+        .status(); // Try graceful shutdown
+
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    let _ = Command::new("VBoxManage")
+        .args(["controlvm", &args.vm_name, "poweroff"])
+        .status(); // Force power off if needed
+
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    // Set EFI firmware
+    let set_efi_status = Command::new("VBoxManage")
+        .args(["modifyvm", &args.vm_name, "--firmware", "efi64"])
+        .status()?;
+    if !set_efi_status.success() {
+        eprintln!("Warning: Failed to set EFI firmware. The VM may need to be recreated for EFI support.");
+    }
+
     // Start VM
     println!("Starting VM...");
     let start_status = Command::new("VBoxManage")
