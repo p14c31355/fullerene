@@ -33,9 +33,8 @@ extern crate alloc;
 use spin::Once;
 
 // Global allocator removed - handled by petroleum crate
-
-#[panic_handler]
 #[cfg(not(test))]
+#[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     use x86_64::instructions::hlt;
     loop {
