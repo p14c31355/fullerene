@@ -184,7 +184,8 @@ fn power_off_vm(vm_name: &str) -> io::Result<()> {
     // Try graceful shutdown first
     let _ = Command::new("VBoxManage")
         .args(["controlvm", vm_name, "acpipowerbutton"])
-        .status();
+        .status()
+        .map_err(|e| eprintln!("Warning: Failed to send ACPI power button signal: {}. This may be ignored if the VM was not running.", e));
 
     // Poll VM state
     for _ in 0..VM_SHUTDOWN_POLL_ATTEMPTS {
