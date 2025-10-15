@@ -211,7 +211,7 @@ fn power_off_vm(vm_name: &str) -> io::Result<()> {
 
     // If graceful shutdown didn't work, force power off
     if !vm_powered_off {
-                let status = Command::new("VBoxManage")
+        let status = Command::new("VBoxManage")
             .args(["controlvm", vm_name, "poweroff"])
             .status()?;
         if !status.success() {
