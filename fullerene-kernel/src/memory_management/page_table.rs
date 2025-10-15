@@ -57,7 +57,7 @@ impl PageTableManager {
             current_page_table: 0,
             page_tables: BTreeMap::new(),
             initialized: false,
-            pml4_frame: crate::heap::PhysFrame::containing_address(x86_64::PhysAddr::new(0)),
+            pml4_frame: x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(0)),
         }
     }
 
