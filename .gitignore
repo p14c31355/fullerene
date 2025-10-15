@@ -14,3 +14,4 @@ fullerene.iso
 *.img
 *.bin
 qemu_log.txt
+*.vdi
