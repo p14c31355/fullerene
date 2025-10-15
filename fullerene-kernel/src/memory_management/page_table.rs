@@ -10,7 +10,7 @@ use petroleum::common::logging as logging;
 
 // Import needed types
 use alloc::collections::BTreeMap;
-use x86_64::{VirtAddr, PhysAddr, structures::paging::{PageTable, Page, PhysFrame, Mapper, FrameAllocator, Size4KiB, PageTableFlags as Flags, OffsetPageTable}};
+use x86_64::{VirtAddr, PhysAddr, structures::paging::{PageTable, Page, PhysFrame, Mapper, FrameAllocator, Size4KiB, PageTableFlags as Flags, OffsetPageTable, Translate}};
 
     /// A dummy frame allocator for when we need to allocate pages for page tables
     pub struct DummyFrameAllocator {}
@@ -42,6 +42,7 @@ pub struct PageTableManager {
     page_tables: BTreeMap<usize, usize>,
     initialized: bool,
     pub pml4_frame: x86_64::structures::paging::PhysFrame,
+    mapper: Option<OffsetPageTable<'static>>,
 }
 
 /// Get the physical memory offset for virtual to physical address translation
@@ -58,6 +59,7 @@ impl PageTableManager {
             page_tables: BTreeMap::new(),
             initialized: false,
             pml4_frame: x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(0)),
+            mapper: None,
         }
     }
 
@@ -67,6 +69,16 @@ impl PageTableManager {
         let (frame, _) = x86_64::registers::control::Cr3::read();
         self.current_page_table = frame.start_address().as_u64() as usize;
         self.pml4_frame = frame;
+
+        // Create and store the mapper instance
+        unsafe {
+            let table_phys = frame.start_address().as_u64() as *mut PageTable;
+            let mapper = OffsetPageTable::new(
+                &mut *table_phys,
+                VirtAddr::new(get_physical_memory_offset() as u64),
+            );
+            self.mapper = Some(mapper);
+        }
 
         self.initialized = true;
         // Logging disabled to avoid import issues
@@ -102,6 +114,8 @@ impl PageTableHelper for PageTableManager {
             return Err(SystemError::InternalError);
         }
 
+        let mapper = self.mapper.as_mut().ok_or(SystemError::InternalError)?;
+
         // Convert parameters to x86_64 types
         let virtual_addr = x86_64::VirtAddr::new(virtual_addr as u64);
         let physical_addr = x86_64::PhysAddr::new(physical_addr as u64);
@@ -109,18 +123,8 @@ impl PageTableHelper for PageTableManager {
         let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(physical_addr);
         let page_flags = convert_to_x86_64_flags(flags);
 
-        // Get the active page table from CPU
+        // Map the page using the stored mapper instance
         unsafe {
-            let (current_level_4_table_frame, _) = x86_64::registers::control::Cr3::read();
-            let current_table_phys = current_level_4_table_frame.start_address().as_u64() as *mut x86_64::structures::paging::PageTable;
-
-            // Create mapper with physical memory offset
-            let mut mapper = x86_64::structures::paging::OffsetPageTable::new(
-                &mut *current_table_phys,
-                x86_64::VirtAddr::new(get_physical_memory_offset() as u64),
-            );
-
-            // Map the page, creating intermediate tables if needed
             mapper.map_to(page, frame, page_flags, frame_allocator)
                 .map_err(|_| SystemError::MappingFailed)?
                 .flush();
@@ -144,42 +148,14 @@ impl PageTableHelper for PageTableManager {
             return Err(SystemError::InternalError);
         }
 
-        use x86_64::registers::control::Cr3;
-        use x86_64::structures::paging::page_table::FrameError;
-
-        // Read the active level 4 frame from CR3 register
-        let (level_4_table_frame, _) = Cr3::read();
+        let mapper = self.mapper.as_ref().ok_or(SystemError::InternalError)?;
         let virt_addr = VirtAddr::new(virtual_addr as u64);
-        let offset = VirtAddr::new(get_physical_memory_offset() as u64);
 
-        let table_indexes = [
-            virt_addr.p4_index(),
-            virt_addr.p3_index(),
-            virt_addr.p2_index(),
-            virt_addr.p1_index(),
-        ];
-        let mut frame = level_4_table_frame;
-
-        // Traverse the multi-level page table
-        for &index in &table_indexes {
-            // Convert the frame into a page table reference
-            let virt = offset + frame.start_address().as_u64();
-            let table_ptr: *const PageTable = virt.as_ptr();
-            let table = unsafe { &*table_ptr };
-
-            // Read the page table entry and update `frame`
-            let entry = &table[index];
-            frame = match entry.frame() {
-                Ok(frame) => frame,
-                Err(FrameError::FrameNotPresent) => return Err(SystemError::InvalidArgument),
-                Err(FrameError::HugeFrame) => continue,
-            };
+        // Use the mapper's translate_addr method
+        match mapper.translate_addr(virt_addr) {
+            Some(phys_addr) => Ok(phys_addr.as_u64() as usize),
+            None => Err(SystemError::InvalidArgument),
         }
-
-        // Calculate the physical address by adding the page offset
-        Some(frame.start_address() + u64::from(virt_addr.page_offset()))
-            .map(|addr| addr.as_u64() as usize)
-            .ok_or(SystemError::InvalidArgument)
     }
 
     fn set_page_flags(&mut self, _virtual_addr: usize, _flags: PageFlags) -> SystemResult<()> {
