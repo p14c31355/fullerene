@@ -142,28 +142,95 @@ fn create_iso_and_setup(workspace_root: &PathBuf) -> io::Result<(PathBuf, PathBu
     Ok((iso_path, ovmf_fd_path, ovmf_vars_fd_path, temp_ovmf_vars_fd))
 }
 
+// Constants to replace magic numbers
+const VM_SHUTDOWN_POLL_ATTEMPTS: u32 = 10;
+const VM_SHUTDOWN_POLL_INTERVAL_MS: u64 = 500;
+
 fn run_virtualbox(args: &Args, workspace_root: &PathBuf) -> io::Result<()> {
     println!("Starting VirtualBox...");
     let (iso_path, _ovmf_fd_path, _ovmf_vars_fd_path, _dummy) = create_iso_and_setup(&workspace_root)?;
 
-    // First, check if the VM exists
+    ensure_vm_exists(&args.vm_name)?;
+    power_off_vm(&args.vm_name)?;
+    attach_iso_and_start_vm(&args, &iso_path)?;
+
+    Ok(())
+}
+
+fn ensure_vm_exists(vm_name: &str) -> io::Result<()> {
+    println!("Checking if VM '{}' exists...", vm_name);
     let check_vm_cmd = Command::new("VBoxManage")
-        .args(["showvminfo", &args.vm_name])
+        .args(["showvminfo", vm_name])
         .output();
 
     match check_vm_cmd {
         Ok(output) if output.status.success() => {
-            println!("Found VM: {}", args.vm_name);
+            println!("Found VM: {}", vm_name);
+            Ok(())
         },
         _ => {
-            return Err(io::Error::other(format!(
+            Err(io::Error::other(format!(
                 "VirtualBox VM '{}' does not exist. Create it first with:\nVBoxManage createvm --name \"{}\" --ostype \"Other\" --register\nThen add storage controller and attach a hard disk.",
-                args.vm_name, args.vm_name
-            )));
+                vm_name, vm_name
+            )))
+        }
+    }
+}
+
+fn power_off_vm(vm_name: &str) -> io::Result<()> {
+    println!("Powering off VM if running...");
+    let mut vm_powered_off = false;
+
+    // Try graceful shutdown first
+    let _ = Command::new("VBoxManage")
+        .args(["controlvm", vm_name, "acpipowerbutton"])
+        .status();
+
+    // Poll VM state
+    for _ in 0..VM_SHUTDOWN_POLL_ATTEMPTS {
+        std::thread::sleep(std::time::Duration::from_millis(VM_SHUTDOWN_POLL_INTERVAL_MS));
+        let output = Command::new("VBoxManage")
+            .args(["showvminfo", vm_name, "--machinereadable"])
+            .output();
+
+        if let Ok(output) = output {
+            if let Ok(stdout) = std::str::from_utf8(&output.stdout) {
+                let state_line = stdout.lines()
+                    .find(|line| line.starts_with("VMState="))
+                    .and_then(|line| line.strip_prefix("VMState=\""))
+                    .and_then(|s| s.strip_suffix("\""));
+
+                if let Some("poweroff") = state_line {
+                    vm_powered_off = true;
+                    break;
+                }
+            }
         }
     }
 
-    // Mount ISO
+    // If graceful shutdown didn't work, force power off
+    if !vm_powered_off {
+        let _ = Command::new("VBoxManage")
+            .args(["controlvm", vm_name, "poweroff"])
+            .status();
+
+        // Brief wait for force power off
+        std::thread::sleep(std::time::Duration::from_millis(VM_SHUTDOWN_POLL_INTERVAL_MS));
+    }
+
+    Ok(())
+}
+
+fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
+    // Set EFI firmware
+    let set_efi_status = Command::new("VBoxManage")
+        .args(["modifyvm", &args.vm_name, "--firmware", "efi64"])
+        .status()?;
+    if !set_efi_status.success() {
+        eprintln!("Warning: Failed to set EFI firmware. The VM may need to be recreated for EFI support.");
+    }
+
+    // Attach ISO
     println!("Attaching ISO to VM...");
     let attach_status = Command::new("VBoxManage")
         .args([
@@ -184,51 +251,6 @@ fn run_virtualbox(args: &Args, workspace_root: &PathBuf) -> io::Result<()> {
 
     if !attach_status.success() {
         return Err(io::Error::other("Failed to attach ISO to VirtualBox VM"));
-    }
-
-    // Power off VM if it's running, then set EFI firmware
-    let mut vm_powered_off = false;
-    let _ = Command::new("VBoxManage")
-        .args(["controlvm", &args.vm_name, "acpipowerbutton"])
-        .status(); // Try graceful shutdown
-
-    // Poll VM state instead of fixed sleep
-    for _ in 0..10 { // Poll up to 10 times
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        let output = Command::new("VBoxManage")
-            .args(["showvminfo", &args.vm_name, "--machinereadable"])
-            .output();
-
-        if let Ok(output) = output {
-            if let Ok(stdout) = std::str::from_utf8(&output.stdout) {
-                let state_line = stdout.lines()
-                    .find(|line| line.starts_with("VMState="))
-                    .map(|line| line.trim_start_matches("VMState=\"").trim_end_matches("\""));
-
-                if let Some("poweroff") = state_line {
-                    vm_powered_off = true;
-                    break;
-                }
-            }
-        }
-    }
-
-    // If graceful shutdown didn't work, force power off
-    if !vm_powered_off {
-        let _ = Command::new("VBoxManage")
-            .args(["controlvm", &args.vm_name, "poweroff"])
-            .status(); // Force power off if needed
-
-        // Brief wait for force power off
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-
-    // Set EFI firmware
-    let set_efi_status = Command::new("VBoxManage")
-        .args(["modifyvm", &args.vm_name, "--firmware", "efi64"])
-        .status()?;
-    if !set_efi_status.success() {
-        eprintln!("Warning: Failed to set EFI firmware. The VM may need to be recreated for EFI support.");
     }
 
     // Start VM

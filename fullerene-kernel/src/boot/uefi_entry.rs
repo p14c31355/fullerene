@@ -311,70 +311,57 @@ pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
 }
 
 /// Kernel-side fallback framebuffer detection when config table is not available
-/// Duplicate bootloader framebuffer detection logic for when config table installation hangs
+/// Uses shared logic from petroleum crate
 pub fn kernel_fallback_framebuffer_detection() -> Option<FullereneFramebufferConfig> {
     kernel_log!("Attempting kernel-side fallback framebuffer detection (bootloader config table not available)");
 
-    const MAX_FRAMEBUFFER_SIZE: u64 = 0x10000000; // 256MB limit - named constant
-
-    kernel_log!("Kernel: Testing QEMU framebuffer configurations as fallback...");
-
-    #[derive(Clone, Copy)]
-    struct QemuConfig {
-        pub address: u64,
-        pub width: u32,
-        pub height: u32,
-        pub bpp: u32,
-    }
-
-    // Try to detect QEMU-specific framebuffer configurations (QEMU Cirrus VGA)
-    // Mirror the same configurations the bootloader uses
-    const QEMU_FALLBACK_CONFIGS: [QemuConfig; 8] = [
+    // Use the standard QEMU configurations from petroleum crate
+    const QEMU_FALLBACK_CONFIGS: [petroleum::QemuConfig; 8] = [
         // Cirrus VGA specific addresses (common with -vga cirrus)
-        QemuConfig {
+        petroleum::QemuConfig {
             address: 0x40000000,
             width: 1024,
             height: 768,
             bpp: 32,
         }, // Working config verified by bootloader
-        QemuConfig {
+        petroleum::QemuConfig {
             address: 0x40000000,
             width: 800,
             height: 600,
             bpp: 32,
         }, // Alternative 800x600
         // Standard QEMU std-vga framebuffer
-        QemuConfig {
+        petroleum::QemuConfig {
             address: 0xE0000000,
             width: 1024,
             height: 768,
             bpp: 32,
         },
-        QemuConfig {
+        petroleum::QemuConfig {
             address: 0xF0000000,
             width: 1024,
             height: 768,
             bpp: 32,
         },
-        QemuConfig {
+        petroleum::QemuConfig {
             address: 0xFD000000,
             width: 1024,
             height: 768,
             bpp: 32,
         },
-        QemuConfig {
+        petroleum::QemuConfig {
             address: 0xE0000000,
             width: 800,
             height: 600,
             bpp: 32,
         },
-        QemuConfig {
+        petroleum::QemuConfig {
             address: 0xF0000000,
             width: 800,
             height: 600,
             bpp: 32,
         },
-        QemuConfig {
+        petroleum::QemuConfig {
             address: 0x80000000,
             width: 1024,
             height: 768,
@@ -383,57 +370,28 @@ pub fn kernel_fallback_framebuffer_detection() -> Option<FullereneFramebufferCon
     ];
 
     for config in QEMU_FALLBACK_CONFIGS.iter() {
-        let QemuConfig {
-            address,
-            width,
-            height,
-            bpp,
-        } = *config;
-        kernel_log!("Kernel: Testing QEMU framebuffer at 0x{:x}, {}x{}, {} BPP", address, width, height, bpp);
+        kernel_log!("Kernel: Testing QEMU framebuffer at 0x{:x}, {}x{}, {} BPP", config.address, config.width, config.height, config.bpp);
 
-        // Check basic constraints
-        let framebuffer_size = (height as u64) * (width as u64) * (bpp as u64 / 8);
-        if address == 0 || framebuffer_size > MAX_FRAMEBUFFER_SIZE {
-            kernel_log!("Kernel: Skipping invalid framebuffer config");
-            continue;
-        }
+        // Test framebuffer access using petroleum's shared function
+        if petroleum::test_qemu_framebuffer_access(config.address) {
+            kernel_log!("Kernel: Framebuffer access verified for 0x{:x}", config.address);
 
-        // Validate framebuffer access by testing write/verify cycle
-        let test_ptr = address as *mut u32;
-        if test_ptr.is_null() {
-            kernel_log!("Kernel: Invalid test pointer for address 0x{:x}", address);
-            continue;
-        }
+            // Create and return framebuffer config
+            let fb_config = FullereneFramebufferConfig {
+                address: config.address,
+                width: config.width,
+                height: config.height,
+                pixel_format: petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                bpp: config.bpp,
+                stride: config.width, // Assume stride equals width for QEMU
+            };
 
-        // Perform write-verify test (unsafe: direct memory access)
-        unsafe {
-            let original_value = test_ptr.read_volatile();
-            test_ptr.write_volatile(0x12345678);
-            let readback_value = test_ptr.read_volatile();
-
-            // Restore original value regardless of test result
-            test_ptr.write_volatile(original_value);
-
-            if readback_value == 0x12345678 {
-                kernel_log!("Kernel: Framebuffer access verified for 0x{:x}", address);
-
-                // Create and return framebuffer config
-                let fb_config = FullereneFramebufferConfig {
-                    address,
-                    width,
-                    height,
-                    pixel_format: petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-                    bpp,
-                    stride: width, // Assume stride equals width for QEMU
-                };
-
-                kernel_log!("Kernel: Kernel-side framebuffer detection succeeded: {}x{} @ 0x{:x}",
-                    fb_config.width, fb_config.height, fb_config.address);
-                return Some(fb_config);
-            } else {
-                kernel_log!("Kernel: Framebuffer write verification failed for 0x{:x} (wrote 0x12345678, read 0x{:x})",
-                    address, readback_value);
-            }
+            kernel_log!("Kernel: Kernel-side framebuffer detection succeeded: {}x{} @ 0x{:x}",
+                fb_config.width, fb_config.height, fb_config.address);
+            return Some(fb_config);
+        } else {
+            kernel_log!("Kernel: Framebuffer write verification failed for 0x{:x}",
+                config.address);
         }
     }
 

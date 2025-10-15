@@ -200,18 +200,15 @@ impl<'a> FramebufferInstaller<'a> {
         }
     }
 
-    fn install_and_clear(
-        &self,
-        config: FullereneFramebufferConfig,
-    ) -> Result<FullereneFramebufferConfig, EfiStatus> {
-        serial::_print(format_args!("FramebufferInstaller::install_and_clear: addr=0x{:x}, {}x{}, bpp={}, stride={}\n",
+    fn clear_framebuffer(&self, config: &FullereneFramebufferConfig) -> Result<(), EfiStatus> {
+        serial::_print(format_args!("FramebufferInstaller::clear_framebuffer: addr=0x{:x}, {}x{}, bpp={}, stride={}\n",
             config.address, config.width, config.height, config.bpp, config.stride));
 
         let clear_size = (config.height as u64 * config.stride as u64 * (config.bpp as u64 / 8)) as usize;
 
-        serial::_print(format_args!("FramebufferInstaller::install_and_clear: install succeeded, clearing {} bytes at {:#x}\n", clear_size, config.address));
+        serial::_print(format_args!("FramebufferInstaller::clear_framebuffer: clearing {} bytes at {:#x}\n", clear_size, config.address));
 
-        // Clear screen for clean state (safely in chunks to avoid issues)
+        // Clear screen for clean state
         unsafe {
             ptr::write_bytes(
                 config.address as *mut u8,
@@ -220,8 +217,8 @@ impl<'a> FramebufferInstaller<'a> {
             );
         }
 
-        serial::_print(format_args!("FramebufferInstaller::install_and_clear: clear completed\n"));
-        Ok(config)
+        serial::_print(format_args!("FramebufferInstaller::clear_framebuffer: clear completed\n"));
+        Ok(())
     }
 }
 
@@ -365,29 +362,119 @@ pub fn init_uga_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     }
 }
 
+/// Shared struct for QEMU configuration testing
+#[derive(Clone, Copy)]
+pub struct QemuConfig {
+    pub address: u64,
+    pub width: u32,
+    pub height: u32,
+    pub bpp: u32,
+}
+
+/// Test a QEMU framebuffer configuration for accessibility
+pub fn test_qemu_framebuffer_access(address: u64) -> bool {
+    const MAX_FRAMEBUFFER_SIZE: u64 = 0x10000000; // 256MB limit - named constant
+
+    // Check basic constraints
+    if address == 0 {
+        return false;
+    }
+
+    let test_ptr = address as *mut u32;
+    if test_ptr.is_null() {
+        return false;
+    }
+
+    // Try a simple validation write to test if the address is accessible
+    // This will help catch invalid framebuffer addresses early
+    unsafe {
+        // Store original value for restoration if test succeeds
+        let original_value = test_ptr.read_volatile();
+
+        // Write a test pattern
+        test_ptr.write_volatile(0x12345678);
+
+        // Read back to verify write was successful
+        let readback_value = test_ptr.read_volatile();
+
+        if readback_value == 0x12345678 {
+            // Restore original value and return success
+            test_ptr.write_volatile(original_value);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Detect virtualized framebuffer for QEMU/VirtualBox environments
+/// This consolidates the duplicated logic between bootloader and kernel
+pub fn detect_qemu_framebuffer(standard_configs: &[QemuConfig]) -> Option<FullereneFramebufferConfig> {
+    const MAX_FRAMEBUFFER_SIZE: u64 = 0x10000000; // 256MB limit - named constant
+
+    serial::_print(format_args!(
+        "Testing QEMU framebuffer configurations...\n"
+    ));
+
+    for config in standard_configs.iter() {
+        let QemuConfig {
+            address,
+            width,
+            height,
+            bpp,
+        } = *config;
+        serial::_print(format_args!(
+            "Testing QEMU framebuffer at {:#x}, {}x{}, {} BPP\n",
+            address, width, height, bpp
+        ));
+
+        // Check if framebuffer memory size is reasonable
+        let framebuffer_size = (height as u64) * (width as u64) * (bpp as u64 / 8);
+        if address == 0 || framebuffer_size > MAX_FRAMEBUFFER_SIZE {
+            continue;
+        }
+
+        // Test framebuffer access
+        if test_qemu_framebuffer_access(address) {
+            serial::_print(format_args!(
+                "QEMU framebuffer address {:#x} is accessible\n",
+                address
+            ));
+
+            // Create framebuffer configuration
+            let fb_config = FullereneFramebufferConfig {
+                address,
+                width,
+                height,
+                pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                bpp,
+                stride: width, // Assume stride equals width for QEMU
+            };
+
+            serial::_print(format_args!(
+                "QEMU framebuffer candidate: {}x{} @ {:#x}\n",
+                fb_config.width, fb_config.height, fb_config.address
+            ));
+
+            return Some(fb_config);
+        }
+    }
+
+    serial::_print(format_args!(
+        "No working QEMU framebuffer configurations found\n"
+    ));
+    None
+}
+
 /// Alternative GOP detection for QEMU environments
 pub fn init_gop_framebuffer_alternative(
     system_table: &EfiSystemTable,
 ) -> Option<FullereneFramebufferConfig> {
-    const MAX_FRAMEBUFFER_SIZE: u64 = 0x10000000; // 256MB limit - named constant
-
     serial::_print(format_args!(
         "GOP: Trying alternative detection methods for QEMU...\n"
     ));
 
-    #[derive(Clone, Copy)]
-    struct QemuConfig {
-        pub address: u64,
-        pub width: u32,
-        pub height: u32,
-        pub bpp: u32,
-    }
-
-    // Try to detect QEMU-specific framebuffer configurations
-    // QEMU often provides a linear framebuffer even when GOP is not properly detected
-
     // Try standard QEMU framebuffer addresses and configurations
-    // Note: From the debug output, we see that address 0x40000000 works and has write verification success for 1024x768
     const QEMU_CONFIGS: [QemuConfig; 8] = [
         // Cirrus VGA specific addresses (common with -vga cirrus) - start with successfully tested ones
         QemuConfig {
@@ -441,76 +528,7 @@ pub fn init_gop_framebuffer_alternative(
         }, // Alternative Cirrus address
     ];
 
-    for config in QEMU_CONFIGS.iter() {
-        let QemuConfig {
-            address,
-            width,
-            height,
-            bpp,
-        } = *config;
-        serial::_print(format_args!(
-            "GOP: Testing QEMU framebuffer at {:#x}, {}x{}, {} BPP\n",
-            address, width, height, bpp
-        ));
-
-        // Check if framebuffer memory is accessible (basic validation)
-        let framebuffer_size = (height as u64) * (width as u64) * (bpp as u64 / 8);
-
-        if address == 0 || framebuffer_size > MAX_FRAMEBUFFER_SIZE {
-            continue;
-        }
-
-        // Try to validate framebuffer access by checking if we can write to it
-        let test_ptr = address as *mut u32;
-        if test_ptr.is_null() {
-            continue;
-        }
-
-        // Try a simple validation write to test if the address is accessible
-        // This will help catch invalid framebuffer addresses early
-        unsafe {
-            // Store original value for restoration if test succeeds
-            let original_value = test_ptr.read_volatile();
-
-            // Write a test pattern
-            test_ptr.write_volatile(0x12345678);
-
-            // Read back to verify write was successful
-            let readback_value = test_ptr.read_volatile();
-
-            if readback_value == 0x12345678 {
-                // Restore original value and continue with this config
-                test_ptr.write_volatile(original_value);
-                serial::_print(format_args!(
-                    "GOP: Framebuffer address {:#x} is accessible and writable\n",
-                    address
-                ));
-            } else {
-                // Write failed, skip this configuration
-                serial::_print(format_args!(
-                    "GOP: Framebuffer address {:#x} write verification failed (wrote {:#x}, read {:#x})\n",
-                    address, 0x12345678u32, readback_value
-                ));
-                continue;
-            }
-        }
-
-        // Create framebuffer configuration for QEMU
-        let config = FullereneFramebufferConfig {
-            address,
-            width,
-            height,
-            pixel_format:
-                crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-            bpp,
-            stride: width, // Assume stride equals width for QEMU
-        };
-
-        serial::_print(format_args!(
-            "GOP: QEMU framebuffer candidate: {}x{} @ {:#x}\n",
-            config.width, config.height, config.address
-        ));
-
+    detect_qemu_framebuffer(&QEMU_CONFIGS).and_then(|config| {
         // Try to install and validate the configuration
         serial::_print(format_args!(
             "GOP: Attempting to install framebuffer config table...\n"
@@ -521,37 +539,22 @@ pub fn init_gop_framebuffer_alternative(
                 serial::_print(format_args!(
                     "GOP: Config table installed successfully, clearing framebuffer...\n"
                 ));
-                match installer.install_and_clear(config) {
-                    Ok(final_config) => {
-                        serial::_print(format_args!(
-                            "GOP: Successfully initialized QEMU framebuffer: {}x{} @ {:#x}\n",
-                            final_config.width, final_config.height, final_config.address
-                        ));
-                        return Some(final_config);
-                    }
-                    Err(status) => {
-                        serial::_print(format_args!(
-                            "GOP: Failed to clear framebuffer after config install (status: {:#x})\n",
-                            status as u32
-                        ));
-                        continue;
-                    }
-                }
+                let _ = installer.clear_framebuffer(&config);
+                serial::_print(format_args!(
+                    "GOP: Successfully initialized QEMU framebuffer: {}x{} @ {:#x}\n",
+                    config.width, config.height, config.address
+                ));
+                Some(config)
             }
             Err(status) => {
                 serial::_print(format_args!(
                     "GOP: Failed to install framebuffer config table (status: {:#x})\n",
                     status as u32
                 ));
-                continue;
+                None
             }
         }
-    }
-
-    serial::_print(format_args!(
-        "GOP: No working QEMU framebuffer configurations found\n"
-    ));
-    None
+    })
 }
 
 /// Helper to initialize GOP and framebuffer
@@ -671,12 +674,13 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     ));
 
     let installer = FramebufferInstaller::new(system_table);
-    match installer.install_and_clear(config) {
-        Ok(final_config) => {
+    match installer.install(config) {
+        Ok(_) => {
+            let _ = installer.clear_framebuffer(&config);
             serial::_print(format_args!(
                 "GOP: Configuration table installed successfully.\n"
             ));
-            Some(final_config)
+            Some(config)
         }
         Err(status) => {
             serial::_print(format_args!(
