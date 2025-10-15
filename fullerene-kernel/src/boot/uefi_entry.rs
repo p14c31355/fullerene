@@ -378,16 +378,14 @@ fn restore_vga_text_buffer(buffer: &Box<[[u16; 80]; 25]>) {
 /// Returns true if graphics mode was successfully initialized and desktop drawn
 #[cfg(target_os = "uefi")]
 pub fn try_initialize_cirrus_graphics_mode() -> bool {
-    petroleum::serial::serial_log(format_args!("Trying to initialize Cirrus graphics mode...\n"));
-
+    kernel_log!("Trying to initialize Cirrus graphics mode...");
     // Check if Cirrus VGA device was detected
     if !petroleum::graphics::detect_cirrus_vga() {
-        petroleum::serial::serial_log(format_args!("No Cirrus VGA device detected, cannot initialize graphics mode\n"));
+        kernel_log!("No Cirrus VGA device detected, cannot initialize graphics mode");
         return false;
     }
 
-    petroleum::serial::serial_log(format_args!("Cirrus VGA device detected, setting up graphics mode...\n"));
-
+    kernel_log!("Cirrus VGA device detected, setting up graphics mode...");
     // Set up VGA mode 13h (320x200, 256 colors) for graphics
     petroleum::graphics::setup_cirrus_vga_mode();
 
