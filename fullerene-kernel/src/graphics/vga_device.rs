@@ -59,26 +59,26 @@ impl TextBufferOperations for VgaBuffer {
     }
 
     fn set_char_at(&mut self, row: usize, col: usize, chr: ScreenChar) {
-    if self.enabled && row < VGA_HEIGHT && col < VGA_WIDTH {
-        if let Some(buffer) = self.get_buffer() {
-            buffer[row][col] = chr;
+        if self.enabled && row < VGA_HEIGHT && col < VGA_WIDTH {
+            if let Some(buffer) = self.get_buffer() {
+                buffer[row][col] = chr;
+            }
         }
     }
-}
 
-fn get_char_at(&self, row: usize, col: usize) -> ScreenChar {
-    if self.enabled && row < VGA_HEIGHT && col < VGA_WIDTH {
-        // Get buffer directly for immutable access
-        let buffer =
-            unsafe { &*(VGA_BUFFER_ADDR as *const [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) };
-        buffer[row][col]
-    } else {
-        ScreenChar {
-            ascii_character: b' ',
-            color_code: self.color_code,
+    fn get_char_at(&self, row: usize, col: usize) -> ScreenChar {
+        if self.enabled && row < VGA_HEIGHT && col < VGA_WIDTH {
+            // Get buffer directly for immutable access
+            let buffer =
+                unsafe { &*(VGA_BUFFER_ADDR as *const [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) };
+            buffer[row][col]
+        } else {
+            ScreenChar {
+                ascii_character: b' ',
+                color_code: self.color_code,
+            }
         }
     }
-}
 
     fn scroll_up(&mut self) {
         if let Some(buffer) = self.get_buffer() {
