@@ -8,6 +8,14 @@ struct Args {
     /// Use QEMU instead of VirtualBox for virtualization
     #[arg(long)]
     qemu: bool,
+
+    /// VirtualBox VM name (default: fullerene-vm)
+    #[arg(long, default_value = "fullerene-vm")]
+    vm_name: String,
+
+    /// IDE controller name (default: IDE Controller)
+    #[arg(long, default_value = "IDE Controller")]
+    controller: String,
 }
 
 
@@ -17,7 +25,7 @@ fn main() -> io::Result<()> {
     if args.qemu {
         run_qemu()?;
     } else {
-        run_virtualbox()?;
+        run_virtualbox(&args)?;
     }
     Ok(())
 }
@@ -130,7 +138,7 @@ fn create_iso_and_setup(workspace_root: &PathBuf) -> io::Result<(PathBuf, PathBu
     Ok((iso_path, ovmf_fd_path, ovmf_vars_fd_path, temp_ovmf_vars_fd))
 }
 
-fn run_virtualbox() -> io::Result<()> {
+fn run_virtualbox(args: &Args) -> io::Result<()> {
     println!("Starting VirtualBox...");
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -139,42 +147,58 @@ fn run_virtualbox() -> io::Result<()> {
 
     let (iso_path, _ovmf_fd_path, _ovmf_vars_fd_path, _dummy) = create_iso_and_setup(&workspace_root)?;
 
-    // Start VirtualBox VM with the ISO
-    let mut vbox_cmd = Command::new("VBoxManage");
-    vbox_cmd.args([
-        "startvm",
-        "fullerene-vm", // Assume VM name, could be configurable later
-        "--type",
-        "gui",
-    ]);
+    // First, check if the VM exists
+    let check_vm_cmd = Command::new("VBoxManage")
+        .args(["showvminfo", &args.vm_name])
+        .output();
 
-    // Add ISO as storage attachment
-    let mut attach_cmd = Command::new("VBoxManage");
-    let iso_path_str = iso_path.to_str().expect("ISO path should be valid UTF-8");
-    attach_cmd.args([
-        "storageattach",
-        "fullerene-vm",
-        "--storagectl",
-        "IDE Controller", // Assume default controller name
-        "--port",
-        "0",
-        "--device",
-        "0",
-        "--type",
-        "dvddrive",
-        "--medium",
-        iso_path_str,
-    ]);
-
-    // Execute attach command first
-    match attach_cmd.status() {
-        Ok(status) if status.success() => {},
-        _ => return Err(io::Error::other("Failed to attach ISO to VirtualBox VM")),
+    match check_vm_cmd {
+        Ok(output) if output.status.success() => {
+            println!("Found VM: {}", args.vm_name);
+        },
+        _ => {
+            return Err(io::Error::other(format!(
+                "VirtualBox VM '{}' does not exist. Create it first with:\nVBoxManage createvm --name \"{}\" --ostype \"Other\" --register\nThen add storage controller and attach a hard disk.",
+                args.vm_name, args.vm_name
+            )));
+        }
     }
 
-    // Then start VM
-    let vbox_status = vbox_cmd.status()?;
-    if !vbox_status.success() {
+    // Mount ISO
+    println!("Attaching ISO to VM...");
+    let attach_status = Command::new("VBoxManage")
+        .args([
+            "storageattach",
+            &args.vm_name,
+            "--storagectl",
+            &args.controller,
+            "--port",
+            "0",
+            "--device",
+            "0",
+            "--type",
+            "dvddrive",
+            "--medium",
+            &iso_path.to_string_lossy(),
+        ])
+        .status()?;
+
+    if !attach_status.success() {
+        return Err(io::Error::other("Failed to attach ISO to VirtualBox VM"));
+    }
+
+    // Start VM
+    println!("Starting VM...");
+    let start_status = Command::new("VBoxManage")
+        .args([
+            "startvm",
+            &args.vm_name,
+            "--type",
+            "gui",
+        ])
+        .status()?;
+
+    if !start_status.success() {
         return Err(io::Error::other("VirtualBox VM startup failed"));
     }
 
