@@ -72,6 +72,60 @@ use crate::common::{
     EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable, FullereneFramebufferConfig,
 };
 
+/// Shared QEMU framebuffer configurations for both bootloader and kernel
+pub const QEMU_CONFIGS: [QemuConfig; 8] = [
+    // Cirrus VGA specific addresses (common with -vga cirrus) - start with successfully tested ones
+    QemuConfig {
+        address: 0x40000000,
+        width: 1024,
+        height: 768,
+        bpp: 32,
+    }, // Verified working config from debug output
+    QemuConfig {
+        address: 0x40000000,
+        width: 800,
+        height: 600,
+        bpp: 32,
+    }, // Cirrus 800x600 alternative
+    // Standard QEMU std-vga framebuffer
+    QemuConfig {
+        address: 0xE0000000,
+        width: 1024,
+        height: 768,
+        bpp: 32,
+    }, // Common QEMU std-vga mode
+    QemuConfig {
+        address: 0xF0000000,
+        width: 1024,
+        height: 768,
+        bpp: 32,
+    }, // Alternative QEMU framebuffer
+    QemuConfig {
+        address: 0xFD000000,
+        width: 1024,
+        height: 768,
+        bpp: 32,
+    }, // High memory framebuffer
+    QemuConfig {
+        address: 0xE0000000,
+        width: 800,
+        height: 600,
+        bpp: 32,
+    }, // 800x600 mode
+    QemuConfig {
+        address: 0xF0000000,
+        width: 800,
+        height: 600,
+        bpp: 32,
+    }, // Alternative 800x600
+    QemuConfig {
+        address: 0x80000000,
+        width: 1024,
+        height: 768,
+        bpp: 32,
+    }, // Alternative Cirrus address
+];
+
 #[derive(Clone, Copy)]
 pub struct UefiSystemTablePtr(pub *mut EfiSystemTable);
 
@@ -473,60 +527,6 @@ pub fn init_gop_framebuffer_alternative(
     serial::_print(format_args!(
         "GOP: Trying alternative detection methods for QEMU...\n"
     ));
-
-    // Try standard QEMU framebuffer addresses and configurations
-    const QEMU_CONFIGS: [QemuConfig; 8] = [
-        // Cirrus VGA specific addresses (common with -vga cirrus) - start with successfully tested ones
-        QemuConfig {
-            address: 0x40000000,
-            width: 1024,
-            height: 768,
-            bpp: 32,
-        }, // Verified working config from debug output
-        QemuConfig {
-            address: 0x40000000,
-            width: 800,
-            height: 600,
-            bpp: 32,
-        }, // Cirrus 800x600 alternative
-        // Standard QEMU std-vga framebuffer
-        QemuConfig {
-            address: 0xE0000000,
-            width: 1024,
-            height: 768,
-            bpp: 32,
-        }, // Common QEMU std-vga mode
-        QemuConfig {
-            address: 0xF0000000,
-            width: 1024,
-            height: 768,
-            bpp: 32,
-        }, // Alternative QEMU framebuffer
-        QemuConfig {
-            address: 0xFD000000,
-            width: 1024,
-            height: 768,
-            bpp: 32,
-        }, // High memory framebuffer
-        QemuConfig {
-            address: 0xE0000000,
-            width: 800,
-            height: 600,
-            bpp: 32,
-        }, // 800x600 mode
-        QemuConfig {
-            address: 0xF0000000,
-            width: 800,
-            height: 600,
-            bpp: 32,
-        }, // Alternative 800x600
-        QemuConfig {
-            address: 0x80000000,
-            width: 1024,
-            height: 768,
-            bpp: 32,
-        }, // Alternative Cirrus address
-    ];
 
     detect_qemu_framebuffer(&QEMU_CONFIGS).and_then(|config| {
         // Try to install and validate the configuration
