@@ -33,8 +33,10 @@ extern crate alloc;
 use spin::Once;
 
 // Global allocator removed - handled by petroleum crate
+
 #[cfg(not(test))]
 #[panic_handler]
+#[cfg(any(not(target_family = "unix"), not(target_os = "uefi")))]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     use x86_64::instructions::hlt;
     loop {

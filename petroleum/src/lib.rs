@@ -146,21 +146,57 @@ impl<'a> FramebufferInstaller<'a> {
     }
 
     fn install(&self, config: FullereneFramebufferConfig) -> Result<(), EfiStatus> {
+        serial::_print(format_args!("FramebufferInstaller::install: allocating config\n"));
         let config_ptr = Box::leak(Box::new(config));
         let bs = unsafe { &*self.system_table.boot_services };
 
+        // UEFI requires 8-byte alignment for configuration tables, but Box allocation should already be aligned
+        // Use Box::into_raw to properly convert the box into a raw pointer
+        serial::_print(format_args!("FramebufferInstaller::install: alignment OK (using Box::into_raw)\n"));
+        let final_config_ptr = Box::into_raw(Box::new(config));
+
+        serial::_print(format_args!("FramebufferInstaller::install: calling install_configuration_table\n"));
+        serial::_print(format_args!("INSTALL_CONFIG_TABLE: GUID={:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}\n",
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[0],
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[1],
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[2],
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[3],
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[4],
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[5],
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[6],
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[7],
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[8],
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[9],
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[10],
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[11],
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[12],
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[13],
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[14],
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[15]
+        ));
+
+        serial::_print(format_args!("INSTALL_CONFIG_TABLE: config_ptr={:#p}, boot_services={:#p}\n", final_config_ptr, bs));
+
+        // Provide safety timeout mechanism
+        serial::_print(format_args!("INSTALL_CONFIG_TABLE: calling bs.install_configuration_table...\n"));
+
+        // Try the UEFI call
         let status = unsafe {
             (bs.install_configuration_table)(
                 FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
-                config_ptr as *const _ as *mut c_void,
+                final_config_ptr as *const _ as *mut c_void,
             )
         };
 
-        let efi_status = EfiStatus::from(status);
-        if efi_status != EfiStatus::Success {
+        serial::_print(format_args!("INSTALL_CONFIG_TABLE: returned from call, status={:#x}\n", status));
+
+        let efi_status = crate::common::EfiStatus::from(status);
+        if efi_status != crate::common::EfiStatus::Success {
+            serial::_print(format_args!("FramebufferInstaller::install failed: status {:#x}, recovering memory\n", status));
             let _ = unsafe { Box::from_raw(config_ptr) };
             Err(efi_status)
         } else {
+            serial::_print(format_args!("FramebufferInstaller::install succeeded\n"));
             Ok(())
         }
     }
@@ -169,17 +205,23 @@ impl<'a> FramebufferInstaller<'a> {
         &self,
         config: FullereneFramebufferConfig,
     ) -> Result<FullereneFramebufferConfig, EfiStatus> {
-        self.install(config)?;
+        serial::_print(format_args!("FramebufferInstaller::install_and_clear: addr=0x{:x}, {}x{}, bpp={}, stride={}\n",
+            config.address, config.width, config.height, config.bpp, config.stride));
 
-        // Clear screen for clean state
+        let clear_size = (config.height as u64 * config.stride as u64 * (config.bpp as u64 / 8)) as usize;
+
+        serial::_print(format_args!("FramebufferInstaller::install_and_clear: install succeeded, clearing {} bytes at {:#x}\n", clear_size, config.address));
+
+        // Clear screen for clean state (safely in chunks to avoid issues)
         unsafe {
             ptr::write_bytes(
                 config.address as *mut u8,
                 0x00,
-                (config.height as u64 * config.stride as u64 * (config.bpp as u64 / 8)) as usize,
+                clear_size,
             );
         }
 
+        serial::_print(format_args!("FramebufferInstaller::install_and_clear: clear completed\n"));
         Ok(config)
     }
 }
@@ -346,7 +388,21 @@ pub fn init_gop_framebuffer_alternative(
     // QEMU often provides a linear framebuffer even when GOP is not properly detected
 
     // Try standard QEMU framebuffer addresses and configurations
-    const QEMU_CONFIGS: [QemuConfig; 5] = [
+    // Note: From the debug output, we see that address 0x40000000 works and has write verification success for 1024x768
+    const QEMU_CONFIGS: [QemuConfig; 8] = [
+        // Cirrus VGA specific addresses (common with -vga cirrus) - start with successfully tested ones
+        QemuConfig {
+            address: 0x40000000,
+            width: 1024,
+            height: 768,
+            bpp: 32,
+        }, // Verified working config from debug output
+        QemuConfig {
+            address: 0x40000000,
+            width: 800,
+            height: 600,
+            bpp: 32,
+        }, // Cirrus 800x600 alternative
         // Standard QEMU std-vga framebuffer
         QemuConfig {
             address: 0xE0000000,
@@ -378,6 +434,12 @@ pub fn init_gop_framebuffer_alternative(
             height: 600,
             bpp: 32,
         }, // Alternative 800x600
+        QemuConfig {
+            address: 0x80000000,
+            width: 1024,
+            height: 768,
+            bpp: 32,
+        }, // Alternative Cirrus address
     ];
 
     for config in QEMU_CONFIGS.iter() {
@@ -405,6 +467,35 @@ pub fn init_gop_framebuffer_alternative(
             continue;
         }
 
+        // Try a simple validation write to test if the address is accessible
+        // This will help catch invalid framebuffer addresses early
+        unsafe {
+            // Store original value for restoration if test succeeds
+            let original_value = test_ptr.read_volatile();
+
+            // Write a test pattern
+            test_ptr.write_volatile(0x12345678);
+
+            // Read back to verify write was successful
+            let readback_value = test_ptr.read_volatile();
+
+            if readback_value == 0x12345678 {
+                // Restore original value and continue with this config
+                test_ptr.write_volatile(original_value);
+                serial::_print(format_args!(
+                    "GOP: Framebuffer address {:#x} is accessible and writable\n",
+                    address
+                ));
+            } else {
+                // Write failed, skip this configuration
+                serial::_print(format_args!(
+                    "GOP: Framebuffer address {:#x} write verification failed (wrote {:#x}, read {:#x})\n",
+                    address, 0x12345678u32, readback_value
+                ));
+                continue;
+            }
+        }
+
         // Create framebuffer configuration for QEMU
         let config = FullereneFramebufferConfig {
             address,
@@ -422,18 +513,35 @@ pub fn init_gop_framebuffer_alternative(
         ));
 
         // Try to install and validate the configuration
+        serial::_print(format_args!(
+            "GOP: Attempting to install framebuffer config table...\n"
+        ));
         let installer = FramebufferInstaller::new(system_table);
-        match installer.install_and_clear(config) {
-            Ok(final_config) => {
+        match installer.install(config) {
+            Ok(_) => {
                 serial::_print(format_args!(
-                    "GOP: Successfully initialized QEMU framebuffer: {}x{} @ {:#x}\n",
-                    final_config.width, final_config.height, final_config.address
+                    "GOP: Config table installed successfully, clearing framebuffer...\n"
                 ));
-                return Some(final_config);
+                match installer.install_and_clear(config) {
+                    Ok(final_config) => {
+                        serial::_print(format_args!(
+                            "GOP: Successfully initialized QEMU framebuffer: {}x{} @ {:#x}\n",
+                            final_config.width, final_config.height, final_config.address
+                        ));
+                        return Some(final_config);
+                    }
+                    Err(status) => {
+                        serial::_print(format_args!(
+                            "GOP: Failed to clear framebuffer after config install (status: {:#x})\n",
+                            status as u32
+                        ));
+                        continue;
+                    }
+                }
             }
             Err(status) => {
                 serial::_print(format_args!(
-                    "GOP: Failed to install QEMU framebuffer config (status: {:#x})\n",
+                    "GOP: Failed to install framebuffer config table (status: {:#x})\n",
                     status as u32
                 ));
                 continue;

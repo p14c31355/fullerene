@@ -310,6 +310,137 @@ pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     }
 }
 
+/// Kernel-side fallback framebuffer detection when config table is not available
+/// Duplicate bootloader framebuffer detection logic for when config table installation hangs
+pub fn kernel_fallback_framebuffer_detection() -> Option<FullereneFramebufferConfig> {
+    kernel_log!("Attempting kernel-side fallback framebuffer detection (bootloader config table not available)");
+
+    const MAX_FRAMEBUFFER_SIZE: u64 = 0x10000000; // 256MB limit - named constant
+
+    kernel_log!("Kernel: Testing QEMU framebuffer configurations as fallback...");
+
+    #[derive(Clone, Copy)]
+    struct QemuConfig {
+        pub address: u64,
+        pub width: u32,
+        pub height: u32,
+        pub bpp: u32,
+    }
+
+    // Try to detect QEMU-specific framebuffer configurations (QEMU Cirrus VGA)
+    // Mirror the same configurations the bootloader uses
+    const QEMU_FALLBACK_CONFIGS: [QemuConfig; 8] = [
+        // Cirrus VGA specific addresses (common with -vga cirrus)
+        QemuConfig {
+            address: 0x40000000,
+            width: 1024,
+            height: 768,
+            bpp: 32,
+        }, // Working config verified by bootloader
+        QemuConfig {
+            address: 0x40000000,
+            width: 800,
+            height: 600,
+            bpp: 32,
+        }, // Alternative 800x600
+        // Standard QEMU std-vga framebuffer
+        QemuConfig {
+            address: 0xE0000000,
+            width: 1024,
+            height: 768,
+            bpp: 32,
+        },
+        QemuConfig {
+            address: 0xF0000000,
+            width: 1024,
+            height: 768,
+            bpp: 32,
+        },
+        QemuConfig {
+            address: 0xFD000000,
+            width: 1024,
+            height: 768,
+            bpp: 32,
+        },
+        QemuConfig {
+            address: 0xE0000000,
+            width: 800,
+            height: 600,
+            bpp: 32,
+        },
+        QemuConfig {
+            address: 0xF0000000,
+            width: 800,
+            height: 600,
+            bpp: 32,
+        },
+        QemuConfig {
+            address: 0x80000000,
+            width: 1024,
+            height: 768,
+            bpp: 32,
+        },
+    ];
+
+    for config in QEMU_FALLBACK_CONFIGS.iter() {
+        let QemuConfig {
+            address,
+            width,
+            height,
+            bpp,
+        } = *config;
+        kernel_log!("Kernel: Testing QEMU framebuffer at 0x{:x}, {}x{}, {} BPP", address, width, height, bpp);
+
+        // Check basic constraints
+        let framebuffer_size = (height as u64) * (width as u64) * (bpp as u64 / 8);
+        if address == 0 || framebuffer_size > MAX_FRAMEBUFFER_SIZE {
+            kernel_log!("Kernel: Skipping invalid framebuffer config");
+            continue;
+        }
+
+        // Validate framebuffer access by testing write/verify cycle
+        let test_ptr = address as *mut u32;
+        if test_ptr.is_null() {
+            kernel_log!("Kernel: Invalid test pointer for address 0x{:x}", address);
+            continue;
+        }
+
+        // Perform write-verify test (unsafe: direct memory access)
+        unsafe {
+            let original_value = test_ptr.read_volatile();
+            test_ptr.write_volatile(0x12345678);
+            let readback_value = test_ptr.read_volatile();
+
+            // Restore original value regardless of test result
+            test_ptr.write_volatile(original_value);
+
+            if readback_value == 0x12345678 {
+                kernel_log!("Kernel: Framebuffer access verified for 0x{:x}", address);
+
+                // Create and return framebuffer config
+                let fb_config = FullereneFramebufferConfig {
+                    address,
+                    width,
+                    height,
+                    pixel_format: petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                    bpp,
+                    stride: width, // Assume stride equals width for QEMU
+                };
+
+                kernel_log!("Kernel: Kernel-side framebuffer detection succeeded: {}x{} @ 0x{:x}",
+                    fb_config.width, fb_config.height, fb_config.address);
+                return Some(fb_config);
+            } else {
+                kernel_log!("Kernel: Framebuffer write verification failed for 0x{:x} (wrote 0x12345678, read 0x{:x})",
+                    address, readback_value);
+            }
+        }
+    }
+
+    kernel_log!("Kernel: No working QEMU framebuffer configurations found by kernel");
+    None
+}
+
 /// Helper function to try initializing graphics with a framebuffer config.
 /// Returns true if graphics were successfully initialized and drawn.
 /// source_name is used for logging purposes (e.g., "UEFI custom" or "GOP").
@@ -475,7 +606,21 @@ pub fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
         return try_init_graphics(&gop_config, "UEFI GOP");
     }
 
-    kernel_log!("No standard graphics modes found, trying Cirrus VGA fallback...");
+    kernel_log!("No standard graphics modes found, trying kernel-side fallback detection...");
+    // Try kernel-side fallback framebuffer detection when bootloader config table installation hangs
+    if let Some(fallback_config) = kernel_fallback_framebuffer_detection() {
+        kernel_log!(
+            "Found kernel-detected framebuffer config: {}x{} @ {:#x}, stride: {}, pixel_format: {:?}",
+            fallback_config.width,
+            fallback_config.height,
+            fallback_config.address,
+            fallback_config.stride,
+            fallback_config.pixel_format
+        );
+        return try_init_graphics(&fallback_config, "Kernel fallback");
+    }
+
+    kernel_log!("No kernel fallback graphics modes found, trying Cirrus VGA fallback...");
 
     // As a fallback, try Cirrus VGA graphics if the function exists
     try_initialize_cirrus_graphics_mode()
