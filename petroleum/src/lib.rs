@@ -199,17 +199,24 @@ impl<'a> FramebufferInstaller<'a> {
         Self { system_table }
     }
 
-        fn install(&self, config: FullereneFramebufferConfig) -> Result<(), EfiStatus> {
-        serial::_print(format_args!("FramebufferInstaller::install: allocating config\n"));
+    fn install(&self, config: FullereneFramebufferConfig) -> Result<(), EfiStatus> {
+        serial::_print(format_args!(
+            "FramebufferInstaller::install: allocating config\n"
+        ));
         let config_ptr = Box::into_raw(Box::new(config));
         let bs = unsafe { &*self.system_table.boot_services };
 
         // UEFI requires 8-byte alignment for configuration tables, but Box allocation should already be aligned
         // Use Box::into_raw to properly convert the box into a raw pointer
-        serial::_print(format_args!("FramebufferInstaller::install: alignment OK (using Box::into_raw)\n"));
+        serial::_print(format_args!(
+            "FramebufferInstaller::install: alignment OK (using Box::into_raw)\n"
+        ));
 
-        serial::_print(format_args!("FramebufferInstaller::install: calling install_configuration_table\n"));
-        serial::_print(format_args!("INSTALL_CONFIG_TABLE: GUID={:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}\n",
+        serial::_print(format_args!(
+            "FramebufferInstaller::install: calling install_configuration_table\n"
+        ));
+        serial::_print(format_args!(
+            "INSTALL_CONFIG_TABLE: GUID={:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}\n",
             FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[0],
             FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[1],
             FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[2],
@@ -228,10 +235,15 @@ impl<'a> FramebufferInstaller<'a> {
             FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[15]
         ));
 
-        serial::_print(format_args!("INSTALL_CONFIG_TABLE: config_ptr={:#p}, boot_services={:#p}\n", config_ptr, bs));
+        serial::_print(format_args!(
+            "INSTALL_CONFIG_TABLE: config_ptr={:#p}, boot_services={:#p}\n",
+            config_ptr, bs
+        ));
 
         // Provide safety timeout mechanism
-        serial::_print(format_args!("INSTALL_CONFIG_TABLE: calling bs.install_configuration_table...\n"));
+        serial::_print(format_args!(
+            "INSTALL_CONFIG_TABLE: calling bs.install_configuration_table...\n"
+        ));
 
         // Try the UEFI call
         let status = unsafe {
@@ -241,11 +253,17 @@ impl<'a> FramebufferInstaller<'a> {
             )
         };
 
-        serial::_print(format_args!("INSTALL_CONFIG_TABLE: returned from call, status={:#x}\n", status));
+        serial::_print(format_args!(
+            "INSTALL_CONFIG_TABLE: returned from call, status={:#x}\n",
+            status
+        ));
 
         let efi_status = crate::common::EfiStatus::from(status);
         if efi_status != crate::common::EfiStatus::Success {
-            serial::_print(format_args!("FramebufferInstaller::install failed: status {:#x}, recovering memory\n", status));
+            serial::_print(format_args!(
+                "FramebufferInstaller::install failed: status {:#x}, recovering memory\n",
+                status
+            ));
             let _ = unsafe { Box::from_raw(config_ptr) };
             Err(efi_status)
         } else {
@@ -255,23 +273,27 @@ impl<'a> FramebufferInstaller<'a> {
     }
 
     fn clear_framebuffer(&self, config: &FullereneFramebufferConfig) -> Result<(), EfiStatus> {
-        serial::_print(format_args!("FramebufferInstaller::clear_framebuffer: addr=0x{:x}, {}x{}, bpp={}, stride={}\n",
-            config.address, config.width, config.height, config.bpp, config.stride));
+        serial::_print(format_args!(
+            "FramebufferInstaller::clear_framebuffer: addr=0x{:x}, {}x{}, bpp={}, stride={}\n",
+            config.address, config.width, config.height, config.bpp, config.stride
+        ));
 
-        let clear_size = (config.height as u64 * config.stride as u64 * (config.bpp as u64 / 8)) as usize;
+        let clear_size =
+            (config.height as u64 * config.stride as u64 * (config.bpp as u64 / 8)) as usize;
 
-        serial::_print(format_args!("FramebufferInstaller::clear_framebuffer: clearing {} bytes at {:#x}\n", clear_size, config.address));
+        serial::_print(format_args!(
+            "FramebufferInstaller::clear_framebuffer: clearing {} bytes at {:#x}\n",
+            clear_size, config.address
+        ));
 
         // Clear screen for clean state
         unsafe {
-            ptr::write_bytes(
-                config.address as *mut u8,
-                0x00,
-                clear_size,
-            );
+            ptr::write_bytes(config.address as *mut u8, 0x00, clear_size);
         }
 
-        serial::_print(format_args!("FramebufferInstaller::clear_framebuffer: clear completed\n"));
+        serial::_print(format_args!(
+            "FramebufferInstaller::clear_framebuffer: clear completed\n"
+        ));
         Ok(())
     }
 }
@@ -463,12 +485,12 @@ pub fn test_qemu_framebuffer_access(address: u64) -> bool {
 
 /// Detect virtualized framebuffer for QEMU/VirtualBox environments
 /// This consolidates the duplicated logic between bootloader and kernel
-pub fn detect_qemu_framebuffer(standard_configs: &[QemuConfig]) -> Option<FullereneFramebufferConfig> {
+pub fn detect_qemu_framebuffer(
+    standard_configs: &[QemuConfig],
+) -> Option<FullereneFramebufferConfig> {
     const MAX_FRAMEBUFFER_SIZE: u64 = 0x10000000; // 256MB limit - named constant
 
-    serial::_print(format_args!(
-        "Testing QEMU framebuffer configurations...\n"
-    ));
+    serial::_print(format_args!("Testing QEMU framebuffer configurations...\n"));
 
     for config in standard_configs.iter() {
         let QemuConfig {
@@ -500,7 +522,8 @@ pub fn detect_qemu_framebuffer(standard_configs: &[QemuConfig]) -> Option<Fuller
                 address,
                 width,
                 height,
-                pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                pixel_format:
+                    crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                 bpp,
                 stride: width, // Assume stride equals width for QEMU
             };
@@ -562,7 +585,8 @@ pub fn init_gop_framebuffer_alternative(
             address,
             width,
             height,
-            pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+            pixel_format:
+                crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
             bpp,
             stride: width, // Assume stride equals width for QEMU
         };

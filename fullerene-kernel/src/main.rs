@@ -37,8 +37,8 @@ use spin::Once;
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    use x86_64::instructions::hlt;
     use petroleum::serial::_print;
+    use x86_64::instructions::hlt;
 
     _print(format_args!("PANIC: {}\n", info));
 

@@ -313,7 +313,9 @@ pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
 /// Kernel-side fallback framebuffer detection when config table is not available
 /// Uses shared logic from petroleum crate
 pub fn kernel_fallback_framebuffer_detection() -> Option<FullereneFramebufferConfig> {
-    kernel_log!("Attempting kernel-side fallback framebuffer detection (bootloader config table not available)");
+    kernel_log!(
+        "Attempting kernel-side fallback framebuffer detection (bootloader config table not available)"
+    );
 
     // Call petroleum's consolidated QEMU framebuffer detection
     petroleum::detect_qemu_framebuffer(&petroleum::QEMU_CONFIGS)
