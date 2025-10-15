@@ -210,9 +210,15 @@ fn power_off_vm(vm_name: &str) -> io::Result<()> {
 
     // If graceful shutdown didn't work, force power off
     if !vm_powered_off {
-        let _ = Command::new("VBoxManage")
+                let status = Command::new("VBoxManage")
             .args(["controlvm", vm_name, "poweroff"])
-            .status();
+            .status()?;
+        if !status.success() {
+            return Err(io::Error::other(format!(
+                "`VBoxManage poweroff` failed with status: {}",
+                status
+            )));
+        }
 
         // Brief wait for force power off
         std::thread::sleep(std::time::Duration::from_millis(VM_SHUTDOWN_POLL_INTERVAL_MS));
