@@ -11,10 +11,9 @@ pub mod input;
 pub mod pic;
 pub mod syscall;
 
-use core::arch::asm;
 use lazy_static::lazy_static;
 use spin::Mutex;
-use x86_64::registers::control::Cr3;
+use x86_64::instructions::interrupts;
 
 // Global tick counter for timing
 lazy_static! {
@@ -36,18 +35,18 @@ pub fn send_eoi() {
 
 /// Disable interrupts
 pub fn disable_interrupts() {
-    unsafe { asm!("cli") };
+    interrupts::disable();
 }
 
 /// Enable interrupts
 pub fn enable_interrupts() {
-    unsafe { asm!("sti") };
+    interrupts::enable();
 }
 
 /// Wait for interrupt (hlt instruction)
 pub fn hlt_loop() -> ! {
     loop {
-        unsafe { asm!("hlt") };
+        x86_64::instructions::hlt();
     }
 }
 
@@ -60,5 +59,5 @@ pub extern "C" fn syscall_entry() {
 // Panic button for debugging
 #[cfg(debug_assertions)]
 pub fn trigger_breakpoint() {
-    unsafe { asm!("int3") };
+    interrupts::int3();
 }

@@ -31,13 +31,10 @@ pub const ICW4_8086: u8 = 0x01;
 macro_rules! init_pic {
     ($pic:expr, $vector_offset:expr, $slave_on:expr) => {{
         unsafe {
-            let mut cmd_port = Port::<u8>::new($pic.command);
-            let mut data_port = Port::<u8>::new($pic.data);
-
-            cmd_port.write(ICW1_INIT);
-            data_port.write($vector_offset); // ICW2: vector offset
-            data_port.write($slave_on); // ICW3: slave configuration
-            data_port.write(ICW4_8086);
+            Port::<u8>::new($pic.command).write(ICW1_INIT);
+            Port::<u8>::new($pic.data).write($vector_offset); // ICW2: vector offset
+            Port::<u8>::new($pic.data).write($slave_on); // ICW3: slave configuration
+            Port::<u8>::new($pic.data).write(ICW4_8086);
         }
     }};
 }
@@ -48,12 +45,12 @@ struct Pic {
     data: u16,
 }
 
-const PIC1: Pic = Pic {
+const PIC_MASTER: Pic = Pic {
     command: PicPorts::MASTER_COMMAND,
     data: PicPorts::MASTER_DATA,
 };
 
-const PIC2: Pic = Pic {
+const PIC_SLAVE: Pic = Pic {
     command: PicPorts::SLAVE_COMMAND,
     data: PicPorts::SLAVE_DATA,
 };
@@ -61,12 +58,12 @@ const PIC2: Pic = Pic {
 /// Disable legacy PIC by remapping IRQs and masking all interrupts
 pub fn disable_legacy_pic() {
     // Remap PIC vectors to avoid conflicts
-    init_pic!(PIC1, 0x20, 4); // PIC1: vectors 32-39, slave on IR2
-    init_pic!(PIC2, 0x28, 2); // PIC2: vectors 40-47, slave identity 2
+    init_pic!(PIC_MASTER, 0x20, 4); // PIC1: vectors 32-39, slave on IR2
+    init_pic!(PIC_SLAVE, 0x28, 2); // PIC2: vectors 40-47, slave identity 2
 
     // Mask all interrupts on both PICs
-    port_write!(PIC1.data, 0xFFu8);
-    port_write!(PIC2.data, 0xFFu8);
+    port_write!(PIC_MASTER.data, 0xFFu8);
+    port_write!(PIC_SLAVE.data, 0xFFu8);
 }
 
 // Timer interrupt handling is now in input.rs

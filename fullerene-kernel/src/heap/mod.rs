@@ -1,24 +1,22 @@
 //! Heap memory management module for Fullerene OS
 //!
-//! This module provides dynamic memory allocation, page table management,
-//! frame allocation, and memory mapping utilities.
+//! This module provides frame allocation and memory mapping utilities.
+//! Dynamic allocation uses the global linked_list_allocator.
 
-pub mod allocator;
 pub mod memory_map;
-pub mod paging;
 
-pub use allocator::{ALLOCATOR, HEAP_SIZE, Heap, Locked};
-pub use memory_map::{MEMORY_MAP, init_frame_allocator};
 // Note: MAPPER and FRAME_ALLOCATOR are pub(crate), not re-exportable
-pub use paging::{
-    HIGHER_HALF_OFFSET, PHYSICAL_MEMORY_OFFSET, allocate_heap_from_map, init, init_page_table,
-    reinit_page_table,
-};
+pub use memory_map::{MEMORY_MAP, init_frame_allocator};
 
-// Re-export for convenience
+// Heap allocation functions moved to petroleum subcrate
 pub use petroleum::page_table::BootInfoFrameAllocator;
 pub use petroleum::page_table::EfiMemoryDescriptor;
+pub use petroleum::page_table::allocate_heap_from_map;
+pub use petroleum::page_table::reinit_page_table;
 pub use x86_64::structures::paging::{
     FrameAllocator, Mapper, OffsetPageTable, PageTableFlags as Flags, PhysFrame, Size4KiB,
 };
 pub use x86_64::{PhysAddr, VirtAddr};
+
+// Heap size constant moved to petroleum - for now define locally
+pub const HEAP_SIZE: usize = 1024 * 1024; // 1MB heap

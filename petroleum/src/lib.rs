@@ -10,52 +10,51 @@ pub mod bare_metal_pci;
 pub mod common;
 pub mod graphics;
 pub mod graphics_alternatives;
+pub mod hardware;
 pub mod page_table;
 pub mod serial;
 pub mod uefi_helpers;
 pub use apic::{IoApic, IoApicRedirectionEntry, init_io_apic};
 pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 pub use graphics::{
-    Color, ColorCode, ScreenChar, TextBufferOperations, VgaPortOps, VgaPorts, init_vga_graphics,
+    Color, ColorCode, HardwarePorts, ScreenChar, TextBufferOperations, VgaPortOps,
+    init_vga_graphics,
 };
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
 pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 pub use uefi_helpers::handle_panic;
 
+// Heap allocation exports
+pub use page_table::ALLOCATOR;
+pub use page_table::allocate_heap_from_map;
+pub use page_table::reinit_page_table;
+
 /// Generic framebuffer buffer clear operation
-pub unsafe fn clear_buffer_pixels<T: Copy>(
-    address: u64,
-    stride: u32,
-    height: u32,
-    bg_color: T,
-) {
+pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
     let fb_ptr = address as *mut T;
     let count = (stride * height) as usize;
     core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color);
 }
 
 /// Generic framebuffer buffer scroll up operation
-pub unsafe fn scroll_buffer_pixels<T: Copy>(
-    address: u64,
-    stride: u32,
-    height: u32,
-    bg_color: T,
-) {
+pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
     let bytes_per_pixel = core::mem::size_of::<T>() as u32;
     let bytes_per_line = stride * bytes_per_pixel;
     let shift_bytes = 8u64 * bytes_per_line as u64;
     let fb_ptr = address as *mut u8;
     let total_bytes = height as u64 * bytes_per_line as u64;
-    core::ptr::copy(
-        fb_ptr.add(shift_bytes as usize),
-        fb_ptr,
-        (total_bytes - shift_bytes) as usize,
-    );
+    unsafe {
+        core::ptr::copy(
+            fb_ptr.add(shift_bytes as usize),
+            fb_ptr,
+            (total_bytes - shift_bytes) as usize,
+        );
+    }
     // Clear last 8 lines
     let clear_offset = ((height - 8) as u32 * bytes_per_line) as usize;
     let clear_ptr = (address + clear_offset as u64) as *mut T;
     let clear_count = 8 * stride as usize;
-    core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color);
+    unsafe { core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color) };
 }
 
 use alloc::boxed::Box;
@@ -70,8 +69,7 @@ use crate::common::{
     FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
 };
 use crate::common::{
-    EfiConfigurationTable, EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable,
-    FullereneFramebufferConfig,
+    EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable, FullereneFramebufferConfig,
 };
 
 #[derive(Clone, Copy)]
@@ -123,13 +121,8 @@ impl<'a> ProtocolLocator<'a> {
         let bs = unsafe { &*self.system_table.boot_services };
         let mut protocol: *mut c_void = ptr::null_mut();
 
-        let status = unsafe {
-            (bs.locate_protocol)(
-                self.guid.as_ptr(),
-                ptr::null_mut(),
-                &mut protocol,
-            )
-        };
+        let status =
+            unsafe { (bs.locate_protocol)(self.guid.as_ptr(), ptr::null_mut(), &mut protocol) };
 
         let efi_status = EfiStatus::from(status);
         if efi_status != EfiStatus::Success || protocol.is_null() {
@@ -172,7 +165,10 @@ impl<'a> FramebufferInstaller<'a> {
         }
     }
 
-    fn install_and_clear(&self, mut config: FullereneFramebufferConfig) -> Result<FullereneFramebufferConfig, EfiStatus> {
+    fn install_and_clear(
+        &self,
+        config: FullereneFramebufferConfig,
+    ) -> Result<FullereneFramebufferConfig, EfiStatus> {
         self.install(config)?;
 
         // Clear screen for clean state
@@ -329,18 +325,22 @@ pub fn init_uga_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
 }
 
 /// Alternative GOP detection for QEMU environments
-#[derive(Clone, Copy)]
-struct QemuConfig {
-    pub address: u64,
-    pub width: u32,
-    pub height: u32,
-    pub bpp: u32,
-}
-
-fn init_gop_framebuffer_alternative(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
+pub fn init_gop_framebuffer_alternative(
+    system_table: &EfiSystemTable,
+) -> Option<FullereneFramebufferConfig> {
     const MAX_FRAMEBUFFER_SIZE: u64 = 0x10000000; // 256MB limit - named constant
 
-    serial::_print(format_args!("GOP: Trying alternative detection methods for QEMU...\n"));
+    serial::_print(format_args!(
+        "GOP: Trying alternative detection methods for QEMU...\n"
+    ));
+
+    #[derive(Clone, Copy)]
+    struct QemuConfig {
+        pub address: u64,
+        pub width: u32,
+        pub height: u32,
+        pub bpp: u32,
+    }
 
     // Try to detect QEMU-specific framebuffer configurations
     // QEMU often provides a linear framebuffer even when GOP is not properly detected
@@ -348,15 +348,45 @@ fn init_gop_framebuffer_alternative(system_table: &EfiSystemTable) -> Option<Ful
     // Try standard QEMU framebuffer addresses and configurations
     const QEMU_CONFIGS: [QemuConfig; 5] = [
         // Standard QEMU std-vga framebuffer
-        QemuConfig { address: 0xE0000000, width: 1024, height: 768, bpp: 32 }, // Common QEMU std-vga mode
-        QemuConfig { address: 0xF0000000, width: 1024, height: 768, bpp: 32 }, // Alternative QEMU framebuffer
-        QemuConfig { address: 0xFD000000, width: 1024, height: 768, bpp: 32 }, // High memory framebuffer
-        QemuConfig { address: 0xE0000000, width: 800, height: 600, bpp: 32 },  // 800x600 mode
-        QemuConfig { address: 0xF0000000, width: 800, height: 600, bpp: 32 },  // Alternative 800x600
+        QemuConfig {
+            address: 0xE0000000,
+            width: 1024,
+            height: 768,
+            bpp: 32,
+        }, // Common QEMU std-vga mode
+        QemuConfig {
+            address: 0xF0000000,
+            width: 1024,
+            height: 768,
+            bpp: 32,
+        }, // Alternative QEMU framebuffer
+        QemuConfig {
+            address: 0xFD000000,
+            width: 1024,
+            height: 768,
+            bpp: 32,
+        }, // High memory framebuffer
+        QemuConfig {
+            address: 0xE0000000,
+            width: 800,
+            height: 600,
+            bpp: 32,
+        }, // 800x600 mode
+        QemuConfig {
+            address: 0xF0000000,
+            width: 800,
+            height: 600,
+            bpp: 32,
+        }, // Alternative 800x600
     ];
 
     for config in QEMU_CONFIGS.iter() {
-        let QemuConfig { address, width, height, bpp } = *config;
+        let QemuConfig {
+            address,
+            width,
+            height,
+            bpp,
+        } = *config;
         serial::_print(format_args!(
             "GOP: Testing QEMU framebuffer at {:#x}, {}x{}, {} BPP\n",
             address, width, height, bpp
@@ -369,12 +399,19 @@ fn init_gop_framebuffer_alternative(system_table: &EfiSystemTable) -> Option<Ful
             continue;
         }
 
+        // Try to validate framebuffer access by checking if we can write to it
+        let test_ptr = address as *mut u32;
+        if test_ptr.is_null() {
+            continue;
+        }
+
         // Create framebuffer configuration for QEMU
         let config = FullereneFramebufferConfig {
             address,
             width,
             height,
-            pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+            pixel_format:
+                crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
             bpp,
             stride: width, // Assume stride equals width for QEMU
         };
@@ -404,7 +441,9 @@ fn init_gop_framebuffer_alternative(system_table: &EfiSystemTable) -> Option<Ful
         }
     }
 
-    serial::_print(format_args!("GOP: No working QEMU framebuffer configurations found\n"));
+    serial::_print(format_args!(
+        "GOP: No working QEMU framebuffer configurations found\n"
+    ));
     None
 }
 
@@ -571,10 +610,7 @@ pub fn init_graphics_protocols(
         &EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID,
         "EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL",
     );
-    tester.test_availability(
-        &EFI_LOADED_IMAGE_PROTOCOL_GUID,
-        "EFI_LOADED_IMAGE_PROTOCOL",
-    );
+    tester.test_availability(&EFI_LOADED_IMAGE_PROTOCOL_GUID, "EFI_LOADED_IMAGE_PROTOCOL");
     tester.test_availability(
         &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,
         "EFI_SIMPLE_FILE_SYSTEM_PROTOCOL",
@@ -593,7 +629,9 @@ pub fn init_graphics_protocols(
         "All graphics protocols failed, trying alternative VESA detection...\n"
     ));
 
-    if let Some(config) = graphics_alternatives::detect_vesa_graphics(unsafe { &*system_table.boot_services }) {
+    if let Some(config) =
+        graphics_alternatives::detect_vesa_graphics(unsafe { &*system_table.boot_services })
+    {
         serial::_print(format_args!(
             "EFI PCI enumeration succeeded, installing config table\n"
         ));

@@ -1,4 +1,4 @@
-use petroleum::graphics::ports::VgaPorts;
+use petroleum::graphics::ports::HardwarePorts;
 use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations, port_write};
 use spin::{Mutex, Once};
 
@@ -35,10 +35,10 @@ impl VgaBuffer {
     /// Updates the hardware cursor position.
     pub fn update_cursor(&self) {
         let pos = self.row_position * BUFFER_WIDTH + self.column_position;
-        port_write!(VgaPorts::CRTC_INDEX, CURSOR_POS_LOW_REG);
-        port_write!(VgaPorts::CRTC_DATA, (pos & 0xFF) as u8);
-        port_write!(VgaPorts::CRTC_INDEX, CURSOR_POS_HIGH_REG);
-        port_write!(VgaPorts::CRTC_DATA, ((pos >> 8) & 0xFF) as u8);
+        port_write!(HardwarePorts::CRTC_INDEX, CURSOR_POS_LOW_REG);
+        port_write!(HardwarePorts::CRTC_DATA, (pos & 0xFF) as u8);
+        port_write!(HardwarePorts::CRTC_INDEX, CURSOR_POS_HIGH_REG);
+        port_write!(HardwarePorts::CRTC_DATA, ((pos >> 8) & 0xFF) as u8);
     }
 }
 
@@ -91,13 +91,51 @@ impl TextBufferOperations for VgaBuffer {
         }
     }
 
-    fn scroll_up(&mut self) {
-        for row in 1..BUFFER_HEIGHT {
-            for col in 0..BUFFER_WIDTH {
-                self.buffer[row - 1][col] = self.buffer[row][col];
+    fn write_byte(&mut self, byte: u8) {
+        match byte {
+            b'\n' => {
+                self.new_line();
+            }
+            byte => {
+                if self.column_position >= BUFFER_WIDTH {
+                    self.new_line();
+                }
+                if self.row_position >= BUFFER_HEIGHT {
+                    self.scroll_up();
+                    self.row_position = BUFFER_HEIGHT - 1;
+                }
+
+                let screen_char = ScreenChar {
+                    ascii_character: byte,
+                    color_code: self.color_code,
+                };
+                self.buffer[self.row_position][self.column_position] = screen_char;
+                self.column_position += 1;
             }
         }
-        self.clear_row(BUFFER_HEIGHT - 1);
+    }
+
+    fn new_line(&mut self) {
+        self.column_position = 0;
+        if self.row_position < BUFFER_HEIGHT - 1 {
+            self.row_position += 1;
+        } else {
+            self.scroll_up();
+        }
+    }
+
+    fn clear_screen(&mut self) {
+        let blank = ScreenChar {
+            ascii_character: b' ',
+            color_code: self.color_code,
+        };
+        for row in 0..BUFFER_HEIGHT {
+            for col in 0..BUFFER_WIDTH {
+                self.buffer[row][col] = blank;
+            }
+        }
+        self.column_position = 0;
+        self.row_position = 0;
     }
 }
 
@@ -114,7 +152,7 @@ pub fn init_vga() {
     writer.write_string("This is output directly to VGA.\n");
     writer.update_cursor();
     // Force display refresh by reading status register
-    let _: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::VgaPorts::STATUS);
+    let _: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::HardwarePorts::STATUS);
 }
 
 #[cfg(test)]
@@ -182,6 +220,17 @@ mod tests {
                 }
             }
             self.clear_row(self.height - 1);
+        }
+
+        fn clear_row(&mut self, row: usize) {
+            let blank_char = ScreenChar {
+                ascii_character: b' ',
+                color_code: self.color_code,
+            };
+            for col in 0..self.width {
+                let index = row * self.width + col;
+                self.buffer[index] = blank_char;
+            }
         }
     }
 

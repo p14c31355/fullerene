@@ -52,14 +52,14 @@ pub struct ApicRaw {
 impl ApicRaw {
     /// Read from APIC register
     unsafe fn read(&self, offset: u32) -> u32 {
-        let addr = (self.base_addr + offset as u64) as *mut u32;
-        addr.read_volatile()
+        let addr = (self.base_addr + offset as u64) as *const u32;
+        unsafe { addr.read_volatile() }
     }
 
     /// Write to APIC register
     unsafe fn write(&self, offset: u32, value: u32) {
         let addr = (self.base_addr + offset as u64) as *mut u32;
-        addr.write_volatile(value)
+        unsafe { addr.write_volatile(value) }
     }
 }
 
@@ -68,8 +68,7 @@ pub static APIC: Mutex<Option<ApicRaw>> = Mutex::new(None);
 
 /// Get APIC base address
 fn get_apic_base() -> Option<u64> {
-    let msr = Msr::new(ApicOffsets::BASE_MSR);
-    let value = unsafe { msr.read() };
+    let value = unsafe { Msr::new(ApicOffsets::BASE_MSR).read() };
     if value & (1 << 11) != 0 {
         Some(value & ApicOffsets::BASE_ADDR_MASK)
     } else {

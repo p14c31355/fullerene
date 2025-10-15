@@ -332,8 +332,13 @@ pub struct EfiPciIoProtocol {
     /// flush(This) -> EFI_STATUS
     pub flush: usize, // fn11 - not used
     /// get_location(This, SegmentNumber, BusNumber, DeviceNumber, FunctionNumber) -> EFI_STATUS
-    pub get_location:
-        extern "efiapi" fn(*mut EfiPciIoProtocol, *mut usize, *mut usize, *mut usize, *mut usize) -> usize, // fn12
+    pub get_location: extern "efiapi" fn(
+        *mut EfiPciIoProtocol,
+        *mut usize,
+        *mut usize,
+        *mut usize,
+        *mut usize,
+    ) -> usize, // fn12
     /// attributes(This, Operation, Attributes, Result) -> EFI_STATUS
     pub attributes: usize, // fn13 - not used
     /// get_bar_attributes(This, BarIndex, Supports, Resources) -> EFI_STATUS

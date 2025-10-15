@@ -7,20 +7,20 @@
 #![no_main]
 
 // Kernel modules
+mod context_switch; // Context switching
+mod fs; // Basic filesystem
 mod gdt; // Add GDT module
 mod graphics;
 mod heap;
 mod interrupts;
-mod vga;
-// Kernel modules
-mod context_switch; // Context switching
-mod fs; // Basic filesystem
 mod keyboard; // Keyboard input driver
 mod loader; // Program loader
 mod memory_management; // Virtual memory management
 mod process; // Process management
 mod shell;
-mod syscall; // System calls // Shell/CLI interface
+mod syscall;
+mod traits;
+mod vga; // System calls // Shell/CLI interface
 
 // Submodules for modularizing main.rs
 mod boot;
@@ -32,20 +32,13 @@ extern crate alloc;
 
 use spin::Once;
 
-#[cfg(all(not(test), not(target_os = "uefi")))]
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    petroleum::handle_panic(info)
-}
-
-#[cfg(all(not(test), target_os = "uefi"))]
+// Global allocator removed - handled by petroleum crate
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    // For UEFI, just loop forever on panic
+    use x86_64::instructions::hlt;
     loop {
-        unsafe {
-            x86_64::instructions::hlt();
-        }
+        hlt();
     }
 }
 

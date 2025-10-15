@@ -4,17 +4,19 @@ use crate::boot::FALLBACK_HEAP_START_ADDR;
 use crate::graphics::framebuffer::FramebufferLike;
 use crate::heap;
 use crate::hlt_loop;
-use crate::memory::find_framebuffer_config;
-use crate::memory::setup_memory_maps;
+use crate::memory::find_heap_start;
 use crate::{gdt, graphics, interrupts, memory};
 use alloc::boxed::Box;
 use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
-use petroleum::debug_log;
-use petroleum::graphics::{VGA_MODE13H_ADDRESS, VGA_MODE13H_WIDTH, VGA_MODE13H_HEIGHT, VGA_MODE13H_BPP, VGA_MODE13H_STRIDE};
-use petroleum::write_serial_bytes;
-use x86_64::{PhysAddr, VirtAddr};
+use petroleum::kernel_log;
+use petroleum::{debug_log, write_serial_bytes};
+use x86_64::PhysAddr;
+
+use petroleum::graphics::{
+    VGA_MODE13H_ADDRESS, VGA_MODE13H_BPP, VGA_MODE13H_HEIGHT, VGA_MODE13H_STRIDE, VGA_MODE13H_WIDTH,
+};
 
 /// Helper function to write a string to VGA buffer at specified row
 pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
@@ -56,8 +58,6 @@ pub extern "efiapi" fn efi_main(
 
     // Initialize serial early for debug logging
     petroleum::serial::serial_init();
-
-    debug_log!("Early VGA write done");
 
     // Debug parameter values
     debug_log!(
@@ -103,7 +103,8 @@ pub extern "efiapi" fn efi_main(
 
     // Setup memory maps and initialize memory management
     let kernel_virt_addr = efi_main as u64;
-    let kernel_phys_start = setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
+    let kernel_phys_start =
+        crate::memory::setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
 
     // Initialize memory management components (heap, page tables, etc.)
     // Comment out reinit for now to allow desktop drawing
@@ -118,7 +119,7 @@ pub extern "efiapi" fn efi_main(
 
     // Find framebuffer configuration before reiniting page tables
     kernel_log!("Finding framebuffer config for page table mapping...");
-    let framebuffer_config = find_framebuffer_config(system_table);
+    let framebuffer_config = crate::memory::find_framebuffer_config(system_table);
     let config = framebuffer_config.as_ref();
     let (fb_addr, fb_size) = if let Some(config) = config {
         let fb_size_bytes =
@@ -130,7 +131,10 @@ pub extern "efiapi" fn efi_main(
             config.address,
             fb_size_bytes
         );
-        (Some(config.address as u64), Some(fb_size_bytes as u64))
+        (
+            Some(x86_64::VirtAddr::new(config.address)),
+            Some(fb_size_bytes as u64),
+        )
     } else {
         kernel_log!("No framebuffer config found, using None");
         (None, None)
@@ -142,10 +146,15 @@ pub extern "efiapi" fn efi_main(
     kernel_log!("Page table reinit completed successfully");
 
     // Set physical memory offset for process management
-    crate::memory_management::set_physical_memory_offset(physical_memory_offset);
+    crate::memory_management::set_physical_memory_offset(physical_memory_offset.as_u64() as usize);
+
+    kernel_log!(
+        "Physical memory offset set to: 0x{:x}",
+        physical_memory_offset.as_u64()
+    );
 
     // Initialize GDT with proper heap address
-    let heap_phys_start = memory::find_heap_start(*MEMORY_MAP.get().unwrap());
+    let heap_phys_start = find_heap_start(*MEMORY_MAP.get().unwrap());
     kernel_log!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());
     let start_addr = if heap_phys_start.as_u64() < 0x1000 {
         kernel_log!(
@@ -166,10 +175,16 @@ pub extern "efiapi" fn efi_main(
     );
     kernel_log!("Kernel: GDT init done");
 
-    // Initialize heap with the remaining memory
+    // Initialize linked_list_allocator with the remaining memory
     let gdt_mem_usage = heap_start_after_gdt - heap_start;
     let heap_size_remaining = heap::HEAP_SIZE - gdt_mem_usage as usize;
-    heap::init(heap_start_after_gdt, heap_size_remaining);
+
+    use petroleum::page_table::ALLOCATOR;
+    unsafe {
+        ALLOCATOR
+            .lock()
+            .init(heap_start_after_gdt.as_mut_ptr::<u8>(), heap_size_remaining);
+    }
 
     if heap_phys_start.as_u64() < 0x1000 {
         kernel_log!("Kernel: heap initialized with fallback");
@@ -379,7 +394,6 @@ fn restore_vga_text_buffer(buffer: &Box<[[u16; 80]; 25]>) {
 #[cfg(target_os = "uefi")]
 pub fn try_initialize_cirrus_graphics_mode() -> bool {
     kernel_log!("Trying to initialize Cirrus graphics mode...");
-
     // Check if Cirrus VGA device was detected
     if !petroleum::graphics::detect_cirrus_vga() {
         kernel_log!("No Cirrus VGA device detected, cannot initialize graphics mode");
@@ -387,9 +401,10 @@ pub fn try_initialize_cirrus_graphics_mode() -> bool {
     }
 
     kernel_log!("Cirrus VGA device detected, setting up graphics mode...");
-
     // Set up VGA mode 13h (320x200, 256 colors) for graphics
     petroleum::graphics::setup_cirrus_vga_mode();
+
+    // VGA framebuffer configuration is handled by uefi_vga_config below
 
     kernel_log!("Initializing VGA framebuffer writer...");
 
@@ -433,7 +448,7 @@ pub fn try_initialize_cirrus_graphics_mode() -> bool {
 pub fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
     // Check if framebuffer config is available from UEFI bootloader
     kernel_log!("Checking framebuffer config from UEFI bootloader...");
-    if let Some(fb_config) = find_framebuffer_config(system_table) {
+    if let Some(fb_config) = crate::memory::find_framebuffer_config(system_table) {
         kernel_log!(
             "Found framebuffer config: {}x{} @ {:#x}, stride: {}, pixel_format: {:?}",
             fb_config.width,

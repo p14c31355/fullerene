@@ -1,31 +1,35 @@
 //! Keyboard input driver for Fullerene OS
 //!
 //! This module provides keyboard input functionality including:
-//! - PS/2 keyboard protocol handling
+//! - PS/2 keyboard protocol handling using pc-keyboard crate
 //! - Scan code to ASCII conversion
 //! - Input buffer management
 //! - Blocking/non-blocking input
 
 use alloc::collections::VecDeque;
 use alloc::string::String;
+use pc_keyboard::{DecodedKey, KeyCode, Keyboard, ScancodeSet1, layouts};
 use spin::Mutex;
+
+// Using pc-keyboard for scan code handling
+static KEYBOARD: Mutex<Option<Keyboard<layouts::Us104Key, ScancodeSet1>>> = Mutex::new(None);
 
 /// Keyboard input buffer
 static INPUT_BUFFER: Mutex<VecDeque<u8>> = Mutex::new(VecDeque::new());
 static INPUT_STRING_BUFFER: Mutex<String> = Mutex::new(String::new());
 
-/// Keyboard modifiers (shift, ctrl, alt, etc.)
+/// Keyboard modifiers (shift, ctrl, alt, etc.) - simplified since pc-keyboard handles most
 #[derive(Debug, Clone, Copy, Default)]
-struct KeyboardModifiers {
-    lshift: bool,
-    rshift: bool,
-    lctrl: bool,
-    rctrl: bool,
-    lalt: bool,
-    ralt: bool,
-    caps_lock: bool,
-    num_lock: bool,
-    scroll_lock: bool,
+pub struct KeyboardModifiers {
+    pub lshift: bool,
+    pub rshift: bool,
+    pub lctrl: bool,
+    pub rctrl: bool,
+    pub lalt: bool,
+    pub ralt: bool,
+    pub caps_lock: bool,
+    pub num_lock: bool,
+    pub scroll_lock: bool,
 }
 
 static MODIFIERS: Mutex<KeyboardModifiers> = Mutex::new(KeyboardModifiers {
@@ -284,6 +288,14 @@ pub fn get_keyboard_status() -> KeyboardModifiers {
 pub fn init() {
     // Reset keyboard state
     flush_input();
+
+    // Initialize keyboard instance lazily
+    *KEYBOARD.lock() = Some(Keyboard::new(
+        ScancodeSet1::default(),
+        layouts::Us104Key {},
+        pc_keyboard::HandleControl::Ignore,
+    ));
+
     petroleum::serial::serial_log(format_args!("Keyboard input driver initialized\n"));
 }
 

@@ -209,11 +209,8 @@ pub fn create_process(name: &'static str, entry_point_address: VirtAddr) -> Proc
     let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
 
     // Create page table for the process
-    let offset = crate::memory_management::PHYSICAL_MEMORY_OFFSET
-        .lock()
-        .expect("Physical memory offset not set");
-    let process_page_table = crate::memory_management::create_process_page_table(offset)
-        .expect("Failed to create page table");
+    let process_page_table =
+        crate::memory_management::create_process_page_table().expect("Failed to create page table");
 
     process.page_table_phys_addr = process_page_table.pml4_frame.start_address();
     process.page_table = Some(process_page_table);
@@ -257,9 +254,7 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
         // Free resources
         let kernel_stack_base = process.kernel_stack.as_u64() - KERNEL_STACK_SIZE as u64;
         let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
-        unsafe {
-            alloc::alloc::dealloc(kernel_stack_base as *mut u8, layout);
-        }
+        unsafe { alloc::alloc::dealloc(kernel_stack_base as *mut u8, layout) };
 
         // Properly free page table frames recursively
         if let Some(page_table) = process.page_table.take() {
@@ -357,8 +352,8 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
         .map(|p| p.as_ref() as *const Process);
 
     if let Some(new_ptr) = new_proc_ptr {
-        let old_context = old_proc_ptr.map(|p| &mut (*p).context);
-        let new_context = &(*new_ptr).context;
+        let old_context = old_proc_ptr.map(|p| unsafe { &mut (*p).context });
+        let new_context = unsafe { &(*new_ptr).context };
 
         // Drop the lock before the context switch to prevent deadlocks.
         drop(process_list);

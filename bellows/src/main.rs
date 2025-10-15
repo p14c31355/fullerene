@@ -10,6 +10,8 @@ use alloc::boxed::Box;
 
 use core::{ffi::c_void, ptr};
 
+extern crate log;
+
 // Embedded kernel binary
 static KERNEL_BINARY: &[u8] = include_bytes!("kernel.bin");
 // Import Port for direct I/O
@@ -28,7 +30,16 @@ use petroleum::common::{
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    petroleum::uefi_helpers::handle_panic(info)
+    use core::fmt::Write;
+    let mut writer = petroleum::serial::SERIAL_PORT_WRITER.lock();
+    let _ = write!(writer, "Panic: {}\n", info);
+    unsafe {
+        core::ptr::write_volatile(0xB8000 as *mut u16, 0x1F20);
+    } // White ' ' on blue
+    unsafe {
+        core::ptr::write_volatile(0xB8002 as *mut u16, 0x1F50);
+    } // White 'P' on blue
+    loop {}
 }
 
 /// Main entry point of the bootloader.
@@ -36,7 +47,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 /// This function is the `start` attribute as defined in the `Cargo.toml`.
 #[unsafe(no_mangle)]
 pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
-    petroleum::serial::_print(format_args!("Bellows: efi_main entered.\n"));
+    log::debug!("Bellows: efi_main entered.");
 
     debug_print_str("Main: image_handle=0x");
     debug_print_hex(image_handle);
@@ -198,23 +209,36 @@ fn try_uga_protocol(st: &EfiSystemTable) -> bool {
 
 /// Installs a basic VGA framebuffer configuration for UEFI environments when GOP is not available.
 /// Provides a fallback framebuffer configuration that the kernel can use.
+///
+
 fn install_vga_framebuffer_config(st: &EfiSystemTable) {
     petroleum::println!("Installing VGA framebuffer config table for UEFI...");
 
     // Create an improved VGA-compatible framebuffer config
     // Use higher resolution VGA modes for better compatibility and to prevent logo scattering
     let config = FullereneFramebufferConfig {
-        address: 0xA0000, // Standard VGA memory address
-        width: 800,       // Higher resolution to prevent logo scattering
-        height: 600,      // Higher resolution for better display
+        address: 0xA0000,                                     // Standard VGA memory address
+        width: 800,  // Higher resolution to prevent logo scattering
+        height: 600, // Higher resolution for better display
         pixel_format: EfiGraphicsPixelFormat::PixelFormatMax, // Special marker for VGA mode
         bpp: 8,
-        stride: 800,      // Match width for VGA modes
+        stride: 800, // Match width for VGA modes
     };
+
+    #[cfg(debug_assertions)]
+    petroleum::serial::_print(format_args!(
+        "VGA: Created config - address: {:#x}, width: {}, height: {}, bpp: {}\n",
+        config.address, config.width, config.height, config.bpp
+    ));
 
     let config_ptr = Box::leak(Box::new(config));
 
+    #[cfg(debug_assertions)]
+    petroleum::serial::_print(format_args!("VGA: Config boxed and leaked\n"));
+
     let bs = unsafe { &*st.boot_services };
+    #[cfg(debug_assertions)]
+    petroleum::serial::_print(format_args!("VGA: Got boot services\n"));
 
     let status = unsafe {
         (bs.install_configuration_table)(
@@ -226,6 +250,9 @@ fn install_vga_framebuffer_config(st: &EfiSystemTable) {
     if EfiStatus::from(status) == EfiStatus::Success {
         petroleum::println!("VGA framebuffer config table installed successfully.");
     } else {
+        petroleum::serial::_print(format_args!(
+            "VGA: Installation failed, recovering memory\n"
+        ));
         let _ = unsafe { Box::from_raw(config_ptr) };
         petroleum::println!(
             "Failed to install VGA framebuffer config table (status: {:#x})",

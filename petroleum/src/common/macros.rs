@@ -18,6 +18,55 @@ macro_rules! lock_and_read {
     }};
 }
 
+/// Convenient logging macros using log crate
+#[macro_export]
+macro_rules! log_error {
+    ($error:expr) => {
+        log::error!("SystemError({}):", (*$error) as u32)
+    };
+    ($error:expr, $context:expr) => {
+        log::error!("SystemError({}): {}", (*$error) as u32, $context)
+    };
+}
+
+#[macro_export]
+macro_rules! log_warning {
+    ($message:expr) => {
+        log::warn!("{}", $message)
+    };
+}
+
+#[macro_export]
+macro_rules! log_info {
+    ($message:expr) => {
+        log::info!("{}", $message)
+    };
+}
+
+#[macro_export]
+macro_rules! log_debug {
+    ($message:expr) => {
+        log::debug!("{}", $message)
+    };
+}
+
+#[macro_export]
+macro_rules! log_trace {
+    ($message:expr) => {
+        log::trace!("{}", $message)
+    };
+}
+
+/// Macro for kernel-specific logging
+#[macro_export]
+macro_rules! kernel_log {
+    ($($arg:tt)*) => {{
+        use core::fmt::Write;
+        // Use a single lock to prevent potential deadlocks and improve efficiency.
+        let _ = writeln!(&mut *petroleum::serial::SERIAL_PORT_WRITER.lock(), $($arg)*);
+    }};
+}
+
 // Removed kernel_print macros - moved to fullerene-kernel crate
 
 // Helper for repeated initialization patterns
