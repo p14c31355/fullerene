@@ -15,6 +15,7 @@ pub mod page_table;
 pub mod serial;
 pub mod uefi_helpers;
 pub use apic::{IoApic, IoApicRedirectionEntry, init_io_apic};
+// Macros with #[macro_export] are automatically available at root, no need to re-export
 pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 pub use graphics::{
     Color, ColorCode, HardwarePorts, ScreenChar, TextBufferOperations, VgaPortOps,

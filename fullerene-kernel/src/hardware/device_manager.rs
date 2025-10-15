@@ -73,7 +73,7 @@ impl DeviceManager {
             },
         );
 
-        log_info!("Device registered successfully");
+        log::info!("Device registered successfully");
         Ok(())
     }
 
@@ -82,7 +82,7 @@ impl DeviceManager {
         if let Some(device_entry) = self.devices.lock().get_mut(name) {
             device_entry.device.enable()?;
             device_entry.device_info.enabled = true;
-            log_info!("Device enabled");
+            log::info!("Device enabled");
             Ok(())
         } else {
             Err(SystemError::DeviceNotFound)
@@ -94,7 +94,7 @@ impl DeviceManager {
         if let Some(device_entry) = self.devices.lock().get_mut(name) {
             device_entry.device.disable()?;
             device_entry.device_info.enabled = false;
-            log_info!("Device disabled");
+            log::info!("Device disabled");
             Ok(())
         } else {
             Err(SystemError::DeviceNotFound)
@@ -105,7 +105,7 @@ impl DeviceManager {
     pub fn reset_device(&self, name: &str) -> SystemResult<()> {
         if let Some(device_entry) = self.devices.lock().get_mut(name) {
             device_entry.device.reset()?;
-            log_info!("Device reset");
+            log::info!("Device reset");
             Ok(())
         } else {
             Err(SystemError::DeviceNotFound)
@@ -147,7 +147,7 @@ impl DeviceManager {
             }
         }
 
-        log_info!("All devices initialized");
+        log::info!("All devices initialized");
         Ok(())
     }
 
@@ -159,7 +159,7 @@ impl DeviceManager {
             self.enable_device(name)?;
         }
 
-        log_info!("All devices enabled");
+        log::info!("All devices enabled");
         Ok(())
     }
 
@@ -171,7 +171,7 @@ impl DeviceManager {
             self.disable_device(name)?;
         }
 
-        log_info!("All devices disabled");
+        log::info!("All devices disabled");
         Ok(())
     }
 
@@ -195,7 +195,7 @@ impl DeviceManager {
 
 impl Initializable for DeviceManager {
     fn init(&mut self) -> SystemResult<()> {
-        log_info!("DeviceManager initialized");
+        log::info!("DeviceManager initialized");
         Ok(())
     }
 
@@ -210,23 +210,23 @@ impl Initializable for DeviceManager {
 
 impl ErrorLogging for DeviceManager {
     fn log_error(&self, error: &SystemError, context: &'static str) {
-        log_error!(error, context);
+        log::error!("Error: {:?} in {}", error, context);
     }
 
     fn log_warning(&self, message: &'static str) {
-        log_warning!(message);
+        log::warn!("{}", message);
     }
 
     fn log_info(&self, message: &'static str) {
-        log_info!(message);
+        log::info!("{}", message);
     }
 
     fn log_debug(&self, message: &'static str) {
-        log_debug!(message);
+        log::debug!("{}", message);
     }
 
     fn log_trace(&self, message: &'static str) {
-        log_trace!(message);
+        log::trace!("{}", message);
     }
 }
 
@@ -237,7 +237,7 @@ static DEVICE_MANAGER: Mutex<Option<DeviceManager>> = Mutex::new(None);
 pub fn init_device_manager() -> SystemResult<()> {
     let mut manager = DEVICE_MANAGER.lock();
     *manager = Some(DeviceManager::new());
-    log_info!("Global device manager initialized");
+    log::info!("Global device manager initialized");
     Ok(())
 }
 

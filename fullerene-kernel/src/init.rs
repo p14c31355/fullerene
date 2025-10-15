@@ -1,51 +1,41 @@
 //! Initialization module containing common initialization logic for both UEFI and BIOS boot
 
 use crate::interrupts;
-use petroleum::SERIAL1;
-
-// Macro to reduce repetitive serial logging - local copy since we moved function here
-
-macro_rules! kernel_log {
-    ($($arg:tt)*) => {
-        let _ = core::fmt::write(&mut *SERIAL1.lock(), format_args!($($arg)*));
-        let _ = core::fmt::write(&mut *SERIAL1.lock(), format_args!("\n"));
-    };
-}
 
 #[cfg(target_os = "uefi")]
 pub fn init_common() {
     crate::vga::init_vga();
     // Now safe to initialize APIC and enable interrupts (after stable page tables and heap)
     interrupts::init_apic();
-    kernel_log!("Kernel: APIC initialized and interrupts enabled");
+    log::info!("Kernel: APIC initialized and interrupts enabled");
 
-    // Initialize process management
     crate::process::init();
-    kernel_log!("Kernel: Process management initialized");
 
-    // Initialize system calls
+    log::info!("Kernel: Process management initialized");
+
     crate::syscall::init();
-    kernel_log!("Kernel: System calls initialized");
 
-    // Initialize filesystem
+    log::info!("Kernel: System calls initialized");
+
     crate::fs::init();
-    kernel_log!("Kernel: Filesystem initialized");
 
-    // Initialize program loader
+    log::info!("Kernel: Filesystem initialized");
+
     crate::loader::init();
-    kernel_log!("Kernel: Program loader initialized");
 
-    // Create a test user process
-    let test_entry = x86_64::VirtAddr::new(crate::test_process::test_process_main as usize as u64);
+    log::info!("Kernel: Program loader initialized");
+
     let test_pid = crate::process::create_process("test_process", test_entry);
-    kernel_log!("Kernel: Created test process with PID {}", test_pid);
+
+    log::info!("Kernel: Created test process with PID {}", test_pid);
 
     // Test interrupt handling - should not panic or crash if APIC is working
-    kernel_log!("Testing interrupt handling with int3...");
+
+    log::info!("Testing interrupt handling with int3...");
     unsafe {
-        x86_64::instructions::interrupts::int3();
     }
-    kernel_log!("Interrupt test passed (no crash)");
+
+    log::info!("Interrupt test passed (no crash)");
 }
 
 #[cfg(not(target_os = "uefi"))]

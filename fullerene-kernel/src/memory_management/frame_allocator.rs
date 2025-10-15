@@ -298,7 +298,7 @@ impl ErrorLogging for BitmapFrameAllocator {
     }
 
     fn log_info(&self, _message: &'static str) {
-        // log_info!(message);
+        // log::info!(message);
     }
 
     fn log_debug(&self, _message: &'static str) {

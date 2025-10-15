@@ -20,8 +20,7 @@ macro_rules! init_component {
             }
             Err(e) => {
                 log::error!(
-                    "SystemError({}): Failed to initialize {}",
-                    (*$error) as u32,
+                    "Failed to initialize {}",
                     $name
                 );
                 Err(e)
@@ -114,15 +113,7 @@ macro_rules! static_str {
     }};
 }
 
-/// Macro for debug logging in UEFI context
-#[macro_export]
-macro_rules! kernel_log {
-    ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        // Use a single lock to prevent potential deadlocks and improve efficiency.
-        let _ = writeln!(&mut *petroleum::serial::SERIAL_PORT_WRITER.lock(), $($arg)*);
-    }};
-}
+
 
 #[cfg(test)]
 mod tests {
@@ -132,11 +123,11 @@ mod tests {
     #[test]
     fn test_logging_macros() {
         // Test that macros compile correctly
-        log_error!(&SystemError::InvalidArgument, "Test error");
-        log_warning!("Test warning");
-        log_info!("Test info");
-        log_debug!("Test debug");
-        log_trace!("Test trace");
+        log::error!("Test error");
+        log::warn!("Test warning");
+        log::info!("Test info");
+        log::debug!("Test debug");
+        log::trace!("Test trace");
     }
 
     #[test]
