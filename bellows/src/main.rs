@@ -29,10 +29,10 @@ use petroleum::common::{
 
 #[cfg(not(test))]
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo) -> ! {
     use core::fmt::Write;
     let mut writer = petroleum::serial::SERIAL_PORT_WRITER.lock();
-    let _ = write!(writer, "Panic: {}\n", _info);
+    let _ = write!(writer, "Panic: {}\n", info);
     unsafe { core::ptr::write_volatile(0xB8000 as *mut u16, 0x1F20); } // White ' ' on blue
     unsafe { core::ptr::write_volatile(0xB8002 as *mut u16, 0x1F50); } // White 'P' on blue
     loop {}
