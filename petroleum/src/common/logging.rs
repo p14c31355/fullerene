@@ -70,32 +70,45 @@ pub enum LogLevel {
 pub type SystemResult<T> = Result<T, SystemError>;
 
 /// System error types
-#[derive(Clone, Copy, PartialOrd, PartialEq, Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemError {
-    InvalidSyscall = 0,
-    BadFileDescriptor = 1,
-    PermissionDenied = 2,
-    FileNotFound = 3,
-    NoSuchProcess = 4,
-    InvalidArgument = 5,
-    SyscallOutOfMemory = 6,
-    FileExists = 7,
+    // System call errors
+    InvalidSyscall = 1,
+    BadFileDescriptor = 9,
+    PermissionDenied = 13,
+    FileNotFound = 2,
+    NoSuchProcess = 3,
+    InvalidArgument = 22,
+    SyscallOutOfMemory = 12,
+
+    // File system errors
+    FileExists = 17,
+    InvalidSeek = 29,
+    DiskFull = 28,
+
+    // Memory management errors
+    MappingFailed = 100,
+    UnmappingFailed = 101,
+    FrameAllocationFailed = 102,
+    MemOutOfMemory = 103,
+
+    // Loader errors
+    InvalidFormat = 200,
+    LoadFailed = 201,
+
+    // Hardware errors
+    DeviceNotFound = 300,
+    DeviceError = 301,
+    PortError = 302,
+
+    // General errors
+    NotImplemented = 400,
+    NotSupported = 401,
+    InternalError = 500,
+    UnknownError = 999,
+
+    // Additional errors from fullerene-kernel
     FsInvalidFileDescriptor = 8,
-    InvalidSeek = 9,
-    DiskFull = 10,
-    MappingFailed = 11,
-    UnmappingFailed = 12,
-    FrameAllocationFailed = 13,
-    MemOutOfMemory = 14,
-    InvalidFormat = 15,
-    LoadFailed = 16,
-    DeviceNotFound = 17,
-    DeviceError = 18,
-    PortError = 19,
-    NotImplemented = 20,
-    InternalError = 21,
-    NotSupported = 22,
-    UnknownError = 23,
 }
 
 // Keep the old logging system for system error reporting with context

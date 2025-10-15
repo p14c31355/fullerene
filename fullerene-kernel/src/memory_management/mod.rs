@@ -740,11 +740,35 @@ pub fn switch_to_page_table(page_table: &ProcessPageTable) -> SystemResult<()> {
 
 /// Create a new process page table
 pub fn create_process_page_table(offset: usize) -> SystemResult<ProcessPageTable> {
-    let mut page_table_manager = PageTableManager::new();
+    // Allocate a new PML4 frame for the process page table
+    let mut manager_guard = get_memory_manager().lock();
+    let manager = manager_guard.as_mut().ok_or(SystemError::InternalError)?;
+
+    // Allocate frame for the new page table
+    let pml4_frame = manager.frame_allocator.allocate_frame().map_err(|_| SystemError::FrameAllocationFailed)?;
+
+    // Copy kernel mappings to the new page table
+    // This involves copying the higher half kernel mappings from the current page table
+    let current_cr3 = unsafe { x86_64::registers::control::Cr3::read() };
+    let kernel_table_phys = current_cr3.0.start_address().as_u64();
+
+    // Map the new page table temporarily to copy kernel mappings
+    let kernel_table_virt = physical_to_virtual(kernel_table_phys.try_into().unwrap());
+    let new_table_virt = physical_to_virtual(pml4_frame.try_into().unwrap());
+
+    // Copy the kernel page table entries (PML4[256..512])
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            (kernel_table_virt + 256 * 8) as *const u64,
+            (new_table_virt + 256 * 8) as *mut u64,
+            256
+        );
+    }
+
+    // Initialize the new page table manager with the allocated frame
+    let mut page_table_manager = PageTableManager::new_with_frame(x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(pml4_frame as u64)));
     Initializable::init(&mut page_table_manager)?;
 
-    // In a real implementation, this would create a new page table with proper mappings
-    // For now, just return a new page table manager
     Ok(page_table_manager)
 }
 

@@ -63,6 +63,17 @@ impl PageTableManager {
         }
     }
 
+    /// Create a new page table manager with a specific frame
+    pub fn new_with_frame(pml4_frame: x86_64::structures::paging::PhysFrame) -> Self {
+        Self {
+            current_page_table: pml4_frame.start_address().as_u64() as usize,
+            page_tables: BTreeMap::new(),
+            initialized: false,
+            pml4_frame,
+            mapper: None,
+        }
+    }
+
     /// Initialize paging
     pub fn init_paging(&mut self) -> SystemResult<()> {
         // Get current CR3 (page table base)

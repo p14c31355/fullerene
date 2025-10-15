@@ -1,45 +1,10 @@
-//! System error types and conversions
+//! System error types and conversions - DEPRECATED
+//!
+//! This module is deprecated. Use `petroleum::common::logging::SystemError` instead.
+//! This file is kept for backward compatibility during migration.
 
-use core::result::Result;
-
-// Common error type for the entire system
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SystemError {
-    // System call errors
-    InvalidSyscall = 1,
-    BadFileDescriptor = 9,
-    PermissionDenied = 13,
-    FileNotFound = 2,
-    NoSuchProcess = 3,
-    InvalidArgument = 22,
-    SyscallOutOfMemory = 12,
-
-    // File system errors
-    FileExists = 17,
-    InvalidSeek = 29,
-    DiskFull = 28,
-
-    // Memory management errors
-    MappingFailed = 100,
-    UnmappingFailed = 101,
-    FrameAllocationFailed = 102,
-    MemOutOfMemory = 103,
-
-    // Loader errors
-    InvalidFormat = 200,
-    LoadFailed = 201,
-
-    // Hardware errors
-    DeviceNotFound = 300,
-    DeviceError = 301,
-    PortError = 302,
-
-    // General errors
-    NotImplemented = 400,
-    NotSupported = 401,
-    InternalError = 500,
-    UnknownError = 999,
-}
+// Re-export from petroleum for backward compatibility
+pub use petroleum::common::logging::{SystemError, SystemResult};
 
 impl From<crate::syscall::interface::SyscallError> for SystemError {
     fn from(error: crate::syscall::interface::SyscallError) -> Self {
@@ -106,6 +71,3 @@ impl From<crate::loader::LoadError> for SystemError {
         }
     }
 }
-
-/// Common system result type alias
-pub type SystemResult<T> = Result<T, SystemError>;

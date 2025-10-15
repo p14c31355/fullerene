@@ -198,18 +198,20 @@ fn try_uga_protocol(st: &EfiSystemTable) -> bool {
 
 /// Installs a basic VGA framebuffer configuration for UEFI environments when GOP is not available.
 /// Provides a fallback framebuffer configuration that the kernel can use.
+///
+/// Debug logging macro for VGA operations.
+macro_rules! vga_debug_log {
+    ($message:expr, $($args:tt)*) => {
+        #[cfg(debug_assertions)]
+        petroleum::serial::_print(format_args!($message, $($args)*));
+    };
+    ($message:expr) => {
+        #[cfg(debug_assertions)]
+        petroleum::serial::_print(format_args!($message));
+    };
+}
+
 fn install_vga_framebuffer_config(st: &EfiSystemTable) {
-    // Create a debug logging macro to clean up unsafe blocks
-    macro_rules! vga_debug_log {
-        ($message:expr, $($args:tt)*) => {
-            #[cfg(debug_assertions)]
-            petroleum::serial::_print(format_args!($message, $($args)*));
-        };
-        ($message:expr) => {
-            #[cfg(debug_assertions)]
-            petroleum::serial::_print(format_args!($message));
-        };
-    }
 
     petroleum::println!("Installing VGA framebuffer config table for UEFI...");
     vga_debug_log!("VGA: About to create config...\n");
