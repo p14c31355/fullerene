@@ -310,6 +310,15 @@ pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     }
 }
 
+/// Kernel-side fallback framebuffer detection when config table is not available
+/// Uses shared logic from petroleum crate
+pub fn kernel_fallback_framebuffer_detection() -> Option<FullereneFramebufferConfig> {
+    kernel_log!("Attempting kernel-side fallback framebuffer detection (bootloader config table not available)");
+
+    // Call petroleum's consolidated QEMU framebuffer detection
+    petroleum::detect_qemu_framebuffer(&petroleum::QEMU_CONFIGS)
+}
+
 /// Helper function to try initializing graphics with a framebuffer config.
 /// Returns true if graphics were successfully initialized and drawn.
 /// source_name is used for logging purposes (e.g., "UEFI custom" or "GOP").
@@ -475,7 +484,21 @@ pub fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
         return try_init_graphics(&gop_config, "UEFI GOP");
     }
 
-    kernel_log!("No standard graphics modes found, trying Cirrus VGA fallback...");
+    kernel_log!("No standard graphics modes found, trying kernel-side fallback detection...");
+    // Try kernel-side fallback framebuffer detection when bootloader config table installation hangs
+    if let Some(fallback_config) = kernel_fallback_framebuffer_detection() {
+        kernel_log!(
+            "Found kernel-detected framebuffer config: {}x{} @ {:#x}, stride: {}, pixel_format: {:?}",
+            fallback_config.width,
+            fallback_config.height,
+            fallback_config.address,
+            fallback_config.stride,
+            fallback_config.pixel_format
+        );
+        return try_init_graphics(&fallback_config, "Kernel fallback");
+    }
+
+    kernel_log!("No kernel fallback graphics modes found, trying Cirrus VGA fallback...");
 
     // As a fallback, try Cirrus VGA graphics if the function exists
     try_initialize_cirrus_graphics_mode()
