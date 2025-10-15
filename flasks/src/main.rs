@@ -21,11 +21,15 @@ struct Args {
 
 fn main() -> io::Result<()> {
     let args = Args::parse();
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("Failed to get workspace root")
+        .to_path_buf();
 
     if args.qemu {
-        run_qemu()?;
+        run_qemu(&workspace_root)?;
     } else {
-        run_virtualbox(&args)?;
+        run_virtualbox(&args, &workspace_root)?;
     }
     Ok(())
 }
@@ -138,13 +142,8 @@ fn create_iso_and_setup(workspace_root: &PathBuf) -> io::Result<(PathBuf, PathBu
     Ok((iso_path, ovmf_fd_path, ovmf_vars_fd_path, temp_ovmf_vars_fd))
 }
 
-fn run_virtualbox(args: &Args) -> io::Result<()> {
+fn run_virtualbox(args: &Args, workspace_root: &PathBuf) -> io::Result<()> {
     println!("Starting VirtualBox...");
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("Failed to get workspace root")
-        .to_path_buf();
-
     let (iso_path, _ovmf_fd_path, _ovmf_vars_fd_path, _dummy) = create_iso_and_setup(&workspace_root)?;
 
     // First, check if the VM exists
@@ -188,17 +187,41 @@ fn run_virtualbox(args: &Args) -> io::Result<()> {
     }
 
     // Power off VM if it's running, then set EFI firmware
+    let mut vm_powered_off = false;
     let _ = Command::new("VBoxManage")
         .args(["controlvm", &args.vm_name, "acpipowerbutton"])
         .status(); // Try graceful shutdown
 
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    // Poll VM state instead of fixed sleep
+    for _ in 0..10 { // Poll up to 10 times
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let output = Command::new("VBoxManage")
+            .args(["showvminfo", &args.vm_name, "--machinereadable"])
+            .output();
 
-    let _ = Command::new("VBoxManage")
-        .args(["controlvm", &args.vm_name, "poweroff"])
-        .status(); // Force power off if needed
+        if let Ok(output) = output {
+            if let Ok(stdout) = std::str::from_utf8(&output.stdout) {
+                let state_line = stdout.lines()
+                    .find(|line| line.starts_with("VMState="))
+                    .map(|line| line.trim_start_matches("VMState=\"").trim_end_matches("\""));
 
-    std::thread::sleep(std::time::Duration::from_secs(2));
+                if let Some("poweroff") = state_line {
+                    vm_powered_off = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    // If graceful shutdown didn't work, force power off
+    if !vm_powered_off {
+        let _ = Command::new("VBoxManage")
+            .args(["controlvm", &args.vm_name, "poweroff"])
+            .status(); // Force power off if needed
+
+        // Brief wait for force power off
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
 
     // Set EFI firmware
     let set_efi_status = Command::new("VBoxManage")
@@ -226,13 +249,8 @@ fn run_virtualbox(args: &Args) -> io::Result<()> {
     Ok(())
 }
 
-fn run_qemu() -> io::Result<()> {
+fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {
     println!("Starting QEMU...");
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("Failed to get workspace root")
-        .to_path_buf();
-
     let (iso_path, ovmf_fd_path, ovmf_vars_fd_path, temp_ovmf_vars_fd) = create_iso_and_setup(&workspace_root)?;
 
     // --- 4. Run QEMU with the created ISO ---

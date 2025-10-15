@@ -155,7 +155,7 @@ impl<'a> FramebufferInstaller<'a> {
         serial::_print(format_args!("FramebufferInstaller::install: alignment OK (using Box::into_raw)\n"));
 
         serial::_print(format_args!("FramebufferInstaller::install: calling install_configuration_table\n"));
-        serial::_print(format_args!("INSTALL_CONFIG_TABLE: GUID={{:02x}}-{{:02x}}-{{:02x}}-{{:02x}}-{{:02x}}-{{:02x}}-{{:02x}}-{{:02x}}-{{:02x}}-{{:02x}}-{{:02x}}-{{:02x}}-{{:02x}}-{{:02x}}-{{:02x}}-{{:02x}}\n",
+        serial::_print(format_args!("INSTALL_CONFIG_TABLE: GUID={:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}\n",
             FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[0],
             FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[1],
             FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[2],
@@ -174,7 +174,7 @@ impl<'a> FramebufferInstaller<'a> {
             FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[15]
         ));
 
-        serial::_print(format_args!("INSTALL_CONFIG_TABLE: config_ptr={{:#p}}, boot_services={{:#p}}\n", config_ptr, bs));
+        serial::_print(format_args!("INSTALL_CONFIG_TABLE: config_ptr={:#p}, boot_services={:#p}\n", config_ptr, bs));
 
         // Provide safety timeout mechanism
         serial::_print(format_args!("INSTALL_CONFIG_TABLE: calling bs.install_configuration_table...\n"));
@@ -187,11 +187,11 @@ impl<'a> FramebufferInstaller<'a> {
             )
         };
 
-        serial::_print(format_args!("INSTALL_CONFIG_TABLE: returned from call, status={{:#x}}\n", status));
+        serial::_print(format_args!("INSTALL_CONFIG_TABLE: returned from call, status={:#x}\n", status));
 
         let efi_status = crate::common::EfiStatus::from(status);
         if efi_status != crate::common::EfiStatus::Success {
-            serial::_print(format_args!("FramebufferInstaller::install failed: status {{:#x}}, recovering memory\n", status));
+            serial::_print(format_args!("FramebufferInstaller::install failed: status {:#x}, recovering memory\n", status));
             let _ = unsafe { Box::from_raw(config_ptr) };
             Err(efi_status)
         } else {
