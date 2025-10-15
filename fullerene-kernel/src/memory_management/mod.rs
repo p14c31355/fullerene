@@ -739,7 +739,7 @@ pub fn switch_to_page_table(page_table: &ProcessPageTable) -> SystemResult<()> {
 }
 
 /// Create a new process page table
-pub fn create_process_page_table(offset: usize) -> SystemResult<ProcessPageTable> {
+pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
     // Allocate a new PML4 frame for the process page table
     let mut manager_guard = get_memory_manager().lock();
     let manager = manager_guard.as_mut().ok_or(SystemError::InternalError)?;
