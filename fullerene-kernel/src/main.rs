@@ -7,20 +7,20 @@
 #![no_main]
 
 // Kernel modules
-mod traits;
+mod context_switch; // Context switching
+mod fs; // Basic filesystem
 mod gdt; // Add GDT module
 mod graphics;
 mod heap;
 mod interrupts;
-mod vga;
-mod context_switch; // Context switching
-mod fs; // Basic filesystem
 mod keyboard; // Keyboard input driver
 mod loader; // Program loader
 mod memory_management; // Virtual memory management
 mod process; // Process management
 mod shell;
-mod syscall; // System calls // Shell/CLI interface
+mod syscall;
+mod traits;
+mod vga; // System calls // Shell/CLI interface
 
 // Submodules for modularizing main.rs
 mod boot;

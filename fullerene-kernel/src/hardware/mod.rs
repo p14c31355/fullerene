@@ -11,6 +11,6 @@ pub mod device_manager;
 pub use device_manager::{
     DeviceInfo, DeviceManager, init_device_manager, register_device, register_vga_device,
 };
-pub use petroleum::hardware::{PciConfigSpace, PciDevice, PciScanner};
-pub use petroleum::hardware::{VgaRegisterWriter};
 pub use petroleum::HardwarePorts;
+pub use petroleum::hardware::VgaRegisterWriter;
+pub use petroleum::hardware::{PciConfigSpace, PciDevice, PciScanner};

@@ -98,7 +98,14 @@ impl PciConfigSpace {
     }
 
     /// Write a byte to PCI configuration space
-    pub fn write_config_byte(&mut self, _bus: u8, _device: u8, _function: u8, offset: u8, value: u8) {
+    pub fn write_config_byte(
+        &mut self,
+        _bus: u8,
+        _device: u8,
+        _function: u8,
+        offset: u8,
+        value: u8,
+    ) {
         // Write the byte by reading-modifying-writing the entire 32-bit register
         let address = Self::build_config_address(_bus, _device, _function, offset);
         Self::write_config_byte_raw(address, offset, value);
@@ -132,13 +139,24 @@ impl PciConfigSpace {
     }
 
     /// Write a dword to PCI configuration space
-    pub fn write_config_dword(&mut self, bus: u8, device: u8, function: u8, offset: u8, value: u32) {
+    pub fn write_config_dword(
+        &mut self,
+        bus: u8,
+        device: u8,
+        function: u8,
+        offset: u8,
+        value: u32,
+    ) {
         Self::write_config_dword_raw(bus, device, function, offset, value);
     }
 
     /// Build PCI configuration address
     fn build_config_address(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
-        0x80000000u32 | ((bus as u32) << 16) | ((device as u32) << 11) | ((function as u32) << 8) | (offset as u32 & 0xFC)
+        0x80000000u32
+            | ((bus as u32) << 16)
+            | ((device as u32) << 11)
+            | ((function as u32) << 8)
+            | (offset as u32 & 0xFC)
     }
 
     fn write_config_byte_raw(address: u32, offset: u8, value: u8) {
@@ -276,7 +294,8 @@ impl PrivatePciDevice {
     }
 
     fn write_command_reg(&mut self, new_command: u16) {
-        self.config.write_config_word(self.bus, self.device, self.function, 4, new_command);
+        self.config
+            .write_config_word(self.bus, self.device, self.function, 4, new_command);
         self.config.command = new_command;
     }
 
@@ -294,7 +313,13 @@ impl PrivatePciDevice {
     pub fn set_bar(&mut self, bar_index: usize, value: u32) {
         if bar_index < 6 {
             let offset = 0x10 + (bar_index * 4);
-            self.config.write_config_dword(self.bus, self.device, self.function, offset as u8, value);
+            self.config.write_config_dword(
+                self.bus,
+                self.device,
+                self.function,
+                offset as u8,
+                value,
+            );
         }
     }
 }
@@ -334,7 +359,11 @@ impl PciScanner {
     }
 
     /// Find devices by class code
-    pub fn find_devices_by_class(&self, class_code: u8, subclass: u8) -> alloc::vec::Vec<&PciDevice> {
+    pub fn find_devices_by_class(
+        &self,
+        class_code: u8,
+        subclass: u8,
+    ) -> alloc::vec::Vec<&PciDevice> {
         self.devices
             .iter()
             .filter(|device| device.class_code == class_code && device.subclass == subclass)

@@ -160,8 +160,6 @@ fn process_command(line: &str) -> bool {
     true
 }
 
-
-
 // Command implementations
 fn help_command(_args: &[&str]) -> i32 {
     print!("Available commands:\n");

@@ -10,31 +10,27 @@ use spin::Mutex;
 use static_assertions::assert_eq_size;
 
 use crate::traits::{
-    ErrorLogging,
-    FrameAllocator,
-    Initializable,
-    MemoryManager,
-    PageTableHelper,
+    ErrorLogging, FrameAllocator, Initializable, MemoryManager, PageTableHelper,
     ProcessMemoryManager,
 };
 use petroleum::common::logging::{SystemError, SystemResult};
 use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
 
 use frame_allocator::BitmapFrameAllocator;
-use process_memory::ProcessMemoryManagerImpl;
-use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
 use page_table::PageTableManager;
-pub mod frame_allocator;
-pub mod process_memory;
+use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
+use process_memory::ProcessMemoryManagerImpl;
 pub mod convenience;
+pub mod frame_allocator;
 pub mod page_table;
+pub mod process_memory;
 pub mod user_space;
 
 // Re-export for external use
-pub use petroleum::page_table::*;
-pub use frame_allocator::*;
-pub use process_memory::*;
 pub use convenience::*;
+pub use frame_allocator::*;
+pub use petroleum::page_table::*;
+pub use process_memory::*;
 pub use user_space::*;
 
 #[macro_export]
@@ -62,7 +58,6 @@ macro_rules! check_initialized_mut {
     };
 }
 
-
 macro_rules! with_memory_manager {
     ($manager:expr, $operation:expr) => {
         if let Some(manager) = $manager {
@@ -89,8 +84,6 @@ macro_rules! memory_operation_mut {
     }};
 }
 
-
-
 // Generic helper for looping over pages
 macro_rules! for_each_page {
     ($start:expr, $count:expr, $body:expr) => {
@@ -111,8 +104,6 @@ macro_rules! with_current_process_manager {
         }
     };
 }
-
-
 
 // Memory management error types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,8 +203,12 @@ impl MemoryManager for UnifiedMemoryManager {
             for i in 0..count {
                 let phys_addr = frame_addr + (i * 4096);
                 let virt_addr = virtual_addr + (i * 4096);
-                self.page_table_manager
-                    .map_page(virt_addr, phys_addr, PageFlags::PRESENT | PageFlags::WRITABLE, &mut self.frame_allocator)?;
+                self.page_table_manager.map_page(
+                    virt_addr,
+                    phys_addr,
+                    PageFlags::PRESENT | PageFlags::WRITABLE,
+                    &mut self.frame_allocator,
+                )?;
             }
 
             Ok(virtual_addr)
@@ -253,7 +248,12 @@ impl MemoryManager for UnifiedMemoryManager {
             for i in 0..count {
                 let vaddr = virtual_addr + (i * 4096);
                 let paddr = physical_addr + (i * 4096);
-                self.page_table_manager.map_page(vaddr, paddr, PageFlags::PRESENT | PageFlags::WRITABLE, &mut self.frame_allocator)?;
+                self.page_table_manager.map_page(
+                    vaddr,
+                    paddr,
+                    PageFlags::PRESENT | PageFlags::WRITABLE,
+                    &mut self.frame_allocator,
+                )?;
             }
             Ok(())
         })
@@ -689,7 +689,11 @@ impl UnifiedMemoryManager {
             let virt_addr = user_addr + offset;
 
             // Ensure page is mapped by allocating if necessary
-            if self.page_table_manager.translate_address(virt_addr).is_err() {
+            if self
+                .page_table_manager
+                .translate_address(virt_addr)
+                .is_err()
+            {
                 let frame = self.frame_allocator.allocate_frame()?;
                 self.page_table_manager.map_page(
                     virt_addr,
@@ -739,7 +743,10 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
     let manager = manager_guard.as_mut().ok_or(SystemError::InternalError)?;
 
     // Allocate frame for the new page table
-    let pml4_frame = manager.frame_allocator.allocate_frame().map_err(|_| SystemError::FrameAllocationFailed)?;
+    let pml4_frame = manager
+        .frame_allocator
+        .allocate_frame()
+        .map_err(|_| SystemError::FrameAllocationFailed)?;
 
     // Copy kernel mappings to the new page table
     // This involves copying the higher half kernel mappings from the current page table
@@ -755,12 +762,16 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
         core::ptr::copy_nonoverlapping(
             (kernel_table_virt + 256 * 8) as *const u64,
             (new_table_virt + 256 * 8) as *mut u64,
-            256
+            256,
         );
     }
 
     // Initialize the new page table manager with the allocated frame
-    let mut page_table_manager = PageTableManager::new_with_frame(x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(pml4_frame as u64)));
+    let mut page_table_manager = PageTableManager::new_with_frame(
+        x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(
+            pml4_frame as u64,
+        )),
+    );
     Initializable::init(&mut page_table_manager)?;
 
     Ok(page_table_manager)

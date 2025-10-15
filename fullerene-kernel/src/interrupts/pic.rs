@@ -23,8 +23,6 @@ impl PicPorts {
     pub const SLAVE_DATA: u16 = 0xA1;
 }
 
-
-
 // PIC ICW commands
 pub const ICW1_INIT: u8 = 0x10;
 pub const ICW4_8086: u8 = 0x01;

@@ -65,7 +65,13 @@ impl DeviceManager {
 
         // Store device and its info
         let mut devices = self.devices.lock();
-        devices.insert(name, DeviceEntry { device, device_info });
+        devices.insert(
+            name,
+            DeviceEntry {
+                device,
+                device_info,
+            },
+        );
 
         log_info!("Device registered successfully");
         Ok(())
@@ -171,12 +177,19 @@ impl DeviceManager {
 
     /// Get device information
     pub fn get_device_info(&self, name: &str) -> Option<DeviceInfo> {
-        self.devices.lock().get(name).map(|entry| entry.device_info.clone())
+        self.devices
+            .lock()
+            .get(name)
+            .map(|entry| entry.device_info.clone())
     }
 
     /// List all registered devices
     pub fn list_devices(&self) -> Vec<DeviceInfo> {
-        self.devices.lock().values().map(|entry| entry.device_info.clone()).collect()
+        self.devices
+            .lock()
+            .values()
+            .map(|entry| entry.device_info.clone())
+            .collect()
     }
 }
 

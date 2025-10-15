@@ -22,7 +22,12 @@ pub mod user_space {
         flags: PageFlags,
     ) -> SystemResult<()> {
         if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
-            manager.page_table_manager.map_page(virtual_addr, physical_addr, flags, &mut manager.frame_allocator)
+            manager.page_table_manager.map_page(
+                virtual_addr,
+                physical_addr,
+                flags,
+                &mut manager.frame_allocator,
+            )
         } else {
             Err(SystemError::InternalError)
         }

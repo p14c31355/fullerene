@@ -33,8 +33,12 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     use core::fmt::Write;
     let mut writer = petroleum::serial::SERIAL_PORT_WRITER.lock();
     let _ = write!(writer, "Panic: {}\n", info);
-    unsafe { core::ptr::write_volatile(0xB8000 as *mut u16, 0x1F20); } // White ' ' on blue
-    unsafe { core::ptr::write_volatile(0xB8002 as *mut u16, 0x1F50); } // White 'P' on blue
+    unsafe {
+        core::ptr::write_volatile(0xB8000 as *mut u16, 0x1F20);
+    } // White ' ' on blue
+    unsafe {
+        core::ptr::write_volatile(0xB8002 as *mut u16, 0x1F50);
+    } // White 'P' on blue
     loop {}
 }
 
@@ -207,9 +211,7 @@ fn try_uga_protocol(st: &EfiSystemTable) -> bool {
 /// Provides a fallback framebuffer configuration that the kernel can use.
 ///
 
-
 fn install_vga_framebuffer_config(st: &EfiSystemTable) {
-
     petroleum::println!("Installing VGA framebuffer config table for UEFI...");
 
     // Create an improved VGA-compatible framebuffer config

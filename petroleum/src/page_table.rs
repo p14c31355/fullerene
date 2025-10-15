@@ -148,7 +148,8 @@ pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> VirtAdd
 
 // Global heap allocator
 #[global_allocator]
-pub static ALLOCATOR: linked_list_allocator::LockedHeap = linked_list_allocator::LockedHeap::empty();
+pub static ALLOCATOR: linked_list_allocator::LockedHeap =
+    linked_list_allocator::LockedHeap::empty();
 
 /// Private function that is called by `translate_addr`.
 ///

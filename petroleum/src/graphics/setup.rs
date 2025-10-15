@@ -1,4 +1,4 @@
-use super::ports::{PortWriter, VgaPortOps, HardwarePorts};
+use super::ports::{HardwarePorts, PortWriter, VgaPortOps};
 use super::registers::{ATTRIBUTE_CONFIG, CRTC_CONFIG, GRAPHICS_CONFIG, SEQUENCER_CONFIG};
 
 // Helper macros to reduce repetitive serial logging in init functions
@@ -216,8 +216,18 @@ pub fn setup_vga_text_mode() {
     );
 
     // Set cursor start and end registers for hardware cursor to be visible
-    write_vga_register!(HardwarePorts::CRTC_INDEX, HardwarePorts::CRTC_DATA, 0x0A, 0x0E); // cursor start
-    write_vga_register!(HardwarePorts::CRTC_INDEX, HardwarePorts::CRTC_DATA, 0x0B, 0x0F); // cursor end
+    write_vga_register!(
+        HardwarePorts::CRTC_INDEX,
+        HardwarePorts::CRTC_DATA,
+        0x0A,
+        0x0E
+    ); // cursor start
+    write_vga_register!(
+        HardwarePorts::CRTC_INDEX,
+        HardwarePorts::CRTC_DATA,
+        0x0B,
+        0x0F
+    ); // cursor end
 
     // Attribute controller with inlined setup
     setup_vga_attributes();
@@ -253,7 +263,10 @@ pub fn setup_registers_from_configs() {
 /// Helper function to write to attribute registers with special sequence
 pub fn write_attribute_registers() {
     let mut status_reader = PortWriter::<u8>::new(HardwarePorts::STATUS);
-    let mut attr_ops = VgaPortOps::new(HardwarePorts::ATTRIBUTE_INDEX, HardwarePorts::ATTRIBUTE_INDEX);
+    let mut attr_ops = VgaPortOps::new(
+        HardwarePorts::ATTRIBUTE_INDEX,
+        HardwarePorts::ATTRIBUTE_INDEX,
+    );
 
     let _: u8 = status_reader.read_safe(); // Reset flip-flop
 
@@ -297,7 +310,10 @@ pub fn write_vga_registers(index_port: u16, data_port: u16, configs: &[(u8, u8)]
 // Helper function to set VGA attribute controller registers
 pub fn setup_vga_attributes() {
     let mut status_reader = PortWriter::<u8>::new(HardwarePorts::STATUS);
-    let mut attr_ops = VgaPortOps::new(HardwarePorts::ATTRIBUTE_INDEX, HardwarePorts::ATTRIBUTE_INDEX);
+    let mut attr_ops = VgaPortOps::new(
+        HardwarePorts::ATTRIBUTE_INDEX,
+        HardwarePorts::ATTRIBUTE_INDEX,
+    );
 
     let _: u8 = status_reader.read_safe(); // Reset flip-flop
 

@@ -17,16 +17,17 @@ pub mod uefi_helpers;
 pub use apic::{IoApic, IoApicRedirectionEntry, init_io_apic};
 pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 pub use graphics::{
-    Color, ColorCode, ScreenChar, TextBufferOperations, VgaPortOps, HardwarePorts, init_vga_graphics,
+    Color, ColorCode, HardwarePorts, ScreenChar, TextBufferOperations, VgaPortOps,
+    init_vga_graphics,
 };
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
 pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 pub use uefi_helpers::handle_panic;
 
 // Heap allocation exports
-pub use page_table::reinit_page_table;
-pub use page_table::allocate_heap_from_map;
 pub use page_table::ALLOCATOR;
+pub use page_table::allocate_heap_from_map;
+pub use page_table::reinit_page_table;
 
 /// Generic framebuffer buffer clear operation
 pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
@@ -68,8 +69,7 @@ use crate::common::{
     FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
 };
 use crate::common::{
-    EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable,
-    FullereneFramebufferConfig,
+    EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable, FullereneFramebufferConfig,
 };
 
 #[derive(Clone, Copy)]
@@ -330,7 +330,9 @@ pub fn init_gop_framebuffer_alternative(
 ) -> Option<FullereneFramebufferConfig> {
     const MAX_FRAMEBUFFER_SIZE: u64 = 0x10000000; // 256MB limit - named constant
 
-    serial::_print(format_args!("GOP: Trying alternative detection methods for QEMU...\n"));
+    serial::_print(format_args!(
+        "GOP: Trying alternative detection methods for QEMU...\n"
+    ));
 
     #[derive(Clone, Copy)]
     struct QemuConfig {
@@ -346,15 +348,45 @@ pub fn init_gop_framebuffer_alternative(
     // Try standard QEMU framebuffer addresses and configurations
     const QEMU_CONFIGS: [QemuConfig; 5] = [
         // Standard QEMU std-vga framebuffer
-        QemuConfig { address: 0xE0000000, width: 1024, height: 768, bpp: 32 }, // Common QEMU std-vga mode
-        QemuConfig { address: 0xF0000000, width: 1024, height: 768, bpp: 32 }, // Alternative QEMU framebuffer
-        QemuConfig { address: 0xFD000000, width: 1024, height: 768, bpp: 32 }, // High memory framebuffer
-        QemuConfig { address: 0xE0000000, width: 800, height: 600, bpp: 32 },  // 800x600 mode
-        QemuConfig { address: 0xF0000000, width: 800, height: 600, bpp: 32 },  // Alternative 800x600
+        QemuConfig {
+            address: 0xE0000000,
+            width: 1024,
+            height: 768,
+            bpp: 32,
+        }, // Common QEMU std-vga mode
+        QemuConfig {
+            address: 0xF0000000,
+            width: 1024,
+            height: 768,
+            bpp: 32,
+        }, // Alternative QEMU framebuffer
+        QemuConfig {
+            address: 0xFD000000,
+            width: 1024,
+            height: 768,
+            bpp: 32,
+        }, // High memory framebuffer
+        QemuConfig {
+            address: 0xE0000000,
+            width: 800,
+            height: 600,
+            bpp: 32,
+        }, // 800x600 mode
+        QemuConfig {
+            address: 0xF0000000,
+            width: 800,
+            height: 600,
+            bpp: 32,
+        }, // Alternative 800x600
     ];
 
     for config in QEMU_CONFIGS.iter() {
-        let QemuConfig { address, width, height, bpp } = *config;
+        let QemuConfig {
+            address,
+            width,
+            height,
+            bpp,
+        } = *config;
         serial::_print(format_args!(
             "GOP: Testing QEMU framebuffer at {:#x}, {}x{}, {} BPP\n",
             address, width, height, bpp
@@ -378,7 +410,8 @@ pub fn init_gop_framebuffer_alternative(
             address,
             width,
             height,
-            pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+            pixel_format:
+                crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
             bpp,
             stride: width, // Assume stride equals width for QEMU
         };

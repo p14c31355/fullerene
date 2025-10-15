@@ -1,7 +1,6 @@
-
 /// Bare-metal graphics detection using direct PCI access without UEFI protocols
 pub mod bare_metal_graphics_detection {
-    
+
     use crate::serial::_print;
 
     /// Main entry point for bare-metal graphics detection

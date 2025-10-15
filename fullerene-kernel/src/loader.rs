@@ -7,9 +7,9 @@ use crate::memory_management::ProcessPageTable;
 use crate::process;
 use crate::traits::PageTableHelper;
 use core::ptr;
+use goblin::elf::program_header::{PF_W, PF_X, PT_LOAD};
 use x86_64::structures::paging::FrameAllocator;
 use x86_64::structures::paging::PageTableFlags as PageFlags;
-use goblin::elf::program_header::{PF_W, PF_X, PT_LOAD};
 
 pub const PROGRAM_LOAD_BASE: u64 = 0x400000; // 4MB base address for user programs
 
@@ -38,7 +38,10 @@ pub fn load_program(
         .iter()
         .find(|p| p.id == pid)
         .ok_or(LoadError::InvalidFormat)?;
-    let process_page_table = process.page_table.as_ref().ok_or(LoadError::InvalidFormat)?;
+    let process_page_table = process
+        .page_table
+        .as_ref()
+        .ok_or(LoadError::InvalidFormat)?;
 
     // Load program segments using goblin
     for ph in &elf.program_headers {
@@ -75,7 +78,10 @@ pub fn load_program(
             // Check that the virtual address range is not already mapped
             for page_idx in 0..num_pages {
                 let page_vaddr = x86_64::VirtAddr::new(vaddr + page_idx * 4096);
-                if process_page_table.translate_address(page_vaddr.as_u64() as usize).is_ok() {
+                if process_page_table
+                    .translate_address(page_vaddr.as_u64() as usize)
+                    .is_ok()
+                {
                     return Err(LoadError::AddressAlreadyMapped);
                 }
             }
@@ -85,13 +91,13 @@ pub fn load_program(
                 let page_vaddr = x86_64::VirtAddr::new(vaddr + page_idx * 4096);
 
                 // Allocate a physical frame for this page
-            use x86_64::structures::paging::PhysFrame;
-                        let frame = crate::heap::memory_map::FRAME_ALLOCATOR
-                .get()
-                .ok_or(LoadError::OutOfMemory)?
-                .lock()
-                .allocate_frame()
-                .ok_or(LoadError::OutOfMemory)?;
+                use x86_64::structures::paging::PhysFrame;
+                let frame = crate::heap::memory_map::FRAME_ALLOCATOR
+                    .get()
+                    .ok_or(LoadError::OutOfMemory)?
+                    .lock()
+                    .allocate_frame()
+                    .ok_or(LoadError::OutOfMemory)?;
 
                 // Map the virtual page to the physical frame
                 use x86_64::structures::paging::PageTableFlags as X86Flags;
@@ -123,7 +129,8 @@ pub fn load_program(
 
             impl Cr3SwitchGuard {
                 unsafe fn new(page_table: &ProcessPageTable) -> Self {
-                    let (original_cr3, original_cr3_flags) = x86_64::registers::control::Cr3::read();
+                    let (original_cr3, original_cr3_flags) =
+                        x86_64::registers::control::Cr3::read();
                     crate::memory_management::switch_to_page_table(page_table);
                     Self {
                         original_cr3,
@@ -135,7 +142,10 @@ pub fn load_program(
             impl Drop for Cr3SwitchGuard {
                 fn drop(&mut self) {
                     unsafe {
-                        x86_64::registers::control::Cr3::write(self.original_cr3, self.original_cr3_flags);
+                        x86_64::registers::control::Cr3::write(
+                            self.original_cr3,
+                            self.original_cr3_flags,
+                        );
                     }
                 }
             }
@@ -199,8 +209,6 @@ impl From<crate::memory_management::FreeError> for LoadError {
         }
     }
 }
-
-
 
 impl From<petroleum::common::logging::SystemError> for LoadError {
     fn from(error: petroleum::common::logging::SystemError) -> Self {

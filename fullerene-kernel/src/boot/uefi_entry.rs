@@ -1,6 +1,5 @@
 // Use crate imports
 use crate::MEMORY_MAP;
-use petroleum::kernel_log;
 use crate::boot::FALLBACK_HEAP_START_ADDR;
 use crate::graphics::framebuffer::FramebufferLike;
 use crate::heap;
@@ -11,10 +10,13 @@ use alloc::boxed::Box;
 use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
+use petroleum::kernel_log;
 use petroleum::{debug_log, write_serial_bytes};
 use x86_64::PhysAddr;
 
-use petroleum::graphics::{VGA_MODE13H_ADDRESS, VGA_MODE13H_WIDTH, VGA_MODE13H_HEIGHT, VGA_MODE13H_BPP, VGA_MODE13H_STRIDE};
+use petroleum::graphics::{
+    VGA_MODE13H_ADDRESS, VGA_MODE13H_BPP, VGA_MODE13H_HEIGHT, VGA_MODE13H_STRIDE, VGA_MODE13H_WIDTH,
+};
 
 /// Helper function to write a string to VGA buffer at specified row
 pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
@@ -101,7 +103,8 @@ pub extern "efiapi" fn efi_main(
 
     // Setup memory maps and initialize memory management
     let kernel_virt_addr = efi_main as u64;
-    let kernel_phys_start = crate::memory::setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
+    let kernel_phys_start =
+        crate::memory::setup_memory_maps(memory_map, memory_map_size, kernel_virt_addr);
 
     // Initialize memory management components (heap, page tables, etc.)
     // Comment out reinit for now to allow desktop drawing
@@ -128,7 +131,10 @@ pub extern "efiapi" fn efi_main(
             config.address,
             fb_size_bytes
         );
-        (Some(x86_64::VirtAddr::new(config.address)), Some(fb_size_bytes as u64))
+        (
+            Some(x86_64::VirtAddr::new(config.address)),
+            Some(fb_size_bytes as u64),
+        )
     } else {
         kernel_log!("No framebuffer config found, using None");
         (None, None)
@@ -142,7 +148,10 @@ pub extern "efiapi" fn efi_main(
     // Set physical memory offset for process management
     crate::memory_management::set_physical_memory_offset(physical_memory_offset.as_u64() as usize);
 
-    kernel_log!("Physical memory offset set to: 0x{:x}", physical_memory_offset.as_u64());
+    kernel_log!(
+        "Physical memory offset set to: 0x{:x}",
+        physical_memory_offset.as_u64()
+    );
 
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(*MEMORY_MAP.get().unwrap());
@@ -172,7 +181,9 @@ pub extern "efiapi" fn efi_main(
 
     use petroleum::page_table::ALLOCATOR;
     unsafe {
-        ALLOCATOR.lock().init(heap_start_after_gdt.as_mut_ptr::<u8>(), heap_size_remaining);
+        ALLOCATOR
+            .lock()
+            .init(heap_start_after_gdt.as_mut_ptr::<u8>(), heap_size_remaining);
     }
 
     if heap_phys_start.as_u64() < 0x1000 {

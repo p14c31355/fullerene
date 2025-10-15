@@ -44,19 +44,15 @@ pub mod convenience {
 
     /// Write to VGA CRTC register
     pub fn write_vga_crtc(index: u8, value: u8) -> Result<(), ()> {
-        let mut writer = VgaRegisterWriter::new(
-            HardwarePorts::CRTC_INDEX,
-            HardwarePorts::CRTC_DATA,
-        );
+        let mut writer =
+            VgaRegisterWriter::new(HardwarePorts::CRTC_INDEX, HardwarePorts::CRTC_DATA);
         writer.write_register(index, value)
     }
 
     /// Write to VGA graphics register
     pub fn write_vga_graphics(index: u8, value: u8) -> Result<(), ()> {
-        let mut writer = VgaRegisterWriter::new(
-            HardwarePorts::GRAPHICS_INDEX,
-            HardwarePorts::GRAPHICS_DATA,
-        );
+        let mut writer =
+            VgaRegisterWriter::new(HardwarePorts::GRAPHICS_INDEX, HardwarePorts::GRAPHICS_DATA);
         writer.write_register(index, value)
     }
 
@@ -77,7 +73,9 @@ pub mod pci {
     /// Read PCI configuration byte
     pub fn read_config_byte(offset: u16) -> Result<u8, ()> {
         unsafe {
-            Ok(crate::port_read_u8!(HardwarePorts::PCI_CONFIG_DATA + offset))
+            Ok(crate::port_read_u8!(
+                HardwarePorts::PCI_CONFIG_DATA + offset
+            ))
         }
     }
 

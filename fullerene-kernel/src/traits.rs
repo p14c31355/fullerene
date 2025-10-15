@@ -55,7 +55,12 @@ pub trait MemoryManager {
     fn free_pages(&mut self, address: usize, count: usize) -> SystemResult<()>;
     fn total_memory(&self) -> usize;
     fn available_memory(&self) -> usize;
-    fn map_address(&mut self, virtual_addr: usize, physical_addr: usize, count: usize) -> SystemResult<()>;
+    fn map_address(
+        &mut self,
+        virtual_addr: usize,
+        physical_addr: usize,
+        count: usize,
+    ) -> SystemResult<()>;
     fn unmap_address(&mut self, virtual_addr: usize, count: usize) -> SystemResult<()>;
     fn virtual_to_physical(&self, virtual_addr: usize) -> SystemResult<usize>;
     fn init_paging(&mut self) -> SystemResult<()>;
@@ -70,12 +75,25 @@ pub trait ProcessMemoryManager {
     fn free_heap(&mut self, address: usize, size: usize) -> SystemResult<()>;
     fn allocate_stack(&mut self, size: usize) -> SystemResult<usize>;
     fn free_stack(&mut self, address: usize, size: usize) -> SystemResult<()>;
-    fn copy_memory_between_processes(&mut self, from_process: usize, to_process: usize, from_addr: usize, to_addr: usize, size: usize) -> SystemResult<()>;
+    fn copy_memory_between_processes(
+        &mut self,
+        from_process: usize,
+        to_process: usize,
+        from_addr: usize,
+        to_addr: usize,
+        size: usize,
+    ) -> SystemResult<()>;
     fn current_process_id(&self) -> usize;
 }
 
 pub trait PageTableHelper {
-    fn map_page(&mut self, virtual_addr: usize, physical_addr: usize, flags: PageFlags, frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>) -> SystemResult<()>;
+    fn map_page(
+        &mut self,
+        virtual_addr: usize,
+        physical_addr: usize,
+        flags: PageFlags,
+        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
+    ) -> SystemResult<()>;
     fn unmap_page(&mut self, virtual_addr: usize) -> SystemResult<()>;
     fn translate_address(&self, virtual_addr: usize) -> SystemResult<usize>;
     fn set_page_flags(&mut self, virtual_addr: usize, flags: PageFlags) -> SystemResult<()>;

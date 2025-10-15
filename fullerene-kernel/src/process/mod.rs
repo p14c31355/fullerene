@@ -209,8 +209,8 @@ pub fn create_process(name: &'static str, entry_point_address: VirtAddr) -> Proc
     let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
 
     // Create page table for the process
-    let process_page_table = crate::memory_management::create_process_page_table()
-        .expect("Failed to create page table");
+    let process_page_table =
+        crate::memory_management::create_process_page_table().expect("Failed to create page table");
 
     process.page_table_phys_addr = process_page_table.pml4_frame.start_address();
     process.page_table = Some(process_page_table);

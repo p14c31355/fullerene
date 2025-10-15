@@ -2,10 +2,7 @@
 
 use alloc::{boxed::Box, vec::Vec};
 
-use crate::{
-    traits::Initializable,
-    SystemResult
-};
+use crate::{SystemResult, traits::Initializable};
 
 // System initializer for managing component initialization
 pub struct SystemInitializer {
@@ -28,8 +25,7 @@ impl SystemInitializer {
     pub fn initialize_system(&mut self) -> SystemResult<()> {
         // Sort components by priority (higher priority first)
         self.components.sort_by(
-            |a: &Box<dyn Initializable + Send>,
-             b: &Box<dyn Initializable + Send>| {
+            |a: &Box<dyn Initializable + Send>, b: &Box<dyn Initializable + Send>| {
                 b.priority().cmp(&a.priority())
             },
         );

@@ -11,7 +11,7 @@
 pub mod pci;
 pub mod ports;
 
+pub use crate::graphics::HardwarePorts;
 /// Re-export commonly used hardware types
 pub use pci::{PciConfigSpace, PciDevice, PciScanner};
-pub use ports::{VgaRegisterWriter};
-pub use crate::graphics::HardwarePorts;
+pub use ports::VgaRegisterWriter;

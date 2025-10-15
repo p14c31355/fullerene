@@ -19,7 +19,11 @@ macro_rules! init_component {
                 Ok(())
             }
             Err(e) => {
-                log::error!("SystemError({}): Failed to initialize {}", (*$error) as u32, $name);
+                log::error!(
+                    "SystemError({}): Failed to initialize {}",
+                    (*$error) as u32,
+                    $name
+                );
                 Err(e)
             }
         }
@@ -159,6 +163,9 @@ mod tests {
             option_to_result!(some_value, &SystemError::FileNotFound),
             Ok(42)
         );
-        assert!(matches!(option_to_result!(none_value, &SystemError::FileNotFound), Err(SystemError::FileNotFound)));
+        assert!(matches!(
+            option_to_result!(none_value, &SystemError::FileNotFound),
+            Err(SystemError::FileNotFound)
+        ));
     }
 }

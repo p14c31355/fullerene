@@ -91,8 +91,6 @@ impl TextBufferOperations for VgaBuffer {
         }
     }
 
-
-
     fn write_byte(&mut self, byte: u8) {
         match byte {
             b'\n' => {

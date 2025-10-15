@@ -6,26 +6,32 @@
 use super::*;
 
 // Import logging functions from crate namespace
-use petroleum::common::logging as logging;
+use petroleum::common::logging;
 
 // Import needed types
 use alloc::collections::BTreeMap;
-use x86_64::{VirtAddr, PhysAddr, structures::paging::{PageTable, Page, PhysFrame, Mapper, FrameAllocator, Size4KiB, PageTableFlags as Flags, OffsetPageTable, Translate}};
+use x86_64::{
+    PhysAddr, VirtAddr,
+    structures::paging::{
+        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags as Flags,
+        PhysFrame, Size4KiB, Translate,
+    },
+};
 
-    /// A dummy frame allocator for when we need to allocate pages for page tables
-    pub struct DummyFrameAllocator {}
+/// A dummy frame allocator for when we need to allocate pages for page tables
+pub struct DummyFrameAllocator {}
 
-    impl DummyFrameAllocator {
-        pub fn new() -> Self {
-            Self {}
-        }
+impl DummyFrameAllocator {
+    pub fn new() -> Self {
+        Self {}
     }
+}
 
-    unsafe impl FrameAllocator<Size4KiB> for DummyFrameAllocator {
-        fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
-            None // For now, we don't support allocating new frames for page tables
-        }
+unsafe impl FrameAllocator<Size4KiB> for DummyFrameAllocator {
+    fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        None // For now, we don't support allocating new frames for page tables
     }
+}
 
 // TODO: Fix the import issue - for now using a direct conversion
 /// Convert PageTableFlags to x86_64 PageTableFlags
@@ -58,7 +64,9 @@ impl PageTableManager {
             current_page_table: 0,
             page_tables: BTreeMap::new(),
             initialized: false,
-            pml4_frame: x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(0)),
+            pml4_frame: x86_64::structures::paging::PhysFrame::containing_address(
+                x86_64::PhysAddr::new(0),
+            ),
             mapper: None,
         }
     }
@@ -131,12 +139,14 @@ impl PageTableHelper for PageTableManager {
         let virtual_addr = x86_64::VirtAddr::new(virtual_addr as u64);
         let physical_addr = x86_64::PhysAddr::new(physical_addr as u64);
         let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virtual_addr);
-        let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(physical_addr);
+        let frame =
+            x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(physical_addr);
         let page_flags = convert_to_x86_64_flags(flags);
 
         // Map the page using the stored mapper instance
         unsafe {
-            mapper.map_to(page, frame, page_flags, frame_allocator)
+            mapper
+                .map_to(page, frame, page_flags, frame_allocator)
                 .map_err(|_| SystemError::MappingFailed)?
                 .flush();
         }

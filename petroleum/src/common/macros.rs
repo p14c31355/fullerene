@@ -57,8 +57,6 @@ macro_rules! log_trace {
     };
 }
 
-
-
 /// Macro for kernel-specific logging
 #[macro_export]
 macro_rules! kernel_log {
@@ -68,8 +66,6 @@ macro_rules! kernel_log {
         let _ = writeln!(&mut *petroleum::serial::SERIAL_PORT_WRITER.lock(), $($arg)*);
     }};
 }
-
-
 
 // Removed kernel_print macros - moved to fullerene-kernel crate
 

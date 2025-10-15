@@ -6,8 +6,6 @@ use super::*;
 use petroleum::common::logging::{SystemError, SystemResult};
 use x86_64::structures::paging::Size4KiB;
 
-
-
 // Note: super::* used to inherit Debug/Clone traits and common types from parent module
 
 /// Bitmap-based frame allocator implementation
@@ -68,7 +66,6 @@ impl BitmapFrameAllocator {
                 }
             }
         }
-
 
         Ok(())
     }

@@ -8,8 +8,8 @@
 
 use alloc::collections::VecDeque;
 use alloc::string::String;
+use pc_keyboard::{DecodedKey, KeyCode, Keyboard, ScancodeSet1, layouts};
 use spin::Mutex;
-use pc_keyboard::{layouts, DecodedKey, KeyCode, Keyboard, ScancodeSet1};
 
 // Using pc-keyboard for scan code handling
 static KEYBOARD: Mutex<Option<Keyboard<layouts::Us104Key, ScancodeSet1>>> = Mutex::new(None);
@@ -290,7 +290,11 @@ pub fn init() {
     flush_input();
 
     // Initialize keyboard instance lazily
-    *KEYBOARD.lock() = Some(Keyboard::new(ScancodeSet1::default(), layouts::Us104Key {}, pc_keyboard::HandleControl::Ignore));
+    *KEYBOARD.lock() = Some(Keyboard::new(
+        ScancodeSet1::default(),
+        layouts::Us104Key {},
+        pc_keyboard::HandleControl::Ignore,
+    ));
 
     petroleum::serial::serial_log(format_args!("Keyboard input driver initialized\n"));
 }

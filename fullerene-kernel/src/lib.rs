@@ -25,8 +25,8 @@ extern crate petroleum;
 
 extern crate alloc;
 
-use spin::Once;
 use petroleum::page_table::EfiMemoryDescriptor;
+use spin::Once;
 
 // Submodules
 pub mod errors;
@@ -65,8 +65,10 @@ pub use initializer::{initialize_system, register_system_component};
 // Re-export traits with explicit imports to avoid conflicts
 
 pub use traits::HardwareDevice;
-pub use traits::{SyscallHandler, MemoryManager, ProcessMemoryManager,
-                 PageTableHelper, FrameAllocator, Initializable, ErrorLogging};
+pub use traits::{
+    ErrorLogging, FrameAllocator, Initializable, MemoryManager, PageTableHelper,
+    ProcessMemoryManager, SyscallHandler,
+};
 
 // Re-export memory management types
 pub use memory_management::{FreeError, ProcessPageTable, UnifiedMemoryManager};
@@ -74,15 +76,9 @@ pub use memory_management::{FreeError, ProcessPageTable, UnifiedMemoryManager};
 // Re-export commonly used types for convenience
 pub use graphics::vga_device::VgaDevice;
 pub use hardware::{
-    device_manager::DeviceManager,
-    PciConfigSpace,
-    PciDevice,
-    PciScanner,
-    HardwarePorts,
+    HardwarePorts, PciConfigSpace, PciDevice, PciScanner, device_manager::DeviceManager,
 };
-pub use memory_management::{
-    AllocError, MapError,
-};
+pub use memory_management::{AllocError, MapError};
 // Re-export critical types from memory_management module for internal use
 pub use memory_management::{get_memory_manager, init_memory_manager};
 pub use process::{PROCESS_LIST, Process, ProcessId};
