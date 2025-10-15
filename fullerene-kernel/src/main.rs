@@ -36,9 +36,12 @@ use spin::Once;
 
 #[cfg(not(test))]
 #[panic_handler]
-#[cfg(not(target_os = "uefi"))]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo) -> ! {
     use x86_64::instructions::hlt;
+    use petroleum::serial::_print;
+
+    _print(format_args!("PANIC: {}\n", info));
+
     loop {
         hlt();
     }

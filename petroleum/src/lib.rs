@@ -528,33 +528,76 @@ pub fn init_gop_framebuffer_alternative(
         "GOP: Trying alternative detection methods for QEMU...\n"
     ));
 
-    detect_qemu_framebuffer(&QEMU_CONFIGS).and_then(|config| {
-        // Try to install and validate the configuration
+    // Loop through all QEMU configs, testing accessibility and attempting installation for each
+    for config in QEMU_CONFIGS.iter() {
+        let address = config.address;
+        let width = config.width;
+        let height = config.height;
+        let bpp = config.bpp;
+
+        serial::_print(format_args!(
+            "GOP: Testing QEMU config at {:#x}, {}x{}, {} BPP\n",
+            address, width, height, bpp
+        ));
+
+        // Check if framebuffer memory size is reasonable
+        let framebuffer_size = (height as u64) * (width as u64) * (bpp as u64 / 8);
+        const MAX_FRAMEBUFFER_SIZE: u64 = 0x10000000; // 256MB limit
+        if address == 0 || framebuffer_size > MAX_FRAMEBUFFER_SIZE {
+            continue;
+        }
+
+        // Test framebuffer access
+        if !test_qemu_framebuffer_access(address) {
+            continue;
+        }
+
+        serial::_print(format_args!(
+            "GOP: QEMU framebuffer address {:#x} is accessible, attempting installation\n",
+            address
+        ));
+
+        // Create and try to install the configuration
+        let fb_config = FullereneFramebufferConfig {
+            address,
+            width,
+            height,
+            pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+            bpp,
+            stride: width, // Assume stride equals width for QEMU
+        };
+
         serial::_print(format_args!(
             "GOP: Attempting to install framebuffer config table...\n"
         ));
+
         let installer = FramebufferInstaller::new(system_table);
-        match installer.install(config) {
+        match installer.install(fb_config) {
             Ok(_) => {
                 serial::_print(format_args!(
                     "GOP: Config table installed successfully, clearing framebuffer...\n"
                 ));
-                let _ = installer.clear_framebuffer(&config);
+                let _ = installer.clear_framebuffer(&fb_config);
                 serial::_print(format_args!(
                     "GOP: Successfully initialized QEMU framebuffer: {}x{} @ {:#x}\n",
-                    config.width, config.height, config.address
+                    fb_config.width, fb_config.height, fb_config.address
                 ));
-                Some(config)
+                return Some(fb_config);
             }
             Err(status) => {
                 serial::_print(format_args!(
-                    "GOP: Failed to install framebuffer config table (status: {:#x})\n",
+                    "GOP: Failed to install framebuffer config table (status: {:#x}), trying next config\n",
                     status as u32
                 ));
-                None
+                // Continue to next config
             }
         }
-    })
+    }
+
+    serial::_print(format_args!(
+        "GOP: No QEMU framebuffer configurations succeeded\n"
+    ));
+    None
 }
 
 /// Helper to initialize GOP and framebuffer
