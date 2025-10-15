@@ -233,8 +233,7 @@ fn run_qemu() -> io::Result<()> {
         .expect("Failed to get workspace root")
         .to_path_buf();
 
-    let (_iso_path, ovmf_fd_path, ovmf_vars_fd_path, temp_ovmf_vars_fd) = create_iso_and_setup(&workspace_root)?;
-    let iso_path = workspace_root.join("fullerene.iso");
+    let (iso_path, ovmf_fd_path, ovmf_vars_fd_path, temp_ovmf_vars_fd) = create_iso_and_setup(&workspace_root)?;
 
     // --- 4. Run QEMU with the created ISO ---
 
