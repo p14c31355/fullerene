@@ -128,7 +128,7 @@ pub extern "efiapi" fn efi_main(
             config.address,
             fb_size_bytes
         );
-        (Some(config.address as u64), Some(fb_size_bytes as u64))
+        (Some(x86_64::VirtAddr::new(config.address)), Some(fb_size_bytes as u64))
     } else {
         kernel_log!("No framebuffer config found, using None");
         (None, None)
@@ -166,10 +166,14 @@ pub extern "efiapi" fn efi_main(
     );
     kernel_log!("Kernel: GDT init done");
 
-    // Initialize heap with the remaining memory
+    // Initialize linked_list_allocator with the remaining memory
     let gdt_mem_usage = heap_start_after_gdt - heap_start;
     let heap_size_remaining = heap::HEAP_SIZE - gdt_mem_usage as usize;
-    heap::init(heap_start_after_gdt, heap_size_remaining);
+
+    use petroleum::page_table::ALLOCATOR;
+    unsafe {
+        ALLOCATOR.lock().init(heap_start_after_gdt.as_mut_ptr::<u8>(), heap_size_remaining);
+    }
 
     if heap_phys_start.as_u64() < 0x1000 {
         kernel_log!("Kernel: heap initialized with fallback");

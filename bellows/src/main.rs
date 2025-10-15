@@ -10,6 +10,8 @@ use alloc::boxed::Box;
 
 use core::{ffi::c_void, ptr};
 
+extern crate log;
+
 // Embedded kernel binary
 static KERNEL_BINARY: &[u8] = include_bytes!("kernel.bin");
 // Import Port for direct I/O
@@ -28,7 +30,12 @@ use petroleum::common::{
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    petroleum::common_panic!(_info);
+    use core::fmt::Write;
+    let mut writer = petroleum::serial::SERIAL_PORT_WRITER.lock();
+    let _ = write!(writer, "Panic: {}\n", _info);
+    unsafe { core::ptr::write_volatile(0xB8000 as *mut u16, 0x1F20); } // White ' ' on blue
+    unsafe { core::ptr::write_volatile(0xB8002 as *mut u16, 0x1F50); } // White 'P' on blue
+    loop {}
 }
 
 /// Main entry point of the bootloader.
@@ -36,7 +43,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 /// This function is the `start` attribute as defined in the `Cargo.toml`.
 #[unsafe(no_mangle)]
 pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
-    petroleum::serial::_print(format_args!("Bellows: efi_main entered.\n"));
+    log::debug!("Bellows: efi_main entered.");
 
     debug_print_str("Main: image_handle=0x");
     debug_print_hex(image_handle);
@@ -199,22 +206,11 @@ fn try_uga_protocol(st: &EfiSystemTable) -> bool {
 /// Installs a basic VGA framebuffer configuration for UEFI environments when GOP is not available.
 /// Provides a fallback framebuffer configuration that the kernel can use.
 ///
-/// Debug logging macro for VGA operations.
-macro_rules! vga_debug_log {
-    ($message:expr, $($args:tt)*) => {
-        #[cfg(debug_assertions)]
-        petroleum::serial::_print(format_args!($message, $($args)*));
-    };
-    ($message:expr) => {
-        #[cfg(debug_assertions)]
-        petroleum::serial::_print(format_args!($message));
-    };
-}
+
 
 fn install_vga_framebuffer_config(st: &EfiSystemTable) {
 
     petroleum::println!("Installing VGA framebuffer config table for UEFI...");
-    vga_debug_log!("VGA: About to create config...\n");
 
     // Create an improved VGA-compatible framebuffer config
     // Use higher resolution VGA modes for better compatibility and to prevent logo scattering

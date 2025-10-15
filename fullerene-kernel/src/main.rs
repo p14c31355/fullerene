@@ -32,19 +32,16 @@ extern crate alloc;
 
 use spin::Once;
 
-// Panic handlers removed to avoid conflicts with std::panic - handled by petroleum crate
+// Global allocator removed - handled by petroleum crate
 
-/// Panic handler for UEFI boot path
-#[cfg(not(test))]
-#[cfg(target_os = "uefi")]
 #[panic_handler]
+#[cfg(not(test))]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-petroleum::common_panic!(_info);
+    use x86_64::instructions::hlt;
+    loop {
+        hlt();
+    }
 }
-
-/// Global allocator for no_std environment
-#[global_allocator]
-static ALLOCATOR: linked_list_allocator::LockedHeap = linked_list_allocator::LockedHeap::empty();
 
 use petroleum::page_table::EfiMemoryDescriptor;
 

@@ -87,12 +87,18 @@ pub fn load_program(
                 let page_vaddr = x86_64::VirtAddr::new(vaddr + page_idx * 4096);
 
                 // Allocate a physical frame for this page
-                let frame = crate::heap::paging::FRAME_ALLOCATOR
-                    .get()
-                    .unwrap()
-                    .lock()
-                    .allocate_frame()
-                    .ok_or(LoadError::OutOfMemory)?;
+            use x86_64::structures::paging::PhysFrame;
+            let frame = match crate::heap::MEMORY_MAP.get() {
+                Some(memory_map) => {
+                    crate::heap::init_frame_allocator(*memory_map);
+                    if let Some(allocator_ref) = crate::heap::memory_map::FRAME_ALLOCATOR.get() {
+                        allocator_ref.lock().allocate_frame().ok_or(LoadError::OutOfMemory)?
+                    } else {
+                        return Err(LoadError::OutOfMemory);
+                    }
+                }
+                None => return Err(LoadError::OutOfMemory),
+            };
 
                 // Map the virtual page to the physical frame
                 use x86_64::structures::paging::PageTableFlags as X86Flags;

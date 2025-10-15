@@ -59,7 +59,8 @@ pub fn init_common() {
     unsafe {
         let heap_start_ptr: *mut u8 = core::ptr::addr_of_mut!(HEAP) as *mut u8;
         heap_start_addr = x86_64::VirtAddr::from_ptr(heap_start_ptr);
-        crate::heap::ALLOCATOR
+        use petroleum::page_table::ALLOCATOR;
+        ALLOCATOR
             .lock()
             .init(heap_start_ptr, crate::heap::HEAP_SIZE);
     }

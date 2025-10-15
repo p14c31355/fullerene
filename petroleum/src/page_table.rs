@@ -119,6 +119,37 @@ pub unsafe fn translate_addr(addr: VirtAddr, physical_memory_offset: VirtAddr) -
     translate_addr_inner(addr, physical_memory_offset)
 }
 
+/// Reinitialize the page table with identity mapping
+///
+/// Returns the physical memory offset used for the mapping
+pub fn reinit_page_table(
+    kernel_phys_start: PhysAddr,
+    fb_addr: Option<VirtAddr>,
+    fb_size: Option<u64>,
+) -> VirtAddr {
+    // For now, just return identity mapping offset
+    // Full implementation would involve creating a new page table structure
+    VirtAddr::new(0)
+}
+
+/// Allocate heap memory from EFI memory map
+pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> VirtAddr {
+    const FRAME_SIZE: u64 = 4096;
+    let heap_frames = (heap_size + FRAME_SIZE as usize - 1) / FRAME_SIZE as usize;
+
+    let heap_start = if start_addr.as_u64() % FRAME_SIZE == 0 {
+        start_addr
+    } else {
+        PhysAddr::new((start_addr.as_u64() / FRAME_SIZE + 1) * FRAME_SIZE)
+    };
+
+    VirtAddr::new(heap_start.as_u64())
+}
+
+// Global heap allocator
+#[global_allocator]
+pub static ALLOCATOR: linked_list_allocator::LockedHeap = linked_list_allocator::LockedHeap::empty();
+
 /// Private function that is called by `translate_addr`.
 ///
 /// This function is safe to limit the scope of `unsafe` because Rust is

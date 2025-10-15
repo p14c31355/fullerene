@@ -6,13 +6,16 @@ use petroleum::common::EfiMemoryType;
 use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
 use spin::{Mutex, Once};
 
+/// Global frame allocator
+pub(crate) static FRAME_ALLOCATOR: Once<Mutex<BootInfoFrameAllocator<'static>>> = Once::new();
+
 /// Global memory map storage
 pub static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
 
 /// Initialize the boot frame allocator with memory map
 pub fn init_frame_allocator(memory_map: &'static [EfiMemoryDescriptor]) {
     let allocator = unsafe { BootInfoFrameAllocator::init(memory_map) };
-    super::paging::FRAME_ALLOCATOR.call_once(|| Mutex::new(allocator));
+    FRAME_ALLOCATOR.call_once(|| Mutex::new(allocator));
     MEMORY_MAP.call_once(|| memory_map);
 }
 
@@ -30,5 +33,3 @@ pub fn for_each_memory_descriptor<F>(
         }
     }
 }
-
-// Global frame allocator is defined in paging module

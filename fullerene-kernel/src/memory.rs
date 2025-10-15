@@ -186,7 +186,7 @@ pub fn init_memory_management(
         "Calling heap::init_page_table with offset 0x{:x}",
         physical_memory_offset.as_u64()
     );
-    heap::init_page_table(physical_memory_offset);
+    unsafe { petroleum::page_table::init(physical_memory_offset) };
     kernel_log!("Page table init completed successfully");
 
     kernel_log!(
