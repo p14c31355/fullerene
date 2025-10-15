@@ -154,8 +154,8 @@ fn run_virtualbox(args: &Args, workspace_root: &PathBuf) -> io::Result<()> {
 
     ensure_vm_exists(&args.vm_name)?;
     power_off_vm(&args.vm_name)?;
-    configure_serial_port(&args.vm_name, &workspace_root)?;
-    attach_iso_and_start_vm(&args, &iso_path)?;
+    let serial_log_path = configure_serial_port(&args.vm_name, &workspace_root)?;
+    attach_iso_and_start_vm(&args, &iso_path, &serial_log_path)?;
 
     Ok(())
 }
@@ -205,6 +205,22 @@ fn power_off_vm(vm_name: &str) -> io::Result<()> {
     // If VM is already powered off, do nothing
     if let Some("poweroff") = initial_state.as_deref() {
         println!("VM '{}' is already powered off.", vm_name);
+        return Ok(());
+    }
+
+    // If VM is saved, discard the saved state
+    if let Some("saved") = initial_state.as_deref() {
+        println!("VM '{}' is in saved state, discarding saved state...", vm_name);
+        let discard_status = Command::new("VBoxManage")
+            .args(["discardstate", vm_name])
+            .status()?;
+        if !discard_status.success() {
+            return Err(io::Error::other(format!(
+                "`VBoxManage discardstate` failed for saved VM state."
+            )));
+        }
+        // After discarding, VM should be powered off
+        println!("Saved state discarded.");
         return Ok(());
     }
 
@@ -279,15 +295,20 @@ fn power_off_vm(vm_name: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn configure_serial_port(vm_name: &str, workspace_root: &PathBuf) -> io::Result<()> {
+fn configure_serial_port(vm_name: &str, workspace_root: &PathBuf) -> io::Result<PathBuf> {
     println!("Configuring serial port for VM '{}'...", vm_name);
 
-    // Create the serial log file first if it doesn't exist
+    // Create the serial log FIFO for VirtualBox serial redirection
     let serial_log_file = workspace_root.join("virtualbox_serial.log");
-    if !serial_log_file.exists() {
-        std::fs::File::create(&serial_log_file)?;
+    if serial_log_file.exists() {
+        // Remove existing file/FIFO if it exists
+        std::fs::remove_file(&serial_log_file)?;
     }
-    let serial_log_path = serial_log_file.to_string_lossy();
+    // Create a named pipe
+    Command::new("mkfifo")
+        .arg(&serial_log_file)
+        .status()?;
+    let serial_log_path_str = serial_log_file.to_string_lossy().to_string();
 
     // Configure serial port 1 (COM1) to redirect output to file
     // Enable UART1 at COM1 (0x3f8) with 4 IRQs
@@ -297,17 +318,12 @@ fn configure_serial_port(vm_name: &str, workspace_root: &PathBuf) -> io::Result<
 
     if !uart_status.success() {
         eprintln!("Warning: Failed to configure UART1 port.");
-        return Ok(());
+        return Ok(serial_log_file);
     }
 
-    // Set UART1 mode to file redirection
+    // Set UART1 mode to tcp server for serial output
     let serial_status = Command::new("VBoxManage")
-        .args([
-            "modifyvm",
-            vm_name,
-            "--uartmode1",
-            &format!("file:{}", &serial_log_path),
-        ])
+        .args(["modifyvm", vm_name, "--uartmode1", "tcpserver", "6000"])
         .status()?;
 
     if !serial_status.success() {
@@ -316,22 +332,16 @@ fn configure_serial_port(vm_name: &str, workspace_root: &PathBuf) -> io::Result<
         );
         // Don't return error, as this might not be fatal
     } else {
-        println!("Serial logs will be written to: {}", serial_log_path);
+        println!("Serial output will be accessible on TCP port 6000");
     }
 
-    Ok(())
+    Ok(serial_log_file)
 }
 
-fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
-    // Set EFI firmware
-    let set_efi_status = Command::new("VBoxManage")
-        .args(["modifyvm", &args.vm_name, "--firmware", "efi64"])
-        .status()?;
-    if !set_efi_status.success() {
-        eprintln!(
-            "Warning: Failed to set EFI firmware. The VM may need to be recreated for EFI support."
-        );
-    }
+fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf, serial_log_path: &PathBuf) -> io::Result<()> {
+    // Use default firmware (UEFI) for serial console output like QEMU
+
+
 
     // Attach ISO
     println!("Attaching ISO to VM...");
@@ -356,14 +366,50 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
         return Err(io::Error::other("Failed to attach ISO to VirtualBox VM"));
     }
 
-    // Start VM
-    println!("Starting VM...");
-    let start_status = Command::new("VBoxManage")
-        .args(["startvm", &args.vm_name, "--type", "gui"])
-        .status()?;
+    // Start VM in headless mode so that serial output can be seen in terminal
+    println!("Starting VM in headless mode...");
+    let mut start_cmd = Command::new("VBoxHeadless");
+    start_cmd.args(["-s", &args.vm_name]);
 
-    if !start_status.success() {
-        return Err(io::Error::other("VirtualBox VM startup failed"));
+    // Spawn the VBoxHeadless process
+    let vm_process = start_cmd.spawn();
+
+    let mut vm_process = match vm_process {
+        Ok(process) => process,
+        Err(e) => {
+            return Err(io::Error::other(format!("Failed to start VBoxHeadless: {}", e)));
+        }
+    };
+
+    // Wait a moment for VM to start and serial output to begin
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    // Start nc to connect to serial TCP server and display output in realtime
+    println!("Streaming serial output...");
+    let nc_status = Command::new("nc")
+        .args(["localhost", "6000"])
+        .status();
+
+    match nc_status {
+        Ok(status) if status.success() => {
+            println!("Serial output streaming completed.");
+        }
+        _ => {
+            eprintln!("Warning: Failed to stream serial output, but VM may still be running.");
+        }
+    }
+
+    // Wait for the VM process to finish
+    let exit_status = vm_process.wait();
+    match exit_status {
+        Ok(status) => {
+            if !status.success() {
+                eprintln!("VBoxHeadless exited with status: {}", status);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error waiting for VBoxHeadless process: {}", e);
+        }
     }
 
     Ok(())

@@ -8,6 +8,7 @@ use petroleum::kernel_log;
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start() -> ! {
     crate::init::init_common();
+    petroleum::serial::serial_init();
     kernel_log!("Entering _start (BIOS mode)...");
 
     // Graphics initialization for VGA framebuffer (graphics mode)
