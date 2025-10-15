@@ -89,13 +89,7 @@ macro_rules! memory_operation_mut {
     }};
 }
 
-// Helper for page-aligned operations
-macro_rules! align_page {
-    ($size:expr) => {{
-        const PAGE_SIZE: usize = 4096;
-        ($size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
-    }};
-}
+
 
 // Generic helper for looping over pages
 macro_rules! for_each_page {

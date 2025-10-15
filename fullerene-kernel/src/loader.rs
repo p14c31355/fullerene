@@ -38,7 +38,7 @@ pub fn load_program(
         .iter()
         .find(|p| p.id == pid)
         .ok_or(LoadError::InvalidFormat)?;
-    let process_page_table = &process.page_table;
+    let process_page_table = process.page_table.as_ref().ok_or(LoadError::InvalidFormat)?;
 
     // Load program segments using goblin
     for ph in &elf.program_headers {
@@ -73,12 +73,10 @@ pub fn load_program(
             let num_pages = ((mem_size + 4095) / 4096) as u64; // Round up to page size
 
             // Check that the virtual address range is not already mapped
-            if let Some(pt) = process_page_table {
-                for page_idx in 0..num_pages {
-                    let page_vaddr = x86_64::VirtAddr::new(vaddr + page_idx * 4096);
-                    if pt.translate_address(page_vaddr.as_u64() as usize).is_ok() {
-                        return Err(LoadError::AddressAlreadyMapped);
-                    }
+            for page_idx in 0..num_pages {
+                let page_vaddr = x86_64::VirtAddr::new(vaddr + page_idx * 4096);
+                if process_page_table.translate_address(page_vaddr.as_u64() as usize).is_ok() {
+                    return Err(LoadError::AddressAlreadyMapped);
                 }
             }
 
@@ -142,7 +140,6 @@ pub fn load_program(
                 }
             }
 
-            let process_page_table = process_page_table.as_ref().ok_or(LoadError::InvalidFormat)?;
             let _cr3_guard = unsafe { Cr3SwitchGuard::new(process_page_table) };
 
             // Copy file data

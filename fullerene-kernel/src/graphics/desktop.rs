@@ -67,25 +67,9 @@ fn draw_centered_text<W: FramebufferLike>(
     text_obj.draw(writer).ok();
 }
 
-// More accurate text width calculation
+// Text width calculation for monospaced font
 fn calc_text_width(text: &str) -> i32 {
-    let mut width = 0;
-    for ch in text.chars() {
-        // Handle different character widths more accurately
-        width += match ch {
-            // Narrow characters
-            'i' | 'l' | 'j' | '!' | '.' | ',' | ':' | ';' | '|' | '1' | 'I' => 2,
-            // Wide characters
-            'W' | 'M' | '@' | '%' | '#' | '$' | '&' => 8,
-            // Medium characters
-            'w' | 'm' | 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' |
-            'H' | 'J' | 'K' | 'L' | 'N' | 'O' | 'P' | 'Q' | 'R' |
-            'S' | 'T' | 'U' | 'V' | 'X' | 'Y' | 'Z' => 6,
-            // Default monospaced width for digits and other characters
-            _ => 6,
-        };
-    }
-    width
+    (text.len() * 6) as i32
 }
 
 // Generic window drawing trait
