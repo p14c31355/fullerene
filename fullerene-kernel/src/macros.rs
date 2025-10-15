@@ -19,10 +19,7 @@ macro_rules! init_component {
                 Ok(())
             }
             Err(e) => {
-                log::error!(
-                    "Failed to initialize {}",
-                    $name
-                );
+                log::error!("Failed to initialize {}", $name);
                 Err(e)
             }
         }
@@ -112,8 +109,6 @@ macro_rules! static_str {
         S
     }};
 }
-
-
 
 #[cfg(test)]
 mod tests {

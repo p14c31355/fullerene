@@ -32,8 +32,7 @@ pub fn init_common() {
     // Test interrupt handling - should not panic or crash if APIC is working
 
     log::info!("Testing interrupt handling with int3...");
-    unsafe {
-    }
+    unsafe {}
 
     log::info!("Interrupt test passed (no crash)");
 }

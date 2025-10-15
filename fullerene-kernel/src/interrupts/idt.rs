@@ -16,7 +16,7 @@ macro_rules! setup_idt_handler {
     };
 }
 
-/// Global Interrupt Descriptor Table
+// Global Interrupt Descriptor Table
 lazy_static! {
     pub static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();

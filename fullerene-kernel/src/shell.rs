@@ -4,7 +4,7 @@
 //! to interact with the operating system through text commands.
 
 use crate::keyboard;
-use crate::syscall::{self, kernel_syscall};
+use crate::syscall::kernel_syscall;
 use alloc::vec::Vec;
 use petroleum::print;
 
@@ -242,7 +242,6 @@ pub fn init() {
 // Test functions
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_command_parsing() {

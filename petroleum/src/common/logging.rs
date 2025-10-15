@@ -111,46 +111,6 @@ pub enum SystemError {
     FsInvalidFileDescriptor = 8,
 }
 
-// Keep the old logging system for system error reporting with context
-// This provides compatibility with existing code that uses structured error logging
-
-impl FullereneLogger {
-    fn log_error(&self, error: &SystemError, context: &'static str) {
-        if log::Level::Error <= self.level {
-            use crate::serial;
-            serial::serial_log(format_args!("[ERROR {}] {}\n", *error as u64, context));
-        }
-    }
-
-    fn log_warning(&self, message: &'static str) {
-        if log::Level::Warn <= self.level {
-            use crate::serial;
-            serial::serial_log(format_args!("[WARNING] {}\n", message));
-        }
-    }
-
-    fn log_info(&self, message: &'static str) {
-        if log::Level::Info <= self.level {
-            use crate::serial;
-            serial::serial_log(format_args!("[INFO] {}\n", message));
-        }
-    }
-
-    fn log_debug(&self, message: &'static str) {
-        if log::Level::Debug <= self.level {
-            use crate::serial;
-            serial::serial_log(format_args!("[DEBUG] {}\n", message));
-        }
-    }
-
-    fn log_trace(&self, message: &'static str) {
-        if log::Level::Trace <= self.level {
-            use crate::serial;
-            serial::serial_log(format_args!("[TRACE] {}\n", message));
-        }
-    }
-}
-
 /// Logging trait for system errors with context
 pub trait ErrorLogging {
     fn log_error(&self, error: &SystemError, context: &'static str);

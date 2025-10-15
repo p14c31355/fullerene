@@ -157,8 +157,7 @@ pub fn setup_memory_maps(
     // Calculate the physical_memory_offset for the higher-half kernel mapping.
     // This offset is such that physical_address + offset = higher_half_virtual_address.
     // Use a simpler offset that maps physical addresses to the higher half directly
-    physical_memory_offset =
-        VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE);
+    physical_memory_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE);
 
     log::info!(
         "Physical memory offset calculation complete: offset=0x{:x}, kernel_phys_start=0x{:x}",

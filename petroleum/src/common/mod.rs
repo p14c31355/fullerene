@@ -8,7 +8,6 @@ pub mod utils;
 
 // Re-exports to maintain compatibility and new macros
 pub use bios::*;
-pub use macros::*;
 pub use error::*;
 pub use uefi::*;
 pub use utils::*;

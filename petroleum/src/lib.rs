@@ -34,7 +34,7 @@ pub use page_table::reinit_page_table;
 pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
     let fb_ptr = address as *mut T;
     let count = (stride * height) as usize;
-    core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color);
+    unsafe { core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color) };
 }
 
 /// Generic framebuffer buffer scroll up operation
@@ -176,8 +176,7 @@ impl<'a> ProtocolLocator<'a> {
         let bs = unsafe { &*self.system_table.boot_services };
         let mut protocol: *mut c_void = ptr::null_mut();
 
-        let status =
-            unsafe { (bs.locate_protocol)(self.guid.as_ptr(), ptr::null_mut(), &mut protocol) };
+        let status = (bs.locate_protocol)(self.guid.as_ptr(), ptr::null_mut(), &mut protocol);
 
         let efi_status = EfiStatus::from(status);
         if efi_status != EfiStatus::Success || protocol.is_null() {
@@ -247,7 +246,9 @@ impl<'a> FramebufferInstaller<'a> {
         ));
 
         // Skip install_configuration_table for debugging to advance to next stage
-        serial::_print(format_args!("INSTALL_CONFIG_TABLE: SKIPPING call for debugging\n"));
+        serial::_print(format_args!(
+            "INSTALL_CONFIG_TABLE: SKIPPING call for debugging\n"
+        ));
         let status = 0; // Simulate success
 
         serial::_print(format_args!(
@@ -386,15 +387,13 @@ impl<'a> ProtocolTester<'a> {
         let mut handle_count: usize = 0;
         let mut handles: *mut usize = ptr::null_mut();
 
-        let status = unsafe {
-            (bs.locate_handle_buffer)(
-                2, // ByProtocol
-                guid.as_ptr(),
-                ptr::null_mut(),
-                &mut handle_count,
-                &mut handles,
-            )
-        };
+        let status = (bs.locate_handle_buffer)(
+            2, // ByProtocol
+            guid.as_ptr(),
+            ptr::null_mut(),
+            &mut handle_count,
+            &mut handles,
+        );
 
         if EfiStatus::from(status) == EfiStatus::Success && handle_count > 0 {
             serial::_print(format_args!(
@@ -402,7 +401,7 @@ impl<'a> ProtocolTester<'a> {
                 name, handle_count
             ));
             if !handles.is_null() {
-                unsafe { (bs.free_pool)(handles as *mut c_void) };
+                (bs.free_pool)(handles as *mut c_void);
             }
         } else {
             serial::_print(format_args!(
@@ -814,12 +813,10 @@ pub fn init_graphics_protocols(
         let config_ptr = Box::leak(Box::new(config));
 
         let boot_services = unsafe { &*system_table.boot_services };
-        let install_status = unsafe {
-            (boot_services.install_configuration_table)(
-                FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
-                config_ptr as *const _ as *mut c_void,
-            )
-        };
+        let install_status = (boot_services.install_configuration_table)(
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
+            config_ptr as *const _ as *mut c_void,
+        );
 
         if EfiStatus::from(install_status) != EfiStatus::Success {
             let _ = unsafe { Box::from_raw(config_ptr) };

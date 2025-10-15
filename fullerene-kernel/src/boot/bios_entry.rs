@@ -1,6 +1,5 @@
 use crate::graphics;
 use crate::hlt_loop;
-use crate::init::init_common;
 use petroleum::common::VgaFramebufferConfig;
 
 #[cfg(not(target_os = "uefi"))]

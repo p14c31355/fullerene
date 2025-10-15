@@ -1,5 +1,3 @@
-use petroleum::serial::SERIAL_PORT_WRITER;
-
 /// Macro for common print pattern in kernel/shell code
 #[macro_export]
 macro_rules! kernel_print {

@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn test_vga_device_initialization() {
-        let mut device = VgaDevice::new();
+        let device = VgaDevice::new();
         // Note: We can't actually test init() in unit tests due to unsafe code
         // This would require integration testing
         assert_eq!(device.name(), "VgaDevice");

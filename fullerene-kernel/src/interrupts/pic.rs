@@ -3,16 +3,8 @@
 //! This module provides functions to disable the legacy PIC,
 //! which is necessary when using APIC.
 
-use crate::gdt;
-use crate::interrupts::send_eoi;
-use crate::process::context_switch;
-use crate::process::current_pid;
-use crate::process::schedule_next;
-use petroleum::port_read_u8;
 use petroleum::port_write;
-use spin::Mutex;
 use x86_64::instructions::port::Port;
-use x86_64::structures::idt::InterruptStackFrame;
 
 // PIC ports
 pub struct PicPorts;

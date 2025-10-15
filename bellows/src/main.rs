@@ -22,7 +22,6 @@ use loader::{exit_boot_services_and_jump, heap::init_heap, pe::load_efi_image};
 use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
 use petroleum::common::{
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiGraphicsOutputModeInformation, EfiGraphicsOutputProtocol,
     EfiGraphicsPixelFormat, EfiStatus, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
     FullereneFramebufferConfig,
 };
@@ -198,7 +197,7 @@ fn try_uga_protocol(st: &EfiSystemTable) -> bool {
     let bs = unsafe { &*st.boot_services };
     let mut uga: *mut c_void = ptr::null_mut();
 
-    let status = unsafe { (bs.locate_protocol)(uga_guid.as_ptr(), ptr::null_mut(), &mut uga) };
+    let status = (bs.locate_protocol)(uga_guid.as_ptr(), ptr::null_mut(), &mut uga);
 
     if EfiStatus::from(status) != EfiStatus::Success || uga.is_null() {
         petroleum::serial::_print(format_args!(
@@ -252,12 +251,10 @@ fn install_vga_framebuffer_config(st: &EfiSystemTable) {
     #[cfg(debug_assertions)]
     petroleum::serial::_print(format_args!("VGA: Got boot services\n"));
 
-    let status = unsafe {
-        (bs.install_configuration_table)(
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
-            config_ptr as *const _ as *mut c_void,
-        )
-    };
+    let status = (bs.install_configuration_table)(
+        FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
+        config_ptr as *const _ as *mut c_void,
+    );
 
     if EfiStatus::from(status) == EfiStatus::Success {
         petroleum::println!("VGA framebuffer config table installed successfully.");

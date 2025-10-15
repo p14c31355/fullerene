@@ -5,16 +5,13 @@
 // Import from parent module instead of crate root
 use super::*;
 
-// Import logging functions from crate namespace
-use petroleum::common::logging;
-
 // Import needed types
 use alloc::collections::BTreeMap;
 use x86_64::{
-    PhysAddr, VirtAddr,
+    VirtAddr,
     structures::paging::{
-        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags as Flags,
-        PhysFrame, Size4KiB, Translate,
+        FrameAllocator, Mapper, OffsetPageTable, PageTable, PageTableFlags as Flags, PhysFrame,
+        Size4KiB, Translate,
     },
 };
 

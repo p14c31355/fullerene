@@ -22,10 +22,8 @@ impl VgaRegisterWriter {
 
     /// Write a register value
     pub fn write_register(&mut self, index: u8, value: u8) -> Result<(), ()> {
-        unsafe {
-            crate::port_write!(self.index_port, index);
-            crate::port_write!(self.data_port, value);
-        }
+        crate::port_write!(self.index_port, index);
+        crate::port_write!(self.data_port, value);
         Ok(())
     }
 
@@ -72,26 +70,20 @@ pub mod pci {
 
     /// Read PCI configuration byte
     pub fn read_config_byte(offset: u16) -> Result<u8, ()> {
-        unsafe {
-            Ok(crate::port_read_u8!(
-                HardwarePorts::PCI_CONFIG_DATA + offset
-            ))
-        }
+        Ok(crate::port_read_u8!(
+            HardwarePorts::PCI_CONFIG_DATA + offset
+        ))
     }
 
     /// Write PCI configuration byte
     pub fn write_config_byte(offset: u16, value: u8) -> Result<(), ()> {
-        unsafe {
-            crate::port_write!(HardwarePorts::PCI_CONFIG_DATA + offset, value);
-        }
+        crate::port_write!(HardwarePorts::PCI_CONFIG_DATA + offset, value);
         Ok(())
     }
 
     /// Write PCI configuration address
     pub fn write_config_address(address: u32) -> Result<(), ()> {
-        unsafe {
-            crate::port_write!(HardwarePorts::PCI_CONFIG_ADDRESS, address);
-        }
+        crate::port_write!(HardwarePorts::PCI_CONFIG_ADDRESS, address);
         Ok(())
     }
 }

@@ -179,7 +179,7 @@ const KERNEL_STACK_SIZE: usize = 4096;
 #[unsafe(naked)]
 extern "C" fn process_trampoline() -> ! {
     // The entry point function pointer is stored in RAX by context switch
-    unsafe { core::arch::naked_asm!("jmp rax") };
+    core::arch::naked_asm!("jmp rax");
 }
 
 /// Initialize process management system
@@ -279,9 +279,7 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
 /// Idle process loop
 fn idle_loop() {
     loop {
-        unsafe {
-            x86_64::instructions::hlt();
-        }
+        x86_64::instructions::hlt();
     }
 }
 
@@ -391,7 +389,7 @@ mod tests {
     #[test]
     fn test_process_creation() {
         let addr = VirtAddr::new(0);
-        let mut proc = Process::new("test", addr);
+        let proc = Process::new("test", addr);
         assert_eq!(proc.name, "test");
         assert_eq!(proc.state, ProcessState::Ready);
     }

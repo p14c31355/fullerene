@@ -188,16 +188,14 @@ fn power_off_vm(vm_name: &str) -> io::Result<()> {
 
     let initial_state = match output {
         Ok(output) if output.status.success() => {
-            std::str::from_utf8(&output.stdout)
-                .ok()
-                .and_then(|stdout| {
-                    stdout
-                        .lines()
-                        .find(|line| line.starts_with("VMState="))
-                        .and_then(|line| line.strip_prefix("VMState=\""))
-                        .and_then(|s| s.strip_suffix("\""))
-                        .map(|s| s.to_string())
-                })
+            std::str::from_utf8(&output.stdout).ok().and_then(|stdout| {
+                stdout
+                    .lines()
+                    .find(|line| line.starts_with("VMState="))
+                    .and_then(|line| line.strip_prefix("VMState=\""))
+                    .and_then(|s| s.strip_suffix("\""))
+                    .map(|s| s.to_string())
+            })
         }
         _ => None,
     };
@@ -210,7 +208,10 @@ fn power_off_vm(vm_name: &str) -> io::Result<()> {
 
     // If VM is saved, discard the saved state
     if let Some("saved") = initial_state.as_deref() {
-        println!("VM '{}' is in saved state, discarding saved state...", vm_name);
+        println!(
+            "VM '{}' is in saved state, discarding saved state...",
+            vm_name
+        );
         let discard_status = Command::new("VBoxManage")
             .args(["discardstate", vm_name])
             .status()?;
@@ -239,13 +240,13 @@ fn power_off_vm(vm_name: &str) -> io::Result<()> {
     } else if !acpi_result.as_ref().unwrap().status.success() {
         let stderr = String::from_utf8_lossy(&acpi_result.as_ref().unwrap().stderr);
         if stderr.contains("not currently running") {
-            println!("VM '{}' is not currently running, so it is already powered off.", vm_name);
+            println!(
+                "VM '{}' is not currently running, so it is already powered off.",
+                vm_name
+            );
             return Ok(());
         } else {
-            eprintln!(
-                "Warning: ACPI power button signal failed: {}",
-                stderr
-            );
+            eprintln!("Warning: ACPI power button signal failed: {}", stderr);
         }
     }
 
@@ -305,9 +306,7 @@ fn configure_serial_port(vm_name: &str, workspace_root: &PathBuf) -> io::Result<
         std::fs::remove_file(&serial_log_file)?;
     }
     // Create a named pipe
-    Command::new("mkfifo")
-        .arg(&serial_log_file)
-        .status()?;
+    Command::new("mkfifo").arg(&serial_log_file).status()?;
     let serial_log_path_str = serial_log_file.to_string_lossy().to_string();
 
     // Configure serial port 1 (COM1) to redirect output to file
@@ -327,9 +326,7 @@ fn configure_serial_port(vm_name: &str, workspace_root: &PathBuf) -> io::Result<
         .status()?;
 
     if !serial_status.success() {
-        eprintln!(
-            "Warning: Failed to configure serial port mode. Serial logging may not work."
-        );
+        eprintln!("Warning: Failed to configure serial port mode. Serial logging may not work.");
         // Don't return error, as this might not be fatal
     } else {
         println!("Serial output will be accessible on TCP port 6000");
@@ -338,10 +335,12 @@ fn configure_serial_port(vm_name: &str, workspace_root: &PathBuf) -> io::Result<
     Ok(serial_log_file)
 }
 
-fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf, serial_log_path: &PathBuf) -> io::Result<()> {
+fn attach_iso_and_start_vm(
+    args: &Args,
+    iso_path: &PathBuf,
+    serial_log_path: &PathBuf,
+) -> io::Result<()> {
     // Use default firmware (UEFI) for serial console output like QEMU
-
-
 
     // Attach ISO
     println!("Attaching ISO to VM...");
@@ -377,7 +376,10 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf, serial_log_path: &Pa
     let mut vm_process = match vm_process {
         Ok(process) => process,
         Err(e) => {
-            return Err(io::Error::other(format!("Failed to start VBoxHeadless: {}", e)));
+            return Err(io::Error::other(format!(
+                "Failed to start VBoxHeadless: {}",
+                e
+            )));
         }
     };
 
@@ -386,9 +388,7 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf, serial_log_path: &Pa
 
     // Start nc to connect to serial TCP server and display output in realtime
     println!("Streaming serial output...");
-    let nc_status = Command::new("nc")
-        .args(["localhost", "6000"])
-        .status();
+    let nc_status = Command::new("nc").args(["localhost", "6000"]).status();
 
     match nc_status {
         Ok(status) if status.success() => {
