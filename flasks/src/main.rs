@@ -1,17 +1,31 @@
 // fullerene/flasks/src/main.rs
+use clap::Parser;
 use isobemak::{BiosBootInfo, BootInfo, IsoImage, IsoImageFile, UefiBootInfo, build_iso};
 use std::{env, io, path::PathBuf, process::Command};
 
-fn main() -> io::Result<()> {
-    println!("Starting flasks application...");
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("Failed to get workspace root")
-        .to_path_buf();
+#[derive(Parser)]
+struct Args {
+    /// Use QEMU instead of VirtualBox for virtualization
+    #[arg(long)]
+    qemu: bool,
+}
 
+
+fn main() -> io::Result<()> {
+    let args = Args::parse();
+
+    if args.qemu {
+        run_qemu()?;
+    } else {
+        run_virtualbox()?;
+    }
+    Ok(())
+}
+
+fn create_iso_and_setup(workspace_root: &PathBuf) -> io::Result<(PathBuf, PathBuf, PathBuf, tempfile::NamedTempFile)> {
     // --- 1. Build fullerene-kernel (no_std) ---
     let status = Command::new("cargo")
-        .current_dir(&workspace_root)
+        .current_dir(workspace_root)
         .args([
             "+nightly",
             "build",
@@ -43,7 +57,7 @@ fn main() -> io::Result<()> {
         // Use existing
     } else {
         let status = Command::new("cargo")
-            .current_dir(&workspace_root)
+            .current_dir(workspace_root)
             .args([
                 "+nightly",
                 "build",
@@ -83,7 +97,7 @@ fn main() -> io::Result<()> {
         ],
         boot_info: BootInfo {
             bios_boot: Some(BiosBootInfo {
-                boot_catalog: dummy_boot_catalog_path,
+                boot_catalog: dummy_boot_catalog_path.clone(),
                 boot_image: bellows_path.clone(),
                 destination_in_iso: "EFI\\BOOT\\BOOTX64.EFI".to_string(),
             }),
@@ -96,7 +110,6 @@ fn main() -> io::Result<()> {
     };
     build_iso(&iso_path, &image, true)?; // Set to true for isohybrid UEFI boot
 
-    // --- 4. Run QEMU with the created ISO ---
     let ovmf_fd_path = workspace_root
         .join("flasks")
         .join("ovmf")
@@ -113,6 +126,72 @@ fn main() -> io::Result<()> {
         temp_ovmf_vars_fd.as_file_mut(),
     )?;
     let ovmf_vars_fd_path = temp_ovmf_vars_fd.path().to_path_buf();
+
+    Ok((iso_path, ovmf_fd_path, ovmf_vars_fd_path, temp_ovmf_vars_fd))
+}
+
+fn run_virtualbox() -> io::Result<()> {
+    println!("Starting VirtualBox...");
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("Failed to get workspace root")
+        .to_path_buf();
+
+    let (iso_path, _ovmf_fd_path, _ovmf_vars_fd_path, _dummy) = create_iso_and_setup(&workspace_root)?;
+
+    // Start VirtualBox VM with the ISO
+    let mut vbox_cmd = Command::new("VBoxManage");
+    vbox_cmd.args([
+        "startvm",
+        "fullerene-vm", // Assume VM name, could be configurable later
+        "--type",
+        "gui",
+    ]);
+
+    // Add ISO as storage attachment
+    let mut attach_cmd = Command::new("VBoxManage");
+    let iso_path_str = iso_path.to_str().expect("ISO path should be valid UTF-8");
+    attach_cmd.args([
+        "storageattach",
+        "fullerene-vm",
+        "--storagectl",
+        "IDE Controller", // Assume default controller name
+        "--port",
+        "0",
+        "--device",
+        "0",
+        "--type",
+        "dvddrive",
+        "--medium",
+        iso_path_str,
+    ]);
+
+    // Execute attach command first
+    match attach_cmd.status() {
+        Ok(status) if status.success() => {},
+        _ => return Err(io::Error::other("Failed to attach ISO to VirtualBox VM")),
+    }
+
+    // Then start VM
+    let vbox_status = vbox_cmd.status()?;
+    if !vbox_status.success() {
+        return Err(io::Error::other("VirtualBox VM startup failed"));
+    }
+
+    Ok(())
+}
+
+fn run_qemu() -> io::Result<()> {
+    println!("Starting QEMU...");
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("Failed to get workspace root")
+        .to_path_buf();
+
+    let (_iso_path, ovmf_fd_path, ovmf_vars_fd_path, temp_ovmf_vars_fd) = create_iso_and_setup(&workspace_root)?;
+    let iso_path = workspace_root.join("fullerene.iso");
+
+    // --- 4. Run QEMU with the created ISO ---
 
     let ovmf_fd_drive = format!(
         "if=pflash,format=raw,unit=0,readonly=on,file={}",
