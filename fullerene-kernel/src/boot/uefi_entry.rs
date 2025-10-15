@@ -203,8 +203,10 @@ pub extern "efiapi" fn efi_main(
 
     kernel_log!("Kernel: Jumping straight to graphics testing");
 
+    kernel_log!("About to call init_common");
     // Initialize interrupts and other components call init_common here
     crate::init::init_common();
+    kernel_log!("init_common completed");
 
     // Initialize graphics with framebuffer configuration
     if initialize_graphics_with_config(system_table) {
