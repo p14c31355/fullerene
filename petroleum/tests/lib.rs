@@ -49,3 +49,49 @@ mod tests_with_std {
         }
     }
 }
+
+#[cfg(test)]
+mod macro_tests {
+    use crate::*;
+    use crate::common::macros::*;
+
+    #[test]
+    fn test_logging_macros() {
+        // Test that macros compile correctly
+        log::error!("Test error");
+        log::warn!("Test warning");
+        log::info!("Test info");
+        log::debug!("Test debug");
+        log::trace!("Test trace");
+    }
+
+    #[test]
+    fn test_utility_macros() {
+        // Test ensure macro
+        let result: Result<(), &crate::SystemError> = (|| {
+            ensure!(true, &SystemError::InvalidArgument);
+            Ok(())
+        })();
+        assert!(result.is_ok());
+
+        // Test ensure_with_msg macro
+        let result: Result<(), &crate::SystemError> = (|| {
+            ensure_with_msg!(false, &SystemError::InvalidArgument, "Test message");
+            Ok(())
+        })();
+        assert!(result.is_err());
+
+        // Test option_to_result macro
+        let some_value = Some(42);
+        let none_value: Option<i32> = None;
+
+        assert_eq!(
+            option_to_result!(some_value, &SystemError::FileNotFound),
+            Ok(42)
+        );
+        assert!(matches!(
+            option_to_result!(none_value, &SystemError::FileNotFound),
+            Err(crate::SystemError::FileNotFound)
+        ));
+    }
+}

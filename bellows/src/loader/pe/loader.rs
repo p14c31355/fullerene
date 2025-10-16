@@ -79,28 +79,24 @@ pub fn load_efi_image(
         // Use a low address instead, as high may not have execute permissions
         preferred_base = 0x100000;
         phys_addr = preferred_base;
-        status = unsafe {
-            (bs.allocate_pages)(
-                2, // AllocateAddress
-                EfiMemoryType::EfiLoaderCode,
-                pages_needed,
-                &mut phys_addr,
-            )
-        };
+        status = (bs.allocate_pages)(
+            2, // AllocateAddress
+            EfiMemoryType::EfiLoaderCode,
+            pages_needed,
+            &mut phys_addr,
+        );
 
         if EfiStatus::from(status) == EfiStatus::Success {
             petroleum::println!("Allocated at preferred base: {:#x}", phys_addr);
         } else {
             // Fallback to AllocateAnyPages if preferred address is not available.
             phys_addr = 0; // Reset for AllocateAnyPages.
-            status = unsafe {
-                (bs.allocate_pages)(
-                    0, // AllocateAnyPages
-                    EfiMemoryType::EfiLoaderCode,
-                    pages_needed,
-                    &mut phys_addr,
-                )
-            };
+            status = (bs.allocate_pages)(
+                0, // AllocateAnyPages
+                EfiMemoryType::EfiLoaderCode,
+                pages_needed,
+                &mut phys_addr,
+            );
             if EfiStatus::from(status) == EfiStatus::Success {
                 petroleum::println!("Fallback allocation at {:#x}", phys_addr);
             }

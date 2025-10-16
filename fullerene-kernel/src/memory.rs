@@ -15,16 +15,6 @@ use x86_64::{PhysAddr, VirtAddr};
 // Add a constant for the higher-half kernel virtual base address
 const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000; // Common higher-half address
 
-// Macro to reduce repetitive serial logging - local copy since we moved function here
-use petroleum::serial::SERIAL_PORT_WRITER as SERIAL1;
-
-macro_rules! kernel_log {
-    ($($arg:tt)*) => {
-        let _ = core::fmt::write(&mut *SERIAL1.lock(), format_args!($($arg)*));
-        let _ = core::fmt::write(&mut *SERIAL1.lock(), format_args!("\n"));
-    };
-}
-
 // Generic helper for searching memory descriptors
 fn find_memory_descriptor_address<F>(
     descriptors: &[EfiMemoryDescriptor],
@@ -80,7 +70,7 @@ pub fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> PhysAddr {
         }
     }
     // Fallback if no suitable memory found
-    PhysAddr::new(crate::boot::FALLBACK_HEAP_START_ADDR)
+    PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR)
 }
 
 pub fn setup_memory_maps(

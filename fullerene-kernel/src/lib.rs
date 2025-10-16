@@ -47,7 +47,6 @@ pub mod fs; // Basic filesystem
 pub mod keyboard; // Keyboard input driver
 pub mod loader; // Program loader
 
-pub mod macros; // Logging and utility macros
 pub mod memory_management; // Virtual memory management
 pub mod process; // Process management
 pub mod shell;
@@ -57,7 +56,7 @@ pub mod syscall; // System calls // Shell/CLI interface
 pub mod boot;
 pub mod init;
 pub mod memory;
-pub mod test_process;
+
 
 // Re-export key types and functions from submodules for convenience
 pub use initializer::{initialize_system, register_system_component};
@@ -87,10 +86,3 @@ static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
 
 const VGA_BUFFER_ADDRESS: usize = 0xb8000;
 const VGA_COLOR_GREEN_ON_BLACK: u16 = 0x0200;
-
-// A simple loop that halts the CPU until the next interrupt
-pub fn hlt_loop() -> ! {
-    loop {
-        x86_64::instructions::hlt();
-    }
-}

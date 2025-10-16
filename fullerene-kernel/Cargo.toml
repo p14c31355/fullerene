@@ -8,6 +8,11 @@ edition = "2024"
 name = "fullerene-kernel"
 path = "src/main.rs"
 
+[lib]
+name = "fullerene_kernel"
+path = "src/lib.rs"
+crate-type = ["lib", "bin"]
+
 [dependencies]
 x86_64 = { version = "0.15.2", default-features = false, features = [
   "instructions",

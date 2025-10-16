@@ -1,5 +1,5 @@
 use crate::graphics;
-use crate::hlt_loop;
+
 use petroleum::common::VgaFramebufferConfig;
 
 #[cfg(not(target_os = "uefi"))]
@@ -25,5 +25,5 @@ pub unsafe extern "C" fn _start() -> ! {
 
     // Keep kernel running instead of exiting
     log::info!("BIOS boot complete, kernel running...");
-    hlt_loop();
+    petroleum::halt_loop();
 }

@@ -200,7 +200,7 @@ pub fn debug_print_hex(value: usize) {
 }
 
 /// Formats a usize as hex to the given writer without allocation.
-fn format_hex(writer: &mut impl core::fmt::Write, value: usize) -> core::fmt::Result {
+pub fn format_hex(writer: &mut impl core::fmt::Write, value: usize) -> core::fmt::Result {
     write!(writer, "0x")?;
     if value == 0 {
         return write!(writer, "0");
@@ -244,6 +244,52 @@ macro_rules! debug_log {
 /// Initializes the global serial port writer.
 pub fn serial_init() {
     SERIAL_PORT_WRITER.lock().init();
+}
+
+/// Formats a u64 value as hex to a byte buffer with limited digits.
+/// Returns the number of bytes written.
+pub fn format_hex_to_buffer(value: u64, buf: &mut [u8], max_digits: usize) -> usize {
+    let mut temp = value;
+    let mut i = 0;
+    let mut digit_buf = [0u8; 16];
+    if temp == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+    while temp > 0 && i < max_digits && i < 16 {
+        let digit = (temp % 16) as u8;
+        digit_buf[i] = if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) };
+        temp /= 16;
+        i += 1;
+    }
+    // Reverse
+    for j in 0..i {
+        buf[j] = digit_buf[i - 1 - j];
+    }
+    i
+}
+
+/// Formats a usize value as decimal to a byte buffer.
+/// Returns the number of bytes written.
+pub fn format_dec_to_buffer(value: usize, buf: &mut [u8]) -> usize {
+    let mut temp = value;
+    let mut i = 0;
+    let mut digit_buf = [0u8; 16];
+    if temp == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+    while temp > 0 && i < 16 {
+        let digit = (temp % 10) as u8;
+        digit_buf[i] = b'0' + digit;
+        temp /= 10;
+        i += 1;
+    }
+    // Reverse
+    for j in 0..i {
+        buf[j] = digit_buf[i - 1 - j];
+    }
+    i
 }
 
 #[cfg(test)]

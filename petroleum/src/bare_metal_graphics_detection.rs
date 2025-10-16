@@ -3,6 +3,8 @@ pub mod bare_metal_graphics_detection {
 
     use crate::serial::_print;
 
+
+
     /// Main entry point for bare-metal graphics detection
     pub fn detect_bare_metal_graphics() -> Option<crate::common::FullereneFramebufferConfig> {
         _print(format_args!(
@@ -103,38 +105,8 @@ pub mod bare_metal_graphics_detection {
             (640, 480, 32, fb_base_addr),
         ];
 
-        for (width, height, bpp, addr) in standard_modes.iter() {
-            let stride = *width;
-            let expected_fb_size = (*height * stride * bpp / 8) as u64;
-
-            _print(format_args!(
-                "[BM-GFX] Testing {}x{} mode at {:#x} (size: {}KB)\n",
-                width,
-                height,
-                addr,
-                expected_fb_size / 1024
-            ));
-
-            // Since we can't actually map or access memory from UEFI without protocols,
-            // we'll use a simplified heuristic based on typical virtio-gpu memory layout
-            // In practice, the framebuffer would be validated when actually accessed later
-
-            if *addr >= 0x100000 {
-                // At least 1MB address, reasonable for MMIO
-                _print(format_args!(
-                    "[BM-GFX] virtio-gpu framebuffer mode {}x{} appears valid\n",
-                    width, height
-                ));
-                return Some(crate::common::FullereneFramebufferConfig {
-                    address: *addr,
-                    width: *width,
-                    height: *height,
-                    pixel_format:
-                        crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-                    bpp: *bpp,
-                    stride,
-                });
-            }
+        if let Some(config) = crate::detect_standard_modes("virtio-gpu", &standard_modes) {
+            return Some(config);
         }
 
         _print(format_args!(
@@ -169,36 +141,8 @@ pub mod bare_metal_graphics_detection {
             (640, 480, 32, fb_base_addr),
         ];
 
-        for (width, height, bpp, addr) in standard_modes.iter() {
-            let stride = *width;
-            let expected_fb_size = (*height * stride * bpp / 8) as u64;
-
-            _print(format_args!(
-                "[BM-GFX] Testing {}x{} mode at {:#x} (size: {}KB)\n",
-                width,
-                height,
-                addr,
-                expected_fb_size / 1024
-            ));
-
-            // For QXL, validate by checking if the memory region can be accessed
-            // Since we can't actually validate memory access from UEFI, we'll use heuristics
-            if *addr >= 0x100000 {
-                // At least 1MB address, reasonable for MMIO
-                _print(format_args!(
-                    "[BM-GFX] QXL framebuffer mode {}x{} appears valid\n",
-                    width, height
-                ));
-                return Some(crate::common::FullereneFramebufferConfig {
-                    address: *addr,
-                    width: *width,
-                    height: *height,
-                    pixel_format:
-                        crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-                    bpp: *bpp,
-                    stride,
-                });
-            }
+        if let Some(config) = crate::detect_standard_modes("QXL", &standard_modes) {
+            return Some(config);
         }
 
         _print(format_args!(

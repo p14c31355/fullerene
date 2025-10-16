@@ -5,6 +5,11 @@ name = "bellows"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "bellows"
+path = "src/lib.rs"
+crate-type = ["lib"]
+
 [[bin]]
 name = "bellows"
 path = "src/main.rs"

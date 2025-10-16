@@ -6,6 +6,7 @@ edition = "2024"
 [lib]
 name = "flasks"
 path = "src/lib.rs"
+crate-type = ["lib"]
 
 [[bin]]
 name = "flasks"

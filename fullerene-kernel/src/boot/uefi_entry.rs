@@ -1,9 +1,9 @@
 // Use crate imports
 use crate::MEMORY_MAP;
-use crate::boot::FALLBACK_HEAP_START_ADDR;
+
 use crate::graphics::framebuffer::FramebufferLike;
 use crate::heap;
-use crate::hlt_loop;
+
 use crate::memory::find_heap_start;
 use crate::{gdt, graphics, interrupts, memory};
 use alloc::boxed::Box;
@@ -27,53 +27,11 @@ pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8
 }
 
 fn format_addr_hex(value: u64, buf: &mut [u8]) -> usize {
-    format_hex(value, buf, 16)
+    petroleum::serial::format_hex_to_buffer(value, buf, 16)
 }
 
 fn format_size_dec(value: usize, buf: &mut [u8]) -> usize {
-    format_dec(value, buf)
-}
-
-fn format_hex(value: u64, buf: &mut [u8], max_digits: usize) -> usize {
-    let mut temp = value;
-    let mut i = 0;
-    let mut digit_buf = [0u8; 16];
-    if temp == 0 {
-        buf[0] = b'0';
-        return 1;
-    }
-    while temp > 0 && i < max_digits {
-        let digit = (temp % 16) as u8;
-        digit_buf[i] = if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) };
-        temp /= 16;
-        i += 1;
-    }
-    // Reverse
-    for j in 0..i {
-        buf[j] = digit_buf[i - 1 - j];
-    }
-    i
-}
-
-fn format_dec(value: usize, buf: &mut [u8]) -> usize {
-    let mut temp = value;
-    let mut i = 0;
-    let mut digit_buf = [0u8; 16];
-    if temp == 0 {
-        buf[0] = b'0';
-        return 1;
-    }
-    while temp > 0 && i < 16 {
-        let digit = (temp % 10) as u8;
-        digit_buf[i] = b'0' + digit;
-        temp /= 10;
-        i += 1;
-    }
-    // Reverse
-    for j in 0..i {
-        buf[j] = digit_buf[i - 1 - j];
-    }
-    i
+    petroleum::serial::format_dec_to_buffer(value, buf)
 }
 
 /// Helper function to print text to EFI console
@@ -209,15 +167,15 @@ pub extern "efiapi" fn efi_main(
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(*MEMORY_MAP.get().unwrap());
     log::info!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());
-    let start_addr = if heap_phys_start.as_u64() < 0x1000 {
-        log::info!(
-            "Kernel: ERROR - Invalid heap_phys_start, using fallback 0x{:x}",
-            FALLBACK_HEAP_START_ADDR
-        );
-        PhysAddr::new(FALLBACK_HEAP_START_ADDR)
-    } else {
-        heap_phys_start
-    };
+        let start_addr = if heap_phys_start.as_u64() < 0x1000 {
+            log::info!(
+                "Kernel: ERROR - Invalid heap_phys_start, using fallback 0x{:x}",
+                petroleum::FALLBACK_HEAP_START_ADDR
+            );
+            PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR)
+        } else {
+            heap_phys_start
+        };
     // Debug log start_addr before allocation
     log::info!("Kernel: start_addr before allocation=0x{:x}", start_addr.as_u64());
 
@@ -356,7 +314,7 @@ pub extern "efiapi" fn efi_main(
     }
 
     log::info!("Entering idle loop (hlt_loop)");
-    hlt_loop();
+    petroleum::halt_loop();
 }
 
 pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
@@ -636,4 +594,30 @@ pub fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
 
     // As a fallback, try Cirrus VGA graphics if the function exists
     try_initialize_cirrus_graphics_mode()
+}
+
+// Helper function to calculate framebuffer size with bpp validation and logging
+pub fn calculate_framebuffer_size(
+    config: &FullereneFramebufferConfig,
+    source: &str,
+) -> (Option<u64>, Option<u64>) {
+    if config.bpp < 8 {
+        log::warn!(
+            "Warning: Invalid bpp ({}) in {} config.",
+            config.bpp,
+            source
+        );
+        return (None, None);
+    }
+    let size_pixels = config.width as u64 * config.height as u64;
+    let size_bytes = size_pixels * (config.bpp as u64 / 8);
+    log::info!(
+        "Calculated {} framebuffer size: {} bytes from {}x{} @ {} bpp",
+        source,
+        size_bytes,
+        config.width,
+        config.height,
+        config.bpp
+    );
+    (Some(config.address), Some(size_bytes))
 }

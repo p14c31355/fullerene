@@ -1,10 +1,8 @@
 use core::ffi::c_void;
-// Added for debugging
-use crate::debug_print_hex;
-use crate::debug_print_str;
+use log::info;
+
 use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
 
-pub mod file;
 pub mod heap;
 pub mod pe;
 
@@ -18,33 +16,31 @@ pub fn exit_boot_services_and_jump(
     // Immediate debug prints on entry to pinpoint exact hang location
     #[cfg(feature = "debug_loader")]
     {
-        debug_print_str("ENTER\n");
-        debug_print_str("system_table=");
-        debug_print_hex(system_table as usize);
-        debug_print_str("\n");
+        log::info!("ENTER");
+        log::info!("system_table={:#x}", system_table as usize);
     }
 
     #[cfg(feature = "debug_loader")]
-    debug_print_str("About to get boot_services ptr\n");
+    log::info!("About to get boot_services ptr");
     let bs = unsafe { &*(*system_table).boot_services };
     #[cfg(feature = "debug_loader")]
-    debug_print_str("Got boot_services ptr\n");
+    log::info!("Got boot_services ptr");
 
     #[cfg(feature = "debug_loader")]
     {
-        debug_print_str("bs obtained.\n");
-        debug_print_str("About to set up memory map vars.\n");
-        debug_print_str("About to setup buffer vars\n");
+        log::info!("bs obtained.");
+        log::info!("About to set up memory map vars.");
+        log::info!("About to setup buffer vars");
     }
     // Pre-allocate buffer before loop to include it in map key
     let map_buffer_size: usize = 128 * 1024; // 128 KiB
     let alloc_pages = map_buffer_size.div_ceil(4096).max(1);
     #[cfg(feature = "debug_loader")]
-    debug_print_str("Buffer vars setup\n");
+    log::info!("Buffer vars setup");
 
     #[cfg(feature = "debug_loader")]
     {
-        debug_print_str("About to allocate fixed map buffer\n");
+        log::info!("About to allocate fixed map buffer");
     }
 
     let mut map_phys_addr: usize = 0;
@@ -85,9 +81,7 @@ pub fn exit_boot_services_and_jump(
 
         #[cfg(feature = "debug_loader")]
         {
-            debug_print_str("Combined loop, attempt ");
-            debug_print_hex(attempts);
-            debug_print_str("\n");
+            log::info!("Combined loop, attempt {}", attempts);
         }
 
         // Call get_memory_map with pre-allocated buffer
@@ -105,14 +99,8 @@ pub fn exit_boot_services_and_jump(
             EfiStatus::Success => {
                 #[cfg(feature = "debug_loader")]
                 {
-                    debug_print_str("Memory map acquired successfully on attempt ");
-                    debug_print_hex(attempts);
-                    debug_print_str(", size=");
-                    debug_print_hex(map_size);
-                    debug_print_str(", key=");
-                    debug_print_hex(map_key);
-                    debug_print_str("\n");
-                    debug_print_str("About to call exit_boot_services...\n");
+                    log::info!("Memory map acquired successfully on attempt {}, size={:#x}, key={:#x}", attempts, map_size, map_key);
+                    log::info!("About to call exit_boot_services...");
                 }
 
                 // Immediately call exit_boot_services with the freshly acquired map_key
@@ -122,28 +110,22 @@ pub fn exit_boot_services_and_jump(
                     EfiStatus::Success => {
                         #[cfg(feature = "debug_loader")]
                         {
-                            debug_print_str("Exit boot services succeeded on attempt ");
-                            debug_print_hex(attempts);
-                            debug_print_str(".\n");
-                            debug_print_str("About to jump to kernel.\n");
+                            log::info!("Exit boot services succeeded on attempt {}", attempts);
+                            log::info!("About to jump to kernel.");
                         }
                         break; // Success, exit the loop and proceed to kernel jump
                     }
                     EfiStatus::Unsupported => {
                         #[cfg(feature = "debug_loader")]
                         {
-                            debug_print_str(
-                                "exit_boot_services returned Unsupported, proceeding anyway\n",
-                            );
+                            log::info!("exit_boot_services returned Unsupported, proceeding anyway");
                         }
                         break; // Proceed to jump to kernel
                     }
                     EfiStatus::InvalidParameter => {
                         #[cfg(feature = "debug_loader")]
                         {
-                            debug_print_str(
-                                "exit_boot_services returned InvalidParameter, retrying get_memory_map...\n",
-                            );
+                            log::info!("exit_boot_services returned InvalidParameter, retrying get_memory_map...");
                         }
                         // The map key is stale. Loop again to get a new memory map and key.
                         map_size = map_buffer_size;
@@ -153,9 +135,7 @@ pub fn exit_boot_services_and_jump(
                         let _ = (bs.free_pages)(map_phys_addr, alloc_pages); // Cleanup
                         #[cfg(feature = "debug_loader")]
                         {
-                            debug_print_str("Error: Failed to exit boot services: status=");
-                            debug_print_hex(exit_status);
-                            debug_print_str("\n");
+                            log::info!("Error: Failed to exit boot services: status={:#x}", exit_status as u32);
                         }
                         return Err(BellowsError::InvalidState("Failed to exit boot services."));
                     }
@@ -164,9 +144,7 @@ pub fn exit_boot_services_and_jump(
             EfiStatus::BufferTooSmall => {
                 #[cfg(feature = "debug_loader")]
                 {
-                    debug_print_str("Buffer too small, required size is now ");
-                    debug_print_hex(map_size);
-                    debug_print_str(" bytes\n");
+                    log::info!("Buffer too small, required size is now {} bytes", map_size);
                 }
                 // If our fixed buffer is too small, this is a fatal error.
                 let _ = (bs.free_pages)(map_phys_addr, alloc_pages); // Cleanup
@@ -182,9 +160,7 @@ pub fn exit_boot_services_and_jump(
                 let _ = (bs.free_pages)(map_phys_addr, alloc_pages); // Cleanup
                 #[cfg(feature = "debug_loader")]
                 {
-                    debug_print_str("Error: Failed to get memory map: status=");
-                    debug_print_hex(status);
-                    debug_print_str("\n");
+                    log::info!("Error: Failed to get memory map: status={:#x}", status);
                 }
                 return Err(BellowsError::InvalidState("Failed to get memory map."));
             }
@@ -200,14 +176,8 @@ pub fn exit_boot_services_and_jump(
     // function pointer is assumed based on the successful PE file loading.
     #[cfg(feature = "debug_loader")]
     {
-        debug_print_str("Jumping to kernel at ");
-        debug_print_hex(entry as usize);
-        debug_print_str(" with map at ");
-        debug_print_hex(map_phys_addr);
-        debug_print_str(" size ");
-        debug_print_hex(map_size);
-        debug_print_str("\n");
-        debug_print_str("About to call kernel entry.\n");
+        log::info!("Jumping to kernel at {:#x} with map at {:#x} size {:#x}", entry as usize, map_phys_addr, map_size);
+        log::info!("About to call kernel entry.");
     }
     entry(image_handle, system_table, map_ptr, map_size);
 }
