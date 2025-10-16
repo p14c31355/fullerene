@@ -80,17 +80,10 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
     petroleum::serial::serial_log(format_args!("GDT: GDT loaded\n"));
 
     unsafe {
-        #[cfg(not(target_os = "uefi"))]
-        {
-            petroleum::serial::serial_log(format_args!("About to set CS register (BIOS mode)...\n"));
-            CS::set_reg(*CODE_SELECTOR.get().unwrap());
-            petroleum::serial::serial_log(format_args!("GDT: CS set\n"));
-        }
-
-        #[cfg(target_os = "uefi")]
-        {
-            petroleum::serial::serial_log(format_args!("Skipping CS setting in UEFI mode\n"));
-        }
+        // Reload CS register in both BIOS and UEFI modes as it's crucial after GDT reload
+        petroleum::serial::serial_log(format_args!("About to set CS register...\n"));
+        CS::set_reg(*CODE_SELECTOR.get().unwrap());
+        petroleum::serial::serial_log(format_args!("GDT: CS set\n"));
 
         #[cfg(not(target_os = "uefi"))]
         {

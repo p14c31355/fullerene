@@ -154,8 +154,8 @@ fn run_virtualbox(args: &Args, workspace_root: &PathBuf) -> io::Result<()> {
 
     ensure_vm_exists(&args.vm_name)?;
     power_off_vm(&args.vm_name)?;
-    let serial_log_path = configure_serial_port(&args.vm_name, &workspace_root)?;
-    attach_iso_and_start_vm(&args, &iso_path, &serial_log_path)?;
+    configure_serial_port(&args.vm_name)?;
+    attach_iso_and_start_vm(&args, &iso_path)?;
 
     Ok(())
 }
@@ -296,20 +296,10 @@ fn power_off_vm(vm_name: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn configure_serial_port(vm_name: &str, workspace_root: &PathBuf) -> io::Result<PathBuf> {
+fn configure_serial_port(vm_name: &str) -> io::Result<()> {
     println!("Configuring serial port for VM '{}'...", vm_name);
 
-    // Create the serial log FIFO for VirtualBox serial redirection
-    let serial_log_file = workspace_root.join("virtualbox_serial.log");
-    if serial_log_file.exists() {
-        // Remove existing file/FIFO if it exists
-        std::fs::remove_file(&serial_log_file)?;
-    }
-    // Create a named pipe
-    Command::new("mkfifo").arg(&serial_log_file).status()?;
-    let serial_log_path_str = serial_log_file.to_string_lossy().to_string();
-
-    // Configure serial port 1 (COM1) to redirect output to file
+    // Configure serial port 1 (COM1) to redirect output to TCP server
     // Enable UART1 at COM1 (0x3f8) with 4 IRQs
     let uart_status = Command::new("VBoxManage")
         .args(["modifyvm", vm_name, "--uart1", "0x3f8", "4"])
@@ -317,7 +307,7 @@ fn configure_serial_port(vm_name: &str, workspace_root: &PathBuf) -> io::Result<
 
     if !uart_status.success() {
         eprintln!("Warning: Failed to configure UART1 port.");
-        return Ok(serial_log_file);
+        return Ok(());
     }
 
     // Set UART1 mode to tcp server for serial output
@@ -332,13 +322,12 @@ fn configure_serial_port(vm_name: &str, workspace_root: &PathBuf) -> io::Result<
         println!("Serial output will be accessible on TCP port 6000");
     }
 
-    Ok(serial_log_file)
+    Ok(())
 }
 
 fn attach_iso_and_start_vm(
     args: &Args,
     iso_path: &PathBuf,
-    serial_log_path: &PathBuf,
 ) -> io::Result<()> {
     // Use default firmware (UEFI) for serial console output like QEMU
 

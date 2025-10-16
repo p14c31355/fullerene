@@ -26,6 +26,56 @@ pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8
     }
 }
 
+fn format_addr_hex(value: u64, buf: &mut [u8]) -> usize {
+    format_hex(value, buf, 16)
+}
+
+fn format_size_dec(value: usize, buf: &mut [u8]) -> usize {
+    format_dec(value, buf)
+}
+
+fn format_hex(value: u64, buf: &mut [u8], max_digits: usize) -> usize {
+    let mut temp = value;
+    let mut i = 0;
+    let mut digit_buf = [0u8; 16];
+    if temp == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+    while temp > 0 && i < max_digits {
+        let digit = (temp % 16) as u8;
+        digit_buf[i] = if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) };
+        temp /= 16;
+        i += 1;
+    }
+    // Reverse
+    for j in 0..i {
+        buf[j] = digit_buf[i - 1 - j];
+    }
+    i
+}
+
+fn format_dec(value: usize, buf: &mut [u8]) -> usize {
+    let mut temp = value;
+    let mut i = 0;
+    let mut digit_buf = [0u8; 16];
+    if temp == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+    while temp > 0 && i < 16 {
+        let digit = (temp % 10) as u8;
+        digit_buf[i] = b'0' + digit;
+        temp /= 10;
+        i += 1;
+    }
+    // Reverse
+    for j in 0..i {
+        buf[j] = digit_buf[i - 1 - j];
+    }
+    i
+}
+
 /// Helper function to print text to EFI console
 #[cfg(target_os = "uefi")]
 fn efi_print(system_table: &EfiSystemTable, text: &[u8]) {
@@ -251,56 +301,6 @@ pub extern "efiapi" fn efi_main(
         allocator.init(heap_start_after_gdt.as_mut_ptr::<u8>(), heap_size_remaining);
         write_serial_bytes!(0x3F8, 0x3FD, b"allocator.init() completed successfully\n");
         write_serial_bytes!(0x3F8, 0x3FD, b"Allocator initialized successfully\n");
-    }
-
-    fn format_addr_hex(value: u64, buf: &mut [u8]) -> usize {
-        format_hex(value, buf, 16)
-    }
-
-    fn format_size_dec(value: usize, buf: &mut [u8]) -> usize {
-        format_dec(value, buf)
-    }
-
-    fn format_hex(value: u64, buf: &mut [u8], max_digits: usize) -> usize {
-        let mut temp = value;
-        let mut i = 0;
-        let mut digit_buf = [0u8; 16];
-        if temp == 0 {
-            buf[0] = b'0';
-            return 1;
-        }
-        while temp > 0 && i < max_digits {
-            let digit = (temp % 16) as u8;
-            digit_buf[i] = if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) };
-            temp /= 16;
-            i += 1;
-        }
-        // Reverse
-        for j in 0..i {
-            buf[j] = digit_buf[i - 1 - j];
-        }
-        i
-    }
-
-    fn format_dec(value: usize, buf: &mut [u8]) -> usize {
-        let mut temp = value;
-        let mut i = 0;
-        let mut digit_buf = [0u8; 16];
-        if temp == 0 {
-            buf[0] = b'0';
-            return 1;
-        }
-        while temp > 0 && i < 16 {
-            let digit = (temp % 10) as u8;
-            digit_buf[i] = b'0' + digit;
-            temp /= 10;
-            i += 1;
-        }
-        // Reverse
-        for j in 0..i {
-            buf[j] = digit_buf[i - 1 - j];
-        }
-        i
     }
 
     petroleum::serial::serial_log(format_args!("About to print final allocator message...\n"));
