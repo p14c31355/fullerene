@@ -19,7 +19,7 @@ macro_rules! init_component {
                 Ok(())
             }
             Err(e) => {
-                log::error!("Failed to initialize {}", $name);
+                log::error!("Failed to initialize {}: {:?}", $name, e);
                 Err(e)
             }
         }
