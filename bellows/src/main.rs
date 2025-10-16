@@ -38,18 +38,12 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     unsafe {
         core::ptr::write_volatile(0xB8002 as *mut u16, 0x1F50);
     } // White 'P' on blue
-    unsafe {
-        core::ptr::write_volatile(0xB8004 as *mut u16, 0x1F61);
-    } // White 'a' on blue
-    unsafe {
-        core::ptr::write_volatile(0xB8006 as *mut u16, 0x1F6E);
-    } // White 'n' on blue
-    unsafe {
-        core::ptr::write_volatile(0xB8008 as *mut u16, 0x1F69);
-    } // White 'i' on blue
-    unsafe {
-        core::ptr::write_volatile(0xB800A as *mut u16, 0x1F63);
-    } // White 'c' on blue
+    let panic_msg = b"anic";
+    for (i, &char_code) in panic_msg.iter().enumerate() {
+        unsafe {
+            core::ptr::write_volatile((0xB8004 as *mut u16).add(i), 0x1F00 | char_code as u16);
+        }
+    }
     loop {}
 }
 
