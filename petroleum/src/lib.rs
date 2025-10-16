@@ -25,6 +25,7 @@ pub use graphics::{
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
 pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 pub use uefi_helpers::handle_panic;
+pub use common::logging::{SystemError, SystemResult};
 
 // Heap allocation exports
 pub use page_table::ALLOCATOR;
