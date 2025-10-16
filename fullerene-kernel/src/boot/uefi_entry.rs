@@ -1,6 +1,6 @@
 // Use crate imports
 use crate::MEMORY_MAP;
-use crate::boot::FALLBACK_HEAP_START_ADDR;
+
 use crate::graphics::framebuffer::FramebufferLike;
 use crate::heap;
 
@@ -170,9 +170,9 @@ pub extern "efiapi" fn efi_main(
     let start_addr = if heap_phys_start.as_u64() < 0x1000 {
         log::info!(
             "Kernel: ERROR - Invalid heap_phys_start, using fallback 0x{:x}",
-            FALLBACK_HEAP_START_ADDR
+            0x100000
         );
-        PhysAddr::new(FALLBACK_HEAP_START_ADDR)
+        PhysAddr::new(0x100000)
     } else {
         heap_phys_start
     };
