@@ -225,7 +225,7 @@ fn power_off_vm(vm_name: &str) -> io::Result<()> {
         return Ok(());
     }
 
-    let mut vm_powered_off = matches!(initial_state.as_deref(), Some("running") | Some("paused"));
+    let mut vm_powered_off = false;
 
     // Try graceful shutdown first
     let acpi_result = Command::new("VBoxManage")
