@@ -143,6 +143,12 @@ pub fn init_uefi_system_table(system_table: *mut EfiSystemTable) {
         .insert(UefiSystemTablePtr(system_table));
 }
 
+pub fn halt_loop() -> ! {
+    loop {
+        x86_64::instructions::hlt();
+    }
+}
+
 /// Helper to initialize serial for bootloader
 pub unsafe fn write_serial_bytes(port: u16, status_port: u16, bytes: &[u8]) {
     unsafe {

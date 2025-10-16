@@ -3,7 +3,7 @@ use crate::MEMORY_MAP;
 use crate::boot::FALLBACK_HEAP_START_ADDR;
 use crate::graphics::framebuffer::FramebufferLike;
 use crate::heap;
-use crate::hlt_loop;
+
 use crate::memory::find_heap_start;
 use crate::{gdt, graphics, interrupts, memory};
 use alloc::boxed::Box;
@@ -314,7 +314,7 @@ pub extern "efiapi" fn efi_main(
     }
 
     log::info!("Entering idle loop (hlt_loop)");
-    hlt_loop();
+    petroleum::halt_loop();
 }
 
 pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
