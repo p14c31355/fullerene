@@ -3,7 +3,6 @@ use alloc::string::{String, ToString};
 use embedded_graphics::{
     mono_font::{MonoTextStyle, ascii::FONT_6X10},
     prelude::*,
-    primitives::{PrimitiveStyleBuilder, Rectangle},
     text::Text,
 };
 use petroleum::serial::debug_print_str_to_com1 as debug_print_str;

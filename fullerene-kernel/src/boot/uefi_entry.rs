@@ -10,7 +10,7 @@ use alloc::boxed::Box;
 use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
-use petroleum::{debug_log, write_serial_bytes};
+use petroleum::{allocate_heap_from_map, debug_log, write_serial_bytes};
 use x86_64::PhysAddr;
 
 use petroleum::graphics::{
@@ -165,7 +165,7 @@ pub extern "efiapi" fn efi_main(
         heap_phys_start
     };
 
-    let heap_start = heap::allocate_heap_from_map(start_addr, heap::HEAP_SIZE);
+    let heap_start = allocate_heap_from_map(start_addr, heap::HEAP_SIZE);
     log::info!("Kernel: heap_start=0x{:x}", heap_start.as_u64());
     let heap_start_after_gdt = gdt::init(heap_start);
     log::info!(

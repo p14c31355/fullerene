@@ -10,7 +10,7 @@ use alloc::boxed::Box;
 
 use core::{ffi::c_void, ptr};
 
-extern crate log;
+use log;
 
 // Embedded kernel binary
 static KERNEL_BINARY: &[u8] = include_bytes!("kernel.bin");
