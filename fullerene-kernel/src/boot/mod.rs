@@ -6,7 +6,6 @@ pub mod constants;
 pub mod macros;
 pub mod bios_entry;
 pub mod uefi_entry;
-pub mod utils;
 
 // Re-exports for compatibility
 pub use constants::*;
