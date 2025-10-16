@@ -1,8 +1,8 @@
 use core::ffi::c_void;
-use core::ptr;
+// Added for debugging
+use crate::debug_print_hex;
+use crate::debug_print_str;
 use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
-use petroleum::println; // Added for debugging
-pub use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
 pub mod file;
 pub mod heap;

@@ -4,7 +4,7 @@
 //! to interact with the operating system through text commands.
 
 use crate::keyboard;
-use crate::syscall::{self, kernel_syscall};
+use crate::syscall::kernel_syscall;
 use alloc::vec::Vec;
 use petroleum::print;
 
@@ -22,7 +22,8 @@ struct CommandEntry {
     function: CommandFn,
 }
 
-macro_rules! create_commands_array {
+// Use generic command array macro from petroleum
+macro_rules! define_commands {
     ($(($name:expr, $desc:expr, $func:expr)),* $(,)?) => {
         &[$(
             CommandEntry {
@@ -34,7 +35,7 @@ macro_rules! create_commands_array {
     };
 }
 
-static COMMANDS: &[CommandEntry] = create_commands_array![
+static COMMANDS: &[CommandEntry] = define_commands![
     ("help", "Show available commands", help_command),
     ("ps", "Show process list", ps_command),
     ("echo", "Print text", echo_command),
@@ -241,7 +242,6 @@ pub fn init() {
 // Test functions
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_command_parsing() {

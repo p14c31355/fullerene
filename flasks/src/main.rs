@@ -18,7 +18,6 @@ struct Args {
     controller: String,
 }
 
-
 fn main() -> io::Result<()> {
     let args = Args::parse();
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -34,7 +33,9 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-fn create_iso_and_setup(workspace_root: &PathBuf) -> io::Result<(PathBuf, PathBuf, PathBuf, tempfile::NamedTempFile)> {
+fn create_iso_and_setup(
+    workspace_root: &PathBuf,
+) -> io::Result<(PathBuf, PathBuf, PathBuf, tempfile::NamedTempFile)> {
     // --- 1. Build fullerene-kernel (no_std) ---
     let status = Command::new("cargo")
         .current_dir(workspace_root)
@@ -148,10 +149,12 @@ const VM_SHUTDOWN_POLL_INTERVAL_MS: u64 = 500;
 
 fn run_virtualbox(args: &Args, workspace_root: &PathBuf) -> io::Result<()> {
     println!("Starting VirtualBox...");
-    let (iso_path, _ovmf_fd_path, _ovmf_vars_fd_path, _dummy) = create_iso_and_setup(&workspace_root)?;
+    let (iso_path, _ovmf_fd_path, _ovmf_vars_fd_path, _dummy) =
+        create_iso_and_setup(&workspace_root)?;
 
     ensure_vm_exists(&args.vm_name)?;
     power_off_vm(&args.vm_name)?;
+    configure_serial_port(&args.vm_name)?;
     attach_iso_and_start_vm(&args, &iso_path)?;
 
     Ok(())
@@ -167,38 +170,99 @@ fn ensure_vm_exists(vm_name: &str) -> io::Result<()> {
         Ok(output) if output.status.success() => {
             println!("Found VM: {}", vm_name);
             Ok(())
-        },
-        _ => {
-            Err(io::Error::other(format!(
-                "VirtualBox VM '{}' does not exist. Create it first with:\nVBoxManage createvm --name \"{}\" --ostype \"Other\" --register\nThen add storage controller and attach a hard disk.",
-                vm_name, vm_name
-            )))
         }
+        _ => Err(io::Error::other(format!(
+            "VirtualBox VM '{}' does not exist. Create it first with:\nVBoxManage createvm --name \"{}\" --ostype \"Other\" --register\nThen add storage controller and attach a hard disk.",
+            vm_name, vm_name
+        ))),
     }
 }
 
 fn power_off_vm(vm_name: &str) -> io::Result<()> {
     println!("Powering off VM if running...");
+
+    // Check if VM is currently running
+    let output = Command::new("VBoxManage")
+        .args(["showvminfo", vm_name, "--machinereadable"])
+        .output();
+
+    let initial_state = match output {
+        Ok(output) if output.status.success() => {
+            std::str::from_utf8(&output.stdout).ok().and_then(|stdout| {
+                stdout
+                    .lines()
+                    .find(|line| line.starts_with("VMState="))
+                    .and_then(|line| line.strip_prefix("VMState=\""))
+                    .and_then(|s| s.strip_suffix("\""))
+                    .map(|s| s.to_string())
+            })
+        }
+        _ => None,
+    };
+
+    // If VM is already powered off, do nothing
+    if let Some("poweroff") = initial_state.as_deref() {
+        println!("VM '{}' is already powered off.", vm_name);
+        return Ok(());
+    }
+
+    // If VM is saved, discard the saved state
+    if let Some("saved") = initial_state.as_deref() {
+        println!(
+            "VM '{}' is in saved state, discarding saved state...",
+            vm_name
+        );
+        let discard_status = Command::new("VBoxManage")
+            .args(["discardstate", vm_name])
+            .status()?;
+        if !discard_status.success() {
+            return Err(io::Error::other(format!(
+                "`VBoxManage discardstate` failed for saved VM state."
+            )));
+        }
+        // After discarding, VM should be powered off
+        println!("Saved state discarded.");
+        return Ok(());
+    }
+
     let mut vm_powered_off = false;
 
     // Try graceful shutdown first
-    if let Err(e) = Command::new("VBoxManage")
+    let acpi_result = Command::new("VBoxManage")
         .args(["controlvm", vm_name, "acpipowerbutton"])
-        .status()
-    {
-        eprintln!("Warning: Failed to send ACPI power button signal: {}. This may be ignored if the VM was not running.", e);
+        .output();
+
+    if let Err(e) = &acpi_result {
+        eprintln!(
+            "Warning: Failed to send ACPI power button signal: {}. This may be ignored if the VM was not running.",
+            e
+        );
+    } else if !acpi_result.as_ref().unwrap().status.success() {
+        let stderr = String::from_utf8_lossy(&acpi_result.as_ref().unwrap().stderr);
+        if stderr.contains("not currently running") {
+            println!(
+                "VM '{}' is not currently running, so it is already powered off.",
+                vm_name
+            );
+            return Ok(());
+        } else {
+            eprintln!("Warning: ACPI power button signal failed: {}", stderr);
+        }
     }
 
     // Poll VM state
     for _ in 0..VM_SHUTDOWN_POLL_ATTEMPTS {
-        std::thread::sleep(std::time::Duration::from_millis(VM_SHUTDOWN_POLL_INTERVAL_MS));
+        std::thread::sleep(std::time::Duration::from_millis(
+            VM_SHUTDOWN_POLL_INTERVAL_MS,
+        ));
         let output = Command::new("VBoxManage")
             .args(["showvminfo", vm_name, "--machinereadable"])
             .output();
 
         if let Ok(output) = output {
             if let Ok(stdout) = std::str::from_utf8(&output.stdout) {
-                let state_line = stdout.lines()
+                let state_line = stdout
+                    .lines()
                     .find(|line| line.starts_with("VMState="))
                     .and_then(|line| line.strip_prefix("VMState=\""))
                     .and_then(|s| s.strip_suffix("\""));
@@ -224,20 +288,48 @@ fn power_off_vm(vm_name: &str) -> io::Result<()> {
         }
 
         // Brief wait for force power off
-        std::thread::sleep(std::time::Duration::from_millis(VM_SHUTDOWN_POLL_INTERVAL_MS));
+        std::thread::sleep(std::time::Duration::from_millis(
+            VM_SHUTDOWN_POLL_INTERVAL_MS,
+        ));
     }
 
     Ok(())
 }
 
-fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
-    // Set EFI firmware
-    let set_efi_status = Command::new("VBoxManage")
-        .args(["modifyvm", &args.vm_name, "--firmware", "efi64"])
+fn configure_serial_port(vm_name: &str) -> io::Result<()> {
+    println!("Configuring serial port for VM '{}'...", vm_name);
+
+    // Configure serial port 1 (COM1) to redirect output to TCP server
+    // Enable UART1 at COM1 (0x3f8) with 4 IRQs
+    let uart_status = Command::new("VBoxManage")
+        .args(["modifyvm", vm_name, "--uart1", "0x3f8", "4"])
         .status()?;
-    if !set_efi_status.success() {
-        eprintln!("Warning: Failed to set EFI firmware. The VM may need to be recreated for EFI support.");
+
+    if !uart_status.success() {
+        eprintln!("Warning: Failed to configure UART1 port.");
+        return Ok(());
     }
+
+    // Set UART1 mode to tcp server for serial output
+    let serial_status = Command::new("VBoxManage")
+        .args(["modifyvm", vm_name, "--uartmode1", "tcpserver", "6000"])
+        .status()?;
+
+    if !serial_status.success() {
+        eprintln!("Warning: Failed to configure serial port mode. Serial logging may not work.");
+        // Don't return error, as this might not be fatal
+    } else {
+        println!("Serial output will be accessible on TCP port 6000");
+    }
+
+    Ok(())
+}
+
+fn attach_iso_and_start_vm(
+    args: &Args,
+    iso_path: &PathBuf,
+) -> io::Result<()> {
+    // Use default firmware (UEFI) for serial console output like QEMU
 
     // Attach ISO
     println!("Attaching ISO to VM...");
@@ -262,19 +354,51 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
         return Err(io::Error::other("Failed to attach ISO to VirtualBox VM"));
     }
 
-    // Start VM
-    println!("Starting VM...");
-    let start_status = Command::new("VBoxManage")
-        .args([
-            "startvm",
-            &args.vm_name,
-            "--type",
-            "gui",
-        ])
-        .status()?;
+    // Start VM in headless mode so that serial output can be seen in terminal
+    println!("Starting VM in headless mode...");
+    let mut start_cmd = Command::new("VBoxHeadless");
+    start_cmd.args(["-s", &args.vm_name]);
 
-    if !start_status.success() {
-        return Err(io::Error::other("VirtualBox VM startup failed"));
+    // Spawn the VBoxHeadless process
+    let vm_process = start_cmd.spawn();
+
+    let mut vm_process = match vm_process {
+        Ok(process) => process,
+        Err(e) => {
+            return Err(io::Error::other(format!(
+                "Failed to start VBoxHeadless: {}",
+                e
+            )));
+        }
+    };
+
+    // Wait a moment for VM to start and serial output to begin
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    // Start nc to connect to serial TCP server and display output in realtime
+    println!("Streaming serial output...");
+    let nc_status = Command::new("nc").args(["localhost", "6000"]).status();
+
+    match nc_status {
+        Ok(status) if status.success() => {
+            println!("Serial output streaming completed.");
+        }
+        _ => {
+            eprintln!("Warning: Failed to stream serial output, but VM may still be running.");
+        }
+    }
+
+    // Wait for the VM process to finish
+    let exit_status = vm_process.wait();
+    match exit_status {
+        Ok(status) => {
+            if !status.success() {
+                eprintln!("VBoxHeadless exited with status: {}", status);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error waiting for VBoxHeadless process: {}", e);
+        }
     }
 
     Ok(())
@@ -282,7 +406,8 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
 
 fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {
     println!("Starting QEMU...");
-    let (iso_path, ovmf_fd_path, ovmf_vars_fd_path, temp_ovmf_vars_fd) = create_iso_and_setup(&workspace_root)?;
+    let (iso_path, ovmf_fd_path, ovmf_vars_fd_path, temp_ovmf_vars_fd) =
+        create_iso_and_setup(&workspace_root)?;
 
     // --- 4. Run QEMU with the created ISO ---
 

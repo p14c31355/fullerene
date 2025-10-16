@@ -16,7 +16,7 @@ macro_rules! setup_idt_handler {
     };
 }
 
-/// Global Interrupt Descriptor Table
+// Global Interrupt Descriptor Table
 lazy_static! {
     pub static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
@@ -45,6 +45,8 @@ lazy_static! {
 
 /// Initialize IDT (load it into the CPU)
 pub fn init() {
+    petroleum::serial::serial_log(format_args!("About to load IDT...\n"));
     IDT.load();
+    petroleum::serial::serial_log(format_args!("IDT.load() completed, about to log completion...\n"));
     petroleum::serial::serial_log(format_args!("IDT loaded with exception handlers.\n"));
 }

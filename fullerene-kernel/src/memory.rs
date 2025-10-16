@@ -69,27 +69,18 @@ pub fn find_framebuffer_config(
 }
 
 pub fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> PhysAddr {
-    // Find the largest suitable memory region from EfiLoaderData or EfiConventionalMemory and use its physical start for heap
-    let mut largest_addr = None;
-    let mut largest_pages = 0u64;
+    // Find the lowest suitable memory region below 4GB from EfiConventionalMemory with sufficient size for heap
+    const HEAP_PAGES: u64 = 256; // approx 1MB for heap + structures
     for desc in descriptors {
-        if (desc.type_ == EfiMemoryType::EfiLoaderData
-            || desc.type_ == EfiMemoryType::EfiConventionalMemory)
-            && desc.number_of_pages >= 4
+        if desc.type_ == EfiMemoryType::EfiConventionalMemory
+            && desc.number_of_pages >= HEAP_PAGES
+            && desc.physical_start < 0x100000000 // below 4GB
         {
-            // at least 16KB
-            if desc.number_of_pages > largest_pages {
-                largest_pages = desc.number_of_pages;
-                largest_addr = Some(desc.physical_start);
-            }
+            return PhysAddr::new(desc.physical_start);
         }
     }
-    if let Some(addr) = largest_addr {
-        PhysAddr::new(addr)
-    } else {
-        // Fallback if no suitable memory found
-        PhysAddr::new(crate::boot::FALLBACK_HEAP_START_ADDR)
-    }
+    // Fallback if no suitable memory found
+    PhysAddr::new(crate::boot::FALLBACK_HEAP_START_ADDR)
 }
 
 pub fn setup_memory_maps(
@@ -106,7 +97,7 @@ pub fn setup_memory_maps(
         )
     };
     petroleum::serial::debug_print_str_to_com1("Memory map slice created\n");
-    kernel_log!(
+    log::info!(
         "Memory map slice size: {}, descriptor count: {}",
         memory_map_size,
         descriptors.len()
@@ -114,7 +105,7 @@ pub fn setup_memory_maps(
     // Reduce log verbosity for faster boot
     if descriptors.len() < 20 {
         for (i, desc) in descriptors.iter().enumerate() {
-            kernel_log!(
+            log::info!(
                 "Memory descriptor {}: type={:#x}, phys_start=0x{:x}, virt_start=0x{:x}, pages=0x{:x}",
                 i,
                 desc.type_ as u32,
@@ -124,30 +115,30 @@ pub fn setup_memory_maps(
             );
         }
     }
-    kernel_log!("Memory map parsing: finished descriptor dump");
+    log::info!("Memory map parsing: finished descriptor dump");
     // Initialize MEMORY_MAP with descriptors
     MEMORY_MAP.call_once(|| {
         // Since UEFI memory map is static until exit_boot_services, this is safe
         unsafe { &*(descriptors as *const _) }
     });
-    kernel_log!("MEMORY_MAP initialized");
+    log::info!("MEMORY_MAP initialized");
 
     let physical_memory_offset;
     let kernel_phys_start;
 
-    kernel_log!("Scanning memory descriptors to find kernel location...");
+    log::info!("Scanning memory descriptors to find kernel location...");
 
     // Find the memory descriptor containing the kernel (efi_main is virtual address,
     // but UEFI uses identity mapping initially, so check physical range containing kernel_virt_addr)
     // Since UEFI identity-maps initially, kernel_virt_addr should equal its physical address
     if kernel_virt_addr >= 0x1000 {
         kernel_phys_start = PhysAddr::new(kernel_virt_addr);
-        kernel_log!(
+        log::info!(
             "Using identity-mapped kernel physical start: 0x{:x}",
             kernel_phys_start.as_u64()
         );
     } else {
-        kernel_log!(
+        log::info!(
             "Warning: Invalid kernel address 0x{:x}, falling back to hardcoded value",
             kernel_virt_addr
         );
@@ -156,10 +147,10 @@ pub fn setup_memory_maps(
 
     // Calculate the physical_memory_offset for the higher-half kernel mapping.
     // This offset is such that physical_address + offset = higher_half_virtual_address.
-    physical_memory_offset =
-        VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE - kernel_phys_start.as_u64());
+    // Use a simpler offset that maps physical addresses to the higher half directly
+    physical_memory_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE);
 
-    kernel_log!(
+    log::info!(
         "Physical memory offset calculation complete: offset=0x{:x}, kernel_phys_start=0x{:x}",
         physical_memory_offset.as_u64(),
         kernel_phys_start.as_u64()
@@ -173,27 +164,27 @@ pub fn init_memory_management(
     physical_memory_offset: VirtAddr,
     kernel_phys_start: PhysAddr,
 ) {
-    kernel_log!("Starting heap frame allocator init...");
+    log::info!("Starting heap frame allocator init...");
 
-    kernel_log!(
+    log::info!(
         "Calling heap::init_frame_allocator with {} descriptors",
         memory_map.len()
     );
     heap::init_frame_allocator(memory_map);
-    kernel_log!("Heap frame allocator init completed successfully");
+    log::info!("Heap frame allocator init completed successfully");
 
-    kernel_log!(
+    log::info!(
         "Calling heap::init_page_table with offset 0x{:x}",
         physical_memory_offset.as_u64()
     );
     unsafe { petroleum::page_table::init(physical_memory_offset) };
-    kernel_log!("Page table init completed successfully");
+    log::info!("Page table init completed successfully");
 
-    kernel_log!(
+    log::info!(
         "Calling heap::reinit_page_table with offset 0x{:x} and kernel_phys_start 0x{:x}",
         physical_memory_offset.as_u64(),
         kernel_phys_start.as_u64()
     );
     heap::reinit_page_table(kernel_phys_start, None, None);
-    kernel_log!("Page table reinit completed successfully");
+    log::info!("Page table reinit completed successfully");
 }

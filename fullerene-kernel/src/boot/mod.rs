@@ -9,6 +9,4 @@ pub mod uefi_entry;
 pub mod utils;
 
 // Re-exports for compatibility
-pub use bios_entry::*;
 pub use constants::*;
-pub use uefi_entry::*;

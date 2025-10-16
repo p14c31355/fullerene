@@ -71,11 +71,9 @@ impl PciConfigSpace {
         let mut addr_writer = PortWriter::new(crate::graphics::HardwarePorts::PCI_CONFIG_ADDRESS);
         let mut data_reader = PortWriter::new(crate::graphics::HardwarePorts::PCI_CONFIG_DATA);
 
-        unsafe {
-            addr_writer.write_safe(address);
-            let dword: u32 = data_reader.read_safe();
-            (dword >> ((offset & 3) * 8)) as u8
-        }
+        addr_writer.write_safe(address);
+        let dword: u32 = data_reader.read_safe();
+        (dword >> ((offset & 3) * 8)) as u8
     }
 
     /// Read a word from PCI configuration space
@@ -91,10 +89,8 @@ impl PciConfigSpace {
         let mut addr_writer = PortWriter::new(crate::graphics::HardwarePorts::PCI_CONFIG_ADDRESS);
         let mut data_reader = PortWriter::new(crate::graphics::HardwarePorts::PCI_CONFIG_DATA);
 
-        unsafe {
-            addr_writer.write_safe(address);
-            data_reader.read_safe()
-        }
+        addr_writer.write_safe(address);
+        data_reader.read_safe()
     }
 
     /// Write a byte to PCI configuration space
@@ -164,14 +160,12 @@ impl PciConfigSpace {
         let mut data_writer = PortWriter::new(crate::graphics::HardwarePorts::PCI_CONFIG_DATA);
         let mut data_reader = PortWriter::new(crate::graphics::HardwarePorts::PCI_CONFIG_DATA);
 
-        unsafe {
-            addr_writer.write_safe(address);
-            let current_dword: u32 = data_reader.read_safe();
-            let byte_offset = (offset & 3) as usize;
-            let mask = !(0xFFu32 << (byte_offset * 8));
-            let new_dword: u32 = (current_dword & mask) | ((value as u32) << (byte_offset * 8));
-            data_writer.write_safe(new_dword);
-        }
+        addr_writer.write_safe(address);
+        let current_dword: u32 = data_reader.read_safe();
+        let byte_offset = (offset & 3) as usize;
+        let mask = !(0xFFu32 << (byte_offset * 8));
+        let new_dword: u32 = (current_dword & mask) | ((value as u32) << (byte_offset * 8));
+        data_writer.write_safe(new_dword);
     }
 
     fn write_config_dword_raw(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
@@ -179,10 +173,8 @@ impl PciConfigSpace {
         let mut addr_writer = PortWriter::new(crate::graphics::HardwarePorts::PCI_CONFIG_ADDRESS);
         let mut data_writer = PortWriter::new(crate::graphics::HardwarePorts::PCI_CONFIG_DATA);
 
-        unsafe {
-            addr_writer.write_safe(address);
-            data_writer.write_safe(value);
-        }
+        addr_writer.write_safe(address);
+        data_writer.write_safe(value);
     }
 }
 

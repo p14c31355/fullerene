@@ -1,6 +1,5 @@
 // bellows/src/loader/heap.rs
 
-use linked_list_allocator::LockedHeap;
 use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus};
 use petroleum::debug_log;
 

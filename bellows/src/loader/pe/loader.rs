@@ -3,7 +3,6 @@ use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
 
 use super::headers::*;
 use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
-use petroleum::write_serial_bytes;
 
 pub fn load_efi_image(
     st: &EfiSystemTable,

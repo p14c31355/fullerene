@@ -6,7 +6,7 @@ pub mod macros;
 pub mod uefi;
 pub mod utils;
 
-// Re-exports to maintain compatibility
+// Re-exports to maintain compatibility and new macros
 pub use bios::*;
 pub use error::*;
 pub use uefi::*;

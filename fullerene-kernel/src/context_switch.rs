@@ -197,7 +197,6 @@ macro_rules! switch_to_process {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::process::ProcessContext;
 
     #[test]

@@ -1,8 +1,6 @@
 use alloc::collections::BTreeMap;
 use petroleum::common::logging::{SystemError, SystemResult};
 
-use super::*;
-
 /// Process-specific memory manager implementation
 pub struct ProcessMemoryManagerImpl {
     process_id: usize,

@@ -10,8 +10,7 @@ use alloc::boxed::Box;
 use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
-use petroleum::kernel_log;
-use petroleum::{debug_log, write_serial_bytes};
+use petroleum::{allocate_heap_from_map, debug_log, write_serial_bytes};
 use x86_64::PhysAddr;
 
 use petroleum::graphics::{
@@ -25,6 +24,56 @@ pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8
             vga_buffer[row][i] = color | (byte as u16);
         }
     }
+}
+
+fn format_addr_hex(value: u64, buf: &mut [u8]) -> usize {
+    format_hex(value, buf, 16)
+}
+
+fn format_size_dec(value: usize, buf: &mut [u8]) -> usize {
+    format_dec(value, buf)
+}
+
+fn format_hex(value: u64, buf: &mut [u8], max_digits: usize) -> usize {
+    let mut temp = value;
+    let mut i = 0;
+    let mut digit_buf = [0u8; 16];
+    if temp == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+    while temp > 0 && i < max_digits {
+        let digit = (temp % 16) as u8;
+        digit_buf[i] = if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) };
+        temp /= 16;
+        i += 1;
+    }
+    // Reverse
+    for j in 0..i {
+        buf[j] = digit_buf[i - 1 - j];
+    }
+    i
+}
+
+fn format_dec(value: usize, buf: &mut [u8]) -> usize {
+    let mut temp = value;
+    let mut i = 0;
+    let mut digit_buf = [0u8; 16];
+    if temp == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+    while temp > 0 && i < 16 {
+        let digit = (temp % 10) as u8;
+        digit_buf[i] = b'0' + digit;
+        temp /= 10;
+        i += 1;
+    }
+    // Reverse
+    for j in 0..i {
+        buf[j] = digit_buf[i - 1 - j];
+    }
+    i
 }
 
 /// Helper function to print text to EFI console
@@ -57,7 +106,9 @@ pub extern "efiapi" fn efi_main(
     write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main entered.\n");
 
     // Initialize serial early for debug logging
+    log::info!("About to initialize serial port...");
     petroleum::serial::serial_init();
+    log::info!("Serial port initialized successfully");
 
     // Debug parameter values
     debug_log!(
@@ -77,29 +128,31 @@ pub extern "efiapi" fn efi_main(
     let system_table = unsafe { &*system_table };
 
     // Detect and initialize VGA graphics for Cirrus devices
+    petroleum::serial::serial_log(format_args!("Detecting and initializing VGA graphics...\n"));
     petroleum::graphics::detect_and_init_vga_graphics();
+    petroleum::serial::serial_log(format_args!("VGA graphics detection completed\n"));
 
     debug_log!("VGA setup done");
-    kernel_log!("VGA text mode setup function returned");
+    log::info!("VGA text mode setup function returned");
 
     // Direct VGA buffer test - write to hardware buffer directly
-    kernel_log!("Direct VGA buffer write test...");
+    log::info!("Direct VGA buffer write test...");
     unsafe {
         let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
         write_vga_string(vga_buffer, 0, b"Kernel boot", 0x1F00);
     }
-    kernel_log!("Direct VGA write test completed");
+    log::info!("Direct VGA write test completed");
 
     // Initialize VGA buffer writer and write welcome message BEFORE any graphics ops
-    kernel_log!("Initializing VGA writer early...");
+    log::info!("Initializing VGA writer early...");
     crate::vga::init_vga();
-    kernel_log!("VGA writer initialized - text should be visible now");
+    log::info!("VGA writer initialized - text should be visible now");
 
     // Early text output using EFI console to ensure visible output on screen
-    kernel_log!("About to output to EFI console");
+    log::info!("About to output to EFI console");
     efi_print(system_table, b"UEFI Kernel: Display Test!\r\n");
     efi_print(system_table, b"This is output via EFI console.\r\n");
-    kernel_log!("EFI console output completed");
+    log::info!("EFI console output completed");
 
     // Setup memory maps and initialize memory management
     let kernel_virt_addr = efi_main as u64;
@@ -108,23 +161,23 @@ pub extern "efiapi" fn efi_main(
 
     // Initialize memory management components (heap, page tables, etc.)
     // Comment out reinit for now to allow desktop drawing
-    kernel_log!("Starting heap frame allocator init...");
+    log::info!("Starting heap frame allocator init...");
 
-    kernel_log!(
+    log::info!(
         "Calling heap::init_frame_allocator with {} descriptors",
         MEMORY_MAP.get().unwrap().len()
     );
     heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
-    kernel_log!("Heap frame allocator init completed successfully");
+    log::info!("Heap frame allocator init completed successfully");
 
     // Find framebuffer configuration before reiniting page tables
-    kernel_log!("Finding framebuffer config for page table mapping...");
+    log::info!("Finding framebuffer config for page table mapping...");
     let framebuffer_config = crate::memory::find_framebuffer_config(system_table);
     let config = framebuffer_config.as_ref();
     let (fb_addr, fb_size) = if let Some(config) = config {
         let fb_size_bytes =
             (config.width as usize * config.height as usize * config.bpp as usize) / 8;
-        kernel_log!(
+        log::info!(
             "Found framebuffer config: {}x{} @ {:#x}, size: {}",
             config.width,
             config.height,
@@ -136,28 +189,28 @@ pub extern "efiapi" fn efi_main(
             Some(fb_size_bytes as u64),
         )
     } else {
-        kernel_log!("No framebuffer config found, using None");
+        log::info!("No framebuffer config found, using None");
         (None, None)
     };
 
     // Reinit page tables to kernel page tables with framebuffer size
-    kernel_log!("Reinit page tables to kernel page tables with framebuffer info");
+    log::info!("Reinit page tables to kernel page tables with framebuffer info");
     let physical_memory_offset = heap::reinit_page_table(kernel_phys_start, fb_addr, fb_size);
-    kernel_log!("Page table reinit completed successfully");
+    log::info!("Page table reinit completed successfully");
 
     // Set physical memory offset for process management
     crate::memory_management::set_physical_memory_offset(physical_memory_offset.as_u64() as usize);
 
-    kernel_log!(
+    log::info!(
         "Physical memory offset set to: 0x{:x}",
         physical_memory_offset.as_u64()
     );
 
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(*MEMORY_MAP.get().unwrap());
-    kernel_log!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());
+    log::info!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());
     let start_addr = if heap_phys_start.as_u64() < 0x1000 {
-        kernel_log!(
+        log::info!(
             "Kernel: ERROR - Invalid heap_phys_start, using fallback 0x{:x}",
             FALLBACK_HEAP_START_ADDR
         );
@@ -165,65 +218,144 @@ pub extern "efiapi" fn efi_main(
     } else {
         heap_phys_start
     };
+    // Debug log start_addr before allocation
+    log::info!("Kernel: start_addr before allocation=0x{:x}", start_addr.as_u64());
 
-    let heap_start = heap::allocate_heap_from_map(start_addr, heap::HEAP_SIZE);
-    kernel_log!("Kernel: heap_start=0x{:x}", heap_start.as_u64());
+    let heap_start = allocate_heap_from_map(start_addr, heap::HEAP_SIZE);
+    log::info!("Kernel: heap_start=0x{:x}", heap_start.as_u64());
+    log::info!("Kernel: About to call gdt::init...");
     let heap_start_after_gdt = gdt::init(heap_start);
-    kernel_log!(
-        "Kernel: heap_start_after_gdt=0x{:x}",
+    log::info!(
+        "Kernel: gdt::init returned heap_start_after_gdt=0x{:x}",
         heap_start_after_gdt.as_u64()
     );
-    kernel_log!("Kernel: GDT init done");
+    log::info!("Kernel: GDT init done");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: After gdt init in uefi_entry\n");
 
     // Initialize linked_list_allocator with the remaining memory
+    petroleum::serial::serial_log(format_args!("About to calculate heap memory usage...\n"));
     let gdt_mem_usage = heap_start_after_gdt - heap_start;
     let heap_size_remaining = heap::HEAP_SIZE - gdt_mem_usage as usize;
 
+    petroleum::serial::serial_log(format_args!("Test constant value=0x12345678\n"));
+    let test_val: u64 = 0x100000;
+    petroleum::serial::serial_log(format_args!("Test test_val=0x{:x}\n", test_val));
+
+    let heap_start_after_gdt_u64 = heap_start_after_gdt.as_u64();
+    let heap_start_u64 = heap_start.as_u64();
+
+    write_serial_bytes!(0x3F8, 0x3FD, b"heap_start_after_gdt_u64 captured successfully\n");
+    write_serial_bytes!(0x3F8, 0x3FD, b"heap_start_u64 captured successfully\n");
+
+    let gdt_mem_usage_val = heap_start_after_gdt_u64.saturating_sub(heap_start_u64);
+    write_serial_bytes!(0x3F8, 0x3FD, b"Subtraction completed\n");
+
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to format gdt_mem_usage\n");
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to format gdt_mem_usage...\n");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Before debug_log\n");
+    debug_log!("calculated gdt_mem_usage=0x{:x}", gdt_mem_usage_val);
+    write_serial_bytes!(0x3F8, 0x3FD, b"Debug log completed\n");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Formatting completed, allocating heap\n");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Formatting completed\n");
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to initialize linked_list_allocator\n");
+    debug_log!("Link alloc");
+    // petroleum::serial::serial_log(format_args!("About to initialize linked_list_allocator...\n"));
+
     use petroleum::page_table::ALLOCATOR;
+    // Use direct serial writes to avoid UEFI console hang
+    let mut serial_buf = [0u8; 128];
+    let addr_str = heap_start_after_gdt.as_u64();
+    let addr_str_len = format_addr_hex(addr_str, &mut serial_buf);
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to call ALLOCATOR.lock().init() with addr=0x");
+    write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..addr_str_len]);
+    let size_str = heap_size_remaining;
+    let size_str_len = format_size_dec(size_str, &mut serial_buf);
+    write_serial_bytes!(0x3F8, 0x3FD, b" size=");
+    write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..size_str_len]);
+    write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
+    // Add more detailed debug info before allocator init
+    write_serial_bytes!(0x3F8, 0x3FD, b"ALLOCATOR init: heap_start_after_gdt=0x");
+    write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..addr_str_len]);
+    let ptr_str = heap_start_after_gdt.as_mut_ptr::<u8>() as usize;
+    let ptr_str_len = format_addr_hex(ptr_str as u64, &mut serial_buf);
+    write_serial_bytes!(0x3F8, 0x3FD, b" ptr=0x");
+    write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..ptr_str_len]);
+    write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
     unsafe {
-        ALLOCATOR
-            .lock()
-            .init(heap_start_after_gdt.as_mut_ptr::<u8>(), heap_size_remaining);
+        write_serial_bytes!(0x3F8, 0x3FD, b"Calling ALLOCATOR.lock()...\n");
+        let mut allocator = ALLOCATOR.lock();
+        write_serial_bytes!(0x3F8, 0x3FD, b"ALLOCATOR.lock() succeeded\n");
+        let ptr_str_len = format_addr_hex(heap_start_after_gdt.as_mut_ptr::<u8>() as u64, &mut serial_buf);
+        write_serial_bytes!(0x3F8, 0x3FD, b"Before allocator.init() with ptr=0x");
+        write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..ptr_str_len]);
+        let size_str_len = format_size_dec(heap_size_remaining, &mut serial_buf);
+        write_serial_bytes!(0x3F8, 0x3FD, b" size=");
+        write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..size_str_len]);
+        write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        write_serial_bytes!(0x3F8, 0x3FD, b"Just before allocator.init() call\n");
+        write_serial_bytes!(0x3F8, 0x3FD, b"Calling allocator.init() with size=");
+        write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..size_str_len]);
+        write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        allocator.init(heap_start_after_gdt.as_mut_ptr::<u8>(), heap_size_remaining);
+        write_serial_bytes!(0x3F8, 0x3FD, b"allocator.init() completed successfully\n");
+        write_serial_bytes!(0x3F8, 0x3FD, b"Allocator initialized successfully\n");
     }
 
+    petroleum::serial::serial_log(format_args!("About to print final allocator message...\n"));
+    petroleum::serial::serial_log(format_args!("Linked list allocator initialized successfully\n"));
+    petroleum::serial::serial_log(format_args!("About to check heap_phys_start...\n"));
+
     if heap_phys_start.as_u64() < 0x1000 {
-        kernel_log!("Kernel: heap initialized with fallback");
+        petroleum::serial::serial_log(format_args!("Using fallback heap path...\n"));
+        log::info!("Kernel: heap initialized with fallback");
     } else {
-        kernel_log!("Kernel: gdt_mem_usage=0x{:x}", gdt_mem_usage);
-        kernel_log!("Kernel: heap initialized");
+        petroleum::serial::serial_log(format_args!("Using normal heap path...\n"));
+        log::info!("Kernel: gdt_mem_usage=0x{:x}", gdt_mem_usage);
+        write_serial_bytes!(0x3F8, 0x3FD, b"About to jump to interrupts init\n");
     }
 
     // Early serial log works now
-    kernel_log!("Kernel: basic init complete");
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to complete basic init\n");
+    petroleum::serial::serial_log(format_args!("About to log basic init complete...\n"));
+    log::info!("Kernel: basic init complete");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Basic init complete logged\n");
+    petroleum::serial::serial_log(format_args!("basic init complete logged successfully\n"));
+
+    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: About to init interrupts\n");
 
     // Common initialization for both UEFI and BIOS
     // Initialize IDT before enabling interrupts
     interrupts::init();
-    kernel_log!("Kernel: IDT init done");
+    log::info!("Kernel: IDT init done");
 
-    kernel_log!("Kernel: Jumping straight to graphics testing");
+    log::info!("Kernel: Jumping straight to graphics testing");
 
+    log::info!("About to call init_common");
     // Initialize interrupts and other components call init_common here
     crate::init::init_common();
+    log::info!("init_common completed");
 
     // Initialize graphics with framebuffer configuration
     if initialize_graphics_with_config(system_table) {
-        kernel_log!("Graphics initialized successfully");
+        log::info!("Graphics initialized successfully");
 
         // Initialize keyboard input driver
         crate::keyboard::init();
-        kernel_log!("Keyboard initialized");
+        log::info!("Keyboard initialized");
 
         // Start the shell as the main interface
-        kernel_log!("Starting shell...");
+        log::info!("Starting shell...");
         crate::shell::shell_main();
         // shell_main should never return in normal operation
 
-        kernel_log!("Shell exited unexpectedly, entering idle loop");
+        log::info!("Shell exited unexpectedly, entering idle loop");
     } else {
-        kernel_log!("Graphics initialization failed, entering idle loop");
+        log::info!("Graphics initialization failed, entering idle loop");
     }
 
+    log::info!("Entering idle loop (hlt_loop)");
     hlt_loop();
 }
 
@@ -313,7 +445,9 @@ pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
 /// Kernel-side fallback framebuffer detection when config table is not available
 /// Uses shared logic from petroleum crate
 pub fn kernel_fallback_framebuffer_detection() -> Option<FullereneFramebufferConfig> {
-    kernel_log!("Attempting kernel-side fallback framebuffer detection (bootloader config table not available)");
+    log::info!(
+        "Attempting kernel-side fallback framebuffer detection (bootloader config table not available)"
+    );
 
     // Call petroleum's consolidated QEMU framebuffer detection
     petroleum::detect_qemu_framebuffer(&petroleum::QEMU_CONFIGS)
@@ -328,18 +462,18 @@ pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str)
     let vga_backup = match create_vga_backup() {
         Some(backup) => backup,
         None => {
-            kernel_log!("Failed to allocate VGA backup buffer");
+            log::info!("Failed to allocate VGA backup buffer");
             return false;
         }
     };
 
-    kernel_log!("Initializing {} graphics mode...", source_name);
+    log::info!("Initializing {} graphics mode...", source_name);
     graphics::text::init(config);
 
     // Verify the framebuffer was initialized
     if let Some(fb_writer) = graphics::text::FRAMEBUFFER_UEFI.get() {
         let fb_info = fb_writer.lock();
-        kernel_log!(
+        log::info!(
             "{} framebuffer initialized successfully - width: {}, height: {}",
             source_name,
             fb_info.get_width(),
@@ -347,11 +481,11 @@ pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str)
         );
 
         // Test direct pixel write to verify access
-        kernel_log!("Testing {} framebuffer access...", source_name);
+        log::info!("Testing {} framebuffer access...", source_name);
         fb_writer.lock().put_pixel(100, 100, 0xFF0000);
-        kernel_log!("Direct {} pixel write test completed", source_name);
+        log::info!("Direct {} pixel write test completed", source_name);
     } else {
-        kernel_log!("ERROR: {} framebuffer initialization failed!", source_name);
+        log::info!("ERROR: {} framebuffer initialization failed!", source_name);
         // Restore VGA text buffer if graphics init failed
         restore_vga_text_buffer(&vga_backup);
         petroleum::graphics::init_vga_text_mode();
@@ -359,12 +493,12 @@ pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str)
         return false;
     }
 
-    kernel_log!(
+    log::info!(
         "{} graphics mode initialized, calling draw_os_desktop...",
         source_name
     );
     graphics::draw_os_desktop();
-    kernel_log!(
+    log::info!(
         "{} graphics desktop drawn - if you see this, draw_os_desktop completed",
         source_name
     );
@@ -402,20 +536,20 @@ fn restore_vga_text_buffer(buffer: &Box<[[u16; 80]; 25]>) {
 /// Returns true if graphics mode was successfully initialized and desktop drawn
 #[cfg(target_os = "uefi")]
 pub fn try_initialize_cirrus_graphics_mode() -> bool {
-    kernel_log!("Trying to initialize Cirrus graphics mode...");
+    log::info!("Trying to initialize Cirrus graphics mode...");
     // Check if Cirrus VGA device was detected
     if !petroleum::graphics::detect_cirrus_vga() {
-        kernel_log!("No Cirrus VGA device detected, cannot initialize graphics mode");
+        log::info!("No Cirrus VGA device detected, cannot initialize graphics mode");
         return false;
     }
 
-    kernel_log!("Cirrus VGA device detected, setting up graphics mode...");
+    log::info!("Cirrus VGA device detected, setting up graphics mode...");
     // Set up VGA mode 13h (320x200, 256 colors) for graphics
     petroleum::graphics::setup_cirrus_vga_mode();
 
     // VGA framebuffer configuration is handled by uefi_vga_config below
 
-    kernel_log!("Initializing VGA framebuffer writer...");
+    log::info!("Initializing VGA framebuffer writer...");
 
     // For UEFI target, we need to initialize VGA framebuffer in UEFI context
     // Create VGA framebuffer configuration for UEFI
@@ -434,19 +568,19 @@ pub fn try_initialize_cirrus_graphics_mode() -> bool {
     // Verify the framebuffer was initialized
     if let Some(fb_writer) = graphics::text::FRAMEBUFFER_UEFI.get() {
         let fb_info = &mut fb_writer.lock();
-        kernel_log!(
+        log::info!(
             "VGA framebuffer initialized successfully - width: {}, height: {}",
             fb_info.get_width(),
             fb_info.get_height()
         );
 
-        kernel_log!("Drawing desktop on VGA graphics mode...");
+        log::info!("Drawing desktop on VGA graphics mode...");
         graphics::draw_os_desktop();
-        kernel_log!("Desktop drawing completed - graphics mode should be visible");
+        log::info!("Desktop drawing completed - graphics mode should be visible");
         petroleum::serial::serial_log(format_args!("Desktop should be visible now!\n"));
         true
     } else {
-        kernel_log!("ERROR: VGA framebuffer initialization failed!");
+        log::info!("ERROR: VGA framebuffer initialization failed!");
         false
     }
 }
@@ -456,9 +590,9 @@ pub fn try_initialize_cirrus_graphics_mode() -> bool {
 #[cfg(target_os = "uefi")]
 pub fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
     // Check if framebuffer config is available from UEFI bootloader
-    kernel_log!("Checking framebuffer config from UEFI bootloader...");
+    log::info!("Checking framebuffer config from UEFI bootloader...");
     if let Some(fb_config) = crate::memory::find_framebuffer_config(system_table) {
-        kernel_log!(
+        log::info!(
             "Found framebuffer config: {}x{} @ {:#x}, stride: {}, pixel_format: {:?}",
             fb_config.width,
             fb_config.height,
@@ -469,11 +603,11 @@ pub fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
         return try_init_graphics(&fb_config, "UEFI custom");
     }
 
-    kernel_log!("No custom framebuffer config found, trying standard UEFI GOP...");
+    log::info!("No custom framebuffer config found, trying standard UEFI GOP...");
 
     // Try to find GOP (Graphics Output Protocol) from UEFI
     if let Some(gop_config) = find_gop_framebuffer(system_table) {
-        kernel_log!(
+        log::info!(
             "Found GOP framebuffer config: {}x{} @ {:#x}, stride: {}, pixel_format: {:?}",
             gop_config.width,
             gop_config.height,
@@ -484,10 +618,10 @@ pub fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
         return try_init_graphics(&gop_config, "UEFI GOP");
     }
 
-    kernel_log!("No standard graphics modes found, trying kernel-side fallback detection...");
+    log::info!("No standard graphics modes found, trying kernel-side fallback detection...");
     // Try kernel-side fallback framebuffer detection when bootloader config table installation hangs
     if let Some(fallback_config) = kernel_fallback_framebuffer_detection() {
-        kernel_log!(
+        log::info!(
             "Found kernel-detected framebuffer config: {}x{} @ {:#x}, stride: {}, pixel_format: {:?}",
             fallback_config.width,
             fallback_config.height,
@@ -498,7 +632,7 @@ pub fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
         return try_init_graphics(&fallback_config, "Kernel fallback");
     }
 
-    kernel_log!("No kernel fallback graphics modes found, trying Cirrus VGA fallback...");
+    log::info!("No kernel fallback graphics modes found, trying Cirrus VGA fallback...");
 
     // As a fallback, try Cirrus VGA graphics if the function exists
     try_initialize_cirrus_graphics_mode()

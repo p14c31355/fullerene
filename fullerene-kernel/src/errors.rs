@@ -67,7 +67,8 @@ impl From<crate::loader::LoadError> for SystemError {
             crate::loader::LoadError::OutOfMemory => SystemError::MemOutOfMemory,
             crate::loader::LoadError::AddressAlreadyMapped => SystemError::MappingFailed,
             crate::loader::LoadError::MappingFailed => SystemError::MappingFailed,
-            crate::loader::LoadError::NotExecutable | crate::loader::LoadError::UnsupportedArchitecture => SystemError::LoadFailed,
+            crate::loader::LoadError::NotExecutable
+            | crate::loader::LoadError::UnsupportedArchitecture => SystemError::LoadFailed,
         }
     }
 }

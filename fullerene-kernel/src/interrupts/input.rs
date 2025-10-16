@@ -65,7 +65,7 @@ macro_rules! define_input_interrupt_handler {
     };
 }
 
-/// Keyboard interrupt handler
+// Keyboard interrupt handler
 define_input_interrupt_handler!(keyboard_handler, 0x60, |scancode: u8| {
     use petroleum::lock_and_modify;
 
@@ -84,7 +84,7 @@ define_input_interrupt_handler!(keyboard_handler, 0x60, |scancode: u8| {
     crate::keyboard::handle_keyboard_scancode(scancode);
 });
 
-/// Mouse interrupt handler
+// Mouse interrupt handler
 define_input_interrupt_handler!(mouse_handler, 0x60, |byte: u8| {
     use petroleum::lock_and_modify;
 

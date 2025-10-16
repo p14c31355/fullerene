@@ -2,7 +2,6 @@
 //!
 //! This module defines the core traits used throughout the Fullerene kernel system.
 
-use crate::*;
 use petroleum::common::logging::{SystemError, SystemResult};
 use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
 
