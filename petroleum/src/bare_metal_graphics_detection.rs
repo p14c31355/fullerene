@@ -3,36 +3,7 @@ pub mod bare_metal_graphics_detection {
 
     use crate::serial::_print;
 
-    /// Helper function to test standard graphics modes
-    fn detect_standard_modes(device_type: &str, modes: &[(u32, u32, u32, u64)]) -> Option<crate::common::FullereneFramebufferConfig> {
-        for (width, height, bpp, addr) in modes.iter() {
-            let expected_fb_size = (*height * *width * bpp / 8) as u64;
-            _print(format_args!(
-                "[BM-GFX] Testing {}x{} mode at {:#x} (size: {}KB)\n",
-                width,
-                height,
-                addr,
-                expected_fb_size / 1024
-            ));
 
-            if *addr >= 0x100000 {
-                _print(format_args!(
-                    "[BM-GFX] {} framebuffer mode {}x{} appears valid\n",
-                    device_type, width, height
-                ));
-                return Some(crate::common::FullereneFramebufferConfig {
-                    address: *addr,
-                    width: *width,
-                    height: *height,
-                    pixel_format:
-                        crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-                    bpp: *bpp,
-                    stride: *width,
-                });
-            }
-        }
-        None
-    }
 
     /// Main entry point for bare-metal graphics detection
     pub fn detect_bare_metal_graphics() -> Option<crate::common::FullereneFramebufferConfig> {
@@ -134,7 +105,7 @@ pub mod bare_metal_graphics_detection {
             (640, 480, 32, fb_base_addr),
         ];
 
-        if let Some(config) = detect_standard_modes("virtio-gpu", &standard_modes) {
+        if let Some(config) = crate::detect_standard_modes("virtio-gpu", &standard_modes) {
             return Some(config);
         }
 
@@ -170,7 +141,7 @@ pub mod bare_metal_graphics_detection {
             (640, 480, 32, fb_base_addr),
         ];
 
-        if let Some(config) = detect_standard_modes("QXL", &standard_modes) {
+        if let Some(config) = crate::detect_standard_modes("QXL", &standard_modes) {
             return Some(config);
         }
 

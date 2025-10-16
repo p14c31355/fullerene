@@ -278,34 +278,48 @@ impl<'a> FramebufferInstaller<'a> {
         }
     }
 
-    fn clear_framebuffer(&self, config: &FullereneFramebufferConfig) -> Result<(), EfiStatus> {
-        serial::_print(format_args!(
-            "FramebufferInstaller::clear_framebuffer: addr=0x{:x}, {}x{}, bpp={}, stride={}\n",
-            config.address, config.width, config.height, config.bpp, config.stride
-        ));
-
-        let clear_size =
-            (config.height as u64 * config.stride as u64 * (config.bpp as u64 / 8)) as usize;
-
-        serial::_print(format_args!(
-            "FramebufferInstaller::clear_framebuffer: clearing {} bytes at {:#x}\n",
-            clear_size, config.address
-        ));
-
-        // Clear screen for clean state
+    fn clear_framebuffer(&self, config: &FullereneFramebufferConfig) {
         unsafe {
-            ptr::write_bytes(config.address as *mut u8, 0x00, clear_size);
+            ptr::write_bytes(
+                config.address as *mut u8,
+                0x00,
+                (config.height as u64 * config.stride as u64 * (config.bpp as u64 / 8)) as usize,
+            );
         }
-
-        serial::_print(format_args!(
-            "FramebufferInstaller::clear_framebuffer: clear completed\n"
-        ));
-        Ok(())
     }
 }
 
-/// Generic framebuffer buffer operations
-pub trait FramebufferOps<T> {
+/// Generic helper for detecting standard framebuffer modes
+pub fn detect_standard_modes(device_type: &str, modes: &[(u32, u32, u32, u64)]) -> Option<crate::common::FullereneFramebufferConfig> {
+    for (width, height, bpp, addr) in modes.iter() {
+        let expected_fb_size = (*height * *width * bpp / 8) as u64;
+        serial::_print(format_args!(
+            "[BM-GFX] Testing {}x{} mode at {:#x} (size: {}KB)\n",
+            width,
+            height,
+            addr,
+            expected_fb_size / 1024
+        ));
+
+        if *addr >= 0x100000 {
+            serial::_print(format_args!(
+                "[BM-GFX] {} framebuffer mode {}x{} appears valid\n",
+                device_type, width, height
+            ));
+            return Some(crate::common::FullereneFramebufferConfig {
+                address: *addr,
+                width: *width,
+                height: *height,
+                pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                bpp: *bpp,
+                stride: *width,
+            });
+        }
+    }
+    None
+}
+
+trait FramebufferOps<T> {
     unsafe fn scroll_up(&self, address: u64, stride: u32, height: u32, bg_color: T);
     unsafe fn clear(&self, address: u64, stride: u32, height: u32, bg_color: T);
 }
@@ -374,9 +388,41 @@ impl<'a> ConfigTableLogger<'a> {
                     serial::_print(format_args!("-"));
                 }
             }
-            serial::_print(format_args!(" }}\n"));
+            serial::_print(format_args!(" }}"));
+        }
+
+/// Generic helper for detecting standard framebuffer modes
+pub fn detect_standard_modes(device_type: &str, modes: &[(u32, u32, u32, u64)]) -> Option<crate::common::FullereneFramebufferConfig> {
+    for (width, height, bpp, addr) in modes.iter() {
+        let expected_fb_size = (*height * *width * bpp / 8) as u64;
+        serial::_print(format_args!(
+            "[BM-GFX] Testing {}x{} mode at {:#x} (size: {}KB)\n",
+            width,
+            height,
+            addr,
+            expected_fb_size / 1024
+        ));
+
+        if *addr >= 0x100000 {
+            serial::_print(format_args!(
+                "[BM-GFX] {} framebuffer mode {}x{} appears valid\n",
+                device_type, width, height
+            ));
+            return Some(crate::common::FullereneFramebufferConfig {
+                address: *addr,
+                width: *width,
+                height: *height,
+                pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                bpp: *bpp,
+                stride: *width,
+            });
         }
     }
+    None
+
+}
+
+}
 }
 
 /// Protocol availability tester
