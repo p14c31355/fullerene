@@ -54,7 +54,6 @@ mod tests_with_std {
 mod macro_tests {
     use crate::*;
     use crate::common::macros::*;
-    use crate::common::logging::SystemError;
 
     #[test]
     fn test_logging_macros() {

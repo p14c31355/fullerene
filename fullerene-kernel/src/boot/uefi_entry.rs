@@ -167,15 +167,15 @@ pub extern "efiapi" fn efi_main(
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(*MEMORY_MAP.get().unwrap());
     log::info!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());
-    let start_addr = if heap_phys_start.as_u64() < 0x1000 {
-        log::info!(
-            "Kernel: ERROR - Invalid heap_phys_start, using fallback 0x{:x}",
-            0x100000
-        );
-        PhysAddr::new(0x100000)
-    } else {
-        heap_phys_start
-    };
+        let start_addr = if heap_phys_start.as_u64() < 0x1000 {
+            log::info!(
+                "Kernel: ERROR - Invalid heap_phys_start, using fallback 0x{:x}",
+                petroleum::FALLBACK_HEAP_START_ADDR
+            );
+            PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR)
+        } else {
+            heap_phys_start
+        };
     // Debug log start_addr before allocation
     log::info!("Kernel: start_addr before allocation=0x{:x}", start_addr.as_u64());
 

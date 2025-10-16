@@ -4,6 +4,9 @@
 
 extern crate alloc;
 
+// Fallback heap start address constant for when no suitable memory is found
+pub const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
+
 pub mod apic;
 pub mod bare_metal_graphics_detection;
 pub mod bare_metal_pci;
@@ -390,39 +393,7 @@ impl<'a> ConfigTableLogger<'a> {
             }
             serial::_print(format_args!(" }}"));
         }
-
-/// Generic helper for detecting standard framebuffer modes
-pub fn detect_standard_modes(device_type: &str, modes: &[(u32, u32, u32, u64)]) -> Option<crate::common::FullereneFramebufferConfig> {
-    for (width, height, bpp, addr) in modes.iter() {
-        let expected_fb_size = (*height * *width * bpp / 8) as u64;
-        serial::_print(format_args!(
-            "[BM-GFX] Testing {}x{} mode at {:#x} (size: {}KB)\n",
-            width,
-            height,
-            addr,
-            expected_fb_size / 1024
-        ));
-
-        if *addr >= 0x100000 {
-            serial::_print(format_args!(
-                "[BM-GFX] {} framebuffer mode {}x{} appears valid\n",
-                device_type, width, height
-            ));
-            return Some(crate::common::FullereneFramebufferConfig {
-                address: *addr,
-                width: *width,
-                height: *height,
-                pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-                bpp: *bpp,
-                stride: *width,
-            });
-        }
     }
-    None
-
-}
-
-}
 }
 
 /// Protocol availability tester
