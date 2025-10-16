@@ -174,6 +174,7 @@ pub extern "efiapi" fn efi_main(
         heap_start_after_gdt.as_u64()
     );
     log::info!("Kernel: GDT init done");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: After gdt init in uefi_entry\n");
 
     // Initialize linked_list_allocator with the remaining memory
     petroleum::serial::serial_log(format_args!("About to calculate heap memory usage...\n"));
@@ -193,9 +194,13 @@ pub extern "efiapi" fn efi_main(
     let gdt_mem_usage_val = heap_start_after_gdt_u64.saturating_sub(heap_start_u64);
     petroleum::serial::serial_log(format_args!("Subtraction completed\n"));
 
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to format gdt_mem_usage\n");
     petroleum::serial::serial_log(format_args!("About to format gdt_mem_usage...\n"));
+    write_serial_bytes!(0x3F8, 0x3FD, b"Before core::fmt::write\n");
     let _ = core::fmt::write(&mut *petroleum::serial::SERIAL_PORT_WRITER.lock(), format_args!("calculated gdt_mem_usage=0x{:x}\n", gdt_mem_usage_val));
+    write_serial_bytes!(0x3F8, 0x3FD, b"Formatting completed, allocating heap\n");
     petroleum::serial::serial_log(format_args!("Formatting completed\n"));
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to initialize linked_list_allocator\n");
     petroleum::serial::serial_log(format_args!("About to initialize linked_list_allocator...\n"));
 
     use petroleum::page_table::ALLOCATOR;
@@ -208,6 +213,7 @@ pub extern "efiapi" fn efi_main(
         petroleum::serial::serial_log(format_args!("Before allocator.init() with ptr={:p}, size={}\n",
                                                 heap_start_after_gdt.as_mut_ptr::<u8>(), heap_size_remaining));
         allocator.init(heap_start_after_gdt.as_mut_ptr::<u8>(), heap_size_remaining);
+        write_serial_bytes!(0x3F8, 0x3FD, b"allocator.init() completed successfully\n");
         petroleum::serial::serial_log(format_args!("allocator.init() completed successfully\n"));
     }
 
@@ -221,13 +227,17 @@ pub extern "efiapi" fn efi_main(
     } else {
         petroleum::serial::serial_log(format_args!("Using normal heap path...\n"));
         log::info!("Kernel: gdt_mem_usage=0x{:x}", gdt_mem_usage);
-        log::info!("Kernel: heap initialized");
+        write_serial_bytes!(0x3F8, 0x3FD, b"About to jump to interrupts init\n");
     }
 
     // Early serial log works now
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to complete basic init\n");
     petroleum::serial::serial_log(format_args!("About to log basic init complete...\n"));
     log::info!("Kernel: basic init complete");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Basic init complete logged\n");
     petroleum::serial::serial_log(format_args!("basic init complete logged successfully\n"));
+
+    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: About to init interrupts\n");
 
     // Common initialization for both UEFI and BIOS
     // Initialize IDT before enabling interrupts
