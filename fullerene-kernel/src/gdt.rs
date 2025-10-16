@@ -80,13 +80,30 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
     petroleum::serial::serial_log(format_args!("GDT: GDT loaded\n"));
 
     unsafe {
-        petroleum::serial::serial_log(format_args!("About to set CS register...\n"));
-        CS::set_reg(*CODE_SELECTOR.get().unwrap());
-        petroleum::serial::serial_log(format_args!("GDT: CS set\n"));
-        petroleum::serial::serial_log(format_args!("About to load TSS...\n"));
-        load_tss(*TSS_SELECTOR.get().unwrap());
-        petroleum::serial::serial_log(format_args!("GDT: TSS loaded\n"));
+        #[cfg(not(target_os = "uefi"))]
+        {
+            petroleum::serial::serial_log(format_args!("About to set CS register (BIOS mode)...\n"));
+            CS::set_reg(*CODE_SELECTOR.get().unwrap());
+            petroleum::serial::serial_log(format_args!("GDT: CS set\n"));
+        }
+
+        #[cfg(target_os = "uefi")]
+        {
+            petroleum::serial::serial_log(format_args!("Skipping CS setting in UEFI mode\n"));
+        }
+
+        #[cfg(not(target_os = "uefi"))]
+        {
+            petroleum::serial::serial_log(format_args!("About to load TSS...\n"));
+            load_tss(*TSS_SELECTOR.get().unwrap());
+            petroleum::serial::serial_log(format_args!("GDT: TSS loaded\n"));
+        }
+        #[cfg(target_os = "uefi")]
+        {
+            petroleum::serial::serial_log(format_args!("Skipping TSS loading in UEFI mode\n"));
+        }
         debug_print_str("GDT: Loaded and segments set\n");
+
         // Set data segment registers to kernel data segment for proper I/O operations
         petroleum::serial::serial_log(format_args!("Setting data segment registers...\n"));
         if let Some(data_sel) = KERNEL_DATA_SELECTOR.get() {

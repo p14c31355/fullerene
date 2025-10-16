@@ -227,7 +227,7 @@ fn format_hex(writer: &mut impl core::fmt::Write, value: usize) -> core::fmt::Re
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     (&mut *SERIAL_PORT_WRITER.lock()).write_fmt(args).ok();
-    (&mut *UEFI_WRITER.lock()).write_fmt(args).ok();
+    // (&mut *UEFI_WRITER.lock()).write_fmt(args).ok(); // Temporarily disabled for debugging
 }
 
 /// Macro to reduce repetitive debug serial output

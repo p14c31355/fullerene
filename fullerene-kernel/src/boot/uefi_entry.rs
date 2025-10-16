@@ -56,7 +56,9 @@ pub extern "efiapi" fn efi_main(
     write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main entered.\n");
 
     // Initialize serial early for debug logging
+    log::info!("About to initialize serial port...");
     petroleum::serial::serial_init();
+    log::info!("Serial port initialized successfully");
 
     // Debug parameter values
     debug_log!(
@@ -76,7 +78,9 @@ pub extern "efiapi" fn efi_main(
     let system_table = unsafe { &*system_table };
 
     // Detect and initialize VGA graphics for Cirrus devices
+    petroleum::serial::serial_log(format_args!("Detecting and initializing VGA graphics...\n"));
     petroleum::graphics::detect_and_init_vga_graphics();
+    petroleum::serial::serial_log(format_args!("VGA graphics detection completed\n"));
 
     debug_log!("VGA setup done");
     log::info!("VGA text mode setup function returned");
@@ -164,6 +168,8 @@ pub extern "efiapi" fn efi_main(
     } else {
         heap_phys_start
     };
+    // Debug log start_addr before allocation
+    log::info!("Kernel: start_addr before allocation=0x{:x}", start_addr.as_u64());
 
     let heap_start = allocate_heap_from_map(start_addr, heap::HEAP_SIZE);
     log::info!("Kernel: heap_start=0x{:x}", heap_start.as_u64());
@@ -188,33 +194,113 @@ pub extern "efiapi" fn efi_main(
     let heap_start_after_gdt_u64 = heap_start_after_gdt.as_u64();
     let heap_start_u64 = heap_start.as_u64();
 
-    petroleum::serial::serial_log(format_args!("heap_start_after_gdt_u64 captured successfully\n"));
-    petroleum::serial::serial_log(format_args!("heap_start_u64 captured successfully\n"));
+    write_serial_bytes!(0x3F8, 0x3FD, b"heap_start_after_gdt_u64 captured successfully\n");
+    write_serial_bytes!(0x3F8, 0x3FD, b"heap_start_u64 captured successfully\n");
 
     let gdt_mem_usage_val = heap_start_after_gdt_u64.saturating_sub(heap_start_u64);
-    petroleum::serial::serial_log(format_args!("Subtraction completed\n"));
+    write_serial_bytes!(0x3F8, 0x3FD, b"Subtraction completed\n");
 
     write_serial_bytes!(0x3F8, 0x3FD, b"About to format gdt_mem_usage\n");
-    petroleum::serial::serial_log(format_args!("About to format gdt_mem_usage...\n"));
-    write_serial_bytes!(0x3F8, 0x3FD, b"Before core::fmt::write\n");
-    let _ = core::fmt::write(&mut *petroleum::serial::SERIAL_PORT_WRITER.lock(), format_args!("calculated gdt_mem_usage=0x{:x}\n", gdt_mem_usage_val));
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to format gdt_mem_usage...\n");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Before debug_log\n");
+    debug_log!("calculated gdt_mem_usage=0x{:x}", gdt_mem_usage_val);
+    write_serial_bytes!(0x3F8, 0x3FD, b"Debug log completed\n");
     write_serial_bytes!(0x3F8, 0x3FD, b"Formatting completed, allocating heap\n");
-    petroleum::serial::serial_log(format_args!("Formatting completed\n"));
+    write_serial_bytes!(0x3F8, 0x3FD, b"Formatting completed\n");
     write_serial_bytes!(0x3F8, 0x3FD, b"About to initialize linked_list_allocator\n");
-    petroleum::serial::serial_log(format_args!("About to initialize linked_list_allocator...\n"));
+    debug_log!("Link alloc");
+    // petroleum::serial::serial_log(format_args!("About to initialize linked_list_allocator...\n"));
 
     use petroleum::page_table::ALLOCATOR;
-    petroleum::serial::serial_log(format_args!("About to call ALLOCATOR.lock().init() with addr=0x{:x}, size=0x{:x}\n",
-                                              heap_start_after_gdt.as_u64(), heap_size_remaining));
+    // Use direct serial writes to avoid UEFI console hang
+    let mut serial_buf = [0u8; 128];
+    let addr_str = heap_start_after_gdt.as_u64();
+    let addr_str_len = format_addr_hex(addr_str, &mut serial_buf);
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to call ALLOCATOR.lock().init() with addr=0x");
+    write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..addr_str_len]);
+    let size_str = heap_size_remaining;
+    let size_str_len = format_size_dec(size_str, &mut serial_buf);
+    write_serial_bytes!(0x3F8, 0x3FD, b" size=");
+    write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..size_str_len]);
+    write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
+    // Add more detailed debug info before allocator init
+    write_serial_bytes!(0x3F8, 0x3FD, b"ALLOCATOR init: heap_start_after_gdt=0x");
+    write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..addr_str_len]);
+    let ptr_str = heap_start_after_gdt.as_mut_ptr::<u8>() as usize;
+    let ptr_str_len = format_addr_hex(ptr_str as u64, &mut serial_buf);
+    write_serial_bytes!(0x3F8, 0x3FD, b" ptr=0x");
+    write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..ptr_str_len]);
+    write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
     unsafe {
-        petroleum::serial::serial_log(format_args!("Calling ALLOCATOR.lock()...\n"));
+        write_serial_bytes!(0x3F8, 0x3FD, b"Calling ALLOCATOR.lock()...\n");
         let mut allocator = ALLOCATOR.lock();
-        petroleum::serial::serial_log(format_args!("ALLOCATOR.lock() succeeded\n"));
-        petroleum::serial::serial_log(format_args!("Before allocator.init() with ptr={:p}, size={}\n",
-                                                heap_start_after_gdt.as_mut_ptr::<u8>(), heap_size_remaining));
+        write_serial_bytes!(0x3F8, 0x3FD, b"ALLOCATOR.lock() succeeded\n");
+        let ptr_str_len = format_addr_hex(heap_start_after_gdt.as_mut_ptr::<u8>() as u64, &mut serial_buf);
+        write_serial_bytes!(0x3F8, 0x3FD, b"Before allocator.init() with ptr=0x");
+        write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..ptr_str_len]);
+        let size_str_len = format_size_dec(heap_size_remaining, &mut serial_buf);
+        write_serial_bytes!(0x3F8, 0x3FD, b" size=");
+        write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..size_str_len]);
+        write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        write_serial_bytes!(0x3F8, 0x3FD, b"Just before allocator.init() call\n");
+        write_serial_bytes!(0x3F8, 0x3FD, b"Calling allocator.init() with size=");
+        write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..size_str_len]);
+        write_serial_bytes!(0x3F8, 0x3FD, b"\n");
         allocator.init(heap_start_after_gdt.as_mut_ptr::<u8>(), heap_size_remaining);
         write_serial_bytes!(0x3F8, 0x3FD, b"allocator.init() completed successfully\n");
-        petroleum::serial::serial_log(format_args!("allocator.init() completed successfully\n"));
+        write_serial_bytes!(0x3F8, 0x3FD, b"Allocator initialized successfully\n");
+    }
+
+    fn format_addr_hex(value: u64, buf: &mut [u8]) -> usize {
+        format_hex(value, buf, 16)
+    }
+
+    fn format_size_dec(value: usize, buf: &mut [u8]) -> usize {
+        format_dec(value, buf)
+    }
+
+    fn format_hex(value: u64, buf: &mut [u8], max_digits: usize) -> usize {
+        let mut temp = value;
+        let mut i = 0;
+        let mut digit_buf = [0u8; 16];
+        if temp == 0 {
+            buf[0] = b'0';
+            return 1;
+        }
+        while temp > 0 && i < max_digits {
+            let digit = (temp % 16) as u8;
+            digit_buf[i] = if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) };
+            temp /= 16;
+            i += 1;
+        }
+        // Reverse
+        for j in 0..i {
+            buf[j] = digit_buf[i - 1 - j];
+        }
+        i
+    }
+
+    fn format_dec(value: usize, buf: &mut [u8]) -> usize {
+        let mut temp = value;
+        let mut i = 0;
+        let mut digit_buf = [0u8; 16];
+        if temp == 0 {
+            buf[0] = b'0';
+            return 1;
+        }
+        while temp > 0 && i < 16 {
+            let digit = (temp % 10) as u8;
+            digit_buf[i] = b'0' + digit;
+            temp /= 10;
+            i += 1;
+        }
+        // Reverse
+        for j in 0..i {
+            buf[j] = digit_buf[i - 1 - j];
+        }
+        i
     }
 
     petroleum::serial::serial_log(format_args!("About to print final allocator message...\n"));
@@ -269,6 +355,7 @@ pub extern "efiapi" fn efi_main(
         log::info!("Graphics initialization failed, entering idle loop");
     }
 
+    log::info!("Entering idle loop (hlt_loop)");
     hlt_loop();
 }
 

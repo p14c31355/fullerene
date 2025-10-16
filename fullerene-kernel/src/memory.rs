@@ -69,27 +69,18 @@ pub fn find_framebuffer_config(
 }
 
 pub fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> PhysAddr {
-    // Find the largest suitable memory region from EfiLoaderData or EfiConventionalMemory and use its physical start for heap
-    let mut largest_addr = None;
-    let mut largest_pages = 0u64;
+    // Find the lowest suitable memory region below 4GB from EfiConventionalMemory with sufficient size for heap
+    const HEAP_PAGES: u64 = 256; // approx 1MB for heap + structures
     for desc in descriptors {
-        if (desc.type_ == EfiMemoryType::EfiLoaderData
-            || desc.type_ == EfiMemoryType::EfiConventionalMemory)
-            && desc.number_of_pages >= 4
+        if desc.type_ == EfiMemoryType::EfiConventionalMemory
+            && desc.number_of_pages >= HEAP_PAGES
+            && desc.physical_start < 0x100000000 // below 4GB
         {
-            // at least 16KB
-            if desc.number_of_pages > largest_pages {
-                largest_pages = desc.number_of_pages;
-                largest_addr = Some(desc.physical_start);
-            }
+            return PhysAddr::new(desc.physical_start);
         }
     }
-    if let Some(addr) = largest_addr {
-        PhysAddr::new(addr)
-    } else {
-        // Fallback if no suitable memory found
-        PhysAddr::new(crate::boot::FALLBACK_HEAP_START_ADDR)
-    }
+    // Fallback if no suitable memory found
+    PhysAddr::new(crate::boot::FALLBACK_HEAP_START_ADDR)
 }
 
 pub fn setup_memory_maps(
