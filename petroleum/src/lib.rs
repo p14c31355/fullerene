@@ -8,6 +8,7 @@ pub mod apic;
 pub mod bare_metal_graphics_detection;
 pub mod bare_metal_pci;
 pub mod common;
+pub mod filesystem;
 pub mod graphics;
 pub mod graphics_alternatives;
 pub mod hardware;
