@@ -47,7 +47,6 @@ pub mod fs; // Basic filesystem
 pub mod keyboard; // Keyboard input driver
 pub mod loader; // Program loader
 
-pub mod macros; // Logging and utility macros
 pub mod memory_management; // Virtual memory management
 pub mod process; // Process management
 pub mod shell;
