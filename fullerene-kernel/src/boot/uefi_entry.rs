@@ -167,33 +167,67 @@ pub extern "efiapi" fn efi_main(
 
     let heap_start = allocate_heap_from_map(start_addr, heap::HEAP_SIZE);
     log::info!("Kernel: heap_start=0x{:x}", heap_start.as_u64());
+    log::info!("Kernel: About to call gdt::init...");
     let heap_start_after_gdt = gdt::init(heap_start);
     log::info!(
-        "Kernel: heap_start_after_gdt=0x{:x}",
+        "Kernel: gdt::init returned heap_start_after_gdt=0x{:x}",
         heap_start_after_gdt.as_u64()
     );
     log::info!("Kernel: GDT init done");
 
     // Initialize linked_list_allocator with the remaining memory
+    petroleum::serial::serial_log(format_args!("About to calculate heap memory usage...\n"));
     let gdt_mem_usage = heap_start_after_gdt - heap_start;
     let heap_size_remaining = heap::HEAP_SIZE - gdt_mem_usage as usize;
 
+    petroleum::serial::serial_log(format_args!("Test constant value=0x12345678\n"));
+    let test_val: u64 = 0x100000;
+    petroleum::serial::serial_log(format_args!("Test test_val=0x{:x}\n", test_val));
+
+    let heap_start_after_gdt_u64 = heap_start_after_gdt.as_u64();
+    let heap_start_u64 = heap_start.as_u64();
+
+    petroleum::serial::serial_log(format_args!("heap_start_after_gdt_u64 captured successfully\n"));
+    petroleum::serial::serial_log(format_args!("heap_start_u64 captured successfully\n"));
+
+    let gdt_mem_usage_val = heap_start_after_gdt_u64.saturating_sub(heap_start_u64);
+    petroleum::serial::serial_log(format_args!("Subtraction completed\n"));
+
+    petroleum::serial::serial_log(format_args!("About to format gdt_mem_usage...\n"));
+    let _ = core::fmt::write(&mut *petroleum::serial::SERIAL_PORT_WRITER.lock(), format_args!("calculated gdt_mem_usage=0x{:x}\n", gdt_mem_usage_val));
+    petroleum::serial::serial_log(format_args!("Formatting completed\n"));
+    petroleum::serial::serial_log(format_args!("About to initialize linked_list_allocator...\n"));
+
     use petroleum::page_table::ALLOCATOR;
+    petroleum::serial::serial_log(format_args!("About to call ALLOCATOR.lock().init() with addr=0x{:x}, size=0x{:x}\n",
+                                              heap_start_after_gdt.as_u64(), heap_size_remaining));
     unsafe {
-        ALLOCATOR
-            .lock()
-            .init(heap_start_after_gdt.as_mut_ptr::<u8>(), heap_size_remaining);
+        petroleum::serial::serial_log(format_args!("Calling ALLOCATOR.lock()...\n"));
+        let mut allocator = ALLOCATOR.lock();
+        petroleum::serial::serial_log(format_args!("ALLOCATOR.lock() succeeded\n"));
+        petroleum::serial::serial_log(format_args!("Before allocator.init() with ptr={:p}, size={}\n",
+                                                heap_start_after_gdt.as_mut_ptr::<u8>(), heap_size_remaining));
+        allocator.init(heap_start_after_gdt.as_mut_ptr::<u8>(), heap_size_remaining);
+        petroleum::serial::serial_log(format_args!("allocator.init() completed successfully\n"));
     }
 
+    petroleum::serial::serial_log(format_args!("About to print final allocator message...\n"));
+    petroleum::serial::serial_log(format_args!("Linked list allocator initialized successfully\n"));
+    petroleum::serial::serial_log(format_args!("About to check heap_phys_start...\n"));
+
     if heap_phys_start.as_u64() < 0x1000 {
+        petroleum::serial::serial_log(format_args!("Using fallback heap path...\n"));
         log::info!("Kernel: heap initialized with fallback");
     } else {
+        petroleum::serial::serial_log(format_args!("Using normal heap path...\n"));
         log::info!("Kernel: gdt_mem_usage=0x{:x}", gdt_mem_usage);
         log::info!("Kernel: heap initialized");
     }
 
     // Early serial log works now
+    petroleum::serial::serial_log(format_args!("About to log basic init complete...\n"));
     log::info!("Kernel: basic init complete");
+    petroleum::serial::serial_log(format_args!("basic init complete logged successfully\n"));
 
     // Common initialization for both UEFI and BIOS
     // Initialize IDT before enabling interrupts
