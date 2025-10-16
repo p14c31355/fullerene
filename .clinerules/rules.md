@@ -15,5 +15,5 @@
 
 - Consolidate all duplicated code between sub-crates into the `petroleum` sub-crate
 
-- Maximize the functionality of external crates outside of `uefi` to reduce lines of code
+- Maximize the functionality of external crates outside of `uefi` and `bootloader` to reduce lines of code
 
