@@ -212,7 +212,7 @@ pub extern "efiapi" fn efi_main(
     // Use direct serial writes to avoid UEFI console hang
     let mut serial_buf = [0u8; 128];
     let addr_str = heap_start_after_gdt.as_u64();
-    let addr_str_len = format_addr_hex(addr_str, &mut serial_buf);
+    let addr_str_len = petroleum::serial::format_hex_to_buffer(addr_str, &mut serial_buf, 16);
     write_serial_bytes!(
         0x3F8,
         0x3FD,
@@ -220,7 +220,7 @@ pub extern "efiapi" fn efi_main(
     );
     write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..addr_str_len]);
     let size_str = heap_size_remaining;
-    let size_str_len = format_size_dec(size_str, &mut serial_buf);
+    let size_str_len = petroleum::serial::format_dec_to_buffer(size_str, &mut serial_buf);
     write_serial_bytes!(0x3F8, 0x3FD, b" size=");
     write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..size_str_len]);
     write_serial_bytes!(0x3F8, 0x3FD, b"\n");
@@ -229,7 +229,7 @@ pub extern "efiapi" fn efi_main(
     write_serial_bytes!(0x3F8, 0x3FD, b"ALLOCATOR init: heap_start_after_gdt=0x");
     write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..addr_str_len]);
     let ptr_str = heap_start_after_gdt.as_mut_ptr::<u8>() as usize;
-    let ptr_str_len = format_addr_hex(ptr_str as u64, &mut serial_buf);
+    let ptr_str_len = petroleum::serial::format_hex_to_buffer(ptr_str as u64, &mut serial_buf, 16);
     write_serial_bytes!(0x3F8, 0x3FD, b" ptr=0x");
     write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..ptr_str_len]);
     write_serial_bytes!(0x3F8, 0x3FD, b"\n");
@@ -238,13 +238,14 @@ pub extern "efiapi" fn efi_main(
         write_serial_bytes!(0x3F8, 0x3FD, b"Calling ALLOCATOR.lock()...\n");
         let mut allocator = ALLOCATOR.lock();
         write_serial_bytes!(0x3F8, 0x3FD, b"ALLOCATOR.lock() succeeded\n");
-        let ptr_str_len = format_addr_hex(
+        let ptr_str_len = petroleum::serial::format_hex_to_buffer(
             heap_start_after_gdt.as_mut_ptr::<u8>() as u64,
             &mut serial_buf,
+            16
         );
         write_serial_bytes!(0x3F8, 0x3FD, b"Before allocator.init() with ptr=0x");
         write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..ptr_str_len]);
-        let size_str_len = format_size_dec(heap_size_remaining, &mut serial_buf);
+        let size_str_len = petroleum::serial::format_dec_to_buffer(heap_size_remaining, &mut serial_buf);
         write_serial_bytes!(0x3F8, 0x3FD, b" size=");
         write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..size_str_len]);
         write_serial_bytes!(0x3F8, 0x3FD, b"\n");
@@ -564,45 +565,4 @@ pub fn calculate_framebuffer_size(
         config.bpp
     );
     (Some(config.address), Some(size_bytes))
-}
-
-// Simple formatting functions for serial output
-fn format_addr_hex(value: u64, buf: &mut [u8]) -> usize {
-    const HEX_CHARS: &[u8] = b"0123456789abcdef";
-    let mut temp = value;
-    let mut len = 0;
-
-    // Handle 64-bit addresses (16 hex digits)
-    for _ in 0..16 {
-        let digit = (temp & 0xF) as usize;
-        buf[len] = HEX_CHARS[digit];
-        temp >>= 4;
-        len += 1;
-    }
-
-    // Reverse to get correct order
-    buf[..len].reverse();
-    len
-}
-
-fn format_size_dec(value: usize, buf: &mut [u8]) -> usize {
-    const DEC_CHARS: &[u8] = b"0123456789";
-    let mut temp = value;
-    let mut len = 0;
-
-    if temp == 0 {
-        buf[0] = b'0';
-        return 1;
-    }
-
-    while temp > 0 {
-        let digit = temp % 10;
-        buf[len] = DEC_CHARS[digit];
-        temp /= 10;
-        len += 1;
-    }
-
-    // Reverse to get correct order
-    buf[..len].reverse();
-    len
 }
