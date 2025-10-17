@@ -398,7 +398,7 @@ fn attach_iso_and_start_vm(
             }
         }
         Err(e) => {
-            log::info!("Error waiting for VBoxHeadless process: {}", e);
+            log::error!("waiting for VBoxHeadless process: {}", e);
         }
     }
 
