@@ -3,7 +3,7 @@
 //! This module provides process creation, scheduling, and context switching
 //! capabilities for user-space programs.
 
-use crate::PageTableHelper;
+use petroleum::page_table::PageTableHelper;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
