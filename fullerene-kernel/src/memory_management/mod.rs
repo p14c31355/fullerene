@@ -635,13 +635,9 @@ impl UnifiedMemoryManager {
     fn find_free_virtual_address(&self, size: usize) -> SystemResult<usize> {
         // Proper kernel virtual address space allocator
         // Track allocated regions to avoid overlaps and enable deallocation
-        use spin::Mutex;
-
-        static ALLOCATED_REGIONS: Mutex<alloc::collections::BTreeMap<usize, usize>> =
-            Mutex::new(alloc::collections::BTreeMap::new());
 
         let size_aligned = align_page!(size);
-        let mut regions = ALLOCATED_REGIONS.lock();
+        let mut regions = KERNEL_VIRTUAL_ALLOCATED_REGIONS.lock();
 
         // Kernel space starts at 0xFFFF_8000_0000_0000
         let mut current_addr = 0xFFFF_8000_0000_0000;
@@ -743,6 +739,9 @@ pub type ProcessPageTable = PageTableManager;
 
 // Global memory manager instance
 static MEMORY_MANAGER: Mutex<Option<UnifiedMemoryManager>> = Mutex::new(None);
+
+// Kernel virtual address space allocated regions tracker
+static KERNEL_VIRTUAL_ALLOCATED_REGIONS: Mutex<BTreeMap<usize, usize>> = Mutex::new(BTreeMap::new());
 
 /// Physical memory offset for virtual to physical address translation
 pub const PHYSICAL_MEMORY_OFFSET_BASE: usize = 0xFFFF_8000_0000_0000;
