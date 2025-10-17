@@ -3,37 +3,10 @@
 // Test process main function
 pub fn test_process_main() {
     // Simple test process that demonstrates system calls using proper syscall instruction
-    unsafe fn syscall(
-        num: u64,
-        arg1: u64,
-        arg2: u64,
-        arg3: u64,
-        arg4: u64,
-        arg5: u64,
-        arg6: u64,
-    ) -> u64 {
-        let result: u64;
-        unsafe {
-            core::arch::asm!(
-                "syscall",
-                in("rax") num,
-                in("rdi") arg1,
-                in("rsi") arg2,
-                in("rdx") arg3,
-                in("r10") arg4,
-                in("r8") arg5,
-                in("r9") arg6,
-                lateout("rax") result,
-                out("rcx") _, out("r11") _,
-            );
-        }
-        result
-    }
-
     // Write to stdout via syscall
     let message = b"Hello from test user process!\n";
     unsafe {
-        syscall(
+        petroleum::syscall(
             crate::syscall::SyscallNumber::Write as u64,
             1, // fd (stdout)
             message.as_ptr() as u64,
@@ -46,7 +19,7 @@ pub fn test_process_main() {
 
     // Get PID via syscall and print the actual PID
     unsafe {
-        let pid = syscall(
+        let pid = petroleum::syscall(
             crate::syscall::SyscallNumber::GetPid as u64,
             0,
             0,
@@ -56,7 +29,7 @@ pub fn test_process_main() {
             0,
         );
         let pid_msg = b"My PID is: ";
-        syscall(
+        petroleum::syscall(
             crate::syscall::SyscallNumber::Write as u64,
             1,
             pid_msg.as_ptr() as u64,
@@ -69,7 +42,7 @@ pub fn test_process_main() {
         // Convert PID to string and print it
         let pid_str = alloc::format!("{}\n", pid);
         let pid_bytes = pid_str.as_bytes();
-        syscall(
+        petroleum::syscall(
             crate::syscall::SyscallNumber::Write as u64,
             1,
             pid_bytes.as_ptr() as u64,
@@ -82,7 +55,7 @@ pub fn test_process_main() {
 
     // Yield a bit
     unsafe {
-        syscall(
+        petroleum::syscall(
             crate::syscall::SyscallNumber::Yield as u64,
             0,
             0,
@@ -91,7 +64,7 @@ pub fn test_process_main() {
             0,
             0,
         ); // SYS_YIELD
-        syscall(
+        petroleum::syscall(
             crate::syscall::SyscallNumber::Yield as u64,
             0,
             0,
@@ -104,6 +77,6 @@ pub fn test_process_main() {
 
     // Exit
     unsafe {
-        syscall(crate::syscall::SyscallNumber::Exit as u64, 0, 0, 0, 0, 0, 0); // SYS_EXIT
+        petroleum::syscall(crate::syscall::SyscallNumber::Exit as u64, 0, 0, 0, 0, 0, 0); // SYS_EXIT
     }
 }

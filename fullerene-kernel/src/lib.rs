@@ -53,6 +53,7 @@ pub mod memory_management; // Virtual memory management
 pub mod process; // Process management
 pub mod shell;
 pub mod syscall; // System calls // Shell/CLI interface
+pub mod test_process;
 
 // Submodules for modularizing main.rs
 pub mod boot;
