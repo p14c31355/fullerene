@@ -34,6 +34,9 @@ pub fn find_framebuffer_config(
     system_table: &EfiSystemTable,
 ) -> Option<&FullereneFramebufferConfig> {
     petroleum::serial::serial_log(format_args!(
+        "find_framebuffer_config: called with system_table=0x{:x}\n", system_table as *const _ as usize
+    ));
+    petroleum::serial::serial_log(format_args!(
         "find_framebuffer_config: System table has {} configuration table entries\n",
         system_table.number_of_table_entries
     ));
