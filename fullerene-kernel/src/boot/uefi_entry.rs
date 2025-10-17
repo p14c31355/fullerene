@@ -297,8 +297,15 @@ pub extern "efiapi" fn efi_main(
 
     // Initialize the global memory manager with the EFI memory map
     log::info!("Initializing global memory manager...");
-    crate::memory_management::init_memory_manager(MEMORY_MAP.get().unwrap());
-    log::info!("Global memory manager initialized");
+    if let Some(memory_map) = MEMORY_MAP.get() {
+        if let Err(e) = crate::memory_management::init_memory_manager(memory_map) {
+            log::critical!("Failed to initialize global memory manager: {:?}. Halting.", e);
+            petroleum::halt_loop();
+        }
+    } else {
+        log::critical!("MEMORY_MAP not initialized. Cannot initialize memory manager. Halting.");
+        petroleum::halt_loop();
+    }
 
     write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: About to init interrupts\n");
 
