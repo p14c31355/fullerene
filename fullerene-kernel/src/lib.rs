@@ -67,9 +67,10 @@ pub use initializer::{initialize_system, register_system_component};
 
 pub use traits::HardwareDevice;
 pub use traits::{
-    ErrorLogging, FrameAllocator, Initializable, MemoryManager, PageTableHelper,
+    ErrorLogging, FrameAllocator, Initializable, MemoryManager,
     ProcessMemoryManager, SyscallHandler,
 };
+pub use petroleum::page_table::PageTableHelper;
 
 // Re-export memory management types
 pub use memory_management::{FreeError, ProcessPageTable, UnifiedMemoryManager};

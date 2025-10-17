@@ -5,7 +5,7 @@
 
 use crate::memory_management::ProcessPageTable;
 use crate::process;
-use crate::traits::PageTableHelper;
+use crate::PageTableHelper;
 use core::ptr;
 use goblin::elf::program_header::{PF_W, PF_X, PT_LOAD};
 use x86_64::structures::paging::FrameAllocator;

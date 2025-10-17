@@ -15,20 +15,7 @@ use x86_64::{
     },
 };
 
-/// A dummy frame allocator for when we need to allocate pages for page tables
-pub struct DummyFrameAllocator {}
-
-impl DummyFrameAllocator {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-unsafe impl FrameAllocator<Size4KiB> for DummyFrameAllocator {
-    fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
-        None // For now, we don't support allocating new frames for page tables
-    }
-}
+use petroleum::page_table::DummyFrameAllocator;
 
 // PageTableFlags are already x86_64 PageTableFlags via alias, no conversion needed
 
@@ -125,7 +112,7 @@ impl PageTableManager {
 }
 
 // Implementation of PageTableHelper trait for PageTableManager
-impl PageTableHelper for PageTableManager {
+impl petroleum::page_table::PageTableHelper for PageTableManager {
     fn map_page(
         &mut self,
         virtual_addr: usize,

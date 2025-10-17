@@ -10,8 +10,8 @@ use spin::Mutex;
 use static_assertions::assert_eq_size;
 
 use crate::traits::{
-    ErrorLogging, FrameAllocator, Initializable, MemoryManager, PageTableHelper,
-    ProcessMemoryManager,
+    ErrorLogging, FrameAllocator, Initializable, MemoryManager,
+    ProcessMemoryManager, SyscallHandler,
 };
 use petroleum::common::logging::{SystemError, SystemResult};
 use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
