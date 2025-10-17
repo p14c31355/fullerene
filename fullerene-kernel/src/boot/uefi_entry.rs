@@ -9,6 +9,7 @@ use crate::{gdt, graphics, interrupts, memory};
 use alloc::boxed::Box;
 use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
+use petroleum::common::uefi::{efi_print, find_gop_framebuffer, write_vga_string};
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
 use petroleum::{allocate_heap_from_map, debug_log, write_serial_bytes};
 use x86_64::{PhysAddr, VirtAddr};
@@ -16,40 +17,6 @@ use x86_64::{PhysAddr, VirtAddr};
 use petroleum::graphics::{
     VGA_MODE13H_ADDRESS, VGA_MODE13H_BPP, VGA_MODE13H_HEIGHT, VGA_MODE13H_STRIDE, VGA_MODE13H_WIDTH,
 };
-
-/// Helper function to write a string to VGA buffer at specified row
-pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
-    for (i, &byte) in text.iter().enumerate() {
-        if i < 80 {
-            vga_buffer[row][i] = color | (byte as u16);
-        }
-    }
-}
-
-fn format_addr_hex(value: u64, buf: &mut [u8]) -> usize {
-    petroleum::serial::format_hex_to_buffer(value, buf, 16)
-}
-
-fn format_size_dec(value: usize, buf: &mut [u8]) -> usize {
-    petroleum::serial::format_dec_to_buffer(value, buf)
-}
-
-/// Helper function to print text to EFI console
-#[cfg(target_os = "uefi")]
-fn efi_print(system_table: &EfiSystemTable, text: &[u8]) {
-    unsafe {
-        if !(*system_table).con_out.is_null() {
-            let output_string = (*(*system_table).con_out).output_string;
-            let mut buffer = [0u16; 128];
-            let len = text.len().min(buffer.len() - 1);
-            for (i, &byte) in text.iter().take(len).enumerate() {
-                buffer[i] = byte as u16;
-            }
-            buffer[len] = 0;
-            let _ = output_string((*system_table).con_out, buffer.as_ptr());
-        }
-    }
-}
 
 #[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]
@@ -167,7 +134,8 @@ pub extern "efiapi" fn efi_main(
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(*MEMORY_MAP.get().unwrap());
     log::info!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());
-        let start_addr = if heap_phys_start.as_u64() < 0x1000 || heap_phys_start.as_u64() >= 0x0000800000000000 {
+    let start_addr =
+        if heap_phys_start.as_u64() < 0x1000 || heap_phys_start.as_u64() >= 0x0000800000000000 {
             log::info!(
                 "Kernel: ERROR - Invalid heap_phys_start, using fallback 0x{:x}",
                 petroleum::FALLBACK_HEAP_START_ADDR
@@ -177,7 +145,10 @@ pub extern "efiapi" fn efi_main(
             heap_phys_start
         };
     // Debug log start_addr before allocation
-    log::info!("Kernel: start_addr before allocation=0x{:x}", start_addr.as_u64());
+    log::info!(
+        "Kernel: start_addr before allocation=0x{:x}",
+        start_addr.as_u64()
+    );
 
     let heap_start = allocate_heap_from_map(start_addr, heap::HEAP_SIZE);
     log::info!("Kernel: heap_start=0x{:x}", heap_start.as_u64());
@@ -216,7 +187,11 @@ pub extern "efiapi" fn efi_main(
     let heap_start_after_gdt_u64 = heap_start_after_gdt.as_u64();
     let heap_start_u64 = heap_start.as_u64();
 
-    write_serial_bytes!(0x3F8, 0x3FD, b"heap_start_after_gdt_u64 captured successfully\n");
+    write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"heap_start_after_gdt_u64 captured successfully\n"
+    );
     write_serial_bytes!(0x3F8, 0x3FD, b"heap_start_u64 captured successfully\n");
 
     let gdt_mem_usage_val = heap_start_after_gdt_u64.saturating_sub(heap_start_u64);
@@ -237,11 +212,15 @@ pub extern "efiapi" fn efi_main(
     // Use direct serial writes to avoid UEFI console hang
     let mut serial_buf = [0u8; 128];
     let addr_str = heap_start_after_gdt.as_u64();
-    let addr_str_len = format_addr_hex(addr_str, &mut serial_buf);
-    write_serial_bytes!(0x3F8, 0x3FD, b"About to call ALLOCATOR.lock().init() with addr=0x");
+    let addr_str_len = petroleum::serial::format_hex_to_buffer(addr_str, &mut serial_buf, 16);
+    write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"About to call ALLOCATOR.lock().init() with addr=0x"
+    );
     write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..addr_str_len]);
     let size_str = heap_size_remaining;
-    let size_str_len = format_size_dec(size_str, &mut serial_buf);
+    let size_str_len = petroleum::serial::format_dec_to_buffer(size_str, &mut serial_buf);
     write_serial_bytes!(0x3F8, 0x3FD, b" size=");
     write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..size_str_len]);
     write_serial_bytes!(0x3F8, 0x3FD, b"\n");
@@ -250,7 +229,7 @@ pub extern "efiapi" fn efi_main(
     write_serial_bytes!(0x3F8, 0x3FD, b"ALLOCATOR init: heap_start_after_gdt=0x");
     write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..addr_str_len]);
     let ptr_str = heap_start_after_gdt.as_mut_ptr::<u8>() as usize;
-    let ptr_str_len = format_addr_hex(ptr_str as u64, &mut serial_buf);
+    let ptr_str_len = petroleum::serial::format_hex_to_buffer(ptr_str as u64, &mut serial_buf, 16);
     write_serial_bytes!(0x3F8, 0x3FD, b" ptr=0x");
     write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..ptr_str_len]);
     write_serial_bytes!(0x3F8, 0x3FD, b"\n");
@@ -259,10 +238,14 @@ pub extern "efiapi" fn efi_main(
         write_serial_bytes!(0x3F8, 0x3FD, b"Calling ALLOCATOR.lock()...\n");
         let mut allocator = ALLOCATOR.lock();
         write_serial_bytes!(0x3F8, 0x3FD, b"ALLOCATOR.lock() succeeded\n");
-        let ptr_str_len = format_addr_hex(heap_start_after_gdt.as_mut_ptr::<u8>() as u64, &mut serial_buf);
+        let ptr_str_len = petroleum::serial::format_hex_to_buffer(
+            heap_start_after_gdt.as_mut_ptr::<u8>() as u64,
+            &mut serial_buf,
+            16
+        );
         write_serial_bytes!(0x3F8, 0x3FD, b"Before allocator.init() with ptr=0x");
         write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..ptr_str_len]);
-        let size_str_len = format_size_dec(heap_size_remaining, &mut serial_buf);
+        let size_str_len = petroleum::serial::format_dec_to_buffer(heap_size_remaining, &mut serial_buf);
         write_serial_bytes!(0x3F8, 0x3FD, b" size=");
         write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..size_str_len]);
         write_serial_bytes!(0x3F8, 0x3FD, b"\n");
@@ -276,7 +259,9 @@ pub extern "efiapi" fn efi_main(
     }
 
     petroleum::serial::serial_log(format_args!("About to print final allocator message...\n"));
-    petroleum::serial::serial_log(format_args!("Linked list allocator initialized successfully\n"));
+    petroleum::serial::serial_log(format_args!(
+        "Linked list allocator initialized successfully\n"
+    ));
     petroleum::serial::serial_log(format_args!("About to check heap_phys_start...\n"));
 
     if heap_phys_start.as_u64() < 0x1000 {
@@ -295,11 +280,18 @@ pub extern "efiapi" fn efi_main(
     write_serial_bytes!(0x3F8, 0x3FD, b"Basic init complete logged\n");
     petroleum::serial::serial_log(format_args!("basic init complete logged successfully\n"));
 
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to init memory manager\n");
+
     // Initialize the global memory manager with the EFI memory map
     log::info!("Initializing global memory manager...");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Calling MEMORY_MAP.get()\n");
     if let Some(memory_map) = MEMORY_MAP.get() {
+        write_serial_bytes!(0x3F8, 0x3FD, b"MEMORY_MAP.get() succeeded\n");
         if let Err(e) = crate::memory_management::init_memory_manager(memory_map) {
-            log::error!("Failed to initialize global memory manager: {:?}. Halting.", e);
+            log::error!(
+                "Failed to initialize global memory manager: {:?}. Halting.",
+                e
+            );
             petroleum::halt_loop();
         }
     } else {
@@ -322,8 +314,17 @@ pub extern "efiapi" fn efi_main(
     log::info!("init_common completed");
 
     // Initialize graphics with framebuffer configuration
-    if initialize_graphics_with_config(system_table) {
+    log::info!("Initialize graphics with framebuffer configuration");
+    let success = initialize_graphics_with_config(system_table);
+    log::info!("Graphics initialization result: {}", success);
+
+    if success {
         log::info!("Graphics initialized successfully");
+
+        // Now enable interrupts, after graphics setup
+        log::info!("Enabling interrupts...");
+        x86_64::instructions::interrupts::enable();
+        log::info!("Interrupts enabled");
 
         // Initialize keyboard input driver
         crate::keyboard::init();
@@ -336,94 +337,12 @@ pub extern "efiapi" fn efi_main(
 
         log::info!("Shell exited unexpectedly, entering idle loop");
     } else {
-        log::info!("Graphics initialization failed, entering idle loop");
+        log::info!("Graphics initialization failed, enabling interrupts anyway for debugging");
+        x86_64::instructions::interrupts::enable();
     }
 
-    log::info!("Entering idle loop (hlt_loop)");
+    // In case we reach here (shell returned or graphics failed), enter idle loop
     petroleum::halt_loop();
-}
-
-pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
-    use core::ptr;
-    use petroleum::common::{EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiBootServices};
-
-    petroleum::serial::serial_log(format_args!(
-        "find_gop_framebuffer: Looking for GOP protocol\n"
-    ));
-
-    if system_table.boot_services.is_null() {
-        petroleum::serial::serial_log(format_args!(
-            "find_gop_framebuffer: Boot services is null\n"
-        ));
-        return None;
-    }
-
-    let boot_services = unsafe { &*system_table.boot_services };
-
-    // Use locate_protocol to find GOP (simpler than locate_handle)
-    let mut gop_handle: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
-    let status = (boot_services.locate_protocol)(
-        EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
-        core::ptr::null_mut(),
-        core::ptr::addr_of_mut!(gop_handle) as *mut *mut c_void,
-    );
-
-    if status != 0 {
-        petroleum::serial::serial_log(format_args!(
-            "find_gop_framebuffer: locate_protocol failed with status 0x{:x}\n",
-            status
-        ));
-        return None;
-    }
-
-    if gop_handle.is_null() {
-        petroleum::serial::serial_log(format_args!("find_gop_framebuffer: GOP handle is null\n"));
-        return None;
-    }
-
-    let gop = unsafe { &*gop_handle };
-    if gop.mode.is_null() {
-        petroleum::serial::serial_log(format_args!("find_gop_framebuffer: GOP mode is null\n"));
-        return None;
-    }
-
-    let gop_mode = unsafe { &*gop.mode };
-    let address = gop_mode.frame_buffer_base;
-
-    if address == 0 {
-        petroleum::serial::serial_log(format_args!(
-            "find_gop_framebuffer: Framebuffer base is 0\n"
-        ));
-        return None;
-    }
-
-    // Get current mode info - we already have the mode info from gop_mode.info
-    if !gop_mode.info.is_null() {
-        let mode_info = unsafe { &*gop_mode.info };
-
-        petroleum::serial::serial_log(format_args!(
-            "find_gop_framebuffer: Found GOP framebuffer {}x{} @ 0x{:x}, stride: {}, format: {:?}\n",
-            mode_info.horizontal_resolution,
-            mode_info.vertical_resolution,
-            address,
-            mode_info.pixels_per_scan_line,
-            mode_info.pixel_format
-        ));
-
-        Some(FullereneFramebufferConfig {
-            address,
-            width: mode_info.horizontal_resolution,
-            height: mode_info.vertical_resolution,
-            pixel_format: mode_info.pixel_format,
-            bpp: petroleum::common::get_bpp_from_pixel_format(mode_info.pixel_format),
-            stride: mode_info.pixels_per_scan_line,
-        })
-    } else {
-        petroleum::serial::serial_log(format_args!(
-            "find_gop_framebuffer: GOP mode info is null\n"
-        ));
-        None
-    }
 }
 
 /// Kernel-side fallback framebuffer detection when config table is not available

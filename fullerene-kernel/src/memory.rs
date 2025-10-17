@@ -72,7 +72,8 @@ pub fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> PhysAddr {
     for desc in descriptors {
         if desc.type_ == EfiMemoryType::EfiConventionalMemory
             && desc.number_of_pages >= HEAP_PAGES
-            && desc.physical_start < 0x100000000 // below 4GB
+            && desc.physical_start < 0x100000000
+        // below 4GB
         {
             return PhysAddr::new(desc.physical_start);
         }

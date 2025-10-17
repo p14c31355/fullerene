@@ -3,7 +3,7 @@
 
 //! User space system call wrappers for toluene
 
-use crate::{write, exit, getpid, sleep};
+use crate::{exit, getpid, sleep, write};
 
 #[no_mangle]
 pub extern "C" fn main() -> i32 {

@@ -3,8 +3,6 @@ pub mod bare_metal_graphics_detection {
 
     use crate::serial::_print;
 
-
-
     /// Main entry point for bare-metal graphics detection
     pub fn detect_bare_metal_graphics() -> Option<crate::common::FullereneFramebufferConfig> {
         _print(format_args!(

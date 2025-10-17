@@ -159,16 +159,34 @@ fn syscall_write(fd: core::ffi::c_int, buffer: *const u8, count: usize) -> Sysca
 }
 
 /// Open system call
-fn syscall_open(filename: *const u8, _flags: core::ffi::c_int, _mode: u32) -> SyscallResult {
+fn syscall_open(filename: *const u8, flags: core::ffi::c_int, _mode: u32) -> SyscallResult {
     // Safely copy the filename from user space
     let filename_str = copy_user_string(filename, 256)?;
 
-    // TODO: Use flags to determine open mode (read, write, create, etc.)
-    // For now, attempt to open existing file
-    match crate::fs::open_file(&filename_str) {
-        Ok(fd) => Ok(fd as u64),
-        Err(crate::fs::FsError::FileNotFound) => Err(SyscallError::FileNotFound),
-        Err(_) => Err(SyscallError::PermissionDenied),
+    // Interpret flags (basic POSIX-style flags)
+    // O_RDONLY = 0, O_WRONLY = 1, O_RDWR = 2, O_CREAT = 0x40, O_TRUNC = 0x200, O_APPEND = 0x400
+    let read_only = flags & 0x3 == 0; // O_RDONLY
+    let write_only = flags & 0x3 == 1; // O_WRONLY
+    let read_write = flags & 0x3 == 2; // O_RDWR
+    let create = flags & 0x40 != 0; // O_CREAT
+    let truncate = flags & 0x200 != 0; // O_TRUNC
+    let append = flags & 0x400 != 0; // O_APPEND
+
+    // For now, we only support reading existing files
+    // Extended implementation would need fs module support for different modes
+    if create || truncate || append || write_only || read_write {
+        // Not implemented yet - return permission denied for unsupported flags
+        return Err(SyscallError::PermissionDenied);
+    }
+
+    if read_only {
+        match crate::fs::open_file(&filename_str) {
+            Ok(fd) => Ok(fd as u64),
+            Err(crate::fs::FsError::FileNotFound) => Err(SyscallError::FileNotFound),
+            Err(_) => Err(SyscallError::PermissionDenied),
+        }
+    } else {
+        Err(SyscallError::PermissionDenied)
     }
 }
 

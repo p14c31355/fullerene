@@ -63,6 +63,8 @@ lazy_static! {
 pub fn init() {
     petroleum::serial::serial_log(format_args!("About to load IDT...\n"));
     IDT.load();
-    petroleum::serial::serial_log(format_args!("IDT.load() completed, about to log completion...\n"));
+    petroleum::serial::serial_log(format_args!(
+        "IDT.load() completed, about to log completion...\n"
+    ));
     petroleum::serial::serial_log(format_args!("IDT loaded with exception handlers.\n"));
 }

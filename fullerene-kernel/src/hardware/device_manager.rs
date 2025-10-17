@@ -278,7 +278,7 @@ mod tests {
         }
     }
 
-// ErrorLogging impl for MockDevice removed - use petroleum::ERROR_LOGGER instead
+    // ErrorLogging impl for MockDevice removed - use petroleum::ERROR_LOGGER instead
 
     impl HardwareDevice for MockDevice {
         fn device_name(&self) -> &'static str {

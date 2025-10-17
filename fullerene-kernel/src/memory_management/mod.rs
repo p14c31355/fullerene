@@ -296,10 +296,7 @@ impl MemoryManager for UnifiedMemoryManager {
 // Implementation of ProcessMemoryManager trait
 impl ProcessMemoryManager for UnifiedMemoryManager {
     fn create_address_space(&mut self, process_id: usize) -> SystemResult<()> {
-        if !self.initialized {
-            return Err(SystemError::InternalError);
-        }
-
+        // Allow creation during initialization phase
         let process_manager = ProcessMemoryManagerImpl::new(process_id);
         self.process_managers.insert(process_id, process_manager);
 
@@ -636,17 +633,32 @@ impl ErrorLogging for UnifiedMemoryManager {
 // Helper methods for UnifiedMemoryManager
 impl UnifiedMemoryManager {
     fn find_free_virtual_address(&self, size: usize) -> SystemResult<usize> {
-        // TODO: Implement a proper kernel virtual address space allocator.
-        // For now, using a simple bump allocator starting from kernel space base
+        // Proper kernel virtual address space allocator
+        // Track allocated regions to avoid overlaps and enable deallocation
 
-        // Use a static counter as a simple bump allocator
-        static mut KERNEL_VIRTUAL_BUMP: usize = 0xFFFF_8000_0000_0000;
+        let size_aligned = align_page!(size);
+        let mut regions = KERNEL_VIRTUAL_ALLOCATED_REGIONS.lock();
 
-        unsafe {
-            let addr = KERNEL_VIRTUAL_BUMP;
-            KERNEL_VIRTUAL_BUMP += size;
-            Ok(addr)
+        // Kernel space starts at 0xFFFF_8000_0000_0000
+        let mut current_addr = 0xFFFF_8000_0000_0000;
+
+        // Find a free gap large enough for the allocation
+        for (&start, &size) in regions.iter() {
+            let end = start + size;
+            if current_addr + size_aligned <= start {
+                // Found a gap
+                break;
+            }
+            current_addr = end;
         }
+
+        // Align to page boundary
+        current_addr = align_page!(current_addr);
+
+        // Record the allocation
+        regions.insert(current_addr, size_aligned);
+
+        Ok(current_addr)
     }
 
     /// Copy data from user space to kernel space
@@ -728,6 +740,9 @@ pub type ProcessPageTable = PageTableManager;
 // Global memory manager instance
 static MEMORY_MANAGER: Mutex<Option<UnifiedMemoryManager>> = Mutex::new(None);
 
+// Kernel virtual address space allocated regions tracker
+static KERNEL_VIRTUAL_ALLOCATED_REGIONS: Mutex<BTreeMap<usize, usize>> = Mutex::new(BTreeMap::new());
+
 /// Physical memory offset for virtual to physical address translation
 pub const PHYSICAL_MEMORY_OFFSET_BASE: usize = 0xFFFF_8000_0000_0000;
 
@@ -759,8 +774,33 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
         .allocate_frame()
         .map_err(|_| SystemError::FrameAllocationFailed)?;
 
+    // Debug: log the allocation result
+    log::info!("Allocated page table frame: 0x{:x}", pml4_frame);
+
     // Zero the allocated page table frame to ensure it's a valid page table
-    let new_table_virt = physical_to_virtual(pml4_frame) as *mut u64;
+    let physical_offset = get_physical_memory_offset();
+    let new_table_virt_raw = physical_to_virtual(pml4_frame);
+    let new_table_virt = new_table_virt_raw as *mut u64;
+
+    // Debug: log the conversion
+    log::info!(
+        "Physical offset: 0x{:x}, virtual addr: 0x{:x}",
+        physical_offset,
+        new_table_virt_raw
+    );
+
+    // Debug: check if the address is valid
+    if new_table_virt.is_null()
+        || (new_table_virt as usize) < physical_offset
+        || (new_table_virt as usize) % 8 != 0
+    {
+        log::error!(
+            "Invalid page table virtual address: 0x{:x}",
+            new_table_virt as usize
+        );
+        return Err(SystemError::InternalError);
+    }
+
     unsafe {
         core::slice::from_raw_parts_mut(new_table_virt, 512).fill(0);
     }

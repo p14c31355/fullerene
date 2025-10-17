@@ -363,3 +363,82 @@ pub fn get_bpp_from_pixel_format(pixel_format: EfiGraphicsPixelFormat) -> u32 {
         _ => 0,
     }
 }
+
+/// Helper function to print text to EFI console
+pub fn efi_print(system_table: &EfiSystemTable, text: &[u8]) {
+    unsafe {
+        if !(*system_table).con_out.is_null() {
+            let output_string = (*(*system_table).con_out).output_string;
+            let mut buffer = [0u16; 128];
+            let len = text.len().min(buffer.len() - 1);
+            for (i, &byte) in text.iter().take(len).enumerate() {
+                buffer[i] = byte as u16;
+            }
+            buffer[len] = 0;
+            let _ = output_string((*system_table).con_out, buffer.as_ptr());
+        }
+    }
+}
+
+/// Helper function to write a string to VGA buffer at specified row
+pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
+    for (i, &byte) in text.iter().enumerate() {
+        if i < 80 {
+            vga_buffer[row][i] = color | (byte as u16);
+        }
+    }
+}
+
+pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
+    use core::ptr;
+
+    if system_table.boot_services.is_null() {
+        return None;
+    }
+
+    let boot_services = unsafe { &*system_table.boot_services };
+
+    // Use locate_protocol to find GOP (simpler than locate_handle)
+    let mut gop_handle: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
+    let status = (boot_services.locate_protocol)(
+        EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
+        core::ptr::null_mut(),
+        core::ptr::addr_of_mut!(gop_handle) as *mut *mut c_void,
+    );
+
+    if status != 0 {
+        return None;
+    }
+
+    if gop_handle.is_null() {
+        return None;
+    }
+
+    let gop = unsafe { &*gop_handle };
+    if gop.mode.is_null() {
+        return None;
+    }
+
+    let gop_mode = unsafe { &*gop.mode };
+    let address = gop_mode.frame_buffer_base;
+
+    if address == 0 {
+        return None;
+    }
+
+    // Get current mode info
+    if !gop_mode.info.is_null() {
+        let mode_info = unsafe { &*gop_mode.info };
+
+        Some(FullereneFramebufferConfig {
+            address,
+            width: mode_info.horizontal_resolution,
+            height: mode_info.vertical_resolution,
+            pixel_format: mode_info.pixel_format,
+            bpp: get_bpp_from_pixel_format(mode_info.pixel_format),
+            stride: mode_info.pixels_per_scan_line,
+        })
+    } else {
+        None
+    }
+}

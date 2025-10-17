@@ -6,6 +6,7 @@
 // Re-export from petroleum for backward compatibility
 pub use petroleum::common::logging::{SystemError, SystemResult};
 
+// Explicit From implementations
 impl From<crate::syscall::interface::SyscallError> for SystemError {
     fn from(error: crate::syscall::interface::SyscallError) -> Self {
         match error {

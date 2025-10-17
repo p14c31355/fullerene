@@ -36,9 +36,10 @@ pub fn init_common() {
     write_serial_bytes!(0x3F8, 0x3FD, b"init_common: Loader init done\n");
     log::info!("Kernel: Program loader initialized");
 
-
-
-    let test_pid = crate::process::create_process("test_process", VirtAddr::new(crate::test_process::test_process_main as usize as u64));
+    let test_pid = crate::process::create_process(
+        "test_process",
+        VirtAddr::new(crate::test_process::test_process_main as usize as u64),
+    );
 
     log::info!("Kernel: Created test process with PID {}", test_pid);
 

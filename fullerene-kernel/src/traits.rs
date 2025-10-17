@@ -39,6 +39,10 @@ pub trait Initializable {
     fn init(&mut self) -> SystemResult<()>;
     fn name(&self) -> &'static str;
     fn priority(&self) -> i32;
+    fn dependencies(&self) -> &[&'static str] {
+        // Default: no dependencies
+        &[]
+    }
 }
 
 pub trait ErrorLogging {

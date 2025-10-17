@@ -94,7 +94,7 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
             // Set data segment registers to kernel data segment for proper I/O operations
             petroleum::serial::serial_log(format_args!("Setting data segment registers...\n"));
             if let Some(data_sel) = KERNEL_DATA_SELECTOR.get() {
-                use x86_64::registers::segmentation::{DS, SS, ES, FS, GS};
+                use x86_64::registers::segmentation::{DS, ES, FS, GS, SS};
                 DS::set_reg(*data_sel);
                 SS::set_reg(*data_sel);
                 ES::set_reg(*data_sel);
@@ -107,7 +107,9 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
     #[cfg(target_os = "uefi")]
     {
         // Skip GDT reload and TSS loading in UEFI mode to avoid stack pointer corruption
-        petroleum::serial::serial_log(format_args!("Skipping GDT reload and TSS loading in UEFI mode\n"));
+        petroleum::serial::serial_log(format_args!(
+            "Skipping GDT reload and TSS loading in UEFI mode\n"
+        ));
     }
 
     // Mark as initialized

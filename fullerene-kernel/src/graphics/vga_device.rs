@@ -79,32 +79,6 @@ impl TextBufferOperations for VgaBuffer {
             }
         }
     }
-
-    fn scroll_up(&mut self) {
-        if let Some(buffer) = self.get_buffer() {
-            for row in 1..VGA_HEIGHT {
-                for col in 0..VGA_WIDTH {
-                    buffer[row - 1][col] = buffer[row][col];
-                }
-            }
-            self.clear_row(VGA_HEIGHT - 1);
-        }
-    }
-
-    fn clear_row(&mut self, row: usize) {
-        if self.enabled {
-            let color_code = self.color_code;
-            if let Some(buffer) = self.get_buffer() {
-                let blank = ScreenChar {
-                    ascii_character: b' ',
-                    color_code,
-                };
-                for col in 0..VGA_WIDTH {
-                    buffer[row][col] = blank;
-                }
-            }
-        }
-    }
 }
 
 /// VGA text mode device implementation
@@ -139,7 +113,6 @@ impl Initializable for VgaDevice {
     fn priority(&self) -> i32 {
         10 // High priority for display device
     }
-
 }
 
 impl ErrorLogging for VgaDevice {
@@ -187,21 +160,7 @@ impl HardwareDevice for VgaDevice {
 
     fn reset(&mut self) -> SystemResult<()> {
         if self.buffer.enabled {
-            // Clear the entire buffer
-            let color_code = self.buffer.color_code;
-            if let Some(buffer) = self.buffer.get_buffer() {
-                for row in 0..VGA_HEIGHT {
-                    let blank = ScreenChar {
-                        ascii_character: b' ',
-                        color_code,
-                    };
-                    for col in 0..VGA_WIDTH {
-                        buffer[row][col] = blank;
-                    }
-                }
-            }
-            self.buffer.cursor_row = 0;
-            self.buffer.cursor_col = 0;
+            self.buffer.clear_screen();
         }
         log::info!("VGA device reset");
         Ok(())

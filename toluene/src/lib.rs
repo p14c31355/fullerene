@@ -1,4 +1,3 @@
-
 /// Simple write syscall wrapper
 pub fn write(fd: i32, buf: &[u8]) -> i64 {
     unsafe {
@@ -17,7 +16,15 @@ pub fn write(fd: i32, buf: &[u8]) -> i64 {
 /// Simple exit syscall wrapper
 pub fn exit(code: i32) -> ! {
     unsafe {
-        petroleum::syscall(petroleum::SyscallNumber::Exit as u64, code as u64, 0, 0, 0, 0, 0);
+        petroleum::syscall(
+            petroleum::SyscallNumber::Exit as u64,
+            code as u64,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
     }
     loop {} // unreachable, but to make ! return type
 }

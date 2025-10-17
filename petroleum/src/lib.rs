@@ -20,17 +20,17 @@ pub mod serial;
 pub mod uefi_helpers;
 pub use apic::{IoApic, IoApicRedirectionEntry, init_io_apic};
 // Macros with #[macro_export] are automatically available at root, no need to re-export
+pub use common::logging::{SystemError, SystemResult};
+pub use common::syscall::*;
 pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 pub use graphics::{
     Color, ColorCode, HardwarePorts, ScreenChar, TextBufferOperations, VgaPortOps,
-    init_vga_graphics,
     color::{self, *},
+    init_vga_graphics,
 };
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
 pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 pub use uefi_helpers::handle_panic;
-pub use common::logging::{SystemError, SystemResult};
-pub use common::syscall::*;
 
 // Heap allocation exports
 pub use page_table::ALLOCATOR;
@@ -295,7 +295,10 @@ impl<'a> FramebufferInstaller<'a> {
 }
 
 /// Generic helper for detecting standard framebuffer modes
-pub fn detect_standard_modes(device_type: &str, modes: &[(u32, u32, u32, u64)]) -> Option<crate::common::FullereneFramebufferConfig> {
+pub fn detect_standard_modes(
+    device_type: &str,
+    modes: &[(u32, u32, u32, u64)],
+) -> Option<crate::common::FullereneFramebufferConfig> {
     for (width, height, bpp, addr) in modes.iter() {
         let expected_fb_size = (*height * *width * bpp / 8) as u64;
         serial::_print(format_args!(
@@ -315,7 +318,8 @@ pub fn detect_standard_modes(device_type: &str, modes: &[(u32, u32, u32, u64)]) 
                 address: *addr,
                 width: *width,
                 height: *height,
-                pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                pixel_format:
+                    crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                 bpp: *bpp,
                 stride: *width,
             });

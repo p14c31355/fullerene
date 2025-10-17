@@ -60,7 +60,6 @@ pub mod boot;
 pub mod init;
 pub mod memory;
 
-
 // Re-export key types and functions from submodules for convenience
 pub use initializer::{initialize_system, register_system_component};
 

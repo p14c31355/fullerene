@@ -1,10 +1,10 @@
-use core::ffi::c_void;
-use core::ptr;
-use alloc::vec::Vec;
 use crate::common::{
     BellowsError, EFI_FILE_INFO_GUID, EfiBootServices, EfiFile, EfiFileInfo, EfiStatus,
 };
 use crate::serial::debug_print_str_to_com1 as debug_print_str;
+use alloc::vec::Vec;
+use core::ffi::c_void;
+use core::ptr;
 
 const EFI_FILE_MODE_READ: u64 = 0x1;
 const KERNEL_PATH: &str = r"EFI\BOOT\KERNEL.EFI";
@@ -124,12 +124,14 @@ pub fn read_file_to_memory(
     let pages = file_size.div_ceil(4096);
     let mut phys_addr: usize = 0;
 
-    let status = unsafe { ((*bs).allocate_pages)(
-        0usize,
-        crate::common::EfiMemoryType::EfiLoaderData,
-        pages,
-        &mut phys_addr,
-    ) };
+    let status = unsafe {
+        ((*bs).allocate_pages)(
+            0usize,
+            crate::common::EfiMemoryType::EfiLoaderData,
+            pages,
+            &mut phys_addr,
+        )
+    };
     if EfiStatus::from(status) != EfiStatus::Success {
         debug_print_str("File: Failed to allocate pages.\n");
         return Err(BellowsError::AllocationFailed(
