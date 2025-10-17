@@ -41,8 +41,7 @@ macro_rules! draw_border_rect {
 }
 
 // Use consolidated colors from petroleum
-use petroleum::{COLOR_LIGHT_GRAY, COLOR_BLACK, COLOR_DARK_GRAY, COLOR_WHITE, COLOR_LIGHT_BLUE, COLOR_TASKBAR, COLOR_WINDOW_BG};
-use petroleum::{calc_text_width}; // Importing the shared utility function
+use petroleum::{calc_text_width, COLOR_BLACK, COLOR_DARK_GRAY, COLOR_LIGHT_BLUE, COLOR_LIGHT_GRAY, COLOR_TASKBAR, COLOR_WHITE, COLOR_WINDOW_BG};
 
 // Helper function to draw centered text
 fn draw_centered_text<W: FramebufferLike>(
