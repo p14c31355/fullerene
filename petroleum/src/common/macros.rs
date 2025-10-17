@@ -291,7 +291,7 @@ macro_rules! test_framebuffer_mode {
 #[macro_export]
 macro_rules! bit_field_set {
     ($field:expr, $mask:expr, $shift:expr, $value:expr) => {
-        $field = ($field & !$mask) | (($value as u32 & $mask) << $shift);
+        $field = ($field & !($mask << $shift)) | (($value as u32 & $mask) << $shift);
     };
 }
 
