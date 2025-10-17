@@ -85,15 +85,24 @@ impl PageTableManager {
 
     /// Initialize paging
     pub fn init_paging(&mut self) -> SystemResult<()> {
-        // Check that pml4_frame has been set
-        let frame = self.pml4_frame.ok_or(SystemError::InternalError)?;
-        self.current_page_table = frame.start_address().as_u64() as usize;
+        // If we have an allocated frame, use it for process-specific page tables
+        // Otherwise, use the current active page table from CR3 (for system memory manager)
+        let table_frame = if let Some(frame) = self.pml4_frame {
+            // Use the allocated frame for this page table manager's custom table
+            self.current_page_table = frame.start_address().as_u64() as usize;
+            frame
+        } else {
+            // Use the current active page table from CR3 for system page table manager
+            let (current_frame, _) = x86_64::registers::control::Cr3::read();
+            self.current_page_table = current_frame.start_address().as_u64() as usize;
+            current_frame
+        };
 
-        // Create and store the mapper instance
+        // Create mapper using the appropriate page table
         unsafe {
-            let table_phys = frame.start_address().as_u64() as *mut PageTable;
+            let table_virt = physical_to_virtual(self.current_page_table) as *mut PageTable;
             let mapper = OffsetPageTable::new(
-                &mut *table_phys,
+                &mut *table_virt,
                 VirtAddr::new(get_physical_memory_offset() as u64),
             );
             self.mapper = Some(mapper);
@@ -175,7 +184,15 @@ impl PageTableHelper for PageTableManager {
         // Use the mapper's translate_addr method
         match mapper.translate_addr(virt_addr) {
             Some(phys_addr) => Ok(phys_addr.as_u64() as usize),
-            None => Err(SystemError::InvalidArgument),
+            None => {
+                // For non-system page tables (where pml4_frame is set), uninitialized mappings should return InvalidArgument
+                // But for system page table managers using CR3, most addresses won't be mapped yet
+                if self.pml4_frame.is_some() {
+                    Err(SystemError::InvalidArgument)
+                } else {
+                    Err(SystemError::InvalidArgument)
+                }
+            }
         }
     }
 

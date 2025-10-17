@@ -153,22 +153,10 @@ impl UnifiedMemoryManager {
         // Initialize frame allocator with memory map
         self.frame_allocator.init_with_memory_map(memory_map)?;
 
-        // Allocate a frame for the page table manager
-        let pml4_frame_addr = self.frame_allocator.allocate_frame()
-            .map_err(|_| petroleum::common::logging::SystemError::FrameAllocationFailed)?;
-        let pml4_frame = x86_64::structures::paging::PhysFrame::containing_address(
-            x86_64::PhysAddr::new(pml4_frame_addr as u64)
-        );
+        // Page table manager will now use the active CR3 page table directly,
+        // so no need to allocate a separate frame
 
-        log::info!("PageTableManager: Allocated frame at physical address: 0x{:x}", pml4_frame_addr);
-
-        // For now, assume the frame allocator returns zeroed frames
-        // TODO: Properly zero the frame through virtual memory mapping
-
-        // Set the frame on page table manager
-        self.page_table_manager.set_pml4_frame(pml4_frame);
-
-        // Initialize page table manager
+        // Initialize page table manager (it will initialize using current CR3)
         Initializable::init(&mut self.page_table_manager)?;
 
         // Create kernel address space (process 0)
