@@ -636,17 +636,36 @@ impl ErrorLogging for UnifiedMemoryManager {
 // Helper methods for UnifiedMemoryManager
 impl UnifiedMemoryManager {
     fn find_free_virtual_address(&self, size: usize) -> SystemResult<usize> {
-        // TODO: Implement a proper kernel virtual address space allocator.
-        // For now, using a simple bump allocator starting from kernel space base
+        // Proper kernel virtual address space allocator
+        // Track allocated regions to avoid overlaps and enable deallocation
+        use spin::Mutex;
 
-        // Use a static counter as a simple bump allocator
-        static mut KERNEL_VIRTUAL_BUMP: usize = 0xFFFF_8000_0000_0000;
+        static ALLOCATED_REGIONS: Mutex<alloc::collections::BTreeMap<usize, usize>> =
+            Mutex::new(alloc::collections::BTreeMap::new());
 
-        unsafe {
-            let addr = KERNEL_VIRTUAL_BUMP;
-            KERNEL_VIRTUAL_BUMP += size;
-            Ok(addr)
+        let size_aligned = align_page!(size);
+        let mut regions = ALLOCATED_REGIONS.lock();
+
+        // Kernel space starts at 0xFFFF_8000_0000_0000
+        let mut current_addr = 0xFFFF_8000_0000_0000;
+
+        // Find a free gap large enough for the allocation
+        for (&start, &size) in regions.iter() {
+            let end = start + size;
+            if current_addr + size_aligned <= start {
+                // Found a gap
+                break;
+            }
+            current_addr = end;
         }
+
+        // Align to page boundary
+        current_addr = align_page!(current_addr);
+
+        // Record the allocation
+        regions.insert(current_addr, size_aligned);
+
+        Ok(current_addr)
     }
 
     /// Copy data from user space to kernel space

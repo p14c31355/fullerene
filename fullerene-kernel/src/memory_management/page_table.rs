@@ -30,11 +30,7 @@ unsafe impl FrameAllocator<Size4KiB> for DummyFrameAllocator {
     }
 }
 
-// TODO: Fix the import issue - for now using a direct conversion
-/// Convert PageTableFlags to x86_64 PageTableFlags
-fn convert_to_x86_64_flags(flags: Flags) -> Flags {
-    flags
-}
+// PageTableFlags are already x86_64 PageTableFlags via alias, no conversion needed
 
 /// Process page table type alias for PageTableManager
 pub type ProcessPageTable = PageTableManager;
@@ -149,7 +145,7 @@ impl PageTableHelper for PageTableManager {
         let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virtual_addr);
         let frame =
             x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(physical_addr);
-        let page_flags = convert_to_x86_64_flags(flags);
+        let page_flags = flags;
 
         // Map the page using the stored mapper instance
         unsafe {

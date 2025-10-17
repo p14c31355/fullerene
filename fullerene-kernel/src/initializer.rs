@@ -1,8 +1,9 @@
 //! System initializer for managing component initialization
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, vec::Vec, string::String, collections::{BTreeMap, BTreeSet}};
 
 use crate::{SystemResult, traits::Initializable};
+use petroleum::common::logging::SystemError;
 
 // System initializer for managing component initialization
 pub struct SystemInitializer {
@@ -23,18 +24,81 @@ impl SystemInitializer {
 
     /// Initialize all registered components in dependency order
     pub fn initialize_system(&mut self) -> SystemResult<()> {
-        // Sort components by priority (higher priority first)
-        self.components.sort_by(
-            |a: &Box<dyn Initializable + Send>, b: &Box<dyn Initializable + Send>| {
-                b.priority().cmp(&a.priority())
-            },
-        );
+        // Build component info and dependency graph
+        let mut component_names = Vec::new();
+        let mut dependency_graph: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
-        // TODO: Implement proper dependency resolution
-        // For now, just initialize in priority order
+        for (i, component) in self.components.iter().enumerate() {
+            let name = component.name();
+            component_names.push((name, i, component.priority()));
 
-        for component in &mut self.components {
-            // Initialize component without format strings for now
+            let deps: Vec<String> = component.dependencies()
+                .iter()
+                .map(|s| String::from(*s))
+                .collect();
+            dependency_graph.insert(String::from(name), deps);
+        }
+
+        // Perform topological sort
+        let mut visited = BTreeSet::new();
+        let mut visiting = BTreeSet::new();
+        let mut order = Vec::new();
+
+        fn visit(
+            component_name: &str,
+            dependency_graph: &BTreeMap<String, Vec<String>>,
+            visited: &mut BTreeSet<String>,
+            visiting: &mut BTreeSet<String>,
+            order: &mut Vec<String>,
+        ) -> SystemResult<()> {
+            if visiting.contains(component_name) {
+                return Err(SystemError::InvalidArgument); // Circular dependency
+            }
+            if visited.contains(component_name) {
+                return Ok(());
+            }
+
+            visiting.insert(String::from(component_name));
+
+            // Visit all dependencies first
+            if let Some(deps) = dependency_graph.get(component_name) {
+                for dep in deps {
+                    visit(dep, dependency_graph, visited, visiting, order)?;
+                }
+            }
+
+            visiting.remove(component_name);
+            visited.insert(String::from(component_name));
+            order.push(String::from(component_name));
+            Ok(())
+        }
+
+        // Visit all components
+        for (name, _, _) in &component_names {
+            visit(name, &dependency_graph, &mut visited, &mut visiting, &mut order)?;
+        }
+
+        // Build final initialization order
+        let mut init_order = Vec::new();
+        let name_to_component: BTreeMap<_, _> = component_names.into_iter()
+            .map(|(name, idx, priority)| (String::from(name), (idx, priority)))
+            .collect();
+
+        for component_name in order.into_iter().rev() { // Reverse to get dependencies first
+            if let Some((idx, _)) = name_to_component.get(&component_name) {
+                init_order.push(*idx);
+            }
+        }
+
+        // Sort by priority within dependency order
+        init_order.sort_by_key(|&idx| {
+            let component = &self.components[idx];
+            component.priority()
+        });
+
+        // Initialize components in the final order
+        for idx in init_order.into_iter().rev() { // Highest priority first
+            let component = &mut self.components[idx];
             if let Err(e) = component.init() {
                 return Err(e);
             }
