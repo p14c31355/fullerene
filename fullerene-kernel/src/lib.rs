@@ -96,4 +96,3 @@ fn panic(info: &PanicInfo) -> ! {
     // For now, just loop to halt the system.
     loop {}
 }
-}

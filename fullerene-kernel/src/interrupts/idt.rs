@@ -16,18 +16,13 @@ macro_rules! setup_idt_handler {
     };
 }
 
-/// Macro to set up IDT handler with optional stack index based on target OS
+/// Macro to set up IDT handler with stack index
 macro_rules! setup_idt_handler_with_stack {
     ($idt:expr, $field:ident, $handler:ident, $stack_index:expr) => {
-        #[cfg(not(target_os = "uefi"))]
         unsafe {
             $idt.$field
                 .set_handler_fn($handler)
                 .set_stack_index($stack_index);
-        }
-        #[cfg(target_os = "uefi")]
-        {
-            $idt.$field.set_handler_fn($handler);
         }
     };
 }
@@ -42,19 +37,13 @@ lazy_static! {
         setup_idt_handler!(idt, page_fault, page_fault_handler);
         setup_idt_handler_with_stack!(idt, double_fault, double_fault_handler, gdt::DOUBLE_FAULT_IST_INDEX);
 
-        // Set up hardware interrupt handlers - disabled in UEFI mode due to CPU state issues
-        #[cfg(not(target_os = "uefi"))]
+        // Set up hardware interrupt handlers
         unsafe {
             idt[TIMER_INTERRUPT_INDEX as u8]
                 .set_handler_fn(timer_handler)
                 .set_stack_index(gdt::TIMER_IST_INDEX);
             idt[KEYBOARD_INTERRUPT_INDEX as u8].set_handler_fn(keyboard_handler);
             idt[MOUSE_INTERRUPT_INDEX as u8].set_handler_fn(mouse_handler);
-        }
-        #[cfg(target_os = "uefi")]
-        {
-            // Skip setting up hardware interrupts in UEFI mode to avoid invalid opcode errors
-            // UEFI has its own interrupt handling setup
         }
 
         idt

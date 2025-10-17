@@ -11,7 +11,7 @@ use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
 use petroleum::{allocate_heap_from_map, debug_log, write_serial_bytes};
-use x86_64::PhysAddr;
+use x86_64::{PhysAddr, VirtAddr};
 
 use petroleum::graphics::{
     VGA_MODE13H_ADDRESS, VGA_MODE13H_BPP, VGA_MODE13H_HEIGHT, VGA_MODE13H_STRIDE, VGA_MODE13H_WIDTH,
@@ -167,7 +167,7 @@ pub extern "efiapi" fn efi_main(
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(*MEMORY_MAP.get().unwrap());
     log::info!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());
-        let start_addr = if heap_phys_start.as_u64() < 0x1000 {
+        let start_addr = if heap_phys_start.as_u64() < 0x1000 || heap_phys_start.as_u64() >= 0x0000800000000000 {
             log::info!(
                 "Kernel: ERROR - Invalid heap_phys_start, using fallback 0x{:x}",
                 petroleum::FALLBACK_HEAP_START_ADDR
@@ -181,8 +181,22 @@ pub extern "efiapi" fn efi_main(
 
     let heap_start = allocate_heap_from_map(start_addr, heap::HEAP_SIZE);
     log::info!("Kernel: heap_start=0x{:x}", heap_start.as_u64());
+
+    // Allocate kernel stack in UEFI mode before GDT init to provide stable stack for GDT loading
+    const KERNEL_STACK_SIZE: usize = 4096 * 16; // 64KB
+    let virt_heap_start = VirtAddr::new(heap_start.as_u64());
+    let stack_bottom = virt_heap_start + (heap::HEAP_SIZE as u64 - KERNEL_STACK_SIZE as u64);
+    let stack_top = stack_bottom + (KERNEL_STACK_SIZE - 1) as u64;
+
+    // Switch RSP to new kernel stack
+    unsafe {
+        core::arch::asm!("mov rsp, {}", in(reg) stack_top.as_u64());
+    }
+    log::info!("Switched to kernel stack before GDT init");
+
     log::info!("Kernel: About to call gdt::init...");
-    let heap_start_after_gdt = gdt::init(heap_start);
+    let gdt_heap_start = virt_heap_start;
+    let heap_start_after_gdt = gdt::init(gdt_heap_start);
     log::info!(
         "Kernel: gdt::init returned heap_start_after_gdt=0x{:x}",
         heap_start_after_gdt.as_u64()
@@ -192,8 +206,8 @@ pub extern "efiapi" fn efi_main(
 
     // Initialize linked_list_allocator with the remaining memory
     petroleum::serial::serial_log(format_args!("About to calculate heap memory usage...\n"));
-    let gdt_mem_usage = heap_start_after_gdt - heap_start;
-    let heap_size_remaining = heap::HEAP_SIZE - gdt_mem_usage as usize;
+    let gdt_mem_used = (heap_start_after_gdt.as_u64() - virt_heap_start.as_u64()) as usize;
+    let heap_size_remaining = heap::HEAP_SIZE - gdt_mem_used - KERNEL_STACK_SIZE;
 
     petroleum::serial::serial_log(format_args!("Test constant value=0x12345678\n"));
     let test_val: u64 = 0x100000;
@@ -270,7 +284,7 @@ pub extern "efiapi" fn efi_main(
         log::info!("Kernel: heap initialized with fallback");
     } else {
         petroleum::serial::serial_log(format_args!("Using normal heap path...\n"));
-        log::info!("Kernel: gdt_mem_usage=0x{:x}", gdt_mem_usage);
+        log::info!("Kernel: gdt_mem_usage=0x{:x}", gdt_mem_usage_val);
         write_serial_bytes!(0x3F8, 0x3FD, b"About to jump to interrupts init\n");
     }
 
@@ -280,25 +294,6 @@ pub extern "efiapi" fn efi_main(
     log::info!("Kernel: basic init complete");
     write_serial_bytes!(0x3F8, 0x3FD, b"Basic init complete logged\n");
     petroleum::serial::serial_log(format_args!("basic init complete logged successfully\n"));
-
-    // Allocate kernel stack in UEFI mode to avoid using UEFI's potentially corrupted high stack
-    log::info!("Allocating kernel stack for UEFI mode");
-    use alloc::alloc::{alloc, Layout};
-    const KERNEL_STACK_SIZE: usize = 4096 * 16; // 64KB
-    let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
-    let stack_ptr = unsafe { alloc(layout) as *mut u8 };
-    if stack_ptr.is_null() {
-        log::error!("Failed to allocate kernel stack!");
-        petroleum::halt_loop();
-    }
-    let stack_top = unsafe { stack_ptr.add(KERNEL_STACK_SIZE) };
-    log::info!("Kernel stack allocated at {:p}, top: {:p}", stack_ptr, stack_top);
-
-    // Switch RSP to new kernel stack
-    unsafe {
-        core::arch::asm!("mov rsp, {}", in(reg) stack_top);
-    }
-    log::info!("Switched to kernel stack");
 
     write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: About to init interrupts\n");
 
