@@ -1,5 +1,5 @@
 use petroleum::graphics::ports::HardwarePorts;
-use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations, port_write};
+use petroleum::{clear_buffer, Color, ColorCode, ScreenChar, TextBufferOperations, port_write};
 use spin::{Mutex, Once};
 
 const BUFFER_HEIGHT: usize = 25;
@@ -129,11 +129,7 @@ impl TextBufferOperations for VgaBuffer {
             ascii_character: b' ',
             color_code: self.color_code,
         };
-        for row in 0..BUFFER_HEIGHT {
-            for col in 0..BUFFER_WIDTH {
-                self.buffer[row][col] = blank;
-            }
-        }
+        clear_buffer!(self.buffer, BUFFER_HEIGHT, BUFFER_WIDTH, blank);
         self.column_position = 0;
         self.row_position = 0;
     }

@@ -3,6 +3,7 @@
 //! Provides functions for configuring LAPIC and I/O APIC during UEFI boot.
 
 use core::ptr;
+use crate::{bit_field_set, set_bool_bit};
 
 /// I/O APIC register offsets
 const IOAPIC_VER: u8 = 0x01;
@@ -41,53 +42,37 @@ impl IoApicRedirectionEntry {
 
     /// Set the vector
     pub fn set_vector(&mut self, vector: u8) {
-        self.lower = (self.lower & !0xFF) | (vector as u32);
+        bit_field_set!(self.lower, 0xFF, 0, vector);
     }
 
     /// Set delivery mode
     pub fn set_delivery_mode(&mut self, mode: u8) {
-        self.lower = (self.lower & !(0x7 << 8)) | ((mode as u32) << 8);
+        bit_field_set!(self.lower, 0x7, 8, mode);
     }
 
     /// Set destination mode (0 = physical, 1 = logical)
     pub fn set_dest_mode(&mut self, logical: bool) {
-        if logical {
-            self.lower |= 1 << 11;
-        } else {
-            self.lower &= !(1 << 11);
-        }
+        set_bool_bit!(self.lower, 11, logical);
     }
 
     /// Set polarity (0 = high active, 1 = low active)
     pub fn set_polarity(&mut self, low_active: bool) {
-        if low_active {
-            self.lower |= 1 << 13;
-        } else {
-            self.lower &= !(1 << 13);
-        }
+        set_bool_bit!(self.lower, 13, low_active);
     }
 
     /// Set trigger mode (0 = edge, 1 = level)
     pub fn set_trigger_mode(&mut self, level: bool) {
-        if level {
-            self.lower |= 1 << 15;
-        } else {
-            self.lower &= !(1 << 15);
-        }
+        set_bool_bit!(self.lower, 15, level);
     }
 
     /// Set mask (0 = unmasked, 1 = masked)
     pub fn set_mask(&mut self, masked: bool) {
-        if masked {
-            self.lower |= 1 << 16;
-        } else {
-            self.lower &= !(1 << 16);
-        }
+        set_bool_bit!(self.lower, 16, masked);
     }
 
     /// Set destination
     pub fn set_destination(&mut self, dest: u8) {
-        self.upper = (self.upper & !(0xFF << 24)) | ((dest as u32) << 24);
+        bit_field_set!(self.upper, 0xFF, 24, dest);
     }
 }
 

@@ -286,3 +286,74 @@ macro_rules! test_framebuffer_mode {
         }
     }};
 }
+
+/// Macro to set a bit field in a u32 word, reducing line count for repetitive bit operations
+#[macro_export]
+macro_rules! bit_field_set {
+    ($field:expr, $mask:expr, $shift:expr, $value:expr) => {
+        $field = ($field & !$mask) | (($value as u32 & $mask) << $shift);
+    };
+}
+
+/// Macro to set or clear a single bit based on bool value
+#[macro_export]
+macro_rules! set_bool_bit {
+    ($field:expr, $bit:expr, $value:expr) => {
+        if $value {
+            $field |= 1 << $bit;
+        } else {
+            $field &= !(1 << $bit);
+        }
+    };
+}
+
+/// Macro to clear a 2D buffer with a value, reducing nested loop code
+#[macro_export]
+macro_rules! clear_buffer {
+    ($buffer:expr, $height:expr, $width:expr, $value:expr) => {
+        for row in 0..$height {
+            for col in 0..$width {
+                $buffer[row][col] = $value;
+            }
+        }
+    };
+}
+
+/// Macro to scroll up a 2D buffer, reducing loop code
+#[macro_export]
+macro_rules! scroll_buffer_up {
+    ($buffer:expr, $height:expr, $width:expr, $blank:expr) => {
+        for row in 1..$height {
+            for col in 0..$width {
+                $buffer[row - 1][col] = $buffer[row][col];
+            }
+        }
+        for col in 0..$width {
+            $buffer[$height - 1][col] = $blank;
+        }
+    };
+}
+
+/// Command definition macro to reduce repetitive command array initialization scatter
+///
+/// # Examples
+/// ```
+/// define_commands!(CommandEntry,
+///     ("help", "Show help", help_fn),
+///     ("exit", "Exit", exit_fn)
+/// )
+/// ```
+#[macro_export]
+macro_rules! define_commands {
+    ($entry_ty:ident, $(($name:expr, $desc:expr, $func:expr)),* $(,)?) => {
+        &[
+            $(
+                $entry_ty {
+                    name: $name,
+                    description: $desc,
+                    function: $func,
+                }
+            ),*
+        ]
+    };
+}
