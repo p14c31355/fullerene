@@ -553,6 +553,8 @@ fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {
         "-no-shutdown",
         "-device",
         "isa-debug-exit,iobase=0xf4,iosize=0x04",
+        "-rtc",
+        "base=utc",
         "-boot",
         "menu=on,order=d",
         "-nodefaults",
