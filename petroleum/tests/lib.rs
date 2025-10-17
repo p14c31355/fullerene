@@ -68,15 +68,15 @@ mod macro_tests {
     #[test]
     fn test_utility_macros() {
         // Test ensure macro
-        let result: Result<(), &crate::SystemError> = (|| {
-            ensure!(true, &SystemError::InvalidArgument);
+        let result: Result<(), &crate::common::logging::SystemError> = (|| {
+            ensure!(true, &common::logging::SystemError::InvalidArgument);
             Ok(())
         })();
         assert!(result.is_ok());
 
         // Test ensure_with_msg macro
-        let result: Result<(), &crate::SystemError> = (|| {
-            ensure_with_msg!(false, &SystemError::InvalidArgument, "Test message");
+        let result: Result<(), &crate::common::logging::SystemError> = (|| {
+            ensure_with_msg!(false, &common::logging::SystemError::InvalidArgument, "Test message");
             Ok(())
         })();
         assert!(result.is_err());
@@ -86,12 +86,12 @@ mod macro_tests {
         let none_value: Option<i32> = None;
 
         assert_eq!(
-            option_to_result!(some_value, &SystemError::FileNotFound),
+            option_to_result!(some_value, &common::logging::SystemError::FileNotFound),
             Ok(42)
         );
         assert!(matches!(
-            option_to_result!(none_value, &SystemError::FileNotFound),
-            Err(crate::SystemError::FileNotFound)
+            option_to_result!(none_value, &common::logging::SystemError::FileNotFound),
+            Err(crate::common::logging::SystemError::FileNotFound)
         ));
     }
 }

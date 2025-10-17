@@ -296,10 +296,7 @@ impl MemoryManager for UnifiedMemoryManager {
 // Implementation of ProcessMemoryManager trait
 impl ProcessMemoryManager for UnifiedMemoryManager {
     fn create_address_space(&mut self, process_id: usize) -> SystemResult<()> {
-        if !self.initialized {
-            return Err(SystemError::InternalError);
-        }
-
+        // Allow creation during initialization phase
         let process_manager = ProcessMemoryManagerImpl::new(process_id);
         self.process_managers.insert(process_id, process_manager);
 
@@ -778,8 +775,23 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
         .allocate_frame()
         .map_err(|_| SystemError::FrameAllocationFailed)?;
 
+    // Debug: log the allocation result
+    log::info!("Allocated page table frame: 0x{:x}", pml4_frame);
+
     // Zero the allocated page table frame to ensure it's a valid page table
-    let new_table_virt = physical_to_virtual(pml4_frame) as *mut u64;
+    let physical_offset = get_physical_memory_offset();
+    let new_table_virt_raw = physical_to_virtual(pml4_frame);
+    let new_table_virt = new_table_virt_raw as *mut u64;
+
+    // Debug: log the conversion
+    log::info!("Physical offset: 0x{:x}, virtual addr: 0x{:x}", physical_offset, new_table_virt_raw);
+
+    // Debug: check if the address is valid
+    if new_table_virt.is_null() || (new_table_virt as usize) < physical_offset || (new_table_virt as usize) % 8 != 0 {
+        log::error!("Invalid page table virtual address: 0x{:x}", new_table_virt as usize);
+        return Err(SystemError::InternalError);
+    }
+
     unsafe {
         core::slice::from_raw_parts_mut(new_table_virt, 512).fill(0);
     }

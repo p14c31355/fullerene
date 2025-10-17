@@ -10,6 +10,7 @@ use alloc::boxed::Box;
 use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
+use petroleum::common::uefi::{efi_print, write_vga_string, find_gop_framebuffer};
 use petroleum::{allocate_heap_from_map, debug_log, write_serial_bytes};
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -17,39 +18,7 @@ use petroleum::graphics::{
     VGA_MODE13H_ADDRESS, VGA_MODE13H_BPP, VGA_MODE13H_HEIGHT, VGA_MODE13H_STRIDE, VGA_MODE13H_WIDTH,
 };
 
-/// Helper function to write a string to VGA buffer at specified row
-pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
-    for (i, &byte) in text.iter().enumerate() {
-        if i < 80 {
-            vga_buffer[row][i] = color | (byte as u16);
-        }
-    }
-}
 
-fn format_addr_hex(value: u64, buf: &mut [u8]) -> usize {
-    petroleum::serial::format_hex_to_buffer(value, buf, 16)
-}
-
-fn format_size_dec(value: usize, buf: &mut [u8]) -> usize {
-    petroleum::serial::format_dec_to_buffer(value, buf)
-}
-
-/// Helper function to print text to EFI console
-#[cfg(target_os = "uefi")]
-fn efi_print(system_table: &EfiSystemTable, text: &[u8]) {
-    unsafe {
-        if !(*system_table).con_out.is_null() {
-            let output_string = (*(*system_table).con_out).output_string;
-            let mut buffer = [0u16; 128];
-            let len = text.len().min(buffer.len() - 1);
-            for (i, &byte) in text.iter().take(len).enumerate() {
-                buffer[i] = byte as u16;
-            }
-            buffer[len] = 0;
-            let _ = output_string((*system_table).con_out, buffer.as_ptr());
-        }
-    }
-}
 
 #[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]
@@ -357,88 +326,7 @@ pub extern "efiapi" fn efi_main(
     petroleum::halt_loop();
 }
 
-pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
-    use core::ptr;
-    use petroleum::common::{EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EfiBootServices};
 
-    petroleum::serial::serial_log(format_args!(
-        "find_gop_framebuffer: Looking for GOP protocol\n"
-    ));
-
-    if system_table.boot_services.is_null() {
-        petroleum::serial::serial_log(format_args!(
-            "find_gop_framebuffer: Boot services is null\n"
-        ));
-        return None;
-    }
-
-    let boot_services = unsafe { &*system_table.boot_services };
-
-    // Use locate_protocol to find GOP (simpler than locate_handle)
-    let mut gop_handle: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
-    let status = (boot_services.locate_protocol)(
-        EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
-        core::ptr::null_mut(),
-        core::ptr::addr_of_mut!(gop_handle) as *mut *mut c_void,
-    );
-
-    if status != 0 {
-        petroleum::serial::serial_log(format_args!(
-            "find_gop_framebuffer: locate_protocol failed with status 0x{:x}\n",
-            status
-        ));
-        return None;
-    }
-
-    if gop_handle.is_null() {
-        petroleum::serial::serial_log(format_args!("find_gop_framebuffer: GOP handle is null\n"));
-        return None;
-    }
-
-    let gop = unsafe { &*gop_handle };
-    if gop.mode.is_null() {
-        petroleum::serial::serial_log(format_args!("find_gop_framebuffer: GOP mode is null\n"));
-        return None;
-    }
-
-    let gop_mode = unsafe { &*gop.mode };
-    let address = gop_mode.frame_buffer_base;
-
-    if address == 0 {
-        petroleum::serial::serial_log(format_args!(
-            "find_gop_framebuffer: Framebuffer base is 0\n"
-        ));
-        return None;
-    }
-
-    // Get current mode info - we already have the mode info from gop_mode.info
-    if !gop_mode.info.is_null() {
-        let mode_info = unsafe { &*gop_mode.info };
-
-        petroleum::serial::serial_log(format_args!(
-            "find_gop_framebuffer: Found GOP framebuffer {}x{} @ 0x{:x}, stride: {}, format: {:?}\n",
-            mode_info.horizontal_resolution,
-            mode_info.vertical_resolution,
-            address,
-            mode_info.pixels_per_scan_line,
-            mode_info.pixel_format
-        ));
-
-        Some(FullereneFramebufferConfig {
-            address,
-            width: mode_info.horizontal_resolution,
-            height: mode_info.vertical_resolution,
-            pixel_format: mode_info.pixel_format,
-            bpp: petroleum::common::get_bpp_from_pixel_format(mode_info.pixel_format),
-            stride: mode_info.pixels_per_scan_line,
-        })
-    } else {
-        petroleum::serial::serial_log(format_args!(
-            "find_gop_framebuffer: GOP mode info is null\n"
-        ));
-        None
-    }
-}
 
 /// Kernel-side fallback framebuffer detection when config table is not available
 /// Uses shared logic from petroleum crate
@@ -660,4 +548,45 @@ pub fn calculate_framebuffer_size(
         config.bpp
     );
     (Some(config.address), Some(size_bytes))
+}
+
+// Simple formatting functions for serial output
+fn format_addr_hex(value: u64, buf: &mut [u8]) -> usize {
+    const HEX_CHARS: &[u8] = b"0123456789abcdef";
+    let mut temp = value;
+    let mut len = 0;
+
+    // Handle 64-bit addresses (16 hex digits)
+    for _ in 0..16 {
+        let digit = (temp & 0xF) as usize;
+        buf[len] = HEX_CHARS[digit];
+        temp >>= 4;
+        len += 1;
+    }
+
+    // Reverse to get correct order
+    buf[..len].reverse();
+    len
+}
+
+fn format_size_dec(value: usize, buf: &mut [u8]) -> usize {
+    const DEC_CHARS: &[u8] = b"0123456789";
+    let mut temp = value;
+    let mut len = 0;
+
+    if temp == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+
+    while temp > 0 {
+        let digit = temp % 10;
+        buf[len] = DEC_CHARS[digit];
+        temp /= 10;
+        len += 1;
+    }
+
+    // Reverse to get correct order
+    buf[..len].reverse();
+    len
 }

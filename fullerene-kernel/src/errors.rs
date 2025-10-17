@@ -6,21 +6,16 @@
 // Re-export from petroleum for backward compatibility
 pub use petroleum::common::logging::{SystemError, SystemResult};
 
+// Explicit From implementations
 impl From<crate::syscall::interface::SyscallError> for SystemError {
     fn from(error: crate::syscall::interface::SyscallError) -> Self {
         match error {
             crate::syscall::interface::SyscallError::InvalidSyscall => SystemError::InvalidSyscall,
-            crate::syscall::interface::SyscallError::BadFileDescriptor => {
-                SystemError::BadFileDescriptor
-            }
-            crate::syscall::interface::SyscallError::PermissionDenied => {
-                SystemError::PermissionDenied
-            }
+            crate::syscall::interface::SyscallError::BadFileDescriptor => SystemError::BadFileDescriptor,
+            crate::syscall::interface::SyscallError::PermissionDenied => SystemError::PermissionDenied,
             crate::syscall::interface::SyscallError::FileNotFound => SystemError::FileNotFound,
             crate::syscall::interface::SyscallError::NoSuchProcess => SystemError::NoSuchProcess,
-            crate::syscall::interface::SyscallError::InvalidArgument => {
-                SystemError::InvalidArgument
-            }
+            crate::syscall::interface::SyscallError::InvalidArgument => SystemError::InvalidArgument,
             crate::syscall::interface::SyscallError::OutOfMemory => SystemError::SyscallOutOfMemory,
         }
     }
@@ -44,9 +39,7 @@ impl From<crate::memory_management::MapError> for SystemError {
         match error {
             crate::memory_management::MapError::MappingFailed => SystemError::MappingFailed,
             crate::memory_management::MapError::UnmappingFailed => SystemError::UnmappingFailed,
-            crate::memory_management::MapError::FrameAllocationFailed => {
-                SystemError::FrameAllocationFailed
-            }
+            crate::memory_management::MapError::FrameAllocationFailed => SystemError::FrameAllocationFailed,
         }
     }
 }
@@ -67,8 +60,7 @@ impl From<crate::loader::LoadError> for SystemError {
             crate::loader::LoadError::OutOfMemory => SystemError::MemOutOfMemory,
             crate::loader::LoadError::AddressAlreadyMapped => SystemError::MappingFailed,
             crate::loader::LoadError::MappingFailed => SystemError::MappingFailed,
-            crate::loader::LoadError::NotExecutable
-            | crate::loader::LoadError::UnsupportedArchitecture => SystemError::LoadFailed,
+            crate::loader::LoadError::NotExecutable | crate::loader::LoadError::UnsupportedArchitecture => SystemError::LoadFailed,
         }
     }
 }
