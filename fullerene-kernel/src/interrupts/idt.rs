@@ -36,26 +36,20 @@ lazy_static! {
         setup_idt_handler!(idt, breakpoint, breakpoint_handler);
         setup_idt_handler!(idt, page_fault, page_fault_handler);
 
+                let mut double_fault_entry = &mut idt.double_fault;
+        double_fault_entry.set_handler_fn(double_fault_handler);
         #[cfg(not(target_os = "uefi"))]
-        {
-            setup_idt_handler_with_stack!(idt, double_fault, double_fault_handler, gdt::DOUBLE_FAULT_IST_INDEX);
-        }
-        #[cfg(target_os = "uefi")]
-        {
-            setup_idt_handler!(idt, double_fault, double_fault_handler);
+        unsafe {
+            double_fault_entry.set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
         }
 
         // Set up hardware interrupt handlers
         unsafe {
+            let mut timer_entry = &mut idt[TIMER_INTERRUPT_INDEX as u8];
+            timer_entry.set_handler_fn(timer_handler);
             #[cfg(not(target_os = "uefi"))]
             {
-                idt[TIMER_INTERRUPT_INDEX as u8]
-                    .set_handler_fn(timer_handler)
-                    .set_stack_index(gdt::TIMER_IST_INDEX);
-            }
-            #[cfg(target_os = "uefi")]
-            {
-                idt[TIMER_INTERRUPT_INDEX as u8].set_handler_fn(timer_handler);
+                timer_entry.set_stack_index(gdt::TIMER_IST_INDEX);
             }
             idt[KEYBOARD_INTERRUPT_INDEX as u8].set_handler_fn(keyboard_handler);
             idt[MOUSE_INTERRUPT_INDEX as u8].set_handler_fn(mouse_handler);

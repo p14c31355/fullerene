@@ -741,6 +741,12 @@ pub fn switch_to_page_table(page_table: &ProcessPageTable) -> SystemResult<()> {
 
 /// Create a new process page table
 pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
+    // Check if memory manager is initialized; if not, use current page table for composite mode
+    if get_memory_manager().lock().is_none() {
+        // Fallback: use current CR3 page table when memory manager not available
+        return Ok(PageTableManager::new());
+    }
+
     // Allocate a new PML4 frame for the process page table
     let mut manager_guard = get_memory_manager().lock();
     let manager = manager_guard.as_mut().ok_or(SystemError::InternalError)?;

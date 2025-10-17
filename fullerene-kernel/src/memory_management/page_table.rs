@@ -184,15 +184,7 @@ impl PageTableHelper for PageTableManager {
         // Use the mapper's translate_addr method
         match mapper.translate_addr(virt_addr) {
             Some(phys_addr) => Ok(phys_addr.as_u64() as usize),
-            None => {
-                // For non-system page tables (where pml4_frame is set), uninitialized mappings should return InvalidArgument
-                // But for system page table managers using CR3, most addresses won't be mapped yet
-                if self.pml4_frame.is_some() {
-                    Err(SystemError::InvalidArgument)
-                } else {
-                    Err(SystemError::InvalidArgument)
-                }
-            }
+            None => Err(SystemError::InvalidArgument),
         }
     }
 
