@@ -164,15 +164,15 @@ where
     T: Fn(),
 {
     fn run(&self) {
-        println!("{}...\t", core::any::type_name::<T>());
+        log::info!("{}...\t", core::any::type_name::<T>());
         self();
-        println!("[ok]");
+        log::info!("[ok]");
     }
 }
 
 #[cfg(test)]
 pub fn test_runner(tests: &[&dyn Testable]) {
-    println!("Running {} tests", tests.len());
+    log::info!("Running {} tests", tests.len());
     for test in tests {
         test.run();
     }
