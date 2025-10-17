@@ -9,16 +9,14 @@ use crate::{gdt, graphics, interrupts, memory};
 use alloc::boxed::Box;
 use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
+use petroleum::common::uefi::{efi_print, find_gop_framebuffer, write_vga_string};
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
-use petroleum::common::uefi::{efi_print, write_vga_string, find_gop_framebuffer};
 use petroleum::{allocate_heap_from_map, debug_log, write_serial_bytes};
 use x86_64::{PhysAddr, VirtAddr};
 
 use petroleum::graphics::{
     VGA_MODE13H_ADDRESS, VGA_MODE13H_BPP, VGA_MODE13H_HEIGHT, VGA_MODE13H_STRIDE, VGA_MODE13H_WIDTH,
 };
-
-
 
 #[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]
@@ -136,7 +134,8 @@ pub extern "efiapi" fn efi_main(
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(*MEMORY_MAP.get().unwrap());
     log::info!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());
-        let start_addr = if heap_phys_start.as_u64() < 0x1000 || heap_phys_start.as_u64() >= 0x0000800000000000 {
+    let start_addr =
+        if heap_phys_start.as_u64() < 0x1000 || heap_phys_start.as_u64() >= 0x0000800000000000 {
             log::info!(
                 "Kernel: ERROR - Invalid heap_phys_start, using fallback 0x{:x}",
                 petroleum::FALLBACK_HEAP_START_ADDR
@@ -146,7 +145,10 @@ pub extern "efiapi" fn efi_main(
             heap_phys_start
         };
     // Debug log start_addr before allocation
-    log::info!("Kernel: start_addr before allocation=0x{:x}", start_addr.as_u64());
+    log::info!(
+        "Kernel: start_addr before allocation=0x{:x}",
+        start_addr.as_u64()
+    );
 
     let heap_start = allocate_heap_from_map(start_addr, heap::HEAP_SIZE);
     log::info!("Kernel: heap_start=0x{:x}", heap_start.as_u64());
@@ -185,7 +187,11 @@ pub extern "efiapi" fn efi_main(
     let heap_start_after_gdt_u64 = heap_start_after_gdt.as_u64();
     let heap_start_u64 = heap_start.as_u64();
 
-    write_serial_bytes!(0x3F8, 0x3FD, b"heap_start_after_gdt_u64 captured successfully\n");
+    write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"heap_start_after_gdt_u64 captured successfully\n"
+    );
     write_serial_bytes!(0x3F8, 0x3FD, b"heap_start_u64 captured successfully\n");
 
     let gdt_mem_usage_val = heap_start_after_gdt_u64.saturating_sub(heap_start_u64);
@@ -207,7 +213,11 @@ pub extern "efiapi" fn efi_main(
     let mut serial_buf = [0u8; 128];
     let addr_str = heap_start_after_gdt.as_u64();
     let addr_str_len = format_addr_hex(addr_str, &mut serial_buf);
-    write_serial_bytes!(0x3F8, 0x3FD, b"About to call ALLOCATOR.lock().init() with addr=0x");
+    write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"About to call ALLOCATOR.lock().init() with addr=0x"
+    );
     write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..addr_str_len]);
     let size_str = heap_size_remaining;
     let size_str_len = format_size_dec(size_str, &mut serial_buf);
@@ -228,7 +238,10 @@ pub extern "efiapi" fn efi_main(
         write_serial_bytes!(0x3F8, 0x3FD, b"Calling ALLOCATOR.lock()...\n");
         let mut allocator = ALLOCATOR.lock();
         write_serial_bytes!(0x3F8, 0x3FD, b"ALLOCATOR.lock() succeeded\n");
-        let ptr_str_len = format_addr_hex(heap_start_after_gdt.as_mut_ptr::<u8>() as u64, &mut serial_buf);
+        let ptr_str_len = format_addr_hex(
+            heap_start_after_gdt.as_mut_ptr::<u8>() as u64,
+            &mut serial_buf,
+        );
         write_serial_bytes!(0x3F8, 0x3FD, b"Before allocator.init() with ptr=0x");
         write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..ptr_str_len]);
         let size_str_len = format_size_dec(heap_size_remaining, &mut serial_buf);
@@ -245,7 +258,9 @@ pub extern "efiapi" fn efi_main(
     }
 
     petroleum::serial::serial_log(format_args!("About to print final allocator message...\n"));
-    petroleum::serial::serial_log(format_args!("Linked list allocator initialized successfully\n"));
+    petroleum::serial::serial_log(format_args!(
+        "Linked list allocator initialized successfully\n"
+    ));
     petroleum::serial::serial_log(format_args!("About to check heap_phys_start...\n"));
 
     if heap_phys_start.as_u64() < 0x1000 {
@@ -272,7 +287,10 @@ pub extern "efiapi" fn efi_main(
     if let Some(memory_map) = MEMORY_MAP.get() {
         write_serial_bytes!(0x3F8, 0x3FD, b"MEMORY_MAP.get() succeeded\n");
         if let Err(e) = crate::memory_management::init_memory_manager(memory_map) {
-            log::error!("Failed to initialize global memory manager: {:?}. Halting.", e);
+            log::error!(
+                "Failed to initialize global memory manager: {:?}. Halting.",
+                e
+            );
             petroleum::halt_loop();
         }
     } else {
@@ -325,8 +343,6 @@ pub extern "efiapi" fn efi_main(
     // In case we reach here (shell returned or graphics failed), enter idle loop
     petroleum::halt_loop();
 }
-
-
 
 /// Kernel-side fallback framebuffer detection when config table is not available
 /// Uses shared logic from petroleum crate

@@ -196,3 +196,93 @@ macro_rules! print {
         $crate::serial::_print(format_args!($($arg)*));
     };
 }
+
+/// Enhanced logging macro for common patterns throughout the codebase
+/// Provides consistent prefixes and formatting
+#[macro_export]
+macro_rules! log {
+    ($prefix:literal) => {
+        $crate::serial::_print(format_args!(concat!($prefix, "\n")));
+    };
+    ($prefix:literal, $msg:expr) => {
+        $crate::serial::_print(format_args!(concat!($prefix, ": {}\n"), $msg));
+    };
+    ($prefix:literal, $format:expr, $($args:tt)*) => {
+        $crate::serial::_print(format_args!(concat!($prefix, ": ", $format, "\n"), $($args)*));
+    };
+}
+
+/// Common logging macros (note: some may be defined in serial.rs)
+#[macro_export]
+macro_rules! info_log {
+    ($($arg:tt)*) => {
+        $crate::serial::_print(format_args!("[INFO] {}\n", format_args!($($arg)*)));
+    };
+}
+
+#[macro_export]
+macro_rules! error_log {
+    ($($arg:tt)*) => {
+        $crate::serial::_print(format_args!("[ERROR] {}\n", format_args!($($arg)*)));
+    };
+}
+
+#[macro_export]
+macro_rules! warn_log {
+    ($($arg:tt)*) => {
+        $crate::serial::_print(format_args!("[WARN] {}\n", format_args!($($arg)*)));
+    };
+}
+
+/// PCI operation helper macros to reduce repetition in PCI handling
+#[macro_export]
+macro_rules! pci_read_bars {
+    ($pci_io_ref:expr, $protocol_ptr:expr, $buf:expr, $count:expr, $offset:expr) => {{
+        ($pci_io_ref.pci_read)(
+            $protocol_ptr,
+            2, // Dword width
+            $offset,
+            $count,
+            $buf.as_mut_ptr() as *mut core::ffi::c_void,
+        )
+    }};
+}
+
+/// Safely extract BAR value and check if memory-mapped
+#[macro_export]
+macro_rules! extract_bar_info {
+    ($bars:expr, $bar_index:expr) => {{
+        let bar = $bars[$bar_index] & 0xFFFFFFF0; // Mask off lower 4 bits
+        let bar_type = $bars[$bar_index] & 0xF;
+        let is_memory = (bar_type & 0x1) == 0;
+        (bar, bar_type, is_memory)
+    }};
+}
+
+/// Macro for framebuffer detection patterns
+#[macro_export]
+macro_rules! test_framebuffer_mode {
+    ($addr:expr, $width:expr, $height:expr, $bpp:expr, $stride:expr) => {{
+        let fb_size = ($height * $stride * $bpp / 8) as u64;
+        if crate::graphics_alternatives::probe_framebuffer_access($addr, fb_size) {
+            info_log!(
+                "Detected valid framebuffer: {}x{} @ {:#x}",
+                $width,
+                $height,
+                $addr
+            );
+            Some($crate::common::FullereneFramebufferConfig {
+                address: $addr,
+                width: $width,
+                height: $height,
+                pixel_format:
+                    $crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                bpp: $bpp,
+                stride: $stride,
+            })
+        } else {
+            warn_log!("Framebuffer mode {}x{} invalid", $width, $height);
+            None
+        }
+    }};
+}

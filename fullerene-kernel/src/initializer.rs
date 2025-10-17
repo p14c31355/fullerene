@@ -1,6 +1,11 @@
 //! System initializer for managing component initialization
 
-use alloc::{boxed::Box, vec::Vec, string::String, collections::{BTreeMap, BTreeSet}};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    string::String,
+    vec::Vec,
+};
 
 use crate::{SystemResult, traits::Initializable};
 use petroleum::common::logging::SystemError;
@@ -32,7 +37,8 @@ impl SystemInitializer {
             let name = component.name();
             component_names.push((name, i, component.priority()));
 
-            let deps: Vec<String> = component.dependencies()
+            let deps: Vec<String> = component
+                .dependencies()
                 .iter()
                 .map(|s| String::from(*s))
                 .collect();
@@ -75,16 +81,24 @@ impl SystemInitializer {
 
         // Visit all components
         for (name, _, _) in &component_names {
-            visit(name, &dependency_graph, &mut visited, &mut visiting, &mut order)?;
+            visit(
+                name,
+                &dependency_graph,
+                &mut visited,
+                &mut visiting,
+                &mut order,
+            )?;
         }
 
         // Build final initialization order
         let mut init_order = Vec::new();
-        let name_to_component: BTreeMap<_, _> = component_names.into_iter()
+        let name_to_component: BTreeMap<_, _> = component_names
+            .into_iter()
             .map(|(name, idx, priority)| (String::from(name), (idx, priority)))
             .collect();
 
-        for component_name in order.into_iter().rev() { // Reverse to get dependencies first
+        for component_name in order.into_iter().rev() {
+            // Reverse to get dependencies first
             if let Some((idx, _)) = name_to_component.get(&component_name) {
                 init_order.push(*idx);
             }
@@ -97,7 +111,8 @@ impl SystemInitializer {
         });
 
         // Initialize components in the final order
-        for idx in init_order.into_iter().rev() { // Highest priority first
+        for idx in init_order.into_iter().rev() {
+            // Highest priority first
             let component = &mut self.components[idx];
             if let Err(e) = component.init() {
                 return Err(e);

@@ -27,8 +27,6 @@ pub enum SyscallError {
     OutOfMemory = 12,
 }
 
-
-
 /// Helper function to validate user buffer access
 pub fn validate_user_buffer(
     ptr: usize,

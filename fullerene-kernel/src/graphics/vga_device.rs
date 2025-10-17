@@ -79,8 +79,6 @@ impl TextBufferOperations for VgaBuffer {
             }
         }
     }
-
-
 }
 
 /// VGA text mode device implementation
@@ -115,7 +113,6 @@ impl Initializable for VgaDevice {
     fn priority(&self) -> i32 {
         10 // High priority for display device
     }
-
 }
 
 impl ErrorLogging for VgaDevice {

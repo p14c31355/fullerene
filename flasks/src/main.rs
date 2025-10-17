@@ -326,10 +326,7 @@ fn configure_serial_port(vm_name: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn attach_iso_and_start_vm(
-    args: &Args,
-    iso_path: &PathBuf,
-) -> io::Result<()> {
+fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
     // Use default firmware (UEFI) for serial console output like QEMU
 
     // Attach ISO

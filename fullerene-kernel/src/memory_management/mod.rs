@@ -784,11 +784,21 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
     let new_table_virt = new_table_virt_raw as *mut u64;
 
     // Debug: log the conversion
-    log::info!("Physical offset: 0x{:x}, virtual addr: 0x{:x}", physical_offset, new_table_virt_raw);
+    log::info!(
+        "Physical offset: 0x{:x}, virtual addr: 0x{:x}",
+        physical_offset,
+        new_table_virt_raw
+    );
 
     // Debug: check if the address is valid
-    if new_table_virt.is_null() || (new_table_virt as usize) < physical_offset || (new_table_virt as usize) % 8 != 0 {
-        log::error!("Invalid page table virtual address: 0x{:x}", new_table_virt as usize);
+    if new_table_virt.is_null()
+        || (new_table_virt as usize) < physical_offset
+        || (new_table_virt as usize) % 8 != 0
+    {
+        log::error!(
+            "Invalid page table virtual address: 0x{:x}",
+            new_table_virt as usize
+        );
         return Err(SystemError::InternalError);
     }
 

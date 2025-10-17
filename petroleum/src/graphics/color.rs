@@ -53,7 +53,10 @@ macro_rules! create_button {
 macro_rules! draw_filled_rect {
     ($writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $color:expr) => {{
         use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
-        let rect = Rectangle::new(embedded_graphics::geometry::Point::new($x, $y), embedded_graphics::geometry::Size::new($w, $h));
+        let rect = Rectangle::new(
+            embedded_graphics::geometry::Point::new($x, $y),
+            embedded_graphics::geometry::Size::new($w, $h),
+        );
         let style = PrimitiveStyleBuilder::new()
             .fill_color($crate::graphics::color::u32_to_rgb888($color))
             .build();
@@ -65,7 +68,10 @@ macro_rules! draw_filled_rect {
 macro_rules! draw_border_rect {
     ($writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $fill_color:expr, $stroke_color:expr, $stroke_width:expr) => {{
         use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
-        let rect = Rectangle::new(embedded_graphics::geometry::Point::new($x, $y), embedded_graphics::geometry::Size::new($w, $h));
+        let rect = Rectangle::new(
+            embedded_graphics::geometry::Point::new($x, $y),
+            embedded_graphics::geometry::Size::new($w, $h),
+        );
         let style = PrimitiveStyleBuilder::new()
             .fill_color($crate::graphics::color::u32_to_rgb888($fill_color))
             .stroke_color($crate::graphics::color::u32_to_rgb888($stroke_color))

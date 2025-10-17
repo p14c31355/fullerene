@@ -3,13 +3,13 @@
 //! This module provides process creation, scheduling, and context switching
 //! capabilities for user-space programs.
 
+use crate::traits::PageTableHelper;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
-use crate::traits::PageTableHelper;
 
 /// Process ID type
 pub type ProcessId = u64;
@@ -292,7 +292,10 @@ pub fn schedule_next() {
     log::info!("Schedule_next: Starting process scheduling");
 
     let mut process_list = PROCESS_LIST.lock();
-    log::info!("Schedule_next: Acquired process list lock, {} processes", process_list.len());
+    log::info!(
+        "Schedule_next: Acquired process list lock, {} processes",
+        process_list.len()
+    );
 
     // Handle empty process list
     if process_list.is_empty() {
@@ -310,8 +313,12 @@ pub fn schedule_next() {
 
     loop {
         next_index = (next_index + 1) % process_list.len();
-        log::info!("Schedule_next: Checking process at index {}, name: {}, state: {:?}",
-                   next_index, process_list[next_index].name, process_list[next_index].state);
+        log::info!(
+            "Schedule_next: Checking process at index {}, name: {}, state: {:?}",
+            next_index,
+            process_list[next_index].name,
+            process_list[next_index].state
+        );
 
         if process_list[next_index].state == ProcessState::Ready {
             log::info!("Schedule_next: Found ready process at index {}", next_index);
@@ -324,7 +331,10 @@ pub fn schedule_next() {
             // All processes blocked, run idle
             if let Some(idle_idx) = process_list.iter().position(|p| p.name == "idle") {
                 next_index = idle_idx;
-                log::info!("Schedule_next: Switching to idle process at index {}", idle_idx);
+                log::info!(
+                    "Schedule_next: Switching to idle process at index {}",
+                    idle_idx
+                );
             } else {
                 log::info!("Schedule_next: No idle process found, using first process");
                 next_index = 0;
@@ -336,7 +346,11 @@ pub fn schedule_next() {
     // Update current process tracking
     *CURRENT_PROCESS_INDEX.lock() = next_index;
     *CURRENT_PROCESS.lock() = Some(process_list[next_index].id);
-    log::info!("Schedule_next: Set current process index to {}, PID {}", next_index, process_list[next_index].id);
+    log::info!(
+        "Schedule_next: Set current process index to {}, PID {}",
+        next_index,
+        process_list[next_index].id
+    );
 
     // Mark current as ready, next as running
     if current_index != next_index {

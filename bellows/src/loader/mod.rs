@@ -99,7 +99,12 @@ pub fn exit_boot_services_and_jump(
             EfiStatus::Success => {
                 #[cfg(feature = "debug_loader")]
                 {
-                    log::info!("Memory map acquired successfully on attempt {}, size={:#x}, key={:#x}", attempts, map_size, map_key);
+                    log::info!(
+                        "Memory map acquired successfully on attempt {}, size={:#x}, key={:#x}",
+                        attempts,
+                        map_size,
+                        map_key
+                    );
                     log::info!("About to call exit_boot_services...");
                 }
 
@@ -118,14 +123,18 @@ pub fn exit_boot_services_and_jump(
                     EfiStatus::Unsupported => {
                         #[cfg(feature = "debug_loader")]
                         {
-                            log::info!("exit_boot_services returned Unsupported, proceeding anyway");
+                            log::info!(
+                                "exit_boot_services returned Unsupported, proceeding anyway"
+                            );
                         }
                         break; // Proceed to jump to kernel
                     }
                     EfiStatus::InvalidParameter => {
                         #[cfg(feature = "debug_loader")]
                         {
-                            log::info!("exit_boot_services returned InvalidParameter, retrying get_memory_map...");
+                            log::info!(
+                                "exit_boot_services returned InvalidParameter, retrying get_memory_map..."
+                            );
                         }
                         // The map key is stale. Loop again to get a new memory map and key.
                         map_size = map_buffer_size;
@@ -135,7 +144,10 @@ pub fn exit_boot_services_and_jump(
                         let _ = (bs.free_pages)(map_phys_addr, alloc_pages); // Cleanup
                         #[cfg(feature = "debug_loader")]
                         {
-                            log::info!("Error: Failed to exit boot services: status={:#x}", exit_status as u32);
+                            log::info!(
+                                "Error: Failed to exit boot services: status={:#x}",
+                                exit_status as u32
+                            );
                         }
                         return Err(BellowsError::InvalidState("Failed to exit boot services."));
                     }
@@ -176,7 +188,12 @@ pub fn exit_boot_services_and_jump(
     // function pointer is assumed based on the successful PE file loading.
     #[cfg(feature = "debug_loader")]
     {
-        log::info!("Jumping to kernel at {:#x} with map at {:#x} size {:#x}", entry as usize, map_phys_addr, map_size);
+        log::info!(
+            "Jumping to kernel at {:#x} with map at {:#x} size {:#x}",
+            entry as usize,
+            map_phys_addr,
+            map_size
+        );
         log::info!("About to call kernel entry.");
     }
     entry(image_handle, system_table, map_ptr, map_size);

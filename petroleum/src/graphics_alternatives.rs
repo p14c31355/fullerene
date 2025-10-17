@@ -71,9 +71,7 @@ pub mod graphics_alternatives {
         }
 
         // If VESA detection fails, try bare-metal detection
-        _print(format_args!(
-            "EFI PCI enumeration failed, trying bare-metal detection\n"
-        ));
+        info_log!("EFI PCI enumeration failed, trying bare-metal detection");
         detect_bare_metal_graphics(bs)
     }
 
@@ -379,39 +377,27 @@ pub mod graphics_alternatives {
         // Create a reference to the protocol for calling methods
         let pci_io_ref = unsafe { &*guard.protocol };
 
-        let read_result = (pci_io_ref.pci_read)(
-            guard.protocol,
-            2,    // Dword width
-            0x10, // Offset - BAR0 offset (0x10)
-            6,    // Count - 6 BARs
-            config_buf.as_mut_ptr() as *mut core::ffi::c_void,
-        );
+        let read_result = crate::pci_read_bars!(pci_io_ref, guard.protocol, config_buf, 6, 0x10);
 
         if EfiStatus::from(read_result) != EfiStatus::Success {
-            _print(format_args!(
-                "[GOP-ALT] Failed to read PCI BARs: {:#x}\n",
-                read_result
-            ));
+            error_log!("Failed to read PCI BARs: {:#x}", read_result);
             return None;
         }
 
         // Analyze BAR0 (typically the framebuffer for virtio-gpu)
-        let bar0 = config_buf[0] & 0xFFFFFFF0; // Mask off lower 4 bits (flags)
-        let bar0_type = config_buf[0] & 0xF;
+        let (bar0, bar0_type, is_memory) = crate::extract_bar_info!(config_buf, 0);
 
         if bar0 == 0 {
-            _print(format_args!(
-                "[GOP-ALT] BAR0 is zero - invalid MMIO region\n"
-            ));
+            error_log!("BAR0 is zero - invalid MMIO region");
             return None;
         }
 
-        // Check if BAR0 is a memory-mapped region (bits 0-1 = 00 for 32-bit memory, 10 for 64-bit)
-        if bar0_type & 0x1 != 0 {
-            _print(format_args!(
-                "[GOP-ALT] BAR0 is I/O space (type: {}), expected memory space\n",
+        // Check if BAR0 is a memory-mapped region
+        if !is_memory {
+            error_log!(
+                "BAR0 is I/O space (type: {}), expected memory space",
                 bar0_type
-            ));
+            );
             return None;
         }
 

@@ -165,8 +165,6 @@ impl fmt::Write for UefiWriter {
 // Global writer instance
 pub static UEFI_WRITER: Mutex<UefiWriter> = Mutex::new(UefiWriter::new());
 
-
-
 /// Writes a string to the COM1 serial port.
 /// This is a very early debug function for use beforeUEFI writers are available.
 pub fn debug_print_str_to_com1(s: &str) {
@@ -249,7 +247,11 @@ pub fn format_hex_to_buffer(value: u64, buf: &mut [u8], max_digits: usize) -> us
     }
     while temp > 0 && i < max_digits && i < 16 {
         let digit = (temp % 16) as u8;
-        digit_buf[i] = if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) };
+        digit_buf[i] = if digit < 10 {
+            b'0' + digit
+        } else {
+            b'a' + (digit - 10)
+        };
         temp /= 16;
         i += 1;
     }
