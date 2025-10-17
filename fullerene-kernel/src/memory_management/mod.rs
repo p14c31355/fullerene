@@ -744,7 +744,9 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
     // Check if memory manager is initialized; if not, use current page table for composite mode
     if get_memory_manager().lock().is_none() {
         // Fallback: use current CR3 page table when memory manager not available
-        return Ok(PageTableManager::new());
+        let mut ptm = PageTableManager::new();
+        Initializable::init(&mut ptm)?;
+        return Ok(ptm);
     }
 
     // Allocate a new PML4 frame for the process page table
