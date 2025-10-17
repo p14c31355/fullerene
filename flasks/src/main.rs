@@ -434,7 +434,7 @@ fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {
         "-M",
         "q35",
         "-vga",
-        "cirrus",
+        "std",
         "-display",
         "gtk,gl=on,window-close=on,zoom-to-fit=on",
         "-serial",

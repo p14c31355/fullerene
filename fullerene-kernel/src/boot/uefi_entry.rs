@@ -322,8 +322,17 @@ pub extern "efiapi" fn efi_main(
     log::info!("init_common completed");
 
     // Initialize graphics with framebuffer configuration
-    if initialize_graphics_with_config(system_table) {
+    log::info!("Initialize graphics with framebuffer configuration");
+    let success = initialize_graphics_with_config(system_table);
+    log::info!("Graphics initialization result: {}", success);
+
+    if success {
         log::info!("Graphics initialized successfully");
+
+        // Now enable interrupts, after graphics setup
+        log::info!("Enabling interrupts...");
+        x86_64::instructions::interrupts::enable();
+        log::info!("Interrupts enabled");
 
         // Initialize keyboard input driver
         crate::keyboard::init();
@@ -336,10 +345,11 @@ pub extern "efiapi" fn efi_main(
 
         log::info!("Shell exited unexpectedly, entering idle loop");
     } else {
-        log::info!("Graphics initialization failed, entering idle loop");
+        log::info!("Graphics initialization failed, enabling interrupts anyway for debugging");
+        x86_64::instructions::interrupts::enable();
     }
 
-    log::info!("Entering idle loop (hlt_loop)");
+    // In case we reach here (shell returned or graphics failed), enter idle loop
     petroleum::halt_loop();
 }
 
