@@ -91,7 +91,9 @@ const VGA_COLOR_GREEN_ON_BLACK: u16 = 0x0200;
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    // Handle panic - in a real kernel, you'd log this or print to screen
-    // For now, just loop
+    // Log the panic information to the serial port for debugging.
+    log::error!("KERNEL PANIC: {}", info);
+    // For now, just loop to halt the system.
     loop {}
+}
 }
