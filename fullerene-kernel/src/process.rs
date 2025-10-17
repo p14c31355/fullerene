@@ -9,6 +9,7 @@ use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
+use crate::traits::PageTableHelper;
 
 /// Process ID type
 pub type ProcessId = u64;
@@ -212,7 +213,7 @@ pub fn create_process(name: &'static str, entry_point_address: VirtAddr) -> Proc
     let process_page_table =
         crate::memory_management::create_process_page_table().expect("Failed to create page table");
 
-    process.page_table_phys_addr = process_page_table.pml4_frame.expect("Page table should have valid frame").start_address();
+    process.page_table_phys_addr = PhysAddr::new(process_page_table.current_page_table() as u64);
     process.page_table = Some(process_page_table);
 
     process.init_context(kernel_stack_top);
@@ -258,9 +259,12 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
 
         // Properly free page table frames recursively
         if let Some(page_table) = process.page_table.take() {
-            let pml4_frame = page_table.pml4_frame.expect("Page table should have valid frame");
-            drop(page_table); // Explicit drop to release the mapper
-            crate::memory_management::deallocate_process_page_table(pml4_frame);
+            // For now, skip deallocation if no allocated pml4_frame
+            // This handles the case where page table was created with current CR3 (fallback)
+            if let Some(pml4_frame) = page_table.pml4_frame {
+                drop(page_table); // Explicit drop to release the mapper
+                crate::memory_management::deallocate_process_page_table(pml4_frame);
+            }
         }
 
         process.page_table = None; // Already taken above, this is redundant but safe

@@ -87,16 +87,15 @@ impl PageTableManager {
     pub fn init_paging(&mut self) -> SystemResult<()> {
         // If we have an allocated frame, use it for process-specific page tables
         // Otherwise, use the current active page table from CR3 (for system memory manager)
-        let table_frame = if let Some(frame) = self.pml4_frame {
+        let frame = if let Some(frame) = self.pml4_frame {
             // Use the allocated frame for this page table manager's custom table
-            self.current_page_table = frame.start_address().as_u64() as usize;
             frame
         } else {
             // Use the current active page table from CR3 for system page table manager
             let (current_frame, _) = x86_64::registers::control::Cr3::read();
-            self.current_page_table = current_frame.start_address().as_u64() as usize;
             current_frame
         };
+        self.current_page_table = frame.start_address().as_u64() as usize;
 
         // Create mapper using the appropriate page table
         unsafe {

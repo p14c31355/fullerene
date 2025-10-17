@@ -847,6 +847,9 @@ dependencies = [
 [[package]]
 name = "toluene"
 version = "0.1.0"
+dependencies = [
+ "petroleum",
+]
 
 [[package]]
 name = "unicode-ident"
