@@ -1,10 +1,12 @@
 use core::marker::{Send, Sync};
+use core::ptr::{read_volatile, write_volatile};
 use embedded_graphics::{geometry::Size, pixelcolor::Rgb888, prelude::*};
 use petroleum::common::EfiGraphicsPixelFormat;
 use petroleum::common::FullereneFramebufferConfig;
 use petroleum::common::VgaFramebufferConfig;
 use petroleum::graphics::rgb_pixel;
 use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
+use spin::{Mutex, Once};
 
 // Generic type aliases for cleaner code
 type FramebufferWriter32 = FramebufferWriter<u32>;
@@ -403,4 +405,106 @@ pub fn vga_color_index(r: u8, g: u8, b: u8) -> u32 {
     }
 
     best_index
+}
+
+/// Global simple framebuffer config (Redox vesad-style)
+pub static SIMPLE_FRAMEBUFFER_CONFIG: Once<spin::Mutex<Option<SimpleFramebufferConfig>>> = Once::new();
+
+/// Simple framebuffer config for recreation
+#[derive(Clone, Copy)]
+pub struct SimpleFramebufferConfig {
+    pub base_addr: usize,
+    pub width: usize,
+    pub height: usize,
+    pub stride: usize, // bytes per row
+    pub bytes_per_pixel: usize,
+}
+
+/// Get the simple framebuffer instance (creates it from config if needed)
+pub fn get_simple_framebuffer() -> Option<SimpleFramebuffer> {
+    SIMPLE_FRAMEBUFFER_CONFIG.get().and_then(|config_mutex| {
+        let config = config_mutex.lock();
+        config.as_ref().map(|cfg| SimpleFramebuffer::new(*cfg))
+    })
+}
+
+/// Initialize the simple framebuffer config
+pub fn init_simple_framebuffer_config(config: SimpleFramebufferConfig) {
+    SIMPLE_FRAMEBUFFER_CONFIG.call_once(|| Mutex::new(Some(config)));
+}
+
+/// Simple Framebuffer struct for direct MMIO pixel manipulation (Redox vesad-style)
+pub struct SimpleFramebuffer {
+    pub base: usize, // Use usize instead of raw pointer to avoid Send/Sync issues
+    pub width: usize,
+    pub height: usize,
+    pub stride: usize, // bytes per row
+    pub bytes_per_pixel: usize,
+}
+
+impl SimpleFramebuffer {
+    /// Create a new framebuffer from GOP config
+    pub fn new(config: SimpleFramebufferConfig) -> Self {
+        Self {
+            base: config.base_addr,
+            width: config.width,
+            height: config.height,
+            stride: config.stride,
+            bytes_per_pixel: config.bytes_per_pixel,
+        }
+    }
+
+    /// Clear the entire framebuffer
+    pub fn clear(&mut self, color: u32) {
+        for y in 0..self.height {
+            let row_base = self.base + y * self.stride;
+            for x in 0..self.width {
+                let offset = x * self.bytes_per_pixel;
+                let pixel_addr = (row_base + offset) as *mut u32;
+                unsafe { write_volatile(pixel_addr, color); }
+            }
+        }
+    }
+
+    /// Draw a single pixel (orbclient-style)
+    pub fn draw_pixel(&mut self, x: usize, y: usize, color: u32) {
+        if x >= self.width || y >= self.height {
+            return;
+        }
+        let row_base = self.base + y * self.stride;
+        let offset = x * self.bytes_per_pixel;
+        let pixel_addr = (row_base + offset) as *mut u32;
+        unsafe { write_volatile(pixel_addr, color); }
+    }
+
+    /// Draw a filled rectangle (orbclient-style)
+    pub fn draw_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: u32) {
+        for dy in 0..height {
+            if y + dy >= self.height {
+                break;
+            }
+            for dx in 0..width {
+                if x + dx >= self.width {
+                    break;
+                }
+                self.draw_pixel(x + dx, y + dy, color);
+            }
+        }
+    }
+
+    /// Read a pixel (for reference, though not used in Redox)
+    pub fn get_pixel(&self, x: usize, y: usize) -> u32 {
+        if x >= self.width || y >= self.height {
+            return 0;
+        }
+        let row_base = self.base + y * self.stride;
+        let offset = x * self.bytes_per_pixel;
+        let pixel_addr = (row_base + offset) as *const u32;
+        unsafe { read_volatile(pixel_addr) }
+    }
+
+    /// Get framebuffer dimensions
+    pub fn dimensions(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
 }

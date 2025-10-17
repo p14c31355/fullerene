@@ -112,6 +112,16 @@ pub fn init(config: &FullereneFramebufferConfig) {
         config.width, config.height, config.stride, config.pixel_format
     ));
 
+    // Initialize simple framebuffer config (Redox vesad-style)
+    let simple_config = super::framebuffer::SimpleFramebufferConfig {
+        base_addr: config.address as usize,
+        width: config.width as usize,
+        height: config.height as usize,
+        stride: config.stride as usize * 4, // stride is in pixels, convert to bytes
+        bytes_per_pixel: 4, // Assume 32-bit pixels for UEFI graphics
+    };
+    super::framebuffer::init_simple_framebuffer_config(simple_config);
+
     // Check pixel format to determine whether to use 32-bit or 8-bit writer
     let (writer, fb_enum) = match config.pixel_format {
         petroleum::common::EfiGraphicsPixelFormat::PixelFormatMax => {
