@@ -16,7 +16,7 @@ pub unsafe extern "C" fn _start() -> ! {
         address: 0xA0000,
         width: 320,
         height: 200,
-        bpp: 32,
+        bpp: 8,
     };
     graphics::init_vga(&vga_config);
 
