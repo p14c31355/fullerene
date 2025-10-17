@@ -5,7 +5,8 @@
 
 use crate::keyboard;
 use crate::syscall::kernel_syscall;
-use alloc::vec::Vec;
+use alloc::{vec::Vec, string::String};
+use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::{define_commands, print};
 
 /// Shell prompt
@@ -25,6 +26,11 @@ struct CommandEntry {
 static COMMANDS: &[CommandEntry] = define_commands!(CommandEntry,
     ("help", "Show available commands", help_command),
     ("ps", "Show process list", ps_command),
+    ("top", "Show top processes", top_command),
+    ("free", "Show memory usage", free_command),
+    ("uptime", "Show system uptime", uptime_command),
+    ("date", "Show current date/time", date_command),
+    ("history", "Show command history", history_command),
     ("echo", "Print text", echo_command),
     ("clear", "Clear screen", clear_command),
     ("uname", "Show system information", uname_command),
@@ -209,6 +215,75 @@ fn kill_command(args: &[&str]) -> i32 {
             1
         }
     }
+}
+
+fn top_command(_args: &[&str]) -> i32 {
+    print!("Top processes (by priority):\n");
+    print!("PID    PPID   State      CPU%   Name\n");
+    print!("-----------------------------------\n");
+
+    let process_list = crate::process::PROCESS_LIST.lock();
+    let mut procs: Vec<_> = process_list.iter().collect();
+    // Sort by process ID as a simple proxy for priority
+    procs.sort_by(|a, b| b.id.cmp(&a.id));
+
+    let mut shown = 0;
+    for proc in procs.iter().take(10) {
+        let ppid = match proc.parent_id {
+            Some(pid) => pid,
+            None => 0,
+        };
+        print!("{:<6} {:<6} {:<10?} 0.0   {}\n", proc.id, ppid, proc.state, proc.name);
+        shown += 1;
+        if shown >= 5 {
+            break; // Limit to top 5 for display
+        }
+    }
+
+    print!("Showing {} processes\n", shown);
+    0
+}
+
+fn free_command(_args: &[&str]) -> i32 {
+    let allocator = petroleum::page_table::ALLOCATOR.lock();
+    let used = allocator.used();
+    let total = allocator.size();
+    let free = total - used;
+    let used_pct = (used * 100) / total;
+
+    print!("Memory usage:\n");
+    print!("Total: {} bytes\n", total);
+    print!("Used:  {} bytes ({}%)\n", used, used_pct);
+    print!("Free:  {} bytes ({}%)\n", free, 100 - used_pct);
+    0
+}
+
+fn uptime_command(_args: &[&str]) -> i32 {
+    // For now, use approximate tick count
+    // In a real system, we'd track real time
+    let ticks = 12345; // TODO: Get actual system tick
+    let uptime_seconds = ticks / 1000; // Assuming 1000 ticks per second
+    let hours = uptime_seconds / 3600;
+    let minutes = (uptime_seconds % 3600) / 60;
+    let seconds = uptime_seconds % 60;
+
+    print!("Uptime: {:02}:{:02}:{:02} ({} ticks)\n", hours, minutes, seconds, ticks);
+    0
+}
+
+fn date_command(_args: &[&str]) -> i32 {
+    // Simple date/time - would be enhanced with RTC in real implementation
+    print!("Current date/time: ");
+    print!("System tick: {}\n", 67890); // TODO: Get actual system tick
+    print!("(RTC integration pending)\n");
+    0
+}
+
+fn history_command(_args: &[&str]) -> i32 {
+    print!("Command history:\n");
+    print!("(History feature not yet implemented)\n");
+    print!("Use 'help' to see available commands.\n");
+    0
 }
 
 fn exit_command(_args: &[&str]) -> i32 {

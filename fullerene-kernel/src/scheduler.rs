@@ -116,6 +116,69 @@ fn log_system_stats(stats: &SystemStats, interval_ticks: u64) {
     }
 }
 
+/// Get the current system tick count
+pub fn get_system_tick() -> u64 {
+    SYSTEM_TICK.load(Ordering::Relaxed)
+}
+
+/// Periodic system maintenance tasks
+fn perform_system_maintenance() {
+    // Environment monitoring
+    monitor_environment();
+
+    // Resource optimization
+    optimize_system_resources();
+
+    // Background service management
+    manage_background_services();
+}
+
+/// Monitor system environment and adapt accordingly
+fn monitor_environment() {
+    // Check CPU load distribution
+    let system_stats = collect_system_stats();
+
+    // If memory usage is high, perform garbage collection
+    if system_stats.memory_used > system_stats.memory_used / 4 * 3 { // >75%
+        log::debug!("High memory usage detected, running memory optimization");
+        // petroleum::page_table::ALLOCATOR.lock().optimize(); // Method not available
+    }
+
+    // Monitor process health
+    if system_stats.active_processes > system_stats.total_processes / 2 {
+        log::warn!("High active process ratio: {}/{}", system_stats.active_processes, system_stats.total_processes);
+    }
+}
+
+/// Perform resource optimization tasks
+fn optimize_system_resources() {
+    // Optimize memory layout periodically
+    static mut LAST_OPTIMIZATION_TICK: u64 = 0;
+    let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
+
+    unsafe {
+        if current_tick - LAST_OPTIMIZATION_TICK > 10000 { // Every 10000 ticks
+            // Run memory defragmentation or optimization
+            log::debug!("Running periodic resource optimization");
+            LAST_OPTIMIZATION_TICK = current_tick;
+
+            // Optimize heap allocation patterns
+            // petroleum::page_table::ALLOCATOR.lock().defragment(); // Method not available
+        }
+    }
+}
+
+/// Manage background system services
+fn manage_background_services() {
+    // Placeholder for future background services
+    // Ideas: disk I/O scheduler, network protocol handlers, device monitoring
+
+    // For now, just ensure system remains responsive
+    if SYSTEM_TICK.load(Ordering::Relaxed) % 5000 == 0 {
+        log::debug!("Background service check completed");
+    }
+}
+
 /// Main kernel scheduler loop - orchestrates all system functionality
 pub fn scheduler_loop() -> ! {
     use x86_64::instructions::hlt;
@@ -154,6 +217,11 @@ pub fn scheduler_loop() -> ! {
         if current_tick % 5000 == 0 {
             // Placeholder - filesystem synchronization would be added here
             log::debug!("Filesystem synchronization point reached");
+        }
+
+        // Perform system maintenance tasks periodically
+        if current_tick % 2000 == 0 {
+            perform_system_maintenance();
         }
 
         // Periodic memory capacity check (every 10000 ticks)

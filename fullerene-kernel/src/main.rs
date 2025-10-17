@@ -17,6 +17,7 @@ mod keyboard; // Keyboard input driver
 mod loader; // Program loader
 mod memory_management; // Virtual memory management
 mod process; // Process management
+mod scheduler;
 mod shell;
 mod syscall;
 mod traits;
@@ -29,6 +30,7 @@ mod memory;
 mod test_process;
 
 extern crate alloc;
+extern crate fullerene_kernel;
 
 use spin::Once;
 

@@ -1,6 +1,5 @@
 // Use crate imports
 use crate::scheduler::scheduler_loop;
-use crate::heap::memory_map::MEMORY_MAP;
 
 use crate::graphics::framebuffer::FramebufferLike;
 use crate::heap;
