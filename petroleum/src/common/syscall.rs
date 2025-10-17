@@ -2,23 +2,23 @@
 #[repr(u64)]
 #[derive(Debug, Clone, Copy)]
 pub enum SyscallNumber {
-    /// Exit the current process (exit_code in EBX)
+    /// Exit the current process (exit_code in RDI)
     Exit = 1,
-    /// Write to file descriptor (fd in EBX, buffer in ECX, count in EDX)
+    /// Write to file descriptor (fd in RDI, buffer in RSI, count in RDX)
     Write = 4,
-    /// Open file (filename in EBX, flags in ECX, mode in EDX)
+    /// Open file (filename in RDI, flags in RSI, mode in RDX)
     Open = 5,
-    /// Close file descriptor (fd in EBX)
+    /// Close file descriptor (fd in RDI)
     Close = 6,
-    /// Read from file descriptor (fd in EBX, buffer in ECX, count in EDX)
+    /// Read from file descriptor (fd in RDI, buffer in RSI, count in RDX)
     Read = 3,
-    /// Create a new process (entry_point in EBX)
+    /// Create a new process (entry_point in RDI)
     Fork = 2,
-    /// Wait for process to finish (pid in EBX)
+    /// Wait for process to finish (pid in RDI)
     Wait = 7,
     /// Get current process ID
     GetPid = 20,
-    /// Get process name (buffer in EBX, size in ECX)
+    /// Get process name (buffer in RDI, size in RSI)
     GetProcessName = 21,
     /// Yield to scheduler
     Yield = 22,
