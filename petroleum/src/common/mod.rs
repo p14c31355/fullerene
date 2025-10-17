@@ -12,6 +12,7 @@ pub struct VgaFramebufferConfig {
 pub mod error;
 pub mod logging;
 pub mod macros;
+pub mod syscall;
 
 // Common VGA mode setup helper to avoid code duplication
 pub fn setup_vga_mode_common() {
@@ -22,4 +23,5 @@ pub mod uefi;
 
 // Re-exports to maintain compatibility and new macros
 pub use error::*;
+pub use syscall::*;
 pub use uefi::*;

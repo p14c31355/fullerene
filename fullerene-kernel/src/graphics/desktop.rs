@@ -40,14 +40,8 @@ macro_rules! draw_border_rect {
     }};
 }
 
-// Common colors as constants
-const COLOR_LIGHT_GRAY: u32 = 0xE0E0E0;
-const COLOR_BLACK: u32 = 0x000000;
-const COLOR_DARK_GRAY: u32 = 0xA0A0A0;
-const COLOR_WHITE: u32 = 0xFFFFFF;
-const COLOR_LIGHT_BLUE: u32 = 0xADD8E6;
-const COLOR_TASKBAR: u32 = 0xC0C0C0;
-const COLOR_WINDOW_BG: u32 = 0xF8F8F8;
+// Use consolidated colors from petroleum
+use petroleum::{calc_text_width, COLOR_BLACK, COLOR_DARK_GRAY, COLOR_LIGHT_BLUE, COLOR_LIGHT_GRAY, COLOR_TASKBAR, COLOR_WHITE, COLOR_WINDOW_BG};
 
 // Helper function to draw centered text
 fn draw_centered_text<W: FramebufferLike>(
@@ -66,10 +60,7 @@ fn draw_centered_text<W: FramebufferLike>(
     text_obj.draw(writer).ok();
 }
 
-// Text width calculation for monospaced font
-fn calc_text_width(text: &str) -> i32 {
-    (text.len() * 6) as i32
-}
+// Using calc_text_width from petroleum
 
 // Generic window drawing trait
 trait WindowElement {

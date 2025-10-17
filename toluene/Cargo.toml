@@ -24,3 +24,4 @@ binary = []
 test = []
 
 [dependencies]
+petroleum = { path = "../petroleum" }

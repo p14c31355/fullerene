@@ -38,6 +38,14 @@ pub fn find_framebuffer_config(
         system_table.number_of_table_entries
     ));
 
+    // Check for null pointer after UEFI boot services exit
+    if system_table.configuration_table.is_null() {
+        petroleum::serial::serial_log(format_args!(
+            "find_framebuffer_config: Configuration table is null (UEFI boot services exited)\n"
+        ));
+        return None;
+    }
+
     let config_table_entries = unsafe {
         core::slice::from_raw_parts(
             system_table.configuration_table,

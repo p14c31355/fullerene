@@ -1,3 +1,6 @@
+// Re-export SyscallNumber from petroleum
+pub use petroleum::SyscallNumber;
+
 use alloc::string::String;
 use alloc::vec::Vec;
 use x86_64::VirtAddr;
@@ -24,31 +27,7 @@ pub enum SyscallError {
     OutOfMemory = 12,
 }
 
-/// System call numbers
-#[repr(u64)]
-#[derive(Debug, Clone, Copy)]
-pub enum SyscallNumber {
-    /// Exit the current process (exit_code in EBX)
-    Exit = 1,
-    /// Write to file descriptor (fd in EBX, buffer in ECX, count in EDX)
-    Write = 4,
-    /// Open file (filename in EBX, flags in ECX, mode in EDX)
-    Open = 5,
-    /// Close file descriptor (fd in EBX)
-    Close = 6,
-    /// Read from file descriptor (fd in EBX, buffer in ECX, count in EDX)
-    Read = 3,
-    /// Create a new process (entry_point in EBX)
-    Fork = 2,
-    /// Wait for process to finish (pid in EBX)
-    Wait = 7,
-    /// Get current process ID
-    GetPid = 20,
-    /// Get process name (buffer in EBX, size in ECX)
-    GetProcessName = 21,
-    /// Yield to scheduler
-    Yield = 22,
-}
+
 
 /// Helper function to validate user buffer access
 pub fn validate_user_buffer(

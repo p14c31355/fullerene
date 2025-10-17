@@ -24,11 +24,13 @@ pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig}
 pub use graphics::{
     Color, ColorCode, HardwarePorts, ScreenChar, TextBufferOperations, VgaPortOps,
     init_vga_graphics,
+    color::{self, *},
 };
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
 pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 pub use uefi_helpers::handle_panic;
 pub use common::logging::{SystemError, SystemResult};
+pub use common::syscall::*;
 
 // Heap allocation exports
 pub use page_table::ALLOCATOR;

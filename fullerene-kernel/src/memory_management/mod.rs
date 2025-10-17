@@ -153,7 +153,10 @@ impl UnifiedMemoryManager {
         // Initialize frame allocator with memory map
         self.frame_allocator.init_with_memory_map(memory_map)?;
 
-        // Initialize page table manager
+        // Page table manager will now use the active CR3 page table directly,
+        // so no need to allocate a separate frame
+
+        // Initialize page table manager (it will initialize using current CR3)
         Initializable::init(&mut self.page_table_manager)?;
 
         // Create kernel address space (process 0)
@@ -738,6 +741,14 @@ pub fn switch_to_page_table(page_table: &ProcessPageTable) -> SystemResult<()> {
 
 /// Create a new process page table
 pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
+    // Check if memory manager is initialized; if not, use current page table for composite mode
+    if get_memory_manager().lock().is_none() {
+        // Fallback: use current CR3 page table when memory manager not available
+        let mut ptm = PageTableManager::new();
+        Initializable::init(&mut ptm)?;
+        return Ok(ptm);
+    }
+
     // Allocate a new PML4 frame for the process page table
     let mut manager_guard = get_memory_manager().lock();
     let manager = manager_guard.as_mut().ok_or(SystemError::InternalError)?;
@@ -748,6 +759,12 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
         .allocate_frame()
         .map_err(|_| SystemError::FrameAllocationFailed)?;
 
+    // Zero the allocated page table frame to ensure it's a valid page table
+    let new_table_virt = physical_to_virtual(pml4_frame) as *mut u64;
+    unsafe {
+        core::slice::from_raw_parts_mut(new_table_virt, 512).fill(0);
+    }
+
     // Copy kernel mappings to the new page table
     // This involves copying the higher half kernel mappings from the current page table
     let current_cr3 = unsafe { x86_64::registers::control::Cr3::read() };
@@ -755,13 +772,13 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
 
     // Map the new page table temporarily to copy kernel mappings
     let kernel_table_virt = physical_to_virtual(kernel_table_phys.try_into().unwrap());
-    let new_table_virt = physical_to_virtual(pml4_frame.try_into().unwrap());
+    let new_table_virt_u64 = new_table_virt as u64;
 
     // Copy the kernel page table entries (PML4[256..512])
     unsafe {
         core::ptr::copy_nonoverlapping(
             (kernel_table_virt + 256 * 8) as *const u64,
-            (new_table_virt + 256 * 8) as *mut u64,
+            (new_table_virt_u64 + 256 * 8) as *mut u64,
             256,
         );
     }
