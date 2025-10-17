@@ -73,41 +73,41 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
 
     petroleum::serial::serial_log(format_args!("GDT: GDT built\n"));
 
-    // Load GDT - required for proper segmentation in both BIOS and UEFI
-    petroleum::serial::serial_log(format_args!("About to load GDT...\n"));
-    petroleum::serial::serial_log(format_args!("GDT table address: {:p}\n", gdt as *const GlobalDescriptorTable as *const u8));
-    gdt.load();
-    petroleum::serial::serial_log(format_args!("GDT: GDT loaded\n"));
+    #[cfg(not(target_os = "uefi"))]
+    {
+        // Load GDT - required for proper segmentation in BIOS mode
+        petroleum::serial::serial_log(format_args!("About to load GDT...\n"));
+        gdt.load();
+        petroleum::serial::serial_log(format_args!("GDT: GDT loaded\n"));
 
-    unsafe {
-        // Reload CS register in both BIOS and UEFI modes as it's crucial after GDT reload
-        petroleum::serial::serial_log(format_args!("About to set CS register...\n"));
-        CS::set_reg(*CODE_SELECTOR.get().unwrap());
-        petroleum::serial::serial_log(format_args!("GDT: CS set\n"));
+        unsafe {
+            // Reload CS register in BIOS mode as it's crucial after GDT reload
+            petroleum::serial::serial_log(format_args!("About to set CS register...\n"));
+            CS::set_reg(*CODE_SELECTOR.get().unwrap());
+            petroleum::serial::serial_log(format_args!("GDT: CS set\n"));
 
-        #[cfg(not(target_os = "uefi"))]
-        {
             petroleum::serial::serial_log(format_args!("About to load TSS...\n"));
             load_tss(*TSS_SELECTOR.get().unwrap());
             petroleum::serial::serial_log(format_args!("GDT: TSS loaded\n"));
-        }
-        #[cfg(target_os = "uefi")]
-        {
-            petroleum::serial::serial_log(format_args!("Skipping TSS loading in UEFI mode\n"));
-        }
-        debug_print_str("GDT: Loaded and segments set\n");
+            debug_print_str("GDT: Loaded and segments set\n");
 
-        // Set data segment registers to kernel data segment for proper I/O operations
-        petroleum::serial::serial_log(format_args!("Setting data segment registers...\n"));
-        if let Some(data_sel) = KERNEL_DATA_SELECTOR.get() {
-            use x86_64::registers::segmentation::{DS, SS, ES, FS, GS};
-            DS::set_reg(*data_sel);
-            SS::set_reg(*data_sel);
-            ES::set_reg(*data_sel);
-            FS::set_reg(*data_sel);
-            GS::set_reg(*data_sel);
+            // Set data segment registers to kernel data segment for proper I/O operations
+            petroleum::serial::serial_log(format_args!("Setting data segment registers...\n"));
+            if let Some(data_sel) = KERNEL_DATA_SELECTOR.get() {
+                use x86_64::registers::segmentation::{DS, SS, ES, FS, GS};
+                DS::set_reg(*data_sel);
+                SS::set_reg(*data_sel);
+                ES::set_reg(*data_sel);
+                FS::set_reg(*data_sel);
+                GS::set_reg(*data_sel);
+            }
+            petroleum::serial::serial_log(format_args!("Data segment registers set\n"));
         }
-        petroleum::serial::serial_log(format_args!("Data segment registers set\n"));
+    }
+    #[cfg(target_os = "uefi")]
+    {
+        // Skip GDT reload and TSS loading in UEFI mode to avoid stack pointer corruption
+        petroleum::serial::serial_log(format_args!("Skipping GDT reload and TSS loading in UEFI mode\n"));
     }
 
     // Mark as initialized

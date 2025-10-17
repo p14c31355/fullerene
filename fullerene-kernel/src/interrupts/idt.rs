@@ -16,6 +16,17 @@ macro_rules! setup_idt_handler {
     };
 }
 
+/// Macro to set up IDT handler with stack index
+macro_rules! setup_idt_handler_with_stack {
+    ($idt:expr, $field:ident, $handler:ident, $stack_index:expr) => {
+        unsafe {
+            $idt.$field
+                .set_handler_fn($handler)
+                .set_stack_index($stack_index);
+        }
+    };
+}
+
 // Global Interrupt Descriptor Table
 lazy_static! {
     pub static ref IDT: InterruptDescriptorTable = {
@@ -24,20 +35,16 @@ lazy_static! {
         // Set up CPU exception handlers
         setup_idt_handler!(idt, breakpoint, breakpoint_handler);
         setup_idt_handler!(idt, page_fault, page_fault_handler);
-        unsafe {
-            idt.double_fault
-                .set_handler_fn(double_fault_handler)
-                .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
-        }
+        setup_idt_handler_with_stack!(idt, double_fault, double_fault_handler, gdt::DOUBLE_FAULT_IST_INDEX);
 
         // Set up hardware interrupt handlers
         unsafe {
             idt[TIMER_INTERRUPT_INDEX as u8]
                 .set_handler_fn(timer_handler)
                 .set_stack_index(gdt::TIMER_IST_INDEX);
+            idt[KEYBOARD_INTERRUPT_INDEX as u8].set_handler_fn(keyboard_handler);
+            idt[MOUSE_INTERRUPT_INDEX as u8].set_handler_fn(mouse_handler);
         }
-        idt[KEYBOARD_INTERRUPT_INDEX as u8].set_handler_fn(keyboard_handler);
-        idt[MOUSE_INTERRUPT_INDEX as u8].set_handler_fn(mouse_handler);
 
         idt
     };

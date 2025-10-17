@@ -11,6 +11,8 @@
 #![feature(sync_unsafe_cell)]
 #![feature(vec_into_raw_parts)]
 
+use core::panic::PanicInfo;
+
 // Re-export consolidated logging types from petroleum - must come before traits mod to be available in traits.rs
 pub use petroleum::common::logging::{SystemError, SystemResult};
 
@@ -86,3 +88,11 @@ static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
 
 const VGA_BUFFER_ADDRESS: usize = 0xb8000;
 const VGA_COLOR_GREEN_ON_BLACK: u16 = 0x0200;
+
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    // Log the panic information to the serial port for debugging.
+    log::error!("KERNEL PANIC: {}", info);
+    // For now, just loop to halt the system.
+    loop {}
+}
