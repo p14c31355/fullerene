@@ -123,7 +123,9 @@ impl TextBufferOperations for VgaBuffer {
             ascii_character: b' ',
             color_code: self.color_code,
         };
-        clear_buffer!(self, BUFFER_HEIGHT, BUFFER_WIDTH, blank);
+        for row in 0..BUFFER_HEIGHT {
+            self.buffer[row].fill(blank);
+        }
         self.column_position = 0;
         self.row_position = 0;
     }
