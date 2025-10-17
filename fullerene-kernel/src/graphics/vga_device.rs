@@ -139,11 +139,12 @@ impl Initializable for VgaDevice {
     fn priority(&self) -> i32 {
         10 // High priority for display device
     }
+
 }
 
 impl ErrorLogging for VgaDevice {
     fn log_error(&self, error: &SystemError, context: &'static str) {
-        log::error!("SystemError({}): {}", *error as u32, context);
+        log::error!("{}: {:?}", context, error);
     }
 
     fn log_warning(&self, message: &'static str) {

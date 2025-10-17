@@ -272,25 +272,4 @@ impl Initializable for PageTableManager {
     }
 }
 
-// Implementation of ErrorLogging trait for PageTableManager
-impl ErrorLogging for PageTableManager {
-    fn log_error(&self, error: &SystemError, context: &'static str) {
-        log::error!("SystemError({}): {}", (*error) as u32, context);
-    }
-
-    fn log_warning(&self, message: &'static str) {
-        log::warn!("{}", message);
-    }
-
-    fn log_info(&self, message: &'static str) {
-        log::info!("{}", message);
-    }
-
-    fn log_debug(&self, message: &'static str) {
-        log::debug!("{}", message);
-    }
-
-    fn log_trace(&self, message: &'static str) {
-        log::trace!("{}", message);
-    }
-}
+// ErrorLogging impl for PageTableManager removed - use petroleum::ERROR_LOGGER instead

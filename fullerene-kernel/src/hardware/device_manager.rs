@@ -142,7 +142,7 @@ impl DeviceManager {
 
         for device_entry in device_list {
             if let Err(e) = device_entry.device.init() {
-                log_error!(&e, "Failed to initialize device");
+                petroleum::log_error!(&e, "Failed to initialize device");
                 return Err(e);
             }
         }
@@ -208,27 +208,7 @@ impl Initializable for DeviceManager {
     }
 }
 
-impl ErrorLogging for DeviceManager {
-    fn log_error(&self, error: &SystemError, context: &'static str) {
-        log::error!("Error: {:?} in {}", error, context);
-    }
-
-    fn log_warning(&self, message: &'static str) {
-        log::warn!("{}", message);
-    }
-
-    fn log_info(&self, message: &'static str) {
-        log::info!("{}", message);
-    }
-
-    fn log_debug(&self, message: &'static str) {
-        log::debug!("{}", message);
-    }
-
-    fn log_trace(&self, message: &'static str) {
-        log::trace!("{}", message);
-    }
-}
+// ErrorLogging impl for DeviceManager removed - use petroleum::ERROR_LOGGER instead
 
 // Global device manager instance
 static DEVICE_MANAGER: Mutex<Option<DeviceManager>> = Mutex::new(None);
@@ -298,13 +278,7 @@ mod tests {
         }
     }
 
-    impl ErrorLogging for MockDevice {
-        fn log_error(&self, _error: &SystemError, _context: &'static str) {}
-        fn log_warning(&self, _message: &'static str) {}
-        fn log_info(&self, _message: &'static str) {}
-        fn log_debug(&self, _message: &'static str) {}
-        fn log_trace(&self, _message: &'static str) {}
-    }
+// ErrorLogging impl for MockDevice removed - use petroleum::ERROR_LOGGER instead
 
     impl HardwareDevice for MockDevice {
         fn device_name(&self) -> &'static str {

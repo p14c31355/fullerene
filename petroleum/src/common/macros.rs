@@ -173,3 +173,26 @@ macro_rules! static_str {
         S
     }};
 }
+
+/// Unified print macros using the log crate for consistent logging across all crates
+/// Uses log::info! for println! and serial output for print!
+#[macro_export]
+macro_rules! println {
+    () => {
+        log::info!("");
+    };
+    ($($arg:tt)*) => {
+        log::info!("{}", format_args!($($arg)*));
+    };
+}
+
+/// Unified print macro using serial output for direct serial logging
+#[macro_export]
+macro_rules! print {
+    () => {
+        $crate::serial::_print(format_args!(""));
+    };
+    ($($arg:tt)*) => {
+        $crate::serial::_print(format_args!($($arg)*));
+    };
+}

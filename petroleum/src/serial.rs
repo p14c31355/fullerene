@@ -165,16 +165,7 @@ impl fmt::Write for UefiWriter {
 // Global writer instance
 pub static UEFI_WRITER: Mutex<UefiWriter> = Mutex::new(UefiWriter::new());
 
-#[macro_export]
-macro_rules! print {
-    ($($arg:tt)*) => ($crate::serial::_print(format_args!($($arg)*)));
-}
 
-#[macro_export]
-macro_rules! println {
-    () => ($crate::print!("\n"));
-    ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
-}
 
 /// Writes a string to the COM1 serial port.
 /// This is a very early debug function for use beforeUEFI writers are available.
