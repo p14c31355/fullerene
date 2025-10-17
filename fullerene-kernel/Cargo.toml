@@ -37,6 +37,7 @@ bitflags = { version = "2.4", default-features = false }
 volatile = { version = "0.6", default-features = false }
 pc-keyboard = { version = "0.8.0", default-features = false }
 log = { version = "0.4.28", default-features = false }
+heapless = { version = "0.8", default-features = false }
 # shell-words = "1.1"  # Cannot use in no_std kernel
 
 [features]

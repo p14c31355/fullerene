@@ -24,6 +24,7 @@ pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig}
 pub use graphics::{
     Color, ColorCode, HardwarePorts, ScreenChar, TextBufferOperations, VgaPortOps,
     init_vga_graphics,
+    color::{self, *, rgb_pixel, u32_to_rgb888, COLOR_LIGHT_GRAY, COLOR_BLACK, COLOR_DARK_GRAY, COLOR_WHITE, COLOR_LIGHT_BLUE, COLOR_TASKBAR, COLOR_WINDOW_BG},
 };
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
 pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
