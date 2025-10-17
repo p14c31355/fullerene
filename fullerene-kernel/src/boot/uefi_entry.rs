@@ -295,9 +295,13 @@ pub extern "efiapi" fn efi_main(
     write_serial_bytes!(0x3F8, 0x3FD, b"Basic init complete logged\n");
     petroleum::serial::serial_log(format_args!("basic init complete logged successfully\n"));
 
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to init memory manager\n");
+
     // Initialize the global memory manager with the EFI memory map
     log::info!("Initializing global memory manager...");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Calling MEMORY_MAP.get()\n");
     if let Some(memory_map) = MEMORY_MAP.get() {
+        write_serial_bytes!(0x3F8, 0x3FD, b"MEMORY_MAP.get() succeeded\n");
         if let Err(e) = crate::memory_management::init_memory_manager(memory_map) {
             log::error!("Failed to initialize global memory manager: {:?}. Halting.", e);
             petroleum::halt_loop();

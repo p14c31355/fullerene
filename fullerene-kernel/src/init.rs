@@ -10,7 +10,11 @@ pub fn init_common() {
     crate::vga::init_vga();
     write_serial_bytes!(0x3F8, 0x3FD, b"init_common: VGA init done\n");
 
-
+    // Now safe to initialize APIC and enable interrupts (after stable page tables and heap)
+    write_serial_bytes!(0x3F8, 0x3FD, b"init_common: About to init APIC\n");
+    interrupts::init_apic();
+    write_serial_bytes!(0x3F8, 0x3FD, b"init_common: APIC init done\n");
+    log::info!("Kernel: APIC initialized and interrupts enabled");
 
     write_serial_bytes!(0x3F8, 0x3FD, b"init_common: About to init process\n");
     crate::process::init();
