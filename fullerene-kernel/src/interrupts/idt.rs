@@ -36,7 +36,7 @@ lazy_static! {
         setup_idt_handler!(idt, breakpoint, breakpoint_handler);
         setup_idt_handler!(idt, page_fault, page_fault_handler);
 
-                let mut double_fault_entry = &mut idt.double_fault;
+        let mut double_fault_entry = &mut idt.double_fault;
         double_fault_entry.set_handler_fn(double_fault_handler);
         #[cfg(not(target_os = "uefi"))]
         unsafe {
