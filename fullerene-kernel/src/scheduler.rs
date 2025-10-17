@@ -6,6 +6,7 @@
 use x86_64::VirtAddr;
 use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicU64, Ordering};
+use petroleum::{TextBufferOperations, Color, ColorCode, ScreenChar};
 
 // System-wide counters and statistics
 static SYSTEM_TICK: AtomicU64 = AtomicU64::new(0);
@@ -112,6 +113,49 @@ fn log_system_stats(stats: &SystemStats, interval_ticks: u64) {
                 stats.uptime_ticks
             );
             LAST_LOG_TICK = current_tick;
+        }
+    }
+}
+
+/// Display system statistics on VGA periodically
+fn display_system_stats_on_vga(stats: &SystemStats, interval_ticks: u64) {
+    static mut LAST_DISPLAY_TICK: u64 = 0;
+
+    let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
+    unsafe {
+        if current_tick - LAST_DISPLAY_TICK >= interval_ticks {
+            if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {
+                let uptime_minutes = stats.uptime_ticks / 60000; // Assuming ~1000 ticks per second
+                let uptime_seconds = (stats.uptime_ticks % 60000) / 1000;
+
+                let mut vga_writer = vga_buffer.lock();
+
+                // Clear bottom rows for system info display
+                let blank_char = petroleum::ScreenChar {
+                    ascii_character: b' ',
+                    color_code: petroleum::ColorCode::new(petroleum::Color::Black, petroleum::Color::Black),
+                };
+
+                // Set position to bottom left for system info
+                vga_writer.set_position(22, 0);
+                use core::fmt::Write;
+                use petroleum::ColorCode;
+                vga_writer.set_color_code(ColorCode::new(petroleum::Color::Cyan, petroleum::Color::Black));
+
+                // Clear the status lines first
+                for col in 0..80 {
+                    vga_writer.set_char_at(23, col, blank_char);
+                    vga_writer.set_char_at(24, col, blank_char);
+                }
+
+                // Display system info on bottom rows
+                vga_writer.set_position(23, 0);
+                let _ = write!(vga_writer, "Processes: {}/{}  ", stats.active_processes, stats.total_processes);
+                let _ = write!(vga_writer, "Memory: {} KB  ", stats.memory_used / 1024);
+                let _ = write!(vga_writer, "Tick: {}", stats.uptime_ticks);
+                vga_writer.update_cursor();
+            }
+            LAST_DISPLAY_TICK = current_tick;
         }
     }
 }
@@ -240,6 +284,7 @@ pub fn scheduler_loop() -> ! {
         if current_tick % 1000 == 0 { // Every 1000 ticks
             perform_system_health_checks();
             log_system_stats(&system_stats, 5000); // Log every 5000 ticks
+            display_system_stats_on_vga(&system_stats, 5000); // Display every 5000 ticks
         }
 
         // Periodic filesystem synchronization and OS features (every 3000 ticks)
