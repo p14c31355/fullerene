@@ -155,8 +155,107 @@ fn run_virtualbox(args: &Args, workspace_root: &PathBuf) -> io::Result<()> {
 
     ensure_vm_exists(&args.vm_name)?;
     power_off_vm(&args.vm_name)?;
+    configure_vm_settings(&args.vm_name)?;
     configure_serial_port(&args.vm_name)?;
     attach_iso_and_start_vm(&args, &iso_path)?;
+
+    Ok(())
+}
+
+fn configure_vm_settings(vm_name: &str) -> io::Result<()> {
+    log::info!("Configuring VM settings for '{}'...", vm_name);
+
+    // Set memory to 4GB
+    let memory_status = Command::new("VBoxManage")
+        .args(["modifyvm", vm_name, "--memory", "4096"])
+        .status()?;
+
+    if !memory_status.success() {
+        log::warn!("Failed to set VM memory.");
+    }
+
+    // Set video memory to 128MB
+    let vram_status = Command::new("VBoxManage")
+        .args(["modifyvm", vm_name, "--vram", "128"])
+        .status()?;
+
+    if !vram_status.success() {
+        log::warn!("Failed to set VM video memory.");
+    }
+
+    // Enable ACPI
+    let acpi_status = Command::new("VBoxManage")
+        .args(["modifyvm", vm_name, "--acpi", "on"])
+        .status()?;
+
+    if !acpi_status.success() {
+        log::warn!("Failed to enable ACPI.");
+    }
+
+    // Set network to NAT
+    let nat_status = Command::new("VBoxManage")
+        .args(["modifyvm", vm_name, "--nic1", "nat"])
+        .status()?;
+
+    if !nat_status.success() {
+        log::warn!("Failed to configure network NAT.");
+    }
+
+    // Set CPU to 1
+    let cpu_status = Command::new("VBoxManage")
+        .args(["modifyvm", vm_name, "--cpus", "1"])
+        .status()?;
+
+    if !cpu_status.success() {
+        log::warn!("Failed to set CPU count.");
+    }
+
+    // Set chipset to ICH9
+    let chipset_status = Command::new("VBoxManage")
+        .args(["modifyvm", vm_name, "--chipset", "ich9"])
+        .status()?;
+
+    if !chipset_status.success() {
+        log::warn!("Failed to set chipset.");
+    }
+
+    // Disable hardware virtualization for nested VM compatibility
+    let hwvirtex_status = Command::new("VBoxManage")
+        .args(["modifyvm", vm_name, "--hwvirtex", "off"])
+        .status()?;
+
+    if !hwvirtex_status.success() {
+        log::warn!("Failed to disable hardware virtualization. This may cause issues in nested VM environments.");
+    } else {
+        log::info!("Hardware virtualization disabled for compatibility with nested VMs");
+    }
+
+    // Disable nested paging for software emulation
+    let nested_paging_status = Command::new("VBoxManage")
+        .args(["modifyvm", vm_name, "--nested-paging", "off"])
+        .status()?;
+
+    if !nested_paging_status.success() {
+        log::warn!("Failed to disable nested paging.");
+    }
+
+    // Disable large pages for software emulation
+    let large_pages_status = Command::new("VBoxManage")
+        .args(["modifyvm", vm_name, "--large-pages", "off"])
+        .status()?;
+
+    if !large_pages_status.success() {
+        log::warn!("Failed to disable large pages.");
+    }
+
+    // Disable nested hardware virtualization
+    let nested_hw_virt_status = Command::new("VBoxManage")
+        .args(["modifyvm", vm_name, "--nested-hw-virt", "off"])
+        .status()?;
+
+    if !nested_hw_virt_status.success() {
+        log::warn!("Failed to disable nested hardware virtualization.");
+    }
 
     Ok(())
 }
@@ -423,7 +522,7 @@ fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {
     let mut qemu_cmd = Command::new("qemu-system-x86_64");
     qemu_cmd.args([
         "-m",
-        "8G",
+        "4G",
         "-cpu",
         "qemu64,+smap,-invtsc",
         "-smp",
@@ -431,7 +530,7 @@ fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {
         "-M",
         "q35",
         "-vga",
-        "qxl",
+        "cirrus",
         "-display",
         "gtk,gl=on,window-close=on,zoom-to-fit=on",
         "-serial",

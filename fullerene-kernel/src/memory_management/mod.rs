@@ -225,10 +225,9 @@ impl MemoryManager for UnifiedMemoryManager {
             // Get physical addresses and free frames
             for i in 0..count {
                 let virt_addr = address + (i * 4096);
-                if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
-                    self.frame_allocator.free_frame(phys_addr)?;
-                }
-                self.page_table_manager.unmap_page(virt_addr)?;
+                let frame = self.page_table_manager.unmap_page(virt_addr)?;
+                let phys_addr = frame.start_address().as_u64() as usize;
+                self.frame_allocator.free_frame(phys_addr)?;
             }
 
             Ok(())
@@ -438,7 +437,7 @@ impl PageTableHelper for UnifiedMemoryManager {
             .map_page(virtual_addr, physical_addr, flags, frame_allocator)
     }
 
-    fn unmap_page(&mut self, virtual_addr: usize) -> SystemResult<()> {
+    fn unmap_page(&mut self, virtual_addr: usize) -> SystemResult<x86_64::structures::paging::PhysFrame<Size4KiB>> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
