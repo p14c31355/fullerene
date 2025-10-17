@@ -328,42 +328,7 @@ pub fn detect_standard_modes(
     None
 }
 
-trait FramebufferOps<T> {
-    unsafe fn scroll_up(&self, address: u64, stride: u32, height: u32, bg_color: T);
-    unsafe fn clear(&self, address: u64, stride: u32, height: u32, bg_color: T);
-}
 
-impl<T: Copy> FramebufferOps<T> for () {
-    unsafe fn scroll_up(&self, address: u64, stride: u32, height: u32, bg_color: T) {
-        let bytes_per_pixel = core::mem::size_of::<T>() as u32;
-        let bytes_per_line = stride * bytes_per_pixel;
-        let shift_bytes = 8u64 * bytes_per_line as u64;
-        let fb_ptr = address as *mut u8;
-        let total_bytes = height as u64 * bytes_per_line as u64;
-        unsafe {
-            core::ptr::copy(
-                fb_ptr.add(shift_bytes as usize),
-                fb_ptr,
-                (total_bytes - shift_bytes) as usize,
-            );
-        }
-        // Clear last 8 lines
-        let clear_offset = (height - 8) as usize * bytes_per_line as usize;
-        let clear_ptr = (address + clear_offset as u64) as *mut T;
-        let clear_count = 8 * stride as usize;
-        unsafe {
-            core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color);
-        }
-    }
-
-    unsafe fn clear(&self, address: u64, stride: u32, height: u32, bg_color: T) {
-        let fb_ptr = address as *mut T;
-        let count = (stride * height) as usize;
-        unsafe {
-            core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color);
-        }
-    }
-}
 
 /// Configuration table GUID logger
 struct ConfigTableLogger<'a> {

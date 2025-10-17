@@ -34,9 +34,6 @@ impl log::Log for FullereneLogger {
     fn flush(&self) {}
 }
 
-// Store logger level
-static mut GLOBAL_LEVEL: log::LevelFilter = log::LevelFilter::Info;
-
 // Initialize global logger
 static LOGGER: FullereneLogger = FullereneLogger::new();
 

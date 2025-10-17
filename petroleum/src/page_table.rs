@@ -125,9 +125,9 @@ pub unsafe fn translate_addr(addr: VirtAddr, physical_memory_offset: VirtAddr) -
 ///
 /// Returns the physical memory offset used for the mapping
 pub fn reinit_page_table(
-    kernel_phys_start: PhysAddr,
-    fb_addr: Option<VirtAddr>,
-    fb_size: Option<u64>,
+    _kernel_phys_start: PhysAddr,
+    _fb_addr: Option<VirtAddr>,
+    _fb_size: Option<u64>,
 ) -> VirtAddr {
     // For now, just return identity mapping offset
     // Full implementation would involve creating a new page table structure
@@ -137,7 +137,7 @@ pub fn reinit_page_table(
 /// Allocate heap memory from EFI memory map
 pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> VirtAddr {
     const FRAME_SIZE: u64 = 4096;
-    let heap_frames = (heap_size + FRAME_SIZE as usize - 1) / FRAME_SIZE as usize;
+    let _heap_frames = (heap_size + FRAME_SIZE as usize - 1) / FRAME_SIZE as usize;
 
     let heap_start = if start_addr.as_u64() % FRAME_SIZE == 0 {
         start_addr

@@ -23,9 +23,6 @@ pub struct PciConfigSpace {
     pub bist: u8,
 }
 
-const PCI_CONFIG_ADDR: u16 = 0xCF8;
-const PCI_CONFIG_DATA: u16 = 0xCFC;
-
 impl PciConfigSpace {
     /// Create a new PCI config space header
     pub fn new() -> Self {
@@ -208,7 +205,6 @@ struct PrivatePciDevice {
     device: u8,
     function: u8,
     config: PciConfigSpace,
-    enabled: bool,
 }
 
 impl PrivatePciDevice {
@@ -220,7 +216,6 @@ impl PrivatePciDevice {
                 device,
                 function,
                 config,
-                enabled: false,
             })
         } else {
             None

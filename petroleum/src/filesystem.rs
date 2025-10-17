@@ -124,14 +124,12 @@ pub fn read_file_to_memory(
     let pages = file_size.div_ceil(4096);
     let mut phys_addr: usize = 0;
 
-    let status = unsafe {
-        ((*bs).allocate_pages)(
-            0usize,
-            crate::common::EfiMemoryType::EfiLoaderData,
-            pages,
-            &mut phys_addr,
-        )
-    };
+    let status = ((*bs).allocate_pages)(
+        0usize,
+        crate::common::EfiMemoryType::EfiLoaderData,
+        pages,
+        &mut phys_addr,
+    );
     if EfiStatus::from(status) != EfiStatus::Success {
         debug_print_str("File: Failed to allocate pages.\n");
         return Err(BellowsError::AllocationFailed(

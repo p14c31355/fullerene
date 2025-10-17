@@ -64,11 +64,3 @@ static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
 
 const VGA_BUFFER_ADDRESS: usize = 0xb8000;
 const VGA_COLOR_GREEN_ON_BLACK: u16 = 0x0200;
-
-// A simple loop that halts the CPU until the next interrupt
-pub fn hlt_loop() -> ! {
-    use x86_64::instructions::hlt;
-    loop {
-        hlt();
-    }
-}

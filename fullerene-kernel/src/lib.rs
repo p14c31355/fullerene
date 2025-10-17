@@ -59,9 +59,11 @@ pub mod test_process;
 pub mod boot;
 pub mod init;
 pub mod memory;
+pub mod scheduler;
 
 // Re-export key types and functions from submodules for convenience
 pub use initializer::{initialize_system, register_system_component};
+pub use scheduler::{scheduler_loop, shell_process_main};
 
 // Re-export traits with explicit imports to avoid conflicts
 
@@ -87,10 +89,11 @@ pub use process::{PROCESS_LIST, Process, ProcessId};
 
 static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
 
+
 const VGA_BUFFER_ADDRESS: usize = 0xb8000;
 const VGA_COLOR_GREEN_ON_BLACK: u16 = 0x0200;
 
-// A graphics testing loop instead of just halting
+// A graphics testing loop integrated with full system scheduling
 pub fn graphics_test_loop() -> ! {
     use x86_64::instructions::hlt;
 
@@ -113,24 +116,13 @@ pub fn graphics_test_loop() -> ! {
 
         crate::graphics::_print(format_args!("Graphics: SimpleFramebuffer drawing completed\n"));
 
-        // Enter idle loop - graphics should be visible now
-        loop {
-            // Could add animation or user input handling here later
-            hlt();
-        }
-    } else {
-        crate::graphics::_print(format_args!("Graphics: ERROR - SimpleFramebuffer not initialized, falling back to halt loop\n"));
-        // Fallback to original halt loop if graphics not available
-        loop {
-            hlt();
-        }
-    }
-}
+        log::info!("Graphics: Starting full system scheduler after graphics test");
 
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    // Log the panic information to the serial port for debugging.
-    log::error!("KERNEL PANIC: {}", info);
-    // For now, just loop to halt the system.
-    loop {}
+        // Now start the full scheduler to integrate all system functionality
+        scheduler_loop();
+    } else {
+        crate::graphics::_print(format_args!("Graphics: ERROR - SimpleFramebuffer not initialized, falling back to scheduler anyway\n"));
+        // Fallback to scheduler even without graphics
+        scheduler_loop();
+    }
 }

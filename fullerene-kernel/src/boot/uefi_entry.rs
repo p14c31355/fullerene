@@ -6,6 +6,7 @@ use crate::heap;
 
 use crate::memory::find_heap_start;
 use crate::{gdt, graphics, interrupts, memory};
+use crate::scheduler::scheduler_loop;
 use alloc::boxed::Box;
 use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
@@ -17,6 +18,8 @@ use x86_64::{PhysAddr, VirtAddr};
 use petroleum::graphics::{
     VGA_MODE13H_ADDRESS, VGA_MODE13H_BPP, VGA_MODE13H_HEIGHT, VGA_MODE13H_STRIDE, VGA_MODE13H_WIDTH,
 };
+
+
 
 #[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]
@@ -330,12 +333,12 @@ pub extern "efiapi" fn efi_main(
         crate::keyboard::init();
         log::info!("Keyboard initialized");
 
-        // Start the shell as the main interface
-        log::info!("Starting shell...");
-        crate::shell::shell_main();
-        // shell_main should never return in normal operation
+        // Start the main kernel scheduler that orchestrates all system functionality
+        log::info!("Starting full system scheduler...");
+        scheduler_loop();
+        // scheduler_loop should never return in normal operation
 
-        log::info!("Shell exited unexpectedly, entering idle loop");
+        log::info!("Scheduler exited unexpectedly, entering idle loop");
     } else {
         log::info!("Graphics initialization failed, enabling interrupts anyway for debugging");
         x86_64::instructions::interrupts::enable();
