@@ -89,26 +89,7 @@ pub trait ProcessMemoryManager {
     fn current_process_id(&self) -> usize;
 }
 
-pub trait PageTableHelper {
-    fn map_page(
-        &mut self,
-        virtual_addr: usize,
-        physical_addr: usize,
-        flags: PageFlags,
-        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
-    ) -> SystemResult<()>;
-    fn unmap_page(&mut self, virtual_addr: usize) -> SystemResult<()>;
-    fn translate_address(&self, virtual_addr: usize) -> SystemResult<usize>;
-    fn set_page_flags(&mut self, virtual_addr: usize, flags: PageFlags) -> SystemResult<()>;
-    fn get_page_flags(&self, virtual_addr: usize) -> SystemResult<PageFlags>;
-    fn flush_tlb(&mut self, virtual_addr: usize) -> SystemResult<()>;
-    fn flush_tlb_all(&mut self) -> SystemResult<()>;
-    fn create_page_table(&mut self) -> SystemResult<usize>;
-    fn destroy_page_table(&mut self, table_addr: usize) -> SystemResult<()>;
-    fn clone_page_table(&mut self, source_table: usize) -> SystemResult<usize>;
-    fn switch_page_table(&mut self, table_addr: usize) -> SystemResult<()>;
-    fn current_page_table(&self) -> usize;
-}
+
 
 pub trait FrameAllocator {
     fn allocate_frame(&mut self) -> SystemResult<usize>;

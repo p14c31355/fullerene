@@ -286,3 +286,181 @@ macro_rules! test_framebuffer_mode {
         }
     }};
 }
+
+/// Macro to set a bit field in a u32 word, reducing line count for repetitive bit operations
+#[macro_export]
+macro_rules! bit_field_set {
+    ($field:expr, $mask:expr, $shift:expr, $value:expr) => {
+        $field = ($field & !($mask << $shift)) | (($value as u32 & $mask) << $shift);
+    };
+}
+
+/// Macro to set or clear a single bit based on bool value
+#[macro_export]
+macro_rules! set_bool_bit {
+    ($field:expr, $bit:expr, $value:expr) => {
+        if $value {
+            $field |= 1 << $bit;
+        } else {
+            $field &= !(1 << $bit);
+        }
+    };
+}
+
+/// Macro to clear a 2D buffer with a value for trait-based buffers, reducing nested loop code
+#[macro_export]
+macro_rules! clear_buffer {
+    ($buffer:expr, $height:expr, $width:expr, $value:expr) => {
+        for row in 0..$height {
+            for col in 0..$width {
+                $buffer.set_char_at(row, col, $value);
+            }
+        }
+    };
+}
+
+/// Macro to scroll up a 2D buffer for trait-based buffers, reducing loop code
+#[macro_export]
+macro_rules! scroll_buffer_up {
+    ($buffer:expr, $height:expr, $width:expr, $blank:expr) => {
+        for row in 1..$height {
+            for col in 0..$width {
+                let chr = $buffer.get_char_at(row, col);
+                $buffer.set_char_at(row - 1, col, chr);
+            }
+        }
+        for col in 0..$width {
+            $buffer.set_char_at($height - 1, col, $blank);
+        }
+    };
+}
+
+/// Command definition macro to reduce repetitive command array initialization scatter
+///
+/// # Examples
+/// ```
+/// define_commands!(CommandEntry,
+///     ("help", "Show help", help_fn),
+///     ("exit", "Exit", exit_fn)
+/// )
+/// ```
+#[macro_export]
+macro_rules! define_commands {
+    ($entry_ty:ident, $(($name:expr, $desc:expr, $func:expr)),* $(,)?) => {
+        &[
+            $(
+                $entry_ty {
+                    name: $name,
+                    description: $desc,
+                    function: $func,
+                }
+            ),*
+        ]
+    };
+}
+
+/// Macro for volatile memory read operations
+#[macro_export]
+macro_rules! volatile_read {
+    ($addr:expr, $ty:ty) => {
+        unsafe { core::ptr::read_volatile($addr as *const $ty) }
+    };
+}
+
+/// Macro for volatile memory write operations
+#[macro_export]
+macro_rules! volatile_write {
+    ($addr:expr, $value:expr) => {{
+        let addr = $addr as *mut _;
+        unsafe { core::ptr::write_volatile(addr, $value) }
+    }};
+}
+
+/// Macro for safe buffer index access with bounds checking
+#[macro_export]
+macro_rules! safe_buffer_access {
+    ($buffer:expr, $index:expr, $default:expr) => {
+        if $index < $buffer.len() {
+            &$buffer[$index]
+        } else {
+            &$default
+        }
+    };
+}
+
+/// Macro for scrolling up a 2D character buffer (generic version)
+#[macro_export]
+macro_rules! scroll_char_buffer_up {
+    ($buffer:expr, $height:expr, $width:expr, $blank:expr) => {
+        for row in 1..$height {
+            for col in 0..$width {
+                $buffer[row - 1][col] = $buffer[row][col];
+            }
+        }
+        for col in 0..$width {
+            $buffer[$height - 1][col] = $blank;
+        }
+    };
+}
+
+/// Macro for generic text buffer operations in write_byte
+#[macro_export]
+macro_rules! handle_write_byte {
+    ($self:expr, $byte:expr, $newline:block, $write_char:block) => {
+        match $byte {
+            b'\n' => $newline,
+            byte => $write_char,
+        }
+    };
+}
+
+/// Macro to reduce boilerplate in error conversion implementations
+/// Converts an error type to SystemError using a mapping closure
+#[macro_export]
+macro_rules! impl_error_from {
+    ($src:ty, $dst:ty, $map_fn:expr) => {
+        impl From<$src> for $dst {
+            fn from(error: $src) -> Self {
+                ($map_fn)(error)
+            }
+        }
+    };
+}
+
+/// Compact error conversion macro for common patterns where variants map directly
+#[macro_export]
+macro_rules! error_variant_map {
+    ($src:ty, $dst:ty, $pat:pat => $result:expr) => {
+        impl From<$src> for $dst {
+            fn from(error: $src) -> Self {
+                match error {
+                    $pat => $result,
+                }
+            }
+        }
+    };
+}
+
+/// Macro for chained error conversions
+#[macro_export]
+macro_rules! error_chain {
+    ($src:ty, $dst:ty, $( $pat:pat => $result:expr ),* $(,)?) => {
+        impl From<$src> for $dst {
+            fn from(error: $src) -> Self {
+                match error {
+                    $(
+                        $pat => $result,
+                    )*
+                }
+            }
+        }
+    };
+}
+
+/// Macro for simple module initialization with logging
+#[macro_export]
+macro_rules! declare_init {
+    ($mod_name:expr) => {{
+        $crate::serial::serial_log(format_args!("{} initialized\n", $mod_name));
+    }};
+}

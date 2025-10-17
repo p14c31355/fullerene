@@ -10,8 +10,8 @@ use spin::Mutex;
 use static_assertions::assert_eq_size;
 
 use crate::traits::{
-    ErrorLogging, FrameAllocator, Initializable, MemoryManager, PageTableHelper,
-    ProcessMemoryManager,
+    ErrorLogging, FrameAllocator, Initializable, MemoryManager,
+    ProcessMemoryManager, SyscallHandler,
 };
 use petroleum::common::logging::{SystemError, SystemResult};
 use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
@@ -152,6 +152,8 @@ impl UnifiedMemoryManager {
     ) -> SystemResult<()> {
         // Initialize frame allocator with memory map
         self.frame_allocator.init_with_memory_map(memory_map)?;
+        // Reserve the NULL frame to prevent allocation of invalid page tables
+        self.frame_allocator.reserve_frames(0, 1)?;
 
         // Page table manager will now use the active CR3 page table directly,
         // so no need to allocate a separate frame

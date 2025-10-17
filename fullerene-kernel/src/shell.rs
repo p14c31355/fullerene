@@ -6,7 +6,7 @@
 use crate::keyboard;
 use crate::syscall::kernel_syscall;
 use alloc::vec::Vec;
-use petroleum::print;
+use petroleum::{define_commands, print};
 
 /// Shell prompt
 const PROMPT: &str = "fullerene> ";
@@ -22,28 +22,15 @@ struct CommandEntry {
     function: CommandFn,
 }
 
-// Use generic command array macro from petroleum
-macro_rules! define_commands {
-    ($(($name:expr, $desc:expr, $func:expr)),* $(,)?) => {
-        &[$(
-            CommandEntry {
-                name: $name,
-                description: $desc,
-                function: $func,
-            }
-        ),*]
-    };
-}
-
-static COMMANDS: &[CommandEntry] = define_commands![
+static COMMANDS: &[CommandEntry] = define_commands!(CommandEntry,
     ("help", "Show available commands", help_command),
     ("ps", "Show process list", ps_command),
     ("echo", "Print text", echo_command),
     ("clear", "Clear screen", clear_command),
     ("uname", "Show system information", uname_command),
     ("kill", "Kill a process (usage: kill <pid>)", kill_command),
-    ("exit", "Exit shell", exit_command),
-];
+    ("exit", "Exit shell", exit_command)
+);
 
 // Shell main loop
 pub fn shell_main() {

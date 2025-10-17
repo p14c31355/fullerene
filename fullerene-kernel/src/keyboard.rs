@@ -9,6 +9,7 @@
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use pc_keyboard::{DecodedKey, KeyCode, Keyboard, ScancodeSet1, layouts};
+use petroleum::declare_init;
 use spin::Mutex;
 
 // Using pc-keyboard for scan code handling
@@ -296,7 +297,7 @@ pub fn init() {
         pc_keyboard::HandleControl::Ignore,
     ));
 
-    petroleum::serial::serial_log(format_args!("Keyboard input driver initialized\n"));
+    declare_init!("Keyboard input driver");
 }
 
 // Test functions
