@@ -441,4 +441,42 @@ mod tests {
         assert_eq!(proc.name, "test");
         assert_eq!(proc.state, ProcessState::Ready);
     }
+
+    #[test]
+    fn test_process_counting() {
+        init(); // Initialize the process list
+        assert!(get_process_count() > 0);
+        assert!(get_active_process_count() > 0);
+    }
+}
+
+/// Get total number of processes in the system
+pub fn get_process_count() -> usize {
+    PROCESS_LIST.lock().len()
+}
+
+/// Get number of active processes (ready or running)
+pub fn get_active_process_count() -> usize {
+    PROCESS_LIST.lock().iter()
+        .filter(|p| p.state == ProcessState::Ready || p.state == ProcessState::Running)
+        .count()
+}
+
+/// Clean up terminated processes to free resources
+pub fn cleanup_terminated_processes() {
+    let mut process_list = PROCESS_LIST.lock();
+
+    // Collect PIDs of terminated processes
+    let terminated_pids: Vec<ProcessId> = process_list.iter()
+        .filter(|p| p.state == ProcessState::Terminated)
+        .map(|p| p.id)
+        .collect();
+
+    // Terminate each terminated process
+    for pid in terminated_pids {
+        terminate_process(pid, 0); // Exit code doesn't matter for cleanup
+    }
+
+    // Remove terminated processes from the list after their resources are cleaned up
+    process_list.retain(|p| p.state != ProcessState::Terminated);
 }

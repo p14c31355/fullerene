@@ -4,14 +4,124 @@
 //! including process scheduling, shell execution, and system-wide orchestration.
 
 use x86_64::VirtAddr;
+use alloc::collections::VecDeque;
+use core::sync::atomic::{AtomicU64, Ordering};
 
+// System-wide counters and statistics
+static SYSTEM_TICK: AtomicU64 = AtomicU64::new(0);
+static SCHEDULER_ITERATIONS: AtomicU64 = AtomicU64::new(0);
+
+// I/O event queue (placeholder for future I/O operations)
+static IO_EVENTS: spin::Mutex<VecDeque<IoEvent>> = spin::Mutex::new(VecDeque::new());
+
+// System diagnostics structure
+#[derive(Clone, Copy)]
+struct SystemStats {
+    total_processes: usize,
+    active_processes: usize,
+    memory_used: usize,
+    uptime_ticks: u64,
+}
+
+/// I/O event type for future I/O handling
+#[derive(Clone, Copy)]
+struct IoEvent {
+    event_type: u8,
+    data: usize,
+}
+
+
+/// Collect current system statistics
+fn collect_system_stats() -> SystemStats {
+    // Count total and active processes
+    // For now, we'll use a simple implementation
+    let total_processes = crate::process::get_process_count();
+    let active_processes = crate::process::get_active_process_count();
+
+    // Get memory usage from the global allocator
+    let memory_used = petroleum::page_table::ALLOCATOR.lock().used();
+
+    let uptime_ticks = SYSTEM_TICK.load(Ordering::Relaxed);
+
+    SystemStats {
+        total_processes,
+        active_processes,
+        memory_used,
+        uptime_ticks,
+    }
+}
+
+/// Process I/O events (placeholder for future expansion)
+fn process_io_events() {
+    let mut events = IO_EVENTS.lock();
+
+    // Process all pending I/O events
+    while let Some(event) = events.pop_front() {
+        match event.event_type {
+            // Placeholder for different event types
+            0x01 => log::debug!("Processed keyboard event"),
+            0x02 => log::debug!("Processed filesystem event"),
+            _ => log::debug!("Processed unknown I/O event type {}", event.event_type),
+        }
+    }
+
+    // Re-process any remaining events during next iteration
+}
+
+/// Perform system health checks (memory, processes, etc.)
+fn perform_system_health_checks() {
+    // Check memory usage
+    let allocator = petroleum::page_table::ALLOCATOR.lock();
+    let used = allocator.used();
+    let total = allocator.size();
+
+    // Log warning if memory usage is high
+    if used > total / 2 {
+        log::warn!("High memory usage: {} bytes used out of {} bytes", used, total);
+    }
+
+    // Check for too many processes
+    let active_count = crate::process::get_active_process_count();
+    if active_count > 10 {
+        log::warn!("High process count: {} active processes", active_count);
+    }
+
+    // Check keyboard buffer for overflow
+    if crate::keyboard::input_available() {
+        // Drain excess input to prevent buffer overflow
+        let drained = crate::keyboard::drain_line_buffer(&mut []);
+        if drained > 256 {
+            log::debug!("Drained {} bytes from keyboard buffer", drained);
+        }
+    }
+}
+
+/// Log system statistics periodically
+fn log_system_stats(stats: &SystemStats, interval_ticks: u64) {
+    static mut LAST_LOG_TICK: u64 = 0;
+
+    // Only log every interval_ticks to avoid spam
+    let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
+    unsafe {
+        if current_tick - LAST_LOG_TICK >= interval_ticks {
+            log::info!(
+                "System Stats - Processes: {}/{}, Memory: {} bytes, Uptime: {} ticks",
+                stats.active_processes,
+                stats.total_processes,
+                stats.memory_used,
+                stats.uptime_ticks
+            );
+            LAST_LOG_TICK = current_tick;
+        }
+    }
+}
 
 /// Main kernel scheduler loop - orchestrates all system functionality
 pub fn scheduler_loop() -> ! {
     use x86_64::instructions::hlt;
 
     // Initialize scheduler by creating the shell process
-    log::info!("Initializing shell process...");
+    log::info!("Starting enhanced OS scheduler with integrated system features...");
     let shell_pid = crate::process::create_process(
         "shell_process",
         VirtAddr::new(shell_process_main as usize as u64),
@@ -21,18 +131,93 @@ pub fn scheduler_loop() -> ! {
     // Set initial process as shell
     let _ = crate::process::unblock_process(shell_pid);
 
-    // Main scheduler loop - continuously execute processes
+    // Main scheduler loop - continuously execute processes with integrated OS functionality
     loop {
-        // Yield to allow scheduler to run
+        // Increment system tick counter
+        SYSTEM_TICK.fetch_add(1, Ordering::Relaxed);
+        SCHEDULER_ITERATIONS.fetch_add(1, Ordering::Relaxed);
+
+        // Collect current system statistics (every scheduler iteration for simplicity)
+        let system_stats = collect_system_stats();
+
+        // Process I/O events (keyboard, filesystem, etc.)
+        process_io_events();
+
+        // Periodically perform health checks and log statistics
+        let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
+        if current_tick % 1000 == 0 { // Every 1000 ticks
+            perform_system_health_checks();
+            log_system_stats(&system_stats, 5000); // Log every 5000 ticks
+        }
+
+        // Periodic filesystem synchronization (every 5000 ticks)
+        if current_tick % 5000 == 0 {
+            // Placeholder - filesystem synchronization would be added here
+            log::debug!("Filesystem synchronization point reached");
+        }
+
+        // Periodic memory capacity check (every 10000 ticks)
+        if current_tick % 10000 == 0 {
+            let allocator = petroleum::page_table::ALLOCATOR.lock();
+            let used_bytes = allocator.used();
+            let total_bytes = allocator.size();
+            let usage_ratio = used_bytes as f32 / total_bytes as f32;
+
+            log::info!("Memory utilization: {} bytes / {} bytes ({:.2}%)",
+                used_bytes, total_bytes, usage_ratio * 100.0);
+
+            if usage_ratio > 0.9 {
+                log::warn!("Critical memory usage (>90%) detected!");
+            }
+        }
+
+        // Check for process cleanup every 100 iterations
+        let iteration_count = SCHEDULER_ITERATIONS.load(Ordering::Relaxed);
+        if iteration_count % 100 == 0 {
+            // Check for terminated processes and clean up
+            crate::process::cleanup_terminated_processes();
+        }
+
+        // Handle any pending system calls or kernel requests
+        // This is a placeholder - in a full implementation, there would be
+        // a queue of kernel tasks to process
+
+        // Yield to allow scheduler to run process switching
         crate::syscall::kernel_syscall(22, 0, 0, 0); // Yield syscall
 
         // Allow graphics and I/O operations to process
-        // This loop will be interrupted by timer and maintain process scheduling
+        // This loop will be interrupted by timer maintaining process scheduling
 
         // Yield for short periods to avoid high CPU usage
-        for _ in 0..100 {
+        // This also allows for I/O device polling and interrupt handling
+        for _ in 0..50 { // Reduced from 100 to allow more frequent system operations
             hlt();
         }
+
+        // After yield cycle, check if any emergency conditions need handling
+        // (e.g., out of memory, too many processes, kernel panic recovery)
+        if current_tick % 10000 == 0 {
+            emergency_condition_handler();
+        }
+    }
+}
+
+/// Handle emergency system conditions (OOM, process limits, etc.)
+fn emergency_condition_handler() {
+    // Check for out-of-memory condition
+    let allocator = petroleum::page_table::ALLOCATOR.lock();
+    if allocator.used() > (allocator.size() * 4) / 5 { // >80% usage
+        log::error!("EMERGENCY: Critical memory usage detected!");
+        // In a full implementation, this would:
+        // 1. Kill memory-hog processes
+        // 2. Perform emergency memory cleanup
+        // 3. Log diagnostic information
+    }
+
+    // Check process limits
+    if crate::process::get_active_process_count() > 100 {
+        log::error!("EMERGENCY: Too many active processes!");
+        // Would implement process cleanup here
     }
 }
 

@@ -63,7 +63,6 @@ pub mod scheduler;
 
 // Re-export key types and functions from submodules for convenience
 pub use initializer::{initialize_system, register_system_component};
-pub use scheduler::{scheduler_loop, shell_process_main};
 
 // Re-export traits with explicit imports to avoid conflicts
 
@@ -119,10 +118,10 @@ pub fn graphics_test_loop() -> ! {
         log::info!("Graphics: Starting full system scheduler after graphics test");
 
         // Now start the full scheduler to integrate all system functionality
-        scheduler_loop();
+        crate::scheduler::scheduler_loop();
     } else {
         crate::graphics::_print(format_args!("Graphics: ERROR - SimpleFramebuffer not initialized, falling back to scheduler anyway\n"));
         // Fallback to scheduler even without graphics
-        scheduler_loop();
+        crate::scheduler::scheduler_loop();
     }
 }

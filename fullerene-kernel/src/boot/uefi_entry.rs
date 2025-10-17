@@ -1,12 +1,12 @@
 // Use crate imports
-use crate::MEMORY_MAP;
+use crate::scheduler::scheduler_loop;
+use crate::heap::memory_map::MEMORY_MAP;
 
 use crate::graphics::framebuffer::FramebufferLike;
 use crate::heap;
 
 use crate::memory::find_heap_start;
 use crate::{gdt, graphics, interrupts, memory};
-use crate::scheduler::scheduler_loop;
 use alloc::boxed::Box;
 use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
@@ -325,20 +325,20 @@ pub extern "efiapi" fn efi_main(
         log::info!("Graphics initialized successfully");
 
         // Now enable interrupts, after graphics setup
-        log::info!("Enabling interrupts...");
-        x86_64::instructions::interrupts::enable();
-        log::info!("Interrupts enabled");
+    log::info!("Enabling interrupts...");
+    x86_64::instructions::interrupts::enable();
+    log::info!("Interrupts enabled");
 
-        // Initialize keyboard input driver
-        crate::keyboard::init();
-        log::info!("Keyboard initialized");
+    // Initialize keyboard input driver
+    crate::keyboard::init();
+    log::info!("Keyboard initialized");
 
-        // Start the main kernel scheduler that orchestrates all system functionality
-        log::info!("Starting full system scheduler...");
-        scheduler_loop();
-        // scheduler_loop should never return in normal operation
+    // Start the main kernel scheduler that orchestrates all system functionality
+    log::info!("Starting full system scheduler...");
+    scheduler_loop();
+    // scheduler_loop should never return in normal operation
 
-        log::info!("Scheduler exited unexpectedly, entering idle loop");
+    log::info!("Scheduler exited unexpectedly, entering idle loop");
     } else {
         log::info!("Graphics initialization failed, enabling interrupts anyway for debugging");
         x86_64::instructions::interrupts::enable();
