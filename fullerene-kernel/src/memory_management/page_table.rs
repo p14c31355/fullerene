@@ -146,13 +146,18 @@ impl petroleum::page_table::PageTableHelper for PageTableManager {
         Ok(())
     }
 
-    fn unmap_page(&mut self, _virtual_addr: usize) -> SystemResult<()> {
+    fn unmap_page(&mut self, virtual_addr: usize) -> SystemResult<x86_64::structures::paging::PhysFrame<Size4KiB>> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
 
-        log::info!("Unmapping virtual address");
-        Ok(())
+        let mapper = self.mapper.as_mut().ok_or(SystemError::InternalError)?;
+        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(virtual_addr as u64));
+
+        let (frame, flush) = mapper.unmap(page).map_err(|_| SystemError::UnmappingFailed)?;
+        flush.flush();
+
+        Ok(frame)
     }
 
     fn translate_address(&self, virtual_addr: usize) -> SystemResult<usize> {

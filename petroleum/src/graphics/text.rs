@@ -121,6 +121,5 @@ pub trait TextBufferOperations {
             color_code: self.get_color_code(),
         };
         scroll_buffer_up!(self, self.get_height(), self.get_width(), blank_char);
-        self.clear_row(self.get_height() - 1);
     }
 }
