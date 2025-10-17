@@ -258,11 +258,11 @@ impl<'a> FramebufferInstaller<'a> {
             "INSTALL_CONFIG_TABLE: calling bs.install_configuration_table...\n"
         ));
 
-        // Skip install_configuration_table for debugging to advance to next stage
-        serial::_print(format_args!(
-            "INSTALL_CONFIG_TABLE: SKIPPING call for debugging\n"
-        ));
-        let status = 0; // Simulate success
+        // Now actually call install_configuration_table
+        let status = (bs.install_configuration_table)(
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
+            config_ptr as *mut c_void,
+        );
 
         serial::_print(format_args!(
             "INSTALL_CONFIG_TABLE: returned from call, status={:#x}\n",

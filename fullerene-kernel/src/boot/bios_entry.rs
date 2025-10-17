@@ -10,11 +10,13 @@ pub unsafe extern "C" fn _start() -> ! {
     log::info!("Entering _start (BIOS mode)...");
 
     // Graphics initialization for VGA framebuffer (graphics mode)
+    // Note: Traditional VGA only supports up to 8-bit, but we set to 32 for consistency
+    // In practice, graphics operations will still be limited to 256 colors
     let vga_config = VgaFramebufferConfig {
         address: 0xA0000,
         width: 320,
         height: 200,
-        bpp: 8,
+        bpp: 32,
     };
     graphics::init_vga(&vga_config);
 
