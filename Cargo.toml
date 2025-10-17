@@ -1,17 +1,15 @@
 [workspace]
-members = [
-  "bellows",
-  "flasks",
-  "fullerene-kernel",
-  "petroleum",
-  "toluene",
-]
-resolver = "2"
+members = ["bellows", "flasks", "fullerene-kernel", "petroleum", "toluene"]
 
 [profile.dev]
 panic = "abort"
+overflow-checks = false
 
 [profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
+panic = "abort"
+overflow-checks = false
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["p14c31355"]

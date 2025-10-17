@@ -281,6 +281,25 @@ pub extern "efiapi" fn efi_main(
     write_serial_bytes!(0x3F8, 0x3FD, b"Basic init complete logged\n");
     petroleum::serial::serial_log(format_args!("basic init complete logged successfully\n"));
 
+    // Allocate kernel stack in UEFI mode to avoid using UEFI's potentially corrupted high stack
+    log::info!("Allocating kernel stack for UEFI mode");
+    use alloc::alloc::{alloc, Layout};
+    const KERNEL_STACK_SIZE: usize = 4096 * 16; // 64KB
+    let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
+    let stack_ptr = unsafe { alloc(layout) as *mut u8 };
+    if stack_ptr.is_null() {
+        log::error!("Failed to allocate kernel stack!");
+        petroleum::halt_loop();
+    }
+    let stack_top = unsafe { stack_ptr.add(KERNEL_STACK_SIZE) };
+    log::info!("Kernel stack allocated at {:p}, top: {:p}", stack_ptr, stack_top);
+
+    // Switch RSP to new kernel stack
+    unsafe {
+        core::arch::asm!("mov rsp, {}", in(reg) stack_top);
+    }
+    log::info!("Switched to kernel stack");
+
     write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: About to init interrupts\n");
 
     // Common initialization for both UEFI and BIOS

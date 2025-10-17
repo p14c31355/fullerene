@@ -11,7 +11,6 @@ path = "src/main.rs"
 [lib]
 name = "fullerene_kernel"
 path = "src/lib.rs"
-crate-type = ["lib", "bin"]
 
 [dependencies]
 x86_64 = { version = "0.15.2", default-features = false, features = [
@@ -32,11 +31,11 @@ embedded-graphics = { version = "0.8", default-features = false }
 memoffset = { version = "0.9", default-features = false }
 linked_list_allocator = { version = "0.10", default-features = false, features = ["alloc_ref"] }
 goblin = { version = "0.10.2", default-features = false, features = ["elf32", "elf64", "endian_fd"] }
-bitfield = "0.19.3"
-static_assertions = "1.1"
-bitflags = "2.4"
-volatile = "0.6"
-pc-keyboard = "0.8.0"
+bitfield = { version = "0.19.3", default-features = false }
+static_assertions = { version = "1.1", default-features = false }
+bitflags = { version = "2.4", default-features = false }
+volatile = { version = "0.6", default-features = false }
+pc-keyboard = { version = "0.8.0", default-features = false }
 log = { version = "0.4.28", default-features = false }
 # shell-words = "1.1"  # Cannot use in no_std kernel
 
