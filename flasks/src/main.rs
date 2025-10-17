@@ -247,7 +247,7 @@ fn power_off_vm(vm_name: &str) -> io::Result<()> {
             );
             return Ok(());
         } else {
-            log::info!("Warning: ACPI power button signal failed: {}", stderr);
+            log::warn!("ACPI power button signal failed: {}", stderr);
         }
     }
 
