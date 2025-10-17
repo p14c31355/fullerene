@@ -307,7 +307,7 @@ fn configure_serial_port(vm_name: &str) -> io::Result<()> {
         .status()?;
 
     if !uart_status.success() {
-        log::info!("Warning: Failed to configure UART1 port.");
+        log::warn!("Failed to configure UART1 port.");
         return Ok(());
     }
 
