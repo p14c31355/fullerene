@@ -67,8 +67,8 @@ macro_rules! draw_border_rect {
         use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
         let rect = Rectangle::new(embedded_graphics::geometry::Point::new($x, $y), embedded_graphics::geometry::Size::new($w, $h));
         let style = PrimitiveStyleBuilder::new()
-            .fill_color(crate::graphics::color::u32_to_rgb888($fill_color))
-            .stroke_color(crate::graphics::color::u32_to_rgb888($stroke_color))
+            .fill_color($crate::graphics::color::u32_to_rgb888($fill_color))
+            .stroke_color($crate::graphics::color::u32_to_rgb888($stroke_color))
             .stroke_width($stroke_width)
             .build();
         rect.into_styled(style).draw($writer).ok();
