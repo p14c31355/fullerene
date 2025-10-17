@@ -394,7 +394,7 @@ fn attach_iso_and_start_vm(
     match exit_status {
         Ok(status) => {
             if !status.success() {
-                log::info!("VBoxHeadless exited with status: {}", status);
+                log::warn!("VBoxHeadless exited with status: {}", status);
             }
         }
         Err(e) => {
