@@ -284,10 +284,20 @@ impl PageTableHelper for PageTableManager {
         Ok(())
     }
 
-    fn unmap_page(&mut self, _virtual_addr: usize) -> crate::common::logging::SystemResult<()> {
+        fn unmap_page(&mut self, virtual_addr: usize) -> crate::common::logging::SystemResult<()> {
         if !self.initialized {
             return Err(crate::common::logging::SystemError::InternalError);
         }
+
+        let mapper = self.mapper.as_mut().unwrap();
+        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(virtual_addr as u64));
+        
+        // Note: The physical frame returned by `unmap` is currently being dropped,
+        // which means it is not returned to the frame allocator. This will lead to
+        // a memory leak. The `PageTableHelper` trait may need to be adjusted to
+        // allow for frame deallocation.
+        let (_frame, flush) = mapper.unmap(page).map_err(|_| crate::common::logging::SystemError::UnmappingFailed)?;
+        flush.flush();
 
         Ok(())
     }
