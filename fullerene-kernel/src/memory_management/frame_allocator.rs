@@ -286,29 +286,7 @@ impl Initializable for BitmapFrameAllocator {
     }
 }
 
-// Implementation of ErrorLogging trait for BitmapFrameAllocator
-impl ErrorLogging for BitmapFrameAllocator {
-    fn log_error(&self, _error: &SystemError, _context: &'static str) {
-        // For now, skip logging since macros aren't available
-        // log_error!(error, context);
-    }
-
-    fn log_warning(&self, _message: &'static str) {
-        // log_warning!(message);
-    }
-
-    fn log_info(&self, _message: &'static str) {
-        // log::info!(message);
-    }
-
-    fn log_debug(&self, _message: &'static str) {
-        // log_debug!(message);
-    }
-
-    fn log_trace(&self, _message: &'static str) {
-        // log_trace!(message);
-    }
-}
+// ErrorLogging fidelity for BitmapFrameAllocator removed - use petroleum::ERROR_LOGGER instead
 
 #[cfg(test)]
 mod tests {
