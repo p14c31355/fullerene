@@ -234,8 +234,8 @@ fn power_off_vm(vm_name: &str) -> io::Result<()> {
         .output();
 
     if let Err(e) = &acpi_result {
-        log::info!(
-            "Warning: Failed to send ACPI power button signal: {}. This may be ignored if the VM was not running.",
+        log::warn!(
+            "Failed to send ACPI power button signal: {}. This may be ignored if the VM was not running.",
             e
         );
     } else if !acpi_result.as_ref().unwrap().status.success() {
