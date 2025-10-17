@@ -758,9 +758,9 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
         .map_err(|_| SystemError::FrameAllocationFailed)?;
 
     // Zero the allocated page table frame to ensure it's a valid page table
-    let new_table_virt = physical_to_virtual(pml4_frame) as *mut u8;
+    let new_table_virt = physical_to_virtual(pml4_frame) as *mut u64;
     unsafe {
-        core::ptr::write_bytes(new_table_virt, 0, 4096);
+        core::slice::from_raw_parts_mut(new_table_virt, 512).fill(0);
     }
 
     // Copy kernel mappings to the new page table
