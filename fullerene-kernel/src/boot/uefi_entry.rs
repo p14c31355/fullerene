@@ -186,7 +186,7 @@ pub extern "efiapi" fn efi_main(
     const KERNEL_STACK_SIZE: usize = 4096 * 16; // 64KB
     let virt_heap_start = VirtAddr::new(heap_start.as_u64());
     let stack_bottom = virt_heap_start + (heap::HEAP_SIZE as u64 - KERNEL_STACK_SIZE as u64);
-    let stack_top = stack_bottom + (KERNEL_STACK_SIZE - 1) as u64;
+    let stack_top = stack_bottom + KERNEL_STACK_SIZE as u64;
 
     // Switch RSP to new kernel stack
     unsafe {
