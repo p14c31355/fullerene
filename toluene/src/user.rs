@@ -2,4 +2,4 @@
 
 #![no_std]
 
-pub use crate::{syscall, write, exit, getpid, sleep};
+pub use crate::{write, exit, getpid, sleep};
