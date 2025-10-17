@@ -153,6 +153,21 @@ impl UnifiedMemoryManager {
         // Initialize frame allocator with memory map
         self.frame_allocator.init_with_memory_map(memory_map)?;
 
+        // Allocate a frame for the page table manager
+        let pml4_frame_addr = self.frame_allocator.allocate_frame()
+            .map_err(|_| petroleum::common::logging::SystemError::FrameAllocationFailed)?;
+        let pml4_frame = x86_64::structures::paging::PhysFrame::containing_address(
+            x86_64::PhysAddr::new(pml4_frame_addr as u64)
+        );
+
+        log::info!("PageTableManager: Allocated frame at physical address: 0x{:x}", pml4_frame_addr);
+
+        // For now, assume the frame allocator returns zeroed frames
+        // TODO: Properly zero the frame through virtual memory mapping
+
+        // Set the frame on page table manager
+        self.page_table_manager.set_pml4_frame(pml4_frame);
+
         // Initialize page table manager
         Initializable::init(&mut self.page_table_manager)?;
 
@@ -748,6 +763,12 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
         .allocate_frame()
         .map_err(|_| SystemError::FrameAllocationFailed)?;
 
+    // Zero the allocated page table frame to ensure it's a valid page table
+    let new_table_virt = physical_to_virtual(pml4_frame) as *mut u8;
+    unsafe {
+        core::ptr::write_bytes(new_table_virt, 0, 4096);
+    }
+
     // Copy kernel mappings to the new page table
     // This involves copying the higher half kernel mappings from the current page table
     let current_cr3 = unsafe { x86_64::registers::control::Cr3::read() };
@@ -755,13 +776,13 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
 
     // Map the new page table temporarily to copy kernel mappings
     let kernel_table_virt = physical_to_virtual(kernel_table_phys.try_into().unwrap());
-    let new_table_virt = physical_to_virtual(pml4_frame.try_into().unwrap());
+    let new_table_virt_u64 = new_table_virt as u64;
 
     // Copy the kernel page table entries (PML4[256..512])
     unsafe {
         core::ptr::copy_nonoverlapping(
             (kernel_table_virt + 256 * 8) as *const u64,
-            (new_table_virt + 256 * 8) as *mut u64,
+            (new_table_virt_u64 + 256 * 8) as *mut u64,
             256,
         );
     }

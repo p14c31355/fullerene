@@ -295,6 +295,11 @@ pub extern "efiapi" fn efi_main(
     write_serial_bytes!(0x3F8, 0x3FD, b"Basic init complete logged\n");
     petroleum::serial::serial_log(format_args!("basic init complete logged successfully\n"));
 
+    // Initialize the global memory manager with the EFI memory map
+    log::info!("Initializing global memory manager...");
+    crate::memory_management::init_memory_manager(MEMORY_MAP.get().unwrap());
+    log::info!("Global memory manager initialized");
+
     write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: About to init interrupts\n");
 
     // Common initialization for both UEFI and BIOS

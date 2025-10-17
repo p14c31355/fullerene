@@ -44,7 +44,7 @@ pub struct PageTableManager {
     current_page_table: usize,
     page_tables: BTreeMap<usize, usize>,
     initialized: bool,
-    pub pml4_frame: x86_64::structures::paging::PhysFrame,
+    pub pml4_frame: Option<x86_64::structures::paging::PhysFrame>,
     mapper: Option<OffsetPageTable<'static>>,
 }
 
@@ -55,15 +55,13 @@ pub fn get_physical_memory_offset() -> usize {
 }
 
 impl PageTableManager {
-    /// Create a new page table manager
+    /// Create a new page table manager (deferred initialization)
     pub fn new() -> Self {
         Self {
             current_page_table: 0,
             page_tables: BTreeMap::new(),
             initialized: false,
-            pml4_frame: x86_64::structures::paging::PhysFrame::containing_address(
-                x86_64::PhysAddr::new(0),
-            ),
+            pml4_frame: None,
             mapper: None,
         }
     }
@@ -74,17 +72,22 @@ impl PageTableManager {
             current_page_table: pml4_frame.start_address().as_u64() as usize,
             page_tables: BTreeMap::new(),
             initialized: false,
-            pml4_frame,
+            pml4_frame: Some(pml4_frame),
             mapper: None,
         }
     }
 
+    /// Set the pml4 frame for this page table manager
+    pub fn set_pml4_frame(&mut self, pml4_frame: x86_64::structures::paging::PhysFrame) {
+        self.pml4_frame = Some(pml4_frame);
+        self.current_page_table = pml4_frame.start_address().as_u64() as usize;
+    }
+
     /// Initialize paging
     pub fn init_paging(&mut self) -> SystemResult<()> {
-        // Get current CR3 (page table base)
-        let (frame, _) = x86_64::registers::control::Cr3::read();
+        // Check that pml4_frame has been set
+        let frame = self.pml4_frame.ok_or(SystemError::InternalError)?;
         self.current_page_table = frame.start_address().as_u64() as usize;
-        self.pml4_frame = frame;
 
         // Create and store the mapper instance
         unsafe {
