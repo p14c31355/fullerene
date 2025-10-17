@@ -183,32 +183,20 @@ pub enum LoadError {
     AddressAlreadyMapped,
 }
 
-impl From<crate::memory_management::AllocError> for LoadError {
-    fn from(error: crate::memory_management::AllocError) -> Self {
-        match error {
-            crate::memory_management::AllocError::OutOfMemory => LoadError::OutOfMemory,
-            crate::memory_management::AllocError::MappingFailed => LoadError::MappingFailed,
-        }
-    }
-}
+petroleum::error_chain!(crate::memory_management::AllocError, LoadError,
+    crate::memory_management::AllocError::OutOfMemory => LoadError::OutOfMemory,
+    crate::memory_management::AllocError::MappingFailed => LoadError::MappingFailed,
+);
 
-impl From<crate::memory_management::MapError> for LoadError {
-    fn from(error: crate::memory_management::MapError) -> Self {
-        match error {
-            crate::memory_management::MapError::MappingFailed => LoadError::MappingFailed,
-            crate::memory_management::MapError::UnmappingFailed => LoadError::MappingFailed,
-            crate::memory_management::MapError::FrameAllocationFailed => LoadError::OutOfMemory,
-        }
-    }
-}
+petroleum::error_chain!(crate::memory_management::MapError, LoadError,
+    crate::memory_management::MapError::MappingFailed => LoadError::MappingFailed,
+    crate::memory_management::MapError::UnmappingFailed => LoadError::MappingFailed,
+    crate::memory_management::MapError::FrameAllocationFailed => LoadError::OutOfMemory,
+);
 
-impl From<crate::memory_management::FreeError> for LoadError {
-    fn from(error: crate::memory_management::FreeError) -> Self {
-        match error {
-            crate::memory_management::FreeError::UnmappingFailed => LoadError::MappingFailed,
-        }
-    }
-}
+petroleum::error_chain!(crate::memory_management::FreeError, LoadError,
+    crate::memory_management::FreeError::UnmappingFailed => LoadError::MappingFailed,
+);
 
 impl From<petroleum::common::logging::SystemError> for LoadError {
     fn from(error: petroleum::common::logging::SystemError) -> Self {

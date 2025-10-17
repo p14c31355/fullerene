@@ -307,29 +307,30 @@ macro_rules! set_bool_bit {
     };
 }
 
-/// Macro to clear a 2D buffer with a value, reducing nested loop code
+/// Macro to clear a 2D buffer with a value for trait-based buffers, reducing nested loop code
 #[macro_export]
 macro_rules! clear_buffer {
     ($buffer:expr, $height:expr, $width:expr, $value:expr) => {
         for row in 0..$height {
             for col in 0..$width {
-                $buffer[row][col] = $value;
+                $buffer.set_char_at(row, col, $value);
             }
         }
     };
 }
 
-/// Macro to scroll up a 2D buffer, reducing loop code
+/// Macro to scroll up a 2D buffer for trait-based buffers, reducing loop code
 #[macro_export]
 macro_rules! scroll_buffer_up {
     ($buffer:expr, $height:expr, $width:expr, $blank:expr) => {
         for row in 1..$height {
             for col in 0..$width {
-                $buffer[row - 1][col] = $buffer[row][col];
+                let chr = $buffer.get_char_at(row, col);
+                $buffer.set_char_at(row - 1, col, chr);
             }
         }
         for col in 0..$width {
-            $buffer[$height - 1][col] = $blank;
+            $buffer.set_char_at($height - 1, col, $blank);
         }
     };
 }
@@ -356,4 +357,110 @@ macro_rules! define_commands {
             ),*
         ]
     };
+}
+
+/// Macro for volatile memory read operations
+#[macro_export]
+macro_rules! volatile_read {
+    ($addr:expr, $ty:ty) => {
+        unsafe { core::ptr::read_volatile($addr as *const $ty) }
+    };
+}
+
+/// Macro for volatile memory write operations
+#[macro_export]
+macro_rules! volatile_write {
+    ($addr:expr, $value:expr) => {{
+        let addr = $addr as *mut _;
+        unsafe { core::ptr::write_volatile(addr, $value) }
+    }};
+}
+
+/// Macro for safe buffer index access with bounds checking
+#[macro_export]
+macro_rules! safe_buffer_access {
+    ($buffer:expr, $index:expr, $default:expr) => {
+        if $index < $buffer.len() {
+            &$buffer[$index]
+        } else {
+            &$default
+        }
+    };
+}
+
+/// Macro for scrolling up a 2D character buffer (generic version)
+#[macro_export]
+macro_rules! scroll_char_buffer_up {
+    ($buffer:expr, $height:expr, $width:expr, $blank:expr) => {
+        for row in 1..$height {
+            for col in 0..$width {
+                $buffer[row - 1][col] = $buffer[row][col];
+            }
+        }
+        for col in 0..$width {
+            $buffer[$height - 1][col] = $blank;
+        }
+    };
+}
+
+/// Macro for generic text buffer operations in write_byte
+#[macro_export]
+macro_rules! handle_write_byte {
+    ($self:expr, $byte:expr, $newline:block, $write_char:block) => {
+        match $byte {
+            b'\n' => $newline,
+            byte => $write_char,
+        }
+    };
+}
+
+/// Macro to reduce boilerplate in error conversion implementations
+/// Converts an error type to SystemError using a mapping closure
+#[macro_export]
+macro_rules! impl_error_from {
+    ($src:ty, $dst:ty, $map_fn:expr) => {
+        impl From<$src> for $dst {
+            fn from(error: $src) -> Self {
+                ($map_fn)(error)
+            }
+        }
+    };
+}
+
+/// Compact error conversion macro for common patterns where variants map directly
+#[macro_export]
+macro_rules! error_variant_map {
+    ($src:ty, $dst:ty, $pat:pat => $result:expr) => {
+        impl From<$src> for $dst {
+            fn from(error: $src) -> Self {
+                match error {
+                    $pat => $result,
+                }
+            }
+        }
+    };
+}
+
+/// Macro for chained error conversions
+#[macro_export]
+macro_rules! error_chain {
+    ($src:ty, $dst:ty, $( $pat:pat => $result:expr ),* $(,)?) => {
+        impl From<$src> for $dst {
+            fn from(error: $src) -> Self {
+                match error {
+                    $(
+                        $pat => $result,
+                    )*
+                }
+            }
+        }
+    };
+}
+
+/// Macro for simple module initialization with logging
+#[macro_export]
+macro_rules! declare_init {
+    ($mod_name:expr) => {{
+        $crate::serial::serial_log(format_args!("{} initialized\n", $mod_name));
+    }};
 }

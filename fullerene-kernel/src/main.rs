@@ -45,12 +45,12 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     // Visual indicator on VGA screen for kernel panic
     unsafe {
         // Yellow text on red background for panic
-        core::ptr::write_volatile(0xB8000 as *mut u16, 0xCE50); // 'P' yellow on red
-        core::ptr::write_volatile(0xB8002 as *mut u16, 0xCE41); // 'A' yellow on red
-        core::ptr::write_volatile(0xB8004 as *mut u16, 0xCE4E); // 'N' yellow on red
-        core::ptr::write_volatile(0xB8006 as *mut u16, 0xCE49); // 'I' yellow on red
-        core::ptr::write_volatile(0xB8008 as *mut u16, 0xCE43); // 'C' yellow on red
-        core::ptr::write_volatile(0xB800A as *mut u16, 0xCE21); // '!' yellow on red
+        petroleum::volatile_write!(0xB8000 as *mut u16, 0xCE50); // 'P' yellow on red
+        petroleum::volatile_write!(0xB8002 as *mut u16, 0xCE41); // 'A' yellow on red
+        petroleum::volatile_write!(0xB8004 as *mut u16, 0xCE4E); // 'N' yellow on red
+        petroleum::volatile_write!(0xB8006 as *mut u16, 0xCE49); // 'I' yellow on red
+        petroleum::volatile_write!(0xB8008 as *mut u16, 0xCE43); // 'C' yellow on red
+        petroleum::volatile_write!(0xB800A as *mut u16, 0xCE21); // '!' yellow on red
     }
 
     loop {

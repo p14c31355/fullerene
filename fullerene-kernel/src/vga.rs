@@ -1,5 +1,5 @@
 use petroleum::graphics::ports::HardwarePorts;
-use petroleum::{clear_buffer, Color, ColorCode, ScreenChar, TextBufferOperations, port_write};
+use petroleum::{clear_buffer, Color, ColorCode, ScreenChar, TextBufferOperations, port_write, handle_write_byte};
 use spin::{Mutex, Once};
 
 const BUFFER_HEIGHT: usize = 25;
@@ -92,27 +92,21 @@ impl TextBufferOperations for VgaBuffer {
     }
 
     fn write_byte(&mut self, byte: u8) {
-        match byte {
-            b'\n' => {
+        handle_write_byte!(self, byte, { self.new_line() }, {
+            if self.column_position >= BUFFER_WIDTH {
                 self.new_line();
             }
-            byte => {
-                if self.column_position >= BUFFER_WIDTH {
-                    self.new_line();
-                }
-                if self.row_position >= BUFFER_HEIGHT {
-                    self.scroll_up();
-                    self.row_position = BUFFER_HEIGHT - 1;
-                }
-
-                let screen_char = ScreenChar {
-                    ascii_character: byte,
-                    color_code: self.color_code,
-                };
-                self.buffer[self.row_position][self.column_position] = screen_char;
-                self.column_position += 1;
+            if self.row_position >= BUFFER_HEIGHT {
+                self.scroll_up();
+                self.row_position = BUFFER_HEIGHT - 1;
             }
-        }
+            let screen_char = ScreenChar {
+                ascii_character: byte,
+                color_code: self.color_code,
+            };
+            self.buffer[self.row_position][self.column_position] = screen_char;
+            self.column_position += 1;
+        });
     }
 
     fn new_line(&mut self) {
@@ -129,7 +123,7 @@ impl TextBufferOperations for VgaBuffer {
             ascii_character: b' ',
             color_code: self.color_code,
         };
-        clear_buffer!(self.buffer, BUFFER_HEIGHT, BUFFER_WIDTH, blank);
+        clear_buffer!(self, BUFFER_HEIGHT, BUFFER_WIDTH, blank);
         self.column_position = 0;
         self.row_position = 0;
     }
@@ -207,16 +201,7 @@ mod tests {
             }
         }
 
-        fn scroll_up(&mut self) {
-            for row in 1..self.height {
-                for col in 0..self.width {
-                    let src_index = row * self.width + col;
-                    let dest_index = (row - 1) * self.width + col;
-                    self.buffer[dest_index] = self.buffer[src_index];
-                }
-            }
-            self.clear_row(self.height - 1);
-        }
+
 
         fn clear_row(&mut self, row: usize) {
             let blank_char = ScreenChar {

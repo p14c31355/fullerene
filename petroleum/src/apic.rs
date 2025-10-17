@@ -2,8 +2,7 @@
 //!
 //! Provides functions for configuring LAPIC and I/O APIC during UEFI boot.
 
-use core::ptr;
-use crate::{bit_field_set, set_bool_bit};
+use crate::{bit_field_set, set_bool_bit, volatile_read, volatile_write};
 
 /// I/O APIC register offsets
 const IOAPIC_VER: u8 = 0x01;
@@ -90,22 +89,20 @@ impl IoApic {
 
     /// Read from I/O APIC register (volatile)
     unsafe fn read(&self, reg: u8) -> u32 {
-        let reg_addr = (self.base_addr) as *mut u32;
+        let reg_addr = self.base_addr as *mut u32;
         let value_addr = (self.base_addr + 0x10) as *mut u32;
 
-        unsafe {
-            ptr::write_volatile(reg_addr, reg as u32);
-        }
-        unsafe { ptr::read_volatile(value_addr) }
+        volatile_write!(reg_addr, reg as u32);
+        volatile_read!(value_addr, u32)
     }
 
     /// Write to I/O APIC register (volatile)
     unsafe fn write(&self, reg: u8, value: u32) {
-        let reg_addr = (self.base_addr) as *mut u32;
+        let reg_addr = self.base_addr as *mut u32;
         let value_addr = (self.base_addr + 0x10) as *mut u32;
 
-        unsafe { ptr::write_volatile(reg_addr, reg as u32) };
-        unsafe { ptr::write_volatile(value_addr, value) };
+        volatile_write!(reg_addr, reg as u32);
+        volatile_write!(value_addr, value);
     }
 
     /// Read redirection table entry
@@ -161,7 +158,7 @@ pub fn configure_io_apic_for_legacy_irqs(io_apic: &mut IoApic, local_apic_id: u8
 /// Get local APIC ID from the LAPIC
 pub unsafe fn get_local_apic_id(lapic_base: u64) -> u8 {
     let lapic_id_reg = (lapic_base + 0x20) as *const u32;
-    (unsafe { ptr::read_volatile(lapic_id_reg) } >> 24) as u8
+    (volatile_read!(lapic_id_reg, u32) >> 24) as u8
 }
 
 /// Initialize I/O APIC for legacy interrupts

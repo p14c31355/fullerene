@@ -29,6 +29,8 @@ impl ColorCode {
     }
 }
 
+use crate::{clear_buffer, scroll_buffer_up};
+
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct ScreenChar {
@@ -101,25 +103,24 @@ pub trait TextBufferOperations {
             ascii_character: b' ',
             color_code: self.get_color_code(),
         };
-        for col in 0..self.get_width() {
-            self.set_char_at(row, col, blank_char);
-        }
+        clear_buffer!(self, 1, self.get_width(), blank_char);
     }
 
     fn clear_screen(&mut self) {
-        for row in 0..self.get_height() {
-            self.clear_row(row);
-        }
+        let blank_char = ScreenChar {
+            ascii_character: b' ',
+            color_code: self.get_color_code(),
+        };
+        clear_buffer!(self, self.get_height(), self.get_width(), blank_char);
         self.set_position(0, 0);
     }
 
     fn scroll_up(&mut self) {
-        for row in 1..self.get_height() {
-            for col in 0..self.get_width() {
-                let chr = self.get_char_at(row, col);
-                self.set_char_at(row - 1, col, chr);
-            }
-        }
+        let blank_char = ScreenChar {
+            ascii_character: b' ',
+            color_code: self.get_color_code(),
+        };
+        scroll_buffer_up!(self, self.get_height(), self.get_width(), blank_char);
         self.clear_row(self.get_height() - 1);
     }
 }

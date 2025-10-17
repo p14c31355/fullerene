@@ -566,6 +566,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4895175b425cb1f87721b59f0f286c2092bd4af812243672510e1ac53e2e0ad"
 
 [[package]]
+name = "paste"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
 name = "pc-keyboard"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -575,6 +581,7 @@ checksum = "f0ca629cbb3f0d5b699c338f0129ff78c9bfd7ea8b1258ad529bff490dc8ed5a"
 name = "petroleum"
 version = "0.1.0"
 dependencies = [
+ "bitfield",
  "bitflags 2.9.4",
  "conquer-util",
  "embedded-graphics",
@@ -582,6 +589,7 @@ dependencies = [
  "linked_list_allocator",
  "log",
  "once_cell",
+ "paste",
  "spin 0.10.0",
  "static_assertions",
  "volatile 0.6.1",

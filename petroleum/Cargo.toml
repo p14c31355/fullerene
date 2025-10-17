@@ -27,6 +27,8 @@ bitflags = "2.4"
 conquer-util = { version = "0.3", default-features = false }
 static_assertions = "1.1"
 log = { version = "0.4.28", default-features = false }
+paste = "1.0"
+bitfield = "0.19"
 
 [lib]
 name = "petroleum"
