@@ -55,7 +55,7 @@ macro_rules! draw_filled_rect {
         use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
         let rect = Rectangle::new(embedded_graphics::geometry::Point::new($x, $y), embedded_graphics::geometry::Size::new($w, $h));
         let style = PrimitiveStyleBuilder::new()
-            .fill_color(crate::graphics::color::u32_to_rgb888($color))
+            .fill_color($crate::graphics::color::u32_to_rgb888($color))
             .build();
         rect.into_styled(style).draw($writer).ok();
     }};
