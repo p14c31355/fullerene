@@ -317,7 +317,7 @@ fn configure_serial_port(vm_name: &str) -> io::Result<()> {
         .status()?;
 
     if !serial_status.success() {
-        log::info!("Warning: Failed to configure serial port mode. Serial logging may not work.");
+        log::warn!("Failed to configure serial port mode. Serial logging may not work.");
         // Don't return error, as this might not be fatal
     } else {
         log::info!("Serial output will be accessible on TCP port 6000");
