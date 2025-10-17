@@ -3,6 +3,7 @@ use crate::scheduler::scheduler_loop;
 
 use crate::graphics::framebuffer::FramebufferLike;
 use crate::heap;
+use crate::heap::memory_map::MEMORY_MAP;
 
 use crate::memory::find_heap_start;
 use crate::{gdt, graphics, interrupts, memory};
@@ -349,6 +350,7 @@ pub extern "efiapi" fn efi_main(
 
 /// Kernel-side fallback framebuffer detection when config table is not available
 /// Uses shared logic from petroleum crate
+#[cfg(target_os = "uefi")]
 pub fn kernel_fallback_framebuffer_detection() -> Option<FullereneFramebufferConfig> {
     log::info!(
         "Attempting kernel-side fallback framebuffer detection (bootloader config table not available)"
@@ -541,30 +543,4 @@ pub fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
 
     // As a fallback, try Cirrus VGA graphics if the function exists
     try_initialize_cirrus_graphics_mode()
-}
-
-// Helper function to calculate framebuffer size with bpp validation and logging
-pub fn calculate_framebuffer_size(
-    config: &FullereneFramebufferConfig,
-    source: &str,
-) -> (Option<u64>, Option<u64>) {
-    if config.bpp < 8 {
-        log::warn!(
-            "Warning: Invalid bpp ({}) in {} config.",
-            config.bpp,
-            source
-        );
-        return (None, None);
-    }
-    let size_pixels = config.width as u64 * config.height as u64;
-    let size_bytes = size_pixels * (config.bpp as u64 / 8);
-    log::info!(
-        "Calculated {} framebuffer size: {} bytes from {}x{} @ {} bpp",
-        source,
-        size_bytes,
-        config.width,
-        config.height,
-        config.bpp
-    );
-    (Some(config.address), Some(size_bytes))
 }
