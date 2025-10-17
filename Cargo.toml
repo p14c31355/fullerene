@@ -3,7 +3,7 @@ members = ["bellows", "flasks", "fullerene-kernel", "petroleum", "toluene"]
 
 [profile.dev]
 panic = "abort"
-overflow-checks = false
+overflow-checks = true
 
 [profile.release]
 panic = "abort"
