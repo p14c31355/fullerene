@@ -456,19 +456,26 @@ impl SimpleFramebuffer {
 
     /// Clear the entire framebuffer
     pub fn clear(&mut self, color: u32) {
+        let color_bytes = color.to_le_bytes();
         for y in 0..self.height {
             let row_base = self.base + y * self.stride;
             for x in 0..self.width {
                 let offset = x * self.bytes_per_pixel;
-                let pixel_addr = (row_base + offset) as *mut u32;
+                let pixel_addr = (row_base + offset) as *mut u8;
 
                 // Check that the calculated pixel_addr is within the valid framebuffer memory region
                 let pixel_addr_usize = pixel_addr as usize;
-                if pixel_addr_usize < self.base || pixel_addr_usize >= self.base + self.height * self.stride {
+                if pixel_addr_usize < self.base || (pixel_addr_usize + self.bytes_per_pixel) > (self.base + self.height * self.stride) {
                     continue;
                 }
 
-                unsafe { write_volatile(pixel_addr, color); }
+                unsafe {
+                    for i in 0..self.bytes_per_pixel {
+                        if i < color_bytes.len() {
+                            write_volatile(pixel_addr.add(i), color_bytes[i]);
+                        }
+                    }
+                }
             }
         }
     }
@@ -480,15 +487,22 @@ impl SimpleFramebuffer {
         }
         let row_base = self.base + y * self.stride;
         let offset = x * self.bytes_per_pixel;
-        let pixel_addr = (row_base + offset) as *mut u32;
+        let pixel_addr = (row_base + offset) as *mut u8;
 
         // Check that the calculated pixel_addr is within the valid framebuffer memory region
         let pixel_addr_usize = pixel_addr as usize;
-        if pixel_addr_usize < self.base || pixel_addr_usize >= self.base + self.height * self.stride {
+        if pixel_addr_usize < self.base || (pixel_addr_usize + self.bytes_per_pixel) > (self.base + self.height * self.stride) {
             return;
         }
 
-        unsafe { write_volatile(pixel_addr, color); }
+        unsafe {
+            let color_bytes = color.to_le_bytes();
+            for i in 0..self.bytes_per_pixel {
+                if i < color_bytes.len() {
+                    write_volatile(pixel_addr.add(i), color_bytes[i]);
+                }
+            }
+        }
     }
 
     /// Draw a filled rectangle (orbclient-style)

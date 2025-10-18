@@ -103,7 +103,7 @@ pub extern "efiapi" fn efi_main(
     log::info!("Finding framebuffer config for page table mapping...");
     let framebuffer_config = crate::memory::find_framebuffer_config(system_table);
     // Save the config globally for later use after exit_boot_services
-    if let Some(config) = &framebuffer_config {
+    if let Some(config) = framebuffer_config {
         petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| Mutex::new(Some(*config)));
         log::info!("Saved framebuffer config globally for kernel use");
     }

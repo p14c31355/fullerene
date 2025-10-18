@@ -184,35 +184,22 @@ fn run_vbox_modify(vm_name: &str, args: &[&str], failure_msg: &str, success_msg:
 fn configure_vm_settings(vm_name: &str) -> io::Result<()> {
     log::info!("Configuring VM settings for '{}'...", vm_name);
 
-    // Set memory to 4GB
-    run_vbox_modify(vm_name, &["--memory", "4096"], "Failed to set VM memory.", None)?;
+    let settings: &[(&[&str], &str, Option<&str>)] = &[
+        (&["--memory", "4096"], "Failed to set VM memory.", None),
+        (&["--vram", "128"], "Failed to set VM video memory.", None),
+        (&["--acpi", "on"], "Failed to enable ACPI.", None),
+        (&["--nic1", "nat"], "Failed to configure network NAT.", None),
+        (&["--cpus", "1"], "Failed to set CPU count.", None),
+        (&["--chipset", "ich9"], "Failed to set chipset.", None),
+        (&["--hwvirtex", "off"], "Failed to disable hardware virtualization. This may cause issues in nested VM environments.", Some("Hardware virtualization disabled for compatibility with nested VMs")),
+        (&["--nested-paging", "off"], "Failed to disable nested paging.", None),
+        (&["--large-pages", "off"], "Failed to disable large pages.", None),
+        (&["--nested-hw-virt", "off"], "Failed to disable nested hardware virtualization.", None),
+    ];
 
-    // Set video memory to 128MB
-    run_vbox_modify(vm_name, &["--vram", "128"], "Failed to set VM video memory.", None)?;
-
-    // Enable ACPI
-    run_vbox_modify(vm_name, &["--acpi", "on"], "Failed to enable ACPI.", None)?;
-
-    // Set network to NAT
-    run_vbox_modify(vm_name, &["--nic1", "nat"], "Failed to configure network NAT.", None)?;
-
-    // Set CPU to 1
-    run_vbox_modify(vm_name, &["--cpus", "1"], "Failed to set CPU count.", None)?;
-
-    // Set chipset to ICH9
-    run_vbox_modify(vm_name, &["--chipset", "ich9"], "Failed to set chipset.", None)?;
-
-    // Disable hardware virtualization for nested VM compatibility
-    run_vbox_modify(vm_name, &["--hwvirtex", "off"], "Failed to disable hardware virtualization. This may cause issues in nested VM environments.", Some("Hardware virtualization disabled for compatibility with nested VMs"))?;
-
-    // Disable nested paging for software emulation
-    run_vbox_modify(vm_name, &["--nested-paging", "off"], "Failed to disable nested paging.", None)?;
-
-    // Disable large pages for software emulation
-    run_vbox_modify(vm_name, &["--large-pages", "off"], "Failed to disable large pages.", None)?;
-
-    // Disable nested hardware virtualization
-    run_vbox_modify(vm_name, &["--nested-hw-virt", "off"], "Failed to disable nested hardware virtualization.", None)?;
+    for (args, failure_msg, success_msg) in settings {
+        run_vbox_modify(vm_name, args, failure_msg, *success_msg)?;
+    }
 
     Ok(())
 }
