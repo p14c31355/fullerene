@@ -740,7 +740,7 @@ impl UnifiedMemoryManager {
                     core::ptr::copy_nonoverlapping(chunk.as_ptr(), ptr, chunk.len());
                 }
                 // Unmap temp
-                let _ = self.page_table_manager.unmap_page(TEMP_PHY_ACCESS);
+                let _ = self.page_table_manager.unmap_page(TEMP_PHY_ACCESS)?;
             } else {
                 return Err(SystemError::InvalidArgument);
             }
