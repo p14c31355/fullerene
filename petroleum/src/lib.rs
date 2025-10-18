@@ -33,9 +33,10 @@ pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 pub use uefi_helpers::handle_panic;
 
 // Heap allocation exports
+// Heap allocation exports
 pub use page_table::ALLOCATOR;
 pub use page_table::allocate_heap_from_map;
-pub use page_table::reinit_page_table;
+// Removed reinit_page_table export - implemented in higher-level crates
 
 /// Generic framebuffer buffer clear operation
 /// stride is in bytes per line
@@ -69,7 +70,6 @@ pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u
     unsafe { core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color) };
 }
 
-use alloc::boxed::Box;
 use core::arch::asm;
 use core::ffi::c_void;
 use core::ptr;
@@ -78,7 +78,6 @@ use spin::{Mutex, Once};
 use crate::common::{
     EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EFI_LOADED_IMAGE_PROTOCOL_GUID,
     EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID,
-    FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
 };
 use crate::common::{
     EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable, FullereneFramebufferConfig,

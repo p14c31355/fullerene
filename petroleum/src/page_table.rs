@@ -3,10 +3,9 @@ use x86_64::{
     registers::control::Cr3,
     instructions::tlb,
     structures::paging::{
-        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate,
+        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PhysFrame, Size4KiB, Translate,
     },
 };
-use spin::{Mutex, Once};
 
 /// EFI Memory Descriptor as defined in UEFI spec
 #[repr(C)]
@@ -122,23 +121,17 @@ pub unsafe fn translate_addr(addr: VirtAddr, physical_memory_offset: VirtAddr) -
     translate_addr_inner(addr, physical_memory_offset)
 }
 
-/// Reinitialize the page table with identity mapping and higher-half kernel mapping
-///
-/// Returns the physical memory offset used for the mapping
-pub fn reinit_page_table(
+/// Returns the higher-half kernel mapping offset
+pub fn get_higher_half_offset(
     _kernel_phys_start: PhysAddr,
     _fb_addr: Option<VirtAddr>,
     _fb_size: Option<u64>,
 ) -> VirtAddr {
-    use x86_64::structures::paging::PageTableFlags as Flags;
-
     // Use petroleum's higher half kernel virtual base
     const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000;
 
     // Create the offset for higher-half kernel mapping: physical + offset = virtual
-    let phys_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE);
-
-    phys_offset
+    VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE)
 }
 
 /// Reinitialize the page table with identity mapping and higher-half kernel mapping
@@ -172,8 +165,8 @@ pub fn reinit_page_table_with_allocator(
 
     // Map kernel at higher half
     // Kernel typically spans from kernel_phys_start for several MB
-    // We'll map the first 4MB to be safe (can be adjusted based on actual kernel size)
-    const KERNEL_SIZE: u64 = 4 * 1024 * 1024; // 4MB
+    // We'll map the first 64MB to be safe against future growth
+    const KERNEL_SIZE: u64 = 64 * 1024 * 1024; // 64MB
     let kernel_pages = (KERNEL_SIZE + 4095) / 4096; // Round up to page count
 
     for i in 0..kernel_pages {
