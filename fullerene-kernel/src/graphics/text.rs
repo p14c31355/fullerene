@@ -13,7 +13,8 @@ use petroleum::graphics::init_vga_graphics;
 use spin::{Mutex, Once};
 
 // Imports from other modules
-use super::framebuffer::{FramebufferInfo, FramebufferLike, FramebufferWriter};
+use super::framebuffer::{FramebufferLike, FramebufferWriter};
+use petroleum::graphics::color::{FramebufferInfo, PixelType, SimpleFramebufferConfig, init_simple_framebuffer_config};
 
 // Optimized text rendering using embedded-graphics
 // Batcher processing for efficiency and reduced code complexity
@@ -86,7 +87,7 @@ type VgaFramebufferWriter = FramebufferWriter<u8>;
 
 impl<T> core::fmt::Write for FramebufferWriter<T>
 where
-    T: super::framebuffer::PixelType,
+    T: PixelType,
 {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         write_text(self, s)
@@ -114,7 +115,7 @@ pub fn init(config: &FullereneFramebufferConfig) {
 
     // Initialize simple framebuffer config (Redox vesad-style)
     if config.bpp == 32 {
-        let simple_config = super::framebuffer::SimpleFramebufferConfig {
+        let simple_config = SimpleFramebufferConfig {
             base_addr: config.address as usize,
             width: config.width as usize,
             height: config.height as usize,
@@ -122,7 +123,7 @@ pub fn init(config: &FullereneFramebufferConfig) {
 
             bytes_per_pixel: 4, // Assume 32-bit pixels for UEFI graphics
         };
-        super::framebuffer::init_simple_framebuffer_config(simple_config);
+        init_simple_framebuffer_config(simple_config);
     }
 
     // Check pixel format to determine whether to use 32-bit or 8-bit writer
@@ -150,7 +151,7 @@ pub fn init(config: &FullereneFramebufferConfig) {
                 "Graphics: Using 32-bit UEFI graphics mode\n"
             ));
             let writer =
-                FramebufferWriter::<u32>::new(super::framebuffer::FramebufferInfo::new(config));
+                FramebufferWriter::<u32>::new(FramebufferInfo::new(config));
             (
                 Box::new(writer.clone()) as Box<dyn core::fmt::Write + Send + Sync>,
                 super::framebuffer::UefiFramebuffer::Uefi32(writer),

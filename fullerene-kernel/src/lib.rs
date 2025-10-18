@@ -51,7 +51,7 @@ pub mod memory_management; // Virtual memory management
 pub mod process; // Process management
 pub mod shell;
 pub mod syscall; // System calls // Shell/CLI interface
-pub mod test_process;
+
 
 // Submodules for modularizing main.rs
 pub mod boot;
@@ -96,11 +96,11 @@ const VGA_COLOR_GREEN_ON_BLACK: u16 = 0x0200;
 // A graphics testing loop integrated with full system scheduling
 pub fn graphics_test_loop() -> ! {
     
-    if let Some(mut fb) = crate::graphics::framebuffer::get_simple_framebuffer() {
+    if let Some(mut fb) = petroleum::graphics::color::get_simple_framebuffer() {
         crate::graphics::_print(format_args!("Graphics: Testing SimpleFramebuffer API\n"));
         fb.clear(0xFF000000); // Clear to black
 
-        for i in 0..100 {
+        for i in 0..100usize {
             fb.draw_pixel(i, i, 0xFFFF0000); // Red diagonal line
             fb.draw_pixel(200 + i, 100, 0xFF00FF00); // Green horizontal line
             fb.draw_pixel(100, 200 + i, 0xFF0000FF); // Blue vertical line

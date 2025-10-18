@@ -27,7 +27,6 @@ mod vga; // System calls // Shell/CLI interface
 mod boot;
 mod init;
 mod memory;
-mod test_process;
 
 extern crate alloc;
 extern crate fullerene_kernel;

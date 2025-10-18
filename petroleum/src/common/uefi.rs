@@ -1,5 +1,9 @@
 // Common definitions for UEFI and BIOS modes.
 
+/// Physical memory offset for virtual to physical address translation (UEFI)
+#[cfg(target_os = "uefi")]
+pub const PHYSICAL_MEMORY_OFFSET_BASE: usize = 0xFFFF_8000_0000_0000;
+
 use core::ffi::c_void;
 
 /// GUID for FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID (UEFI only)

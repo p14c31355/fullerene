@@ -38,7 +38,7 @@ pub fn init_common() {
     init_log!("About to create test process");
     let test_pid = crate::process::create_process(
         "test_process",
-        x86_64::VirtAddr::new(crate::test_process::test_process_main as usize as u64),
+        x86_64::VirtAddr::new(crate::process::test_process_main as usize as u64),
     );
     init_log!("Test process created");
 
