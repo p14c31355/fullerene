@@ -21,9 +21,7 @@ mod scheduler;
 mod shell;
 mod syscall;
 mod traits;
-mod vga; // System calls // Shell/CLI interface
-
-// Submodules for modularizing main.rs
+mod vga;
 mod boot;
 mod init;
 mod memory;
@@ -48,6 +46,12 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     use petroleum::serial::_print;
     use x86_64::instructions::hlt;
     _print(format_args!("KERNEL PANIC: {}\n", info));
+
+    // Visual indicator on VGA screen for kernel panic (yellow on red) - helps with debugging in environments without serial access
+    let panic_msg = b"PANIC!";
+    for (i, &ch) in panic_msg.iter().enumerate() {
+        petroleum::volatile_write!((VGA_BUFFER_ADDRESS + i * 2) as *mut u16, 0xCE00 | (ch as u16));
+    }
 
     // Halt the CPU to prevent spinning
     loop {
