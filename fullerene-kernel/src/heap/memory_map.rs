@@ -16,7 +16,7 @@ pub static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
 pub fn init_frame_allocator(memory_map: &'static [EfiMemoryDescriptor]) {
     let allocator = unsafe { BootInfoFrameAllocator::init(memory_map) };
     FRAME_ALLOCATOR.call_once(|| Mutex::new(allocator));
-    MEMORY_MAP.call_once(|| memory_map);
+    // MEMORY_MAP is already initialized in setup_memory_maps
 }
 
 /// Helper function to iterate over memory descriptors with specific types

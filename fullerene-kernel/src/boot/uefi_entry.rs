@@ -3,7 +3,7 @@ use crate::scheduler::scheduler_loop;
 
 use crate::graphics::framebuffer::FramebufferLike;
 use crate::heap;
-use crate::heap::memory_map::MEMORY_MAP;
+use crate::MEMORY_MAP;
 
 use crate::memory::find_heap_start;
 use crate::{gdt, graphics, interrupts, memory};
@@ -93,9 +93,9 @@ pub extern "efiapi" fn efi_main(
 
     log::info!(
         "Calling heap::init_frame_allocator with {} descriptors",
-        MEMORY_MAP.get().unwrap().len()
+        MEMORY_MAP.get().expect("Memory map not initialized").len()
     );
-    heap::init_frame_allocator(*MEMORY_MAP.get().unwrap());
+    heap::init_frame_allocator(*MEMORY_MAP.get().expect("Memory map not initialized"));
     log::info!("Heap frame allocator init completed successfully");
 
     // Find framebuffer configuration before reiniting page tables
@@ -135,7 +135,7 @@ pub extern "efiapi" fn efi_main(
     );
 
     // Initialize GDT with proper heap address
-    let heap_phys_start = find_heap_start(*MEMORY_MAP.get().unwrap());
+    let heap_phys_start = find_heap_start(*MEMORY_MAP.get().expect("Memory map not initialized"));
     log::info!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());
     let start_addr =
         if heap_phys_start.as_u64() < 0x1000 || heap_phys_start.as_u64() >= 0x0000800000000000 {

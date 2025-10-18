@@ -91,7 +91,7 @@ pub use memory_management::{AllocError, MapError};
 pub use memory_management::{get_memory_manager, init_memory_manager};
 pub use process::{PROCESS_LIST, Process, ProcessId};
 
-static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
+pub static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
 
 
 const VGA_BUFFER_ADDRESS: usize = 0xb8000;
