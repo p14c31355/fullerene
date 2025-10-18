@@ -130,8 +130,8 @@ pub extern "efiapi" fn efi_main(
 
     // Set kernel CR3 for syscall to access kernel heap
     let kernel_cr3 = x86_64::registers::control::Cr3::read();
-    crate::interrupts::syscall::set_kernel_cr3(kernel_cr3.0);
-    log::info!("Kernel CR3 set for syscall: {:#x}", kernel_cr3.0);
+    crate::interrupts::syscall::set_kernel_cr3(kernel_cr3.0.start_address().as_u64());
+    log::info!("Kernel CR3 set for syscall: {:#x}", kernel_cr3.0.start_address().as_u64());
 
     // Set physical memory offset for process management
     crate::memory_management::set_physical_memory_offset(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE);

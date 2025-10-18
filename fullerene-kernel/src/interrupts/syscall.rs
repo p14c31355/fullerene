@@ -13,7 +13,8 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 static SYSCALL_KERNEL_STACK: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Kernel CR3 for syscall to access kernel heap
-static mut KERNEL_CR3_U64: u64 = 0;
+#[unsafe(no_mangle)]
+pub static mut KERNEL_CR3_U64: u64 = 0;
 
 /// Set kernel CR3 for syscall switching
 pub fn set_kernel_cr3(cr3: u64) {
