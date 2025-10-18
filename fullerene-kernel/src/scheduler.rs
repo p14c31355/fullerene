@@ -126,8 +126,9 @@ fn display_system_stats_on_vga(stats: &SystemStats, interval_ticks: u64) {
 
     if current_tick - *last_display_tick >= interval_ticks {
         if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {
-            let uptime_minutes = stats.uptime_ticks / 60000; // Assuming ~1000 ticks per second
-            let uptime_seconds = (stats.uptime_ticks % 60000) / 1000;
+            const TICKS_PER_SECOND: u64 = 1000; // Assuming ~1000 ticks per second
+            let uptime_minutes = stats.uptime_ticks / (60 * TICKS_PER_SECOND);
+            let uptime_seconds = (stats.uptime_ticks % (60 * TICKS_PER_SECOND)) / TICKS_PER_SECOND;
 
             let mut vga_writer = vga_buffer.lock();
 
