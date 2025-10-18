@@ -23,6 +23,35 @@ use petroleum::graphics::{
     VGA_MODE13H_ADDRESS, VGA_MODE13H_BPP, VGA_MODE13H_HEIGHT, VGA_MODE13H_STRIDE, VGA_MODE13H_WIDTH,
 };
 
+/// Helper function to map a range of memory pages
+/// Takes the base physical address, number of pages, mapper, frame allocator, and flags
+#[cfg(target_os = "uefi")]
+fn map_memory_range(
+    base_phys_addr: PhysAddr,
+    num_pages: u64,
+    physical_memory_offset: VirtAddr,
+    mapper: &mut impl Mapper<Size4KiB>,
+    frame_allocator: &mut impl petroleum::page_table::FrameAllocator<Size4KiB>,
+    flags: x86_64::structures::paging::PageTableFlags,
+) {
+    for i in 0..num_pages {
+        let phys_addr_u64 = base_phys_addr.as_u64() + (i * 4096);
+        let phys_addr = PhysAddr::new(phys_addr_u64);
+        let virt_addr = physical_memory_offset + phys_addr_u64;
+
+        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
+        let frame =
+            x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
+
+        unsafe {
+            mapper
+                .map_to(page, frame, flags, frame_allocator)
+                .expect("Failed to map memory page")
+                .flush();
+        }
+    }
+}
+
 #[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]
 #[unsafe(link_section = ".text.efi_main")]
@@ -173,25 +202,10 @@ pub extern "efiapi" fn efi_main(
     log::info!("Mapping heap memory to virtual addresses");
     let heap_pages = (heap::HEAP_SIZE as u64).div_ceil(4096);
     let mut mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
-    for i in 0..heap_pages {
-        let phys_addr_u64 = heap_start.as_u64() + (i * 4096);
-        let phys_addr = PhysAddr::new(phys_addr_u64);
-        let virt_addr = physical_memory_offset + phys_addr_u64;
-
-        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
-        let frame =
-            x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
-
-        let flags = x86_64::structures::paging::PageTableFlags::PRESENT
-            | x86_64::structures::paging::PageTableFlags::WRITABLE
-            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-        unsafe {
-            mapper
-                .map_to(page, frame, flags, &mut frame_allocator)
-                .expect("Failed to map heap page")
-                .flush();
-        }
-    }
+    let flags = x86_64::structures::paging::PageTableFlags::PRESENT
+        | x86_64::structures::paging::PageTableFlags::WRITABLE
+        | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+    map_memory_range(heap_start, heap_pages, physical_memory_offset, &mut mapper, &mut frame_allocator, flags);
     log::info!("Heap memory mapped successfully");
 
     // Calculate virtual heap address after offset mapping
@@ -216,25 +230,11 @@ pub extern "efiapi" fn efi_main(
 
     // Map stack memory before switching RSP
     let stack_pages = (KERNEL_STACK_SIZE as u64).div_ceil(4096);
-    for i in 0..stack_pages {
-        let phys_addr_u64 = stack_bottom.as_u64() + (i * 4096) - physical_memory_offset.as_u64();
-        let phys_addr = PhysAddr::new(phys_addr_u64);
-        let virt_addr = physical_memory_offset + phys_addr_u64;
-
-        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
-        let frame =
-            x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
-
-        let flags = x86_64::structures::paging::PageTableFlags::PRESENT
-            | x86_64::structures::paging::PageTableFlags::WRITABLE
-            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-        unsafe {
-            mapper
-                .map_to(page, frame, flags, &mut frame_allocator)
-                .expect("Failed to map stack page")
-                .flush();
-        }
-    }
+    let stack_base_phys = PhysAddr::new(stack_bottom.as_u64() - physical_memory_offset.as_u64());
+    let flags = x86_64::structures::paging::PageTableFlags::PRESENT
+        | x86_64::structures::paging::PageTableFlags::WRITABLE
+        | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+    map_memory_range(stack_base_phys, stack_pages, physical_memory_offset, &mut mapper, &mut frame_allocator, flags);
     log::info!("Stack memory mapped successfully");
 
     // Switch RSP to new kernel stack for safety

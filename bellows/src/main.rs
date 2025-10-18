@@ -28,6 +28,9 @@ use petroleum::common::{
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
+    use core::fmt::Write;
+    let mut writer = petroleum::serial::SERIAL_PORT_WRITER.lock();
+    let _ = write!(writer, "Panic: {}\n", info);
     // Simple panic handler for UEFI bootloader
     unsafe {
         petroleum::volatile_write!(0xB8000 as *mut u16, 0x1F20); // White ' ' on blue
