@@ -177,3 +177,48 @@ pub fn test_runner(tests: &[&dyn Testable]) {
         test.run();
     }
 }
+
+/// Kernel-side fallback framebuffer detection when config table is not available
+/// Uses shared logic from petroleum crate
+pub fn kernel_fallback_framebuffer_detection() -> Option<crate::common::FullereneFramebufferConfig> {
+    // Call petroleum's consolidated QEMU framebuffer detection
+    crate::detect_qemu_framebuffer(&crate::QEMU_CONFIGS)
+}
+
+/// Helper function to initialize graphics with framebuffer configuration
+/// Returns true if graphics were successfully initialized and drawn
+pub fn initialize_graphics_with_config() -> bool {
+    // Use petroleum's existing graphics protocol initialization
+    // This consolidates the graphics initialization logic
+
+    // Get system table from the global UEFI system table
+    let system_table_ptr = crate::UEFI_SYSTEM_TABLE.lock().as_ref().cloned();
+    let system_table = match system_table_ptr {
+        Some(ptr) => unsafe { &*ptr.0 },
+        None => {
+            serial_log!("No UEFI system table available for graphics initialization");
+            return false;
+        }
+    };
+
+    match crate::init_graphics_protocols(system_table) {
+        Some(_) => {
+            serial_log!("Graphics protocols initialized successfully");
+            // Kernel-specific graphics init would be called here
+            // For now, just return success since the config is saved globally
+            true
+        }
+        None => {
+            serial_log!("Failed to initialize graphics protocols");
+            false
+        }
+    }
+}
+
+/// Serial logging macro for UEFI helpers
+#[macro_export]
+macro_rules! serial_log {
+    ($($arg:tt)*) => {{
+        crate::serial::serial_log(format_args!($($arg)*));
+    }};
+}

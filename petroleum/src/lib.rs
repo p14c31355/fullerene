@@ -35,6 +35,10 @@ pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 pub use page_table::ALLOCATOR;
 pub use page_table::allocate_heap_from_map;
 // Removed reinit_page_table export - implemented in higher-level crates
+// UEFI helper exports
+pub use uefi_helpers::{
+    kernel_fallback_framebuffer_detection, initialize_graphics_with_config,
+};
 
 /// Generic framebuffer buffer clear operation
 /// stride is in bytes per line
