@@ -8,7 +8,7 @@
 
 use alloc::collections::VecDeque;
 use alloc::string::String;
-use pc_keyboard::{DecodedKey, KeyCode, Keyboard, ScancodeSet1, layouts};
+use pc_keyboard::{Keyboard, ScancodeSet1, layouts};
 use petroleum::declare_init;
 use spin::Mutex;
 

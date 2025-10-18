@@ -11,8 +11,6 @@
 #![feature(sync_unsafe_cell)]
 #![feature(vec_into_raw_parts)]
 
-use core::panic::PanicInfo;
-
 // Re-export consolidated logging types from petroleum - must come before traits mod to be available in traits.rs
 pub use petroleum::common::logging::{SystemError, SystemResult};
 
@@ -89,6 +87,9 @@ pub use process::{PROCESS_LIST, Process, ProcessId};
 pub static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
 
 
+#[cfg(target_os = "uefi")]
+const VGA_BUFFER_ADDRESS: usize = crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE + 0xb8000;
+#[cfg(not(target_os = "uefi"))]
 const VGA_BUFFER_ADDRESS: usize = 0xb8000;
 const VGA_COLOR_GREEN_ON_BLACK: u16 = 0x0200;
 

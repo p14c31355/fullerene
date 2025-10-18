@@ -9,7 +9,7 @@ use petroleum::page_table::PageTableHelper;
 use core::ptr;
 use goblin::elf::program_header::{PF_W, PF_X, PT_LOAD};
 use x86_64::structures::paging::FrameAllocator;
-use x86_64::structures::paging::PageTableFlags as PageFlags;
+
 
 pub const PROGRAM_LOAD_BASE: u64 = 0x400000; // 4MB base address for user programs
 
@@ -91,7 +91,6 @@ pub fn load_program(
                 let page_vaddr = x86_64::VirtAddr::new(vaddr + page_idx * 4096);
 
                 // Allocate a physical frame for this page
-                use x86_64::structures::paging::PhysFrame;
                 let frame = crate::heap::memory_map::FRAME_ALLOCATOR
                     .get()
                     .ok_or(LoadError::OutOfMemory)?
