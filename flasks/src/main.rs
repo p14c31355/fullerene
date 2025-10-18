@@ -43,6 +43,7 @@ fn create_iso_and_setup(
         .args([
             "+nightly",
             "build",
+            "-q",
             "-Zbuild-std=core,alloc",
             "--package",
             "fullerene-kernel",
@@ -75,6 +76,7 @@ fn create_iso_and_setup(
             .args([
                 "+nightly",
                 "build",
+                "-q",
                 "-Zbuild-std=core,alloc",
                 "--features",
                 "debug_loader",
@@ -168,24 +170,7 @@ struct VmSetting<'a> {
     success_msg: Option<&'a str>,
 }
 
-fn run_vbox_modify(vm_name: &str, args: &[&str], failure_msg: &str, success_msg: Option<&str>) -> io::Result<()> {
-    let mut full_args = vec!["modifyvm", vm_name];
-    full_args.extend_from_slice(args);
 
-    let status = Command::new("VBoxManage")
-        .args(&full_args)
-        .status()?;
-
-    if status.success() {
-        if let Some(msg) = success_msg {
-            log::info!("{}", msg);
-        }
-        Ok(())
-    } else {
-        log::warn!("{}", failure_msg);
-        Err(io::Error::new(io::ErrorKind::Other, failure_msg))
-    }
-}
 
 fn configure_vm_settings(vm_name: &str) -> io::Result<()> {
     log::info!("Configuring VM settings for '{}'...", vm_name);
@@ -203,11 +188,28 @@ fn configure_vm_settings(vm_name: &str) -> io::Result<()> {
         VmSetting { args: &["--nested-hw-virt", "off"], failure_msg: "Failed to disable nested hardware virtualization.", success_msg: None },
     ];
 
+    let mut command_args: Vec<&str> = vec!["modifyvm", vm_name];
+    let mut success_msgs = Vec::new();
+
     for setting in settings {
-        run_vbox_modify(vm_name, setting.args, setting.failure_msg, setting.success_msg)?;
+        command_args.extend_from_slice(setting.args);
+        if let Some(msg) = setting.success_msg {
+            success_msgs.push(msg);
+        }
     }
 
-    Ok(())
+    let status = Command::new("VBoxManage").args(&command_args).status()?;
+
+    if status.success() {
+        for msg in success_msgs {
+            log::info!("{}", msg);
+        }
+        Ok(())
+    } else {
+        let failure_msg = "Failed to apply one or more VM settings.";
+        log::warn!("{}", failure_msg);
+        Err(io::Error::new(io::ErrorKind::Other, failure_msg))
+    }
 }
 
 fn ensure_vm_exists(vm_name: &str) -> io::Result<()> {

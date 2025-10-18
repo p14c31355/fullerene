@@ -228,14 +228,20 @@ fn manage_background_services() {
 
 /// Helper function for logging system stats to filesystem
 fn log_system_stats_to_fs(stats: &SystemStats) {
-    // Simple fixed log content to avoid format macro
-    let log_content = b"System stats logged to filesystem\n";
+    // Use alloc::format! to create a log string with actual stats.
+    let log_content = alloc::format!(
+        "Uptime: {}, Processes: {}/{}, Memory Used: {}\n",
+        stats.uptime_ticks,
+        stats.active_processes,
+        stats.total_processes,
+        stats.memory_used
+    );
 
     static LOG_FILE_CREATED: spin::Mutex<bool> = spin::Mutex::new(false);
     let mut log_file_created = LOG_FILE_CREATED.lock();
 
     if !*log_file_created {
-        match crate::fs::create_file("system.log", log_content) {
+        match crate::fs::create_file("system.log", log_content.as_bytes()) {
             Ok(_) => {
                 *log_file_created = true;
                 log::debug!("Created system.log file");
@@ -250,7 +256,7 @@ fn log_system_stats_to_fs(stats: &SystemStats) {
                 if let Err(e) = crate::fs::seek_file(fd, 0) {
                     log::warn!("Failed to seek in system.log: {:?}", e);
                 }
-                if let Err(e) = crate::fs::write_file(fd, log_content) {
+                if let Err(e) = crate::fs::write_file(fd, log_content.as_bytes()) {
                     log::warn!("Failed to write to system.log: {:?}", e);
                 }
                 if let Err(e) = crate::fs::close_file(fd) {
