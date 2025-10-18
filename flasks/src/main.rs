@@ -5,9 +5,9 @@ use std::{env, io, path::PathBuf, process::Command};
 
 #[derive(Parser)]
 struct Args {
-    /// Use QEMU instead of VirtualBox for virtualization
-    #[arg(long)]
-    qemu: bool,
+    /// Use VirtualBox instead of QEMU for virtualization
+    #[arg(long, default_value = "false")]
+    virtualbox: bool,
 
     /// VirtualBox VM name (default: fullerene-vm)
     #[arg(long, default_value = "fullerene-vm")]
@@ -16,6 +16,10 @@ struct Args {
     /// IDE controller name (default: IDE Controller)
     #[arg(long, default_value = "IDE Controller")]
     controller: String,
+
+    /// Start VM in GUI mode instead of headless (useful for debugging)
+    #[arg(long)]
+    gui: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -27,10 +31,10 @@ fn main() -> io::Result<()> {
         .expect("Failed to get workspace root")
         .to_path_buf();
 
-    if args.qemu {
-        run_qemu(&workspace_root)?;
-    } else {
+    if args.virtualbox {
         run_virtualbox(&args, &workspace_root)?;
+    } else {
+        run_qemu(&workspace_root)?;
     }
     Ok(())
 }
@@ -148,8 +152,8 @@ fn create_iso_and_setup(
 }
 
 // Constants to replace magic numbers
-const VM_SHUTDOWN_POLL_ATTEMPTS: u32 = 10;
-const VM_SHUTDOWN_POLL_INTERVAL_MS: u64 = 500;
+const VM_SHUTDOWN_POLL_ATTEMPTS: u32 = 20;
+const VM_SHUTDOWN_POLL_INTERVAL_MS: u64 = 1000;
 
 fn run_virtualbox(args: &Args, workspace_root: &PathBuf) -> io::Result<()> {
     log::info!("Starting VirtualBox...");
@@ -183,6 +187,7 @@ fn configure_vm_settings(vm_name: &str) -> io::Result<()> {
         VmSetting { args: &["--nic1", "nat"], failure_msg: "Failed to configure network NAT.", success_msg: None },
         VmSetting { args: &["--cpus", "1"], failure_msg: "Failed to set CPU count.", success_msg: None },
         VmSetting { args: &["--chipset", "ich9"], failure_msg: "Failed to set chipset.", success_msg: None },
+        VmSetting { args: &["--firmware", "efi"], failure_msg: "Failed to set firmware to EFI.", success_msg: Some("Firmware set to EFI for UEFI boot.") },
         VmSetting { args: &["--hwvirtex", "off"], failure_msg: "Failed to disable hardware virtualization. This may cause issues in nested VM environments.", success_msg: Some("Hardware virtualization disabled for compatibility with nested VMs") },
         VmSetting { args: &["--nested-paging", "off"], failure_msg: "Failed to disable nested paging.", success_msg: None },
         VmSetting { args: &["--large-pages", "off"], failure_msg: "Failed to disable large pages.", success_msg: None },
