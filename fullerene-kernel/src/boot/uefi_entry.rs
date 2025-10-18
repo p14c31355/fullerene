@@ -9,6 +9,7 @@ use crate::memory::find_heap_start;
 use crate::{gdt, graphics, interrupts, memory};
 use alloc::boxed::Box;
 use core::ffi::c_void;
+use spin::Mutex;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::uefi::{efi_print, find_gop_framebuffer, write_vga_string};
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
@@ -98,9 +99,14 @@ pub extern "efiapi" fn efi_main(
     heap::init_frame_allocator(*MEMORY_MAP.get().expect("Memory map not initialized"));
     log::info!("Heap frame allocator init completed successfully");
 
-    // Find framebuffer configuration before reiniting page tables
+    // Find framebuffer configuration before reiniting page tables and save it globally
     log::info!("Finding framebuffer config for page table mapping...");
     let framebuffer_config = crate::memory::find_framebuffer_config(system_table);
+    // Save the config globally for later use after exit_boot_services
+    if let Some(config) = &framebuffer_config {
+        petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| Mutex::new(Some(**config)));
+        log::info!("Saved framebuffer config globally for kernel use");
+    }
     let config = framebuffer_config.as_ref();
     let (fb_addr, fb_size) = if let Some(config) = config {
         let fb_size_bytes =
@@ -501,37 +507,24 @@ pub fn try_initialize_cirrus_graphics_mode() -> bool {
 /// Helper function to initialize graphics with framebuffer configuration
 /// Returns true if graphics were successfully initialized and drawn
 #[cfg(target_os = "uefi")]
-pub fn initialize_graphics_with_config(system_table: &EfiSystemTable) -> bool {
-    // Check if framebuffer config is available from UEFI bootloader
-    log::info!("Checking framebuffer config from UEFI bootloader...");
-    if let Some(fb_config) = crate::memory::find_framebuffer_config(system_table) {
-        log::info!(
-            "Found framebuffer config: {}x{} @ {:#x}, stride: {}, pixel_format: {:?}",
-            fb_config.width,
-            fb_config.height,
-            fb_config.address,
-            fb_config.stride,
-            fb_config.pixel_format
-        );
-        return try_init_graphics(&fb_config, "UEFI custom");
+pub fn initialize_graphics_with_config(_system_table: &EfiSystemTable) -> bool {
+    // First, check if we have a saved framebuffer config from before exit_boot_services
+    log::info!("Checking for saved framebuffer config...");
+    if let Some(saved_config_mutex) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get() {
+        if let Some(saved_config) = *saved_config_mutex.lock() {
+            log::info!(
+                "Using saved framebuffer config: {}x{} @ {:#x}, stride: {}, pixel_format: {:?}",
+                saved_config.width,
+                saved_config.height,
+                saved_config.address,
+                saved_config.stride,
+                saved_config.pixel_format
+            );
+            return try_init_graphics(&saved_config, "Saved UEFI config");
+        }
     }
 
-    log::info!("No custom framebuffer config found, trying standard UEFI GOP...");
-
-    // Try to find GOP (Graphics Output Protocol) from UEFI
-    if let Some(gop_config) = find_gop_framebuffer(system_table) {
-        log::info!(
-            "Found GOP framebuffer config: {}x{} @ {:#x}, stride: {}, pixel_format: {:?}",
-            gop_config.width,
-            gop_config.height,
-            gop_config.address,
-            gop_config.stride,
-            gop_config.pixel_format
-        );
-        return try_init_graphics(&gop_config, "UEFI GOP");
-    }
-
-    log::info!("No standard graphics modes found, trying kernel-side fallback detection...");
+    log::info!("No saved framebuffer config found, trying kernel-side fallback detection...");
     // Try kernel-side fallback framebuffer detection when bootloader config table installation hangs
     if let Some(fallback_config) = kernel_fallback_framebuffer_detection() {
         log::info!(

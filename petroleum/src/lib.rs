@@ -69,7 +69,7 @@ use alloc::boxed::Box;
 use core::arch::asm;
 use core::ffi::c_void;
 use core::ptr;
-use spin::Mutex;
+use spin::{Mutex, Once};
 
 use crate::common::{
     EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EFI_LOADED_IMAGE_PROTOCOL_GUID,
@@ -79,6 +79,9 @@ use crate::common::{
 use crate::common::{
     EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable, FullereneFramebufferConfig,
 };
+
+/// Global framebuffer config storage for kernel use after exit_boot_services
+pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferConfig>>> = Once::new();
 
 /// Shared QEMU framebuffer configurations for both bootloader and kernel
 pub const QEMU_CONFIGS: [QemuConfig; 8] = [
