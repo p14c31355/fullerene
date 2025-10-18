@@ -10,12 +10,6 @@ use petroleum::serial::debug_print_str_to_com1 as debug_print_str;
 use super::text; // For re-exporting statics or accessing
 
 // Consolidated drawing macros to reduce repetitive code
-macro_rules! create_button {
-    ($x:expr, $y:expr, $width:expr, $height:expr, $text:expr, $bg:expr, $text_color:expr) => {
-        Button::new($x, $y, $width, $height, $text).with_colors($bg, $text_color)
-    };
-}
-
 macro_rules! draw_filled_rect {
     ($writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $color:expr) => {{
         use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};

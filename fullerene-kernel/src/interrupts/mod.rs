@@ -46,7 +46,7 @@ pub fn enable_interrupts() {
 /// Wait for interrupt (using pause for QEMU-friendliness instead of hlt)
 pub fn hlt_loop() -> ! {
     loop {
-        unsafe { core::arch::asm!("pause"); }
+        petroleum::cpu_pause();
     }
 }
 
