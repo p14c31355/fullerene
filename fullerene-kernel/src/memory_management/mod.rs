@@ -665,7 +665,7 @@ impl UnifiedMemoryManager {
 
     /// Copy data from user space to kernel space
     fn copy_from_user_space(
-        &self,
+        &mut self,
         user_addr: usize,
         size: usize,
     ) -> SystemResult<alloc::vec::Vec<u8>> {
@@ -680,13 +680,20 @@ impl UnifiedMemoryManager {
             let virt_addr = user_addr + offset;
 
             if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
-                // Convert physical address to virtual address using the offset
-                let virtual_phys_addr = physical_to_virtual(phys_addr) + (offset % 4096);
+                // Map temp to phys for read access
+                self.page_table_manager.map_page(
+                    TEMP_PHY_ACCESS,
+                    phys_addr,
+                    PageFlags::PRESENT,
+                    &mut self.frame_allocator,
+                )?;
                 unsafe {
-                    let phys_ptr = virtual_phys_addr as *const u8;
-                    let slice = core::slice::from_raw_parts(phys_ptr, page_size);
+                    let ptr = (TEMP_PHY_ACCESS + (offset % 4096)) as *const u8;
+                    let slice = core::slice::from_raw_parts(ptr, page_size);
                     data.extend_from_slice(slice);
                 }
+                // Unmap temp
+                let _ = self.page_table_manager.unmap_page(TEMP_PHY_ACCESS);
             } else {
                 return Err(SystemError::InvalidArgument);
             }
@@ -721,12 +728,19 @@ impl UnifiedMemoryManager {
             }
 
             if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
-                // Convert physical address to virtual address using the offset
-                let virtual_phys_addr = physical_to_virtual(phys_addr) + (offset % 4096);
+                // Map temp to phys for write access
+                self.page_table_manager.map_page(
+                    TEMP_PHY_ACCESS,
+                    phys_addr,
+                    PageFlags::PRESENT | PageFlags::WRITABLE,
+                    &mut self.frame_allocator,
+                )?;
                 unsafe {
-                    let phys_ptr = virtual_phys_addr as *mut u8;
-                    core::ptr::copy_nonoverlapping(chunk.as_ptr(), phys_ptr, chunk.len());
+                    let ptr = (TEMP_PHY_ACCESS + (offset % 4096)) as *mut u8;
+                    core::ptr::copy_nonoverlapping(chunk.as_ptr(), ptr, chunk.len());
                 }
+                // Unmap temp
+                let _ = self.page_table_manager.unmap_page(TEMP_PHY_ACCESS);
             } else {
                 return Err(SystemError::InvalidArgument);
             }
@@ -888,6 +902,9 @@ pub fn get_physical_memory_offset() -> usize {
 pub fn virtual_to_physical(virtual_addr: usize) -> usize {
     virtual_addr - get_physical_memory_offset()
 }
+
+/// Temporary virtual address for physical memory access
+const TEMP_PHY_ACCESS: usize = 0xffff_8000_0000_1000;
 
 /// Convert physical address to virtual address using the offset
 pub fn physical_to_virtual(physical_addr: usize) -> usize {
