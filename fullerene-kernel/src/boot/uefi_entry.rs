@@ -14,7 +14,7 @@ use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::uefi::{efi_print, find_gop_framebuffer, write_vga_string};
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
 use petroleum::{allocate_heap_from_map, debug_log, write_serial_bytes};
-use x86_64::{PhysAddr, VirtAddr};
+use x86_64::{structures::paging::{Mapper, Size4KiB}, PhysAddr, VirtAddr};
 
 use petroleum::graphics::{
     VGA_MODE13H_ADDRESS, VGA_MODE13H_BPP, VGA_MODE13H_HEIGHT, VGA_MODE13H_STRIDE, VGA_MODE13H_WIDTH,
@@ -56,10 +56,10 @@ pub extern "efiapi" fn efi_main(
     // Cast system_table to reference
     let system_table = unsafe { &*system_table };
 
-    // Detect and initialize VGA graphics for Cirrus devices
-    petroleum::serial::serial_log(format_args!("Detecting and initializing VGA graphics...\n"));
-    petroleum::graphics::detect_and_init_vga_graphics();
-    petroleum::serial::serial_log(format_args!("VGA graphics detection completed\n"));
+    // Skip VGA detection and use standard mode to avoid PCI access issues post-UEFI
+    petroleum::serial::serial_log(format_args!("Initializing VGA graphics in standard mode...\n"));
+    petroleum::graphics::setup::setup_vga_mode_13h();
+    petroleum::serial::serial_log(format_args!("VGA graphics initialization completed\n"));
 
     debug_log!("VGA setup done");
     log::info!("VGA text mode setup function returned");
@@ -71,11 +71,6 @@ pub extern "efiapi" fn efi_main(
         write_vga_string(vga_buffer, 0, b"Kernel boot", 0x1F00);
     }
     log::info!("Direct VGA write test completed");
-
-    // Initialize VGA buffer writer and write welcome message BEFORE any graphics ops
-    log::info!("Initializing VGA writer early...");
-    crate::vga::init_vga();
-    log::info!("VGA writer initialized - text should be visible now");
 
     // Early text output using EFI console to ensure visible output on screen
     log::info!("About to output to EFI console");
@@ -136,11 +131,6 @@ pub extern "efiapi" fn efi_main(
     // Set physical memory offset for process management
     crate::memory_management::set_physical_memory_offset(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE);
 
-    log::info!(
-        "Physical memory offset set to: 0x{:x}",
-        crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE
-    );
-
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(*MEMORY_MAP.get().expect("Memory map not initialized"));
     log::info!("Kernel: heap_phys_start=0x{:x}", heap_phys_start.as_u64());
@@ -154,19 +144,35 @@ pub extern "efiapi" fn efi_main(
         } else {
             heap_phys_start
         };
-    // Debug log start_addr before allocation
-    log::info!(
-        "Kernel: start_addr before allocation=0x{:x}",
-        start_addr.as_u64()
-    );
-
     let heap_start = allocate_heap_from_map(start_addr, heap::HEAP_SIZE);
     log::info!("Kernel: heap_start=0x{:x}", heap_start.as_u64());
 
+    // Map heap memory after page table reinit so it's accessible at virtual address
+    log::info!("Mapping heap memory to virtual addresses");
+    let heap_pages = (heap::HEAP_SIZE as u64).div_ceil(4096);
+    for i in 0..heap_pages {
+        let phys_addr_u64 = heap_start.as_u64() + (i * 4096);
+        let phys_addr = PhysAddr::new(phys_addr_u64);
+        let virt_addr = physical_memory_offset + phys_addr_u64;
+
+        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
+        let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
+
+        let flags = x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+        unsafe {
+            let mut mapper = petroleum::page_table::init(physical_memory_offset);
+            mapper.map_to(page, frame, flags, &mut frame_allocator).expect("Failed to map heap page").flush();
+        }
+    }
+    log::info!("Heap memory mapped successfully");
+
+    // Calculate virtual heap address after offset mapping
+    let virtual_heap_start = physical_memory_offset + heap_start.as_u64();
+    log::info!("Virtual heap start: 0x{:x}", virtual_heap_start.as_u64());
+
     // Allocate kernel stack in UEFI mode before GDT init to provide stable stack for GDT loading
     const KERNEL_STACK_SIZE: usize = 4096 * 16; // 64KB
-    let virt_heap_start = VirtAddr::new(heap_start.as_u64());
-    let stack_bottom = virt_heap_start + (heap::HEAP_SIZE as u64 - KERNEL_STACK_SIZE as u64);
+    let stack_bottom = virtual_heap_start + (heap::HEAP_SIZE as u64 - KERNEL_STACK_SIZE as u64);
     let stack_top = stack_bottom + KERNEL_STACK_SIZE as u64;
 
     // Switch RSP to new kernel stack
@@ -176,7 +182,7 @@ pub extern "efiapi" fn efi_main(
     log::info!("Switched to kernel stack before GDT init");
 
     log::info!("Kernel: About to call gdt::init...");
-    let gdt_heap_start = virt_heap_start;
+    let gdt_heap_start = virtual_heap_start;
     let heap_start_after_gdt = gdt::init(gdt_heap_start);
     log::info!(
         "Kernel: gdt::init returned heap_start_after_gdt=0x{:x}",
@@ -187,7 +193,7 @@ pub extern "efiapi" fn efi_main(
 
     // Initialize linked_list_allocator with the remaining memory
     petroleum::serial::serial_log(format_args!("About to calculate heap memory usage...\n"));
-    let gdt_mem_used = (heap_start_after_gdt.as_u64() - virt_heap_start.as_u64()) as usize;
+    let gdt_mem_used = (heap_start_after_gdt.as_u64() - virtual_heap_start.as_u64()) as usize;
     let heap_size_remaining = heap::HEAP_SIZE - gdt_mem_used - KERNEL_STACK_SIZE;
 
     petroleum::serial::serial_log(format_args!("Test constant value=0x12345678\n"));
@@ -216,7 +222,6 @@ pub extern "efiapi" fn efi_main(
     write_serial_bytes!(0x3F8, 0x3FD, b"Formatting completed\n");
     write_serial_bytes!(0x3F8, 0x3FD, b"About to initialize linked_list_allocator\n");
     debug_log!("Link alloc");
-    // petroleum::serial::serial_log(format_args!("About to initialize linked_list_allocator...\n"));
 
     use petroleum::page_table::ALLOCATOR;
     // Use direct serial writes to avoid UEFI console hang
@@ -274,24 +279,6 @@ pub extern "efiapi" fn efi_main(
     ));
     petroleum::serial::serial_log(format_args!("About to check heap_phys_start...\n"));
 
-    if heap_phys_start.as_u64() < 0x1000 {
-        petroleum::serial::serial_log(format_args!("Using fallback heap path...\n"));
-        log::info!("Kernel: heap initialized with fallback");
-    } else {
-        petroleum::serial::serial_log(format_args!("Using normal heap path...\n"));
-        log::info!("Kernel: gdt_mem_usage=0x{:x}", gdt_mem_usage_val);
-        write_serial_bytes!(0x3F8, 0x3FD, b"About to jump to interrupts init\n");
-    }
-
-    // Early serial log works now
-    write_serial_bytes!(0x3F8, 0x3FD, b"About to complete basic init\n");
-    petroleum::serial::serial_log(format_args!("About to log basic init complete...\n"));
-    log::info!("Kernel: basic init complete");
-    write_serial_bytes!(0x3F8, 0x3FD, b"Basic init complete logged\n");
-    petroleum::serial::serial_log(format_args!("basic init complete logged successfully\n"));
-
-    write_serial_bytes!(0x3F8, 0x3FD, b"About to init memory manager\n");
-
     // Initialize the global memory manager with the EFI memory map
     log::info!("Initializing global memory manager...");
     write_serial_bytes!(0x3F8, 0x3FD, b"Calling MEMORY_MAP.get()\n");
@@ -308,6 +295,18 @@ pub extern "efiapi" fn efi_main(
         log::error!("MEMORY_MAP not initialized. Cannot initialize memory manager. Halting.");
         petroleum::halt_loop();
     }
+
+    // Now that allocator is set up, initialize VGA buffer writer
+    log::info!("Initializing VGA writer after allocator setup...");
+    crate::vga::init_vga();
+    log::info!("VGA writer initialized - text should be visible now");
+
+    // Early serial log works now
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to complete basic init\n");
+    petroleum::serial::serial_log(format_args!("About to log basic init complete...\n"));
+    log::info!("Kernel: basic init complete");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Basic init complete logged\n");
+    petroleum::serial::serial_log(format_args!("basic init complete logged successfully\n"));
 
     write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: About to init interrupts\n");
 

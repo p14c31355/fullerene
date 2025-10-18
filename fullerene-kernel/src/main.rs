@@ -63,8 +63,5 @@ use petroleum::page_table::EfiMemoryDescriptor;
 
 static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
 
-#[cfg(target_os = "uefi")]
-const VGA_BUFFER_ADDRESS: usize = fullerene_kernel::memory_management::PHYSICAL_MEMORY_OFFSET_BASE + 0xb8000;
-#[cfg(not(target_os = "uefi"))]
 const VGA_BUFFER_ADDRESS: usize = 0xb8000;
 const VGA_COLOR_GREEN_ON_BLACK: u16 = 0x0200;
