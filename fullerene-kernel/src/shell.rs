@@ -261,7 +261,7 @@ fn free_command(_args: &[&str]) -> i32 {
 fn uptime_command(_args: &[&str]) -> i32 {
     // For now, use approximate tick count
     // In a real system, we'd track real time
-    let ticks = 12345; // TODO: Get actual system tick
+    let ticks = crate::get_system_tick(); // TODO: Get actual system tick
     let uptime_seconds = ticks / 1000; // Assuming 1000 ticks per second
     let hours = uptime_seconds / 3600;
     let minutes = (uptime_seconds % 3600) / 60;
