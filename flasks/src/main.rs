@@ -437,6 +437,9 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
 
     // Wait for the VM to shut down by polling state
     log::info!("Waiting for VM to power off...");
+        let mut consecutive_failures = 0;
+    const MAX_CONSECUTIVE_FAILURES: u32 = 5;
+
     for _ in 0..VM_POWER_OFF_POLL_ATTEMPTS {
         std::thread::sleep(std::time::Duration::from_secs(VM_POWER_OFF_POLL_INTERVAL_S));
         let output = Command::new("VBoxManage")
@@ -444,6 +447,7 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
             .output();
 
         if let Ok(output) = output {
+            consecutive_failures = 0; // Reset on success
             if let Ok(stdout) = std::str::from_utf8(&output.stdout) {
                 let state_line = stdout
                     .lines()
@@ -452,11 +456,17 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
                     .and_then(|s| s.strip_suffix("\""));
 
                 if let Some("poweroff") = state_line {
+                    log::info!("VM is confirmed to be powered off.");
                     break;
                 }
             }
         } else {
-            log::warn!("Failed to check VM state, continuing...");
+            consecutive_failures += 1;
+            log::warn!("Failed to check VM state (attempt {}/{}), continuing...", consecutive_failures, MAX_CONSECUTIVE_FAILURES);
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                log::error!("Aborting wait: Failed to check VM state after multiple attempts.");
+                break;
+            }
         }
     }
 
