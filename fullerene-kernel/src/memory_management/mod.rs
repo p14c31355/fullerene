@@ -693,7 +693,7 @@ impl UnifiedMemoryManager {
                     data.extend_from_slice(slice);
                 }
                 // Unmap temp
-                let _ = self.page_table_manager.unmap_page(TEMP_PHY_ACCESS);
+                self.page_table_manager.unmap_page(TEMP_PHY_ACCESS)?;
             } else {
                 return Err(SystemError::InvalidArgument);
             }
