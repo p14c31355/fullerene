@@ -1,46 +1,46 @@
 //! Initialization module containing common initialization logic for both UEFI and BIOS boot
 
 use crate::interrupts;
-use petroleum::{init_step, init_done, write_serial_bytes};
+use petroleum::{init_log, write_serial_bytes};
 
 #[cfg(target_os = "uefi")]
 pub fn init_common() {
-    init_step!("init_common: About to init VGA");
+    init_log!("init_common: About to init VGA");
     crate::vga::init_vga();
-    init_done!("init_common: VGA init done");
+    init_log!("init_common: VGA init done");
 
     // Now safe to initialize APIC and enable interrupts (after stable page tables and heap)
-    init_step!("init_common: About to init APIC");
+    init_log!("init_common: About to init APIC");
     interrupts::init_apic();
-    init_done!("init_common: APIC init done");
+    init_log!("init_common: APIC init done");
     log::info!("Kernel: APIC initialized and interrupts enabled");
 
-    init_step!("init_common: About to init process");
+    init_log!("init_common: About to init process");
     crate::process::init();
-    init_done!("init_common: Process init done");
+    init_log!("init_common: Process init done");
     log::info!("Kernel: Process management initialized");
 
-    init_step!("init_common: About to init syscall");
+    init_log!("init_common: About to init syscall");
     crate::syscall::init();
-    init_done!("init_common: syscall init done");
+    init_log!("init_common: syscall init done");
     log::info!("Kernel: System calls initialized");
 
-    init_step!("init_common: About to init fs");
+    init_log!("init_common: About to init fs");
     crate::fs::init();
-    init_done!("init_common: FS init done");
+    init_log!("init_common: FS init done");
     log::info!("Kernel: Filesystem initialized");
 
-    init_step!("init_common: About to init loader");
+    init_log!("init_common: About to init loader");
     crate::loader::init();
-    init_done!("init_common: Loader init done");
+    init_log!("init_common: Loader init done");
     log::info!("Kernel: loader initialized");
 
-    init_step!("About to create test process");
+    init_log!("About to create test process");
     let test_pid = crate::process::create_process(
         "test_process",
         x86_64::VirtAddr::new(crate::test_process::test_process_main as usize as u64),
     );
-    init_done!("Test process created");
+    init_log!("Test process created");
 
     log::info!("Kernel: Created test process with PID {}", test_pid);
 

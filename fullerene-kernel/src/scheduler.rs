@@ -16,6 +16,9 @@ static SCHEDULER_ITERATIONS: AtomicU64 = AtomicU64::new(0);
 // I/O event queue (placeholder for future I/O operations)
 static IO_EVENTS: spin::Mutex<VecDeque<IoEvent>> = spin::Mutex::new(VecDeque::new());
 
+// Periodic desktop update interval (in ticks)
+const DESKTOP_UPDATE_INTERVAL_TICKS: u64 = 5000;
+
 // System diagnostics structure
 #[derive(Clone, Copy)]
 struct SystemStats {
@@ -373,7 +376,7 @@ pub fn scheduler_loop() -> ! {
         }
 
         // Periodic desktop update
-        if current_tick % 5000 == 0 {
+        if current_tick % DESKTOP_UPDATE_INTERVAL_TICKS == 0 {
             graphics::draw_os_desktop();
         }
 

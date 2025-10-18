@@ -464,17 +464,9 @@ macro_rules! declare_init {
     }};
 }
 
-/// Macro for initialization steps with serial logging
+/// Macro for initialization steps/done with serial logging
 #[macro_export]
-macro_rules! init_step {
-    ($msg:literal) => {
-        write_serial_bytes!(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes());
-    };
-}
-
-/// Macro for initialization done steps with serial logging
-#[macro_export]
-macro_rules! init_done {
+macro_rules! init_log {
     ($msg:literal) => {
         write_serial_bytes!(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes());
     };
