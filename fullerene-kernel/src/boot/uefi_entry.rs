@@ -155,6 +155,7 @@ pub extern "efiapi" fn efi_main(
     // Map heap memory after page table reinit so it's accessible at virtual address
     log::info!("Mapping heap memory to virtual addresses");
     let heap_pages = (heap::HEAP_SIZE as u64).div_ceil(4096);
+    let mut mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
     for i in 0..heap_pages {
         let phys_addr_u64 = heap_start.as_u64() + (i * 4096);
         let phys_addr = PhysAddr::new(phys_addr_u64);
@@ -165,7 +166,6 @@ pub extern "efiapi" fn efi_main(
 
         let flags = x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
         unsafe {
-            let mut mapper = petroleum::page_table::init(physical_memory_offset);
             mapper.map_to(page, frame, flags, &mut frame_allocator).expect("Failed to map heap page").flush();
         }
     }
