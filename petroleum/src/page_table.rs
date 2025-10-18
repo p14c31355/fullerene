@@ -167,7 +167,7 @@ pub fn reinit_page_table_with_allocator(
     // Kernel typically spans from kernel_phys_start for several MB
     // We'll map the first 64MB to be safe against future growth
     const KERNEL_SIZE: u64 = 64 * 1024 * 1024; // 64MB
-    let kernel_pages = (KERNEL_SIZE + 4095) / 4096; // Round up to page count
+    let kernel_pages = KERNEL_SIZE.div_ceil(4096); // Round up to page count
 
     for i in 0..kernel_pages {
         let phys_addr = kernel_phys_start + (i * 4096);
