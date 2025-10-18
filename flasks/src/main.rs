@@ -170,14 +170,15 @@ fn run_vbox_modify(vm_name: &str, args: &[&str], failure_msg: &str, success_msg:
         .args(&full_args)
         .status()?;
 
-    if status.success() {
+        if status.success() {
         if let Some(msg) = success_msg {
             log::info!("{}", msg);
         }
+        Ok(())
     } else {
         log::warn!("{}", failure_msg);
+        Err(io::Error::new(io::ErrorKind::Other, failure_msg))
     }
-    Ok(())
 }
 
 fn configure_vm_settings(vm_name: &str) -> io::Result<()> {
