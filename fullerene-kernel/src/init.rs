@@ -2,7 +2,6 @@
 
 use crate::interrupts;
 use petroleum::write_serial_bytes;
-use x86_64::VirtAddr;
 
 #[cfg(target_os = "uefi")]
 pub fn init_common() {
@@ -38,7 +37,7 @@ pub fn init_common() {
 
     let test_pid = crate::process::create_process(
         "test_process",
-        VirtAddr::new(crate::test_process::test_process_main as usize as u64),
+        x86_64::VirtAddr::new(crate::test_process::test_process_main as usize as u64),
     );
 
     log::info!("Kernel: Created test process with PID {}", test_pid);

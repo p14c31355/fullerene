@@ -371,8 +371,7 @@ macro_rules! volatile_read {
 #[macro_export]
 macro_rules! volatile_write {
     ($addr:expr, $value:expr) => {{
-        let addr = $addr as *mut _;
-        unsafe { core::ptr::write_volatile(addr, $value) }
+        unsafe { core::ptr::write_volatile($addr, $value) }
     }};
 }
 

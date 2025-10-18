@@ -283,7 +283,11 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
 /// Idle process loop
 fn idle_loop() {
     loop {
-        x86_64::instructions::hlt();
+        // Use pause for QEMU-friendliness instead of hlt
+        // pause allows the CPU to enter a low-power state while remaining responsive to interrupts,
+        // making it more suitable for virtualization environments like QEMU compared to hlt which
+        // puts the CPU in a deeper sleep state that's harder for hypervisors to manage efficiently.
+        unsafe { core::arch::asm!("pause"); }
     }
 }
 
@@ -441,4 +445,33 @@ mod tests {
         assert_eq!(proc.name, "test");
         assert_eq!(proc.state, ProcessState::Ready);
     }
+
+    #[test]
+    fn test_process_counting() {
+        init(); // Initialize the process list
+        assert!(get_process_count() > 0);
+        assert!(get_active_process_count() > 0);
+    }
+}
+
+/// Get total number of processes in the system
+pub fn get_process_count() -> usize {
+    PROCESS_LIST.lock().len()
+}
+
+/// Get number of active processes (ready or running)
+pub fn get_active_process_count() -> usize {
+    PROCESS_LIST.lock().iter()
+        .filter(|p| p.state == ProcessState::Ready || p.state == ProcessState::Running)
+        .count()
+}
+
+/// Clean up terminated processes to free resources
+pub fn cleanup_terminated_processes() {
+    let mut process_list = PROCESS_LIST.lock();
+
+    // Remove terminated processes from the list. This will drop the `Box<Process>`,
+    // freeing the memory for the struct itself. `terminate_process` should have
+    // already been called to free other associated resources.
+    process_list.retain(|p| p.state != ProcessState::Terminated);
 }

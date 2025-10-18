@@ -1,4 +1,4 @@
-use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str, serial_log};
+use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 use spin::Once;
 use x86_64::VirtAddr;
 use x86_64::instructions::tables::load_tss;

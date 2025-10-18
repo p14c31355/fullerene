@@ -17,6 +17,7 @@ mod keyboard; // Keyboard input driver
 mod loader; // Program loader
 mod memory_management; // Virtual memory management
 mod process; // Process management
+mod scheduler;
 mod shell;
 mod syscall;
 mod traits;
@@ -29,6 +30,7 @@ mod memory;
 mod test_process;
 
 extern crate alloc;
+extern crate fullerene_kernel;
 
 use spin::Once;
 
@@ -43,18 +45,17 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     _print(format_args!("KERNEL PANIC: {}\n", info));
 
     // Visual indicator on VGA screen for kernel panic
-    unsafe {
-        // Yellow text on red background for panic
-        petroleum::volatile_write!(0xB8000 as *mut u16, 0xCE50); // 'P' yellow on red
-        petroleum::volatile_write!(0xB8002 as *mut u16, 0xCE41); // 'A' yellow on red
-        petroleum::volatile_write!(0xB8004 as *mut u16, 0xCE4E); // 'N' yellow on red
-        petroleum::volatile_write!(0xB8006 as *mut u16, 0xCE49); // 'I' yellow on red
-        petroleum::volatile_write!(0xB8008 as *mut u16, 0xCE43); // 'C' yellow on red
-        petroleum::volatile_write!(0xB800A as *mut u16, 0xCE21); // '!' yellow on red
-    }
+    // Yellow text on red background for panic
+    petroleum::volatile_write!(0xB8000 as *mut u16, 0xCE50); // 'P' yellow on red
+    petroleum::volatile_write!(0xB8002 as *mut u16, 0xCE41); // 'A' yellow on red
+    petroleum::volatile_write!(0xB8004 as *mut u16, 0xCE4E); // 'N' yellow on red
+    petroleum::volatile_write!(0xB8006 as *mut u16, 0xCE49); // 'I' yellow on red
+    petroleum::volatile_write!(0xB8008 as *mut u16, 0xCE43); // 'C' yellow on red
+    petroleum::volatile_write!(0xB800A as *mut u16, 0xCE21); // '!' yellow on red
+    
 
     loop {
-        hlt();
+        hlt(); // Use hlt to halt the CPU in case of a kernel panic
     }
 }
 
@@ -64,11 +65,3 @@ static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
 
 const VGA_BUFFER_ADDRESS: usize = 0xb8000;
 const VGA_COLOR_GREEN_ON_BLACK: u16 = 0x0200;
-
-// A simple loop that halts the CPU until the next interrupt
-pub fn hlt_loop() -> ! {
-    use x86_64::instructions::hlt;
-    loop {
-        hlt();
-    }
-}

@@ -43,6 +43,7 @@ fn create_iso_and_setup(
         .args([
             "+nightly",
             "build",
+            "-q",
             "-Zbuild-std=core,alloc",
             "--package",
             "fullerene-kernel",
@@ -75,6 +76,7 @@ fn create_iso_and_setup(
             .args([
                 "+nightly",
                 "build",
+                "-q",
                 "-Zbuild-std=core,alloc",
                 "--features",
                 "debug_loader",
@@ -155,8 +157,51 @@ fn run_virtualbox(args: &Args, workspace_root: &PathBuf) -> io::Result<()> {
 
     ensure_vm_exists(&args.vm_name)?;
     power_off_vm(&args.vm_name)?;
+    configure_vm_settings(&args.vm_name)?;
     configure_serial_port(&args.vm_name)?;
     attach_iso_and_start_vm(&args, &iso_path)?;
+
+    Ok(())
+}
+
+struct VmSetting<'a> {
+    args: &'a [&'a str],
+    failure_msg: &'a str,
+    success_msg: Option<&'a str>,
+}
+
+
+
+fn configure_vm_settings(vm_name: &str) -> io::Result<()> {
+    log::info!("Configuring VM settings for '{}'...", vm_name);
+
+    let settings = &[
+        VmSetting { args: &["--memory", "4096"], failure_msg: "Failed to set VM memory.", success_msg: None },
+        VmSetting { args: &["--vram", "128"], failure_msg: "Failed to set VM video memory.", success_msg: None },
+        VmSetting { args: &["--acpi", "on"], failure_msg: "Failed to enable ACPI.", success_msg: None },
+        VmSetting { args: &["--nic1", "nat"], failure_msg: "Failed to configure network NAT.", success_msg: None },
+        VmSetting { args: &["--cpus", "1"], failure_msg: "Failed to set CPU count.", success_msg: None },
+        VmSetting { args: &["--chipset", "ich9"], failure_msg: "Failed to set chipset.", success_msg: None },
+        VmSetting { args: &["--hwvirtex", "off"], failure_msg: "Failed to disable hardware virtualization. This may cause issues in nested VM environments.", success_msg: Some("Hardware virtualization disabled for compatibility with nested VMs") },
+        VmSetting { args: &["--nested-paging", "off"], failure_msg: "Failed to disable nested paging.", success_msg: None },
+        VmSetting { args: &["--large-pages", "off"], failure_msg: "Failed to disable large pages.", success_msg: None },
+        VmSetting { args: &["--nested-hw-virt", "off"], failure_msg: "Failed to disable nested hardware virtualization.", success_msg: None },
+    ];
+
+    for setting in settings {
+        let mut command = Command::new("VBoxManage");
+        command.arg("modifyvm").arg(vm_name).args(setting.args);
+
+        let status = command.status()?;
+        if !status.success() {
+            log::warn!("{}", setting.failure_msg);
+            return Err(io::Error::new(io::ErrorKind::Other, setting.failure_msg));
+        }
+
+        if let Some(msg) = setting.success_msg {
+            log::info!("{}", msg);
+        }
+    }
 
     Ok(())
 }
@@ -422,40 +467,25 @@ fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {
 
     let mut qemu_cmd = Command::new("qemu-system-x86_64");
     qemu_cmd.args([
-        "-m",
-        "8G",
-        "-cpu",
-        "qemu64,+smap,-invtsc",
-        "-smp",
-        "1",
-        "-M",
-        "q35",
-        "-vga",
-        "qxl",
-        "-display",
-        "gtk,gl=on,window-close=on,zoom-to-fit=on",
-        "-serial",
-        "stdio",
-        "-accel",
-        "tcg,thread=single",
-        "-d",
-        "guest_errors,unimp",
-        "-D",
-        "qemu_log.txt",
-        "-monitor",
-        "none",
-        "-drive",
-        &ovmf_fd_drive,
-        "-drive",
-        &ovmf_vars_fd_drive,
-        "-drive",
-        &format!("file={},media=cdrom,if=ide,format=raw", iso_path_str),
+        "-m", "4G",
+        "-cpu", "qemu64,+smap,-invtsc",
+        "-smp", "1",
+        "-M", "q35",
+        "-vga", "qxl",
+        "-display", "gtk,gl=off,window-close=on,zoom-to-fit=on",
+        "-serial", "stdio",
+        "-accel", "tcg,thread=single",
+        "-d", "guest_errors,unimp",
+        "-D", "qemu_log.txt",
+        "-monitor", "none",
+        "-drive", &ovmf_fd_drive,
+        "-drive", &ovmf_vars_fd_drive,
+        "-drive", &format!("file={},media=cdrom,if=ide,format=raw", iso_path_str),
         "-no-reboot",
         "-no-shutdown",
-        "-device",
-        "isa-debug-exit,iobase=0xf4,iosize=0x04",
-        "-boot",
-        "menu=on,order=d",
+        "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
+        "-rtc", "base=utc",
+        "-boot", "menu=on,order=d",
         "-nodefaults",
     ]);
     // Keep the temporary file alive until QEMU exits

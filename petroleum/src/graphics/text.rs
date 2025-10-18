@@ -98,7 +98,7 @@ pub trait TextBufferOperations {
         }
     }
 
-    fn clear_row(&mut self, row: usize) {
+    fn clear_row(&mut self, _row: usize) {
         let blank_char = ScreenChar {
             ascii_character: b' ',
             color_code: self.get_color_code(),
