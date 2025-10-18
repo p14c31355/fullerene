@@ -188,28 +188,22 @@ fn configure_vm_settings(vm_name: &str) -> io::Result<()> {
         VmSetting { args: &["--nested-hw-virt", "off"], failure_msg: "Failed to disable nested hardware virtualization.", success_msg: None },
     ];
 
-    let mut command_args: Vec<&str> = vec!["modifyvm", vm_name];
-    let mut success_msgs = Vec::new();
-
     for setting in settings {
-        command_args.extend_from_slice(setting.args);
-        if let Some(msg) = setting.success_msg {
-            success_msgs.push(msg);
+        let mut command = Command::new("VBoxManage");
+        command.arg("modifyvm").arg(vm_name).args(setting.args);
+
+        let status = command.status()?;
+        if !status.success() {
+            log::warn!("{}", setting.failure_msg);
+            return Err(io::Error::new(io::ErrorKind::Other, setting.failure_msg));
         }
-    }
 
-    let status = Command::new("VBoxManage").args(&command_args).status()?;
-
-    if status.success() {
-        for msg in success_msgs {
+        if let Some(msg) = setting.success_msg {
             log::info!("{}", msg);
         }
-        Ok(())
-    } else {
-        let failure_msg = "Failed to apply one or more VM settings.";
-        log::warn!("{}", failure_msg);
-        Err(io::Error::new(io::ErrorKind::Other, failure_msg))
     }
+
+    Ok(())
 }
 
 fn ensure_vm_exists(vm_name: &str) -> io::Result<()> {
