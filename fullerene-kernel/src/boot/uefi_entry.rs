@@ -205,7 +205,7 @@ pub extern "efiapi" fn efi_main(
     let flags = x86_64::structures::paging::PageTableFlags::PRESENT
         | x86_64::structures::paging::PageTableFlags::WRITABLE
         | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-    map_memory_range(heap_start, heap_pages, physical_memory_offset, &mut mapper, &mut frame_allocator, flags);
+    map_memory_range(heap_start, heap_pages, physical_memory_offset, &mut mapper, &mut frame_allocator, flags).expect("Failed to map heap memory");
     log::info!("Heap memory mapped successfully");
 
     // Calculate virtual heap address after offset mapping
