@@ -374,7 +374,7 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
         .status()?;
 
     if !attach_status.success() {
-        return Err(io::Error::other("Failed to attach ISO to VirtualBox VM"));
+        return Err(io::Error::new(io::ErrorKind::Other, "Failed to attach ISO to VirtualBox VM"));
     }
 
     // Start VM in headless or GUI mode
