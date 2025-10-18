@@ -478,27 +478,27 @@ fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {
 
     let mut qemu_cmd = Command::new("qemu-system-x86_64");
     qemu_cmd.args([
-    "-m", "4G",
-    "-cpu", "qemu64,+smap,-invtsc",
-    "-smp", "1",
-    "-M", "q35",
-    "-vga", "qxl",
-    "-display", "gtk,gl=off,window-close=on,zoom-to-fit=on",  // Set gl=off
-    "-serial", "stdio",
-    "-accel", "tcg,thread=single",
-    "-d", "guest_errors,unimp",
-    "-D", "qemu_log.txt",
-    "-monitor", "none",
-    "-drive", &ovmf_fd_drive,
-    "-drive", &ovmf_vars_fd_drive,
-    "-drive", &format!("file={},media=cdrom,if=ide,format=raw", iso_path_str),
-    "-no-reboot",
-    "-no-shutdown",
-    "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
-    "-rtc", "base=utc",
-    "-boot", "menu=on,order=d",
-    "-nodefaults",
-]);
+        "-m", "4G",
+        "-cpu", "qemu64,+smap,-invtsc",
+        "-smp", "1",
+        "-M", "q35",
+        "-vga", "qxl",
+        "-display", "gtk,gl=off,window-close=on,zoom-to-fit=on",
+        "-serial", "stdio",
+        "-accel", "tcg,thread=single",
+        "-d", "guest_errors,unimp",
+        "-D", "qemu_log.txt",
+        "-monitor", "none",
+        "-drive", &ovmf_fd_drive,
+        "-drive", &ovmf_vars_fd_drive,
+        "-drive", &format!("file={},media=cdrom,if=ide,format=raw", iso_path_str),
+        "-no-reboot",
+        "-no-shutdown",
+        "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
+        "-rtc", "base=utc",
+        "-boot", "menu=on,order=d",
+        "-nodefaults",
+    ]);
     // Keep the temporary file alive until QEMU exits
     let _temp_ovmf_vars_fd_holder = temp_ovmf_vars_fd;
     // LD_PRELOAD is a workaround for specific QEMU/libpthread versions.

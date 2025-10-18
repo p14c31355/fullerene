@@ -4,6 +4,7 @@
 //! to interact with the operating system through text commands.
 
 use crate::keyboard;
+use crate::scheduler::get_system_tick;
 use crate::syscall::kernel_syscall;
 use alloc::{vec::Vec, string::String};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -261,7 +262,7 @@ fn free_command(_args: &[&str]) -> i32 {
 fn uptime_command(_args: &[&str]) -> i32 {
     // For now, use approximate tick count
     // In a real system, we'd track real time
-    let ticks = crate::get_system_tick(); // TODO: Get actual system tick
+    let ticks = get_system_tick(); // TODO: Get actual system tick
     let uptime_seconds = ticks / 1000; // Assuming 1000 ticks per second
     let hours = uptime_seconds / 3600;
     let minutes = (uptime_seconds % 3600) / 60;
@@ -274,7 +275,7 @@ fn uptime_command(_args: &[&str]) -> i32 {
 fn date_command(_args: &[&str]) -> i32 {
     // Simple date/time - would be enhanced with RTC in real implementation
     print!("Current date/time: ");
-    print!("System tick: {}\n", crate::get_system_tick()); // TODO: Get actual system tick
+    print!("System tick: {}\n", get_system_tick()); // TODO: Get actual system tick
     print!("(RTC integration pending)\n");
     0
 }

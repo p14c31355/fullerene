@@ -232,14 +232,31 @@ fn log_system_stats_to_fs(stats: &SystemStats) {
     let mut log_file_created = LOG_FILE_CREATED.lock();
 
     if !*log_file_created {
-        if crate::fs::create_file("system.log", log_content).is_ok() {
-            *log_file_created = true;
+        match crate::fs::create_file("system.log", log_content) {
+            Ok(_) => {
+                *log_file_created = true;
+                log::debug!("Created system.log file");
+            }
+            Err(e) => {
+                log::warn!("Failed to create system.log file: {:?}", e);
+            }
         }
     } else {
-        if let Ok(fd) = crate::fs::open_file("system.log") {
-            let _ = crate::fs::seek_file(fd, 0);
-            let _ = crate::fs::write_file(fd, log_content);
-            let _ = crate::fs::close_file(fd);
+        match crate::fs::open_file("system.log") {
+            Ok(fd) => {
+                if let Err(e) = crate::fs::seek_file(fd, 0) {
+                    log::warn!("Failed to seek in system.log: {:?}", e);
+                }
+                if let Err(e) = crate::fs::write_file(fd, log_content) {
+                    log::warn!("Failed to write to system.log: {:?}", e);
+                }
+                if let Err(e) = crate::fs::close_file(fd) {
+                    log::warn!("Failed to close system.log: {:?}", e);
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to open system.log file: {:?}", e);
+            }
         }
     }
 }
@@ -249,7 +266,14 @@ fn perform_automated_backup() {
     // Simple backup: fixed message
     let log_content = b"Automated backup completed\n";
 
-    let _ = crate::fs::create_file("backup.log", log_content);
+    match crate::fs::create_file("backup.log", log_content) {
+        Ok(_) => {
+            log::debug!("Automated backup completed, log written to backup.log");
+        }
+        Err(e) => {
+            log::warn!("Failed to perform automated backup: {:?}", e);
+        }
+    }
 }
 
 /// Main kernel scheduler loop - orchestrates all system functionality

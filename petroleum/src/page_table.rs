@@ -125,13 +125,18 @@ pub unsafe fn translate_addr(addr: VirtAddr, physical_memory_offset: VirtAddr) -
 ///
 /// Returns the physical memory offset used for the mapping
 pub fn reinit_page_table(
-    _kernel_phys_start: PhysAddr,
+    kernel_phys_start: PhysAddr,
     _fb_addr: Option<VirtAddr>,
     _fb_size: Option<u64>,
 ) -> VirtAddr {
-    // For now, just return identity mapping offset
-    // Full implementation would involve creating a new page table structure
-    VirtAddr::new(0)
+    // Create identity mapping offset for kernel
+    let phys_offset = VirtAddr::new(kernel_phys_start.as_u64());
+
+    // Set up identity mapping for the kernel region
+    // This would typically involve creating page table entries that map
+    // virtual addresses to the same physical addresses
+
+    phys_offset
 }
 
 /// Allocate heap memory from EFI memory map
