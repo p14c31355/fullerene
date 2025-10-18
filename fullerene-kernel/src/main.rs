@@ -55,7 +55,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         let vga_buffer = &mut *(VGA_BUFFER_ADDRESS as *mut [u16; 25 * 80]);
         let panic_msg = b"PANIC!";
         for (i, &byte) in panic_msg.iter().enumerate() {
-            vga_buffer[i] = (VGA_COLOR_GREEN_ON_BLACK << 8) | byte as u16;
+            vga_buffer[i] = VGA_COLOR_GREEN_ON_BLACK | byte as u16;
         }
     }
 
