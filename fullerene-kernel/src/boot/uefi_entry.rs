@@ -234,7 +234,7 @@ pub extern "efiapi" fn efi_main(
     let flags = x86_64::structures::paging::PageTableFlags::PRESENT
         | x86_64::structures::paging::PageTableFlags::WRITABLE
         | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-    map_memory_range(stack_base_phys, stack_pages, physical_memory_offset, &mut mapper, &mut frame_allocator, flags);
+    map_memory_range(stack_base_phys, stack_pages, physical_memory_offset, &mut mapper, &mut frame_allocator, flags).expect("Failed to map stack memory");
     log::info!("Stack memory mapped successfully");
 
     // Switch RSP to new kernel stack for safety
