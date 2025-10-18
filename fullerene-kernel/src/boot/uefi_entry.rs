@@ -33,7 +33,7 @@ fn map_memory_range(
     mapper: &mut impl Mapper<Size4KiB>,
     frame_allocator: &mut impl petroleum::page_table::FrameAllocator<Size4KiB>,
     flags: x86_64::structures::paging::PageTableFlags,
-) {
+) -> Result<(), x86_64::structures::paging::MapToError<Size4KiB>> {
     for i in 0..num_pages {
         let phys_addr_u64 = base_phys_addr.as_u64() + (i * 4096);
         let phys_addr = PhysAddr::new(phys_addr_u64);
@@ -45,11 +45,11 @@ fn map_memory_range(
 
         unsafe {
             mapper
-                .map_to(page, frame, flags, frame_allocator)
-                .expect("Failed to map memory page")
+                .map_to(page, frame, flags, frame_allocator)?
                 .flush();
         }
     }
+    Ok(())
 }
 
 #[cfg(target_os = "uefi")]
