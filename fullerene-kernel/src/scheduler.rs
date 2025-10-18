@@ -303,12 +303,12 @@ pub fn scheduler_loop() -> ! {
             let allocator = petroleum::page_table::ALLOCATOR.lock();
             let used_bytes = allocator.used();
             let total_bytes = allocator.size();
-            let usage_ratio = used_bytes as f32 / total_bytes as f32;
+            let usage_percent = if total_bytes > 0 { (used_bytes * 100) / total_bytes } else { 0 };
 
-            log::info!("Memory utilization: {} bytes / {} bytes ({:.2}%)",
-                used_bytes, total_bytes, usage_ratio * 100.0);
+            log::info!("Memory utilization: {} bytes / {} bytes ({}%)",
+                used_bytes, total_bytes, usage_percent);
 
-            if usage_ratio > 0.9 {
+            if usage_percent > 90 {
                 log::warn!("Critical memory usage (>90%) detected!");
             }
         }

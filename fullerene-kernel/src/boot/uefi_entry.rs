@@ -402,7 +402,7 @@ pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str)
         fb_writer.lock().put_pixel(100, 100, 0xFF0000);
         log::info!("Direct {} pixel write test completed - red dot should be visible at 100,100", source_name);
     } else {
-        log::info!("CRITICAL ERROR: {} framebuffer initialization failed! text::FRAMEBUFFER_UEFI.get() returned None", source_name);
+        log::error!("CRITICAL ERROR: {} framebuffer initialization failed! text::FRAMEBUFFER_UEFI.get() returned None", source_name);
         // Restore VGA text buffer if graphics init failed
         restore_vga_text_buffer(&vga_backup);
         petroleum::graphics::init_vga_text_mode();
