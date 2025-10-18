@@ -61,7 +61,7 @@ impl FramebufferInfo {
 impl FramebufferInfo {
     pub fn new(fb_config: &FullereneFramebufferConfig) -> Self {
         Self {
-            address: fb_config.address + (crate::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64), // Assuming this path is correct in petroleum
+            address: fb_config.address + (crate::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64),
             width: fb_config.width,
             height: fb_config.height,
             stride: fb_config.stride,
