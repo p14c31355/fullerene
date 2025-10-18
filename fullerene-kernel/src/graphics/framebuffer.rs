@@ -53,7 +53,10 @@ impl FramebufferInfo {
     pub fn width_or_stride(&self) -> u32 {
         #[cfg(target_os = "uefi")]
         {
-            self.stride
+            let stride_bytes = self.stride as u64 * self.bytes_per_pixel() as u64;
+            stride_bytes
+                .try_into()
+                .expect("Stride in bytes exceeds u32::MAX")
         }
         #[cfg(not(target_os = "uefi"))]
         {
@@ -64,7 +67,7 @@ impl FramebufferInfo {
     pub fn calculate_offset(&self, x: u32, y: u32) -> usize {
         #[cfg(target_os = "uefi")]
         {
-            ((y * self.stride) + (x * self.bytes_per_pixel() as u32)) as usize
+            ((y as u64 * self.stride as u64 + x as u64) * self.bytes_per_pixel() as u64) as usize
         }
         #[cfg(not(target_os = "uefi"))]
         {
@@ -88,7 +91,7 @@ impl FramebufferInfo {
 impl FramebufferInfo {
     pub fn new(fb_config: &FullereneFramebufferConfig) -> Self {
         Self {
-            address: fb_config.address,
+            address: fb_config.address + (crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64),
             width: fb_config.width,
             height: fb_config.height,
             stride: fb_config.stride,

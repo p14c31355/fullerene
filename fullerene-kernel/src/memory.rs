@@ -175,17 +175,6 @@ pub fn init_memory_management(
     log::info!("Heap frame allocator init completed successfully");
 
     log::info!(
-        "Calling heap::init_page_table with offset 0x{:x}",
-        physical_memory_offset.as_u64()
+        "Page tables already initialized by bootloader, skipping reinit in kernel"
     );
-    unsafe { petroleum::page_table::init(physical_memory_offset) };
-    log::info!("Page table init completed successfully");
-
-    log::info!(
-        "Calling heap::reinit_page_table with offset 0x{:x} and kernel_phys_start 0x{:x}",
-        physical_memory_offset.as_u64(),
-        kernel_phys_start.as_u64()
-    );
-    heap::reinit_page_table(kernel_phys_start, None, None);
-    log::info!("Page table reinit completed successfully");
 }

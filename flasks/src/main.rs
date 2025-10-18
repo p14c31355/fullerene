@@ -5,9 +5,9 @@ use std::{env, io, path::PathBuf, process::Command};
 
 #[derive(Parser)]
 struct Args {
-    /// Use QEMU instead of VirtualBox for virtualization
-    #[arg(long)]
-    qemu: bool,
+    /// Use VirtualBox instead of QEMU for virtualization
+    #[arg(long, default_value = "false")]
+    virtualbox: bool,
 
     /// VirtualBox VM name (default: fullerene-vm)
     #[arg(long, default_value = "fullerene-vm")]
@@ -16,6 +16,10 @@ struct Args {
     /// IDE controller name (default: IDE Controller)
     #[arg(long, default_value = "IDE Controller")]
     controller: String,
+
+    /// Start VM in GUI mode instead of headless (useful for debugging)
+    #[arg(long)]
+    gui: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -27,10 +31,10 @@ fn main() -> io::Result<()> {
         .expect("Failed to get workspace root")
         .to_path_buf();
 
-    if args.qemu {
-        run_qemu(&workspace_root)?;
-    } else {
+    if args.virtualbox {
         run_virtualbox(&args, &workspace_root)?;
+    } else {
+        run_qemu(&workspace_root)?;
     }
     Ok(())
 }
@@ -148,8 +152,10 @@ fn create_iso_and_setup(
 }
 
 // Constants to replace magic numbers
-const VM_SHUTDOWN_POLL_ATTEMPTS: u32 = 10;
-const VM_SHUTDOWN_POLL_INTERVAL_MS: u64 = 500;
+const VM_SHUTDOWN_POLL_ATTEMPTS: u32 = 20;
+const VM_SHUTDOWN_POLL_INTERVAL_MS: u64 = 1000;
+const VM_POWER_OFF_POLL_ATTEMPTS: u32 = 200;
+const VM_POWER_OFF_POLL_INTERVAL_S: u64 = 1;
 
 fn run_virtualbox(args: &Args, workspace_root: &PathBuf) -> io::Result<()> {
     log::info!("Starting VirtualBox...");
@@ -183,6 +189,7 @@ fn configure_vm_settings(vm_name: &str) -> io::Result<()> {
         VmSetting { args: &["--nic1", "nat"], failure_msg: "Failed to configure network NAT.", success_msg: None },
         VmSetting { args: &["--cpus", "1"], failure_msg: "Failed to set CPU count.", success_msg: None },
         VmSetting { args: &["--chipset", "ich9"], failure_msg: "Failed to set chipset.", success_msg: None },
+        VmSetting { args: &["--firmware", "efi"], failure_msg: "Failed to set firmware to EFI.", success_msg: Some("Firmware set to EFI for UEFI boot.") },
         VmSetting { args: &["--hwvirtex", "off"], failure_msg: "Failed to disable hardware virtualization. This may cause issues in nested VM environments.", success_msg: Some("Hardware virtualization disabled for compatibility with nested VMs") },
         VmSetting { args: &["--nested-paging", "off"], failure_msg: "Failed to disable nested paging.", success_msg: None },
         VmSetting { args: &["--large-pages", "off"], failure_msg: "Failed to disable large pages.", success_msg: None },
@@ -229,23 +236,7 @@ fn power_off_vm(vm_name: &str) -> io::Result<()> {
     log::info!("Powering off VM if running...");
 
     // Check if VM is currently running
-    let output = Command::new("VBoxManage")
-        .args(["showvminfo", vm_name, "--machinereadable"])
-        .output();
-
-    let initial_state = match output {
-        Ok(output) if output.status.success() => {
-            std::str::from_utf8(&output.stdout).ok().and_then(|stdout| {
-                stdout
-                    .lines()
-                    .find(|line| line.starts_with("VMState="))
-                    .and_then(|line| line.strip_prefix("VMState=\""))
-                    .and_then(|s| s.strip_suffix("\""))
-                    .map(|s| s.to_string())
-            })
-        }
-        _ => None,
-    };
+    let initial_state = get_vm_state(vm_name)?;
 
     // If VM is already powered off, do nothing
     if let Some("poweroff") = initial_state.as_deref() {
@@ -302,23 +293,11 @@ fn power_off_vm(vm_name: &str) -> io::Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(
             VM_SHUTDOWN_POLL_INTERVAL_MS,
         ));
-        let output = Command::new("VBoxManage")
-            .args(["showvminfo", vm_name, "--machinereadable"])
-            .output();
+        let state = get_vm_state(vm_name)?;
 
-        if let Ok(output) = output {
-            if let Ok(stdout) = std::str::from_utf8(&output.stdout) {
-                let state_line = stdout
-                    .lines()
-                    .find(|line| line.starts_with("VMState="))
-                    .and_then(|line| line.strip_prefix("VMState=\""))
-                    .and_then(|s| s.strip_suffix("\""));
-
-                if let Some("poweroff") = state_line {
-                    vm_powered_off = true;
-                    break;
-                }
-            }
+        if let Some("poweroff") = state.as_deref() {
+            vm_powered_off = true;
+            break;
         }
     }
 
@@ -395,26 +374,22 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
         .status()?;
 
     if !attach_status.success() {
-        return Err(io::Error::other("Failed to attach ISO to VirtualBox VM"));
+        return Err(io::Error::new(io::ErrorKind::Other, "Failed to attach ISO to VirtualBox VM"));
     }
 
-    // Start VM in headless mode so that serial output can be seen in terminal
-    log::info!("Starting VM in headless mode...");
-    let mut start_cmd = Command::new("VBoxHeadless");
-    start_cmd.args(["-s", &args.vm_name]);
+    // Start VM in headless or GUI mode
+    let start_type = if args.gui { "gui" } else { "headless" };
+    log::info!("Starting VM in {} mode...", start_type);
+    let status = Command::new("VBoxManage")
+        .args(["startvm", &args.vm_name, "--type", start_type])
+        .status()?;
 
-    // Spawn the VBoxHeadless process
-    let vm_process = start_cmd.spawn();
-
-    let mut vm_process = match vm_process {
-        Ok(process) => process,
-        Err(e) => {
-            return Err(io::Error::other(format!(
-                "Failed to start VBoxHeadless: {}",
-                e
-            )));
-        }
-    };
+    if !status.success() {
+        return Err(io::Error::new(io::ErrorKind::Other, format!(
+            "Failed to start VM in {} mode",
+            start_type
+        )));
+    }
 
     // Wait a moment for VM to start and serial output to begin
     std::thread::sleep(std::time::Duration::from_secs(2));
@@ -432,20 +407,59 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
         }
     }
 
-    // Wait for the VM process to finish
-    let exit_status = vm_process.wait();
-    match exit_status {
-        Ok(status) => {
-            if !status.success() {
-                log::warn!("VBoxHeadless exited with status: {}", status);
+        // Wait for the VM to shut down by polling state
+    log::info!("Waiting for VM to power off...");
+    let mut consecutive_failures = 0;
+    const MAX_CONSECUTIVE_FAILURES: u32 = 5;
+    let mut is_powered_off = false;
+
+    for _ in 0..VM_POWER_OFF_POLL_ATTEMPTS {
+        std::thread::sleep(std::time::Duration::from_secs(VM_POWER_OFF_POLL_INTERVAL_S));
+        match get_vm_state(&args.vm_name) {
+            Ok(state) => {
+                consecutive_failures = 0; // Reset on success
+                if let Some("poweroff") = state.as_deref() {
+                    log::info!("VM is confirmed to be powered off.");
+                    is_powered_off = true;
+                    break;
+                }
             }
-        }
-        Err(e) => {
-            log::error!("waiting for VBoxHeadless process: {}", e);
+            Err(e) => {
+                consecutive_failures += 1;
+                log::warn!("Failed to check VM state (attempt {}/{}), error: {}, continuing...", consecutive_failures, MAX_CONSECUTIVE_FAILURES, e);
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                    log::error!("Aborting wait: Failed to check VM state after multiple attempts.");
+                    break;
+                }
+            }
         }
     }
 
+    if !is_powered_off {
+        return Err(io::Error::new(io::ErrorKind::Other, "Timed out waiting for VM to power off. It might still be running."));
+    }
+
     Ok(())
+}
+
+// Helper function to get the VM state
+fn get_vm_state(vm_name: &str) -> io::Result<Option<String>> {
+    let output = Command::new("VBoxManage")
+        .args(["showvminfo", vm_name, "--machinereadable"])
+        .output()?;
+
+    if output.status.success() {
+        let stdout = std::str::from_utf8(&output.stdout).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let state = stdout
+            .lines()
+            .find(|line| line.starts_with("VMState="))
+            .and_then(|line| line.strip_prefix("VMState=\""))
+            .and_then(|s| s.strip_suffix('"'))
+            .map(|s| s.to_string());
+        Ok(state)
+    } else {
+        Ok(None)
+    }
 }
 
 fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {
