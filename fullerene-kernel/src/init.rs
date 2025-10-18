@@ -115,7 +115,7 @@ impl SystemInitializer {
             order: &mut Vec<String>,
         ) -> petroleum::common::logging::SystemResult<()> {
             if visiting.contains(component_name) {
-                return Err(SystemError::InvalidArgument); // Circular dependency
+                return Err(SystemError::InternalError); // Circular dependency
             }
             if visited.contains(component_name) {
                 return Ok(());
