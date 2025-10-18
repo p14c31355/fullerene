@@ -21,6 +21,7 @@ pub mod uefi_helpers;
 pub use apic::{IoApic, IoApicRedirectionEntry, init_io_apic};
 // Macros with #[macro_export] are automatically available at root, no need to re-export
 pub use common::logging::{SystemError, SystemResult};
+pub use common::macros::InitSequence;
 pub use common::syscall::*;
 pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 pub use graphics::{
@@ -34,6 +35,10 @@ pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 pub use page_table::ALLOCATOR;
 pub use page_table::allocate_heap_from_map;
 // Removed reinit_page_table export - implemented in higher-level crates
+// UEFI helper exports
+pub use uefi_helpers::{
+    kernel_fallback_framebuffer_detection, initialize_graphics_with_config,
+};
 
 /// Generic framebuffer buffer clear operation
 /// stride is in bytes per line
@@ -81,7 +86,8 @@ use crate::common::{
 };
 
 /// Global framebuffer config storage for kernel use after exit_boot_services
-pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferConfig>>> = Once::new();
+pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferConfig>>> =
+    Once::new();
 
 /// Shared QEMU framebuffer configurations for both bootloader and kernel
 pub const QEMU_CONFIGS: [QemuConfig; 8] = [
@@ -162,7 +168,9 @@ pub fn halt_loop() -> ! {
 /// Helper function to pause CPU for brief moment (used for busy waits and yielding)
 #[inline(always)]
 pub fn cpu_pause() {
-    unsafe { core::arch::asm!("pause"); }
+    unsafe {
+        core::arch::asm!("pause");
+    }
 }
 
 /// Helper to initialize serial for bootloader
@@ -225,7 +233,9 @@ impl<'a> FramebufferInstaller<'a> {
     fn install(&self, config: FullereneFramebufferConfig) -> Result<(), EfiStatus> {
         // Save to global instead of installing config table to avoid hang
         FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| Mutex::new(Some(config)));
-        serial::_print(format_args!("FramebufferInstaller::install saved config globally\n"));
+        serial::_print(format_args!(
+            "FramebufferInstaller::install saved config globally\n"
+        ));
         Ok(())
     }
 
@@ -273,8 +283,6 @@ pub fn detect_standard_modes(
     }
     None
 }
-
-
 
 /// Configuration table GUID logger
 struct ConfigTableLogger<'a> {
@@ -755,16 +763,10 @@ pub fn init_graphics_protocols(
         // Save to global instead of installing config table
         FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| Mutex::new(Some(config)));
 
-        serial::_print(format_args!(
-            "EFI: Config saved globally successfully.\n"
-        ));
+        serial::_print(format_args!("EFI: Config saved globally successfully.\n"));
         serial::_print(format_args!(
             "EFI: Framebuffer ready: {}x{} @ {:#x}, {} BPP, stride {}\n",
-            config.width,
-            config.height,
-            config.address,
-            config.bpp,
-            config.stride
+            config.width, config.height, config.address, config.bpp, config.stride
         ));
 
         unsafe {
@@ -796,11 +798,7 @@ pub fn init_graphics_protocols(
         ));
         serial::_print(format_args!(
             "Bare-metal: Framebuffer ready: {}x{} @ {:#x}, {} BPP, stride {}\n",
-            config.width,
-            config.height,
-            config.address,
-            config.bpp,
-            config.stride
+            config.width, config.height, config.address, config.bpp, config.stride
         ));
 
         unsafe {

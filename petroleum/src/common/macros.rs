@@ -370,9 +370,7 @@ macro_rules! volatile_read {
 /// Macro for volatile memory write operations
 #[macro_export]
 macro_rules! volatile_write {
-    ($addr:expr, $value:expr) => {{
-        unsafe { core::ptr::write_volatile($addr, $value) }
-    }};
+    ($addr:expr, $value:expr) => {{ unsafe { core::ptr::write_volatile($addr, $value) } }};
 }
 
 /// Macro for safe buffer index access with bounds checking
@@ -467,18 +465,55 @@ macro_rules! declare_init {
 /// Macro for initialization steps/done with serial logging
 #[macro_export]
 macro_rules! init_log {
-    ($msg:literal) => {
-        write_serial_bytes!(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes());
-    };
+    ($msg:literal) => {{
+        let msg = concat!($msg, "\n");
+        write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
+    }};
+    ($fmt:expr $(, $($arg:tt)*)?) => {{
+        $crate::serial::serial_log(format_args!(concat!($fmt, "\n") $(, $($arg)*)?));
+    }};
 }
 
 /// Macro to update VGA cursor position by writing to ports
 #[macro_export]
 macro_rules! update_vga_cursor {
     ($pos:expr) => {{
-        port_write!($crate::graphics::ports::HardwarePorts::CRTC_INDEX, $crate::graphics::ports::HardwarePorts::CURSOR_POS_LOW_REG);
-        port_write!($crate::graphics::ports::HardwarePorts::CRTC_DATA, (($pos & 0xFFusize) as u8));
-        port_write!($crate::graphics::ports::HardwarePorts::CRTC_INDEX, $crate::graphics::ports::HardwarePorts::CURSOR_POS_HIGH_REG);
-        port_write!($crate::graphics::ports::HardwarePorts::CRTC_DATA, ((($pos >> 8) & 0xFFusize) as u8));
+        port_write!(
+            $crate::graphics::ports::HardwarePorts::CRTC_INDEX,
+            $crate::graphics::ports::HardwarePorts::CURSOR_POS_LOW_REG
+        );
+        port_write!(
+            $crate::graphics::ports::HardwarePorts::CRTC_DATA,
+            (($pos & 0xFFusize) as u8)
+        );
+        port_write!(
+            $crate::graphics::ports::HardwarePorts::CRTC_INDEX,
+            $crate::graphics::ports::HardwarePorts::CURSOR_POS_HIGH_REG
+        );
+        port_write!(
+            $crate::graphics::ports::HardwarePorts::CRTC_DATA,
+            ((($pos >> 8) & 0xFFusize) as u8)
+        );
     }};
+}
+
+pub struct InitSequence<'a> {
+    steps: &'a [(&'static str, fn() -> Result<(), &'static str>)],
+}
+
+impl<'a> InitSequence<'a> {
+    pub fn new(steps: &'a [(&'static str, fn() -> Result<(), &'static str>)]) -> Self {
+        Self { steps }
+    }
+
+    pub fn run(&self) {
+        for (name, init_fn) in self.steps {
+            init_log!("About to init {}", name);
+            if let Err(e) = init_fn() {
+                init_log!("Init {} failed: {}", name, e);
+                panic!("{}", e);
+            }
+            init_log!("{} init done", name);
+        }
+    }
 }

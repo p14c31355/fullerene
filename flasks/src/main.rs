@@ -178,23 +178,65 @@ struct VmSetting<'a> {
     success_msg: Option<&'a str>,
 }
 
-
-
 fn configure_vm_settings(vm_name: &str) -> io::Result<()> {
     log::info!("Configuring VM settings for '{}'...", vm_name);
 
     let settings = &[
-        VmSetting { args: &["--memory", "4096"], failure_msg: "Failed to set VM memory.", success_msg: None },
-        VmSetting { args: &["--vram", "128"], failure_msg: "Failed to set VM video memory.", success_msg: None },
-        VmSetting { args: &["--acpi", "on"], failure_msg: "Failed to enable ACPI.", success_msg: None },
-        VmSetting { args: &["--nic1", "nat"], failure_msg: "Failed to configure network NAT.", success_msg: None },
-        VmSetting { args: &["--cpus", "1"], failure_msg: "Failed to set CPU count.", success_msg: None },
-        VmSetting { args: &["--chipset", "ich9"], failure_msg: "Failed to set chipset.", success_msg: None },
-        VmSetting { args: &["--firmware", "efi"], failure_msg: "Failed to set firmware to EFI.", success_msg: Some("Firmware set to EFI for UEFI boot.") },
-        VmSetting { args: &["--hwvirtex", "off"], failure_msg: "Failed to disable hardware virtualization. This may cause issues in nested VM environments.", success_msg: Some("Hardware virtualization disabled for compatibility with nested VMs") },
-        VmSetting { args: &["--nested-paging", "off"], failure_msg: "Failed to disable nested paging.", success_msg: None },
-        VmSetting { args: &["--large-pages", "off"], failure_msg: "Failed to disable large pages.", success_msg: None },
-        VmSetting { args: &["--nested-hw-virt", "off"], failure_msg: "Failed to disable nested hardware virtualization.", success_msg: None },
+        VmSetting {
+            args: &["--memory", "4096"],
+            failure_msg: "Failed to set VM memory.",
+            success_msg: None,
+        },
+        VmSetting {
+            args: &["--vram", "128"],
+            failure_msg: "Failed to set VM video memory.",
+            success_msg: None,
+        },
+        VmSetting {
+            args: &["--acpi", "on"],
+            failure_msg: "Failed to enable ACPI.",
+            success_msg: None,
+        },
+        VmSetting {
+            args: &["--nic1", "nat"],
+            failure_msg: "Failed to configure network NAT.",
+            success_msg: None,
+        },
+        VmSetting {
+            args: &["--cpus", "1"],
+            failure_msg: "Failed to set CPU count.",
+            success_msg: None,
+        },
+        VmSetting {
+            args: &["--chipset", "ich9"],
+            failure_msg: "Failed to set chipset.",
+            success_msg: None,
+        },
+        VmSetting {
+            args: &["--firmware", "efi"],
+            failure_msg: "Failed to set firmware to EFI.",
+            success_msg: Some("Firmware set to EFI for UEFI boot."),
+        },
+        VmSetting {
+            args: &["--hwvirtex", "off"],
+            failure_msg: "Failed to disable hardware virtualization. This may cause issues in nested VM environments.",
+            success_msg: Some("Hardware virtualization disabled for compatibility with nested VMs"),
+        },
+        VmSetting {
+            args: &["--nested-paging", "off"],
+            failure_msg: "Failed to disable nested paging.",
+            success_msg: None,
+        },
+        VmSetting {
+            args: &["--large-pages", "off"],
+            failure_msg: "Failed to disable large pages.",
+            success_msg: None,
+        },
+        VmSetting {
+            args: &["--nested-hw-virt", "off"],
+            failure_msg: "Failed to disable nested hardware virtualization.",
+            success_msg: None,
+        },
     ];
 
     for setting in settings {
@@ -375,7 +417,10 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
         .status()?;
 
     if !attach_status.success() {
-        return Err(io::Error::new(io::ErrorKind::Other, "Failed to attach ISO to VirtualBox VM"));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Failed to attach ISO to VirtualBox VM",
+        ));
     }
 
     // Start VM in headless or GUI mode
@@ -386,10 +431,10 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
         .status()?;
 
     if !status.success() {
-        return Err(io::Error::new(io::ErrorKind::Other, format!(
-            "Failed to start VM in {} mode",
-            start_type
-        )));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Failed to start VM in {} mode", start_type),
+        ));
     }
 
     // Wait a moment for VM to start and serial output to begin
@@ -408,7 +453,7 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
         }
     }
 
-        // Wait for the VM to shut down by polling state
+    // Wait for the VM to shut down by polling state
     log::info!("Waiting for VM to power off...");
     let mut consecutive_failures = 0;
     const MAX_CONSECUTIVE_FAILURES: u32 = 5;
@@ -427,7 +472,12 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
             }
             Err(e) => {
                 consecutive_failures += 1;
-                log::warn!("Failed to check VM state (attempt {}/{}), error: {}, continuing...", consecutive_failures, MAX_CONSECUTIVE_FAILURES, e);
+                log::warn!(
+                    "Failed to check VM state (attempt {}/{}), error: {}, continuing...",
+                    consecutive_failures,
+                    MAX_CONSECUTIVE_FAILURES,
+                    e
+                );
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
                     log::error!("Aborting wait: Failed to check VM state after multiple attempts.");
                     break;
@@ -437,7 +487,10 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
     }
 
     if !is_powered_off {
-        return Err(io::Error::new(io::ErrorKind::Other, "Timed out waiting for VM to power off. It might still be running."));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Timed out waiting for VM to power off. It might still be running.",
+        ));
     }
 
     Ok(())
@@ -450,7 +503,8 @@ fn get_vm_state(vm_name: &str) -> io::Result<Option<String>> {
         .output()?;
 
     if output.status.success() {
-        let stdout = std::str::from_utf8(&output.stdout).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let stdout = std::str::from_utf8(&output.stdout)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let state = stdout
             .lines()
             .find(|line| line.starts_with("VMState="))
@@ -483,25 +537,42 @@ fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {
 
     let mut qemu_cmd = Command::new("qemu-system-x86_64");
     qemu_cmd.args([
-        "-m", "4G",
-        "-cpu", "qemu64,+smap,-invtsc",
-        "-smp", "1",
-        "-M", "q35",
-        "-vga", "cirrus",
-        "-display", "gtk,gl=off,window-close=on,zoom-to-fit=on",
-        "-serial", "stdio",
-        "-accel", "tcg,thread=single",
-        "-d", "guest_errors,unimp",
-        "-D", "qemu_log.txt",
-        "-monitor", "none",
-        "-drive", &ovmf_fd_drive,
-        "-drive", &ovmf_vars_fd_drive,
-        "-drive", &format!("file={},media=cdrom,if=ide,format=raw", iso_path_str),
+        "-m",
+        "4G",
+        "-cpu",
+        "qemu64,+smap,-invtsc",
+        "-smp",
+        "1",
+        "-M",
+        "q35",
+        "-vga",
+        "cirrus",
+        "-display",
+        "gtk,gl=off,window-close=on,zoom-to-fit=on",
+        "-serial",
+        "stdio",
+        "-accel",
+        "tcg,thread=single",
+        "-d",
+        "guest_errors,unimp",
+        "-D",
+        "qemu_log.txt",
+        "-monitor",
+        "none",
+        "-drive",
+        &ovmf_fd_drive,
+        "-drive",
+        &ovmf_vars_fd_drive,
+        "-drive",
+        &format!("file={},media=cdrom,if=ide,format=raw", iso_path_str),
         "-no-reboot",
         "-no-shutdown",
-        "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
-        "-rtc", "base=utc",
-        "-boot", "menu=on,order=d",
+        "-device",
+        "isa-debug-exit,iobase=0xf4,iosize=0x04",
+        "-rtc",
+        "base=utc",
+        "-boot",
+        "menu=on,order=d",
         "-nodefaults",
     ]);
     // Keep the temporary file alive until QEMU exits

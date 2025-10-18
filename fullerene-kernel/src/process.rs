@@ -3,11 +3,11 @@
 //! This module provides process creation, scheduling, and context switching
 //! capabilities for user-space programs.
 
-use petroleum::page_table::PageTableHelper;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, Ordering};
+use petroleum::page_table::PageTableHelper;
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -461,7 +461,9 @@ pub fn get_process_count() -> usize {
 
 /// Get number of active processes (ready or running)
 pub fn get_active_process_count() -> usize {
-    PROCESS_LIST.lock().iter()
+    PROCESS_LIST
+        .lock()
+        .iter()
         .filter(|p| p.state == ProcessState::Ready || p.state == ProcessState::Running)
         .count()
 }
@@ -474,4 +476,25 @@ pub fn cleanup_terminated_processes() {
     // freeing the memory for the struct itself. `terminate_process` should have
     // already been called to free other associated resources.
     process_list.retain(|p| p.state != ProcessState::Terminated);
+}
+// Test process module containing the test user process functions
+
+// Test process main function
+pub fn test_process_main() {
+    // Use syscall helpers for reduced code duplication
+    let message = b"Hello from test user process!\n";
+    petroleum::write(1, message); // stdout fd = 1
+
+    // Get and print PID
+    let pid = petroleum::getpid();
+    petroleum::write(1, b"My PID is: ");
+    let pid_str = alloc::format!("{}\n", pid);
+    petroleum::write(1, pid_str.as_bytes());
+
+    // Yield twice for demonstration
+    petroleum::sleep();
+    petroleum::sleep();
+
+    // Exit process
+    petroleum::exit(0);
 }

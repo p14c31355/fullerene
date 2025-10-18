@@ -6,7 +6,6 @@ use petroleum::common::VgaFramebufferConfig;
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start() -> ! {
     crate::init::init_common();
-    petroleum::serial::serial_init();
     log::info!("Entering _start (BIOS mode)...");
 
     // Graphics initialization for VGA framebuffer (graphics mode)

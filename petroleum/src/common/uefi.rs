@@ -1,5 +1,9 @@
 // Common definitions for UEFI and BIOS modes.
 
+/// Physical memory offset for virtual to physical address translation (UEFI)
+#[cfg(target_os = "uefi")]
+pub const PHYSICAL_MEMORY_OFFSET_BASE: usize = 0xFFFF_8000_0000_0000;
+
 use core::ffi::c_void;
 
 /// GUID for FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID (UEFI only)
@@ -436,7 +440,8 @@ pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
             height: mode_info.vertical_resolution,
             pixel_format: mode_info.pixel_format,
             bpp: get_bpp_from_pixel_format(mode_info.pixel_format),
-            stride: mode_info.pixels_per_scan_line * (get_bpp_from_pixel_format(mode_info.pixel_format) / 8),
+            stride: mode_info.pixels_per_scan_line
+                * (get_bpp_from_pixel_format(mode_info.pixel_format) / 8),
         })
     } else {
         None

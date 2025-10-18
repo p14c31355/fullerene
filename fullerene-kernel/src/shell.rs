@@ -6,7 +6,7 @@
 use crate::keyboard;
 use crate::scheduler::get_system_tick;
 use crate::syscall::kernel_syscall;
-use alloc::{vec::Vec, string::String};
+use alloc::{string::String, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::{define_commands, print};
 
@@ -24,7 +24,8 @@ struct CommandEntry {
     function: CommandFn,
 }
 
-static COMMANDS: &[CommandEntry] = define_commands!(CommandEntry,
+static COMMANDS: &[CommandEntry] = define_commands!(
+    CommandEntry,
     ("help", "Show available commands", help_command),
     ("ps", "Show process list", ps_command),
     ("top", "Show top processes", top_command),
@@ -230,7 +231,10 @@ fn top_command(_args: &[&str]) -> i32 {
 
     for proc in procs.iter().take(5) {
         let ppid = proc.parent_id.unwrap_or(0);
-        print!("{:<6} {:<6} {:<10?} 0.0   {}\n", proc.id, ppid, proc.state, proc.name);
+        print!(
+            "{:<6} {:<6} {:<10?} 0.0   {}\n",
+            proc.id, ppid, proc.state, proc.name
+        );
     }
 
     0
@@ -260,7 +264,10 @@ fn uptime_command(_args: &[&str]) -> i32 {
     let minutes = (uptime_seconds % 3600) / 60;
     let seconds = uptime_seconds % 60;
 
-    print!("Uptime: {:02}:{:02}:{:02} ({} ticks)\n", hours, minutes, seconds, ticks);
+    print!(
+        "Uptime: {:02}:{:02}:{:02} ({} ticks)\n",
+        hours, minutes, seconds, ticks
+    );
     0
 }
 

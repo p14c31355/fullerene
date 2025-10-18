@@ -1,55 +1,46 @@
 //! Initialization module containing common initialization logic for both UEFI and BIOS boot
 
 use crate::interrupts;
-use petroleum::{init_log, write_serial_bytes};
+use crate::traits::Initializable;
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    string::String,
+    vec::Vec,
+};
+use petroleum::{common::logging::SystemError, init_log, write_serial_bytes, InitSequence};
+use spin::Once;
+
+macro_rules! init_step {
+    ($name:expr, $init:expr) => {{
+        fn __init_fn() -> Result<(), &'static str> {
+            $init;
+            Ok(())
+        }
+        ($name, __init_fn as fn() -> Result<(), &'static str>)
+    }};
+}
 
 #[cfg(target_os = "uefi")]
 pub fn init_common() {
-    init_log!("init_common: About to init VGA");
-    crate::vga::init_vga();
-    init_log!("init_common: VGA init done");
+    init_log!("Initializing common components");
+    let steps = [
+        init_step!("VGA", crate::vga::init_vga()),
+        init_step!("APIC", interrupts::init_apic()),
+        init_step!("process", crate::process::init()),
+        init_step!("syscall", crate::syscall::init()),
+        init_step!("fs", crate::fs::init()),
+        init_step!("loader", crate::loader::init()),
+    ];
 
-    // Now safe to initialize APIC and enable interrupts (after stable page tables and heap)
-    init_log!("init_common: About to init APIC");
-    interrupts::init_apic();
-    init_log!("init_common: APIC init done");
-    log::info!("Kernel: APIC initialized and interrupts enabled");
-
-    init_log!("init_common: About to init process");
-    crate::process::init();
-    init_log!("init_common: Process init done");
-    log::info!("Kernel: Process management initialized");
-
-    init_log!("init_common: About to init syscall");
-    crate::syscall::init();
-    init_log!("init_common: syscall init done");
-    log::info!("Kernel: System calls initialized");
-
-    init_log!("init_common: About to init fs");
-    crate::fs::init();
-    init_log!("init_common: FS init done");
-    log::info!("Kernel: Filesystem initialized");
-
-    init_log!("init_common: About to init loader");
-    crate::loader::init();
-    init_log!("init_common: Loader init done");
-    log::info!("Kernel: loader initialized");
+    InitSequence::new(&steps).run();
 
     init_log!("About to create test process");
     let test_pid = crate::process::create_process(
         "test_process",
-        x86_64::VirtAddr::new(crate::test_process::test_process_main as usize as u64),
+        x86_64::VirtAddr::new(crate::process::test_process_main as usize as u64),
     );
-    init_log!("Test process created");
-
-    log::info!("Kernel: Created test process with PID {}", test_pid);
-
-    // Test interrupt handling - should not panic or crash if APIC is working
-
-    log::info!("Testing interrupt handling with int3...");
-    // The interrupt test has been removed.
-
-    log::info!("Interrupt test passed (no crash)");
+    init_log!("Test process created: {}", test_pid);
 }
 
 #[cfg(not(target_os = "uefi"))]
@@ -74,4 +65,135 @@ pub fn init_common() {
     // Heap already initialized
     petroleum::serial::serial_init(); // Initialize serial early for debugging
     crate::vga::init_vga();
+}
+
+// System initializer for managing component initialization
+pub struct SystemInitializer {
+    components: Vec<Box<dyn Initializable + Send>>,
+}
+
+impl SystemInitializer {
+    pub fn new() -> Self {
+        Self {
+            components: Vec::new(),
+        }
+    }
+
+    /// Register a component for initialization
+    pub fn register_component(&mut self, component: Box<dyn Initializable + Send>) {
+        self.components.push(component);
+    }
+
+    /// Initialize all registered components in dependency order
+    pub fn initialize_system(&mut self) -> petroleum::common::logging::SystemResult<()> {
+        // Build component info and dependency graph
+        let mut component_names = Vec::new();
+        let mut dependency_graph: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+        for (i, component) in self.components.iter().enumerate() {
+            let name = component.name();
+            component_names.push((name, i, component.priority()));
+
+            let deps: Vec<String> = component
+                .dependencies()
+                .iter()
+                .map(|s| String::from(*s))
+                .collect();
+            dependency_graph.insert(String::from(name), deps);
+        }
+
+        // Perform topological sort
+        let mut visited = BTreeSet::new();
+        let mut visiting = BTreeSet::new();
+        let mut order = Vec::new();
+
+        fn visit(
+            component_name: &str,
+            dependency_graph: &BTreeMap<String, Vec<String>>,
+            visited: &mut BTreeSet<String>,
+            visiting: &mut BTreeSet<String>,
+            order: &mut Vec<String>,
+        ) -> petroleum::common::logging::SystemResult<()> {
+            if visiting.contains(component_name) {
+                return Err(SystemError::InternalError); // Circular dependency
+            }
+            if visited.contains(component_name) {
+                return Ok(());
+            }
+
+            visiting.insert(String::from(component_name));
+
+            // Visit all dependencies first
+            if let Some(deps) = dependency_graph.get(component_name) {
+                for dep in deps {
+                    visit(dep, dependency_graph, visited, visiting, order)?;
+                }
+            }
+
+            visiting.remove(component_name);
+            visited.insert(String::from(component_name));
+            order.push(String::from(component_name));
+            Ok(())
+        }
+
+        // Visit all components
+        for (name, _, _) in &component_names {
+            visit(
+                name,
+                &dependency_graph,
+                &mut visited,
+                &mut visiting,
+                &mut order,
+            )?;
+        }
+
+        // Build final initialization order
+        let mut init_order = Vec::new();
+        let name_to_component: BTreeMap<_, _> = component_names
+            .into_iter()
+            .map(|(name, idx, priority)| (String::from(name), (idx, priority)))
+            .collect();
+
+        for component_name in order.into_iter().rev() {
+            // Reverse to get dependencies first
+            if let Some((idx, _)) = name_to_component.get(&component_name) {
+                init_order.push(*idx);
+            }
+        }
+
+        // Sort by priority within dependency order
+        init_order.sort_by_key(|&idx| {
+            let component = &self.components[idx];
+            component.priority()
+        });
+
+        // Initialize components in the final order
+        for idx in init_order.into_iter().rev() {
+            // Highest priority first
+            let component = &mut self.components[idx];
+            if let Err(e) = component.init() {
+                return Err(e);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+static SYSTEM_INITIALIZER: Once<spin::Mutex<SystemInitializer>> = Once::new();
+
+// Register a component globally
+pub fn register_system_component(component: Box<dyn Initializable + Send>) {
+    SYSTEM_INITIALIZER
+        .call_once(|| spin::Mutex::new(SystemInitializer::new()))
+        .lock()
+        .register_component(component);
+}
+
+// Initialize the entire system
+pub fn initialize_system() -> petroleum::common::logging::SystemResult<()> {
+    SYSTEM_INITIALIZER
+        .call_once(|| spin::Mutex::new(SystemInitializer::new()))
+        .lock()
+        .initialize_system()
 }

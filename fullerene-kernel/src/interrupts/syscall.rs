@@ -2,9 +2,9 @@
 //!
 //! This module implements the Fast System Call mechanism using SYSCALL/SYSRET instructions.
 
+use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{GsBase, Msr};
 use x86_64::registers::rflags::RFlags;
-use x86_64::VirtAddr;
 
 /// Static kernel stack for syscall to prevent page fault vulnerabilities
 const SYSCALL_STACK_SIZE: usize = 4096;
@@ -18,12 +18,14 @@ pub static mut KERNEL_CR3_U64: u64 = 0;
 
 /// Set kernel CR3 for syscall switching
 pub fn set_kernel_cr3(cr3: u64) {
-    unsafe { KERNEL_CR3_U64 = cr3; }
+    unsafe {
+        KERNEL_CR3_U64 = cr3;
+    }
 }
 
 /// Initialize syscall kernel stack
 pub fn init_syscall_stack() {
-    use alloc::alloc::{alloc, Layout};
+    use alloc::alloc::{Layout, alloc};
     let layout = Layout::from_size_align(SYSCALL_STACK_SIZE, 16).unwrap();
     let ptr = unsafe { alloc(layout) };
     let stack_top = unsafe { ptr.add(SYSCALL_STACK_SIZE) };
@@ -43,7 +45,7 @@ pub extern "C" fn syscall_entry() {
         "push rax",     // Save user CR3 on stack
         "lea rax, [rip + KERNEL_CR3_U64]",
         "mov rax, [rax]", // Load kernel CR3
-        "mov cr3, rax",  // Switch to kernel page table
+        "mov cr3, rax",   // Switch to kernel page table
         // Entry: SYSCALL puts RIP in RCX, RFLAGS in R11
         "push rcx", // Save return RIP
         "push r11", // Save return RFLAGS
@@ -55,11 +57,11 @@ pub extern "C" fn syscall_entry() {
         "call handle_syscall",
         "add rsp, 8", // Clean up stack (instead of pop r10)
         // Restore user CR3 and RFLAGS/RIP
-        "pop r11",    // Restore RFLAGS
-        "pop rcx",    // Restore RIP
-        "pop rax",    // Restore user CR3
+        "pop r11", // Restore RFLAGS
+        "pop rcx", // Restore RIP
+        "pop rax", // Restore user CR3
         "mov cr3, rax",
-        "swapgs",     // Restore user GS base
+        "swapgs", // Restore user GS base
         "sysretq"
     );
 }

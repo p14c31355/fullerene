@@ -10,8 +10,8 @@ use spin::Mutex;
 use static_assertions::assert_eq_size;
 
 use crate::traits::{
-    ErrorLogging, FrameAllocator, Initializable, MemoryManager,
-    ProcessMemoryManager, SyscallHandler,
+    ErrorLogging, FrameAllocator, Initializable, MemoryManager, ProcessMemoryManager,
+    SyscallHandler,
 };
 use petroleum::common::logging::{SystemError, SystemResult};
 use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
@@ -438,7 +438,10 @@ impl PageTableHelper for UnifiedMemoryManager {
             .map_page(virtual_addr, physical_addr, flags, frame_allocator)
     }
 
-    fn unmap_page(&mut self, virtual_addr: usize) -> SystemResult<x86_64::structures::paging::PhysFrame<Size4KiB>> {
+    fn unmap_page(
+        &mut self,
+        virtual_addr: usize,
+    ) -> SystemResult<x86_64::structures::paging::PhysFrame<Size4KiB>> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
@@ -757,7 +760,8 @@ pub type ProcessPageTable = PageTableManager;
 static MEMORY_MANAGER: Mutex<Option<UnifiedMemoryManager>> = Mutex::new(None);
 
 // Kernel virtual address space allocated regions tracker
-static KERNEL_VIRTUAL_ALLOCATED_REGIONS: Mutex<BTreeMap<usize, usize>> = Mutex::new(BTreeMap::new());
+static KERNEL_VIRTUAL_ALLOCATED_REGIONS: Mutex<BTreeMap<usize, usize>> =
+    Mutex::new(BTreeMap::new());
 
 /// Physical memory offset for virtual to physical address translation
 pub const PHYSICAL_MEMORY_OFFSET_BASE: usize = 0xFFFF_8000_0000_0000;

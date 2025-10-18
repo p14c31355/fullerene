@@ -165,8 +165,6 @@ impl fmt::Write for UefiWriter {
 // Global writer instance
 pub static UEFI_WRITER: Mutex<UefiWriter> = Mutex::new(UefiWriter::new());
 
-
-
 pub fn serial_log(args: core::fmt::Arguments) {
     _print(args);
 }

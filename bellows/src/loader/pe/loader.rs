@@ -347,7 +347,10 @@ pub fn load_efi_image(
 
     let entry_point_addr = phys_addr.saturating_add(address_of_entry_point);
 
-    log::info!("PE: address_of_entry_point = 0x{:x}", address_of_entry_point);
+    log::info!(
+        "PE: address_of_entry_point = 0x{:x}",
+        address_of_entry_point
+    );
 
     log::info!("PE: entry_point_addr = 0x{:x}", entry_point_addr);
 
@@ -364,7 +367,6 @@ pub fn load_efi_image(
 
     // Debug print just before transmuting to function pointer
     log::info!("PE: EFI image loaded. Entry: 0x{:x}", entry_point_addr);
-
 
     let entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> ! =
         unsafe { mem::transmute(entry_point_addr) };

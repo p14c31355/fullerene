@@ -31,15 +31,12 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     use core::fmt::Write;
     let mut writer = petroleum::serial::SERIAL_PORT_WRITER.lock();
     let _ = write!(writer, "Panic: {}\n", info);
+    // Simple panic handler for UEFI bootloader
     unsafe {
-        petroleum::volatile_write!(0xB8000 as *mut u16, 0x1F20);
-    } // White ' ' on blue
-    unsafe {
-        petroleum::volatile_write!(0xB8002 as *mut u16, 0x1F50);
-    } // White 'P' on blue
-    let panic_msg = b"anic";
-    for (i, &char_code) in panic_msg.iter().enumerate() {
-        unsafe {
+        petroleum::volatile_write!(0xB8000 as *mut u16, 0x1F20); // White ' ' on blue
+        petroleum::volatile_write!(0xB8002 as *mut u16, 0x1F50); // White 'P' on blue
+        let panic_msg = b"anic";
+        for (i, &char_code) in panic_msg.iter().enumerate() {
             petroleum::volatile_write!((0xB8004 as *mut u16).add(i), 0x1F00 | char_code as u16);
         }
     }
@@ -53,7 +50,11 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
     log::debug!("Bellows: efi_main entered.");
 
-    log::info!("Main: image_handle=0x{:x}, system_table=0x{:x}", image_handle, system_table as usize);
+    log::info!(
+        "Main: image_handle=0x{:x}, system_table=0x{:x}",
+        image_handle,
+        system_table as usize
+    );
 
     // Before setting UEFI_SYSTEM_TABLE
     if image_handle == 0 {

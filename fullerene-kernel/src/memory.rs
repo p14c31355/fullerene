@@ -44,7 +44,9 @@ pub fn find_framebuffer_config(
 
     // Check for null pointer after UEFI boot services exit
     if system_table.configuration_table.is_null() {
-        log::info!("find_framebuffer_config: Configuration table is null (UEFI boot services exited)");
+        log::info!(
+            "find_framebuffer_config: Configuration table is null (UEFI boot services exited)"
+        );
         return None;
     }
 
@@ -58,7 +60,8 @@ pub fn find_framebuffer_config(
     for (i, entry) in config_table_entries.iter().enumerate() {
         log::info!(
             "Config table {}: table={:#x}, checking for GOP GUID",
-            i, entry.vendor_table as usize
+            i,
+            entry.vendor_table as usize
         );
 
         if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
@@ -174,7 +177,5 @@ pub fn init_memory_management(
     heap::init_frame_allocator(memory_map);
     log::info!("Heap frame allocator init completed successfully");
 
-    log::info!(
-        "Page tables already initialized by bootloader, skipping reinit in kernel"
-    );
+    log::info!("Page tables already initialized by bootloader, skipping reinit in kernel");
 }

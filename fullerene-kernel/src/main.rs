@@ -21,43 +21,16 @@ mod scheduler;
 mod shell;
 mod syscall;
 mod traits;
-mod vga; // System calls // Shell/CLI interface
-
-// Submodules for modularizing main.rs
+mod vga;
 mod boot;
 mod init;
 mod memory;
-mod test_process;
 
 extern crate alloc;
-extern crate fullerene_kernel;
 
 use spin::Once;
 
 // Global allocator removed - handled by petroleum crate
-
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    use petroleum::serial::_print;
-    use x86_64::instructions::hlt;
-
-    _print(format_args!("KERNEL PANIC: {}\n", info));
-
-    // Visual indicator on VGA screen for kernel panic
-    // Yellow text on red background for panic
-    petroleum::volatile_write!((VGA_BUFFER_ADDRESS + 0) as *mut u16, 0xCE50); // 'P' yellow on red
-    petroleum::volatile_write!((VGA_BUFFER_ADDRESS + 2) as *mut u16, 0xCE41); // 'A' yellow on red
-    petroleum::volatile_write!((VGA_BUFFER_ADDRESS + 4) as *mut u16, 0xCE4E); // 'N' yellow on red
-    petroleum::volatile_write!((VGA_BUFFER_ADDRESS + 6) as *mut u16, 0xCE49); // 'I' yellow on red
-    petroleum::volatile_write!((VGA_BUFFER_ADDRESS + 8) as *mut u16, 0xCE43); // 'C' yellow on red
-    petroleum::volatile_write!((VGA_BUFFER_ADDRESS + 10) as *mut u16, 0xCE21); // '!' yellow on red
-    
-
-    loop {
-        hlt(); // Use hlt to halt the CPU in case of a kernel panic
-    }
-}
 
 use petroleum::page_table::EfiMemoryDescriptor;
 
@@ -65,3 +38,23 @@ static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
 
 const VGA_BUFFER_ADDRESS: usize = 0xb8000;
 const VGA_COLOR_GREEN_ON_BLACK: u16 = 0x0200;
+
+#[cfg(not(test))]
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    // Log panic info to serial port for debugging
+    use petroleum::serial::_print;
+    use x86_64::instructions::hlt;
+    _print(format_args!("KERNEL PANIC: {}\n", info));
+
+    // Visual indicator on VGA screen for kernel panic (yellow on red) - helps with debugging in environments without serial access
+    let panic_msg = b"PANIC!";
+    for (i, &ch) in panic_msg.iter().enumerate() {
+        petroleum::volatile_write!((VGA_BUFFER_ADDRESS + i * 2) as *mut u16, 0xCE00 | (ch as u16));
+    }
+
+    // Halt the CPU to prevent spinning
+    loop {
+        hlt();
+    }
+}

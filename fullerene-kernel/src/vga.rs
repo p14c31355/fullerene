@@ -1,4 +1,7 @@
-use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations, port_write, handle_write_byte, update_vga_cursor};
+use petroleum::{
+    Color, ColorCode, ScreenChar, TextBufferOperations, handle_write_byte, port_write,
+    update_vga_cursor,
+};
 use spin::{Mutex, Once};
 
 const BUFFER_HEIGHT: usize = 25;
@@ -198,8 +201,6 @@ mod tests {
                 }
             }
         }
-
-
 
         fn clear_row(&mut self, row: usize) {
             let blank_char = ScreenChar {

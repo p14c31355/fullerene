@@ -3,11 +3,11 @@
 //! This module provides the main kernel scheduler that orchestrates all system functionality,
 //! including process scheduling, shell execution, and system-wide orchestration.
 
-use x86_64::VirtAddr;
+use crate::graphics;
 use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicU64, Ordering};
-use petroleum::{TextBufferOperations, Color, ColorCode, ScreenChar};
-use crate::graphics;
+use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations};
+use x86_64::VirtAddr;
 
 // System-wide counters and statistics
 static SYSTEM_TICK: AtomicU64 = AtomicU64::new(0);
@@ -34,7 +34,6 @@ struct IoEvent {
     event_type: u8,
     data: usize,
 }
-
 
 /// Collect current system statistics
 fn collect_system_stats() -> SystemStats {
@@ -82,7 +81,11 @@ fn perform_system_health_checks() {
 
     // Log warning if memory usage is high
     if used > total / 2 {
-        log::warn!("High memory usage: {} bytes used out of {} bytes", used, total);
+        log::warn!(
+            "High memory usage: {} bytes used out of {} bytes",
+            used,
+            total
+        );
     }
 
     // Check for too many processes
@@ -139,14 +142,20 @@ fn display_system_stats_on_vga(stats: &SystemStats, interval_ticks: u64) {
             // Clear bottom rows for system info display
             let blank_char = petroleum::ScreenChar {
                 ascii_character: b' ',
-                color_code: petroleum::ColorCode::new(petroleum::Color::Black, petroleum::Color::Black),
+                color_code: petroleum::ColorCode::new(
+                    petroleum::Color::Black,
+                    petroleum::Color::Black,
+                ),
             };
 
             // Set position to bottom left for system info
             vga_writer.set_position(22, 0);
             use core::fmt::Write;
             use petroleum::ColorCode;
-            vga_writer.set_color_code(ColorCode::new(petroleum::Color::Cyan, petroleum::Color::Black));
+            vga_writer.set_color_code(ColorCode::new(
+                petroleum::Color::Cyan,
+                petroleum::Color::Black,
+            ));
 
             // Clear the status lines first
             for col in 0..80 {
@@ -156,7 +165,11 @@ fn display_system_stats_on_vga(stats: &SystemStats, interval_ticks: u64) {
 
             // Display system info on bottom rows
             vga_writer.set_position(23, 0);
-            let _ = write!(vga_writer, "Processes: {}/{}  ", stats.active_processes, stats.total_processes);
+            let _ = write!(
+                vga_writer,
+                "Processes: {}/{}  ",
+                stats.active_processes, stats.total_processes
+            );
             let _ = write!(vga_writer, "Memory: {} KB  ", stats.memory_used / 1024);
             let _ = write!(vga_writer, "Tick: {}", stats.uptime_ticks);
             vga_writer.update_cursor();
@@ -190,14 +203,19 @@ fn monitor_environment() {
     // If memory usage is high, perform garbage collection
     let allocator = petroleum::page_table::ALLOCATOR.lock();
     let total_memory = allocator.size();
-    if total_memory > 0 && system_stats.memory_used > total_memory * 3 / 4 { // >75%
+    if total_memory > 0 && system_stats.memory_used > total_memory * 3 / 4 {
+        // >75%
         log::debug!("High memory usage detected, running memory optimization");
         // petroleum::page_table::ALLOCATOR.lock().optimize(); // Method not available
     }
 
     // Monitor process health
     if system_stats.active_processes > system_stats.total_processes / 2 {
-        log::warn!("High active process ratio: {}/{}", system_stats.active_processes, system_stats.total_processes);
+        log::warn!(
+            "High active process ratio: {}/{}",
+            system_stats.active_processes,
+            system_stats.total_processes
+        );
     }
 }
 
@@ -209,7 +227,8 @@ fn optimize_system_resources() {
 
     let mut last_optimization_tick = LAST_OPTIMIZATION_TICK.lock();
 
-    if current_tick - *last_optimization_tick > 10000 { // Every 10000 ticks
+    if current_tick - *last_optimization_tick > 10000 {
+        // Every 10000 ticks
         // Run memory defragmentation or optimization
         log::debug!("Running periodic resource optimization");
         *last_optimization_tick = current_tick;
@@ -318,7 +337,8 @@ pub fn scheduler_loop() -> ! {
 
         // Periodically perform health checks and log statistics
         let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
-        if current_tick % 1000 == 0 { // Every 1000 ticks
+        if current_tick % 1000 == 0 {
+            // Every 1000 ticks
             perform_system_health_checks();
             log_system_stats(&system_stats, 5000); // Log every 5000 ticks
             display_system_stats_on_vga(&system_stats, 5000); // Display every 5000 ticks
@@ -340,10 +360,18 @@ pub fn scheduler_loop() -> ! {
             let allocator = petroleum::page_table::ALLOCATOR.lock();
             let used_bytes = allocator.used();
             let total_bytes = allocator.size();
-            let usage_percent = if total_bytes > 0 { (used_bytes * 100) / total_bytes } else { 0 };
+            let usage_percent = if total_bytes > 0 {
+                (used_bytes * 100) / total_bytes
+            } else {
+                0
+            };
 
-            log::info!("Memory utilization: {} bytes / {} bytes ({}%)",
-                used_bytes, total_bytes, usage_percent);
+            log::info!(
+                "Memory utilization: {} bytes / {} bytes ({}%)",
+                used_bytes,
+                total_bytes,
+                usage_percent
+            );
 
             if usage_percent > 90 {
                 log::warn!("Critical memory usage (>90%) detected!");
@@ -371,7 +399,8 @@ pub fn scheduler_loop() -> ! {
         // pause allows the CPU to enter a low-power state while remaining responsive to interrupts,
         // making it more suitable for virtualization environments like QEMU compared to hlt which
         // puts the CPU in a deeper sleep state that's harder for hypervisors to manage efficiently.
-        for _ in 0..50 { // Reduced from 100 to allow more frequent system operations
+        for _ in 0..50 {
+            // Reduced from 100 to allow more frequent system operations
             petroleum::cpu_pause();
         }
 
@@ -392,7 +421,8 @@ pub fn scheduler_loop() -> ! {
 fn emergency_condition_handler() {
     // Check for out-of-memory condition
     let allocator = petroleum::page_table::ALLOCATOR.lock();
-    if allocator.used() > (allocator.size() * 4) / 5 { // >80% usage
+    if allocator.used() > (allocator.size() * 4) / 5 {
+        // >80% usage
         log::error!("EMERGENCY: Critical memory usage detected!");
         // In a full implementation, this would:
         // 1. Kill memory-hog processes
@@ -415,10 +445,7 @@ pub extern "C" fn shell_process_main() -> ! {
     crate::shell::shell_main();
 
     // If shell exits, terminate the process
-    crate::process::terminate_process(
-        crate::process::current_pid().unwrap(),
-        0
-    );
+    crate::process::terminate_process(crate::process::current_pid().unwrap(), 0);
 
     // Should never reach here
     petroleum::halt_loop();
