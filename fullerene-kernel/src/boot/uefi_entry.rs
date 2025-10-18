@@ -137,7 +137,7 @@ pub extern "efiapi" fn efi_main(
 
     log::info!(
         "Physical memory offset set to: 0x{:x}",
-        physical_memory_offset.as_u64()
+        crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE
     );
 
     // Initialize GDT with proper heap address
