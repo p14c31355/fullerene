@@ -330,9 +330,9 @@ pub fn scheduler_loop() -> ! {
         // Allow graphics and I/O operations to process
         // This loop will be interrupted by timer maintaining process scheduling
 
-        // Yield for short periods to allow more frequent system operations
+        // Yield for short periods to allow more frequent system operations using pause instead of hlt for QEMU-friendliness
         for _ in 0..50 { // Reduced from 100 to allow more frequent system operations
-            hlt();
+            unsafe { core::arch::asm!("pause"); }
         }
 
         // After yield cycle, check if any emergency conditions need handling
@@ -377,6 +377,7 @@ pub extern "C" fn shell_process_main() -> ! {
 
     // Should never reach here
     loop {
-        x86_64::instructions::hlt();
+        // Use pause for QEMU-friendliness instead of hlt
+        unsafe { core::arch::asm!("pause"); }
     }
 }

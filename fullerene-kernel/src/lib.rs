@@ -99,21 +99,17 @@ const VGA_COLOR_GREEN_ON_BLACK: u16 = 0x0200;
 
 // A graphics testing loop integrated with full system scheduling
 pub fn graphics_test_loop() -> ! {
-    use x86_64::instructions::hlt;
-
-    // Test our SimpleFramebuffer (Redox vesad-style)
+    
     if let Some(mut fb) = crate::graphics::framebuffer::get_simple_framebuffer() {
         crate::graphics::_print(format_args!("Graphics: Testing SimpleFramebuffer API\n"));
         fb.clear(0xFF000000); // Clear to black
 
-        // Test draw_pixel (orbclient-style)
         for i in 0..100 {
             fb.draw_pixel(i, i, 0xFFFF0000); // Red diagonal line
             fb.draw_pixel(200 + i, 100, 0xFF00FF00); // Green horizontal line
             fb.draw_pixel(100, 200 + i, 0xFF0000FF); // Blue vertical line
         }
 
-        // Test draw_rect (orbclient-style)
         fb.draw_rect(50, 50, 100, 50, 0xFFFFFF00); // Yellow rectangle
         fb.draw_rect(300, 300, 80, 60, 0xFFFF00FF); // Magenta rectangle
         fb.draw_rect(150, 400, 60, 40, 0xFF00FFFF); // Cyan rectangle

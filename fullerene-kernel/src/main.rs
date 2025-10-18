@@ -55,7 +55,8 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     
 
     loop {
-        hlt();
+        // Use pause for QEMU-friendliness instead of hlt
+        unsafe { core::arch::asm!("pause"); }
     }
 }
 

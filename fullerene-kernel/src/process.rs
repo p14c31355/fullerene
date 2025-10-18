@@ -283,7 +283,8 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
 /// Idle process loop
 fn idle_loop() {
     loop {
-        x86_64::instructions::hlt();
+        // Use pause for QEMU-friendliness instead of hlt
+        unsafe { core::arch::asm!("pause"); }
     }
 }
 

@@ -151,7 +151,8 @@ pub fn init_uefi_system_table(system_table: *mut EfiSystemTable) {
 
 pub fn halt_loop() -> ! {
     loop {
-        x86_64::instructions::hlt();
+        // Use pause instruction which is more QEMU-friendly than hlt
+        unsafe { core::arch::asm!("pause"); }
     }
 }
 

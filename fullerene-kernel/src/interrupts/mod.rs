@@ -43,10 +43,10 @@ pub fn enable_interrupts() {
     interrupts::enable();
 }
 
-/// Wait for interrupt (hlt instruction)
+/// Wait for interrupt (using pause for QEMU-friendliness instead of hlt)
 pub fn hlt_loop() -> ! {
     loop {
-        x86_64::instructions::hlt();
+        unsafe { core::arch::asm!("pause"); }
     }
 }
 
