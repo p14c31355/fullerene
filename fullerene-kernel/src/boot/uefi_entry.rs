@@ -365,6 +365,8 @@ pub fn kernel_fallback_framebuffer_detection() -> Option<FullereneFramebufferCon
 /// source_name is used for logging purposes (e.g., "UEFI custom" or "GOP").
 #[cfg(target_os = "uefi")]
 pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str) -> bool {
+    log::info!("=== ENTERING try_init_graphics for {} ===", source_name);
+
     // Save current VGA buffer content before attempting graphics initialization
     let vga_backup = match create_vga_backup() {
         Some(backup) => backup,
@@ -374,39 +376,43 @@ pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str)
         }
     };
 
-    log::info!("Initializing {} graphics mode...", source_name);
+    log::info!("Calling graphics::text::init with {} config...", source_name);
     graphics::text::init(config);
+
+    log::info!("Checking if framebuffer was initialized...");
 
     // Verify the framebuffer was initialized
     if let Some(fb_writer) = graphics::text::FRAMEBUFFER_UEFI.get() {
         let fb_info = fb_writer.lock();
         log::info!(
-            "{} framebuffer initialized successfully - width: {}, height: {}",
+            "SUCCESS: {} framebuffer initialized successfully - width: {}, height: {}, pixel_format: {:?}",
             source_name,
             fb_info.get_width(),
-            fb_info.get_height()
+            fb_info.get_height(),
+            config.pixel_format
         );
 
         // Test direct pixel write to verify access
-        log::info!("Testing {} framebuffer access...", source_name);
+        log::info!("Testing {} framebuffer access with direct pixel write...", source_name);
         fb_writer.lock().put_pixel(100, 100, 0xFF0000);
-        log::info!("Direct {} pixel write test completed", source_name);
+        log::info!("Direct {} pixel write test completed - red dot should be visible at 100,100", source_name);
     } else {
-        log::info!("ERROR: {} framebuffer initialization failed!", source_name);
+        log::info!("CRITICAL ERROR: {} framebuffer initialization failed! text::FRAMEBUFFER_UEFI.get() returned None", source_name);
         // Restore VGA text buffer if graphics init failed
         restore_vga_text_buffer(&vga_backup);
         petroleum::graphics::init_vga_text_mode();
         crate::vga::init_vga();
+        log::info!("Restored VGA text mode after graphics initialization failure");
         return false;
     }
 
     log::info!(
-        "{} graphics mode initialized, calling draw_os_desktop...",
+        "About to call graphics::draw_os_desktop() for {}...",
         source_name
     );
     graphics::draw_os_desktop();
     log::info!(
-        "{} graphics desktop drawn - if you see this, draw_os_desktop completed",
+        "=== SUCCESS: {} graphics desktop drawn - if you see this, draw_os_desktop completed ===",
         source_name
     );
     petroleum::serial::serial_log(format_args!("Desktop should be visible now!\n"));
