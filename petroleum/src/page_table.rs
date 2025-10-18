@@ -184,7 +184,7 @@ pub fn reinit_page_table_with_allocator(
 
     // Map framebuffer if provided
     if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
-        let fb_pages = (fb_size + 4095) / 4096; // Round up to page count
+        let fb_pages = fb_size.div_ceil(4096); // Round up to page count
 
         for i in 0..fb_pages {
             let phys_addr = PhysAddr::new(fb_addr.as_u64() + i * 4096);
