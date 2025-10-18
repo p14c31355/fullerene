@@ -185,7 +185,7 @@ pub fn reinit_page_table_with_allocator(
 
         let flags = Flags::PRESENT | Flags::WRITABLE;
         unsafe {
-            mapper.map_to(page, frame, flags, frame_allocator).unwrap().flush();
+            mapper.map_to(page, frame, flags, frame_allocator).expect("Failed to map kernel page").flush();
         }
     }
 
