@@ -67,7 +67,7 @@ pub extern "efiapi" fn efi_main(
     // Direct VGA buffer test - write to hardware buffer directly
     log::info!("Direct VGA buffer write test...");
     unsafe {
-        let vga_buffer = &mut *(0xb8000 as *mut [[u16; 80]; 25]);
+        let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
         write_vga_string(vga_buffer, 0, b"Kernel boot", 0x1F00);
     }
     log::info!("Direct VGA write test completed");
