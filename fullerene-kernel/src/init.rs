@@ -1,55 +1,40 @@
 //! Initialization module containing common initialization logic for both UEFI and BIOS boot
 
 use crate::interrupts;
-use petroleum::{init_log, write_serial_bytes};
+use petroleum::{InitSequence, init_log, write_serial_bytes};
+
+#[cfg(target_os = "uefi")]
+fn init_vga_step() -> Result<(), &'static str> { crate::vga::init_vga(); Ok(()) }
+#[cfg(target_os = "uefi")]
+fn init_apic_step() -> Result<(), &'static str> { interrupts::init_apic(); Ok(()) }
+#[cfg(target_os = "uefi")]
+fn init_process_step() -> Result<(), &'static str> { crate::process::init(); Ok(()) }
+#[cfg(target_os = "uefi")]
+fn init_syscall_step() -> Result<(), &'static str> { crate::syscall::init(); Ok(()) }
+#[cfg(target_os = "uefi")]
+fn init_fs_step() -> Result<(), &'static str> { crate::fs::init(); Ok(()) }
+#[cfg(target_os = "uefi")]
+fn init_loader_step() -> Result<(), &'static str> { crate::loader::init(); Ok(()) }
 
 #[cfg(target_os = "uefi")]
 pub fn init_common() {
-    init_log!("init_common: About to init VGA");
-    crate::vga::init_vga();
-    init_log!("init_common: VGA init done");
+    let steps = [
+        ("VGA", init_vga_step as fn() -> Result<(), &'static str>),
+        ("APIC", init_apic_step as fn() -> Result<(), &'static str>),
+        ("process", init_process_step as fn() -> Result<(), &'static str>),
+        ("syscall", init_syscall_step as fn() -> Result<(), &'static str>),
+        ("fs", init_fs_step as fn() -> Result<(), &'static str>),
+        ("loader", init_loader_step as fn() -> Result<(), &'static str>),
+    ];
 
-    // Now safe to initialize APIC and enable interrupts (after stable page tables and heap)
-    init_log!("init_common: About to init APIC");
-    interrupts::init_apic();
-    init_log!("init_common: APIC init done");
-    log::info!("Kernel: APIC initialized and interrupts enabled");
-
-    init_log!("init_common: About to init process");
-    crate::process::init();
-    init_log!("init_common: Process init done");
-    log::info!("Kernel: Process management initialized");
-
-    init_log!("init_common: About to init syscall");
-    crate::syscall::init();
-    init_log!("init_common: syscall init done");
-    log::info!("Kernel: System calls initialized");
-
-    init_log!("init_common: About to init fs");
-    crate::fs::init();
-    init_log!("init_common: FS init done");
-    log::info!("Kernel: Filesystem initialized");
-
-    init_log!("init_common: About to init loader");
-    crate::loader::init();
-    init_log!("init_common: Loader init done");
-    log::info!("Kernel: loader initialized");
+    InitSequence::new(&steps).run();
 
     init_log!("About to create test process");
     let test_pid = crate::process::create_process(
         "test_process",
         x86_64::VirtAddr::new(crate::process::test_process_main as usize as u64),
     );
-    init_log!("Test process created");
-
-    log::info!("Kernel: Created test process with PID {}", test_pid);
-
-    // Test interrupt handling - should not panic or crash if APIC is working
-
-    log::info!("Testing interrupt handling with int3...");
-    // The interrupt test has been removed.
-
-    log::info!("Interrupt test passed (no crash)");
+    init_log!("Test process created: {}", test_pid);
 }
 
 #[cfg(not(target_os = "uefi"))]

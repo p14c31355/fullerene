@@ -82,6 +82,19 @@ macro_rules! port_read {
     };
 }
 
+/// Generic port sequence writer trait
+pub trait PortSequenceWriter<T> {
+    fn write_sequence(&mut self, values: &[T]);
+}
+
+impl<T: Copy + x86_64::instructions::port::PortWrite> PortSequenceWriter<T> for x86_64::instructions::port::Port<T> {
+    fn write_sequence(&mut self, values: &[T]) {
+        for &value in values {
+            unsafe { self.write(value) };
+        }
+    }
+}
+
 /// Generic MSR (Model-Specific Register) operations wrapper
 pub struct MsrHelper {
     index: u32,

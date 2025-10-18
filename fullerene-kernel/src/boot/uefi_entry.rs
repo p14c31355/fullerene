@@ -191,6 +191,23 @@ pub extern "efiapi" fn efi_main(
     let stack_bottom = heap_start_after_gdt;
     let stack_top = stack_bottom + KERNEL_STACK_SIZE as u64;
 
+    // Map stack memory before switching RSP
+    let stack_pages = (KERNEL_STACK_SIZE as u64).div_ceil(4096);
+    for i in 0..stack_pages {
+        let phys_addr_u64 = stack_bottom.as_u64() + (i * 4096) - physical_memory_offset.as_u64();
+        let phys_addr = PhysAddr::new(phys_addr_u64);
+        let virt_addr = physical_memory_offset + phys_addr_u64;
+
+        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
+        let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
+
+        let flags = x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+        unsafe {
+            mapper.map_to(page, frame, flags, &mut frame_allocator).expect("Failed to map stack page").flush();
+        }
+    }
+    log::info!("Stack memory mapped successfully");
+
     // Switch RSP to new kernel stack for safety
     unsafe {
         core::arch::asm!("mov rsp, {}", in(reg) stack_top.as_u64());

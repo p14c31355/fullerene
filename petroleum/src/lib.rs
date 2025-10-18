@@ -21,6 +21,7 @@ pub mod uefi_helpers;
 pub use apic::{IoApic, IoApicRedirectionEntry, init_io_apic};
 // Macros with #[macro_export] are automatically available at root, no need to re-export
 pub use common::logging::{SystemError, SystemResult};
+pub use common::macros::InitSequence;
 pub use common::syscall::*;
 pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 pub use graphics::{

@@ -35,6 +35,13 @@ use spin::Once;
 
 // Global allocator removed - handled by petroleum crate
 
+use petroleum::page_table::EfiMemoryDescriptor;
+
+static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
+
+const VGA_BUFFER_ADDRESS: usize = 0xb8000;
+const VGA_COLOR_GREEN_ON_BLACK: u16 = 0x0200;
+
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
@@ -44,23 +51,15 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     _print(format_args!("KERNEL PANIC: {}\n", info));
 
     // Visual indicator on VGA screen for kernel panic
-    // Yellow text on red background for panic
-    petroleum::volatile_write!((VGA_BUFFER_ADDRESS + 0) as *mut u16, 0xCE50); // 'P' yellow on red
-    petroleum::volatile_write!((VGA_BUFFER_ADDRESS + 2) as *mut u16, 0xCE41); // 'A' yellow on red
-    petroleum::volatile_write!((VGA_BUFFER_ADDRESS + 4) as *mut u16, 0xCE4E); // 'N' yellow on red
-    petroleum::volatile_write!((VGA_BUFFER_ADDRESS + 6) as *mut u16, 0xCE49); // 'I' yellow on red
-    petroleum::volatile_write!((VGA_BUFFER_ADDRESS + 8) as *mut u16, 0xCE43); // 'C' yellow on red
-    petroleum::volatile_write!((VGA_BUFFER_ADDRESS + 10) as *mut u16, 0xCE21); // '!' yellow on red
-    
+    unsafe {
+        let vga_buffer = &mut *(VGA_BUFFER_ADDRESS as *mut [u16; 25*80]);
+        let panic_msg = b"PANIC!";
+        for (i, &byte) in panic_msg.iter().enumerate() {
+            vga_buffer[i] = (VGA_COLOR_GREEN_ON_BLACK << 8) | byte as u16;
+        }
+    }
 
     loop {
         hlt(); // Use hlt to halt the CPU in case of a kernel panic
     }
 }
-
-use petroleum::page_table::EfiMemoryDescriptor;
-
-static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
-
-const VGA_BUFFER_ADDRESS: usize = 0xb8000;
-const VGA_COLOR_GREEN_ON_BLACK: u16 = 0x0200;
