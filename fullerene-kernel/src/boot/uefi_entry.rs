@@ -31,7 +31,7 @@ fn map_memory_range(
     num_pages: u64,
     physical_memory_offset: VirtAddr,
     mapper: &mut impl Mapper<Size4KiB>,
-    frame_allocator: &mut impl petroleum::page_table::FrameAllocator<Size4KiB>,
+    frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
     flags: x86_64::structures::paging::PageTableFlags,
 ) -> Result<(), x86_64::structures::paging::MapToError<Size4KiB>> {
     for i in 0..num_pages {
