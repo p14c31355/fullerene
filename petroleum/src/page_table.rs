@@ -234,17 +234,17 @@ pub fn reinit_page_table_with_allocator(
 }
 
 /// Allocate heap memory from EFI memory map
-pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> VirtAddr {
+pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> PhysAddr {
     const FRAME_SIZE: u64 = 4096;
     let _heap_frames = (heap_size + FRAME_SIZE as usize - 1) / FRAME_SIZE as usize;
 
-    let heap_start = if start_addr.as_u64() % FRAME_SIZE == 0 {
+    let aligned_start = if start_addr.as_u64() % FRAME_SIZE == 0 {
         start_addr
     } else {
         PhysAddr::new((start_addr.as_u64() / FRAME_SIZE + 1) * FRAME_SIZE)
     };
 
-    VirtAddr::new(heap_start.as_u64())
+    aligned_start
 }
 
 use x86_64::structures::paging::PageTableFlags as PageFlags;

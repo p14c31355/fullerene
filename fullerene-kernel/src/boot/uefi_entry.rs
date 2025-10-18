@@ -16,7 +16,7 @@ use petroleum::{allocate_heap_from_map, debug_log, write_serial_bytes};
 use spin::Mutex;
 use x86_64::{
     PhysAddr, VirtAddr,
-    structures::paging::{Mapper, Size4KiB},
+    structures::paging::{Mapper, Size4KiB, mapper::MapToError},
 };
 
 use petroleum::graphics::{
@@ -33,7 +33,7 @@ fn map_memory_range(
     mapper: &mut impl Mapper<Size4KiB>,
     frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
     flags: x86_64::structures::paging::PageTableFlags,
-) -> Result<(), x86_64::structures::paging::MapToError<Size4KiB>> {
+) -> Result<(), MapToError<Size4KiB>> {
     for i in 0..num_pages {
         let phys_addr_u64 = base_phys_addr.as_u64() + (i * 4096);
         let phys_addr = PhysAddr::new(phys_addr_u64);

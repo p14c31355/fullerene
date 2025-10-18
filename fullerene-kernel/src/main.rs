@@ -29,7 +29,6 @@ mod init;
 mod memory;
 
 extern crate alloc;
-extern crate fullerene_kernel;
 
 use spin::Once;
 
@@ -52,10 +51,10 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
     unsafe {
         // Display panic message on VGA screen briefly
-        let vga_buffer = &mut *(VGA_BUFFER_ADDRESS as *mut [u16; 25 * 80]);
+        let vga_buffer = VGA_BUFFER_ADDRESS as *mut u16;
         let panic_msg = b"PANIC!";
         for (i, &byte) in panic_msg.iter().enumerate() {
-            vga_buffer[0][i] = VGA_COLOR_GREEN_ON_BLACK | byte as u16;
+            *vga_buffer.add(i) = VGA_COLOR_GREEN_ON_BLACK | byte as u16;
         }
     }
 

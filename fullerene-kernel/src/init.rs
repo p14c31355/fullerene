@@ -1,57 +1,57 @@
 //! Initialization module containing common initialization logic for both UEFI and BIOS boot
 
 use crate::interrupts;
-use petroleum::{InitSequence, init_log, write_serial_bytes};
+use crate::traits::Initializable;
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    string::String,
+    vec::Vec,
+};
+use petroleum::{common::logging::SystemError, init_log, write_serial_bytes};
+use spin::Once;
 
-#[cfg(target_os = "uefi")]
-fn init_vga_step() -> Result<(), &'static str> {
-    crate::vga::init_vga();
-    Ok(())
+//// Helper struct for sequenced initialization
+pub struct InitSequence<'a> {
+    steps: &'a [(&'static str, fn() -> Result<(), &'static str>)],
 }
-#[cfg(target_os = "uefi")]
-fn init_apic_step() -> Result<(), &'static str> {
-    interrupts::init_apic();
-    Ok(())
+
+impl<'a> InitSequence<'a> {
+    pub fn new(steps: &'a [(&'static str, fn() -> Result<(), &'static str>)]) -> Self {
+        Self { steps }
+    }
+
+    pub fn run(&self) {
+        for (name, init_fn) in self.steps {
+            init_log!("About to init {}", name);
+            if let Err(e) = init_fn() {
+                init_log!("Init {} failed: {}", name, e);
+                panic!("{}", e);
+            }
+            init_log!("{} init done", name);
+        }
+    }
 }
-#[cfg(target_os = "uefi")]
-fn init_process_step() -> Result<(), &'static str> {
-    crate::process::init();
-    Ok(())
-}
-#[cfg(target_os = "uefi")]
-fn init_syscall_step() -> Result<(), &'static str> {
-    crate::syscall::init();
-    Ok(())
-}
-#[cfg(target_os = "uefi")]
-fn init_fs_step() -> Result<(), &'static str> {
-    crate::fs::init();
-    Ok(())
-}
-#[cfg(target_os = "uefi")]
-fn init_loader_step() -> Result<(), &'static str> {
-    crate::loader::init();
-    Ok(())
+
+macro_rules! init_step {
+    ($name:expr, $init:expr) => {{
+        fn __init_fn() -> Result<(), &'static str> {
+            $init;
+            Ok(())
+        }
+        ($name, __init_fn as fn() -> Result<(), &'static str>)
+    }};
 }
 
 #[cfg(target_os = "uefi")]
 pub fn init_common() {
     let steps = [
-        ("VGA", init_vga_step as fn() -> Result<(), &'static str>),
-        ("APIC", init_apic_step as fn() -> Result<(), &'static str>),
-        (
-            "process",
-            init_process_step as fn() -> Result<(), &'static str>,
-        ),
-        (
-            "syscall",
-            init_syscall_step as fn() -> Result<(), &'static str>,
-        ),
-        ("fs", init_fs_step as fn() -> Result<(), &'static str>),
-        (
-            "loader",
-            init_loader_step as fn() -> Result<(), &'static str>,
-        ),
+        init_step!("VGA", crate::vga::init_vga()),
+        init_step!("APIC", interrupts::init_apic()),
+        init_step!("process", crate::process::init()),
+        init_step!("syscall", crate::syscall::init()),
+        init_step!("fs", crate::fs::init()),
+        init_step!("loader", crate::loader::init()),
     ];
 
     InitSequence::new(&steps).run();
@@ -86,4 +86,135 @@ pub fn init_common() {
     // Heap already initialized
     petroleum::serial::serial_init(); // Initialize serial early for debugging
     crate::vga::init_vga();
+}
+
+// System initializer for managing component initialization
+pub struct SystemInitializer {
+    components: Vec<Box<dyn Initializable + Send>>,
+}
+
+impl SystemInitializer {
+    pub fn new() -> Self {
+        Self {
+            components: Vec::new(),
+        }
+    }
+
+    /// Register a component for initialization
+    pub fn register_component(&mut self, component: Box<dyn Initializable + Send>) {
+        self.components.push(component);
+    }
+
+    /// Initialize all registered components in dependency order
+    pub fn initialize_system(&mut self) -> petroleum::common::logging::SystemResult<()> {
+        // Build component info and dependency graph
+        let mut component_names = Vec::new();
+        let mut dependency_graph: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+        for (i, component) in self.components.iter().enumerate() {
+            let name = component.name();
+            component_names.push((name, i, component.priority()));
+
+            let deps: Vec<String> = component
+                .dependencies()
+                .iter()
+                .map(|s| String::from(*s))
+                .collect();
+            dependency_graph.insert(String::from(name), deps);
+        }
+
+        // Perform topological sort
+        let mut visited = BTreeSet::new();
+        let mut visiting = BTreeSet::new();
+        let mut order = Vec::new();
+
+        fn visit(
+            component_name: &str,
+            dependency_graph: &BTreeMap<String, Vec<String>>,
+            visited: &mut BTreeSet<String>,
+            visiting: &mut BTreeSet<String>,
+            order: &mut Vec<String>,
+        ) -> petroleum::common::logging::SystemResult<()> {
+            if visiting.contains(component_name) {
+                return Err(SystemError::InvalidArgument); // Circular dependency
+            }
+            if visited.contains(component_name) {
+                return Ok(());
+            }
+
+            visiting.insert(String::from(component_name));
+
+            // Visit all dependencies first
+            if let Some(deps) = dependency_graph.get(component_name) {
+                for dep in deps {
+                    visit(dep, dependency_graph, visited, visiting, order)?;
+                }
+            }
+
+            visiting.remove(component_name);
+            visited.insert(String::from(component_name));
+            order.push(String::from(component_name));
+            Ok(())
+        }
+
+        // Visit all components
+        for (name, _, _) in &component_names {
+            visit(
+                name,
+                &dependency_graph,
+                &mut visited,
+                &mut visiting,
+                &mut order,
+            )?;
+        }
+
+        // Build final initialization order
+        let mut init_order = Vec::new();
+        let name_to_component: BTreeMap<_, _> = component_names
+            .into_iter()
+            .map(|(name, idx, priority)| (String::from(name), (idx, priority)))
+            .collect();
+
+        for component_name in order.into_iter().rev() {
+            // Reverse to get dependencies first
+            if let Some((idx, _)) = name_to_component.get(&component_name) {
+                init_order.push(*idx);
+            }
+        }
+
+        // Sort by priority within dependency order
+        init_order.sort_by_key(|&idx| {
+            let component = &self.components[idx];
+            component.priority()
+        });
+
+        // Initialize components in the final order
+        for idx in init_order.into_iter().rev() {
+            // Highest priority first
+            let component = &mut self.components[idx];
+            if let Err(e) = component.init() {
+                return Err(e);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+static SYSTEM_INITIALIZER: Once<spin::Mutex<SystemInitializer>> = Once::new();
+
+// Register a component globally
+pub fn register_system_component(component: Box<dyn Initializable + Send>) {
+    SYSTEM_INITIALIZER
+        .call_once(|| spin::Mutex::new(SystemInitializer::new()))
+        .lock()
+        .register_component(component);
+}
+
+// Initialize the entire system
+pub fn initialize_system() -> petroleum::common::logging::SystemResult<()> {
+    SYSTEM_INITIALIZER
+        .call_once(|| spin::Mutex::new(SystemInitializer::new()))
+        .lock()
+        .initialize_system()
 }
