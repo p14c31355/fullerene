@@ -37,9 +37,7 @@ lazy_static! {
         setup_idt_handler!(idt, page_fault, page_fault_handler);
 
 
-        // Set up CPU exception handlers - Note: set_stack_index API changed in newer x86_64 versions
-        setup_idt_handler!(idt, breakpoint, breakpoint_handler);
-        setup_idt_handler!(idt, page_fault, page_fault_handler);
+
         setup_idt_handler!(idt, double_fault, double_fault_handler);
         // TODO: Re-enable stack index setting when x86_64 API stabilizes
         /*

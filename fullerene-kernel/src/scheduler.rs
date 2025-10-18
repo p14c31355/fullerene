@@ -99,64 +99,64 @@ fn perform_system_health_checks() {
 
 /// Log system statistics periodically
 fn log_system_stats(stats: &SystemStats, interval_ticks: u64) {
-    static mut LAST_LOG_TICK: u64 = 0;
+    static LAST_LOG_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
 
     // Only log every interval_ticks to avoid spam
     let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
-    unsafe {
-        if current_tick - LAST_LOG_TICK >= interval_ticks {
-            log::info!(
-                "System Stats - Processes: {}/{}, Memory: {} bytes, Uptime: {} ticks",
-                stats.active_processes,
-                stats.total_processes,
-                stats.memory_used,
-                stats.uptime_ticks
-            );
-            LAST_LOG_TICK = current_tick;
-        }
+    let mut last_log_tick = LAST_LOG_TICK.lock();
+
+    if current_tick - *last_log_tick >= interval_ticks {
+        log::info!(
+            "System Stats - Processes: {}/{}, Memory: {} bytes, Uptime: {} ticks",
+            stats.active_processes,
+            stats.total_processes,
+            stats.memory_used,
+            stats.uptime_ticks
+        );
+        *last_log_tick = current_tick;
     }
 }
 
 /// Display system statistics on VGA periodically
 fn display_system_stats_on_vga(stats: &SystemStats, interval_ticks: u64) {
-    static mut LAST_DISPLAY_TICK: u64 = 0;
+    static LAST_DISPLAY_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
 
     let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
-    unsafe {
-        if current_tick - LAST_DISPLAY_TICK >= interval_ticks {
-            if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {
-                let uptime_minutes = stats.uptime_ticks / 60000; // Assuming ~1000 ticks per second
-                let uptime_seconds = (stats.uptime_ticks % 60000) / 1000;
+    let mut last_display_tick = LAST_DISPLAY_TICK.lock();
 
-                let mut vga_writer = vga_buffer.lock();
+    if current_tick - *last_display_tick >= interval_ticks {
+        if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {
+            let uptime_minutes = stats.uptime_ticks / 60000; // Assuming ~1000 ticks per second
+            let uptime_seconds = (stats.uptime_ticks % 60000) / 1000;
 
-                // Clear bottom rows for system info display
-                let blank_char = petroleum::ScreenChar {
-                    ascii_character: b' ',
-                    color_code: petroleum::ColorCode::new(petroleum::Color::Black, petroleum::Color::Black),
-                };
+            let mut vga_writer = vga_buffer.lock();
 
-                // Set position to bottom left for system info
-                vga_writer.set_position(22, 0);
-                use core::fmt::Write;
-                use petroleum::ColorCode;
-                vga_writer.set_color_code(ColorCode::new(petroleum::Color::Cyan, petroleum::Color::Black));
+            // Clear bottom rows for system info display
+            let blank_char = petroleum::ScreenChar {
+                ascii_character: b' ',
+                color_code: petroleum::ColorCode::new(petroleum::Color::Black, petroleum::Color::Black),
+            };
 
-                // Clear the status lines first
-                for col in 0..80 {
-                    vga_writer.set_char_at(23, col, blank_char);
-                    vga_writer.set_char_at(24, col, blank_char);
-                }
+            // Set position to bottom left for system info
+            vga_writer.set_position(22, 0);
+            use core::fmt::Write;
+            use petroleum::ColorCode;
+            vga_writer.set_color_code(ColorCode::new(petroleum::Color::Cyan, petroleum::Color::Black));
 
-                // Display system info on bottom rows
-                vga_writer.set_position(23, 0);
-                let _ = write!(vga_writer, "Processes: {}/{}  ", stats.active_processes, stats.total_processes);
-                let _ = write!(vga_writer, "Memory: {} KB  ", stats.memory_used / 1024);
-                let _ = write!(vga_writer, "Tick: {}", stats.uptime_ticks);
-                vga_writer.update_cursor();
+            // Clear the status lines first
+            for col in 0..80 {
+                vga_writer.set_char_at(23, col, blank_char);
+                vga_writer.set_char_at(24, col, blank_char);
             }
-            LAST_DISPLAY_TICK = current_tick;
+
+            // Display system info on bottom rows
+            vga_writer.set_position(23, 0);
+            let _ = write!(vga_writer, "Processes: {}/{}  ", stats.active_processes, stats.total_processes);
+            let _ = write!(vga_writer, "Memory: {} KB  ", stats.memory_used / 1024);
+            let _ = write!(vga_writer, "Tick: {}", stats.uptime_ticks);
+            vga_writer.update_cursor();
         }
+        *last_display_tick = current_tick;
     }
 }
 
@@ -197,18 +197,18 @@ fn monitor_environment() {
 /// Perform resource optimization tasks
 fn optimize_system_resources() {
     // Optimize memory layout periodically
-    static mut LAST_OPTIMIZATION_TICK: u64 = 0;
+    static LAST_OPTIMIZATION_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
     let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
 
-    unsafe {
-        if current_tick - LAST_OPTIMIZATION_TICK > 10000 { // Every 10000 ticks
-            // Run memory defragmentation or optimization
-            log::debug!("Running periodic resource optimization");
-            LAST_OPTIMIZATION_TICK = current_tick;
+    let mut last_optimization_tick = LAST_OPTIMIZATION_TICK.lock();
 
-            // Optimize heap allocation patterns
-            // petroleum::page_table::ALLOCATOR.lock().defragment(); // Method not available
-        }
+    if current_tick - *last_optimization_tick > 10000 { // Every 10000 ticks
+        // Run memory defragmentation or optimization
+        log::debug!("Running periodic resource optimization");
+        *last_optimization_tick = current_tick;
+
+        // Optimize heap allocation patterns
+        // petroleum::page_table::ALLOCATOR.lock().defragment(); // Method not available
     }
 }
 
@@ -228,18 +228,18 @@ fn log_system_stats_to_fs(stats: &SystemStats) {
     // Simple fixed log content to avoid format macro
     let log_content = b"System stats logged to filesystem\n";
 
-    static mut LOG_FILE_CREATED: bool = false;
-    unsafe {
-        if !LOG_FILE_CREATED {
-            if crate::fs::create_file("system.log", log_content).is_ok() {
-                LOG_FILE_CREATED = true;
-            }
-        } else {
-            if let Ok(fd) = crate::fs::open_file("system.log") {
-                let _ = crate::fs::seek_file(fd, 0);
-                let _ = crate::fs::write_file(fd, log_content);
-                let _ = crate::fs::close_file(fd);
-            }
+    static LOG_FILE_CREATED: spin::Mutex<bool> = spin::Mutex::new(false);
+    let mut log_file_created = LOG_FILE_CREATED.lock();
+
+    if !*log_file_created {
+        if crate::fs::create_file("system.log", log_content).is_ok() {
+            *log_file_created = true;
+        }
+    } else {
+        if let Ok(fd) = crate::fs::open_file("system.log") {
+            let _ = crate::fs::seek_file(fd, 0);
+            let _ = crate::fs::write_file(fd, log_content);
+            let _ = crate::fs::close_file(fd);
         }
     }
 }

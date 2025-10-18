@@ -30,11 +30,6 @@ extern crate alloc;
 use petroleum::page_table::EfiMemoryDescriptor;
 use spin::Once;
 
-// Global system tick accessor (needed by shell)
-pub fn get_system_tick() -> u64 {
-    scheduler::get_system_tick()
-}
-
 // Submodules
 pub mod errors;
 pub mod initializer;
@@ -130,4 +125,9 @@ pub fn graphics_test_loop() -> ! {
         // Fallback to scheduler even without graphics
         crate::scheduler::scheduler_loop();
     }
+}
+
+// Global system tick accessor (needed by shell)
+pub fn get_system_tick() -> u64 {
+    scheduler::get_system_tick()
 }

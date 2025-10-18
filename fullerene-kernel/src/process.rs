@@ -470,17 +470,8 @@ pub fn get_active_process_count() -> usize {
 pub fn cleanup_terminated_processes() {
     let mut process_list = PROCESS_LIST.lock();
 
-    // Collect PIDs of terminated processes
-    let terminated_pids: Vec<ProcessId> = process_list.iter()
-        .filter(|p| p.state == ProcessState::Terminated)
-        .map(|p| p.id)
-        .collect();
-
-    // Terminate each terminated process
-    for pid in terminated_pids {
-        terminate_process(pid, 0); // Exit code doesn't matter for cleanup
-    }
-
-    // Remove terminated processes from the list after their resources are cleaned up
+    // Remove terminated processes from the list. This will drop the `Box<Process>`,
+    // freeing the memory for the struct itself. `terminate_process` should have
+    // already been called to free other associated resources.
     process_list.retain(|p| p.state != ProcessState::Terminated);
 }
