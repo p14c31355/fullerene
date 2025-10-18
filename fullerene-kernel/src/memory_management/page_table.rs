@@ -24,7 +24,7 @@ pub type ProcessPageTable = PageTableManager;
 
 /// Page table manager implementation
 pub struct PageTableManager {
-    current_page_table: usize,
+    current_page_table: usize, // Physical address of the current page table
     page_tables: BTreeMap<usize, usize>,
     initialized: bool,
     pub pml4_frame: Option<x86_64::structures::paging::PhysFrame>,

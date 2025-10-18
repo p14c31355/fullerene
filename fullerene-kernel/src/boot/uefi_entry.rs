@@ -133,7 +133,7 @@ pub extern "efiapi" fn efi_main(
     log::info!("Page table reinit completed successfully");
 
     // Set physical memory offset for process management
-    crate::memory_management::set_physical_memory_offset(physical_memory_offset.as_u64() as usize);
+    crate::memory_management::set_physical_memory_offset(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE);
 
     log::info!(
         "Physical memory offset set to: 0x{:x}",

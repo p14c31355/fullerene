@@ -217,76 +217,10 @@ impl<'a> FramebufferInstaller<'a> {
     }
 
     fn install(&self, config: FullereneFramebufferConfig) -> Result<(), EfiStatus> {
-        serial::_print(format_args!(
-            "FramebufferInstaller::install: allocating config\n"
-        ));
-        let config_ptr = Box::into_raw(Box::new(config));
-        let bs = unsafe { &*self.system_table.boot_services };
-
-        // UEFI requires 8-byte alignment for configuration tables, but Box allocation should already be aligned
-        // Use Box::into_raw to properly convert the box into a raw pointer
-        serial::_print(format_args!(
-            "FramebufferInstaller::install: alignment OK (using Box::into_raw)\n"
-        ));
-
-        serial::_print(format_args!(
-            "FramebufferInstaller::install: calling install_configuration_table\n"
-        ));
-        serial::_print(format_args!(
-            "INSTALL_CONFIG_TABLE: GUID={:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}\n",
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[0],
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[1],
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[2],
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[3],
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[4],
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[5],
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[6],
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[7],
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[8],
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[9],
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[10],
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[11],
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[12],
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[13],
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[14],
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID[15]
-        ));
-
-        serial::_print(format_args!(
-            "INSTALL_CONFIG_TABLE: config_ptr={:#p}, boot_services={:#p}\n",
-            config_ptr, bs
-        ));
-
-        // Provide safety timeout mechanism
-        serial::_print(format_args!(
-            "INSTALL_CONFIG_TABLE: calling bs.install_configuration_table...\n"
-        ));
-
-        // Previously temporarily skipped install_configuration_table to test if that's causing the hang
-        // Re-enabling after debugging showed this step is critical for passing framebuffer info to the kernel
-        // This call installs the framebuffer configuration into UEFI's configuration table for kernel retrieval
-        let status = (bs.install_configuration_table)(
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
-            config_ptr as *mut c_void,
-        );
-
-        serial::_print(format_args!(
-            "INSTALL_CONFIG_TABLE: returned from call, status={:#x}\n",
-            status
-        ));
-
-        let efi_status = crate::common::EfiStatus::from(status);
-        if efi_status != crate::common::EfiStatus::Success {
-            serial::_print(format_args!(
-                "FramebufferInstaller::install failed: status {:#x}, recovering memory\n",
-                status
-            ));
-            let _ = unsafe { Box::from_raw(config_ptr) };
-            Err(efi_status)
-        } else {
-            serial::_print(format_args!("FramebufferInstaller::install succeeded\n"));
-            Ok(())
-        }
+        // Save to global instead of installing config table to avoid hang
+        FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| Mutex::new(Some(config)));
+        serial::_print(format_args!("FramebufferInstaller::install saved config globally\n"));
+        Ok(())
     }
 
     fn clear_framebuffer(&self, config: &FullereneFramebufferConfig) {
@@ -809,49 +743,34 @@ pub fn init_graphics_protocols(
         graphics_alternatives::detect_vesa_graphics(unsafe { &*system_table.boot_services })
     {
         serial::_print(format_args!(
-            "EFI PCI enumeration succeeded, installing config table\n"
+            "EFI PCI enumeration succeeded, saving config globally\n"
         ));
 
-        let config_ptr = Box::leak(Box::new(config));
-
-        let boot_services = unsafe { &*system_table.boot_services };
-        let install_status = (boot_services.install_configuration_table)(
-            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
-            config_ptr as *const _ as *mut c_void,
-        );
-
-        if EfiStatus::from(install_status) != EfiStatus::Success {
-            let _ = unsafe { Box::from_raw(config_ptr) };
-            serial::_print(format_args!(
-                "EFI: Failed to install config table (status: {:#x}).\n",
-                install_status
-            ));
-            return None;
-        }
+        // Save to global instead of installing config table
+        FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| Mutex::new(Some(config)));
 
         serial::_print(format_args!(
-            "EFI: Configuration table installed successfully.\n"
+            "EFI: Config saved globally successfully.\n"
         ));
         serial::_print(format_args!(
             "EFI: Framebuffer ready: {}x{} @ {:#x}, {} BPP, stride {}\n",
-            config_ptr.width,
-            config_ptr.height,
-            config_ptr.address,
-            config_ptr.bpp,
-            config_ptr.stride
+            config.width,
+            config.height,
+            config.address,
+            config.bpp,
+            config.stride
         ));
 
         unsafe {
             ptr::write_bytes(
-                config_ptr.address as *mut u8,
+                config.address as *mut u8,
                 0x00,
-                (config_ptr.height as u64 * config_ptr.stride as u64 * (config_ptr.bpp as u64 / 8))
-                    as usize,
+                (config.height as u64 * config.stride as u64 * (config.bpp as u64 / 8)) as usize,
             );
         }
 
         serial::_print(format_args!("EFI: Framebuffer cleared.\n"));
-        return Some(*config_ptr);
+        return Some(config);
     }
 
     serial::_print(format_args!(
@@ -859,47 +778,35 @@ pub fn init_graphics_protocols(
     ));
 
     if let Some(config) = bare_metal_graphics_detection::detect_bare_metal_graphics() {
-        let config_ptr = Box::leak(Box::new(config));
+        serial::_print(format_args!(
+            "Bare-metal: Config detected, saving globally\n"
+        ));
 
-        let install_status = unsafe {
-            ((*system_table.boot_services).install_configuration_table)(
-                FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
-                config_ptr as *const _ as *mut c_void,
-            )
-        };
-
-        if EfiStatus::from(install_status) != EfiStatus::Success {
-            let _ = unsafe { Box::from_raw(config_ptr) };
-            serial::_print(format_args!(
-                "Bare-metal: Failed to install config table (status: {:#x}).\n",
-                install_status
-            ));
-            return None;
-        }
+        // Save to global instead of installing config table
+        FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| Mutex::new(Some(config)));
 
         serial::_print(format_args!(
-            "Bare-metal: Configuration table installed successfully.\n"
+            "Bare-metal: Config saved globally successfully.\n"
         ));
         serial::_print(format_args!(
             "Bare-metal: Framebuffer ready: {}x{} @ {:#x}, {} BPP, stride {}\n",
-            config_ptr.width,
-            config_ptr.height,
-            config_ptr.address,
-            config_ptr.bpp,
-            config_ptr.stride
+            config.width,
+            config.height,
+            config.address,
+            config.bpp,
+            config.stride
         ));
 
         unsafe {
             ptr::write_bytes(
-                config_ptr.address as *mut u8,
+                config.address as *mut u8,
                 0x00,
-                (config_ptr.height as u64 * config_ptr.stride as u64 * (config_ptr.bpp as u64 / 8))
-                    as usize,
+                (config.height as u64 * config.stride as u64 * (config.bpp as u64 / 8)) as usize,
             );
         }
 
         serial::_print(format_args!("Bare-metal: Framebuffer cleared.\n"));
-        return Some(*config_ptr);
+        return Some(config);
     } else {
         serial::_print(format_args!("Bare-metal graphics detection also failed\n"));
     }

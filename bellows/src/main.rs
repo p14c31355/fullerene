@@ -217,7 +217,7 @@ fn try_uga_protocol(st: &EfiSystemTable) -> bool {
 ///
 
 fn install_vga_framebuffer_config(st: &EfiSystemTable) {
-    petroleum::println!("Installing VGA framebuffer config table for UEFI...");
+    petroleum::println!("Installing VGA framebuffer config for UEFI...");
 
     // Create an improved VGA-compatible framebuffer config
     // Use higher resolution VGA modes for better compatibility and to prevent logo scattering
@@ -236,32 +236,10 @@ fn install_vga_framebuffer_config(st: &EfiSystemTable) {
         config.address, config.width, config.height, config.bpp
     ));
 
-    let config_ptr = Box::leak(Box::new(config));
+    // Save to global instead of installing config table to avoid hang
+    petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config)));
 
-    #[cfg(debug_assertions)]
-    petroleum::serial::_print(format_args!("VGA: Config boxed and leaked\n"));
-
-    let bs = unsafe { &*st.boot_services };
-    #[cfg(debug_assertions)]
-    petroleum::serial::_print(format_args!("VGA: Got boot services\n"));
-
-    let status = (bs.install_configuration_table)(
-        FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
-        config_ptr as *const _ as *mut c_void,
-    );
-
-    if EfiStatus::from(status) == EfiStatus::Success {
-        petroleum::println!("VGA framebuffer config table installed successfully.");
-    } else {
-        petroleum::serial::_print(format_args!(
-            "VGA: Installation failed, recovering memory\n"
-        ));
-        let _ = unsafe { Box::from_raw(config_ptr) };
-        petroleum::println!(
-            "Failed to install VGA framebuffer config table (status: {:#x})",
-            status
-        );
-    }
+    petroleum::println!("VGA framebuffer config saved globally successfully.");
 }
 
 // Note: This function is unused as GOP initialization is now handled by petroleum::init_graphics_protocols
