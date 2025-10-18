@@ -403,23 +403,19 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
         return Err(io::Error::other("Failed to attach ISO to VirtualBox VM"));
     }
 
-    // Start VM in headless mode so that serial output can be seen in terminal
-    log::info!("Starting VM in headless mode...");
-    let mut start_cmd = Command::new("VBoxHeadless");
-    start_cmd.args(["-s", &args.vm_name]);
+    // Start VM in headless or GUI mode
+    let start_type = if args.gui { "gui" } else { "headless" };
+    log::info!("Starting VM in {} mode...", start_type);
+    let status = Command::new("VBoxManage")
+        .args(["startvm", &args.vm_name, "--type", start_type])
+        .status()?;
 
-    // Spawn the VBoxHeadless process
-    let vm_process = start_cmd.spawn();
-
-    let mut vm_process = match vm_process {
-        Ok(process) => process,
-        Err(e) => {
-            return Err(io::Error::other(format!(
-                "Failed to start VBoxHeadless: {}",
-                e
-            )));
-        }
-    };
+    if !status.success() {
+        return Err(io::Error::other(format!(
+            "Failed to start VM in {} mode",
+            start_type
+        )));
+    }
 
     // Wait a moment for VM to start and serial output to begin
     std::thread::sleep(std::time::Duration::from_secs(2));
@@ -437,16 +433,28 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
         }
     }
 
-    // Wait for the VM process to finish
-    let exit_status = vm_process.wait();
-    match exit_status {
-        Ok(status) => {
-            if !status.success() {
-                log::warn!("VBoxHeadless exited with status: {}", status);
+    // Wait for the VM to shut down by polling state
+    log::info!("Waiting for VM to power off...");
+    for _ in 0..200 { // limit to 200 attempts, ~200 seconds
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let output = Command::new("VBoxManage")
+            .args(["showvminfo", &args.vm_name, "--machinereadable"])
+            .output();
+
+        if let Ok(output) = output {
+            if let Ok(stdout) = std::str::from_utf8(&output.stdout) {
+                let state_line = stdout
+                    .lines()
+                    .find(|line| line.starts_with("VMState="))
+                    .and_then(|line| line.strip_prefix("VMState=\""))
+                    .and_then(|s| s.strip_suffix("\""));
+
+                if let Some("poweroff") = state_line {
+                    break;
+                }
             }
-        }
-        Err(e) => {
-            log::error!("waiting for VBoxHeadless process: {}", e);
+        } else {
+            log::warn!("Failed to check VM state, continuing...");
         }
     }
 

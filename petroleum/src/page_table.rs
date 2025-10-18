@@ -126,9 +126,9 @@ pub unsafe fn translate_addr(addr: VirtAddr, physical_memory_offset: VirtAddr) -
 ///
 /// Returns the physical memory offset used for the mapping
 pub fn reinit_page_table(
-    kernel_phys_start: PhysAddr,
-    fb_addr: Option<VirtAddr>,
-    fb_size: Option<u64>,
+    _kernel_phys_start: PhysAddr,
+    _fb_addr: Option<VirtAddr>,
+    _fb_size: Option<u64>,
 ) -> VirtAddr {
     use x86_64::structures::paging::PageTableFlags as Flags;
 
