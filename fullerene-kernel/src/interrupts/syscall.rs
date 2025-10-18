@@ -26,7 +26,7 @@ pub fn init_syscall_stack() {
     use alloc::alloc::{alloc, Layout};
     let layout = Layout::from_size_align(SYSCALL_STACK_SIZE, 16).unwrap();
     let ptr = unsafe { alloc(layout) };
-    let stack_top = ptr.add(SYSCALL_STACK_SIZE);
+    let stack_top = unsafe { ptr.add(SYSCALL_STACK_SIZE) };
     SYSCALL_KERNEL_STACK.store(stack_top, Ordering::Relaxed);
 }
 
