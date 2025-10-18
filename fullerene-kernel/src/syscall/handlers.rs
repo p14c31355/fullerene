@@ -280,7 +280,9 @@ pub fn kernel_syscall(syscall_num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 
 
 /// Initialize system calls
 pub fn init() {
-    // Add syscall interrupt handler to IDT
-    // This would normally be done in interrupts::init()
-    // For now, assume it's handled there
+    // Initialize syscall kernel stack and setup syscall mechanism
+    use crate::interrupts::syscall::{init_syscall_stack, setup_syscall};
+
+    init_syscall_stack();
+    setup_syscall();
 }

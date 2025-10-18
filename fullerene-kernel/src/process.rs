@@ -287,7 +287,7 @@ fn idle_loop() {
         // pause allows the CPU to enter a low-power state while remaining responsive to interrupts,
         // making it more suitable for virtualization environments like QEMU compared to hlt which
         // puts the CPU in a deeper sleep state that's harder for hypervisors to manage efficiently.
-        unsafe { core::arch::asm!("pause"); }
+        petroleum::cpu_pause();
     }
 }
 

@@ -155,8 +155,14 @@ pub fn init_uefi_system_table(system_table: *mut EfiSystemTable) {
 pub fn halt_loop() -> ! {
     loop {
         // Use pause instruction which is more QEMU-friendly than hlt
-        unsafe { core::arch::asm!("pause"); }
+        cpu_pause();
     }
+}
+
+/// Helper function to pause CPU for brief moment (used for busy waits and yielding)
+#[inline(always)]
+pub fn cpu_pause() {
+    unsafe { core::arch::asm!("pause"); }
 }
 
 /// Helper to initialize serial for bootloader

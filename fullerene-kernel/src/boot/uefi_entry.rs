@@ -61,13 +61,13 @@ pub extern "efiapi" fn efi_main(
     petroleum::graphics::setup::setup_vga_mode_13h();
     petroleum::serial::serial_log(format_args!("VGA graphics initialization completed\n"));
 
-    debug_log!("VGA setup done");
+    //debug_log!("VGA setup done");
     log::info!("VGA text mode setup function returned");
 
     // Direct VGA buffer test - write to hardware buffer directly
     log::info!("Direct VGA buffer write test...");
     unsafe {
-        let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
+        let vga_buffer = &mut *(0xb8000 as *mut [[u16; 80]; 25]);
         write_vga_string(vga_buffer, 0, b"Kernel boot", 0x1F00);
     }
     log::info!("Direct VGA write test completed");
@@ -128,6 +128,11 @@ pub extern "efiapi" fn efi_main(
     let physical_memory_offset = heap::reinit_page_table_with_allocator(kernel_phys_start, fb_addr, fb_size, &mut frame_allocator);
     log::info!("Page table reinit completed successfully");
 
+    // Set kernel CR3 for syscall to access kernel heap
+    let kernel_cr3 = x86_64::registers::control::Cr3::read();
+    crate::interrupts::syscall::set_kernel_cr3(kernel_cr3.0);
+    log::info!("Kernel CR3 set for syscall: {:#x}", kernel_cr3.0);
+
     // Set physical memory offset for process management
     crate::memory_management::set_physical_memory_offset(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE);
 
@@ -170,17 +175,6 @@ pub extern "efiapi" fn efi_main(
     let virtual_heap_start = physical_memory_offset + heap_start.as_u64();
     log::info!("Virtual heap start: 0x{:x}", virtual_heap_start.as_u64());
 
-    // Allocate kernel stack in UEFI mode before GDT init to provide stable stack for GDT loading
-    const KERNEL_STACK_SIZE: usize = 4096 * 16; // 64KB
-    let stack_bottom = virtual_heap_start + (heap::HEAP_SIZE as u64 - KERNEL_STACK_SIZE as u64);
-    let stack_top = stack_bottom + KERNEL_STACK_SIZE as u64;
-
-    // Switch RSP to new kernel stack
-    unsafe {
-        core::arch::asm!("mov rsp, {}", in(reg) stack_top.as_u64());
-    }
-    log::info!("Switched to kernel stack before GDT init");
-
     log::info!("Kernel: About to call gdt::init...");
     let gdt_heap_start = virtual_heap_start;
     let heap_start_after_gdt = gdt::init(gdt_heap_start);
@@ -191,42 +185,33 @@ pub extern "efiapi" fn efi_main(
     log::info!("Kernel: GDT init done");
     write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: After gdt init in uefi_entry\n");
 
+    // Allocate a proper kernel stack for safe kernel operations
+    // Even though GDT/TSS loading is skipped in UEFI, the kernel still needs a stable stack
+    const KERNEL_STACK_SIZE: usize = 4096 * 16; // 64KB
+    let stack_bottom = heap_start_after_gdt;
+    let stack_top = stack_bottom + KERNEL_STACK_SIZE as u64;
+
+    // Switch RSP to new kernel stack for safety
+    unsafe {
+        core::arch::asm!("mov rsp, {}", in(reg) stack_top.as_u64());
+    }
+    log::info!("Switched to kernel stack at 0x{:x}", stack_top.as_u64());
+
+    // Update heap_start_after_gdt to account for the kernel stack allocation
+    let heap_start_after_stack = stack_top;
+
     // Initialize linked_list_allocator with the remaining memory
     petroleum::serial::serial_log(format_args!("About to calculate heap memory usage...\n"));
-    let gdt_mem_used = (heap_start_after_gdt.as_u64() - virtual_heap_start.as_u64()) as usize;
-    let heap_size_remaining = heap::HEAP_SIZE - gdt_mem_used - KERNEL_STACK_SIZE;
+    let kernel_overhead = (heap_start_after_stack.as_u64() - virtual_heap_start.as_u64()) as usize;
+    let heap_size_remaining = heap::HEAP_SIZE - kernel_overhead;
 
-    petroleum::serial::serial_log(format_args!("Test constant value=0x12345678\n"));
-    let test_val: u64 = 0x100000;
-    petroleum::serial::serial_log(format_args!("Test test_val=0x{:x}\n", test_val));
-
-    let heap_start_after_gdt_u64 = heap_start_after_gdt.as_u64();
-    let heap_start_u64 = heap_start.as_u64();
-
-    write_serial_bytes!(
-        0x3F8,
-        0x3FD,
-        b"heap_start_after_gdt_u64 captured successfully\n"
-    );
-    write_serial_bytes!(0x3F8, 0x3FD, b"heap_start_u64 captured successfully\n");
-
-    let gdt_mem_usage_val = heap_start_after_gdt_u64.saturating_sub(heap_start_u64);
-    write_serial_bytes!(0x3F8, 0x3FD, b"Subtraction completed\n");
-
-    write_serial_bytes!(0x3F8, 0x3FD, b"About to format gdt_mem_usage\n");
-    write_serial_bytes!(0x3F8, 0x3FD, b"About to format gdt_mem_usage...\n");
-    write_serial_bytes!(0x3F8, 0x3FD, b"Before debug_log\n");
-    debug_log!("calculated gdt_mem_usage=0x{:x}", gdt_mem_usage_val);
-    write_serial_bytes!(0x3F8, 0x3FD, b"Debug log completed\n");
-    write_serial_bytes!(0x3F8, 0x3FD, b"Formatting completed, allocating heap\n");
-    write_serial_bytes!(0x3F8, 0x3FD, b"Formatting completed\n");
-    write_serial_bytes!(0x3F8, 0x3FD, b"About to initialize linked_list_allocator\n");
+    petroleum::serial::serial_log(format_args!("About to initialize linked_list_allocator\n"));
     debug_log!("Link alloc");
 
     use petroleum::page_table::ALLOCATOR;
     // Use direct serial writes to avoid UEFI console hang
     let mut serial_buf = [0u8; 128];
-    let addr_str = heap_start_after_gdt.as_u64();
+    let addr_str = heap_start_after_stack.as_u64();
     let addr_str_len = petroleum::serial::format_hex_to_buffer(addr_str, &mut serial_buf, 16);
     write_serial_bytes!(
         0x3F8,
@@ -240,21 +225,12 @@ pub extern "efiapi" fn efi_main(
     write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..size_str_len]);
     write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
-    // Add more detailed debug info before allocator init
-    write_serial_bytes!(0x3F8, 0x3FD, b"ALLOCATOR init: heap_start_after_gdt=0x");
-    write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..addr_str_len]);
-    let ptr_str = heap_start_after_gdt.as_mut_ptr::<u8>() as usize;
-    let ptr_str_len = petroleum::serial::format_hex_to_buffer(ptr_str as u64, &mut serial_buf, 16);
-    write_serial_bytes!(0x3F8, 0x3FD, b" ptr=0x");
-    write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..ptr_str_len]);
-    write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-
     unsafe {
         write_serial_bytes!(0x3F8, 0x3FD, b"Calling ALLOCATOR.lock()...\n");
         let mut allocator = ALLOCATOR.lock();
         write_serial_bytes!(0x3F8, 0x3FD, b"ALLOCATOR.lock() succeeded\n");
         let ptr_str_len = petroleum::serial::format_hex_to_buffer(
-            heap_start_after_gdt.as_mut_ptr::<u8>() as u64,
+            heap_start_after_stack.as_mut_ptr::<u8>() as u64,
             &mut serial_buf,
             16
         );
@@ -268,7 +244,7 @@ pub extern "efiapi" fn efi_main(
         write_serial_bytes!(0x3F8, 0x3FD, b"Calling allocator.init() with size=");
         write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..size_str_len]);
         write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-        allocator.init(heap_start_after_gdt.as_mut_ptr::<u8>(), heap_size_remaining);
+        allocator.init(heap_start_after_stack.as_mut_ptr::<u8>(), heap_size_remaining);
         write_serial_bytes!(0x3F8, 0x3FD, b"allocator.init() completed successfully\n");
         write_serial_bytes!(0x3F8, 0x3FD, b"Allocator initialized successfully\n");
     }
