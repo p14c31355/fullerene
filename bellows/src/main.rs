@@ -19,7 +19,6 @@ static KERNEL_BINARY: &[u8] = include_bytes!("kernel.bin");
 mod loader;
 
 use loader::{exit_boot_services_and_jump, heap::init_heap, pe::load_efi_image};
-use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
 
 use petroleum::common::{
     EfiGraphicsPixelFormat, EfiStatus, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
@@ -54,11 +53,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
     log::debug!("Bellows: efi_main entered.");
 
-    debug_print_str("Main: image_handle=0x");
-    debug_print_hex(image_handle);
-    debug_print_str(", system_table=0x");
-    debug_print_hex(system_table as usize);
-    debug_print_str("\n");
+    log::info!("Main: image_handle=0x{:x}, system_table=0x{:x}", image_handle, system_table as usize);
 
     // Before setting UEFI_SYSTEM_TABLE
     if image_handle == 0 {
@@ -86,11 +81,11 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     // Initialize heap
     petroleum::serial::_print(format_args!("Attempting to initialize heap...\n"));
     init_heap(bs).expect("Heap initialization failed");
-    debug_print_str("Main: Heap init returned OK.\n");
+    log::info!("Main: Heap init returned OK");
     petroleum::serial::_print(format_args!("Heap initialized successfully.\n"));
-    debug_print_str("Main: After Heap initialized print.\n");
+    log::info!("Main: After Heap initialized print");
     petroleum::println!("Bellows: Heap OK.");
-    debug_print_str("Main: After Heap OK println.\n");
+    log::info!("Main: After Heap OK println");
 
     // Initialize graphics protocols for framebuffer setup
     petroleum::serial::_print(format_args!(
@@ -160,7 +155,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     ));
     // Exit boot services and jump to the kernel.
     petroleum::println!("Bellows: About to exit boot services and jump to kernel."); // Debug print just before the call
-    debug_print_str("Before match exit_boot_services_and_jump.\n");
+    log::info!("Before match exit_boot_services_and_jump");
     match exit_boot_services_and_jump(image_handle, system_table, entry) {
         Ok(_) => {
             unreachable!(); // This branch should never be reached if the function returns '!'
@@ -255,9 +250,7 @@ fn init_gop(st: &EfiSystemTable) {
         &mut gop as *mut _ as *mut *mut c_void,
     );
 
-    debug_print_str("GOP locate_protocol status: 0x");
-    debug_print_hex(status as usize);
-    debug_print_str("\n");
+    log::info!("GOP locate_protocol status: 0x{:x}", status as usize);
 
     if EfiStatus::from(status) != EfiStatus::Success || gop.is_null() {
         petroleum::serial::_print(format_args!(

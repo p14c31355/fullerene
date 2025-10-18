@@ -7,6 +7,7 @@ use x86_64::VirtAddr;
 use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::{TextBufferOperations, Color, ColorCode, ScreenChar};
+use crate::graphics;
 
 // System-wide counters and statistics
 static SYSTEM_TICK: AtomicU64 = AtomicU64::new(0);
@@ -14,6 +15,9 @@ static SCHEDULER_ITERATIONS: AtomicU64 = AtomicU64::new(0);
 
 // I/O event queue (placeholder for future I/O operations)
 static IO_EVENTS: spin::Mutex<VecDeque<IoEvent>> = spin::Mutex::new(VecDeque::new());
+
+// Periodic desktop update interval (in ticks)
+const DESKTOP_UPDATE_INTERVAL_TICKS: u64 = 5000;
 
 // System diagnostics structure
 #[derive(Clone, Copy)]
@@ -369,6 +373,11 @@ pub fn scheduler_loop() -> ! {
         // puts the CPU in a deeper sleep state that's harder for hypervisors to manage efficiently.
         for _ in 0..50 { // Reduced from 100 to allow more frequent system operations
             unsafe { core::arch::asm!("pause"); }
+        }
+
+        // Periodic desktop update
+        if current_tick % DESKTOP_UPDATE_INTERVAL_TICKS == 0 {
+            graphics::draw_os_desktop();
         }
 
         // After yield cycle, check if any emergency conditions need handling

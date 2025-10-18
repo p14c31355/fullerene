@@ -19,6 +19,7 @@ struct Args {
 }
 
 fn main() -> io::Result<()> {
+    unsafe { env::set_var("RUST_LOG", "fatfs=warn"); }
     simple_logger::init().unwrap();
     let args = Args::parse();
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -471,7 +472,7 @@ fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {
         "-cpu", "qemu64,+smap,-invtsc",
         "-smp", "1",
         "-M", "q35",
-        "-vga", "qxl",
+        "-vga", "cirrus",
         "-display", "gtk,gl=off,window-close=on,zoom-to-fit=on",
         "-serial", "stdio",
         "-accel", "tcg,thread=single",

@@ -165,13 +165,7 @@ impl fmt::Write for UefiWriter {
 // Global writer instance
 pub static UEFI_WRITER: Mutex<UefiWriter> = Mutex::new(UefiWriter::new());
 
-/// Writes a string to the COM1 serial port.
-/// This is a very early debug function for use beforeUEFI writers are available.
-pub fn debug_print_str_to_com1(s: &str) {
-    unsafe {
-        write_serial_bytes(0x3F8, 0x3FD, s.as_bytes());
-    }
-}
+
 
 pub fn serial_log(args: core::fmt::Arguments) {
     _print(args);
@@ -180,6 +174,11 @@ pub fn serial_log(args: core::fmt::Arguments) {
 /// Writes a single byte to the COM1 serial port (0x3F8).
 pub fn debug_print_byte_to_com1(byte: u8) {
     SERIAL_PORT_WRITER.lock().write_byte(byte);
+}
+
+/// Writes a string to the COM1 serial port.
+pub fn debug_print_str_to_com1(s: &str) {
+    SERIAL_PORT_WRITER.lock().write_string(s);
 }
 
 /// Prints a usize as hex to COM1 (early debug, no alloc).

@@ -64,7 +64,7 @@ impl FramebufferInfo {
     pub fn calculate_offset(&self, x: u32, y: u32) -> usize {
         #[cfg(target_os = "uefi")]
         {
-            ((y * self.stride + x) * self.bytes_per_pixel()) as usize
+            ((y * self.stride) + (x * self.bytes_per_pixel() as u32)) as usize
         }
         #[cfg(not(target_os = "uefi"))]
         {

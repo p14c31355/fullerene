@@ -55,3 +55,46 @@ pub unsafe fn syscall(
     }
     result
 }
+
+/// Simple write syscall wrapper
+pub fn write(fd: i32, buf: &[u8]) -> i64 {
+    unsafe {
+        syscall(
+            SyscallNumber::Write as u64,
+            fd as u64,
+            buf.as_ptr() as u64,
+            buf.len() as u64,
+            0,
+            0,
+            0,
+        ) as i64
+    }
+}
+
+/// Simple exit syscall wrapper
+pub fn exit(code: i32) -> ! {
+    unsafe {
+        syscall(
+            SyscallNumber::Exit as u64,
+            code as u64,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+    }
+    loop {} // unreachable, but to make ! return type
+}
+
+/// Get PID syscall wrapper
+pub fn getpid() -> u64 {
+    unsafe { syscall(SyscallNumber::GetPid as u64, 0, 0, 0, 0, 0, 0) }
+}
+
+/// Yield syscall wrapper
+pub fn sleep() {
+    unsafe {
+        syscall(SyscallNumber::Yield as u64, 0, 0, 0, 0, 0, 0);
+    }
+}

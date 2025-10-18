@@ -1,44 +1,46 @@
 //! Initialization module containing common initialization logic for both UEFI and BIOS boot
 
 use crate::interrupts;
-use petroleum::write_serial_bytes;
+use petroleum::{init_log, write_serial_bytes};
 
 #[cfg(target_os = "uefi")]
 pub fn init_common() {
-    write_serial_bytes!(0x3F8, 0x3FD, b"init_common: About to init VGA\n");
+    init_log!("init_common: About to init VGA");
     crate::vga::init_vga();
-    write_serial_bytes!(0x3F8, 0x3FD, b"init_common: VGA init done\n");
+    init_log!("init_common: VGA init done");
 
     // Now safe to initialize APIC and enable interrupts (after stable page tables and heap)
-    write_serial_bytes!(0x3F8, 0x3FD, b"init_common: About to init APIC\n");
+    init_log!("init_common: About to init APIC");
     interrupts::init_apic();
-    write_serial_bytes!(0x3F8, 0x3FD, b"init_common: APIC init done\n");
+    init_log!("init_common: APIC init done");
     log::info!("Kernel: APIC initialized and interrupts enabled");
 
-    write_serial_bytes!(0x3F8, 0x3FD, b"init_common: About to init process\n");
+    init_log!("init_common: About to init process");
     crate::process::init();
-    write_serial_bytes!(0x3F8, 0x3FD, b"init_common: Process init done\n");
+    init_log!("init_common: Process init done");
     log::info!("Kernel: Process management initialized");
 
-    write_serial_bytes!(0x3F8, 0x3FD, b"init_common: About to init syscall\n");
+    init_log!("init_common: About to init syscall");
     crate::syscall::init();
-    write_serial_bytes!(0x3F8, 0x3FD, b"init_common: syscall init done\n");
+    init_log!("init_common: syscall init done");
     log::info!("Kernel: System calls initialized");
 
-    write_serial_bytes!(0x3F8, 0x3FD, b"init_common: About to init fs\n");
+    init_log!("init_common: About to init fs");
     crate::fs::init();
-    write_serial_bytes!(0x3F8, 0x3FD, b"init_common: FS init done\n");
+    init_log!("init_common: FS init done");
     log::info!("Kernel: Filesystem initialized");
 
-    write_serial_bytes!(0x3F8, 0x3FD, b"init_common: About to init loader\n");
+    init_log!("init_common: About to init loader");
     crate::loader::init();
-    write_serial_bytes!(0x3F8, 0x3FD, b"init_common: Loader init done\n");
-    log::info!("Kernel: Program loader initialized");
+    init_log!("init_common: Loader init done");
+    log::info!("Kernel: loader initialized");
 
+    init_log!("About to create test process");
     let test_pid = crate::process::create_process(
         "test_process",
         x86_64::VirtAddr::new(crate::test_process::test_process_main as usize as u64),
     );
+    init_log!("Test process created");
 
     log::info!("Kernel: Created test process with PID {}", test_pid);
 

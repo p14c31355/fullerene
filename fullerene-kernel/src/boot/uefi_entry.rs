@@ -326,31 +326,24 @@ pub extern "efiapi" fn efi_main(
     log::info!("Initialize graphics with framebuffer configuration");
     let success = initialize_graphics_with_config(system_table);
     log::info!("Graphics initialization result: {}", success);
-
-    if success {
-        log::info!("Graphics initialized successfully");
-
-        // Now enable interrupts, after graphics setup
-        log::info!("Enabling interrupts...");
-        x86_64::instructions::interrupts::enable();
-        log::info!("Interrupts enabled");
-
-        // Initialize keyboard input driver
-        crate::keyboard::init();
-        log::info!("Keyboard initialized");
-
-        // Start the main kernel scheduler that orchestrates all system functionality
-        log::info!("Starting full system scheduler...");
-        scheduler_loop();
-        // scheduler_loop should never return in normal operation
-        panic!("scheduler_loop returned unexpectedly - kernel critical failure!");
-    } else {
-        log::info!("Graphics initialization failed, enabling interrupts anyway for debugging");
-        x86_64::instructions::interrupts::enable();
+    if !success {
+        log::info!("Graphics initialization failed, continuing without graphics for debugging");
     }
 
-    // In case we reach here (shell returned or graphics failed), enter idle loop
-    petroleum::halt_loop();
+    // Always enable interrupts and proceed to scheduler
+    log::info!("Enabling interrupts...");
+    x86_64::instructions::interrupts::enable();
+    log::info!("Interrupts enabled");
+
+    // Initialize keyboard input driver
+    crate::keyboard::init();
+    log::info!("Keyboard initialized");
+
+    // Start the main kernel scheduler that orchestrates all system functionality
+    log::info!("Starting full system scheduler...");
+    scheduler_loop();
+    // scheduler_loop should never return in normal operation
+    panic!("scheduler_loop returned unexpectedly - kernel critical failure!");
 }
 
 /// Kernel-side fallback framebuffer detection when config table is not available

@@ -436,7 +436,7 @@ pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
             height: mode_info.vertical_resolution,
             pixel_format: mode_info.pixel_format,
             bpp: get_bpp_from_pixel_format(mode_info.pixel_format),
-            stride: mode_info.pixels_per_scan_line,
+            stride: mode_info.pixels_per_scan_line * (get_bpp_from_pixel_format(mode_info.pixel_format) / 8),
         })
     } else {
         None

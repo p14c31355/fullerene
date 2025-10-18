@@ -33,19 +33,18 @@ where
 pub fn find_framebuffer_config(
     system_table: &EfiSystemTable,
 ) -> Option<&FullereneFramebufferConfig> {
-    petroleum::serial::serial_log(format_args!(
-        "find_framebuffer_config: called with system_table=0x{:x}\n", system_table as *const _ as usize
-    ));
-    petroleum::serial::serial_log(format_args!(
-        "find_framebuffer_config: System table has {} configuration table entries\n",
+    log::info!(
+        "find_framebuffer_config: called with system_table=0x{:x}",
+        system_table as *const _ as usize
+    );
+    log::info!(
+        "find_framebuffer_config: System table has {} configuration table entries",
         system_table.number_of_table_entries
-    ));
+    );
 
     // Check for null pointer after UEFI boot services exit
     if system_table.configuration_table.is_null() {
-        petroleum::serial::serial_log(format_args!(
-            "find_framebuffer_config: Configuration table is null (UEFI boot services exited)\n"
-        ));
+        log::info!("find_framebuffer_config: Configuration table is null (UEFI boot services exited)");
         return None;
     }
 
@@ -57,10 +56,10 @@ pub fn find_framebuffer_config(
     };
 
     for (i, entry) in config_table_entries.iter().enumerate() {
-        petroleum::serial::serial_log(format_args!(
-            "Config table {}: table={:#x}, checking for GOP GUID\n",
+        log::info!(
+            "Config table {}: table={:#x}, checking for GOP GUID",
             i, entry.vendor_table as usize
-        ));
+        );
 
         if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
             return unsafe { Some(&*(entry.vendor_table as *const FullereneFramebufferConfig)) };
@@ -91,14 +90,14 @@ pub fn setup_memory_maps(
     kernel_virt_addr: u64,
 ) -> PhysAddr {
     // Use the passed memory map
-    petroleum::serial::debug_print_str_to_com1("About to create memory map slice\n");
+    log::info!("About to create memory map slice");
     let descriptors = unsafe {
         core::slice::from_raw_parts(
             memory_map as *const EfiMemoryDescriptor,
             memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>(),
         )
     };
-    petroleum::serial::debug_print_str_to_com1("Memory map slice created\n");
+    log::info!("Memory map slice created");
     log::info!(
         "Memory map slice size: {}, descriptor count: {}",
         memory_map_size,
