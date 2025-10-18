@@ -435,10 +435,11 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
         }
     }
 
-    // Wait for the VM to shut down by polling state
+        // Wait for the VM to shut down by polling state
     log::info!("Waiting for VM to power off...");
-        let mut consecutive_failures = 0;
+    let mut consecutive_failures = 0;
     const MAX_CONSECUTIVE_FAILURES: u32 = 5;
+    let mut is_powered_off = false;
 
     for _ in 0..VM_POWER_OFF_POLL_ATTEMPTS {
         std::thread::sleep(std::time::Duration::from_secs(VM_POWER_OFF_POLL_INTERVAL_S));
@@ -453,10 +454,11 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
                     .lines()
                     .find(|line| line.starts_with("VMState="))
                     .and_then(|line| line.strip_prefix("VMState=\""))
-                    .and_then(|s| s.strip_suffix("\""));
+                    .and_then(|s| s.strip_suffix('"'));
 
                 if let Some("poweroff") = state_line {
                     log::info!("VM is confirmed to be powered off.");
+                    is_powered_off = true;
                     break;
                 }
             }
@@ -468,6 +470,10 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
                 break;
             }
         }
+    }
+
+    if !is_powered_off {
+        return Err(io::Error::other("Timed out waiting for VM to power off. It might still be running."));
     }
 
     Ok(())
