@@ -228,20 +228,11 @@ fn top_command(_args: &[&str]) -> i32 {
     // Sort by process ID as a simple proxy for priority
     procs.sort_by(|a, b| b.id.cmp(&a.id));
 
-    let mut shown = 0;
-    for proc in procs.iter().take(10) {
-        let ppid = match proc.parent_id {
-            Some(pid) => pid,
-            None => 0,
-        };
+    for proc in procs.iter().take(5) {
+        let ppid = proc.parent_id.unwrap_or(0);
         print!("{:<6} {:<6} {:<10?} 0.0   {}\n", proc.id, ppid, proc.state, proc.name);
-        shown += 1;
-        if shown >= 5 {
-            break; // Limit to top 5 for display
-        }
     }
 
-    print!("Showing {} processes\n", shown);
     0
 }
 
@@ -249,8 +240,8 @@ fn free_command(_args: &[&str]) -> i32 {
     let allocator = petroleum::page_table::ALLOCATOR.lock();
     let used = allocator.used();
     let total = allocator.size();
-    let free = total - used;
-    let used_pct = (used * 100) / total;
+    let free = total.saturating_sub(used);
+    let used_pct = if total > 0 { (used * 100) / total } else { 0 };
 
     print!("Memory usage:\n");
     print!("Total: {} bytes\n", total);

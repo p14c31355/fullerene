@@ -162,6 +162,12 @@ fn run_virtualbox(args: &Args, workspace_root: &PathBuf) -> io::Result<()> {
     Ok(())
 }
 
+struct VmSetting<'a> {
+    args: &'a [&'a str],
+    failure_msg: &'a str,
+    success_msg: Option<&'a str>,
+}
+
 fn run_vbox_modify(vm_name: &str, args: &[&str], failure_msg: &str, success_msg: Option<&str>) -> io::Result<()> {
     let mut full_args = vec!["modifyvm", vm_name];
     full_args.extend_from_slice(args);
@@ -184,21 +190,21 @@ fn run_vbox_modify(vm_name: &str, args: &[&str], failure_msg: &str, success_msg:
 fn configure_vm_settings(vm_name: &str) -> io::Result<()> {
     log::info!("Configuring VM settings for '{}'...", vm_name);
 
-    let settings: &[(&[&str], &str, Option<&str>)] = &[
-        (&["--memory", "4096"], "Failed to set VM memory.", None),
-        (&["--vram", "128"], "Failed to set VM video memory.", None),
-        (&["--acpi", "on"], "Failed to enable ACPI.", None),
-        (&["--nic1", "nat"], "Failed to configure network NAT.", None),
-        (&["--cpus", "1"], "Failed to set CPU count.", None),
-        (&["--chipset", "ich9"], "Failed to set chipset.", None),
-        (&["--hwvirtex", "off"], "Failed to disable hardware virtualization. This may cause issues in nested VM environments.", Some("Hardware virtualization disabled for compatibility with nested VMs")),
-        (&["--nested-paging", "off"], "Failed to disable nested paging.", None),
-        (&["--large-pages", "off"], "Failed to disable large pages.", None),
-        (&["--nested-hw-virt", "off"], "Failed to disable nested hardware virtualization.", None),
+    let settings = &[
+        VmSetting { args: &["--memory", "4096"], failure_msg: "Failed to set VM memory.", success_msg: None },
+        VmSetting { args: &["--vram", "128"], failure_msg: "Failed to set VM video memory.", success_msg: None },
+        VmSetting { args: &["--acpi", "on"], failure_msg: "Failed to enable ACPI.", success_msg: None },
+        VmSetting { args: &["--nic1", "nat"], failure_msg: "Failed to configure network NAT.", success_msg: None },
+        VmSetting { args: &["--cpus", "1"], failure_msg: "Failed to set CPU count.", success_msg: None },
+        VmSetting { args: &["--chipset", "ich9"], failure_msg: "Failed to set chipset.", success_msg: None },
+        VmSetting { args: &["--hwvirtex", "off"], failure_msg: "Failed to disable hardware virtualization. This may cause issues in nested VM environments.", success_msg: Some("Hardware virtualization disabled for compatibility with nested VMs") },
+        VmSetting { args: &["--nested-paging", "off"], failure_msg: "Failed to disable nested paging.", success_msg: None },
+        VmSetting { args: &["--large-pages", "off"], failure_msg: "Failed to disable large pages.", success_msg: None },
+        VmSetting { args: &["--nested-hw-virt", "off"], failure_msg: "Failed to disable nested hardware virtualization.", success_msg: None },
     ];
 
-    for (args, failure_msg, success_msg) in settings {
-        run_vbox_modify(vm_name, args, failure_msg, *success_msg)?;
+    for setting in settings {
+        run_vbox_modify(vm_name, setting.args, setting.failure_msg, setting.success_msg)?;
     }
 
     Ok(())
