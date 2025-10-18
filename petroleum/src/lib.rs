@@ -38,19 +38,22 @@ pub use page_table::allocate_heap_from_map;
 pub use page_table::reinit_page_table;
 
 /// Generic framebuffer buffer clear operation
+/// stride is in bytes per line
 pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
     let fb_ptr = address as *mut T;
-    let count = (stride * height) as usize;
+    let bytes_per_pixel = core::mem::size_of::<T>() as u32;
+    let elements_per_line = (stride / bytes_per_pixel) as usize;
+    let count = elements_per_line * height as usize;
     unsafe { core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color) };
 }
 
 /// Generic framebuffer buffer scroll up operation
+/// stride is in bytes per line
 pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
     let bytes_per_pixel = core::mem::size_of::<T>() as u32;
-    let bytes_per_line = stride * bytes_per_pixel;
-    let shift_bytes = 8u64 * bytes_per_line as u64;
+    let shift_bytes = 8u64 * stride as u64;
     let fb_ptr = address as *mut u8;
-    let total_bytes = height as u64 * bytes_per_line as u64;
+    let total_bytes = height as u64 * stride as u64;
     unsafe {
         core::ptr::copy(
             fb_ptr.add(shift_bytes as usize),
@@ -59,9 +62,10 @@ pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u
         );
     }
     // Clear last 8 lines
-    let clear_offset = ((height - 8) as u32 * bytes_per_line) as usize;
+    let clear_offset = ((height - 8) as u32 * stride) as usize;
     let clear_ptr = (address + clear_offset as u64) as *mut T;
-    let clear_count = 8 * stride as usize;
+    let elements_per_line = (stride / bytes_per_pixel) as usize;
+    let clear_count = 8 * elements_per_line;
     unsafe { core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color) };
 }
 
@@ -228,7 +232,7 @@ impl<'a> FramebufferInstaller<'a> {
             ptr::write_bytes(
                 config.address as *mut u8,
                 0x00,
-                (config.height as u64 * config.stride as u64 * (config.bpp as u64 / 8)) as usize,
+                (config.height as u64 * config.stride as u64) as usize,
             );
         }
     }
@@ -261,7 +265,7 @@ pub fn detect_standard_modes(
                 pixel_format:
                     crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                 bpp: *bpp,
-                stride: *width,
+                stride: *width * (*bpp / 8),
             });
         }
     }
@@ -457,7 +461,7 @@ pub fn detect_qemu_framebuffer(
                 pixel_format:
                     crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                 bpp,
-                stride: width, // Assume stride equals width for QEMU
+                stride: width * (bpp / 8), // stride in bytes
             };
 
             serial::_print(format_args!(
@@ -520,7 +524,7 @@ pub fn init_gop_framebuffer_alternative(
             pixel_format:
                 crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
             bpp,
-            stride: width, // Assume stride equals width for QEMU
+            stride: width * (bpp / 8), // stride in bytes
         };
 
         serial::_print(format_args!(
@@ -765,7 +769,7 @@ pub fn init_graphics_protocols(
             ptr::write_bytes(
                 config.address as *mut u8,
                 0x00,
-                (config.height as u64 * config.stride as u64 * (config.bpp as u64 / 8)) as usize,
+                (config.height as u64 * config.stride as u64) as usize,
             );
         }
 
@@ -801,7 +805,7 @@ pub fn init_graphics_protocols(
             ptr::write_bytes(
                 config.address as *mut u8,
                 0x00,
-                (config.height as u64 * config.stride as u64 * (config.bpp as u64 / 8)) as usize,
+                (config.height as u64 * config.stride as u64) as usize,
             );
         }
 
