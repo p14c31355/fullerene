@@ -127,11 +127,10 @@ impl UefiInitContext {
         };
 
         // Reinit page tables
-        let mut frame_allocator = unsafe {
-            petroleum::page_table::BootInfoFrameAllocator::init(
-                *MEMORY_MAP.get().expect("Memory map not initialized"),
-            )
-        };
+        let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
+            .get()
+            .expect("Frame allocator not initialized")
+            .lock();
         self.physical_memory_offset = heap::reinit_page_table_with_allocator(
             kernel_phys_start, fb_addr, fb_size, &mut frame_allocator,
         );
@@ -162,7 +161,7 @@ impl UefiInitContext {
         let flags = x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE
             | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-        map_memory_range(heap_start, heap_pages, self.physical_memory_offset, &mut mapper, &mut frame_allocator, flags)
+        map_memory_range(heap_start, heap_pages, self.physical_memory_offset, &mut mapper, &mut *frame_allocator, flags)
             .expect("Failed to map heap memory");
 
         (self.physical_memory_offset, heap_start, self.virtual_heap_start)
@@ -180,16 +179,15 @@ impl UefiInitContext {
 
         let stack_pages = (KERNEL_STACK_SIZE as u64).div_ceil(4096);
         let stack_base_phys = PhysAddr::new(stack_bottom.as_u64() - physical_memory_offset.as_u64());
-        let mut frame_allocator = unsafe {
-            petroleum::page_table::BootInfoFrameAllocator::init(
-                *MEMORY_MAP.get().expect("Memory map not initialized"),
-            )
-        };
+        let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
+            .get()
+            .expect("Frame allocator not initialized")
+            .lock();
         let mut mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
         let flags = x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE
             | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-        map_memory_range(stack_base_phys, stack_pages, physical_memory_offset, &mut mapper, &mut frame_allocator, flags)
+        map_memory_range(stack_base_phys, stack_pages, physical_memory_offset, &mut mapper, &mut *frame_allocator, flags)
             .expect("Failed to map stack memory");
 
         unsafe {

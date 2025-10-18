@@ -278,8 +278,6 @@ mod tests {
         }
     }
 
-    // ErrorLogging impl for MockDevice removed - use petroleum::ERROR_LOGGER instead
-
     impl ErrorLogging for MockDevice {
         fn log_error(&self, error: &SystemError, context: &'static str) {
             petroleum::log_error!(error, context);
