@@ -472,7 +472,7 @@ fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {
         "-cpu", "qemu64,+smap,-invtsc",
         "-smp", "1",
         "-M", "q35",
-        "-vga", "qxl",
+        "-vga", "cirrus",
         "-display", "gtk,gl=off,window-close=on,zoom-to-fit=on",
         "-serial", "stdio",
         "-accel", "tcg,thread=single",

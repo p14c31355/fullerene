@@ -7,6 +7,7 @@ use x86_64::VirtAddr;
 use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::{TextBufferOperations, Color, ColorCode, ScreenChar};
+use crate::graphics;
 
 // System-wide counters and statistics
 static SYSTEM_TICK: AtomicU64 = AtomicU64::new(0);
@@ -369,6 +370,11 @@ pub fn scheduler_loop() -> ! {
         // puts the CPU in a deeper sleep state that's harder for hypervisors to manage efficiently.
         for _ in 0..50 { // Reduced from 100 to allow more frequent system operations
             unsafe { core::arch::asm!("pause"); }
+        }
+
+        // Periodic desktop update
+        if current_tick % 5000 == 0 {
+            graphics::draw_os_desktop();
         }
 
         // After yield cycle, check if any emergency conditions need handling
