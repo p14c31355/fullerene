@@ -1,5 +1,4 @@
-use petroleum::graphics::ports::HardwarePorts;
-use petroleum::{clear_buffer, Color, ColorCode, ScreenChar, TextBufferOperations, port_write, handle_write_byte, update_vga_cursor};
+use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations, port_write, handle_write_byte, update_vga_cursor};
 use spin::{Mutex, Once};
 
 const BUFFER_HEIGHT: usize = 25;
@@ -20,7 +19,7 @@ impl VgaBuffer {
     /// Creates a new VgaBuffer instance.
     pub fn new() -> VgaBuffer {
         VgaBuffer {
-            buffer: unsafe { &mut *(0xb8000 as *mut _) },
+            buffer: unsafe { &mut *(crate::VGA_BUFFER_ADDRESS as *mut _) },
             column_position: 0,
             row_position: 0,
             color_code: ColorCode::new(Color::Green, Color::Black),

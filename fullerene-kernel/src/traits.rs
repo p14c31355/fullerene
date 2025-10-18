@@ -3,7 +3,6 @@
 //! This module defines the core traits used throughout the Fullerene kernel system.
 
 use petroleum::common::logging::{SystemError, SystemResult};
-use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
 
 // Placeholder for hardware-related traits that may need to be defined
 pub trait HardwareDevice: Initializable + ErrorLogging {
