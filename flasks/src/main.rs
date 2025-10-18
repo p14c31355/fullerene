@@ -482,7 +482,7 @@ fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {
     "-smp", "1",
     "-M", "q35",
     "-vga", "qxl",
-    "-display", "gtk,gl=off,window-close=on,zoom-to-fit=on",  // gl=offに
+    "-display", "gtk,gl=off,window-close=on,zoom-to-fit=on",  // Set gl=off
     "-serial", "stdio",
     "-accel", "tcg,thread=single",
     "-d", "guest_errors,unimp",
