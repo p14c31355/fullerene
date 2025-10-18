@@ -200,6 +200,24 @@ pub fn reinit_page_table_with_allocator(
         }
     }
 
+    // Always map VGA memory regions (0xA0000 - 0xC0000) for compatibility with VGA text/graphics modes
+    const VGA_MEMORY_START: u64 = 0xA0000;
+    const VGA_MEMORY_SIZE: u64 = 0xC0000 - 0xA0000; // 128KB VGA memory aperture
+    let vga_pages = VGA_MEMORY_SIZE / 4096;
+
+    for i in 0..vga_pages {
+        let phys_addr = PhysAddr::new(VGA_MEMORY_START + i * 4096);
+        let virt_addr = phys_offset + phys_addr.as_u64();
+
+        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
+        let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
+
+        let flags = Flags::PRESENT | Flags::WRITABLE;
+        unsafe {
+            mapper.map_to(page, frame, flags, frame_allocator).expect("Failed to map VGA memory page").flush();
+        }
+    }
+
     phys_offset
 }
 
