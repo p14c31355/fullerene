@@ -226,6 +226,7 @@ impl MemoryManager for UnifiedMemoryManager {
             for i in 0..count {
                 let virt_addr = address + (i * 4096);
                 let frame = self.page_table_manager.unmap_page(virt_addr)?;
+
                 let phys_addr = frame.start_address().as_u64() as usize;
                 self.frame_allocator.free_frame(phys_addr)?;
             }
