@@ -127,9 +127,10 @@ pub extern "efiapi" fn efi_main(
         (None, None)
     };
 
-    // Reinit page tables to kernel page tables with framebuffer size
+    // Reinit page tables to kernel page tables with framebuffer size using frame allocator
     log::info!("Reinit page tables to kernel page tables with framebuffer info");
-    let physical_memory_offset = heap::reinit_page_table(kernel_phys_start, fb_addr, fb_size);
+    let mut frame_allocator = unsafe { petroleum::page_table::BootInfoFrameAllocator::init(*MEMORY_MAP.get().expect("Memory map not initialized")) };
+    let physical_memory_offset = heap::reinit_page_table_with_allocator(kernel_phys_start, fb_addr, fb_size, &mut frame_allocator);
     log::info!("Page table reinit completed successfully");
 
     // Set physical memory offset for process management

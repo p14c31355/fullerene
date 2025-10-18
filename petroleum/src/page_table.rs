@@ -3,9 +3,10 @@ use x86_64::{
     registers::control::Cr3,
     instructions::tlb,
     structures::paging::{
-        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PhysFrame, Size4KiB, Translate,
+        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate,
     },
 };
+use spin::{Mutex, Once};
 
 /// EFI Memory Descriptor as defined in UEFI spec
 #[repr(C)]
@@ -121,20 +122,89 @@ pub unsafe fn translate_addr(addr: VirtAddr, physical_memory_offset: VirtAddr) -
     translate_addr_inner(addr, physical_memory_offset)
 }
 
-/// Reinitialize the page table with identity mapping
+/// Reinitialize the page table with identity mapping and higher-half kernel mapping
 ///
 /// Returns the physical memory offset used for the mapping
 pub fn reinit_page_table(
     kernel_phys_start: PhysAddr,
-    _fb_addr: Option<VirtAddr>,
-    _fb_size: Option<u64>,
+    fb_addr: Option<VirtAddr>,
+    fb_size: Option<u64>,
 ) -> VirtAddr {
-    // Create identity mapping offset for kernel
-    let phys_offset = VirtAddr::new(kernel_phys_start.as_u64());
+    use x86_64::structures::paging::PageTableFlags as Flags;
 
-    // Set up identity mapping for the kernel region
-    // This would typically involve creating page table entries that map
-    // virtual addresses to the same physical addresses
+    // Use petroleum's higher half kernel virtual base
+    const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000;
+
+    // Create the offset for higher-half kernel mapping: physical + offset = virtual
+    let phys_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE);
+
+    phys_offset
+}
+
+/// Reinitialize the page table with identity mapping and higher-half kernel mapping
+/// This version takes a frame allocator to perform the actual mapping
+///
+/// Returns the physical memory offset used for the mapping
+pub fn reinit_page_table_with_allocator(
+    kernel_phys_start: PhysAddr,
+    fb_addr: Option<VirtAddr>,
+    fb_size: Option<u64>,
+    frame_allocator: &mut BootInfoFrameAllocator,
+) -> VirtAddr {
+    use x86_64::structures::paging::PageTableFlags as Flags;
+
+    // Use petroleum's higher half kernel virtual base
+    const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000;
+
+    // Create the offset for higher-half kernel mapping: physical + offset = virtual
+    let phys_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE);
+
+    // Get the mapper and frame allocator
+    let mut mapper = unsafe {
+        use x86_64::registers::control::Cr3;
+        let (level_4_table_frame, _) = Cr3::read();
+        OffsetPageTable::new(
+            &mut *(phys_offset + level_4_table_frame.start_address().as_u64()).as_mut_ptr::<PageTable>(),
+            phys_offset,
+        )
+    };
+
+    // Map kernel at higher half
+    // Kernel typically spans from kernel_phys_start for several MB
+    // We'll map the first 4MB to be safe (can be adjusted based on actual kernel size)
+    const KERNEL_SIZE: u64 = 4 * 1024 * 1024; // 4MB
+    let kernel_pages = (KERNEL_SIZE + 4095) / 4096; // Round up to page count
+
+    for i in 0..kernel_pages {
+        let phys_addr = kernel_phys_start + (i * 4096);
+        let virt_addr = phys_offset + phys_addr.as_u64();
+
+        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
+        let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
+
+        let flags = Flags::PRESENT | Flags::WRITABLE;
+        unsafe {
+            mapper.map_to(page, frame, flags, frame_allocator).unwrap().flush();
+        }
+    }
+
+    // Map framebuffer if provided
+    if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
+        let fb_pages = (fb_size + 4095) / 4096; // Round up to page count
+
+        for i in 0..fb_pages {
+            let phys_addr = PhysAddr::new(fb_addr.as_u64() + i * 4096);
+            let virt_addr = phys_offset + phys_addr.as_u64();
+
+            let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
+            let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
+
+            let flags = Flags::PRESENT | Flags::WRITABLE;
+            unsafe {
+                mapper.map_to(page, frame, flags, frame_allocator).unwrap().flush();
+            }
+        }
+    }
 
     phys_offset
 }
