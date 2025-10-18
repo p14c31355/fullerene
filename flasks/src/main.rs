@@ -385,7 +385,7 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
         .status()?;
 
     if !status.success() {
-        return Err(io::Error::other(format!(
+        return Err(io::Error::new(io::ErrorKind::Other, format!(
             "Failed to start VM in {} mode",
             start_type
         )));
