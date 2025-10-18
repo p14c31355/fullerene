@@ -23,6 +23,7 @@ macro_rules! init_step {
 
 #[cfg(target_os = "uefi")]
 pub fn init_common() {
+    init_log!("Initializing common components");
     let steps = [
         init_step!("VGA", crate::vga::init_vga()),
         init_step!("APIC", interrupts::init_apic()),
