@@ -176,7 +176,7 @@ pub fn reinit_page_table_with_allocator(
         let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
         let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
 
-        let flags = Flags::PRESENT | Flags::WRITABLE;
+        let flags = Flags::PRESENT;
         unsafe {
             mapper.map_to(page, frame, flags, frame_allocator).expect("Failed to map kernel page").flush();
         }
