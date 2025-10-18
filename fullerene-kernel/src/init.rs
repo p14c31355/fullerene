@@ -33,12 +33,14 @@ pub fn init_common() {
     write_serial_bytes!(0x3F8, 0x3FD, b"init_common: About to init loader\n");
     crate::loader::init();
     write_serial_bytes!(0x3F8, 0x3FD, b"init_common: Loader init done\n");
-    log::info!("Kernel: Program loader initialized");
+    log::info!("Kernel: loader initialized");
 
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to create test process\n");
     let test_pid = crate::process::create_process(
         "test_process",
         x86_64::VirtAddr::new(crate::test_process::test_process_main as usize as u64),
     );
+    write_serial_bytes!(0x3F8, 0x3FD, b"Test process created\n");
 
     log::info!("Kernel: Created test process with PID {}", test_pid);
 

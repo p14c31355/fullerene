@@ -19,6 +19,7 @@ struct Args {
 }
 
 fn main() -> io::Result<()> {
+    unsafe { env::set_var("RUST_LOG", "fatfs=warn"); }
     simple_logger::init().unwrap();
     let args = Args::parse();
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
