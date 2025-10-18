@@ -163,10 +163,11 @@ pub fn reinit_page_table_with_allocator(
     let mut mapper = unsafe {
         use x86_64::registers::control::Cr3;
         let (level_4_table_frame, _) = Cr3::read();
-        OffsetPageTable::new(
-            &mut *(phys_offset + level_4_table_frame.start_address().as_u64()).as_mut_ptr::<PageTable>(),
-            phys_offset,
-        )
+        // At this point, we are still using UEFI's identity mapping.
+        // The virtual address of the page table is its physical address.
+        let p4_table_ptr = level_4_table_frame.start_address().as_u64() as *mut PageTable;
+        // We create a mapper with an offset of 0 to work with the identity mapping.
+        OffsetPageTable::new(&mut *p4_table_ptr, VirtAddr::new(0))
     };
 
     // Map kernel at higher half
