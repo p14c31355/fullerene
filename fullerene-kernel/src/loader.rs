@@ -90,7 +90,7 @@ pub fn load_program(
                 let page_vaddr = x86_64::VirtAddr::new(vaddr + page_idx * 4096);
 
                 // Allocate a physical frame for this page
-                let frame = crate::heap::memory_map::FRAME_ALLOCATOR
+                let frame = crate::heap::FRAME_ALLOCATOR
                     .get()
                     .ok_or(LoadError::OutOfMemory)?
                     .lock()

@@ -65,9 +65,9 @@ pub extern "efiapi" fn efi_main(
     write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main entered.\n");
 
     // Initialize serial early for debug logging
-    log::info!("About to initialize serial port...");
+    petroleum::serial::serial_log(format_args!("About to initialize serial port...\n"));
     petroleum::serial::serial_init();
-    log::info!("Serial port initialized successfully");
+    petroleum::serial::serial_log(format_args!("Serial port initialized successfully\n"));
 
     // Debug parameter values
     debug_log!(
@@ -94,20 +94,21 @@ pub extern "efiapi" fn efi_main(
     petroleum::serial::serial_log(format_args!("VGA graphics initialization completed\n"));
 
     //debug_log!("VGA setup done");
-    log::info!("VGA text mode setup function returned");
+    petroleum::serial::serial_log(format_args!("VGA text mode setup function returned\n"));
 
     // Direct VGA buffer test - write to hardware buffer directly
-    log::info!("Direct VGA buffer write test...");
+    petroleum::serial::serial_log(format_args!("Direct VGA buffer write test...\n"));
     unsafe {
         let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
         write_vga_string(vga_buffer, 0, b"Kernel boot", 0x1F00);
     }
-    log::info!("Direct VGA write test completed");
+    petroleum::serial::serial_log(format_args!("Direct VGA write test completed\n"));
 
     // Early text output using EFI console to ensure visible output on screen
-    log::info!("About to output to EFI console");
-    efi_print(system_table, b"UEFI Kernel: Display Test!\r\n");
-    efi_print(system_table, b"This is output via EFI console.\r\n");
+    petroleum::serial::serial_log(format_args!("About to output to EFI console\n"));
+    // EFI console calls commented out - not available after exit_boot_services
+    // efi_print(system_table, b"UEFI Kernel: Display Test!\r\n");
+    // efi_print(system_table, b"This is output via EFI console.\r\n");
     log::info!("EFI console output completed");
 
     // Setup memory maps and initialize memory management
