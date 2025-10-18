@@ -55,8 +55,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     
 
     loop {
-        // Use pause for QEMU-friendliness instead of hlt
-        unsafe { core::arch::asm!("pause"); }
+        hlt(); // Use hlt to halt the CPU in case of a kernel panic
     }
 }
 

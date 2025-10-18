@@ -331,6 +331,9 @@ pub fn scheduler_loop() -> ! {
         // This loop will be interrupted by timer maintaining process scheduling
 
         // Yield for short periods to allow more frequent system operations using pause instead of hlt for QEMU-friendliness
+        // pause allows the CPU to enter a low-power state while remaining responsive to interrupts,
+        // making it more suitable for virtualization environments like QEMU compared to hlt which
+        // puts the CPU in a deeper sleep state that's harder for hypervisors to manage efficiently.
         for _ in 0..50 { // Reduced from 100 to allow more frequent system operations
             unsafe { core::arch::asm!("pause"); }
         }
@@ -378,6 +381,9 @@ pub extern "C" fn shell_process_main() -> ! {
     // Should never reach here
     loop {
         // Use pause for QEMU-friendliness instead of hlt
+        // pause allows the CPU to enter a low-power state while remaining responsive to interrupts,
+        // making it more suitable for virtualization environments like QEMU compared to hlt which
+        // puts the CPU in a deeper sleep state that's harder for hypervisors to manage efficiently.
         unsafe { core::arch::asm!("pause"); }
     }
 }

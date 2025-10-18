@@ -461,6 +461,13 @@ impl SimpleFramebuffer {
             for x in 0..self.width {
                 let offset = x * self.bytes_per_pixel;
                 let pixel_addr = (row_base + offset) as *mut u32;
+
+                // Check that the calculated pixel_addr is within the valid framebuffer memory region
+                let pixel_addr_usize = pixel_addr as usize;
+                if pixel_addr_usize < self.base || pixel_addr_usize >= self.base + self.height * self.stride {
+                    continue;
+                }
+
                 unsafe { write_volatile(pixel_addr, color); }
             }
         }
@@ -474,6 +481,13 @@ impl SimpleFramebuffer {
         let row_base = self.base + y * self.stride;
         let offset = x * self.bytes_per_pixel;
         let pixel_addr = (row_base + offset) as *mut u32;
+
+        // Check that the calculated pixel_addr is within the valid framebuffer memory region
+        let pixel_addr_usize = pixel_addr as usize;
+        if pixel_addr_usize < self.base || pixel_addr_usize >= self.base + self.height * self.stride {
+            return;
+        }
+
         unsafe { write_volatile(pixel_addr, color); }
     }
 

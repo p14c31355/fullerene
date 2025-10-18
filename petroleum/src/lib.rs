@@ -262,13 +262,13 @@ impl<'a> FramebufferInstaller<'a> {
             "INSTALL_CONFIG_TABLE: calling bs.install_configuration_table...\n"
         ));
 
-        // Temporarily skip install_configuration_table to test if that's causing the hang
-        log::info!("INSTALL_CONFIG_TABLE: Skipping install_configuration_table call for debugging");
-        // let status = (bs.install_configuration_table)(
-        //     FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
-        //     config_ptr as *mut c_void,
-        // );
-        let status = 0; // Fake success status for testing
+        // Previously temporarily skipped install_configuration_table to test if that's causing the hang
+        // Re-enabling after debugging showed this step is critical for passing framebuffer info to the kernel
+        // This call installs the framebuffer configuration into UEFI's configuration table for kernel retrieval
+        let status = (bs.install_configuration_table)(
+            FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID.as_ptr(),
+            config_ptr as *mut c_void,
+        );
 
         serial::_print(format_args!(
             "INSTALL_CONFIG_TABLE: returned from call, status={:#x}\n",

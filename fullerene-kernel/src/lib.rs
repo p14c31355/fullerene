@@ -121,7 +121,12 @@ pub fn graphics_test_loop() -> ! {
         // Now start the full scheduler to integrate all system functionality
         crate::scheduler::scheduler_loop();
     } else {
-        crate::graphics::_print(format_args!("Graphics: ERROR - SimpleFramebuffer not initialized, falling back to scheduler anyway\n"));
+        log::error!("SimpleFramebuffer initialization failed. Graphics functionality is not available. Falling back to text-only system shell.");
+        crate::graphics::_print(format_args!("Graphics: ERROR - SimpleFramebuffer not initialized, falling back to text-only shell\n"));
+        // Ensure VGA text mode is available for user interface
+        crate::vga::init_vga();
+        // Log to serial for debugging
+        log::info!("Initialized VGA text mode for fallback shell operation");
         // Fallback to scheduler even without graphics
         crate::scheduler::scheduler_loop();
     }

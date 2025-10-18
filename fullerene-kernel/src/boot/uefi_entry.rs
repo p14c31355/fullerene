@@ -104,8 +104,13 @@ pub extern "efiapi" fn efi_main(
     let framebuffer_config = crate::memory::find_framebuffer_config(system_table);
     // Save the config globally for later use after exit_boot_services
     if let Some(config) = &framebuffer_config {
-        petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| Mutex::new(Some(**config)));
-        log::info!("Saved framebuffer config globally for kernel use");
+        // Ensure FULLERENE_FRAMEBUFFER_CONFIG is not already initialized before attempting to set it
+        if petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().is_some() {
+            log::warn!("FULLERENE_FRAMEBUFFER_CONFIG is already initialized, skipping to prevent overwriting");
+        } else {
+            petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| Mutex::new(Some(**config)));
+            log::info!("Saved framebuffer config globally for kernel use");
+        }
     }
     let config = framebuffer_config.as_ref();
     let (fb_addr, fb_size) = if let Some(config) = config {
@@ -343,8 +348,7 @@ pub extern "efiapi" fn efi_main(
     log::info!("Starting full system scheduler...");
     scheduler_loop();
     // scheduler_loop should never return in normal operation
-
-    log::info!("Scheduler exited unexpectedly, entering idle loop");
+    panic!("scheduler_loop returned unexpectedly - kernel critical failure!");
     } else {
         log::info!("Graphics initialization failed, enabling interrupts anyway for debugging");
         x86_64::instructions::interrupts::enable();
