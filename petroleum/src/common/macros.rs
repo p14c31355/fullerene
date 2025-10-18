@@ -476,9 +476,9 @@ macro_rules! init_log {
 #[macro_export]
 macro_rules! update_vga_cursor {
     ($pos:expr) => {{
-        port_write!($crate::graphics::ports::HardwarePorts::CRTC_INDEX, 0x0Fu8);
+        port_write!($crate::graphics::ports::HardwarePorts::CRTC_INDEX, $crate::graphics::ports::HardwarePorts::CURSOR_POS_LOW_REG);
         port_write!($crate::graphics::ports::HardwarePorts::CRTC_DATA, (($pos & 0xFFusize) as u8));
-        port_write!($crate::graphics::ports::HardwarePorts::CRTC_INDEX, 0x0Eu8);
+        port_write!($crate::graphics::ports::HardwarePorts::CRTC_INDEX, $crate::graphics::ports::HardwarePorts::CURSOR_POS_HIGH_REG);
         port_write!($crate::graphics::ports::HardwarePorts::CRTC_DATA, ((($pos >> 8) & 0xFFusize) as u8));
     }};
 }
