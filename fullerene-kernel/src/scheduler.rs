@@ -183,7 +183,9 @@ fn monitor_environment() {
     let system_stats = collect_system_stats();
 
     // If memory usage is high, perform garbage collection
-    if system_stats.memory_used > system_stats.memory_used / 4 * 3 { // >75%
+    let allocator = petroleum::page_table::ALLOCATOR.lock();
+    let total_memory = allocator.size();
+    if total_memory > 0 && system_stats.memory_used > total_memory * 3 / 4 { // >75%
         log::debug!("High memory usage detected, running memory optimization");
         // petroleum::page_table::ALLOCATOR.lock().optimize(); // Method not available
     }
