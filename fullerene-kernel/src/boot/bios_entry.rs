@@ -5,11 +5,7 @@ use petroleum::common::VgaFramebufferConfig;
 #[cfg(not(target_os = "uefi"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start() -> ! {
-    // Integrated init_common functionality
-    petroleum::init_log!("init_common: About to init VGA");
-    crate::vga::init_vga();
-    petroleum::init_log!("VGA init done");
-    petroleum::serial::serial_init();
+    crate::init::init_common();
     log::info!("Entering _start (BIOS mode)...");
 
     // Graphics initialization for VGA framebuffer (graphics mode)
