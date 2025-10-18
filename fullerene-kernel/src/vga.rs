@@ -1,5 +1,5 @@
 use petroleum::graphics::ports::HardwarePorts;
-use petroleum::{clear_buffer, Color, ColorCode, ScreenChar, TextBufferOperations, port_write, handle_write_byte};
+use petroleum::{clear_buffer, Color, ColorCode, ScreenChar, TextBufferOperations, port_write, handle_write_byte, update_vga_cursor};
 use spin::{Mutex, Once};
 
 const BUFFER_HEIGHT: usize = 25;
@@ -35,10 +35,7 @@ impl VgaBuffer {
     /// Updates the hardware cursor position.
     pub fn update_cursor(&self) {
         let pos = self.row_position * BUFFER_WIDTH + self.column_position;
-        port_write!(HardwarePorts::CRTC_INDEX, CURSOR_POS_LOW_REG);
-        port_write!(HardwarePorts::CRTC_DATA, (pos & 0xFF) as u8);
-        port_write!(HardwarePorts::CRTC_INDEX, CURSOR_POS_HIGH_REG);
-        port_write!(HardwarePorts::CRTC_DATA, ((pos >> 8) & 0xFF) as u8);
+        update_vga_cursor!(pos);
     }
 }
 
