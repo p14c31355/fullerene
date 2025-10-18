@@ -610,8 +610,8 @@ unsafe fn map_kernel_segments(
 
             // Derive flags from p_flags
             let mut flags = Flags::PRESENT;
-            if phdr.p_flags & 2 != 0 { flags |= Flags::WRITABLE; }
-            if phdr.p_flags & 1 == 0 { flags |= Flags::NO_EXECUTE; }
+            if (phdr.p_flags & 2) != 0 { flags |= Flags::WRITABLE; }
+            if (phdr.p_flags & 1) == 0 { flags |= Flags::NO_EXECUTE; }
             // Read bit is always present for loadable segments
 
             let pages = segment_size.div_ceil(4096);
