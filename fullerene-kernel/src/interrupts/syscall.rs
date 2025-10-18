@@ -91,12 +91,13 @@ pub fn setup_syscall() {
         Msr::new(0xC0000084).write(RFlags::INTERRUPT_FLAG.bits() | RFlags::TRAP_FLAG.bits());
     }
 
-    // Set GS base to point to safe kernel stack to prevent page fault vulnerabilities
-    let stack_top_addr = syscall_kernel_stack_top();
+    // Set KERNEL_GS_BASE to point to the static variable holding the syscall kernel stack top.
+    use x86_64::registers::model_specific::KernelGsBase;
     unsafe {
-        GsBase::write(VirtAddr::new(stack_top_addr));
+        KernelGsBase::write(VirtAddr::new(&SYSCALL_KERNEL_STACK as *const _ as u64));
     }
 
+    let stack_top_addr = SYSCALL_KERNEL_STACK.load(Ordering::Relaxed) as u64;
     petroleum::serial::serial_log(format_args!(
         "Fast syscall mechanism initialized with LSTAR at {:#x}, kernel stack at {:#x}\n",
         entry_addr, stack_top_addr
