@@ -1,26 +1,27 @@
 // Use crate imports
 use crate::scheduler::scheduler_loop;
 
+use crate::MEMORY_MAP;
 use crate::graphics::framebuffer::FramebufferLike;
 use crate::heap;
-use crate::MEMORY_MAP;
 
 use crate::memory::find_heap_start;
 use crate::{gdt, graphics, interrupts, memory};
 use alloc::boxed::Box;
 use core::ffi::c_void;
-use spin::Mutex;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::uefi::{efi_print, find_gop_framebuffer, write_vga_string};
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
 use petroleum::{allocate_heap_from_map, debug_log, write_serial_bytes};
-use x86_64::{structures::paging::{Mapper, Size4KiB}, PhysAddr, VirtAddr};
+use spin::Mutex;
+use x86_64::{
+    PhysAddr, VirtAddr,
+    structures::paging::{Mapper, Size4KiB},
+};
 
 use petroleum::graphics::{
     VGA_MODE13H_ADDRESS, VGA_MODE13H_BPP, VGA_MODE13H_HEIGHT, VGA_MODE13H_STRIDE, VGA_MODE13H_WIDTH,
 };
-
-
 
 #[cfg(target_os = "uefi")]
 #[unsafe(export_name = "efi_main")]
@@ -57,7 +58,9 @@ pub extern "efiapi" fn efi_main(
     let system_table = unsafe { &*system_table };
 
     // Skip VGA detection and use standard mode to avoid PCI access issues post-UEFI
-    petroleum::serial::serial_log(format_args!("Initializing VGA graphics in standard mode...\n"));
+    petroleum::serial::serial_log(format_args!(
+        "Initializing VGA graphics in standard mode...\n"
+    ));
     petroleum::graphics::setup::setup_vga_mode_13h();
     petroleum::serial::serial_log(format_args!("VGA graphics initialization completed\n"));
 
@@ -124,17 +127,31 @@ pub extern "efiapi" fn efi_main(
 
     // Reinit page tables to kernel page tables with framebuffer size using frame allocator
     log::info!("Reinit page tables to kernel page tables with framebuffer info");
-    let mut frame_allocator = unsafe { petroleum::page_table::BootInfoFrameAllocator::init(*MEMORY_MAP.get().expect("Memory map not initialized")) };
-    let physical_memory_offset = heap::reinit_page_table_with_allocator(kernel_phys_start, fb_addr, fb_size, &mut frame_allocator);
+    let mut frame_allocator = unsafe {
+        petroleum::page_table::BootInfoFrameAllocator::init(
+            *MEMORY_MAP.get().expect("Memory map not initialized"),
+        )
+    };
+    let physical_memory_offset = heap::reinit_page_table_with_allocator(
+        kernel_phys_start,
+        fb_addr,
+        fb_size,
+        &mut frame_allocator,
+    );
     log::info!("Page table reinit completed successfully");
 
     // Set kernel CR3 for syscall to access kernel heap
     let kernel_cr3 = x86_64::registers::control::Cr3::read();
     crate::interrupts::syscall::set_kernel_cr3(kernel_cr3.0.start_address().as_u64());
-    log::info!("Kernel CR3 set for syscall: {:#x}", kernel_cr3.0.start_address().as_u64());
+    log::info!(
+        "Kernel CR3 set for syscall: {:#x}",
+        kernel_cr3.0.start_address().as_u64()
+    );
 
     // Set physical memory offset for process management
-    crate::memory_management::set_physical_memory_offset(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE);
+    crate::memory_management::set_physical_memory_offset(
+        crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE,
+    );
 
     // Initialize GDT with proper heap address
     let heap_phys_start = find_heap_start(*MEMORY_MAP.get().expect("Memory map not initialized"));
@@ -162,11 +179,17 @@ pub extern "efiapi" fn efi_main(
         let virt_addr = physical_memory_offset + phys_addr_u64;
 
         let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
-        let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
+        let frame =
+            x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
 
-        let flags = x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+        let flags = x86_64::structures::paging::PageTableFlags::PRESENT
+            | x86_64::structures::paging::PageTableFlags::WRITABLE
+            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
         unsafe {
-            mapper.map_to(page, frame, flags, &mut frame_allocator).expect("Failed to map heap page").flush();
+            mapper
+                .map_to(page, frame, flags, &mut frame_allocator)
+                .expect("Failed to map heap page")
+                .flush();
         }
     }
     log::info!("Heap memory mapped successfully");
@@ -199,11 +222,17 @@ pub extern "efiapi" fn efi_main(
         let virt_addr = physical_memory_offset + phys_addr_u64;
 
         let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
-        let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
+        let frame =
+            x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
 
-        let flags = x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+        let flags = x86_64::structures::paging::PageTableFlags::PRESENT
+            | x86_64::structures::paging::PageTableFlags::WRITABLE
+            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
         unsafe {
-            mapper.map_to(page, frame, flags, &mut frame_allocator).expect("Failed to map stack page").flush();
+            mapper
+                .map_to(page, frame, flags, &mut frame_allocator)
+                .expect("Failed to map stack page")
+                .flush();
         }
     }
     log::info!("Stack memory mapped successfully");
@@ -249,11 +278,12 @@ pub extern "efiapi" fn efi_main(
         let ptr_str_len = petroleum::serial::format_hex_to_buffer(
             heap_start_after_stack.as_mut_ptr::<u8>() as u64,
             &mut serial_buf,
-            16
+            16,
         );
         write_serial_bytes!(0x3F8, 0x3FD, b"Before allocator.init() with ptr=0x");
         write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..ptr_str_len]);
-        let size_str_len = petroleum::serial::format_dec_to_buffer(heap_size_remaining, &mut serial_buf);
+        let size_str_len =
+            petroleum::serial::format_dec_to_buffer(heap_size_remaining, &mut serial_buf);
         write_serial_bytes!(0x3F8, 0x3FD, b" size=");
         write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..size_str_len]);
         write_serial_bytes!(0x3F8, 0x3FD, b"\n");
@@ -261,7 +291,10 @@ pub extern "efiapi" fn efi_main(
         write_serial_bytes!(0x3F8, 0x3FD, b"Calling allocator.init() with size=");
         write_serial_bytes!(0x3F8, 0x3FD, &serial_buf[..size_str_len]);
         write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-        allocator.init(heap_start_after_stack.as_mut_ptr::<u8>(), heap_size_remaining);
+        allocator.init(
+            heap_start_after_stack.as_mut_ptr::<u8>(),
+            heap_size_remaining,
+        );
         write_serial_bytes!(0x3F8, 0x3FD, b"allocator.init() completed successfully\n");
         write_serial_bytes!(0x3F8, 0x3FD, b"Allocator initialized successfully\n");
     }
@@ -367,7 +400,10 @@ pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str)
         }
     };
 
-    log::info!("Calling graphics::text::init with {} config...", source_name);
+    log::info!(
+        "Calling graphics::text::init with {} config...",
+        source_name
+    );
     graphics::text::init(config);
 
     log::info!("Checking if framebuffer was initialized...");
@@ -384,11 +420,20 @@ pub fn try_init_graphics(config: &FullereneFramebufferConfig, source_name: &str)
         );
 
         // Test direct pixel write to verify access
-        log::info!("Testing {} framebuffer access with direct pixel write...", source_name);
+        log::info!(
+            "Testing {} framebuffer access with direct pixel write...",
+            source_name
+        );
         fb_writer.lock().put_pixel(100, 100, 0xFF0000);
-        log::info!("Direct {} pixel write test completed - red dot should be visible at 100,100", source_name);
+        log::info!(
+            "Direct {} pixel write test completed - red dot should be visible at 100,100",
+            source_name
+        );
     } else {
-        log::error!("CRITICAL ERROR: {} framebuffer initialization failed! text::FRAMEBUFFER_UEFI.get() returned None", source_name);
+        log::error!(
+            "CRITICAL ERROR: {} framebuffer initialization failed! text::FRAMEBUFFER_UEFI.get() returned None",
+            source_name
+        );
         // Restore VGA text buffer if graphics init failed
         restore_vga_text_buffer(&vga_backup);
         petroleum::graphics::init_vga_text_mode();

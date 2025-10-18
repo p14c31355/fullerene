@@ -139,18 +139,29 @@ pub fn draw_os_desktop() {
     } else {
         "BIOS"
     };
-    crate::graphics::_print(format_args!("Graphics: draw_os_desktop() called in {} mode\n", mode));
+    crate::graphics::_print(format_args!(
+        "Graphics: draw_os_desktop() called in {} mode\n",
+        mode
+    ));
 
     if let Some(fb_writer) = fb_option {
-        crate::graphics::_print(format_args!("Graphics: {} framebuffer found, locking...\n", mode));
+        crate::graphics::_print(format_args!(
+            "Graphics: {} framebuffer found, locking...\n",
+            mode
+        ));
         let mut locked = fb_writer.lock();
-        crate::graphics::_print(format_args!("Graphics: framebuffer locked, checking mode...\n"));
+        crate::graphics::_print(format_args!(
+            "Graphics: framebuffer locked, checking mode...\n"
+        ));
         if locked.is_vga() {
             crate::graphics::_print(format_args!(
                 "Graphics: VGA text mode active, desktop drawing skipped\n"
             ));
         } else {
-            crate::graphics::_print(format_args!("Graphics: proceeding to draw {} desktop...\n", mode));
+            crate::graphics::_print(format_args!(
+                "Graphics: proceeding to draw {} desktop...\n",
+                mode
+            ));
             draw_desktop_internal(&mut *locked, mode);
         }
     } else {

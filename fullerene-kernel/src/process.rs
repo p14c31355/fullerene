@@ -3,11 +3,11 @@
 //! This module provides process creation, scheduling, and context switching
 //! capabilities for user-space programs.
 
-use petroleum::page_table::PageTableHelper;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, Ordering};
+use petroleum::page_table::PageTableHelper;
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -461,7 +461,9 @@ pub fn get_process_count() -> usize {
 
 /// Get number of active processes (ready or running)
 pub fn get_active_process_count() -> usize {
-    PROCESS_LIST.lock().iter()
+    PROCESS_LIST
+        .lock()
+        .iter()
         .filter(|p| p.state == ProcessState::Ready || p.state == ProcessState::Running)
         .count()
 }

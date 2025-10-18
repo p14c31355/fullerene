@@ -4,27 +4,54 @@ use crate::interrupts;
 use petroleum::{InitSequence, init_log, write_serial_bytes};
 
 #[cfg(target_os = "uefi")]
-fn init_vga_step() -> Result<(), &'static str> { crate::vga::init_vga(); Ok(()) }
+fn init_vga_step() -> Result<(), &'static str> {
+    crate::vga::init_vga();
+    Ok(())
+}
 #[cfg(target_os = "uefi")]
-fn init_apic_step() -> Result<(), &'static str> { interrupts::init_apic(); Ok(()) }
+fn init_apic_step() -> Result<(), &'static str> {
+    interrupts::init_apic();
+    Ok(())
+}
 #[cfg(target_os = "uefi")]
-fn init_process_step() -> Result<(), &'static str> { crate::process::init(); Ok(()) }
+fn init_process_step() -> Result<(), &'static str> {
+    crate::process::init();
+    Ok(())
+}
 #[cfg(target_os = "uefi")]
-fn init_syscall_step() -> Result<(), &'static str> { crate::syscall::init(); Ok(()) }
+fn init_syscall_step() -> Result<(), &'static str> {
+    crate::syscall::init();
+    Ok(())
+}
 #[cfg(target_os = "uefi")]
-fn init_fs_step() -> Result<(), &'static str> { crate::fs::init(); Ok(()) }
+fn init_fs_step() -> Result<(), &'static str> {
+    crate::fs::init();
+    Ok(())
+}
 #[cfg(target_os = "uefi")]
-fn init_loader_step() -> Result<(), &'static str> { crate::loader::init(); Ok(()) }
+fn init_loader_step() -> Result<(), &'static str> {
+    crate::loader::init();
+    Ok(())
+}
 
 #[cfg(target_os = "uefi")]
 pub fn init_common() {
     let steps = [
         ("VGA", init_vga_step as fn() -> Result<(), &'static str>),
         ("APIC", init_apic_step as fn() -> Result<(), &'static str>),
-        ("process", init_process_step as fn() -> Result<(), &'static str>),
-        ("syscall", init_syscall_step as fn() -> Result<(), &'static str>),
+        (
+            "process",
+            init_process_step as fn() -> Result<(), &'static str>,
+        ),
+        (
+            "syscall",
+            init_syscall_step as fn() -> Result<(), &'static str>,
+        ),
         ("fs", init_fs_step as fn() -> Result<(), &'static str>),
-        ("loader", init_loader_step as fn() -> Result<(), &'static str>),
+        (
+            "loader",
+            init_loader_step as fn() -> Result<(), &'static str>,
+        ),
     ];
 
     InitSequence::new(&steps).run();

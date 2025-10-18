@@ -2,7 +2,10 @@ use embedded_graphics::{geometry::Size, pixelcolor::Rgb888, prelude::*};
 use petroleum::common::EfiGraphicsPixelFormat;
 use petroleum::common::FullereneFramebufferConfig;
 use petroleum::common::VgaFramebufferConfig;
-use petroleum::graphics::color::{rgb_pixel, vga_color_index, ColorScheme, FramebufferInfo, PixelType, SimpleFramebuffer, SimpleFramebufferConfig, SIMPLE_FRAMEBUFFER_CONFIG};
+use petroleum::graphics::color::{
+    ColorScheme, FramebufferInfo, PixelType, SIMPLE_FRAMEBUFFER_CONFIG, SimpleFramebuffer,
+    SimpleFramebufferConfig, rgb_pixel, vga_color_index,
+};
 use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
 use spin::{Mutex, Once};
 

@@ -8,7 +8,9 @@ pub mod memory_map;
 // Note: MAPPER and FRAME_ALLOCATOR are pub(crate), not re-exportable
 pub use memory_map::init_frame_allocator;
 
-pub use petroleum::page_table::{HIGHER_HALF_OFFSET, reinit_page_table_with_allocator, BootInfoFrameAllocator};
+pub use petroleum::page_table::{
+    BootInfoFrameAllocator, HIGHER_HALF_OFFSET, reinit_page_table_with_allocator,
+};
 
 // Heap size constant moved to petroleum - for now define locally
 pub const HEAP_SIZE: usize = 1024 * 1024; // 1MB heap
@@ -20,6 +22,9 @@ pub fn reinit_page_table(
     fb_addr: Option<x86_64::VirtAddr>,
     fb_size: Option<u64>,
 ) -> x86_64::VirtAddr {
-    let mut frame_allocator = memory_map::FRAME_ALLOCATOR.get().expect("Frame allocator not initialized").lock();
+    let mut frame_allocator = memory_map::FRAME_ALLOCATOR
+        .get()
+        .expect("Frame allocator not initialized")
+        .lock();
     reinit_page_table_with_allocator(kernel_phys_start, fb_addr, fb_size, &mut *frame_allocator)
 }

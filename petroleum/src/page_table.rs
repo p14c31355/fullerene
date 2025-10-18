@@ -1,7 +1,7 @@
 use x86_64::{
     PhysAddr, VirtAddr,
-    registers::control::Cr3,
     instructions::tlb,
+    registers::control::Cr3,
     structures::paging::{
         FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PhysFrame, Size4KiB, Translate,
     },
@@ -195,11 +195,15 @@ pub fn reinit_page_table_with_allocator(
             let virt_addr = phys_offset + phys_addr.as_u64();
 
             let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
-            let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
+            let frame =
+                x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
 
             let flags = Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE;
             unsafe {
-                mapper.map_to(page, frame, flags, frame_allocator).expect("Failed to map framebuffer page").flush();
+                mapper
+                    .map_to(page, frame, flags, frame_allocator)
+                    .expect("Failed to map framebuffer page")
+                    .flush();
             }
         }
     }
@@ -214,11 +218,15 @@ pub fn reinit_page_table_with_allocator(
         let virt_addr = phys_offset + phys_addr.as_u64();
 
         let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
-        let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
+        let frame =
+            x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
 
         let flags = Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE;
         unsafe {
-            mapper.map_to(page, frame, flags, frame_allocator).expect("Failed to map VGA memory page").flush();
+            mapper
+                .map_to(page, frame, flags, frame_allocator)
+                .expect("Failed to map VGA memory page")
+                .flush();
         }
     }
 
@@ -255,15 +263,30 @@ pub trait PageTableHelper {
         flags: PageFlags,
         frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
     ) -> crate::common::logging::SystemResult<()>;
-    fn unmap_page(&mut self, virtual_addr: usize) -> crate::common::logging::SystemResult<x86_64::structures::paging::PhysFrame<Size4KiB>>;
-    fn translate_address(&self, virtual_addr: usize) -> crate::common::logging::SystemResult<usize>;
-    fn set_page_flags(&mut self, virtual_addr: usize, flags: PageFlags) -> crate::common::logging::SystemResult<()>;
-    fn get_page_flags(&self, virtual_addr: usize) -> crate::common::logging::SystemResult<PageFlags>;
+    fn unmap_page(
+        &mut self,
+        virtual_addr: usize,
+    ) -> crate::common::logging::SystemResult<x86_64::structures::paging::PhysFrame<Size4KiB>>;
+    fn translate_address(&self, virtual_addr: usize)
+    -> crate::common::logging::SystemResult<usize>;
+    fn set_page_flags(
+        &mut self,
+        virtual_addr: usize,
+        flags: PageFlags,
+    ) -> crate::common::logging::SystemResult<()>;
+    fn get_page_flags(
+        &self,
+        virtual_addr: usize,
+    ) -> crate::common::logging::SystemResult<PageFlags>;
     fn flush_tlb(&mut self, virtual_addr: usize) -> crate::common::logging::SystemResult<()>;
     fn flush_tlb_all(&mut self) -> crate::common::logging::SystemResult<()>;
     fn create_page_table(&mut self) -> crate::common::logging::SystemResult<usize>;
-    fn destroy_page_table(&mut self, table_addr: usize) -> crate::common::logging::SystemResult<()>;
-    fn clone_page_table(&mut self, source_table: usize) -> crate::common::logging::SystemResult<usize>;
+    fn destroy_page_table(&mut self, table_addr: usize)
+    -> crate::common::logging::SystemResult<()>;
+    fn clone_page_table(
+        &mut self,
+        source_table: usize,
+    ) -> crate::common::logging::SystemResult<usize>;
     fn switch_page_table(&mut self, table_addr: usize) -> crate::common::logging::SystemResult<()>;
     fn current_page_table(&self) -> usize;
 }
@@ -322,7 +345,10 @@ impl PageTableManager {
     }
 
     /// Initialize paging
-    pub fn init_paging(&mut self, physical_memory_offset: VirtAddr) -> crate::common::logging::SystemResult<()> {
+    pub fn init_paging(
+        &mut self,
+        physical_memory_offset: VirtAddr,
+    ) -> crate::common::logging::SystemResult<()> {
         let frame = if let Some(frame) = self.pml4_frame {
             frame
         } else {
@@ -335,10 +361,7 @@ impl PageTableManager {
         unsafe {
             let table_virt = physical_memory_offset + self.current_page_table as u64;
             let table_ptr = table_virt.as_mut_ptr() as *mut PageTable;
-            let mapper = OffsetPageTable::new(
-                &mut *table_ptr,
-                physical_memory_offset,
-            );
+            let mapper = OffsetPageTable::new(&mut *table_ptr, physical_memory_offset);
             self.mapper = Some(mapper);
         }
 
@@ -377,21 +400,31 @@ impl PageTableHelper for PageTableManager {
         Ok(())
     }
 
-        fn unmap_page(&mut self, virtual_addr: usize) -> crate::common::logging::SystemResult<x86_64::structures::paging::PhysFrame<Size4KiB>> {
+    fn unmap_page(
+        &mut self,
+        virtual_addr: usize,
+    ) -> crate::common::logging::SystemResult<x86_64::structures::paging::PhysFrame<Size4KiB>> {
         if !self.initialized {
             return Err(crate::common::logging::SystemError::InternalError);
         }
 
         let mapper = self.mapper.as_mut().unwrap();
-        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(virtual_addr as u64));
+        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(
+            x86_64::VirtAddr::new(virtual_addr as u64),
+        );
 
-        let (frame, flush) = mapper.unmap(page).map_err(|_| crate::common::logging::SystemError::UnmappingFailed)?;
+        let (frame, flush) = mapper
+            .unmap(page)
+            .map_err(|_| crate::common::logging::SystemError::UnmappingFailed)?;
         flush.flush();
 
         Ok(frame)
     }
 
-    fn translate_address(&self, virtual_addr: usize) -> crate::common::logging::SystemResult<usize> {
+    fn translate_address(
+        &self,
+        virtual_addr: usize,
+    ) -> crate::common::logging::SystemResult<usize> {
         if !self.initialized {
             return Err(crate::common::logging::SystemError::InternalError);
         }
@@ -405,22 +438,34 @@ impl PageTableHelper for PageTableManager {
         }
     }
 
-    fn set_page_flags(&mut self, virtual_addr: usize, flags: PageFlags) -> crate::common::logging::SystemResult<()> {
+    fn set_page_flags(
+        &mut self,
+        virtual_addr: usize,
+        flags: PageFlags,
+    ) -> crate::common::logging::SystemResult<()> {
         if !self.initialized {
             return Err(crate::common::logging::SystemError::InternalError);
         }
 
         let mapper = self.mapper.as_mut().unwrap();
-        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(virtual_addr as u64));
+        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(
+            x86_64::VirtAddr::new(virtual_addr as u64),
+        );
 
         unsafe {
-            mapper.update_flags(page, flags).map_err(|_| crate::common::logging::SystemError::MappingFailed)?.flush();
+            mapper
+                .update_flags(page, flags)
+                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
+                .flush();
         }
 
         Ok(())
     }
 
-    fn get_page_flags(&self, virtual_addr: usize) -> crate::common::logging::SystemResult<PageFlags> {
+    fn get_page_flags(
+        &self,
+        virtual_addr: usize,
+    ) -> crate::common::logging::SystemResult<PageFlags> {
         if !self.initialized {
             return Err(crate::common::logging::SystemError::InternalError);
         }
@@ -497,7 +542,10 @@ impl PageTableHelper for PageTableManager {
         Ok(0x1000)
     }
 
-    fn destroy_page_table(&mut self, _table_addr: usize) -> crate::common::logging::SystemResult<()> {
+    fn destroy_page_table(
+        &mut self,
+        _table_addr: usize,
+    ) -> crate::common::logging::SystemResult<()> {
         if !self.initialized {
             return Err(crate::common::logging::SystemError::InternalError);
         }
@@ -505,7 +553,10 @@ impl PageTableHelper for PageTableManager {
         Ok(())
     }
 
-    fn clone_page_table(&mut self, _source_table: usize) -> crate::common::logging::SystemResult<usize> {
+    fn clone_page_table(
+        &mut self,
+        _source_table: usize,
+    ) -> crate::common::logging::SystemResult<usize> {
         if !self.initialized {
             return Err(crate::common::logging::SystemError::InternalError);
         }
@@ -587,10 +638,14 @@ unsafe fn map_kernel_segments(
             let phys_addr = kernel_phys_start + (i * 4096);
             let virt_addr = phys_offset + phys_addr.as_u64();
             let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
-            let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
+            let frame =
+                x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
             let flags = Flags::PRESENT | Flags::WRITABLE;
             unsafe {
-                mapper.map_to(page, frame, flags, frame_allocator).expect("Failed to map kernel page").flush();
+                mapper
+                    .map_to(page, frame, flags, frame_allocator)
+                    .expect("Failed to map kernel page")
+                    .flush();
             }
         }
         return;
@@ -602,7 +657,8 @@ unsafe fn map_kernel_segments(
         let phdr_ptr = (phdr_base + i as u64 * ehdr.e_phentsize as u64) as *const Elf64Phdr;
         let phdr = unsafe { &*phdr_ptr };
 
-        if phdr.p_type == 1 { // PT_LOAD
+        if phdr.p_type == 1 {
+            // PT_LOAD
             // Map the segment
             let segment_start_phys = kernel_phys_start.as_u64() + phdr.p_offset;
             let segment_start_virt = phdr.p_vaddr;
@@ -610,18 +666,28 @@ unsafe fn map_kernel_segments(
 
             // Derive flags from p_flags
             let mut flags = Flags::PRESENT;
-            if (phdr.p_flags & 2) != 0 { flags |= Flags::WRITABLE; }
-            if (phdr.p_flags & 1) == 0 { flags |= Flags::NO_EXECUTE; }
+            if (phdr.p_flags & 2) != 0 {
+                flags |= Flags::WRITABLE;
+            }
+            if (phdr.p_flags & 1) == 0 {
+                flags |= Flags::NO_EXECUTE;
+            }
             // Read bit is always present for loadable segments
 
             let pages = segment_size.div_ceil(4096);
             for p in 0..pages {
                 let phys_addr = PhysAddr::new(segment_start_phys + p * 4096);
                 let virt_addr = VirtAddr::new(segment_start_virt + p * 4096);
-                let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
-                let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
+                let page =
+                    x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
+                let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(
+                    phys_addr,
+                );
                 unsafe {
-                    mapper.map_to(page, frame, flags, frame_allocator).expect("Failed to map kernel segment").flush();
+                    mapper
+                        .map_to(page, frame, flags, frame_allocator)
+                        .expect("Failed to map kernel segment")
+                        .flush();
                 }
             }
         }

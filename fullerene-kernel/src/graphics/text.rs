@@ -14,7 +14,9 @@ use spin::{Mutex, Once};
 
 // Imports from other modules
 use super::framebuffer::{FramebufferLike, FramebufferWriter};
-use petroleum::graphics::color::{FramebufferInfo, PixelType, SimpleFramebufferConfig, init_simple_framebuffer_config};
+use petroleum::graphics::color::{
+    FramebufferInfo, PixelType, SimpleFramebufferConfig, init_simple_framebuffer_config,
+};
 
 // Optimized text rendering using embedded-graphics
 // Batcher processing for efficiency and reduced code complexity
@@ -150,8 +152,7 @@ pub fn init(config: &FullereneFramebufferConfig) {
             petroleum::serial::serial_log(format_args!(
                 "Graphics: Using 32-bit UEFI graphics mode\n"
             ));
-            let writer =
-                FramebufferWriter::<u32>::new(FramebufferInfo::new(config));
+            let writer = FramebufferWriter::<u32>::new(FramebufferInfo::new(config));
             (
                 Box::new(writer.clone()) as Box<dyn core::fmt::Write + Send + Sync>,
                 super::framebuffer::UefiFramebuffer::Uefi32(writer),

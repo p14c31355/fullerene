@@ -1,10 +1,10 @@
 use crate::common::{
     BellowsError, EFI_FILE_INFO_GUID, EfiBootServices, EfiFile, EfiFileInfo, EfiStatus,
 };
-use log;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr;
+use log;
 
 const EFI_FILE_MODE_READ: u64 = 0x1;
 const KERNEL_PATH: &str = r"EFI\BOOT\KERNEL.EFI";
@@ -125,8 +125,7 @@ pub fn read_file_to_memory(
     let mut phys_addr: usize = 0;
 
     unsafe {
-        let status =
-        ((*bs).allocate_pages)(
+        let status = ((*bs).allocate_pages)(
             0usize,
             crate::common::EfiMemoryType::EfiLoaderData,
             pages,

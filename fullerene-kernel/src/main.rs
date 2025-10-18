@@ -45,21 +45,13 @@ const VGA_COLOR_GREEN_ON_BLACK: u16 = 0x0200;
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    use petroleum::serial::_print;
-    use x86_64::instructions::hlt;
-
-    _print(format_args!("KERNEL PANIC: {}\n", info));
-
-    // Visual indicator on VGA screen for kernel panic
     unsafe {
-        let vga_buffer = &mut *(VGA_BUFFER_ADDRESS as *mut [u16; 25*80]);
+        // Display panic message on VGA screen briefly
+        let vga_buffer = &mut *(VGA_BUFFER_ADDRESS as *mut [u16; 25 * 80]);
         let panic_msg = b"PANIC!";
         for (i, &byte) in panic_msg.iter().enumerate() {
             vga_buffer[i] = (VGA_COLOR_GREEN_ON_BLACK << 8) | byte as u16;
         }
     }
-
-    loop {
-        hlt(); // Use hlt to halt the CPU in case of a kernel panic
-    }
+    loop {} // Infinite loop for panic
 }

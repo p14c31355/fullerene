@@ -1,1 +1,1 @@
-pub use petroleum::common::syscall::{write, exit, getpid, sleep};
+pub use petroleum::common::syscall::{exit, getpid, sleep, write};

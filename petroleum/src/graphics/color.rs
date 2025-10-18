@@ -1,18 +1,11 @@
+use embedded_graphics::mono_font::{MonoTextStyle, ascii::FONT_6X10};
+use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
 use embedded_graphics::{geometry::Point, pixelcolor::Rgb888, prelude::*};
-use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle}; // For macros
-use embedded_graphics::text::Text; // For text rendering
-use embedded_graphics::mono_font::{MonoTextStyle, ascii::FONT_6X10}; // For text rendering
 
 use core::marker::{Send, Sync};
 use core::ptr::{read_volatile, write_volatile};
-use alloc::string::ToString; // For Button text
 
-// Corrected imports for internal crate references
-// rgb_pixel is defined in this file, so no explicit import is needed within the same module.
-// clear_buffer_pixels and scroll_buffer_pixels are top-level exports of the petroleum crate.
-// Changed 'use petroleum::{...}' to 'use crate::{...}' as color.rs is part of the petroleum crate.
-use crate::{clear_buffer_pixels, scroll_buffer_pixels};
-use crate::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig, VgaFramebufferConfig}; // Assuming common is a submodule of petroleum
+use crate::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig, VgaFramebufferConfig};
 use spin::{Mutex, Once};
 
 // --- FramebufferInfo ---
@@ -185,7 +178,8 @@ pub fn vga_color_index(r: u8, g: u8, b: u8) -> u32 {
 
 // --- SimpleFramebuffer ---
 /// Global simple framebuffer config (Redox vesad-style)
-pub static SIMPLE_FRAMEBUFFER_CONFIG: Once<spin::Mutex<Option<SimpleFramebufferConfig>>> = Once::new();
+pub static SIMPLE_FRAMEBUFFER_CONFIG: Once<spin::Mutex<Option<SimpleFramebufferConfig>>> =
+    Once::new();
 
 /// Simple framebuffer config for recreation
 #[derive(Clone, Copy)]
@@ -242,7 +236,10 @@ impl SimpleFramebuffer {
 
                 // Check that the calculated pixel_addr is within the valid framebuffer memory region
                 let pixel_addr_usize = pixel_addr as usize;
-                if pixel_addr_usize < self.base || (pixel_addr_usize + self.bytes_per_pixel) > (self.base + self.height * self.stride) {
+                if pixel_addr_usize < self.base
+                    || (pixel_addr_usize + self.bytes_per_pixel)
+                        > (self.base + self.height * self.stride)
+                {
                     continue;
                 }
 
@@ -268,7 +265,9 @@ impl SimpleFramebuffer {
 
         // Check that the calculated pixel_addr is within the valid framebuffer memory region
         let pixel_addr_usize = pixel_addr as usize;
-        if pixel_addr_usize < self.base || (pixel_addr_usize + self.bytes_per_pixel) > (self.base + self.height * self.stride) {
+        if pixel_addr_usize < self.base
+            || (pixel_addr_usize + self.bytes_per_pixel) > (self.base + self.height * self.stride)
+        {
             return;
         }
 

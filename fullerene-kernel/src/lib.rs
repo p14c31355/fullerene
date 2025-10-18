@@ -52,7 +52,6 @@ pub mod process; // Process management
 pub mod shell;
 pub mod syscall; // System calls // Shell/CLI interface
 
-
 // Submodules for modularizing main.rs
 pub mod boot;
 pub mod init;
@@ -64,12 +63,12 @@ pub use initializer::{initialize_system, register_system_component};
 
 // Re-export traits with explicit imports to avoid conflicts
 
+pub use petroleum::page_table::PageTableHelper;
 pub use traits::HardwareDevice;
 pub use traits::{
-    ErrorLogging, FrameAllocator, Initializable, MemoryManager,
-    ProcessMemoryManager, SyscallHandler,
+    ErrorLogging, FrameAllocator, Initializable, MemoryManager, ProcessMemoryManager,
+    SyscallHandler,
 };
-pub use petroleum::page_table::PageTableHelper;
 
 // Re-export memory management types
 pub use memory_management::{FreeError, ProcessPageTable, UnifiedMemoryManager};
@@ -86,7 +85,6 @@ pub use process::{PROCESS_LIST, Process, ProcessId};
 
 pub static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
 
-
 #[cfg(target_os = "uefi")]
 const VGA_BUFFER_ADDRESS: usize = crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE + 0xb8000;
 #[cfg(not(target_os = "uefi"))]
@@ -95,7 +93,6 @@ const VGA_COLOR_GREEN_ON_BLACK: u16 = 0x0200;
 
 // A graphics testing loop integrated with full system scheduling
 pub fn graphics_test_loop() -> ! {
-    
     if let Some(mut fb) = petroleum::graphics::color::get_simple_framebuffer() {
         crate::graphics::_print(format_args!("Graphics: Testing SimpleFramebuffer API\n"));
         fb.clear(0xFF000000); // Clear to black
@@ -110,15 +107,21 @@ pub fn graphics_test_loop() -> ! {
         fb.draw_rect(300, 300, 80, 60, 0xFFFF00FF); // Magenta rectangle
         fb.draw_rect(150, 400, 60, 40, 0xFF00FFFF); // Cyan rectangle
 
-        crate::graphics::_print(format_args!("Graphics: SimpleFramebuffer drawing completed\n"));
+        crate::graphics::_print(format_args!(
+            "Graphics: SimpleFramebuffer drawing completed\n"
+        ));
 
         log::info!("Graphics: Starting full system scheduler after graphics test");
 
         // Now start the full scheduler to integrate all system functionality
         crate::scheduler::scheduler_loop();
     } else {
-        log::error!("SimpleFramebuffer initialization failed. Graphics functionality is not available. Falling back to text-only system shell.");
-        crate::graphics::_print(format_args!("Graphics: ERROR - SimpleFramebuffer not initialized, falling back to text-only shell\n"));
+        log::error!(
+            "SimpleFramebuffer initialization failed. Graphics functionality is not available. Falling back to text-only system shell."
+        );
+        crate::graphics::_print(format_args!(
+            "Graphics: ERROR - SimpleFramebuffer not initialized, falling back to text-only shell\n"
+        ));
         // Ensure VGA text mode is available for user interface
         crate::vga::init_vga();
         // Log to serial for debugging

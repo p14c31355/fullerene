@@ -82,7 +82,8 @@ use crate::common::{
 };
 
 /// Global framebuffer config storage for kernel use after exit_boot_services
-pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferConfig>>> = Once::new();
+pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferConfig>>> =
+    Once::new();
 
 /// Shared QEMU framebuffer configurations for both bootloader and kernel
 pub const QEMU_CONFIGS: [QemuConfig; 8] = [
@@ -163,7 +164,9 @@ pub fn halt_loop() -> ! {
 /// Helper function to pause CPU for brief moment (used for busy waits and yielding)
 #[inline(always)]
 pub fn cpu_pause() {
-    unsafe { core::arch::asm!("pause"); }
+    unsafe {
+        core::arch::asm!("pause");
+    }
 }
 
 /// Helper to initialize serial for bootloader
@@ -226,7 +229,9 @@ impl<'a> FramebufferInstaller<'a> {
     fn install(&self, config: FullereneFramebufferConfig) -> Result<(), EfiStatus> {
         // Save to global instead of installing config table to avoid hang
         FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| Mutex::new(Some(config)));
-        serial::_print(format_args!("FramebufferInstaller::install saved config globally\n"));
+        serial::_print(format_args!(
+            "FramebufferInstaller::install saved config globally\n"
+        ));
         Ok(())
     }
 
@@ -274,8 +279,6 @@ pub fn detect_standard_modes(
     }
     None
 }
-
-
 
 /// Configuration table GUID logger
 struct ConfigTableLogger<'a> {
@@ -756,16 +759,10 @@ pub fn init_graphics_protocols(
         // Save to global instead of installing config table
         FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| Mutex::new(Some(config)));
 
-        serial::_print(format_args!(
-            "EFI: Config saved globally successfully.\n"
-        ));
+        serial::_print(format_args!("EFI: Config saved globally successfully.\n"));
         serial::_print(format_args!(
             "EFI: Framebuffer ready: {}x{} @ {:#x}, {} BPP, stride {}\n",
-            config.width,
-            config.height,
-            config.address,
-            config.bpp,
-            config.stride
+            config.width, config.height, config.address, config.bpp, config.stride
         ));
 
         unsafe {
@@ -797,11 +794,7 @@ pub fn init_graphics_protocols(
         ));
         serial::_print(format_args!(
             "Bare-metal: Framebuffer ready: {}x{} @ {:#x}, {} BPP, stride {}\n",
-            config.width,
-            config.height,
-            config.address,
-            config.bpp,
-            config.stride
+            config.width, config.height, config.address, config.bpp, config.stride
         ));
 
         unsafe {

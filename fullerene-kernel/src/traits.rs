@@ -88,8 +88,6 @@ pub trait ProcessMemoryManager {
     fn current_process_id(&self) -> usize;
 }
 
-
-
 pub trait FrameAllocator {
     fn allocate_frame(&mut self) -> SystemResult<usize>;
     fn free_frame(&mut self, frame_addr: usize) -> SystemResult<()>;
