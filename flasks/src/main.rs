@@ -170,7 +170,7 @@ fn run_vbox_modify(vm_name: &str, args: &[&str], failure_msg: &str, success_msg:
         .args(&full_args)
         .status()?;
 
-        if status.success() {
+    if status.success() {
         if let Some(msg) = success_msg {
             log::info!("{}", msg);
         }
