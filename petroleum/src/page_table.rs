@@ -17,6 +17,37 @@ pub struct EfiMemoryDescriptor {
     pub attribute: u64,
 }
 
+/// ELF definitions for parsing kernel permissions
+#[repr(C)]
+pub struct Elf64Ehdr {
+    pub e_ident: [u8; 16],
+    pub e_type: u16,
+    pub e_machine: u16,
+    pub e_version: u32,
+    pub e_entry: u64,
+    pub e_phoff: u64,
+    pub e_shoff: u64,
+    pub e_flags: u32,
+    pub e_ehsize: u16,
+    pub e_phentsize: u16,
+    pub e_phnum: u16,
+    pub e_shentsize: u16,
+    pub e_shnum: u16,
+    pub e_shstrndx: u16,
+}
+
+#[repr(C)]
+pub struct Elf64Phdr {
+    pub p_type: u32,
+    pub p_flags: u32,
+    pub p_offset: u64,
+    pub p_vaddr: u64,
+    pub p_paddr: u64,
+    pub p_filesz: u64,
+    pub p_memsz: u64,
+    pub p_align: u64,
+}
+
 /// A FrameAllocator that returns usable frames from the bootloader's memory map.
 pub struct BootInfoFrameAllocator<'a> {
     memory_map: &'a [EfiMemoryDescriptor],
@@ -121,18 +152,8 @@ pub unsafe fn translate_addr(addr: VirtAddr, physical_memory_offset: VirtAddr) -
     translate_addr_inner(addr, physical_memory_offset)
 }
 
-/// Returns the higher-half kernel mapping offset
-pub fn get_higher_half_offset(
-    _kernel_phys_start: PhysAddr,
-    _fb_addr: Option<VirtAddr>,
-    _fb_size: Option<u64>,
-) -> VirtAddr {
-    // Use petroleum's higher half kernel virtual base
-    const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000;
-
-    // Create the offset for higher-half kernel mapping: physical + offset = virtual
-    VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE)
-}
+/// Returns the higher-half kernel mapping offset.
+pub const HIGHER_HALF_OFFSET: VirtAddr = VirtAddr::new(0xFFFF_8000_0000_0000);
 
 /// Reinitialize the page table with identity mapping and higher-half kernel mapping
 /// This version takes a frame allocator to perform the actual mapping
@@ -146,11 +167,8 @@ pub fn reinit_page_table_with_allocator(
 ) -> VirtAddr {
     use x86_64::structures::paging::PageTableFlags as Flags;
 
-    // Use petroleum's higher half kernel virtual base
-    const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000;
-
-    // Create the offset for higher-half kernel mapping: physical + offset = virtual
-    let phys_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE);
+    // Use the higher-half kernel offset
+    let phys_offset = HIGHER_HALF_OFFSET;
 
     // Get the mapper and frame allocator
     let mut mapper = unsafe {
@@ -163,23 +181,9 @@ pub fn reinit_page_table_with_allocator(
         OffsetPageTable::new(&mut *p4_table_ptr, VirtAddr::new(0))
     };
 
-    // Map kernel at higher half
-    // Kernel typically spans from kernel_phys_start for several MB
-    // We'll map the first 64MB to be safe against future growth
-    const KERNEL_SIZE: u64 = 64 * 1024 * 1024; // 64MB
-    let kernel_pages = KERNEL_SIZE.div_ceil(4096); // Round up to page count
-
-    for i in 0..kernel_pages {
-        let phys_addr = kernel_phys_start + (i * 4096);
-        let virt_addr = phys_offset + phys_addr.as_u64();
-
-        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
-        let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
-
-        let flags = Flags::PRESENT | Flags::WRITABLE;
-        unsafe {
-            mapper.map_to(page, frame, flags, frame_allocator).expect("Failed to map kernel page").flush();
-        }
+    // Map kernel at higher half by parsing the ELF file for permissions
+    unsafe {
+        map_kernel_segments(&mut mapper, kernel_phys_start, phys_offset, frame_allocator);
     }
 
     // Map framebuffer if provided
@@ -560,4 +564,66 @@ fn translate_addr_inner(addr: VirtAddr, physical_memory_offset: VirtAddr) -> Opt
 
     // calculate the physical address by adding the page offset
     Some(frame.start_address() + u64::from(addr.page_offset()))
+}
+
+/// Map kernel segments with appropriate permissions parsed from the ELF file
+unsafe fn map_kernel_segments(
+    mapper: &mut OffsetPageTable,
+    kernel_phys_start: PhysAddr,
+    phys_offset: VirtAddr,
+    frame_allocator: &mut BootInfoFrameAllocator,
+) {
+    use x86_64::structures::paging::PageTableFlags as Flags;
+
+    let ehdr_ptr = kernel_phys_start.as_u64() as *const Elf64Ehdr;
+    let ehdr = unsafe { &*ehdr_ptr };
+
+    // Check ELF magic
+    if ehdr.e_ident[0..4] != [0x7f, b'E', b'L', b'F'] {
+        // If not ELF, fall back to mapping as writable (old behavior)
+        const KERNEL_SIZE: u64 = 64 * 1024 * 1024;
+        let kernel_pages = KERNEL_SIZE.div_ceil(4096);
+        for i in 0..kernel_pages {
+            let phys_addr = kernel_phys_start + (i * 4096);
+            let virt_addr = phys_offset + phys_addr.as_u64();
+            let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
+            let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
+            let flags = Flags::PRESENT | Flags::WRITABLE;
+            unsafe {
+                mapper.map_to(page, frame, flags, frame_allocator).expect("Failed to map kernel page").flush();
+            }
+        }
+        return;
+    }
+
+    // Parse program headers
+    let phdr_base = kernel_phys_start.as_u64() + ehdr.e_phoff;
+    for i in 0..ehdr.e_phnum {
+        let phdr_ptr = (phdr_base + i as u64 * ehdr.e_phentsize as u64) as *const Elf64Phdr;
+        let phdr = unsafe { &*phdr_ptr };
+
+        if phdr.p_type == 1 { // PT_LOAD
+            // Map the segment
+            let segment_start_phys = kernel_phys_start.as_u64() + phdr.p_offset;
+            let segment_start_virt = phdr.p_vaddr;
+            let segment_size = phdr.p_memsz;
+
+            // Derive flags from p_flags
+            let mut flags = Flags::PRESENT;
+            if phdr.p_flags & 2 != 0 { flags |= Flags::WRITABLE; }
+            if phdr.p_flags & 1 == 0 { flags |= Flags::NO_EXECUTE; }
+            // Read bit is always present for loadable segments
+
+            let pages = segment_size.div_ceil(4096);
+            for p in 0..pages {
+                let phys_addr = PhysAddr::new(segment_start_phys + p * 4096);
+                let virt_addr = VirtAddr::new(segment_start_virt + p * 4096);
+                let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
+                let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
+                unsafe {
+                    mapper.map_to(page, frame, flags, frame_allocator).expect("Failed to map kernel segment").flush();
+                }
+            }
+        }
+    }
 }

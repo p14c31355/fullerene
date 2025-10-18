@@ -236,23 +236,7 @@ fn power_off_vm(vm_name: &str) -> io::Result<()> {
     log::info!("Powering off VM if running...");
 
     // Check if VM is currently running
-    let output = Command::new("VBoxManage")
-        .args(["showvminfo", vm_name, "--machinereadable"])
-        .output();
-
-    let initial_state = match output {
-        Ok(output) if output.status.success() => {
-            std::str::from_utf8(&output.stdout).ok().and_then(|stdout| {
-                stdout
-                    .lines()
-                    .find(|line| line.starts_with("VMState="))
-                    .and_then(|line| line.strip_prefix("VMState=\""))
-                    .and_then(|s| s.strip_suffix("\""))
-                    .map(|s| s.to_string())
-            })
-        }
-        _ => None,
-    };
+    let initial_state = get_vm_state(vm_name)?;
 
     // If VM is already powered off, do nothing
     if let Some("poweroff") = initial_state.as_deref() {
@@ -309,23 +293,11 @@ fn power_off_vm(vm_name: &str) -> io::Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(
             VM_SHUTDOWN_POLL_INTERVAL_MS,
         ));
-        let output = Command::new("VBoxManage")
-            .args(["showvminfo", vm_name, "--machinereadable"])
-            .output();
+        let state = get_vm_state(vm_name)?;
 
-        if let Ok(output) = output {
-            if let Ok(stdout) = std::str::from_utf8(&output.stdout) {
-                let state_line = stdout
-                    .lines()
-                    .find(|line| line.starts_with("VMState="))
-                    .and_then(|line| line.strip_prefix("VMState=\""))
-                    .and_then(|s| s.strip_suffix("\""));
-
-                if let Some("poweroff") = state_line {
-                    vm_powered_off = true;
-                    break;
-                }
-            }
+        if let Some("poweroff") = state.as_deref() {
+            vm_powered_off = true;
+            break;
         }
     }
 
@@ -443,31 +415,22 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
 
     for _ in 0..VM_POWER_OFF_POLL_ATTEMPTS {
         std::thread::sleep(std::time::Duration::from_secs(VM_POWER_OFF_POLL_INTERVAL_S));
-        let output = Command::new("VBoxManage")
-            .args(["showvminfo", &args.vm_name, "--machinereadable"])
-            .output();
-
-        if let Ok(output) = output {
-            consecutive_failures = 0; // Reset on success
-            if let Ok(stdout) = std::str::from_utf8(&output.stdout) {
-                let state_line = stdout
-                    .lines()
-                    .find(|line| line.starts_with("VMState="))
-                    .and_then(|line| line.strip_prefix("VMState=\""))
-                    .and_then(|s| s.strip_suffix('"'));
-
-                if let Some("poweroff") = state_line {
+        match get_vm_state(&args.vm_name) {
+            Ok(state) => {
+                consecutive_failures = 0; // Reset on success
+                if let Some("poweroff") = state.as_deref() {
                     log::info!("VM is confirmed to be powered off.");
                     is_powered_off = true;
                     break;
                 }
             }
-        } else {
-            consecutive_failures += 1;
-            log::warn!("Failed to check VM state (attempt {}/{}), continuing...", consecutive_failures, MAX_CONSECUTIVE_FAILURES);
-            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                log::error!("Aborting wait: Failed to check VM state after multiple attempts.");
-                break;
+            Err(e) => {
+                consecutive_failures += 1;
+                log::warn!("Failed to check VM state (attempt {}/{}), error: {}, continuing...", consecutive_failures, MAX_CONSECUTIVE_FAILURES, e);
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                    log::error!("Aborting wait: Failed to check VM state after multiple attempts.");
+                    break;
+                }
             }
         }
     }
@@ -477,6 +440,26 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+// Helper function to get the VM state
+fn get_vm_state(vm_name: &str) -> io::Result<Option<String>> {
+    let output = Command::new("VBoxManage")
+        .args(["showvminfo", vm_name, "--machinereadable"])
+        .output()?;
+
+    if output.status.success() {
+        let stdout = std::str::from_utf8(&output.stdout).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let state = stdout
+            .lines()
+            .find(|line| line.starts_with("VMState="))
+            .and_then(|line| line.strip_prefix("VMState=\""))
+            .and_then(|s| s.strip_suffix('"'))
+            .map(|s| s.to_string());
+        Ok(state)
+    } else {
+        Ok(None)
+    }
 }
 
 fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {

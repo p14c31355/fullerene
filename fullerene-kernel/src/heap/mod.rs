@@ -8,7 +8,7 @@ pub mod memory_map;
 // Note: MAPPER and FRAME_ALLOCATOR are pub(crate), not re-exportable
 pub use memory_map::init_frame_allocator;
 
-pub use petroleum::page_table::{get_higher_half_offset, reinit_page_table_with_allocator, BootInfoFrameAllocator};
+pub use petroleum::page_table::{HIGHER_HALF_OFFSET, reinit_page_table_with_allocator, BootInfoFrameAllocator};
 
 // Heap size constant moved to petroleum - for now define locally
 pub const HEAP_SIZE: usize = 1024 * 1024; // 1MB heap
