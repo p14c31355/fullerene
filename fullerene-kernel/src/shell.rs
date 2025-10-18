@@ -262,8 +262,9 @@ fn free_command(_args: &[&str]) -> i32 {
 fn uptime_command(_args: &[&str]) -> i32 {
     // For now, use approximate tick count
     // In a real system, we'd track real time
+    const TICKS_PER_SECOND: u64 = 1000; // Assuming 1000 ticks per second
     let ticks = get_system_tick(); // TODO: Get actual system tick
-    let uptime_seconds = ticks / 1000; // Assuming 1000 ticks per second
+    let uptime_seconds = ticks / TICKS_PER_SECOND;
     let hours = uptime_seconds / 3600;
     let minutes = (uptime_seconds % 3600) / 60;
     let seconds = uptime_seconds % 60;
