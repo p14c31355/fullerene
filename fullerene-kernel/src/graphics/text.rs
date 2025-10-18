@@ -117,7 +117,8 @@ pub fn init(config: &FullereneFramebufferConfig) {
         base_addr: config.address as usize,
         width: config.width as usize,
         height: config.height as usize,
-        stride: config.stride as usize * 4, // stride is in pixels, convert to bytes
+        stride: config.stride as usize * config.bytes_per_pixel,
+
         bytes_per_pixel: 4, // Assume 32-bit pixels for UEFI graphics
     };
     super::framebuffer::init_simple_framebuffer_config(simple_config);
