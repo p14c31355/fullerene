@@ -1,7 +1,7 @@
 use crate::common::{
     BellowsError, EFI_FILE_INFO_GUID, EfiBootServices, EfiFile, EfiFileInfo, EfiStatus,
 };
-use crate::serial::debug_print_str_to_com1 as debug_print_str;
+use log;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr;
@@ -65,11 +65,11 @@ pub fn open_file(dir: &EfiFileWrapper, path: &[u16]) -> crate::common::Result<Ef
             0,
         );
         if EfiStatus::from(status) != EfiStatus::Success {
-            debug_print_str("File: Failed to open file.\n");
+            log::error!("File: Failed to open file.");
             return Err(BellowsError::FileIo("Failed to open file."));
         }
     }
-    debug_print_str("File: Opened file.\n");
+    log::info!("File: Opened file.");
     Ok(EfiFileWrapper::new(file_handle))
 }
 
@@ -88,11 +88,11 @@ pub fn read_file_to_memory(
             ptr::null_mut(),
         );
         if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
-            debug_print_str("File: Failed to get file info size.\n");
+            log::error!("File: Failed to get file info size.");
             return Err(BellowsError::FileIo("Failed to get file info size."));
         }
         if file_info_buffer_size == 0 {
-            debug_print_str("File: File info size is 0.\n");
+            log::error!("File: File info size is 0.");
             return Err(BellowsError::FileIo("File info size is 0."));
         }
     }
@@ -108,7 +108,7 @@ pub fn read_file_to_memory(
             file_info_buffer.as_mut_ptr() as *mut c_void,
         );
         if EfiStatus::from(status) != EfiStatus::Success {
-            debug_print_str("File: Failed to get file info.\n");
+            log::error!("File: Failed to get file info.");
             return Err(BellowsError::FileIo("Failed to get file info."));
         }
     }
@@ -133,7 +133,7 @@ pub fn read_file_to_memory(
             &mut phys_addr,
         );
         if EfiStatus::from(status) != EfiStatus::Success {
-            debug_print_str("File: Failed to allocate pages.\n");
+            log::error!("File: Failed to allocate pages.");
             return Err(BellowsError::AllocationFailed(
                 "Failed to allocate pages for kernel file.",
             ));
@@ -147,7 +147,7 @@ pub fn read_file_to_memory(
         let status = ((*file.file).read)(file.file, &mut read_size, buf_ptr);
         if EfiStatus::from(status) != EfiStatus::Success || read_size as usize != file_size {
             ((*bs).free_pages)(phys_addr, pages);
-            debug_print_str("File: Failed to read file.\n");
+            log::error!("File: Failed to read file.");
             return Err(BellowsError::FileIo(
                 "Failed to read kernel file or read size mismatch.",
             ));

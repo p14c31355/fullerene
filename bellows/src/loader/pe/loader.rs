@@ -2,7 +2,7 @@ use core::{ffi::c_void, mem, mem::offset_of, ptr};
 use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
 
 use super::headers::*;
-use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
+use log;
 
 pub fn load_efi_image(
     st: &EfiSystemTable,
@@ -343,19 +343,13 @@ pub fn load_efi_image(
         petroleum::println!("Image base delta is 0, no relocations needed.");
     }
 
-    debug_print_str("PE: phys_addr = ");
-    debug_print_hex(phys_addr);
-    debug_print_str("\n");
+    log::info!("PE: phys_addr = 0x{:x}", phys_addr);
 
     let entry_point_addr = phys_addr.saturating_add(address_of_entry_point);
 
-    debug_print_str("PE: address_of_entry_point = ");
-    debug_print_hex(address_of_entry_point as usize);
-    debug_print_str("\n");
+    log::info!("PE: address_of_entry_point = 0x{:x}", address_of_entry_point);
 
-    debug_print_str("PE: entry_point_addr = ");
-    debug_print_hex(entry_point_addr);
-    debug_print_str("\n");
+    log::info!("PE: entry_point_addr = 0x{:x}", entry_point_addr);
 
     petroleum::println!("Calculated Entry Point Address: {:#x}", entry_point_addr);
 
@@ -369,13 +363,12 @@ pub fn load_efi_image(
     }
 
     // Debug print just before transmuting to function pointer
-    debug_print_str("PE: EFI image loaded. Entry: ");
-    debug_print_hex(entry_point_addr);
-    debug_print_str("\n");
+    log::info!("PE: EFI image loaded. Entry: 0x{:x}", entry_point_addr);
+
 
     let entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> ! =
         unsafe { mem::transmute(entry_point_addr) };
 
-    debug_print_str("PE: load_efi_image completed successfully.\n");
+    log::info!("PE: load_efi_image completed successfully.");
     Ok(entry)
 }

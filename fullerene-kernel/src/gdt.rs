@@ -1,4 +1,4 @@
-use petroleum::serial::{debug_print_hex, debug_print_str_to_com1 as debug_print_str};
+use log;
 use spin::Once;
 use x86_64::VirtAddr;
 use x86_64::instructions::tables::load_tss;
@@ -25,31 +25,29 @@ pub fn kernel_code_selector() -> SegmentSelector {
 pub fn init(heap_start: VirtAddr) -> VirtAddr {
     // If already initialized, just return the heap start (don't modify)
     if GDT_INITIALIZED.is_completed() {
-        petroleum::serial::serial_log(format_args!("GDT: Already initialized, skipping\n"));
+        log::info!("GDT: Already initialized, skipping");
         return heap_start;
     }
 
-    debug_print_str("GDT: Initializing with heap at ");
-    debug_print_hex(heap_start.as_u64() as usize);
-    debug_print_str("\n");
+    log::info!("GDT: Initializing with heap at {:#x}", heap_start.as_u64());
 
     const STACK_SIZE: usize = 4096 * 5;
     let double_fault_ist = heap_start + STACK_SIZE as u64;
     let timer_ist = double_fault_ist + STACK_SIZE as u64;
     let new_heap_start = timer_ist + STACK_SIZE as u64; // Reserve space for both stacks
 
-    petroleum::serial::serial_log(format_args!("GDT: Stack addresses calculated\n"));
+    log::info!("GDT: Stack addresses calculated");
 
-    petroleum::serial::serial_log(format_args!("About to create TSS...\n"));
+    log::info!("About to create TSS...");
     let tss = TSS.call_once(|| {
         let mut tss = TaskStateSegment::new();
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = double_fault_ist;
         tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = timer_ist;
         tss
     });
-    petroleum::serial::serial_log(format_args!("TSS created successfully\n"));
+    log::info!("TSS created successfully");
 
-    petroleum::serial::serial_log(format_args!("GDT: TSS created\n"));
+    log::info!("GDT: TSS created");
 
     let gdt = GDT.call_once(|| {
         let mut gdt = GlobalDescriptorTable::new();
@@ -71,28 +69,28 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
         gdt
     });
 
-    petroleum::serial::serial_log(format_args!("GDT: GDT built\n"));
+    log::info!("GDT: GDT built");
 
     #[cfg(not(target_os = "uefi"))]
     {
         // Load GDT - required for proper segmentation in BIOS mode
-        petroleum::serial::serial_log(format_args!("About to load GDT...\n"));
+        log::info!("About to load GDT...");
         gdt.load();
-        petroleum::serial::serial_log(format_args!("GDT: GDT loaded\n"));
+        log::info!("GDT: GDT loaded");
 
         unsafe {
             // Reload CS register in BIOS mode as it's crucial after GDT reload
-            petroleum::serial::serial_log(format_args!("About to set CS register...\n"));
+            log::info!("About to set CS register...");
             CS::set_reg(*CODE_SELECTOR.get().unwrap());
-            petroleum::serial::serial_log(format_args!("GDT: CS set\n"));
+            log::info!("GDT: CS set");
 
-            petroleum::serial::serial_log(format_args!("About to load TSS...\n"));
+            log::info!("About to load TSS...");
             load_tss(*TSS_SELECTOR.get().unwrap());
-            petroleum::serial::serial_log(format_args!("GDT: TSS loaded\n"));
-            debug_print_str("GDT: Loaded and segments set\n");
+            log::info!("GDT: TSS loaded");
+            log::info!("GDT: Loaded and segments set");
 
             // Set data segment registers to kernel data segment for proper I/O operations
-            petroleum::serial::serial_log(format_args!("Setting data segment registers...\n"));
+            log::info!("Setting data segment registers...");
             if let Some(data_sel) = KERNEL_DATA_SELECTOR.get() {
                 use x86_64::registers::segmentation::{DS, ES, FS, GS, SS};
                 DS::set_reg(*data_sel);
@@ -101,20 +99,18 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
                 FS::set_reg(*data_sel);
                 GS::set_reg(*data_sel);
             }
-            petroleum::serial::serial_log(format_args!("Data segment registers set\n"));
+            log::info!("Data segment registers set");
         }
     }
     #[cfg(target_os = "uefi")]
     {
         // Skip GDT reload and TSS loading in UEFI mode to avoid stack pointer corruption
-        petroleum::serial::serial_log(format_args!(
-            "Skipping GDT reload and TSS loading in UEFI mode\n"
-        ));
+        log::info!("Skipping GDT reload and TSS loading in UEFI mode");
     }
 
     // Mark as initialized
     GDT_INITIALIZED.call_once(|| {});
-    debug_print_str("GDT: About to return\n");
+    log::info!("GDT: About to return");
     new_heap_start
 }
 
