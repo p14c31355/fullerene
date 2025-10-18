@@ -436,7 +436,7 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
     }
 
     if !is_powered_off {
-        return Err(io::Error::other("Timed out waiting for VM to power off. It might still be running."));
+        return Err(io::Error::new(io::ErrorKind::Other, "Timed out waiting for VM to power off. It might still be running."));
     }
 
     Ok(())
