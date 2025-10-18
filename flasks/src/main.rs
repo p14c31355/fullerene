@@ -154,6 +154,8 @@ fn create_iso_and_setup(
 // Constants to replace magic numbers
 const VM_SHUTDOWN_POLL_ATTEMPTS: u32 = 20;
 const VM_SHUTDOWN_POLL_INTERVAL_MS: u64 = 1000;
+const VM_POWER_OFF_POLL_ATTEMPTS: u32 = 200;
+const VM_POWER_OFF_POLL_INTERVAL_S: u64 = 1;
 
 fn run_virtualbox(args: &Args, workspace_root: &PathBuf) -> io::Result<()> {
     log::info!("Starting VirtualBox...");
@@ -435,8 +437,8 @@ fn attach_iso_and_start_vm(args: &Args, iso_path: &PathBuf) -> io::Result<()> {
 
     // Wait for the VM to shut down by polling state
     log::info!("Waiting for VM to power off...");
-    for _ in 0..200 { // limit to 200 attempts, ~200 seconds
-        std::thread::sleep(std::time::Duration::from_secs(1));
+    for _ in 0..VM_POWER_OFF_POLL_ATTEMPTS {
+        std::thread::sleep(std::time::Duration::from_secs(VM_POWER_OFF_POLL_INTERVAL_S));
         let output = Command::new("VBoxManage")
             .args(["showvminfo", &args.vm_name, "--machinereadable"])
             .output();
