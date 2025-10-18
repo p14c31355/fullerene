@@ -225,7 +225,7 @@ fn top_command(_args: &[&str]) -> i32 {
 
     let process_list = crate::process::PROCESS_LIST.lock();
     let mut procs: Vec<_> = process_list.iter().collect();
-    // Sort by process ID as a simple proxy for priority
+    // Sort by process ID to show newest processes first
     procs.sort_by(|a, b| b.id.cmp(&a.id));
 
     for proc in procs.iter().take(5) {
