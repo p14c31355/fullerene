@@ -147,8 +147,8 @@ impl UefiInitContext {
         );
 
         let heap_phys_start = find_heap_start(*MEMORY_MAP.get().expect("Memory map not initialized"));
-        let heap_phys_start_addr = if heap_phys_start.as_u64() < 0x1000 {
-            log::info!("Using fallback heap address");
+        let heap_phys_start_addr = if heap_phys_start.as_u64() < 0x1000 || heap_phys_start.as_u64() >= 0x0000_8000_0000_0000 {
+            log::info!("Invalid heap_phys_start, using fallback heap address");
             PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR)
         } else {
             heap_phys_start
