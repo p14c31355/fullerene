@@ -26,13 +26,8 @@ pub fn init_syscall_stack() {
     use alloc::alloc::{alloc, Layout};
     let layout = Layout::from_size_align(SYSCALL_STACK_SIZE, 16).unwrap();
     let ptr = unsafe { alloc(layout) };
-    SYSCALL_KERNEL_STACK.store(ptr, Ordering::Relaxed);
-}
-
-/// Get syscall kernel stack top address
-fn syscall_kernel_stack_top() -> u64 {
-    let base = SYSCALL_KERNEL_STACK.load(Ordering::Relaxed) as u64;
-    base + SYSCALL_STACK_SIZE as u64
+    let stack_top = ptr.add(SYSCALL_STACK_SIZE);
+    SYSCALL_KERNEL_STACK.store(stack_top, Ordering::Relaxed);
 }
 
 /// System call entry point (naked function for manual assembly handling)
