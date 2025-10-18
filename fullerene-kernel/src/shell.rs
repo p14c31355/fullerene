@@ -274,7 +274,7 @@ fn uptime_command(_args: &[&str]) -> i32 {
 fn date_command(_args: &[&str]) -> i32 {
     // Simple date/time - would be enhanced with RTC in real implementation
     print!("Current date/time: ");
-    print!("System tick: {}\n", 67890); // TODO: Get actual system tick
+    print!("System tick: {}\n", crate::get_system_tick()); // TODO: Get actual system tick
     print!("(RTC integration pending)\n");
     0
 }
