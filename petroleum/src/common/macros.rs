@@ -544,3 +544,13 @@ macro_rules! create_framebuffer_config {
         }
     };
 }
+
+/// Macro to execute a task periodically based on tick count
+#[macro_export]
+macro_rules! periodic_task {
+    ($tick:expr, $interval:expr, $body:block) => {
+        if $tick % $interval == 0 {
+            $body
+        }
+    };
+}

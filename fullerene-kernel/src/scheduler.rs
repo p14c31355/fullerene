@@ -6,8 +6,9 @@
 use crate::graphics;
 use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicU64, Ordering};
-use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations};
+use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations, periodic_task};
 use x86_64::VirtAddr;
+use paste::paste;
 
 // System-wide counters and statistics
 static SYSTEM_TICK: AtomicU64 = AtomicU64::new(0);
@@ -16,8 +17,18 @@ static SCHEDULER_ITERATIONS: AtomicU64 = AtomicU64::new(0);
 // I/O event queue (placeholder for future I/O operations)
 static IO_EVENTS: spin::Mutex<VecDeque<IoEvent>> = spin::Mutex::new(VecDeque::new());
 
-// Periodic desktop update interval (in ticks)
-const DESKTOP_UPDATE_INTERVAL_TICKS: u64 = 5000;
+paste! {
+// Macro to define intervals with nicer names
+macro_rules! define_intervals {
+    () => {
+        const DESKTOP_UPDATE_INTERVAL_TICKS: u64 = 5000;
+        const LOG_INTERVAL_TICKS: u64 = 5000;
+        const DISPLAY_INTERVAL_TICKS: u64 = 5000;
+    };
+}
+
+define_intervals!();
+}
 
 // System diagnostics structure
 #[derive(Clone, Copy)]
@@ -221,18 +232,17 @@ fn optimize_system_resources() {
     // Optimize memory layout periodically
     static LAST_OPTIMIZATION_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
     let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
+    petroleum::lock_and_modify!(LAST_OPTIMIZATION_TICK, last_optimization_tick, {
+        if current_tick - *last_optimization_tick > 10000 {
+            // Every 10000 ticks
+            // Run memory defragmentation or optimization
+            log::debug!("Running periodic resource optimization");
+            *last_optimization_tick = current_tick;
 
-    let mut last_optimization_tick = LAST_OPTIMIZATION_TICK.lock();
-
-    if current_tick - *last_optimization_tick > 10000 {
-        // Every 10000 ticks
-        // Run memory defragmentation or optimization
-        log::debug!("Running periodic resource optimization");
-        *last_optimization_tick = current_tick;
-
-        // Optimize heap allocation patterns
-        // petroleum::page_table::ALLOCATOR.lock().defragment(); // Method not available
-    }
+            // Optimize heap allocation patterns
+            // petroleum::page_table::ALLOCATOR.lock().defragment(); // Method not available
+        }
+    });
 }
 
 /// Manage background system services
@@ -334,26 +344,25 @@ pub fn scheduler_loop() -> ! {
 
         // Periodically perform health checks and log statistics
         let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
-        if current_tick % 1000 == 0 {
-            // Every 1000 ticks
+        periodic_task!(current_tick, 1000, {
             perform_system_health_checks();
-            log_system_stats(&system_stats, 5000); // Log every 5000 ticks
-            display_system_stats_on_vga(&system_stats, 5000); // Display every 5000 ticks
-        }
+            log_system_stats(&system_stats, 5000);
+            display_system_stats_on_vga(&system_stats, 5000);
+        });
 
         // Periodic filesystem synchronization and OS features (every 3000 ticks)
-        if current_tick % 3000 == 0 {
+        periodic_task!(current_tick, 3000, {
             log_system_stats_to_fs(&system_stats);
             perform_automated_backup();
-        }
+        });
 
         // Perform system maintenance tasks periodically
-        if current_tick % 2000 == 0 {
+        periodic_task!(current_tick, 2000, {
             perform_system_maintenance();
-        }
+        });
 
         // Periodic memory capacity check (every 10000 ticks)
-        if current_tick % 10000 == 0 {
+        periodic_task!(current_tick, 10000, {
             let (used_bytes, total_bytes, _) = petroleum::get_memory_stats!();
             let usage_percent = if total_bytes > 0 {
                 (used_bytes * 100) / total_bytes
@@ -371,14 +380,13 @@ pub fn scheduler_loop() -> ! {
             if usage_percent > 90 {
                 log::warn!("Critical memory usage (>90%) detected!");
             }
-        }
+        });
 
         // Check for process cleanup every 100 iterations
         let iteration_count = SCHEDULER_ITERATIONS.load(Ordering::Relaxed);
-        if iteration_count % 100 == 0 {
-            // Check for terminated processes and clean up
+        periodic_task!(iteration_count, 100, {
             crate::process::cleanup_terminated_processes();
-        }
+        });
 
         // Handle any pending system calls or kernel requests
         // This is a placeholder - in a full implementation, there would be

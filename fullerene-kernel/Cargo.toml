@@ -34,6 +34,7 @@ volatile = { version = "0.6", default-features = false }
 pc-keyboard = { version = "0.8.0", default-features = false }
 log = { version = "0.4.28", default-features = false }
 heapless = { version = "0.8", default-features = false }
+paste = "1.0.15"
 # shell-words = "1.1"  # Cannot use in no_std kernel
 
 [features]
