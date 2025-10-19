@@ -329,8 +329,8 @@ pub fn scheduler_loop() -> ! {
         let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
         periodic_task!(current_tick, 1000, {
             perform_system_health_checks();
-            log_system_stats(&system_stats, 5000);
-            display_system_stats_on_vga(&system_stats, 5000);
+            log_system_stats(&system_stats, LOG_INTERVAL_TICKS);
+            display_system_stats_on_vga(&system_stats, DISPLAY_INTERVAL_TICKS);
         });
 
         // Periodic filesystem synchronization and OS features (every 3000 ticks)
