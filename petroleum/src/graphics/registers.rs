@@ -145,6 +145,208 @@ pub const GRAPHICS_CONFIG: &[RegisterConfig] = &[
 
 // VGA Attribute Controller registers configuration for mode 13h
 // These control color mapping and screen display attributes
+// VGA Sequencer registers configuration for text mode (80x25)
+pub const SEQUENCER_TEXT_CONFIG: &[RegisterConfig] = &[
+    RegisterConfig {
+        index: 0x00,
+        value: 0x03,
+    }, // Reset register
+    RegisterConfig {
+        index: 0x01,
+        value: 0x00,
+    }, // Clocking mode register
+    RegisterConfig {
+        index: 0x02,
+        value: 0x03,
+    }, // Map mask register
+    RegisterConfig {
+        index: 0x03,
+        value: 0x00,
+    }, // Character map select register
+    RegisterConfig {
+        index: 0x04,
+        value: 0x02,
+    }, // Memory mode register
+];
+
+// VGA CRTC registers configuration for text mode (80x25)
+pub const CRTC_TEXT_CONFIG: &[RegisterConfig] = &[
+    RegisterConfig {
+        index: 0x00,
+        value: 0x5F,
+    }, // Horizontal total
+    RegisterConfig {
+        index: 0x01,
+        value: 0x4F,
+    }, // Horizontal display enable end
+    RegisterConfig {
+        index: 0x02,
+        value: 0x50,
+    }, // Start horizontal blanking
+    RegisterConfig {
+        index: 0x03,
+        value: 0x82,
+    }, // End horizontal blanking
+    RegisterConfig {
+        index: 0x04,
+        value: 0x55,
+    }, // Start horizontal retrace pulse
+    RegisterConfig {
+        index: 0x05,
+        value: 0x81,
+    }, // End horizontal retrace
+    RegisterConfig {
+        index: 0x06,
+        value: 0xBF,
+    }, // Vertical total
+    RegisterConfig {
+        index: 0x07,
+        value: 0x1F,
+    }, // Overflow
+    RegisterConfig {
+        index: 0x08,
+        value: 0x00,
+    }, // Preset row scan
+    RegisterConfig {
+        index: 0x09,
+        value: 0x4F,
+    }, // Maximum scan line
+    RegisterConfig {
+        index: 0x10,
+        value: 0x9C,
+    }, // Start vertical retrace
+    RegisterConfig {
+        index: 0x11,
+        value: 0x8E,
+    }, // End vertical retrace
+    RegisterConfig {
+        index: 0x12,
+        value: 0x8F,
+    }, // Vertical display enable end
+    RegisterConfig {
+        index: 0x13,
+        value: 0x28,
+    }, // Offset
+    RegisterConfig {
+        index: 0x14,
+        value: 0x1F,
+    }, // Underline location
+    RegisterConfig {
+        index: 0x15,
+        value: 0x96,
+    }, // Start vertical blanking
+    RegisterConfig {
+        index: 0x16,
+        value: 0xB9,
+    }, // End vertical blanking
+    RegisterConfig {
+        index: 0x17,
+        value: 0xA3,
+    }, // CRTC mode control
+];
+
+// VGA Graphics Controller registers configuration for text mode
+pub const GRAPHICS_TEXT_CONFIG: &[RegisterConfig] = &[
+    RegisterConfig {
+        index: 0x05,
+        value: 0x10,
+    }, // Graphics mode register
+    RegisterConfig {
+        index: 0x06,
+        value: 0x0E,
+    }, // Miscellaneous register
+];
+
+// VGA Attribute Controller registers configuration for text mode
+pub const ATTRIBUTE_TEXT_CONFIG: &[RegisterConfig] = &[
+    RegisterConfig {
+        index: 0x00,
+        value: 0x00,
+    }, // Palette register 0
+    RegisterConfig {
+        index: 0x01,
+        value: 0x01,
+    }, // Palette register 1
+    RegisterConfig {
+        index: 0x02,
+        value: 0x02,
+    }, // Palette register 2
+    RegisterConfig {
+        index: 0x03,
+        value: 0x03,
+    }, // Palette register 3
+    RegisterConfig {
+        index: 0x04,
+        value: 0x04,
+    }, // Palette register 4
+    RegisterConfig {
+        index: 0x05,
+        value: 0x05,
+    }, // Palette register 5
+    RegisterConfig {
+        index: 0x06,
+        value: 0x06,
+    }, // Palette register 6
+    RegisterConfig {
+        index: 0x07,
+        value: 0x07,
+    }, // Palette register 7
+    RegisterConfig {
+        index: 0x08,
+        value: 0x08,
+    }, // Palette register 8
+    RegisterConfig {
+        index: 0x09,
+        value: 0x09,
+    }, // Palette register 9
+    RegisterConfig {
+        index: 0x0A,
+        value: 0x0A,
+    }, // Palette register A
+    RegisterConfig {
+        index: 0x0B,
+        value: 0x0B,
+    }, // Palette register B
+    RegisterConfig {
+        index: 0x0C,
+        value: 0x0C,
+    }, // Palette register C
+    RegisterConfig {
+        index: 0x0D,
+        value: 0x0D,
+    }, // Palette register D
+    RegisterConfig {
+        index: 0x0E,
+        value: 0x0E,
+    }, // Palette register E
+    RegisterConfig {
+        index: 0x0F,
+        value: 0x0F,
+    }, // Palette register F
+    RegisterConfig {
+        index: 0x10,
+        value: 0x0C,
+    }, // Attr mode control register - text mode, blinking enabled
+    RegisterConfig {
+        index: 0x11,
+        value: 0x00,
+    }, // Overscan color register
+    RegisterConfig {
+        index: 0x12,
+        value: 0x0F,
+    }, // Color plane enable register
+    RegisterConfig {
+        index: 0x13,
+        value: 0x00,
+    }, // Horizontal pixel panning register
+    RegisterConfig {
+        index: 0x14,
+        value: 0x00,
+    }, // Color select register
+];
+
+// VGA Attribute Controller registers configuration for mode 13h
+// These control color mapping and screen display attributes
 pub const ATTRIBUTE_CONFIG: &[RegisterConfig] = &[
     RegisterConfig {
         index: 0x00,
