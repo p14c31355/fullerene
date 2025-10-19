@@ -304,6 +304,9 @@ pub fn scheduler_loop() -> ! {
 
     // Initialize scheduler by creating the shell process
     log::info!("Starting enhanced OS scheduler with integrated system features...");
+
+    // At the top of scheduler_loop
+    static LAST_HEALTH_CHECK_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
     let shell_pid = crate::process::create_process(
         "shell_process",
         VirtAddr::new(shell_process_main as usize as u64),
@@ -327,7 +330,7 @@ pub fn scheduler_loop() -> ! {
 
         // Periodically perform health checks and log statistics
         let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
-        periodic_task!(current_tick, 1000, {
+        check_periodic!(LAST_HEALTH_CHECK_TICK, 1000, current_tick, {
             perform_system_health_checks();
             log_system_stats(&system_stats, LOG_INTERVAL_TICKS);
             display_system_stats_on_vga(&system_stats, DISPLAY_INTERVAL_TICKS);

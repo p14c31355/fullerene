@@ -144,9 +144,7 @@ fn alloc_error(_layout: core::alloc::Layout) -> ! {
                 .write_string_heapless("Allocation error!\n")
                 .ok();
         }
-        unsafe {
-            crate::halt!(); // For QEMU debugging
-        }
+        crate::halt!(); // For QEMU debugging
     }
 }
 
