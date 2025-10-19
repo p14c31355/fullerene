@@ -1,12 +1,7 @@
 /// Generic window drawing macro for desktop elements to reduce boilerplate
 #[macro_export]
 macro_rules! draw_window_shell {
-    ($writer:expr, $x:expr, $y:expr, $width:expr, $height:expr, $title:expr) => {{
-        $crate::draw_window_base!($writer, $x, $y, $width, $height, $title);
-        // Empty content for base windows
-        {}
-    }};
-    ($writer:expr, $x:expr, $y:expr, $width:expr, $height:expr, $title:expr, $content:tt) => {{
+    ($writer:expr, $x:expr, $y:expr, $width:expr, $height:expr, $title:expr, $content:block) => {{
         $crate::draw_window_base!($writer, $x, $y, $width, $height, $title);
         $content
     }};

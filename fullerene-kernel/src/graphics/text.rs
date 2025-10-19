@@ -11,7 +11,6 @@ use petroleum::common::FullereneFramebufferConfig;
 use petroleum::common::VgaFramebufferConfig;
 use petroleum::graphics::init_vga_graphics;
 use spin::{Mutex, Once};
-use paste::paste;
 
 // Imports from other modules
 use super::framebuffer::{FramebufferLike, FramebufferWriter};
