@@ -8,7 +8,6 @@ use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::{check_periodic, Color, ColorCode, ScreenChar, TextBufferOperations, periodic_task};
 use x86_64::VirtAddr;
-use paste::paste;
 
 // System-wide counters and statistics
 static SYSTEM_TICK: AtomicU64 = AtomicU64::new(0);
@@ -17,18 +16,10 @@ static SCHEDULER_ITERATIONS: AtomicU64 = AtomicU64::new(0);
 // I/O event queue (placeholder for future I/O operations)
 static IO_EVENTS: spin::Mutex<VecDeque<IoEvent>> = spin::Mutex::new(VecDeque::new());
 
-paste! {
-// Macro to define intervals with nicer names
-macro_rules! define_intervals {
-    () => {
-        const DESKTOP_UPDATE_INTERVAL_TICKS: u64 = 5000;
-        const LOG_INTERVAL_TICKS: u64 = 5000;
-        const DISPLAY_INTERVAL_TICKS: u64 = 5000;
-    };
-}
-
-define_intervals!();
-}
+// Periodic task intervals (in ticks)
+const DESKTOP_UPDATE_INTERVAL_TICKS: u64 = 5000;
+const LOG_INTERVAL_TICKS: u64 = 5000;
+const DISPLAY_INTERVAL_TICKS: u64 = 5000;
 
 // System diagnostics structure
 #[derive(Clone, Copy)]

@@ -1,3 +1,8 @@
+//! Macro definitions for common patterns across Fullerene OS
+
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+
 /// Macro for reduce code duplication in command arrays
 #[macro_export]
 macro_rules! command_args {
@@ -497,8 +502,8 @@ macro_rules! update_vga_cursor {
     }};
 }
 
-pub struct InitSequence<'a> {
-    steps: &'a [(&'static str, fn() -> Result<(), &'static str>)],
+pub struct InitSequence {
+    steps: Vec<(&'static str, Box<dyn Fn() -> Result<(), &'static str>>)>,
 }
 
 /// Macro for getting memory statistics in a single line
@@ -513,13 +518,13 @@ macro_rules! get_memory_stats {
     }};
 }
 
-impl<'a> InitSequence<'a> {
-    pub fn new(steps: &'a [(&'static str, fn() -> Result<(), &'static str>)]) -> Self {
+impl InitSequence {
+    pub fn new(steps: Vec<(&'static str, Box<dyn Fn() -> Result<(), &'static str>>)>) -> Self {
         Self { steps }
     }
 
     pub fn run(&self) {
-        for (name, init_fn) in self.steps {
+        for (name, init_fn) in &self.steps {
             init_log!("About to init {}", name);
             if let Err(e) = init_fn() {
                 init_log!("Init {} failed: {}", name, e);
