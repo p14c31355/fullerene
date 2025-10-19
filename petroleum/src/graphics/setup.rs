@@ -1,5 +1,8 @@
 use super::ports::{HardwarePorts, PortWriter, VgaPortOps};
-use super::registers::{ATTRIBUTE_CONFIG, ATTRIBUTE_TEXT_CONFIG, CRTC_CONFIG, CRTC_TEXT_CONFIG, GRAPHICS_CONFIG, GRAPHICS_TEXT_CONFIG, SEQUENCER_CONFIG, SEQUENCER_TEXT_CONFIG};
+use super::registers::{
+    ATTRIBUTE_CONFIG, ATTRIBUTE_TEXT_CONFIG, CRTC_CONFIG, CRTC_TEXT_CONFIG, GRAPHICS_CONFIG,
+    GRAPHICS_TEXT_CONFIG, SEQUENCER_CONFIG, SEQUENCER_TEXT_CONFIG,
+};
 
 /// Macro to reduce repetitive RGB value writing in palette setup
 #[macro_export]
@@ -25,10 +28,7 @@ macro_rules! pci_vendor_check_loop {
             for device in $dev_start..$dev_end {
                 let test_vendor = crate::bare_metal_pci::pci_config_read_word(bus, device, 0, 0x00);
                 if test_vendor == $vendor_id {
-                    crate::serial::_print(format_args!(
-                        $found_msg,
-                        bus, device
-                    ));
+                    crate::serial::_print(format_args!($found_msg, bus, device));
                     return true;
                 }
             }
@@ -114,7 +114,11 @@ pub fn detect_cirrus_vga() -> bool {
 
     // Also check other common locations using macro to reduce code
     pci_vendor_check_loop!(
-        0x1013, 0, 2, 0, 32,
+        0x1013,
+        0,
+        2,
+        0,
+        32,
         "VGA Detection: Cirrus VGA device found at bus:device = {}:{}\n"
     );
 
@@ -129,7 +133,10 @@ pub fn setup_vga_text_mode() {
     setup_misc_output();
 
     // Unlock CRTC registers
-    let crtc_unlock = super::ports::RegisterConfig { index: 0x11, value: 0x0E };
+    let crtc_unlock = super::ports::RegisterConfig {
+        index: 0x11,
+        value: 0x0E,
+    };
 
     write_port_sequence!(
         SEQUENCER_TEXT_CONFIG, HardwarePorts::SEQUENCER_INDEX, HardwarePorts::SEQUENCER_DATA;

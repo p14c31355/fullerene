@@ -11,9 +11,9 @@ macro_rules! draw_window_shell {
 #[macro_export]
 macro_rules! draw_window_base {
     ($writer:expr, $x:expr, $y:expr, $width:expr, $height:expr, $title:expr) => {{
+        use embedded_graphics::mono_font::{MonoTextStyle, ascii::FONT_6X10};
         use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
         use embedded_graphics::{prelude::*, text::Text};
-        use embedded_graphics::mono_font::{MonoTextStyle, ascii::FONT_6X10};
 
         let rect = Rectangle::new(Point::new($x as i32, $y as i32), Size::new($width, $height));
         let style = PrimitiveStyleBuilder::new()
@@ -29,12 +29,18 @@ macro_rules! draw_window_base {
             .build();
         title_rect.into_styled(title_style).draw($writer).ok();
 
-        let title_text_style = MonoTextStyle::new(&FONT_6X10, $crate::u32_to_rgb888($crate::COLOR_BLACK));
+        let title_text_style =
+            MonoTextStyle::new(&FONT_6X10, $crate::u32_to_rgb888($crate::COLOR_BLACK));
         let title_width = $crate::calc_text_width($title);
         let title_x = $x as i32 + (($width as i32 / 2) - (title_width as i32 / 2));
-        Text::new($title, Point::new(title_x, $y as i32 + 8), title_text_style).draw($writer).ok();
+        Text::new($title, Point::new(title_x, $y as i32 + 8), title_text_style)
+            .draw($writer)
+            .ok();
 
-        let content_rect = Rectangle::new(Point::new($x as i32 + 5, $y as i32 + 30), Size::new($width.saturating_sub(10), $height.saturating_sub(35)));
+        let content_rect = Rectangle::new(
+            Point::new($x as i32 + 5, $y as i32 + 30),
+            Size::new($width.saturating_sub(10), $height.saturating_sub(35)),
+        );
         let content_style = PrimitiveStyleBuilder::new()
             .fill_color($crate::u32_to_rgb888($crate::COLOR_WINDOW_BG))
             .build();

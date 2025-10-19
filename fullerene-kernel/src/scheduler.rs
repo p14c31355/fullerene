@@ -6,7 +6,9 @@
 use crate::graphics;
 use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicU64, Ordering};
-use petroleum::{check_periodic, Color, ColorCode, ScreenChar, TextBufferOperations, periodic_task};
+use petroleum::{
+    Color, ColorCode, ScreenChar, TextBufferOperations, check_periodic, periodic_task,
+};
 use x86_64::VirtAddr;
 
 // System-wide counters and statistics
@@ -211,7 +213,6 @@ fn monitor_environment() {
         );
     }
 }
-
 
 /// Perform resource optimization tasks
 fn optimize_system_resources() {

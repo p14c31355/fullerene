@@ -567,8 +567,7 @@ macro_rules! check_periodic {
     ($last_tick_var:expr, $interval:expr, $current_tick:expr, $body:block) => {{
         let mut last_tick = $last_tick_var.lock();
         if $current_tick - *last_tick >= $interval {
-            $body
-            *last_tick = $current_tick;
+            $body * last_tick = $current_tick;
         }
     }};
 }

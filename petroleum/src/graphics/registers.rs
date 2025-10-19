@@ -2,7 +2,10 @@ use super::ports::RegisterConfig;
 
 macro_rules! reg {
     ($index:expr, $value:expr) => {
-        RegisterConfig { index: $index, value: $value }
+        RegisterConfig {
+            index: $index,
+            value: $value,
+        }
     };
 }
 

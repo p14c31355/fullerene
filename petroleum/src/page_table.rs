@@ -250,20 +250,30 @@ pub fn reinit_page_table_with_allocator(
 
     // Map VGA memory to identity for bootloader compatibility
     unsafe {
-        map_identity_range(&mut mapper, frame_allocator, VGA_MEMORY_START, vga_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE)
-            .expect("Failed to map VGA memory identity");
+        map_identity_range(
+            &mut mapper,
+            frame_allocator,
+            VGA_MEMORY_START,
+            vga_pages,
+            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+        )
+        .expect("Failed to map VGA memory identity");
     }
 
     // Map framebuffer to identity for bootloader compatibility
     if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
         let fb_pages = fb_size.div_ceil(4096);
         unsafe {
-            map_identity_range(&mut mapper, frame_allocator, fb_addr.as_u64(), fb_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE)
-                .expect("Failed to map framebuffer identity pages");
+            map_identity_range(
+                &mut mapper,
+                frame_allocator,
+                fb_addr.as_u64(),
+                fb_pages,
+                Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+            )
+            .expect("Failed to map framebuffer identity pages");
         }
     }
-
-
 
     phys_offset
 }

@@ -176,7 +176,8 @@ pub fn test_runner(tests: &[&dyn Testable]) {
 
 /// Kernel-side fallback framebuffer detection when config table is not available
 /// Uses shared logic from petroleum crate
-pub fn kernel_fallback_framebuffer_detection() -> Option<crate::common::FullereneFramebufferConfig> {
+pub fn kernel_fallback_framebuffer_detection() -> Option<crate::common::FullereneFramebufferConfig>
+{
     // Call petroleum's consolidated QEMU framebuffer detection
     crate::detect_qemu_framebuffer(&crate::QEMU_CONFIGS)
 }

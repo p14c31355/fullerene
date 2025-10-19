@@ -8,12 +8,15 @@ use alloc::{
     string::String,
     vec::{self, Vec},
 };
-use petroleum::{common::logging::SystemError, init_log, write_serial_bytes, InitSequence};
+use petroleum::{InitSequence, common::logging::SystemError, init_log, write_serial_bytes};
 use spin::Once;
 
 macro_rules! init_step {
     ($name:expr, $closure:expr) => {
-        ($name, Box::new($closure) as Box<dyn Fn() -> Result<(), &'static str>>)
+        (
+            $name,
+            Box::new($closure) as Box<dyn Fn() -> Result<(), &'static str>>,
+        )
     };
 }
 
@@ -22,12 +25,30 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     init_log!("Initializing common components");
 
     let steps = [
-        init_step!("VGA", move || { crate::vga::init_vga(physical_memory_offset); Ok(()) }),
-        init_step!("APIC", || { interrupts::init_apic(); Ok(()) }),
-        init_step!("process", || { crate::process::init(); Ok(()) }),
-        init_step!("syscall", || { crate::syscall::init(); Ok(()) }),
-        init_step!("fs", || { crate::fs::init(); Ok(()) }),
-        init_step!("loader", || { crate::loader::init(); Ok(()) }),
+        init_step!("VGA", move || {
+            crate::vga::init_vga(physical_memory_offset);
+            Ok(())
+        }),
+        init_step!("APIC", || {
+            interrupts::init_apic();
+            Ok(())
+        }),
+        init_step!("process", || {
+            crate::process::init();
+            Ok(())
+        }),
+        init_step!("syscall", || {
+            crate::syscall::init();
+            Ok(())
+        }),
+        init_step!("fs", || {
+            crate::fs::init();
+            Ok(())
+        }),
+        init_step!("loader", || {
+            crate::loader::init();
+            Ok(())
+        }),
     ];
     InitSequence::new(&steps).run();
 

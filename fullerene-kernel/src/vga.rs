@@ -116,8 +116,6 @@ impl TextBufferOperations for VgaBuffer {
             self.scroll_up();
         }
     }
-
-
 }
 
 // Global singleton
@@ -193,8 +191,6 @@ mod tests {
                 }
             }
         }
-
-
     }
 
     impl MockVgaBuffer {

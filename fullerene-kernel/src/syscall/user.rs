@@ -15,15 +15,7 @@ pub mod user {
         arg6: u64,
     ) -> u64 {
         let mut result: u64;
-        result = petroleum::syscall_call!(
-            syscall_num as u64,
-            arg1,
-            arg2,
-            arg3,
-            arg4,
-            arg5,
-            arg6
-        );
+        result = petroleum::syscall_call!(syscall_num as u64, arg1, arg2, arg3, arg4, arg5, arg6);
         result
     }
 

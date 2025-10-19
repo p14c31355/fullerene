@@ -19,8 +19,6 @@ use x86_64::{
     structures::paging::{Mapper, Size4KiB, mapper::MapToError},
 };
 
-
-
 /// Helper function to map a range of memory pages
 /// Takes the base physical address, number of pages, mapper, frame allocator, and flags
 #[cfg(target_os = "uefi")]
@@ -42,9 +40,7 @@ fn map_memory_range(
             x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
 
         unsafe {
-            mapper
-                .map_to(page, frame, flags, frame_allocator)?
-                .flush();
+            mapper.map_to(page, frame, flags, frame_allocator)?.flush();
         }
     }
     Ok(())
@@ -117,9 +113,18 @@ impl UefiInitContext {
 
         let config = framebuffer_config.as_ref();
         let (fb_addr, fb_size) = if let Some(config) = config {
-            let fb_size_bytes = (config.width as usize * config.height as usize * config.bpp as usize) / 8;
-            log::info!("Found framebuffer config: {}x{} @ {:#x}", config.width, config.height, config.address);
-            (Some(VirtAddr::new(config.address)), Some(fb_size_bytes as u64))
+            let fb_size_bytes =
+                (config.width as usize * config.height as usize * config.bpp as usize) / 8;
+            log::info!(
+                "Found framebuffer config: {}x{} @ {:#x}",
+                config.width,
+                config.height,
+                config.address
+            );
+            (
+                Some(VirtAddr::new(config.address)),
+                Some(fb_size_bytes as u64),
+            )
         } else {
             log::info!("No framebuffer config found");
             (None, None)
@@ -131,7 +136,10 @@ impl UefiInitContext {
             .expect("Frame allocator not initialized")
             .lock();
         self.physical_memory_offset = heap::reinit_page_table_with_allocator(
-            kernel_phys_start, fb_addr, fb_size, &mut frame_allocator,
+            kernel_phys_start,
+            fb_addr,
+            fb_size,
+            &mut frame_allocator,
         );
         log::info!("Page table reinit completed");
 
@@ -144,8 +152,11 @@ impl UefiInitContext {
             crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE,
         );
 
-        let heap_phys_start = find_heap_start(*MEMORY_MAP.get().expect("Memory map not initialized"));
-        let heap_phys_start_addr = if heap_phys_start.as_u64() < 0x1000 || heap_phys_start.as_u64() >= 0x0000_8000_0000_0000 {
+        let heap_phys_start =
+            find_heap_start(*MEMORY_MAP.get().expect("Memory map not initialized"));
+        let heap_phys_start_addr = if heap_phys_start.as_u64() < 0x1000
+            || heap_phys_start.as_u64() >= 0x0000_8000_0000_0000
+        {
             log::info!("Invalid heap_phys_start, using fallback heap address");
             PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR)
         } else {
@@ -160,19 +171,41 @@ impl UefiInitContext {
         let flags = x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE
             | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-// Map VGA buffer
-let vga_phys_addr = PhysAddr::new(crate::VGA_BUFFER_ADDRESS as u64);
-let vga_pages = 1; // 4KB for 80*25*2 bytes
-map_memory_range(vga_phys_addr, vga_pages, self.physical_memory_offset, &mut mapper, &mut *frame_allocator, flags)
-    .expect("Failed to map VGA buffer");
+        // Map VGA buffer
+        let vga_phys_addr = PhysAddr::new(crate::VGA_BUFFER_ADDRESS as u64);
+        let vga_pages = 1; // 4KB for 80*25*2 bytes
+        map_memory_range(
+            vga_phys_addr,
+            vga_pages,
+            self.physical_memory_offset,
+            &mut mapper,
+            &mut *frame_allocator,
+            flags,
+        )
+        .expect("Failed to map VGA buffer");
 
-map_memory_range(heap_start, heap_pages, self.physical_memory_offset, &mut mapper, &mut *frame_allocator, flags)
-    .expect("Failed to map heap memory");
+        map_memory_range(
+            heap_start,
+            heap_pages,
+            self.physical_memory_offset,
+            &mut mapper,
+            &mut *frame_allocator,
+            flags,
+        )
+        .expect("Failed to map heap memory");
 
-        (self.physical_memory_offset, heap_start, self.virtual_heap_start)
+        (
+            self.physical_memory_offset,
+            heap_start,
+            self.virtual_heap_start,
+        )
     }
 
-    fn setup_gdt_and_stack(&mut self, virtual_heap_start: VirtAddr, physical_memory_offset: VirtAddr) {
+    fn setup_gdt_and_stack(
+        &mut self,
+        virtual_heap_start: VirtAddr,
+        physical_memory_offset: VirtAddr,
+    ) {
         log::info!("Setting up GDT and kernel stack");
         let gdt_heap_start = virtual_heap_start;
         self.heap_start_after_gdt = gdt::init(gdt_heap_start);
@@ -183,7 +216,8 @@ map_memory_range(heap_start, heap_pages, self.physical_memory_offset, &mut mappe
         self.heap_start_after_stack = stack_bottom + KERNEL_STACK_SIZE as u64;
 
         let stack_pages = (KERNEL_STACK_SIZE as u64).div_ceil(4096);
-        let stack_base_phys = PhysAddr::new(stack_bottom.as_u64() - physical_memory_offset.as_u64());
+        let stack_base_phys =
+            PhysAddr::new(stack_bottom.as_u64() - physical_memory_offset.as_u64());
         let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
             .get()
             .expect("Frame allocator not initialized")
@@ -192,8 +226,15 @@ map_memory_range(heap_start, heap_pages, self.physical_memory_offset, &mut mappe
         let flags = x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE
             | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-        map_memory_range(stack_base_phys, stack_pages, physical_memory_offset, &mut mapper, &mut *frame_allocator, flags)
-            .expect("Failed to map stack memory");
+        map_memory_range(
+            stack_base_phys,
+            stack_pages,
+            physical_memory_offset,
+            &mut mapper,
+            &mut *frame_allocator,
+            flags,
+        )
+        .expect("Failed to map stack memory");
 
         unsafe {
             core::arch::asm!("mov rsp, {}", in(reg) self.heap_start_after_stack.as_u64());
@@ -203,7 +244,8 @@ map_memory_range(heap_start, heap_pages, self.physical_memory_offset, &mut mappe
 
     fn setup_allocator(&mut self, virtual_heap_start: VirtAddr) {
         petroleum::serial::serial_log(format_args!("Initializing allocator\n"));
-        let kernel_overhead = (self.heap_start_after_stack.as_u64() - virtual_heap_start.as_u64()) as usize;
+        let kernel_overhead =
+            (self.heap_start_after_stack.as_u64() - virtual_heap_start.as_u64()) as usize;
         let heap_size_remaining = heap::HEAP_SIZE - kernel_overhead;
 
         use petroleum::page_table::ALLOCATOR;
@@ -256,7 +298,6 @@ pub extern "efiapi" fn efi_main(
 
     // Now that allocator is set up, initialize VGA buffer writer (will be done in init_common)
 
-
     // Early serial log works now
     write_serial_bytes!(0x3F8, 0x3FD, b"About to complete basic init\n");
     petroleum::serial::serial_log(format_args!("About to log basic init complete...\n"));
@@ -272,7 +313,6 @@ pub extern "efiapi" fn efi_main(
     log::info!("Kernel: IDT init done");
 
     log::info!("Kernel: Jumping straight to graphics testing");
-
 
     log::info!("About to call init_common");
     // Initialize interrupts and other components call init_common here
