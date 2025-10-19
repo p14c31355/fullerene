@@ -228,6 +228,49 @@ pub fn reinit_page_table_with_allocator(
                 .expect("Failed to map VGA memory page")
                 .flush();
         }
+
+        // Also map VGA memory to identity for bootloader compatibility
+        let ident_virt_addr = VirtAddr::new(VGA_MEMORY_START + i * 4096);
+        let ident_page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(ident_virt_addr);
+        unsafe {
+            mapper
+                .map_to(ident_page, frame, flags, frame_allocator)
+                .expect("Failed to map VGA memory identity")
+                .flush();
+        }
+    }
+
+    // Map framebuffer to identity for bootloader compatibility
+    if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
+        let fb_pages = fb_size.div_ceil(4096);
+        for i in 0..fb_pages {
+            let phys_addr = PhysAddr::new(fb_addr.as_u64() + i * 4096);
+            let ident_virt_addr = VirtAddr::new(fb_addr.as_u64() + i * 4096);
+
+            let ident_page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(ident_virt_addr);
+            let ident_frame =
+                x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
+
+            let flags = Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE;
+            unsafe {
+                mapper
+                    .map_to(ident_page, ident_frame, flags, frame_allocator)
+                    .expect("Failed to map framebuffer identity page")
+                    .flush();
+            }
+        }
+    }
+
+    // Map VGA text buffer (0xB8000) to identity for bootloader compatibility
+    let vga_text_pages = 4; // 80*25*2 = 4000 bytes, 4 pages
+    for i in 0..vga_text_pages {
+        let phys_addr = PhysAddr::new(0xB8000 + i * 4096);
+        let ident_virt_addr = VirtAddr::new(0xB8000 + i * 4096);
+        let ident_page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(ident_virt_addr);
+        let ident_frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
+        unsafe {
+            mapper.map_to(ident_page, ident_frame, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE, frame_allocator).expect("Failed to map VGA text buffer identity").flush();
+        }
     }
 
     phys_offset

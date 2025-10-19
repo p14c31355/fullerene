@@ -19,9 +19,7 @@ use x86_64::{
     structures::paging::{Mapper, Size4KiB, mapper::MapToError},
 };
 
-use petroleum::graphics::{
-    VGA_MODE13H_ADDRESS, VGA_MODE13H_BPP, VGA_MODE13H_HEIGHT, VGA_MODE13H_STRIDE, VGA_MODE13H_WIDTH,
-};
+
 
 /// Helper function to map a range of memory pages
 /// Takes the base physical address, number of pages, mapper, frame allocator, and flags
@@ -89,10 +87,11 @@ impl UefiInitContext {
         petroleum::serial::serial_init();
         debug_log!("Kernel: efi_main located at {:x}", efi_main as usize);
 
-        petroleum::graphics::setup::setup_vga_mode_13h();
+        // UEFI uses framebuffer graphics, not legacy VGA hardware programming
+        // Graphics initialization happens later with initialize_graphics_with_config()
         unsafe {
             let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
-            write_vga_string(vga_buffer, 0, b"Kernel boot", 0x1F00);
+            write_vga_string(vga_buffer, 0, b"Kernel boot (UEFI)", 0x1F00);
         }
         log::info!("Early setup completed");
 
