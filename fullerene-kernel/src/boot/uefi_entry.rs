@@ -161,8 +161,14 @@ impl UefiInitContext {
         let flags = x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE
             | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-        map_memory_range(heap_start, heap_pages, self.physical_memory_offset, &mut mapper, &mut *frame_allocator, flags)
-            .expect("Failed to map heap memory");
+// Map VGA buffer
+let vga_phys_addr = PhysAddr::new(crate::VGA_BUFFER_ADDRESS as u64);
+let vga_pages = 1; // 4KB for 80*25*2 bytes
+map_memory_range(vga_phys_addr, vga_pages, self.physical_memory_offset, &mut mapper, &mut *frame_allocator, flags)
+    .expect("Failed to map VGA buffer");
+
+map_memory_range(heap_start, heap_pages, self.physical_memory_offset, &mut mapper, &mut *frame_allocator, flags)
+    .expect("Failed to map heap memory");
 
         (self.physical_memory_offset, heap_start, self.virtual_heap_start)
     }
@@ -249,10 +255,8 @@ pub extern "efiapi" fn efi_main(
         petroleum::halt_loop();
     }
 
-    // Now that allocator is set up, initialize VGA buffer writer
-    log::info!("Initializing VGA writer after allocator setup...");
-    crate::vga::init_vga();
-    log::info!("VGA writer initialized - text should be visible now");
+    // Now that allocator is set up, initialize VGA buffer writer (will be done in init_common)
+
 
     // Early serial log works now
     write_serial_bytes!(0x3F8, 0x3FD, b"About to complete basic init\n");
@@ -270,9 +274,10 @@ pub extern "efiapi" fn efi_main(
 
     log::info!("Kernel: Jumping straight to graphics testing");
 
+
     log::info!("About to call init_common");
     // Initialize interrupts and other components call init_common here
-    crate::init::init_common();
+    crate::init::init_common(physical_memory_offset);
     log::info!("init_common completed");
 
     // Initialize graphics with framebuffer configuration

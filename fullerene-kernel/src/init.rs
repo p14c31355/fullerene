@@ -22,18 +22,15 @@ macro_rules! init_step {
 }
 
 #[cfg(target_os = "uefi")]
-pub fn init_common() {
+pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     init_log!("Initializing common components");
-    let steps = [
-        init_step!("VGA", crate::vga::init_vga()),
-        init_step!("APIC", interrupts::init_apic()),
-        init_step!("process", crate::process::init()),
-        init_step!("syscall", crate::syscall::init()),
-        init_step!("fs", crate::fs::init()),
-        init_step!("loader", crate::loader::init()),
-    ];
 
-    InitSequence::new(&steps).run();
+    crate::vga::init_vga(physical_memory_offset);
+    interrupts::init_apic();
+    crate::process::init();
+    crate::syscall::init();
+    crate::fs::init();
+    crate::loader::init();
 
     init_log!("About to create test process");
     let test_pid = crate::process::create_process(
@@ -44,7 +41,7 @@ pub fn init_common() {
 }
 
 #[cfg(not(target_os = "uefi"))]
-pub fn init_common() {
+pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     use core::mem::MaybeUninit;
 
     // Static heap for BIOS
@@ -64,7 +61,7 @@ pub fn init_common() {
     interrupts::init(); // Initialize IDT
     // Heap already initialized
     petroleum::serial::serial_init(); // Initialize serial early for debugging
-    crate::vga::init_vga();
+    crate::vga::init_vga(physical_memory_offset);
 }
 
 // System initializer for managing component initialization
