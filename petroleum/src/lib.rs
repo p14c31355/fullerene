@@ -168,9 +168,7 @@ pub fn halt_loop() -> ! {
 /// Helper function to pause CPU for brief moment (used for busy waits and yielding)
 #[inline(always)]
 pub fn cpu_pause() {
-    unsafe {
-        core::arch::asm!("pause");
-    }
+    crate::pause!();
 }
 
 /// Helper to initialize serial for bootloader

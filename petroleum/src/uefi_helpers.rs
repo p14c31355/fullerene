@@ -125,9 +125,7 @@ pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
     }
 
     // For QEMU debugging, halt the CPU
-    unsafe {
-        asm!("hlt");
-    }
+    crate::halt!();
     loop {} // Panics must diverge
 }
 
@@ -147,7 +145,7 @@ fn alloc_error(_layout: core::alloc::Layout) -> ! {
                 .ok();
         }
         unsafe {
-            asm!("hlt"); // For QEMU debugging
+            crate::halt!(); // For QEMU debugging
         }
     }
 }

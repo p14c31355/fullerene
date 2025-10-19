@@ -15,19 +15,14 @@ pub mod user {
         arg6: u64,
     ) -> u64 {
         let mut result: u64;
-        core::arch::asm!(
-            "syscall",
-            in("rax") syscall_num as u64,
-            in("rdi") arg1,
-            in("rsi") arg2,
-            in("rdx") arg3,
-            in("r10") arg4,
-            in("r8") arg5,
-            in("r9") arg6,
-            lateout("rax") result,
-            // syscall clobbers rcx and r11
-            out("rcx") _,
-            out("r11") _,
+        result = petroleum::syscall_call!(
+            syscall_num as u64,
+            arg1,
+            arg2,
+            arg3,
+            arg4,
+            arg5,
+            arg6
         );
         result
     }

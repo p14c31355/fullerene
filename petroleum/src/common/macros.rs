@@ -572,3 +572,44 @@ macro_rules! check_periodic {
         }
     }};
 }
+
+/// Macro for syscall inline assembly to reduce duplication
+/// This macro encapsulates the syscall instruction with proper ABI
+#[macro_export]
+macro_rules! syscall_call {
+    ($syscall_num:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr, $arg6:expr) => {{
+        let result: u64;
+        unsafe {
+            core::arch::asm!(
+                "syscall",
+                in("rax") $syscall_num,
+                in("rdi") $arg1,
+                in("rsi") $arg2,
+                in("rdx") $arg3,
+                in("r10") $arg4,
+                in("r8") $arg5,
+                in("r9") $arg6,
+                lateout("rax") result,
+                out("rcx") _,
+                out("r11") _,
+            );
+        }
+        result
+    }};
+}
+
+/// Macro for halt instruction to reduce duplication
+#[macro_export]
+macro_rules! halt {
+    () => {
+        unsafe { asm!("hlt") };
+    };
+}
+
+/// Macro for pause instruction to reduce duplication
+#[macro_export]
+macro_rules! pause {
+    () => {
+        unsafe { asm!("pause") };
+    };
+}
