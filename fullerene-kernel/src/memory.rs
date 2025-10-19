@@ -11,7 +11,7 @@ use crate::MEMORY_MAP;
 
 use core::ffi::c_void;
 use x86_64::{PhysAddr, VirtAddr};
-use petroleum::write_serial_bytes;
+use petroleum::{write_serial_bytes, check_memory_initialized, mem_debug, debug_mem_descriptor};
 
 // Add a constant for the higher-half kernel virtual base address
 const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000; // Common higher-half address

@@ -1,3 +1,5 @@
+// Macros are automatically available from common module
+
 use x86_64::{
     PhysAddr, VirtAddr,
     instructions::tlb,
@@ -213,8 +215,7 @@ pub fn reinit_page_table_with_allocator(
     // Skip the first page (physical address 0) to avoid null pointer issues
     unsafe {
         map_identity_range(&mut mapper, frame_allocator, 4096, 1024, // 4MB - 1 page = 1024 pages
-            Flags::PRESENT | Flags::WRITABLE) // | Flags::NO_EXECUTE
-            .expect("Failed to map identity range");
+            Flags::PRESENT | Flags::WRITABLE).expect("Failed to map identity range") // | Flags::NO_EXECUTE
     }
 
     // Map kernel at higher half by parsing the ELF file for permissions
