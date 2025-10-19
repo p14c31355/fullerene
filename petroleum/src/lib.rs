@@ -270,15 +270,7 @@ pub fn detect_standard_modes(
                 "[BM-GFX] {} framebuffer mode {}x{} appears valid\n",
                 device_type, width, height
             ));
-            return Some(crate::common::FullereneFramebufferConfig {
-                address: *addr,
-                width: *width,
-                height: *height,
-                pixel_format:
-                    crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-                bpp: *bpp,
-                stride: *width * (*bpp / 8),
-            });
+            return Some(create_framebuffer_config!(*addr, *width, *height, crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor, *bpp, *width * (*bpp / 8)));
         }
     }
     None
@@ -464,15 +456,7 @@ pub fn detect_qemu_framebuffer(
             ));
 
             // Create framebuffer configuration
-            let fb_config = FullereneFramebufferConfig {
-                address,
-                width,
-                height,
-                pixel_format:
-                    crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-                bpp,
-                stride: width * (bpp / 8), // stride in bytes
-            };
+            let fb_config = create_framebuffer_config!(address, width, height, crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor, bpp, width * (bpp / 8));
 
             serial::_print(format_args!(
                 "QEMU framebuffer candidate: {}x{} @ {:#x}\n",
@@ -527,15 +511,7 @@ pub fn init_gop_framebuffer_alternative(
         ));
 
         // Create and try to install the configuration
-        let fb_config = FullereneFramebufferConfig {
-            address,
-            width,
-            height,
-            pixel_format:
-                crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-            bpp,
-            stride: width * (bpp / 8), // stride in bytes
-        };
+        let fb_config = create_framebuffer_config!(address, width, height, crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor, bpp, width * (bpp / 8));
 
         serial::_print(format_args!(
             "GOP: Attempting to install framebuffer config table...\n"
@@ -672,14 +648,7 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
         return None;
     }
 
-    let config = FullereneFramebufferConfig {
-        address: fb_addr as u64,
-        width: info.horizontal_resolution,
-        height: info.vertical_resolution,
-        pixel_format: info.pixel_format,
-        bpp: crate::common::get_bpp_from_pixel_format(info.pixel_format),
-        stride: info.pixels_per_scan_line,
-    };
+    let config = create_framebuffer_config!(fb_addr as u64, info.horizontal_resolution, info.vertical_resolution, info.pixel_format, crate::common::get_bpp_from_pixel_format(info.pixel_format), info.pixels_per_scan_line);
 
     serial::_print(format_args!(
         "GOP: Framebuffer ready: {}x{} @ {:#x}, {} BPP, stride {}\n",

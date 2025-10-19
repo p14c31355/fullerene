@@ -517,3 +517,18 @@ impl<'a> InitSequence<'a> {
         }
     }
 }
+
+/// Macro for creating FullereneFramebufferConfig structs to reduce boilerplate
+#[macro_export]
+macro_rules! create_framebuffer_config {
+    ($address:expr, $width:expr, $height:expr, $pixel_format:expr, $bpp:expr, $stride:expr) => {
+        $crate::common::FullereneFramebufferConfig {
+            address: $address,
+            width: $width,
+            height: $height,
+            pixel_format: $pixel_format,
+            bpp: $bpp,
+            stride: $stride,
+        }
+    };
+}
