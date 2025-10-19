@@ -1,6 +1,16 @@
 use super::ports::{HardwarePorts, PortWriter, VgaPortOps};
 use super::registers::{ATTRIBUTE_CONFIG, CRTC_CONFIG, GRAPHICS_CONFIG, SEQUENCER_CONFIG};
 
+/// Macro to reduce repetitive RGB value writing in palette setup
+#[macro_export]
+macro_rules! write_rgb_value {
+    ($writer:expr, $value:expr) => {
+        for _ in 0..3 {
+            $writer.write_safe($value);
+        }
+    };
+}
+
 // Helper macros to reduce repetitive serial logging in init functions
 macro_rules! log_step {
     ($msg:expr) => {
@@ -291,9 +301,7 @@ pub fn setup_palette() {
 
     for i in 0..256 {
         let val = (i * 63 / 255) as u8;
-        for _ in 0..3 {
-            dac_data_writer.write_safe(val); // RGB
-        }
+        write_rgb_value!(dac_data_writer, val);
     }
 }
 
