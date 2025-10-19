@@ -246,16 +246,12 @@ pub fn reinit_page_table_with_allocator(
                 .expect("Failed to map VGA memory page")
                 .flush();
         }
+    }
 
-        // Also map VGA memory to identity for bootloader compatibility
-        let ident_virt_addr = VirtAddr::new(VGA_MEMORY_START + i * 4096);
-        let ident_page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(ident_virt_addr);
-        unsafe {
-            mapper
-                .map_to(ident_page, frame, flags, frame_allocator)
-                .expect("Failed to map VGA memory identity")
-                .flush();
-        }
+    // Map VGA memory to identity for bootloader compatibility
+    unsafe {
+        map_identity_range(&mut mapper, frame_allocator, VGA_MEMORY_START, vga_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE)
+            .expect("Failed to map VGA memory identity");
     }
 
     // Map framebuffer to identity for bootloader compatibility
