@@ -81,7 +81,9 @@ impl UefiInitContext {
     ) -> PhysAddr {
         write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main entered.\n");
         petroleum::serial::serial_init();
-        debug_log!("Kernel: efi_main located at {:x}", efi_main as usize);
+        petroleum::serial::debug_print_str_to_com1("Kernel: efi_main located at ");
+        petroleum::serial::debug_print_hex(efi_main as usize);
+        petroleum::serial::debug_print_str_to_com1("\n");
 
         // UEFI uses framebuffer graphics, not legacy VGA hardware programming
         // Graphics initialization happens later with initialize_graphics_with_config()
@@ -89,7 +91,7 @@ impl UefiInitContext {
             let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
             write_vga_string(vga_buffer, 0, b"Kernel boot (UEFI)", 0x1F00);
         }
-        log::info!("Early setup completed");
+        write_serial_bytes!(0x3F8, 0x3FD, b"Early setup completed\n");
 
         let kernel_virt_addr = efi_main as u64;
         crate::memory::setup_memory_maps(_memory_map, memory_map_size, kernel_virt_addr)

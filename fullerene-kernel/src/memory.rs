@@ -11,6 +11,7 @@ use crate::MEMORY_MAP;
 
 use core::ffi::c_void;
 use x86_64::{PhysAddr, VirtAddr};
+use petroleum::write_serial_bytes;
 
 // Add a constant for the higher-half kernel virtual base address
 const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000; // Common higher-half address
@@ -93,59 +94,60 @@ pub fn setup_memory_maps(
     kernel_virt_addr: u64,
 ) -> PhysAddr {
     // Use the passed memory map
-    log::info!("About to create memory map slice");
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to create memory map slice\n");
     let descriptors = unsafe {
         core::slice::from_raw_parts(
             memory_map as *const EfiMemoryDescriptor,
             memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>(),
         )
     };
-    log::info!("Memory map slice created");
-    log::info!(
-        "Memory map slice size: {}, descriptor count: {}",
-        memory_map_size,
-        descriptors.len()
-    );
+    write_serial_bytes!(0x3F8, 0x3FD, b"Memory map slice created\n");
+    petroleum::serial::debug_print_str_to_com1("Memory map slice size: ");
+    petroleum::serial::debug_print_hex(memory_map_size);
+    petroleum::serial::debug_print_str_to_com1(", descriptor count: ");
+    petroleum::serial::debug_print_hex(descriptors.len());
+    petroleum::serial::debug_print_str_to_com1("\n");
     // Reduce log verbosity for faster boot
     if descriptors.len() < 20 {
         for (i, desc) in descriptors.iter().enumerate() {
-            log::info!(
-                "Memory descriptor {}: type={:#x}, phys_start=0x{:x}, virt_start=0x{:x}, pages=0x{:x}",
-                i,
-                desc.type_ as u32,
-                desc.physical_start,
-                desc.virtual_start,
-                desc.number_of_pages
-            );
+            petroleum::serial::debug_print_str_to_com1("Memory descriptor ");
+            petroleum::serial::debug_print_hex(i);
+            petroleum::serial::debug_print_str_to_com1(": type=");
+            petroleum::serial::debug_print_hex(desc.type_ as usize);
+            petroleum::serial::debug_print_str_to_com1(", phys_start=0x");
+            petroleum::serial::debug_print_hex(desc.physical_start as usize);
+            petroleum::serial::debug_print_str_to_com1(", virt_start=0x");
+            petroleum::serial::debug_print_hex(desc.virtual_start as usize);
+            petroleum::serial::debug_print_str_to_com1(", pages=0x");
+            petroleum::serial::debug_print_hex(desc.number_of_pages as usize);
+            petroleum::serial::debug_print_str_to_com1("\n");
         }
     }
-    log::info!("Memory map parsing: finished descriptor dump");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Memory map parsing: finished descriptor dump\n");
     // Initialize MEMORY_MAP with descriptors
     MEMORY_MAP.call_once(|| {
         // Since UEFI memory map is static until exit_boot_services, this is safe
         unsafe { &*(descriptors as *const _) }
     });
-    log::info!("MEMORY_MAP initialized");
+    write_serial_bytes!(0x3F8, 0x3FD, b"MEMORY_MAP initialized\n");
 
     let physical_memory_offset;
     let kernel_phys_start;
 
-    log::info!("Scanning memory descriptors to find kernel location...");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Scanning memory descriptors to find kernel location...\n");
 
     // Find the memory descriptor containing the kernel (efi_main is virtual address,
     // but UEFI uses identity mapping initially, so check physical range containing kernel_virt_addr)
     // Since UEFI identity-maps initially, kernel_virt_addr should equal its physical address
     if kernel_virt_addr >= 0x1000 {
         kernel_phys_start = PhysAddr::new(kernel_virt_addr);
-        log::info!(
-            "Using identity-mapped kernel physical start: 0x{:x}",
-            kernel_phys_start.as_u64()
-        );
+        petroleum::serial::debug_print_str_to_com1("Using identity-mapped kernel physical start: 0x");
+        petroleum::serial::debug_print_hex(kernel_phys_start.as_u64() as usize);
+        petroleum::serial::debug_print_str_to_com1("\n");
     } else {
-        log::info!(
-            "Warning: Invalid kernel address 0x{:x}, falling back to hardcoded value",
-            kernel_virt_addr
-        );
+        petroleum::serial::debug_print_str_to_com1("Warning: Invalid kernel address 0x");
+        petroleum::serial::debug_print_hex(kernel_virt_addr as usize);
+        petroleum::serial::debug_print_str_to_com1(", falling back to hardcoded value\n");
         kernel_phys_start = PhysAddr::new(0x100000);
     }
 
@@ -154,11 +156,11 @@ pub fn setup_memory_maps(
     // Use a simpler offset that maps physical addresses to the higher half directly
     physical_memory_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE);
 
-    log::info!(
-        "Physical memory offset calculation complete: offset=0x{:x}, kernel_phys_start=0x{:x}",
-        physical_memory_offset.as_u64(),
-        kernel_phys_start.as_u64()
-    );
+    petroleum::serial::debug_print_str_to_com1("Physical memory offset calculation complete: offset=0x");
+    petroleum::serial::debug_print_hex(physical_memory_offset.as_u64() as usize);
+    petroleum::serial::debug_print_str_to_com1(", kernel_phys_start=0x");
+    petroleum::serial::debug_print_hex(kernel_phys_start.as_u64() as usize);
+    petroleum::serial::debug_print_str_to_com1("\n");
 
     kernel_phys_start
 }

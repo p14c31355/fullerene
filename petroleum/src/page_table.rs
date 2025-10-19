@@ -188,21 +188,28 @@ pub fn reinit_page_table_with_allocator(
     // Use the higher-half kernel offset
     let phys_offset = HIGHER_HALF_OFFSET;
 
-    // Get the current L4 table frame
-    let level_4_table_frame;
+    // Allocate a new L4 table frame for the kernel
+    let level_4_table_frame = frame_allocator.allocate_frame()
+        .expect("Failed to allocate frame for new L4 table");
+
+    // Zero the new L4 table
     unsafe {
-        use x86_64::registers::control::Cr3;
-        (level_4_table_frame, _) = Cr3::read();
+        let l4_table_ptr = level_4_table_frame.start_address().as_u64() as *mut PageTable;
+        core::ptr::write_bytes(l4_table_ptr, 0, 1);
     }
 
-    // Get the mapper and frame allocator
+    // Create mapper for the new L4 table with identity mapping (offset 0)
     let mut mapper = unsafe {
-        // At this point, we are still using UEFI's identity mapping.
-        // The virtual address of the page table is its physical address.
-        let p4_table_ptr = level_4_table_frame.start_address().as_u64() as *mut PageTable;
-        // We create a mapper with an offset of 0 to work with the identity mapping.
-        OffsetPageTable::new(&mut *p4_table_ptr, VirtAddr::new(0))
+        let l4_table_ptr = level_4_table_frame.start_address().as_u64() as *mut PageTable;
+        OffsetPageTable::new(&mut *l4_table_ptr, VirtAddr::new(0))
     };
+
+    // Set up identity mapping for the first 4GB of physical memory for UEFI compatibility
+    unsafe {
+        map_identity_range(&mut mapper, frame_allocator, 0, 1024 * 1024, // 4GB = 1M pages
+            Flags::PRESENT | Flags::WRITABLE) // | Flags::NO_EXECUTE
+            .expect("Failed to map identity range");
+    }
 
     // Map kernel at higher half by parsing the ELF file for permissions
     unsafe {
@@ -288,6 +295,11 @@ pub fn reinit_page_table_with_allocator(
             .map_to(page, level_4_table_frame, Flags::PRESENT | Flags::WRITABLE, frame_allocator)
             .expect("Failed to map L4 to higher half")
             .flush();
+    }
+
+    // Switch to the new page table
+    unsafe {
+        Cr3::write(level_4_table_frame, x86_64::registers::control::Cr3Flags::empty());
     }
 
     phys_offset
