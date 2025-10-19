@@ -43,7 +43,7 @@ fn collect_system_stats() -> SystemStats {
     let active_processes = crate::process::get_active_process_count();
 
     // Get memory usage from the global allocator
-    let memory_used = petroleum::page_table::ALLOCATOR.lock().used();
+    let (memory_used, _, _) = petroleum::get_memory_stats!();
 
     let uptime_ticks = SYSTEM_TICK.load(Ordering::Relaxed);
 
@@ -75,9 +75,7 @@ fn process_io_events() {
 /// Perform system health checks (memory, processes, etc.)
 fn perform_system_health_checks() {
     // Check memory usage
-    let allocator = petroleum::page_table::ALLOCATOR.lock();
-    let used = allocator.used();
-    let total = allocator.size();
+    let (used, total, _) = petroleum::get_memory_stats!();
 
     // Log warning if memory usage is high
     if used > total / 2 {
@@ -201,8 +199,7 @@ fn monitor_environment() {
     let system_stats = collect_system_stats();
 
     // If memory usage is high, perform garbage collection
-    let allocator = petroleum::page_table::ALLOCATOR.lock();
-    let total_memory = allocator.size();
+    let (_, total_memory, _) = petroleum::get_memory_stats!();
     if total_memory > 0 && system_stats.memory_used > total_memory * 3 / 4 {
         // >75%
         log::debug!("High memory usage detected, running memory optimization");
@@ -357,9 +354,7 @@ pub fn scheduler_loop() -> ! {
 
         // Periodic memory capacity check (every 10000 ticks)
         if current_tick % 10000 == 0 {
-            let allocator = petroleum::page_table::ALLOCATOR.lock();
-            let used_bytes = allocator.used();
-            let total_bytes = allocator.size();
+            let (used_bytes, total_bytes, _) = petroleum::get_memory_stats!();
             let usage_percent = if total_bytes > 0 {
                 (used_bytes * 100) / total_bytes
             } else {
@@ -420,8 +415,8 @@ pub fn scheduler_loop() -> ! {
 /// Handle emergency system conditions (OOM, process limits, etc.)
 fn emergency_condition_handler() {
     // Check for out-of-memory condition
-    let allocator = petroleum::page_table::ALLOCATOR.lock();
-    if allocator.used() > (allocator.size() * 4) / 5 {
+    let (used, total, _) = petroleum::get_memory_stats!();
+    if used > (total * 4) / 5 {
         // >80% usage
         log::error!("EMERGENCY: Critical memory usage detected!");
         // In a full implementation, this would:

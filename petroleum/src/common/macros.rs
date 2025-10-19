@@ -501,6 +501,18 @@ pub struct InitSequence<'a> {
     steps: &'a [(&'static str, fn() -> Result<(), &'static str>)],
 }
 
+/// Macro for getting memory statistics in a single line
+#[macro_export]
+macro_rules! get_memory_stats {
+    () => {{
+        let allocator = $crate::page_table::ALLOCATOR.lock();
+        let used = allocator.used();
+        let total = allocator.size();
+        let free = total.saturating_sub(used);
+        (used, total, free)
+    }};
+}
+
 impl<'a> InitSequence<'a> {
     pub fn new(steps: &'a [(&'static str, fn() -> Result<(), &'static str>)]) -> Self {
         Self { steps }

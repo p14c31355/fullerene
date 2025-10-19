@@ -117,17 +117,7 @@ impl TextBufferOperations for VgaBuffer {
         }
     }
 
-    fn clear_screen(&mut self) {
-        let blank = ScreenChar {
-            ascii_character: b' ',
-            color_code: self.color_code,
-        };
-        for row in 0..BUFFER_HEIGHT {
-            self.buffer[row].fill(blank);
-        }
-        self.column_position = 0;
-        self.row_position = 0;
-    }
+
 }
 
 // Global singleton
@@ -204,16 +194,7 @@ mod tests {
             }
         }
 
-        fn clear_row(&mut self, row: usize) {
-            let blank_char = ScreenChar {
-                ascii_character: b' ',
-                color_code: self.color_code,
-            };
-            for col in 0..self.width {
-                let index = row * self.width + col;
-                self.buffer[index] = blank_char;
-            }
-        }
+
     }
 
     impl MockVgaBuffer {
