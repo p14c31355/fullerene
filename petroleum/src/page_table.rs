@@ -188,10 +188,15 @@ pub fn reinit_page_table_with_allocator(
     // Use the higher-half kernel offset
     let phys_offset = HIGHER_HALF_OFFSET;
 
+    // Get the current L4 table frame
+    let level_4_table_frame;
+    unsafe {
+        use x86_64::registers::control::Cr3;
+        (level_4_table_frame, _) = Cr3::read();
+    }
+
     // Get the mapper and frame allocator
     let mut mapper = unsafe {
-        use x86_64::registers::control::Cr3;
-        let (level_4_table_frame, _) = Cr3::read();
         // At this point, we are still using UEFI's identity mapping.
         // The virtual address of the page table is its physical address.
         let p4_table_ptr = level_4_table_frame.start_address().as_u64() as *mut PageTable;
@@ -273,6 +278,16 @@ pub fn reinit_page_table_with_allocator(
             )
             .expect("Failed to map framebuffer identity pages");
         }
+    }
+
+    // Map the L4 page table to higher-half so that OffsetPageTable with high offset can access it
+    let l4_virt = phys_offset + level_4_table_frame.start_address().as_u64();
+    let page = Page::containing_address(l4_virt);
+    unsafe {
+        mapper
+            .map_to(page, level_4_table_frame, Flags::PRESENT | Flags::WRITABLE, frame_allocator)
+            .expect("Failed to map L4 to higher half")
+            .flush();
     }
 
     phys_offset
