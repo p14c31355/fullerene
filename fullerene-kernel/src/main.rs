@@ -7,14 +7,17 @@
 #![no_main]
 
 // Kernel modules
+mod boot;
 mod context_switch; // Context switching
 mod fs; // Basic filesystem
 mod gdt; // Add GDT module
 mod graphics;
 mod heap;
+mod init;
 mod interrupts;
 mod keyboard; // Keyboard input driver
 mod loader; // Program loader
+mod memory;
 mod memory_management; // Virtual memory management
 mod process; // Process management
 mod scheduler;
@@ -22,9 +25,6 @@ mod shell;
 mod syscall;
 mod traits;
 mod vga;
-mod boot;
-mod init;
-mod memory;
 
 extern crate alloc;
 
@@ -50,7 +50,10 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     // Visual indicator on VGA screen for kernel panic (yellow on red) - helps with debugging in environments without serial access
     let panic_msg = b"PANIC!";
     for (i, &ch) in panic_msg.iter().enumerate() {
-        petroleum::volatile_write!((VGA_BUFFER_ADDRESS + i * 2) as *mut u16, 0xCE00 | (ch as u16));
+        petroleum::volatile_write!(
+            (VGA_BUFFER_ADDRESS + i * 2) as *mut u16,
+            0xCE00 | (ch as u16)
+        );
     }
 
     // Halt the CPU to prevent spinning

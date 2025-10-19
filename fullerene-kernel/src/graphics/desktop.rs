@@ -252,43 +252,25 @@ fn draw_app_window<W: FramebufferLike>(
     height: u32,
     title: &str,
 ) {
-    draw_border_rect!(
-        writer,
-        x as i32,
-        y as i32,
-        width,
-        height,
-        COLOR_WHITE,
-        COLOR_BLACK,
-        2
-    );
-    draw_filled_rect!(writer, x as i32, y as i32, width, 25, COLOR_DARK_GRAY);
-    draw_centered_text(writer, title, x as i32, y as i32 + 8, width, COLOR_BLACK);
-    draw_filled_rect!(
-        writer,
-        x as i32 + 5,
-        y as i32 + 30,
-        width.saturating_sub(10),
-        height.saturating_sub(35),
-        COLOR_WINDOW_BG
-    );
+    petroleum::draw_window_shell!(writer, x as i32, y as i32, width, height, title, {});
 }
 
 fn draw_shell_window<W: FramebufferLike>(writer: &mut W, x: u32, y: u32, width: u32, height: u32) {
-    draw_app_window(writer, x, y, width, height, "Shell");
-    let text_style = MonoTextStyle::new(&FONT_6X10, super::u32_to_rgb888(COLOR_BLACK));
-    Text::new(
-        "fullerene> ",
-        Point::new(x as i32 + 15, y as i32 + 40),
-        text_style,
-    )
-    .draw(writer)
-    .ok();
-    Text::new(
-        "Welcome to Fullerene OS Shell",
-        Point::new(x as i32 + 15, y as i32 + 55),
-        text_style,
-    )
-    .draw(writer)
-    .ok();
+    petroleum::draw_window_shell!(writer, x as i32, y as i32, width, height, "Shell", {
+        let text_style = MonoTextStyle::new(&FONT_6X10, super::u32_to_rgb888(COLOR_BLACK));
+        Text::new(
+            "fullerene> ",
+            Point::new(x as i32 + 15, y as i32 + 40),
+            text_style,
+        )
+        .draw(writer)
+        .ok();
+        Text::new(
+            "Welcome to Fullerene OS Shell",
+            Point::new(x as i32 + 15, y as i32 + 55),
+            text_style,
+        )
+        .draw(writer)
+        .ok();
+    });
 }

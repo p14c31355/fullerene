@@ -6,7 +6,9 @@
 use crate::graphics;
 use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicU64, Ordering};
-use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations};
+use petroleum::{
+    Color, ColorCode, ScreenChar, TextBufferOperations, check_periodic, periodic_task,
+};
 use x86_64::VirtAddr;
 
 // System-wide counters and statistics
@@ -16,8 +18,10 @@ static SCHEDULER_ITERATIONS: AtomicU64 = AtomicU64::new(0);
 // I/O event queue (placeholder for future I/O operations)
 static IO_EVENTS: spin::Mutex<VecDeque<IoEvent>> = spin::Mutex::new(VecDeque::new());
 
-// Periodic desktop update interval (in ticks)
+// Periodic task intervals (in ticks)
 const DESKTOP_UPDATE_INTERVAL_TICKS: u64 = 5000;
+const LOG_INTERVAL_TICKS: u64 = 5000;
+const DISPLAY_INTERVAL_TICKS: u64 = 5000;
 
 // System diagnostics structure
 #[derive(Clone, Copy)]
@@ -43,7 +47,7 @@ fn collect_system_stats() -> SystemStats {
     let active_processes = crate::process::get_active_process_count();
 
     // Get memory usage from the global allocator
-    let memory_used = petroleum::page_table::ALLOCATOR.lock().used();
+    let (memory_used, _, _) = petroleum::get_memory_stats!();
 
     let uptime_ticks = SYSTEM_TICK.load(Ordering::Relaxed);
 
@@ -75,9 +79,7 @@ fn process_io_events() {
 /// Perform system health checks (memory, processes, etc.)
 fn perform_system_health_checks() {
     // Check memory usage
-    let allocator = petroleum::page_table::ALLOCATOR.lock();
-    let used = allocator.used();
-    let total = allocator.size();
+    let (used, total, _) = petroleum::get_memory_stats!();
 
     // Log warning if memory usage is high
     if used > total / 2 {
@@ -110,9 +112,7 @@ fn log_system_stats(stats: &SystemStats, interval_ticks: u64) {
 
     // Only log every interval_ticks to avoid spam
     let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
-    let mut last_log_tick = LAST_LOG_TICK.lock();
-
-    if current_tick - *last_log_tick >= interval_ticks {
+    petroleum::check_periodic!(LAST_LOG_TICK, interval_ticks, current_tick, {
         log::info!(
             "System Stats - Processes: {}/{}, Memory: {} bytes, Uptime: {} ticks",
             stats.active_processes,
@@ -120,8 +120,7 @@ fn log_system_stats(stats: &SystemStats, interval_ticks: u64) {
             stats.memory_used,
             stats.uptime_ticks
         );
-        *last_log_tick = current_tick;
-    }
+    });
 }
 
 /// Display system statistics on VGA periodically
@@ -129,9 +128,7 @@ fn display_system_stats_on_vga(stats: &SystemStats, interval_ticks: u64) {
     static LAST_DISPLAY_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
 
     let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
-    let mut last_display_tick = LAST_DISPLAY_TICK.lock();
-
-    if current_tick - *last_display_tick >= interval_ticks {
+    petroleum::check_periodic!(LAST_DISPLAY_TICK, interval_ticks, current_tick, {
         if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {
             const TICKS_PER_SECOND: u64 = 1000; // Assuming ~1000 ticks per second
             let uptime_minutes = stats.uptime_ticks / (60 * TICKS_PER_SECOND);
@@ -174,8 +171,7 @@ fn display_system_stats_on_vga(stats: &SystemStats, interval_ticks: u64) {
             let _ = write!(vga_writer, "Tick: {}", stats.uptime_ticks);
             vga_writer.update_cursor();
         }
-        *last_display_tick = current_tick;
-    }
+    });
 }
 
 /// Get the current system tick count
@@ -201,8 +197,7 @@ fn monitor_environment() {
     let system_stats = collect_system_stats();
 
     // If memory usage is high, perform garbage collection
-    let allocator = petroleum::page_table::ALLOCATOR.lock();
-    let total_memory = allocator.size();
+    let (_, total_memory, _) = petroleum::get_memory_stats!();
     if total_memory > 0 && system_stats.memory_used > total_memory * 3 / 4 {
         // >75%
         log::debug!("High memory usage detected, running memory optimization");
@@ -224,18 +219,14 @@ fn optimize_system_resources() {
     // Optimize memory layout periodically
     static LAST_OPTIMIZATION_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
     let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
-
-    let mut last_optimization_tick = LAST_OPTIMIZATION_TICK.lock();
-
-    if current_tick - *last_optimization_tick > 10000 {
+    petroleum::check_periodic!(LAST_OPTIMIZATION_TICK, 10000, current_tick, {
         // Every 10000 ticks
         // Run memory defragmentation or optimization
         log::debug!("Running periodic resource optimization");
-        *last_optimization_tick = current_tick;
 
         // Optimize heap allocation patterns
         // petroleum::page_table::ALLOCATOR.lock().defragment(); // Method not available
-    }
+    });
 }
 
 /// Manage background system services
@@ -314,6 +305,9 @@ pub fn scheduler_loop() -> ! {
 
     // Initialize scheduler by creating the shell process
     log::info!("Starting enhanced OS scheduler with integrated system features...");
+
+    // At the top of scheduler_loop
+    static LAST_HEALTH_CHECK_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
     let shell_pid = crate::process::create_process(
         "shell_process",
         VirtAddr::new(shell_process_main as usize as u64),
@@ -337,29 +331,26 @@ pub fn scheduler_loop() -> ! {
 
         // Periodically perform health checks and log statistics
         let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
-        if current_tick % 1000 == 0 {
-            // Every 1000 ticks
+        check_periodic!(LAST_HEALTH_CHECK_TICK, 1000, current_tick, {
             perform_system_health_checks();
-            log_system_stats(&system_stats, 5000); // Log every 5000 ticks
-            display_system_stats_on_vga(&system_stats, 5000); // Display every 5000 ticks
-        }
+            log_system_stats(&system_stats, LOG_INTERVAL_TICKS);
+            display_system_stats_on_vga(&system_stats, DISPLAY_INTERVAL_TICKS);
+        });
 
         // Periodic filesystem synchronization and OS features (every 3000 ticks)
-        if current_tick % 3000 == 0 {
+        periodic_task!(current_tick, 3000, {
             log_system_stats_to_fs(&system_stats);
             perform_automated_backup();
-        }
+        });
 
         // Perform system maintenance tasks periodically
-        if current_tick % 2000 == 0 {
+        periodic_task!(current_tick, 2000, {
             perform_system_maintenance();
-        }
+        });
 
         // Periodic memory capacity check (every 10000 ticks)
-        if current_tick % 10000 == 0 {
-            let allocator = petroleum::page_table::ALLOCATOR.lock();
-            let used_bytes = allocator.used();
-            let total_bytes = allocator.size();
+        periodic_task!(current_tick, 10000, {
+            let (used_bytes, total_bytes, _) = petroleum::get_memory_stats!();
             let usage_percent = if total_bytes > 0 {
                 (used_bytes * 100) / total_bytes
             } else {
@@ -376,14 +367,13 @@ pub fn scheduler_loop() -> ! {
             if usage_percent > 90 {
                 log::warn!("Critical memory usage (>90%) detected!");
             }
-        }
+        });
 
         // Check for process cleanup every 100 iterations
         let iteration_count = SCHEDULER_ITERATIONS.load(Ordering::Relaxed);
-        if iteration_count % 100 == 0 {
-            // Check for terminated processes and clean up
+        periodic_task!(iteration_count, 100, {
             crate::process::cleanup_terminated_processes();
-        }
+        });
 
         // Handle any pending system calls or kernel requests
         // This is a placeholder - in a full implementation, there would be
@@ -420,8 +410,8 @@ pub fn scheduler_loop() -> ! {
 /// Handle emergency system conditions (OOM, process limits, etc.)
 fn emergency_condition_handler() {
     // Check for out-of-memory condition
-    let allocator = petroleum::page_table::ALLOCATOR.lock();
-    if allocator.used() > (allocator.size() * 4) / 5 {
+    let (used, total, _) = petroleum::get_memory_stats!();
+    if used > (total * 4) / 5 {
         // >80% usage
         log::error!("EMERGENCY: Critical memory usage detected!");
         // In a full implementation, this would:

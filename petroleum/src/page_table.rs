@@ -155,6 +155,24 @@ pub unsafe fn translate_addr(addr: VirtAddr, physical_memory_offset: VirtAddr) -
 /// Returns the higher-half kernel mapping offset.
 pub const HIGHER_HALF_OFFSET: VirtAddr = VirtAddr::new(0xFFFF_8000_0000_0000);
 
+/// Helper function to map a range of physical addresses to the same virtual addresses (identity mapping)
+unsafe fn map_identity_range(
+    mapper: &mut impl Mapper<Size4KiB>,
+    frame_allocator: &mut impl FrameAllocator<Size4KiB>,
+    phys_start: u64,
+    num_pages: u64,
+    flags: x86_64::structures::paging::PageTableFlags,
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    for i in 0..num_pages {
+        let phys_addr = PhysAddr::new(phys_start + i * 4096);
+        let virt_addr = VirtAddr::new(phys_start + i * 4096);
+        let page = Page::containing_address(virt_addr);
+        let frame = PhysFrame::containing_address(phys_addr);
+        mapper.map_to(page, frame, flags, frame_allocator)?.flush();
+    }
+    Ok(())
+}
+
 /// Reinitialize the page table with identity mapping and higher-half kernel mapping
 /// This version takes a frame allocator to perform the actual mapping
 ///
@@ -227,6 +245,33 @@ pub fn reinit_page_table_with_allocator(
                 .map_to(page, frame, flags, frame_allocator)
                 .expect("Failed to map VGA memory page")
                 .flush();
+        }
+    }
+
+    // Map VGA memory to identity for bootloader compatibility
+    unsafe {
+        map_identity_range(
+            &mut mapper,
+            frame_allocator,
+            VGA_MEMORY_START,
+            vga_pages,
+            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+        )
+        .expect("Failed to map VGA memory identity");
+    }
+
+    // Map framebuffer to identity for bootloader compatibility
+    if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
+        let fb_pages = fb_size.div_ceil(4096);
+        unsafe {
+            map_identity_range(
+                &mut mapper,
+                frame_allocator,
+                fb_addr.as_u64(),
+                fb_pages,
+                Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+            )
+            .expect("Failed to map framebuffer identity pages");
         }
     }
 

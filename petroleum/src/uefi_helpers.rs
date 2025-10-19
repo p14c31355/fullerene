@@ -125,9 +125,7 @@ pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
     }
 
     // For QEMU debugging, halt the CPU
-    unsafe {
-        asm!("hlt");
-    }
+    crate::halt!();
     loop {} // Panics must diverge
 }
 
@@ -146,9 +144,7 @@ fn alloc_error(_layout: core::alloc::Layout) -> ! {
                 .write_string_heapless("Allocation error!\n")
                 .ok();
         }
-        unsafe {
-            asm!("hlt"); // For QEMU debugging
-        }
+        crate::halt!(); // For QEMU debugging
     }
 }
 
@@ -180,7 +176,8 @@ pub fn test_runner(tests: &[&dyn Testable]) {
 
 /// Kernel-side fallback framebuffer detection when config table is not available
 /// Uses shared logic from petroleum crate
-pub fn kernel_fallback_framebuffer_detection() -> Option<crate::common::FullereneFramebufferConfig> {
+pub fn kernel_fallback_framebuffer_detection() -> Option<crate::common::FullereneFramebufferConfig>
+{
     // Call petroleum's consolidated QEMU framebuffer detection
     crate::detect_qemu_framebuffer(&crate::QEMU_CONFIGS)
 }

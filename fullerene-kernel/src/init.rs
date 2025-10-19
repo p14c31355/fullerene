@@ -6,33 +6,50 @@ use alloc::{
     boxed::Box,
     collections::{BTreeMap, BTreeSet},
     string::String,
-    vec::Vec,
+    vec::{self, Vec},
 };
-use petroleum::{common::logging::SystemError, init_log, write_serial_bytes, InitSequence};
+use petroleum::{InitSequence, common::logging::SystemError, init_log, write_serial_bytes};
 use spin::Once;
 
 macro_rules! init_step {
-    ($name:expr, $init:expr) => {{
-        fn __init_fn() -> Result<(), &'static str> {
-            $init;
-            Ok(())
-        }
-        ($name, __init_fn as fn() -> Result<(), &'static str>)
-    }};
+    ($name:expr, $closure:expr) => {
+        (
+            $name,
+            Box::new($closure) as Box<dyn Fn() -> Result<(), &'static str>>,
+        )
+    };
 }
 
 #[cfg(target_os = "uefi")]
-pub fn init_common() {
+pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     init_log!("Initializing common components");
-    let steps = [
-        init_step!("VGA", crate::vga::init_vga()),
-        init_step!("APIC", interrupts::init_apic()),
-        init_step!("process", crate::process::init()),
-        init_step!("syscall", crate::syscall::init()),
-        init_step!("fs", crate::fs::init()),
-        init_step!("loader", crate::loader::init()),
-    ];
 
+    let steps = [
+        init_step!("VGA", move || {
+            crate::vga::init_vga(physical_memory_offset);
+            Ok(())
+        }),
+        init_step!("APIC", || {
+            interrupts::init_apic();
+            Ok(())
+        }),
+        init_step!("process", || {
+            crate::process::init();
+            Ok(())
+        }),
+        init_step!("syscall", || {
+            crate::syscall::init();
+            Ok(())
+        }),
+        init_step!("fs", || {
+            crate::fs::init();
+            Ok(())
+        }),
+        init_step!("loader", || {
+            crate::loader::init();
+            Ok(())
+        }),
+    ];
     InitSequence::new(&steps).run();
 
     init_log!("About to create test process");
@@ -44,7 +61,7 @@ pub fn init_common() {
 }
 
 #[cfg(not(target_os = "uefi"))]
-pub fn init_common() {
+pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     use core::mem::MaybeUninit;
 
     // Static heap for BIOS
@@ -64,7 +81,7 @@ pub fn init_common() {
     interrupts::init(); // Initialize IDT
     // Heap already initialized
     petroleum::serial::serial_init(); // Initialize serial early for debugging
-    crate::vga::init_vga();
+    crate::vga::init_vga(physical_memory_offset);
 }
 
 // System initializer for managing component initialization

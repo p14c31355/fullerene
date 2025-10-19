@@ -19,10 +19,10 @@ pub struct VgaBuffer {
 }
 
 impl VgaBuffer {
-    /// Creates a new VgaBuffer instance.
-    pub fn new() -> VgaBuffer {
+    /// Creates a new VgaBuffer instance with the given VGA address.
+    pub fn new(vga_address: usize) -> VgaBuffer {
         VgaBuffer {
-            buffer: unsafe { &mut *(crate::VGA_BUFFER_ADDRESS as *mut _) },
+            buffer: unsafe { &mut *(vga_address as *mut _) },
             column_position: 0,
             row_position: 0,
             color_code: ColorCode::new(Color::Green, Color::Black),
@@ -116,26 +116,16 @@ impl TextBufferOperations for VgaBuffer {
             self.scroll_up();
         }
     }
-
-    fn clear_screen(&mut self) {
-        let blank = ScreenChar {
-            ascii_character: b' ',
-            color_code: self.color_code,
-        };
-        for row in 0..BUFFER_HEIGHT {
-            self.buffer[row].fill(blank);
-        }
-        self.column_position = 0;
-        self.row_position = 0;
-    }
 }
 
 // Global singleton
 pub static VGA_BUFFER: Once<Mutex<VgaBuffer>> = Once::new();
 
-// Initialize the VGA screen
-pub fn init_vga() {
-    VGA_BUFFER.call_once(|| Mutex::new(VgaBuffer::new()));
+// Initialize the VGA screen with the given physical memory offset
+pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
+    const VGA_PHY_ADDR: usize = 0xb8000;
+    let vga_virt_addr = physical_memory_offset.as_u64() as usize + VGA_PHY_ADDR;
+    VGA_BUFFER.call_once(|| Mutex::new(VgaBuffer::new(vga_virt_addr)));
     let mut writer = VGA_BUFFER.get().unwrap().lock();
     writer.clear_screen();
     writer.set_color_code(ColorCode::new(Color::Green, Color::Black));
@@ -199,17 +189,6 @@ mod tests {
                     ascii_character: 0,
                     color_code: self.color_code,
                 }
-            }
-        }
-
-        fn clear_row(&mut self, row: usize) {
-            let blank_char = ScreenChar {
-                ascii_character: b' ',
-                color_code: self.color_code,
-            };
-            for col in 0..self.width {
-                let index = row * self.width + col;
-                self.buffer[index] = blank_char;
             }
         }
     }

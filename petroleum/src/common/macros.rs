@@ -1,3 +1,8 @@
+//! Macro definitions for common patterns across Fullerene OS
+
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+
 /// Macro for reduce code duplication in command arrays
 #[macro_export]
 macro_rules! command_args {
@@ -498,11 +503,23 @@ macro_rules! update_vga_cursor {
 }
 
 pub struct InitSequence<'a> {
-    steps: &'a [(&'static str, fn() -> Result<(), &'static str>)],
+    steps: &'a [(&'static str, Box<dyn Fn() -> Result<(), &'static str>>)],
+}
+
+/// Macro for getting memory statistics in a single line
+#[macro_export]
+macro_rules! get_memory_stats {
+    () => {{
+        let allocator = $crate::page_table::ALLOCATOR.lock();
+        let used = allocator.used();
+        let total = allocator.size();
+        let free = total.saturating_sub(used);
+        (used, total, free)
+    }};
 }
 
 impl<'a> InitSequence<'a> {
-    pub fn new(steps: &'a [(&'static str, fn() -> Result<(), &'static str>)]) -> Self {
+    pub fn new(steps: &'a [(&'static str, Box<dyn Fn() -> Result<(), &'static str>>)]) -> Self {
         Self { steps }
     }
 
@@ -516,4 +533,82 @@ impl<'a> InitSequence<'a> {
             init_log!("{} init done", name);
         }
     }
+}
+
+/// Macro for creating FullereneFramebufferConfig structs to reduce boilerplate
+#[macro_export]
+macro_rules! create_framebuffer_config {
+    ($address:expr, $width:expr, $height:expr, $pixel_format:expr, $bpp:expr, $stride:expr) => {
+        $crate::common::FullereneFramebufferConfig {
+            address: $address,
+            width: $width,
+            height: $height,
+            pixel_format: $pixel_format,
+            bpp: $bpp,
+            stride: $stride,
+        }
+    };
+}
+
+/// Macro to execute a task periodically based on tick count
+#[macro_export]
+macro_rules! periodic_task {
+    ($tick:expr, $interval:expr, $body:block) => {
+        if $tick % $interval == 0 {
+            $body
+        }
+    };
+}
+
+/// Macro for timed periodic task execution with interval tracking
+/// Checks if enough time has passed since last execution and runs body if so
+#[macro_export]
+macro_rules! check_periodic {
+    ($last_tick_var:expr, $interval:expr, $current_tick:expr, $body:block) => {{
+        let mut last_tick = $last_tick_var.lock();
+        if $current_tick - *last_tick >= $interval {
+            $body * last_tick = $current_tick;
+        }
+    }};
+}
+
+/// Macro for syscall inline assembly to reduce duplication
+/// This macro encapsulates the syscall instruction with proper ABI
+#[macro_export]
+macro_rules! syscall_call {
+    ($syscall_num:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr, $arg6:expr) => {{
+        let result: u64;
+        unsafe {
+            core::arch::asm!(
+                "syscall",
+                in("rax") $syscall_num,
+                in("rdi") $arg1,
+                in("rsi") $arg2,
+                in("rdx") $arg3,
+                in("r10") $arg4,
+                in("r8") $arg5,
+                in("r9") $arg6,
+                lateout("rax") result,
+                out("rcx") _,
+                out("r11") _,
+            );
+        }
+        result
+    }};
+}
+
+/// Macro for halt instruction to reduce duplication
+#[macro_export]
+macro_rules! halt {
+    () => {
+        unsafe { asm!("hlt") };
+    };
+}
+
+/// Macro for pause instruction to reduce duplication
+#[macro_export]
+macro_rules! pause {
+    () => {
+        unsafe { asm!("pause") };
+    };
 }

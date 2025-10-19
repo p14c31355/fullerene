@@ -49,8 +49,8 @@ pub unsafe fn syscall(
             in("r8") arg5,
             in("r9") arg6,
             lateout("rax") result,
-            // syscall may clobber rcx and r11 per ABI
-            out("rcx") _, out("r11") _,
+            out("rcx") _,
+            out("r11") _,
         );
     }
     result

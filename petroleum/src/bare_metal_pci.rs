@@ -1,6 +1,20 @@
 use super::*;
 use crate::graphics::ports::PortWriter;
 
+/// Macro to reduce repetitive nested loops in PCI enumeration
+#[macro_export]
+macro_rules! enumerate_pci_devices {
+    ($bus:ident, $device:ident, $function:ident, $body:block) => {
+        for $bus in 0u8..=255u8 {
+            for $device in 0u8..32u8 {
+                for $function in 0u8..8u8 {
+                    $body
+                }
+            }
+        }
+    };
+}
+
 /// PCI configuration space access addresses (x86 I/O ports)
 const PCI_CONFIG_ADDR: u16 = 0xCF8;
 const PCI_CONFIG_DATA: u16 = 0xCFC;
@@ -111,18 +125,14 @@ pub fn enumerate_all_pci_devices() -> alloc::vec::Vec<crate::graphics_alternativ
 
     // Scan all possible PCI devices (bus 0-255, device 0-31, function 0-7)
     // In practice, most systems only use bus 0 and maybe a few bridges
-    for bus in 0..=255u8 {
-        for device in 0..32u8 {
-            for function in 0..8u8 {
-                if let Some(pci_dev) = read_pci_device_info(bus, device, function) {
-                    if pci_dev.vendor_id != 0xFFFF {
-                        devices.push(pci_dev);
-                    }
-                }
+    enumerate_pci_devices!(bus, device, function, {
+        if let Some(pci_dev) = read_pci_device_info(bus, device, function) {
+            if pci_dev.vendor_id != 0xFFFF {
+                devices.push(pci_dev);
             }
         }
-        // Scan all buses - optimization removed as it may miss devices on secondary buses
-    }
+    });
+    // Scan all buses - optimization removed as it may miss devices on secondary buses
 
     devices
 }
