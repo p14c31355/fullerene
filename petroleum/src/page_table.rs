@@ -262,7 +262,7 @@ pub fn reinit_page_table_with_allocator(
     }
 
     // Map VGA text buffer (0xB8000) to identity for bootloader compatibility
-    let vga_text_pages = 4; // 80*25*2 = 4000 bytes, 4 pages
+    let vga_text_pages = 1; // 80*25*2 = 4000 bytes, fits in one 4KB page
     for i in 0..vga_text_pages {
         let phys_addr = PhysAddr::new(0xB8000 + i * 4096);
         let ident_virt_addr = VirtAddr::new(0xB8000 + i * 4096);
