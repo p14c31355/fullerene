@@ -8,9 +8,10 @@ use alloc::{
     string::String,
     vec::{self, Vec},
 };
-use petroleum::{InitSequence, common::logging::SystemError, init_log, write_serial_bytes};
+use petroleum::{InitSequence, init_log, write_serial_bytes, common::logging::SystemError};
 use spin::Once;
 
+#[cfg(target_os = "uefi")]
 macro_rules! init_step {
     ($name:expr, $closure:expr) => {
         (

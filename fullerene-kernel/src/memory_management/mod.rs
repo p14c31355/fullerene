@@ -31,7 +31,6 @@ pub use convenience::*;
 pub use frame_allocator::*;
 pub use petroleum::page_table::*;
 pub use process_memory::*;
-pub use user_space::*;
 
 #[macro_export]
 macro_rules! align_page {
@@ -42,14 +41,6 @@ macro_rules! align_page {
 }
 
 // Helper macros for common operations
-macro_rules! check_initialized {
-    ($self:expr) => {
-        if !$self.initialized {
-            return Err(SystemError::InternalError);
-        }
-    };
-}
-
 macro_rules! check_initialized_mut {
     ($self:expr) => {
         if !$self.initialized {
@@ -58,51 +49,12 @@ macro_rules! check_initialized_mut {
     };
 }
 
-macro_rules! with_memory_manager {
-    ($manager:expr, $operation:expr) => {
-        if let Some(manager) = $manager {
-            $operation
-        } else {
-            Err(SystemError::InternalError)
-        }
-    };
-}
-
-// Generic memory operation helper
-macro_rules! memory_operation {
-    ($self:expr, $operation:expr) => {{
-        check_initialized!($self);
-        $operation
-    }};
-}
-
 // Generic memory operation helper for mutable access
 macro_rules! memory_operation_mut {
     ($self:expr, $operation:expr) => {{
         check_initialized_mut!($self);
         $operation
     }};
-}
-
-// Generic helper for looping over pages
-macro_rules! for_each_page {
-    ($start:expr, $count:expr, $body:expr) => {
-        for i in 0..$count {
-            let addr = $start + (i * 4096);
-            $body(addr, i);
-        }
-    };
-}
-
-// Generic helper for frame allocations
-macro_rules! with_current_process_manager {
-    ($self:expr, $operation:expr) => {
-        if let Some(process_manager) = $self.process_managers.get_mut(&$self.current_process) {
-            $operation(process_manager)
-        } else {
-            Err(SystemError::NoSuchProcess)
-        }
-    };
 }
 
 // Memory management error types

@@ -7,7 +7,7 @@ use crate::graphics;
 use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::{
-    Color, ColorCode, ScreenChar, TextBufferOperations, check_periodic, periodic_task,
+    TextBufferOperations, check_periodic, periodic_task,
 };
 use x86_64::VirtAddr;
 

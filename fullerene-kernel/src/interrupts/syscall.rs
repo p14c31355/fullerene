@@ -3,7 +3,7 @@
 //! This module implements the Fast System Call mechanism using SYSCALL/SYSRET instructions.
 
 use x86_64::VirtAddr;
-use x86_64::registers::model_specific::{GsBase, Msr};
+use x86_64::registers::model_specific::Msr;
 use x86_64::registers::rflags::RFlags;
 
 /// Static kernel stack for syscall to prevent page fault vulnerabilities
