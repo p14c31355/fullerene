@@ -83,6 +83,11 @@ unsafe impl<'a> FrameAllocator<Size4KiB> for BootInfoFrameAllocator<'a> {
                     let frame_addr = PhysAddr::new(
                         descriptor.physical_start + self.next_frame_offset * FRAME_SIZE,
                     );
+                    // Skip frames at physical address 0 (null pointer)
+                    if frame_addr.as_u64() == 0 {
+                        self.next_frame_offset += 1;
+                        continue;
+                    }
                     if let Ok(frame) = PhysFrame::<Size4KiB>::from_start_address(frame_addr) {
                         self.next_frame_offset += 1;
                         return Some(frame);
@@ -204,9 +209,10 @@ pub fn reinit_page_table_with_allocator(
         OffsetPageTable::new(&mut *l4_table_ptr, VirtAddr::new(0))
     };
 
-    // Set up identity mapping for the first 4GB of physical memory for UEFI compatibility
+    // Set up identity mapping for the first 4MB of physical memory for UEFI compatibility
+    // Skip the first page (physical address 0) to avoid null pointer issues
     unsafe {
-        map_identity_range(&mut mapper, frame_allocator, 0, 1024 * 1024, // 4GB = 1M pages
+        map_identity_range(&mut mapper, frame_allocator, 4096, 1024, // 4MB - 1 page = 1024 pages
             Flags::PRESENT | Flags::WRITABLE) // | Flags::NO_EXECUTE
             .expect("Failed to map identity range");
     }
@@ -260,17 +266,7 @@ pub fn reinit_page_table_with_allocator(
         }
     }
 
-    // Map VGA memory to identity for bootloader compatibility
-    unsafe {
-        map_identity_range(
-            &mut mapper,
-            frame_allocator,
-            VGA_MEMORY_START,
-            vga_pages,
-            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
-        )
-        .expect("Failed to map VGA memory identity");
-    }
+
 
     // Map framebuffer to identity for bootloader compatibility
     if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {

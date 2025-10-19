@@ -114,11 +114,11 @@ pub fn setup_memory_maps(
             petroleum::serial::debug_print_hex(i);
             petroleum::serial::debug_print_str_to_com1(": type=");
             petroleum::serial::debug_print_hex(desc.type_ as usize);
-            petroleum::serial::debug_print_str_to_com1(", phys_start=0x");
+            petroleum::serial::debug_print_str_to_com1(", phys_start=");
             petroleum::serial::debug_print_hex(desc.physical_start as usize);
-            petroleum::serial::debug_print_str_to_com1(", virt_start=0x");
+            petroleum::serial::debug_print_str_to_com1(", virt_start=");
             petroleum::serial::debug_print_hex(desc.virtual_start as usize);
-            petroleum::serial::debug_print_str_to_com1(", pages=0x");
+            petroleum::serial::debug_print_str_to_com1(", pages=");
             petroleum::serial::debug_print_hex(desc.number_of_pages as usize);
             petroleum::serial::debug_print_str_to_com1("\n");
         }
@@ -141,11 +141,11 @@ pub fn setup_memory_maps(
     // Since UEFI identity-maps initially, kernel_virt_addr should equal its physical address
     if kernel_virt_addr >= 0x1000 {
         kernel_phys_start = PhysAddr::new(kernel_virt_addr);
-        petroleum::serial::debug_print_str_to_com1("Using identity-mapped kernel physical start: 0x");
+        petroleum::serial::debug_print_str_to_com1("Using identity-mapped kernel physical start: ");
         petroleum::serial::debug_print_hex(kernel_phys_start.as_u64() as usize);
         petroleum::serial::debug_print_str_to_com1("\n");
     } else {
-        petroleum::serial::debug_print_str_to_com1("Warning: Invalid kernel address 0x");
+        petroleum::serial::debug_print_str_to_com1("Warning: Invalid kernel address ");
         petroleum::serial::debug_print_hex(kernel_virt_addr as usize);
         petroleum::serial::debug_print_str_to_com1(", falling back to hardcoded value\n");
         kernel_phys_start = PhysAddr::new(0x100000);
@@ -156,9 +156,9 @@ pub fn setup_memory_maps(
     // Use a simpler offset that maps physical addresses to the higher half directly
     physical_memory_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE);
 
-    petroleum::serial::debug_print_str_to_com1("Physical memory offset calculation complete: offset=0x");
+    petroleum::serial::debug_print_str_to_com1("Physical memory offset calculation complete: offset=");
     petroleum::serial::debug_print_hex(physical_memory_offset.as_u64() as usize);
-    petroleum::serial::debug_print_str_to_com1(", kernel_phys_start=0x");
+    petroleum::serial::debug_print_str_to_com1(", kernel_phys_start=");
     petroleum::serial::debug_print_hex(kernel_phys_start.as_u64() as usize);
     petroleum::serial::debug_print_str_to_com1("\n");
 
