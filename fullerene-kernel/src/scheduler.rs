@@ -6,7 +6,7 @@
 use crate::graphics;
 use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicU64, Ordering};
-use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations, periodic_task};
+use petroleum::{check_periodic, Color, ColorCode, ScreenChar, TextBufferOperations, periodic_task};
 use x86_64::VirtAddr;
 use paste::paste;
 
@@ -119,9 +119,7 @@ fn log_system_stats(stats: &SystemStats, interval_ticks: u64) {
 
     // Only log every interval_ticks to avoid spam
     let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
-    let mut last_log_tick = LAST_LOG_TICK.lock();
-
-    if current_tick - *last_log_tick >= interval_ticks {
+    petroleum::check_periodic!(LAST_LOG_TICK, interval_ticks, current_tick, {
         log::info!(
             "System Stats - Processes: {}/{}, Memory: {} bytes, Uptime: {} ticks",
             stats.active_processes,
@@ -129,8 +127,7 @@ fn log_system_stats(stats: &SystemStats, interval_ticks: u64) {
             stats.memory_used,
             stats.uptime_ticks
         );
-        *last_log_tick = current_tick;
-    }
+    });
 }
 
 /// Display system statistics on VGA periodically
@@ -138,9 +135,7 @@ fn display_system_stats_on_vga(stats: &SystemStats, interval_ticks: u64) {
     static LAST_DISPLAY_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
 
     let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
-    let mut last_display_tick = LAST_DISPLAY_TICK.lock();
-
-    if current_tick - *last_display_tick >= interval_ticks {
+    petroleum::check_periodic!(LAST_DISPLAY_TICK, interval_ticks, current_tick, {
         if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {
             const TICKS_PER_SECOND: u64 = 1000; // Assuming ~1000 ticks per second
             let uptime_minutes = stats.uptime_ticks / (60 * TICKS_PER_SECOND);
@@ -183,8 +178,7 @@ fn display_system_stats_on_vga(stats: &SystemStats, interval_ticks: u64) {
             let _ = write!(vga_writer, "Tick: {}", stats.uptime_ticks);
             vga_writer.update_cursor();
         }
-        *last_display_tick = current_tick;
-    }
+    });
 }
 
 /// Get the current system tick count
@@ -227,21 +221,19 @@ fn monitor_environment() {
     }
 }
 
+
 /// Perform resource optimization tasks
 fn optimize_system_resources() {
     // Optimize memory layout periodically
     static LAST_OPTIMIZATION_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
     let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
-    petroleum::lock_and_modify!(LAST_OPTIMIZATION_TICK, last_optimization_tick, {
-        if current_tick - *last_optimization_tick > 10000 {
-            // Every 10000 ticks
-            // Run memory defragmentation or optimization
-            log::debug!("Running periodic resource optimization");
-            *last_optimization_tick = current_tick;
+    petroleum::check_periodic!(LAST_OPTIMIZATION_TICK, 10000, current_tick, {
+        // Every 10000 ticks
+        // Run memory defragmentation or optimization
+        log::debug!("Running periodic resource optimization");
 
-            // Optimize heap allocation patterns
-            // petroleum::page_table::ALLOCATOR.lock().defragment(); // Method not available
-        }
+        // Optimize heap allocation patterns
+        // petroleum::page_table::ALLOCATOR.lock().defragment(); // Method not available
     });
 }
 

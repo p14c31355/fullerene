@@ -554,3 +554,16 @@ macro_rules! periodic_task {
         }
     };
 }
+
+/// Macro for timed periodic task execution with interval tracking
+/// Checks if enough time has passed since last execution and runs body if so
+#[macro_export]
+macro_rules! check_periodic {
+    ($last_tick_var:expr, $interval:expr, $current_tick:expr, $body:block) => {{
+        let mut last_tick = $last_tick_var.lock();
+        if $current_tick - *last_tick >= $interval {
+            $body
+            *last_tick = $current_tick;
+        }
+    }};
+}
