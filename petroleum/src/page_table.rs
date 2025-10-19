@@ -263,11 +263,7 @@ pub fn reinit_page_table_with_allocator(
         }
     }
 
-    // Map VGA text buffer (0xB8000) to identity for bootloader compatibility
-    unsafe {
-        map_identity_range(&mut mapper, frame_allocator, 0xB8000, 1, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE)
-            .expect("Failed to map VGA text buffer identity");
-    }
+
 
     phys_offset
 }

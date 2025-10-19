@@ -502,8 +502,8 @@ macro_rules! update_vga_cursor {
     }};
 }
 
-pub struct InitSequence {
-    steps: Vec<(&'static str, Box<dyn Fn() -> Result<(), &'static str>>)>,
+pub struct InitSequence<'a> {
+    steps: &'a [(&'static str, Box<dyn Fn() -> Result<(), &'static str>>)],
 }
 
 /// Macro for getting memory statistics in a single line
@@ -518,13 +518,13 @@ macro_rules! get_memory_stats {
     }};
 }
 
-impl InitSequence {
-    pub fn new(steps: Vec<(&'static str, Box<dyn Fn() -> Result<(), &'static str>>)>) -> Self {
+impl<'a> InitSequence<'a> {
+    pub fn new(steps: &'a [(&'static str, Box<dyn Fn() -> Result<(), &'static str>>)]) -> Self {
         Self { steps }
     }
 
     pub fn run(&self) {
-        for (name, init_fn) in &self.steps {
+        for (name, init_fn) in self.steps {
             init_log!("About to init {}", name);
             if let Err(e) = init_fn() {
                 init_log!("Init {} failed: {}", name, e);

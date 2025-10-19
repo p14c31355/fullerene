@@ -21,15 +21,15 @@ macro_rules! init_step {
 pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     init_log!("Initializing common components");
 
-    let mut steps = Vec::new();
-    steps.push(init_step!("VGA", move || { crate::vga::init_vga(physical_memory_offset); Ok(()) }));
-    steps.push(init_step!("APIC", || { interrupts::init_apic(); Ok(()) }));
-    steps.push(init_step!("process", || { crate::process::init(); Ok(()) }));
-    steps.push(init_step!("syscall", || { crate::syscall::init(); Ok(()) }));
-    steps.push(init_step!("fs", || { crate::fs::init(); Ok(()) }));
-    steps.push(init_step!("loader", || { crate::loader::init(); Ok(()) }));
-
-    InitSequence::new(steps).run();
+    let steps = [
+        init_step!("VGA", move || { crate::vga::init_vga(physical_memory_offset); Ok(()) }),
+        init_step!("APIC", || { interrupts::init_apic(); Ok(()) }),
+        init_step!("process", || { crate::process::init(); Ok(()) }),
+        init_step!("syscall", || { crate::syscall::init(); Ok(()) }),
+        init_step!("fs", || { crate::fs::init(); Ok(()) }),
+        init_step!("loader", || { crate::loader::init(); Ok(()) }),
+    ];
+    InitSequence::new(&steps).run();
 
     init_log!("About to create test process");
     let test_pid = crate::process::create_process(
