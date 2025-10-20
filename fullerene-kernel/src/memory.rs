@@ -1,6 +1,7 @@
 //! Memory management module containing memory map parsing and initialization
 
 use crate::heap;
+use petroleum::common::uefi::{ConfigWithMetadata, FRAMEBUFFER_CONFIG_MAGIC};
 use petroleum::common::{
     EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
     FullereneFramebufferConfig,
@@ -10,6 +11,10 @@ use petroleum::page_table::EfiMemoryDescriptor;
 use crate::MEMORY_MAP;
 
 use core::ffi::c_void;
+use petroleum::{
+    check_memory_initialized, debug_log, debug_mem_descriptor, debug_print, mem_debug,
+    write_serial_bytes,
+};
 use x86_64::{PhysAddr, VirtAddr};
 
 // Add a constant for the higher-half kernel virtual base address
@@ -92,60 +97,64 @@ pub fn setup_memory_maps(
     memory_map_size: usize,
     kernel_virt_addr: u64,
 ) -> PhysAddr {
-    // Use the passed memory map
-    log::info!("About to create memory map slice");
+    // Check for framebuffer config appended to memory map
+    let total_map_size = memory_map_size;
+    let config_size = core::mem::size_of::<ConfigWithMetadata>();
+
+    let (actual_descriptors_size, descriptor_item_size) = if total_map_size > config_size {
+        let config_ptr = unsafe {
+            (memory_map as *const u8).add(total_map_size - config_size) as *const ConfigWithMetadata
+        };
+        let config_with_metadata = unsafe { &*config_ptr };
+        if config_with_metadata.magic == FRAMEBUFFER_CONFIG_MAGIC {
+            debug_log!("Framebuffer config found in memory map");
+            petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+                .call_once(|| spin::Mutex::new(Some(config_with_metadata.config)));
+            (
+                total_map_size - config_size,
+                config_with_metadata.descriptor_size,
+            )
+        } else {
+            debug_log!("No framebuffer config found in memory map (magic mismatch)");
+            (total_map_size, core::mem::size_of::<EfiMemoryDescriptor>())
+        }
+    } else {
+        debug_log!("Not enough size for framebuffer config in memory map");
+        (total_map_size, core::mem::size_of::<EfiMemoryDescriptor>())
+    };
+
     let descriptors = unsafe {
         core::slice::from_raw_parts(
             memory_map as *const EfiMemoryDescriptor,
-            memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>(),
+            actual_descriptors_size / descriptor_item_size,
         )
     };
-    log::info!("Memory map slice created");
-    log::info!(
-        "Memory map slice size: {}, descriptor count: {}",
-        memory_map_size,
-        descriptors.len()
-    );
-    // Reduce log verbosity for faster boot
-    if descriptors.len() < 20 {
-        for (i, desc) in descriptors.iter().enumerate() {
-            log::info!(
-                "Memory descriptor {}: type={:#x}, phys_start=0x{:x}, virt_start=0x{:x}, pages=0x{:x}",
-                i,
-                desc.type_ as u32,
-                desc.physical_start,
-                desc.virtual_start,
-                desc.number_of_pages
-            );
-        }
-    }
-    log::info!("Memory map parsing: finished descriptor dump");
+    debug_log!("Memory map descriptor count: {}", descriptors.len());
+
     // Initialize MEMORY_MAP with descriptors
     MEMORY_MAP.call_once(|| {
         // Since UEFI memory map is static until exit_boot_services, this is safe
         unsafe { &*(descriptors as *const _) }
     });
-    log::info!("MEMORY_MAP initialized");
+    write_serial_bytes!(0x3F8, 0x3FD, b"MEMORY_MAP initialized\n");
 
     let physical_memory_offset;
     let kernel_phys_start;
 
-    log::info!("Scanning memory descriptors to find kernel location...");
+    write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"Scanning memory descriptors to find kernel location...\n"
+    );
 
     // Find the memory descriptor containing the kernel (efi_main is virtual address,
     // but UEFI uses identity mapping initially, so check physical range containing kernel_virt_addr)
     // Since UEFI identity-maps initially, kernel_virt_addr should equal its physical address
     if kernel_virt_addr >= 0x1000 {
         kernel_phys_start = PhysAddr::new(kernel_virt_addr);
-        log::info!(
-            "Using identity-mapped kernel physical start: 0x{:x}",
-            kernel_phys_start.as_u64()
-        );
+        mem_debug!("Using identity-mapped kernel physical start: ", kernel_phys_start.as_u64() as usize, "\n");
     } else {
-        log::info!(
-            "Warning: Invalid kernel address 0x{:x}, falling back to hardcoded value",
-            kernel_virt_addr
-        );
+        mem_debug!("Warning: Invalid kernel address ", kernel_virt_addr as usize, ", falling back to hardcoded value\n");
         kernel_phys_start = PhysAddr::new(0x100000);
     }
 
@@ -154,10 +163,12 @@ pub fn setup_memory_maps(
     // Use a simpler offset that maps physical addresses to the higher half directly
     physical_memory_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE);
 
-    log::info!(
-        "Physical memory offset calculation complete: offset=0x{:x}, kernel_phys_start=0x{:x}",
-        physical_memory_offset.as_u64(),
-        kernel_phys_start.as_u64()
+    mem_debug!(
+        "Physical memory offset calculation complete: offset=",
+        physical_memory_offset.as_u64() as usize,
+        ", kernel_phys_start=",
+        kernel_phys_start.as_u64() as usize,
+        "\n"
     );
 
     kernel_phys_start

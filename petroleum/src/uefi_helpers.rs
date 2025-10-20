@@ -185,31 +185,17 @@ pub fn kernel_fallback_framebuffer_detection() -> Option<crate::common::Fulleren
 /// Helper function to initialize graphics with framebuffer configuration
 /// Returns true if graphics were successfully initialized and drawn
 pub fn initialize_graphics_with_config() -> bool {
-    // Use petroleum's existing graphics protocol initialization
-    // This consolidates the graphics initialization logic
-
-    // Get system table from the global UEFI system table
-    let system_table_ptr = crate::UEFI_SYSTEM_TABLE.lock().as_ref().cloned();
-    let system_table = match system_table_ptr {
-        Some(ptr) => unsafe { &*ptr.0 },
-        None => {
-            serial_log!("No UEFI system table available for graphics initialization");
-            return false;
-        }
-    };
-
-    match crate::init_graphics_protocols(system_table) {
-        Some(_) => {
-            serial_log!("Graphics protocols initialized successfully");
-            // Kernel-specific graphics init would be called here
-            // For now, just return success since the config is saved globally
-            true
-        }
-        None => {
-            serial_log!("Failed to initialize graphics protocols");
-            false
-        }
+    // Check if framebuffer config is available in global storage
+    if crate::FULLERENE_FRAMEBUFFER_CONFIG
+        .get()
+        .map_or(false, |mutex| mutex.lock().is_some())
+    {
+        serial_log!("Graphics configuration found in global storage");
+        return true;
     }
+
+    serial_log!("No graphics configuration available");
+    false
 }
 
 /// Serial logging macro for UEFI helpers

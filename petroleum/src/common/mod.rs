@@ -21,6 +21,19 @@ pub fn setup_vga_mode_common() {
 
 pub mod uefi;
 
+// Memory initialization state tracking
+static MEMORY_INITIALIZED: spin::Mutex<bool> = spin::Mutex::new(false);
+
+// Function to check if memory has been initialized
+pub fn check_memory_initialized() -> bool {
+    *MEMORY_INITIALIZED.lock()
+}
+
+// Function to mark memory as initialized
+pub fn set_memory_initialized(initialized: bool) {
+    *MEMORY_INITIALIZED.lock() = initialized;
+}
+
 // Re-exports to maintain compatibility and new macros
 pub use error::*;
 pub use syscall::*;

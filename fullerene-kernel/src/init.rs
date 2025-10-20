@@ -11,6 +11,7 @@ use alloc::{
 use petroleum::{InitSequence, common::logging::SystemError, init_log, write_serial_bytes};
 use spin::Once;
 
+#[cfg(target_os = "uefi")]
 macro_rules! init_step {
     ($name:expr, $closure:expr) => {
         (

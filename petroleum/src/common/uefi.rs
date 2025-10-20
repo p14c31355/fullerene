@@ -162,6 +162,16 @@ pub struct EfiFileInfo {
     _file_name: [u16; 1],
 }
 
+/// Structure to append framebuffer config to memory map for kernel
+#[repr(C)]
+pub struct ConfigWithMetadata {
+    pub descriptor_size: usize,
+    pub magic: u32,
+    pub config: FullereneFramebufferConfig,
+}
+
+pub const FRAMEBUFFER_CONFIG_MAGIC: u32 = 0x46424346; // "FBCF"
+
 #[repr(C)]
 pub struct EfiConfigurationTable {
     pub vendor_guid: [u8; 16],

@@ -1,7 +1,6 @@
 //! Macro definitions for common patterns across Fullerene OS
 
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 
 /// Macro for reduce code duplication in command arrays
 #[macro_export]
@@ -16,22 +15,127 @@ macro_rules! command_args {
 
 /// Enhanced delegate call macro using generic patterns
 #[macro_export]
-macro_rules! delegate_to_variant {
-    ($enum:expr, $method:ident $(, $args:expr)*) => {
-        match $enum {
-            $(#[$derive(Debug)])* $enum_variant($variant) => $variant.$method($($args),*)
+macro_rules! debug_mem_descriptor {
+    ($i:expr, $desc:expr) => {{
+        mem_debug!("Memory descriptor ");
+        $crate::serial::debug_print_hex($i);
+        mem_debug!(", type=");
+        $crate::serial::debug_print_hex($desc.type_ as usize);
+        mem_debug!(", phys_start=");
+        $crate::serial::debug_print_hex($desc.physical_start as usize);
+        mem_debug!(", virt_start=");
+        $crate::serial::debug_print_hex($desc.virtual_start as usize);
+        mem_debug!(", pages=");
+        $crate::serial::debug_print_hex($desc.number_of_pages as usize);
+        mem_debug!("\n");
+    }};
+}
+
+/// Macro for loop-based page mapping with simplified syntax
+#[macro_export]
+macro_rules! map_pages_loop {
+    ($mapper:expr, $allocator:expr, $base_phys:expr, $base_virt:expr, $num_pages:expr, $flags:expr) => {{
+        use x86_64::{
+            PhysAddr, VirtAddr,
+            structures::paging::{Page, PhysFrame, Size4KiB},
+        };
+        macro_rules! map_page_with_flush {
+            ($map:expr, $pg:expr, $frm:expr, $flgs:expr, $alloc:expr) => {{
+                unsafe {
+                    $map.map_to($pg, $frm, $flgs, $alloc)
+                        .expect("Failed to map page")
+                        .flush();
+                }
+            }};
+        }
+        for i in 0..$num_pages {
+            let phys_addr = PhysAddr::new($base_phys + i * 4096);
+            let virt_addr = VirtAddr::new($base_virt + i * 4096);
+            let page = Page::<Size4KiB>::containing_address(virt_addr);
+            let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
+            map_page_with_flush!($mapper, page, frame, $flags, $allocator);
+        }
+    }};
+}
+
+/// Macro for creating and mapping pages at higher-half offset
+#[macro_export]
+macro_rules! map_to_higher_half {
+    ($mapper:expr, $allocator:expr, $phys_addr:expr, $num_pages:expr, $flags:expr, $offset:expr) => {{
+        use x86_64::VirtAddr;
+        let virt_base = $offset + $phys_addr;
+        map_pages_loop!(
+            $mapper, $allocator, $phys_addr, virt_base, $num_pages, $flags
+        );
+    }};
+}
+
+/// Macro to reduce repetitive serial debug strings
+///
+/// # Warning
+/// The formatted variant (`debug_log!("format", args...)`) uses `alloc::format!`,
+/// which allocates memory on the heap. This will panic if called before the
+/// heap allocator is initialized, which is common in early boot code.
+/// Consider using `debug_log_no_alloc!` during early boot stages.
+///
+/// # Examples
+/// ```
+/// debug_log!("Starting initialization");
+/// debug_log!("Value: {}", some_value); // May panic if heap not ready
+/// ```
+#[macro_export]
+macro_rules! debug_log {
+    ($msg:literal) => {{
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes());
+    }};
+    ($fmt:literal, $($arg:tt)*) => {{
+        let msg = alloc::format!(concat!($fmt, "\n"), $($arg)*);
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
+    }};
+}
+
+/// Non-allocating debug log macro for early boot code
+///
+/// Supports limited formatting for numeric types without heap allocation.
+/// Use during early boot before heap initialization.
+///
+/// # Examples
+/// ```
+/// debug_log_no_alloc!("Starting initialization");
+/// debug_log_no_alloc!("Value: ", 42, " address: ", 0x1234);
+/// ```
+#[macro_export]
+macro_rules! debug_log_no_alloc {
+    ($msg:literal) => {{
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes());
+    }};
+    ($msg:literal, $($value:expr),* $(,)?) => {{
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, $msg.as_bytes());
+        $(
+            $crate::serial::debug_print_hex($value as usize);
+        )*
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+    }};
+}
+
+/// Macro for checking memory initialization in methods
+#[macro_export]
+macro_rules! ensure_initialized {
+    ($self:expr) => {
+        if !$self.initialized {
+            return Err($crate::common::logging::SystemError::InternalError);
         }
     };
 }
 
-/// Generic helper for pattern-matched operations
+/// Macro for flushing TLB and checking CR3
 #[macro_export]
-macro_rules! match_and_apply {
-    ($value:expr, $(($pattern:pat, $body:block)),* $(,)?) => {
-        match $value {
-            $($pattern => $body,)*
-        }
-    };
+macro_rules! flush_tlb_and_verify {
+    () => {{
+        x86_64::instructions::tlb::flush_all();
+        let (cr3_after, _) = x86_64::registers::control::Cr3::read();
+        debug_log!("CR3 verified: {:#x}", cr3_after.start_address().as_u64());
+    }};
 }
 
 /// Macro for common initialization patterns with cleanup
@@ -177,6 +281,93 @@ macro_rules! static_str {
         const S: &str = $s;
         S
     }};
+}
+
+/// Enhanced memory debugging macro that supports formatted output with mixed strings and values
+///
+/// # Examples
+/// ```
+/// mem_debug!("Memory descriptor: ");
+/// mem_debug!(descriptor.physical_start);
+/// mem_debug!("type=", descriptor.type_, ", pages=", descriptor.number_of_pages);
+/// ```
+#[macro_export]
+macro_rules! mem_debug {
+    () => {};
+    ($msg:literal, $($rest:tt)*) => {
+        $crate::serial::debug_print_str_to_com1($msg);
+        $crate::mem_debug!($($rest)*);
+    };
+    ($msg:literal) => {
+        $crate::serial::debug_print_str_to_com1($msg);
+    };
+    ($value:expr, $($rest:tt)*) => {
+        $crate::serial::debug_print_hex($value as usize);
+        $crate::mem_debug!($($rest)*);
+    };
+    ($value:expr) => {
+        $crate::serial::debug_print_hex($value as usize);
+    };
+}
+
+/// Debug print macro that handles mixed string and hex value output line by line
+///
+/// # Examples
+/// ```
+/// debug_print!("Total map size: ");
+/// debug_print!(total_map_size);
+/// debug_print!(", config size: ");
+/// debug_print!(config_size);
+/// debug_print!("\n");
+/// ```
+#[macro_export]
+macro_rules! debug_print {
+    ($msg:literal) => {
+        $crate::serial::debug_print_str_to_com1($msg);
+    };
+    ($value:expr) => {
+        $crate::serial::debug_print_hex($value as usize);
+    };
+}
+
+/// Macro for periodic task execution that checks if enough time has passed since last execution
+/// Takes a mutable last tick variable, interval, current tick, and block to execute
+///
+/// # Examples
+/// ```
+/// static LAST_CHECK: spin::Mutex<u64> = spin::Mutex::new(0);
+/// check_periodic!(LAST_CHECK, 1000, current_tick, {
+///     perform_hourly_task();
+/// });
+/// ```
+#[macro_export]
+macro_rules! check_periodic {
+    ($last_tick:expr, $interval:expr, $current_tick:expr, $block:block) => {{
+        let mut last = $last_tick.lock();
+        let elapsed = $current_tick - *last;
+        if elapsed >= $interval {
+            $block;
+            *last = $current_tick;
+        }
+    }};
+}
+
+/// Macro for simple periodic task execution based on tick intervals
+/// Executes block every 'interval' ticks
+///
+/// # Examples
+/// ```
+/// periodic_task!(current_tick, 3000, {
+///     log_system_stats();
+/// });
+/// ```
+#[macro_export]
+macro_rules! periodic_task {
+    ($current_tick:expr, $interval:expr, $block:block) => {
+        if $current_tick % $interval == 0 {
+            $block;
+        }
+    };
 }
 
 /// Unified print macros using the log crate for consistent logging across all crates
@@ -472,7 +663,7 @@ macro_rules! declare_init {
 macro_rules! init_log {
     ($msg:literal) => {{
         let msg = concat!($msg, "\n");
-        write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
     }};
     ($fmt:expr $(, $($arg:tt)*)?) => {{
         $crate::serial::serial_log(format_args!(concat!($fmt, "\n") $(, $($arg)*)?));
@@ -500,6 +691,26 @@ macro_rules! update_vga_cursor {
             ((($pos >> 8) & 0xFFusize) as u8)
         );
     }};
+}
+
+/// CPU pause instruction for busy-waiting
+#[macro_export]
+macro_rules! pause {
+    () => {
+        unsafe {
+            core::arch::asm!("pause", options(nomem, nostack, preserves_flags));
+        }
+    };
+}
+
+/// CPU halt instruction (use with caution, can hang)
+#[macro_export]
+macro_rules! halt {
+    () => {
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+        }
+    };
 }
 
 pub struct InitSequence<'a> {
@@ -547,68 +758,5 @@ macro_rules! create_framebuffer_config {
             bpp: $bpp,
             stride: $stride,
         }
-    };
-}
-
-/// Macro to execute a task periodically based on tick count
-#[macro_export]
-macro_rules! periodic_task {
-    ($tick:expr, $interval:expr, $body:block) => {
-        if $tick % $interval == 0 {
-            $body
-        }
-    };
-}
-
-/// Macro for timed periodic task execution with interval tracking
-/// Checks if enough time has passed since last execution and runs body if so
-#[macro_export]
-macro_rules! check_periodic {
-    ($last_tick_var:expr, $interval:expr, $current_tick:expr, $body:block) => {{
-        let mut last_tick = $last_tick_var.lock();
-        if $current_tick - *last_tick >= $interval {
-            $body * last_tick = $current_tick;
-        }
-    }};
-}
-
-/// Macro for syscall inline assembly to reduce duplication
-/// This macro encapsulates the syscall instruction with proper ABI
-#[macro_export]
-macro_rules! syscall_call {
-    ($syscall_num:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr, $arg6:expr) => {{
-        let result: u64;
-        unsafe {
-            core::arch::asm!(
-                "syscall",
-                in("rax") $syscall_num,
-                in("rdi") $arg1,
-                in("rsi") $arg2,
-                in("rdx") $arg3,
-                in("r10") $arg4,
-                in("r8") $arg5,
-                in("r9") $arg6,
-                lateout("rax") result,
-                out("rcx") _,
-                out("r11") _,
-            );
-        }
-        result
-    }};
-}
-
-/// Macro for halt instruction to reduce duplication
-#[macro_export]
-macro_rules! halt {
-    () => {
-        unsafe { asm!("hlt") };
-    };
-}
-
-/// Macro for pause instruction to reduce duplication
-#[macro_export]
-macro_rules! pause {
-    () => {
-        unsafe { asm!("pause") };
     };
 }

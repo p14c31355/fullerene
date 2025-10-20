@@ -79,9 +79,9 @@ impl UefiInitContext {
         _memory_map: *mut c_void,
         memory_map_size: usize,
     ) -> PhysAddr {
-        write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main entered.\n");
+        debug_log!("Kernel: efi_main entered");
         petroleum::serial::serial_init();
-        debug_log!("Kernel: efi_main located at {:x}", efi_main as usize);
+        debug_log!("Kernel: efi_main located at {:#x}", efi_main as usize);
 
         // UEFI uses framebuffer graphics, not legacy VGA hardware programming
         // Graphics initialization happens later with initialize_graphics_with_config()
@@ -89,7 +89,7 @@ impl UefiInitContext {
             let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
             write_vga_string(vga_buffer, 0, b"Kernel boot (UEFI)", 0x1F00);
         }
-        log::info!("Early setup completed");
+        write_serial_bytes!(0x3F8, 0x3FD, b"Early setup completed\n");
 
         let kernel_virt_addr = efi_main as u64;
         crate::memory::setup_memory_maps(_memory_map, memory_map_size, kernel_virt_addr)
@@ -100,15 +100,19 @@ impl UefiInitContext {
         kernel_phys_start: PhysAddr,
         system_table: &EfiSystemTable,
     ) -> (VirtAddr, PhysAddr, VirtAddr) {
+        debug_log!("Entering memory_management_initialization");
+        let memory_map_ref = MEMORY_MAP.get().expect("Memory map not initialized");
         // Initialize heap frame allocator
-        heap::init_frame_allocator(*MEMORY_MAP.get().expect("Memory map not initialized"));
+        heap::init_frame_allocator(*memory_map_ref);
         log::info!("Heap frame allocator initialized");
-
-        // Find and save framebuffer config
-        let framebuffer_config = crate::memory::find_framebuffer_config(system_table);
-        if let Some(config) = framebuffer_config {
-            petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| Mutex::new(Some(*config)));
-            log::info!("Saved framebuffer config globally");
+        // Get framebuffer config from petroleum global
+        let framebuffer_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+            .get()
+            .and_then(|mutex| *mutex.lock());
+        if framebuffer_config.is_some() {
+            log::info!("Framebuffer config found");
+        } else {
+            log::info!("No framebuffer config found");
         }
 
         let config = framebuffer_config.as_ref();
@@ -130,6 +134,7 @@ impl UefiInitContext {
             (None, None)
         };
 
+        debug_log!("About to reinit page tables");
         // Reinit page tables
         let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
             .get()
@@ -141,19 +146,24 @@ impl UefiInitContext {
             fb_size,
             &mut frame_allocator,
         );
+        #[cfg(feature = "verbose_boot_log")]
+        write_serial_bytes!(0x3F8, 0x3FD, b"page table reinit completed\n");
         log::info!("Page table reinit completed");
 
         // Set kernel CR3
         let kernel_cr3 = x86_64::registers::control::Cr3::read();
         crate::interrupts::syscall::set_kernel_cr3(kernel_cr3.0.start_address().as_u64());
+        #[cfg(feature = "verbose_boot_log")]
+        write_serial_bytes!(0x3F8, 0x3FD, b"About to set physical memory offset\n");
 
         // Set physical memory offset
         crate::memory_management::set_physical_memory_offset(
             crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE,
         );
+        #[cfg(feature = "verbose_boot_log")]
+        write_serial_bytes!(0x3F8, 0x3FD, b"physical memory offset set\n");
 
-        let heap_phys_start =
-            find_heap_start(*MEMORY_MAP.get().expect("Memory map not initialized"));
+        let heap_phys_start = find_heap_start(*memory_map_ref);
         let heap_phys_start_addr = if heap_phys_start.as_u64() < 0x1000
             || heap_phys_start.as_u64() >= 0x0000_8000_0000_0000
         {
@@ -162,7 +172,9 @@ impl UefiInitContext {
         } else {
             heap_phys_start
         };
+        write_serial_bytes!(0x3F8, 0x3FD, b"About to allocate and map heap\n");
         let heap_start = allocate_heap_from_map(heap_phys_start_addr, heap::HEAP_SIZE);
+        write_serial_bytes!(0x3F8, 0x3FD, b"heap allocated\n");
         self.virtual_heap_start = self.physical_memory_offset + heap_start.as_u64();
 
         // Map heap memory
@@ -174,6 +186,7 @@ impl UefiInitContext {
         // Map VGA buffer
         let vga_phys_addr = PhysAddr::new(crate::VGA_BUFFER_ADDRESS as u64);
         let vga_pages = 1; // 4KB for 80*25*2 bytes
+        write_serial_bytes!(0x3F8, 0x3FD, b"Mapping VGA buffer\n");
         map_memory_range(
             vga_phys_addr,
             vga_pages,
@@ -183,7 +196,9 @@ impl UefiInitContext {
             flags,
         )
         .expect("Failed to map VGA buffer");
+        write_serial_bytes!(0x3F8, 0x3FD, b"VGA buffer mapped\n");
 
+        write_serial_bytes!(0x3F8, 0x3FD, b"Mapping heap memory\n");
         map_memory_range(
             heap_start,
             heap_pages,
@@ -193,6 +208,7 @@ impl UefiInitContext {
             flags,
         )
         .expect("Failed to map heap memory");
+        write_serial_bytes!(0x3F8, 0x3FD, b"heap memory mapped\n");
 
         (
             self.physical_memory_offset,
@@ -277,7 +293,9 @@ pub extern "efiapi" fn efi_main(
         ctx.memory_management_initialization(kernel_phys_start, system_table);
 
     ctx.setup_gdt_and_stack(virtual_heap_start, physical_memory_offset);
+    write_serial_bytes!(0x3F8, 0x3FD, b"GDT and stack setup completed\n");
     ctx.setup_allocator(virtual_heap_start);
+    write_serial_bytes!(0x3F8, 0x3FD, b"Allocator setup completed\n");
 
     // Initialize the global memory manager with the EFI memory map
     log::info!("Initializing global memory manager...");
@@ -291,6 +309,8 @@ pub extern "efiapi" fn efi_main(
             );
             petroleum::halt_loop();
         }
+        petroleum::set_memory_initialized(true);
+        log::info!("Memory management initialized and marked as ready");
     } else {
         log::error!("MEMORY_MAP not initialized. Cannot initialize memory manager. Halting.");
         petroleum::halt_loop();
@@ -338,6 +358,7 @@ pub extern "efiapi" fn efi_main(
 
     // Start the main kernel scheduler that orchestrates all system functionality
     log::info!("Starting full system scheduler...");
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to enter scheduler_loop\n");
     scheduler_loop();
     // scheduler_loop should never return in normal operation
     panic!("scheduler_loop returned unexpectedly - kernel critical failure!");

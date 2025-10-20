@@ -10,6 +10,7 @@ pub const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
 pub mod apic;
 pub mod bare_metal_graphics_detection;
 pub mod bare_metal_pci;
+#[macro_use]
 pub mod common;
 pub mod filesystem;
 pub mod graphics;
@@ -23,6 +24,7 @@ pub use apic::{IoApic, IoApicRedirectionEntry, init_io_apic};
 pub use common::logging::{SystemError, SystemResult};
 pub use common::macros::InitSequence;
 pub use common::syscall::*;
+pub use common::{check_memory_initialized, set_memory_initialized};
 pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 pub use graphics::{
     Color, ColorCode, HardwarePorts, ScreenChar, TextBufferOperations, VgaPortOps,
@@ -34,6 +36,7 @@ pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 // Heap allocation exports
 pub use page_table::ALLOCATOR;
 pub use page_table::allocate_heap_from_map;
+pub use page_table::init_global_heap;
 // Removed reinit_page_table export - implemented in higher-level crates
 // UEFI helper exports
 pub use uefi_helpers::{initialize_graphics_with_config, kernel_fallback_framebuffer_detection};

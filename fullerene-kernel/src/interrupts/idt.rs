@@ -5,7 +5,6 @@
 use super::apic::{KEYBOARD_INTERRUPT_INDEX, MOUSE_INTERRUPT_INDEX, TIMER_INTERRUPT_INDEX};
 use super::exceptions::{breakpoint_handler, double_fault_handler, page_fault_handler};
 use super::input::{keyboard_handler, mouse_handler, timer_handler};
-use crate::gdt;
 use lazy_static::lazy_static;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
@@ -13,17 +12,6 @@ use x86_64::structures::idt::InterruptDescriptorTable;
 macro_rules! setup_idt_handler {
     ($idt:expr, $field:ident, $handler:ident) => {
         $idt.$field.set_handler_fn($handler);
-    };
-}
-
-/// Macro to set up IDT handler with stack index
-macro_rules! setup_idt_handler_with_stack {
-    ($idt:expr, $field:ident, $handler:ident, $stack_index:expr) => {
-        unsafe {
-            $idt.$field
-                .set_handler_fn($handler)
-                .set_stack_index($stack_index);
-        }
     };
 }
 

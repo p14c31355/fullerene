@@ -4,7 +4,6 @@
 
 use super::pic::disable_legacy_pic;
 use petroleum::init_io_apic;
-use petroleum::port_write;
 use spin::Mutex;
 use x86_64::registers::model_specific::Msr;
 

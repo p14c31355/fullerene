@@ -1,3 +1,8 @@
+use crate::{debug_log, flush_tlb_and_verify, map_pages_loop};
+
+// Macros are automatically available from common module
+
+use spin::Once;
 use x86_64::{
     PhysAddr, VirtAddr,
     instructions::tlb,
@@ -6,6 +11,19 @@ use x86_64::{
         FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PhysFrame, Size4KiB, Translate,
     },
 };
+
+// Track heap initialization to prevent double init
+pub static HEAP_INITIALIZED: Once<bool> = Once::new();
+
+// Initialize global heap allocator if not already initialized
+pub fn init_global_heap(ptr: *mut u8, size: usize) {
+    if HEAP_INITIALIZED.get().is_none() {
+        unsafe {
+            ALLOCATOR.lock().init(ptr, size);
+        }
+        HEAP_INITIALIZED.call_once(|| true);
+    }
+}
 
 /// EFI Memory Descriptor as defined in UEFI spec
 #[repr(C)]
@@ -83,6 +101,11 @@ unsafe impl<'a> FrameAllocator<Size4KiB> for BootInfoFrameAllocator<'a> {
                     let frame_addr = PhysAddr::new(
                         descriptor.physical_start + self.next_frame_offset * FRAME_SIZE,
                     );
+                    // Skip frames at physical address 0 (null pointer)
+                    if frame_addr.as_u64() == 0 {
+                        self.next_frame_offset += 1;
+                        continue;
+                    }
                     if let Ok(frame) = PhysFrame::<Size4KiB>::from_start_address(frame_addr) {
                         self.next_frame_offset += 1;
                         return Some(frame);
@@ -168,7 +191,11 @@ unsafe fn map_identity_range(
         let virt_addr = VirtAddr::new(phys_start + i * 4096);
         let page = Page::containing_address(virt_addr);
         let frame = PhysFrame::containing_address(phys_addr);
-        mapper.map_to(page, frame, flags, frame_allocator)?.flush();
+        match mapper.map_to(page, frame, flags, frame_allocator) {
+            Ok(flush) => flush.flush(),
+            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => continue,
+            Err(e) => return Err(e),
+        }
     }
     Ok(())
 }
@@ -185,19 +212,54 @@ pub fn reinit_page_table_with_allocator(
 ) -> VirtAddr {
     use x86_64::structures::paging::PageTableFlags as Flags;
 
+    debug_log!("reinit_page_table_with_allocator: starting");
+
     // Use the higher-half kernel offset
     let phys_offset = HIGHER_HALF_OFFSET;
 
-    // Get the mapper and frame allocator
+    // Allocate a new L4 table frame for the kernel
+    let level_4_table_frame = frame_allocator
+        .allocate_frame()
+        .expect("Failed to allocate frame for new L4 table");
+
+    // Zero the new L4 table
+    unsafe {
+        let l4_table_ptr = level_4_table_frame.start_address().as_u64() as *mut PageTable;
+        core::ptr::write_bytes(l4_table_ptr, 0, 1);
+    }
+
+    // Create mapper for the new L4 table with identity mapping (offset 0)
     let mut mapper = unsafe {
-        use x86_64::registers::control::Cr3;
-        let (level_4_table_frame, _) = Cr3::read();
-        // At this point, we are still using UEFI's identity mapping.
-        // The virtual address of the page table is its physical address.
-        let p4_table_ptr = level_4_table_frame.start_address().as_u64() as *mut PageTable;
-        // We create a mapper with an offset of 0 to work with the identity mapping.
-        OffsetPageTable::new(&mut *p4_table_ptr, VirtAddr::new(0))
+        let l4_table_ptr = level_4_table_frame.start_address().as_u64() as *mut PageTable;
+        OffsetPageTable::new(&mut *l4_table_ptr, VirtAddr::new(0))
     };
+
+    // Set up identity mapping for the first 4MB of physical memory for UEFI compatibility
+    // Skip the first page (physical address 0) to avoid null pointer issues
+    unsafe {
+        map_identity_range(
+            &mut mapper,
+            frame_allocator,
+            4096,
+            1023, // 4MB - 4KB = 1023 pages
+            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+        )
+        .expect("Failed to map identity range")
+    }
+
+    // Identity map kernel code for CR3 switch
+    let kernel_size = unsafe { calculate_kernel_memory_size(kernel_phys_start) };
+    let kernel_pages = kernel_size.div_ceil(4096);
+    unsafe {
+        map_identity_range(
+            &mut mapper,
+            frame_allocator,
+            kernel_phys_start.as_u64(),
+            kernel_pages,
+            Flags::PRESENT | Flags::WRITABLE,
+        )
+        .expect("Failed to identity map kernel")
+    }
 
     // Map kernel at higher half by parsing the ELF file for permissions
     unsafe {
@@ -207,58 +269,30 @@ pub fn reinit_page_table_with_allocator(
     // Map framebuffer if provided
     if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
         let fb_pages = fb_size.div_ceil(4096); // Round up to page count
-
-        for i in 0..fb_pages {
-            let phys_addr = PhysAddr::new(fb_addr.as_u64() + i * 4096);
-            let virt_addr = phys_offset + phys_addr.as_u64();
-
-            let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
-            let frame =
-                x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
-
-            let flags = Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE;
-            unsafe {
-                mapper
-                    .map_to(page, frame, flags, frame_allocator)
-                    .expect("Failed to map framebuffer page")
-                    .flush();
-            }
-        }
+        let flags = Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE;
+        map_pages_loop!(
+            mapper,
+            frame_allocator,
+            fb_addr.as_u64(),
+            phys_offset.as_u64() + fb_addr.as_u64(),
+            fb_pages,
+            flags
+        );
     }
 
     // Always map VGA memory regions (0xA0000 - 0xC0000) for compatibility with VGA text/graphics modes
     const VGA_MEMORY_START: u64 = 0xA0000;
     const VGA_MEMORY_SIZE: u64 = 0xC0000 - 0xA0000; // 128KB VGA memory aperture
     let vga_pages = VGA_MEMORY_SIZE / 4096;
-
-    for i in 0..vga_pages {
-        let phys_addr = PhysAddr::new(VGA_MEMORY_START + i * 4096);
-        let virt_addr = phys_offset + phys_addr.as_u64();
-
-        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
-        let frame =
-            x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
-
-        let flags = Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE;
-        unsafe {
-            mapper
-                .map_to(page, frame, flags, frame_allocator)
-                .expect("Failed to map VGA memory page")
-                .flush();
-        }
-    }
-
-    // Map VGA memory to identity for bootloader compatibility
-    unsafe {
-        map_identity_range(
-            &mut mapper,
-            frame_allocator,
-            VGA_MEMORY_START,
-            vga_pages,
-            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
-        )
-        .expect("Failed to map VGA memory identity");
-    }
+    let flags = Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE;
+    map_pages_loop!(
+        mapper,
+        frame_allocator,
+        VGA_MEMORY_START,
+        phys_offset.as_u64() + VGA_MEMORY_START,
+        vga_pages,
+        flags
+    );
 
     // Map framebuffer to identity for bootloader compatibility
     if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
@@ -274,6 +308,34 @@ pub fn reinit_page_table_with_allocator(
             .expect("Failed to map framebuffer identity pages");
         }
     }
+
+    // Map the L4 page table to higher-half so that OffsetPageTable with high offset can access it
+    let l4_virt = phys_offset + level_4_table_frame.start_address().as_u64();
+    let page = Page::containing_address(l4_virt);
+    unsafe {
+        mapper
+            .map_to(
+                page,
+                level_4_table_frame,
+                Flags::PRESENT | Flags::WRITABLE,
+                frame_allocator,
+            )
+            .expect("Failed to map L4 to higher half")
+            .flush();
+    }
+
+    // Switch to the new page table and flush TLB
+    unsafe {
+        Cr3::write(
+            level_4_table_frame,
+            x86_64::registers::control::Cr3Flags::empty(),
+        );
+    }
+    flush_tlb_and_verify!();
+    debug_log!(
+        "reinit_page_table_with_allocator: CR3 switched, phys_offset={:#x}",
+        phys_offset.as_u64()
+    );
 
     phys_offset
 }
@@ -662,6 +724,43 @@ fn translate_addr_inner(addr: VirtAddr, physical_memory_offset: VirtAddr) -> Opt
     Some(frame.start_address() + u64::from(addr.page_offset()))
 }
 
+/// Compute the total memory size required for the kernel by parsing ELF headers
+unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
+    let ehdr_ptr = kernel_phys_start.as_u64() as *const Elf64Ehdr;
+    let ehdr = unsafe { &*ehdr_ptr };
+
+    // Check ELF magic
+    if ehdr.e_ident[0..4] != [0x7f, b'E', b'L', b'F'] {
+        // If not ELF, fall back to hardcoded size
+        const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024;
+        return FALLBACK_KERNEL_SIZE;
+    }
+
+    // Parse program headers to find total memory size
+        let mut min_vaddr = u64::MAX;
+    let mut max_vaddr = 0u64;
+    let phdr_base = kernel_phys_start.as_u64() + ehdr.e_phoff;
+    for i in 0..ehdr.e_phnum {
+        let phdr_ptr = (phdr_base + i as u64 * ehdr.e_phentsize as u64) as *const Elf64Phdr;
+        let phdr = unsafe { &*phdr_ptr };
+
+        if phdr.p_type == 1 && phdr.p_memsz > 0 { // PT_LOAD
+            min_vaddr = min_vaddr.min(phdr.p_vaddr);
+            max_vaddr = max_vaddr.max(phdr.p_vaddr + phdr.p_memsz);
+        }
+    }
+
+    let kernel_size = if min_vaddr <= max_vaddr {
+        max_vaddr - min_vaddr
+    } else {
+        0
+    };
+
+    // Round up to page size and add some padding for safety
+    const KERNEL_MEMORY_PADDING: u64 = 1024 * 1024; // 1MB padding
+    ((kernel_size + 4095) & !4095) + KERNEL_MEMORY_PADDING
+}
+
 /// Map kernel segments with appropriate permissions parsed from the ELF file
 unsafe fn map_kernel_segments(
     mapper: &mut OffsetPageTable,
@@ -677,8 +776,9 @@ unsafe fn map_kernel_segments(
     // Check ELF magic
     if ehdr.e_ident[0..4] != [0x7f, b'E', b'L', b'F'] {
         // If not ELF, fall back to mapping as writable (old behavior)
-        const KERNEL_SIZE: u64 = 64 * 1024 * 1024;
-        let kernel_pages = KERNEL_SIZE.div_ceil(4096);
+        const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024; // As defined in calculate_kernel_memory_size
+        let kernel_size = FALLBACK_KERNEL_SIZE;
+        let kernel_pages = kernel_size.div_ceil(4096);
         for i in 0..kernel_pages {
             let phys_addr = kernel_phys_start + (i * 4096);
             let virt_addr = phys_offset + phys_addr.as_u64();

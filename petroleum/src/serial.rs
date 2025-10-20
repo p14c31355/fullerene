@@ -216,17 +216,6 @@ pub fn _print(args: fmt::Arguments) {
     (&mut *UEFI_WRITER.lock()).write_fmt(args).ok();
 }
 
-/// Macro to reduce repetitive debug serial output
-#[macro_export]
-macro_rules! debug_log {
-    ($msg:expr) => {{
-        $crate::serial::debug_print_str_to_com1($msg);
-    }};
-    ($fmt:expr, $($arg:tt)*) => {{
-        $crate::serial::serial_log(format_args!($fmt, $($arg)*));
-    }};
-}
-
 /// Initializes the global serial port writer.
 pub fn serial_init() {
     SERIAL_PORT_WRITER.lock().init();
