@@ -289,7 +289,6 @@ pub extern "efiapi" fn efi_main(
     let mut ctx = UefiInitContext::new(system_table);
 
     let kernel_phys_start = ctx.early_initialization(memory_map, memory_map_size);
-    debug_log!("About to call memory_management_initialization");
     let (physical_memory_offset, heap_start, virtual_heap_start) =
         ctx.memory_management_initialization(kernel_phys_start, system_table);
 
