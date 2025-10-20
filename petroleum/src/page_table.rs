@@ -66,7 +66,7 @@ pub struct Elf64Phdr {
     pub p_align: u64,
 }
 
-/// Static buffer for bitmap - sized for up to ~256GB of RAM (8M frames)
+/// Static buffer for bitmap - sized for up to 32GiB of RAM (8M frames)
 /// Each bit represents one 4KB frame, so size is (8M / 64) = 128K u64s = 1MB
 static mut BITMAP_STATIC: [u64; 131072] = [u64::MAX; 131072];
 
