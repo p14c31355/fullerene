@@ -36,10 +36,8 @@ fn try_allocate_pages(
             pages, // Start with 1 for testing
             &mut phys_addr_local,
         );
-        debug_log_no_alloc!("Heap: Exited allocate_pages call phys_addr_local=");
-        debug_log_no_alloc!("", phys_addr_local);
-        debug_log_no_alloc!("Heap: Exited allocate_pages call raw_status=");
-        debug_log_no_alloc!("", status);
+        debug_log_no_alloc!("Heap: Exited allocate_pages call phys_addr_local=", phys_addr_local);
+        debug_log_no_alloc!("Heap: Exited allocate_pages call raw_status=", status);
 
         // Immediate validation: check if phys_addr_local is page-aligned (avoid invalid reads)
         if phys_addr_local != 0 && !phys_addr_local.is_multiple_of(4096) {
