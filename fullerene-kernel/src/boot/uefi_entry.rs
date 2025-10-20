@@ -229,9 +229,8 @@ impl UefiInitContext {
         // to prevent allocation failures in subsequent log::info! calls
         debug_log_no_alloc!("Initializing global heap allocator early");
         use petroleum::page_table::{ALLOCATOR, HEAP_INITIALIZED};
-        const KERNEL_STACK_SIZE: usize = 4096 * 16; // This should be a shared constant.
-        let heap_start_for_allocator = self.virtual_heap_start + KERNEL_STACK_SIZE as u64;
-        let heap_size_for_allocator = heap::HEAP_SIZE - KERNEL_STACK_SIZE;
+        let heap_start_for_allocator = self.virtual_heap_start + crate::heap::KERNEL_STACK_SIZE as u64;
+        let heap_size_for_allocator = heap::HEAP_SIZE - crate::heap::KERNEL_STACK_SIZE;
 
         unsafe {
             ALLOCATOR.lock().init(
@@ -260,11 +259,10 @@ impl UefiInitContext {
         self.heap_start_after_gdt = gdt::init(gdt_heap_start);
         log::info!("GDT initialized");
 
-        const KERNEL_STACK_SIZE: usize = 4096 * 16;
         let stack_bottom = self.heap_start_after_gdt;
-        self.heap_start_after_stack = stack_bottom + KERNEL_STACK_SIZE as u64;
+        self.heap_start_after_stack = stack_bottom + crate::heap::KERNEL_STACK_SIZE as u64;
 
-        let stack_pages = (KERNEL_STACK_SIZE as u64).div_ceil(4096);
+        let stack_pages = (crate::heap::KERNEL_STACK_SIZE as u64).div_ceil(4096);
         let stack_base_phys =
             PhysAddr::new(stack_bottom.as_u64() - physical_memory_offset.as_u64());
         let mut frame_allocator = crate::heap::FRAME_ALLOCATOR

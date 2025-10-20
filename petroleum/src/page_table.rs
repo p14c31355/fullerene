@@ -90,6 +90,12 @@ impl BitmapFrameAllocator {
     }
 
     /// Create a FrameAllocator from the passed memory map.
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because calling it multiple times will cause
+    /// mutable aliasing of the global static `BITMAP_STATIC` buffer, leading
+    /// to undefined behavior. It must only be called once during system initialization.
     /// (for compatibility)
     pub unsafe fn init(memory_map: &[EfiMemoryDescriptor]) -> Self {
         let mut allocator = BitmapFrameAllocator::new();
