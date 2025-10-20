@@ -144,19 +144,22 @@ impl UefiInitContext {
             fb_size,
             &mut frame_allocator,
         );
+    #[cfg(feature = "verbose_boot_log")]
     write_serial_bytes!(0x3F8, 0x3FD, b"page table reinit completed\n");
     log::info!("Page table reinit completed");
 
         // Set kernel CR3
         let kernel_cr3 = x86_64::registers::control::Cr3::read();
         crate::interrupts::syscall::set_kernel_cr3(kernel_cr3.0.start_address().as_u64());
-write_serial_bytes!(0x3F8, 0x3FD, b"About to set physical memory offset\n");
+    #[cfg(feature = "verbose_boot_log")]
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to set physical memory offset\n");
 
         // Set physical memory offset
         crate::memory_management::set_physical_memory_offset(
             crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE,
         );
-write_serial_bytes!(0x3F8, 0x3FD, b"physical memory offset set\n");
+    #[cfg(feature = "verbose_boot_log")]
+    write_serial_bytes!(0x3F8, 0x3FD, b"physical memory offset set\n");
 
         let heap_phys_start =
             find_heap_start(*MEMORY_MAP.get().expect("Memory map not initialized"));
