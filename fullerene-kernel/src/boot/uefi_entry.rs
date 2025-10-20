@@ -119,12 +119,9 @@ impl UefiInitContext {
         let (fb_addr, fb_size) = if let Some(config) = config {
             let fb_size_bytes =
                 (config.width as usize * config.height as usize * config.bpp as usize) / 8;
-            debug_log_no_alloc!("Found framebuffer config: ");
-            debug_log_no_alloc!(config.width as usize);
-            debug_log_no_alloc!("x");
-            debug_log_no_alloc!(config.height as usize);
-            debug_log_no_alloc!(" @ ");
-            debug_log_no_alloc!(config.address);
+            debug_log_no_alloc!("Found framebuffer config width=", config.width as usize);
+            debug_log_no_alloc!("Found framebuffer config height=", config.height as usize);
+            debug_log_no_alloc!("Found framebuffer config address=", config.address);
             (
                 Some(VirtAddr::new(config.address)),
                 Some(fb_size_bytes as u64),
