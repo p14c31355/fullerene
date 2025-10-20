@@ -30,7 +30,7 @@ fn try_allocate_pages(
         debug_log_no_alloc!("", pages);
         debug_log_no_alloc!("Heap: Calling allocate_pages mem_type=");
         debug_log_no_alloc!("", mem_type as usize);
-        debug_log!("Heap: Entering allocate_pages call...");
+        debug_log_no_alloc!("Heap: Entering allocate_pages call...");
         // Use AllocateAnyPages (0) for any mem
         let alloc_type = 0usize; // AllocateAnyPages
         let status = (bs.allocate_pages)(
@@ -46,7 +46,7 @@ fn try_allocate_pages(
 
         // Immediate validation: check if phys_addr_local is page-aligned (avoid invalid reads)
         if phys_addr_local != 0 && !phys_addr_local.is_multiple_of(4096) {
-            debug_log!("Heap: WARNING: phys_addr_local not page-aligned!");
+            debug_log_no_alloc!("Heap: WARNING: phys_addr_local not page-aligned!");
             let _ = (bs.free_pages)(phys_addr_local, pages); // Ignore status on free
             continue;
         }
@@ -61,12 +61,12 @@ fn try_allocate_pages(
         debug_log_no_alloc!("Heap: Status: ", status_efi as usize);
 
         if status_efi == EfiStatus::InvalidParameter {
-            debug_log!("Heap: -> Skipping invalid type.");
+            debug_log_no_alloc!("Heap: -> Skipping invalid type.");
             continue; // Ignore Conventional memory type
         }
 
         if status_efi == EfiStatus::Success && phys_addr_local != 0 {
-            debug_log!("Heap: Allocated at address, aligned OK.");
+            debug_log_no_alloc!("Heap: Allocated at address, aligned OK.");
             return Ok(phys_addr_local);
         }
     }
@@ -77,13 +77,13 @@ fn try_allocate_pages(
 }
 
 pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
-    debug_log!("Heap: Allocating pages for heap...");
+    debug_log_no_alloc!("Heap: Allocating pages for heap...");
     let heap_pages = HEAP_SIZE.div_ceil(4096);
     debug_log_no_alloc!("Heap: Requesting pages=", heap_pages);
     let heap_phys = try_allocate_pages(bs, heap_pages, EfiMemoryType::EfiLoaderData)?; // 固定
 
     if heap_phys == 0 {
-        debug_log!("Heap: Allocated heap address is null!");
+        debug_log_no_alloc!("Heap: Allocated heap address is null!");
         return Err(BellowsError::AllocationFailed(
             "Allocated heap address is null.",
         ));
@@ -94,8 +94,8 @@ pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
     // In a more robust implementation, we'd modify try_allocate_pages to return the actual size
     let actual_heap_size = heap_pages * 4096;
 
-    debug_log!("Heap: Initializing global allocator using petroleum...");
+    debug_log_no_alloc!("Heap: Initializing global allocator using petroleum...");
     petroleum::init_global_heap(heap_phys as *mut u8, actual_heap_size);
-    debug_log!("Heap: Petroleum global heap init done. Returning Ok(()).");
+    debug_log_no_alloc!("Heap: Petroleum global heap init done. Returning Ok(()).");
     Ok(())
 }

@@ -1,4 +1,4 @@
-use crate::{debug_log, flush_tlb_and_verify, map_pages_loop};
+use crate::{debug_log, debug_log_no_alloc, flush_tlb_and_verify, map_pages_loop};
 
 // Macros are automatically available from common module
 
@@ -212,7 +212,7 @@ pub fn reinit_page_table_with_allocator(
 ) -> VirtAddr {
     use x86_64::structures::paging::PageTableFlags as Flags;
 
-    debug_log!("reinit_page_table_with_allocator: starting");
+    debug_log_no_alloc!("reinit_page_table_with_allocator: starting");
 
     // Use the higher-half kernel offset
     let phys_offset = HIGHER_HALF_OFFSET;
@@ -332,10 +332,7 @@ pub fn reinit_page_table_with_allocator(
         );
     }
     flush_tlb_and_verify!();
-    debug_log!(
-        "reinit_page_table_with_allocator: CR3 switched, phys_offset={:#x}",
-        phys_offset.as_u64()
-    );
+    debug_log_no_alloc!("reinit_page_table_with_allocator: CR3 switched, phys_offset=", phys_offset.as_u64());
 
     phys_offset
 }
