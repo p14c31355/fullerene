@@ -252,6 +252,63 @@ macro_rules! static_str {
     }};
 }
 
+/// Memory debugging macro that prints strings and values to serial output
+///
+/// # Examples
+/// ```
+/// mem_debug!("Memory descriptor: ");
+/// mem_debug!(descriptor.physical_start);
+/// ```
+#[macro_export]
+macro_rules! mem_debug {
+    ($msg:literal) => {
+        $crate::serial::debug_print_str_to_com1($msg);
+    };
+    ($value:expr) => {
+        $crate::serial::debug_print_hex($value as usize);
+    };
+}
+
+/// Macro for periodic task execution that checks if enough time has passed since last execution
+/// Takes a mutable last tick variable, interval, current tick, and block to execute
+///
+/// # Examples
+/// ```
+/// static LAST_CHECK: spin::Mutex<u64> = spin::Mutex::new(0);
+/// check_periodic!(LAST_CHECK, 1000, current_tick, {
+///     perform_hourly_task();
+/// });
+/// ```
+#[macro_export]
+macro_rules! check_periodic {
+    ($last_tick:expr, $interval:expr, $current_tick:expr, $block:block) => {{
+        let mut last = $last_tick.lock();
+        let elapsed = $current_tick - *last;
+        if elapsed >= $interval {
+            $block;
+            *last = $current_tick;
+        }
+    }};
+}
+
+/// Macro for simple periodic task execution based on tick intervals
+/// Executes block every 'interval' ticks
+///
+/// # Examples
+/// ```
+/// periodic_task!(current_tick, 3000, {
+///     log_system_stats();
+/// });
+/// ```
+#[macro_export]
+macro_rules! periodic_task {
+    ($current_tick:expr, $interval:expr, $block:block) => {
+        if $current_tick % $interval == 0 {
+            $block;
+        }
+    };
+}
+
 /// Unified print macros using the log crate for consistent logging across all crates
 /// Uses log::info! for println! and serial output for print!
 #[macro_export]

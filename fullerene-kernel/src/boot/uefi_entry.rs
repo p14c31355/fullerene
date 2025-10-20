@@ -303,6 +303,19 @@ write_serial_bytes!(0x3F8, 0x3FD, b"GDT and stack setup completed\n");
     ctx.setup_allocator(virtual_heap_start);
 write_serial_bytes!(0x3F8, 0x3FD, b"Allocator setup completed\n");
 
+    // Initialize memory management and mark memory as initialized
+    log::info!("Initializing memory management...");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Calling MEMORY_MAP.get() for memory mgmt\n");
+    if let Some(memory_map) = MEMORY_MAP.get() {
+        write_serial_bytes!(0x3F8, 0x3FD, b"MEMORY_MAP.get() succeeded for memory mgmt\n");
+        crate::memory::init_memory_management(*memory_map, physical_memory_offset, kernel_phys_start);
+        petroleum::set_memory_initialized(true);
+        log::info!("Memory management initialized and marked as ready");
+    } else {
+        log::error!("MEMORY_MAP not initialized. Cannot initialize memory management.");
+        petroleum::halt_loop();
+    }
+
     // Initialize the global memory manager with the EFI memory map
     log::info!("Initializing global memory manager...");
     write_serial_bytes!(0x3F8, 0x3FD, b"Calling MEMORY_MAP.get()\n");
