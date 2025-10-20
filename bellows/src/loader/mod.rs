@@ -189,7 +189,7 @@ pub fn exit_boot_services_and_jump(
                 magic: u32,
                 config: petroleum::common::FullereneFramebufferConfig,
             }
-            const MAGIC: u32 = 0x12345678;
+            const FRAMEBUFFER_CONFIG_MAGIC: u32 = 0x46424346; // "FBCF"
             let config_with_metadata = ConfigWithMetadata {
                 descriptor_size,
                 magic: MAGIC,
