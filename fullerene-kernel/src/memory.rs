@@ -11,7 +11,7 @@ use crate::MEMORY_MAP;
 
 use core::ffi::c_void;
 use x86_64::{PhysAddr, VirtAddr};
-use petroleum::{write_serial_bytes, check_memory_initialized, mem_debug, debug_mem_descriptor};
+use petroleum::{write_serial_bytes, check_memory_initialized, mem_debug, debug_mem_descriptor, debug_print};
 
 // Add a constant for the higher-half kernel virtual base address
 const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000; // Common higher-half address
@@ -104,11 +104,11 @@ pub fn setup_memory_maps(
     }
     const MAGIC: u32 = 0x12345678;
     let config_size = core::mem::size_of::<ConfigWithMetadata>();
-    petroleum::serial::debug_print_str_to_com1("Total map size: ");
-    petroleum::serial::debug_print_hex(total_map_size);
-    petroleum::serial::debug_print_str_to_com1(", config size: ");
-    petroleum::serial::debug_print_hex(config_size);
-    petroleum::serial::debug_print_str_to_com1("\n");
+    debug_print!("Total map size: ");
+    debug_print!(total_map_size);
+    debug_print!(", config size: ");
+    debug_print!(config_size);
+    debug_print!("\n");
 
     let actual_descriptors_size;
     let descriptors;

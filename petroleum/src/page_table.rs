@@ -28,6 +28,7 @@ macro_rules! map_page_loop {
     }};
 }
 
+use spin::Once;
 use x86_64::{
     PhysAddr, VirtAddr,
     instructions::tlb,
@@ -36,6 +37,17 @@ use x86_64::{
         FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PhysFrame, Size4KiB, Translate,
     },
 };
+
+// Track heap initialization to prevent double init
+pub static HEAP_INITIALIZED: Once<bool> = Once::new();
+
+// Initialize global heap allocator if not already initialized
+pub fn init_global_heap(ptr: *mut u8, size: usize) {
+    if HEAP_INITIALIZED.get().is_none() {
+        unsafe { ALLOCATOR.lock().init(ptr, size); }
+        HEAP_INITIALIZED.call_once(|| true);
+    }
+}
 
 /// EFI Memory Descriptor as defined in UEFI spec
 #[repr(C)]

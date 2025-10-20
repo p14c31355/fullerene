@@ -4,9 +4,7 @@ use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus}
 use petroleum::debug_log;
 
 /// Size of the heap we will allocate for `alloc` usage (bytes).
-const HEAP_SIZE: usize = 32 * 1024; // 32 KiB
-
-/// Global allocator removed - now provided by petroleum crate
+const HEAP_SIZE: usize = 128 * 1024; // 128 KiB
 
 /// Tries to allocate pages with multiple strategies and memory types.
 fn try_allocate_pages(
@@ -99,16 +97,8 @@ pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
     // In a more robust implementation, we'd modify try_allocate_pages to return the actual size
     let actual_heap_size = heap_pages * 4096;
 
-    debug_log!("Heap: Initializing allocator using petroleum...");
-    // Safety:
-    // We have successfully allocated a valid, non-zero memory region.
-    // The `init` function correctly initializes the allocator with this region.
-    debug_log!("Heap: About to init petroleum ALLOCATOR...");
-    unsafe {
-        petroleum::page_table::ALLOCATOR
-            .lock()
-            .init(heap_phys as *mut u8, actual_heap_size);
-    }
-    debug_log!("Heap: Petroleum ALLOCATOR init done. Returning Ok(()).");
+    debug_log!("Heap: Initializing global allocator using petroleum...");
+    petroleum::init_global_heap(heap_phys as *mut u8, actual_heap_size);
+    debug_log!("Heap: Petroleum global heap init done. Returning Ok(()).");
     Ok(())
 }

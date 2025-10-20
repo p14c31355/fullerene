@@ -12,7 +12,7 @@ use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::uefi::{efi_print, find_gop_framebuffer, write_vga_string};
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
-use petroleum::{allocate_heap_from_map, debug_log, write_serial_bytes};
+use petroleum::{allocate_heap_from_map, debug_log, write_serial_bytes, boot_log};
 use spin::Mutex;
 use x86_64::{
     PhysAddr, VirtAddr,
@@ -79,7 +79,7 @@ impl UefiInitContext {
         _memory_map: *mut c_void,
         memory_map_size: usize,
     ) -> PhysAddr {
-        write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main entered.\n");
+        boot_log!("Kernel: efi_main entered");
         petroleum::serial::serial_init();
         petroleum::serial::debug_print_str_to_com1("Kernel: efi_main located at ");
         petroleum::serial::debug_print_hex(efi_main as usize);

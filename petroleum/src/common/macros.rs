@@ -252,15 +252,60 @@ macro_rules! static_str {
     }};
 }
 
-/// Memory debugging macro that prints strings and values to serial output
+/// Enhanced memory debugging macro that supports formatted output with mixed strings and values
 ///
 /// # Examples
 /// ```
 /// mem_debug!("Memory descriptor: ");
 /// mem_debug!(descriptor.physical_start);
+/// mem_debug!("type=", descriptor.type_, ", pages=", descriptor.number_of_pages);
 /// ```
 #[macro_export]
 macro_rules! mem_debug {
+    ($msg:literal) => {
+        $crate::serial::debug_print_str_to_com1($msg);
+    };
+    ($value:expr) => {
+        $crate::serial::debug_print_hex($value as usize);
+    };
+    ($($tokens:tt)*) => {{
+        $(
+            $crate::mem_debug!($tokens);
+        )*
+    }};
+}
+
+/// Boot logging macro for UEFI initialization with automatic port configuration
+///
+/// # Examples
+/// ```
+/// boot_log!("Starting initialization");
+/// boot_log!("Value: {}", some_value);
+/// ```
+#[macro_export]
+macro_rules! boot_log {
+    ($msg:literal) => {{
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes());
+    }};
+    ($fmt:expr, $($arg:tt)*) => {{
+        use alloc::string::ToString;
+        let msg = alloc::format!(concat!($fmt, "\n"), $($arg)*);
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
+    }};
+}
+
+/// Debug print macro that handles mixed string and hex value output line by line
+///
+/// # Examples
+/// ```
+/// debug_print!("Total map size: ");
+/// debug_print!(total_map_size);
+/// debug_print!(", config size: ");
+/// debug_print!(config_size);
+/// debug_print!("\n");
+/// ```
+#[macro_export]
+macro_rules! debug_print {
     ($msg:literal) => {
         $crate::serial::debug_print_str_to_com1($msg);
     };
