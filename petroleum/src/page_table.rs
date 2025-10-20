@@ -66,9 +66,13 @@ pub struct Elf64Phdr {
     pub p_align: u64,
 }
 
+/// Static buffer for bitmap - sized for up to ~256GB of RAM (8M frames)
+/// Each bit represents one 4KB frame, so size is (8M / 64) = 128K u64s = 1MB
+static mut BITMAP_STATIC: [u64; 131072] = [u64::MAX; 131072];
+
 /// Bitmap-based frame allocator implementation
 pub struct BitmapFrameAllocator {
-    bitmap: alloc::vec::Vec<u64>,
+    bitmap: Option<&'static mut [u64]>,
     frame_count: usize,
     next_free_frame: usize,
     initialized: bool,
@@ -78,7 +82,7 @@ impl BitmapFrameAllocator {
     /// Create a new bitmap frame allocator
     pub fn new() -> Self {
         Self {
-            bitmap: alloc::vec::Vec::new(),
+            bitmap: None,
             frame_count: 0,
             next_free_frame: 0,
             initialized: false,
@@ -112,10 +116,23 @@ impl BitmapFrameAllocator {
             return Err(crate::common::logging::SystemError::InternalError);
         }
 
-        // Initialize bitmap (each bit represents a frame)
+        // Calculate bitmap size needed
         let bitmap_size = (total_frames + 63) / 64; // Round up for 64-bit chunks
-        self.bitmap = alloc::vec::Vec::new();
-        self.bitmap.resize(bitmap_size, 0xFFFF_FFFF_FFFF_FFFF); // Mark all as used initially
+
+        // Ensure bitmap size doesn't exceed our static buffer
+        if bitmap_size > 131072 {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
+
+        // Get a mutable slice from the static buffer
+        unsafe {
+            self.bitmap = Some(&mut BITMAP_STATIC[..bitmap_size]);
+
+            // Initialize bitmap - mark all as used initially
+            for chunk in self.bitmap.as_mut().unwrap().iter_mut() {
+                *chunk = u64::MAX;
+            }
+        }
 
         self.frame_count = total_frames;
         self.next_free_frame = 0;
@@ -144,31 +161,39 @@ impl BitmapFrameAllocator {
 
     /// Set a frame as free in the bitmap
     fn set_frame_free(&mut self, frame_index: usize) {
-        let chunk_index = frame_index / 64;
-        let bit_index = frame_index % 64;
+        if let Some(ref mut bitmap) = self.bitmap {
+            let chunk_index = frame_index / 64;
+            let bit_index = frame_index % 64;
 
-        if chunk_index < self.bitmap.len() {
-            self.bitmap[chunk_index] &= !(1 << bit_index);
+            if chunk_index < bitmap.len() {
+                bitmap[chunk_index] &= !(1 << bit_index);
+            }
         }
     }
 
     /// Set a frame as used in the bitmap
     fn set_frame_used(&mut self, frame_index: usize) {
-        let chunk_index = frame_index / 64;
-        let bit_index = frame_index % 64;
+        if let Some(ref mut bitmap) = self.bitmap {
+            let chunk_index = frame_index / 64;
+            let bit_index = frame_index % 64;
 
-        if chunk_index < self.bitmap.len() {
-            self.bitmap[chunk_index] |= 1 << bit_index;
+            if chunk_index < bitmap.len() {
+                bitmap[chunk_index] |= 1 << bit_index;
+            }
         }
     }
 
     /// Check if a frame is free
     fn is_frame_free(&self, frame_index: usize) -> bool {
-        let chunk_index = frame_index / 64;
-        let bit_index = frame_index % 64;
+        if let Some(ref bitmap) = self.bitmap {
+            let chunk_index = frame_index / 64;
+            let bit_index = frame_index % 64;
 
-        if chunk_index < self.bitmap.len() {
-            (self.bitmap[chunk_index] & (1 << bit_index)) == 0
+            if chunk_index < bitmap.len() {
+                (bitmap[chunk_index] & (1 << bit_index)) == 0
+            } else {
+                false
+            }
         } else {
             false
         }
@@ -176,6 +201,10 @@ impl BitmapFrameAllocator {
 
     /// Find the next free frame starting from a given index
     fn find_next_free_frame(&self, start_index: usize) -> Option<usize> {
+        if !self.initialized {
+            return None;
+        }
+
         let mut index = start_index;
 
         while index < self.frame_count {
@@ -190,6 +219,10 @@ impl BitmapFrameAllocator {
 
     /// Allocate a specific frame range (for reserving used regions)
     pub fn allocate_frames_at(&mut self, start_addr: usize, count: usize) -> crate::common::logging::SystemResult<()> {
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
+
         let start_frame = start_addr / 4096;
         if start_frame + count > self.frame_count {
             return Err(crate::common::logging::SystemError::InvalidArgument);
