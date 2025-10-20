@@ -2,32 +2,6 @@ use crate::{debug_log, flush_tlb_and_verify, map_pages_loop};
 
 // Macros are automatically available from common module
 
-#[macro_export]
-macro_rules! serial_debug {
-    ($msg:expr) => {{
-        unsafe { crate::write_serial_bytes(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes()); }
-    }};
-}
-
-#[macro_export]
-macro_rules! map_page_loop {
-    ($mapper:expr, $allocator:expr, $start_phys:expr, $start_virt:expr, $num_pages:expr, $flags:expr) => {{
-        use x86_64::structures::paging::PageTableFlags as Flags;
-        for i in 0..$num_pages {
-            let phys_addr = PhysAddr::new($start_phys + i * 4096);
-            let virt_addr = VirtAddr::new($start_virt + i * 4096);
-            let page = Page::<Size4KiB>::containing_address(virt_addr);
-            let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
-            unsafe {
-                $mapper
-                    .map_to(page, frame, $flags, $allocator)
-                    .expect("Failed to map page")
-                    .flush();
-            }
-        }
-    }};
-}
-
 use spin::Once;
 use x86_64::{
     PhysAddr, VirtAddr,
