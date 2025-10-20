@@ -102,24 +102,17 @@ impl UefiInitContext {
         kernel_phys_start: PhysAddr,
         system_table: &EfiSystemTable,
     ) -> (VirtAddr, PhysAddr, VirtAddr) {
-        write_serial_bytes!(0x3F8, 0x3FD, b"Entering memory_management_initialization\n");
-        write_serial_bytes!(0x3F8, 0x3FD, b"About to call MEMORY_MAP.get()\n");
+                boot_log!("Entering memory_management_initialization");
         let memory_map_ref = MEMORY_MAP.get().expect("Memory map not initialized");
-        write_serial_bytes!(0x3F8, 0x3FD, b"MEMORY_MAP.get() returned\n");
         // Initialize heap frame allocator
-        write_serial_bytes!(0x3F8, 0x3FD, b"About to call heap::init_frame_allocator\n");
         heap::init_frame_allocator(*memory_map_ref);
-        write_serial_bytes!(0x3F8, 0x3FD, b"heap::init_frame_allocator completed\n");
         log::info!("Heap frame allocator initialized");
-
-        write_serial_bytes!(0x3F8, 0x3FD, b"About to find framebuffer config\n");
         // Get framebuffer config from petroleum global
         let framebuffer_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|mutex| *mutex.lock());
-        write_serial_bytes!(0x3F8, 0x3FD, b"framebuffer config search completed\n");
         if framebuffer_config.is_some() {
-            write_serial_bytes!(0x3F8, 0x3FD, b"framebuffer config found\n");
+            log::info!("Framebuffer config found");
         } else {
-            write_serial_bytes!(0x3F8, 0x3FD, b"no framebuffer config found\n");
+            log::info!("No framebuffer config found");
         }
 
         let config = framebuffer_config.as_ref();
