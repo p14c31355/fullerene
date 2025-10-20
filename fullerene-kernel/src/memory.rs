@@ -152,9 +152,7 @@ pub fn setup_memory_maps(
     // Since UEFI identity-maps initially, kernel_virt_addr should equal its physical address
     if kernel_virt_addr >= 0x1000 {
         kernel_phys_start = PhysAddr::new(kernel_virt_addr);
-        petroleum::serial::debug_print_str_to_com1("Using identity-mapped kernel physical start: ");
-        petroleum::serial::debug_print_hex(kernel_phys_start.as_u64() as usize);
-        petroleum::serial::debug_print_str_to_com1("\n");
+        mem_debug!("Using identity-mapped kernel physical start: ", kernel_phys_start.as_u64() as usize, "\n");
     } else {
         petroleum::serial::debug_print_str_to_com1("Warning: Invalid kernel address ");
         petroleum::serial::debug_print_hex(kernel_virt_addr as usize);
