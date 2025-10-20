@@ -241,7 +241,7 @@ pub fn reinit_page_table_with_allocator(
             &mut mapper,
             frame_allocator,
             4096,
-            1024, // 4MB - 1 page = 1024 pages
+            1023, // 4MB - 4KB = 1023 pages
             Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
         )
         .expect("Failed to map identity range")
