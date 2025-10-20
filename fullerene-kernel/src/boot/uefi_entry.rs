@@ -210,6 +210,21 @@ impl UefiInitContext {
         .expect("Failed to map heap memory");
         write_serial_bytes!(0x3F8, 0x3FD, b"heap memory mapped\n");
 
+        // Initialize the global heap allocator immediately after heap mapping
+        // to prevent allocation failures in subsequent log::info! calls
+        debug_log!("Initializing global heap allocator early");
+        use petroleum::page_table::{ALLOCATOR, HEAP_INITIALIZED};
+        unsafe {
+            let mut allocator = ALLOCATOR.lock();
+            allocator.init(
+                self.virtual_heap_start.as_mut_ptr::<u8>(),
+                heap::HEAP_SIZE,
+            );
+        }
+        // Mark heap as initialized to prevent double-init
+        HEAP_INITIALIZED.call_once(|| true);
+        write_serial_bytes!(0x3F8, 0x3FD, b"Global heap allocator initialized\n");
+
         (
             self.physical_memory_offset,
             heap_start,
@@ -259,6 +274,12 @@ impl UefiInitContext {
     }
 
     fn setup_allocator(&mut self, virtual_heap_start: VirtAddr) {
+        // Check if heap was already initialized early in memory_management_initialization
+        if petroleum::page_table::HEAP_INITIALIZED.get().is_some() {
+            log::info!("Heap allocator already initialized early, skipping second initialization");
+            return;
+        }
+
         petroleum::serial::serial_log(format_args!("Initializing allocator\n"));
         let kernel_overhead =
             (self.heap_start_after_stack.as_u64() - virtual_heap_start.as_u64()) as usize;
