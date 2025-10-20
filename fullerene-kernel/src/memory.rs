@@ -163,13 +163,13 @@ pub fn setup_memory_maps(
     // Use a simpler offset that maps physical addresses to the higher half directly
     physical_memory_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE);
 
-    petroleum::serial::debug_print_str_to_com1(
+    mem_debug!(
         "Physical memory offset calculation complete: offset=",
+        physical_memory_offset.as_u64() as usize,
+        ", kernel_phys_start=",
+        kernel_phys_start.as_u64() as usize,
+        "\n"
     );
-    petroleum::serial::debug_print_hex(physical_memory_offset.as_u64() as usize);
-    petroleum::serial::debug_print_str_to_com1(", kernel_phys_start=");
-    petroleum::serial::debug_print_hex(kernel_phys_start.as_u64() as usize);
-    petroleum::serial::debug_print_str_to_com1("\n");
 
     kernel_phys_start
 }
