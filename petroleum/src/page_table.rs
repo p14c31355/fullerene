@@ -244,6 +244,12 @@ impl BitmapFrameAllocator {
             return Err(crate::common::logging::SystemError::InvalidArgument);
         }
 
+                for i in 0..count {
+            if !self.is_frame_free(start_frame + i) {
+                return Err(crate::common::logging::SystemError::FrameAllocationFailed);
+            }
+        }
+
         for i in 0..count {
             self.set_frame_used(start_frame + i);
         }
