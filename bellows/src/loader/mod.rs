@@ -192,7 +192,7 @@ pub fn exit_boot_services_and_jump(
             const FRAMEBUFFER_CONFIG_MAGIC: u32 = 0x46424346; // "FBCF"
             let config_with_metadata = ConfigWithMetadata {
                 descriptor_size,
-                magic: MAGIC,
+                magic: FRAMEBUFFER_CONFIG_MAGIC,
                 config,
             };
             let config_size = core::mem::size_of::<ConfigWithMetadata>();
