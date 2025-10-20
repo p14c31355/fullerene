@@ -35,12 +35,14 @@ macro_rules! debug_mem_descriptor {
 #[macro_export]
 macro_rules! map_pages_loop {
     ($mapper:expr, $allocator:expr, $base_phys:expr, $base_virt:expr, $num_pages:expr, $flags:expr) => {{
-        use x86_64::{PhysAddr, VirtAddr, structures::paging::{Page, PhysFrame, Size4KiB}};
+        use x86_64::{
+            PhysAddr, VirtAddr,
+            structures::paging::{Page, PhysFrame, Size4KiB},
+        };
         macro_rules! map_page_with_flush {
             ($map:expr, $pg:expr, $frm:expr, $flgs:expr, $alloc:expr) => {{
                 unsafe {
-                    $map
-                        .map_to($pg, $frm, $flgs, $alloc)
+                    $map.map_to($pg, $frm, $flgs, $alloc)
                         .expect("Failed to map page")
                         .flush();
                 }
@@ -62,7 +64,9 @@ macro_rules! map_to_higher_half {
     ($mapper:expr, $allocator:expr, $phys_addr:expr, $num_pages:expr, $flags:expr, $offset:expr) => {{
         use x86_64::VirtAddr;
         let virt_base = $offset + $phys_addr;
-        map_pages_loop!($mapper, $allocator, $phys_addr, virt_base, $num_pages, $flags);
+        map_pages_loop!(
+            $mapper, $allocator, $phys_addr, virt_base, $num_pages, $flags
+        );
     }};
 }
 

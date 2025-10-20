@@ -216,8 +216,6 @@ pub fn _print(args: fmt::Arguments) {
     (&mut *UEFI_WRITER.lock()).write_fmt(args).ok();
 }
 
-
-
 /// Initializes the global serial port writer.
 pub fn serial_init() {
     SERIAL_PORT_WRITER.lock().init();

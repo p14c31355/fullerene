@@ -18,7 +18,9 @@ pub static HEAP_INITIALIZED: Once<bool> = Once::new();
 // Initialize global heap allocator if not already initialized
 pub fn init_global_heap(ptr: *mut u8, size: usize) {
     if HEAP_INITIALIZED.get().is_none() {
-        unsafe { ALLOCATOR.lock().init(ptr, size); }
+        unsafe {
+            ALLOCATOR.lock().init(ptr, size);
+        }
         HEAP_INITIALIZED.call_once(|| true);
     }
 }
@@ -216,7 +218,8 @@ pub fn reinit_page_table_with_allocator(
     let phys_offset = HIGHER_HALF_OFFSET;
 
     // Allocate a new L4 table frame for the kernel
-    let level_4_table_frame = frame_allocator.allocate_frame()
+    let level_4_table_frame = frame_allocator
+        .allocate_frame()
         .expect("Failed to allocate frame for new L4 table");
 
     // Zero the new L4 table
@@ -234,16 +237,28 @@ pub fn reinit_page_table_with_allocator(
     // Set up identity mapping for the first 4MB of physical memory for UEFI compatibility
     // Skip the first page (physical address 0) to avoid null pointer issues
     unsafe {
-        map_identity_range(&mut mapper, frame_allocator, 4096, 1024, // 4MB - 1 page = 1024 pages
-            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE).expect("Failed to map identity range")
+        map_identity_range(
+            &mut mapper,
+            frame_allocator,
+            4096,
+            1024, // 4MB - 1 page = 1024 pages
+            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+        )
+        .expect("Failed to map identity range")
     }
 
     // Identity map kernel code for CR3 switch
     let kernel_size = unsafe { calculate_kernel_memory_size(kernel_phys_start) };
     let kernel_pages = kernel_size.div_ceil(4096);
     unsafe {
-        map_identity_range(&mut mapper, frame_allocator, kernel_phys_start.as_u64(), kernel_pages,
-            Flags::PRESENT | Flags::WRITABLE).expect("Failed to identity map kernel")
+        map_identity_range(
+            &mut mapper,
+            frame_allocator,
+            kernel_phys_start.as_u64(),
+            kernel_pages,
+            Flags::PRESENT | Flags::WRITABLE,
+        )
+        .expect("Failed to identity map kernel")
     }
 
     // Map kernel at higher half by parsing the ELF file for permissions
@@ -255,7 +270,14 @@ pub fn reinit_page_table_with_allocator(
     if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
         let fb_pages = fb_size.div_ceil(4096); // Round up to page count
         let flags = Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE;
-        map_pages_loop!(mapper, frame_allocator, fb_addr.as_u64(), phys_offset.as_u64() + fb_addr.as_u64(), fb_pages, flags);
+        map_pages_loop!(
+            mapper,
+            frame_allocator,
+            fb_addr.as_u64(),
+            phys_offset.as_u64() + fb_addr.as_u64(),
+            fb_pages,
+            flags
+        );
     }
 
     // Always map VGA memory regions (0xA0000 - 0xC0000) for compatibility with VGA text/graphics modes
@@ -263,9 +285,14 @@ pub fn reinit_page_table_with_allocator(
     const VGA_MEMORY_SIZE: u64 = 0xC0000 - 0xA0000; // 128KB VGA memory aperture
     let vga_pages = VGA_MEMORY_SIZE / 4096;
     let flags = Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE;
-    map_pages_loop!(mapper, frame_allocator, VGA_MEMORY_START, phys_offset.as_u64() + VGA_MEMORY_START, vga_pages, flags);
-
-
+    map_pages_loop!(
+        mapper,
+        frame_allocator,
+        VGA_MEMORY_START,
+        phys_offset.as_u64() + VGA_MEMORY_START,
+        vga_pages,
+        flags
+    );
 
     // Map framebuffer to identity for bootloader compatibility
     if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
@@ -287,17 +314,28 @@ pub fn reinit_page_table_with_allocator(
     let page = Page::containing_address(l4_virt);
     unsafe {
         mapper
-            .map_to(page, level_4_table_frame, Flags::PRESENT | Flags::WRITABLE, frame_allocator)
+            .map_to(
+                page,
+                level_4_table_frame,
+                Flags::PRESENT | Flags::WRITABLE,
+                frame_allocator,
+            )
             .expect("Failed to map L4 to higher half")
             .flush();
     }
 
     // Switch to the new page table and flush TLB
     unsafe {
-        Cr3::write(level_4_table_frame, x86_64::registers::control::Cr3Flags::empty());
+        Cr3::write(
+            level_4_table_frame,
+            x86_64::registers::control::Cr3Flags::empty(),
+        );
     }
     flush_tlb_and_verify!();
-    debug_log!("reinit_page_table_with_allocator: CR3 switched, phys_offset={:#x}", phys_offset.as_u64());
+    debug_log!(
+        "reinit_page_table_with_allocator: CR3 switched, phys_offset={:#x}",
+        phys_offset.as_u64()
+    );
 
     phys_offset
 }
@@ -705,7 +743,8 @@ unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
         let phdr_ptr = (phdr_base + i as u64 * ehdr.e_phentsize as u64) as *const Elf64Phdr;
         let phdr = unsafe { &*phdr_ptr };
 
-        if phdr.p_type == 1 { // PT_LOAD
+        if phdr.p_type == 1 {
+            // PT_LOAD
             let segment_end = phdr.p_vaddr + phdr.p_memsz;
             if segment_end > max_end {
                 max_end = segment_end;

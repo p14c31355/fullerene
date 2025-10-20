@@ -1,18 +1,21 @@
 //! Memory management module containing memory map parsing and initialization
 
 use crate::heap;
+use petroleum::common::uefi::{ConfigWithMetadata, FRAMEBUFFER_CONFIG_MAGIC};
 use petroleum::common::{
     EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
     FullereneFramebufferConfig,
 };
-use petroleum::common::uefi::{ConfigWithMetadata, FRAMEBUFFER_CONFIG_MAGIC};
 use petroleum::page_table::EfiMemoryDescriptor;
 
 use crate::MEMORY_MAP;
 
 use core::ffi::c_void;
+use petroleum::{
+    check_memory_initialized, debug_log, debug_mem_descriptor, debug_print, mem_debug,
+    write_serial_bytes,
+};
 use x86_64::{PhysAddr, VirtAddr};
-use petroleum::{debug_log, check_memory_initialized, debug_mem_descriptor, debug_print, mem_debug, write_serial_bytes};
 
 // Add a constant for the higher-half kernel virtual base address
 const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000; // Common higher-half address
@@ -94,22 +97,27 @@ pub fn setup_memory_maps(
     memory_map_size: usize,
     kernel_virt_addr: u64,
 ) -> PhysAddr {
-
-        // Check for framebuffer config appended to memory map
+    // Check for framebuffer config appended to memory map
     let total_map_size = memory_map_size;
     let config_size = core::mem::size_of::<ConfigWithMetadata>();
 
-        let (actual_descriptors_size, descriptor_item_size) = if total_map_size > config_size {
-    let config_ptr = unsafe { (memory_map as *const u8).add(total_map_size - config_size) as *const ConfigWithMetadata };
-    let config_with_metadata = unsafe { &*config_ptr };
-    if config_with_metadata.magic == FRAMEBUFFER_CONFIG_MAGIC {
-        debug_log!("Framebuffer config found in memory map");
-        petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config_with_metadata.config)));
-        (total_map_size - config_size, config_with_metadata.descriptor_size)
-    } else {
-        debug_log!("No framebuffer config found in memory map (magic mismatch)");
-        (total_map_size, core::mem::size_of::<EfiMemoryDescriptor>())
-    }
+    let (actual_descriptors_size, descriptor_item_size) = if total_map_size > config_size {
+        let config_ptr = unsafe {
+            (memory_map as *const u8).add(total_map_size - config_size) as *const ConfigWithMetadata
+        };
+        let config_with_metadata = unsafe { &*config_ptr };
+        if config_with_metadata.magic == FRAMEBUFFER_CONFIG_MAGIC {
+            debug_log!("Framebuffer config found in memory map");
+            petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+                .call_once(|| spin::Mutex::new(Some(config_with_metadata.config)));
+            (
+                total_map_size - config_size,
+                config_with_metadata.descriptor_size,
+            )
+        } else {
+            debug_log!("No framebuffer config found in memory map (magic mismatch)");
+            (total_map_size, core::mem::size_of::<EfiMemoryDescriptor>())
+        }
     } else {
         debug_log!("Not enough size for framebuffer config in memory map");
         (total_map_size, core::mem::size_of::<EfiMemoryDescriptor>())
@@ -133,7 +141,11 @@ pub fn setup_memory_maps(
     let physical_memory_offset;
     let kernel_phys_start;
 
-    write_serial_bytes!(0x3F8, 0x3FD, b"Scanning memory descriptors to find kernel location...\n");
+    write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"Scanning memory descriptors to find kernel location...\n"
+    );
 
     // Find the memory descriptor containing the kernel (efi_main is virtual address,
     // but UEFI uses identity mapping initially, so check physical range containing kernel_virt_addr)
@@ -155,7 +167,9 @@ pub fn setup_memory_maps(
     // Use a simpler offset that maps physical addresses to the higher half directly
     physical_memory_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE);
 
-    petroleum::serial::debug_print_str_to_com1("Physical memory offset calculation complete: offset=");
+    petroleum::serial::debug_print_str_to_com1(
+        "Physical memory offset calculation complete: offset=",
+    );
     petroleum::serial::debug_print_hex(physical_memory_offset.as_u64() as usize);
     petroleum::serial::debug_print_str_to_com1(", kernel_phys_start=");
     petroleum::serial::debug_print_hex(kernel_phys_start.as_u64() as usize);

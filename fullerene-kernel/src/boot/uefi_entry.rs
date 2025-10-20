@@ -106,7 +106,9 @@ impl UefiInitContext {
         heap::init_frame_allocator(*memory_map_ref);
         log::info!("Heap frame allocator initialized");
         // Get framebuffer config from petroleum global
-        let framebuffer_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|mutex| *mutex.lock());
+        let framebuffer_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+            .get()
+            .and_then(|mutex| *mutex.lock());
         if framebuffer_config.is_some() {
             log::info!("Framebuffer config found");
         } else {
@@ -144,25 +146,24 @@ impl UefiInitContext {
             fb_size,
             &mut frame_allocator,
         );
-    #[cfg(feature = "verbose_boot_log")]
-    write_serial_bytes!(0x3F8, 0x3FD, b"page table reinit completed\n");
-    log::info!("Page table reinit completed");
+        #[cfg(feature = "verbose_boot_log")]
+        write_serial_bytes!(0x3F8, 0x3FD, b"page table reinit completed\n");
+        log::info!("Page table reinit completed");
 
         // Set kernel CR3
         let kernel_cr3 = x86_64::registers::control::Cr3::read();
         crate::interrupts::syscall::set_kernel_cr3(kernel_cr3.0.start_address().as_u64());
-    #[cfg(feature = "verbose_boot_log")]
-    write_serial_bytes!(0x3F8, 0x3FD, b"About to set physical memory offset\n");
+        #[cfg(feature = "verbose_boot_log")]
+        write_serial_bytes!(0x3F8, 0x3FD, b"About to set physical memory offset\n");
 
         // Set physical memory offset
         crate::memory_management::set_physical_memory_offset(
             crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE,
         );
-    #[cfg(feature = "verbose_boot_log")]
-    write_serial_bytes!(0x3F8, 0x3FD, b"physical memory offset set\n");
+        #[cfg(feature = "verbose_boot_log")]
+        write_serial_bytes!(0x3F8, 0x3FD, b"physical memory offset set\n");
 
-        let heap_phys_start =
-            find_heap_start(*memory_map_ref);
+        let heap_phys_start = find_heap_start(*memory_map_ref);
         let heap_phys_start_addr = if heap_phys_start.as_u64() < 0x1000
             || heap_phys_start.as_u64() >= 0x0000_8000_0000_0000
         {
@@ -293,9 +294,9 @@ pub extern "efiapi" fn efi_main(
         ctx.memory_management_initialization(kernel_phys_start, system_table);
 
     ctx.setup_gdt_and_stack(virtual_heap_start, physical_memory_offset);
-write_serial_bytes!(0x3F8, 0x3FD, b"GDT and stack setup completed\n");
+    write_serial_bytes!(0x3F8, 0x3FD, b"GDT and stack setup completed\n");
     ctx.setup_allocator(virtual_heap_start);
-write_serial_bytes!(0x3F8, 0x3FD, b"Allocator setup completed\n");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Allocator setup completed\n");
 
     // Initialize the global memory manager with the EFI memory map
     log::info!("Initializing global memory manager...");
@@ -358,7 +359,7 @@ write_serial_bytes!(0x3F8, 0x3FD, b"Allocator setup completed\n");
 
     // Start the main kernel scheduler that orchestrates all system functionality
     log::info!("Starting full system scheduler...");
-write_serial_bytes!(0x3F8, 0x3FD, b"About to enter scheduler_loop\n");
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to enter scheduler_loop\n");
     scheduler_loop();
     // scheduler_loop should never return in normal operation
     panic!("scheduler_loop returned unexpectedly - kernel critical failure!");
