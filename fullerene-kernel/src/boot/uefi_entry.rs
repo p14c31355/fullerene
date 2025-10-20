@@ -150,10 +150,6 @@ impl UefiInitContext {
             frame_allocator.allocate_frames_at(fb_phys_addr, fb_pages).expect("Failed to reserve framebuffer frames");
         }
 
-        // Reserve heap memory region (will be allocated later, but reserve now)
-        // But heap is allocated from map, so physical address from memory map
-        // For simplicity, reserve from heap_phys_start
-
         self.physical_memory_offset = heap::reinit_page_table_with_allocator(
             kernel_phys_start,
             fb_addr,
