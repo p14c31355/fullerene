@@ -694,7 +694,8 @@ unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     // Check ELF magic
     if ehdr.e_ident[0..4] != [0x7f, b'E', b'L', b'F'] {
         // If not ELF, fall back to hardcoded size
-        return 64 * 1024 * 1024;
+        const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024;
+        return FALLBACK_KERNEL_SIZE;
     }
 
     // Parse program headers to find total memory size
@@ -713,7 +714,8 @@ unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     }
 
     // Round up to page size and add some padding for safety
-    ((max_end + 4095) & !4095) + 1024 * 1024 // Add 1MB padding
+    const KERNEL_MEMORY_PADDING: u64 = 1024 * 1024; // 1MB padding
+    ((max_end + 4095) & !4095) + KERNEL_MEMORY_PADDING
 }
 
 /// Map kernel segments with appropriate permissions parsed from the ELF file
