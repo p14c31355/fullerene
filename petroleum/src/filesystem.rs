@@ -80,37 +80,37 @@ pub fn read_file_to_memory(
 ) -> crate::common::Result<(usize, usize)> {
     let mut file_info_buffer_size = 0;
 
-    unsafe {
-        let status = ((*file.file).get_info)(
+    let status = unsafe {
+        ((*file.file).get_info)(
             file.file,
             EFI_FILE_INFO_GUID.as_ptr(),
             &mut file_info_buffer_size,
             ptr::null_mut(),
-        );
-        if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
-            log::error!("File: Failed to get file info size.");
-            return Err(BellowsError::FileIo("Failed to get file info size."));
-        }
-        if file_info_buffer_size == 0 {
-            log::error!("File: File info size is 0.");
-            return Err(BellowsError::FileIo("File info size is 0."));
-        }
+        )
+    };
+    if EfiStatus::from(status) != EfiStatus::BufferTooSmall {
+        log::error!("File: Failed to get file info size.");
+        return Err(BellowsError::FileIo("Failed to get file info size."));
+    }
+    if file_info_buffer_size == 0 {
+        log::error!("File: File info size is 0.");
+        return Err(BellowsError::FileIo("File info size is 0."));
     }
 
     let mut file_info_buffer = Vec::new();
     file_info_buffer.resize(file_info_buffer_size, 0);
 
-    unsafe {
-        let status = ((*file.file).get_info)(
+    let status = unsafe {
+        ((*file.file).get_info)(
             file.file,
             EFI_FILE_INFO_GUID.as_ptr(),
             &mut file_info_buffer_size,
             file_info_buffer.as_mut_ptr() as *mut c_void,
-        );
-        if EfiStatus::from(status) != EfiStatus::Success {
-            log::error!("File: Failed to get file info.");
-            return Err(BellowsError::FileIo("Failed to get file info."));
-        }
+        )
+    };
+    if EfiStatus::from(status) != EfiStatus::Success {
+        log::error!("File: Failed to get file info.");
+        return Err(BellowsError::FileIo("Failed to get file info."));
     }
 
     let file_info: &EfiFileInfo =
@@ -124,33 +124,33 @@ pub fn read_file_to_memory(
     let pages = file_size.div_ceil(4096);
     let mut phys_addr: usize = 0;
 
-    unsafe {
-        let status = ((*bs).allocate_pages)(
+    let status = unsafe {
+        ((*bs).allocate_pages)(
             0usize,
             crate::common::EfiMemoryType::EfiLoaderData,
             pages,
             &mut phys_addr,
-        );
-        if EfiStatus::from(status) != EfiStatus::Success {
-            log::error!("File: Failed to allocate pages.");
-            return Err(BellowsError::AllocationFailed(
-                "Failed to allocate pages for kernel file.",
-            ));
-        }
+        )
+    };
+    if EfiStatus::from(status) != EfiStatus::Success {
+        log::error!("File: Failed to allocate pages.");
+        return Err(BellowsError::AllocationFailed(
+            "Failed to allocate pages for kernel file.",
+        ));
     }
 
     let buf_ptr = phys_addr as *mut u8;
     let mut read_size = file_size as u64;
 
-    unsafe {
-        let status = ((*file.file).read)(file.file, &mut read_size, buf_ptr);
-        if EfiStatus::from(status) != EfiStatus::Success || read_size as usize != file_size {
-            ((*bs).free_pages)(phys_addr, pages);
-            log::error!("File: Failed to read file.");
-            return Err(BellowsError::FileIo(
-                "Failed to read kernel file or read size mismatch.",
-            ));
-        }
+    let status = unsafe {
+        ((*file.file).read)(file.file, &mut read_size, buf_ptr)
+    };
+    if EfiStatus::from(status) != EfiStatus::Success || read_size as usize != file_size {
+        unsafe { ((*bs).free_pages)(phys_addr, pages) };
+        log::error!("File: Failed to read file.");
+        return Err(BellowsError::FileIo(
+            "Failed to read kernel file or read size mismatch.",
+        ));
     }
 
     Ok((phys_addr, file_size))

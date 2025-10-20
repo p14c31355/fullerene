@@ -191,7 +191,7 @@ unsafe fn map_identity_range(
         let virt_addr = VirtAddr::new(phys_start + i * 4096);
         let page = Page::containing_address(virt_addr);
         let frame = PhysFrame::containing_address(phys_addr);
-        match mapper.map_to(page, frame, flags, frame_allocator) {
+        match unsafe { mapper.map_to(page, frame, flags, frame_allocator) } {
             Ok(flush) => flush.flush(),
             Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => continue,
             Err(e) => return Err(e),

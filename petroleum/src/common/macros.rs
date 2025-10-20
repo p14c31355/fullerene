@@ -102,12 +102,17 @@ macro_rules! debug_log {
 /// # Examples
 /// ```
 /// debug_log_no_alloc!("Starting initialization");
+/// debug_log_no_alloc!(42);  // Just print a value
 /// debug_log_no_alloc!("Value: ", 42, " address: ", 0x1234);
 /// ```
 #[macro_export]
 macro_rules! debug_log_no_alloc {
     ($msg:literal) => {{
         $crate::write_serial_bytes!(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes());
+    }};
+    ($value:expr) => {{
+        $crate::serial::debug_print_hex($value as usize);
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
     }};
     ($msg:literal, $($value:expr),* $(,)?) => {{
         $crate::write_serial_bytes!(0x3F8, 0x3FD, $msg.as_bytes());
