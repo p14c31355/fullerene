@@ -184,22 +184,24 @@ pub fn exit_boot_services_and_jump(
     if let Some(config_mutex) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get() {
         if let Some(config) = *config_mutex.lock() {
             #[repr(C)]
-            struct ConfigWithMagic {
+            struct ConfigWithMetadata {
+                descriptor_size: usize,
                 magic: u32,
                 config: petroleum::common::FullereneFramebufferConfig,
             }
             const MAGIC: u32 = 0x12345678;
-            let config_with_magic = ConfigWithMagic {
+            let config_with_metadata = ConfigWithMetadata {
+                descriptor_size,
                 magic: MAGIC,
                 config,
             };
-            let config_size = core::mem::size_of::<ConfigWithMagic>();
+            let config_size = core::mem::size_of::<ConfigWithMetadata>();
 
             // Check if buffer has space
             if map_phys_addr + map_size + config_size <= map_phys_addr + map_buffer_size {
                 unsafe {
                     core::ptr::copy(
-                        &config_with_magic as *const _ as *const u8,
+                        &config_with_metadata as *const _ as *const u8,
                         (map_phys_addr as *mut u8).add(map_size),
                         config_size,
                     );

@@ -175,7 +175,11 @@ unsafe fn map_identity_range(
         let virt_addr = VirtAddr::new(phys_start + i * 4096);
         let page = Page::containing_address(virt_addr);
         let frame = PhysFrame::containing_address(phys_addr);
-        mapper.map_to(page, frame, flags, frame_allocator)?.flush();
+        match mapper.map_to(page, frame, flags, frame_allocator) {
+            Ok(flush) => flush.flush(),
+            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => continue,
+            Err(e) => return Err(e),
+        }
     }
     Ok(())
 }
@@ -233,15 +237,41 @@ unsafe {
 
     // Set up identity mapping for the first 4MB of physical memory for UEFI compatibility
     // Skip the first page (physical address 0) to avoid null pointer issues
+unsafe {
+    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: about to map identity range\n");
+}
     unsafe {
         map_identity_range(&mut mapper, frame_allocator, 4096, 1024, // 4MB - 1 page = 1024 pages
             Flags::PRESENT | Flags::WRITABLE).expect("Failed to map identity range") // | Flags::NO_EXECUTE
     }
+unsafe {
+    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: identity range mapped\n");
+}
+
+    // Identity map kernel code for CR3 switch
+    let kernel_size: u64 = 64 * 1024 * 1024; // 64MB kernel size
+    let kernel_pages = kernel_size.div_ceil(4096);
+unsafe {
+    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: identity mapping kernel\n");
+}
+    unsafe {
+        map_identity_range(&mut mapper, frame_allocator, kernel_phys_start.as_u64(), kernel_pages,
+            Flags::PRESENT | Flags::WRITABLE).expect("Failed to identity map kernel")
+    }
+unsafe {
+    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: kernel identity mapped\n");
+}
 
     // Map kernel at higher half by parsing the ELF file for permissions
+unsafe {
+    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: about to map kernel segments\n");
+}
     unsafe {
         map_kernel_segments(&mut mapper, kernel_phys_start, phys_offset, frame_allocator);
     }
+unsafe {
+    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: kernel segments mapped\n");
+}
 
     // Map framebuffer if provided
     if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
@@ -315,9 +345,24 @@ unsafe {
     }
 
     // Switch to the new page table
+unsafe {
+    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: about to switch CR3\n");
+}
     unsafe {
         Cr3::write(level_4_table_frame, x86_64::registers::control::Cr3Flags::empty());
     }
+    // Flush TLB after CR3 switch
+    tlb::flush_all();
+unsafe {
+    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: CR3 switched, TLB flushed\n");
+}
+    // Verify CR3 after switch
+    let (cr3_after, _) = Cr3::read();
+unsafe {
+    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: CR3 verification done, phys_offset=");
+    crate::serial::debug_print_hex(phys_offset.as_u64() as usize);
+    crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+}
 
     phys_offset
 }
@@ -766,7 +811,7 @@ unsafe fn map_kernel_segments(
             let pages = segment_size.div_ceil(4096);
             for p in 0..pages {
                 let phys_addr = PhysAddr::new(segment_start_phys + p * 4096);
-                let virt_addr = VirtAddr::new(segment_start_virt + p * 4096);
+                let virt_addr = VirtAddr::new(phys_offset.as_u64() + segment_start_virt + p * 4096);
                 let page =
                     x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
                 let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(

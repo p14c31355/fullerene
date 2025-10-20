@@ -93,63 +93,72 @@ pub fn setup_memory_maps(
     memory_map_size: usize,
     kernel_virt_addr: u64,
 ) -> PhysAddr {
-    // Use the passed memory map
-    write_serial_bytes!(0x3F8, 0x3FD, b"About to create memory map slice\n");
-    let descriptors = unsafe {
-        core::slice::from_raw_parts(
-            memory_map as *const EfiMemoryDescriptor,
-            memory_map_size / core::mem::size_of::<EfiMemoryDescriptor>(),
-        )
-    };
-    write_serial_bytes!(0x3F8, 0x3FD, b"Memory map slice created\n");
-    petroleum::serial::debug_print_str_to_com1("Memory map slice size: ");
-    petroleum::serial::debug_print_hex(memory_map_size);
-    petroleum::serial::debug_print_str_to_com1(", descriptor count: ");
+
+    // Check for framebuffer config appended to memory map
+    let total_map_size = memory_map_size;
+    #[repr(C)]
+    struct ConfigWithMetadata {
+        descriptor_size: usize,
+        magic: u32,
+        config: FullereneFramebufferConfig,
+    }
+    const MAGIC: u32 = 0x12345678;
+    let config_size = core::mem::size_of::<ConfigWithMetadata>();
+    petroleum::serial::debug_print_str_to_com1("Total map size: ");
+    petroleum::serial::debug_print_hex(total_map_size);
+    petroleum::serial::debug_print_str_to_com1(", config size: ");
+    petroleum::serial::debug_print_hex(config_size);
+    petroleum::serial::debug_print_str_to_com1("\n");
+
+    let actual_descriptors_size;
+    let descriptors;
+
+    if total_map_size > config_size {
+        let config_ptr = unsafe { (memory_map as *const u8).add(total_map_size - config_size) as *const ConfigWithMetadata };
+        let config_with_metadata = unsafe { &*config_ptr };
+        petroleum::serial::debug_print_str_to_com1("Magic read: ");
+        petroleum::serial::debug_print_hex(config_with_metadata.magic as usize);
+        petroleum::serial::debug_print_str_to_com1("\n");
+        if config_with_metadata.magic == MAGIC {
+            petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config_with_metadata.config)));
+            petroleum::serial::debug_print_str_to_com1("Frame buffer config loaded from memory map\n");
+            actual_descriptors_size = total_map_size - config_size;
+            descriptors = unsafe {
+                core::slice::from_raw_parts(
+                    memory_map as *const EfiMemoryDescriptor,
+                    actual_descriptors_size / config_with_metadata.descriptor_size,
+                )
+            };
+        } else {
+            petroleum::serial::debug_print_str_to_com1("Magic mismatch, no framebuffer config in memory map\n");
+            actual_descriptors_size = total_map_size;
+            descriptors = unsafe {
+                core::slice::from_raw_parts(
+                    memory_map as *const EfiMemoryDescriptor,
+                    actual_descriptors_size / core::mem::size_of::<EfiMemoryDescriptor>(),
+                )
+            };
+        }
+    } else {
+        petroleum::serial::debug_print_str_to_com1("Not enough size for framebuffer config\n");
+        actual_descriptors_size = total_map_size;
+        descriptors = unsafe {
+            core::slice::from_raw_parts(
+                memory_map as *const EfiMemoryDescriptor,
+                actual_descriptors_size / core::mem::size_of::<EfiMemoryDescriptor>(),
+            )
+        };
+    }
+    petroleum::serial::debug_print_str_to_com1("Descriptors count: ");
     petroleum::serial::debug_print_hex(descriptors.len());
     petroleum::serial::debug_print_str_to_com1("\n");
-    // Reduce log verbosity for faster boot
-    if descriptors.len() < 20 {
-        for (i, desc) in descriptors.iter().enumerate() {
-            petroleum::serial::debug_print_str_to_com1("Memory descriptor ");
-            petroleum::serial::debug_print_hex(i);
-            petroleum::serial::debug_print_str_to_com1(": type=");
-            petroleum::serial::debug_print_hex(desc.type_ as usize);
-            petroleum::serial::debug_print_str_to_com1(", phys_start=");
-            petroleum::serial::debug_print_hex(desc.physical_start as usize);
-            petroleum::serial::debug_print_str_to_com1(", virt_start=");
-            petroleum::serial::debug_print_hex(desc.virtual_start as usize);
-            petroleum::serial::debug_print_str_to_com1(", pages=");
-            petroleum::serial::debug_print_hex(desc.number_of_pages as usize);
-            petroleum::serial::debug_print_str_to_com1("\n");
-        }
-    }
-    write_serial_bytes!(0x3F8, 0x3FD, b"Memory map parsing: finished descriptor dump\n");
+
     // Initialize MEMORY_MAP with descriptors
     MEMORY_MAP.call_once(|| {
         // Since UEFI memory map is static until exit_boot_services, this is safe
         unsafe { &*(descriptors as *const _) }
     });
     write_serial_bytes!(0x3F8, 0x3FD, b"MEMORY_MAP initialized\n");
-    petroleum::serial::debug_print_str_to_com1("\n");
-
-    // Check for framebuffer config appended to memory map
-    let total_map_size = memory_map_size;
-    let descriptors_size = descriptors.len() * core::mem::size_of::<EfiMemoryDescriptor>();
-    let remaining_size = total_map_size - descriptors_size;
-    #[repr(C)]
-    struct ConfigWithMagic {
-        magic: u32,
-        config: FullereneFramebufferConfig,
-    }
-    const MAGIC: u32 = 0x12345678;
-    if remaining_size >= core::mem::size_of::<ConfigWithMagic>() {
-        let config_ptr = unsafe { (memory_map as *const u8).add(descriptors_size) as *const ConfigWithMagic };
-        let config_with_magic = unsafe { &*config_ptr };
-        if config_with_magic.magic == MAGIC {
-            petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config_with_magic.config)));
-            petroleum::serial::debug_print_str_to_com1("Frame buffer config loaded from memory map\n");
-        }
-    }
 
     let physical_memory_offset;
     let kernel_phys_start;
