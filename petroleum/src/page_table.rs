@@ -733,7 +733,8 @@ unsafe fn map_kernel_segments(
     // Check ELF magic
     if ehdr.e_ident[0..4] != [0x7f, b'E', b'L', b'F'] {
         // If not ELF, fall back to mapping as writable (old behavior)
-        let kernel_size = calculate_kernel_memory_size(kernel_phys_start);
+        const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024; // As defined in calculate_kernel_memory_size
+        let kernel_size = FALLBACK_KERNEL_SIZE;
         let kernel_pages = kernel_size.div_ceil(4096);
         for i in 0..kernel_pages {
             let phys_addr = kernel_phys_start + (i * 4096);

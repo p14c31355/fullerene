@@ -68,10 +68,16 @@ macro_rules! map_to_higher_half {
 
 /// Macro to reduce repetitive serial debug strings
 ///
+/// # Warning
+/// The formatted variant (`debug_log!("format", args...)`) uses `alloc::format!`,
+/// which allocates memory on the heap. This will panic if called before the
+/// heap allocator is initialized, which is common in early boot code.
+/// Consider using `debug_log_no_alloc!` during early boot stages.
+///
 /// # Examples
 /// ```
 /// debug_log!("Starting initialization");
-/// debug_log!("Value: {}", some_value);
+/// debug_log!("Value: {}", some_value); // May panic if heap not ready
 /// ```
 #[macro_export]
 macro_rules! debug_log {
@@ -84,11 +90,27 @@ macro_rules! debug_log {
     }};
 }
 
-/// Macro for physical to virtual address conversion
+/// Non-allocating debug log macro for early boot code
+///
+/// Supports limited formatting for numeric types without heap allocation.
+/// Use during early boot before heap initialization.
+///
+/// # Examples
+/// ```
+/// debug_log_no_alloc!("Starting initialization");
+/// debug_log_no_alloc!("Value: ", 42, " address: ", 0x1234);
+/// ```
 #[macro_export]
-macro_rules! phys_to_virt {
-    ($phys:expr, $offset:expr) => {{
-        x86_64::VirtAddr::new($offset.as_u64() + $phys)
+macro_rules! debug_log_no_alloc {
+    ($msg:literal) => {{
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes());
+    }};
+    ($msg:literal, $($value:expr),* $(,)?) => {{
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, $msg.as_bytes());
+        $(
+            $crate::serial::debug_print_hex($value as usize);
+        )*
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
     }};
 }
 
