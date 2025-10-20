@@ -102,15 +102,24 @@ impl UefiInitContext {
         kernel_phys_start: PhysAddr,
         system_table: &EfiSystemTable,
     ) -> (VirtAddr, PhysAddr, VirtAddr) {
+        write_serial_bytes!(0x3F8, 0x3FD, b"Entering memory_management_initialization\n");
+        write_serial_bytes!(0x3F8, 0x3FD, b"About to call MEMORY_MAP.get()\n");
+        let memory_map_ref = MEMORY_MAP.get().expect("Memory map not initialized");
+        write_serial_bytes!(0x3F8, 0x3FD, b"MEMORY_MAP.get() returned\n");
         // Initialize heap frame allocator
-        heap::init_frame_allocator(*MEMORY_MAP.get().expect("Memory map not initialized"));
+        write_serial_bytes!(0x3F8, 0x3FD, b"About to call heap::init_frame_allocator\n");
+        heap::init_frame_allocator(*memory_map_ref);
+        write_serial_bytes!(0x3F8, 0x3FD, b"heap::init_frame_allocator completed\n");
         log::info!("Heap frame allocator initialized");
 
-        // Find and save framebuffer config
-        let framebuffer_config = crate::memory::find_framebuffer_config(system_table);
-        if let Some(config) = framebuffer_config {
-            petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| Mutex::new(Some(*config)));
-            log::info!("Saved framebuffer config globally");
+        write_serial_bytes!(0x3F8, 0x3FD, b"About to find framebuffer config\n");
+        // Get framebuffer config from petroleum global
+        let framebuffer_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|mutex| *mutex.lock());
+        write_serial_bytes!(0x3F8, 0x3FD, b"framebuffer config search completed\n");
+        if framebuffer_config.is_some() {
+            write_serial_bytes!(0x3F8, 0x3FD, b"framebuffer config found\n");
+        } else {
+            write_serial_bytes!(0x3F8, 0x3FD, b"no framebuffer config found\n");
         }
 
         let config = framebuffer_config.as_ref();
@@ -132,6 +141,7 @@ impl UefiInitContext {
             (None, None)
         };
 
+        write_serial_bytes!(0x3F8, 0x3FD, b"About to reinit page tables\n");
         // Reinit page tables
         let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
             .get()
@@ -143,6 +153,7 @@ impl UefiInitContext {
             fb_size,
             &mut frame_allocator,
         );
+        write_serial_bytes!(0x3F8, 0x3FD, b"page table reinit completed\n");
         log::info!("Page table reinit completed");
 
         // Set kernel CR3
@@ -164,7 +175,9 @@ impl UefiInitContext {
         } else {
             heap_phys_start
         };
+        write_serial_bytes!(0x3F8, 0x3FD, b"About to allocate and map heap\n");
         let heap_start = allocate_heap_from_map(heap_phys_start_addr, heap::HEAP_SIZE);
+        write_serial_bytes!(0x3F8, 0x3FD, b"heap allocated\n");
         self.virtual_heap_start = self.physical_memory_offset + heap_start.as_u64();
 
         // Map heap memory
@@ -176,6 +189,7 @@ impl UefiInitContext {
         // Map VGA buffer
         let vga_phys_addr = PhysAddr::new(crate::VGA_BUFFER_ADDRESS as u64);
         let vga_pages = 1; // 4KB for 80*25*2 bytes
+        write_serial_bytes!(0x3F8, 0x3FD, b"Mapping VGA buffer\n");
         map_memory_range(
             vga_phys_addr,
             vga_pages,
@@ -185,7 +199,9 @@ impl UefiInitContext {
             flags,
         )
         .expect("Failed to map VGA buffer");
+        write_serial_bytes!(0x3F8, 0x3FD, b"VGA buffer mapped\n");
 
+        write_serial_bytes!(0x3F8, 0x3FD, b"Mapping heap memory\n");
         map_memory_range(
             heap_start,
             heap_pages,
@@ -195,6 +211,7 @@ impl UefiInitContext {
             flags,
         )
         .expect("Failed to map heap memory");
+        write_serial_bytes!(0x3F8, 0x3FD, b"heap memory mapped\n");
 
         (
             self.physical_memory_offset,
@@ -275,6 +292,7 @@ pub extern "efiapi" fn efi_main(
     let mut ctx = UefiInitContext::new(system_table);
 
     let kernel_phys_start = ctx.early_initialization(memory_map, memory_map_size);
+    write_serial_bytes!(0x3F8, 0x3FD, b"About to call memory_management_initialization\n");
     let (physical_memory_offset, heap_start, virtual_heap_start) =
         ctx.memory_management_initialization(kernel_phys_start, system_table);
 

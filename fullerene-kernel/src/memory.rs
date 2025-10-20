@@ -130,6 +130,26 @@ pub fn setup_memory_maps(
         unsafe { &*(descriptors as *const _) }
     });
     write_serial_bytes!(0x3F8, 0x3FD, b"MEMORY_MAP initialized\n");
+    petroleum::serial::debug_print_str_to_com1("\n");
+
+    // Check for framebuffer config appended to memory map
+    let total_map_size = memory_map_size;
+    let descriptors_size = descriptors.len() * core::mem::size_of::<EfiMemoryDescriptor>();
+    let remaining_size = total_map_size - descriptors_size;
+    #[repr(C)]
+    struct ConfigWithMagic {
+        magic: u32,
+        config: FullereneFramebufferConfig,
+    }
+    const MAGIC: u32 = 0x12345678;
+    if remaining_size >= core::mem::size_of::<ConfigWithMagic>() {
+        let config_ptr = unsafe { (memory_map as *const u8).add(descriptors_size) as *const ConfigWithMagic };
+        let config_with_magic = unsafe { &*config_ptr };
+        if config_with_magic.magic == MAGIC {
+            petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config_with_magic.config)));
+            petroleum::serial::debug_print_str_to_com1("Frame buffer config loaded from memory map\n");
+        }
+    }
 
     let physical_memory_offset;
     let kernel_phys_start;
