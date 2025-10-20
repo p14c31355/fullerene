@@ -132,7 +132,7 @@ impl UefiInitContext {
             (None, None)
         };
 
-        write_serial_bytes!(0x3F8, 0x3FD, b"About to reinit page tables\n");
+        boot_log!("About to reinit page tables");
         // Reinit page tables
         let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
             .get()
