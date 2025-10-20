@@ -825,7 +825,7 @@ fn translate_addr_inner(addr: VirtAddr, physical_memory_offset: VirtAddr) -> Opt
 }
 
 /// Compute the total memory size required for the kernel by parsing ELF headers
-unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
+pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     let ehdr_ptr = kernel_phys_start.as_u64() as *const Elf64Ehdr;
     let ehdr = unsafe { &*ehdr_ptr };
 

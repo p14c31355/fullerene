@@ -149,7 +149,7 @@ impl UefiInitContext {
         // Reserve framebuffer memory region if present
         if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
             let fb_pages = fb_size.div_ceil(4096) as usize;
-            let fb_phys_addr = (fb_addr.as_u64() - physical_memory_offset.as_u64()) as usize; // Assuming it's in identity mapped area
+            let fb_phys_addr = fb_addr.as_u64() as usize; // In identity mapped area before reinit
             frame_allocator.allocate_frames_at(fb_phys_addr, fb_pages).expect("Failed to reserve framebuffer frames");
         }
 
