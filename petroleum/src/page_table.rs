@@ -772,7 +772,7 @@ unsafe fn map_kernel_segments(
             let pages = segment_size.div_ceil(4096);
             for p in 0..pages {
                 let phys_addr = PhysAddr::new(segment_start_phys + p * 4096);
-                let virt_addr = VirtAddr::new(phys_offset.as_u64() + segment_start_virt + p * 4096);
+                let virt_addr = VirtAddr::new(segment_start_virt + p * 4096);
                 let page =
                     x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
                 let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(
