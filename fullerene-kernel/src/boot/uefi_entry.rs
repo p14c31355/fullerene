@@ -191,7 +191,7 @@ impl UefiInitContext {
         write_serial_bytes!(0x3F8, 0x3FD, b"heap allocated\n");
 
         // Reserve heap memory region in frame allocator to prevent corruption
-        let heap_pages = (heap::HEAP_SIZE as usize + 4095) / 4096; // Round up to pages
+        let heap_pages = heap::HEAP_SIZE.div_ceil(4096); // Round up to pages
         frame_allocator.allocate_frames_at(heap_start.as_u64() as usize, heap_pages).expect("Failed to reserve heap frames");
 
         self.virtual_heap_start = self.physical_memory_offset + heap_start.as_u64();
