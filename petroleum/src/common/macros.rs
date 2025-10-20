@@ -103,7 +103,7 @@ macro_rules! debug_log {
 /// ```
 /// debug_log_no_alloc!("Starting initialization");
 /// debug_log_no_alloc!(42);  // Just print a value
-/// debug_log_no_alloc!("Value: ", 42, " address: ", 0x1234);
+/// debug_log_no_alloc!("Log with values: ", 42, 0x1234);
 /// ```
 #[macro_export]
 macro_rules! debug_log_no_alloc {
