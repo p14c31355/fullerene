@@ -22,8 +22,7 @@ fn try_allocate_pages(
             EfiMemoryType::EfiConventionalMemory => "Conventional",
             _ => "Other",
         };
-        debug_log_no_alloc!("Heap: About to call allocate_pages mem_type=");
-        debug_log_no_alloc!("", mem_type as usize);
+        debug_log_no_alloc!("Heap: About to call allocate_pages mem_type=", mem_type as usize);
 
         let mut phys_addr_local: usize = 0;
         debug_log_no_alloc!("Heap: Calling allocate_pages pages=");
