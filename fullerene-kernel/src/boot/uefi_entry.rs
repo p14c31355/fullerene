@@ -81,9 +81,7 @@ impl UefiInitContext {
     ) -> PhysAddr {
         boot_log!("Kernel: efi_main entered");
         petroleum::serial::serial_init();
-        petroleum::serial::debug_print_str_to_com1("Kernel: efi_main located at ");
-        petroleum::serial::debug_print_hex(efi_main as usize);
-        petroleum::serial::debug_print_str_to_com1("\n");
+        debug_log!("Kernel: efi_main located at {:#x}", efi_main as usize);
 
         // UEFI uses framebuffer graphics, not legacy VGA hardware programming
         // Graphics initialization happens later with initialize_graphics_with_config()
