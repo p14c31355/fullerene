@@ -1,4 +1,3 @@
-use embedded_graphics::mono_font::{MonoTextStyle, ascii::FONT_6X10};
 use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
 use embedded_graphics::{geometry::Point, pixelcolor::Rgb888, prelude::*};
 

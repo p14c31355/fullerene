@@ -1,7 +1,6 @@
 //! Macro definitions for common patterns across Fullerene OS
 
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 
 /// Macro for reduce code duplication in command arrays
 #[macro_export]
@@ -32,24 +31,21 @@ macro_rules! debug_mem_descriptor {
     }};
 }
 
-/// Macro to reduce repetitive map_to operations with flushing
-#[macro_export]
-macro_rules! map_page_with_flush {
-    ($mapper:expr, $page:expr, $frame:expr, $flags:expr, $allocator:expr) => {{
-        unsafe {
-            $mapper
-                .map_to($page, $frame, $flags, $allocator)
-                .expect("Failed to map page")
-                .flush();
-        }
-    }};
-}
-
 /// Macro for loop-based page mapping with simplified syntax
 #[macro_export]
 macro_rules! map_pages_loop {
     ($mapper:expr, $allocator:expr, $base_phys:expr, $base_virt:expr, $num_pages:expr, $flags:expr) => {{
         use x86_64::{PhysAddr, VirtAddr, structures::paging::{Page, PhysFrame, Size4KiB}};
+        macro_rules! map_page_with_flush {
+            ($map:expr, $pg:expr, $frm:expr, $flgs:expr, $alloc:expr) => {{
+                unsafe {
+                    $map
+                        .map_to($pg, $frm, $flgs, $alloc)
+                        .expect("Failed to map page")
+                        .flush();
+                }
+            }};
+        }
         for i in 0..$num_pages {
             let phys_addr = PhysAddr::new($base_phys + i * 4096);
             let virt_addr = VirtAddr::new($base_virt + i * 4096);
@@ -74,12 +70,12 @@ macro_rules! map_to_higher_half {
 #[macro_export]
 macro_rules! debug_log {
     ($msg:literal) => {{
-        unsafe { crate::write_serial_bytes(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes()); }
+        unsafe { $crate::write_serial_bytes(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes()); }
     }};
     ($fmt:expr, $($arg:tt)*) => {{
         use alloc::string::ToString;
         let msg = alloc::format!(concat!($fmt, "\n"), $($arg)*);
-        unsafe { crate::write_serial_bytes(0x3F8, 0x3FD, msg.as_bytes()); }
+        unsafe { $crate::write_serial_bytes(0x3F8, 0x3FD, msg.as_bytes()); }
     }};
 }
 
@@ -577,6 +573,26 @@ macro_rules! update_vga_cursor {
             ((($pos >> 8) & 0xFFusize) as u8)
         );
     }};
+}
+
+/// CPU pause instruction for busy-waiting
+#[macro_export]
+macro_rules! pause {
+    () => {
+        unsafe {
+            core::arch::asm!("pause", options(nomem, nostack, preserves_flags));
+        }
+    };
+}
+
+/// CPU halt instruction (use with caution, can hang)
+#[macro_export]
+macro_rules! halt {
+    () => {
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+        }
+    };
 }
 
 pub struct InitSequence<'a> {

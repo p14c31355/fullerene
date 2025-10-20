@@ -1,3 +1,5 @@
+use crate::{debug_log, flush_tlb_and_verify, map_pages_loop};
+
 // Macros are automatically available from common module
 
 #[macro_export]
