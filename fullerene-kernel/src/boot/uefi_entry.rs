@@ -162,7 +162,7 @@ impl UefiInitContext {
     write_serial_bytes!(0x3F8, 0x3FD, b"physical memory offset set\n");
 
         let heap_phys_start =
-            find_heap_start(*MEMORY_MAP.get().expect("Memory map not initialized"));
+            find_heap_start(*memory_map_ref);
         let heap_phys_start_addr = if heap_phys_start.as_u64() < 0x1000
             || heap_phys_start.as_u64() >= 0x0000_8000_0000_0000
         {
