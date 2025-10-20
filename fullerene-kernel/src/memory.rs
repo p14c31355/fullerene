@@ -5,6 +5,7 @@ use petroleum::common::{
     EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
     FullereneFramebufferConfig,
 };
+use petroleum::common::uefi::{ConfigWithMetadata, FRAMEBUFFER_CONFIG_MAGIC};
 use petroleum::page_table::EfiMemoryDescriptor;
 
 use crate::MEMORY_MAP;
@@ -96,13 +97,6 @@ pub fn setup_memory_maps(
 
         // Check for framebuffer config appended to memory map
     let total_map_size = memory_map_size;
-    #[repr(C)]
-    struct ConfigWithMetadata {
-        descriptor_size: usize,
-        magic: u32,
-        config: FullereneFramebufferConfig,
-    }
-    const MAGIC: u32 = 0x46424346; // "FBCF", must match bootloader
     let config_size = core::mem::size_of::<ConfigWithMetadata>();
 
     let actual_descriptors_size;
@@ -111,7 +105,7 @@ pub fn setup_memory_maps(
     if total_map_size > config_size {
         let config_ptr = unsafe { (memory_map as *const u8).add(total_map_size - config_size) as *const ConfigWithMetadata };
         let config_with_metadata = unsafe { &*config_ptr };
-        if config_with_metadata.magic == MAGIC {
+        if config_with_metadata.magic == FRAMEBUFFER_CONFIG_MAGIC {
             boot_log!("Framebuffer config found in memory map");
             petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config_with_metadata.config)));
             actual_descriptors_size = total_map_size - config_size;

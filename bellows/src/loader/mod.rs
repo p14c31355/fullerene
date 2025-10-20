@@ -183,19 +183,12 @@ pub fn exit_boot_services_and_jump(
     let mut final_map_size = map_size;
     if let Some(config_mutex) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get() {
         if let Some(config) = *config_mutex.lock() {
-            #[repr(C)]
-            struct ConfigWithMetadata {
-                descriptor_size: usize,
-                magic: u32,
-                config: petroleum::common::FullereneFramebufferConfig,
-            }
-            const FRAMEBUFFER_CONFIG_MAGIC: u32 = 0x46424346; // "FBCF"
-            let config_with_metadata = ConfigWithMetadata {
+            let config_with_metadata = petroleum::common::uefi::ConfigWithMetadata {
                 descriptor_size,
-                magic: FRAMEBUFFER_CONFIG_MAGIC,
+                magic: petroleum::common::uefi::FRAMEBUFFER_CONFIG_MAGIC,
                 config,
             };
-            let config_size = core::mem::size_of::<ConfigWithMetadata>();
+            let config_size = core::mem::size_of::<petroleum::common::uefi::ConfigWithMetadata>();
 
             // Check if buffer has space
             if map_phys_addr + map_size + config_size <= map_phys_addr + map_buffer_size {

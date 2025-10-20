@@ -239,7 +239,7 @@ pub fn reinit_page_table_with_allocator(
     }
 
     // Identity map kernel code for CR3 switch
-    let kernel_size: u64 = 64 * 1024 * 1024; // 64MB kernel size
+    let kernel_size = unsafe { calculate_kernel_memory_size(kernel_phys_start) };
     let kernel_pages = kernel_size.div_ceil(4096);
     unsafe {
         map_identity_range(&mut mapper, frame_allocator, kernel_phys_start.as_u64(), kernel_pages,
@@ -686,6 +686,36 @@ fn translate_addr_inner(addr: VirtAddr, physical_memory_offset: VirtAddr) -> Opt
     Some(frame.start_address() + u64::from(addr.page_offset()))
 }
 
+/// Compute the total memory size required for the kernel by parsing ELF headers
+unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
+    let ehdr_ptr = kernel_phys_start.as_u64() as *const Elf64Ehdr;
+    let ehdr = unsafe { &*ehdr_ptr };
+
+    // Check ELF magic
+    if ehdr.e_ident[0..4] != [0x7f, b'E', b'L', b'F'] {
+        // If not ELF, fall back to hardcoded size
+        return 64 * 1024 * 1024;
+    }
+
+    // Parse program headers to find total memory size
+    let mut max_end = 0u64;
+    let phdr_base = kernel_phys_start.as_u64() + ehdr.e_phoff;
+    for i in 0..ehdr.e_phnum {
+        let phdr_ptr = (phdr_base + i as u64 * ehdr.e_phentsize as u64) as *const Elf64Phdr;
+        let phdr = unsafe { &*phdr_ptr };
+
+        if phdr.p_type == 1 { // PT_LOAD
+            let segment_end = phdr.p_vaddr + phdr.p_memsz;
+            if segment_end > max_end {
+                max_end = segment_end;
+            }
+        }
+    }
+
+    // Round up to page size and add some padding for safety
+    ((max_end + 4095) & !4095) + 1024 * 1024 // Add 1MB padding
+}
+
 /// Map kernel segments with appropriate permissions parsed from the ELF file
 unsafe fn map_kernel_segments(
     mapper: &mut OffsetPageTable,
@@ -701,8 +731,8 @@ unsafe fn map_kernel_segments(
     // Check ELF magic
     if ehdr.e_ident[0..4] != [0x7f, b'E', b'L', b'F'] {
         // If not ELF, fall back to mapping as writable (old behavior)
-        const KERNEL_SIZE: u64 = 64 * 1024 * 1024;
-        let kernel_pages = KERNEL_SIZE.div_ceil(4096);
+        let kernel_size = calculate_kernel_memory_size(kernel_phys_start);
+        let kernel_pages = kernel_size.div_ceil(4096);
         for i in 0..kernel_pages {
             let phys_addr = kernel_phys_start + (i * 4096);
             let virt_addr = phys_offset + phys_addr.as_u64();

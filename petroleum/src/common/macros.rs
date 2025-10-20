@@ -66,16 +66,35 @@ macro_rules! map_to_higher_half {
     }};
 }
 
-/// Macro to reduce repetitive serial debug strings
+/// Boot logging macro for UEFI initialization with automatic port configuration
+///
+/// # Examples
+/// ```
+/// boot_log!("Starting initialization");
+/// boot_log!("Value: {}", some_value);
+/// ```
 #[macro_export]
-macro_rules! debug_log {
+macro_rules! boot_log {
     ($msg:literal) => {{
-        unsafe { $crate::write_serial_bytes(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes()); }
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes());
     }};
     ($fmt:expr, $($arg:tt)*) => {{
         use alloc::string::ToString;
         let msg = alloc::format!(concat!($fmt, "\n"), $($arg)*);
-        unsafe { $crate::write_serial_bytes(0x3F8, 0x3FD, msg.as_bytes()); }
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
+    }};
+}
+
+/// Macro to reduce repetitive serial debug strings (same as boot_log!)
+#[macro_export]
+macro_rules! debug_log {
+    ($msg:literal) => {{
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes());
+    }};
+    ($fmt:expr, $($arg:tt)*) => {{
+        use alloc::string::ToString;
+        let msg = alloc::format!(concat!($fmt, "\n"), $($arg)*);
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
     }};
 }
 
@@ -262,36 +281,21 @@ macro_rules! static_str {
 /// ```
 #[macro_export]
 macro_rules! mem_debug {
+    () => {};
+    ($msg:literal, $($rest:tt)*) => {
+        $crate::serial::debug_print_str_to_com1($msg);
+        $crate::mem_debug!($($rest)*);
+    };
     ($msg:literal) => {
         $crate::serial::debug_print_str_to_com1($msg);
+    };
+    ($value:expr, $($rest:tt)*) => {
+        $crate::serial::debug_print_hex($value as usize);
+        $crate::mem_debug!($($rest)*);
     };
     ($value:expr) => {
         $crate::serial::debug_print_hex($value as usize);
     };
-    ($($tokens:tt)*) => {{
-        $(
-            $crate::mem_debug!($tokens);
-        )*
-    }};
-}
-
-/// Boot logging macro for UEFI initialization with automatic port configuration
-///
-/// # Examples
-/// ```
-/// boot_log!("Starting initialization");
-/// boot_log!("Value: {}", some_value);
-/// ```
-#[macro_export]
-macro_rules! boot_log {
-    ($msg:literal) => {{
-        $crate::write_serial_bytes!(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes());
-    }};
-    ($fmt:expr, $($arg:tt)*) => {{
-        use alloc::string::ToString;
-        let msg = alloc::format!(concat!($fmt, "\n"), $($arg)*);
-        $crate::write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
-    }};
 }
 
 /// Debug print macro that handles mixed string and hex value output line by line
