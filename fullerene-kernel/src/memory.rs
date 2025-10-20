@@ -77,18 +77,19 @@ pub fn find_framebuffer_config(
 }
 
 pub fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> PhysAddr {
-    // Find the lowest suitable memory region below 4GB from EfiConventionalMemory with sufficient size for heap
+    // Find the lowest suitable memory region within first 64MB from EfiConventionalMemory with sufficient size for heap
+    // This ensures heap is within the identity-mapped range during page table reinitialization
     const HEAP_PAGES: u64 = 256; // approx 1MB for heap + structures
     for desc in descriptors {
         if desc.type_ == EfiMemoryType::EfiConventionalMemory
             && desc.number_of_pages >= HEAP_PAGES
-            && desc.physical_start < 0x100000000
-        // below 4GB
+            && desc.physical_start < 0x4000000 // within first 64MB
+            && desc.physical_start + (desc.number_of_pages * 4096) <= 0x4000000 // ensure entire region fits
         {
             return PhysAddr::new(desc.physical_start);
         }
     }
-    // Fallback if no suitable memory found
+    // Fallback if no suitable memory found within first 64MB
     PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR)
 }
 
