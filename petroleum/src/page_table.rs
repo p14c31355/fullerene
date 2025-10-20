@@ -98,19 +98,17 @@ impl BitmapFrameAllocator {
     }
 
     /// Initialize with EFI memory map
-    pub fn init_with_memory_map(
+        pub fn init_with_memory_map(
         &mut self,
         memory_map: &[EfiMemoryDescriptor],
     ) -> crate::common::logging::SystemResult<()> {
-        // Calculate total memory and initialize bitmap
-        let mut total_frames = 0usize;
-
-        for descriptor in memory_map {
-            // EFI memory type 7 is EfiConventionalMemory (available RAM)
-            if descriptor.type_ == crate::common::EfiMemoryType::EfiConventionalMemory {
-                total_frames += descriptor.number_of_pages as usize;
-            }
-        }
+        // 1. Find the highest physical address to determine the total number of frames to manage.
+        let max_phys_addr = memory_map
+            .iter()
+            .map(|d| d.physical_start + d.number_of_pages * 4096)
+            .max()
+            .unwrap_or(0);
+        let total_frames = (max_phys_addr.div_ceil(4096)) as usize;
 
         if total_frames == 0 {
             return Err(crate::common::logging::SystemError::InternalError);
@@ -138,21 +136,17 @@ impl BitmapFrameAllocator {
         self.next_free_frame = 0;
         self.initialized = true;
 
-        // Mark available frames as free
-        let mut frame_offset = 0usize;
+        // Mark available frames as free based on their physical address
         for descriptor in memory_map {
-            // EFI memory type 7 is EfiConventionalMemory (available RAM)
             if descriptor.type_ == crate::common::EfiMemoryType::EfiConventionalMemory {
-                let start_frame = descriptor.physical_start as usize / 4096;
-                let frame_count_desc = descriptor.number_of_pages as usize;
+                let start_frame = (descriptor.physical_start / 4096) as usize;
+                let end_frame = start_frame + descriptor.number_of_pages as usize;
 
-                for i in 0..frame_count_desc {
-                    let global_frame_index = frame_offset + i;
-                    if global_frame_index < total_frames {
-                        self.set_frame_free(global_frame_index);
+                for frame_index in start_frame..end_frame {
+                    if frame_index < self.frame_count {
+                        self.set_frame_free(frame_index);
                     }
                 }
-                frame_offset += frame_count_desc;
             }
         }
 
