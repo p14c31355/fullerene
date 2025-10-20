@@ -182,26 +182,26 @@ pub fn exit_boot_services_and_jump(
     // Check if framebuffer config is available and append it to memory map for kernel
     let mut final_map_size = map_size;
     if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|mutex| *mutex.lock()) {
-            let config_with_metadata = petroleum::common::uefi::ConfigWithMetadata {
-                descriptor_size,
-                magic: petroleum::common::uefi::FRAMEBUFFER_CONFIG_MAGIC,
-                config,
-            };
-            let config_size = core::mem::size_of::<petroleum::common::uefi::ConfigWithMetadata>();
+        let config_with_metadata = petroleum::common::uefi::ConfigWithMetadata {
+            descriptor_size,
+            magic: petroleum::common::uefi::FRAMEBUFFER_CONFIG_MAGIC,
+            config,
+        };
+        let config_size = core::mem::size_of::<petroleum::common::uefi::ConfigWithMetadata>();
 
-            // Check if buffer has space
-            if map_phys_addr + map_size + config_size <= map_phys_addr + map_buffer_size {
-                unsafe {
-                    core::ptr::copy(
-                        &config_with_metadata as *const _ as *const u8,
-                        (map_phys_addr as *mut u8).add(map_size),
-                        config_size,
-                    );
-                }
-                final_map_size += config_size;
-                #[cfg(feature = "debug_loader")]
-                log::info!("Appended framebuffer config to memory map");
+        // Check if buffer has space
+        if map_phys_addr + map_size + config_size <= map_phys_addr + map_buffer_size {
+            unsafe {
+                core::ptr::copy(
+                    &config_with_metadata as *const _ as *const u8,
+                    (map_phys_addr as *mut u8).add(map_size),
+                    config_size,
+                );
             }
+            final_map_size += config_size;
+            #[cfg(feature = "debug_loader")]
+            log::info!("Appended framebuffer config to memory map");
+        }
         }
 
     // Note: The memory map buffer at `map_phys_addr` is intentionally not freed here
