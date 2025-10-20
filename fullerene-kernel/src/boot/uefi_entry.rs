@@ -229,11 +229,14 @@ impl UefiInitContext {
         // to prevent allocation failures in subsequent log::info! calls
         debug_log_no_alloc!("Initializing global heap allocator early");
         use petroleum::page_table::{ALLOCATOR, HEAP_INITIALIZED};
+        const KERNEL_STACK_SIZE: usize = 4096 * 16; // This should be a shared constant.
+        let heap_start_for_allocator = self.virtual_heap_start + KERNEL_STACK_SIZE as u64;
+        let heap_size_for_allocator = heap::HEAP_SIZE - KERNEL_STACK_SIZE;
+
         unsafe {
-            let mut allocator = ALLOCATOR.lock();
-            allocator.init(
-                self.virtual_heap_start.as_mut_ptr::<u8>(),
-                heap::HEAP_SIZE,
+            ALLOCATOR.lock().init(
+                heap_start_for_allocator.as_mut_ptr::<u8>(),
+                heap_size_for_allocator,
             );
         }
         // Mark heap as initialized to prevent double-init
