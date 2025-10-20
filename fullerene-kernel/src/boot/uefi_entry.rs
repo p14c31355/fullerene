@@ -100,7 +100,7 @@ impl UefiInitContext {
         kernel_phys_start: PhysAddr,
         system_table: &EfiSystemTable,
     ) -> (VirtAddr, PhysAddr, VirtAddr) {
-                boot_log!("Entering memory_management_initialization");
+        boot_log!("Entering memory_management_initialization");
         let memory_map_ref = MEMORY_MAP.get().expect("Memory map not initialized");
         // Initialize heap frame allocator
         heap::init_frame_allocator(*memory_map_ref);
