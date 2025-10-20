@@ -25,10 +25,8 @@ fn try_allocate_pages(
         debug_log_no_alloc!("Heap: About to call allocate_pages mem_type=", mem_type as usize);
 
         let mut phys_addr_local: usize = 0;
-        debug_log_no_alloc!("Heap: Calling allocate_pages pages=");
-        debug_log_no_alloc!("", pages);
-        debug_log_no_alloc!("Heap: Calling allocate_pages mem_type=");
-        debug_log_no_alloc!("", mem_type as usize);
+        debug_log_no_alloc!("Heap: Calling allocate_pages pages=", pages);
+        debug_log_no_alloc!("Heap: Calling allocate_pages mem_type=", mem_type as usize);
         debug_log_no_alloc!("Heap: Entering allocate_pages call...");
         // Use AllocateAnyPages (0) for any mem
         let alloc_type = 0usize; // AllocateAnyPages
