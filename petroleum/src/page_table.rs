@@ -236,70 +236,46 @@ pub fn reinit_page_table_with_allocator(
 ) -> VirtAddr {
     use x86_64::structures::paging::PageTableFlags as Flags;
 
-debug_log!("reinit_page_table_with_allocator: starting");
+    debug_log!("reinit_page_table_with_allocator: starting");
 
     // Use the higher-half kernel offset
     let phys_offset = HIGHER_HALF_OFFSET;
 
-debug_log!("reinit_page_table_with_allocator: allocating L4 table frame");
-
     // Allocate a new L4 table frame for the kernel
-debug_log!("reinit_page_table_with_allocator: calling allocate_frame");
     let level_4_table_frame = frame_allocator.allocate_frame()
         .expect("Failed to allocate frame for new L4 table");
-debug_log!("reinit_page_table_with_allocator: allocate_frame succeeded");
 
     // Zero the new L4 table
     unsafe {
         let l4_table_ptr = level_4_table_frame.start_address().as_u64() as *mut PageTable;
         core::ptr::write_bytes(l4_table_ptr, 0, 1);
     }
-debug_log!("reinit_page_table_with_allocator: L4 table zeroed");
 
     // Create mapper for the new L4 table with identity mapping (offset 0)
     let mut mapper = unsafe {
         let l4_table_ptr = level_4_table_frame.start_address().as_u64() as *mut PageTable;
         OffsetPageTable::new(&mut *l4_table_ptr, VirtAddr::new(0))
     };
-debug_log!("reinit_page_table_with_allocator: mapper created");
 
     // Set up identity mapping for the first 4MB of physical memory for UEFI compatibility
     // Skip the first page (physical address 0) to avoid null pointer issues
-unsafe {
-    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: about to map identity range\n");
-}
     unsafe {
         map_identity_range(&mut mapper, frame_allocator, 4096, 1024, // 4MB - 1 page = 1024 pages
             Flags::PRESENT | Flags::WRITABLE).expect("Failed to map identity range") // | Flags::NO_EXECUTE
     }
-unsafe {
-    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: identity range mapped\n");
-}
 
     // Identity map kernel code for CR3 switch
     let kernel_size: u64 = 64 * 1024 * 1024; // 64MB kernel size
     let kernel_pages = kernel_size.div_ceil(4096);
-unsafe {
-    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: identity mapping kernel\n");
-}
     unsafe {
         map_identity_range(&mut mapper, frame_allocator, kernel_phys_start.as_u64(), kernel_pages,
             Flags::PRESENT | Flags::WRITABLE).expect("Failed to identity map kernel")
     }
-unsafe {
-    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: kernel identity mapped\n");
-}
 
     // Map kernel at higher half by parsing the ELF file for permissions
-unsafe {
-    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: about to map kernel segments\n");
-}
     unsafe {
         map_kernel_segments(&mut mapper, kernel_phys_start, phys_offset, frame_allocator);
     }
-unsafe {
-    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: kernel segments mapped\n");
-}
 
     // Map framebuffer if provided
     if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
