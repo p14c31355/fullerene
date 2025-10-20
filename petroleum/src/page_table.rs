@@ -149,7 +149,8 @@ impl BitmapFrameAllocator {
                 }
             }
         }
-
+        // Mark frame 0 as used to avoid allocating the null page.
+        self.set_frame_used(0);
         Ok(())
     }
 
