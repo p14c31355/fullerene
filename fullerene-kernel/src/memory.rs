@@ -102,7 +102,7 @@ pub fn setup_memory_maps(
         magic: u32,
         config: FullereneFramebufferConfig,
     }
-    const MAGIC: u32 = 0x12345678; // Consider using a more unique magic number
+    const MAGIC: u32 = 0x46424346; // "FBCF", must match bootloader
     let config_size = core::mem::size_of::<ConfigWithMetadata>();
 
     let actual_descriptors_size;
