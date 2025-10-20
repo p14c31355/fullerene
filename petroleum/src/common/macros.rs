@@ -16,22 +16,99 @@ macro_rules! command_args {
 
 /// Enhanced delegate call macro using generic patterns
 #[macro_export]
-macro_rules! delegate_to_variant {
-    ($enum:expr, $method:ident $(, $args:expr)*) => {
-        match $enum {
-            $(#[$derive(Debug)])* $enum_variant($variant) => $variant.$method($($args),*)
+macro_rules! debug_mem_descriptor {
+    ($i:expr, $desc:expr) => {{
+        mem_debug!("Memory descriptor ");
+        $crate::serial::debug_print_hex($i);
+        mem_debug!(", type=");
+        $crate::serial::debug_print_hex($desc.type_ as usize);
+        mem_debug!(", phys_start=");
+        $crate::serial::debug_print_hex($desc.physical_start as usize);
+        mem_debug!(", virt_start=");
+        $crate::serial::debug_print_hex($desc.virtual_start as usize);
+        mem_debug!(", pages=");
+        $crate::serial::debug_print_hex($desc.number_of_pages as usize);
+        mem_debug!("\n");
+    }};
+}
+
+/// Macro to reduce repetitive map_to operations with flushing
+#[macro_export]
+macro_rules! map_page_with_flush {
+    ($mapper:expr, $page:expr, $frame:expr, $flags:expr, $allocator:expr) => {{
+        unsafe {
+            $mapper
+                .map_to($page, $frame, $flags, $allocator)
+                .expect("Failed to map page")
+                .flush();
+        }
+    }};
+}
+
+/// Macro for loop-based page mapping with simplified syntax
+#[macro_export]
+macro_rules! map_pages_loop {
+    ($mapper:expr, $allocator:expr, $base_phys:expr, $base_virt:expr, $num_pages:expr, $flags:expr) => {{
+        use x86_64::{PhysAddr, VirtAddr, structures::paging::{Page, PhysFrame, Size4KiB}};
+        for i in 0..$num_pages {
+            let phys_addr = PhysAddr::new($base_phys + i * 4096);
+            let virt_addr = VirtAddr::new($base_virt + i * 4096);
+            let page = Page::<Size4KiB>::containing_address(virt_addr);
+            let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
+            map_page_with_flush!($mapper, page, frame, $flags, $allocator);
+        }
+    }};
+}
+
+/// Macro for creating and mapping pages at higher-half offset
+#[macro_export]
+macro_rules! map_to_higher_half {
+    ($mapper:expr, $allocator:expr, $phys_addr:expr, $num_pages:expr, $flags:expr, $offset:expr) => {{
+        use x86_64::VirtAddr;
+        let virt_base = $offset + $phys_addr;
+        map_pages_loop!($mapper, $allocator, $phys_addr, virt_base, $num_pages, $flags);
+    }};
+}
+
+/// Macro to reduce repetitive serial debug strings
+#[macro_export]
+macro_rules! debug_log {
+    ($msg:literal) => {{
+        unsafe { crate::write_serial_bytes(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes()); }
+    }};
+    ($fmt:expr, $($arg:tt)*) => {{
+        use alloc::string::ToString;
+        let msg = alloc::format!(concat!($fmt, "\n"), $($arg)*);
+        unsafe { crate::write_serial_bytes(0x3F8, 0x3FD, msg.as_bytes()); }
+    }};
+}
+
+/// Macro for physical to virtual address conversion
+#[macro_export]
+macro_rules! phys_to_virt {
+    ($phys:expr, $offset:expr) => {{
+        x86_64::VirtAddr::new($offset.as_u64() + $phys)
+    }};
+}
+
+/// Macro for checking memory initialization in methods
+#[macro_export]
+macro_rules! ensure_initialized {
+    ($self:expr) => {
+        if !$self.initialized {
+            return Err($crate::common::logging::SystemError::InternalError);
         }
     };
 }
 
-/// Generic helper for pattern-matched operations
+/// Macro for flushing TLB and checking CR3
 #[macro_export]
-macro_rules! match_and_apply {
-    ($value:expr, $(($pattern:pat, $body:block)),* $(,)?) => {
-        match $value {
-            $($pattern => $body,)*
-        }
-    };
+macro_rules! flush_tlb_and_verify {
+    () => {{
+        x86_64::instructions::tlb::flush_all();
+        let (cr3_after, _) = x86_64::registers::control::Cr3::read();
+        debug_log!("CR3 verified: {:#x}", cr3_after.start_address().as_u64());
+    }};
 }
 
 /// Macro for common initialization patterns with cleanup
@@ -548,199 +625,4 @@ macro_rules! create_framebuffer_config {
             stride: $stride,
         }
     };
-}
-
-/// Macro to execute a task periodically based on tick count
-#[macro_export]
-macro_rules! periodic_task {
-    ($tick:expr, $interval:expr, $body:block) => {
-        if $tick % $interval == 0 {
-            $body
-        }
-    };
-}
-
-/// Macro for timed periodic task execution with interval tracking
-/// Checks if enough time has passed since last execution and runs body if so
-#[macro_export]
-macro_rules! check_periodic {
-    ($last_tick_var:expr, $interval:expr, $current_tick:expr, $body:block) => {{
-        let mut last_tick = $last_tick_var.lock();
-        if $current_tick - *last_tick >= $interval {
-            $body * last_tick = $current_tick;
-        }
-    }};
-}
-
-/// Macro for syscall inline assembly to reduce duplication
-/// This macro encapsulates the syscall instruction with proper ABI
-#[macro_export]
-macro_rules! syscall_call {
-    ($syscall_num:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr, $arg6:expr) => {{
-        let result: u64;
-        unsafe {
-            core::arch::asm!(
-                "syscall",
-                in("rax") $syscall_num,
-                in("rdi") $arg1,
-                in("rsi") $arg2,
-                in("rdx") $arg3,
-                in("r10") $arg4,
-                in("r8") $arg5,
-                in("r9") $arg6,
-                lateout("rax") result,
-                out("rcx") _,
-                out("r11") _,
-            );
-        }
-        result
-    }};
-}
-
-/// Macro for halt instruction to reduce duplication
-#[macro_export]
-macro_rules! halt {
-    () => {
-        unsafe { asm!("hlt") };
-    };
-}
-
-/// Macro for pause instruction to reduce duplication
-#[macro_export]
-macro_rules! pause {
-    () => {
-        unsafe { asm!("pause") };
-    };
-}
-
-/// Macro for memory management initialization check
-#[macro_export]
-macro_rules! check_memory_initialized {
-    ($self:expr) => {
-        if !$self.initialized {
-            return Err($crate::common::logging::SystemError::InternalError);
-        }
-    };
-}
-
-/// Macro for unified memory page mapping loop
-#[macro_export]
-macro_rules! map_page_range {
-    ($mapper:expr, $frame_allocator:expr, $start_phys:expr, $num_pages:expr, $virt_offset:expr, $flags:expr) => {{
-        use x86_64::{PhysAddr, VirtAddr, structures::paging::{Page, PhysFrame, Size4KiB}};
-        for i in 0..$num_pages {
-            let phys_addr = PhysAddr::new($start_phys + i * 4096);
-            let virt_addr = VirtAddr::new($virt_offset + i * 4096);
-            let page = Page::<Size4KiB>::containing_address(virt_addr);
-            let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
-            unsafe {
-                $mapper
-                    .map_to(page, frame, $flags, $frame_allocator)
-                    .expect("Failed to map page")
-                    .flush();
-            }
-        }
-    }};
-}
-
-/// Macro for identity mapping page ranges
-#[macro_export]
-macro_rules! map_identity_range_macro {
-    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $num_pages:expr, $flags:expr) => {{
-        use x86_64::{PhysAddr, VirtAddr, structures::paging::{Page, PhysFrame, Size4KiB}};
-        for i in 0..$num_pages {
-            let addr_u64 = $start_addr + i * 4096;
-            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr_u64));
-            let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(addr_u64));
-            unsafe {
-                $mapper
-                    .map_to(page, frame, $flags, $frame_allocator)
-                    .expect("Failed to map identity page")
-                    .flush();
-            }
-        }
-    }};
-}
-
-/// Macro for kernel segment mapping with ELF permissions
-#[macro_export]
-macro_rules! map_kernel_segments_macro {
-    ($mapper:expr, $kernel_phys_start:expr, $phys_offset:expr, $frame_allocator:expr, $ehdr:expr, $phdr_base:expr) => {{
-        use x86_64::structures::paging::PageTableFlags as Flags;
-        use x86_64::{PhysAddr, VirtAddr, structures::paging::{Page, PhysFrame, Size4KiB}};
-        for i in 0..$ehdr.e_phnum {
-            let phdr_ptr = ($phdr_base + i as u64 * $ehdr.e_phentsize as u64) as *const Elf64Phdr;
-            let phdr = unsafe { &*phdr_ptr };
-
-            if phdr.p_type == 1 {
-                let segment_start_phys = $kernel_phys_start.as_u64() + phdr.p_offset;
-                let segment_start_virt = phdr.p_vaddr;
-                let segment_size = phdr.p_memsz;
-
-                let mut flags = Flags::PRESENT;
-                if (phdr.p_flags & 2) != 0 {
-                    flags |= Flags::WRITABLE;
-                }
-                if (phdr.p_flags & 1) == 0 {
-                    flags |= Flags::NO_EXECUTE;
-                }
-
-                let pages = segment_size.div_ceil(4096);
-                for p in 0..pages {
-                    let phys_addr = PhysAddr::new(segment_start_phys + p * 4096);
-                    let virt_addr = VirtAddr::new(segment_start_virt + p * 4096);
-                    let page = Page::<Size4KiB>::containing_address(virt_addr);
-                    let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
-                    unsafe {
-                        $mapper
-                            .map_to(page, frame, flags, $frame_allocator)
-                            .expect("Failed to map kernel segment")
-                            .flush();
-                    }
-                }
-            }
-        }
-    }};
-}
-
-/// Macro for simplified page mapping
-#[macro_export]
-macro_rules! map_pages {
-    ($mapper:expr, $frame_allocator:expr, $phys_addr:expr, $virt_addr:expr, $flags:expr) => {{
-        use x86_64::{PhysAddr, VirtAddr, structures::paging::{Page, PhysFrame, Size4KiB}};
-        let page = Page::<Size4KiB>::containing_address(VirtAddr::new($virt_addr));
-        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new($phys_addr));
-        unsafe {
-            $mapper
-                .map_to(page, frame, $flags, $frame_allocator)
-                .expect("Failed to map page")
-                .flush();
-        }
-    }};
-}
-
-/// Macro for unified memory debug logging
-#[macro_export]
-macro_rules! mem_debug {
-    ($($arg:tt)*) => {{
-        $crate::serial::debug_print_str_to_com1($($arg)*);
-    }};
-}
-
-/// Macro for memory descriptor debug dump
-#[macro_export]
-macro_rules! debug_mem_descriptor {
-    ($i:expr, $desc:expr) => {{
-        mem_debug!("Memory descriptor ");
-        $crate::serial::debug_print_hex($i);
-        mem_debug!(": type=");
-        $crate::serial::debug_print_hex($desc.type_ as usize);
-        mem_debug!(", phys_start=");
-        $crate::serial::debug_print_hex($desc.physical_start as usize);
-        mem_debug!(", virt_start=");
-        $crate::serial::debug_print_hex($desc.virtual_start as usize);
-        mem_debug!(", pages=");
-        $crate::serial::debug_print_hex($desc.number_of_pages as usize);
-        mem_debug!("\n");
-    }};
 }

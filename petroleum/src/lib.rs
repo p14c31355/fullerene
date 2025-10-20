@@ -10,6 +10,7 @@ pub const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
 pub mod apic;
 pub mod bare_metal_graphics_detection;
 pub mod bare_metal_pci;
+#[macro_use]
 pub mod common;
 pub mod filesystem;
 pub mod graphics;

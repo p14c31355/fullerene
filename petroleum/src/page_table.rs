@@ -1,5 +1,31 @@
 // Macros are automatically available from common module
 
+#[macro_export]
+macro_rules! serial_debug {
+    ($msg:expr) => {{
+        unsafe { crate::write_serial_bytes(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes()); }
+    }};
+}
+
+#[macro_export]
+macro_rules! map_page_loop {
+    ($mapper:expr, $allocator:expr, $start_phys:expr, $start_virt:expr, $num_pages:expr, $flags:expr) => {{
+        use x86_64::structures::paging::PageTableFlags as Flags;
+        for i in 0..$num_pages {
+            let phys_addr = PhysAddr::new($start_phys + i * 4096);
+            let virt_addr = VirtAddr::new($start_virt + i * 4096);
+            let page = Page::<Size4KiB>::containing_address(virt_addr);
+            let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
+            unsafe {
+                $mapper
+                    .map_to(page, frame, $flags, $allocator)
+                    .expect("Failed to map page")
+                    .flush();
+            }
+        }
+    }};
+}
+
 use x86_64::{
     PhysAddr, VirtAddr,
     instructions::tlb,
@@ -196,44 +222,32 @@ pub fn reinit_page_table_with_allocator(
 ) -> VirtAddr {
     use x86_64::structures::paging::PageTableFlags as Flags;
 
-unsafe {
-    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: starting\n");
-}
+debug_log!("reinit_page_table_with_allocator: starting");
 
     // Use the higher-half kernel offset
     let phys_offset = HIGHER_HALF_OFFSET;
 
-unsafe {
-    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: allocating L4 table frame\n");
-}
+debug_log!("reinit_page_table_with_allocator: allocating L4 table frame");
 
     // Allocate a new L4 table frame for the kernel
-unsafe {
-    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: calling allocate_frame\n");
-}
+debug_log!("reinit_page_table_with_allocator: calling allocate_frame");
     let level_4_table_frame = frame_allocator.allocate_frame()
         .expect("Failed to allocate frame for new L4 table");
-unsafe {
-    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: allocate_frame succeeded\n");
-}
+debug_log!("reinit_page_table_with_allocator: allocate_frame succeeded");
 
     // Zero the new L4 table
     unsafe {
         let l4_table_ptr = level_4_table_frame.start_address().as_u64() as *mut PageTable;
         core::ptr::write_bytes(l4_table_ptr, 0, 1);
     }
-unsafe {
-    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: L4 table zeroed\n");
-}
+debug_log!("reinit_page_table_with_allocator: L4 table zeroed");
 
     // Create mapper for the new L4 table with identity mapping (offset 0)
     let mut mapper = unsafe {
         let l4_table_ptr = level_4_table_frame.start_address().as_u64() as *mut PageTable;
         OffsetPageTable::new(&mut *l4_table_ptr, VirtAddr::new(0))
     };
-unsafe {
-    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: mapper created\n");
-}
+debug_log!("reinit_page_table_with_allocator: mapper created");
 
     // Set up identity mapping for the first 4MB of physical memory for UEFI compatibility
     // Skip the first page (physical address 0) to avoid null pointer issues
@@ -276,46 +290,16 @@ unsafe {
     // Map framebuffer if provided
     if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
         let fb_pages = fb_size.div_ceil(4096); // Round up to page count
-
-        for i in 0..fb_pages {
-            let phys_addr = PhysAddr::new(fb_addr.as_u64() + i * 4096);
-            let virt_addr = phys_offset + phys_addr.as_u64();
-
-            let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
-            let frame =
-                x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
-
-            let flags = Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE;
-            unsafe {
-                mapper
-                    .map_to(page, frame, flags, frame_allocator)
-                    .expect("Failed to map framebuffer page")
-                    .flush();
-            }
-        }
+        let flags = Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE;
+        map_pages_loop!(mapper, frame_allocator, fb_addr.as_u64(), phys_offset.as_u64() + fb_addr.as_u64(), fb_pages, flags);
     }
 
     // Always map VGA memory regions (0xA0000 - 0xC0000) for compatibility with VGA text/graphics modes
     const VGA_MEMORY_START: u64 = 0xA0000;
     const VGA_MEMORY_SIZE: u64 = 0xC0000 - 0xA0000; // 128KB VGA memory aperture
     let vga_pages = VGA_MEMORY_SIZE / 4096;
-
-    for i in 0..vga_pages {
-        let phys_addr = PhysAddr::new(VGA_MEMORY_START + i * 4096);
-        let virt_addr = phys_offset + phys_addr.as_u64();
-
-        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
-        let frame =
-            x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
-
-        let flags = Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE;
-        unsafe {
-            mapper
-                .map_to(page, frame, flags, frame_allocator)
-                .expect("Failed to map VGA memory page")
-                .flush();
-        }
-    }
+    let flags = Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE;
+    map_pages_loop!(mapper, frame_allocator, VGA_MEMORY_START, phys_offset.as_u64() + VGA_MEMORY_START, vga_pages, flags);
 
 
 
@@ -344,25 +328,12 @@ unsafe {
             .flush();
     }
 
-    // Switch to the new page table
-unsafe {
-    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: about to switch CR3\n");
-}
+    // Switch to the new page table and flush TLB
     unsafe {
         Cr3::write(level_4_table_frame, x86_64::registers::control::Cr3Flags::empty());
     }
-    // Flush TLB after CR3 switch
-    tlb::flush_all();
-unsafe {
-    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: CR3 switched, TLB flushed\n");
-}
-    // Verify CR3 after switch
-    let (cr3_after, _) = Cr3::read();
-unsafe {
-    crate::write_serial_bytes(0x3F8, 0x3FD, b"reinit_page_table_with_allocator: CR3 verification done, phys_offset=");
-    crate::serial::debug_print_hex(phys_offset.as_u64() as usize);
-    crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
-}
+    flush_tlb_and_verify!();
+    debug_log!("reinit_page_table_with_allocator: CR3 switched, phys_offset={:#x}", phys_offset.as_u64());
 
     phys_offset
 }
