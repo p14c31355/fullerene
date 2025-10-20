@@ -737,24 +737,28 @@ unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     }
 
     // Parse program headers to find total memory size
-    let mut max_end = 0u64;
+        let mut min_vaddr = u64::MAX;
+    let mut max_vaddr = 0u64;
     let phdr_base = kernel_phys_start.as_u64() + ehdr.e_phoff;
     for i in 0..ehdr.e_phnum {
         let phdr_ptr = (phdr_base + i as u64 * ehdr.e_phentsize as u64) as *const Elf64Phdr;
         let phdr = unsafe { &*phdr_ptr };
 
-        if phdr.p_type == 1 {
-            // PT_LOAD
-            let segment_end = phdr.p_vaddr + phdr.p_memsz;
-            if segment_end > max_end {
-                max_end = segment_end;
-            }
+        if phdr.p_type == 1 && phdr.p_memsz > 0 { // PT_LOAD
+            min_vaddr = min_vaddr.min(phdr.p_vaddr);
+            max_vaddr = max_vaddr.max(phdr.p_vaddr + phdr.p_memsz);
         }
     }
 
+    let kernel_size = if min_vaddr <= max_vaddr {
+        max_vaddr - min_vaddr
+    } else {
+        0
+    };
+
     // Round up to page size and add some padding for safety
     const KERNEL_MEMORY_PADDING: u64 = 1024 * 1024; // 1MB padding
-    ((max_end + 4095) & !4095) + KERNEL_MEMORY_PADDING
+    ((kernel_size + 4095) & !4095) + KERNEL_MEMORY_PADDING
 }
 
 /// Map kernel segments with appropriate permissions parsed from the ELF file
