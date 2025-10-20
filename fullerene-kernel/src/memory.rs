@@ -154,9 +154,7 @@ pub fn setup_memory_maps(
         kernel_phys_start = PhysAddr::new(kernel_virt_addr);
         mem_debug!("Using identity-mapped kernel physical start: ", kernel_phys_start.as_u64() as usize, "\n");
     } else {
-        petroleum::serial::debug_print_str_to_com1("Warning: Invalid kernel address ");
-        petroleum::serial::debug_print_hex(kernel_virt_addr as usize);
-        petroleum::serial::debug_print_str_to_com1(", falling back to hardcoded value\n");
+        mem_debug!("Warning: Invalid kernel address ", kernel_virt_addr as usize, ", falling back to hardcoded value\n");
         kernel_phys_start = PhysAddr::new(0x100000);
     }
 
