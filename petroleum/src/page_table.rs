@@ -234,14 +234,14 @@ pub fn reinit_page_table_with_allocator(
         OffsetPageTable::new(&mut *l4_table_ptr, VirtAddr::new(0))
     };
 
-    // Set up identity mapping for the first 4MB of physical memory for UEFI compatibility
+    // Set up identity mapping for the first 64MB of physical memory for UEFI compatibility
     // Skip the first page (physical address 0) to avoid null pointer issues
     unsafe {
         map_identity_range(
             &mut mapper,
             frame_allocator,
             4096,
-            1023, // 4MB - 4KB = 1023 pages
+            16383, // 64MB - 4KB = 16383 pages
             Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
         )
         .expect("Failed to map identity range")

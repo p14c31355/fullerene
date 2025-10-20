@@ -139,7 +139,7 @@ macro_rules! flush_tlb_and_verify {
     () => {{
         x86_64::instructions::tlb::flush_all();
         let (cr3_after, _) = x86_64::registers::control::Cr3::read();
-        debug_log!("CR3 verified: {:#x}", cr3_after.start_address().as_u64());
+        debug_log_no_alloc!("CR3 verified: ", cr3_after.start_address().as_u64());
     }};
 }
 
