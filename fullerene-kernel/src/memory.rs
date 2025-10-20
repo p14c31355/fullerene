@@ -12,7 +12,7 @@ use crate::MEMORY_MAP;
 
 use core::ffi::c_void;
 use x86_64::{PhysAddr, VirtAddr};
-use petroleum::{boot_log, check_memory_initialized, debug_mem_descriptor, debug_print, mem_debug, write_serial_bytes};
+use petroleum::{debug_log, check_memory_initialized, debug_mem_descriptor, debug_print, mem_debug, write_serial_bytes};
 
 // Add a constant for the higher-half kernel virtual base address
 const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000; // Common higher-half address
@@ -103,15 +103,15 @@ pub fn setup_memory_maps(
         let config_ptr = unsafe { (memory_map as *const u8).add(total_map_size - config_size) as *const ConfigWithMetadata };
         let config_with_metadata = unsafe { &*config_ptr };
         if config_with_metadata.magic == FRAMEBUFFER_CONFIG_MAGIC {
-            boot_log!("Framebuffer config found in memory map");
+            debug_log!("Framebuffer config found in memory map");
             petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config_with_metadata.config)));
             (total_map_size - config_size, config_with_metadata.descriptor_size)
         } else {
-            boot_log!("No framebuffer config found in memory map (magic mismatch)");
+            debug_log!("No framebuffer config found in memory map (magic mismatch)");
             (total_map_size, core::mem::size_of::<EfiMemoryDescriptor>())
         }
     } else {
-        boot_log!("Not enough size for framebuffer config in memory map");
+        debug_log!("Not enough size for framebuffer config in memory map");
         (total_map_size, core::mem::size_of::<EfiMemoryDescriptor>())
     };
 
@@ -121,7 +121,7 @@ pub fn setup_memory_maps(
             actual_descriptors_size / descriptor_item_size,
         )
     };
-    boot_log!("Memory map descriptor count: {}", descriptors.len());
+    debug_log!("Memory map descriptor count: {}", descriptors.len());
 
     // Initialize MEMORY_MAP with descriptors
     MEMORY_MAP.call_once(|| {

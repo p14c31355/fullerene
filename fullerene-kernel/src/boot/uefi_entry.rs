@@ -12,7 +12,7 @@ use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::uefi::{efi_print, find_gop_framebuffer, write_vga_string};
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
-use petroleum::{allocate_heap_from_map, debug_log, write_serial_bytes, boot_log};
+use petroleum::{allocate_heap_from_map, debug_log, write_serial_bytes};
 use spin::Mutex;
 use x86_64::{
     PhysAddr, VirtAddr,
@@ -79,7 +79,7 @@ impl UefiInitContext {
         _memory_map: *mut c_void,
         memory_map_size: usize,
     ) -> PhysAddr {
-        boot_log!("Kernel: efi_main entered");
+        debug_log!("Kernel: efi_main entered");
         petroleum::serial::serial_init();
         debug_log!("Kernel: efi_main located at {:#x}", efi_main as usize);
 
@@ -100,7 +100,7 @@ impl UefiInitContext {
         kernel_phys_start: PhysAddr,
         system_table: &EfiSystemTable,
     ) -> (VirtAddr, PhysAddr, VirtAddr) {
-        boot_log!("Entering memory_management_initialization");
+        debug_log!("Entering memory_management_initialization");
         let memory_map_ref = MEMORY_MAP.get().expect("Memory map not initialized");
         // Initialize heap frame allocator
         heap::init_frame_allocator(*memory_map_ref);
@@ -132,7 +132,7 @@ impl UefiInitContext {
             (None, None)
         };
 
-        boot_log!("About to reinit page tables");
+        debug_log!("About to reinit page tables");
         // Reinit page tables
         let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
             .get()
@@ -285,7 +285,7 @@ pub extern "efiapi" fn efi_main(
     let mut ctx = UefiInitContext::new(system_table);
 
     let kernel_phys_start = ctx.early_initialization(memory_map, memory_map_size);
-    boot_log!("About to call memory_management_initialization");
+    debug_log!("About to call memory_management_initialization");
     let (physical_memory_offset, heap_start, virtual_heap_start) =
         ctx.memory_management_initialization(kernel_phys_start, system_table);
 

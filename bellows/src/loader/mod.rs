@@ -203,7 +203,6 @@ pub fn exit_boot_services_and_jump(
                 log::info!("Appended framebuffer config to memory map");
             }
         }
-    }
 
     // Note: The memory map buffer at `map_phys_addr` is intentionally not freed here
     // because after `exit_boot_services` is called, the boot services are no longer
