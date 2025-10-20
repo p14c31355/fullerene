@@ -140,6 +140,23 @@ impl UefiInitContext {
             .get()
             .expect("Frame allocator not initialized")
             .lock();
+
+        // Reserve kernel memory region in frame allocator
+        let kernel_size_u64 = unsafe { petroleum::page_table::calculate_kernel_memory_size(kernel_phys_start) };
+        let kernel_pages = kernel_size_u64.div_ceil(4096) as usize;
+        frame_allocator.allocate_frames_at(kernel_phys_start.as_u64() as usize, kernel_pages).expect("Failed to reserve kernel frames");
+
+        // Reserve framebuffer memory region if present
+        if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
+            let fb_pages = fb_size.div_ceil(4096) as usize;
+            let fb_phys_addr = (fb_addr.as_u64() - physical_memory_offset.as_u64()) as usize; // Assuming it's in identity mapped area
+            frame_allocator.allocate_frames_at(fb_phys_addr, fb_pages).expect("Failed to reserve framebuffer frames");
+        }
+
+        // Reserve heap memory region (will be allocated later, but reserve now)
+        // But heap is allocated from map, so physical address from memory map
+        // For simplicity, reserve from heap_phys_start
+
         self.physical_memory_offset = heap::reinit_page_table_with_allocator(
             kernel_phys_start,
             fb_addr,

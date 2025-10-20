@@ -66,60 +66,163 @@ pub struct Elf64Phdr {
     pub p_align: u64,
 }
 
-/// A FrameAllocator that returns usable frames from the bootloader's memory map.
-pub struct BootInfoFrameAllocator<'a> {
-    memory_map: &'a [EfiMemoryDescriptor],
-    next_descriptor: usize,
-    next_frame_offset: u64,
+/// Bitmap-based frame allocator implementation
+pub struct BitmapFrameAllocator {
+    bitmap: alloc::vec::Vec<u64>,
+    frame_count: usize,
+    next_free_frame: usize,
+    initialized: bool,
 }
 
-impl<'a> BootInfoFrameAllocator<'a> {
+impl BitmapFrameAllocator {
+    /// Create a new bitmap frame allocator
+    pub fn new() -> Self {
+        Self {
+            bitmap: alloc::vec::Vec::new(),
+            frame_count: 0,
+            next_free_frame: 0,
+            initialized: false,
+        }
+    }
+
     /// Create a FrameAllocator from the passed memory map.
-    ///
-    /// This function is unsafe because the caller must guarantee that the
-    /// memory map is valid. The main requirement is that all frames that are marked
-    /// as `USABLE` in it are really unused.
-    pub unsafe fn init(memory_map: &'a [EfiMemoryDescriptor]) -> Self {
-        BootInfoFrameAllocator {
-            memory_map,
-            next_descriptor: 0,
-            next_frame_offset: 0,
-        }
+    /// (for compatibility)
+    pub unsafe fn init(memory_map: &[EfiMemoryDescriptor]) -> Self {
+        let mut allocator = BitmapFrameAllocator::new();
+        allocator.init_with_memory_map(memory_map).expect("Failed to init bitmap allocator");
+        allocator
     }
-}
 
-unsafe impl<'a> FrameAllocator<Size4KiB> for BootInfoFrameAllocator<'a> {
-    fn allocate_frame(&mut self) -> Option<PhysFrame> {
-        const FRAME_SIZE: u64 = 4096; // 4 KiB
+    /// Initialize with EFI memory map
+    pub fn init_with_memory_map(
+        &mut self,
+        memory_map: &[EfiMemoryDescriptor],
+    ) -> crate::common::logging::SystemResult<()> {
+        // Calculate total memory and initialize bitmap
+        let mut total_frames = 0usize;
 
-        while self.next_descriptor < self.memory_map.len() {
-            let descriptor = &self.memory_map[self.next_descriptor];
-            if descriptor.type_ == crate::common::EfiMemoryType::EfiConventionalMemory
-                && descriptor.number_of_pages > 0
-            {
-                while self.next_frame_offset < descriptor.number_of_pages {
-                    let frame_addr = PhysAddr::new(
-                        descriptor.physical_start + self.next_frame_offset * FRAME_SIZE,
-                    );
-                    // Skip frames at physical address 0 (null pointer)
-                    if frame_addr.as_u64() == 0 {
-                        self.next_frame_offset += 1;
-                        continue;
-                    }
-                    if let Ok(frame) = PhysFrame::<Size4KiB>::from_start_address(frame_addr) {
-                        self.next_frame_offset += 1;
-                        return Some(frame);
-                    }
-                    self.next_frame_offset += 1;
-                }
+        for descriptor in memory_map {
+            // EFI memory type 7 is EfiConventionalMemory (available RAM)
+            if descriptor.type_ == crate::common::EfiMemoryType::EfiConventionalMemory {
+                total_frames += descriptor.number_of_pages as usize;
             }
-            self.next_descriptor += 1;
-            self.next_frame_offset = 0;
         }
 
-        None // No more usable frames
+        if total_frames == 0 {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
+
+        // Initialize bitmap (each bit represents a frame)
+        let bitmap_size = (total_frames + 63) / 64; // Round up for 64-bit chunks
+        self.bitmap = alloc::vec::Vec::new();
+        self.bitmap.resize(bitmap_size, 0xFFFF_FFFF_FFFF_FFFF); // Mark all as used initially
+
+        self.frame_count = total_frames;
+        self.next_free_frame = 0;
+        self.initialized = true;
+
+        // Mark available frames as free
+        let mut frame_offset = 0usize;
+        for descriptor in memory_map {
+            // EFI memory type 7 is EfiConventionalMemory (available RAM)
+            if descriptor.type_ == crate::common::EfiMemoryType::EfiConventionalMemory {
+                let start_frame = descriptor.physical_start as usize / 4096;
+                let frame_count_desc = descriptor.number_of_pages as usize;
+
+                for i in 0..frame_count_desc {
+                    let global_frame_index = frame_offset + i;
+                    if global_frame_index < total_frames {
+                        self.set_frame_free(global_frame_index);
+                    }
+                }
+                frame_offset += frame_count_desc;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Set a frame as free in the bitmap
+    fn set_frame_free(&mut self, frame_index: usize) {
+        let chunk_index = frame_index / 64;
+        let bit_index = frame_index % 64;
+
+        if chunk_index < self.bitmap.len() {
+            self.bitmap[chunk_index] &= !(1 << bit_index);
+        }
+    }
+
+    /// Set a frame as used in the bitmap
+    fn set_frame_used(&mut self, frame_index: usize) {
+        let chunk_index = frame_index / 64;
+        let bit_index = frame_index % 64;
+
+        if chunk_index < self.bitmap.len() {
+            self.bitmap[chunk_index] |= 1 << bit_index;
+        }
+    }
+
+    /// Check if a frame is free
+    fn is_frame_free(&self, frame_index: usize) -> bool {
+        let chunk_index = frame_index / 64;
+        let bit_index = frame_index % 64;
+
+        if chunk_index < self.bitmap.len() {
+            (self.bitmap[chunk_index] & (1 << bit_index)) == 0
+        } else {
+            false
+        }
+    }
+
+    /// Find the next free frame starting from a given index
+    fn find_next_free_frame(&self, start_index: usize) -> Option<usize> {
+        let mut index = start_index;
+
+        while index < self.frame_count {
+            if self.is_frame_free(index) {
+                return Some(index);
+            }
+            index += 1;
+        }
+
+        None
+    }
+
+    /// Allocate a specific frame range (for reserving used regions)
+    pub fn allocate_frames_at(&mut self, start_addr: usize, count: usize) -> crate::common::logging::SystemResult<()> {
+        let start_frame = start_addr / 4096;
+        if start_frame + count > self.frame_count {
+            return Err(crate::common::logging::SystemError::InvalidArgument);
+        }
+
+        for i in 0..count {
+            self.set_frame_used(start_frame + i);
+        }
+
+        Ok(())
     }
 }
+
+unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
+    fn allocate_frame(&mut self) -> Option<PhysFrame> {
+        if !self.initialized {
+            return None;
+        }
+
+        if let Some(frame_index) = self.find_next_free_frame(self.next_free_frame) {
+            self.set_frame_used(frame_index);
+            self.next_free_frame = frame_index + 1;
+
+            let frame_addr = frame_index * 4096;
+            Some(PhysFrame::containing_address(PhysAddr::new(frame_addr as u64)))
+        } else {
+            None
+        }
+    }
+}
+
+// Type alias for backward compatibility
+pub type BootInfoFrameAllocator = BitmapFrameAllocator;
 
 /// Initialize a new OffsetPageTable.
 ///

@@ -31,7 +31,7 @@ use petroleum::page_table::EfiMemoryDescriptor;
 use spin::{Mutex, Once};
 
 /// Global frame allocator
-pub(crate) static FRAME_ALLOCATOR: Once<Mutex<BootInfoFrameAllocator<'static>>> = Once::new();
+pub(crate) static FRAME_ALLOCATOR: Once<Mutex<BootInfoFrameAllocator>> = Once::new();
 
 /// Global memory map storage
 pub static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
