@@ -186,11 +186,12 @@ pub fn kernel_fallback_framebuffer_detection() -> Option<crate::common::Fulleren
 /// Returns true if graphics were successfully initialized and drawn
 pub fn initialize_graphics_with_config() -> bool {
     // Check if framebuffer config is available in global storage
-    if let Some(config_mutex) = crate::FULLERENE_FRAMEBUFFER_CONFIG.get() {
-        if config_mutex.lock().is_some() {
-            serial_log!("Graphics configuration found in global storage");
-            return true;
-        }
+    if crate::FULLERENE_FRAMEBUFFER_CONFIG
+        .get()
+        .map_or(false, |mutex| mutex.lock().is_some())
+    {
+        serial_log!("Graphics configuration found in global storage");
+        return true;
     }
 
     serial_log!("No graphics configuration available");
