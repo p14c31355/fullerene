@@ -1,8 +1,9 @@
 // bellows/src/loader/heap.rs
 
-use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus};
+use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, efi_status_to_str};
 use petroleum::debug_log;
 use petroleum::debug_log_no_alloc;
+use petroleum::serial::debug_print_str_to_com1;
 
 /// Size of the heap we will allocate for `alloc` usage (bytes).
 const HEAP_SIZE: usize = 128 * 1024; // 128 KiB
@@ -47,13 +48,10 @@ fn try_allocate_pages(
         }
 
         let status_efi = EfiStatus::from(status);
-        let status_str = match status_efi {
-            EfiStatus::Success => "Success",
-            EfiStatus::OutOfResources => "OutOfResources",
-            EfiStatus::InvalidParameter => "InvalidParameter",
-            _ => "Other",
-        };
-        debug_log_no_alloc!("Heap: Status: ", status_efi as usize);
+        let status_str = efi_status_to_str(status_efi);
+        debug_print_str_to_com1("Heap: Status: ");
+        debug_print_str_to_com1(status_str);
+        debug_print_str_to_com1("\n");
 
         if status_efi == EfiStatus::InvalidParameter {
             debug_log_no_alloc!("Heap: -> Skipping invalid type.");

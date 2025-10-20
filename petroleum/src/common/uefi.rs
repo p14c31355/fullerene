@@ -107,6 +107,35 @@ impl From<usize> for EfiStatus {
     }
 }
 
+/// Converts an EfiStatus to a human-readable string slice for debugging
+pub fn efi_status_to_str(status: EfiStatus) -> &'static str {
+    match status {
+        EfiStatus::Success => "Success",
+        EfiStatus::LoadError => "LoadError",
+        EfiStatus::InvalidParameter => "InvalidParameter",
+        EfiStatus::Unsupported => "Unsupported",
+        EfiStatus::BadBufferSize => "BadBufferSize",
+        EfiStatus::BufferTooSmall => "BufferTooSmall",
+        EfiStatus::NotInReadyState => "NotInReadyState",
+        EfiStatus::DeviceError => "DeviceError",
+        EfiStatus::WriteProtected => "WriteProtected",
+        EfiStatus::OutOfResources => "OutOfResources",
+        EfiStatus::VolumeCorrupted => "VolumeCorrupted",
+        EfiStatus::VolumeFull => "VolumeFull",
+        EfiStatus::NoMedia => "NoMedia",
+        EfiStatus::MediaChanged => "MediaChanged",
+        EfiStatus::NotFound => "NotFound",
+        EfiStatus::AccessDenied => "AccessDenied",
+        EfiStatus::NoResponse => "NoResponse",
+        EfiStatus::NoMapping => "NoMapping",
+        EfiStatus::Timeout => "Timeout",
+        EfiStatus::NotStarted => "NotStarted",
+        EfiStatus::AlreadyStarted => "AlreadyStarted",
+        EfiStatus::Aborted => "Aborted",
+        EfiStatus::IcalFailed => "IcalFailed",
+    }
+}
+
 /// Minimal subset of UEFI memory types (only those we need)
 #[repr(usize)]
 #[derive(Clone, Copy, PartialEq)]
