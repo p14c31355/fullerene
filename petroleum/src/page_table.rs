@@ -546,7 +546,7 @@ pub fn reinit_page_table_with_allocator(
     debug_log_no_alloc!("Reinit start");
     let phys_offset = HIGHER_HALF_OFFSET;
     let level_4_table_frame = frame_allocator.allocate_frame().expect("L4 alloc");
-        unsafe {
+    unsafe {
         core::ptr::write_bytes(level_4_table_frame.start_address().as_u64() as *mut PageTable, 0, 1);
         let mut mapper = OffsetPageTable::new(&mut *(level_4_table_frame.start_address().as_u64() as *mut PageTable), VirtAddr::new(0));
         map_identity_range(&mut mapper, frame_allocator, 4096, 16383, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE).unwrap();
