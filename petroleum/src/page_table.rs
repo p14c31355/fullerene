@@ -15,23 +15,60 @@ use x86_64::{
     },
 };
 
-// Generic helper for reading unaligned values
+// Macros and constants
 macro_rules! read_unaligned {
     ($ptr:expr, $offset:expr, $ty:ty) => {{
         core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty)
     }};
 }
 
-// Track heap initialization to prevent double init
 pub static HEAP_INITIALIZED: Once<bool> = Once::new();
 
-// Initialize global heap allocator if not already initialized
 pub fn init_global_heap(ptr: *mut u8, size: usize) {
     if HEAP_INITIALIZED.get().is_none() {
-        unsafe {
-            ALLOCATOR.lock().init(ptr, size);
-        }
+        unsafe { ALLOCATOR.lock().init(ptr, size); }
         HEAP_INITIALIZED.call_once(|| true);
+    }
+}
+
+// Generic PeParser to reduce lines from multiple PE functions
+pub struct PeParser {
+    pe_base: *const u8,
+}
+
+impl PeParser {
+    pub unsafe fn new(kernel_ptr: *const u8) -> Option<Self> {
+        find_pe_base(kernel_ptr).map(|base| Self { pe_base: base })
+    }
+
+    pub unsafe fn size_of_image(&self) -> Option<u64> {
+        let pe_offset = read_unaligned!(self.pe_base, 0x3c, u32) as usize;
+        if pe_offset == 0 || pe_offset >= 1024 * 1024 { return None; }
+        let magic = read_unaligned!(self.pe_base, pe_offset + 24, u16);
+        if magic != 0x10B && magic != 0x20B { return None; }
+        Some(read_unaligned!(self.pe_base, pe_offset + 24 + 0x38, u32) as u64)
+    }
+
+    pub unsafe fn sections(&self) -> Option<[PeSection; 16]> {
+        let pe_offset = read_unaligned!(self.pe_base, 0x3c, u32) as usize;
+        if pe_offset == 0 || pe_offset >= 1024 * 1024 { return None; }
+        let num_sections = read_unaligned!(self.pe_base, pe_offset + 6, u16) as usize;
+        let optional_header_size = read_unaligned!(self.pe_base, pe_offset + 20, u16) as usize;
+        let section_table_offset = pe_offset + 24 + optional_header_size;
+        let mut sections = [PeSection {
+            name: [0; 8], virtual_size: 0, virtual_address: 0, size_of_raw_data: 0,
+            pointer_to_raw_data: 0, characteristics: 0
+        }; 16];
+        for i in 0..num_sections.min(16) {
+            let offset = section_table_offset + i * 40;
+            for j in 0..8 { sections[i].name[j] = *self.pe_base.add(offset + j); }
+            sections[i].virtual_size = read_unaligned!(self.pe_base, offset + 8, u32);
+            sections[i].virtual_address = read_unaligned!(self.pe_base, offset + 12, u32);
+            sections[i].size_of_raw_data = read_unaligned!(self.pe_base, offset + 16, u32);
+            sections[i].pointer_to_raw_data = read_unaligned!(self.pe_base, offset + 20, u32);
+            sections[i].characteristics = read_unaligned!(self.pe_base, offset + 36, u32);
+        }
+        Some(sections)
     }
 }
 
@@ -501,7 +538,6 @@ fn adjust_return_address(phys_offset: VirtAddr) {
     }
 }
 
-/// Reinitialize the page table with identity mapping and higher-half kernel mapping
 pub fn reinit_page_table_with_allocator(
     kernel_phys_start: PhysAddr,
     fb_addr: Option<VirtAddr>,
@@ -509,31 +545,24 @@ pub fn reinit_page_table_with_allocator(
     frame_allocator: &mut BootInfoFrameAllocator,
 ) -> VirtAddr {
     use x86_64::structures::paging::PageTableFlags as Flags;
-
     debug_log_no_alloc!("Reinit start");
     let phys_offset = HIGHER_HALF_OFFSET;
     let level_4_table_frame = frame_allocator.allocate_frame().expect("L4 alloc");
-
     unsafe {
         core::ptr::write_bytes(level_4_table_frame.start_address().as_u64() as *mut PageTable, 0, 1);
         let mut mapper = OffsetPageTable::new(&mut *(level_4_table_frame.start_address().as_u64() as *mut PageTable), VirtAddr::new(0));
-
-        // Map initial regions
         map_identity_range(&mut mapper, frame_allocator, 4096, 16383, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE).unwrap();
         let kernel_size = calculate_kernel_memory_size(kernel_phys_start);
         map_identity_range(&mut mapper, frame_allocator, kernel_phys_start.as_u64(), kernel_size.div_ceil(4096), Flags::PRESENT | Flags::WRITABLE).unwrap();
-
-        // Map kernel segments with proper permissions
-        map_kernel_segments_inner(&mut mapper, frame_allocator, kernel_phys_start, phys_offset);
-
-        // Map additional regions
-        map_additional_regions(&mut mapper, frame_allocator, fb_addr, fb_size, phys_offset);
-
-        // Map L4 and switch
-        mapper.map_to(Page::containing_address(phys_offset + level_4_table_frame.start_address().as_u64()), level_4_table_frame, Flags::PRESENT | Flags::WRITABLE, frame_allocator).unwrap().flush();
+        unsafe { map_kernel_segments_inner(&mut mapper, frame_allocator, kernel_phys_start, phys_offset); }
+        {
+            map_additional_regions(&mut mapper, frame_allocator, fb_addr, fb_size, phys_offset);
+        }
+        {
+            mapper.map_to(Page::containing_address(phys_offset + level_4_table_frame.start_address().as_u64()), level_4_table_frame, Flags::PRESENT | Flags::WRITABLE, frame_allocator).unwrap().flush();
+        }
         Cr3::write(level_4_table_frame, x86_64::registers::control::Cr3Flags::empty());
     }
-
     flush_tlb_and_verify!();
     adjust_return_address(phys_offset);
     debug_log_no_alloc!("Reinit done");
@@ -585,15 +614,7 @@ impl<'a> MemoryMapper<'a> {
     pub unsafe fn map_kernel_segments(&mut self, kernel_phys_start: PhysAddr) {
         if let Some(sections) = unsafe { parse_pe_sections(kernel_phys_start) } {
             for section in sections.into_iter().filter(|s| s.virtual_size > 0) {
-                let flags = derive_pe_flags(section.characteristics);
-                let phys_addr = kernel_phys_start.as_u64() + section.pointer_to_raw_data as u64;
-                let virt_addr = self.phys_offset.as_u64() + section.virtual_address as u64;
-                let pages = section.virtual_size as u64 / 4096;
-                for p in 0..pages {
-                    let p_phys = calc_offset_addr!(phys_addr, p);
-                    let p_virt = calc_offset_addr!(virt_addr, p);
-                    map_with_offset!(self.mapper, self.frame_allocator, p_phys, p_virt, flags);
-                }
+                unsafe { map_pe_section(self.mapper, section, kernel_phys_start, self.phys_offset, self.frame_allocator); }
             }
         }
     }
@@ -956,114 +977,22 @@ pub struct PeSection {
     pub characteristics: u32,
 }
 
-/// Manually parse PE SizeOfImage from the optional header
 pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
-    debug_log_no_alloc!("calculate_kernel_memory_size: starting manual PE parsing");
-
-    let kernel_ptr = kernel_phys_start.as_u64() as *const u8;
-
-    // Check if we have at least enough data for the PE signature
-    if kernel_phys_start.as_u64() == 0 {
-        debug_log_no_alloc!("calculate_kernel_memory_size: null kernel_phys_start");
-        return FALLBACK_KERNEL_SIZE;
-    }
-
-    let pe_base = match unsafe { find_pe_base(kernel_ptr) } {
-        Some(ptr) => ptr,
-        None => {
-            debug_log_no_alloc!("calculate_kernel_memory_size: Valid PE header not found, using fallback");
-            return FALLBACK_KERNEL_SIZE;
-        }
+    debug_log_no_alloc!("calculate_kernel_memory_size: starting");
+    if kernel_phys_start.as_u64() == 0 { return FALLBACK_KERNEL_SIZE; }
+    let parser = match unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8) } {
+        Some(p) => p,
+        None => return FALLBACK_KERNEL_SIZE,
     };
-
-    debug_log_no_alloc!("calculate_kernel_memory_size: PE base address = 0x", pe_base as usize);
-
-    // Get PE header offset from DOS header (offset 0x3c)
-    let pe_offset = read_unaligned!(pe_base, 0x3c, u32) as usize;
-    if pe_offset == 0 || pe_offset >= 1024 * 1024 {
-        debug_log_no_alloc!("calculate_kernel_memory_size: Invalid PE offset, using fallback");
-        return FALLBACK_KERNEL_SIZE;
+    match parser.size_of_image() {
+        Some(size) => ((size + 4095) & !4095) + KERNEL_MEMORY_PADDING,
+        None => FALLBACK_KERNEL_SIZE,
     }
-
-    // Check PE signature (already validated in find_pe_base, but double-check)
-    let pe_signature = read_unaligned!(pe_base, pe_offset, u32);
-    if pe_signature != 0x00004550 {
-        debug_log_no_alloc!("calculate_kernel_memory_size: Invalid PE signature, using fallback");
-        return FALLBACK_KERNEL_SIZE;
-    }
-
-    // Get to optional header - after COFF header (24 bytes: signature + 20 bytes COFF)
-    let optional_magic = read_unaligned!(pe_base, pe_offset + 24, u16);
-    if optional_magic != 0x10B && optional_magic != 0x20B {
-        debug_log_no_alloc!("calculate_kernel_memory_size: Invalid optional header magic, using fallback");
-        return FALLBACK_KERNEL_SIZE;
-    }
-
-    // SizeOfImage is at offset 0x38 in the optional header for both PE32 and PE32+.
-    let size_of_image_offset = 0x38;
-    let size_of_image = read_unaligned!(pe_base, pe_offset + 24 + size_of_image_offset, u32) as u64;
-
-    debug_log_no_alloc!("calculate_kernel_memory_size: PE parsed successfully, SizeOfImage=", size_of_image);
-
-    // Round up to page size and add some padding for safety
-    let result = ((size_of_image + 4095) & !4095) + KERNEL_MEMORY_PADDING;
-    debug_log_no_alloc!("calculate_kernel_memory_size: final result=", result);
-    result
 }
 
 pub unsafe fn parse_pe_sections(kernel_phys_start: PhysAddr) -> Option<[PeSection; 16]> {
-    let kernel_ptr = kernel_phys_start.as_u64() as *const u8;
-
-    let pe_base = unsafe { find_pe_base(kernel_ptr) }?;
-
-    let pe_offset = read_unaligned!(pe_base, 0x3c, u32) as usize;
-    if pe_offset == 0 || pe_offset >= 1024 * 1024 {
-        return None;
-    }
-
-    // Get number of sections from COFF header (offset 6 from PE header)
-    let num_sections = read_unaligned!(pe_base, pe_offset + 6, u16) as usize;
-    let num_sections = num_sections.min(16); // Cap at 16 sections max
-
-    // Get optional header size from COFF header (offset 20 from PE header)
-    let optional_header_size = read_unaligned!(pe_base, pe_offset + 20, u16) as usize;
-
-    // Section table starts after optional header
-    let section_table_offset = pe_offset + 24 + optional_header_size;
-    let mut sections = [PeSection {
-        name: [0; 8],
-        virtual_size: 0,
-        virtual_address: 0,
-        size_of_raw_data: 0,
-        pointer_to_raw_data: 0,
-        characteristics: 0,
-    }; 16];
-
-    for i in 0..num_sections {
-        let section_offset = section_table_offset + i * 40; // Each section header is 40 bytes
-
-        let mut name = [0u8; 8];
-        for j in 0..8 {
-            name[j] = unsafe { *pe_base.add(section_offset + j) };
-        }
-
-        let virtual_size = read_unaligned!(pe_base, section_offset + 8, u32);
-        let virtual_address = read_unaligned!(pe_base, section_offset + 12, u32);
-        let size_of_raw_data = read_unaligned!(pe_base, section_offset + 16, u32);
-        let pointer_to_raw_data = read_unaligned!(pe_base, section_offset + 20, u32);
-        let characteristics = read_unaligned!(pe_base, section_offset + 36, u32);
-
-        sections[i] = PeSection {
-            name,
-            virtual_size,
-            virtual_address,
-            size_of_raw_data,
-            pointer_to_raw_data,
-            characteristics,
-        };
-    }
-
-    Some(sections)
+    let parser = unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8) }?;
+    parser.sections()
 }
 
 /// Map kernel segments with appropriate permissions parsed from the PE file
