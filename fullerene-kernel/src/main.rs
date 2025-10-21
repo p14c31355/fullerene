@@ -23,7 +23,6 @@ mod process; // Process management
 mod scheduler;
 mod shell;
 mod syscall;
-mod traits;
 mod vga;
 
 extern crate alloc;
@@ -43,8 +42,9 @@ const VGA_COLOR_GREEN_ON_BLACK: u16 = 0x0200;
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     // Log panic info to serial port for debugging
+    use petroleum::halt_loop;
     use petroleum::serial::_print;
-    use x86_64::instructions::hlt;
+
     _print(format_args!("KERNEL PANIC: {}\n", info));
 
     // Visual indicator on VGA screen for kernel panic (yellow on red) - helps with debugging in environments without serial access
@@ -56,8 +56,6 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         );
     }
 
-    // Halt the CPU to prevent spinning
-    loop {
-        hlt();
-    }
+    // Halt the CPU
+    halt_loop();
 }

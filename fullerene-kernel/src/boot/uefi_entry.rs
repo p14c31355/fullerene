@@ -239,7 +239,8 @@ impl UefiInitContext {
         // The GDT initialization allocates stacks for interrupt handlers (e.g., double fault).
         // This size needs to be accounted for in addition to the main kernel stack to prevent memory corruption.
 
-        let heap_start_for_allocator = self.virtual_heap_start + crate::gdt::GDT_INIT_OVERHEAD as u64;
+        let heap_start_for_allocator =
+            self.virtual_heap_start + crate::gdt::GDT_INIT_OVERHEAD as u64;
         let heap_size_for_allocator = heap::HEAP_SIZE - crate::gdt::GDT_INIT_OVERHEAD;
 
         unsafe {

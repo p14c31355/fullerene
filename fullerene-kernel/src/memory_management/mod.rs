@@ -9,11 +9,11 @@ use spin::Mutex;
 
 use static_assertions::assert_eq_size;
 
-use crate::traits::{
+use petroleum::common::logging::{SystemError, SystemResult};
+use petroleum::initializer::{
     ErrorLogging, FrameAllocator, Initializable, MemoryManager, ProcessMemoryManager,
     SyscallHandler,
 };
-use petroleum::common::logging::{SystemError, SystemResult};
 use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
 
 use frame_allocator::BitmapFrameAllocator;

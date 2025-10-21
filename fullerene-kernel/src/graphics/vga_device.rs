@@ -1,7 +1,5 @@
 use petroleum::common::logging::{SystemError, SystemResult};
-use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations};
-
-use crate::traits::{ErrorLogging, HardwareDevice, Initializable};
+use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations, initializer::*};
 
 // Constants to reduce magic numbers
 const VGA_WIDTH: usize = 80;
@@ -168,10 +166,6 @@ impl HardwareDevice for VgaDevice {
 
     fn is_enabled(&self) -> bool {
         self.buffer.enabled
-    }
-
-    fn priority(&self) -> i32 {
-        <Self as Initializable>::priority(self)
     }
 }
 

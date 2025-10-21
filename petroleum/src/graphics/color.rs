@@ -1,5 +1,5 @@
-use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
-use embedded_graphics::{geometry::Point, pixelcolor::Rgb888, prelude::*};
+use embedded_graphics::pixelcolor::Rgb888;
+use embedded_graphics::prelude::*;
 
 use core::marker::{Send, Sync};
 use core::ptr::{read_volatile, write_volatile};
