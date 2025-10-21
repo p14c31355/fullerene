@@ -986,8 +986,8 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
         return 64 * 1024 * 1024;
     }
 
-    // SizeOfImage is at offset 0x50 in optional header (after magic, linker version, sizes, etc.)
-    let size_of_image_offset = if optional_magic == 0x10B { 0x50 } else { 0x38 }; // PE32+ has different layout
+// SizeOfImage is at offset 0x38 in the optional header for both PE32 and PE32+.
+let size_of_image_offset = 0x38;
     let size_of_image_ptr = unsafe { kernel_ptr.add(pe_offset + 24 + size_of_image_offset as usize) as *const u32 };
     let size_of_image = unsafe { core::ptr::read_unaligned(size_of_image_ptr) } as u64;
 
