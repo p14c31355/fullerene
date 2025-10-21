@@ -1177,7 +1177,7 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
         None => return FALLBACK_KERNEL_SIZE,
     };
     match parser.size_of_image() {
-        Some(size) => size.div_ceil(4096) * 4096 + KERNEL_MEMORY_PADDING,
+        Some(size) => (size + KERNEL_MEMORY_PADDING).div_ceil(4096) * 4096,
         None => FALLBACK_KERNEL_SIZE,
     }
 }

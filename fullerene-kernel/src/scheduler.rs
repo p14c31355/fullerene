@@ -412,7 +412,7 @@ fn initialize_shell_process() -> crate::process::ProcessId {
 pub fn scheduler_loop() -> ! {
     log::info!("Starting enhanced OS scheduler with integrated system features...");
 
-    let _shell_pid = initialize_shell_process();
+    let _ = initialize_shell_process();
 
     // Main scheduler loop - continuously execute processes with integrated OS functionality
     loop {
