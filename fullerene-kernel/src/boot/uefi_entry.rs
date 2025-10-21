@@ -12,7 +12,7 @@ use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::uefi::{efi_print, find_gop_framebuffer, write_vga_string};
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
-use petroleum::{allocate_heap_from_map, debug_log, write_serial_bytes};
+use petroleum::{allocate_heap_from_map, debug_log, debug_log_no_alloc, write_serial_bytes};
 use spin::Mutex;
 use x86_64::{
     PhysAddr, VirtAddr,
@@ -79,9 +79,9 @@ impl UefiInitContext {
         _memory_map: *mut c_void,
         memory_map_size: usize,
     ) -> PhysAddr {
-        debug_log!("Kernel: efi_main entered");
+        debug_log_no_alloc!("Kernel: efi_main entered");
         petroleum::serial::serial_init();
-        debug_log!("Kernel: efi_main located at {:#x}", efi_main as usize);
+        debug_log_no_alloc!("Kernel: efi_main located at ", efi_main as usize);
 
         // UEFI uses framebuffer graphics, not legacy VGA hardware programming
         // Graphics initialization happens later with initialize_graphics_with_config()
@@ -100,46 +100,61 @@ impl UefiInitContext {
         kernel_phys_start: PhysAddr,
         system_table: &EfiSystemTable,
     ) -> (VirtAddr, PhysAddr, VirtAddr) {
-        debug_log!("Entering memory_management_initialization");
+        debug_log_no_alloc!("Entering memory_management_initialization");
         let memory_map_ref = MEMORY_MAP.get().expect("Memory map not initialized");
         // Initialize heap frame allocator
         heap::init_frame_allocator(*memory_map_ref);
-        log::info!("Heap frame allocator initialized");
+        debug_log_no_alloc!("Heap frame allocator initialized");
         // Get framebuffer config from petroleum global
         let framebuffer_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
             .get()
             .and_then(|mutex| *mutex.lock());
         if framebuffer_config.is_some() {
-            log::info!("Framebuffer config found");
+            debug_log_no_alloc!("Framebuffer config found");
         } else {
-            log::info!("No framebuffer config found");
+            debug_log_no_alloc!("No framebuffer config found");
         }
 
         let config = framebuffer_config.as_ref();
         let (fb_addr, fb_size) = if let Some(config) = config {
             let fb_size_bytes =
                 (config.width as usize * config.height as usize * config.bpp as usize) / 8;
-            log::info!(
-                "Found framebuffer config: {}x{} @ {:#x}",
-                config.width,
-                config.height,
-                config.address
-            );
+            debug_log_no_alloc!("Found framebuffer config width=", config.width as usize);
+            debug_log_no_alloc!("Found framebuffer config height=", config.height as usize);
+            debug_log_no_alloc!("Found framebuffer config address=", config.address);
             (
                 Some(VirtAddr::new(config.address)),
                 Some(fb_size_bytes as u64),
             )
         } else {
-            log::info!("No framebuffer config found");
+            debug_log_no_alloc!("No framebuffer config found");
             (None, None)
         };
 
-        debug_log!("About to reinit page tables");
+        debug_log_no_alloc!("About to reinit page tables");
         // Reinit page tables
         let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
             .get()
             .expect("Frame allocator not initialized")
             .lock();
+
+        // Reserve kernel memory region in frame allocator
+        let kernel_size_u64 =
+            unsafe { petroleum::page_table::calculate_kernel_memory_size(kernel_phys_start) };
+        let kernel_pages = kernel_size_u64.div_ceil(4096) as usize;
+        frame_allocator
+            .allocate_frames_at(kernel_phys_start.as_u64() as usize, kernel_pages)
+            .expect("Failed to reserve kernel frames");
+
+        // Reserve framebuffer memory region if present
+        if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
+            let fb_pages = fb_size.div_ceil(4096) as usize;
+            let fb_phys_addr = fb_addr.as_u64() as usize; // In identity mapped area before reinit
+            frame_allocator
+                .allocate_frames_at(fb_phys_addr, fb_pages)
+                .expect("Failed to reserve framebuffer frames");
+        }
+
         self.physical_memory_offset = heap::reinit_page_table_with_allocator(
             kernel_phys_start,
             fb_addr,
@@ -148,7 +163,7 @@ impl UefiInitContext {
         );
         #[cfg(feature = "verbose_boot_log")]
         write_serial_bytes!(0x3F8, 0x3FD, b"page table reinit completed\n");
-        log::info!("Page table reinit completed");
+        debug_log_no_alloc!("Page table reinit completed");
 
         // Set kernel CR3
         let kernel_cr3 = x86_64::registers::control::Cr3::read();
@@ -167,7 +182,7 @@ impl UefiInitContext {
         let heap_phys_start_addr = if heap_phys_start.as_u64() < 0x1000
             || heap_phys_start.as_u64() >= 0x0000_8000_0000_0000
         {
-            log::info!("Invalid heap_phys_start, using fallback heap address");
+            debug_log_no_alloc!("Invalid heap_phys_start, using fallback heap address");
             PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR)
         } else {
             heap_phys_start
@@ -175,6 +190,13 @@ impl UefiInitContext {
         write_serial_bytes!(0x3F8, 0x3FD, b"About to allocate and map heap\n");
         let heap_start = allocate_heap_from_map(heap_phys_start_addr, heap::HEAP_SIZE);
         write_serial_bytes!(0x3F8, 0x3FD, b"heap allocated\n");
+
+        // Reserve heap memory region in frame allocator to prevent corruption
+        let heap_pages = heap::HEAP_SIZE.div_ceil(4096); // Round up to pages
+        frame_allocator
+            .allocate_frames_at(heap_start.as_u64() as usize, heap_pages)
+            .expect("Failed to reserve heap frames");
+
         self.virtual_heap_start = self.physical_memory_offset + heap_start.as_u64();
 
         // Map heap memory
@@ -210,6 +232,26 @@ impl UefiInitContext {
         .expect("Failed to map heap memory");
         write_serial_bytes!(0x3F8, 0x3FD, b"heap memory mapped\n");
 
+        // Initialize the global heap allocator immediately after heap mapping
+        // to prevent allocation failures in subsequent log::info! calls
+        debug_log_no_alloc!("Initializing global heap allocator early");
+        use petroleum::page_table::{ALLOCATOR, HEAP_INITIALIZED};
+        // The GDT initialization allocates stacks for interrupt handlers (e.g., double fault).
+        // This size needs to be accounted for in addition to the main kernel stack to prevent memory corruption.
+
+        let heap_start_for_allocator = self.virtual_heap_start + crate::gdt::GDT_INIT_OVERHEAD as u64;
+        let heap_size_for_allocator = heap::HEAP_SIZE - crate::gdt::GDT_INIT_OVERHEAD;
+
+        unsafe {
+            ALLOCATOR.lock().init(
+                heap_start_for_allocator.as_mut_ptr::<u8>(),
+                heap_size_for_allocator,
+            );
+        }
+        // Mark heap as initialized to prevent double-init
+        HEAP_INITIALIZED.call_once(|| true);
+        write_serial_bytes!(0x3F8, 0x3FD, b"Global heap allocator initialized\n");
+
         (
             self.physical_memory_offset,
             heap_start,
@@ -227,11 +269,10 @@ impl UefiInitContext {
         self.heap_start_after_gdt = gdt::init(gdt_heap_start);
         log::info!("GDT initialized");
 
-        const KERNEL_STACK_SIZE: usize = 4096 * 16;
         let stack_bottom = self.heap_start_after_gdt;
-        self.heap_start_after_stack = stack_bottom + KERNEL_STACK_SIZE as u64;
+        self.heap_start_after_stack = stack_bottom + crate::heap::KERNEL_STACK_SIZE as u64;
 
-        let stack_pages = (KERNEL_STACK_SIZE as u64).div_ceil(4096);
+        let stack_pages = (crate::heap::KERNEL_STACK_SIZE as u64).div_ceil(4096);
         let stack_base_phys =
             PhysAddr::new(stack_bottom.as_u64() - physical_memory_offset.as_u64());
         let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
@@ -259,6 +300,12 @@ impl UefiInitContext {
     }
 
     fn setup_allocator(&mut self, virtual_heap_start: VirtAddr) {
+        // Check if heap was already initialized early in memory_management_initialization
+        if petroleum::page_table::HEAP_INITIALIZED.get().is_some() {
+            log::info!("Heap allocator already initialized early, skipping second initialization");
+            return;
+        }
+
         petroleum::serial::serial_log(format_args!("Initializing allocator\n"));
         let kernel_overhead =
             (self.heap_start_after_stack.as_u64() - virtual_heap_start.as_u64()) as usize;

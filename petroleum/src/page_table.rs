@@ -1,4 +1,4 @@
-use crate::{debug_log, flush_tlb_and_verify, map_pages_loop};
+use crate::{debug_log, debug_log_no_alloc, flush_tlb_and_verify, map_pages_loop};
 
 // Macros are automatically available from common module
 
@@ -66,60 +66,239 @@ pub struct Elf64Phdr {
     pub p_align: u64,
 }
 
-/// A FrameAllocator that returns usable frames from the bootloader's memory map.
-pub struct BootInfoFrameAllocator<'a> {
-    memory_map: &'a [EfiMemoryDescriptor],
-    next_descriptor: usize,
-    next_frame_offset: u64,
+/// Static buffer for bitmap - sized for up to 32GiB of RAM (8M frames)
+/// Each bit represents one 4KB frame, so size is (8M / 64) = 128K u64s = 1MB
+static mut BITMAP_STATIC: [u64; 131072] = [u64::MAX; 131072];
+
+/// Bitmap-based frame allocator implementation
+pub struct BitmapFrameAllocator {
+    bitmap: Option<&'static mut [u64]>,
+    frame_count: usize,
+    next_free_frame: usize,
+    initialized: bool,
 }
 
-impl<'a> BootInfoFrameAllocator<'a> {
+impl BitmapFrameAllocator {
+    /// Create a new bitmap frame allocator
+    pub fn new() -> Self {
+        Self {
+            bitmap: None,
+            frame_count: 0,
+            next_free_frame: 0,
+            initialized: false,
+        }
+    }
+
     /// Create a FrameAllocator from the passed memory map.
     ///
-    /// This function is unsafe because the caller must guarantee that the
-    /// memory map is valid. The main requirement is that all frames that are marked
-    /// as `USABLE` in it are really unused.
-    pub unsafe fn init(memory_map: &'a [EfiMemoryDescriptor]) -> Self {
-        BootInfoFrameAllocator {
-            memory_map,
-            next_descriptor: 0,
-            next_frame_offset: 0,
-        }
+    /// # Safety
+    ///
+    /// This function is unsafe because calling it multiple times will cause
+    /// mutable aliasing of the global static `BITMAP_STATIC` buffer, leading
+    /// to undefined behavior. It must only be called once during system initialization.
+    /// (for compatibility)
+    pub unsafe fn init(memory_map: &[EfiMemoryDescriptor]) -> Self {
+        let mut allocator = BitmapFrameAllocator::new();
+        allocator
+            .init_with_memory_map(memory_map)
+            .expect("Failed to init bitmap allocator");
+        allocator
     }
-}
 
-unsafe impl<'a> FrameAllocator<Size4KiB> for BootInfoFrameAllocator<'a> {
-    fn allocate_frame(&mut self) -> Option<PhysFrame> {
-        const FRAME_SIZE: u64 = 4096; // 4 KiB
+    /// Initialize with EFI memory map
+    pub unsafe fn init_with_memory_map(
+        &mut self,
+        memory_map: &[EfiMemoryDescriptor],
+    ) -> crate::common::logging::SystemResult<()> {
+        // 1. Find the highest physical address to determine the total number of frames to manage.
+        let max_phys_addr = memory_map
+            .iter()
+            .map(|d| d.physical_start + d.number_of_pages * 4096)
+            .max()
+            .unwrap_or(0);
+        let total_frames = (max_phys_addr.div_ceil(4096)) as usize;
 
-        while self.next_descriptor < self.memory_map.len() {
-            let descriptor = &self.memory_map[self.next_descriptor];
-            if descriptor.type_ == crate::common::EfiMemoryType::EfiConventionalMemory
-                && descriptor.number_of_pages > 0
-            {
-                while self.next_frame_offset < descriptor.number_of_pages {
-                    let frame_addr = PhysAddr::new(
-                        descriptor.physical_start + self.next_frame_offset * FRAME_SIZE,
-                    );
-                    // Skip frames at physical address 0 (null pointer)
-                    if frame_addr.as_u64() == 0 {
-                        self.next_frame_offset += 1;
-                        continue;
+        if total_frames == 0 {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
+
+        // Calculate bitmap size needed
+        let bitmap_size = (total_frames + 63) / 64; // Round up for 64-bit chunks
+
+        // Ensure bitmap size doesn't exceed our static buffer
+        if bitmap_size > 131072 {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
+
+        // Get a mutable slice from the static buffer
+        unsafe {
+            self.bitmap = Some(&mut BITMAP_STATIC[..bitmap_size]);
+
+            // Initialize bitmap - mark all as used initially
+            for chunk in self.bitmap.as_mut().unwrap().iter_mut() {
+                *chunk = u64::MAX;
+            }
+        }
+
+        self.frame_count = total_frames;
+        self.next_free_frame = 0;
+        self.initialized = true;
+
+        // Mark available frames as free based on their physical address
+        for descriptor in memory_map {
+            if descriptor.type_ == crate::common::EfiMemoryType::EfiConventionalMemory {
+                let start_frame = (descriptor.physical_start / 4096) as usize;
+                let end_frame = start_frame + descriptor.number_of_pages as usize;
+
+                for frame_index in start_frame..end_frame {
+                    if frame_index < self.frame_count {
+                        self.set_frame_free(frame_index);
                     }
-                    if let Ok(frame) = PhysFrame::<Size4KiB>::from_start_address(frame_addr) {
-                        self.next_frame_offset += 1;
-                        return Some(frame);
-                    }
-                    self.next_frame_offset += 1;
                 }
             }
-            self.next_descriptor += 1;
-            self.next_frame_offset = 0;
+        }
+        // Mark frame 0 as used to avoid allocating the null page.
+        self.set_frame_used(0);
+        Ok(())
+    }
+
+    /// Set a frame as free in the bitmap
+    fn set_frame_free(&mut self, frame_index: usize) {
+        if let Some(ref mut bitmap) = self.bitmap {
+            let chunk_index = frame_index / 64;
+            let bit_index = frame_index % 64;
+
+            if chunk_index < bitmap.len() {
+                bitmap[chunk_index] &= !(1 << bit_index);
+            }
+        }
+    }
+
+    /// Set a frame as used in the bitmap
+    fn set_frame_used(&mut self, frame_index: usize) {
+        if let Some(ref mut bitmap) = self.bitmap {
+            let chunk_index = frame_index / 64;
+            let bit_index = frame_index % 64;
+
+            if chunk_index < bitmap.len() {
+                bitmap[chunk_index] |= 1 << bit_index;
+            }
+        }
+    }
+
+    /// Check if a frame is free
+    fn is_frame_free(&self, frame_index: usize) -> bool {
+        if let Some(ref bitmap) = self.bitmap {
+            let chunk_index = frame_index / 64;
+            let bit_index = frame_index % 64;
+
+            if chunk_index < bitmap.len() {
+                (bitmap[chunk_index] & (1 << bit_index)) == 0
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Find the next free frame starting from a given index
+    fn find_next_free_frame(&self, start_index: usize) -> Option<usize> {
+        if !self.initialized {
+            return None;
         }
 
-        None // No more usable frames
+        if let Some(ref bitmap) = self.bitmap {
+            let mut chunk_index = start_index / 64;
+            let bit_in_chunk = start_index % 64;
+
+            if chunk_index < bitmap.len() {
+                let mut chunk = bitmap[chunk_index];
+                // Create a mask with all bits set before the start_index bit position
+                // This effectively ignores any free bits before start_index in the bitmap chunk
+                // For example, if bit_in_chunk is 3, this creates a mask: 0b000...0111 (bits 0-2 set)
+                // which marks the lower bits as used so they won't be considered free
+                chunk |= (1u64.wrapping_shl(bit_in_chunk as u32)).wrapping_sub(1);
+                if chunk != u64::MAX {
+                    let first_free_bit = (!chunk).trailing_zeros() as usize;
+                    let frame_index = chunk_index * 64 + first_free_bit;
+                    if frame_index < self.frame_count {
+                        return Some(frame_index);
+                    }
+                }
+                chunk_index += 1;
+            }
+
+            for i in chunk_index..bitmap.len() {
+                let chunk = bitmap[i];
+                if chunk != u64::MAX {
+                    let first_free_bit = (!chunk).trailing_zeros() as usize;
+                    let frame_index = i * 64 + first_free_bit;
+                    if frame_index < self.frame_count {
+                        return Some(frame_index);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Allocate a specific frame range (for reserving used regions)
+    pub fn allocate_frames_at(
+        &mut self,
+        start_addr: usize,
+        count: usize,
+    ) -> crate::common::logging::SystemResult<()> {
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
+
+        let start_frame = start_addr / 4096;
+        if start_frame + count > self.frame_count {
+            return Err(crate::common::logging::SystemError::InvalidArgument);
+        }
+
+        for i in 0..count {
+            if !self.is_frame_free(start_frame + i) {
+                debug_log_no_alloc!(
+                    "Frame allocation failed: frame already in use at index",
+                    start_frame + i
+                );
+                return Err(crate::common::logging::SystemError::FrameAllocationFailed);
+            }
+        }
+
+        for i in 0..count {
+            self.set_frame_used(start_frame + i);
+        }
+
+        Ok(())
     }
 }
+
+unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
+    fn allocate_frame(&mut self) -> Option<PhysFrame> {
+        if !self.initialized {
+            return None;
+        }
+
+        if let Some(frame_index) = self.find_next_free_frame(self.next_free_frame) {
+            self.set_frame_used(frame_index);
+            self.next_free_frame = frame_index + 1;
+
+            let frame_addr = frame_index * 4096;
+            Some(PhysFrame::containing_address(PhysAddr::new(
+                frame_addr as u64,
+            )))
+        } else {
+            None
+        }
+    }
+}
+
+// Type alias for backward compatibility
+pub type BootInfoFrameAllocator = BitmapFrameAllocator;
 
 /// Initialize a new OffsetPageTable.
 ///
@@ -191,7 +370,7 @@ unsafe fn map_identity_range(
         let virt_addr = VirtAddr::new(phys_start + i * 4096);
         let page = Page::containing_address(virt_addr);
         let frame = PhysFrame::containing_address(phys_addr);
-        match mapper.map_to(page, frame, flags, frame_allocator) {
+        match unsafe { mapper.map_to(page, frame, flags, frame_allocator) } {
             Ok(flush) => flush.flush(),
             Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => continue,
             Err(e) => return Err(e),
@@ -212,7 +391,7 @@ pub fn reinit_page_table_with_allocator(
 ) -> VirtAddr {
     use x86_64::structures::paging::PageTableFlags as Flags;
 
-    debug_log!("reinit_page_table_with_allocator: starting");
+    debug_log_no_alloc!("reinit_page_table_with_allocator: starting");
 
     // Use the higher-half kernel offset
     let phys_offset = HIGHER_HALF_OFFSET;
@@ -234,14 +413,14 @@ pub fn reinit_page_table_with_allocator(
         OffsetPageTable::new(&mut *l4_table_ptr, VirtAddr::new(0))
     };
 
-    // Set up identity mapping for the first 4MB of physical memory for UEFI compatibility
+    // Set up identity mapping for the first 64MB of physical memory for UEFI compatibility
     // Skip the first page (physical address 0) to avoid null pointer issues
     unsafe {
         map_identity_range(
             &mut mapper,
             frame_allocator,
             4096,
-            1023, // 4MB - 4KB = 1023 pages
+            16383, // 64MB - 4KB = 16383 pages
             Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
         )
         .expect("Failed to map identity range")
@@ -332,8 +511,8 @@ pub fn reinit_page_table_with_allocator(
         );
     }
     flush_tlb_and_verify!();
-    debug_log!(
-        "reinit_page_table_with_allocator: CR3 switched, phys_offset={:#x}",
+    debug_log_no_alloc!(
+        "reinit_page_table_with_allocator: CR3 switched, phys_offset=",
         phys_offset.as_u64()
     );
 
@@ -725,7 +904,7 @@ fn translate_addr_inner(addr: VirtAddr, physical_memory_offset: VirtAddr) -> Opt
 }
 
 /// Compute the total memory size required for the kernel by parsing ELF headers
-unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
+pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     let ehdr_ptr = kernel_phys_start.as_u64() as *const Elf64Ehdr;
     let ehdr = unsafe { &*ehdr_ptr };
 
@@ -737,14 +916,15 @@ unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     }
 
     // Parse program headers to find total memory size
-        let mut min_vaddr = u64::MAX;
+    let mut min_vaddr = u64::MAX;
     let mut max_vaddr = 0u64;
     let phdr_base = kernel_phys_start.as_u64() + ehdr.e_phoff;
     for i in 0..ehdr.e_phnum {
         let phdr_ptr = (phdr_base + i as u64 * ehdr.e_phentsize as u64) as *const Elf64Phdr;
         let phdr = unsafe { &*phdr_ptr };
 
-        if phdr.p_type == 1 && phdr.p_memsz > 0 { // PT_LOAD
+        if phdr.p_type == 1 && phdr.p_memsz > 0 {
+            // PT_LOAD
             min_vaddr = min_vaddr.min(phdr.p_vaddr);
             max_vaddr = max_vaddr.max(phdr.p_vaddr + phdr.p_memsz);
         }

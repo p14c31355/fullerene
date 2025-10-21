@@ -73,7 +73,6 @@ pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u
     unsafe { core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color) };
 }
 
-use core::arch::asm;
 use core::ffi::c_void;
 use core::ptr;
 use spin::{Mutex, Once};
@@ -220,13 +219,11 @@ impl<'a> ProtocolLocator<'a> {
 }
 
 /// Framebuffer configuration installer
-struct FramebufferInstaller<'a> {
-    system_table: &'a EfiSystemTable,
-}
+struct FramebufferInstaller;
 
-impl<'a> FramebufferInstaller<'a> {
-    fn new(system_table: &'a EfiSystemTable) -> Self {
-        Self { system_table }
+impl FramebufferInstaller {
+    fn new() -> Self {
+        Self
     }
 
     fn install(&self, config: FullereneFramebufferConfig) -> Result<(), EfiStatus> {
@@ -537,7 +534,7 @@ pub fn init_gop_framebuffer_alternative(
             "GOP: Attempting to install framebuffer config table...\n"
         ));
 
-        let installer = FramebufferInstaller::new(system_table);
+        let installer = FramebufferInstaller::new();
         match installer.install(fb_config) {
             Ok(_) => {
                 serial::_print(format_args!(
@@ -682,7 +679,7 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
         config.width, config.height, config.address, config.bpp, config.stride
     ));
 
-    let installer = FramebufferInstaller::new(system_table);
+    let installer = FramebufferInstaller::new();
     match installer.install(config) {
         Ok(_) => {
             let _ = installer.clear_framebuffer(&config);

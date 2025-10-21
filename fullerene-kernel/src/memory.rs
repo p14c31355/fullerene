@@ -12,8 +12,8 @@ use crate::MEMORY_MAP;
 
 use core::ffi::c_void;
 use petroleum::{
-    check_memory_initialized, debug_log, debug_mem_descriptor, debug_print, mem_debug,
-    write_serial_bytes,
+    check_memory_initialized, debug_log, debug_log_no_alloc, debug_mem_descriptor, debug_print,
+    mem_debug, write_serial_bytes,
 };
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -77,18 +77,20 @@ pub fn find_framebuffer_config(
 }
 
 pub fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> PhysAddr {
-    // Find the lowest suitable memory region below 4GB from EfiConventionalMemory with sufficient size for heap
+    // Find the lowest suitable memory region within first 64MB from EfiConventionalMemory with sufficient size for heap
+    // This ensures heap is within the identity-mapped range during page table reinitialization
     const HEAP_PAGES: u64 = 256; // approx 1MB for heap + structures
     for desc in descriptors {
         if desc.type_ == EfiMemoryType::EfiConventionalMemory
             && desc.number_of_pages >= HEAP_PAGES
-            && desc.physical_start < 0x100000000
-        // below 4GB
+            && desc.physical_start < 0x4000000 // within first 64MB
+            && desc.physical_start + (desc.number_of_pages * 4096) <= 0x4000000
+        // ensure entire region fits
         {
             return PhysAddr::new(desc.physical_start);
         }
     }
-    // Fallback if no suitable memory found
+    // Fallback if no suitable memory found within first 64MB
     PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR)
 }
 
@@ -107,7 +109,7 @@ pub fn setup_memory_maps(
         };
         let config_with_metadata = unsafe { &*config_ptr };
         if config_with_metadata.magic == FRAMEBUFFER_CONFIG_MAGIC {
-            debug_log!("Framebuffer config found in memory map");
+            debug_log_no_alloc!("Framebuffer config found in memory map");
             petroleum::FULLERENE_FRAMEBUFFER_CONFIG
                 .call_once(|| spin::Mutex::new(Some(config_with_metadata.config)));
             (
@@ -115,11 +117,11 @@ pub fn setup_memory_maps(
                 config_with_metadata.descriptor_size,
             )
         } else {
-            debug_log!("No framebuffer config found in memory map (magic mismatch)");
+            debug_log_no_alloc!("No framebuffer config found in memory map (magic mismatch)");
             (total_map_size, core::mem::size_of::<EfiMemoryDescriptor>())
         }
     } else {
-        debug_log!("Not enough size for framebuffer config in memory map");
+        debug_log_no_alloc!("Not enough size for framebuffer config in memory map");
         (total_map_size, core::mem::size_of::<EfiMemoryDescriptor>())
     };
 
@@ -129,7 +131,7 @@ pub fn setup_memory_maps(
             actual_descriptors_size / descriptor_item_size,
         )
     };
-    debug_log!("Memory map descriptor count: {}", descriptors.len());
+    debug_log_no_alloc!("Memory map descriptor count: ", descriptors.len());
 
     // Initialize MEMORY_MAP with descriptors
     MEMORY_MAP.call_once(|| {
@@ -152,9 +154,17 @@ pub fn setup_memory_maps(
     // Since UEFI identity-maps initially, kernel_virt_addr should equal its physical address
     if kernel_virt_addr >= 0x1000 {
         kernel_phys_start = PhysAddr::new(kernel_virt_addr);
-        mem_debug!("Using identity-mapped kernel physical start: ", kernel_phys_start.as_u64() as usize, "\n");
+        mem_debug!(
+            "Using identity-mapped kernel physical start: ",
+            kernel_phys_start.as_u64() as usize,
+            "\n"
+        );
     } else {
-        mem_debug!("Warning: Invalid kernel address ", kernel_virt_addr as usize, ", falling back to hardcoded value\n");
+        mem_debug!(
+            "Warning: Invalid kernel address ",
+            kernel_virt_addr as usize,
+            ", falling back to hardcoded value\n"
+        );
         kernel_phys_start = PhysAddr::new(0x100000);
     }
 
