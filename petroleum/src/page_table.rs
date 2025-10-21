@@ -61,7 +61,7 @@ impl PeParser {
         }; 16];
         for i in 0..num_sections.min(16) {
             let offset = section_table_offset + i * 40;
-            for j in 0..8 { sections[i].name[j] = *self.pe_base.add(offset + j); }
+            core::ptr::copy_nonoverlapping(self.pe_base.add(offset), sections[i].name.as_mut_ptr(), 8);
             sections[i].virtual_size = read_unaligned!(self.pe_base, offset + 8, u32);
             sections[i].virtual_address = read_unaligned!(self.pe_base, offset + 12, u32);
             sections[i].size_of_raw_data = read_unaligned!(self.pe_base, offset + 16, u32);
@@ -552,12 +552,12 @@ pub fn reinit_page_table_with_allocator(
     unsafe {
         core::ptr::write_bytes(level_4_table_frame.start_address().as_u64() as *mut PageTable, 0, 1);
         let mut mapper = OffsetPageTable::new(&mut *(level_4_table_frame.start_address().as_u64() as *mut PageTable), VirtAddr::new(0));
-        map_identity_range(&mut mapper, frame_allocator, 4096, 16383, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE).unwrap();
+        map_identity_range(&mut mapper, frame_allocator, 4096, 16383, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE).expect("Failed to map identity range for UEFI compatibility");
         let kernel_size = calculate_kernel_memory_size(kernel_phys_start);
-        map_identity_range(&mut mapper, frame_allocator, kernel_phys_start.as_u64(), kernel_size.div_ceil(4096), Flags::PRESENT | Flags::WRITABLE).unwrap();
+        map_identity_range(&mut mapper, frame_allocator, kernel_phys_start.as_u64(), kernel_size.div_ceil(4096), Flags::PRESENT | Flags::WRITABLE).expect("Failed to identity map kernel for CR3 switch");
         map_kernel_segments_inner(&mut mapper, frame_allocator, kernel_phys_start, phys_offset);
         map_additional_regions(&mut mapper, frame_allocator, fb_addr, fb_size, phys_offset);
-        mapper.map_to(Page::containing_address(phys_offset + level_4_table_frame.start_address().as_u64()), level_4_table_frame, Flags::PRESENT | Flags::WRITABLE, frame_allocator).unwrap().flush();
+        mapper.map_to(Page::containing_address(phys_offset + level_4_table_frame.start_address().as_u64()), level_4_table_frame, Flags::PRESENT | Flags::WRITABLE, frame_allocator).expect("Failed to map L4 table to higher half").flush();
         Cr3::write(level_4_table_frame, x86_64::registers::control::Cr3Flags::empty());
     }
     flush_tlb_and_verify!();
