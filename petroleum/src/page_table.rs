@@ -508,7 +508,11 @@ pub fn reinit_page_table_with_allocator(
     unsafe {
         // After CR3 switch, we must adjust the return address on the stack to point to the new
         // higher-half virtual address space. The current return address is an identity-mapped address.
-        // We use the base pointer (rbp) to robustly find the return address on the stack.
+        // WARNING: This code assumes frame pointers (rbp) are available and enabled, and relies on
+        // the standard stack layout where the return address is at [rbp + 8]. This may not hold for
+        // all compiler versions or optimization levels, especially in debug builds where
+        // force-frame-pointers is not set by default. Violation could lead to stack corruption or crash.
+        // For a more robust solution, consider using a naked function with custom assembly.
         let mut base_pointer: u64;
         core::arch::asm!("mov {}, rbp", out(reg) base_pointer);
         let return_address_ptr = (base_pointer as *mut u64).add(1); // Return address is at [rbp + 8]
