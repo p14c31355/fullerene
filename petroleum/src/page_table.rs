@@ -34,6 +34,9 @@ pub struct EfiMemoryDescriptor {
     pub attribute: u64,
 }
 
+/// Named constant for UEFI firmware specific memory type (replace magic number)
+const EFI_MEMORY_TYPE_FIRMWARE_SPECIFIC: u32 = 15;
+
 /// ELF definitions for parsing kernel permissions
 #[repr(C)]
 pub struct Elf64Ehdr {
@@ -174,7 +177,7 @@ impl BitmapFrameAllocator {
         // Mark available frames as free based on their physical address
         for descriptor in memory_map {
             if descriptor.type_ == crate::common::EfiMemoryType::EfiConventionalMemory
-                || descriptor.type_ as u32 == 15 { // TODO: Replace 15 with a named constant, e.g., EfiMemoryType::FirmwareSpecific
+                || descriptor.type_ as u32 == EFI_MEMORY_TYPE_FIRMWARE_SPECIFIC {
                 let start_frame = (descriptor.physical_start / 4096) as usize;
                 let end_frame = start_frame + descriptor.number_of_pages as usize;
 
@@ -374,6 +377,42 @@ unsafe fn map_identity_range(
     map_identity_range_checked!(mapper, frame_allocator, phys_start, num_pages, flags)
 }
 
+use core::arch::naked_asm;
+
+/// Switch to higher-half virtual address space after CR3 switch.
+///
+/// After switching page tables with CR3, the return address on the stack is still
+/// an identity-mapped address. This naked function adjusts it to point to the
+/// new higher-half virtual address space by adding the physical offset.
+///
+/// This approach ensures robustness across different compiler versions and
+/// optimization levels, as it has full control over the stack manipulation.
+///
+/// # Safety
+/// This function must be called immediately after CR3 switch and before returning
+/// from the calling function. The higher-half mapping must be properly set up.
+#[unsafe(naked)]
+pub extern "C" fn switch_to_higher_half(phys_offset: u64) {
+    // phys_offset in rdi
+    naked_asm!(
+        // Calculate return address location: rbp + 8
+        "mov %rbp, %rax",
+        "lea 0x8(%rax), %rax",
+
+        // Load current return address
+        "mov (%rax), %rcx",
+
+        // Adjust return address: rcx = rcx + phys_offset (rdi)
+        "add %rdi, %rcx",
+
+        // Store adjusted return address
+        "mov %rcx, (%rax)",
+
+        // Return
+        "ret",
+    );
+}
+
 /// Reinitialize the page table with identity mapping and higher-half kernel mapping
 /// This version takes a frame allocator to perform the actual mapping
 ///
@@ -509,21 +548,11 @@ pub fn reinit_page_table_with_allocator(
     }
     flush_tlb_and_verify!();
 
-    unsafe {
-        // After CR3 switch, we must adjust the return address on the stack to point to the new
-        // higher-half virtual address space. The current return address is an identity-mapped address.
-        // WARNING: This code assumes frame pointers (rbp) are available and enabled, and relies on
-        // the standard stack layout where the return address is at [rbp + 8]. This may not hold for
-        // all compiler versions or optimization levels, especially in debug builds where
-        // force-frame-pointers is not set by default. Violation could lead to stack corruption or crash.
-        // For a more robust solution, consider using a naked function with custom assembly.
-        let mut base_pointer: u64;
-        core::arch::asm!("mov {}, rbp", out(reg) base_pointer);
-        let return_address_ptr = (base_pointer as *mut u64).add(1); // Return address is at [rbp + 8]
-        let current_return_addr = *return_address_ptr;
-        let adjusted_return_addr = phys_offset.as_u64() + current_return_addr;
-        *return_address_ptr = adjusted_return_addr;
-    }
+    // After CR3 switch, adjust the return address on the stack to point to the new
+    // higher-half virtual address space. The current return address is an identity-mapped address.
+    // This function uses a naked function to have full control over the stack layout,
+    // ensuring robustness across different compiler versions and optimization levels.
+    unsafe { switch_to_higher_half(phys_offset.as_u64()); }
 
     debug_log_no_alloc!(
         "reinit_page_table_with_allocator: CR3 switched, return address adjusted, phys_offset=",
@@ -1003,7 +1032,6 @@ let size_of_image_offset = 0x38;
     result
 }
 
-/// Parse PE sections manually and return them (max 16 sections)
 pub unsafe fn parse_pe_sections(kernel_phys_start: PhysAddr) -> Option<[PeSection; 16]> {
     let mut kernel_ptr = kernel_phys_start.as_u64() as *const u8;
 
@@ -1011,40 +1039,33 @@ pub unsafe fn parse_pe_sections(kernel_phys_start: PhysAddr) -> Option<[PeSectio
     // and valid PE structure, since kernel_phys_start points to entry point inside the PE image
     const MAX_SEARCH_DISTANCE: usize = 10 * 1024 * 1024; // 10MB max search distance
     const MAX_PE_OFFSET: usize = 16 * 1024 * 1024; // 16MB max PE offset
-    let mut search_offset = 0usize;
-    let mut dos_ptr = kernel_ptr as *const u16;
     let mut found_valid_pe = false;
 
-    // Search backwards, checking each 2-byte aligned address for valid PE structure
-    while search_offset < MAX_SEARCH_DISTANCE {
-        let dos_magic = unsafe { core::ptr::read_unaligned(dos_ptr) };
-        if dos_magic == 0x5A4D { // "MZ" candidate found
-            let candidate_kernel_ptr = dos_ptr as *const u8;
+    // Search backwards byte-by-byte for robustness against alignment issues.
+    for i in 0..MAX_SEARCH_DISTANCE {
+        if (kernel_ptr as u64) < i as u64 {
+            // We've searched back to address 0 or beyond, abort
+            return None;
+        }
+        let candidate_ptr = unsafe { kernel_ptr.sub(i) };
 
-            // Read pe_offset from DOS header
-            let pe_offset_ptr = unsafe { candidate_kernel_ptr.add(0x3c) };
-            let pe_offset = unsafe { core::ptr::read_unaligned(pe_offset_ptr as *const u32) } as usize;
+        // Check for 'M' and 'Z'
+        if unsafe { candidate_ptr.read() == b'M' && candidate_ptr.add(1).read() == b'Z' } {
+            // Found "MZ" signature, now validate it's a real PE file.
+            let pe_offset_ptr = unsafe { candidate_ptr.add(0x3c) as *const u32 };
+            let pe_offset = unsafe { pe_offset_ptr.read_unaligned() } as usize;
 
-            // Check if pe_offset is reasonable
+            // A simple sanity check for the offset
             if pe_offset > 0 && pe_offset < MAX_PE_OFFSET {
-                // Check if PE signature exists at pe_offset
-                let pe_sig_ptr = unsafe { candidate_kernel_ptr.add(pe_offset) };
-                let pe_sig = unsafe { core::ptr::read_unaligned(pe_sig_ptr as *const u32) };
-                if pe_sig == 0x4550 { // "PE\0\0"
+                let pe_sig_ptr = unsafe { candidate_ptr.add(pe_offset) as *const u32 };
+                if unsafe { pe_sig_ptr.read_unaligned() } == 0x00004550 { // "PE\0\0"
                     // Valid PE structure found
-                    kernel_ptr = candidate_kernel_ptr;
+                    kernel_ptr = candidate_ptr;
                     found_valid_pe = true;
                     break;
                 }
             }
         }
-
-        search_offset += 2; // Search every 2 bytes
-        if search_offset >= kernel_phys_start.as_u64() as usize {
-            // We've searched back to address 0 or beyond, abort
-            return None;
-        }
-        dos_ptr = unsafe { dos_ptr.sub(1) };
     }
 
     if !found_valid_pe {
