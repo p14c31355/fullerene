@@ -517,7 +517,11 @@ fn map_additional_regions(
 
         // Map framebuffer if provided
         if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
-            map_pages_loop!(mapper, frame_allocator, fb_addr.as_u64(), phys_offset.as_u64() + fb_addr.as_u64(), fb_size.div_ceil(4096), Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE);
+            let fb_pages = fb_size.div_ceil(4096);
+            // Higher-half mapping
+            map_pages_loop!(mapper, frame_allocator, fb_addr.as_u64(), phys_offset.as_u64() + fb_addr.as_u64(), fb_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE);
+            // Identity mapping for bootloader compatibility
+            map_identity_range(mapper, frame_allocator, fb_addr.as_u64(), fb_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE).expect("Failed to identity map framebuffer");
         }
 
         // Always map VGA memory
