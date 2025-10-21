@@ -123,7 +123,12 @@ impl BitmapFrameAllocator {
     }
 
     /// Helper function to set a range of frames using macro
-    fn set_frame_range(&mut self, start_frame: usize, count: usize, operation: FrameOperation) -> SystemResult<()> {
+    fn set_frame_range(
+        &mut self,
+        start_frame: usize,
+        count: usize,
+        operation: FrameOperation,
+    ) -> SystemResult<()> {
         if start_frame + count > self.frame_count {
             return Err(SystemError::InvalidArgument);
         }

@@ -104,7 +104,13 @@ pub static FRAMEBUFFER_BIOS: Once<Mutex<super::framebuffer::FramebufferWriter<u8
 
 #[cfg(target_os = "uefi")]
 pub fn init(config: &FullereneFramebufferConfig) {
-    petroleum::info_log!("Graphics: Initializing UEFI framebuffer: {}x{}, stride: {}, pixel_format: {:?}", config.width, config.height, config.stride, config.pixel_format);
+    petroleum::info_log!(
+        "Graphics: Initializing UEFI framebuffer: {}x{}, stride: {}, pixel_format: {:?}",
+        config.width,
+        config.height,
+        config.stride,
+        config.pixel_format
+    );
 
     // Initialize simple framebuffer config (Redox vesad-style)
     if config.bpp == 32 {

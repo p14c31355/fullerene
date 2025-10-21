@@ -17,16 +17,16 @@ use x86_64::{
 
 // Macros and constants
 macro_rules! read_unaligned {
-    ($ptr:expr, $offset:expr, $ty:ty) => {{
-        core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty)
-    }};
+    ($ptr:expr, $offset:expr, $ty:ty) => {{ core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) }};
 }
 
 pub static HEAP_INITIALIZED: Once<bool> = Once::new();
 
 pub fn init_global_heap(ptr: *mut u8, size: usize) {
     if HEAP_INITIALIZED.get().is_none() {
-        unsafe { ALLOCATOR.lock().init(ptr, size); }
+        unsafe {
+            ALLOCATOR.lock().init(ptr, size);
+        }
         HEAP_INITIALIZED.call_once(|| true);
     }
 }
@@ -41,29 +41,46 @@ impl PeParser {
     pub unsafe fn new(kernel_ptr: *const u8) -> Option<Self> {
         find_pe_base(kernel_ptr).map(|base| {
             let pe_offset = read_unaligned!(base, 0x3c, u32) as usize;
-            Self { pe_base: base, pe_offset }
+            Self {
+                pe_base: base,
+                pe_offset,
+            }
         })
     }
 
     pub unsafe fn size_of_image(&self) -> Option<u64> {
-        if self.pe_offset == 0 || self.pe_offset >= MAX_PE_HEADER_OFFSET || self.pe_base.is_null() { return None; }
+        if self.pe_offset == 0 || self.pe_offset >= MAX_PE_HEADER_OFFSET || self.pe_base.is_null() {
+            return None;
+        }
         let magic = read_unaligned!(self.pe_base, self.pe_offset + 24, u16);
-        if magic != 0x10B && magic != 0x20B { return None; }
+        if magic != 0x10B && magic != 0x20B {
+            return None;
+        }
         Some(read_unaligned!(self.pe_base, self.pe_offset + 24 + 0x38, u32) as u64)
     }
 
     pub unsafe fn sections(&self) -> Option<[PeSection; 16]> {
-        if self.pe_offset == 0 || self.pe_offset >= MAX_PE_HEADER_OFFSET || self.pe_base.is_null() { return None; }
+        if self.pe_offset == 0 || self.pe_offset >= MAX_PE_HEADER_OFFSET || self.pe_base.is_null() {
+            return None;
+        }
         let num_sections = read_unaligned!(self.pe_base, self.pe_offset + 6, u16) as usize;
         let optional_header_size = read_unaligned!(self.pe_base, self.pe_offset + 20, u16) as usize;
         let section_table_offset = self.pe_offset + 24 + optional_header_size;
         let mut sections = [PeSection {
-            name: [0; 8], virtual_size: 0, virtual_address: 0, size_of_raw_data: 0,
-            pointer_to_raw_data: 0, characteristics: 0
+            name: [0; 8],
+            virtual_size: 0,
+            virtual_address: 0,
+            size_of_raw_data: 0,
+            pointer_to_raw_data: 0,
+            characteristics: 0,
         }; MAX_PE_SECTIONS];
         for i in 0..num_sections.min(MAX_PE_SECTIONS) {
             let offset = section_table_offset + i * 40;
-            core::ptr::copy_nonoverlapping(self.pe_base.add(offset), sections[i].name.as_mut_ptr(), 8);
+            core::ptr::copy_nonoverlapping(
+                self.pe_base.add(offset),
+                sections[i].name.as_mut_ptr(),
+                8,
+            );
             sections[i].virtual_size = read_unaligned!(self.pe_base, offset + 8, u32);
             sections[i].virtual_address = read_unaligned!(self.pe_base, offset + 12, u32);
             sections[i].size_of_raw_data = read_unaligned!(self.pe_base, offset + 16, u32);
@@ -135,7 +152,8 @@ unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
                 let pe_offset = read_unaligned!(candidate_ptr, 0x3c, u32) as usize;
                 if pe_offset > 0 && pe_offset < MAX_PE_OFFSET {
                     let pe_sig = read_unaligned!(candidate_ptr, pe_offset, u32);
-                    if pe_sig == 0x00004550 { // "PE\0\0"
+                    if pe_sig == 0x00004550 {
+                        // "PE\0\0"
                         return Some(candidate_ptr);
                     }
                 }
@@ -149,10 +167,12 @@ unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
 fn derive_pe_flags(characteristics: u32) -> x86_64::structures::paging::PageTableFlags {
     use x86_64::structures::paging::PageTableFlags as Flags;
     let mut flags = Flags::PRESENT;
-    if (characteristics & 0x8000_0000) != 0 { // IMAGE_SCN_MEM_WRITE
+    if (characteristics & 0x8000_0000) != 0 {
+        // IMAGE_SCN_MEM_WRITE
         flags |= Flags::WRITABLE;
     }
-    if (characteristics & 0x2000_0000) == 0 { // NOT IMAGE_SCN_MEM_EXECUTE
+    if (characteristics & 0x2000_0000) == 0 {
+        // NOT IMAGE_SCN_MEM_EXECUTE
         flags |= Flags::NO_EXECUTE;
     }
     flags
@@ -182,7 +202,10 @@ unsafe fn map_pe_section(
 fn calculate_frame_allocation_params(memory_map: &[EfiMemoryDescriptor]) -> (u64, usize, usize) {
     let max_addr = memory_map
         .iter()
-        .map(|d| d.physical_start.saturating_add(d.number_of_pages.saturating_mul(4096)))
+        .map(|d| {
+            d.physical_start
+                .saturating_add(d.number_of_pages.saturating_mul(4096))
+        })
         .max()
         .unwrap_or(0);
     let capped_max_addr = max_addr.min(32 * 1024 * 1024 * 1024u64);
@@ -338,11 +361,17 @@ impl BitmapFrameAllocator {
             return None;
         }
 
-        self.bitmap.as_ref().and_then(|bitmap| Self::find_frame_in_bitmap(bitmap, start_index, self.frame_count))
+        self.bitmap
+            .as_ref()
+            .and_then(|bitmap| Self::find_frame_in_bitmap(bitmap, start_index, self.frame_count))
     }
 
     /// Helper method for bitmap operations
-    fn find_frame_in_bitmap(bitmap: &[u64], start_index: usize, frame_count: usize) -> Option<usize> {
+    fn find_frame_in_bitmap(
+        bitmap: &[u64],
+        start_index: usize,
+        frame_count: usize,
+    ) -> Option<usize> {
         let mut chunk_index = start_index / 64;
         let bit_in_chunk = start_index % 64;
 
@@ -399,8 +428,6 @@ impl BitmapFrameAllocator {
         Ok(())
     }
 }
-
-
 
 unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
     fn allocate_frame(&mut self) -> Option<PhysFrame> {
@@ -498,19 +525,37 @@ unsafe fn map_kernel_segments_inner(
     mapper: &mut OffsetPageTable,
     frame_allocator: &mut BootInfoFrameAllocator,
     kernel_phys_start: PhysAddr,
-    phys_offset: VirtAddr
+    phys_offset: VirtAddr,
 ) {
-    if let Some(sections) = unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8).and_then(|p| p.sections()) } {
+    if let Some(sections) =
+        unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8).and_then(|p| p.sections()) }
+    {
         for section in sections.into_iter().filter(|s| s.virtual_size > 0) {
-            unsafe { map_pe_section(mapper, section, kernel_phys_start, phys_offset, frame_allocator); }
+            unsafe {
+                map_pe_section(
+                    mapper,
+                    section,
+                    kernel_phys_start,
+                    phys_offset,
+                    frame_allocator,
+                );
+            }
         }
     } else {
         // Fallback: map 64MB region for the kernel if PE parsing fails
         let kernel_size = FALLBACK_KERNEL_SIZE;
         let kernel_pages = kernel_size.div_ceil(4096);
-        let flags = x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE;
+        let flags = x86_64::structures::paging::PageTableFlags::PRESENT
+            | x86_64::structures::paging::PageTableFlags::WRITABLE;
         unsafe {
-            map_identity_range(mapper, frame_allocator, kernel_phys_start.as_u64(), kernel_pages, flags).expect("Failed to map fallback kernel range");
+            map_identity_range(
+                mapper,
+                frame_allocator,
+                kernel_phys_start.as_u64(),
+                kernel_pages,
+                flags,
+            )
+            .expect("Failed to map fallback kernel range");
         }
     }
 }
@@ -521,7 +566,7 @@ fn map_additional_regions(
     frame_allocator: &mut BootInfoFrameAllocator,
     fb_addr: Option<VirtAddr>,
     fb_size: Option<u64>,
-    phys_offset: VirtAddr
+    phys_offset: VirtAddr,
 ) {
     unsafe {
         use x86_64::structures::paging::PageTableFlags as Flags;
@@ -530,13 +575,34 @@ fn map_additional_regions(
         if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
             let fb_pages = fb_size.div_ceil(4096);
             // Higher-half mapping
-            map_pages_loop!(mapper, frame_allocator, fb_addr.as_u64(), phys_offset.as_u64() + fb_addr.as_u64(), fb_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE);
+            map_pages_loop!(
+                mapper,
+                frame_allocator,
+                fb_addr.as_u64(),
+                phys_offset.as_u64() + fb_addr.as_u64(),
+                fb_pages,
+                Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE
+            );
             // Identity mapping for bootloader compatibility
-            map_identity_range(mapper, frame_allocator, fb_addr.as_u64(), fb_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE).expect("Failed to identity map framebuffer");
+            map_identity_range(
+                mapper,
+                frame_allocator,
+                fb_addr.as_u64(),
+                fb_pages,
+                Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+            )
+            .expect("Failed to identity map framebuffer");
         }
 
         // Always map VGA memory
-        map_pages_loop!(mapper, frame_allocator, 0xA0000, phys_offset.as_u64() + 0xA0000, (0xC0000 - 0xA0000)/4096, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE);
+        map_pages_loop!(
+            mapper,
+            frame_allocator,
+            0xA0000,
+            phys_offset.as_u64() + 0xA0000,
+            (0xC0000 - 0xA0000) / 4096,
+            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE
+        );
     }
 }
 
@@ -571,17 +637,31 @@ pub fn reinit_page_table_with_allocator(
 
     // Zero the new L4 table
     unsafe {
-        core::ptr::write_bytes(level_4_table_frame.start_address().as_u64() as *mut PageTable, 0, 1);
+        core::ptr::write_bytes(
+            level_4_table_frame.start_address().as_u64() as *mut PageTable,
+            0,
+            1,
+        );
     }
 
     // Create mapper for new page table with identity mapping
     let mut mapper = unsafe {
-        OffsetPageTable::new(&mut *(level_4_table_frame.start_address().as_u64() as *mut PageTable), VirtAddr::new(0))
+        OffsetPageTable::new(
+            &mut *(level_4_table_frame.start_address().as_u64() as *mut PageTable),
+            VirtAddr::new(0),
+        )
     };
 
     // Map identity range for UEFI compatibility (64MB - first page)
     unsafe {
-        map_identity_range(&mut mapper, frame_allocator, 4096, 16383, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE).expect("Failed to map identity range for UEFI compatibility");
+        map_identity_range(
+            &mut mapper,
+            frame_allocator,
+            4096,
+            16383,
+            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+        )
+        .expect("Failed to map identity range for UEFI compatibility");
     }
 
     // Calculate kernel size
@@ -590,22 +670,46 @@ pub fn reinit_page_table_with_allocator(
     // Identity map kernel for CR3 switch
     let kernel_pages = kernel_size.div_ceil(4096);
     unsafe {
-        map_identity_range(&mut mapper, frame_allocator, kernel_phys_start.as_u64(), kernel_pages, Flags::PRESENT | Flags::WRITABLE).expect("Failed to identity map kernel for CR3 switch");
+        map_identity_range(
+            &mut mapper,
+            frame_allocator,
+            kernel_phys_start.as_u64(),
+            kernel_pages,
+            Flags::PRESENT | Flags::WRITABLE,
+        )
+        .expect("Failed to identity map kernel for CR3 switch");
     }
 
     // Map kernel segments to higher half
-    unsafe { map_kernel_segments_inner(&mut mapper, frame_allocator, kernel_phys_start, phys_offset); }
+    unsafe {
+        map_kernel_segments_inner(&mut mapper, frame_allocator, kernel_phys_start, phys_offset);
+    }
 
     // Map additional regions
     map_additional_regions(&mut mapper, frame_allocator, fb_addr, fb_size, phys_offset);
 
     // Map L4 table to higher half
     unsafe {
-        mapper.map_to(Page::containing_address(phys_offset + level_4_table_frame.start_address().as_u64()), level_4_table_frame, Flags::PRESENT | Flags::WRITABLE, frame_allocator).expect("Failed to map L4 table to higher half").flush();
+        mapper
+            .map_to(
+                Page::containing_address(
+                    phys_offset + level_4_table_frame.start_address().as_u64(),
+                ),
+                level_4_table_frame,
+                Flags::PRESENT | Flags::WRITABLE,
+                frame_allocator,
+            )
+            .expect("Failed to map L4 table to higher half")
+            .flush();
     }
 
     // Switch to new page table
-    unsafe { Cr3::write(level_4_table_frame, x86_64::registers::control::Cr3Flags::empty()); }
+    unsafe {
+        Cr3::write(
+            level_4_table_frame,
+            x86_64::registers::control::Cr3Flags::empty(),
+        );
+    }
 
     // Flush TLB
     flush_tlb_and_verify!();
@@ -654,7 +758,13 @@ impl<'a> MemoryMapper<'a> {
     }
 
     // Generic method to map a range with given flags
-    pub unsafe fn map_range(&mut self, phys_start: u64, virt_start: u64, num_pages: u64, flags: x86_64::structures::paging::PageTableFlags) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    pub unsafe fn map_range(
+        &mut self,
+        phys_start: u64,
+        virt_start: u64,
+        num_pages: u64,
+        flags: x86_64::structures::paging::PageTableFlags,
+    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
         for i in 0..num_pages {
             let phys_addr = phys_start + i * 4096;
             let virt_addr = virt_start + i * 4096;
@@ -672,7 +782,14 @@ impl<'a> MemoryMapper<'a> {
 
     // Map kernel segments using PE parsing
     pub unsafe fn map_kernel_segments(&mut self, kernel_phys_start: PhysAddr) {
-        unsafe { map_kernel_segments_inner(self.mapper, self.frame_allocator, kernel_phys_start, self.phys_offset); }
+        unsafe {
+            map_kernel_segments_inner(
+                self.mapper,
+                self.frame_allocator,
+                kernel_phys_start,
+                self.phys_offset,
+            );
+        }
     }
 }
 
@@ -1035,7 +1152,9 @@ pub struct PeSection {
 
 pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     debug_log_no_alloc!("calculate_kernel_memory_size: starting");
-    if kernel_phys_start.as_u64() == 0 { return FALLBACK_KERNEL_SIZE; }
+    if kernel_phys_start.as_u64() == 0 {
+        return FALLBACK_KERNEL_SIZE;
+    }
     let parser = match unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8) } {
         Some(p) => p,
         None => return FALLBACK_KERNEL_SIZE,
