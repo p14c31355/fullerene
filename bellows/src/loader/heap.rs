@@ -1,6 +1,8 @@
 // bellows/src/loader/heap.rs
 
-use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, efi_status_to_str};
+use petroleum::common::{
+    BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, efi_status_to_str,
+};
 use petroleum::debug_log;
 use petroleum::debug_log_no_alloc;
 use petroleum::serial::debug_print_str_to_com1;
@@ -23,7 +25,10 @@ fn try_allocate_pages(
             EfiMemoryType::EfiConventionalMemory => "Conventional",
             _ => "Other",
         };
-        debug_log_no_alloc!("Heap: About to call allocate_pages mem_type=", mem_type as usize);
+        debug_log_no_alloc!(
+            "Heap: About to call allocate_pages mem_type=",
+            mem_type as usize
+        );
 
         let mut phys_addr_local: usize = 0;
         debug_log_no_alloc!("Heap: Calling allocate_pages pages=", pages);
@@ -37,7 +42,10 @@ fn try_allocate_pages(
             pages, // Start with 1 for testing
             &mut phys_addr_local,
         );
-        debug_log_no_alloc!("Heap: Exited allocate_pages call phys_addr_local=", phys_addr_local);
+        debug_log_no_alloc!(
+            "Heap: Exited allocate_pages call phys_addr_local=",
+            phys_addr_local
+        );
         debug_log_no_alloc!("Heap: Exited allocate_pages call raw_status=", status);
 
         // Immediate validation: check if phys_addr_local is page-aligned (avoid invalid reads)

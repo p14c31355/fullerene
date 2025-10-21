@@ -12,8 +12,8 @@ use crate::MEMORY_MAP;
 
 use core::ffi::c_void;
 use petroleum::{
-    check_memory_initialized, debug_log, debug_log_no_alloc, debug_mem_descriptor, debug_print, mem_debug,
-    write_serial_bytes,
+    check_memory_initialized, debug_log, debug_log_no_alloc, debug_mem_descriptor, debug_print,
+    mem_debug, write_serial_bytes,
 };
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -84,7 +84,8 @@ pub fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> PhysAddr {
         if desc.type_ == EfiMemoryType::EfiConventionalMemory
             && desc.number_of_pages >= HEAP_PAGES
             && desc.physical_start < 0x4000000 // within first 64MB
-            && desc.physical_start + (desc.number_of_pages * 4096) <= 0x4000000 // ensure entire region fits
+            && desc.physical_start + (desc.number_of_pages * 4096) <= 0x4000000
+        // ensure entire region fits
         {
             return PhysAddr::new(desc.physical_start);
         }
@@ -115,7 +116,6 @@ pub fn setup_memory_maps(
                 total_map_size - config_size,
                 config_with_metadata.descriptor_size,
             )
-
         } else {
             debug_log_no_alloc!("No framebuffer config found in memory map (magic mismatch)");
             (total_map_size, core::mem::size_of::<EfiMemoryDescriptor>())
@@ -154,9 +154,17 @@ pub fn setup_memory_maps(
     // Since UEFI identity-maps initially, kernel_virt_addr should equal its physical address
     if kernel_virt_addr >= 0x1000 {
         kernel_phys_start = PhysAddr::new(kernel_virt_addr);
-        mem_debug!("Using identity-mapped kernel physical start: ", kernel_phys_start.as_u64() as usize, "\n");
+        mem_debug!(
+            "Using identity-mapped kernel physical start: ",
+            kernel_phys_start.as_u64() as usize,
+            "\n"
+        );
     } else {
-        mem_debug!("Warning: Invalid kernel address ", kernel_virt_addr as usize, ", falling back to hardcoded value\n");
+        mem_debug!(
+            "Warning: Invalid kernel address ",
+            kernel_virt_addr as usize,
+            ", falling back to hardcoded value\n"
+        );
         kernel_phys_start = PhysAddr::new(0x100000);
     }
 

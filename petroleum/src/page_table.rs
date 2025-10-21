@@ -99,7 +99,9 @@ impl BitmapFrameAllocator {
     /// (for compatibility)
     pub unsafe fn init(memory_map: &[EfiMemoryDescriptor]) -> Self {
         let mut allocator = BitmapFrameAllocator::new();
-        allocator.init_with_memory_map(memory_map).expect("Failed to init bitmap allocator");
+        allocator
+            .init_with_memory_map(memory_map)
+            .expect("Failed to init bitmap allocator");
         allocator
     }
 
@@ -201,7 +203,7 @@ impl BitmapFrameAllocator {
     }
 
     /// Find the next free frame starting from a given index
-        fn find_next_free_frame(&self, start_index: usize) -> Option<usize> {
+    fn find_next_free_frame(&self, start_index: usize) -> Option<usize> {
         if !self.initialized {
             return None;
         }
@@ -240,7 +242,11 @@ impl BitmapFrameAllocator {
     }
 
     /// Allocate a specific frame range (for reserving used regions)
-    pub fn allocate_frames_at(&mut self, start_addr: usize, count: usize) -> crate::common::logging::SystemResult<()> {
+    pub fn allocate_frames_at(
+        &mut self,
+        start_addr: usize,
+        count: usize,
+    ) -> crate::common::logging::SystemResult<()> {
         if !self.initialized {
             return Err(crate::common::logging::SystemError::InternalError);
         }
@@ -250,8 +256,12 @@ impl BitmapFrameAllocator {
             return Err(crate::common::logging::SystemError::InvalidArgument);
         }
 
-                for i in 0..count {
+        for i in 0..count {
             if !self.is_frame_free(start_frame + i) {
+                debug_log_no_alloc!(
+                    "Frame allocation failed: frame already in use at index",
+                    start_frame + i
+                );
                 return Err(crate::common::logging::SystemError::FrameAllocationFailed);
             }
         }
@@ -275,7 +285,9 @@ unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
             self.next_free_frame = frame_index + 1;
 
             let frame_addr = frame_index * 4096;
-            Some(PhysFrame::containing_address(PhysAddr::new(frame_addr as u64)))
+            Some(PhysFrame::containing_address(PhysAddr::new(
+                frame_addr as u64,
+            )))
         } else {
             None
         }
@@ -496,7 +508,10 @@ pub fn reinit_page_table_with_allocator(
         );
     }
     flush_tlb_and_verify!();
-    debug_log_no_alloc!("reinit_page_table_with_allocator: CR3 switched, phys_offset=", phys_offset.as_u64());
+    debug_log_no_alloc!(
+        "reinit_page_table_with_allocator: CR3 switched, phys_offset=",
+        phys_offset.as_u64()
+    );
 
     phys_offset
 }
@@ -898,14 +913,15 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     }
 
     // Parse program headers to find total memory size
-        let mut min_vaddr = u64::MAX;
+    let mut min_vaddr = u64::MAX;
     let mut max_vaddr = 0u64;
     let phdr_base = kernel_phys_start.as_u64() + ehdr.e_phoff;
     for i in 0..ehdr.e_phnum {
         let phdr_ptr = (phdr_base + i as u64 * ehdr.e_phentsize as u64) as *const Elf64Phdr;
         let phdr = unsafe { &*phdr_ptr };
 
-        if phdr.p_type == 1 && phdr.p_memsz > 0 { // PT_LOAD
+        if phdr.p_type == 1 && phdr.p_memsz > 0 {
+            // PT_LOAD
             min_vaddr = min_vaddr.min(phdr.p_vaddr);
             max_vaddr = max_vaddr.max(phdr.p_vaddr + phdr.p_memsz);
         }

@@ -142,9 +142,7 @@ pub fn read_file_to_memory(
     let buf_ptr = phys_addr as *mut u8;
     let mut read_size = file_size as u64;
 
-    let status = unsafe {
-        ((*file.file).read)(file.file, &mut read_size, buf_ptr)
-    };
+    let status = unsafe { ((*file.file).read)(file.file, &mut read_size, buf_ptr) };
     if EfiStatus::from(status) != EfiStatus::Success || read_size as usize != file_size {
         unsafe { ((*bs).free_pages)(phys_addr, pages) };
         log::error!("File: Failed to read file.");
