@@ -15,6 +15,13 @@ use x86_64::{
     },
 };
 
+// Generic helper for reading unaligned values
+macro_rules! read_unaligned {
+    ($ptr:expr, $offset:expr, $ty:ty) => {{
+        core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty)
+    }};
+}
+
 // Track heap initialization to prevent double init
 pub static HEAP_INITIALIZED: Once<bool> = Once::new();
 
@@ -78,21 +85,6 @@ const MAX_PE_OFFSET: usize = 16 * 1024 * 1024;
 const KERNEL_MEMORY_PADDING: u64 = 1024 * 1024;
 const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024;
 
-// Helper function to read unaligned u32
-unsafe fn read_u32_unaligned(ptr: *const u8, offset: usize) -> u32 {
-    core::ptr::read_unaligned(ptr.add(offset) as *const u32)
-}
-
-// Helper function to read unaligned u16
-unsafe fn read_u16_unaligned(ptr: *const u8, offset: usize) -> u16 {
-    core::ptr::read_unaligned(ptr.add(offset) as *const u16)
-}
-
-// Helper function to read unaligned u64 (if needed)
-unsafe fn read_u64_unaligned(ptr: *const u8, offset: usize) -> u64 {
-    core::ptr::read_unaligned(ptr.add(offset) as *const u64)
-}
-
 // Helper function to find the PE base address by searching backwards for MZ signature
 unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
     for i in 0..MAX_PE_SEARCH_DISTANCE {
@@ -101,9 +93,9 @@ unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
         }
         let candidate_ptr = start_ptr.sub(i);
         if candidate_ptr.read() == b'M' && candidate_ptr.add(1).read() == b'Z' {
-            let pe_offset = unsafe { read_u32_unaligned(candidate_ptr, 0x3c) } as usize;
+            let pe_offset = read_unaligned!(candidate_ptr, 0x3c, u32) as usize;
             if pe_offset > 0 && pe_offset < MAX_PE_OFFSET {
-                let pe_sig = unsafe { read_u32_unaligned(candidate_ptr, pe_offset) };
+                let pe_sig = read_unaligned!(candidate_ptr, pe_offset, u32);
                 if pe_sig == 0x00004550 { // "PE\0\0"
                     return Some(candidate_ptr);
                 }
@@ -464,10 +456,52 @@ unsafe fn map_identity_range(
     map_identity_range_checked!(mapper, frame_allocator, phys_start, num_pages, flags)
 }
 
+// Helper to map kernel segments with proper permissions
+unsafe fn map_kernel_segments_inner(
+    mapper: &mut OffsetPageTable,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    kernel_phys_start: PhysAddr,
+    phys_offset: VirtAddr
+) {
+    if let Some(sections) = unsafe { parse_pe_sections(kernel_phys_start) } {
+        for section in sections.into_iter().filter(|s| s.virtual_size > 0) {
+            unsafe { map_pe_section(mapper, section, kernel_phys_start, phys_offset, frame_allocator); }
+        }
+    }
+}
+
+// Helper to map additional regions like framebuffer and VGA
+fn map_additional_regions(
+    mapper: &mut OffsetPageTable,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    fb_addr: Option<VirtAddr>,
+    fb_size: Option<u64>,
+    phys_offset: VirtAddr
+) {
+    unsafe {
+        use x86_64::structures::paging::PageTableFlags as Flags;
+
+        // Map framebuffer if provided
+        if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
+            map_pages_loop!(mapper, frame_allocator, fb_addr.as_u64(), phys_offset.as_u64() + fb_addr.as_u64(), fb_size.div_ceil(4096), Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE);
+        }
+
+        // Always map VGA memory
+        map_pages_loop!(mapper, frame_allocator, 0xA0000, phys_offset.as_u64() + 0xA0000, (0xC0000 - 0xA0000)/4096, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE);
+    }
+}
+
+// Helper to adjust return address after page table switch
+fn adjust_return_address(phys_offset: VirtAddr) {
+    unsafe {
+        let mut base_pointer: u64;
+        core::arch::asm!("mov {}, rbp", out(reg) base_pointer);
+        let return_address_ptr = (base_pointer as *mut u64).add(1);
+        *return_address_ptr = phys_offset.as_u64() + *return_address_ptr;
+    }
+}
+
 /// Reinitialize the page table with identity mapping and higher-half kernel mapping
-/// This version takes a frame allocator to perform the actual mapping
-///
-/// Returns the physical memory offset used for the mapping
 pub fn reinit_page_table_with_allocator(
     kernel_phys_start: PhysAddr,
     fb_addr: Option<VirtAddr>,
@@ -476,150 +510,33 @@ pub fn reinit_page_table_with_allocator(
 ) -> VirtAddr {
     use x86_64::structures::paging::PageTableFlags as Flags;
 
-    debug_log_no_alloc!("reinit_page_table_with_allocator: starting");
-
-    // Use the higher-half kernel offset
+    debug_log_no_alloc!("Reinit start");
     let phys_offset = HIGHER_HALF_OFFSET;
+    let level_4_table_frame = frame_allocator.allocate_frame().expect("L4 alloc");
 
-    // Allocate a new L4 table frame for the kernel
-    let level_4_table_frame = frame_allocator
-        .allocate_frame()
-        .expect("Failed to allocate frame for new L4 table");
-
-    // Zero the new L4 table
     unsafe {
-        let l4_table_ptr = level_4_table_frame.start_address().as_u64() as *mut PageTable;
-        core::ptr::write_bytes(l4_table_ptr, 0, 1);
+        core::ptr::write_bytes(level_4_table_frame.start_address().as_u64() as *mut PageTable, 0, 1);
+        let mut mapper = OffsetPageTable::new(&mut *(level_4_table_frame.start_address().as_u64() as *mut PageTable), VirtAddr::new(0));
+
+        // Map initial regions
+        map_identity_range(&mut mapper, frame_allocator, 4096, 16383, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE).unwrap();
+        let kernel_size = calculate_kernel_memory_size(kernel_phys_start);
+        map_identity_range(&mut mapper, frame_allocator, kernel_phys_start.as_u64(), kernel_size.div_ceil(4096), Flags::PRESENT | Flags::WRITABLE).unwrap();
+
+        // Map kernel segments with proper permissions
+        map_kernel_segments_inner(&mut mapper, frame_allocator, kernel_phys_start, phys_offset);
+
+        // Map additional regions
+        map_additional_regions(&mut mapper, frame_allocator, fb_addr, fb_size, phys_offset);
+
+        // Map L4 and switch
+        mapper.map_to(Page::containing_address(phys_offset + level_4_table_frame.start_address().as_u64()), level_4_table_frame, Flags::PRESENT | Flags::WRITABLE, frame_allocator).unwrap().flush();
+        Cr3::write(level_4_table_frame, x86_64::registers::control::Cr3Flags::empty());
     }
 
-    // Create mapper for the new L4 table with identity mapping (offset 0)
-    let mut mapper = unsafe {
-        let l4_table_ptr = level_4_table_frame.start_address().as_u64() as *mut PageTable;
-        OffsetPageTable::new(&mut *l4_table_ptr, VirtAddr::new(0))
-    };
-
-    // Set up identity mapping for the first 64MB of physical memory for UEFI compatibility
-    // Skip the first page (physical address 0) to avoid null pointer issues
-    unsafe {
-        map_identity_range(
-            &mut mapper,
-            frame_allocator,
-            4096,
-            16383, // 64MB - 4KB = 16383 pages
-            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
-        )
-        .expect("Failed to map identity range")
-    }
-
-    // Identity map kernel code for CR3 switch
-    let kernel_size = unsafe { calculate_kernel_memory_size(kernel_phys_start) };
-    let kernel_pages = kernel_size.div_ceil(4096);
-    unsafe {
-        map_identity_range(
-            &mut mapper,
-            frame_allocator,
-            kernel_phys_start.as_u64(),
-            kernel_pages,
-            Flags::PRESENT | Flags::WRITABLE,
-        )
-        .expect("Failed to identity map kernel")
-    }
-
-    debug_log_no_alloc!("About to map kernel segments");
-    // Map kernel at higher half by parsing the ELF file for permissions
-    unsafe {
-        map_kernel_segments(&mut mapper, kernel_phys_start, phys_offset, frame_allocator);
-    }
-    debug_log_no_alloc!("Kernel segments mapped");
-
-    // Map framebuffer if provided
-    if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
-        let fb_pages = fb_size.div_ceil(4096); // Round up to page count
-        let flags = Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE;
-        map_pages_loop!(
-            mapper,
-            frame_allocator,
-            fb_addr.as_u64(),
-            phys_offset.as_u64() + fb_addr.as_u64(),
-            fb_pages,
-            flags
-        );
-    }
-
-    // Always map VGA memory regions (0xA0000 - 0xC0000) for compatibility with VGA text/graphics modes
-    const VGA_MEMORY_START: u64 = 0xA0000;
-    const VGA_MEMORY_SIZE: u64 = 0xC0000 - 0xA0000; // 128KB VGA memory aperture
-    let vga_pages = VGA_MEMORY_SIZE / 4096;
-    let flags = Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE;
-    map_pages_loop!(
-        mapper,
-        frame_allocator,
-        VGA_MEMORY_START,
-        phys_offset.as_u64() + VGA_MEMORY_START,
-        vga_pages,
-        flags
-    );
-
-    // Map framebuffer to identity for bootloader compatibility
-    if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
-        let fb_pages = fb_size.div_ceil(4096);
-        unsafe {
-            map_identity_range(
-                &mut mapper,
-                frame_allocator,
-                fb_addr.as_u64(),
-                fb_pages,
-                Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
-            )
-            .expect("Failed to map framebuffer identity pages");
-        }
-    }
-
-    // Map the L4 page table to higher-half so that OffsetPageTable with high offset can access it
-    let l4_virt = phys_offset + level_4_table_frame.start_address().as_u64();
-    let page = Page::containing_address(l4_virt);
-    unsafe {
-        mapper
-            .map_to(
-                page,
-                level_4_table_frame,
-                Flags::PRESENT | Flags::WRITABLE,
-                frame_allocator,
-            )
-            .expect("Failed to map L4 to higher half")
-            .flush();
-    }
-
-    // Switch to the new page table and flush TLB
-    unsafe {
-        Cr3::write(
-            level_4_table_frame,
-            x86_64::registers::control::Cr3Flags::empty(),
-        );
-    }
     flush_tlb_and_verify!();
-
-    // After CR3 switch, we must adjust the return address on the stack to point to the new
-    // higher-half virtual address space. The current return address is an identity-mapped address.
-    // WARNING: This code assumes frame pointers (rbp) are available and enabled, and relies on
-    // the standard stack layout where the return address is at [rbp + 8]. This may not hold for
-    // all compiler versions or optimization levels, especially in debug builds where
-    // force-frame-pointers is not set by default. Violation could lead to stack corruption or crash.
-    // This is acknowledged as fragile but necessary for the higher-half kernel transition.
-    unsafe {
-        let mut base_pointer: u64;
-        core::arch::asm!("mov {}, rbp", out(reg) base_pointer);
-        let return_address_ptr = (base_pointer as *mut u64).add(1); // Return address is at [rbp + 8]
-        let current_return_addr = *return_address_ptr;
-        let adjusted_return_addr = phys_offset.as_u64() + current_return_addr;
-        *return_address_ptr = adjusted_return_addr;
-    }
-
-    debug_log_no_alloc!(
-        "reinit_page_table_with_allocator: CR3 switched, return address adjusted, phys_offset=",
-        phys_offset.as_u64()
-    );
-
+    adjust_return_address(phys_offset);
+    debug_log_no_alloc!("Reinit done");
     phys_offset
 }
 
@@ -638,6 +555,49 @@ pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> PhysAdd
 }
 
 use x86_64::structures::paging::PageTableFlags as PageFlags;
+
+// Generic Memory Mapper structure to reduce repetitive mapping code
+pub struct MemoryMapper<'a> {
+    mapper: &'a mut OffsetPageTable<'a>,
+    frame_allocator: &'a mut BootInfoFrameAllocator,
+    phys_offset: VirtAddr,
+}
+
+impl<'a> MemoryMapper<'a> {
+    pub fn new(
+        mapper: &'a mut OffsetPageTable<'a>,
+        frame_allocator: &'a mut BootInfoFrameAllocator,
+        phys_offset: VirtAddr,
+    ) -> Self {
+        Self {
+            mapper,
+            frame_allocator,
+            phys_offset,
+        }
+    }
+
+    // Generic method to map a range with given flags
+    pub unsafe fn map_range(&mut self, phys_start: u64, virt_start: u64, num_pages: u64, flags: x86_64::structures::paging::PageTableFlags) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+        map_identity_range_checked!(self.mapper, self.frame_allocator, phys_start, num_pages, flags)
+    }
+
+    // Map kernel segments using PE parsing
+    pub unsafe fn map_kernel_segments(&mut self, kernel_phys_start: PhysAddr) {
+        if let Some(sections) = unsafe { parse_pe_sections(kernel_phys_start) } {
+            for section in sections.into_iter().filter(|s| s.virtual_size > 0) {
+                let flags = derive_pe_flags(section.characteristics);
+                let phys_addr = kernel_phys_start.as_u64() + section.pointer_to_raw_data as u64;
+                let virt_addr = self.phys_offset.as_u64() + section.virtual_address as u64;
+                let pages = section.virtual_size as u64 / 4096;
+                for p in 0..pages {
+                    let p_phys = calc_offset_addr!(phys_addr, p);
+                    let p_virt = calc_offset_addr!(virt_addr, p);
+                    map_with_offset!(self.mapper, self.frame_allocator, p_phys, p_virt, flags);
+                }
+            }
+        }
+    }
+}
 
 // Global heap allocator
 #[global_allocator]
@@ -1019,21 +979,21 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     debug_log_no_alloc!("calculate_kernel_memory_size: PE base address = 0x", pe_base as usize);
 
     // Get PE header offset from DOS header (offset 0x3c)
-    let pe_offset = unsafe { read_u32_unaligned(pe_base, 0x3c) } as usize;
+    let pe_offset = read_unaligned!(pe_base, 0x3c, u32) as usize;
     if pe_offset == 0 || pe_offset >= 1024 * 1024 {
         debug_log_no_alloc!("calculate_kernel_memory_size: Invalid PE offset, using fallback");
         return FALLBACK_KERNEL_SIZE;
     }
 
     // Check PE signature (already validated in find_pe_base, but double-check)
-    let pe_signature = unsafe { read_u32_unaligned(pe_base, pe_offset) };
+    let pe_signature = read_unaligned!(pe_base, pe_offset, u32);
     if pe_signature != 0x00004550 {
         debug_log_no_alloc!("calculate_kernel_memory_size: Invalid PE signature, using fallback");
         return FALLBACK_KERNEL_SIZE;
     }
 
     // Get to optional header - after COFF header (24 bytes: signature + 20 bytes COFF)
-    let optional_magic = unsafe { read_u16_unaligned(pe_base, pe_offset + 24) };
+    let optional_magic = read_unaligned!(pe_base, pe_offset + 24, u16);
     if optional_magic != 0x10B && optional_magic != 0x20B {
         debug_log_no_alloc!("calculate_kernel_memory_size: Invalid optional header magic, using fallback");
         return FALLBACK_KERNEL_SIZE;
@@ -1041,7 +1001,7 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
 
     // SizeOfImage is at offset 0x38 in the optional header for both PE32 and PE32+.
     let size_of_image_offset = 0x38;
-    let size_of_image = unsafe { read_u32_unaligned(pe_base, pe_offset + 24 + size_of_image_offset) } as u64;
+    let size_of_image = read_unaligned!(pe_base, pe_offset + 24 + size_of_image_offset, u32) as u64;
 
     debug_log_no_alloc!("calculate_kernel_memory_size: PE parsed successfully, SizeOfImage=", size_of_image);
 
@@ -1056,17 +1016,17 @@ pub unsafe fn parse_pe_sections(kernel_phys_start: PhysAddr) -> Option<[PeSectio
 
     let pe_base = unsafe { find_pe_base(kernel_ptr) }?;
 
-    let pe_offset = unsafe { read_u32_unaligned(pe_base, 0x3c) } as usize;
+    let pe_offset = read_unaligned!(pe_base, 0x3c, u32) as usize;
     if pe_offset == 0 || pe_offset >= 1024 * 1024 {
         return None;
     }
 
     // Get number of sections from COFF header (offset 6 from PE header)
-    let num_sections = unsafe { read_u16_unaligned(pe_base, pe_offset + 6) } as usize;
+    let num_sections = read_unaligned!(pe_base, pe_offset + 6, u16) as usize;
     let num_sections = num_sections.min(16); // Cap at 16 sections max
 
     // Get optional header size from COFF header (offset 20 from PE header)
-    let optional_header_size = unsafe { read_u16_unaligned(pe_base, pe_offset + 20) } as usize;
+    let optional_header_size = read_unaligned!(pe_base, pe_offset + 20, u16) as usize;
 
     // Section table starts after optional header
     let section_table_offset = pe_offset + 24 + optional_header_size;
@@ -1087,11 +1047,11 @@ pub unsafe fn parse_pe_sections(kernel_phys_start: PhysAddr) -> Option<[PeSectio
             name[j] = unsafe { *pe_base.add(section_offset + j) };
         }
 
-        let virtual_size = unsafe { read_u32_unaligned(pe_base, section_offset + 8) };
-        let virtual_address = unsafe { read_u32_unaligned(pe_base, section_offset + 12) };
-        let size_of_raw_data = unsafe { read_u32_unaligned(pe_base, section_offset + 16) };
-        let pointer_to_raw_data = unsafe { read_u32_unaligned(pe_base, section_offset + 20) };
-        let characteristics = unsafe { read_u32_unaligned(pe_base, section_offset + 36) };
+        let virtual_size = read_unaligned!(pe_base, section_offset + 8, u32);
+        let virtual_address = read_unaligned!(pe_base, section_offset + 12, u32);
+        let size_of_raw_data = read_unaligned!(pe_base, section_offset + 16, u32);
+        let pointer_to_raw_data = read_unaligned!(pe_base, section_offset + 20, u32);
+        let characteristics = read_unaligned!(pe_base, section_offset + 36, u32);
 
         sections[i] = PeSection {
             name,
