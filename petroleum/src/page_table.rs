@@ -264,7 +264,7 @@ impl BitmapFrameAllocator {
             return Err(crate::common::logging::SystemError::InvalidArgument);
         }
 
-        for i in 0..count {
+                for i in 0..count {
             if !self.is_frame_free(start_frame + i) {
                 debug_log_no_alloc!(
                     "Frame allocation failed: frame already in use at index ",
@@ -272,8 +272,12 @@ impl BitmapFrameAllocator {
                 );
                 return Err(crate::common::logging::SystemError::FrameAllocationFailed);
             }
+        }
+
+        for i in 0..count {
             self.set_frame_used(start_frame + i);
         }
+
 
         Ok(())
     }
@@ -918,45 +922,40 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     // and valid PE structure, since kernel_phys_start points to entry point inside the PE image
     const MAX_SEARCH_DISTANCE: usize = 10 * 1024 * 1024; // 10MB max search distance
     const MAX_PE_OFFSET: usize = 16 * 1024 * 1024; // 16MB max PE offset
-    let mut search_offset = 0usize;
-    let mut dos_ptr = kernel_ptr as *const u16;
+    let search_offset = 0usize;
+    let dos_ptr = kernel_ptr as *const u16;
     let mut found_valid_pe = false;
 
     // Search backwards, checking each 2-byte aligned address for valid PE structure
-    while search_offset < MAX_SEARCH_DISTANCE {
-        let dos_magic = unsafe { core::ptr::read_unaligned(dos_ptr) };
-        if dos_magic == 0x5A4D { // "MZ" candidate found
-            let candidate_kernel_ptr = dos_ptr as *const u8;
+        // Search backwards byte-by-byte for robustness against alignment issues.
+    for i in 0..MAX_SEARCH_DISTANCE {
+        if (kernel_ptr as u64) < i as u64 {
+            // We've searched back to address 0 or beyond, abort
+            debug_log_no_alloc!("calculate_kernel_memory_size: Search exceeded address range, using fallback");
+            return 64 * 1024 * 1024;
+        }
+        let candidate_ptr = unsafe { kernel_ptr.sub(i) };
 
-            // Read pe_offset from DOS header
-            let pe_offset_ptr = unsafe { candidate_kernel_ptr.add(0x3c) };
-            let pe_offset = unsafe { core::ptr::read_unaligned(pe_offset_ptr as *const u32) } as usize;
+        // Check for 'M' and 'Z'
+        if unsafe { candidate_ptr.read() == b'M' && candidate_ptr.add(1).read() == b'Z' } {
+            // Found "MZ" signature, now validate it's a real PE file.
+            let pe_offset_ptr = unsafe { candidate_ptr.add(0x3c) as *const u32 };
+            let pe_offset = unsafe { pe_offset_ptr.read_unaligned() } as usize;
 
-            // Check if pe_offset is reasonable
+            // A simple sanity check for the offset
             if pe_offset > 0 && pe_offset < MAX_PE_OFFSET {
-                // Check if PE signature exists at pe_offset
-                let pe_sig_ptr = unsafe { candidate_kernel_ptr.add(pe_offset) };
-                let pe_sig = unsafe { core::ptr::read_unaligned(pe_sig_ptr as *const u32) };
-                if pe_sig == 0x4550 { // "PE\0\0"
-                    // Valid PE structure found
-                    let pe_base_addr = candidate_kernel_ptr as u64;
-                    kernel_ptr = pe_base_addr as *const u8;
-                    debug_log_no_alloc!("calculate_kernel_memory_size: Found valid PE at offset -", search_offset);
-                    debug_log_no_alloc!("calculate_kernel_memory_size: PE base address = 0x", pe_base_addr as usize);
+                let pe_sig_ptr = unsafe { candidate_ptr.add(pe_offset) as *const u32 };
+                if unsafe { pe_sig_ptr.read_unaligned() } == 0x00004550 { // "PE\0\0"
+                    kernel_ptr = candidate_ptr;
+                    debug_log_no_alloc!("calculate_kernel_memory_size: Found valid PE at offset -", i);
+                    debug_log_no_alloc!("calculate_kernel_memory_size: PE base address = 0x", kernel_ptr as usize);
                     found_valid_pe = true;
                     break;
                 }
             }
         }
-
-        search_offset += 2; // Search every 2 bytes
-        if search_offset >= kernel_phys_start.as_u64() as usize {
-            // We've searched back to address 0 or beyond, abort
-            debug_log_no_alloc!("calculate_kernel_memory_size: Search exceeded address range, using fallback");
-            return 64 * 1024 * 1024;
-        }
-        dos_ptr = unsafe { dos_ptr.sub(1) };
     }
+
 
     if !found_valid_pe {
         debug_log_no_alloc!("calculate_kernel_memory_size: Valid PE header not found within search limit, using fallback");
