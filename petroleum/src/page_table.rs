@@ -66,6 +66,22 @@ impl PeParser {
         let num_sections = read_unaligned!(self.pe_base, self.pe_offset + 6, u16) as usize;
         let optional_header_size = read_unaligned!(self.pe_base, self.pe_offset + 20, u16) as usize;
         let section_table_offset = self.pe_offset + 24 + optional_header_size;
+
+        #[repr(C)]
+        #[derive(Debug, Clone, Copy)]
+        struct PeSectionHeader {
+            name: [u8; 8],
+            virtual_size: u32,
+            virtual_address: u32,
+            size_of_raw_data: u32,
+            pointer_to_raw_data: u32,
+            _pointer_to_relocations: u32,
+            _pointer_to_linenumbers: u32,
+            _number_of_relocations: u16,
+            _number_of_linenumbers: u16,
+            characteristics: u32,
+        }
+
         let mut sections = [PeSection {
             name: [0; 8],
             virtual_size: 0,
@@ -76,16 +92,15 @@ impl PeParser {
         }; MAX_PE_SECTIONS];
         for i in 0..num_sections.min(MAX_PE_SECTIONS) {
             let offset = section_table_offset + i * 40;
-            core::ptr::copy_nonoverlapping(
-                self.pe_base.add(offset),
-                sections[i].name.as_mut_ptr(),
-                8,
-            );
-            sections[i].virtual_size = read_unaligned!(self.pe_base, offset + 8, u32);
-            sections[i].virtual_address = read_unaligned!(self.pe_base, offset + 12, u32);
-            sections[i].size_of_raw_data = read_unaligned!(self.pe_base, offset + 16, u32);
-            sections[i].pointer_to_raw_data = read_unaligned!(self.pe_base, offset + 20, u32);
-            sections[i].characteristics = read_unaligned!(self.pe_base, offset + 36, u32);
+            let header = read_unaligned!(self.pe_base, offset, PeSectionHeader);
+            sections[i] = PeSection {
+                name: header.name,
+                virtual_size: header.virtual_size,
+                virtual_address: header.virtual_address,
+                size_of_raw_data: header.size_of_raw_data,
+                pointer_to_raw_data: header.pointer_to_raw_data,
+                characteristics: header.characteristics,
+            };
         }
         Some(sections)
     }
@@ -146,16 +161,18 @@ const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024;
 // Helper function to find the PE base address by searching backwards for MZ signature
 unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
     for i in 0..MAX_PE_SEARCH_DISTANCE {
-        if (start_ptr as u64) >= i as u64 {
-            let candidate_ptr = start_ptr.sub(i);
-            if candidate_ptr.read() == b'M' && candidate_ptr.add(1).read() == b'Z' {
-                let pe_offset = read_unaligned!(candidate_ptr, 0x3c, u32) as usize;
-                if pe_offset > 0 && pe_offset < MAX_PE_OFFSET {
-                    let pe_sig = read_unaligned!(candidate_ptr, pe_offset, u32);
-                    if pe_sig == 0x00004550 {
-                        // "PE\0\0"
-                        return Some(candidate_ptr);
-                    }
+        let candidate_addr = match (start_ptr as usize).checked_sub(i) {
+            Some(addr) => addr as *const u8,
+            None => break, // Stop if we would underflow.
+        };
+
+        if candidate_addr.read() == b'M' && candidate_addr.add(1).read() == b'Z' {
+            let pe_offset = read_unaligned!(candidate_addr, 0x3c, u32) as usize;
+            if pe_offset > 0 && pe_offset < MAX_PE_OFFSET {
+                let pe_sig = read_unaligned!(candidate_addr, pe_offset, u32);
+                if pe_sig == 0x00004550 {
+                    // "PE\0\0"
+                    return Some(candidate_addr);
                 }
             }
         }
