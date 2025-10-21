@@ -120,6 +120,48 @@ impl core::fmt::Debug for EfiMemoryDescriptor {
 /// Named constant for UEFI firmware specific memory type (replace magic number)
 const EFI_MEMORY_TYPE_FIRMWARE_SPECIFIC: u32 = 15;
 
+/// Maximum reasonable number of pages in a descriptor (1M pages = 4GB)
+const MAX_DESCRIPTOR_PAGES: u64 = 1_048_576;
+
+/// Validate an EFI memory descriptor for safety
+fn is_valid_memory_descriptor(descriptor: &EfiMemoryDescriptor) -> bool {
+    // Check memory type is within valid UEFI range (0x0-0x7FFFFFFF)
+    // Allow OEM-specific memory types up to the UEFI maximum
+    // But still be conservative about obviously garbage values
+    let mem_type = descriptor.type_ as u32;
+    if mem_type >= 0x80000000 {
+        debug_log_no_alloc!("Invalid memory type (too high): ", mem_type);
+        return false;
+    }
+
+    // Check physical start is page-aligned
+    if descriptor.physical_start % 4096 != 0 {
+        debug_log_no_alloc!("Unaligned physical_start: 0x", descriptor.physical_start as usize);
+        return false;
+    }
+
+    // Check number of pages is reasonable
+    if descriptor.number_of_pages == 0 || descriptor.number_of_pages > MAX_DESCRIPTOR_PAGES {
+        debug_log_no_alloc!("Invalid page count: ", descriptor.number_of_pages as usize);
+        return false;
+    }
+
+    // Check for potential overflow when calculating end address
+    let page_size = 4096u64;
+    if let Some(end_addr) = descriptor.physical_start.checked_add(descriptor.number_of_pages.checked_mul(page_size).unwrap_or(u64::MAX)) {
+        // Ensure end address doesn't exceed reasonable system limits (512GB)
+        if end_addr > 512 * 1024 * 1024 * 1024u64 {
+            debug_log_no_alloc!("Memory region too large: end_addr=0x", end_addr as usize);
+            return false;
+        }
+    } else {
+        debug_log_no_alloc!("Overflow in address calculation");
+        return false;
+    }
+
+    true
+}
+
 /// Constant for UEFI compatibility pages (disabled - first page)
 const UEFI_COMPAT_PAGES: u64 = 16383;
 
@@ -239,14 +281,24 @@ unsafe fn map_pe_section(
 
 // Calculate frame allocation parameters from memory map
 fn calculate_frame_allocation_params(memory_map: &[EfiMemoryDescriptor]) -> (u64, usize, usize) {
-    let max_addr = memory_map
-        .iter()
-        .map(|d| {
-            d.physical_start
-                .saturating_add(d.number_of_pages.saturating_mul(4096))
-        })
-        .max()
-        .unwrap_or(0);
+    // Only consider valid descriptors to prevent corrupted data from causing excessive bitmap allocation
+    let mut max_addr: u64 = 0;
+
+    for descriptor in memory_map {
+        if is_valid_memory_descriptor(descriptor) {
+            let end_addr = descriptor.physical_start
+                .saturating_add(descriptor.number_of_pages.saturating_mul(4096));
+            if end_addr > max_addr {
+                max_addr = end_addr;
+            }
+        }
+    }
+
+    if max_addr == 0 {
+        debug_log_no_alloc!("No valid descriptors found in memory map");
+        return (0, 0, 0);
+    }
+
     let capped_max_addr = max_addr.min(32 * 1024 * 1024 * 1024u64);
     let total_frames = (capped_max_addr.div_ceil(4096)) as usize;
     let bitmap_size = (total_frames + 63) / 64;
@@ -259,13 +311,52 @@ fn mark_available_frames(
     memory_map: &[EfiMemoryDescriptor],
 ) {
     for descriptor in memory_map {
-        if descriptor.type_ == crate::common::EfiMemoryType::EfiConventionalMemory
-            || descriptor.type_ as u32 == EFI_MEMORY_TYPE_FIRMWARE_SPECIFIC
+        // Skip invalid descriptors to prevent crashes from corrupted data
+        if !is_valid_memory_descriptor(descriptor) {
+            debug_log_no_alloc!("Skipping invalid memory descriptor: type=", descriptor.type_ as u32, " pages=", descriptor.number_of_pages as usize);
+            continue;
+        }
+
+        // Mark as free any memory types that are available for general use
+        // EFI spec says conventional memory, boot services data, and some others
+        // become available after ExitBootServices
+        let is_available_memory = match descriptor.type_ as u32 {
+            0 => false,  // EfiReservedMemoryType - not available
+            1 => false,  // EfiLoaderCode - usually needed for runtime
+            2 => false,  // EfiLoaderData - usually needed for runtime
+            3 => false,  // EfiBootServicesCode - available after ExitBootServices
+            4 => true,   // EfiBootServicesData - available for general use
+            5 => false,  // EfiRuntimeServicesCode - usually needed for runtime
+            6 => true,   // EfiRuntimeServicesData - available for general use
+            7 => true,   // EfiConventionalMemory - always available
+            8 => false,  // EfiUnusableMemory - not usable
+            9 => true,   // EfiACPIReclaimMemory - becomes conventional after ACPI is enabled
+            10 => false, // EfiACPIMemoryNVS - not available for general use
+            11 => false, // EfiMemoryMappedIO - not RAM
+            12 => false, // EfiMemoryMappedIOPortSpace - not RAM
+            13 => false, // EfiPalCode - firmware code
+            14 => true,  // EfiPersistentMemory - can be used as conventional
+            15 => true,  // EfiUnacceptedMemoryType - can become conventional
+            _ => false,  // Unknown types - be conservative
+        };
+
+        if is_available_memory
         {
             let start_frame = (descriptor.physical_start / 4096) as usize;
-            let end_frame = start_frame + descriptor.number_of_pages as usize;
-            for frame_index in start_frame..end_frame {
-                if frame_index < frame_allocator.frame_count {
+
+            // Check for overflow in the addition (shouldn't happen due to validation, but being safe)
+            let end_frame = match start_frame.checked_add(descriptor.number_of_pages as usize) {
+                Some(end) => end.min(frame_allocator.frame_count),
+                None => {
+                    // Overflow detected - skip this descriptor (extra safety check)
+                    debug_log_no_alloc!("Skipping descriptor with overflow: pages=", descriptor.number_of_pages);
+                    continue;
+                }
+            };
+
+            // Only process if we have valid frames to mark
+            if start_frame < end_frame {
+                for frame_index in start_frame..end_frame {
                     frame_allocator.set_frame_free(frame_index);
                 }
             }
