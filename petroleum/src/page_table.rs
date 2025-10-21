@@ -46,7 +46,7 @@ impl PeParser {
     }
 
     pub unsafe fn size_of_image(&self) -> Option<u64> {
-        if self.pe_offset == 0 || self.pe_offset >= 1024 * 1024 { return None; }
+        if self.pe_offset == 0 || self.pe_offset >= 1024 * 1024 || self.pe_base.is_null() { return None; }
         let magic = read_unaligned!(self.pe_base, self.pe_offset + 24, u16);
         if magic != 0x10B && magic != 0x20B { return None; }
         Some(read_unaligned!(self.pe_base, self.pe_offset + 24 + 0x38, u32) as u64)
