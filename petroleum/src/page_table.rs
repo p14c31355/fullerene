@@ -124,20 +124,22 @@ impl BitmapFrameAllocator {
             log_memory_descriptor!(desc, i);
         }
 
-        // 1. Find the highest physical address in conventional memory to determine the total number of frames to manage.
-        // Only conventional memory (type EfiConventionalMemory) is available for allocation.
-        let max_conventional_addr = memory_map
+        // 1. Find the highest physical address in any memory descriptor to determine the total number of frames to manage.
+        // We need to track all physical memory, even non-conventional, to be able to reserve regions like kernel code.
+        let max_addr = memory_map
             .iter()
-            .filter(|d| d.type_ == crate::common::EfiMemoryType::EfiConventionalMemory)
             .map(|d| {
                 let pages_size = d.number_of_pages.saturating_mul(4096);
                 d.physical_start.saturating_add(pages_size)
             })
             .max()
             .unwrap_or(0);
-        let total_frames = (max_conventional_addr.div_ceil(4096)) as usize;
+        // Cap at 32GB to avoid excessive bitmap size
+        const MAX_SUPPORTED_BYTES: u64 = 32 * 1024 * 1024 * 1024; // 32GB
+        let capped_max_addr = max_addr.min(MAX_SUPPORTED_BYTES);
+        let total_frames = (capped_max_addr.div_ceil(4096)) as usize;
 
-        debug_log_no_alloc!("Max conventional address: 0x", max_conventional_addr as usize);
+        debug_log_no_alloc!("Max address: 0x", max_addr as usize);
         debug_log_no_alloc!("Calculated total frames: ", total_frames);
 
         if total_frames == 0 {
@@ -260,16 +262,6 @@ impl BitmapFrameAllocator {
         let start_frame = start_addr / 4096;
         if start_frame + count > self.frame_count {
             return Err(crate::common::logging::SystemError::InvalidArgument);
-        }
-
-        for i in 0..count {
-            if !self.is_frame_free(start_frame + i) {
-                debug_log_no_alloc!(
-                    "Frame allocation failed: frame already in use at index",
-                    start_frame + i
-                );
-                return Err(crate::common::logging::SystemError::FrameAllocationFailed);
-            }
         }
 
         for i in 0..count {
@@ -432,10 +424,12 @@ pub fn reinit_page_table_with_allocator(
         .expect("Failed to identity map kernel")
     }
 
+    debug_log_no_alloc!("About to map kernel segments");
     // Map kernel at higher half by parsing the ELF file for permissions
     unsafe {
         map_kernel_segments(&mut mapper, kernel_phys_start, phys_offset, frame_allocator);
     }
+    debug_log_no_alloc!("Kernel segments mapped");
 
     // Map framebuffer if provided
     if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
@@ -875,26 +869,39 @@ fn translate_addr_inner(addr: VirtAddr, physical_memory_offset: VirtAddr) -> Opt
 
 /// Compute the total memory size required for the kernel by parsing ELF headers
 pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
+    debug_log_no_alloc!("calculate_kernel_memory_size: starting");
+
     let ehdr_ptr = kernel_phys_start.as_u64() as *const Elf64Ehdr;
     let ehdr = unsafe { &*ehdr_ptr };
 
+    debug_log_no_alloc!("calculate_kernel_memory_size: ELF header read, checking magic");
+
     // Check ELF magic
     if ehdr.e_ident[0..4] != [0x7f, b'E', b'L', b'F'] {
+        debug_log_no_alloc!("calculate_kernel_memory_size: No ELF magic found, using fallback");
         // If not ELF, fall back to hardcoded size
         const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024;
         return FALLBACK_KERNEL_SIZE;
     }
 
+    debug_log_no_alloc!("calculate_kernel_memory_size: Valid ELF, parsing phnum=", ehdr.e_phnum as usize);
+
     // Parse program headers to find total memory size
     let mut min_vaddr = u64::MAX;
     let mut max_vaddr = 0u64;
     let phdr_base = kernel_phys_start.as_u64() + ehdr.e_phoff;
+
+    debug_log_no_alloc!("calculate_kernel_memory_size: phdr_base=", phdr_base);
+
     for i in 0..ehdr.e_phnum {
         let phdr_ptr = (phdr_base + i as u64 * ehdr.e_phentsize as u64) as *const Elf64Phdr;
         let phdr = unsafe { &*phdr_ptr };
 
+        debug_log_no_alloc!("calculate_kernel_memory_size: phdr ", i as usize, " type=", phdr.p_type as usize);
+
         if phdr.p_type == 1 && phdr.p_memsz > 0 {
             // PT_LOAD
+            debug_log_no_alloc!("calculate_kernel_memory_size: PT_LOAD vaddr=", phdr.p_vaddr, " memsz=", phdr.p_memsz);
             min_vaddr = min_vaddr.min(phdr.p_vaddr);
             max_vaddr = max_vaddr.max(phdr.p_vaddr + phdr.p_memsz);
         }
@@ -906,9 +913,14 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
         0
     };
 
+    debug_log_no_alloc!("calculate_kernel_memory_size: kernel_size=", kernel_size);
+
     // Round up to page size and add some padding for safety
     const KERNEL_MEMORY_PADDING: u64 = 1024 * 1024; // 1MB padding
-    ((kernel_size + 4095) & !4095) + KERNEL_MEMORY_PADDING
+    let result = ((kernel_size + 4095) & !4095) + KERNEL_MEMORY_PADDING;
+    debug_log_no_alloc!("calculate_kernel_memory_size: final result=", result);
+
+    result
 }
 
 /// Map kernel segments with appropriate permissions parsed from the ELF file
@@ -919,6 +931,8 @@ unsafe fn map_kernel_segments(
     frame_allocator: &mut BootInfoFrameAllocator,
 ) {
     use x86_64::structures::paging::PageTableFlags as Flags;
+
+    debug_log_no_alloc!("map_kernel_segments: starting, kernel_phys_start=", kernel_phys_start.as_u64());
 
     let ehdr_ptr = kernel_phys_start.as_u64() as *const Elf64Ehdr;
     let ehdr = unsafe { &*ehdr_ptr };
