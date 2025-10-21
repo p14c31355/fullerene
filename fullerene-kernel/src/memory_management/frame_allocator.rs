@@ -79,7 +79,7 @@ impl BitmapFrameAllocator {
         Ok(())
     }
 
-    /// Set a frame as free in the bitmap using consolidated macro
+    /// Set a frame as free in the bitmap
     fn set_frame_free(&mut self, frame_index: usize) {
         let chunk_index = frame_index / 64;
         let bit_index = frame_index % 64;
