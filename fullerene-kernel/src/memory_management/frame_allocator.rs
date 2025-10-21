@@ -122,7 +122,7 @@ impl BitmapFrameAllocator {
         None
     }
 
-    /// Helper function to set a range of frames using macro
+    /// Helper function to set a range of frames using optimized u64 chunk operations
     fn set_frame_range(
         &mut self,
         start_frame: usize,
@@ -137,15 +137,54 @@ impl BitmapFrameAllocator {
             return Err(SystemError::InvalidArgument);
         }
 
-        match operation {
-            FrameOperation::Free => {
-                for i in 0..count {
-                    self.set_frame_free(start_frame + i);
+        let start_chunk_index = start_frame / 64;
+        let start_bit_in_chunk = start_frame % 64;
+        let end_chunk_index = (end_frame - 1) / 64; // Use end_frame - 1 for inclusive end
+        let end_bit_in_chunk = (end_frame - 1) % 64;
+
+        let target_value = match operation {
+            FrameOperation::Free => 0u64,
+            FrameOperation::Used => u64::MAX,
+        };
+        let inv_target_value = !target_value;
+
+        // Handle partial start chunk
+        if start_chunk_index < self.bitmap.len() {
+            let bits_to_set_in_start_chunk = if start_chunk_index == end_chunk_index {
+                // Start and end in same chunk
+                ((1u64 << (end_bit_in_chunk - start_bit_in_chunk + 1)) - 1) << start_bit_in_chunk
+            } else {
+                // More chunks ahead, set from start_bit to end of chunk
+                u64::MAX << start_bit_in_chunk
+            };
+
+            match operation {
+                FrameOperation::Free => {
+                    self.bitmap[start_chunk_index] &= !bits_to_set_in_start_chunk;
+                }
+                FrameOperation::Used => {
+                    self.bitmap[start_chunk_index] |= bits_to_set_in_start_chunk;
                 }
             }
-            FrameOperation::Used => {
-                for i in 0..count {
-                    self.set_frame_used(start_frame + i);
+        }
+
+        // Handle full middle chunks
+        for chunk_index in (start_chunk_index + 1)..end_chunk_index {
+            if chunk_index < self.bitmap.len() {
+                self.bitmap[chunk_index] = target_value;
+            }
+        }
+
+        // Handle partial end chunk (if different from start chunk)
+        if start_chunk_index != end_chunk_index && end_chunk_index < self.bitmap.len() {
+            let bits_to_set_in_end_chunk = (1u64 << (end_bit_in_chunk + 1)) - 1; // Bits 0 to end_bit_in_chunk
+
+            match operation {
+                FrameOperation::Free => {
+                    self.bitmap[end_chunk_index] &= !bits_to_set_in_end_chunk;
+                }
+                FrameOperation::Used => {
+                    self.bitmap[end_chunk_index] |= bits_to_set_in_end_chunk;
                 }
             }
         }

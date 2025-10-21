@@ -67,21 +67,6 @@ impl PeParser {
         let optional_header_size = read_unaligned!(self.pe_base, self.pe_offset + 20, u16) as usize;
         let section_table_offset = self.pe_offset + 24 + optional_header_size;
 
-        #[repr(C)]
-        #[derive(Debug, Clone, Copy)]
-        struct PeSectionHeader {
-            name: [u8; 8],
-            virtual_size: u32,
-            virtual_address: u32,
-            size_of_raw_data: u32,
-            pointer_to_raw_data: u32,
-            _pointer_to_relocations: u32,
-            _pointer_to_linenumbers: u32,
-            _number_of_relocations: u16,
-            _number_of_linenumbers: u16,
-            characteristics: u32,
-        }
-
         let mut sections = [PeSection {
             name: [0; 8],
             virtual_size: 0,
@@ -107,14 +92,6 @@ impl PeParser {
 }
 
 /// EFI Memory Descriptor as defined in UEFI spec
-#[repr(C)]
-pub struct EfiMemoryDescriptor {
-    pub type_: crate::common::EfiMemoryType,
-    pub physical_start: u64,
-    pub virtual_start: u64,
-    pub number_of_pages: u64,
-    pub attribute: u64,
-}
 
 /// Named constant for UEFI firmware specific memory type (replace magic number)
 const EFI_MEMORY_TYPE_FIRMWARE_SPECIFIC: u32 = 15;
@@ -160,6 +137,22 @@ const MAX_PE_HEADER_OFFSET: usize = 1024 * 1024;
 const MAX_PE_SECTIONS: usize = 16;
 const KERNEL_MEMORY_PADDING: u64 = 1024 * 1024;
 const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024;
+
+/// PE section header as defined in PE file format
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PeSectionHeader {
+    pub name: [u8; 8],
+    pub virtual_size: u32,
+    pub virtual_address: u32,
+    pub size_of_raw_data: u32,
+    pub pointer_to_raw_data: u32,
+    pub _pointer_to_relocations: u32,
+    pub _pointer_to_linenumbers: u32,
+    pub _number_of_relocations: u16,
+    pub _number_of_linenumbers: u16,
+    pub characteristics: u32,
+}
 
 // Helper function to find the PE base address by searching backwards for MZ signature
 unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
