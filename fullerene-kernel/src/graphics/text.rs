@@ -77,12 +77,6 @@ fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result 
     Ok(())
 }
 
-fn unsupported_pixel_format_log() {
-    petroleum::serial::serial_log(format_args!(
-        "Warning: Pixel format not supported, using RGB fallback\n"
-    ));
-}
-
 // Convenience type aliases
 type UefiFramebufferWriter = FramebufferWriter<u32>;
 type VgaFramebufferWriter = FramebufferWriter<u8>;
@@ -110,10 +104,13 @@ pub static FRAMEBUFFER_BIOS: Once<Mutex<super::framebuffer::FramebufferWriter<u8
 
 #[cfg(target_os = "uefi")]
 pub fn init(config: &FullereneFramebufferConfig) {
-    petroleum::serial::serial_log(format_args!(
-        "Graphics: Initializing UEFI framebuffer: {}x{}, stride: {}, pixel_format: {:?}\n",
-        config.width, config.height, config.stride, config.pixel_format
-    ));
+    petroleum::info_log!(
+        "Graphics: Initializing UEFI framebuffer: {}x{}, stride: {}, pixel_format: {:?}",
+        config.width,
+        config.height,
+        config.stride,
+        config.pixel_format
+    );
 
     // Initialize simple framebuffer config (Redox vesad-style)
     if config.bpp == 32 {
@@ -132,9 +129,7 @@ pub fn init(config: &FullereneFramebufferConfig) {
     let (writer, fb_enum) = match config.pixel_format {
         petroleum::common::EfiGraphicsPixelFormat::PixelFormatMax => {
             // Special marker for VGA mode
-            petroleum::serial::serial_log(format_args!(
-                "Graphics: Using VGA 8-bit mode for UEFI\n"
-            ));
+            petroleum::info_log!("Graphics: Using VGA 8-bit mode for UEFI");
             let vga_config = petroleum::common::VgaFramebufferConfig {
                 address: config.address,
                 width: config.width,
@@ -149,9 +144,7 @@ pub fn init(config: &FullereneFramebufferConfig) {
         }
         _ => {
             // Standard UEFI graphics mode (32-bit)
-            petroleum::serial::serial_log(format_args!(
-                "Graphics: Using 32-bit UEFI graphics mode\n"
-            ));
+            petroleum::info_log!("Graphics: Using 32-bit UEFI graphics mode");
             let writer = FramebufferWriter::<u32>::new(FramebufferInfo::new(config));
             (
                 Box::new(writer.clone()) as Box<dyn core::fmt::Write + Send + Sync>,

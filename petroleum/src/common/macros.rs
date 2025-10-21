@@ -39,21 +39,25 @@ macro_rules! map_pages_loop {
             PhysAddr, VirtAddr,
             structures::paging::{Page, PhysFrame, Size4KiB},
         };
-        macro_rules! map_page_with_flush {
-            ($map:expr, $pg:expr, $frm:expr, $flgs:expr, $alloc:expr) => {{
-                unsafe {
-                    $map.map_to($pg, $frm, $flgs, $alloc)
-                        .expect("Failed to map page")
-                        .flush();
-                }
-            }};
-        }
         for i in 0..$num_pages {
             let phys_addr = PhysAddr::new($base_phys + i * 4096);
             let virt_addr = VirtAddr::new($base_virt + i * 4096);
             let page = Page::<Size4KiB>::containing_address(virt_addr);
             let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
-            map_page_with_flush!($mapper, page, frame, $flags, $allocator);
+            unsafe {
+                match $mapper.map_to(page, frame, $flags, $allocator) {
+                    Ok(flush) => flush.flush(),
+                    Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                        // Page already mapped, skip
+                    }
+                    Err(e) => {
+                        // Log mapping errors gracefully instead of panicking - use serial directly to avoid log crate issues
+                        const MSG: &[u8] = b"Mapping error\n";
+                        let _ = unsafe { crate::write_serial_bytes!(0x3F8, 0x3FD, MSG) };
+                        continue;
+                    }
+                }
+            }
         }
     }};
 }

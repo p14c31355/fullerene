@@ -299,111 +299,129 @@ fn perform_automated_backup() {
     }
 }
 
-/// Main kernel scheduler loop - orchestrates all system functionality
-pub fn scheduler_loop() -> ! {
-    use x86_64::instructions::hlt;
+/// Process a single scheduler iteration
+fn process_scheduler_iteration() {
+    let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
+    let iteration_count = SCHEDULER_ITERATIONS.load(Ordering::Relaxed);
+    let system_stats = collect_system_stats();
 
-    // Initialize scheduler by creating the shell process
-    log::info!("Starting enhanced OS scheduler with integrated system features...");
+    // Process I/O events and perform periodic tasks
+    process_io_events();
+    perform_periodic_health_checks(&system_stats, current_tick);
+    perform_periodic_system_tasks(&system_stats, current_tick, iteration_count);
 
-    // At the top of scheduler_loop
+    // Yield and handle system calls
+    yield_and_process_system_calls();
+
+    // Periodic desktop update and emergency checks
+    perform_periodic_ui_operations(current_tick);
+    perform_emergency_checks(current_tick);
+}
+
+/// Perform periodic health checks and statistics
+fn perform_periodic_health_checks(stats: &SystemStats, current_tick: u64) {
     static LAST_HEALTH_CHECK_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
+    check_periodic!(LAST_HEALTH_CHECK_TICK, 1000, current_tick, {
+        perform_system_health_checks();
+        log_system_stats(stats, LOG_INTERVAL_TICKS);
+        display_system_stats_on_vga(stats, DISPLAY_INTERVAL_TICKS);
+    });
+}
+
+/// Perform periodic filesystem and maintenance tasks
+fn perform_periodic_system_tasks(stats: &SystemStats, current_tick: u64, iteration_count: u64) {
+    periodic_task!(current_tick, 3000, {
+        log_system_stats_to_fs(stats);
+        perform_automated_backup();
+    });
+
+    periodic_task!(current_tick, 2000, {
+        perform_system_maintenance();
+    });
+
+    perform_memory_capacity_check(current_tick);
+    perform_process_cleanup_check(iteration_count);
+}
+
+/// Check and log memory utilization periodically
+fn perform_memory_capacity_check(current_tick: u64) {
+    periodic_task!(current_tick, 10000, {
+        let (used_bytes, total_bytes, _) = petroleum::get_memory_stats!();
+        let usage_percent = if total_bytes > 0 {
+            (used_bytes * 100) / total_bytes
+        } else {
+            0
+        };
+
+        log::info!(
+            "Memory utilization: {} bytes / {} bytes ({}%)",
+            used_bytes,
+            total_bytes,
+            usage_percent
+        );
+
+        if usage_percent > 90 {
+            log::warn!("Critical memory usage (>90%) detected!");
+        }
+    });
+}
+
+/// Periodically clean up terminated processes
+fn perform_process_cleanup_check(iteration_count: u64) {
+    periodic_task!(iteration_count, 100, {
+        crate::process::cleanup_terminated_processes();
+    });
+}
+
+/// Yield control and process system calls
+fn yield_and_process_system_calls() {
+    crate::syscall::kernel_syscall(22, 0, 0, 0); // Yield syscall
+
+    // Allow I/O operations with brief pauses
+    for _ in 0..50 {
+        petroleum::cpu_pause();
+    }
+}
+
+/// Handle periodic UI operations (desktop updates)
+fn perform_periodic_ui_operations(current_tick: u64) {
+    if current_tick % DESKTOP_UPDATE_INTERVAL_TICKS == 0 {
+        graphics::draw_os_desktop();
+    }
+}
+
+/// Perform periodic emergency condition checks
+fn perform_emergency_checks(current_tick: u64) {
+    if current_tick % 10000 == 0 {
+        emergency_condition_handler();
+    }
+}
+
+/// Initialize shell process and return PID
+fn initialize_shell_process() -> crate::process::ProcessId {
     let shell_pid = crate::process::create_process(
         "shell_process",
         VirtAddr::new(shell_process_main as usize as u64),
     );
     log::info!("Created shell process with PID {}", shell_pid);
+    crate::process::unblock_process(shell_pid);
+    shell_pid
+}
 
-    // Set initial process as shell
-    let _ = crate::process::unblock_process(shell_pid);
+/// Main kernel scheduler loop - orchestrates all system functionality
+pub fn scheduler_loop() -> ! {
+    log::info!("Starting enhanced OS scheduler with integrated system features...");
+
+    let _ = initialize_shell_process();
 
     // Main scheduler loop - continuously execute processes with integrated OS functionality
     loop {
-        // Increment system tick counter
+        // Increment system counters for this iteration
         SYSTEM_TICK.fetch_add(1, Ordering::Relaxed);
         SCHEDULER_ITERATIONS.fetch_add(1, Ordering::Relaxed);
 
-        // Collect current system statistics (every scheduler iteration for simplicity)
-        let system_stats = collect_system_stats();
-
-        // Process I/O events (keyboard, filesystem, etc.)
-        process_io_events();
-
-        // Periodically perform health checks and log statistics
-        let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
-        check_periodic!(LAST_HEALTH_CHECK_TICK, 1000, current_tick, {
-            perform_system_health_checks();
-            log_system_stats(&system_stats, LOG_INTERVAL_TICKS);
-            display_system_stats_on_vga(&system_stats, DISPLAY_INTERVAL_TICKS);
-        });
-
-        // Periodic filesystem synchronization and OS features (every 3000 ticks)
-        periodic_task!(current_tick, 3000, {
-            log_system_stats_to_fs(&system_stats);
-            perform_automated_backup();
-        });
-
-        // Perform system maintenance tasks periodically
-        periodic_task!(current_tick, 2000, {
-            perform_system_maintenance();
-        });
-
-        // Periodic memory capacity check (every 10000 ticks)
-        periodic_task!(current_tick, 10000, {
-            let (used_bytes, total_bytes, _) = petroleum::get_memory_stats!();
-            let usage_percent = if total_bytes > 0 {
-                (used_bytes * 100) / total_bytes
-            } else {
-                0
-            };
-
-            log::info!(
-                "Memory utilization: {} bytes / {} bytes ({}%)",
-                used_bytes,
-                total_bytes,
-                usage_percent
-            );
-
-            if usage_percent > 90 {
-                log::warn!("Critical memory usage (>90%) detected!");
-            }
-        });
-
-        // Check for process cleanup every 100 iterations
-        let iteration_count = SCHEDULER_ITERATIONS.load(Ordering::Relaxed);
-        periodic_task!(iteration_count, 100, {
-            crate::process::cleanup_terminated_processes();
-        });
-
-        // Handle any pending system calls or kernel requests
-        // This is a placeholder - in a full implementation, there would be
-        // a queue of kernel tasks to process
-
-        // Yield to allow scheduler to run process switching
-        crate::syscall::kernel_syscall(22, 0, 0, 0); // Yield syscall
-
-        // Allow graphics and I/O operations to process
-        // This loop will be interrupted by timer maintaining process scheduling
-
-        // Yield for short periods to allow more frequent system operations using pause instead of hlt for QEMU-friendliness
-        // pause allows the CPU to enter a low-power state while remaining responsive to interrupts,
-        // making it more suitable for virtualization environments like QEMU compared to hlt which
-        // puts the CPU in a deeper sleep state that's harder for hypervisors to manage efficiently.
-        for _ in 0..50 {
-            // Reduced from 100 to allow more frequent system operations
-            petroleum::cpu_pause();
-        }
-
-        // Periodic desktop update
-        if current_tick % DESKTOP_UPDATE_INTERVAL_TICKS == 0 {
-            graphics::draw_os_desktop();
-        }
-
-        // After yield cycle, check if any emergency conditions need handling
-        // (e.g., out of memory, too many processes, kernel panic recovery)
-        if current_tick % 10000 == 0 {
-            emergency_condition_handler();
-        }
+        // Process one complete scheduler iteration
+        process_scheduler_iteration();
     }
 }
 

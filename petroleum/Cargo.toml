@@ -35,5 +35,8 @@ name = "petroleum"
 path = "src/lib.rs"
 crate-type = ["lib"]
 
+[profile.dev]
+force-frame-pointers = true
+
 [profile.release]
 force-frame-pointers = true

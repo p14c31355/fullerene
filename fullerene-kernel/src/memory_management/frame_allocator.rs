@@ -6,6 +6,15 @@ use super::*;
 use petroleum::common::logging::{SystemError, SystemResult};
 use x86_64::structures::paging::Size4KiB;
 
+/// Frame operation types for type-safe frame range operations
+#[derive(Debug, Clone, Copy)]
+pub enum FrameOperation {
+    /// Mark frames as free
+    Free,
+    /// Mark frames as used
+    Used,
+}
+
 // Note: super::* used to inherit Debug/Clone traits and common types from parent module
 
 /// Bitmap-based frame allocator implementation
@@ -74,27 +83,24 @@ impl BitmapFrameAllocator {
     fn set_frame_free(&mut self, frame_index: usize) {
         let chunk_index = frame_index / 64;
         let bit_index = frame_index % 64;
-
         if chunk_index < self.bitmap.len() {
             self.bitmap[chunk_index] &= !(1 << bit_index);
         }
     }
 
-    /// Set a frame as used in the bitmap
+    /// Set a frame as used in the bitmap using consolidated macro
     fn set_frame_used(&mut self, frame_index: usize) {
         let chunk_index = frame_index / 64;
         let bit_index = frame_index % 64;
-
         if chunk_index < self.bitmap.len() {
             self.bitmap[chunk_index] |= 1 << bit_index;
         }
     }
 
-    /// Check if a frame is free
+    /// Check if a frame is free using consolidated macro
     fn is_frame_free(&self, frame_index: usize) -> bool {
         let chunk_index = frame_index / 64;
         let bit_index = frame_index % 64;
-
         if chunk_index < self.bitmap.len() {
             (self.bitmap[chunk_index] & (1 << bit_index)) == 0
         } else {
@@ -114,6 +120,76 @@ impl BitmapFrameAllocator {
         }
 
         None
+    }
+
+    /// Helper function to set a range of frames using optimized u64 chunk operations
+    fn set_frame_range(
+        &mut self,
+        start_frame: usize,
+        count: usize,
+        operation: FrameOperation,
+    ) -> SystemResult<()> {
+        let end_frame = match start_frame.checked_add(count) {
+            Some(end) => end,
+            None => return Err(SystemError::InvalidArgument), // Overflow
+        };
+        if end_frame > self.frame_count {
+            return Err(SystemError::InvalidArgument);
+        }
+
+        let start_chunk_index = start_frame / 64;
+        let start_bit_in_chunk = start_frame % 64;
+        let end_chunk_index = (end_frame - 1) / 64; // Use end_frame - 1 for inclusive end
+        let end_bit_in_chunk = (end_frame - 1) % 64;
+
+        let target_value = match operation {
+            FrameOperation::Free => 0u64,
+            FrameOperation::Used => u64::MAX,
+        };
+
+        // Handle partial start chunk
+        if start_chunk_index < self.bitmap.len() {
+            let bits_to_set_in_start_chunk = if start_chunk_index == end_chunk_index {
+                // Start and end in same chunk - safely handle potential subtraction underflow
+                let num_bits = end_bit_in_chunk.saturating_sub(start_bit_in_chunk).saturating_add(1);
+                ((1u64.wrapping_shl(num_bits as u32)) - 1).wrapping_shl(start_bit_in_chunk as u32)
+            } else {
+                // More chunks ahead, set from start_bit to end of chunk
+                u64::MAX << start_bit_in_chunk
+            };
+
+            match operation {
+                FrameOperation::Free => {
+                    self.bitmap[start_chunk_index] &= !bits_to_set_in_start_chunk;
+                }
+                FrameOperation::Used => {
+                    self.bitmap[start_chunk_index] |= bits_to_set_in_start_chunk;
+                }
+            }
+        }
+
+        // Handle full middle chunks
+        for chunk_index in (start_chunk_index + 1)..end_chunk_index {
+            if chunk_index < self.bitmap.len() {
+                self.bitmap[chunk_index] = target_value;
+            }
+        }
+
+        // Handle partial end chunk (if different from start chunk)
+        if start_chunk_index != end_chunk_index && end_chunk_index < self.bitmap.len() {
+            let bits_to_set_in_end_chunk = (1u64.wrapping_shl((end_bit_in_chunk + 1) as u32)) - 1; // Bits 0 to end_bit_in_chunk
+
+            match operation {
+                FrameOperation::Free => {
+                    self.bitmap[end_chunk_index] &= !bits_to_set_in_end_chunk;
+                }
+                FrameOperation::Used => {
+                    self.bitmap[end_chunk_index] |= bits_to_set_in_end_chunk;
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -186,15 +262,7 @@ impl FrameAllocator for BitmapFrameAllocator {
         }
 
         let start_frame = start_addr / 4096;
-        if start_frame + count > self.frame_count {
-            return Err(SystemError::InvalidArgument);
-        }
-
-        for i in 0..count {
-            self.set_frame_free(start_frame + i);
-        }
-
-        Ok(())
+        self.set_frame_range(start_frame, count, FrameOperation::Free)
     }
 
     fn total_frames(&self) -> usize {
@@ -219,15 +287,7 @@ impl FrameAllocator for BitmapFrameAllocator {
         }
 
         let start_frame = start_addr / 4096;
-        if start_frame + count > self.frame_count {
-            return Err(SystemError::InvalidArgument);
-        }
-
-        for i in 0..count {
-            self.set_frame_used(start_frame + i);
-        }
-
-        Ok(())
+        self.set_frame_range(start_frame, count, FrameOperation::Used)
     }
 
     fn release_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()> {
@@ -236,15 +296,7 @@ impl FrameAllocator for BitmapFrameAllocator {
         }
 
         let start_frame = start_addr / 4096;
-        if start_frame + count > self.frame_count {
-            return Err(SystemError::InvalidArgument);
-        }
-
-        for i in 0..count {
-            self.set_frame_free(start_frame + i);
-        }
-
-        Ok(())
+        self.set_frame_range(start_frame, count, FrameOperation::Free)
     }
 
     fn is_frame_available(&self, frame_addr: usize) -> bool {
@@ -285,8 +337,6 @@ impl Initializable for BitmapFrameAllocator {
         900 // Very high priority for frame allocation
     }
 }
-
-// ErrorLogging fidelity for BitmapFrameAllocator removed - use petroleum::ERROR_LOGGER instead
 
 #[cfg(test)]
 mod tests {
