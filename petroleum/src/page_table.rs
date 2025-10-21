@@ -46,22 +46,22 @@ impl PeParser {
     }
 
     pub unsafe fn size_of_image(&self) -> Option<u64> {
-        if self.pe_offset == 0 || self.pe_offset >= 1024 * 1024 || self.pe_base.is_null() { return None; }
+        if self.pe_offset == 0 || self.pe_offset >= MAX_PE_HEADER_OFFSET || self.pe_base.is_null() { return None; }
         let magic = read_unaligned!(self.pe_base, self.pe_offset + 24, u16);
         if magic != 0x10B && magic != 0x20B { return None; }
         Some(read_unaligned!(self.pe_base, self.pe_offset + 24 + 0x38, u32) as u64)
     }
 
     pub unsafe fn sections(&self) -> Option<[PeSection; 16]> {
-        if self.pe_offset == 0 || self.pe_offset >= 1024 * 1024 || self.pe_base.is_null() { return None; }
+        if self.pe_offset == 0 || self.pe_offset >= MAX_PE_HEADER_OFFSET || self.pe_base.is_null() { return None; }
         let num_sections = read_unaligned!(self.pe_base, self.pe_offset + 6, u16) as usize;
         let optional_header_size = read_unaligned!(self.pe_base, self.pe_offset + 20, u16) as usize;
         let section_table_offset = self.pe_offset + 24 + optional_header_size;
         let mut sections = [PeSection {
             name: [0; 8], virtual_size: 0, virtual_address: 0, size_of_raw_data: 0,
             pointer_to_raw_data: 0, characteristics: 0
-        }; 16];
-        for i in 0..num_sections.min(16) {
+        }; MAX_PE_SECTIONS];
+        for i in 0..num_sections.min(MAX_PE_SECTIONS) {
             let offset = section_table_offset + i * 40;
             core::ptr::copy_nonoverlapping(self.pe_base.add(offset), sections[i].name.as_mut_ptr(), 8);
             sections[i].virtual_size = read_unaligned!(self.pe_base, offset + 8, u32);
@@ -121,6 +121,8 @@ pub struct Elf64Phdr {
 // PE parsing constants
 const MAX_PE_SEARCH_DISTANCE: usize = 10 * 1024 * 1024;
 const MAX_PE_OFFSET: usize = 16 * 1024 * 1024;
+const MAX_PE_HEADER_OFFSET: usize = 1024 * 1024;
+const MAX_PE_SECTIONS: usize = 16;
 const KERNEL_MEMORY_PADDING: u64 = 1024 * 1024;
 const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024;
 
@@ -502,6 +504,14 @@ unsafe fn map_kernel_segments_inner(
         for section in sections.into_iter().filter(|s| s.virtual_size > 0) {
             unsafe { map_pe_section(mapper, section, kernel_phys_start, phys_offset, frame_allocator); }
         }
+    } else {
+        // Fallback: map 64MB region for the kernel if PE parsing fails
+        let kernel_size = FALLBACK_KERNEL_SIZE;
+        let kernel_pages = kernel_size.div_ceil(4096);
+        let flags = x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE;
+        unsafe {
+            map_identity_range(mapper, frame_allocator, kernel_phys_start.as_u64(), kernel_pages, flags).expect("Failed to map fallback kernel range");
+        }
     }
 }
 
@@ -532,6 +542,11 @@ fn map_additional_regions(
 
 // Helper to adjust return address after page table switch
 fn adjust_return_address(phys_offset: VirtAddr) {
+    // WARNING: This code assumes frame pointers (rbp) are available and enabled, and relies on
+    // the standard stack layout where the return address is at [rbp + 8]. This may not hold for
+    // all compiler versions or optimization levels, especially in debug builds where
+    // force-frame-pointers is not set by default. Violation could lead to stack corruption or crash.
+    // This is acknowledged as fragile but necessary for the higher-half kernel transition.
     unsafe {
         let mut base_pointer: u64;
         core::arch::asm!("mov {}, rbp", out(reg) base_pointer);
@@ -548,21 +563,56 @@ pub fn reinit_page_table_with_allocator(
 ) -> VirtAddr {
     use x86_64::structures::paging::PageTableFlags as Flags;
     debug_log_no_alloc!("Reinit start");
+
     let phys_offset = HIGHER_HALF_OFFSET;
+
+    // Allocate new L4 page table frame
     let level_4_table_frame = frame_allocator.allocate_frame().expect("L4 alloc");
+
+    // Zero the new L4 table
     unsafe {
         core::ptr::write_bytes(level_4_table_frame.start_address().as_u64() as *mut PageTable, 0, 1);
-        let mut mapper = OffsetPageTable::new(&mut *(level_4_table_frame.start_address().as_u64() as *mut PageTable), VirtAddr::new(0));
-        map_identity_range(&mut mapper, frame_allocator, 4096, 16383, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE).expect("Failed to map identity range for UEFI compatibility");
-        let kernel_size = calculate_kernel_memory_size(kernel_phys_start);
-        map_identity_range(&mut mapper, frame_allocator, kernel_phys_start.as_u64(), kernel_size.div_ceil(4096), Flags::PRESENT | Flags::WRITABLE).expect("Failed to identity map kernel for CR3 switch");
-        map_kernel_segments_inner(&mut mapper, frame_allocator, kernel_phys_start, phys_offset);
-        map_additional_regions(&mut mapper, frame_allocator, fb_addr, fb_size, phys_offset);
-        mapper.map_to(Page::containing_address(phys_offset + level_4_table_frame.start_address().as_u64()), level_4_table_frame, Flags::PRESENT | Flags::WRITABLE, frame_allocator).expect("Failed to map L4 table to higher half").flush();
-        Cr3::write(level_4_table_frame, x86_64::registers::control::Cr3Flags::empty());
     }
+
+    // Create mapper for new page table with identity mapping
+    let mut mapper = unsafe {
+        OffsetPageTable::new(&mut *(level_4_table_frame.start_address().as_u64() as *mut PageTable), VirtAddr::new(0))
+    };
+
+    // Map identity range for UEFI compatibility (64MB - first page)
+    unsafe {
+        map_identity_range(&mut mapper, frame_allocator, 4096, 16383, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE).expect("Failed to map identity range for UEFI compatibility");
+    }
+
+    // Calculate kernel size
+    let kernel_size = unsafe { calculate_kernel_memory_size(kernel_phys_start) };
+
+    // Identity map kernel for CR3 switch
+    let kernel_pages = kernel_size.div_ceil(4096);
+    unsafe {
+        map_identity_range(&mut mapper, frame_allocator, kernel_phys_start.as_u64(), kernel_pages, Flags::PRESENT | Flags::WRITABLE).expect("Failed to identity map kernel for CR3 switch");
+    }
+
+    // Map kernel segments to higher half
+    unsafe { map_kernel_segments_inner(&mut mapper, frame_allocator, kernel_phys_start, phys_offset); }
+
+    // Map additional regions
+    map_additional_regions(&mut mapper, frame_allocator, fb_addr, fb_size, phys_offset);
+
+    // Map L4 table to higher half
+    unsafe {
+        mapper.map_to(Page::containing_address(phys_offset + level_4_table_frame.start_address().as_u64()), level_4_table_frame, Flags::PRESENT | Flags::WRITABLE, frame_allocator).expect("Failed to map L4 table to higher half").flush();
+    }
+
+    // Switch to new page table
+    unsafe { Cr3::write(level_4_table_frame, x86_64::registers::control::Cr3Flags::empty()); }
+
+    // Flush TLB
     flush_tlb_and_verify!();
+
+    // Adjust return address for higher half
     adjust_return_address(phys_offset);
+
     debug_log_no_alloc!("Reinit done");
     phys_offset
 }
@@ -622,7 +672,7 @@ impl<'a> MemoryMapper<'a> {
 
     // Map kernel segments using PE parsing
     pub unsafe fn map_kernel_segments(&mut self, kernel_phys_start: PhysAddr) {
-        map_kernel_segments_inner(self.mapper, self.frame_allocator, kernel_phys_start, self.phys_offset);
+        unsafe { map_kernel_segments_inner(self.mapper, self.frame_allocator, kernel_phys_start, self.phys_offset); }
     }
 }
 
