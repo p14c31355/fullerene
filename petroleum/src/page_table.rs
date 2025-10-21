@@ -974,7 +974,7 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     // Check PE signature
     let pe_signature_ptr = unsafe { kernel_ptr.add(pe_offset) as *const u32 };
     let pe_signature = unsafe { core::ptr::read_unaligned(pe_signature_ptr) };
-    if pe_signature != 0x4550 { // "PE\0\0"
+    if pe_signature != 0x00004550 { // "PE\0\0"
         debug_log_no_alloc!("calculate_kernel_memory_size: Invalid PE signature, using fallback");
         return 64 * 1024 * 1024;
     }
