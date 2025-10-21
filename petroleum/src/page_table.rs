@@ -505,12 +505,13 @@ pub fn reinit_page_table_with_allocator(
     }
     flush_tlb_and_verify!();
 
-    // After CR3 switch, adjust the return address on the stack to point to higher-half virtual addresses
-    // The return address currently points to identity-mapped code, but now we're in higher-half mode
     unsafe {
-        let mut return_address_ptr: *mut u64;
-        core::arch::asm!("mov {}, rsp", out(reg) return_address_ptr);
-        return_address_ptr = return_address_ptr.add(1); // Return address is at rsp + 8 (after saved rbp)
+        // After CR3 switch, we must adjust the return address on the stack to point to the new
+        // higher-half virtual address space. The current return address is an identity-mapped address.
+        // We use the base pointer (rbp) to robustly find the return address on the stack.
+        let mut base_pointer: u64;
+        core::arch::asm!("mov {}, rbp", out(reg) base_pointer);
+        let return_address_ptr = (base_pointer as *mut u64).add(1); // Return address is at [rbp + 8]
         let current_return_addr = *return_address_ptr;
         let adjusted_return_addr = phys_offset.as_u64() + current_return_addr;
         *return_address_ptr = adjusted_return_addr;
