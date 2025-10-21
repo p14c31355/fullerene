@@ -548,11 +548,21 @@ pub fn reinit_page_table_with_allocator(
     }
     flush_tlb_and_verify!();
 
-    // After CR3 switch, adjust the return address on the stack to point to the new
+    // After CR3 switch, we must adjust the return address on the stack to point to the new
     // higher-half virtual address space. The current return address is an identity-mapped address.
-    // This function uses a naked function to have full control over the stack layout,
-    // ensuring robustness across different compiler versions and optimization levels.
-    unsafe { switch_to_higher_half(phys_offset.as_u64()); }
+    // WARNING: This code assumes frame pointers (rbp) are available and enabled, and relies on
+    // the standard stack layout where the return address is at [rbp + 8]. This may not hold for
+    // all compiler versions or optimization levels, especially in debug builds where
+    // force-frame-pointers is not set by default. Violation could lead to stack corruption or crash.
+    // This is acknowledged as fragile but necessary for the higher-half kernel transition.
+    unsafe {
+        let mut base_pointer: u64;
+        core::arch::asm!("mov {}, rbp", out(reg) base_pointer);
+        let return_address_ptr = (base_pointer as *mut u64).add(1); // Return address is at [rbp + 8]
+        let current_return_addr = *return_address_ptr;
+        let adjusted_return_addr = phys_offset.as_u64() + current_return_addr;
+        *return_address_ptr = adjusted_return_addr;
+    }
 
     debug_log_no_alloc!(
         "reinit_page_table_with_allocator: CR3 switched, return address adjusted, phys_offset=",
