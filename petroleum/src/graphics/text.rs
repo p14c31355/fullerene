@@ -123,3 +123,191 @@ pub trait TextBufferOperations {
         scroll_buffer_up!(self, self.get_height(), self.get_width(), blank_char);
     }
 }
+
+// Constants to reduce magic numbers and consolidate VGA implementation
+const VGA_WIDTH: usize = 80;
+const VGA_HEIGHT: usize = 25;
+const VGA_BUFFER_ADDR: usize = 0xb8000;
+
+#[derive(Clone)]
+/// VGA text mode buffer wrapper that implements TextBufferOperations
+pub struct VgaBuffer {
+    enabled: bool,
+    color_code: ColorCode,
+    cursor_row: usize,
+    cursor_col: usize,
+}
+
+impl VgaBuffer {
+    pub fn new() -> Self {
+        Self {
+            enabled: false,
+            color_code: ColorCode::new(Color::Green, Color::Black),
+            cursor_row: 0,
+            cursor_col: 0,
+        }
+    }
+
+    pub fn get_buffer(&mut self) -> Option<&mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]> {
+        if self.enabled {
+            Some(unsafe { &mut *(VGA_BUFFER_ADDR as *mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) })
+        } else {
+            None
+        }
+    }
+
+    pub fn set_color(&mut self, foreground: Color, background: Color) {
+        self.color_code = ColorCode::new(foreground, background);
+    }
+
+    pub fn enable(&mut self) {
+        self.enabled = true;
+    }
+
+    pub fn disable(&mut self) {
+        self.enabled = false;
+    }
+
+    pub fn reset(&mut self) {
+        if self.enabled {
+            self.clear_screen();
+        }
+        self.cursor_row = 0;
+        self.cursor_col = 0;
+    }
+}
+
+impl TextBufferOperations for VgaBuffer {
+    fn get_width(&self) -> usize {
+        VGA_WIDTH
+    }
+
+    fn get_height(&self) -> usize {
+        VGA_HEIGHT
+    }
+
+    fn get_color_code(&self) -> ColorCode {
+        self.color_code
+    }
+
+    fn get_position(&self) -> (usize, usize) {
+        (self.cursor_row, self.cursor_col)
+    }
+
+    fn set_position(&mut self, row: usize, col: usize) {
+        self.cursor_row = row;
+        self.cursor_col = col;
+    }
+
+    fn set_char_at(&mut self, row: usize, col: usize, chr: ScreenChar) {
+        if self.enabled && row < VGA_HEIGHT && col < VGA_WIDTH {
+            if let Some(buffer) = self.get_buffer() {
+                buffer[row][col] = chr;
+            }
+        }
+    }
+
+    fn get_char_at(&self, row: usize, col: usize) -> ScreenChar {
+        if self.enabled && row < VGA_HEIGHT && col < VGA_WIDTH {
+            // Get buffer directly for immutable access
+            let buffer =
+                unsafe { &*(VGA_BUFFER_ADDR as *const [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) };
+            buffer[row][col]
+        } else {
+            ScreenChar {
+                ascii_character: b' ',
+                color_code: self.color_code,
+            }
+        }
+    }
+}
+
+// VGA text mode device implementation with consolidation
+#[derive(Clone)]
+pub struct VgaDevice {
+    buffer: VgaBuffer,
+}
+
+impl VgaDevice {
+    pub fn new() -> Self {
+        Self {
+            buffer: VgaBuffer::new(),
+        }
+    }
+
+    pub fn set_color(&mut self, foreground: Color, background: Color) {
+        self.buffer.set_color(foreground, background);
+    }
+}
+
+impl crate::initializer::Initializable for VgaDevice {
+    fn init(&mut self) -> crate::common::logging::SystemResult<()> {
+        log::info!("VGA device initialized");
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "VgaDevice"
+    }
+
+    fn priority(&self) -> i32 {
+        10 // High priority for display device
+    }
+}
+
+impl crate::initializer::ErrorLogging for VgaDevice {
+    fn log_error(&self, error: &crate::common::logging::SystemError, context: &'static str) {
+        log::error!("{}: {:?}", context, error);
+    }
+
+    fn log_warning(&self, message: &'static str) {
+        log::warn!("{}", message);
+    }
+
+    fn log_info(&self, message: &'static str) {
+        log::info!("{}", message);
+    }
+
+    fn log_debug(&self, message: &'static str) {
+        log::debug!("{}", message);
+    }
+
+    fn log_trace(&self, message: &'static str) {
+        log::trace!("{}", message);
+    }
+}
+
+impl crate::initializer::HardwareDevice for VgaDevice {
+    fn device_name(&self) -> &'static str {
+        "VGA Text Mode Display"
+    }
+
+    fn device_type(&self) -> &'static str {
+        "Display"
+    }
+
+    fn enable(&mut self) -> crate::common::logging::SystemResult<()> {
+        self.buffer.enable();
+        log::info!("VGA device enabled");
+        Ok(())
+    }
+
+    fn disable(&mut self) -> crate::common::logging::SystemResult<()> {
+        self.buffer.disable();
+        log::info!("VGA device disabled");
+        Ok(())
+    }
+
+    fn reset(&mut self) -> crate::common::logging::SystemResult<()> {
+        self.buffer.reset();
+        log::info!("VGA device reset");
+        Ok(())
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.buffer.enabled
+    }
+}
+
+// Re-export for backward compatibility and consolidation
+pub use self::VgaBuffer as KernelVgaBuffer;
