@@ -174,7 +174,7 @@ impl BitmapFrameAllocator {
         // Mark available frames as free based on their physical address
         for descriptor in memory_map {
             if descriptor.type_ == crate::common::EfiMemoryType::EfiConventionalMemory
-                || descriptor.type_ as u32 == 15 {
+                || descriptor.type_ as u32 == 15 { // TODO: Replace 15 with a named constant, e.g., EfiMemoryType::FirmwareSpecific
                 let start_frame = (descriptor.physical_start / 4096) as usize;
                 let end_frame = start_frame + descriptor.number_of_pages as usize;
 
