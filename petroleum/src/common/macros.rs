@@ -592,6 +592,44 @@ macro_rules! safe_buffer_access {
     };
 }
 
+/// Bitmap operations macro to reduce repetitive bitmap manipulation
+/// Reduces line count for bitmap frame allocation operations by consolidating
+/// the common pattern of chunk/bit index calculation and bounds checking.
+#[macro_export]
+macro_rules! bitmap_operation {
+    ($bitmap:expr, $frame_index:expr, set_free) => {{
+        if let Some(ref mut bitmap) = $bitmap {
+            let chunk_index = $frame_index / 64;
+            let bit_index = $frame_index % 64;
+            if chunk_index < bitmap.len() {
+                bitmap[chunk_index] &= !(1 << bit_index);
+            }
+        }
+    }};
+    ($bitmap:expr, $frame_index:expr, set_used) => {{
+        if let Some(ref mut bitmap) = $bitmap {
+            let chunk_index = $frame_index / 64;
+            let bit_index = $frame_index % 64;
+            if chunk_index < bitmap.len() {
+                bitmap[chunk_index] |= 1 << bit_index;
+            }
+        }
+    }};
+    ($bitmap:expr, $frame_index:expr, is_free) => {{
+        if let Some(ref bitmap) = $bitmap {
+            let chunk_index = $frame_index / 64;
+            let bit_index = $frame_index % 64;
+            if chunk_index < bitmap.len() {
+                (bitmap[chunk_index] & (1 << bit_index)) == 0
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }};
+}
+
 /// Macro for scrolling up a 2D character buffer (generic version)
 #[macro_export]
 macro_rules! scroll_char_buffer_up {

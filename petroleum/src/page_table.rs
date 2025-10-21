@@ -1,4 +1,4 @@
-use crate::{debug_log, debug_log_no_alloc, flush_tlb_and_verify, map_pages_loop};
+use crate::{bitmap_operation, debug_log_no_alloc, ensure_initialized, flush_tlb_and_verify, map_pages_loop};
 
 // Macros are automatically available from common module
 
@@ -196,42 +196,17 @@ impl BitmapFrameAllocator {
 
     /// Set a frame as free in the bitmap
     fn set_frame_free(&mut self, frame_index: usize) {
-        if let Some(ref mut bitmap) = self.bitmap {
-            let chunk_index = frame_index / 64;
-            let bit_index = frame_index % 64;
-
-            if chunk_index < bitmap.len() {
-                bitmap[chunk_index] &= !(1 << bit_index);
-            }
-        }
+        bitmap_operation!(self.bitmap, frame_index, set_free);
     }
 
     /// Set a frame as used in the bitmap
     fn set_frame_used(&mut self, frame_index: usize) {
-        if let Some(ref mut bitmap) = self.bitmap {
-            let chunk_index = frame_index / 64;
-            let bit_index = frame_index % 64;
-
-            if chunk_index < bitmap.len() {
-                bitmap[chunk_index] |= 1 << bit_index;
-            }
-        }
+        bitmap_operation!(self.bitmap, frame_index, set_used);
     }
 
     /// Check if a frame is free
     fn is_frame_free(&self, frame_index: usize) -> bool {
-        if let Some(ref bitmap) = self.bitmap {
-            let chunk_index = frame_index / 64;
-            let bit_index = frame_index % 64;
-
-            if chunk_index < bitmap.len() {
-                (bitmap[chunk_index] & (1 << bit_index)) == 0
-            } else {
-                false
-            }
-        } else {
-            false
-        }
+        bitmap_operation!(self.bitmap, frame_index, is_free)
     }
 
     /// Find the next free frame starting from a given index
@@ -282,9 +257,7 @@ impl BitmapFrameAllocator {
         start_addr: usize,
         count: usize,
     ) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
+        ensure_initialized!(self);
 
         let start_frame = start_addr / 4096;
         if start_frame + count > self.frame_count {
@@ -696,9 +669,7 @@ impl PageTableHelper for PageTableManager {
         flags: PageFlags,
         frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
     ) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
+        ensure_initialized!(self);
 
         let mapper = self.mapper.as_mut().unwrap();
         let virtual_addr = x86_64::VirtAddr::new(virtual_addr as u64);
@@ -722,9 +693,7 @@ impl PageTableHelper for PageTableManager {
         &mut self,
         virtual_addr: usize,
     ) -> crate::common::logging::SystemResult<x86_64::structures::paging::PhysFrame<Size4KiB>> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
+        ensure_initialized!(self);
 
         let mapper = self.mapper.as_mut().unwrap();
         let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(
@@ -743,9 +712,7 @@ impl PageTableHelper for PageTableManager {
         &self,
         virtual_addr: usize,
     ) -> crate::common::logging::SystemResult<usize> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
+        ensure_initialized!(self);
 
         let mapper = self.mapper.as_ref().unwrap();
         let virt_addr = VirtAddr::new(virtual_addr as u64);
@@ -761,9 +728,7 @@ impl PageTableHelper for PageTableManager {
         virtual_addr: usize,
         flags: PageFlags,
     ) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
+        ensure_initialized!(self);
 
         let mapper = self.mapper.as_mut().unwrap();
         let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(
@@ -784,9 +749,7 @@ impl PageTableHelper for PageTableManager {
         &self,
         virtual_addr: usize,
     ) -> crate::common::logging::SystemResult<PageFlags> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
+        ensure_initialized!(self);
 
         // Traverse the page table to find the entry for this page
         let phys_mem_offset = self.mapper.as_ref().unwrap().phys_offset();
@@ -833,18 +796,14 @@ impl PageTableHelper for PageTableManager {
     }
 
     fn flush_tlb(&mut self, virtual_addr: usize) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
+        ensure_initialized!(self);
 
         tlb::flush(VirtAddr::new(virtual_addr as u64));
         Ok(())
     }
 
     fn flush_tlb_all(&mut self) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
+        ensure_initialized!(self);
 
         let (current, flags) = Cr3::read();
         unsafe { Cr3::write(current, flags) };
@@ -852,9 +811,7 @@ impl PageTableHelper for PageTableManager {
     }
 
     fn create_page_table(&mut self) -> crate::common::logging::SystemResult<usize> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
+        ensure_initialized!(self);
 
         // Return a dummy address
         Ok(0x1000)
@@ -864,9 +821,7 @@ impl PageTableHelper for PageTableManager {
         &mut self,
         _table_addr: usize,
     ) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
+        ensure_initialized!(self);
 
         Ok(())
     }
@@ -875,17 +830,13 @@ impl PageTableHelper for PageTableManager {
         &mut self,
         _source_table: usize,
     ) -> crate::common::logging::SystemResult<usize> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
+        ensure_initialized!(self);
 
         Ok(_source_table + 0x1000) // Dummy offset
     }
 
     fn switch_page_table(&mut self, table_addr: usize) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
+        ensure_initialized!(self);
 
         self.current_page_table = table_addr;
         Ok(())
