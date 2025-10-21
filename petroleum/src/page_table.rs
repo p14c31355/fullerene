@@ -104,7 +104,7 @@ impl BitmapFrameAllocator {
     }
 
     /// Initialize with EFI memory map
-        pub fn init_with_memory_map(
+    pub unsafe fn init_with_memory_map(
         &mut self,
         memory_map: &[EfiMemoryDescriptor],
     ) -> crate::common::logging::SystemResult<()> {
