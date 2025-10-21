@@ -240,75 +240,7 @@ impl PrivatePciDevice {
         ((bus as usize) << 16) | ((device as usize) << 8) | (function as usize)
     }
 
-    /// Get device vendor ID
-    pub fn vendor_id(&self) -> u16 {
-        self.config.vendor_id
-    }
 
-    /// Get device ID
-    pub fn device_id(&self) -> u16 {
-        self.config.device_id
-    }
-
-    /// Get device class code
-    pub fn class_code(&self) -> u8 {
-        self.config.class_code
-    }
-
-    /// Get device subclass
-    pub fn subclass(&self) -> u8 {
-        self.config.subclass
-    }
-
-    /// Get device revision ID
-    pub fn revision_id(&self) -> u8 {
-        self.config.revision_id
-    }
-
-    /// Enable memory space access
-    pub fn enable_memory_space(&mut self) {
-        self.write_command_reg(self.config.command | 0x2);
-    }
-
-    /// Enable I/O space access
-    pub fn enable_io_space(&mut self) {
-        self.write_command_reg(self.config.command | 0x1);
-    }
-
-    /// Enable bus mastering
-    pub fn enable_bus_master(&mut self) {
-        self.write_command_reg(self.config.command | 0x4);
-    }
-
-    fn write_command_reg(&mut self, new_command: u16) {
-        self.config
-            .write_config_word(self.bus, self.device, self.function, 4, new_command);
-        self.config.command = new_command;
-    }
-
-    /// Get base address register value
-    pub fn get_bar(&self, bar_index: usize) -> u32 {
-        if bar_index < 6 {
-            let offset = 0x10 + (bar_index << 2);
-            PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset as u8)
-        } else {
-            0
-        }
-    }
-
-    /// Set base address register value
-    pub fn set_bar(&mut self, bar_index: usize, value: u32) {
-        if bar_index < 6 {
-            let offset = 0x10 + (bar_index * 4);
-            self.config.write_config_dword(
-                self.bus,
-                self.device,
-                self.function,
-                offset as u8,
-                value,
-            );
-        }
-    }
 }
 
 /// PCI Bus scanner for device discovery

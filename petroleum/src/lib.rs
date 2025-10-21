@@ -91,6 +91,8 @@ pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferC
     Once::new();
 
 /// Shared QEMU framebuffer configurations for both bootloader and kernel
+
+
 pub const QEMU_CONFIGS: [QemuConfig; 8] = [
     // Cirrus VGA specific addresses (common with -vga cirrus) - start with successfully tested ones
     QemuConfig {
@@ -391,8 +393,6 @@ pub struct QemuConfig {
 
 /// Test a QEMU framebuffer configuration for accessibility
 pub fn test_qemu_framebuffer_access(address: u64) -> bool {
-    const MAX_FRAMEBUFFER_SIZE: u64 = 0x10000000; // 256MB limit - named constant
-
     // Check basic constraints
     if address == 0 {
         return false;
@@ -486,7 +486,7 @@ pub fn detect_qemu_framebuffer(
 
 /// Alternative GOP detection for QEMU environments
 pub fn init_gop_framebuffer_alternative(
-    system_table: &EfiSystemTable,
+    _system_table: &EfiSystemTable,
 ) -> Option<FullereneFramebufferConfig> {
     serial::_print(format_args!(
         "GOP: Trying alternative detection methods for QEMU...\n"

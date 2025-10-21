@@ -379,41 +379,7 @@ unsafe fn map_identity_range(
     map_identity_range_checked!(mapper, frame_allocator, phys_start, num_pages, flags)
 }
 
-use core::arch::naked_asm;
 
-/// Switch to higher-half virtual address space after CR3 switch.
-///
-/// After switching page tables with CR3, the return address on the stack is still
-/// an identity-mapped address. This naked function adjusts it to point to the
-/// new higher-half virtual address space by adding the physical offset.
-///
-/// This approach ensures robustness across different compiler versions and
-/// optimization levels, as it has full control over the stack manipulation.
-///
-/// # Safety
-/// This function must be called immediately after CR3 switch and before returning
-/// from the calling function. The higher-half mapping must be properly set up.
-#[unsafe(naked)]
-pub extern "C" fn switch_to_higher_half(phys_offset: u64) {
-    // phys_offset in rdi
-    naked_asm!(
-        // Calculate return address location: rbp + 8
-        "mov %rbp, %rax",
-        "lea 0x8(%rax), %rax",
-
-        // Load current return address
-        "mov (%rax), %rcx",
-
-        // Adjust return address: rcx = rcx + phys_offset (rdi)
-        "add %rdi, %rcx",
-
-        // Store adjusted return address
-        "mov %rcx, (%rax)",
-
-        // Return
-        "ret",
-    );
-}
 
 /// Reinitialize the page table with identity mapping and higher-half kernel mapping
 /// This version takes a frame allocator to perform the actual mapping

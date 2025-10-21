@@ -122,14 +122,12 @@ pub fn read_file_to_memory(
     let pages = file_size.div_ceil(4096);
     let mut phys_addr: usize = 0;
 
-    let status = unsafe {
-        ((*bs).allocate_pages)(
-            0usize,
-            crate::common::EfiMemoryType::EfiLoaderData,
-            pages,
-            &mut phys_addr,
-        )
-    };
+    let status = ((*bs).allocate_pages)(
+        0usize,
+        crate::common::EfiMemoryType::EfiLoaderData,
+        pages,
+        &mut phys_addr,
+    );
     if EfiStatus::from(status) != EfiStatus::Success {
         log::error!("File: Failed to allocate pages.");
         return Err(BellowsError::AllocationFailed(
@@ -142,7 +140,7 @@ pub fn read_file_to_memory(
 
     let status = unsafe { ((*file.file).read)(file.file, &mut read_size, buf_ptr) };
     if EfiStatus::from(status) != EfiStatus::Success || read_size as usize != file_size {
-        unsafe { ((*bs).free_pages)(phys_addr, pages) };
+        ((*bs).free_pages)(phys_addr, pages);
         log::error!("File: Failed to read file.");
         return Err(BellowsError::FileIo(
             "Failed to read kernel file or read size mismatch.",
