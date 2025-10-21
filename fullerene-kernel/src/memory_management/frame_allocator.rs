@@ -177,7 +177,7 @@ impl BitmapFrameAllocator {
 
         // Handle partial end chunk (if different from start chunk)
         if start_chunk_index != end_chunk_index && end_chunk_index < self.bitmap.len() {
-            let bits_to_set_in_end_chunk = (1u64 << (end_bit_in_chunk + 1)) - 1; // Bits 0 to end_bit_in_chunk
+            let bits_to_set_in_end_chunk = (1u64.wrapping_shl((end_bit_in_chunk + 1) as u32)) - 1; // Bits 0 to end_bit_in_chunk
 
             match operation {
                 FrameOperation::Free => {
