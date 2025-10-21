@@ -1,4 +1,4 @@
-use crate::{bitmap_operation, debug_log_no_alloc, ensure_initialized, flush_tlb_and_verify, map_pages_loop};
+use crate::{bitmap_operation, debug_log_no_alloc, ensure_initialized, flush_tlb_and_verify, map_pages_loop, calc_offset_addr, create_page_and_frame, map_and_flush, map_with_offset, log_memory_descriptor, map_identity_range_checked, calculate_kernel_pages};
 
 // Macros are automatically available from common module
 
@@ -121,9 +121,7 @@ impl BitmapFrameAllocator {
 
         // Debug: Log each descriptor
         for (i, desc) in memory_map.iter().enumerate() {
-            debug_log_no_alloc!("Descriptor ", i, ": type=", desc.type_ as usize,
-                               ", start=0x", desc.physical_start as usize,
-                               ", pages=", desc.number_of_pages as usize);
+            log_memory_descriptor!(desc, i);
         }
 
         // 1. Find the highest physical address in conventional memory to determine the total number of frames to manage.
@@ -370,18 +368,7 @@ unsafe fn map_identity_range(
     num_pages: u64,
     flags: x86_64::structures::paging::PageTableFlags,
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-    for i in 0..num_pages {
-        let phys_addr = PhysAddr::new(phys_start + i * 4096);
-        let virt_addr = VirtAddr::new(phys_start + i * 4096);
-        let page = Page::containing_address(virt_addr);
-        let frame = PhysFrame::containing_address(phys_addr);
-        match unsafe { mapper.map_to(page, frame, flags, frame_allocator) } {
-            Ok(flush) => flush.flush(),
-            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => continue,
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
+    map_identity_range_checked!(mapper, frame_allocator, phys_start, num_pages, flags)
 }
 
 /// Reinitialize the page table with identity mapping and higher-half kernel mapping
@@ -941,20 +928,11 @@ unsafe fn map_kernel_segments(
         // If not ELF, fall back to mapping as writable (old behavior)
         const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024; // As defined in calculate_kernel_memory_size
         let kernel_size = FALLBACK_KERNEL_SIZE;
-        let kernel_pages = kernel_size.div_ceil(4096);
+        let kernel_pages = calculate_kernel_pages!(kernel_size);
         for i in 0..kernel_pages {
-            let phys_addr = kernel_phys_start + (i * 4096);
-            let virt_addr = phys_offset + phys_addr.as_u64();
-            let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
-            let frame =
-                x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
-            let flags = Flags::PRESENT | Flags::WRITABLE;
-            unsafe {
-                mapper
-                    .map_to(page, frame, flags, frame_allocator)
-                    .expect("Failed to map kernel page")
-                    .flush();
-            }
+            let phys_addr = calc_offset_addr!(kernel_phys_start.as_u64(), i);
+            let virt_addr = calc_offset_addr!(phys_offset.as_u64(), i) + kernel_phys_start.as_u64();
+            map_with_offset!(mapper, frame_allocator, phys_addr, virt_addr, Flags::PRESENT | Flags::WRITABLE);
         }
         return;
     }
@@ -984,19 +962,9 @@ unsafe fn map_kernel_segments(
 
             let pages = segment_size.div_ceil(4096);
             for p in 0..pages {
-                let phys_addr = PhysAddr::new(segment_start_phys + p * 4096);
-                let virt_addr = VirtAddr::new(segment_start_virt + p * 4096);
-                let page =
-                    x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
-                let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(
-                    phys_addr,
-                );
-                unsafe {
-                    mapper
-                        .map_to(page, frame, flags, frame_allocator)
-                        .expect("Failed to map kernel segment")
-                        .flush();
-                }
+                let phys_addr = calc_offset_addr!(segment_start_phys, p);
+                let virt_addr = calc_offset_addr!(segment_start_virt, p);
+                map_with_offset!(mapper, frame_allocator, phys_addr, virt_addr, flags);
             }
         }
     }

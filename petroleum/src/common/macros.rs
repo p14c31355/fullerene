@@ -766,6 +766,84 @@ pub struct InitSequence<'a> {
     steps: &'a [(&'static str, Box<dyn Fn() -> Result<(), &'static str>>)],
 }
 
+/// Calculate offset address in loops (phys_addr + i * 4096)
+#[macro_export]
+macro_rules! calc_offset_addr {
+    ($base:expr, $i:expr) => {
+        $base + ($i * 4096) as u64
+    };
+}
+
+/// Create page and frame from addresses in one call
+#[macro_export]
+macro_rules! create_page_and_frame {
+    ($virt_addr:expr, $phys_addr:expr) => {{
+        use x86_64::{VirtAddr, PhysAddr, structures::paging::{Page, PhysFrame, Size4KiB}};
+        let virt = VirtAddr::new($virt_addr);
+        let phys = PhysAddr::new($phys_addr);
+        let page = Page::<Size4KiB>::containing_address(virt);
+        let frame = PhysFrame::<Size4KiB>::containing_address(phys);
+        (page, frame)
+    }};
+}
+
+/// Map and flush operation in one call
+#[macro_export]
+macro_rules! map_and_flush {
+    ($mapper:expr, $page:expr, $frame:expr, $flags:expr, $allocator:expr) => {{
+        unsafe {
+            $mapper.map_to($page, $frame, $flags, $allocator)
+                .expect("Failed to map page")
+                .flush();
+        }
+    }};
+}
+
+/// Map a physical address to virtual address with offset
+#[macro_export]
+macro_rules! map_with_offset {
+    ($mapper:expr, $allocator:expr, $phys_addr:expr, $virt_addr:expr, $flags:expr) => {{
+        let (page, frame) = create_page_and_frame!($virt_addr, $phys_addr);
+        map_and_flush!($mapper, page, frame, $flags, $allocator);
+    }};
+}
+
+/// Enhanced memory descriptor logging for common patterns
+#[macro_export]
+macro_rules! log_memory_descriptor {
+    ($desc:expr, $i:expr) => {
+        crate::mem_debug!("Memory descriptor ", $i);
+        crate::mem_debug!(": type=", $desc.type_ as usize, ", phys_start=0x", $desc.physical_start as usize);
+        crate::mem_debug!(", virt_start=", $desc.virtual_start as usize, ", pages=", $desc.number_of_pages as usize);
+        crate::mem_debug!("\n");
+    };
+}
+
+/// Identity mapping range with error handling
+#[macro_export]
+macro_rules! map_identity_range_checked {
+    ($mapper:expr, $allocator:expr, $phys_start:expr, $num_pages:expr, $flags:expr) => {{
+        for i in 0..$num_pages {
+            let addr = calc_offset_addr!($phys_start, i);
+            let (page, frame) = create_page_and_frame!(addr, addr);
+            match unsafe { $mapper.map_to(page, frame, $flags, $allocator) } {
+                Ok(flush) => flush.flush(),
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }};
+}
+
+/// Calculate kernel size from ELF headers
+#[macro_export]
+macro_rules! calculate_kernel_pages {
+    ($size:expr) => {
+        ($size.div_ceil(4096))
+    };
+}
+
 /// Macro for getting memory statistics in a single line
 #[macro_export]
 macro_rules! get_memory_stats {
