@@ -120,8 +120,8 @@ impl core::fmt::Debug for EfiMemoryDescriptor {
 /// Named constant for UEFI firmware specific memory type (replace magic number)
 const EFI_MEMORY_TYPE_FIRMWARE_SPECIFIC: u32 = 15;
 
-/// Constant for UEFI compatibility pages (64MB - first page)
-const UEFI_COMPAT_PAGES: u64 = (64 * 1024 * 1024 / 4096) - 1;
+/// Constant for UEFI compatibility pages (disabled - first page)
+const UEFI_COMPAT_PAGES: u64 = 0;
 
 /// ELF definitions for parsing kernel permissions
 #[repr(C)]
@@ -613,15 +613,14 @@ fn map_additional_regions(
                 fb_pages,
                 Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE
             );
-            // Identity mapping for bootloader compatibility
-            map_identity_range(
+            // Identity mapping for bootloader compatibility (if possible)
+            let _ = map_identity_range(
                 mapper,
                 frame_allocator,
                 fb_addr.as_u64(),
                 fb_pages,
                 Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
-            )
-            .expect("Failed to identity map framebuffer");
+            );
         }
 
         const VGA_MEMORY_START: u64 = 0xA0000;
@@ -724,17 +723,20 @@ pub fn reinit_page_table_with_allocator(
 
     // Map L4 table to higher half
     unsafe {
-        mapper
-            .map_to(
-                Page::containing_address(
-                    phys_offset + level_4_table_frame.start_address().as_u64(),
-                ),
-                level_4_table_frame,
-                Flags::PRESENT | Flags::WRITABLE,
-                frame_allocator,
-            )
-            .expect("Failed to map L4 table to higher half")
-            .flush();
+        match mapper.map_to(
+            Page::containing_address(
+                phys_offset + level_4_table_frame.start_address().as_u64(),
+            ),
+            level_4_table_frame,
+            Flags::PRESENT | Flags::WRITABLE,
+            frame_allocator,
+        ) {
+            Ok(flush) => flush.flush(),
+            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                // Already mapped, skip
+            }
+            Err(e) => panic!("Failed to map L4 table to higher half: {:?}", e),
+        }
     }
 
     // Switch to new page table

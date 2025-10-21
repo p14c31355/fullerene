@@ -42,9 +42,15 @@ macro_rules! map_pages_loop {
         macro_rules! map_page_with_flush {
             ($map:expr, $pg:expr, $frm:expr, $flgs:expr, $alloc:expr) => {{
                 unsafe {
-                    $map.map_to($pg, $frm, $flgs, $alloc)
-                        .expect("Failed to map page")
-                        .flush();
+                    match $map.map_to($pg, $frm, $flgs, $alloc) {
+                        Ok(flush) => flush.flush(),
+                        Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                            // Page already mapped, skip
+                        }
+                        Err(e) => {
+                            panic!("Failed to map page: {:?}", e);
+                        }
+                    }
                 }
             }};
         }
