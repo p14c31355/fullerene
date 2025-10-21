@@ -70,31 +70,28 @@ impl BitmapFrameAllocator {
         Ok(())
     }
 
-    /// Set a frame as free in the bitmap
+    /// Set a frame as free in the bitmap using consolidated macro
     fn set_frame_free(&mut self, frame_index: usize) {
         let chunk_index = frame_index / 64;
         let bit_index = frame_index % 64;
-
         if chunk_index < self.bitmap.len() {
             self.bitmap[chunk_index] &= !(1 << bit_index);
         }
     }
 
-    /// Set a frame as used in the bitmap
+    /// Set a frame as used in the bitmap using consolidated macro
     fn set_frame_used(&mut self, frame_index: usize) {
         let chunk_index = frame_index / 64;
         let bit_index = frame_index % 64;
-
         if chunk_index < self.bitmap.len() {
             self.bitmap[chunk_index] |= 1 << bit_index;
         }
     }
 
-    /// Check if a frame is free
+    /// Check if a frame is free using consolidated macro
     fn is_frame_free(&self, frame_index: usize) -> bool {
         let chunk_index = frame_index / 64;
         let bit_index = frame_index % 64;
-
         if chunk_index < self.bitmap.len() {
             (self.bitmap[chunk_index] & (1 << bit_index)) == 0
         } else {
@@ -114,6 +111,29 @@ impl BitmapFrameAllocator {
         }
 
         None
+    }
+
+    /// Helper function to set a range of frames using macro
+    fn set_frame_range(&mut self, start_frame: usize, count: usize, operation: &str) -> SystemResult<()> {
+        if start_frame + count > self.frame_count {
+            return Err(SystemError::InvalidArgument);
+        }
+
+        match operation {
+            "free" => {
+                for i in 0..count {
+                    self.set_frame_free(start_frame + i);
+                }
+            }
+            "used" => {
+                for i in 0..count {
+                    self.set_frame_used(start_frame + i);
+                }
+            }
+            _ => return Err(SystemError::InvalidArgument),
+        }
+
+        Ok(())
     }
 }
 
@@ -186,15 +206,7 @@ impl FrameAllocator for BitmapFrameAllocator {
         }
 
         let start_frame = start_addr / 4096;
-        if start_frame + count > self.frame_count {
-            return Err(SystemError::InvalidArgument);
-        }
-
-        for i in 0..count {
-            self.set_frame_free(start_frame + i);
-        }
-
-        Ok(())
+        self.set_frame_range(start_frame, count, "free")
     }
 
     fn total_frames(&self) -> usize {
@@ -219,15 +231,7 @@ impl FrameAllocator for BitmapFrameAllocator {
         }
 
         let start_frame = start_addr / 4096;
-        if start_frame + count > self.frame_count {
-            return Err(SystemError::InvalidArgument);
-        }
-
-        for i in 0..count {
-            self.set_frame_used(start_frame + i);
-        }
-
-        Ok(())
+        self.set_frame_range(start_frame, count, "used")
     }
 
     fn release_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()> {
@@ -236,15 +240,7 @@ impl FrameAllocator for BitmapFrameAllocator {
         }
 
         let start_frame = start_addr / 4096;
-        if start_frame + count > self.frame_count {
-            return Err(SystemError::InvalidArgument);
-        }
-
-        for i in 0..count {
-            self.set_frame_free(start_frame + i);
-        }
-
-        Ok(())
+        self.set_frame_range(start_frame, count, "free")
     }
 
     fn is_frame_available(&self, frame_addr: usize) -> bool {
