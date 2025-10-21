@@ -42,12 +42,10 @@ impl Drop for EfiFileWrapper {
             // Safety:
             // The `EfiFile` pointer is assumed to be valid from the `new` function.
             // This is the last use of the pointer, so it is safe to dereference it for the `close` call.
-            unsafe {
-                let status = ((*self.file).close)(self.file);
-                if EfiStatus::from(status) != EfiStatus::Success {
-                    // In a real application, you might want to log this error.
-                    // For a bootloader, this might be a non-recoverable state.
-                }
+            let status = unsafe { ((*self.file).close)(self.file) };
+            if EfiStatus::from(status) != EfiStatus::Success {
+                // In a real application, you might want to log this error.
+                // For a bootloader, this might be a non-recoverable state.
             }
         }
     }
@@ -56,18 +54,18 @@ impl Drop for EfiFileWrapper {
 /// Helper function to open a file from a directory handle.
 pub fn open_file(dir: &EfiFileWrapper, path: &[u16]) -> crate::common::Result<EfiFileWrapper> {
     let mut file_handle: *mut EfiFile = ptr::null_mut();
-    unsafe {
-        let status = ((*dir.file).open)(
+    let status = unsafe {
+        ((*dir.file).open)(
             dir.file,
             &mut file_handle,
             path.as_ptr(),
             EFI_FILE_MODE_READ,
             0,
-        );
-        if EfiStatus::from(status) != EfiStatus::Success {
-            log::error!("File: Failed to open file.");
-            return Err(BellowsError::FileIo("Failed to open file."));
-        }
+        )
+    };
+    if EfiStatus::from(status) != EfiStatus::Success {
+        log::error!("File: Failed to open file.");
+        return Err(BellowsError::FileIo("Failed to open file."));
     }
     log::info!("File: Opened file.");
     Ok(EfiFileWrapper::new(file_handle))

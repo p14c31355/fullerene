@@ -699,6 +699,17 @@ macro_rules! error_chain {
     };
 }
 
+/// Macro for checking UEFI status and returning error if not success
+#[macro_export]
+macro_rules! check_uefi_status {
+    ($status:expr, $log_msg:expr, $err:expr) => {
+        if EfiStatus::from($status) != EfiStatus::Success {
+            log::error!($log_msg);
+            return Err($err);
+        }
+    };
+}
+
 /// Macro for simple module initialization with logging
 #[macro_export]
 macro_rules! declare_init {
