@@ -61,7 +61,7 @@ impl PeParser {
         }; 16];
         for i in 0..num_sections.min(16) {
             let offset = section_table_offset + i * 40;
-            for j in 0..8 { sections[i].name[j] = *self.pe_base.add(offset + j); }
+            core::ptr::copy_nonoverlapping(self.pe_base.add(offset), sections[i].name.as_mut_ptr(), 8);
             sections[i].virtual_size = read_unaligned!(self.pe_base, offset + 8, u32);
             sections[i].virtual_address = read_unaligned!(self.pe_base, offset + 12, u32);
             sections[i].size_of_raw_data = read_unaligned!(self.pe_base, offset + 16, u32);
