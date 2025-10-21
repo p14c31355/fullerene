@@ -9,8 +9,6 @@ use alloc::{
 
 use crate::common::logging::{SystemError, SystemResult};
 
-use core::result::Result;
-
 /// Initializable trait for components
 pub trait Initializable {
     fn name(&self) -> &str;
@@ -158,11 +156,11 @@ pub trait HardwareDevice: Initializable + ErrorLogging {
     fn disable(&mut self) -> SystemResult<()>;
     fn reset(&mut self) -> SystemResult<()>;
     fn is_enabled(&self) -> bool;
-    fn read(&mut self, address: usize, buffer: &mut [u8]) -> SystemResult<usize> {
+    fn read(&mut self, _address: usize, _buffer: &mut [u8]) -> SystemResult<usize> {
         // Default implementation returns error - hardware-specific devices should override
         Err(SystemError::NotSupported)
     }
-    fn write(&mut self, address: usize, buffer: &[u8]) -> SystemResult<usize> {
+    fn write(&mut self, _address: usize, _buffer: &[u8]) -> SystemResult<usize> {
         // Default implementation returns error - hardware-specific devices should override
         Err(SystemError::NotSupported)
     }

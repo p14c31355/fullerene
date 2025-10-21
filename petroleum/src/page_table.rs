@@ -1,4 +1,4 @@
-use crate::{bitmap_operation, debug_log_no_alloc, ensure_initialized, flush_tlb_and_verify, map_pages_loop, calc_offset_addr, create_page_and_frame, map_and_flush, map_with_offset, log_memory_descriptor, map_identity_range_checked, calculate_kernel_pages};
+use crate::{bitmap_operation, debug_log_no_alloc, ensure_initialized, flush_tlb_and_verify, map_pages_loop, calc_offset_addr, create_page_and_frame, map_and_flush, map_with_offset, log_memory_descriptor, map_identity_range_checked};
 
 // Macros are automatically available from common module
 use spin::Once;
@@ -101,9 +101,11 @@ impl BitmapFrameAllocator {
     /// (for compatibility)
     pub unsafe fn init(memory_map: &[EfiMemoryDescriptor]) -> Self {
         let mut allocator = BitmapFrameAllocator::new();
-        allocator
-            .init_with_memory_map(memory_map)
-            .expect("Failed to init bitmap allocator");
+        unsafe {
+            allocator
+                .init_with_memory_map(memory_map)
+                .expect("Failed to init bitmap allocator");
+        }
         allocator
     }
 
@@ -961,8 +963,8 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     // and valid PE structure, since kernel_phys_start points to entry point inside the PE image
     const MAX_SEARCH_DISTANCE: usize = 10 * 1024 * 1024; // 10MB max search distance
     const MAX_PE_OFFSET: usize = 16 * 1024 * 1024; // 16MB max PE offset
-    let search_offset = 0usize;
-    let dos_ptr = kernel_ptr as *const u16;
+    let _search_offset = 0usize;
+    let _dos_ptr = kernel_ptr as *const u16;
     let mut found_valid_pe = false;
 
     // Search backwards, checking each 2-byte aligned address for valid PE structure
@@ -1115,7 +1117,7 @@ pub unsafe fn parse_pe_sections(kernel_phys_start: PhysAddr) -> Option<[PeSectio
         characteristics: 0,
     }; 16];
 
-    let mut section_count = 0;
+    let mut _section_count = 0;
     for i in 0..num_sections {
         let section_offset = section_table_offset + i * 40; // Each section header is 40 bytes
 
@@ -1130,7 +1132,7 @@ pub unsafe fn parse_pe_sections(kernel_phys_start: PhysAddr) -> Option<[PeSectio
         let pointer_to_raw_data = unsafe { core::ptr::read_unaligned(kernel_ptr.add(section_offset + 20) as *const u32) };
         let characteristics = unsafe { core::ptr::read_unaligned(kernel_ptr.add(section_offset + 36) as *const u32) };
 
-        sections[section_count] = PeSection {
+        sections[_section_count] = PeSection {
             name,
             virtual_size,
             virtual_address,
@@ -1138,7 +1140,7 @@ pub unsafe fn parse_pe_sections(kernel_phys_start: PhysAddr) -> Option<[PeSectio
             pointer_to_raw_data,
             characteristics,
         };
-        section_count += 1;
+        _section_count += 1;
     }
 
     Some(sections)
@@ -1155,14 +1157,14 @@ unsafe fn map_kernel_segments(
 
     debug_log_no_alloc!("map_kernel_segments: starting PE mapping, kernel_phys_start=", kernel_phys_start.as_u64());
 
-    if let Some(sections) = parse_pe_sections(kernel_phys_start) {
+    if let Some(sections) = unsafe { parse_pe_sections(kernel_phys_start) } {
         debug_log_no_alloc!("map_kernel_segments: PE parsed successfully, mapping sections");
 
         // Count non-zero sections (since we have a fixed-size array with padding)
-        let mut section_count = 0;
+        let mut _section_count = 0;
         for i in 0..sections.len() {
             if sections[i].virtual_size > 0 {
-                section_count += 1;
+                _section_count += 1;
             }
         }
 

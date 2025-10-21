@@ -1,6 +1,6 @@
 use embedded_graphics::pixelcolor::Rgb888;
-use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
 use embedded_graphics::prelude::*;
+use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
 
 use core::marker::{Send, Sync};
 use core::ptr::{read_volatile, write_volatile};
