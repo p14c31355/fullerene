@@ -16,6 +16,7 @@ pub mod filesystem;
 pub mod graphics;
 pub mod graphics_alternatives;
 pub mod hardware;
+pub mod initializer;
 pub mod page_table;
 pub mod serial;
 pub mod uefi_helpers;
