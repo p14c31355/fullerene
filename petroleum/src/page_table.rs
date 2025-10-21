@@ -1176,9 +1176,9 @@ unsafe fn map_kernel_segments(
         let kernel_size = FALLBACK_KERNEL_SIZE;
         let kernel_pages = kernel_size.div_ceil(4096);
         for i in 0..kernel_pages {
-            let phys_addr = calc_offset_addr!(kernel_phys_start.as_u64(), i);
-            let virt_addr = calc_offset_addr!(phys_offset.as_u64(), i) + kernel_phys_start.as_u64();
-            map_with_offset!(mapper, frame_allocator, phys_addr, virt_addr, Flags::PRESENT | Flags::WRITABLE);
+let phys_addr = calc_offset_addr!(kernel_phys_start.as_u64(), i);
+let virt_addr = calc_offset_addr!(phys_offset.as_u64(), i);
+map_with_offset!(mapper, frame_allocator, phys_addr, virt_addr, Flags::PRESENT | Flags::WRITABLE);
         }
     }
 }
