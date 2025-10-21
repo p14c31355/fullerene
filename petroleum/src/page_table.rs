@@ -365,9 +365,6 @@ impl BitmapFrameAllocator {
         }
         None
     }
-}
-
-impl BitmapFrameAllocator {
 
     /// Allocate a specific frame range (for reserving used regions)
     pub fn allocate_frames_at(
@@ -399,6 +396,8 @@ impl BitmapFrameAllocator {
         Ok(())
     }
 }
+
+
 
 unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
     fn allocate_frame(&mut self) -> Option<PhysFrame> {
@@ -606,11 +605,7 @@ impl<'a> MemoryMapper<'a> {
 
     // Map kernel segments using PE parsing
     pub unsafe fn map_kernel_segments(&mut self, kernel_phys_start: PhysAddr) {
-        if let Some(sections) = unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8).and_then(|p| p.sections()) } {
-            for section in sections.into_iter().filter(|s| s.virtual_size > 0) {
-                unsafe { map_pe_section(self.mapper, section, kernel_phys_start, self.phys_offset, self.frame_allocator); }
-            }
-        }
+        map_kernel_segments_inner(self.mapper, self.frame_allocator, kernel_phys_start, self.phys_offset);
     }
 }
 
