@@ -126,18 +126,20 @@ impl BitmapFrameAllocator {
                                ", pages=", desc.number_of_pages as usize);
         }
 
-        // 1. Find the highest physical address to determine the total number of frames to manage.
-        let max_phys_addr = memory_map
+        // 1. Find the highest physical address in conventional memory to determine the total number of frames to manage.
+        // Only conventional memory (type EfiConventionalMemory) is available for allocation.
+        let max_conventional_addr = memory_map
             .iter()
+            .filter(|d| d.type_ == crate::common::EfiMemoryType::EfiConventionalMemory)
             .map(|d| {
                 let pages_size = d.number_of_pages.saturating_mul(4096);
                 d.physical_start.saturating_add(pages_size)
             })
             .max()
             .unwrap_or(0);
-        let total_frames = (max_phys_addr.div_ceil(4096)) as usize;
+        let total_frames = (max_conventional_addr.div_ceil(4096)) as usize;
 
-        debug_log_no_alloc!("Max physical address: 0x", max_phys_addr as usize);
+        debug_log_no_alloc!("Max conventional address: 0x", max_conventional_addr as usize);
         debug_log_no_alloc!("Calculated total frames: ", total_frames);
 
         if total_frames == 0 {
