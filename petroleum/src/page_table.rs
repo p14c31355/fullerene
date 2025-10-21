@@ -129,16 +129,15 @@ const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024;
 // Helper function to find the PE base address by searching backwards for MZ signature
 unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
     for i in 0..MAX_PE_SEARCH_DISTANCE {
-        if (start_ptr as u64) < i as u64 {
-            break;
-        }
-        let candidate_ptr = start_ptr.sub(i);
-        if candidate_ptr.read() == b'M' && candidate_ptr.add(1).read() == b'Z' {
-            let pe_offset = read_unaligned!(candidate_ptr, 0x3c, u32) as usize;
-            if pe_offset > 0 && pe_offset < MAX_PE_OFFSET {
-                let pe_sig = read_unaligned!(candidate_ptr, pe_offset, u32);
-                if pe_sig == 0x00004550 { // "PE\0\0"
-                    return Some(candidate_ptr);
+        if (start_ptr as u64) >= i as u64 {
+            let candidate_ptr = start_ptr.sub(i);
+            if candidate_ptr.read() == b'M' && candidate_ptr.add(1).read() == b'Z' {
+                let pe_offset = read_unaligned!(candidate_ptr, 0x3c, u32) as usize;
+                if pe_offset > 0 && pe_offset < MAX_PE_OFFSET {
+                    let pe_sig = read_unaligned!(candidate_ptr, pe_offset, u32);
+                    if pe_sig == 0x00004550 { // "PE\0\0"
+                        return Some(candidate_ptr);
+                    }
                 }
             }
         }

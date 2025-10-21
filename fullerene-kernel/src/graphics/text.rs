@@ -77,10 +77,6 @@ fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result 
     Ok(())
 }
 
-fn unsupported_pixel_format_log() {
-    petroleum::warn_log!("Pixel format not supported, using RGB fallback");
-}
-
 // Convenience type aliases
 type UefiFramebufferWriter = FramebufferWriter<u32>;
 type VgaFramebufferWriter = FramebufferWriter<u8>;
