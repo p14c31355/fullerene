@@ -119,6 +119,9 @@ pub struct EfiMemoryDescriptor {
 /// Named constant for UEFI firmware specific memory type (replace magic number)
 const EFI_MEMORY_TYPE_FIRMWARE_SPECIFIC: u32 = 15;
 
+/// Constant for UEFI compatibility pages (64MB - first page)
+const UEFI_COMPAT_PAGES: u64 = (64 * 1024 * 1024 / 4096) - 1;
+
 /// ELF definitions for parsing kernel permissions
 #[repr(C)]
 pub struct Elf64Ehdr {
@@ -611,13 +614,17 @@ fn map_additional_regions(
             .expect("Failed to identity map framebuffer");
         }
 
+        const VGA_MEMORY_START: u64 = 0xA0000;
+        const VGA_MEMORY_END: u64 = 0xC0000;
+        const VGA_PAGES: u64 = (VGA_MEMORY_END - VGA_MEMORY_START) / 4096;
+
         // Always map VGA memory
         map_pages_loop!(
             mapper,
             frame_allocator,
-            0xA0000,
-            phys_offset.as_u64() + 0xA0000,
-            (0xC0000 - 0xA0000) / 4096,
+            VGA_MEMORY_START,
+            phys_offset.as_u64() + VGA_MEMORY_START,
+            VGA_PAGES,
             Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE
         );
     }
@@ -675,7 +682,7 @@ pub fn reinit_page_table_with_allocator(
             &mut mapper,
             frame_allocator,
             4096,
-            16383,
+            UEFI_COMPAT_PAGES,
             Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
         )
         .expect("Failed to map identity range for UEFI compatibility");

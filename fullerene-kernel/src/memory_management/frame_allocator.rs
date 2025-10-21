@@ -129,7 +129,11 @@ impl BitmapFrameAllocator {
         count: usize,
         operation: FrameOperation,
     ) -> SystemResult<()> {
-        if start_frame + count > self.frame_count {
+        let end_frame = match start_frame.checked_add(count) {
+            Some(end) => end,
+            None => return Err(SystemError::InvalidArgument), // Overflow
+        };
+        if end_frame > self.frame_count {
             return Err(SystemError::InvalidArgument);
         }
 
