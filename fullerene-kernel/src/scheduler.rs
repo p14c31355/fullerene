@@ -404,7 +404,7 @@ fn initialize_shell_process() -> crate::process::ProcessId {
         VirtAddr::new(shell_process_main as usize as u64),
     );
     log::info!("Created shell process with PID {}", shell_pid);
-    let _ = crate::process::unblock_process(shell_pid);
+    crate::process::unblock_process(shell_pid);
     shell_pid
 }
 
