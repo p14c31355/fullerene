@@ -6,6 +6,15 @@ use super::*;
 use petroleum::common::logging::{SystemError, SystemResult};
 use x86_64::structures::paging::Size4KiB;
 
+/// Frame operation types for type-safe frame range operations
+#[derive(Debug, Clone, Copy)]
+pub enum FrameOperation {
+    /// Mark frames as free
+    Free,
+    /// Mark frames as used
+    Used,
+}
+
 // Note: super::* used to inherit Debug/Clone traits and common types from parent module
 
 /// Bitmap-based frame allocator implementation
@@ -114,23 +123,22 @@ impl BitmapFrameAllocator {
     }
 
     /// Helper function to set a range of frames using macro
-    fn set_frame_range(&mut self, start_frame: usize, count: usize, operation: &str) -> SystemResult<()> {
+    fn set_frame_range(&mut self, start_frame: usize, count: usize, operation: FrameOperation) -> SystemResult<()> {
         if start_frame + count > self.frame_count {
             return Err(SystemError::InvalidArgument);
         }
 
         match operation {
-            "free" => {
+            FrameOperation::Free => {
                 for i in 0..count {
                     self.set_frame_free(start_frame + i);
                 }
             }
-            "used" => {
+            FrameOperation::Used => {
                 for i in 0..count {
                     self.set_frame_used(start_frame + i);
                 }
             }
-            _ => return Err(SystemError::InvalidArgument),
         }
 
         Ok(())
@@ -206,7 +214,7 @@ impl FrameAllocator for BitmapFrameAllocator {
         }
 
         let start_frame = start_addr / 4096;
-        self.set_frame_range(start_frame, count, "free")
+        self.set_frame_range(start_frame, count, FrameOperation::Free)
     }
 
     fn total_frames(&self) -> usize {
@@ -231,7 +239,7 @@ impl FrameAllocator for BitmapFrameAllocator {
         }
 
         let start_frame = start_addr / 4096;
-        self.set_frame_range(start_frame, count, "used")
+        self.set_frame_range(start_frame, count, FrameOperation::Used)
     }
 
     fn release_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()> {
@@ -240,7 +248,7 @@ impl FrameAllocator for BitmapFrameAllocator {
         }
 
         let start_frame = start_addr / 4096;
-        self.set_frame_range(start_frame, count, "free")
+        self.set_frame_range(start_frame, count, FrameOperation::Free)
     }
 
     fn is_frame_available(&self, frame_addr: usize) -> bool {
@@ -281,8 +289,6 @@ impl Initializable for BitmapFrameAllocator {
         900 // Very high priority for frame allocation
     }
 }
-
-// ErrorLogging fidelity for BitmapFrameAllocator removed - use petroleum::ERROR_LOGGER instead
 
 #[cfg(test)]
 mod tests {

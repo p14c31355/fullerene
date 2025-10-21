@@ -330,16 +330,16 @@ impl BitmapFrameAllocator {
     }
 
     /// Find the next free frame starting from a given index
-    fn find_next_free_frame(&mut self, start_index: usize) -> Option<usize> {
+    fn find_next_free_frame(&self, start_index: usize) -> Option<usize> {
         if !self.initialized {
             return None;
         }
 
-        self.bitmap.as_mut().and_then(|bitmap| Self::find_frame_in_bitmap(bitmap, start_index))
+        self.bitmap.as_ref().and_then(|bitmap| Self::find_frame_in_bitmap(bitmap, start_index, self.frame_count))
     }
 
     /// Helper method for bitmap operations
-    fn find_frame_in_bitmap(bitmap: &mut [u64], start_index: usize) -> Option<usize> {
+    fn find_frame_in_bitmap(bitmap: &[u64], start_index: usize, frame_count: usize) -> Option<usize> {
         let mut chunk_index = start_index / 64;
         let bit_in_chunk = start_index % 64;
 
@@ -348,7 +348,7 @@ impl BitmapFrameAllocator {
             chunk |= (1u64.wrapping_shl(bit_in_chunk as u32)).wrapping_sub(1);
             if chunk != u64::MAX {
                 let first_free_bit = (!chunk).trailing_zeros() as usize;
-                if chunk_index * 64 + first_free_bit < (bitmap.len() * 64) {
+                if chunk_index * 64 + first_free_bit < frame_count {
                     return Some(chunk_index * 64 + first_free_bit);
                 }
             }
@@ -358,7 +358,9 @@ impl BitmapFrameAllocator {
         for i in chunk_index..bitmap.len() {
             if bitmap[i] != u64::MAX {
                 let first_free_bit = (!bitmap[i]).trailing_zeros() as usize;
-                return Some(i * 64 + first_free_bit);
+                if i * 64 + first_free_bit < frame_count {
+                    return Some(i * 64 + first_free_bit);
+                }
             }
         }
         None
