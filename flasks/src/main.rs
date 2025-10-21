@@ -3,7 +3,7 @@ use clap::Parser;
 use isobemak::{BiosBootInfo, BootInfo, IsoImage, IsoImageFile, UefiBootInfo, build_iso};
 use std::{env, io, path::PathBuf, process::Command};
 
-extern crate env_logger;
+use env_logger;
 
 #[derive(Parser)]
 struct Args {
