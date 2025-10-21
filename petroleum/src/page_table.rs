@@ -544,19 +544,15 @@ pub fn reinit_page_table_with_allocator(
     debug_log_no_alloc!("Reinit start");
     let phys_offset = HIGHER_HALF_OFFSET;
     let level_4_table_frame = frame_allocator.allocate_frame().expect("L4 alloc");
-    unsafe {
+        unsafe {
         core::ptr::write_bytes(level_4_table_frame.start_address().as_u64() as *mut PageTable, 0, 1);
         let mut mapper = OffsetPageTable::new(&mut *(level_4_table_frame.start_address().as_u64() as *mut PageTable), VirtAddr::new(0));
         map_identity_range(&mut mapper, frame_allocator, 4096, 16383, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE).unwrap();
         let kernel_size = calculate_kernel_memory_size(kernel_phys_start);
         map_identity_range(&mut mapper, frame_allocator, kernel_phys_start.as_u64(), kernel_size.div_ceil(4096), Flags::PRESENT | Flags::WRITABLE).unwrap();
-        unsafe { map_kernel_segments_inner(&mut mapper, frame_allocator, kernel_phys_start, phys_offset); }
-        {
-            map_additional_regions(&mut mapper, frame_allocator, fb_addr, fb_size, phys_offset);
-        }
-        {
-            mapper.map_to(Page::containing_address(phys_offset + level_4_table_frame.start_address().as_u64()), level_4_table_frame, Flags::PRESENT | Flags::WRITABLE, frame_allocator).unwrap().flush();
-        }
+        map_kernel_segments_inner(&mut mapper, frame_allocator, kernel_phys_start, phys_offset);
+        map_additional_regions(&mut mapper, frame_allocator, fb_addr, fb_size, phys_offset);
+        mapper.map_to(Page::containing_address(phys_offset + level_4_table_frame.start_address().as_u64()), level_4_table_frame, Flags::PRESENT | Flags::WRITABLE, frame_allocator).unwrap().flush();
         Cr3::write(level_4_table_frame, x86_64::registers::control::Cr3Flags::empty());
     }
     flush_tlb_and_verify!();
