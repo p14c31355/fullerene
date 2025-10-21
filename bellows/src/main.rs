@@ -50,14 +50,6 @@ use petroleum::common::{
 /// This function is the `start` attribute as defined in the `Cargo.toml`.
 #[unsafe(no_mangle)]
 pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
-    // log::debug!("Bellows: efi_main entered.");
-
-    // log::info!(
-    //     "Main: image_handle=0x{:x}, system_table=0x{:x}",
-    //     image_handle,
-    //     system_table as usize
-    // );
-
     // Before setting UEFI_SYSTEM_TABLE
     if image_handle == 0 {
         panic!("Invalid image_handle");
@@ -84,11 +76,8 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     // Initialize heap
     petroleum::serial::_print(format_args!("Attempting to initialize heap...\n"));
     init_heap(bs).expect("Heap initialization failed");
-    // log::info!("Main: Heap init returned OK");
     petroleum::serial::_print(format_args!("Heap initialized successfully.\n"));
-    // log::info!("Main: After Heap initialized print");
     petroleum::println!("Bellows: Heap OK.");
-    // log::info!("Main: After Heap OK println");
 
     // Initialize graphics protocols for framebuffer setup
     petroleum::serial::_print(format_args!(
@@ -158,7 +147,6 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     ));
     // Exit boot services and jump to the kernel.
     petroleum::println!("Bellows: About to exit boot services and jump to kernel."); // Debug print just before the call
-    // log::info!("Before match exit_boot_services_and_jump");
     match exit_boot_services_and_jump(image_handle, system_table, entry) {
         Ok(_) => {
             unreachable!(); // This branch should never be reached if the function returns '!'

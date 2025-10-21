@@ -34,3 +34,6 @@ bitfield = "0.19"
 name = "petroleum"
 path = "src/lib.rs"
 crate-type = ["lib"]
+
+[profile.release]
+force-frame-pointers = true
