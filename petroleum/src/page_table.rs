@@ -55,8 +55,6 @@ impl PeParser {
     pub unsafe fn sections(&self) -> Option<[PeSection; 16]> {
         if self.pe_offset == 0 || self.pe_offset >= 1024 * 1024 || self.pe_base.is_null() { return None; }
         let num_sections = read_unaligned!(self.pe_base, self.pe_offset + 6, u16) as usize;
-        if self.pe_offset == 0 || self.pe_offset >= 1024 * 1024 { return None; }
-        let num_sections = read_unaligned!(self.pe_base, self.pe_offset + 6, u16) as usize;
         let optional_header_size = read_unaligned!(self.pe_base, self.pe_offset + 20, u16) as usize;
         let section_table_offset = self.pe_offset + 24 + optional_header_size;
         let mut sections = [PeSection {
