@@ -40,7 +40,7 @@ pub struct PeParser {
 impl PeParser {
     pub unsafe fn new(kernel_ptr: *const u8) -> Option<Self> {
         find_pe_base(kernel_ptr).map(|base| {
-            let pe_offset = read_unaligned!(base, 0x3c, u32) as usize;
+            let pe_offset = unsafe { read_unaligned!(base, 0x3c, u32) } as usize;
             Self {
                 pe_base: base,
                 pe_offset,
@@ -52,19 +52,19 @@ impl PeParser {
         if self.pe_offset == 0 || self.pe_offset >= MAX_PE_HEADER_OFFSET || self.pe_base.is_null() {
             return None;
         }
-        let magic = read_unaligned!(self.pe_base, self.pe_offset + 24, u16);
+        let magic = unsafe { read_unaligned!(self.pe_base, self.pe_offset + 24, u16) };
         if magic != 0x10B && magic != 0x20B {
             return None;
         }
-        Some(read_unaligned!(self.pe_base, self.pe_offset + 24 + 0x38, u32) as u64)
+        Some(unsafe { read_unaligned!(self.pe_base, self.pe_offset + 24 + 0x38, u32) } as u64)
     }
 
     pub unsafe fn sections(&self) -> Option<[PeSection; 16]> {
         if self.pe_offset == 0 || self.pe_offset >= MAX_PE_HEADER_OFFSET || self.pe_base.is_null() {
             return None;
         }
-        let num_sections = read_unaligned!(self.pe_base, self.pe_offset + 6, u16) as usize;
-        let optional_header_size = read_unaligned!(self.pe_base, self.pe_offset + 20, u16) as usize;
+        let num_sections = unsafe { read_unaligned!(self.pe_base, self.pe_offset + 6, u16) } as usize;
+        let optional_header_size = unsafe { read_unaligned!(self.pe_base, self.pe_offset + 20, u16) } as usize;
         let section_table_offset = self.pe_offset + 24 + optional_header_size;
 
         let mut sections = [PeSection {
@@ -77,7 +77,7 @@ impl PeParser {
         }; MAX_PE_SECTIONS];
         for i in 0..num_sections.min(MAX_PE_SECTIONS) {
             let offset = section_table_offset + i * 40;
-            let header = read_unaligned!(self.pe_base, offset, PeSectionHeader);
+            let header = unsafe { read_unaligned!(self.pe_base, offset, PeSectionHeader) };
             sections[i] = PeSection {
                 name: header.name,
                 virtual_size: header.virtual_size,
@@ -91,7 +91,31 @@ impl PeParser {
     }
 }
 
+
 /// EFI Memory Descriptor as defined in UEFI spec
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct EfiMemoryDescriptor {
+    pub type_: crate::common::EfiMemoryType,
+    pub padding: u32,
+    pub physical_start: u64,
+    pub virtual_start: u64,
+    pub number_of_pages: u64,
+    pub attribute: u64,
+}
+
+impl core::fmt::Debug for EfiMemoryDescriptor {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("EfiMemoryDescriptor")
+            .field("type_", &self.type_)
+            .field("padding", &self.padding)
+            .field("physical_start", &self.physical_start)
+            .field("virtual_start", &self.virtual_start)
+            .field("number_of_pages", &self.number_of_pages)
+            .field("attribute", &self.attribute)
+            .finish()
+    }
+}
 
 /// Named constant for UEFI firmware specific memory type (replace magic number)
 const EFI_MEMORY_TYPE_FIRMWARE_SPECIFIC: u32 = 15;
@@ -157,15 +181,17 @@ pub struct PeSectionHeader {
 // Helper function to find the PE base address by searching backwards for MZ signature
 unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
     for i in 0..MAX_PE_SEARCH_DISTANCE {
-        let candidate_addr = match (start_ptr as usize).checked_sub(i) {
-            Some(addr) => addr as *const u8,
-            None => break, // Stop if we would underflow.
+        let candidate_addr = unsafe {
+            match (start_ptr as usize).checked_sub(i) {
+                Some(addr) => addr as *const u8,
+                None => break, // Stop if we would underflow.
+            }
         };
 
-        if candidate_addr.read() == b'M' && candidate_addr.add(1).read() == b'Z' {
-            let pe_offset = read_unaligned!(candidate_addr, 0x3c, u32) as usize;
+        if unsafe { candidate_addr.read() } == b'M' && unsafe { unsafe { candidate_addr.add(1) }.read() } == b'Z' {
+            let pe_offset = unsafe { read_unaligned!(candidate_addr, 0x3c, u32) } as usize;
             if pe_offset > 0 && pe_offset < MAX_PE_OFFSET {
-                let pe_sig = read_unaligned!(candidate_addr, pe_offset, u32);
+                let pe_sig = unsafe { read_unaligned!(candidate_addr, pe_offset, u32) };
                 if pe_sig == 0x00004550 {
                     // "PE\0\0"
                     return Some(candidate_addr);

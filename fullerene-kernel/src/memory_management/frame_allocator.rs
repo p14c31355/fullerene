@@ -146,7 +146,6 @@ impl BitmapFrameAllocator {
             FrameOperation::Free => 0u64,
             FrameOperation::Used => u64::MAX,
         };
-        let inv_target_value = !target_value;
 
         // Handle partial start chunk
         if start_chunk_index < self.bitmap.len() {

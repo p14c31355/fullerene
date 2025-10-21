@@ -312,3 +312,71 @@ impl crate::initializer::HardwareDevice for VgaDevice {
 
 // Re-export for backward compatibility and consolidation
 pub use self::VgaBuffer as KernelVgaBuffer;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::initializer::{ErrorLogging, HardwareDevice, Initializable};
+
+    #[test]
+    fn test_vga_device_creation() {
+        let device = VgaDevice::new();
+        assert_eq!(device.name(), "VgaDevice");
+        assert!(!device.is_enabled());
+    }
+
+    #[test]
+    fn test_vga_device_initializable_trait() {
+        let mut device = VgaDevice::new();
+        assert_eq!(device.name(), "VgaDevice");
+        assert_eq!(device.priority(), 10);
+        // Test init - should return Ok
+        let result = device.init();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_vga_device_hardware_device_trait() {
+        let mut device = VgaDevice::new();
+        assert_eq!(device.device_name(), "VGA Text Mode Display");
+        assert_eq!(device.device_type(), "Display");
+
+        // Test enable/disable cycle
+        assert!(!device.is_enabled());
+        let enable_result = device.enable();
+        assert!(enable_result.is_ok());
+        assert!(device.is_enabled());
+
+        let disable_result = device.disable();
+        assert!(disable_result.is_ok());
+        assert!(!device.is_enabled());
+
+        // Test reset
+        let reset_result = device.reset();
+        assert!(reset_result.is_ok());
+    }
+
+    #[test]
+    fn test_vga_device_error_logging_trait() {
+        let device = VgaDevice::new();
+        // Error logging methods don't return values, so just ensure they don't panic
+        let error = crate::common::logging::SystemError::InternalError;
+        device.log_error(&error, "test context");
+        device.log_warning("test warning");
+        device.log_info("test info");
+        device.log_debug("test debug");
+        device.log_trace("test trace");
+    }
+
+    #[test]
+    fn test_vga_device_color_setting() {
+        let mut device = VgaDevice::new();
+        device.set_color(Color::Red, Color::Blue);
+
+        // Can't directly test internal state, but method should not panic
+        // and enable/disable/reset should still work
+        assert!(!device.is_enabled());
+        let _ = device.enable();
+        assert!(device.is_enabled());
+    }
+}
