@@ -34,27 +34,29 @@ pub fn init_global_heap(ptr: *mut u8, size: usize) {
 // Generic PeParser to reduce lines from multiple PE functions
 pub struct PeParser {
     pe_base: *const u8,
+    pe_offset: usize,
 }
 
 impl PeParser {
     pub unsafe fn new(kernel_ptr: *const u8) -> Option<Self> {
-        find_pe_base(kernel_ptr).map(|base| Self { pe_base: base })
+        find_pe_base(kernel_ptr).map(|base| {
+            let pe_offset = read_unaligned!(base, 0x3c, u32) as usize;
+            Self { pe_base: base, pe_offset }
+        })
     }
 
     pub unsafe fn size_of_image(&self) -> Option<u64> {
-        let pe_offset = read_unaligned!(self.pe_base, 0x3c, u32) as usize;
-        if pe_offset == 0 || pe_offset >= 1024 * 1024 { return None; }
-        let magic = read_unaligned!(self.pe_base, pe_offset + 24, u16);
+        if self.pe_offset == 0 || self.pe_offset >= 1024 * 1024 { return None; }
+        let magic = read_unaligned!(self.pe_base, self.pe_offset + 24, u16);
         if magic != 0x10B && magic != 0x20B { return None; }
-        Some(read_unaligned!(self.pe_base, pe_offset + 24 + 0x38, u32) as u64)
+        Some(read_unaligned!(self.pe_base, self.pe_offset + 24 + 0x38, u32) as u64)
     }
 
     pub unsafe fn sections(&self) -> Option<[PeSection; 16]> {
-        let pe_offset = read_unaligned!(self.pe_base, 0x3c, u32) as usize;
-        if pe_offset == 0 || pe_offset >= 1024 * 1024 { return None; }
-        let num_sections = read_unaligned!(self.pe_base, pe_offset + 6, u16) as usize;
-        let optional_header_size = read_unaligned!(self.pe_base, pe_offset + 20, u16) as usize;
-        let section_table_offset = pe_offset + 24 + optional_header_size;
+        if self.pe_offset == 0 || self.pe_offset >= 1024 * 1024 { return None; }
+        let num_sections = read_unaligned!(self.pe_base, self.pe_offset + 6, u16) as usize;
+        let optional_header_size = read_unaligned!(self.pe_base, self.pe_offset + 20, u16) as usize;
+        let section_table_offset = self.pe_offset + 24 + optional_header_size;
         let mut sections = [PeSection {
             name: [0; 8], virtual_size: 0, virtual_address: 0, size_of_raw_data: 0,
             pointer_to_raw_data: 0, characteristics: 0
@@ -608,7 +610,7 @@ impl<'a> MemoryMapper<'a> {
             let phys_addr = phys_start + i * 4096;
             let virt_addr = virt_start + i * 4096;
             let (page, frame) = create_page_and_frame!(virt_addr, phys_addr);
-            match self.mapper.map_to(page, frame, flags, &mut self.frame_allocator) {
+            match self.mapper.map_to(page, frame, flags, self.frame_allocator) {
                 Ok(flush) => flush.flush(),
                 Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
                     continue;
