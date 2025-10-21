@@ -173,7 +173,8 @@ impl BitmapFrameAllocator {
 
         // Mark available frames as free based on their physical address
         for descriptor in memory_map {
-            if descriptor.type_ == crate::common::EfiMemoryType::EfiConventionalMemory {
+            if descriptor.type_ == crate::common::EfiMemoryType::EfiConventionalMemory
+                || descriptor.type_ as u32 == 15 {
                 let start_frame = (descriptor.physical_start / 4096) as usize;
                 let end_frame = start_frame + descriptor.number_of_pages as usize;
 
@@ -900,7 +901,7 @@ pub struct PeSection {
 pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     debug_log_no_alloc!("calculate_kernel_memory_size: starting manual PE parsing");
 
-    let kernel_ptr = kernel_phys_start.as_u64() as *const u8;
+    let mut kernel_ptr = kernel_phys_start.as_u64() as *const u8;
 
     // Check if we have at least enough data for the PE signature
     if kernel_phys_start.as_u64() == 0 {
@@ -908,12 +909,56 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
         return 64 * 1024 * 1024; // fallback
     }
 
-    // DOS header check (MZ signature)
-    let dos_magic = unsafe { core::ptr::read_unaligned(kernel_ptr as *const u16) };
-    if dos_magic != 0x5A4D { // "MZ"
-        debug_log_no_alloc!("calculate_kernel_memory_size: Invalid DOS magic, using fallback");
+    // Search backwards from kernel_phys_start to find a valid DOS header (MZ signature)
+    // and valid PE structure, since kernel_phys_start points to entry point inside the PE image
+    const MAX_SEARCH_DISTANCE: usize = 10 * 1024 * 1024; // 10MB max search distance
+    const MAX_PE_OFFSET: usize = 16 * 1024 * 1024; // 16MB max PE offset
+    let mut search_offset = 0usize;
+    let mut dos_ptr = kernel_ptr as *const u16;
+    let mut found_valid_pe = false;
+
+    // Search backwards, checking each 2-byte aligned address for valid PE structure
+    while search_offset < MAX_SEARCH_DISTANCE {
+        let dos_magic = unsafe { core::ptr::read_unaligned(dos_ptr) };
+        if dos_magic == 0x5A4D { // "MZ" candidate found
+            let candidate_kernel_ptr = dos_ptr as *const u8;
+
+            // Read pe_offset from DOS header
+            let pe_offset_ptr = unsafe { candidate_kernel_ptr.add(0x3c) };
+            let pe_offset = unsafe { core::ptr::read_unaligned(pe_offset_ptr as *const u32) } as usize;
+
+            // Check if pe_offset is reasonable
+            if pe_offset > 0 && pe_offset < MAX_PE_OFFSET {
+                // Check if PE signature exists at pe_offset
+                let pe_sig_ptr = unsafe { candidate_kernel_ptr.add(pe_offset) };
+                let pe_sig = unsafe { core::ptr::read_unaligned(pe_sig_ptr as *const u32) };
+                if pe_sig == 0x4550 { // "PE\0\0"
+                    // Valid PE structure found
+                    let pe_base_addr = candidate_kernel_ptr as u64;
+                    kernel_ptr = pe_base_addr as *const u8;
+                    debug_log_no_alloc!("calculate_kernel_memory_size: Found valid PE at offset -", search_offset);
+                    debug_log_no_alloc!("calculate_kernel_memory_size: PE base address = 0x", pe_base_addr as usize);
+                    found_valid_pe = true;
+                    break;
+                }
+            }
+        }
+
+        search_offset += 2; // Search every 2 bytes
+        if search_offset >= kernel_phys_start.as_u64() as usize {
+            // We've searched back to address 0 or beyond, abort
+            debug_log_no_alloc!("calculate_kernel_memory_size: Search exceeded address range, using fallback");
+            return 64 * 1024 * 1024;
+        }
+        dos_ptr = unsafe { dos_ptr.sub(1) };
+    }
+
+    if !found_valid_pe {
+        debug_log_no_alloc!("calculate_kernel_memory_size: Valid PE header not found within search limit, using fallback");
         return 64 * 1024 * 1024;
     }
+
+    // Valid PE header found, kernel_ptr now points to the PE base
 
     // Get PE header offset from DOS header (offset 0x3c)
     let pe_offset = unsafe { core::ptr::read_unaligned(kernel_ptr.add(0x3c) as *const u32) } as usize;
@@ -956,11 +1001,49 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
 
 /// Parse PE sections manually and return them (max 16 sections)
 pub unsafe fn parse_pe_sections(kernel_phys_start: PhysAddr) -> Option<[PeSection; 16]> {
-    let kernel_ptr = kernel_phys_start.as_u64() as *const u8;
+    let mut kernel_ptr = kernel_phys_start.as_u64() as *const u8;
 
-    // DOS header check (MZ signature)
-    let dos_magic = unsafe { core::ptr::read_unaligned(kernel_ptr as *const u16) };
-    if dos_magic != 0x5A4D { // "MZ"
+    // Search backwards from kernel_phys_start to find a valid DOS header (MZ signature)
+    // and valid PE structure, since kernel_phys_start points to entry point inside the PE image
+    const MAX_SEARCH_DISTANCE: usize = 10 * 1024 * 1024; // 10MB max search distance
+    const MAX_PE_OFFSET: usize = 16 * 1024 * 1024; // 16MB max PE offset
+    let mut search_offset = 0usize;
+    let mut dos_ptr = kernel_ptr as *const u16;
+    let mut found_valid_pe = false;
+
+    // Search backwards, checking each 2-byte aligned address for valid PE structure
+    while search_offset < MAX_SEARCH_DISTANCE {
+        let dos_magic = unsafe { core::ptr::read_unaligned(dos_ptr) };
+        if dos_magic == 0x5A4D { // "MZ" candidate found
+            let candidate_kernel_ptr = dos_ptr as *const u8;
+
+            // Read pe_offset from DOS header
+            let pe_offset_ptr = unsafe { candidate_kernel_ptr.add(0x3c) };
+            let pe_offset = unsafe { core::ptr::read_unaligned(pe_offset_ptr as *const u32) } as usize;
+
+            // Check if pe_offset is reasonable
+            if pe_offset > 0 && pe_offset < MAX_PE_OFFSET {
+                // Check if PE signature exists at pe_offset
+                let pe_sig_ptr = unsafe { candidate_kernel_ptr.add(pe_offset) };
+                let pe_sig = unsafe { core::ptr::read_unaligned(pe_sig_ptr as *const u32) };
+                if pe_sig == 0x4550 { // "PE\0\0"
+                    // Valid PE structure found
+                    kernel_ptr = candidate_kernel_ptr;
+                    found_valid_pe = true;
+                    break;
+                }
+            }
+        }
+
+        search_offset += 2; // Search every 2 bytes
+        if search_offset >= kernel_phys_start.as_u64() as usize {
+            // We've searched back to address 0 or beyond, abort
+            return None;
+        }
+        dos_ptr = unsafe { dos_ptr.sub(1) };
+    }
+
+    if !found_valid_pe {
         return None;
     }
 
