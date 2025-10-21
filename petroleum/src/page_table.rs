@@ -606,7 +606,7 @@ impl<'a> MemoryMapper<'a> {
     }
 
     // Generic method to map a range with given flags
-        pub unsafe fn map_range(&mut self, phys_start: u64, virt_start: u64, num_pages: u64, flags: x86_64::structures::paging::PageTableFlags) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    pub unsafe fn map_range(&mut self, phys_start: u64, virt_start: u64, num_pages: u64, flags: x86_64::structures::paging::PageTableFlags) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
         for i in 0..num_pages {
             let phys_addr = phys_start + i * 4096;
             let virt_addr = virt_start + i * 4096;
