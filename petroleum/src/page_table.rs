@@ -121,7 +121,7 @@ impl core::fmt::Debug for EfiMemoryDescriptor {
 const EFI_MEMORY_TYPE_FIRMWARE_SPECIFIC: u32 = 15;
 
 /// Constant for UEFI compatibility pages (disabled - first page)
-const UEFI_COMPAT_PAGES: u64 = 0;
+const UEFI_COMPAT_PAGES: u64 = 16383;
 
 /// ELF definitions for parsing kernel permissions
 #[repr(C)]
