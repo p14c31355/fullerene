@@ -171,9 +171,10 @@ impl VgaBuffer {
     pub fn reset(&mut self) {
         if self.enabled {
             self.clear_screen();
+        } else {
+            self.cursor_row = 0;
+            self.cursor_col = 0;
         }
-        self.cursor_row = 0;
-        self.cursor_col = 0;
     }
 }
 
