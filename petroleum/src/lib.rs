@@ -92,7 +92,6 @@ pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferC
 
 /// Shared QEMU framebuffer configurations for both bootloader and kernel
 
-
 pub const QEMU_CONFIGS: [QemuConfig; 8] = [
     // Cirrus VGA specific addresses (common with -vga cirrus) - start with successfully tested ones
     QemuConfig {

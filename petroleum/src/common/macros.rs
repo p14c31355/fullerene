@@ -789,7 +789,10 @@ macro_rules! calc_offset_addr {
 #[macro_export]
 macro_rules! create_page_and_frame {
     ($virt_addr:expr, $phys_addr:expr) => {{
-        use x86_64::{VirtAddr, PhysAddr, structures::paging::{Page, PhysFrame, Size4KiB}};
+        use x86_64::{
+            PhysAddr, VirtAddr,
+            structures::paging::{Page, PhysFrame, Size4KiB},
+        };
         let virt = VirtAddr::new($virt_addr);
         let phys = PhysAddr::new($phys_addr);
         let page = Page::<Size4KiB>::containing_address(virt);
@@ -803,7 +806,8 @@ macro_rules! create_page_and_frame {
 macro_rules! map_and_flush {
     ($mapper:expr, $page:expr, $frame:expr, $flags:expr, $allocator:expr) => {{
         unsafe {
-            $mapper.map_to($page, $frame, $flags, $allocator)
+            $mapper
+                .map_to($page, $frame, $flags, $allocator)
                 .expect("Failed to map page")
                 .flush();
         }
@@ -824,8 +828,18 @@ macro_rules! map_with_offset {
 macro_rules! log_memory_descriptor {
     ($desc:expr, $i:expr) => {
         crate::mem_debug!("Memory descriptor ", $i);
-        crate::mem_debug!(": type=", $desc.type_ as usize, ", phys_start=0x", $desc.physical_start as usize);
-        crate::mem_debug!(", virt_start=", $desc.virtual_start as usize, ", pages=", $desc.number_of_pages as usize);
+        crate::mem_debug!(
+            ": type=",
+            $desc.type_ as usize,
+            ", phys_start=0x",
+            $desc.physical_start as usize
+        );
+        crate::mem_debug!(
+            ", virt_start=",
+            $desc.virtual_start as usize,
+            ", pages=",
+            $desc.number_of_pages as usize
+        );
         crate::mem_debug!("\n");
     };
 }
@@ -839,7 +853,9 @@ macro_rules! map_identity_range_checked {
             let (page, frame) = create_page_and_frame!(addr, addr);
             match unsafe { $mapper.map_to(page, frame, $flags, $allocator) } {
                 Ok(flush) => flush.flush(),
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => continue,
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                    continue;
+                }
                 Err(e) => return Err(e),
             }
         }

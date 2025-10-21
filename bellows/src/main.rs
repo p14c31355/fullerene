@@ -43,8 +43,6 @@ use petroleum::common::{
     FullereneFramebufferConfig,
 };
 
-
-
 /// Main entry point of the bootloader.
 ///
 /// This function is the `start` attribute as defined in the `Cargo.toml`.

@@ -42,8 +42,8 @@ const VGA_COLOR_GREEN_ON_BLACK: u16 = 0x0200;
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     // Log panic info to serial port for debugging
-    use petroleum::serial::_print;
     use petroleum::halt_loop;
+    use petroleum::serial::_print;
 
     _print(format_args!("KERNEL PANIC: {}\n", info));
 

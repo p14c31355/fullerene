@@ -1,4 +1,8 @@
-use crate::{bitmap_operation, debug_log_no_alloc, ensure_initialized, flush_tlb_and_verify, map_pages_loop, calc_offset_addr, create_page_and_frame, map_and_flush, map_with_offset, log_memory_descriptor, map_identity_range_checked};
+use crate::{
+    bitmap_operation, calc_offset_addr, create_page_and_frame, debug_log_no_alloc,
+    ensure_initialized, flush_tlb_and_verify, log_memory_descriptor, map_and_flush,
+    map_identity_range_checked, map_pages_loop, map_with_offset,
+};
 
 // Macros are automatically available from common module
 use spin::Once;
@@ -179,7 +183,8 @@ impl BitmapFrameAllocator {
         // Mark available frames as free based on their physical address
         for descriptor in memory_map {
             if descriptor.type_ == crate::common::EfiMemoryType::EfiConventionalMemory
-                || descriptor.type_ as u32 == EFI_MEMORY_TYPE_FIRMWARE_SPECIFIC {
+                || descriptor.type_ as u32 == EFI_MEMORY_TYPE_FIRMWARE_SPECIFIC
+            {
                 let start_frame = (descriptor.physical_start / 4096) as usize;
                 let end_frame = start_frame + descriptor.number_of_pages as usize;
 
@@ -194,7 +199,11 @@ impl BitmapFrameAllocator {
         // Mark frame 0 as used to avoid allocating the null page
         self.set_frame_used(0);
 
-        debug_log_no_alloc!("BitmapFrameAllocator initialized successfully with ", total_frames, " frames");
+        debug_log_no_alloc!(
+            "BitmapFrameAllocator initialized successfully with ",
+            total_frames,
+            " frames"
+        );
 
         Ok(())
     }
@@ -269,7 +278,7 @@ impl BitmapFrameAllocator {
             return Err(crate::common::logging::SystemError::InvalidArgument);
         }
 
-                for i in 0..count {
+        for i in 0..count {
             if !self.is_frame_free(start_frame + i) {
                 debug_log_no_alloc!(
                     "Frame allocation failed: frame already in use at index ",
@@ -282,7 +291,6 @@ impl BitmapFrameAllocator {
         for i in 0..count {
             self.set_frame_used(start_frame + i);
         }
-
 
         Ok(())
     }
@@ -378,8 +386,6 @@ unsafe fn map_identity_range(
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
     map_identity_range_checked!(mapper, frame_allocator, phys_start, num_pages, flags)
 }
-
-
 
 /// Reinitialize the page table with identity mapping and higher-half kernel mapping
 /// This version takes a frame allocator to perform the actual mapping
@@ -934,11 +940,13 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     let mut found_valid_pe = false;
 
     // Search backwards, checking each 2-byte aligned address for valid PE structure
-        // Search backwards byte-by-byte for robustness against alignment issues.
+    // Search backwards byte-by-byte for robustness against alignment issues.
     for i in 0..MAX_SEARCH_DISTANCE {
         if (kernel_ptr as u64) < i as u64 {
             // We've searched back to address 0 or beyond, abort
-            debug_log_no_alloc!("calculate_kernel_memory_size: Search exceeded address range, using fallback");
+            debug_log_no_alloc!(
+                "calculate_kernel_memory_size: Search exceeded address range, using fallback"
+            );
             return 64 * 1024 * 1024;
         }
         let candidate_ptr = unsafe { kernel_ptr.sub(i) };
@@ -952,10 +960,17 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
             // A simple sanity check for the offset
             if pe_offset > 0 && pe_offset < MAX_PE_OFFSET {
                 let pe_sig_ptr = unsafe { candidate_ptr.add(pe_offset) as *const u32 };
-                if unsafe { pe_sig_ptr.read_unaligned() } == 0x00004550 { // "PE\0\0"
+                if unsafe { pe_sig_ptr.read_unaligned() } == 0x00004550 {
+                    // "PE\0\0"
                     kernel_ptr = candidate_ptr;
-                    debug_log_no_alloc!("calculate_kernel_memory_size: Found valid PE at offset -", i);
-                    debug_log_no_alloc!("calculate_kernel_memory_size: PE base address = 0x", kernel_ptr as usize);
+                    debug_log_no_alloc!(
+                        "calculate_kernel_memory_size: Found valid PE at offset -",
+                        i
+                    );
+                    debug_log_no_alloc!(
+                        "calculate_kernel_memory_size: PE base address = 0x",
+                        kernel_ptr as usize
+                    );
                     found_valid_pe = true;
                     break;
                 }
@@ -963,16 +978,18 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
         }
     }
 
-
     if !found_valid_pe {
-        debug_log_no_alloc!("calculate_kernel_memory_size: Valid PE header not found within search limit, using fallback");
+        debug_log_no_alloc!(
+            "calculate_kernel_memory_size: Valid PE header not found within search limit, using fallback"
+        );
         return 64 * 1024 * 1024;
     }
 
     // Valid PE header found, kernel_ptr now points to the PE base
 
     // Get PE header offset from DOS header (offset 0x3c)
-    let pe_offset = unsafe { core::ptr::read_unaligned(kernel_ptr.add(0x3c) as *const u32) } as usize;
+    let pe_offset =
+        unsafe { core::ptr::read_unaligned(kernel_ptr.add(0x3c) as *const u32) } as usize;
     if pe_offset == 0 || pe_offset >= 1024 * 1024 {
         debug_log_no_alloc!("calculate_kernel_memory_size: Invalid PE offset, using fallback");
         return 64 * 1024 * 1024;
@@ -981,7 +998,8 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     // Check PE signature
     let pe_signature_ptr = unsafe { kernel_ptr.add(pe_offset) as *const u32 };
     let pe_signature = unsafe { core::ptr::read_unaligned(pe_signature_ptr) };
-    if pe_signature != 0x00004550 { // "PE\0\0"
+    if pe_signature != 0x00004550 {
+        // "PE\0\0"
         debug_log_no_alloc!("calculate_kernel_memory_size: Invalid PE signature, using fallback");
         return 64 * 1024 * 1024;
     }
@@ -992,16 +1010,22 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     // First 2 bytes of optional header is magic - should be 0x10B (PE32) or 0x20B (PE32+)
     let optional_magic = unsafe { core::ptr::read_unaligned(optional_header_ptr) };
     if optional_magic != 0x10B && optional_magic != 0x20B {
-        debug_log_no_alloc!("calculate_kernel_memory_size: Invalid optional header magic, using fallback");
+        debug_log_no_alloc!(
+            "calculate_kernel_memory_size: Invalid optional header magic, using fallback"
+        );
         return 64 * 1024 * 1024;
     }
 
-// SizeOfImage is at offset 0x38 in the optional header for both PE32 and PE32+.
-let size_of_image_offset = 0x38;
-    let size_of_image_ptr = unsafe { kernel_ptr.add(pe_offset + 24 + size_of_image_offset as usize) as *const u32 };
+    // SizeOfImage is at offset 0x38 in the optional header for both PE32 and PE32+.
+    let size_of_image_offset = 0x38;
+    let size_of_image_ptr =
+        unsafe { kernel_ptr.add(pe_offset + 24 + size_of_image_offset as usize) as *const u32 };
     let size_of_image = unsafe { core::ptr::read_unaligned(size_of_image_ptr) } as u64;
 
-    debug_log_no_alloc!("calculate_kernel_memory_size: PE parsed successfully, SizeOfImage=", size_of_image);
+    debug_log_no_alloc!(
+        "calculate_kernel_memory_size: PE parsed successfully, SizeOfImage=",
+        size_of_image
+    );
 
     // Round up to page size and add some padding for safety
     const KERNEL_MEMORY_PADDING: u64 = 1024 * 1024; // 1MB padding
@@ -1036,7 +1060,8 @@ pub unsafe fn parse_pe_sections(kernel_phys_start: PhysAddr) -> Option<[PeSectio
             // A simple sanity check for the offset
             if pe_offset > 0 && pe_offset < MAX_PE_OFFSET {
                 let pe_sig_ptr = unsafe { candidate_ptr.add(pe_offset) as *const u32 };
-                if unsafe { pe_sig_ptr.read_unaligned() } == 0x00004550 { // "PE\0\0"
+                if unsafe { pe_sig_ptr.read_unaligned() } == 0x00004550 {
+                    // "PE\0\0"
                     // Valid PE structure found
                     kernel_ptr = candidate_ptr;
                     found_valid_pe = true;
@@ -1051,7 +1076,8 @@ pub unsafe fn parse_pe_sections(kernel_phys_start: PhysAddr) -> Option<[PeSectio
     }
 
     // Get PE header offset from DOS header (offset 0x3c)
-    let pe_offset = unsafe { core::ptr::read_unaligned(kernel_ptr.add(0x3c) as *const u32) } as usize;
+    let pe_offset =
+        unsafe { core::ptr::read_unaligned(kernel_ptr.add(0x3c) as *const u32) } as usize;
     if pe_offset == 0 || pe_offset >= 1024 * 1024 {
         return None;
     }
@@ -1059,7 +1085,8 @@ pub unsafe fn parse_pe_sections(kernel_phys_start: PhysAddr) -> Option<[PeSectio
     // Check PE signature
     let pe_signature_ptr = unsafe { kernel_ptr.add(pe_offset) as *const u32 };
     let pe_signature = unsafe { core::ptr::read_unaligned(pe_signature_ptr) };
-    if pe_signature != 0x4550 { // "PE\0\0"
+    if pe_signature != 0x4550 {
+        // "PE\0\0"
         return None;
     }
 
@@ -1070,7 +1097,8 @@ pub unsafe fn parse_pe_sections(kernel_phys_start: PhysAddr) -> Option<[PeSectio
 
     // Get optional header size from COFF header (offset 20 from PE header)
     let optional_header_size_ptr = unsafe { kernel_ptr.add(pe_offset + 20) as *const u16 };
-    let optional_header_size = unsafe { core::ptr::read_unaligned(optional_header_size_ptr) } as usize;
+    let optional_header_size =
+        unsafe { core::ptr::read_unaligned(optional_header_size_ptr) } as usize;
 
     // Section table starts after optional header
     let section_table_offset = pe_offset + 24 + optional_header_size;
@@ -1092,11 +1120,16 @@ pub unsafe fn parse_pe_sections(kernel_phys_start: PhysAddr) -> Option<[PeSectio
             name[j] = unsafe { *kernel_ptr.add(section_offset + j) };
         }
 
-        let virtual_size = unsafe { core::ptr::read_unaligned(kernel_ptr.add(section_offset + 8) as *const u32) };
-        let virtual_address = unsafe { core::ptr::read_unaligned(kernel_ptr.add(section_offset + 12) as *const u32) };
-        let size_of_raw_data = unsafe { core::ptr::read_unaligned(kernel_ptr.add(section_offset + 16) as *const u32) };
-        let pointer_to_raw_data = unsafe { core::ptr::read_unaligned(kernel_ptr.add(section_offset + 20) as *const u32) };
-        let characteristics = unsafe { core::ptr::read_unaligned(kernel_ptr.add(section_offset + 36) as *const u32) };
+        let virtual_size =
+            unsafe { core::ptr::read_unaligned(kernel_ptr.add(section_offset + 8) as *const u32) };
+        let virtual_address =
+            unsafe { core::ptr::read_unaligned(kernel_ptr.add(section_offset + 12) as *const u32) };
+        let size_of_raw_data =
+            unsafe { core::ptr::read_unaligned(kernel_ptr.add(section_offset + 16) as *const u32) };
+        let pointer_to_raw_data =
+            unsafe { core::ptr::read_unaligned(kernel_ptr.add(section_offset + 20) as *const u32) };
+        let characteristics =
+            unsafe { core::ptr::read_unaligned(kernel_ptr.add(section_offset + 36) as *const u32) };
 
         sections[_section_count] = PeSection {
             name,
@@ -1121,7 +1154,10 @@ unsafe fn map_kernel_segments(
 ) {
     use x86_64::structures::paging::PageTableFlags as Flags;
 
-    debug_log_no_alloc!("map_kernel_segments: starting PE mapping, kernel_phys_start=", kernel_phys_start.as_u64());
+    debug_log_no_alloc!(
+        "map_kernel_segments: starting PE mapping, kernel_phys_start=",
+        kernel_phys_start.as_u64()
+    );
 
     if let Some(sections) = unsafe { parse_pe_sections(kernel_phys_start) } {
         debug_log_no_alloc!("map_kernel_segments: PE parsed successfully, mapping sections");
@@ -1136,10 +1172,16 @@ unsafe fn map_kernel_segments(
 
         for section in sections {
             let section_name = core::str::from_utf8(&section.name).unwrap_or("<invalid>");
-            debug_log_no_alloc!("map_kernel_segments: mapping section ", section_name,
-                               ", vaddr=", section.virtual_address as u64,
-                               ", vsize=", section.virtual_size as u64,
-                               ", raw_size=", section.size_of_raw_data as u64);
+            debug_log_no_alloc!(
+                "map_kernel_segments: mapping section ",
+                section_name,
+                ", vaddr=",
+                section.virtual_address as u64,
+                ", vsize=",
+                section.virtual_size as u64,
+                ", raw_size=",
+                section.size_of_raw_data as u64
+            );
 
             // Skip empty sections
             if section.virtual_size == 0 {
@@ -1147,7 +1189,8 @@ unsafe fn map_kernel_segments(
             }
 
             // Map the section
-            let section_start_phys = kernel_phys_start.as_u64() + section.pointer_to_raw_data as u64;
+            let section_start_phys =
+                kernel_phys_start.as_u64() + section.pointer_to_raw_data as u64;
             let section_start_virt = section.virtual_address as u64;
             let section_size = section.virtual_size as u64;
 
@@ -1155,10 +1198,12 @@ unsafe fn map_kernel_segments(
             let mut flags = Flags::PRESENT;
             let characteristics = section.characteristics;
             // PE characteristics are bitflags
-            if (characteristics & 0x8000_0000) != 0 { // IMAGE_SCN_MEM_WRITE
+            if (characteristics & 0x8000_0000) != 0 {
+                // IMAGE_SCN_MEM_WRITE
                 flags |= Flags::WRITABLE;
             }
-            if (characteristics & 0x2000_0000) == 0 { // NOT IMAGE_SCN_MEM_EXECUTE
+            if (characteristics & 0x2000_0000) == 0 {
+                // NOT IMAGE_SCN_MEM_EXECUTE
                 flags |= Flags::NO_EXECUTE;
             }
             // Read permission is always present for loaded sections
@@ -1178,9 +1223,15 @@ unsafe fn map_kernel_segments(
         let kernel_size = FALLBACK_KERNEL_SIZE;
         let kernel_pages = kernel_size.div_ceil(4096);
         for i in 0..kernel_pages {
-let phys_addr = calc_offset_addr!(kernel_phys_start.as_u64(), i);
-let virt_addr = calc_offset_addr!(phys_offset.as_u64(), i);
-map_with_offset!(mapper, frame_allocator, phys_addr, virt_addr, Flags::PRESENT | Flags::WRITABLE);
+            let phys_addr = calc_offset_addr!(kernel_phys_start.as_u64(), i);
+            let virt_addr = calc_offset_addr!(phys_offset.as_u64(), i);
+            map_with_offset!(
+                mapper,
+                frame_allocator,
+                phys_addr,
+                virt_addr,
+                Flags::PRESENT | Flags::WRITABLE
+            );
         }
     }
 }

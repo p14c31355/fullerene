@@ -239,8 +239,6 @@ impl PrivatePciDevice {
     fn build_handle(bus: u8, device: u8, function: u8) -> usize {
         ((bus as usize) << 16) | ((device as usize) << 8) | (function as usize)
     }
-
-
 }
 
 /// PCI Bus scanner for device discovery
