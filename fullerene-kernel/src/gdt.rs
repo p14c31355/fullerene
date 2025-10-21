@@ -59,10 +59,10 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
 
     gdt_log!("GDT: Initializing with heap at ", heap_start.as_u64());
 
-    const STACK_SIZE: usize = 4096 * 5;
-    let double_fault_ist = heap_start + STACK_SIZE as u64;
-    let timer_ist = double_fault_ist + STACK_SIZE as u64;
-    let new_heap_start = timer_ist + STACK_SIZE as u64; // Reserve space for both stacks
+    let double_fault_ist = heap_start + GDT_TSS_STACK_SIZE as u64;
+    let timer_ist = double_fault_ist + GDT_TSS_STACK_SIZE as u64;
+    // Reserve space for all TSS stacks (double fault, timer, and one spare).
+    let new_heap_start = timer_ist + GDT_TSS_STACK_SIZE as u64;
 
     gdt_log!("GDT: Stack addresses calculated");
 
