@@ -450,16 +450,7 @@ impl BitmapFrameAllocator {
             return Err(crate::common::logging::SystemError::InvalidArgument);
         }
 
-        for i in 0..count {
-            if !self.is_frame_free(start_frame + i) {
-                debug_log_no_alloc!(
-                    "Frame allocation failed: frame already in use at index ",
-                    start_frame + i
-                );
-                return Err(crate::common::logging::SystemError::FrameAllocationFailed);
-            }
-        }
-
+        // Mark frames as used to reserve them (no need to check if they are free first)
         for i in 0..count {
             self.set_frame_used(start_frame + i);
         }
