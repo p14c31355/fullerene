@@ -1,4 +1,3 @@
-use log;
 use spin::Once;
 use x86_64::VirtAddr;
 use x86_64::instructions::tables::load_tss;
@@ -6,8 +5,37 @@ use x86_64::registers::segmentation::{CS, Segment};
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
 
+// Direct serial logging without allocations
+macro_rules! gdt_log {
+    ($msg:literal) => {{
+        unsafe {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes());
+        }
+    }};
+    ($msg:literal, $arg:expr) => {{
+        unsafe {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, $msg.as_bytes());
+            petroleum::serial::debug_print_hex($arg as usize);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+        }
+    }};
+}
+
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 pub const TIMER_IST_INDEX: u16 = 1;
+
+/// Size of the GDT TSS stack (bytes).
+/// Each stack is 5 pages to accommodate interrupt handling for double fault and timer interrupts.
+pub const GDT_TSS_STACK_SIZE: usize = 4096 * 5;
+
+/// Number of GDT TSS stacks reserved.
+/// Three stacks are reserved: double fault stack, timer stack, and an additional stack for future use.
+/// This provides redundancy and prevents stack overflow during nested interrupts.
+pub const GDT_TSS_STACK_COUNT: usize = 3;
+
+/// Total overhead for GDT initialization in bytes.
+/// This includes space for all TSS stacks and should be accounted for before heap allocation.
+pub const GDT_INIT_OVERHEAD: usize = GDT_TSS_STACK_COUNT * GDT_TSS_STACK_SIZE;
 
 static TSS: Once<TaskStateSegment> = Once::new();
 static GDT: Once<GlobalDescriptorTable> = Once::new();
@@ -25,29 +53,29 @@ pub fn kernel_code_selector() -> SegmentSelector {
 pub fn init(heap_start: VirtAddr) -> VirtAddr {
     // If already initialized, just return the heap start (don't modify)
     if GDT_INITIALIZED.is_completed() {
-        log::info!("GDT: Already initialized, skipping");
+        gdt_log!("GDT: Already initialized, skipping");
         return heap_start;
     }
 
-    log::info!("GDT: Initializing with heap at {:#x}", heap_start.as_u64());
+    gdt_log!("GDT: Initializing with heap at ", heap_start.as_u64());
 
     const STACK_SIZE: usize = 4096 * 5;
     let double_fault_ist = heap_start + STACK_SIZE as u64;
     let timer_ist = double_fault_ist + STACK_SIZE as u64;
     let new_heap_start = timer_ist + STACK_SIZE as u64; // Reserve space for both stacks
 
-    log::info!("GDT: Stack addresses calculated");
+    gdt_log!("GDT: Stack addresses calculated");
 
-    log::info!("About to create TSS...");
+    gdt_log!("About to create TSS...");
     let tss = TSS.call_once(|| {
         let mut tss = TaskStateSegment::new();
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = double_fault_ist;
         tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = timer_ist;
         tss
     });
-    log::info!("TSS created successfully");
+    gdt_log!("TSS created successfully");
 
-    log::info!("GDT: TSS created");
+    gdt_log!("GDT: TSS created");
 
     let gdt = GDT.call_once(|| {
         let mut gdt = GlobalDescriptorTable::new();
@@ -69,28 +97,28 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
         gdt
     });
 
-    log::info!("GDT: GDT built");
+    gdt_log!("GDT: GDT built");
 
     #[cfg(not(target_os = "uefi"))]
     {
         // Load GDT - required for proper segmentation in BIOS mode
-        log::info!("About to load GDT...");
+        gdt_log!("About to load GDT...");
         gdt.load();
-        log::info!("GDT: GDT loaded");
+        gdt_log!("GDT: GDT loaded");
 
         unsafe {
             // Reload CS register in BIOS mode as it's crucial after GDT reload
-            log::info!("About to set CS register...");
+            gdt_log!("About to set CS register...");
             CS::set_reg(*CODE_SELECTOR.get().unwrap());
-            log::info!("GDT: CS set");
+            gdt_log!("GDT: CS set");
 
-            log::info!("About to load TSS...");
+            gdt_log!("About to load TSS...");
             load_tss(*TSS_SELECTOR.get().unwrap());
-            log::info!("GDT: TSS loaded");
-            log::info!("GDT: Loaded and segments set");
+            gdt_log!("GDT: TSS loaded");
+            gdt_log!("GDT: Loaded and segments set");
 
             // Set data segment registers to kernel data segment for proper I/O operations
-            log::info!("Setting data segment registers...");
+            gdt_log!("Setting data segment registers...");
             if let Some(data_sel) = KERNEL_DATA_SELECTOR.get() {
                 use x86_64::registers::segmentation::{DS, ES, FS, GS, SS};
                 DS::set_reg(*data_sel);
@@ -99,18 +127,18 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
                 FS::set_reg(*data_sel);
                 GS::set_reg(*data_sel);
             }
-            log::info!("Data segment registers set");
+            gdt_log!("Data segment registers set");
         }
     }
     #[cfg(target_os = "uefi")]
     {
         // Skip GDT reload and TSS loading in UEFI mode to avoid stack pointer corruption
-        log::info!("Skipping GDT reload and TSS loading in UEFI mode");
+        gdt_log!("Skipping GDT reload and TSS loading in UEFI mode");
     }
 
     // Mark as initialized
     GDT_INITIALIZED.call_once(|| {});
-    log::info!("GDT: About to return");
+    gdt_log!("GDT: About to return");
     new_heap_start
 }
 

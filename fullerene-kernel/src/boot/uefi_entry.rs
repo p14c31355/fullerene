@@ -238,13 +238,9 @@ impl UefiInitContext {
         use petroleum::page_table::{ALLOCATOR, HEAP_INITIALIZED};
         // The GDT initialization allocates stacks for interrupt handlers (e.g., double fault).
         // This size needs to be accounted for in addition to the main kernel stack to prevent memory corruption.
-        const GDT_TSS_STACK_SIZE: usize = 4096 * 5;
-        const GDT_TSS_STACK_COUNT: usize = 3;
-        const GDT_OVERHEAD: usize = GDT_TSS_STACK_COUNT * GDT_TSS_STACK_SIZE;
-        const KERNEL_INIT_OVERHEAD: usize = GDT_OVERHEAD + crate::heap::KERNEL_STACK_SIZE;
 
-        let heap_start_for_allocator = self.virtual_heap_start + KERNEL_INIT_OVERHEAD as u64;
-        let heap_size_for_allocator = heap::HEAP_SIZE - KERNEL_INIT_OVERHEAD;
+        let heap_start_for_allocator = self.virtual_heap_start + crate::gdt::GDT_INIT_OVERHEAD as u64;
+        let heap_size_for_allocator = heap::HEAP_SIZE - crate::gdt::GDT_INIT_OVERHEAD;
 
         unsafe {
             ALLOCATOR.lock().init(

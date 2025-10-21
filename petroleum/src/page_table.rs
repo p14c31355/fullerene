@@ -214,7 +214,10 @@ impl BitmapFrameAllocator {
 
             if chunk_index < bitmap.len() {
                 let mut chunk = bitmap[chunk_index];
-                // Mask off bits before start_index in the first chunk to ignore them
+                // Create a mask with all bits set before the start_index bit position
+                // This effectively ignores any free bits before start_index in the bitmap chunk
+                // For example, if bit_in_chunk is 3, this creates a mask: 0b000...0111 (bits 0-2 set)
+                // which marks the lower bits as used so they won't be considered free
                 chunk |= (1u64.wrapping_shl(bit_in_chunk as u32)).wrapping_sub(1);
                 if chunk != u64::MAX {
                     let first_free_bit = (!chunk).trailing_zeros() as usize;

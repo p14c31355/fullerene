@@ -179,10 +179,89 @@ pub fn debug_print_str_to_com1(s: &str) {
     SERIAL_PORT_WRITER.lock().write_string(s);
 }
 
-/// Prints a usize as hex to COM1 (early debug, no alloc).
-pub fn debug_print_hex(value: usize) {
-    let mut writer = SERIAL_PORT_WRITER.lock();
-    let _ = format_hex(&mut *writer, value);
+/// Prints a value as hex or string to COM1 (early debug, no alloc).
+pub trait DebugToHexOrStr {
+    fn debug_print(self);
+}
+
+impl DebugToHexOrStr for u8 {
+    fn debug_print(self) {
+        let mut writer = SERIAL_PORT_WRITER.lock();
+        let _ = format_hex(&mut *writer, self as usize);
+    }
+}
+
+impl DebugToHexOrStr for u16 {
+    fn debug_print(self) {
+        let mut writer = SERIAL_PORT_WRITER.lock();
+        let _ = format_hex(&mut *writer, self as usize);
+    }
+}
+
+impl DebugToHexOrStr for u32 {
+    fn debug_print(self) {
+        let mut writer = SERIAL_PORT_WRITER.lock();
+        let _ = format_hex(&mut *writer, self as usize);
+    }
+}
+
+impl DebugToHexOrStr for u64 {
+    fn debug_print(self) {
+        let mut writer = SERIAL_PORT_WRITER.lock();
+        let _ = format_hex(&mut *writer, self as usize);
+    }
+}
+
+impl DebugToHexOrStr for usize {
+    fn debug_print(self) {
+        let mut writer = SERIAL_PORT_WRITER.lock();
+        let _ = format_hex(&mut *writer, self as usize);
+    }
+}
+
+impl DebugToHexOrStr for i8 {
+    fn debug_print(self) {
+        let mut writer = SERIAL_PORT_WRITER.lock();
+        let _ = format_hex(&mut *writer, self as usize);
+    }
+}
+
+impl DebugToHexOrStr for i16 {
+    fn debug_print(self) {
+        let mut writer = SERIAL_PORT_WRITER.lock();
+        let _ = format_hex(&mut *writer, self as usize);
+    }
+}
+
+impl DebugToHexOrStr for i32 {
+    fn debug_print(self) {
+        let mut writer = SERIAL_PORT_WRITER.lock();
+        let _ = format_hex(&mut *writer, self as usize);
+    }
+}
+
+impl DebugToHexOrStr for i64 {
+    fn debug_print(self) {
+        let mut writer = SERIAL_PORT_WRITER.lock();
+        let _ = format_hex(&mut *writer, self as usize);
+    }
+}
+
+impl DebugToHexOrStr for isize {
+    fn debug_print(self) {
+        let mut writer = SERIAL_PORT_WRITER.lock();
+        let _ = format_hex(&mut *writer, self as usize);
+    }
+}
+
+impl DebugToHexOrStr for &str {
+    fn debug_print(self) {
+        debug_print_str_to_com1(self);
+    }
+}
+
+pub fn debug_print_hex<T: DebugToHexOrStr>(value: T) {
+    value.debug_print();
 }
 
 /// Formats a usize as hex to the given writer without allocation.

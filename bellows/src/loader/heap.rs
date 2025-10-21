@@ -57,9 +57,7 @@ fn try_allocate_pages(
 
         let status_efi = EfiStatus::from(status);
         let status_str = efi_status_to_str(status_efi);
-        debug_print_str_to_com1("Heap: Status: ");
-        debug_print_str_to_com1(status_str);
-        debug_print_str_to_com1("\n");
+        debug_log_no_alloc!("Heap: Status: ", status_str);
 
         if status_efi == EfiStatus::InvalidParameter {
             debug_log_no_alloc!("Heap: -> Skipping invalid type.");

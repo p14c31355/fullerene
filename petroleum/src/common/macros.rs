@@ -104,6 +104,7 @@ macro_rules! debug_log {
 /// debug_log_no_alloc!("Starting initialization");
 /// debug_log_no_alloc!(42);  // Just print a value
 /// debug_log_no_alloc!("Log with values: ", 42, 0x1234);
+/// debug_log_no_alloc!("Heap: Status: ", "Success");  // Literal + string concatenation
 /// ```
 #[macro_export]
 macro_rules! debug_log_no_alloc {
@@ -111,14 +112,19 @@ macro_rules! debug_log_no_alloc {
         $crate::write_serial_bytes!(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes());
     }};
     ($value:expr) => {{
-        $crate::serial::debug_print_hex($value as usize);
+        $crate::serial::debug_print_hex($value);
         $crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
     }};
     ($msg:literal, $($value:expr),* $(,)?) => {{
         $crate::write_serial_bytes!(0x3F8, 0x3FD, $msg.as_bytes());
         $(
-            $crate::serial::debug_print_hex($value as usize);
+            $crate::serial::debug_print_hex($value);
         )*
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+    }};
+    ($prefix:literal, $string_var:expr) => {{
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, $prefix.as_bytes());
+        $crate::serial::debug_print_str_to_com1($string_var);
         $crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
     }};
 }
@@ -307,11 +313,11 @@ macro_rules! mem_debug {
         $crate::serial::debug_print_str_to_com1($msg);
     };
     ($value:expr, $($rest:tt)*) => {
-        $crate::serial::debug_print_hex($value as usize);
+        $crate::serial::debug_print_hex($value);
         $crate::mem_debug!($($rest)*);
     };
     ($value:expr) => {
-        $crate::serial::debug_print_hex($value as usize);
+        $crate::serial::debug_print_hex($value);
     };
 }
 
@@ -331,7 +337,7 @@ macro_rules! debug_print {
         $crate::serial::debug_print_str_to_com1($msg);
     };
     ($value:expr) => {
-        $crate::serial::debug_print_hex($value as usize);
+        $crate::serial::debug_print_hex($value);
     };
 }
 
