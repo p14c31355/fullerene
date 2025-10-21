@@ -150,8 +150,9 @@ impl BitmapFrameAllocator {
         // Handle partial start chunk
         if start_chunk_index < self.bitmap.len() {
             let bits_to_set_in_start_chunk = if start_chunk_index == end_chunk_index {
-                // Start and end in same chunk
-                ((1u64 << (end_bit_in_chunk - start_bit_in_chunk + 1)) - 1) << start_bit_in_chunk
+                // Start and end in same chunk - safely handle potential subtraction underflow
+                let num_bits = end_bit_in_chunk.saturating_sub(start_bit_in_chunk).saturating_add(1);
+                ((1u64.wrapping_shl(num_bits as u32)) - 1).wrapping_shl(start_bit_in_chunk as u32)
             } else {
                 // More chunks ahead, set from start_bit to end of chunk
                 u64::MAX << start_bit_in_chunk

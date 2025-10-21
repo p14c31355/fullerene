@@ -137,8 +137,8 @@ pub fn efi_status_to_str(status: EfiStatus) -> &'static str {
 }
 
 /// Minimal subset of UEFI memory types (only those we need)
-#[repr(usize)]
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[repr(u32)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum EfiMemoryType {
     EfiReservedMemoryType = 0,
     EfiLoaderCode = 1,
