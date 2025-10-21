@@ -330,46 +330,42 @@ impl BitmapFrameAllocator {
     }
 
     /// Find the next free frame starting from a given index
-    fn find_next_free_frame(&self, start_index: usize) -> Option<usize> {
+    fn find_next_free_frame(&mut self, start_index: usize) -> Option<usize> {
         if !self.initialized {
             return None;
         }
 
-        if let Some(ref bitmap) = self.bitmap {
-            let mut chunk_index = start_index / 64;
-            let bit_in_chunk = start_index % 64;
+        self.bitmap.as_mut().and_then(|bitmap| Self::find_frame_in_bitmap(bitmap, start_index))
+    }
 
-            if chunk_index < bitmap.len() {
-                let mut chunk = bitmap[chunk_index];
-                // Create a mask with all bits set before the start_index bit position
-                // This effectively ignores any free bits before start_index in the bitmap chunk
-                // For example, if bit_in_chunk is 3, this creates a mask: 0b000...0111 (bits 0-2 set)
-                // which marks the lower bits as used so they won't be considered free
-                chunk |= (1u64.wrapping_shl(bit_in_chunk as u32)).wrapping_sub(1);
-                if chunk != u64::MAX {
-                    let first_free_bit = (!chunk).trailing_zeros() as usize;
-                    let frame_index = chunk_index * 64 + first_free_bit;
-                    if frame_index < self.frame_count {
-                        return Some(frame_index);
-                    }
-                }
-                chunk_index += 1;
-            }
+    /// Helper method for bitmap operations
+    fn find_frame_in_bitmap(bitmap: &mut [u64], start_index: usize) -> Option<usize> {
+        let mut chunk_index = start_index / 64;
+        let bit_in_chunk = start_index % 64;
 
-            for i in chunk_index..bitmap.len() {
-                let chunk = bitmap[i];
-                if chunk != u64::MAX {
-                    let first_free_bit = (!chunk).trailing_zeros() as usize;
-                    let frame_index = i * 64 + first_free_bit;
-                    if frame_index < self.frame_count {
-                        return Some(frame_index);
-                    }
+        if chunk_index < bitmap.len() {
+            let mut chunk = bitmap[chunk_index];
+            chunk |= (1u64.wrapping_shl(bit_in_chunk as u32)).wrapping_sub(1);
+            if chunk != u64::MAX {
+                let first_free_bit = (!chunk).trailing_zeros() as usize;
+                if chunk_index * 64 + first_free_bit < (bitmap.len() * 64) {
+                    return Some(chunk_index * 64 + first_free_bit);
                 }
             }
+            chunk_index += 1;
         }
 
+        for i in chunk_index..bitmap.len() {
+            if bitmap[i] != u64::MAX {
+                let first_free_bit = (!bitmap[i]).trailing_zeros() as usize;
+                return Some(i * 64 + first_free_bit);
+            }
+        }
         None
     }
+}
+
+impl BitmapFrameAllocator {
 
     /// Allocate a specific frame range (for reserving used regions)
     pub fn allocate_frames_at(
@@ -500,7 +496,7 @@ unsafe fn map_kernel_segments_inner(
     kernel_phys_start: PhysAddr,
     phys_offset: VirtAddr
 ) {
-    if let Some(sections) = unsafe { parse_pe_sections(kernel_phys_start) } {
+    if let Some(sections) = unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8).and_then(|p| p.sections()) } {
         for section in sections.into_iter().filter(|s| s.virtual_size > 0) {
             unsafe { map_pe_section(mapper, section, kernel_phys_start, phys_offset, frame_allocator); }
         }
@@ -612,7 +608,7 @@ impl<'a> MemoryMapper<'a> {
 
     // Map kernel segments using PE parsing
     pub unsafe fn map_kernel_segments(&mut self, kernel_phys_start: PhysAddr) {
-        if let Some(sections) = unsafe { parse_pe_sections(kernel_phys_start) } {
+        if let Some(sections) = unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8).and_then(|p| p.sections()) } {
             for section in sections.into_iter().filter(|s| s.virtual_size > 0) {
                 unsafe { map_pe_section(self.mapper, section, kernel_phys_start, self.phys_offset, self.frame_allocator); }
             }
@@ -987,73 +983,5 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     match parser.size_of_image() {
         Some(size) => ((size + 4095) & !4095) + KERNEL_MEMORY_PADDING,
         None => FALLBACK_KERNEL_SIZE,
-    }
-}
-
-pub unsafe fn parse_pe_sections(kernel_phys_start: PhysAddr) -> Option<[PeSection; 16]> {
-    let parser = unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8) }?;
-    parser.sections()
-}
-
-/// Map kernel segments with appropriate permissions parsed from the PE file
-unsafe fn map_kernel_segments(
-    mapper: &mut OffsetPageTable,
-    kernel_phys_start: PhysAddr,
-    phys_offset: VirtAddr,
-    frame_allocator: &mut BootInfoFrameAllocator,
-) {
-    use x86_64::structures::paging::PageTableFlags as Flags;
-
-    debug_log_no_alloc!(
-        "map_kernel_segments: starting PE mapping, kernel_phys_start=",
-        kernel_phys_start.as_u64()
-    );
-
-    if let Some(sections) = unsafe { parse_pe_sections(kernel_phys_start) } {
-        debug_log_no_alloc!("map_kernel_segments: PE parsed successfully, mapping sections");
-
-        // Count non-zero sections (since we have a fixed-size array with padding)
-        let mut _section_count = 0;
-        for i in 0..sections.len() {
-            if sections[i].virtual_size > 0 {
-                _section_count += 1;
-            }
-        }
-
-        for section in sections.into_iter().filter(|s| s.virtual_size > 0) {
-            let section_name = core::str::from_utf8(&section.name).unwrap_or("<invalid>");
-            debug_log_no_alloc!(
-                "map_kernel_segments: mapping section ",
-                section_name,
-                ", vaddr=",
-                section.virtual_address as u64,
-                ", vsize=",
-                section.virtual_size as u64,
-                ", raw_size=",
-                section.size_of_raw_data as u64
-            );
-
-            // Map the section using the helper function
-            unsafe {
-                map_pe_section(mapper, section, kernel_phys_start, phys_offset, frame_allocator);
-            }
-        }
-    } else {
-        debug_log_no_alloc!("map_kernel_segments: PE parsing failed, using fallback");
-        // If PE parsing fails, fall back to mapping as executable and writable
-        const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024;
-        let kernel_size = FALLBACK_KERNEL_SIZE;
-        let kernel_pages = kernel_size.div_ceil(4096);
-        for i in 0..kernel_pages {
-            let phys_addr = calc_offset_addr!(kernel_phys_start.as_u64(), i);
-            let virt_addr = calc_offset_addr!(phys_offset.as_u64(), i);
-            map_with_offset!(
-                mapper,
-                frame_allocator,
-                phys_addr,
-                virt_addr,
-                Flags::PRESENT | Flags::WRITABLE
-            );
-        }
     }
 }
