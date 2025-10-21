@@ -110,23 +110,49 @@ impl BitmapFrameAllocator {
         &mut self,
         memory_map: &[EfiMemoryDescriptor],
     ) -> crate::common::logging::SystemResult<()> {
+        // Debug: Log memory map information
+        debug_log_no_alloc!("Memory map contains ", memory_map.len(), " descriptors");
+
+        // Validate memory map is not empty
+        if memory_map.is_empty() {
+            debug_log_no_alloc!("ERROR: Empty memory map received");
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
+
+        // Debug: Log each descriptor
+        for (i, desc) in memory_map.iter().enumerate() {
+            debug_log_no_alloc!("Descriptor ", i, ": type=", desc.type_ as usize,
+                               ", start=0x", desc.physical_start as usize,
+                               ", pages=", desc.number_of_pages as usize);
+        }
+
         // 1. Find the highest physical address to determine the total number of frames to manage.
         let max_phys_addr = memory_map
             .iter()
-            .map(|d| d.physical_start + d.number_of_pages * 4096)
+            .map(|d| {
+                let pages_size = d.number_of_pages.saturating_mul(4096);
+                d.physical_start.saturating_add(pages_size)
+            })
             .max()
             .unwrap_or(0);
         let total_frames = (max_phys_addr.div_ceil(4096)) as usize;
 
+        debug_log_no_alloc!("Max physical address: 0x", max_phys_addr as usize);
+        debug_log_no_alloc!("Calculated total frames: ", total_frames);
+
         if total_frames == 0 {
+            debug_log_no_alloc!("ERROR: No valid frames found in memory map");
             return Err(crate::common::logging::SystemError::InternalError);
         }
 
         // Calculate bitmap size needed
         let bitmap_size = (total_frames + 63) / 64; // Round up for 64-bit chunks
 
+        debug_log_no_alloc!("Required bitmap size: ", bitmap_size);
+
         // Ensure bitmap size doesn't exceed our static buffer
         if bitmap_size > 131072 {
+            debug_log_no_alloc!("ERROR: Bitmap size ", bitmap_size, " exceeds limit 131072");
             return Err(crate::common::logging::SystemError::InternalError);
         }
 
@@ -157,8 +183,12 @@ impl BitmapFrameAllocator {
                 }
             }
         }
-        // Mark frame 0 as used to avoid allocating the null page.
+
+        // Mark frame 0 as used to avoid allocating the null page
         self.set_frame_used(0);
+
+        debug_log_no_alloc!("BitmapFrameAllocator initialized successfully with ", total_frames, " frames");
+
         Ok(())
     }
 
