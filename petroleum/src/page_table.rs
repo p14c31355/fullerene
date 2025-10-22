@@ -775,6 +775,18 @@ fn map_additional_regions(
             VGA_PAGES,
             Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE
         );
+
+        // Map boot code range to higher half for UEFI transition (128MB)
+        let boot_code_start = 0x100000u64;
+        let boot_code_pages = 0x8000u64; // 128MB
+        map_pages_loop!(
+            mapper,
+            frame_allocator,
+            boot_code_start,
+            phys_offset.as_u64() + boot_code_start,
+            boot_code_pages,
+            Flags::PRESENT | Flags::WRITABLE
+        );
     }
 }
 
