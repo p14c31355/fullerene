@@ -6,6 +6,7 @@ use crate::{
 
 // Macros are automatically available from common module
 use spin::Once;
+use alloc::collections::BTreeMap;
 use x86_64::{
     PhysAddr, VirtAddr,
     instructions::tlb,
@@ -1881,6 +1882,8 @@ pub struct PageTableManager {
     initialized: bool,
     pml4_frame: Option<PhysFrame>,
     mapper: Option<OffsetPageTable<'static>>,
+    allocated_tables: alloc::collections::BTreeMap<usize, PhysFrame>,
+    frame_allocator: Option<&'static mut BootInfoFrameAllocator>,
 }
 
 impl PageTableManager {
@@ -1890,7 +1893,38 @@ impl PageTableManager {
             initialized: false,
             pml4_frame: None,
             mapper: None,
+            allocated_tables: alloc::collections::BTreeMap::new(),
         }
+    }
+
+    pub fn initialize_with_frame_allocator(
+        &mut self,
+        phys_offset: VirtAddr,
+        frame_allocator: &mut BootInfoFrameAllocator,
+    ) -> crate::common::logging::SystemResult<()> {
+        if self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
+
+        // Get the current active page table
+        let (current_pml4, _) = Cr3::read();
+        let table_phys_addr = current_pml4.start_address().as_u64();
+
+        // Initialize the mapper with the current table
+        self.mapper = Some(unsafe {
+            // Temporarily map the current table to access it
+            let mut temp_mapper = unsafe { init(phys_offset) };
+            let virt_addr = phys_offset + table_phys_addr;
+            let page = Page::containing_address(virt_addr);
+            let _map_result = temp_mapper.map_to(page, current_pml4, page_flags_const!(READ_WRITE_NO_EXEC), frame_allocator);
+            OffsetPageTable::new(&mut *(virt_addr.as_mut_ptr() as *mut PageTable), phys_offset)
+        });
+
+        self.pml4_frame = Some(current_pml4);
+        self.current_page_table = table_phys_addr as usize;
+        self.allocated_tables.insert(table_phys_addr as usize, current_pml4);
+        self.initialized = true;
+        Ok(())
     }
 }
 
@@ -2046,32 +2080,92 @@ impl PageTableHelper for PageTableManager {
     fn create_page_table(&mut self) -> crate::common::logging::SystemResult<usize> {
         ensure_initialized!(self);
 
-        // Return a dummy address
-        Ok(0x1000)
+        // Allocate a new frame for L4 page table
+        let frame_allocator = self.mapper.as_mut().unwrap();
+        let mut dummy_frame_allocator = DummyFrameAllocator::new();
+        let new_frame = match dummy_frame_allocator.allocate_frame() {
+            Some(frame) => frame,
+            None => return Err(crate::common::logging::SystemError::FrameAllocationFailed),
+        };
+
+        // Zero the new page table frame
+        unsafe {
+            core::ptr::write_bytes(
+                new_frame.start_address().as_u64() as *mut PageTable,
+                0,
+                1,
+            );
+        }
+
+        let table_addr = new_frame.start_address().as_u64() as usize;
+        self.allocated_tables.insert(table_addr, new_frame);
+
+        Ok(table_addr)
     }
 
     fn destroy_page_table(
         &mut self,
-        _table_addr: usize,
+        table_addr: usize,
     ) -> crate::common::logging::SystemResult<()> {
         ensure_initialized!(self);
 
+        if self.allocated_tables.remove(&table_addr).is_none() {
+            return Err(crate::common::logging::SystemError::InvalidArgument);
+        }
+
+        // Frame is now deallocated from our tracking
         Ok(())
     }
 
     fn clone_page_table(
         &mut self,
-        _source_table: usize,
+        source_table: usize,
     ) -> crate::common::logging::SystemResult<usize> {
         ensure_initialized!(self);
 
-        Ok(_source_table + 0x1000) // Dummy offset
+        let source_frame = match self.allocated_tables.get(&source_table) {
+            Some(frame) => frame,
+            None => return Err(crate::common::logging::SystemError::InvalidArgument),
+        };
+
+        // Allocate new frame
+        let frame_allocator = self.mapper.as_mut().unwrap();
+        let mut dummy_frame_allocator = DummyFrameAllocator::new();
+        let new_frame = match dummy_frame_allocator.allocate_frame() {
+            Some(frame) => frame,
+            None => return Err(crate::common::logging::SystemError::FrameAllocationFailed),
+        };
+
+        // Copy source table to new frame
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                source_frame.start_address().as_u64() as *const u8,
+                new_frame.start_address().as_u64() as *mut u8,
+                4096,
+            );
+        }
+
+        let new_table_addr = new_frame.start_address().as_u64() as usize;
+        self.allocated_tables.insert(new_table_addr, new_frame);
+
+        Ok(new_table_addr)
     }
 
     fn switch_page_table(&mut self, table_addr: usize) -> crate::common::logging::SystemResult<()> {
         ensure_initialized!(self);
 
+        let new_frame = match self.allocated_tables.get(&table_addr) {
+            Some(frame) => frame,
+            None => return Err(crate::common::logging::SystemError::InvalidArgument),
+        };
+
+        unsafe {
+            Cr3::write(*new_frame, x86_64::registers::control::Cr3Flags::empty());
+        }
+
+        self.pml4_frame = Some(*new_frame);
         self.current_page_table = table_addr;
+
         Ok(())
     }
 
