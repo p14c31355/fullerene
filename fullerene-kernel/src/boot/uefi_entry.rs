@@ -106,9 +106,6 @@ impl UefiInitContext {
     ) -> (VirtAddr, PhysAddr, VirtAddr) {
         debug_log_no_alloc!("Entering memory_management_initialization");
         let memory_map_ref = MEMORY_MAP.get().expect("Memory map not initialized");
-        // Initialize heap frame allocator
-        heap::init_frame_allocator(*memory_map_ref);
-        debug_log_no_alloc!("Heap frame allocator initialized");
         // Get framebuffer config from petroleum global
         let framebuffer_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
             .get()
@@ -135,16 +132,23 @@ impl UefiInitContext {
             (None, None)
         };
 
-        debug_log_no_alloc!("Skipping page table reinit temporarily for debugging");
-        // TODO: Re-enable page table reinit once basic scheduler is working
-        // Use existing UEFI mappings for now
-        self.physical_memory_offset = VirtAddr::new(petroleum::FALLBACK_HEAP_START_ADDR);
-
-        // For now, just set up a basic frame allocator without page table reinit
+        // Initialize a basic frame allocator first
+        // Initialize heap frame allocator
+        heap::init_frame_allocator(*memory_map_ref);
+        debug_log_no_alloc!("Heap frame allocator initialized");
         let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
             .get()
             .expect("Frame allocator not initialized")
             .lock();
+
+        // Initialize page table with higher half mappings for UEFI
+        self.physical_memory_offset = petroleum::page_table::reinit_page_table_with_allocator(
+            kernel_phys_start,
+            fb_addr,
+            fb_size,
+            &mut frame_allocator,
+            *memory_map_ref,
+        );
 
         // Basic setup without full page table reinit
         debug_log_no_alloc!("Basic memory setup without page table reinit complete");
@@ -223,7 +227,11 @@ impl UefiInitContext {
         self.heap_start_after_gdt = gdt::init(gdt_heap_start);
         log::info!("GDT initialized");
 
-        // Simplified stack setup - assume current rsp is valid
+        // Switch to the kernel stack
+        unsafe {
+            let kernel_stack_top = self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64 - 8;
+            core::arch::asm!("mov rsp, {}", in(reg) kernel_stack_top);
+        }
         self.heap_start_after_stack = self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64;
         write_serial_bytes!(0x3F8, 0x3FD, b"Basic GDT and stack setup completed\n");
     }

@@ -946,7 +946,7 @@ fn setup_identity_mappings(
 
     // Map UEFI runtime services regions to allow continuation
     for desc in memory_map.iter() {
-        (desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode || desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesData) { // EFI_RUNTIME_SERVICES_CODE or EFI_RUNTIME_SERVICES_DATA
+        if (desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode || desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesData) { // EFI_RUNTIME_SERVICES_CODE or EFI_RUNTIME_SERVICES_DATA
             let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
                 Flags::PRESENT | Flags::WRITABLE
             } else {
