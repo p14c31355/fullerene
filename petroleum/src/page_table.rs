@@ -972,11 +972,24 @@ fn setup_identity_mappings(
     mapper: &mut OffsetPageTable,
     frame_allocator: &mut BootInfoFrameAllocator,
     kernel_phys_start: PhysAddr,
+    level_4_table_frame: PhysFrame,
     memory_map: &[EfiMemoryDescriptor],
 ) -> u64 {
     use x86_64::structures::paging::PageTableFlags as Flags;
 
     debug_log_no_alloc!("Setting up identity mappings for CR3 switch");
+
+    // Identity map the new L4 table frame so we can access it after switching page table
+    unsafe {
+        map_identity_range(
+            mapper,
+            frame_allocator,
+            level_4_table_frame.start_address().as_u64(),
+            1,
+            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+        )
+        .expect("Failed to map L4 table frame");
+    }
 
     // Map identity range for UEFI compatibility (64MB - first page)
     unsafe {
@@ -1045,11 +1058,24 @@ fn setup_identity_mappings(
     unsafe {
         core::arch::asm!("mov {}, rsp", out(reg) rsp);
     }
+    // Always identity map the current stack region as a safety measure
+    let stack_pages = 256; // 1MB stack
+    let stack_start = rsp & !4095; // page align
+    unsafe {
+        map_identity_range(
+            mapper,
+            frame_allocator,
+            stack_start,
+            stack_pages,
+            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+        )
+        .expect("Failed to map current stack region");
+    }
     for desc in memory_map.iter() {
         if is_valid_memory_descriptor(desc) {
             let start = desc.physical_start;
             let end = start + desc.number_of_pages * 4096;
-            if rsp >= start && rsp < end {
+            if rsp >= start && rsp < end && desc.number_of_pages <= MAX_DESCRIPTOR_PAGES {
                 unsafe {
                     map_identity_range(
                         mapper,
@@ -1271,8 +1297,13 @@ pub fn reinit_page_table_with_allocator(
     };
 
     // Setup identity mappings
-    let kernel_size =
-        setup_identity_mappings(&mut mapper, frame_allocator, kernel_phys_start, memory_map);
+    let kernel_size = setup_identity_mappings(
+        &mut mapper,
+        frame_allocator,
+        kernel_phys_start,
+        level_4_table_frame,
+        memory_map,
+    );
 
     // Setup higher-half mappings
     setup_higher_half_mappings(
