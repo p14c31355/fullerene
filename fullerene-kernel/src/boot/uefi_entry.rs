@@ -184,9 +184,14 @@ impl UefiInitContext {
         } else {
             heap_phys_start
         };
-        // Allocate and map heap memory
+                // Allocate and map heap memory
         let heap_phys_addr = petroleum::allocate_heap_from_map(heap_phys_start_addr, heap::HEAP_SIZE);
         let heap_pages = (heap::HEAP_SIZE + 4095) / 4096;
+
+        // Reserve heap memory region in frame allocator to prevent corruption
+        frame_allocator
+            .allocate_frames_at(heap_phys_addr.as_u64() as usize, heap_pages)
+            .expect("Failed to reserve heap frames");
 
         // Create mapper for heap allocation
         let mut mapper = unsafe {
