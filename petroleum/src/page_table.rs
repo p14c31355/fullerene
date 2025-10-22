@@ -925,22 +925,33 @@ unsafe fn map_kernel_segments_inner(
 // Consolidated mapping using MemoryMapper (removed standalone function)
 
 // Helper to adjust return address after page table switch
-fn adjust_return_address(phys_offset: VirtAddr) {
+fn adjust_return_address_and_stack(phys_offset: VirtAddr) {
     // WARNING: This code assumes frame pointers (rbp) are available and enabled, and relies on
     // the standard stack layout where the return address is at [rbp + 8]. This may not hold for
     // all compiler versions or optimization levels, especially in debug builds where
     // force-frame-pointers is not set by default. Violation could lead to stack corruption or crash.
     // This is acknowledged as fragile but necessary for the higher-half kernel transition.
-    debug_log_no_alloc!("Adjusting return address for higher half");
+    debug_log_no_alloc!("Adjusting return address and stack for higher half");
 
     unsafe {
         let mut base_pointer: u64;
         core::arch::asm!("mov {}, rbp", out(reg) base_pointer);
+
         let return_address_ptr = (base_pointer as *mut u64).add(1);
-        *return_address_ptr = phys_offset.as_u64() + *return_address_ptr;
+        let old_return_address = *return_address_ptr;
+        *return_address_ptr = old_return_address + phys_offset.as_u64();
+
+        let new_base_pointer = base_pointer + phys_offset.as_u64();
+        core::arch::asm!("mov rbp, {}", in(reg) new_base_pointer);
+
+        let old_rsp: u64;
+        core::arch::asm!("mov {}, rsp", out(reg) old_rsp);
+
+        let new_rsp = old_rsp + phys_offset.as_u64();
+        core::arch::asm!("mov rsp, {}", in(reg) new_rsp);
     }
 
-    debug_log_no_alloc!("Return address adjusted successfully");
+    debug_log_no_alloc!("Return address and stack adjusted successfully");
 }
 
 // Create and initialize a new page table
@@ -1384,7 +1395,7 @@ pub fn reinit_page_table_with_allocator(
     switch_to_new_page_table(level_4_table_frame, phys_offset, frame_allocator, current_physical_memory_offset);
 
     // Adjust return address
-    adjust_return_address(phys_offset);
+    adjust_return_address_and_stack(phys_offset);
 
     debug_log_no_alloc!("Page table reinitialization completed");
     phys_offset
