@@ -33,6 +33,7 @@ pub fn reinit_page_table(
         fb_size,
         &mut *frame_allocator,
         memory_map,
+        x86_64::VirtAddr::new(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64),
     )
 }
 

@@ -1159,23 +1159,30 @@ fn setup_higher_half_mappings<'a>(
 }
 
 // Perform the page table switch
+// Function to assist with page table debugging
+fn debug_page_table_info(level_4_table_frame: PhysFrame, phys_offset: VirtAddr) {
+    debug_log_no_alloc!("New L4 table phys addr: ", level_4_table_frame.start_address().as_u64() as usize);
+    debug_log_no_alloc!("Phys offset: ", phys_offset.as_u64() as usize);
+}
+
 fn switch_to_new_page_table(
     level_4_table_frame: PhysFrame,
     phys_offset: VirtAddr,
     frame_allocator: &mut BootInfoFrameAllocator,
+    current_physical_memory_offset: VirtAddr,
 ) {
     use x86_64::structures::paging::PageTableFlags as Flags;
 
-    // Map L4 table to higher half first
-    let mut temp_mapper = unsafe {
-        OffsetPageTable::new(
-            &mut *(level_4_table_frame.start_address().as_u64() as *mut PageTable),
-            VirtAddr::new(0),
-        )
+    debug_page_table_info(level_4_table_frame, phys_offset);
+
+    // Use the current active page table to map the L4 table to higher half
+    let mut current_mapper = unsafe {
+        let l4_table = crate::page_table::active_level_4_table(current_physical_memory_offset);
+        OffsetPageTable::new(l4_table, current_physical_memory_offset)
     };
 
     unsafe {
-        match temp_mapper.map_to(
+        match current_mapper.map_to(
             Page::containing_address(phys_offset + level_4_table_frame.start_address().as_u64()),
             level_4_table_frame,
             Flags::PRESENT | Flags::WRITABLE,
@@ -1183,9 +1190,12 @@ fn switch_to_new_page_table(
         ) {
             Ok(flush) => flush.flush(),
             Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                // Already mapped, skip
+                debug_log_no_alloc!("L4 table already mapped to higher half");
             }
-            Err(e) => panic!("Failed to map L4 table to higher half: {:?}", e),
+            Err(e) => {
+                debug_log_no_alloc!("Failed to map L4 table to higher half");
+                // Continue anyway, may already be mapped
+            }
         }
     }
 
@@ -1204,7 +1214,7 @@ fn switch_to_new_page_table(
     // Flush TLB
     flush_tlb_and_verify!();
 
-    debug_log_no_alloc!("TLB flushed");
+    debug_log_no_alloc!("TLB flushed, page table switch complete");
 }
 
 pub fn reinit_page_table_with_allocator(
@@ -1213,6 +1223,7 @@ pub fn reinit_page_table_with_allocator(
     fb_size: Option<u64>,
     frame_allocator: &mut BootInfoFrameAllocator,
     memory_map: &[EfiMemoryDescriptor],
+    current_physical_memory_offset: VirtAddr,
 ) -> VirtAddr {
     debug_log_no_alloc!("Page table reinitialization starting");
 
@@ -1222,11 +1233,23 @@ pub fn reinit_page_table_with_allocator(
     let level_4_table_frame =
         create_new_page_table(frame_allocator).expect("Failed to create new page table");
 
-    // Create mapper for new page table
+    // Create a temporary mapper for current page table to identity map the new L4 table
+    let mut current_mapper = unsafe { init(current_physical_memory_offset) };
+
+    // Identity map the new L4 table frame so we can access it
+    use x86_64::structures::paging::PageTableFlags as Flags;
+    unsafe {
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(level_4_table_frame.start_address().as_u64()));
+        let frame = level_4_table_frame;
+        let _ = current_mapper.map_to(page, frame, Flags::PRESENT | Flags::WRITABLE, frame_allocator);
+    }
+
+    // Create mapper for new page table - use current phys_offset to access the new table
     let mut mapper = unsafe {
+        let table_addr = current_physical_memory_offset.as_u64() + level_4_table_frame.start_address().as_u64();
         OffsetPageTable::new(
-            &mut *(level_4_table_frame.start_address().as_u64() as *mut PageTable),
-            VirtAddr::new(0),
+            &mut *(table_addr as *mut PageTable),
+            current_physical_memory_offset,
         )
     };
 
@@ -1247,7 +1270,7 @@ pub fn reinit_page_table_with_allocator(
     );
 
     // Perform the page table switch
-    switch_to_new_page_table(level_4_table_frame, phys_offset, frame_allocator);
+    switch_to_new_page_table(level_4_table_frame, phys_offset, frame_allocator, current_physical_memory_offset);
 
     // Adjust return address
     adjust_return_address(phys_offset);

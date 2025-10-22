@@ -429,6 +429,15 @@ pub fn scheduler_loop() -> ! {
     // Main scheduler loop - continuously execute processes with integrated OS functionality
     log::info!("Scheduler: Entering main loop");
     write_serial_bytes!(0x3F8, 0x3FD, b"Scheduler: Main loop starting\n");
+
+    // Print to VGA if available for GUI output
+    if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {
+        let mut writer = vga_buffer.lock();
+        writer.write_string("Scheduler loop started - VGA output enabled\n");
+        writer.write_string("System is running...\n");
+        writer.update_cursor();
+    }
+
     loop {
         // Increment system counters for this iteration
         SYSTEM_TICK.fetch_add(1, Ordering::Relaxed);
