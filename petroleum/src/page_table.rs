@@ -32,11 +32,11 @@ fn log_memory_mapping(stage: &str, phys_addr: u64, virt_addr: u64, pages: u64) {
 }
 
 // Consolidated PE base finding log helper
-fn log_pe_base_search(start_msg: &str, end_msg: &str, addr: Option<usize>) {
+fn log_pe_base_stage(msg: &str, addr: Option<usize>) {
     if let Some(addr) = addr {
-        debug_log_no_alloc!("PE base: ", start_msg, addr as usize, end_msg);
+        debug_log_no_alloc!("PE base: ", msg, " addr=", addr);
     } else {
-        debug_log_no_alloc!("PE base: ", start_msg);
+        debug_log_no_alloc!("PE base: ", msg);
     }
 }
 
@@ -272,73 +272,43 @@ pub struct PeSectionHeader {
 
 // Helper function to find the PE base address by searching backwards for MZ signature
 unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
-    // Debug: Log start of PE search
-    debug_log_no_alloc!("find_pe_base: starting search at ", start_ptr as usize);
+    log_pe_base_stage("starting search", Some(start_ptr as usize));
 
     for i in 0..PeParser::MAX_PE_SEARCH_DISTANCE {
-        if i % 100000 == 0 && i != 0 {
-            // Periodic debug log to track progress
-            debug_log_no_alloc!("find_pe_base: checked ", i, " bytes");
-        }
-
         let candidate_addr = unsafe {
             match (start_ptr as usize).checked_sub(i) {
                 Some(addr) => addr as *const u8,
-                None => break, // Stop if we would underflow.
+                None => break,
             }
         };
 
-        // Early exit check to prevent excessively long searches
-        if i >= PeParser::MAX_PE_SEARCH_DISTANCE / 4 {
-            debug_log_no_alloc!("find_pe_base: still searching after ", i, " iterations, may be in invalid memory");
-        }
+        unsafe {
+            if candidate_addr.read() == b'M' && candidate_addr.add(1).read() == b'Z' {
+                log_pe_base_stage("found MZ candidate", Some(candidate_addr as usize));
+                let pe_offset = read_unaligned!(candidate_addr, 0x3c, u32) as usize;
 
-        // Safe read with bounds check to prevent page fault
-        let mz_check = unsafe {
-            // Calculate how far we've searched
-            let search_addr = (candidate_addr as usize).wrapping_sub(start_ptr as usize);
-
-            // Add additional debug point for long searches
-            if i % 50000 == 0 && i != 0 {
-                debug_log_no_alloc!("find_pe_base: searched address range 0x", search_addr as usize, " to current");
-            }
-
-            // Check if candidate_addr is page-aligned and readable
-            if (candidate_addr as usize) % 4096 == 0 {
-                debug_log_no_alloc!("find_pe_base: crossed page boundary at i=", i, " addr=", candidate_addr as usize);
-            }
-
-            // Read first byte safely with direct read
-            let first_byte = candidate_addr.read();
-            if first_byte != b'M' {
-                continue;
-            }
-
-            // Read second byte safely with direct read
-            let second_byte = candidate_addr.add(1).read();
-            second_byte == b'Z'
-        };
-
-        if mz_check {
-            debug_log_no_alloc!("find_pe_base: found MZ at offset ", i, " addr=", candidate_addr as usize);
-
-            let pe_offset = unsafe { read_unaligned!(candidate_addr, 0x3c, u32) } as usize;
-            debug_log_no_alloc!("find_pe_base: pe_offset=", pe_offset);
-
-            if pe_offset > 0 && pe_offset < PeParser::MAX_PE_OFFSET {
-                let pe_sig = unsafe { read_unaligned!(candidate_addr, pe_offset, u32) };
-                debug_log_no_alloc!("find_pe_base: pe_sig=0x", pe_sig as usize);
-
-                if pe_sig == 0x00004550 {
-                    // "PE\0\0"
-                    debug_log_no_alloc!("find_pe_base: valid PE file found at ", candidate_addr as usize);
-                    return Some(candidate_addr);
+                if pe_offset > 0 && pe_offset < PeParser::MAX_PE_OFFSET {
+                    let pe_sig = read_unaligned!(candidate_addr, pe_offset, u32);
+                    if pe_sig == 0x00004550 {
+                        log_pe_base_stage("found valid PE", Some(candidate_addr as usize));
+                        return Some(candidate_addr);
+                    }
                 }
             }
         }
+
+        // Progress logging
+        if i % 100000 == 0 && i != 0 {
+            log_pe_base_stage("progress", Some(i));
+        }
+
+        // Early exit check
+        if i >= PeParser::MAX_PE_SEARCH_DISTANCE / 4 {
+            log_pe_base_stage("long search warning", Some(i));
+        }
     }
 
-    debug_log_no_alloc!("find_pe_base: no PE signature found after ", PeParser::MAX_PE_SEARCH_DISTANCE, " bytes");
+    log_pe_base_stage("search complete - no PE found", None);
     None
 }
 
@@ -401,6 +371,77 @@ fn calculate_frame_allocation_params(memory_map: &[EfiMemoryDescriptor]) -> (u64
     let total_frames = (capped_max_addr.div_ceil(4096)) as usize;
     let bitmap_size = (total_frames + 63) / 64;
     (max_addr, total_frames, bitmap_size)
+}
+
+// Consolidated MemoryMapper to reduce lines in mapping functions
+pub struct MemoryMapper<'a> {
+    mapper: &'a mut OffsetPageTable<'static>,
+    frame_allocator: &'a mut BootInfoFrameAllocator,
+    phys_offset: VirtAddr,
+}
+
+impl<'a> MemoryMapper<'a> {
+    pub fn new(
+        mapper: &'a mut OffsetPageTable<'static>,
+        frame_allocator: &'a mut BootInfoFrameAllocator,
+        phys_offset: VirtAddr,
+    ) -> Self {
+        Self {
+            mapper,
+            frame_allocator,
+            phys_offset,
+        }
+    }
+
+    pub fn map_framebuffer(&mut self, fb_addr: Option<VirtAddr>, fb_size: Option<u64>) {
+        use x86_64::structures::paging::PageTableFlags as Flags;
+        if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
+            let fb_pages = fb_size.div_ceil(4096);
+            let fb_phys = fb_addr.as_u64();
+            unsafe {
+                let _ = self.map_to_higher_half(fb_phys, fb_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE);
+                let _ = self.identity_map_range(fb_phys, fb_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE);
+            }
+        }
+    }
+
+    pub fn map_vga(&mut self) {
+        use x86_64::structures::paging::PageTableFlags as Flags;
+        const VGA_MEMORY_START: u64 = 0xA0000;
+        const VGA_MEMORY_END: u64 = 0xC0000;
+        const VGA_PAGES: u64 = (VGA_MEMORY_END - VGA_MEMORY_START) / 4096;
+        unsafe {
+            let _ = self.map_to_higher_half(VGA_MEMORY_START, VGA_PAGES, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE);
+        }
+    }
+
+    pub fn map_boot_code(&mut self) {
+        use x86_64::structures::paging::PageTableFlags as Flags;
+        const BOOT_CODE_START: u64 = 0x100000;
+        const BOOT_CODE_PAGES: u64 = 0x8000;
+        unsafe {
+            let _ = self.map_to_higher_half(BOOT_CODE_START, BOOT_CODE_PAGES, Flags::PRESENT | Flags::WRITABLE);
+        }
+    }
+
+    unsafe fn map_to_higher_half(
+        &mut self,
+        phys_start: u64,
+        num_pages: u64,
+        flags: x86_64::structures::paging::PageTableFlags,
+    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+        let virt_start = self.phys_offset.as_u64() + phys_start;
+        map_range_with_log(self.mapper, self.frame_allocator, phys_start, virt_start, num_pages, flags)
+    }
+
+    unsafe fn identity_map_range(
+        &mut self,
+        start_addr: u64,
+        num_pages: u64,
+        flags: x86_64::structures::paging::PageTableFlags,
+    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+        map_range_with_log(self.mapper, self.frame_allocator, start_addr, start_addr, num_pages, flags)
+    }
 }
 
 // Generic function to process memory descriptors using traits
@@ -755,63 +796,41 @@ unsafe fn map_kernel_segments_inner(
 }
 
 // Helper to map additional regions like framebuffer and VGA
-fn map_additional_regions(
-    mapper: &mut OffsetPageTable,
-    frame_allocator: &mut BootInfoFrameAllocator,
+fn map_additional_regions<'a>(
+    mapper: &'a mut OffsetPageTable<'static>,
+    frame_allocator: &'a mut BootInfoFrameAllocator,
     fb_addr: Option<VirtAddr>,
     fb_size: Option<u64>,
     phys_offset: VirtAddr,
 ) {
-    unsafe {
-        use x86_64::structures::paging::PageTableFlags as Flags;
+    use x86_64::structures::paging::PageTableFlags as Flags;
 
-        // Map framebuffer if provided
-        if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
-            let fb_pages = fb_size.div_ceil(4096);
-            // Higher-half mapping
-            map_pages_loop!(
-                mapper,
-                frame_allocator,
-                fb_addr.as_u64(),
-                phys_offset.as_u64() + fb_addr.as_u64(),
-                fb_pages,
-                Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE
-            );
-            // Identity mapping for bootloader compatibility (if possible)
-            let _ = map_identity_range(
-                mapper,
-                frame_allocator,
-                fb_addr.as_u64(),
-                fb_pages,
-                Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
-            );
+    // Map framebuffer if provided
+    if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
+        let fb_pages = fb_size.div_ceil(4096);
+        let fb_phys = fb_addr.as_u64();
+        // Higher-half mapping
+        unsafe {
+            let _ = map_to_higher_half_with_log(mapper, frame_allocator, phys_offset, fb_phys, fb_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE);
+            // Identity mapping for bootloader compatibility
+            let _ = identity_map_range_with_log(mapper, frame_allocator, fb_phys, fb_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE);
         }
+    }
 
-        const VGA_MEMORY_START: u64 = 0xA0000;
-        const VGA_MEMORY_END: u64 = 0xC0000;
-        const VGA_PAGES: u64 = (VGA_MEMORY_END - VGA_MEMORY_START) / 4096;
+    const VGA_MEMORY_START: u64 = 0xA0000;
+    const VGA_MEMORY_END: u64 = 0xC0000;
+    const VGA_PAGES: u64 = (VGA_MEMORY_END - VGA_MEMORY_START) / 4096;
 
-        // Always map VGA memory
-        map_pages_loop!(
-            mapper,
-            frame_allocator,
-            VGA_MEMORY_START,
-            phys_offset.as_u64() + VGA_MEMORY_START,
-            VGA_PAGES,
-            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE
-        );
+    // Always map VGA memory to higher half
+    unsafe {
+        let _ = map_to_higher_half_with_log(mapper, frame_allocator, phys_offset, VGA_MEMORY_START, VGA_PAGES, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE);
+    }
 
-        // Map boot code range to higher half for UEFI transition (128MB)
-        let boot_code_start = 0x100000u64;
-        let boot_code_pages = 0x8000u64; // 128MB
-        map_pages_loop!(
-            mapper,
-            frame_allocator,
-            boot_code_start,
-            phys_offset.as_u64() + boot_code_start,
-            boot_code_pages,
-            Flags::PRESENT | Flags::WRITABLE
-        );
+    // Map boot code range to higher half for UEFI transition (128MB)
+    const BOOT_CODE_START: u64 = 0x100000;
+    const BOOT_CODE_PAGES: u64 = 0x8000; // 128MB
+    unsafe {
+        let _ = map_to_higher_half_with_log(mapper, frame_allocator, phys_offset, BOOT_CODE_START, BOOT_CODE_PAGES, Flags::PRESENT | Flags::WRITABLE);
     }
 }
 
@@ -908,11 +927,11 @@ fn setup_identity_mappings(
 }
 
 // Setup higher-half mappings
-fn setup_higher_half_mappings(
-    mapper: &mut OffsetPageTable,
-    frame_allocator: &mut BootInfoFrameAllocator,
+fn setup_higher_half_mappings<'a>(
+    mapper: &'a mut OffsetPageTable<'static>,
+    frame_allocator: &'a mut BootInfoFrameAllocator,
     kernel_phys_start: PhysAddr,
-    kernel_size: u64,
+    _kernel_size: u64,
     fb_addr: Option<VirtAddr>,
     fb_size: Option<u64>,
     phys_offset: VirtAddr,
@@ -1040,82 +1059,53 @@ pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> PhysAdd
 
 use x86_64::structures::paging::PageTableFlags as PageFlags;
 
-// Generic Memory Mapper structure to reduce repetitive mapping code
-pub struct MemoryMapper<'a> {
-    mapper: &'a mut OffsetPageTable<'a>,
-    frame_allocator: &'a mut BootInfoFrameAllocator,
-    phys_offset: VirtAddr,
+// Generic function to map a range with given flags (consolidated from MemoryMapper)
+unsafe fn map_range_with_log(
+    mapper: &mut OffsetPageTable,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    phys_start: u64,
+    virt_start: u64,
+    num_pages: u64,
+    flags: x86_64::structures::paging::PageTableFlags,
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    log_memory_mapping("Mapping range", phys_start, virt_start, num_pages);
+    for i in 0..num_pages {
+        let phys_addr = phys_start + i * 4096;
+        let virt_addr = virt_start + i * 4096;
+        let (page, frame) = create_page_and_frame!(virt_addr, phys_addr);
+        match mapper.map_to(page, frame, flags, frame_allocator) {
+            Ok(flush) => flush.flush(),
+            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
-impl<'a> MemoryMapper<'a> {
-    pub fn new(
-        mapper: &'a mut OffsetPageTable<'a>,
-        frame_allocator: &'a mut BootInfoFrameAllocator,
-        phys_offset: VirtAddr,
-    ) -> Self {
-        Self {
-            mapper,
-            frame_allocator,
-            phys_offset,
-        }
-    }
+// Helper to identity map a memory range
+unsafe fn identity_map_range_with_log(
+    mapper: &mut OffsetPageTable,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    start_addr: u64,
+    num_pages: u64,
+    flags: x86_64::structures::paging::PageTableFlags,
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    map_range_with_log(mapper, frame_allocator, start_addr, start_addr, num_pages, flags)
+}
 
-    // Generic method to map a range with given flags
-    pub unsafe fn map_range(
-        &mut self,
-        phys_start: u64,
-        virt_start: u64,
-        num_pages: u64,
-        flags: x86_64::structures::paging::PageTableFlags,
-    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-        log_memory_mapping("Mapping range", phys_start, virt_start, num_pages);
-        for i in 0..num_pages {
-            let phys_addr = phys_start + i * 4096;
-            let virt_addr = virt_start + i * 4096;
-            let (page, frame) = create_page_and_frame!(virt_addr, phys_addr);
-            match self.mapper.map_to(page, frame, flags, self.frame_allocator) {
-                Ok(flush) => flush.flush(),
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(())
-    }
-
-    // Map kernel segments using PE parsing
-    pub unsafe fn map_kernel_segments(&mut self, kernel_phys_start: PhysAddr) {
-        unsafe {
-            map_kernel_segments_inner(
-                self.mapper,
-                self.frame_allocator,
-                kernel_phys_start,
-                self.phys_offset,
-            );
-        }
-    }
-
-    // Identity map a memory range
-    pub unsafe fn identity_map_range(
-        &mut self,
-        start_addr: u64,
-        num_pages: u64,
-        flags: x86_64::structures::paging::PageTableFlags,
-    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-        self.map_range(start_addr, start_addr, num_pages, flags)
-    }
-
-    // Map to higher half
-    pub unsafe fn map_to_higher_half(
-        &mut self,
-        phys_start: u64,
-        num_pages: u64,
-        flags: x86_64::structures::paging::PageTableFlags,
-    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-        let virt_start = self.phys_offset.as_u64() + phys_start;
-        self.map_range(phys_start, virt_start, num_pages, flags)
-    }
+// Helper to map to higher half
+unsafe fn map_to_higher_half_with_log(
+    mapper: &mut OffsetPageTable,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    phys_offset: VirtAddr,
+    phys_start: u64,
+    num_pages: u64,
+    flags: x86_64::structures::paging::PageTableFlags,
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    let virt_start = phys_offset.as_u64() + phys_start;
+    map_range_with_log(mapper, frame_allocator, phys_start, virt_start, num_pages, flags)
 }
 
 // Global heap allocator
