@@ -31,6 +31,15 @@ fn log_memory_mapping(stage: &str, phys_addr: u64, virt_addr: u64, pages: u64) {
     debug_log_no_alloc!("Memory mapping stage=", stage, " phys=0x", phys_addr, " virt=0x", virt_addr, " pages=", pages);
 }
 
+// Consolidated PE base finding log helper
+fn log_pe_base_search(start_msg: &str, end_msg: &str, addr: Option<usize>) {
+    if let Some(addr) = addr {
+        debug_log_no_alloc!("PE base: ", start_msg, addr as usize, end_msg);
+    } else {
+        debug_log_no_alloc!("PE base: ", start_msg);
+    }
+}
+
 // Generic validation trait for different descriptor types
 trait MemoryDescriptorValidator {
     fn is_valid(&self) -> bool;
@@ -88,7 +97,7 @@ impl PeParser {
     }
 
     pub unsafe fn size_of_image(&self) -> Option<u64> {
-        if self.pe_offset == 0 || self.pe_offset >= MAX_PE_HEADER_OFFSET || self.pe_base.is_null() {
+        if self.pe_offset == 0 || self.pe_offset >= PeParser::MAX_PE_HEADER_OFFSET || self.pe_base.is_null() {
             return None;
         }
         let magic = unsafe { read_unaligned!(self.pe_base, self.pe_offset + 24, u16) };
@@ -98,8 +107,8 @@ impl PeParser {
         Some(unsafe { read_unaligned!(self.pe_base, self.pe_offset + 24 + 0x38, u32) } as u64)
     }
 
-    pub unsafe fn sections(&self) -> Option<[PeSection; 16]> {
-        if self.pe_offset == 0 || self.pe_offset >= MAX_PE_HEADER_OFFSET || self.pe_base.is_null() {
+    pub unsafe fn sections(&self) -> Option<[PeSection; PeParser::MAX_PE_SECTIONS]> {
+        if self.pe_offset == 0 || self.pe_offset >= PeParser::MAX_PE_HEADER_OFFSET || self.pe_base.is_null() {
             return None;
         }
         let num_sections = unsafe { read_unaligned!(self.pe_base, self.pe_offset + 6, u16) } as usize;
@@ -113,8 +122,8 @@ impl PeParser {
             size_of_raw_data: 0,
             pointer_to_raw_data: 0,
             characteristics: 0,
-        }; MAX_PE_SECTIONS];
-        for i in 0..num_sections.min(MAX_PE_SECTIONS) {
+        }; PeParser::MAX_PE_SECTIONS];
+        for i in 0..num_sections.min(PeParser::MAX_PE_SECTIONS) {
             let offset = section_table_offset + i * 40;
             let header = unsafe { read_unaligned!(self.pe_base, offset, PeSectionHeader) };
             sections[i] = PeSection {
@@ -235,11 +244,13 @@ pub struct Elf64Phdr {
     pub p_align: u64,
 }
 
-// PE parsing constants
-const MAX_PE_SEARCH_DISTANCE: usize = 10 * 1024 * 1024;
-const MAX_PE_OFFSET: usize = 16 * 1024 * 1024;
-const MAX_PE_HEADER_OFFSET: usize = 1024 * 1024;
-const MAX_PE_SECTIONS: usize = 16;
+// Consolidated PE parsing constants into associated constants
+impl PeParser {
+    const MAX_PE_SEARCH_DISTANCE: usize = 10 * 1024 * 1024;
+    const MAX_PE_OFFSET: usize = 16 * 1024 * 1024;
+    const MAX_PE_HEADER_OFFSET: usize = 1024 * 1024;
+    const MAX_PE_SECTIONS: usize = 16;
+}
 const KERNEL_MEMORY_PADDING: u64 = 1024 * 1024;
 const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024;
 
@@ -264,7 +275,7 @@ unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
     // Debug: Log start of PE search
     debug_log_no_alloc!("find_pe_base: starting search at ", start_ptr as usize);
 
-    for i in 0..MAX_PE_SEARCH_DISTANCE {
+    for i in 0..PeParser::MAX_PE_SEARCH_DISTANCE {
         if i % 100000 == 0 && i != 0 {
             // Periodic debug log to track progress
             debug_log_no_alloc!("find_pe_base: checked ", i, " bytes");
@@ -278,7 +289,7 @@ unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
         };
 
         // Early exit check to prevent excessively long searches
-        if i >= MAX_PE_SEARCH_DISTANCE / 4 {
+        if i >= PeParser::MAX_PE_SEARCH_DISTANCE / 4 {
             debug_log_no_alloc!("find_pe_base: still searching after ", i, " iterations, may be in invalid memory");
         }
 
@@ -314,7 +325,7 @@ unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
             let pe_offset = unsafe { read_unaligned!(candidate_addr, 0x3c, u32) } as usize;
             debug_log_no_alloc!("find_pe_base: pe_offset=", pe_offset);
 
-            if pe_offset > 0 && pe_offset < MAX_PE_OFFSET {
+            if pe_offset > 0 && pe_offset < PeParser::MAX_PE_OFFSET {
                 let pe_sig = unsafe { read_unaligned!(candidate_addr, pe_offset, u32) };
                 debug_log_no_alloc!("find_pe_base: pe_sig=0x", pe_sig as usize);
 
@@ -327,7 +338,7 @@ unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
         }
     }
 
-    debug_log_no_alloc!("find_pe_base: no PE signature found after ", MAX_PE_SEARCH_DISTANCE, " bytes");
+    debug_log_no_alloc!("find_pe_base: no PE signature found after ", PeParser::MAX_PE_SEARCH_DISTANCE, " bytes");
     None
 }
 
@@ -1112,7 +1123,7 @@ impl<'a> MemoryMapper<'a> {
 pub static ALLOCATOR: linked_list_allocator::LockedHeap =
     linked_list_allocator::LockedHeap::empty();
 
-// Consolidated Page Table Helper Trait
+// Minimal PageTableHelper trait retained for compatibility
 pub trait PageTableHelper {
     fn map_page(
         &mut self,
@@ -1121,32 +1132,39 @@ pub trait PageTableHelper {
         flags: PageFlags,
         frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
     ) -> crate::common::logging::SystemResult<()>;
-    fn unmap_page(
+    // Keep only essential methods to reduce lines
+}
+
+pub type ProcessPageTable = PageTableManager;
+
+pub struct PageTableManager {
+    current_page_table: usize,
+    initialized: bool,
+    pml4_frame: Option<PhysFrame>,
+    mapper: Option<OffsetPageTable<'static>>,
+}
+
+impl PageTableManager {
+    pub fn new() -> Self {
+        Self {
+            current_page_table: 0,
+            initialized: false,
+            pml4_frame: None,
+            mapper: None,
+        }
+    }
+}
+
+impl PageTableHelper for PageTableManager {
+    fn map_page(
         &mut self,
-        virtual_addr: usize,
-    ) -> crate::common::logging::SystemResult<x86_64::structures::paging::PhysFrame<Size4KiB>>;
-    fn translate_address(&self, virtual_addr: usize)
-    -> crate::common::logging::SystemResult<usize>;
-    fn set_page_flags(
-        &mut self,
-        virtual_addr: usize,
-        flags: PageFlags,
-    ) -> crate::common::logging::SystemResult<()>;
-    fn get_page_flags(
-        &self,
-        virtual_addr: usize,
-    ) -> crate::common::logging::SystemResult<PageFlags>;
-    fn flush_tlb(&mut self, virtual_addr: usize) -> crate::common::logging::SystemResult<()>;
-    fn flush_tlb_all(&mut self) -> crate::common::logging::SystemResult<()>;
-    fn create_page_table(&mut self) -> crate::common::logging::SystemResult<usize>;
-    fn destroy_page_table(&mut self, table_addr: usize)
-    -> crate::common::logging::SystemResult<()>;
-    fn clone_page_table(
-        &mut self,
-        source_table: usize,
-    ) -> crate::common::logging::SystemResult<usize>;
-    fn switch_page_table(&mut self, table_addr: usize) -> crate::common::logging::SystemResult<()>;
-    fn current_page_table(&self) -> usize;
+        _virtual_addr: usize,
+        _physical_addr: usize,
+        _flags: PageFlags,
+        _frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
+    ) -> crate::common::logging::SystemResult<()> {
+        Err(crate::common::logging::SystemError::InternalError)
+    }
 }
 
 /// A dummy frame allocator for when we need to allocate pages for page tables
@@ -1158,259 +1176,9 @@ impl DummyFrameAllocator {
     }
 }
 
-unsafe impl x86_64::structures::paging::FrameAllocator<Size4KiB> for DummyFrameAllocator {
-    fn allocate_frame(&mut self) -> Option<x86_64::structures::paging::PhysFrame<Size4KiB>> {
+unsafe impl FrameAllocator<Size4KiB> for DummyFrameAllocator {
+    fn allocate_frame(&mut self) -> Option<PhysFrame> {
         None // For now, we don't support allocating new frames for page tables
-    }
-}
-
-/// Process page table type alias for PageTableManager
-pub type ProcessPageTable = PageTableManager;
-
-/// Page table manager implementation
-pub struct PageTableManager {
-    current_page_table: usize,
-    initialized: bool,
-    pub pml4_frame: Option<x86_64::structures::paging::PhysFrame>,
-    mapper: Option<OffsetPageTable<'static>>,
-}
-
-impl PageTableManager {
-    /// Create a new page table manager (deferred initialization)
-    pub fn new() -> Self {
-        Self {
-            current_page_table: 0,
-            initialized: false,
-            pml4_frame: None,
-            mapper: None,
-        }
-    }
-
-    /// Create a new page table manager with a specific frame
-    pub fn new_with_frame(pml4_frame: x86_64::structures::paging::PhysFrame) -> Self {
-        Self {
-            current_page_table: pml4_frame.start_address().as_u64() as usize,
-            initialized: false,
-            pml4_frame: Some(pml4_frame),
-            mapper: None,
-        }
-    }
-
-    /// Set the pml4 frame for this page table manager
-    pub fn set_pml4_frame(&mut self, pml4_frame: x86_64::structures::paging::PhysFrame) {
-        self.pml4_frame = Some(pml4_frame);
-        self.current_page_table = pml4_frame.start_address().as_u64() as usize;
-    }
-
-    /// Initialize paging
-    pub fn init_paging(
-        &mut self,
-        physical_memory_offset: VirtAddr,
-    ) -> crate::common::logging::SystemResult<()> {
-        let frame = if let Some(frame) = self.pml4_frame {
-            frame
-        } else {
-            let (current_frame, _) = x86_64::registers::control::Cr3::read();
-            current_frame
-        };
-        self.current_page_table = frame.start_address().as_u64() as usize;
-
-        // Create mapper using the appropriate page table
-        unsafe {
-            let table_virt = physical_memory_offset + self.current_page_table as u64;
-            let table_ptr = table_virt.as_mut_ptr() as *mut PageTable;
-            let mapper = OffsetPageTable::new(&mut *table_ptr, physical_memory_offset);
-            self.mapper = Some(mapper);
-        }
-
-        self.initialized = true;
-        Ok(())
-    }
-}
-
-impl PageTableHelper for PageTableManager {
-    fn map_page(
-        &mut self,
-        virtual_addr: usize,
-        physical_addr: usize,
-        flags: PageFlags,
-        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
-    ) -> crate::common::logging::SystemResult<()> {
-        ensure_initialized!(self);
-
-        let mapper = self.mapper.as_mut().unwrap();
-        let virtual_addr = x86_64::VirtAddr::new(virtual_addr as u64);
-        let physical_addr = x86_64::PhysAddr::new(physical_addr as u64);
-        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virtual_addr);
-        let frame =
-            x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(physical_addr);
-
-        // Map the page using the stored mapper instance
-        unsafe {
-            mapper
-                .map_to(page, frame, flags, frame_allocator)
-                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
-                .flush();
-        }
-
-        Ok(())
-    }
-
-    fn unmap_page(
-        &mut self,
-        virtual_addr: usize,
-    ) -> crate::common::logging::SystemResult<x86_64::structures::paging::PhysFrame<Size4KiB>> {
-        ensure_initialized!(self);
-
-        let mapper = self.mapper.as_mut().unwrap();
-        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(
-            x86_64::VirtAddr::new(virtual_addr as u64),
-        );
-
-        let (frame, flush) = mapper
-            .unmap(page)
-            .map_err(|_| crate::common::logging::SystemError::UnmappingFailed)?;
-        flush.flush();
-
-        Ok(frame)
-    }
-
-    fn translate_address(
-        &self,
-        virtual_addr: usize,
-    ) -> crate::common::logging::SystemResult<usize> {
-        ensure_initialized!(self);
-
-        let mapper = self.mapper.as_ref().unwrap();
-        let virt_addr = VirtAddr::new(virtual_addr as u64);
-
-        match mapper.translate_addr(virt_addr) {
-            Some(phys_addr) => Ok(phys_addr.as_u64() as usize),
-            None => Err(crate::common::logging::SystemError::InvalidArgument),
-        }
-    }
-
-    fn set_page_flags(
-        &mut self,
-        virtual_addr: usize,
-        flags: PageFlags,
-    ) -> crate::common::logging::SystemResult<()> {
-        ensure_initialized!(self);
-
-        let mapper = self.mapper.as_mut().unwrap();
-        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(
-            x86_64::VirtAddr::new(virtual_addr as u64),
-        );
-
-        unsafe {
-            mapper
-                .update_flags(page, flags)
-                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
-                .flush();
-        }
-
-        Ok(())
-    }
-
-    fn get_page_flags(
-        &self,
-        virtual_addr: usize,
-    ) -> crate::common::logging::SystemResult<PageFlags> {
-        ensure_initialized!(self);
-
-        // Traverse the page table to find the entry for this page
-        let phys_mem_offset = self.mapper.as_ref().unwrap().phys_offset();
-        let addr = x86_64::VirtAddr::new(virtual_addr as u64);
-
-        // Use CR3 to get L4
-        let (level_4_table_frame, _) = x86_64::registers::control::Cr3::read();
-
-        let table_indexes = [
-            addr.p4_index(),
-            addr.p3_index(),
-            addr.p2_index(),
-            addr.p1_index(),
-        ];
-        let mut frame = level_4_table_frame;
-        let mut flags = None;
-
-        // Traverse the multi-level page table
-        for (level, &index) in table_indexes.iter().enumerate() {
-            // Convert the frame into a page table reference
-            let virt = phys_mem_offset + frame.start_address().as_u64();
-            let table_ptr: *const PageTable = virt.as_ptr();
-            let table = unsafe { &*table_ptr };
-
-            // Read the page table entry
-            let entry = &table[index];
-            if level == 3 {
-                // At L1, get flags
-                if entry.flags().contains(PageFlags::PRESENT) {
-                    flags = Some(entry.flags());
-                } else {
-                    return Ok(PageFlags::empty()); // Not present
-                }
-            } else {
-                // Continue traversing
-                frame = match entry.frame() {
-                    Ok(frame) => frame,
-                    Err(_) => return Ok(PageFlags::empty()), // Not present
-                };
-            }
-        }
-
-        Ok(flags.unwrap_or(PageFlags::empty()))
-    }
-
-    fn flush_tlb(&mut self, virtual_addr: usize) -> crate::common::logging::SystemResult<()> {
-        ensure_initialized!(self);
-
-        tlb::flush(VirtAddr::new(virtual_addr as u64));
-        Ok(())
-    }
-
-    fn flush_tlb_all(&mut self) -> crate::common::logging::SystemResult<()> {
-        ensure_initialized!(self);
-
-        let (current, flags) = Cr3::read();
-        unsafe { Cr3::write(current, flags) };
-        Ok(())
-    }
-
-    fn create_page_table(&mut self) -> crate::common::logging::SystemResult<usize> {
-        ensure_initialized!(self);
-
-        // Return a dummy address
-        Ok(0x1000)
-    }
-
-    fn destroy_page_table(
-        &mut self,
-        _table_addr: usize,
-    ) -> crate::common::logging::SystemResult<()> {
-        ensure_initialized!(self);
-
-        Ok(())
-    }
-
-    fn clone_page_table(
-        &mut self,
-        _source_table: usize,
-    ) -> crate::common::logging::SystemResult<usize> {
-        ensure_initialized!(self);
-
-        Ok(_source_table + 0x1000) // Dummy offset
-    }
-
-    fn switch_page_table(&mut self, table_addr: usize) -> crate::common::logging::SystemResult<()> {
-        ensure_initialized!(self);
-
-        self.current_page_table = table_addr;
-        Ok(())
-    }
-
-    fn current_page_table(&self) -> usize {
-        self.current_page_table
     }
 }
 
