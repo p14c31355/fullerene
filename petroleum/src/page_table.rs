@@ -1266,20 +1266,11 @@ unsafe fn parse_kernel_size(kernel_phys_start: PhysAddr) -> Option<u64> {
 }
 
 pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
-    debug_log_no_alloc!("calculate_kernel_memory_size: starting at addr=", kernel_phys_start.as_u64() as usize);
     if kernel_phys_start.as_u64() == 0 {
-        debug_log_no_alloc!("calculate_kernel_memory_size: kernel_phys_start is 0, returning fallback");
         FALLBACK_KERNEL_SIZE
+    } else if let Some(size) = parse_kernel_size(kernel_phys_start) {
+        size
     } else {
-        match parse_kernel_size(kernel_phys_start) {
-            Some(result) => {
-                debug_log_no_alloc!("calculate_kernel_memory_size: size_of_image succeeded, result=", result as usize);
-                result
-            }
-            None => {
-                debug_log_no_alloc!("calculate_kernel_memory_size: size_of_image failed, returning fallback");
-                FALLBACK_KERNEL_SIZE
-            }
-        }
+        FALLBACK_KERNEL_SIZE
     }
 }
