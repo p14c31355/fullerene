@@ -6,6 +6,7 @@ use crate::{
 
 // Macros are automatically available from common module
 use spin::Once;
+use core::marker::PhantomData;
 use x86_64::{
     PhysAddr, VirtAddr,
     instructions::tlb,
@@ -471,9 +472,7 @@ fn mark_available_frames(
 ) {
     process_memory_descriptors(memory_map, |descriptor, start_frame, end_frame| {
         let actual_end = end_frame.min(frame_allocator.frame_count);
-        for frame_index in start_frame..actual_end {
-            frame_allocator.set_frame_free(frame_index);
-        }
+        frame_allocator.set_frame_range(start_frame, actual_end, false);
     });
 
     // Mark frame 0 as used to avoid allocating the null page
@@ -651,16 +650,26 @@ impl BitmapFrameAllocator {
         ensure_initialized!(self);
 
         let start_frame = start_addr / 4096;
-        if start_frame + count > self.frame_count {
+        let end_frame = start_frame + count;
+        if end_frame > self.frame_count {
             return Err(crate::common::logging::SystemError::InvalidArgument);
         }
 
         // Mark frames as used without checking if they're free first
-        for i in 0..count {
-            self.set_frame_used(start_frame + i);
-        }
+        self.set_frame_range(start_frame, end_frame, true);
 
         Ok(())
+    }
+
+    /// Set a range of frames as used or free
+    fn set_frame_range(&mut self, start_frame: usize, end_frame: usize, used: bool) {
+        for i in start_frame..end_frame {
+            if used {
+                self.set_frame_used(i);
+            } else {
+                self.set_frame_free(i);
+            }
+        }
     }
 }
 
@@ -795,44 +804,7 @@ unsafe fn map_kernel_segments_inner(
     }
 }
 
-// Helper to map additional regions like framebuffer and VGA
-fn map_additional_regions<'a>(
-    mapper: &'a mut OffsetPageTable<'static>,
-    frame_allocator: &'a mut BootInfoFrameAllocator,
-    fb_addr: Option<VirtAddr>,
-    fb_size: Option<u64>,
-    phys_offset: VirtAddr,
-) {
-    use x86_64::structures::paging::PageTableFlags as Flags;
-
-    // Map framebuffer if provided
-    if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
-        let fb_pages = fb_size.div_ceil(4096);
-        let fb_phys = fb_addr.as_u64();
-        // Higher-half mapping
-        unsafe {
-            let _ = map_to_higher_half_with_log(mapper, frame_allocator, phys_offset, fb_phys, fb_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE);
-            // Identity mapping for bootloader compatibility
-            let _ = identity_map_range_with_log(mapper, frame_allocator, fb_phys, fb_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE);
-        }
-    }
-
-    const VGA_MEMORY_START: u64 = 0xA0000;
-    const VGA_MEMORY_END: u64 = 0xC0000;
-    const VGA_PAGES: u64 = (VGA_MEMORY_END - VGA_MEMORY_START) / 4096;
-
-    // Always map VGA memory to higher half
-    unsafe {
-        let _ = map_to_higher_half_with_log(mapper, frame_allocator, phys_offset, VGA_MEMORY_START, VGA_PAGES, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE);
-    }
-
-    // Map boot code range to higher half for UEFI transition (128MB)
-    const BOOT_CODE_START: u64 = 0x100000;
-    const BOOT_CODE_PAGES: u64 = 0x8000; // 128MB
-    unsafe {
-        let _ = map_to_higher_half_with_log(mapper, frame_allocator, phys_offset, BOOT_CODE_START, BOOT_CODE_PAGES, Flags::PRESENT | Flags::WRITABLE);
-    }
-}
+// Consolidated mapping using MemoryMapper (removed standalone function)
 
 // Helper to adjust return address after page table switch
 fn adjust_return_address(phys_offset: VirtAddr) {
@@ -945,8 +917,11 @@ fn setup_higher_half_mappings<'a>(
 
     debug_log_no_alloc!("Kernel segments mapped to higher half");
 
-    // Map additional regions
-    map_additional_regions(mapper, frame_allocator, fb_addr, fb_size, phys_offset);
+    // Map additional regions using MemoryMapper
+    let mut memory_mapper = MemoryMapper::new(mapper, frame_allocator, phys_offset);
+    memory_mapper.map_framebuffer(fb_addr, fb_size);
+    memory_mapper.map_vga();
+    memory_mapper.map_boot_code();
 
     debug_log_no_alloc!("Additional regions mapped to higher half");
 }
@@ -1113,7 +1088,7 @@ unsafe fn map_to_higher_half_with_log(
 pub static ALLOCATOR: linked_list_allocator::LockedHeap =
     linked_list_allocator::LockedHeap::empty();
 
-// Minimal PageTableHelper trait retained for compatibility
+// PageTableHelper trait with methods required by other subcrates
 pub trait PageTableHelper {
     fn map_page(
         &mut self,
@@ -1122,7 +1097,17 @@ pub trait PageTableHelper {
         flags: PageFlags,
         frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
     ) -> crate::common::logging::SystemResult<()>;
-    // Keep only essential methods to reduce lines
+    fn unmap_page(&mut self, virtual_addr: usize) -> crate::common::logging::SystemResult<PhysFrame>;
+    fn translate_address(&self, virtual_addr: usize) -> crate::common::logging::SystemResult<usize>;
+    fn set_page_flags(&mut self, virtual_addr: usize, flags: PageFlags) -> crate::common::logging::SystemResult<()>;
+    fn get_page_flags(&self, virtual_addr: usize) -> crate::common::logging::SystemResult<PageFlags>;
+    fn flush_tlb(&mut self, virtual_addr: usize) -> crate::common::logging::SystemResult<()>;
+    fn flush_tlb_all(&mut self) -> crate::common::logging::SystemResult<()>;
+    fn create_page_table(&mut self) -> crate::common::logging::SystemResult<usize>;
+    fn destroy_page_table(&mut self, table_addr: usize) -> crate::common::logging::SystemResult<()>;
+    fn clone_page_table(&mut self, source_table: usize) -> crate::common::logging::SystemResult<usize>;
+    fn switch_page_table(&mut self, table_addr: usize) -> crate::common::logging::SystemResult<()>;
+    fn current_page_table(&self) -> usize;
 }
 
 pub type ProcessPageTable = PageTableManager;
@@ -1154,6 +1139,39 @@ impl PageTableHelper for PageTableManager {
         _frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
     ) -> crate::common::logging::SystemResult<()> {
         Err(crate::common::logging::SystemError::InternalError)
+    }
+    fn unmap_page(&mut self, _virtual_addr: usize) -> crate::common::logging::SystemResult<PhysFrame> {
+        Err(crate::common::logging::SystemError::InternalError)
+    }
+    fn translate_address(&self, _virtual_addr: usize) -> crate::common::logging::SystemResult<usize> {
+        Err(crate::common::logging::SystemError::InternalError)
+    }
+    fn set_page_flags(&mut self, _virtual_addr: usize, _flags: PageFlags) -> crate::common::logging::SystemResult<()> {
+        Err(crate::common::logging::SystemError::InternalError)
+    }
+    fn get_page_flags(&self, _virtual_addr: usize) -> crate::common::logging::SystemResult<PageFlags> {
+        Err(crate::common::logging::SystemError::InternalError)
+    }
+    fn flush_tlb(&mut self, _virtual_addr: usize) -> crate::common::logging::SystemResult<()> {
+        Err(crate::common::logging::SystemError::InternalError)
+    }
+    fn flush_tlb_all(&mut self) -> crate::common::logging::SystemResult<()> {
+        Err(crate::common::logging::SystemError::InternalError)
+    }
+    fn create_page_table(&mut self) -> crate::common::logging::SystemResult<usize> {
+        Err(crate::common::logging::SystemError::InternalError)
+    }
+    fn destroy_page_table(&mut self, _table_addr: usize) -> crate::common::logging::SystemResult<()> {
+        Err(crate::common::logging::SystemError::InternalError)
+    }
+    fn clone_page_table(&mut self, _source_table: usize) -> crate::common::logging::SystemResult<usize> {
+        Err(crate::common::logging::SystemError::InternalError)
+    }
+    fn switch_page_table(&mut self, _table_addr: usize) -> crate::common::logging::SystemResult<()> {
+        Err(crate::common::logging::SystemError::InternalError)
+    }
+    fn current_page_table(&self) -> usize {
+        self.current_page_table
     }
 }
 
@@ -1222,33 +1240,26 @@ pub struct PeSection {
     pub characteristics: u32,
 }
 
+unsafe fn parse_kernel_size(kernel_phys_start: PhysAddr) -> Option<u64> {
+    unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8)?.size_of_image().map(|size| (size + KERNEL_MEMORY_PADDING).div_ceil(4096) * 4096) }
+}
+
 pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     debug_log_no_alloc!("calculate_kernel_memory_size: starting at addr=", kernel_phys_start.as_u64() as usize);
-    if kernel_phys_start.as_u64() == 0 {
-        debug_log_no_alloc!("calculate_kernel_memory_size: kernel_phys_start is 0, returning fallback");
-        return FALLBACK_KERNEL_SIZE;
-    }
-    debug_log_no_alloc!("calculate_kernel_memory_size: calling PeParser::new");
-    let parser = match unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8) } {
-        Some(p) => {
-            debug_log_no_alloc!("calculate_kernel_memory_size: PE parser created successfully");
-            p
-        },
-        None => {
-            debug_log_no_alloc!("calculate_kernel_memory_size: PE parser creation failed, returning fallback");
-            return FALLBACK_KERNEL_SIZE;
-        }
-    };
-    debug_log_no_alloc!("calculate_kernel_memory_size: calling parser.size_of_image");
-    match parser.size_of_image() {
-        Some(size) => {
-            let result = (size + KERNEL_MEMORY_PADDING).div_ceil(4096) * 4096;
-            debug_log_no_alloc!("calculate_kernel_memory_size: size_of_image succeeded, result=", result as usize);
-            result
-        },
-        None => {
-            debug_log_no_alloc!("calculate_kernel_memory_size: size_of_image failed, returning fallback");
+    match kernel_phys_start.as_u64() {
+        0 => {
+            debug_log_no_alloc!("calculate_kernel_memory_size: kernel_phys_start is 0, returning fallback");
             FALLBACK_KERNEL_SIZE
+        },
+        _ => match parse_kernel_size(kernel_phys_start) {
+            Some(result) => {
+                debug_log_no_alloc!("calculate_kernel_memory_size: size_of_image succeeded, result=", result as usize);
+                result
+            },
+            None => {
+                debug_log_no_alloc!("calculate_kernel_memory_size: size_of_image failed, returning fallback");
+                FALLBACK_KERNEL_SIZE
+            }
         }
     }
 }
