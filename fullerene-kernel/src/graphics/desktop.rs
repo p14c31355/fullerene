@@ -25,7 +25,6 @@ fn draw_centered_text<W: FramebufferLike>(
     color: u32,
 ) {
     let style = MonoTextStyle::new(&FONT_6X10, super::u32_to_rgb888(color));
-    // Calculate more precise text width considering proportional characters and kerning
     let text_width = calc_text_width(text);
     let text_x = x + (width as i32 / 2) - (text_width as i32 / 2);
     let text_obj = Text::new(text, Point::new(text_x, y), style);
@@ -34,13 +33,6 @@ fn draw_centered_text<W: FramebufferLike>(
 
 // Using calc_text_width from petroleum
 
-// Generic window drawing trait
-trait WindowElement {
-    fn draw_element<W: FramebufferLike>(&self, writer: &mut W);
-}
-
-// Simple GUI element definitions with trait implementation
-#[derive(Clone)]
 pub struct Button {
     pub x: u32,
     pub y: u32,
@@ -69,32 +61,10 @@ impl Button {
         self.text_color = text_color;
         self
     }
-}
 
-impl WindowElement for Button {
-    fn draw_element<W: FramebufferLike>(&self, writer: &mut W) {
-        draw_filled_rect!(
-            writer,
-            self.x as i32,
-            self.y as i32,
-            self.width,
-            self.height,
-            self.bg_color
-        );
-        draw_centered_text(
-            writer,
-            &self.text,
-            self.x as i32,
-            self.y as i32 + (self.height as i32 / 2) - 5,
-            self.width,
-            self.text_color,
-        );
-    }
-}
-
-impl Button {
     pub fn draw<W: FramebufferLike>(&self, writer: &mut W) {
-        self.draw_element(writer);
+        draw_filled_rect!(writer, self.x as i32, self.y as i32, self.width, self.height, self.bg_color);
+        draw_centered_text(writer, &self.text, self.x as i32, self.y as i32 + (self.height as i32 / 2) - 5, self.width, self.text_color);
     }
 
     pub fn contains_point(&self, x: u32, y: u32) -> bool {
@@ -188,8 +158,8 @@ fn draw_main_window<W: FramebufferLike>(writer: &mut W) {
 }
 
 fn draw_icons<W: FramebufferLike>(writer: &mut W) {
-    draw_icon(writer, 65, 100, 96); // File manager icon
-    draw_icon(writer, 125, 100, 160); // Terminal icon
+    draw_filled_rect!(writer, 65, 100, 48, 48, 96);
+    draw_filled_rect!(writer, 125, 100, 48, 48, 160);
 }
 
 fn draw_taskbar_with_buttons<W: FramebufferLike>(writer: &mut W) {
@@ -213,10 +183,6 @@ fn draw_taskbar_with_buttons<W: FramebufferLike>(writer: &mut W) {
 fn draw_application_windows<W: FramebufferLike>(writer: &mut W) {
     draw_app_window(writer, 300, 80, 250, 150, "File Manager");
     draw_shell_window(writer, 100, 250, 350, 120);
-}
-
-fn draw_icon<W: FramebufferLike>(writer: &mut W, x: u32, y: u32, color: u32) {
-    draw_filled_rect!(writer, x as i32, y as i32, 48, 48, color);
 }
 
 fn draw_app_window<W: FramebufferLike>(
