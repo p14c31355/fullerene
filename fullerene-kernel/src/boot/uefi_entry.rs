@@ -230,7 +230,7 @@ impl UefiInitContext {
 
         (
             self.physical_memory_offset,
-            PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR),
+            heap_phys_addr,
             self.virtual_heap_start,
         )
     }
