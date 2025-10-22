@@ -219,8 +219,13 @@ pub fn create_process(name: &'static str, entry_point_address: VirtAddr) -> Proc
     write_serial_bytes!(0x3F8, 0x3FD, b"Process: Kernel stack allocated\n");
 
     // Create page table for the process
-    let page_table =
-        crate::memory_management::create_process_page_table().expect("Failed to create page table");
+    let page_table = match crate::memory_management::create_process_page_table() {
+        Ok(pt) => pt,
+        Err(e) => {
+            log::error!("Failed to create process page table: {:?}", e);
+            return Err(e);
+        }
+    };
     process.page_table_phys_addr = PhysAddr::new(page_table.current_page_table() as u64);
     process.page_table = Some(page_table);
 
