@@ -201,7 +201,7 @@ impl UefiInitContext {
                 self.physical_memory_offset,
                 &mut mapper,
                 &mut frame_allocator,
-                x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
+                x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
             )
             .expect("Failed to map heap memory");
         }
@@ -230,7 +230,7 @@ impl UefiInitContext {
 
         (
             self.physical_memory_offset,
-            PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR),
+            heap_phys_addr,
             self.virtual_heap_start,
         )
     }
@@ -265,7 +265,7 @@ impl UefiInitContext {
                 physical_memory_offset,
                 &mut mapper,
                 &mut *frame_allocator,
-                x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
+                x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
             )
             .expect("Failed to map kernel stack memory");
         }
