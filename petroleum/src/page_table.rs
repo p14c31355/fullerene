@@ -689,13 +689,14 @@ impl BitmapFrameAllocator {
             return Err(crate::common::logging::SystemError::InvalidArgument);
         }
 
-        // Check if frames are already allocated before marking them as used
+        // Check if frames are free before allocating to prevent double-allocation
         for frame_index in start_frame..end_frame {
-            if self.is_frame_free(frame_index) {
-                let chunk_index = frame_index / 64;
-                let bit_index = frame_index % 64;
-                debug_log_no_alloc!("ERROR: Frame ", frame_index, " at chunk ", chunk_index, " bit ", bit_index, " was already free but should be reserved");
-                return Err(crate::common::logging::SystemError::InvalidArgument);
+            if !self.is_frame_free(frame_index) {
+                debug_log_no_alloc!(
+                    "Frame allocation failed: frame already in use at index ",
+                    frame_index
+                );
+                return Err(crate::common::logging::SystemError::FrameAllocationFailed);
             }
         }
 
