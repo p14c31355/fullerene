@@ -2099,8 +2099,7 @@ impl PageTableHelper for PageTableManager {
 
         if let Some(frame) = self.allocated_tables.remove(&table_addr) {
             if let Some(allocator) = self.frame_allocator.as_mut() {
-                use petroleum::initializer::FrameAllocator;
-                allocator.free_frame(frame.start_address().as_u64() as usize)?;
+                allocator.find_next_free_frame(frame.start_address().as_u64() as usize);
             }
         } else {
             return Err(crate::common::logging::SystemError::InvalidArgument);
