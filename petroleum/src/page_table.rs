@@ -1118,7 +1118,7 @@ unsafe fn map_memory_descriptors_with_config<F>(
     for desc in memory_map.iter() {
         if let Some(config) = config_fn(desc) {
             unsafe {
-                let _ = map_range_with_log_macro!(
+                let _ = map_range_with_log(
                     mapper,
                     frame_allocator,
                     config.phys_start,
@@ -1788,6 +1788,25 @@ unsafe fn identity_map_range_with_log(
         frame_allocator,
         start_addr,
         start_addr,
+        num_pages,
+        flags
+    )
+}
+
+// Helper to map range with log
+unsafe fn map_range_with_log(
+    mapper: &mut OffsetPageTable,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    phys_start: u64,
+    virt_start: u64,
+    num_pages: u64,
+    flags: x86_64::structures::paging::PageTableFlags,
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    map_range_with_log_macro!(
+        mapper,
+        frame_allocator,
+        phys_start,
+        virt_start,
         num_pages,
         flags
     )
