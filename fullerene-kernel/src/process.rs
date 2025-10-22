@@ -7,7 +7,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, Ordering};
-use petroleum::page_table::PageTableHelper;
+use petroleum::{page_table::PageTableHelper, write_serial_bytes};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -202,25 +202,35 @@ pub fn init() {
 
 /// Create a new process and add it to the process list
 pub fn create_process(name: &'static str, entry_point_address: VirtAddr) -> ProcessId {
+    write_serial_bytes!(0x3F8, 0x3FD, b"Process: create_process starting\n");
+
     let mut process = Process::new(name, entry_point_address);
+    write_serial_bytes!(0x3F8, 0x3FD, b"Process: Process::new done\n");
 
     // Allocate kernel stack for the process
     let stack_layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
     let stack_ptr = unsafe { alloc::alloc::alloc(stack_layout) };
+    if stack_ptr.is_null() {
+        panic!("Failed to allocate kernel stack for process");
+    }
     let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
+    write_serial_bytes!(0x3F8, 0x3FD, b"Process: Kernel stack allocated\n");
 
-    // Create page table for the process
-    let process_page_table =
-        crate::memory_management::create_process_page_table().expect("Failed to create page table");
+    // TODO: Create page table for the process - for now use current address space
+    // The full process isolation requires proper user/kernel memory separation
+    write_serial_bytes!(0x3F8, 0x3FD, b"Process: Skipping page table creation (running in kernel space)\n");
 
-    process.page_table_phys_addr = PhysAddr::new(process_page_table.current_page_table() as u64);
-    process.page_table = Some(process_page_table);
+    // Use dummy values for now - all processes share kernel address space
+    process.page_table_phys_addr = PhysAddr::new(0);
+    process.page_table = None;
 
     process.init_context(kernel_stack_top);
+    write_serial_bytes!(0x3F8, 0x3FD, b"Process: Context initialized\n");
 
     let pid = process.id;
     let mut process_list = PROCESS_LIST.lock();
     process_list.push(Box::new(process));
+    write_serial_bytes!(0x3F8, 0x3FD, b"Process: Process added to list\n");
 
     pid
 }
