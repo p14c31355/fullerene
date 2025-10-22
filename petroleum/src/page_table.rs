@@ -1065,6 +1065,23 @@ fn setup_identity_mappings(
         }
     }
 
+    // Map the bitmap region for identity mapping
+    unsafe {
+        let bitmap_ptr = &raw const BITMAP_STATIC as *const u8;
+        let bitmap_start = bitmap_ptr as usize as u64 & !(4095);
+        let bitmap_end = bitmap_ptr as usize as u64 + core::mem::size_of::<[u64; 131072]>() as u64;
+        let bitmap_end_page = ((bitmap_end - 1) & !(4095)) + 4096;
+        let pages = ((bitmap_end_page - bitmap_start) / 4096) as u64;
+        map_identity_range(
+            mapper,
+            frame_allocator,
+            bitmap_start,
+            pages,
+            x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
+        )
+        .expect("Failed to map bitmap region");
+    }
+
     debug_log_no_alloc!("Identity mappings completed");
     kernel_size
 }
@@ -1268,6 +1285,15 @@ pub fn reinit_page_table_with_allocator(
         phys_offset,
         memory_map,
     );
+
+    // Set up recursive mapping for page table management
+    unsafe {
+        let table = mapper.level_4_table() as *const PageTable as *mut PageTable;
+        (&mut *table.cast::<x86_64::structures::paging::page_table::PageTableEntry>().add(511)).set_addr(
+            level_4_table_frame.start_address(),
+            x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
+        );
+    }
 
     // Perform the page table switch
     switch_to_new_page_table(level_4_table_frame, phys_offset, frame_allocator, current_physical_memory_offset);
