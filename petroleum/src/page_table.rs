@@ -65,8 +65,8 @@ impl MemoryDescriptorValidator for EfiMemoryDescriptor {
 
         fn is_memory_available(&self) -> bool {
         use crate::common::EfiMemoryType;
-        const EFI_ACPI_RECLAIM_MEMORY: u32 = 9;
-        const EFI_PERSISTENT_MEMORY: u32 = 14;
+        const EFI_ACPI_RECLAIM_MEMORY: u32 = 9; // Memory that holds ACPI tables that can be reclaimed after ACPI initialization
+        const EFI_PERSISTENT_MEMORY: u32 = 14; // Memory that persists across reboot, typically NVDIMM-backed
 
         let mem_type = self.type_;
         matches!(mem_type,
@@ -198,18 +198,21 @@ fn is_valid_memory_descriptor(descriptor: &EfiMemoryDescriptor) -> bool {
         debug_log_no_alloc!("Invalid memory type (too high): ", mem_type);
         return false;
     }
+    debug_log_no_alloc!("Memory type validated: ", mem_type);
 
     // Check physical start is page-aligned
     if descriptor.physical_start % 4096 != 0 {
         debug_log_no_alloc!("Unaligned physical_start: 0x", descriptor.physical_start as usize);
         return false;
     }
+    debug_log_no_alloc!("Physical start page-aligned: 0x", descriptor.physical_start as usize);
 
     // Check number of pages is reasonable
     if descriptor.number_of_pages == 0 || descriptor.number_of_pages > MAX_DESCRIPTOR_PAGES {
         debug_log_no_alloc!("Invalid page count: ", descriptor.number_of_pages as usize);
         return false;
     }
+    debug_log_no_alloc!("Page count validated: ", descriptor.number_of_pages as usize);
 
     // Check for potential overflow when calculating end address
     let page_size = 4096u64;
@@ -219,6 +222,7 @@ fn is_valid_memory_descriptor(descriptor: &EfiMemoryDescriptor) -> bool {
             debug_log_no_alloc!("Memory region too large: end_addr=0x", end_addr as usize);
             return false;
         }
+        debug_log_no_alloc!("End address validated: 0x", end_addr as usize);
     } else {
         debug_log_no_alloc!("Overflow in address calculation");
         return false;
@@ -874,11 +878,13 @@ fn adjust_return_address(phys_offset: VirtAddr) {
 }
 
 // Create and initialize a new page table
-fn create_new_page_table(frame_allocator: &mut BootInfoFrameAllocator) -> PhysFrame {
+fn create_new_page_table(frame_allocator: &mut BootInfoFrameAllocator) -> crate::common::logging::SystemResult<PhysFrame> {
     debug_log_no_alloc!("Allocating new L4 page table frame");
 
-    let level_4_table_frame = frame_allocator.allocate_frame()
-        .expect("Failed to allocate L4 page table frame");
+    let level_4_table_frame = match frame_allocator.allocate_frame() {
+        Some(frame) => frame,
+        None => return Err(crate::common::logging::SystemError::MemOutOfMemory),
+    };
 
     // Zero the new L4 table
     unsafe {
@@ -890,7 +896,7 @@ fn create_new_page_table(frame_allocator: &mut BootInfoFrameAllocator) -> PhysFr
     }
 
     debug_log_no_alloc!("New L4 page table created and zeroed");
-    level_4_table_frame
+    Ok(level_4_table_frame)
 }
 
 // Setup identity mappings needed for CR3 switch
@@ -1108,7 +1114,7 @@ pub fn reinit_page_table_with_allocator(
     let phys_offset = HIGHER_HALF_OFFSET;
 
     // Create new page table
-    let level_4_table_frame = create_new_page_table(frame_allocator);
+    let level_4_table_frame = create_new_page_table(frame_allocator).expect("Failed to create new page table");
 
     // Create mapper for new page table
     let mut mapper = unsafe {
@@ -1510,11 +1516,39 @@ unsafe fn parse_kernel_size(kernel_phys_start: PhysAddr) -> Option<u64> {
 }
 
 pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
+    debug_log_no_alloc!("calculate_kernel_memory_size: starting");
+
     if kernel_phys_start.as_u64() == 0 {
-        FALLBACK_KERNEL_SIZE
-    } else if let Some(size) = parse_kernel_size(kernel_phys_start) {
-        size
-    } else {
-        FALLBACK_KERNEL_SIZE
+        debug_log_no_alloc!("Kernel phys start is 0, using fallback size");
+        return FALLBACK_KERNEL_SIZE;
+    }
+
+    let parser = match unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8) } {
+        Some(p) => {
+            debug_log_no_alloc!("PE parser created successfully");
+            p
+        }
+        None => {
+            debug_log_no_alloc!("Failed to create PE parser, using fallback");
+            return FALLBACK_KERNEL_SIZE;
+        }
+    };
+
+    match parser.size_of_image() {
+        Some(size) => {
+            let padded_size = (size + KERNEL_MEMORY_PADDING).div_ceil(4096) * 4096;
+            debug_log_no_alloc!("PE parsing successful, size=0x", padded_size as usize);
+            padded_size
+        }
+        None => {
+            debug_log_no_alloc!("PE parsing failed for size_of_image, trying parse_kernel_size fallback");
+            if let Some(size) = parse_kernel_size(kernel_phys_start) {
+                debug_log_no_alloc!("Fallback parsing successful, size=0x", size as usize);
+                size
+            } else {
+                debug_log_no_alloc!("All parsing attempts failed, using fallback size");
+                FALLBACK_KERNEL_SIZE
+            }
+        }
     }
 }
