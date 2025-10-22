@@ -1053,6 +1053,36 @@ fn setup_identity_mappings(
         }
     }
 
+    // Map all available memory regions to identity for complete UEFI compatibility
+    process_memory_descriptors(memory_map, |desc, start_frame, end_frame| {
+        let phys_start = desc.get_physical_start();
+        let pages = (end_frame - start_frame) as u64;
+        let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+            Flags::PRESENT
+        } else {
+            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE
+        };
+        unsafe {
+            let _ = map_identity_range(mapper, frame_allocator, phys_start, pages, flags);
+        }
+    });
+
+    // Map all page-aligned physical_start with 1 page for safety, regardless of validity
+    for desc in memory_map.iter() {
+        if desc.physical_start % 4096 != 0 {
+            continue; // skip unaligned
+        }
+        let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+            Flags::PRESENT
+        } else {
+            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE
+        };
+        unsafe {
+            map_identity_range(mapper, frame_allocator, desc.physical_start, 1, flags)
+                .ok(); // ignore error to avoid panic
+        }
+    }
+
     // Map current stack region to allow continuation
     let rsp: u64;
     unsafe {
@@ -1169,6 +1199,30 @@ fn setup_higher_half_mappings<'a>(
             }
         }
     }
+
+    // Map all available memory regions to higher half for complete UEFI compatibility
+    process_memory_descriptors(memory_map, |desc, start_frame, end_frame| {
+        let phys_start = desc.get_physical_start();
+        let virt_start = phys_start + phys_offset.as_u64();
+        let pages = (end_frame - start_frame) as u64;
+        let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+            x86_64::structures::paging::PageTableFlags::PRESENT
+        } else {
+            x86_64::structures::paging::PageTableFlags::PRESENT
+                | x86_64::structures::paging::PageTableFlags::WRITABLE
+                | x86_64::structures::paging::PageTableFlags::NO_EXECUTE
+        };
+        unsafe {
+            let _ = map_range_with_log(
+                mapper,
+                frame_allocator,
+                phys_start,
+                virt_start,
+                pages,
+                flags,
+            );
+        }
+    });
 
     // Map current stack region to higher half
     let rsp: u64;
