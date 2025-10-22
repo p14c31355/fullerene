@@ -210,9 +210,11 @@ pub fn create_process(name: &'static str, entry_point_address: VirtAddr) -> Proc
     // Allocate kernel stack for the process
     let stack_layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
     let stack_ptr = unsafe { alloc::alloc::alloc(stack_layout) };
+    let stack_ptr = unsafe { alloc::alloc::alloc(stack_layout) };
     if stack_ptr.is_null() {
-        panic!("Failed to allocate kernel stack for process");
+        return Err(crate::common::logging::SystemError::OutOfMemory);
     }
+    let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
     let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
     write_serial_bytes!(0x3F8, 0x3FD, b"Process: Kernel stack allocated\n");
 
