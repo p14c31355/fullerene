@@ -919,7 +919,7 @@ fn setup_identity_mappings(
     // Map UEFI runtime services regions to allow continuation
     for desc in memory_map.iter() {
         if is_valid_memory_descriptor(desc) &&
-           (desc.type_ as u32 == 5 || desc.type_ as u32 == 7) { // EFI_RUNTIME_SERVICES_CODE or EFI_RUNTIME_SERVICES_DATA
+           (desc.type_ as u32 == 5 || desc.type_ as u32 == 6) { // EFI_RUNTIME_SERVICES_CODE or EFI_RUNTIME_SERVICES_DATA
             let flags = if desc.type_ as u32 == 5 {
                 Flags::PRESENT | Flags::WRITABLE
             } else {
