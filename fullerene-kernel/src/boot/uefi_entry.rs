@@ -19,6 +19,10 @@ use x86_64::{
     structures::paging::{Mapper, Size4KiB, mapper::MapToError},
 };
 
+/// Virtual heap start offset from physical memory offset
+#[cfg(target_os = "uefi")]
+const VIRTUAL_HEAP_START_OFFSET: u64 = crate::memory_management::VIRTUAL_HEAP_START_OFFSET;
+
 /// Helper function to map a range of memory pages
 /// Takes the base physical address, number of pages, mapper, frame allocator, and flags
 #[cfg(target_os = "uefi")]
@@ -102,9 +106,6 @@ impl UefiInitContext {
     ) -> (VirtAddr, PhysAddr, VirtAddr) {
         debug_log_no_alloc!("Entering memory_management_initialization");
         let memory_map_ref = MEMORY_MAP.get().expect("Memory map not initialized");
-        // Initialize heap frame allocator
-        heap::init_frame_allocator(*memory_map_ref);
-        debug_log_no_alloc!("Heap frame allocator initialized");
         // Get framebuffer config from petroleum global
         let framebuffer_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
             .get()
@@ -131,50 +132,46 @@ impl UefiInitContext {
             (None, None)
         };
 
-        debug_log_no_alloc!("About to reinit page tables");
-        // Reinit page tables
+        // Initialize a basic frame allocator first
+        // Initialize heap frame allocator
+        heap::init_frame_allocator(*memory_map_ref);
+        debug_log_no_alloc!("Heap frame allocator initialized");
         let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
             .get()
             .expect("Frame allocator not initialized")
             .lock();
 
-        // Reserve kernel memory region in frame allocator
-        let kernel_size_u64 =
-            unsafe { petroleum::page_table::calculate_kernel_memory_size(kernel_phys_start) };
-        let kernel_pages = kernel_size_u64.div_ceil(4096) as usize;
-        frame_allocator
-            .allocate_frames_at(kernel_phys_start.as_u64() as usize, kernel_pages)
-            .expect("Failed to reserve kernel frames");
-
-        // Reserve framebuffer memory region if present
-        if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
-            let fb_pages = fb_size.div_ceil(4096) as usize;
-            let fb_phys_addr = fb_addr.as_u64() as usize; // In identity mapped area before reinit
-            frame_allocator
-                .allocate_frames_at(fb_phys_addr, fb_pages)
-                .expect("Failed to reserve framebuffer frames");
-        }
-
-        self.physical_memory_offset = heap::reinit_page_table_with_allocator(
+        // Initialize page table with higher half mappings for UEFI
+        self.physical_memory_offset = petroleum::page_table::reinit_page_table_with_allocator(
             kernel_phys_start,
             fb_addr,
             fb_size,
             &mut frame_allocator,
+            *memory_map_ref,
         );
+
+        // Basic setup without full page table reinit
+        debug_log_no_alloc!("Basic memory setup without page table reinit complete");
         #[cfg(feature = "verbose_boot_log")]
         write_serial_bytes!(0x3F8, 0x3FD, b"page table reinit completed\n");
         debug_log_no_alloc!("Page table reinit completed");
 
-        // Set kernel CR3
+        // Set kernel CR3 - CRITICAL: this might cause issues if page table has wrong mappings
+        debug_log_no_alloc!("About to read kernel CR3");
         let kernel_cr3 = x86_64::registers::control::Cr3::read();
+        debug_log_no_alloc!("Kernel CR3 read: ", kernel_cr3.0.start_address().as_u64() as usize);
+        debug_log_no_alloc!("About to set kernel CR3 in syscall");
         crate::interrupts::syscall::set_kernel_cr3(kernel_cr3.0.start_address().as_u64());
+        debug_log_no_alloc!("Kernel CR3 set in syscall");
         #[cfg(feature = "verbose_boot_log")]
         write_serial_bytes!(0x3F8, 0x3FD, b"About to set physical memory offset\n");
 
-        // Set physical memory offset
+        // Set physical memory offset - CRITICAL: this changes virtual address calculation
+        debug_log_no_alloc!("About to set physical memory offset to ", crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as usize);
         crate::memory_management::set_physical_memory_offset(
             crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE,
         );
+        debug_log_no_alloc!("Physical memory offset set successfully");
         #[cfg(feature = "verbose_boot_log")]
         write_serial_bytes!(0x3F8, 0x3FD, b"physical memory offset set\n");
 
@@ -187,75 +184,61 @@ impl UefiInitContext {
         } else {
             heap_phys_start
         };
-        write_serial_bytes!(0x3F8, 0x3FD, b"About to allocate and map heap\n");
-        let heap_start = allocate_heap_from_map(heap_phys_start_addr, heap::HEAP_SIZE);
-        write_serial_bytes!(0x3F8, 0x3FD, b"heap allocated\n");
+                // Allocate and map heap memory
+        let heap_phys_addr = petroleum::allocate_heap_from_map(heap_phys_start_addr, heap::HEAP_SIZE);
+        let heap_pages = (heap::HEAP_SIZE + 4095) / 4096;
 
         // Reserve heap memory region in frame allocator to prevent corruption
-        let heap_pages = heap::HEAP_SIZE.div_ceil(4096); // Round up to pages
         frame_allocator
-            .allocate_frames_at(heap_start.as_u64() as usize, heap_pages)
+            .allocate_frames_at(heap_phys_addr.as_u64() as usize, heap_pages)
             .expect("Failed to reserve heap frames");
 
-        self.virtual_heap_start = self.physical_memory_offset + heap_start.as_u64();
+        // Create mapper for heap allocation
+        let mut mapper = unsafe {
+            petroleum::page_table::init(self.physical_memory_offset)
+        };
 
-        // Map heap memory
-        let heap_pages = (heap::HEAP_SIZE as u64).div_ceil(4096);
-        let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset) };
-        let flags = x86_64::structures::paging::PageTableFlags::PRESENT
+        // Map heap to higher half
+        let heap_flags = x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE
             | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-        // Map VGA buffer
-        let vga_phys_addr = PhysAddr::new(crate::VGA_BUFFER_ADDRESS as u64);
-        let vga_pages = 1; // 4KB for 80*25*2 bytes
-        write_serial_bytes!(0x3F8, 0x3FD, b"Mapping VGA buffer\n");
-        map_memory_range(
-            vga_phys_addr,
-            vga_pages,
-            self.physical_memory_offset,
-            &mut mapper,
-            &mut *frame_allocator,
-            flags,
-        )
-        .expect("Failed to map VGA buffer");
-        write_serial_bytes!(0x3F8, 0x3FD, b"VGA buffer mapped\n");
+        unsafe {
+            map_memory_range(
+                heap_phys_addr,
+                heap_pages as u64,
+                self.physical_memory_offset,
+                &mut mapper,
+                &mut *frame_allocator,
+                heap_flags,
+            )
+            .expect("Failed to map heap memory");
+        }
 
-        write_serial_bytes!(0x3F8, 0x3FD, b"Mapping heap memory\n");
-        map_memory_range(
-            heap_start,
-            heap_pages,
-            self.physical_memory_offset,
-            &mut mapper,
-            &mut *frame_allocator,
-            flags,
-        )
-        .expect("Failed to map heap memory");
-        write_serial_bytes!(0x3F8, 0x3FD, b"heap memory mapped\n");
+        self.virtual_heap_start = self.physical_memory_offset + heap_phys_addr.as_u64();
+        write_serial_bytes!(0x3F8, 0x3FD, b"Heap allocated and mapped\n");
 
-        // Initialize the global heap allocator immediately after heap mapping
-        // to prevent allocation failures in subsequent log::info! calls
-        debug_log_no_alloc!("Initializing global heap allocator early");
+        // Simple heap allocator init without advanced mapping
+        debug_log_no_alloc!("Initializing basic heap allocator");
         use petroleum::page_table::{ALLOCATOR, HEAP_INITIALIZED};
-        // The GDT initialization allocates stacks for interrupt handlers (e.g., double fault).
-        // This size needs to be accounted for in addition to the main kernel stack to prevent memory corruption.
+
+        debug_log_no_alloc!("Using basic heap allocator init");
 
         let heap_start_for_allocator =
             self.virtual_heap_start + crate::gdt::GDT_INIT_OVERHEAD as u64;
         let heap_size_for_allocator = heap::HEAP_SIZE - crate::gdt::GDT_INIT_OVERHEAD;
-
         unsafe {
             ALLOCATOR.lock().init(
                 heap_start_for_allocator.as_mut_ptr::<u8>(),
                 heap_size_for_allocator,
             );
         }
-        // Mark heap as initialized to prevent double-init
         HEAP_INITIALIZED.call_once(|| true);
-        write_serial_bytes!(0x3F8, 0x3FD, b"Global heap allocator initialized\n");
+        debug_log_no_alloc!("Basic heap allocator initialized");
+        write_serial_bytes!(0x3F8, 0x3FD, b"Basic heap allocator initialized\n");
 
         (
             self.physical_memory_offset,
-            heap_start,
+            heap_phys_addr,
             self.virtual_heap_start,
         )
     }
@@ -270,34 +253,43 @@ impl UefiInitContext {
         self.heap_start_after_gdt = gdt::init(gdt_heap_start);
         log::info!("GDT initialized");
 
-        let stack_bottom = self.heap_start_after_gdt;
-        self.heap_start_after_stack = stack_bottom + crate::heap::KERNEL_STACK_SIZE as u64;
+        // Allocate and map kernel stack before switching
+        let stack_phys_start = self.heap_start_after_gdt.as_u64() - physical_memory_offset.as_u64();
+        let stack_pages = (crate::heap::KERNEL_STACK_SIZE + 4095) / 4096;
 
-        let stack_pages = (crate::heap::KERNEL_STACK_SIZE as u64).div_ceil(4096);
-        let stack_base_phys =
-            PhysAddr::new(stack_bottom.as_u64() - physical_memory_offset.as_u64());
         let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
             .get()
             .expect("Frame allocator not initialized")
             .lock();
-        let mut mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
-        let flags = x86_64::structures::paging::PageTableFlags::PRESENT
+
+        let mut mapper = unsafe {
+            petroleum::page_table::init(physical_memory_offset)
+        };
+
+        let stack_flags = x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE
             | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-        map_memory_range(
-            stack_base_phys,
-            stack_pages,
-            physical_memory_offset,
-            &mut mapper,
-            &mut *frame_allocator,
-            flags,
-        )
-        .expect("Failed to map stack memory");
-
         unsafe {
-            core::arch::asm!("mov rsp, {}", in(reg) self.heap_start_after_stack.as_u64());
+            map_memory_range(
+                PhysAddr::new(stack_phys_start),
+                stack_pages as u64,
+                physical_memory_offset,
+                &mut mapper,
+                &mut *frame_allocator,
+                stack_flags,
+            )
+            .expect("Failed to map kernel stack memory");
         }
-        log::info!("Kernel stack initialized and switched");
+
+        write_serial_bytes!(0x3F8, 0x3FD, b"Kernel stack allocated and mapped\n");
+
+        // Switch to the kernel stack
+        unsafe {
+            let kernel_stack_top = (self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64 - 8).as_u64();
+            core::arch::asm!("mov rsp, {}", in(reg) kernel_stack_top);
+        }
+        self.heap_start_after_stack = self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64;
+        write_serial_bytes!(0x3F8, 0x3FD, b"Basic GDT and stack setup completed\n");
     }
 
     fn setup_allocator(&mut self, virtual_heap_start: VirtAddr) {
@@ -403,6 +395,10 @@ pub extern "efiapi" fn efi_main(
     // Initialize keyboard input driver
     crate::keyboard::init();
     log::info!("Keyboard initialized");
+
+    // Initialize process management system
+    crate::process::init();
+    log::info!("Process management initialized");
 
     // Start the main kernel scheduler that orchestrates all system functionality
     log::info!("Starting full system scheduler...");

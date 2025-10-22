@@ -26,7 +26,10 @@ pub fn reinit_page_table(
         .get()
         .expect("Frame allocator not initialized")
         .lock();
-    reinit_page_table_with_allocator(kernel_phys_start, fb_addr, fb_size, &mut *frame_allocator)
+    let memory_map = MEMORY_MAP
+        .get()
+        .expect("Memory map not initialized");
+    reinit_page_table_with_allocator(kernel_phys_start, fb_addr, fb_size, &mut *frame_allocator, memory_map)
 }
 
 use petroleum::common::EfiMemoryType;

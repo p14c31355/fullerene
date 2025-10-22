@@ -7,7 +7,8 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, Ordering};
-use petroleum::page_table::PageTableHelper;
+use crate::errors::SystemError;
+use petroleum::{page_table::PageTableHelper, write_serial_bytes};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -201,28 +202,43 @@ pub fn init() {
 }
 
 /// Create a new process and add it to the process list
-pub fn create_process(name: &'static str, entry_point_address: VirtAddr) -> ProcessId {
+pub fn create_process(name: &'static str, entry_point_address: VirtAddr) -> Result<ProcessId, petroleum::common::logging::SystemError> {
+    write_serial_bytes!(0x3F8, 0x3FD, b"Process: create_process starting\n");
+
     let mut process = Process::new(name, entry_point_address);
+    write_serial_bytes!(0x3F8, 0x3FD, b"Process: Process::new done\n");
 
     // Allocate kernel stack for the process
     let stack_layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
     let stack_ptr = unsafe { alloc::alloc::alloc(stack_layout) };
+    if stack_ptr.is_null() {
+        return Err(petroleum::common::logging::SystemError::MemOutOfMemory);
+    }
     let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
+    write_serial_bytes!(0x3F8, 0x3FD, b"Process: Kernel stack allocated\n");
 
     // Create page table for the process
-    let process_page_table =
-        crate::memory_management::create_process_page_table().expect("Failed to create page table");
-
-    process.page_table_phys_addr = PhysAddr::new(process_page_table.current_page_table() as u64);
-    process.page_table = Some(process_page_table);
+    let page_table = match crate::memory_management::create_process_page_table() {
+        Ok(pt) => pt,
+        Err(e) => {
+            log::error!("Failed to create process page table: {:?}", e);
+            // Deallocate stack to prevent memory leak on error
+            unsafe { alloc::alloc::dealloc(stack_ptr, stack_layout); }
+            return Err(e);
+        }
+    };
+    process.page_table_phys_addr = PhysAddr::new(page_table.current_page_table() as u64);
+    process.page_table = Some(page_table);
 
     process.init_context(kernel_stack_top);
+    write_serial_bytes!(0x3F8, 0x3FD, b"Process: Context initialized\n");
 
     let pid = process.id;
     let mut process_list = PROCESS_LIST.lock();
     process_list.push(Box::new(process));
+    write_serial_bytes!(0x3F8, 0x3FD, b"Process: Process added to list\n");
 
-    pid
+    Ok(pid)
 }
 
 /// Unblock parent processes that are waiting for this child process

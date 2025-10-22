@@ -29,7 +29,7 @@ pub fn load_program(
     let entry_point_address = x86_64::VirtAddr::new(elf.header.e_entry);
 
     // Create process with the loaded program
-    let pid = process::create_process(name, entry_point_address);
+    let pid = process::create_process(name, entry_point_address)?;
 
     // Get the process's page table
     let process_list_locked = process::PROCESS_LIST.lock();

@@ -76,7 +76,7 @@ fn syscall_fork() -> SyscallResult {
     let child_entry = parent_process.entry_point; // Same entry point for now
     drop(process_list); // Release lock
 
-    let child_pid = process::create_process(child_name, child_entry);
+    let child_pid = process::create_process(child_name, child_entry)?;
 
     // TODO: Implement full process cloning with memory copying
     // For now, we return the child PID from fork (should return 0 in child, child_pid in parent)
