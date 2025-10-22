@@ -21,7 +21,7 @@ use x86_64::{
 
 /// Virtual heap start offset from physical memory offset
 #[cfg(target_os = "uefi")]
-const VIRTUAL_HEAP_START_OFFSET: u64 = 0x100000;
+const VIRTUAL_HEAP_START_OFFSET: u64 = crate::memory_management::VIRTUAL_HEAP_START_OFFSET;
 
 /// Helper function to map a range of memory pages
 /// Takes the base physical address, number of pages, mapper, frame allocator, and flags
