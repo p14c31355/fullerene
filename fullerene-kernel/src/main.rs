@@ -9,6 +9,7 @@
 // Kernel modules
 mod boot;
 mod context_switch; // Context switching
+mod errors; // System error types
 mod fs; // Basic filesystem
 mod gdt; // Add GDT module
 mod graphics;

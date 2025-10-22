@@ -202,7 +202,7 @@ pub fn init() {
 }
 
 /// Create a new process and add it to the process list
-pub fn create_process(name: &'static str, entry_point_address: VirtAddr) -> Result<ProcessId, crate::common::logging::SystemError> {
+pub fn create_process(name: &'static str, entry_point_address: VirtAddr) -> Result<ProcessId, petroleum::common::logging::SystemError> {
     write_serial_bytes!(0x3F8, 0x3FD, b"Process: create_process starting\n");
 
     let mut process = Process::new(name, entry_point_address);

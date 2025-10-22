@@ -59,7 +59,10 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
         "test_process",
         x86_64::VirtAddr::new(crate::process::test_process_main as usize as u64),
     );
-    init_log!("Test process created: {}", test_pid);
+    match test_pid {
+        Ok(pid) => init_log!("Test process created: {}", pid),
+        Err(e) => init_log!("Failed to create test process: {:?}", e),
+    }
 }
 
 #[cfg(not(target_os = "uefi"))]

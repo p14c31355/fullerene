@@ -27,6 +27,21 @@ pub enum SyscallError {
     OutOfMemory = 12,
 }
 
+impl From<petroleum::common::logging::SystemError> for SyscallError {
+    fn from(error: petroleum::common::logging::SystemError) -> Self {
+        match error {
+            petroleum::common::logging::SystemError::MemOutOfMemory => SyscallError::OutOfMemory,
+            petroleum::common::logging::SystemError::InvalidArgument => SyscallError::InvalidArgument,
+            petroleum::common::logging::SystemError::PermissionDenied => SyscallError::PermissionDenied,
+            petroleum::common::logging::SystemError::FileNotFound => SyscallError::FileNotFound,
+            petroleum::common::logging::SystemError::NoSuchProcess => SyscallError::NoSuchProcess,
+            petroleum::common::logging::SystemError::BadFileDescriptor => SyscallError::BadFileDescriptor,
+            // Default to InvalidArgument for unhandled errors
+            _ => SyscallError::InvalidArgument,
+        }
+    }
+}
+
 /// Helper function to validate user buffer access
 pub fn validate_user_buffer(
     ptr: usize,

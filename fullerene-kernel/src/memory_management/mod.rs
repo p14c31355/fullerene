@@ -718,6 +718,10 @@ static KERNEL_VIRTUAL_ALLOCATED_REGIONS: Mutex<BTreeMap<usize, usize>> =
 /// Physical memory offset for virtual to physical address translation
 pub const PHYSICAL_MEMORY_OFFSET_BASE: usize = 0xFFFF_8000_0000_0000;
 
+/// Virtual heap start offset from physical memory offset (UEFI)
+#[cfg(target_os = "uefi")]
+pub const VIRTUAL_HEAP_START_OFFSET: u64 = PHYSICAL_MEMORY_OFFSET_BASE as u64;
+
 /// Switch to a specific page table
 pub fn switch_to_page_table(page_table: &ProcessPageTable) -> SystemResult<()> {
     // In a real implementation, this would switch the CR3 register
