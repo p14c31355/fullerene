@@ -1706,8 +1706,7 @@ fn switch_to_new_page_table(
                 debug_log_no_alloc!("L4 table already mapped to higher half");
             }
             Err(e) => {
-                debug_log_no_alloc!("Failed to map L4 table to higher half");
-                // Continue anyway, may already be mapped
+                panic!("Failed to map L4 table to higher half: {:?}", e);
             }
         }
     }
