@@ -194,14 +194,17 @@ impl UefiInitContext {
         };
 
         // Map heap to higher half
+        let heap_flags = x86_64::structures::paging::PageTableFlags::PRESENT
+            | x86_64::structures::paging::PageTableFlags::WRITABLE
+            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
         unsafe {
             map_memory_range(
                 heap_phys_addr,
                 heap_pages as u64,
                 self.physical_memory_offset,
                 &mut mapper,
-                &mut frame_allocator,
-                x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
+                &mut *frame_allocator,
+                heap_flags,
             )
             .expect("Failed to map heap memory");
         }
@@ -249,7 +252,7 @@ impl UefiInitContext {
         let stack_phys_start = self.heap_start_after_gdt.as_u64() - physical_memory_offset.as_u64();
         let stack_pages = (crate::heap::KERNEL_STACK_SIZE + 4095) / 4096;
 
-        let frame_allocator = crate::heap::FRAME_ALLOCATOR
+        let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
             .get()
             .expect("Frame allocator not initialized")
             .lock();
@@ -258,6 +261,9 @@ impl UefiInitContext {
             petroleum::page_table::init(physical_memory_offset)
         };
 
+        let stack_flags = x86_64::structures::paging::PageTableFlags::PRESENT
+            | x86_64::structures::paging::PageTableFlags::WRITABLE
+            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
         unsafe {
             map_memory_range(
                 PhysAddr::new(stack_phys_start),
@@ -265,7 +271,7 @@ impl UefiInitContext {
                 physical_memory_offset,
                 &mut mapper,
                 &mut *frame_allocator,
-                x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
+                stack_flags,
             )
             .expect("Failed to map kernel stack memory");
         }
@@ -274,7 +280,7 @@ impl UefiInitContext {
 
         // Switch to the kernel stack
         unsafe {
-            let kernel_stack_top = self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64 - 8;
+            let kernel_stack_top = (self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64 - 8).as_u64();
             core::arch::asm!("mov rsp, {}", in(reg) kernel_stack_top);
         }
         self.heap_start_after_stack = self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64;
