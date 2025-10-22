@@ -7,7 +7,8 @@ use crate::graphics;
 use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::{
-    Color, ColorCode, ScreenChar, TextBufferOperations, check_periodic, periodic_task, write_serial_bytes,
+    Color, ColorCode, ScreenChar, TextBufferOperations, check_periodic, periodic_task,
+    write_serial_bytes,
 };
 use x86_64::VirtAddr;
 
@@ -402,7 +403,8 @@ fn initialize_shell_process() -> crate::process::ProcessId {
     let shell_pid = crate::process::create_process(
         "shell_process",
         VirtAddr::new(shell_process_main as usize as u64),
-    ).expect("Failed to create shell process");
+    )
+    .expect("Failed to create shell process");
     log::info!("Created shell process with PID {}", shell_pid);
     crate::process::unblock_process(shell_pid);
     shell_pid
@@ -411,10 +413,18 @@ fn initialize_shell_process() -> crate::process::ProcessId {
 /// Main kernel scheduler loop - orchestrates all system functionality
 pub fn scheduler_loop() -> ! {
     log::info!("Starting enhanced OS scheduler with integrated system features...");
-    write_serial_bytes!(0x3F8, 0x3FD, b"Scheduler: About to initialize shell process\n");
+    write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"Scheduler: About to initialize shell process\n"
+    );
 
     let _ = initialize_shell_process();
-    write_serial_bytes!(0x3F8, 0x3FD, b"Scheduler: Shell process initialized successfully\n");
+    write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"Scheduler: Shell process initialized successfully\n"
+    );
 
     // Main scheduler loop - continuously execute processes with integrated OS functionality
     log::info!("Scheduler: Entering main loop");
