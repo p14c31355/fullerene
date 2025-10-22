@@ -21,32 +21,70 @@ macro_rules! read_unaligned {
     ($ptr:expr, $offset:expr, $ty:ty) => {{ core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) }};
 }
 
-// Structured logging helper for PE parsing operations
-fn log_pe_parsing(message: &str, addr: usize) {
-    debug_log_no_alloc!("PE parsing: addr=", addr);
+// Consolidated logging macro for page table operations
+macro_rules! log_page_table_op {
+    ($operation:expr) => {
+        debug_log_no_alloc!($operation);
+    };
+    ($operation:expr, $msg:expr, $addr:expr) => {
+        debug_log_no_alloc!($operation, $msg, " addr=", $addr);
+    };
+    ($stage:expr, $phys:expr, $virt:expr, $pages:expr) => {
+        debug_log_no_alloc!(
+            "Memory mapping stage=",
+            $stage,
+            " phys=0x",
+            $phys,
+            " virt=0x",
+            $virt,
+            " pages=",
+            $pages
+        );
+    };
+    ($operation:expr, $msg:expr) => {
+        debug_log_no_alloc!($operation, $msg);
+    };
 }
 
-// Batch logging helper for memory mapping operations
-fn log_memory_mapping(stage: &str, phys_addr: u64, virt_addr: u64, pages: u64) {
-    debug_log_no_alloc!(
-        "Memory mapping stage=",
-        stage,
-        " phys=0x",
-        phys_addr,
-        " virt=0x",
-        virt_addr,
-        " pages=",
-        pages
-    );
+// Bit manipulation macros to reduce repeated code in BitmapFrameAllocator
+macro_rules! bit_set {
+    ($bitmap:expr, $index:expr) => {
+        if let Some(ref mut bmp) = $bitmap {
+            let chunk_index = $index / 64;
+            let bit_index = $index % 64;
+            if chunk_index < bmp.len() {
+                bmp[chunk_index] |= 1 << bit_index;
+            }
+        }
+    };
 }
 
-// Consolidated PE base finding log helper
-fn log_pe_base_stage(msg: &str, addr: Option<usize>) {
-    if let Some(addr) = addr {
-        debug_log_no_alloc!("PE base: ", msg, " addr=", addr);
-    } else {
-        debug_log_no_alloc!("PE base: ", msg);
-    }
+macro_rules! bit_clear {
+    ($bitmap:expr, $index:expr) => {
+        if let Some(ref mut bmp) = $bitmap {
+            let chunk_index = $index / 64;
+            let bit_index = $index % 64;
+            if chunk_index < bmp.len() {
+                bmp[chunk_index] &= !(1 << bit_index);
+            }
+        }
+    };
+}
+
+macro_rules! bit_test {
+    ($bitmap:expr, $index:expr) => {
+        if let Some(ref bmp) = $bitmap {
+            let chunk_index = $index / 64;
+            let bit_index = $index % 64;
+            if chunk_index < bmp.len() {
+                (bmp[chunk_index] & (1 << bit_index)) == 0
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
 }
 
 // Generic validation trait for different descriptor types
@@ -326,7 +364,7 @@ pub struct PeSectionHeader {
 
 // Helper function to find the PE base address by searching backwards for MZ signature
 unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
-    log_pe_base_stage("starting search", Some(start_ptr as usize));
+    log_page_table_op!("PE base", "starting search", start_ptr as usize);
 
     for i in 0..PeParser::MAX_PE_SEARCH_DISTANCE {
         let candidate_addr = unsafe {
@@ -338,13 +376,13 @@ unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
 
         unsafe {
             if candidate_addr.read() == b'M' && candidate_addr.add(1).read() == b'Z' {
-                log_pe_base_stage("found MZ candidate", Some(candidate_addr as usize));
+                log_page_table_op!("PE base", "found MZ candidate", candidate_addr as usize);
                 let pe_offset = read_unaligned!(candidate_addr, 0x3c, u32) as usize;
 
                 if pe_offset > 0 && pe_offset < PeParser::MAX_PE_OFFSET {
                     let pe_sig = read_unaligned!(candidate_addr, pe_offset, u32);
                     if pe_sig == 0x00004550 {
-                        log_pe_base_stage("found valid PE", Some(candidate_addr as usize));
+                        log_page_table_op!("PE base", "found valid PE", candidate_addr as usize);
                         return Some(candidate_addr);
                     }
                 }
@@ -353,16 +391,16 @@ unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
 
         // Progress logging
         if i % 100000 == 0 && i != 0 {
-            log_pe_base_stage("progress", Some(i));
+            log_page_table_op!("PE base", "progress", i);
         }
 
         // Early exit check
         if i >= PeParser::MAX_PE_SEARCH_DISTANCE / 4 {
-            log_pe_base_stage("long search warning", Some(i));
+            log_page_table_op!("PE base", "long search warning", i);
         }
     }
 
-    log_pe_base_stage("search complete - no PE found", None);
+    log_page_table_op!("PE base", "search complete - no PE found");
     None
 }
 
@@ -670,39 +708,17 @@ impl BitmapFrameAllocator {
 
     /// Set a frame as free in the bitmap
     fn set_frame_free(&mut self, frame_index: usize) {
-        if let Some(ref mut bitmap) = self.bitmap {
-            let chunk_index = frame_index / 64;
-            let bit_index = frame_index % 64;
-            if chunk_index < bitmap.len() {
-                bitmap[chunk_index] &= !(1 << bit_index);
-            }
-        }
+        bit_clear!(self.bitmap, frame_index);
     }
 
     /// Set a frame as used in the bitmap
     fn set_frame_used(&mut self, frame_index: usize) {
-        if let Some(ref mut bitmap) = self.bitmap {
-            let chunk_index = frame_index / 64;
-            let bit_index = frame_index % 64;
-            if chunk_index < bitmap.len() {
-                bitmap[chunk_index] |= 1 << bit_index;
-            }
-        }
+        bit_set!(self.bitmap, frame_index);
     }
 
     /// Check if a frame is free
     fn is_frame_free(&self, frame_index: usize) -> bool {
-        if let Some(ref bitmap) = self.bitmap {
-            let chunk_index = frame_index / 64;
-            let bit_index = frame_index % 64;
-            if chunk_index < bitmap.len() {
-                (bitmap[chunk_index] & (1 << bit_index)) == 0
-            } else {
-                false
-            }
-        } else {
-            false
-        }
+        bit_test!(self.bitmap, frame_index)
     }
 
     /// Find the next free frame starting from a given index
@@ -1426,7 +1442,7 @@ unsafe fn map_range_with_log(
     num_pages: u64,
     flags: x86_64::structures::paging::PageTableFlags,
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-    log_memory_mapping("Mapping range", phys_start, virt_start, num_pages);
+    log_page_table_op!("Mapping range", phys_start, virt_start, num_pages);
     for i in 0..num_pages {
         let phys_addr = phys_start + i * 4096;
         let virt_addr = virt_start + i * 4096;
