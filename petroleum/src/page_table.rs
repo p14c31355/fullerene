@@ -222,7 +222,15 @@ pub struct PeSectionHeader {
 
 // Helper function to find the PE base address by searching backwards for MZ signature
 unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
+    // Debug: Log start of PE search
+    debug_log_no_alloc!("find_pe_base: starting search at ", start_ptr as usize);
+
     for i in 0..MAX_PE_SEARCH_DISTANCE {
+        if i % 100000 == 0 && i != 0 {
+            // Periodic debug log to track progress
+            debug_log_no_alloc!("find_pe_base: checked ", i, " bytes");
+        }
+
         let candidate_addr = unsafe {
             match (start_ptr as usize).checked_sub(i) {
                 Some(addr) => addr as *const u8,
@@ -230,17 +238,57 @@ unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
             }
         };
 
-        if unsafe { candidate_addr.read() } == b'M' && unsafe { unsafe { candidate_addr.add(1) }.read() } == b'Z' {
+        // Early exit check to prevent excessively long searches
+        if i >= MAX_PE_SEARCH_DISTANCE / 4 {
+            debug_log_no_alloc!("find_pe_base: still searching after ", i, " iterations, may be in invalid memory");
+        }
+
+        // Safe read with bounds check to prevent page fault
+        let mz_check = unsafe {
+            // Calculate how far we've searched
+            let search_addr = (candidate_addr as usize).wrapping_sub(start_ptr as usize);
+
+            // Add additional debug point for long searches
+            if i % 50000 == 0 && i != 0 {
+                debug_log_no_alloc!("find_pe_base: searched address range 0x", search_addr as usize, " to current");
+            }
+
+            // Check if candidate_addr is page-aligned and readable
+            if (candidate_addr as usize) % 4096 == 0 {
+                debug_log_no_alloc!("find_pe_base: crossed page boundary at i=", i, " addr=", candidate_addr as usize);
+            }
+
+            // Read first byte safely with direct read
+            let first_byte = candidate_addr.read();
+            if first_byte != b'M' {
+                continue;
+            }
+
+            // Read second byte safely with direct read
+            let second_byte = candidate_addr.add(1).read();
+            second_byte == b'Z'
+        };
+
+        if mz_check {
+            debug_log_no_alloc!("find_pe_base: found MZ at offset ", i, " addr=", candidate_addr as usize);
+
             let pe_offset = unsafe { read_unaligned!(candidate_addr, 0x3c, u32) } as usize;
+            debug_log_no_alloc!("find_pe_base: pe_offset=", pe_offset);
+
             if pe_offset > 0 && pe_offset < MAX_PE_OFFSET {
                 let pe_sig = unsafe { read_unaligned!(candidate_addr, pe_offset, u32) };
+                debug_log_no_alloc!("find_pe_base: pe_sig=0x", pe_sig as usize);
+
                 if pe_sig == 0x00004550 {
                     // "PE\0\0"
+                    debug_log_no_alloc!("find_pe_base: valid PE file found at ", candidate_addr as usize);
                     return Some(candidate_addr);
                 }
             }
         }
     }
+
+    debug_log_no_alloc!("find_pe_base: no PE signature found after ", MAX_PE_SEARCH_DISTANCE, " bytes");
     None
 }
 
@@ -804,13 +852,32 @@ pub fn reinit_page_table_with_allocator(
         .expect("Failed to identity map kernel for CR3 switch");
     }
 
+    // Identity map boot code and data that will execute immediately after CR3 switch
+    // This includes the efi_main function and surrounding code
+    unsafe {
+        map_identity_range(
+            &mut mapper,
+            frame_allocator,
+            0x190000,  // Map from approximately where boot code starts
+            0x10000,   // Map generous 64MB range for boot code (can be reduced when working)
+            Flags::PRESENT | Flags::WRITABLE,
+        )
+        .expect("Failed to identity map boot code");
+    }
+
+    debug_log_no_alloc!("About to map kernel segments to higher half");
+
     // Map kernel segments to higher half
     unsafe {
         map_kernel_segments_inner(&mut mapper, frame_allocator, kernel_phys_start, phys_offset);
     }
 
+    debug_log_no_alloc!("Kernel segments mapped, about to map additional regions");
+
     // Map additional regions
     map_additional_regions(&mut mapper, frame_allocator, fb_addr, fb_size, phys_offset);
+
+    debug_log_no_alloc!("Additional regions mapped, about to map L4 table to higher half");
 
     // Map L4 table to higher half
     unsafe {
@@ -830,6 +897,8 @@ pub fn reinit_page_table_with_allocator(
         }
     }
 
+    debug_log_no_alloc!("About to switch CR3 to new page table");
+
     // Switch to new page table
     unsafe {
         Cr3::write(
@@ -838,13 +907,17 @@ pub fn reinit_page_table_with_allocator(
         );
     }
 
+    debug_log_no_alloc!("CR3 switched, about to flush TLB");
+
     // Flush TLB
     flush_tlb_and_verify!();
+
+    debug_log_no_alloc!("TLB flushed, about to adjust return address");
 
     // Adjust return address for higher half
     adjust_return_address(phys_offset);
 
-    debug_log_no_alloc!("Reinit done");
+    debug_log_no_alloc!("Return address adjusted, reinit done");
     phys_offset
 }
 
@@ -1278,16 +1351,32 @@ pub struct PeSection {
 }
 
 pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
-    debug_log_no_alloc!("calculate_kernel_memory_size: starting");
+    debug_log_no_alloc!("calculate_kernel_memory_size: starting at addr=", kernel_phys_start.as_u64() as usize);
     if kernel_phys_start.as_u64() == 0 {
+        debug_log_no_alloc!("calculate_kernel_memory_size: kernel_phys_start is 0, returning fallback");
         return FALLBACK_KERNEL_SIZE;
     }
+    debug_log_no_alloc!("calculate_kernel_memory_size: calling PeParser::new");
     let parser = match unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8) } {
-        Some(p) => p,
-        None => return FALLBACK_KERNEL_SIZE,
+        Some(p) => {
+            debug_log_no_alloc!("calculate_kernel_memory_size: PE parser created successfully");
+            p
+        },
+        None => {
+            debug_log_no_alloc!("calculate_kernel_memory_size: PE parser creation failed, returning fallback");
+            return FALLBACK_KERNEL_SIZE;
+        }
     };
+    debug_log_no_alloc!("calculate_kernel_memory_size: calling parser.size_of_image");
     match parser.size_of_image() {
-        Some(size) => (size + KERNEL_MEMORY_PADDING).div_ceil(4096) * 4096,
-        None => FALLBACK_KERNEL_SIZE,
+        Some(size) => {
+            let result = (size + KERNEL_MEMORY_PADDING).div_ceil(4096) * 4096;
+            debug_log_no_alloc!("calculate_kernel_memory_size: size_of_image succeeded, result=", result as usize);
+            result
+        },
+        None => {
+            debug_log_no_alloc!("calculate_kernel_memory_size: size_of_image failed, returning fallback");
+            FALLBACK_KERNEL_SIZE
+        }
     }
 }

@@ -155,26 +155,34 @@ impl UefiInitContext {
                 .expect("Failed to reserve framebuffer frames");
         }
 
+        debug_log_no_alloc!("About to call reinit_page_table_with_allocator");
         self.physical_memory_offset = heap::reinit_page_table_with_allocator(
             kernel_phys_start,
             fb_addr,
             fb_size,
             &mut frame_allocator,
         );
+        debug_log_no_alloc!("reinit_page_table_with_allocator returned successfully");
         #[cfg(feature = "verbose_boot_log")]
         write_serial_bytes!(0x3F8, 0x3FD, b"page table reinit completed\n");
         debug_log_no_alloc!("Page table reinit completed");
 
-        // Set kernel CR3
+        // Set kernel CR3 - CRITICAL: this might cause issues if page table has wrong mappings
+        debug_log_no_alloc!("About to read kernel CR3");
         let kernel_cr3 = x86_64::registers::control::Cr3::read();
+        debug_log_no_alloc!("Kernel CR3 read: ", kernel_cr3.0.start_address().as_u64() as usize);
+        debug_log_no_alloc!("About to set kernel CR3 in syscall");
         crate::interrupts::syscall::set_kernel_cr3(kernel_cr3.0.start_address().as_u64());
+        debug_log_no_alloc!("Kernel CR3 set in syscall");
         #[cfg(feature = "verbose_boot_log")]
         write_serial_bytes!(0x3F8, 0x3FD, b"About to set physical memory offset\n");
 
-        // Set physical memory offset
+        // Set physical memory offset - CRITICAL: this changes virtual address calculation
+        debug_log_no_alloc!("About to set physical memory offset to ", crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as usize);
         crate::memory_management::set_physical_memory_offset(
             crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE,
         );
+        debug_log_no_alloc!("Physical memory offset set successfully");
         #[cfg(feature = "verbose_boot_log")]
         write_serial_bytes!(0x3F8, 0x3FD, b"physical memory offset set\n");
 
@@ -236,12 +244,16 @@ impl UefiInitContext {
         // to prevent allocation failures in subsequent log::info! calls
         debug_log_no_alloc!("Initializing global heap allocator early");
         use petroleum::page_table::{ALLOCATOR, HEAP_INITIALIZED};
+
+        debug_log_no_alloc!("heap_start_for_allocator calculation: virtual_heap_start=", self.virtual_heap_start.as_u64() as usize, " GDT_INIT_OVERHEAD=", crate::gdt::GDT_INIT_OVERHEAD);
+
         // The GDT initialization allocates stacks for interrupt handlers (e.g., double fault).
         // This size needs to be accounted for in addition to the main kernel stack to prevent memory corruption.
-
         let heap_start_for_allocator =
             self.virtual_heap_start + crate::gdt::GDT_INIT_OVERHEAD as u64;
         let heap_size_for_allocator = heap::HEAP_SIZE - crate::gdt::GDT_INIT_OVERHEAD;
+
+        debug_log_no_alloc!("About to init ALLOCATOR: ptr=", heap_start_for_allocator.as_u64() as usize, " size=", heap_size_for_allocator);
 
         unsafe {
             ALLOCATOR.lock().init(
@@ -251,6 +263,7 @@ impl UefiInitContext {
         }
         // Mark heap as initialized to prevent double-init
         HEAP_INITIALIZED.call_once(|| true);
+        debug_log_no_alloc!("Global heap allocator initialized early");
         write_serial_bytes!(0x3F8, 0x3FD, b"Global heap allocator initialized\n");
 
         (
