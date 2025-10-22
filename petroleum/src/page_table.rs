@@ -1505,7 +1505,7 @@ pub struct PeSection {
 }
 
 unsafe fn parse_kernel_size(kernel_phys_start: PhysAddr) -> Option<u64> {
-    unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8)?.size_of_image().map(|size| (size + KERNEL_MEMORY_PADDING).div_ceil(4096) * 4096) }
+    PeParser::new(kernel_phys_start.as_u64() as *const u8)?.size_of_image().map(|size| (size + KERNEL_MEMORY_PADDING).div_ceil(4096) * 4096)
 }
 
 pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
