@@ -1,18 +1,17 @@
+
 use crate::{
-    bitmap_operation, calc_offset_addr, create_page_and_frame, debug_log_no_alloc,
+    calc_offset_addr, create_page_and_frame, debug_log_no_alloc,
     ensure_initialized, flush_tlb_and_verify, log_memory_descriptor, map_and_flush,
-    map_identity_range_checked, map_pages_loop, map_with_offset,
+    map_identity_range_checked, map_with_offset,
 };
 
 // Macros are automatically available from common module
 use spin::Once;
-use core::marker::PhantomData;
 use x86_64::{
     PhysAddr, VirtAddr,
-    instructions::tlb,
     registers::control::Cr3,
     structures::paging::{
-        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PhysFrame, Size4KiB, Translate,
+        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PhysFrame, Size4KiB,
     },
 };
 
@@ -585,17 +584,39 @@ impl BitmapFrameAllocator {
 
     /// Set a frame as free in the bitmap
     fn set_frame_free(&mut self, frame_index: usize) {
-        bitmap_operation!(self.bitmap, frame_index, set_free);
+        if let Some(ref mut bitmap) = self.bitmap {
+            let chunk_index = frame_index / 64;
+            let bit_index = frame_index % 64;
+            if chunk_index < bitmap.len() {
+                bitmap[chunk_index] &= !(1 << bit_index);
+            }
+        }
     }
 
     /// Set a frame as used in the bitmap
     fn set_frame_used(&mut self, frame_index: usize) {
-        bitmap_operation!(self.bitmap, frame_index, set_used);
+        if let Some(ref mut bitmap) = self.bitmap {
+            let chunk_index = frame_index / 64;
+            let bit_index = frame_index % 64;
+            if chunk_index < bitmap.len() {
+                bitmap[chunk_index] |= 1 << bit_index;
+            }
+        }
     }
 
     /// Check if a frame is free
     fn is_frame_free(&self, frame_index: usize) -> bool {
-        bitmap_operation!(self.bitmap, frame_index, is_free)
+        if let Some(ref bitmap) = self.bitmap {
+            let chunk_index = frame_index / 64;
+            let bit_index = frame_index % 64;
+            if chunk_index < bitmap.len() {
+                (bitmap[chunk_index] & (1 << bit_index)) == 0
+            } else {
+                false
+            }
+        } else {
+            false
+        }
     }
 
     /// Find the next free frame starting from a given index
@@ -1246,16 +1267,15 @@ unsafe fn parse_kernel_size(kernel_phys_start: PhysAddr) -> Option<u64> {
 
 pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     debug_log_no_alloc!("calculate_kernel_memory_size: starting at addr=", kernel_phys_start.as_u64() as usize);
-    match kernel_phys_start.as_u64() {
-        0 => {
-            debug_log_no_alloc!("calculate_kernel_memory_size: kernel_phys_start is 0, returning fallback");
-            FALLBACK_KERNEL_SIZE
-        },
-        _ => match parse_kernel_size(kernel_phys_start) {
+    if kernel_phys_start.as_u64() == 0 {
+        debug_log_no_alloc!("calculate_kernel_memory_size: kernel_phys_start is 0, returning fallback");
+        FALLBACK_KERNEL_SIZE
+    } else {
+        match parse_kernel_size(kernel_phys_start) {
             Some(result) => {
                 debug_log_no_alloc!("calculate_kernel_memory_size: size_of_image succeeded, result=", result as usize);
                 result
-            },
+            }
             None => {
                 debug_log_no_alloc!("calculate_kernel_memory_size: size_of_image failed, returning fallback");
                 FALLBACK_KERNEL_SIZE
