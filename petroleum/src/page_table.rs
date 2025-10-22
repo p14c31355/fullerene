@@ -2092,17 +2092,21 @@ impl PageTableHelper for PageTableManager {
         Ok(table_addr)
     }
 
-    fn destroy_page_table(
+        fn destroy_page_table(
         &mut self,
         table_addr: usize,
     ) -> crate::common::logging::SystemResult<()> {
         ensure_initialized!(self);
 
-        if self.allocated_tables.remove(&table_addr).is_none() {
+        if let Some(frame) = self.allocated_tables.remove(&table_addr) {
+            if let Some(allocator) = self.frame_allocator.as_mut() {
+                use petroleum::initializer::FrameAllocator;
+                allocator.free_frame(frame.start_address().as_u64() as usize)?;
+            }
+        } else {
             return Err(crate::common::logging::SystemError::InvalidArgument);
         }
 
-        // Frame is now deallocated from our tracking
         Ok(())
     }
 
