@@ -985,7 +985,7 @@ fn setup_higher_half_mappings<'a>(
     // Map UEFI runtime services regions to higher half
     for desc in memory_map.iter() {
         if is_valid_memory_descriptor(desc) &&
-           (desc.type_ as u32 == 5 || desc.type_ as u32 == 7) { // EFI_RUNTIME_SERVICES_CODE or EFI_RUNTIME_SERVICES_DATA
+           (desc.type_ as u32 == 5 || desc.type_ as u32 == 6) { // EFI_RUNTIME_SERVICES_CODE or EFI_RUNTIME_SERVICES_DATA
             let flags = if desc.type_ as u32 == 5 {
                 x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE
             } else {
