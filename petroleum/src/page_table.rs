@@ -155,6 +155,8 @@ macro_rules! map_range_with_log_macro {
     }};
 }
 
+
+
 // Module for all constants to reduce namespace pollution and lines
 mod memory_constants {
     pub const PAGE_SIZE: u64 = 4096;
@@ -1762,24 +1764,6 @@ pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> PhysAdd
 }
 
 use x86_64::structures::paging::PageTableFlags as PageFlags;
-
-// Macro to inline mapping range for reduced function calls
-macro_rules! map_range_with_log_macro {
-    ($mapper:expr, $frame_allocator:expr, $phys_start:expr, $virt_start:expr, $num_pages:expr, $flags:expr) => {{
-        log_page_table_op!("Mapping range", $phys_start, $virt_start, $num_pages);
-        for i in 0..$num_pages {
-            let phys_addr = $phys_start + i * 4096;
-            let virt_addr = $virt_start + i * 4096;
-            let (page, frame) = create_page_and_frame!(virt_addr, phys_addr);
-            match $mapper.map_to(page, frame, $flags, $frame_allocator) {
-                Ok(flush) => flush.flush(),
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => continue,
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(())
-    }};
-}
 
 // Helper to identity map a memory range
 unsafe fn identity_map_range_with_log(
