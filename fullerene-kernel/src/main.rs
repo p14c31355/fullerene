@@ -26,6 +26,9 @@ mod shell;
 mod syscall;
 mod vga;
 
+#[macro_use]
+extern crate petroleum;
+
 extern crate alloc;
 
 use spin::Once;

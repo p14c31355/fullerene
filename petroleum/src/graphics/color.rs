@@ -330,36 +330,7 @@ macro_rules! create_button {
     };
 }
 
-// Simplified drawing macros for common UI elements
-#[macro_export]
-macro_rules! draw_filled_rect {
-    ($writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $color:expr) => {{
-        let rect = Rectangle::new(
-            embedded_graphics::geometry::Point::new($x, $y),
-            embedded_graphics::geometry::Size::new($w, $h),
-        );
-        let style = PrimitiveStyleBuilder::new()
-            .fill_color($crate::graphics::color::u32_to_rgb888($color))
-            .build();
-        rect.into_styled(style).draw($writer).ok();
-    }};
-}
 
-#[macro_export]
-macro_rules! draw_border_rect {
-    ($writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $fill_color:expr, $stroke_color:expr, $stroke_width:expr) => {{
-        let rect = Rectangle::new(
-            embedded_graphics::geometry::Point::new($x, $y),
-            embedded_graphics::geometry::Size::new($w, $h),
-        );
-        let style = PrimitiveStyleBuilder::new()
-            .fill_color($crate::graphics::color::u32_to_rgb888($fill_color))
-            .stroke_color($crate::graphics::color::u32_to_rgb888($stroke_color))
-            .stroke_width($stroke_width)
-            .build();
-        rect.into_styled(style).draw($writer).ok();
-    }};
-}
 
 // Simple GUI element definitions (basic structs without complex trait impls)
 pub struct Button {

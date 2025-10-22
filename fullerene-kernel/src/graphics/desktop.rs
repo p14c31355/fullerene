@@ -9,31 +9,6 @@ use petroleum::serial::debug_print_str_to_com1 as debug_print_str;
 
 use super::text; // For re-exporting statics or accessing
 
-// Consolidated drawing macros to reduce repetitive code
-macro_rules! draw_filled_rect {
-    ($writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $color:expr) => {{
-        use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
-        let rect = Rectangle::new(Point::new($x, $y), Size::new($w, $h));
-        let style = PrimitiveStyleBuilder::new()
-            .fill_color(super::u32_to_rgb888($color))
-            .build();
-        rect.into_styled(style).draw($writer).ok();
-    }};
-}
-
-macro_rules! draw_border_rect {
-    ($writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $fill_color:expr, $stroke_color:expr, $stroke_width:expr) => {{
-        use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
-        let rect = Rectangle::new(Point::new($x, $y), Size::new($w, $h));
-        let style = PrimitiveStyleBuilder::new()
-            .fill_color(super::u32_to_rgb888($fill_color))
-            .stroke_color(super::u32_to_rgb888($stroke_color))
-            .stroke_width($stroke_width)
-            .build();
-        rect.into_styled(style).draw($writer).ok();
-    }};
-}
-
 // Use consolidated colors from petroleum
 use petroleum::{
     COLOR_BLACK, COLOR_DARK_GRAY, COLOR_LIGHT_BLUE, COLOR_LIGHT_GRAY, COLOR_TASKBAR, COLOR_WHITE,

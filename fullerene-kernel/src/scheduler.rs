@@ -24,6 +24,12 @@ const DESKTOP_UPDATE_INTERVAL_TICKS: u64 = 5000;
 const LOG_INTERVAL_TICKS: u64 = 5000;
 const DISPLAY_INTERVAL_TICKS: u64 = 5000;
 
+// Configurable thresholds
+const HIGH_MEMORY_THRESHOLD: usize = 50; // %
+const MAX_PROCESSES_THRESHOLD: usize = 10;
+const EMERGENCY_MEMORY_THRESHOLD: usize = 80; // %
+const MAX_PROCESSES_EMERGENCY: usize = 100;
+
 // System diagnostics structure
 #[derive(Clone, Copy)]
 struct SystemStats {
@@ -79,27 +85,35 @@ fn process_io_events() {
 
 /// Perform system health checks (memory, processes, etc.)
 fn perform_system_health_checks() {
-    // Check memory usage
+    check_memory_usage();
+    check_process_count();
+    check_keyboard_buffer();
+}
+
+/// Check memory usage and log warnings if high
+fn check_memory_usage() {
     let (used, total, _) = petroleum::get_memory_stats!();
 
-    // Log warning if memory usage is high
-    if used > total / 2 {
+    if total > 0 && (used * 100 / total) > HIGH_MEMORY_THRESHOLD {
         log::warn!(
             "High memory usage: {} bytes used out of {} bytes",
             used,
             total
         );
     }
+}
 
-    // Check for too many processes
+/// Check process count and warn if too many active
+fn check_process_count() {
     let active_count = crate::process::get_active_process_count();
-    if active_count > 10 {
+    if active_count > MAX_PROCESSES_THRESHOLD {
         log::warn!("High process count: {} active processes", active_count);
     }
+}
 
-    // Check keyboard buffer for overflow
+/// Check and drain keyboard buffer if needed
+fn check_keyboard_buffer() {
     if crate::keyboard::input_available() {
-        // Drain excess input to prevent buffer overflow
         let drained = crate::keyboard::drain_line_buffer(&mut []);
         if drained > 256 {
             log::debug!("Drained {} bytes from keyboard buffer", drained);
@@ -450,19 +464,25 @@ pub fn scheduler_loop() -> ! {
 
 /// Handle emergency system conditions (OOM, process limits, etc.)
 fn emergency_condition_handler() {
-    // Check for out-of-memory condition
+    check_emergency_memory();
+    check_emergency_process_count();
+}
+
+/// Check for critical memory emergency conditions
+fn check_emergency_memory() {
     let (used, total, _) = petroleum::get_memory_stats!();
-    if used > (total * 4) / 5 {
-        // >80% usage
+    if total > 0 && (used * 100 / total) > EMERGENCY_MEMORY_THRESHOLD {
         log::error!("EMERGENCY: Critical memory usage detected!");
         // In a full implementation, this would:
         // 1. Kill memory-hog processes
         // 2. Perform emergency memory cleanup
         // 3. Log diagnostic information
     }
+}
 
-    // Check process limits
-    if crate::process::get_active_process_count() > 100 {
+/// Check for emergency process count limits
+fn check_emergency_process_count() {
+    if crate::process::get_active_process_count() > MAX_PROCESSES_EMERGENCY {
         log::error!("EMERGENCY: Too many active processes!");
         // Would implement process cleanup here
     }
