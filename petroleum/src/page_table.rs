@@ -871,6 +871,7 @@ fn setup_identity_mappings(
     mapper: &mut OffsetPageTable,
     frame_allocator: &mut BootInfoFrameAllocator,
     kernel_phys_start: PhysAddr,
+    memory_map: &[EfiMemoryDescriptor],
 ) -> u64 {
     use x86_64::structures::paging::PageTableFlags as Flags;
 
@@ -915,6 +916,42 @@ fn setup_identity_mappings(
         .expect("Failed to identity map boot code");
     }
 
+    // Map UEFI runtime services regions to allow continuation
+    for desc in memory_map.iter() {
+        if is_valid_memory_descriptor(desc) &&
+           (desc.type_ as u32 == 5 || desc.type_ as u32 == 7) { // EFI_RUNTIME_SERVICES_CODE or EFI_RUNTIME_SERVICES_DATA
+            let flags = if desc.type_ as u32 == 5 {
+                Flags::PRESENT | Flags::WRITABLE
+            } else {
+                Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE
+            };
+            let pages = desc.number_of_pages;
+            unsafe {
+                map_identity_range(mapper, frame_allocator, desc.physical_start, pages, flags)
+                    .expect("Failed to map UEFI runtime region");
+            }
+        }
+    }
+
+    // Map current stack region to allow continuation
+    let rsp: u64;
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) rsp);
+    }
+    for desc in memory_map.iter() {
+        if is_valid_memory_descriptor(desc) {
+            let start = desc.physical_start;
+            let end = start + desc.number_of_pages * 4096;
+            if rsp >= start && rsp < end {
+                unsafe {
+                    map_identity_range(mapper, frame_allocator, desc.physical_start, desc.number_of_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE)
+                        .expect("Failed to map stack region");
+                }
+                break;
+            }
+        }
+    }
+
     debug_log_no_alloc!("Identity mappings completed");
     kernel_size
 }
@@ -928,6 +965,7 @@ fn setup_higher_half_mappings<'a>(
     fb_addr: Option<VirtAddr>,
     fb_size: Option<u64>,
     phys_offset: VirtAddr,
+    memory_map: &[EfiMemoryDescriptor],
 ) {
     debug_log_no_alloc!("Setting up higher-half mappings");
 
@@ -943,6 +981,42 @@ fn setup_higher_half_mappings<'a>(
     memory_mapper.map_framebuffer(fb_addr, fb_size);
     memory_mapper.map_vga();
     memory_mapper.map_boot_code();
+
+    // Map UEFI runtime services regions to higher half
+    for desc in memory_map.iter() {
+        if is_valid_memory_descriptor(desc) &&
+           (desc.type_ as u32 == 5 || desc.type_ as u32 == 7) { // EFI_RUNTIME_SERVICES_CODE or EFI_RUNTIME_SERVICES_DATA
+            let flags = if desc.type_ as u32 == 5 {
+                x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE
+            } else {
+                x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE | x86_64::structures::paging::PageTableFlags::NO_EXECUTE
+            };
+            let pages = desc.number_of_pages;
+            unsafe {
+                map_range_with_log(mapper, frame_allocator, desc.physical_start, desc.physical_start + phys_offset.as_u64(), pages, flags)
+                    .expect("Failed to map UEFI runtime region to higher half");
+            }
+        }
+    }
+
+    // Map current stack region to higher half
+    let rsp: u64;
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) rsp);
+    }
+    for desc in memory_map.iter() {
+        if is_valid_memory_descriptor(desc) {
+            let start = desc.physical_start;
+            let end = start + desc.number_of_pages * 4096;
+            if rsp >= start && rsp < end {
+                unsafe {
+                    map_range_with_log(mapper, frame_allocator, desc.physical_start, desc.physical_start + phys_offset.as_u64(), desc.number_of_pages, x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE | x86_64::structures::paging::PageTableFlags::NO_EXECUTE)
+                        .expect("Failed to map stack region to higher half");
+                }
+                break;
+            }
+        }
+    }
 
     debug_log_no_alloc!("Additional regions mapped to higher half");
 }
@@ -999,6 +1073,7 @@ pub fn reinit_page_table_with_allocator(
     fb_addr: Option<VirtAddr>,
     fb_size: Option<u64>,
     frame_allocator: &mut BootInfoFrameAllocator,
+    memory_map: &[EfiMemoryDescriptor],
 ) -> VirtAddr {
     debug_log_no_alloc!("Page table reinitialization starting");
 
@@ -1016,7 +1091,7 @@ pub fn reinit_page_table_with_allocator(
     };
 
     // Setup identity mappings
-    let kernel_size = setup_identity_mappings(&mut mapper, frame_allocator, kernel_phys_start);
+    let kernel_size = setup_identity_mappings(&mut mapper, frame_allocator, kernel_phys_start, memory_map);
 
     // Setup higher-half mappings
     setup_higher_half_mappings(
@@ -1027,6 +1102,7 @@ pub fn reinit_page_table_with_allocator(
         fb_addr,
         fb_size,
         phys_offset,
+        memory_map,
     );
 
     // Perform the page table switch

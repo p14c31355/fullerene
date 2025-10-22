@@ -161,6 +161,7 @@ impl UefiInitContext {
             fb_addr,
             fb_size,
             &mut frame_allocator,
+            *memory_map_ref,
         );
         debug_log_no_alloc!("reinit_page_table_with_allocator returned successfully");
         #[cfg(feature = "verbose_boot_log")]
