@@ -184,12 +184,30 @@ impl UefiInitContext {
         } else {
             heap_phys_start
         };
-        write_serial_bytes!(0x3F8, 0x3FD, b"Skipping heap allocation temporarily for debugging\n");
+        // Allocate and map heap memory
+        let heap_phys_addr = petroleum::allocate_heap_from_map(heap_phys_start_addr, heap::HEAP_SIZE);
+        let heap_pages = (heap::HEAP_SIZE + 4095) / 4096;
 
-        // TODO: Re-enable heap allocation once basic scheduler is working
-        // Use simple fallback for now
-        self.virtual_heap_start = self.physical_memory_offset + VIRTUAL_HEAP_START_OFFSET;
-        write_serial_bytes!(0x3F8, 0x3FD, b"Simple heap fallback set\n");
+        // Create mapper for heap allocation
+        let mut mapper = unsafe {
+            petroleum::page_table::init(self.physical_memory_offset)
+        };
+
+        // Map heap to higher half
+        unsafe {
+            map_memory_range(
+                heap_phys_addr,
+                heap_pages as u64,
+                self.physical_memory_offset,
+                &mut mapper,
+                &mut frame_allocator,
+                x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
+            )
+            .expect("Failed to map heap memory");
+        }
+
+        self.virtual_heap_start = self.physical_memory_offset + heap_phys_addr.as_u64();
+        write_serial_bytes!(0x3F8, 0x3FD, b"Heap allocated and mapped\n");
 
         // Simple heap allocator init without advanced mapping
         debug_log_no_alloc!("Initializing basic heap allocator");
@@ -226,6 +244,33 @@ impl UefiInitContext {
         let gdt_heap_start = virtual_heap_start;
         self.heap_start_after_gdt = gdt::init(gdt_heap_start);
         log::info!("GDT initialized");
+
+        // Allocate and map kernel stack before switching
+        let stack_phys_start = self.heap_start_after_gdt.as_u64() - physical_memory_offset.as_u64();
+        let stack_pages = (crate::heap::KERNEL_STACK_SIZE + 4095) / 4096;
+
+        let frame_allocator = crate::heap::FRAME_ALLOCATOR
+            .get()
+            .expect("Frame allocator not initialized")
+            .lock();
+
+        let mut mapper = unsafe {
+            petroleum::page_table::init(physical_memory_offset)
+        };
+
+        unsafe {
+            map_memory_range(
+                PhysAddr::new(stack_phys_start),
+                stack_pages as u64,
+                physical_memory_offset,
+                &mut mapper,
+                &mut *frame_allocator,
+                x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
+            )
+            .expect("Failed to map kernel stack memory");
+        }
+
+        write_serial_bytes!(0x3F8, 0x3FD, b"Kernel stack allocated and mapped\n");
 
         // Switch to the kernel stack
         unsafe {
