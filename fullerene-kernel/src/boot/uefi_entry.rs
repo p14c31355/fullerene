@@ -19,6 +19,10 @@ use x86_64::{
     structures::paging::{Mapper, Size4KiB, mapper::MapToError},
 };
 
+/// Virtual heap start offset from physical memory offset
+#[cfg(target_os = "uefi")]
+const VIRTUAL_HEAP_START_OFFSET: u64 = 0x100000;
+
 /// Helper function to map a range of memory pages
 /// Takes the base physical address, number of pages, mapper, frame allocator, and flags
 #[cfg(target_os = "uefi")]
@@ -180,7 +184,7 @@ impl UefiInitContext {
 
         // TODO: Re-enable heap allocation once basic scheduler is working
         // Use simple fallback for now
-        self.virtual_heap_start = self.physical_memory_offset + 0x100000; // Simple offset
+        self.virtual_heap_start = self.physical_memory_offset + VIRTUAL_HEAP_START_OFFSET;
         write_serial_bytes!(0x3F8, 0x3FD, b"Simple heap fallback set\n");
 
         // Simple heap allocator init without advanced mapping

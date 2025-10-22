@@ -63,8 +63,13 @@ impl MemoryDescriptorValidator for EfiMemoryDescriptor {
     }
 
     fn is_memory_available(&self) -> bool {
-        let mem_type = self.type_ as u32;
-        matches!(mem_type, 4 | 6 | 7 | 9 | 14)
+        use crate::common::EfiMemoryType;
+        let mem_type = self.type_;
+        matches!(mem_type,
+            EfiMemoryType::EfiBootServicesData |     // 4
+            EfiMemoryType::EfiRuntimeServicesData |  // 6
+            EfiMemoryType::EfiConventionalMemory     // 7
+        ) || matches!(mem_type as u32, 9 | 14)       // EFI_ACPI_RECLAIM_MEMORY and EFI_PERSISTENT_MEMORY
     }
 }
 
@@ -171,6 +176,15 @@ const EFI_MEMORY_TYPE_FIRMWARE_SPECIFIC: u32 = 15;
 /// Maximum reasonable number of pages in a descriptor (1M pages = 4GB)
 const MAX_DESCRIPTOR_PAGES: u64 = 1_048_576;
 
+/// Maximum reasonable system memory limit (512GB)
+const MAX_SYSTEM_MEMORY: u64 = 512 * 1024 * 1024 * 1024u64;
+
+/// Boot code physical start address
+const BOOT_CODE_START: u64 = 0x100000;
+
+/// Boot code size in pages (0x8000 pages = 128MB)
+const BOOT_CODE_PAGES: u64 = 0x8000;
+
 /// Validate an EFI memory descriptor for safety
 fn is_valid_memory_descriptor(descriptor: &EfiMemoryDescriptor) -> bool {
     // Check memory type is within valid UEFI range (0x0-0x7FFFFFFF)
@@ -198,7 +212,7 @@ fn is_valid_memory_descriptor(descriptor: &EfiMemoryDescriptor) -> bool {
     let page_size = 4096u64;
     if let Some(end_addr) = descriptor.physical_start.checked_add(descriptor.number_of_pages.checked_mul(page_size).unwrap_or(u64::MAX)) {
         // Ensure end address doesn't exceed reasonable system limits (512GB)
-        if end_addr > 512 * 1024 * 1024 * 1024u64 {
+        if end_addr > MAX_SYSTEM_MEMORY {
             debug_log_no_alloc!("Memory region too large: end_addr=0x", end_addr as usize);
             return false;
         }
@@ -417,8 +431,6 @@ impl<'a> MemoryMapper<'a> {
 
     pub fn map_boot_code(&mut self) {
         use x86_64::structures::paging::PageTableFlags as Flags;
-        const BOOT_CODE_START: u64 = 0x100000;
-        const BOOT_CODE_PAGES: u64 = 0x8000;
         unsafe {
             let _ = self.map_to_higher_half(BOOT_CODE_START, BOOT_CODE_PAGES, Flags::PRESENT | Flags::WRITABLE);
         }
@@ -676,7 +688,17 @@ impl BitmapFrameAllocator {
             return Err(crate::common::logging::SystemError::InvalidArgument);
         }
 
-        // Mark frames as used without checking if they're free first
+        // Check if frames are already allocated before marking them as used
+        for frame_index in start_frame..end_frame {
+            if self.is_frame_free(frame_index) {
+                let chunk_index = frame_index / 64;
+                let bit_index = frame_index % 64;
+                debug_log_no_alloc!("ERROR: Frame ", frame_index, " at chunk ", chunk_index, " bit ", bit_index, " was already free but should be reserved");
+                return Err(crate::common::logging::SystemError::InvalidArgument);
+            }
+        }
+
+        // Mark frames as used
         self.set_frame_range(start_frame, end_frame, true);
 
         Ok(())
@@ -1022,7 +1044,7 @@ fn setup_higher_half_mappings<'a>(
 }
 
 // Perform the page table switch
-fn switch_to_new_page_table(level_4_table_frame: PhysFrame, phys_offset: VirtAddr) {
+fn switch_to_new_page_table(level_4_table_frame: PhysFrame, phys_offset: VirtAddr, frame_allocator: &mut BootInfoFrameAllocator) {
     use x86_64::structures::paging::PageTableFlags as Flags;
 
     // Map L4 table to higher half first
@@ -1040,7 +1062,7 @@ fn switch_to_new_page_table(level_4_table_frame: PhysFrame, phys_offset: VirtAdd
             ),
             level_4_table_frame,
             Flags::PRESENT | Flags::WRITABLE,
-            &mut DummyFrameAllocator::new(),
+            frame_allocator,
         ) {
             Ok(flush) => flush.flush(),
             Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
@@ -1106,7 +1128,7 @@ pub fn reinit_page_table_with_allocator(
     );
 
     // Perform the page table switch
-    switch_to_new_page_table(level_4_table_frame, phys_offset);
+    switch_to_new_page_table(level_4_table_frame, phys_offset, frame_allocator);
 
     // Adjust return address
     adjust_return_address(phys_offset);
