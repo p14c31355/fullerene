@@ -216,13 +216,10 @@ pub fn create_process(name: &'static str, entry_point_address: VirtAddr) -> Proc
     let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
     write_serial_bytes!(0x3F8, 0x3FD, b"Process: Kernel stack allocated\n");
 
-    // TODO: Create page table for the process - for now use current address space
-    // The full process isolation requires proper user/kernel memory separation
-    write_serial_bytes!(0x3F8, 0x3FD, b"Process: Skipping page table creation (running in kernel space)\n");
-
-    // Use dummy values for now - all processes share kernel address space
-    process.page_table_phys_addr = PhysAddr::new(0);
-    process.page_table = None;
+    // Create page table for the process
+    let page_table = crate::memory_management::ProcessPageTable::new();
+    process.page_table_phys_addr = PhysAddr::new(page_table.current_page_table() as u64);
+    process.page_table = Some(page_table);
 
     process.init_context(kernel_stack_top);
     write_serial_bytes!(0x3F8, 0x3FD, b"Process: Context initialized\n");

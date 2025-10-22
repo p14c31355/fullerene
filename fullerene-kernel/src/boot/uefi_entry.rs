@@ -196,7 +196,7 @@ impl UefiInitContext {
         unsafe {
             ALLOCATOR.lock().init(
                 self.virtual_heap_start.as_mut_ptr::<u8>(),
-                heap::HEAP_SIZE / 2, // Use half the heap for now
+                heap::HEAP_SIZE,
             );
         }
         HEAP_INITIALIZED.call_once(|| true);
@@ -215,7 +215,7 @@ impl UefiInitContext {
         virtual_heap_start: VirtAddr,
         physical_memory_offset: VirtAddr,
     ) {
-        log::info!("Setting up GDT and kernel stack (simplified)");
+        log::info!("Setting up GDT and kernel stack");
         let gdt_heap_start = virtual_heap_start;
         self.heap_start_after_gdt = gdt::init(gdt_heap_start);
         log::info!("GDT initialized");

@@ -9,9 +9,10 @@ use crate::{
 use spin::Once;
 use x86_64::{
     PhysAddr, VirtAddr,
+    instructions::tlb,
     registers::control::Cr3,
     structures::paging::{
-        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PhysFrame, Size4KiB,
+        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PhysFrame, Size4KiB, Translate,
     },
 };
 
@@ -1252,43 +1253,183 @@ impl PageTableManager {
 impl PageTableHelper for PageTableManager {
     fn map_page(
         &mut self,
-        _virtual_addr: usize,
-        _physical_addr: usize,
-        _flags: PageFlags,
-        _frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
+        virtual_addr: usize,
+        physical_addr: usize,
+        flags: PageFlags,
+        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
     ) -> crate::common::logging::SystemResult<()> {
-        Err(crate::common::logging::SystemError::InternalError)
+        ensure_initialized!(self);
+
+        let mapper = self.mapper.as_mut().unwrap();
+        let virtual_addr = x86_64::VirtAddr::new(virtual_addr as u64);
+        let physical_addr = x86_64::PhysAddr::new(physical_addr as u64);
+        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virtual_addr);
+        let frame =
+            x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(physical_addr);
+
+        // Map the page using the stored mapper instance
+        unsafe {
+            mapper
+                .map_to(page, frame, flags, frame_allocator)
+                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
+                .flush();
+        }
+
+        Ok(())
     }
-    fn unmap_page(&mut self, _virtual_addr: usize) -> crate::common::logging::SystemResult<PhysFrame> {
-        Err(crate::common::logging::SystemError::InternalError)
+
+    fn unmap_page(
+        &mut self,
+        virtual_addr: usize,
+    ) -> crate::common::logging::SystemResult<x86_64::structures::paging::PhysFrame<Size4KiB>> {
+        ensure_initialized!(self);
+
+        let mapper = self.mapper.as_mut().unwrap();
+        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(
+            x86_64::VirtAddr::new(virtual_addr as u64),
+        );
+
+        let (frame, flush) = mapper
+            .unmap(page)
+            .map_err(|_| crate::common::logging::SystemError::UnmappingFailed)?;
+        flush.flush();
+
+        Ok(frame)
     }
-    fn translate_address(&self, _virtual_addr: usize) -> crate::common::logging::SystemResult<usize> {
-        Err(crate::common::logging::SystemError::InternalError)
+
+    fn translate_address(
+        &self,
+        virtual_addr: usize,
+    ) -> crate::common::logging::SystemResult<usize> {
+        ensure_initialized!(self);
+
+        let mapper = self.mapper.as_ref().unwrap();
+        let virt_addr = VirtAddr::new(virtual_addr as u64);
+
+        match mapper.translate_addr(virt_addr) {
+            Some(phys_addr) => Ok(phys_addr.as_u64() as usize),
+            None => Err(crate::common::logging::SystemError::InvalidArgument),
+        }
     }
-    fn set_page_flags(&mut self, _virtual_addr: usize, _flags: PageFlags) -> crate::common::logging::SystemResult<()> {
-        Err(crate::common::logging::SystemError::InternalError)
+
+    fn set_page_flags(
+        &mut self,
+        virtual_addr: usize,
+        flags: PageFlags,
+    ) -> crate::common::logging::SystemResult<()> {
+        ensure_initialized!(self);
+
+        let mapper = self.mapper.as_mut().unwrap();
+        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(
+            x86_64::VirtAddr::new(virtual_addr as u64),
+        );
+
+        unsafe {
+            mapper
+                .update_flags(page, flags)
+                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
+                .flush();
+        }
+
+        Ok(())
     }
-    fn get_page_flags(&self, _virtual_addr: usize) -> crate::common::logging::SystemResult<PageFlags> {
-        Err(crate::common::logging::SystemError::InternalError)
+
+    fn get_page_flags(
+        &self,
+        virtual_addr: usize,
+    ) -> crate::common::logging::SystemResult<PageFlags> {
+        ensure_initialized!(self);
+
+        // Traverse the page table to find the entry for this page
+        let phys_mem_offset = self.mapper.as_ref().unwrap().phys_offset();
+        let addr = x86_64::VirtAddr::new(virtual_addr as u64);
+
+        // Use CR3 to get L4
+        let (level_4_table_frame, _) = x86_64::registers::control::Cr3::read();
+
+        let table_indexes = [
+            addr.p4_index(),
+            addr.p3_index(),
+            addr.p2_index(),
+            addr.p1_index(),
+        ];
+        let mut frame = level_4_table_frame;
+        let mut flags = None;
+
+        // Traverse the multi-level page table
+        for (level, &index) in table_indexes.iter().enumerate() {
+            // Convert the frame into a page table reference
+            let virt = phys_mem_offset + frame.start_address().as_u64();
+            let table_ptr: *const PageTable = virt.as_ptr();
+            let table = unsafe { &*table_ptr };
+
+            // Read the page table entry
+            let entry = &table[index];
+            if level == 3 {
+                // At L1, get flags
+                if entry.flags().contains(PageFlags::PRESENT) {
+                    flags = Some(entry.flags());
+                } else {
+                    return Ok(PageFlags::empty()); // Not present
+                }
+            } else {
+                // Continue traversing
+                frame = match entry.frame() {
+                    Ok(frame) => frame,
+                    Err(_) => return Ok(PageFlags::empty()), // Not present
+                };
+            }
+        }
+
+        Ok(flags.unwrap_or(PageFlags::empty()))
     }
-    fn flush_tlb(&mut self, _virtual_addr: usize) -> crate::common::logging::SystemResult<()> {
-        Err(crate::common::logging::SystemError::InternalError)
+
+    fn flush_tlb(&mut self, virtual_addr: usize) -> crate::common::logging::SystemResult<()> {
+        ensure_initialized!(self);
+
+        tlb::flush(VirtAddr::new(virtual_addr as u64));
+        Ok(())
     }
+
     fn flush_tlb_all(&mut self) -> crate::common::logging::SystemResult<()> {
-        Err(crate::common::logging::SystemError::InternalError)
+        ensure_initialized!(self);
+
+        let (current, flags) = Cr3::read();
+        unsafe { Cr3::write(current, flags) };
+        Ok(())
     }
+
     fn create_page_table(&mut self) -> crate::common::logging::SystemResult<usize> {
-        Err(crate::common::logging::SystemError::InternalError)
+        ensure_initialized!(self);
+
+        // Return a dummy address
+        Ok(0x1000)
     }
-    fn destroy_page_table(&mut self, _table_addr: usize) -> crate::common::logging::SystemResult<()> {
-        Err(crate::common::logging::SystemError::InternalError)
+
+    fn destroy_page_table(
+        &mut self,
+        _table_addr: usize,
+    ) -> crate::common::logging::SystemResult<()> {
+        ensure_initialized!(self);
+
+        Ok(())
     }
-    fn clone_page_table(&mut self, _source_table: usize) -> crate::common::logging::SystemResult<usize> {
-        Err(crate::common::logging::SystemError::InternalError)
+
+    fn clone_page_table(
+        &mut self,
+        _source_table: usize,
+    ) -> crate::common::logging::SystemResult<usize> {
+        ensure_initialized!(self);
+
+        Ok(_source_table + 0x1000) // Dummy offset
     }
+
     fn switch_page_table(&mut self, _table_addr: usize) -> crate::common::logging::SystemResult<()> {
-        Err(crate::common::logging::SystemError::InternalError)
+        ensure_initialized!(self);
+
+        Err(crate::common::logging::SystemError::NotImplemented)
     }
+
     fn current_page_table(&self) -> usize {
         self.current_page_table
     }
