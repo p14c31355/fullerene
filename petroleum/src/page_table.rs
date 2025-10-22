@@ -1249,7 +1249,7 @@ pub fn reinit_page_table_with_allocator(
         let table_addr = current_physical_memory_offset.as_u64() + level_4_table_frame.start_address().as_u64();
         OffsetPageTable::new(
             &mut *(table_addr as *mut PageTable),
-            current_physical_memory_offset,
+            VirtAddr::new(0),
         )
     };
 
