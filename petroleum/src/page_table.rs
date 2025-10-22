@@ -63,14 +63,17 @@ impl MemoryDescriptorValidator for EfiMemoryDescriptor {
         self.number_of_pages
     }
 
-    fn is_memory_available(&self) -> bool {
+        fn is_memory_available(&self) -> bool {
         use crate::common::EfiMemoryType;
+        const EFI_ACPI_RECLAIM_MEMORY: u32 = 9;
+        const EFI_PERSISTENT_MEMORY: u32 = 14;
+
         let mem_type = self.type_;
         matches!(mem_type,
             EfiMemoryType::EfiBootServicesData |     // 4
             EfiMemoryType::EfiRuntimeServicesData |  // 6
             EfiMemoryType::EfiConventionalMemory     // 7
-        ) || matches!(mem_type as u32, 9 | 14)       // EFI_ACPI_RECLAIM_MEMORY and EFI_PERSISTENT_MEMORY
+        ) || matches!(mem_type as u32, EFI_ACPI_RECLAIM_MEMORY | EFI_PERSISTENT_MEMORY)
     }
 }
 
@@ -408,16 +411,17 @@ impl<'a> MemoryMapper<'a> {
         }
     }
 
-    pub fn map_framebuffer(&mut self, fb_addr: Option<VirtAddr>, fb_size: Option<u64>) {
+        pub fn map_framebuffer(&mut self, fb_addr: Option<VirtAddr>, fb_size: Option<u64>) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
         use x86_64::structures::paging::PageTableFlags as Flags;
         if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
             let fb_pages = fb_size.div_ceil(4096);
             let fb_phys = fb_addr.as_u64();
             unsafe {
-                let _ = self.map_to_higher_half(fb_phys, fb_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE);
-                let _ = self.identity_map_range(fb_phys, fb_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE);
+                self.map_to_higher_half(fb_phys, fb_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE)?;
+                self.identity_map_range(fb_phys, fb_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE)?;
             }
         }
+        Ok(())
     }
 
     pub fn map_vga(&mut self) {
@@ -942,9 +946,8 @@ fn setup_identity_mappings(
 
     // Map UEFI runtime services regions to allow continuation
     for desc in memory_map.iter() {
-        if is_valid_memory_descriptor(desc) &&
-           (desc.type_ as u32 == 5 || desc.type_ as u32 == 6) { // EFI_RUNTIME_SERVICES_CODE or EFI_RUNTIME_SERVICES_DATA
-            let flags = if desc.type_ as u32 == 5 {
+        (desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode || desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesData) { // EFI_RUNTIME_SERVICES_CODE or EFI_RUNTIME_SERVICES_DATA
+            let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
                 Flags::PRESENT | Flags::WRITABLE
             } else {
                 Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE
