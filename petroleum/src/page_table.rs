@@ -71,7 +71,6 @@ impl MemoryDescriptorValidator for EfiMemoryDescriptor {
         let mem_type = self.type_;
         matches!(mem_type,
             EfiMemoryType::EfiBootServicesData |     // 4
-            EfiMemoryType::EfiRuntimeServicesData |  // 6
             EfiMemoryType::EfiConventionalMemory     // 7
         ) || matches!(mem_type as u32, EFI_ACPI_RECLAIM_MEMORY | EFI_PERSISTENT_MEMORY)
     }
@@ -948,7 +947,7 @@ fn setup_identity_mappings(
     for desc in memory_map.iter() {
         if (desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode || desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesData) { // EFI_RUNTIME_SERVICES_CODE or EFI_RUNTIME_SERVICES_DATA
             let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-                Flags::PRESENT | Flags::WRITABLE
+                Flags::PRESENT
             } else {
                 Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE
             };
