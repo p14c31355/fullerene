@@ -1441,14 +1441,19 @@ impl PageTableReinitializer {
 
         let mut current_mapper = unsafe { let l4_table = active_level_4_table(current_physical_memory_offset); OffsetPageTable::new(l4_table, current_physical_memory_offset) };
         unsafe {
-            match current_mapper.map_to(
+                        match current_mapper.map_to(
                 Page::containing_address(self.phys_offset + level_4_table_frame.start_address().as_u64()),
                 level_4_table_frame,
                 page_flags_const!(READ_WRITE),
                 frame_allocator,
             ) {
                 Ok(flush) => flush.flush(),
-                Err(..) => {} // Continue anyway
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                    // This is acceptable, the page is already mapped.
+                }
+                Err(e) => {
+                    panic!("Failed to map new L4 table to higher half: {:?}", e);
+                }
             }
         }
         debug_log_no_alloc!("About to switch CR3 to new page table");
