@@ -193,10 +193,10 @@ impl UefiInitContext {
 
         debug_log_no_alloc!("Using basic heap allocator init");
 
+        let heap_start_for_allocator =
+            self.virtual_heap_start + crate::gdt::GDT_INIT_OVERHEAD as u64;
+        let heap_size_for_allocator = heap::HEAP_SIZE - crate::gdt::GDT_INIT_OVERHEAD;
         unsafe {
-            let heap_start_for_allocator =
-                self.virtual_heap_start + crate::gdt::GDT_INIT_OVERHEAD as u64;
-            let heap_size_for_allocator = heap::HEAP_SIZE - crate::gdt::GDT_INIT_OVERHEAD;
             ALLOCATOR.lock().init(
                 heap_start_for_allocator.as_mut_ptr::<u8>(),
                 heap_size_for_allocator,
