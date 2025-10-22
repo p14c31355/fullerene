@@ -70,6 +70,22 @@ macro_rules! log_page_table_op {
     };
 }
 
+// Page table flags constants macro for reducing duplication
+macro_rules! page_flags_const {
+    (READ_WRITE_NO_EXEC) => {
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
+    };
+    (READ_ONLY) => {
+        PageTableFlags::PRESENT
+    };
+    (READ_WRITE) => {
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE
+    };
+    (EXECUTE_ONLY) => {
+        PageTableFlags::PRESENT | PageTableFlags::NO_EXECUTE
+    };
+}
+
 // Bit manipulation macros to reduce repeated code in BitmapFrameAllocator
 macro_rules! bit_set {
     ($bitmap:expr, $index:expr) => {
@@ -594,17 +610,10 @@ impl<'a> MemoryMapper<'a> {
         if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
             let fb_pages = fb_size.div_ceil(4096);
             let fb_phys = fb_addr.as_u64();
+            let flags = page_flags_const!(READ_WRITE_NO_EXEC);
             unsafe {
-                self.map_to_higher_half(
-                    fb_phys,
-                    fb_pages,
-                    Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
-                )?;
-                self.identity_map_range(
-                    fb_phys,
-                    fb_pages,
-                    Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
-                )?;
+                self.map_to_higher_half(fb_phys, fb_pages, flags)?;
+                self.identity_map_range(fb_phys, fb_pages, flags)?;
             }
         }
         Ok(())
@@ -615,22 +624,19 @@ impl<'a> MemoryMapper<'a> {
         const VGA_MEMORY_START: u64 = memory_region_const_macro!(VGA_START);
         const VGA_MEMORY_END: u64 = memory_region_const_macro!(VGA_END);
         const VGA_PAGES: u64 = (VGA_MEMORY_END - VGA_MEMORY_START) / 4096;
+        let flags = page_flags_const!(READ_WRITE_NO_EXEC);
         unsafe {
-            let _ = self.map_to_higher_half(
-                VGA_MEMORY_START,
-                VGA_PAGES,
-                Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
-            );
+            let _ = self.map_to_higher_half(VGA_MEMORY_START, VGA_PAGES, flags);
         }
     }
 
     pub fn map_boot_code(&mut self) {
-        use x86_64::structures::paging::PageTableFlags as Flags;
+        let flags = page_flags_const!(READ_WRITE);
         unsafe {
             let _ = self.map_to_higher_half(
                 memory_region_const_macro!(BOOT_CODE_START),
                 memory_region_const_macro!(BOOT_CODE_PAGES),
-                Flags::PRESENT | Flags::WRITABLE,
+                flags,
             );
         }
     }
@@ -1022,8 +1028,7 @@ unsafe fn map_kernel_segments_inner(
         // Fallback: map 64MB region for the kernel if PE parsing fails
         let kernel_size = FALLBACK_KERNEL_SIZE;
         let kernel_pages = kernel_size.div_ceil(4096);
-        let flags = x86_64::structures::paging::PageTableFlags::PRESENT
-            | x86_64::structures::paging::PageTableFlags::WRITABLE;
+        let flags = page_flags_const!(READ_WRITE);
         unsafe {
             map_identity_range(
                 mapper,
@@ -1227,8 +1232,7 @@ unsafe fn setup_recursive_mapping(mapper: &mut OffsetPageTable, level_4_table_fr
             .add(511))
             .set_addr(
                 level_4_table_frame.start_address(),
-                x86_64::structures::paging::PageTableFlags::PRESENT
-                    | x86_64::structures::paging::PageTableFlags::WRITABLE,
+                page_flags_const!(READ_WRITE),
             );
     }
 }
@@ -1386,6 +1390,104 @@ unsafe fn map_bitmap_region(
         Flags::PRESENT | Flags::WRITABLE,
     )
     .expect("Failed to map bitmap region");
+}
+
+struct PageTableReinitializer {
+    phys_offset: VirtAddr,
+}
+
+impl PageTableReinitializer {
+    fn new() -> Self {
+        Self {
+            phys_offset: HIGHER_HALF_OFFSET,
+        }
+    }
+
+    fn reinitialize(
+        &mut self,
+        kernel_phys_start: PhysAddr,
+        fb_addr: Option<VirtAddr>,
+        fb_size: Option<u64>,
+        frame_allocator: &mut BootInfoFrameAllocator,
+        memory_map: &[EfiMemoryDescriptor],
+        current_physical_memory_offset: VirtAddr,
+    ) -> VirtAddr {
+        debug_log_no_alloc!("Page table reinitialization starting");
+
+        let level_4_table_frame = self.create_page_table(frame_allocator);
+        let mut mapper = self.setup_new_mapper(level_4_table_frame, current_physical_memory_offset, frame_allocator);
+        let mut initializer = PageTableInitializer::new(&mut mapper, frame_allocator, self.phys_offset, memory_map);
+        let _kernel_size = initializer.setup_identity_mappings(kernel_phys_start, level_4_table_frame);
+        initializer.setup_higher_half_mappings(kernel_phys_start, fb_addr, fb_size);
+        self.setup_recursive_mapping(&mut mapper, level_4_table_frame);
+        self.perform_page_table_switch(level_4_table_frame, frame_allocator, current_physical_memory_offset);
+        self.adjust_return_address_and_log();
+        self.phys_offset
+    }
+
+    fn create_page_table(&self, frame_allocator: &mut BootInfoFrameAllocator) -> PhysFrame {
+        debug_log_no_alloc!("Allocating new L4 page table frame");
+        let level_4_table_frame = match frame_allocator.allocate_frame() {
+            Some(frame) => frame,
+            None => panic!("Failed to allocate L4 page table frame"),
+        };
+        unsafe {
+            core::ptr::write_bytes(level_4_table_frame.start_address().as_u64() as *mut PageTable, 0, 1);
+        }
+        debug_log_no_alloc!("New L4 page table created and zeroed");
+        level_4_table_frame
+    }
+
+    fn setup_new_mapper(&self, level_4_table_frame: PhysFrame, current_physical_memory_offset: VirtAddr, frame_allocator: &mut BootInfoFrameAllocator) -> OffsetPageTable<'static> {
+        let mut current_mapper = unsafe { init(current_physical_memory_offset) };
+        unsafe {
+            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(level_4_table_frame.start_address().as_u64()));
+            let frame = level_4_table_frame;
+            let _ = current_mapper.map_to(page, frame, page_flags_const!(READ_WRITE_NO_EXEC), frame_allocator);
+        };
+        unsafe {
+            let table_addr = current_physical_memory_offset.as_u64() + level_4_table_frame.start_address().as_u64();
+            OffsetPageTable::new(&mut *(table_addr as *mut PageTable), VirtAddr::new(0))
+        }
+    }
+
+    fn setup_recursive_mapping(&self, mapper: &mut OffsetPageTable, level_4_table_frame: PhysFrame) {
+        unsafe {
+            let table = mapper.level_4_table() as *const PageTable as *mut PageTable;
+            (&mut *table.cast::<x86_64::structures::paging::page_table::PageTableEntry>().add(511)).set_addr(
+                level_4_table_frame.start_address(),
+                page_flags_const!(READ_WRITE),
+            );
+        }
+    }
+
+    fn perform_page_table_switch(&self, level_4_table_frame: PhysFrame, frame_allocator: &mut BootInfoFrameAllocator, current_physical_memory_offset: VirtAddr) {
+        debug_log_no_alloc!("New L4 table phys addr: ", level_4_table_frame.start_address().as_u64() as usize);
+        debug_log_no_alloc!("Phys offset: ", self.phys_offset.as_u64() as usize);
+
+        let mut current_mapper = unsafe { let l4_table = active_level_4_table(current_physical_memory_offset); OffsetPageTable::new(l4_table, current_physical_memory_offset) };
+        unsafe {
+            match current_mapper.map_to(
+                Page::containing_address(self.phys_offset + level_4_table_frame.start_address().as_u64()),
+                level_4_table_frame,
+                page_flags_const!(READ_WRITE),
+                frame_allocator,
+            ) {
+                Ok(flush) => flush.flush(),
+                Err(..) => {} // Continue anyway
+            }
+        }
+        debug_log_no_alloc!("About to switch CR3 to new page table");
+        unsafe { Cr3::write(level_4_table_frame, x86_64::registers::control::Cr3Flags::empty()); }
+        debug_log_no_alloc!("CR3 switched, flushing TLB");
+        flush_tlb_and_verify!();
+        debug_log_no_alloc!("TLB flushed, page table switch complete");
+    }
+
+    fn adjust_return_address_and_log(&self) {
+        adjust_return_address_and_stack(self.phys_offset);
+        debug_log_no_alloc!("Page table reinitialization completed");
+    }
 }
 
 // Consolidated page table initializer to reduce lines and improve organization
@@ -1653,65 +1755,15 @@ pub fn reinit_page_table_with_allocator(
     memory_map: &[EfiMemoryDescriptor],
     current_physical_memory_offset: VirtAddr,
 ) -> VirtAddr {
-    debug_log_no_alloc!("Page table reinitialization starting");
-
-    let phys_offset = HIGHER_HALF_OFFSET;
-
-    // Create new page table
-    let level_4_table_frame =
-        create_new_page_table(frame_allocator).expect("Failed to create new page table");
-
-    // Create a temporary mapper for current page table to identity map the new L4 table
-    let mut current_mapper = unsafe { init(current_physical_memory_offset) };
-
-    // Identity map the new L4 table frame so we can access it
-    use x86_64::structures::paging::PageTableFlags as Flags;
-    unsafe {
-        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(
-            level_4_table_frame.start_address().as_u64(),
-        ));
-        let frame = level_4_table_frame;
-        let _ = current_mapper.map_to(
-            page,
-            frame,
-            Flags::PRESENT | Flags::WRITABLE,
-            frame_allocator,
-        );
-    }
-
-    // Create mapper for new page table - use current phys_offset to access the new table
-    let mut mapper = unsafe {
-        let table_addr =
-            current_physical_memory_offset.as_u64() + level_4_table_frame.start_address().as_u64();
-        OffsetPageTable::new(&mut *(table_addr as *mut PageTable), VirtAddr::new(0))
-    };
-
-    // Use PageTableInitializer for organized mapping setup
-    let mut initializer =
-        PageTableInitializer::new(&mut mapper, frame_allocator, phys_offset, memory_map);
-
-    // Setup identity mappings
-    let kernel_size = initializer.setup_identity_mappings(kernel_phys_start, level_4_table_frame);
-
-    // Setup higher-half mappings
-    initializer.setup_higher_half_mappings(kernel_phys_start, fb_addr, fb_size);
-
-    // Set up recursive mapping for page table management
-    unsafe { setup_recursive_mapping(&mut mapper, level_4_table_frame) };
-
-    // Perform the page table switch
-    switch_to_new_page_table(
-        level_4_table_frame,
-        phys_offset,
+    let mut reinitializer = PageTableReinitializer::new();
+    reinitializer.reinitialize(
+        kernel_phys_start,
+        fb_addr,
+        fb_size,
         frame_allocator,
+        memory_map,
         current_physical_memory_offset,
-    );
-
-    // Adjust return address
-    adjust_return_address_and_stack(phys_offset);
-
-    debug_log_no_alloc!("Page table reinitialization completed");
-    phys_offset
+    )
 }
 
 /// Allocate heap memory from EFI memory map
