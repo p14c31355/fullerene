@@ -94,7 +94,7 @@ fn perform_system_health_checks() {
 fn check_memory_usage() {
     let (used, total, _) = petroleum::get_memory_stats!();
 
-    if total > 0 && (used * 100 / total) > HIGH_MEMORY_THRESHOLD {
+    if total > 0 && (used as u128 * 100 / total as u128) > HIGH_MEMORY_THRESHOLD as u128 {
         log::warn!(
             "High memory usage: {} bytes used out of {} bytes",
             used,
