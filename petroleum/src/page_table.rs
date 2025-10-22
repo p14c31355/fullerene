@@ -945,13 +945,14 @@ fn setup_identity_mappings(
 
     // Map UEFI runtime services regions to allow continuation
     for desc in memory_map.iter() {
-        if (desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode || desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesData) { // EFI_RUNTIME_SERVICES_CODE or EFI_RUNTIME_SERVICES_DATA
+        if is_valid_memory_descriptor(desc) && matches!(desc.type_, crate::common::EfiMemoryType::EfiRuntimeServicesCode | crate::common::EfiMemoryType::EfiRuntimeServicesData) {
             let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
                 Flags::PRESENT
             } else {
                 Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE
             };
             let pages = desc.number_of_pages;
+
             unsafe {
                 map_identity_range(mapper, frame_allocator, desc.physical_start, pages, flags)
                     .expect("Failed to map UEFI runtime region");
