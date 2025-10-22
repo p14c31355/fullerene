@@ -471,7 +471,7 @@ fn emergency_condition_handler() {
 /// Check for critical memory emergency conditions
 fn check_emergency_memory() {
     let (used, total, _) = petroleum::get_memory_stats!();
-    if total > 0 && (used * 100 / total) > EMERGENCY_MEMORY_THRESHOLD {
+    if total > 0 && (used as u128 * 100 / total as u128) > EMERGENCY_MEMORY_THRESHOLD as u128 {
         log::error!("EMERGENCY: Critical memory usage detected!");
         // In a full implementation, this would:
         // 1. Kill memory-hog processes
