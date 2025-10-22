@@ -1,5 +1,4 @@
 // Graphics submodules
-#[macro_use]
 pub mod desktop;
 pub mod framebuffer;
 pub mod text;
