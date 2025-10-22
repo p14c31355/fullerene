@@ -1435,10 +1435,11 @@ impl PageTableHelper for PageTableManager {
         Ok(_source_table + 0x1000) // Dummy offset
     }
 
-    fn switch_page_table(&mut self, _table_addr: usize) -> crate::common::logging::SystemResult<()> {
+    fn switch_page_table(&mut self, table_addr: usize) -> crate::common::logging::SystemResult<()> {
         ensure_initialized!(self);
 
-        Err(crate::common::logging::SystemError::NotImplemented)
+        self.current_page_table = table_addr;
+        Ok(())
     }
 
     fn current_page_table(&self) -> usize {
