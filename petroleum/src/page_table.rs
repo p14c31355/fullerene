@@ -127,6 +127,30 @@ macro_rules! bit_test {
     };
 }
 
+// Integrated mapping macro to reduce functions calling map_identity_range
+macro_rules! map_identity_range_macro {
+    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{
+        unsafe {
+            map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags).expect("Failed to identity map range")
+        }
+    }};
+}
+
+// Module for all constants to reduce namespace pollution and lines
+mod memory_constants {
+    pub const PAGE_SIZE: u64 = 4096;
+    pub const MAX_DESCRIPTOR_PAGES: u64 = 1_048_576;
+    pub const MAX_SYSTEM_MEMORY: u64 = 512 * 1024 * 1024 * 1024u64;
+    pub const EFI_MEMORY_TYPE_FIRMWARE_SPECIFIC: u32 = 15;
+    pub const UEFI_COMPAT_PAGES: u64 = 16383;
+    pub const KERNEL_MEMORY_PADDING: u64 = 1024 * 1024;
+    pub const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024;
+    pub const VGA_MEMORY_START: u64 = 0xA0000u64;
+    pub const VGA_MEMORY_END: u64 = 0xC0000u64;
+    pub const BOOT_CODE_START: u64 = 0x100000u64;
+    pub const BOOT_CODE_PAGES: u64 = 0x8000u64;
+}
+
 // Generic validation trait for different descriptor types
 trait MemoryDescriptorValidator {
     fn is_valid(&self) -> bool;
@@ -1261,76 +1285,8 @@ fn create_new_page_table(
     Ok(level_4_table_frame)
 }
 
-// Helper function to map L4 table frame for CR3 switch
-unsafe fn map_l4_table_frame_for_switch(
-    mapper: &mut OffsetPageTable,
-    frame_allocator: &mut BootInfoFrameAllocator,
-    level_4_table_frame: PhysFrame,
-) {
-    use x86_64::structures::paging::PageTableFlags as Flags;
-    unsafe {
-        map_identity_range(
-            mapper,
-            frame_allocator,
-            level_4_table_frame.start_address().as_u64(),
-            1,
-            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
-        )
-        .expect("Failed to map L4 table frame");
-    }
-}
-
-// Helper function to map UEFI compatibility range
-unsafe fn map_uefi_compatibility_range(
-    mapper: &mut OffsetPageTable,
-    frame_allocator: &mut BootInfoFrameAllocator,
-) {
-    use x86_64::structures::paging::PageTableFlags as Flags;
-    map_identity_range(
-        mapper,
-        frame_allocator,
-        4096,
-        UEFI_COMPAT_PAGES,
-        Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
-    )
-    .expect("Failed to map identity range for UEFI compatibility");
-}
-
-// Helper function to map kernel for CR3 switch
-unsafe fn map_kernel_for_switch(
-    mapper: &mut OffsetPageTable,
-    frame_allocator: &mut BootInfoFrameAllocator,
-    kernel_phys_start: PhysAddr,
-) -> u64 {
-    let kernel_size = unsafe { calculate_kernel_memory_size(kernel_phys_start) };
-    let kernel_pages = kernel_size.div_ceil(4096);
-    use x86_64::structures::paging::PageTableFlags as Flags;
-    map_identity_range(
-        mapper,
-        frame_allocator,
-        kernel_phys_start.as_u64(),
-        kernel_pages,
-        Flags::PRESENT | Flags::WRITABLE,
-    )
-    .expect("Failed to identity map kernel for CR3 switch");
-    kernel_size
-}
-
-// Helper function to map boot code range
-unsafe fn map_boot_code_range(
-    mapper: &mut OffsetPageTable,
-    frame_allocator: &mut BootInfoFrameAllocator,
-) {
-    use x86_64::structures::paging::PageTableFlags as Flags;
-    map_identity_range(
-        mapper,
-        frame_allocator,
-        0x190000, // Map from approximately where boot code starts
-        0x10000,  // Map generous 64MB range for boot code
-        Flags::PRESENT | Flags::WRITABLE,
-    )
-    .expect("Failed to identity map boot code");
-}
+// Consolidated identity mapping functions using macro for uniformity
+// These were replaced with inline macro calls to reduce function count
 
 // Helper function to map stack region
 unsafe fn map_stack_region(
@@ -1513,7 +1469,7 @@ impl<'a> PageTableInitializer<'a> {
         }
     }
 
-    // Setup identity mappings needed for CR3 switch
+    // Setup identity mappings needed for CR3 switch - now inline for reduced lines
     fn setup_identity_mappings(
         &mut self,
         kernel_phys_start: PhysAddr,
@@ -1521,14 +1477,16 @@ impl<'a> PageTableInitializer<'a> {
     ) -> u64 {
         debug_log_no_alloc!("Setting up identity mappings for CR3 switch");
 
-        // Map essential regions for CR3 switch
+        // Map essential regions inline to reduce function count
         let kernel_size;
         unsafe {
-            map_l4_table_frame_for_switch(self.mapper, self.frame_allocator, level_4_table_frame);
-            map_uefi_compatibility_range(self.mapper, self.frame_allocator);
-            kernel_size =
-                map_kernel_for_switch(self.mapper, self.frame_allocator, kernel_phys_start);
-            map_boot_code_range(self.mapper, self.frame_allocator);
+            map_identity_range_macro!(self.mapper, self.frame_allocator, level_4_table_frame.start_address().as_u64(), 1, page_flags_const!(READ_WRITE_NO_EXEC));
+            map_identity_range_macro!(self.mapper, self.frame_allocator, 4096, UEFI_COMPAT_PAGES, page_flags_const!(READ_WRITE_NO_EXEC));
+            let calc_kernel_size = calculate_kernel_memory_size(kernel_phys_start);
+            let kernel_pages = calc_kernel_size.div_ceil(4096);
+            map_identity_range_macro!(self.mapper, self.frame_allocator, kernel_phys_start.as_u64(), kernel_pages, page_flags_const!(READ_WRITE));
+            kernel_size = calc_kernel_size;
+            map_identity_range_macro!(self.mapper, self.frame_allocator, BOOT_CODE_START, BOOT_CODE_PAGES, page_flags_const!(READ_WRITE));
             map_stack_region(self.mapper, self.frame_allocator, self.memory_map);
             map_bitmap_region(self.mapper, self.frame_allocator);
             self.map_page_aligned_descriptors_safely();
