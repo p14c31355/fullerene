@@ -1511,10 +1511,6 @@ pub struct PeSection {
     pub characteristics: u32,
 }
 
-unsafe fn parse_kernel_size(kernel_phys_start: PhysAddr) -> Option<u64> {
-    PeParser::new(kernel_phys_start.as_u64() as *const u8)?.size_of_image().map(|size| (size + KERNEL_MEMORY_PADDING).div_ceil(4096) * 4096)
-}
-
 pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     debug_log_no_alloc!("calculate_kernel_memory_size: starting");
 
@@ -1534,21 +1530,15 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
         }
     };
 
-    match parser.size_of_image() {
+    match unsafe { parser.size_of_image() } {
         Some(size) => {
             let padded_size = (size + KERNEL_MEMORY_PADDING).div_ceil(4096) * 4096;
             debug_log_no_alloc!("PE parsing successful, size=0x", padded_size as usize);
             padded_size
         }
         None => {
-            debug_log_no_alloc!("PE parsing failed for size_of_image, trying parse_kernel_size fallback");
-            if let Some(size) = parse_kernel_size(kernel_phys_start) {
-                debug_log_no_alloc!("Fallback parsing successful, size=0x", size as usize);
-                size
-            } else {
-                debug_log_no_alloc!("All parsing attempts failed, using fallback size");
-                FALLBACK_KERNEL_SIZE
-            }
+            debug_log_no_alloc!("PE parsing failed for size_of_image, using fallback size");
+            FALLBACK_KERNEL_SIZE
         }
     }
 }
