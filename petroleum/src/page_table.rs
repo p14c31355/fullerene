@@ -1894,13 +1894,14 @@ impl PageTableManager {
             pml4_frame: None,
             mapper: None,
             allocated_tables: alloc::collections::BTreeMap::new(),
+            frame_allocator: None,
         }
     }
 
     pub fn initialize_with_frame_allocator(
         &mut self,
         phys_offset: VirtAddr,
-        frame_allocator: &mut BootInfoFrameAllocator,
+        frame_allocator: &'static mut BootInfoFrameAllocator,
     ) -> crate::common::logging::SystemResult<()> {
         if self.initialized {
             return Err(crate::common::logging::SystemError::InternalError);
@@ -1923,6 +1924,7 @@ impl PageTableManager {
         self.pml4_frame = Some(current_pml4);
         self.current_page_table = table_phys_addr as usize;
         self.allocated_tables.insert(table_phys_addr as usize, current_pml4);
+        self.frame_allocator = Some(frame_allocator);
         self.initialized = true;
         Ok(())
     }
@@ -2080,10 +2082,8 @@ impl PageTableHelper for PageTableManager {
     fn create_page_table(&mut self) -> crate::common::logging::SystemResult<usize> {
         ensure_initialized!(self);
 
-        // Allocate a new frame for L4 page table
-        let frame_allocator = self.mapper.as_mut().unwrap();
-        let mut dummy_frame_allocator = DummyFrameAllocator::new();
-        let new_frame = match dummy_frame_allocator.allocate_frame() {
+        // Use the configured frame allocator
+        let new_frame = match self.frame_allocator.as_mut().unwrap().allocate_frame() {
             Some(frame) => frame,
             None => return Err(crate::common::logging::SystemError::FrameAllocationFailed),
         };
@@ -2128,10 +2128,8 @@ impl PageTableHelper for PageTableManager {
             None => return Err(crate::common::logging::SystemError::InvalidArgument),
         };
 
-        // Allocate new frame
-        let frame_allocator = self.mapper.as_mut().unwrap();
-        let mut dummy_frame_allocator = DummyFrameAllocator::new();
-        let new_frame = match dummy_frame_allocator.allocate_frame() {
+        // Allocate new frame using configured allocator
+        let new_frame = match self.frame_allocator.as_mut().unwrap().allocate_frame() {
             Some(frame) => frame,
             None => return Err(crate::common::logging::SystemError::FrameAllocationFailed),
         };
