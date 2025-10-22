@@ -136,6 +136,24 @@ macro_rules! map_identity_range_macro {
     }};
 }
 
+// Macro to inline mapping range for reduced function calls
+macro_rules! map_range_with_log_macro {
+    ($mapper:expr, $frame_allocator:expr, $phys_start:expr, $virt_start:expr, $num_pages:expr, $flags:expr) => {{
+        log_page_table_op!("Mapping range", $phys_start, $virt_start, $num_pages);
+        for i in 0..$num_pages {
+            let phys_addr = $phys_start + i * 4096;
+            let virt_addr = $virt_start + i * 4096;
+            let (page, frame) = create_page_and_frame!(virt_addr, phys_addr);
+            match $mapper.map_to(page, frame, $flags, $frame_allocator) {
+                Ok(flush) => flush.flush(),
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }};
+}
+
 // Module for all constants to reduce namespace pollution and lines
 mod memory_constants {
     pub const PAGE_SIZE: u64 = 4096;
@@ -581,13 +599,13 @@ impl<'a> MemoryRegionMapper for MemoryMapper<'a> {
         flags: x86_64::structures::paging::PageTableFlags,
     ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
         unsafe {
-            map_range_with_log(
+            map_range_with_log_macro!(
                 self.mapper,
                 self.frame_allocator,
                 phys_start,
                 virt_start,
                 num_pages,
-                flags,
+                flags
             )
         }
     }
@@ -672,13 +690,13 @@ impl<'a> MemoryMapper<'a> {
         flags: x86_64::structures::paging::PageTableFlags,
     ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
         let virt_start = self.phys_offset.as_u64() + phys_start;
-        map_range_with_log(
+        map_range_with_log_macro!(
             self.mapper,
             self.frame_allocator,
             phys_start,
             virt_start,
             num_pages,
-            flags,
+            flags
         )
     }
 
@@ -1100,15 +1118,14 @@ unsafe fn map_memory_descriptors_with_config<F>(
     for desc in memory_map.iter() {
         if let Some(config) = config_fn(desc) {
             unsafe {
-                map_range_with_log(
+                let _ = map_range_with_log_macro!(
                     mapper,
                     frame_allocator,
                     config.phys_start,
                     config.virt_start,
                     config.num_pages,
-                    config.flags,
-                )
-                .ok(); // Ignore errors to continue mapping other regions
+                    config.flags
+                );
             }
         }
     }
@@ -1740,29 +1757,22 @@ pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> PhysAdd
 
 use x86_64::structures::paging::PageTableFlags as PageFlags;
 
-// Generic function to map a range with given flags (consolidated from MemoryMapper)
-unsafe fn map_range_with_log(
-    mapper: &mut OffsetPageTable,
-    frame_allocator: &mut BootInfoFrameAllocator,
-    phys_start: u64,
-    virt_start: u64,
-    num_pages: u64,
-    flags: x86_64::structures::paging::PageTableFlags,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-    log_page_table_op!("Mapping range", phys_start, virt_start, num_pages);
-    for i in 0..num_pages {
-        let phys_addr = phys_start + i * 4096;
-        let virt_addr = virt_start + i * 4096;
-        let (page, frame) = create_page_and_frame!(virt_addr, phys_addr);
-        match mapper.map_to(page, frame, flags, frame_allocator) {
-            Ok(flush) => flush.flush(),
-            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                continue;
+// Macro to inline mapping range for reduced function calls
+macro_rules! map_range_with_log_macro {
+    ($mapper:expr, $frame_allocator:expr, $phys_start:expr, $virt_start:expr, $num_pages:expr, $flags:expr) => {{
+        log_page_table_op!("Mapping range", $phys_start, $virt_start, $num_pages);
+        for i in 0..$num_pages {
+            let phys_addr = $phys_start + i * 4096;
+            let virt_addr = $virt_start + i * 4096;
+            let (page, frame) = create_page_and_frame!(virt_addr, phys_addr);
+            match $mapper.map_to(page, frame, $flags, $frame_allocator) {
+                Ok(flush) => flush.flush(),
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => continue,
+                Err(e) => return Err(e),
             }
-            Err(e) => return Err(e),
         }
-    }
-    Ok(())
+        Ok(())
+    }};
 }
 
 // Helper to identity map a memory range
@@ -1773,13 +1783,13 @@ unsafe fn identity_map_range_with_log(
     num_pages: u64,
     flags: x86_64::structures::paging::PageTableFlags,
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-    map_range_with_log(
+    map_range_with_log_macro!(
         mapper,
         frame_allocator,
         start_addr,
         start_addr,
         num_pages,
-        flags,
+        flags
     )
 }
 
@@ -1793,13 +1803,13 @@ unsafe fn map_to_higher_half_with_log(
     flags: x86_64::structures::paging::PageTableFlags,
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
     let virt_start = phys_offset.as_u64() + phys_start;
-    map_range_with_log(
+    map_range_with_log_macro!(
         mapper,
         frame_allocator,
         phys_start,
         virt_start,
         num_pages,
-        flags,
+        flags
     )
 }
 
