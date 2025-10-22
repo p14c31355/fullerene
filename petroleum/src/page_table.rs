@@ -11,7 +11,7 @@ use x86_64::{
     instructions::tlb,
     registers::control::Cr3,
     structures::paging::{
-        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PhysFrame, Size4KiB, Translate,
+        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate,
     },
 };
 
@@ -93,6 +93,22 @@ trait MemoryDescriptorValidator {
     fn get_physical_start(&self) -> u64;
     fn get_page_count(&self) -> u64;
     fn is_memory_available(&self) -> bool;
+}
+
+// Generic flag derivation trait for memory types
+trait FlagDeriver {
+    fn derive_flags(&self) -> PageTableFlags;
+}
+
+// Implement for EfiMemoryType
+impl FlagDeriver for crate::common::EfiMemoryType {
+    fn derive_flags(&self) -> PageTableFlags {
+        use x86_64::structures::paging::PageTableFlags as Flags;
+        match self {
+            crate::common::EfiMemoryType::EfiRuntimeServicesCode => Flags::PRESENT,
+            _ => Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+        }
+    }
 }
 
 // Implementation for EFI memory descriptors
@@ -974,41 +990,75 @@ unsafe fn map_kernel_segments_inner(
     }
 }
 
-// Helper functions for region mapping to reduce code lines
+// Unified mapping configuration structure to reduce parameters
+#[derive(Clone, Copy)]
+struct MappingConfig {
+    phys_start: u64,
+    virt_start: u64,
+    num_pages: u64,
+    flags: PageTableFlags,
+}
+
+// Generic function to map descriptors with custom configuration
+unsafe fn map_memory_descriptors_with_config<F>(
+    mapper: &mut OffsetPageTable,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    memory_map: &[EfiMemoryDescriptor],
+    config_fn: F,
+) where
+    F: Fn(&EfiMemoryDescriptor) -> Option<MappingConfig>,
+{
+    for desc in memory_map.iter() {
+        if let Some(config) = config_fn(desc) {
+            unsafe {
+                map_range_with_log(
+                    mapper,
+                    frame_allocator,
+                    config.phys_start,
+                    config.virt_start,
+                    config.num_pages,
+                    config.flags,
+                ).ok(); // Ignore errors to continue mapping other regions
+            }
+        }
+    }
+}
+
+// Helper functions for region mapping using generic config
 unsafe fn map_uefi_runtime_to_higher_half(
     mapper: &mut OffsetPageTable,
     frame_allocator: &mut BootInfoFrameAllocator,
     phys_offset: VirtAddr,
     memory_map: &[EfiMemoryDescriptor],
 ) {
-    use x86_64::structures::paging::PageTableFlags as Flags;
-
-    for desc in memory_map.iter() {
-        if is_valid_memory_descriptor(desc)
-            && matches!(
-                desc.type_,
-                crate::common::EfiMemoryType::EfiRuntimeServicesCode
-                    | crate::common::EfiMemoryType::EfiRuntimeServicesData
-            )
-        {
-            let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-                Flags::PRESENT
-            } else {
-                Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE
-            };
-            let pages = desc.number_of_pages;
-            unsafe {
-                map_range_with_log(
-                    mapper,
-                    frame_allocator,
-                    desc.physical_start,
-                    desc.physical_start + phys_offset.as_u64(),
-                    pages,
-                    flags,
-                )
-                .expect("Failed to map UEFI runtime region to higher half");
-            }
-        }
+    unsafe {
+        map_memory_descriptors_with_config(
+            mapper,
+            frame_allocator,
+            memory_map,
+            move |desc| {
+                if is_valid_memory_descriptor(desc)
+                    && matches!(
+                        desc.type_,
+                        crate::common::EfiMemoryType::EfiRuntimeServicesCode
+                            | crate::common::EfiMemoryType::EfiRuntimeServicesData
+                    ) {
+                    let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+                        PageTableFlags::PRESENT
+                    } else {
+                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
+                    };
+                    Some(MappingConfig {
+                        phys_start: desc.physical_start,
+                        virt_start: desc.physical_start + phys_offset.as_u64(),
+                        num_pages: desc.number_of_pages,
+                        flags,
+                    })
+                } else {
+                    None
+                }
+            },
+        );
     }
 }
 
@@ -1018,16 +1068,14 @@ unsafe fn map_available_memory_to_higher_half(
     phys_offset: VirtAddr,
     memory_map: &[EfiMemoryDescriptor],
 ) {
-    use x86_64::structures::paging::PageTableFlags as Flags;
-
     process_memory_descriptors(memory_map, |desc, start_frame, end_frame| {
         let phys_start = desc.get_physical_start();
         let virt_start = phys_start + phys_offset.as_u64();
         let pages = (end_frame - start_frame) as u64;
         let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-            Flags::PRESENT
+            PageTableFlags::PRESENT
         } else {
-            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
         };
         unsafe {
             let _ = map_range_with_log(
@@ -1048,8 +1096,6 @@ unsafe fn map_stack_to_higher_half(
     phys_offset: VirtAddr,
     memory_map: &[EfiMemoryDescriptor],
 ) {
-    use x86_64::structures::paging::PageTableFlags as Flags;
-
     let rsp: u64;
     unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp); }
 
@@ -1065,7 +1111,7 @@ unsafe fn map_stack_to_higher_half(
                         desc.physical_start,
                         desc.physical_start + phys_offset.as_u64(),
                         desc.number_of_pages,
-                        Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE,
                     )
                     .expect("Failed to map stack region to higher half");
                 }
