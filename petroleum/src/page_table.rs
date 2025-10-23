@@ -1441,12 +1441,12 @@ impl PageTableReinitializer {
                 level_4_table_frame.start_address().as_u64(),
             ));
             let frame = level_4_table_frame;
-            let _ = current_mapper.map_to(
+            current_mapper.map_to(
                 page,
                 frame,
                 page_flags_const!(READ_WRITE_NO_EXEC),
                 frame_allocator,
-            );
+            ).expect("Failed to identity-map new L4 table for mapper setup").flush();
         };
         unsafe {
             let table_addr = current_physical_memory_offset.as_u64()
