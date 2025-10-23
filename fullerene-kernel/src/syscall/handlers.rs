@@ -88,13 +88,10 @@ fn syscall_fork() -> SyscallResult {
 /// Read system call
 fn syscall_read(fd: core::ffi::c_int, buffer: *mut u8, count: usize) -> SyscallResult {
     petroleum::validate_syscall_fd(fd)?;
-    petroleum::validate_syscall_buffer(buffer as usize, false)?;
-
     // POSIX: reading 0 bytes should return 0 immediately
     if count == 0 {
         return Ok(0);
     }
-
     // Check if buffer is valid for user space
     petroleum::validate_user_buffer(buffer as usize, count, false)?;
 
@@ -128,9 +125,7 @@ fn syscall_read(fd: core::ffi::c_int, buffer: *mut u8, count: usize) -> SyscallR
 /// Write system call
 fn syscall_write(fd: core::ffi::c_int, buffer: *const u8, count: usize) -> SyscallResult {
     petroleum::validate_syscall_fd(fd)?;
-    // Validate that the buffer pointer is not null and is in a valid region.
     let allow_kernel = fd == 1 || fd == 2;
-    petroleum::validate_syscall_buffer(buffer as usize, allow_kernel)?;
     if count == 0 {
         return Ok(0);
     }
@@ -232,14 +227,11 @@ fn syscall_getpid() -> SyscallResult {
 
 /// Get process name
 fn syscall_get_process_name(buffer: *mut u8, size: usize) -> SyscallResult {
-    petroleum::validate_syscall_buffer(buffer as usize, false)?;
     if size == 0 {
         return Err(SyscallError::InvalidArgument);
     }
-
     // Check if buffer is valid for user space
     petroleum::validate_user_buffer(buffer as usize, size, false)?;
-
     let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
     let process_list = crate::process::PROCESS_LIST.lock();

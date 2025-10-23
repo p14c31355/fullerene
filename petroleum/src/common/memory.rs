@@ -14,17 +14,17 @@ pub fn is_user_address(addr: VirtAddr) -> bool {
 
 /// Validate user buffer access
 pub fn validate_user_buffer(ptr: usize, count: usize, allow_kernel: bool) -> SystemResult<()> {
-    if ptr == 0 && count == 0 {
+    if count == 0 {
         return Ok(());
+    }
+
+    if ptr == 0 {
+        return Err(SystemError::InvalidArgument);
     }
 
     let start = VirtAddr::new(ptr as u64);
     if !allow_kernel && !is_user_address(start) {
         return Err(SystemError::InvalidArgument);
-    }
-
-    if count == 0 {
-        return Ok(());
     }
 
     if let Some(end_ptr) = ptr.checked_add(count - 1) {
@@ -33,6 +33,7 @@ pub fn validate_user_buffer(ptr: usize, count: usize, allow_kernel: bool) -> Sys
             return Err(SystemError::InvalidArgument);
         }
     } else {
+        // Overflow in end_ptr calculation
         return Err(SystemError::InvalidArgument);
     }
 
