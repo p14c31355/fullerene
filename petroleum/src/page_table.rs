@@ -6,7 +6,7 @@ pub mod efi_memory;
 pub mod bitmap_allocator;
 
 use crate::{
-    calc_offset_addr, create_page_and_frame, debug_log_no_alloc, ensure_initialized,
+    calc_offset_addr, create_page_and_frame, debug_log_no_alloc,
     flush_tlb_and_verify, log_memory_descriptor, map_and_flush, map_identity_range_checked,
     map_with_offset,
 };

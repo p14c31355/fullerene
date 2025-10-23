@@ -171,7 +171,7 @@ impl BitmapFrameAllocator {
         start_addr: usize,
         count: usize,
     ) -> crate::common::logging::SystemResult<()> {
-        ensure_initialized!(self);
+        crate::ensure_initialized!(self);
 
         let start_frame = start_addr / 4096;
         let end_frame = start_frame + count;
@@ -196,17 +196,6 @@ impl BitmapFrameAllocator {
         Ok(())
     }
 
-    /// Set a range of frames as used or free
-    fn set_frame_range(&mut self, start_frame: usize, end_frame: usize, used: bool) {
-        for i in start_frame..end_frame {
-            if used {
-                self.set_frame_used(i);
-            } else {
-                self.set_frame_free(i);
-            }
-        }
-    }
-
     /// Deallocate a specific frame back to the free pool
     pub fn deallocate_frame(&mut self, frame: PhysFrame) {
         if !self.initialized {
@@ -215,6 +204,17 @@ impl BitmapFrameAllocator {
         let frame_index = (frame.start_address().as_u64() / 4096) as usize;
         if frame_index < self.frame_count {
             self.set_frame_free(frame_index);
+        }
+    }
+
+    /// Set a range of frames as used or free
+    pub fn set_frame_range(&mut self, start_frame: usize, end_frame: usize, used: bool) {
+        for i in start_frame..end_frame {
+            if used {
+                self.set_frame_used(i);
+            } else {
+                self.set_frame_free(i);
+            }
         }
     }
 
@@ -250,87 +250,87 @@ impl BitmapFrameAllocator {
         None
     }
 
-    /// Set a range of frames as used or free
-    pub fn set_frame_range(&mut self, start_frame: usize, end_frame: usize, used: bool) {
-        for i in start_frame..end_frame {
-            if used {
-                self.set_frame_used(i);
+    /// Allocate contiguous frames for large allocations
+    fn allocate_contiguous_frames(&mut self, count: usize) -> crate::common::logging::SystemResult<usize> {
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
+
+        let mut start_index = 0;
+        let mut found_count = 0;
+
+        for i in 0..self.frame_count {
+            if self.is_frame_free(i) {
+                if found_count == 0 {
+                    start_index = i;
+                }
+                found_count += 1;
+                if found_count == count {
+                    for j in 0..count {
+                        self.set_frame_used(start_index + j);
+                    }
+                    return Ok(start_index * 4096);
+                }
             } else {
-                self.set_frame_free(i);
+                found_count = 0;
             }
         }
+        Err(crate::common::logging::SystemError::FrameAllocationFailed)
     }
 
-
-}
-
-unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
-    fn allocate_frame(&mut self) -> Option<PhysFrame> {
+    /// Deallocate contiguous frames
+    fn free_contiguous_frames(&mut self, start_addr: usize, count: usize) -> crate::common::logging::SystemResult<()> {
         if !self.initialized {
-            return None;
+            return Err(crate::common::logging::SystemError::InternalError);
         }
 
-        if let Some(frame_index) = self.find_next_free_frame(self.next_free_frame) {
-            self.set_frame_used(frame_index);
-            self.next_free_frame = frame_index + 1;
-
-            let frame_addr = frame_index * 4096;
-            Some(PhysFrame::containing_address(PhysAddr::new(
-                frame_addr as u64,
-            )))
-        } else {
-            None
+        let start_frame = start_addr / 4096;
+        for frame_index in start_frame..(start_frame + count) {
+            if frame_index < self.frame_count {
+                self.set_frame_free(frame_index);
+            }
         }
-    }
-}
-
-// Implement petroleum's FrameAllocator trait for the BitmapFrameAllocator
-impl crate::initializer::FrameAllocator for BitmapFrameAllocator {
-    fn allocate_frame(&mut self) -> crate::common::logging::SystemResult<usize> {
-        <Self as FrameAllocator<Size4KiB>>::allocate_frame(self)
-            .map(|f| f.start_address().as_u64() as usize)
-            .ok_or(crate::common::logging::SystemError::FrameAllocationFailed)
-    }
-
-    fn free_frame(&mut self, frame_addr: usize) -> crate::common::logging::SystemResult<()> {
-        let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(
-            x86_64::PhysAddr::new(frame_addr as u64),
-        );
-        self.deallocate_frame(frame);
         Ok(())
     }
 
-    fn allocate_contiguous_frames(&mut self, count: usize) -> crate::common::logging::SystemResult<usize> {
-        self.allocate_contiguous_frames(count)
+    /// Reserve frames at a specific address
+    fn reserve_frames(&mut self, start_addr: usize, count: usize) -> crate::common::logging::SystemResult<()> {
+        self.allocate_frames_at(start_addr, count)
     }
 
-    fn free_contiguous_frames(&mut self, start_addr: usize, count: usize) -> crate::common::logging::SystemResult<()> {
+    /// Release frames at a specific address
+    fn release_frames(&mut self, start_addr: usize, count: usize) -> crate::common::logging::SystemResult<()> {
         self.free_contiguous_frames(start_addr, count)
     }
 
-    fn total_frames(&self) -> usize {
-        self.frame_count
-    }
-
-    fn available_frames(&self) -> usize {
-        self.available_frames()
-    }
-
-    fn reserve_frames(&mut self, start_addr: usize, count: usize) -> crate::common::logging::SystemResult<()> {
-        self.reserve_frames(start_addr, count)
-    }
-
-    fn release_frames(&mut self, start_addr: usize, count: usize) -> crate::common::logging::SystemResult<()> {
-        self.release_frames(start_addr, count)
-    }
-
+    /// Check if a frame is available
     fn is_frame_available(&self, frame_addr: usize) -> bool {
-        self.is_frame_available(frame_addr)
+        let frame_index = frame_addr / 4096;
+        frame_index < self.frame_count && self.is_frame_free(frame_index)
     }
 
+    /// Get the frame size (constant)
     fn frame_size(&self) -> usize {
-        self.frame_size()
+        4096
     }
+
+    /// Get available frames count
+    fn available_frames(&self) -> usize {
+        if !self.initialized || self.bitmap.is_none() {
+            return 0;
+        }
+
+        let bitmap = self.bitmap.as_ref().unwrap();
+        let mut used = 0;
+        let chunks_to_check = self.frame_count.div_ceil(64);
+
+        for i in 0..chunks_to_check {
+            used += bitmap[i].count_ones() as usize;
+        }
+
+        self.frame_count - used
+    }
+
 }
 
 // Global heap allocator
