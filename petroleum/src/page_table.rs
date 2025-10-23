@@ -30,7 +30,7 @@ macro_rules! debug_log_validate_macro {
     };
 }
 
-// Unified constants for memory mapping regions
+// Unified constants for memory mapping regions and page sizes
 macro_rules! memory_region_const_macro {
     (VGA_START) => {
         0xA0000u64
@@ -43,6 +43,9 @@ macro_rules! memory_region_const_macro {
     };
     (BOOT_CODE_PAGES) => {
         0x8000u64
+    };
+    (PAGE_SIZE) => {
+        4096u64
     };
 }
 
@@ -156,6 +159,38 @@ macro_rules! map_range_with_log_macro {
         }
         Ok(())
     }};
+}
+
+// Additional macros for further reducing repetition
+macro_rules! calc_page_addr {
+    ($base:expr, $index:expr) => {
+        $base + $index * 4096
+    };
+}
+
+macro_rules! derive_memory_flags {
+    ($mem_type:expr, $code_flags:expr, $data_flags:expr) => {
+        if $mem_type == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+            $code_flags
+        } else {
+            $data_flags
+        }
+    };
+}
+
+macro_rules! validate_and_process_descriptor {
+    ($desc:expr, $processor:expr) => {
+        if $desc.is_valid() {
+            $processor($desc);
+        }
+    };
+}
+
+macro_rules! log_and_panic {
+    ($msg:expr, $err:expr) => {
+        debug_log_no_alloc!($msg);
+        panic!($err);
+    };
 }
 
 // Module for all constants to reduce namespace pollution and lines
@@ -1260,13 +1295,54 @@ unsafe fn map_stack_to_higher_half(
     }
 }
 
+// Generic mapping configuration builder trait for reducing configuration duplication
+trait MappingConfigurator {
+    fn configure_identity(&self, phys_start: u64, num_pages: u64) -> MappingConfig;
+    fn configure_higher_half(&self, phys_start: u64, num_pages: u64) -> MappingConfig;
+}
+
+// Generic page table utilities to reduce duplication between different mappers
+trait PageTableUtils {
+    fn map_multiple_ranges<F>(
+        &mut self,
+        frame_allocator: &mut BootInfoFrameAllocator,
+        ranges: &[MappingConfig],
+        log_fn: F,
+    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>>
+    where
+        F: Fn(&MappingConfig);
+}
+
+impl<T: MemoryRegionMapper + ?Sized> PageTableUtils for T {
+    fn map_multiple_ranges<F>(
+        &mut self,
+        frame_allocator: &mut BootInfoFrameAllocator,
+        ranges: &[MappingConfig],
+        log_fn: F,
+    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>>
+    where
+        F: Fn(&MappingConfig),
+    {
+        for config in ranges {
+            log_fn(config);
+            self.map_region_with_flags(
+                config.phys_start,
+                config.virt_start,
+                config.num_pages,
+                config.flags,
+            )?;
+        }
+        Ok(())
+    }
+}
+
 // Helper to adjust return address after page table switch
 fn adjust_return_address_and_stack(phys_offset: VirtAddr) {
     // WARNING: This code assumes frame pointers (rbp) are available and enabled, and relies on
     // the standard stack layout where the return address is at [rbp + 8]. This may not hold for
     // all compiler versions or optimization levels, especially in debug builds where
     // force-frame-pointers is not set by default. Violation could lead to stack corruption or crash.
-    // This is acknowledged as fragile but necessary for the higher-half kernel transition.
+    // This is acknowledged as fragile but is necessary for the higher-half kernel transition.
     debug_log_no_alloc!("Adjusting return address and stack for higher half");
 
     unsafe {
@@ -1459,24 +1535,33 @@ impl PageTableReinitializer {
     ) -> OffsetPageTable<'static> {
         let mut current_mapper = unsafe { init(current_physical_memory_offset) };
         unsafe {
-            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(
-                level_4_table_frame.start_address().as_u64(),
-            ));
+            // Use a temporary virtual address that doesn't conflict with huge pages
+            let temp_virt_addr = TEMP_VA_FOR_CLONE; // Use the clone temp VA for this
+            let page = Page::<Size4KiB>::containing_address(temp_virt_addr);
             let frame = level_4_table_frame;
-            current_mapper
-                .map_to(
-                    page,
-                    frame,
-                    page_flags_const!(READ_WRITE_NO_EXEC),
-                    frame_allocator,
-                )
-                .expect("Failed to identity-map new L4 table for mapper setup")
-                .flush();
+            match current_mapper.map_to(
+                page,
+                frame,
+                page_flags_const!(READ_WRITE_NO_EXEC),
+                frame_allocator,
+            ) {
+                Ok(flush) => flush.flush(),
+                Err(e) => {
+                    // Try different temp VA for any mapping error, including huge page conflicts
+                    let alt_temp_va = TEMP_VA_FOR_DESTROY;
+                    let alt_page = Page::<Size4KiB>::containing_address(alt_temp_va);
+                    current_mapper
+                        .map_to(alt_page, frame, page_flags_const!(READ_WRITE_NO_EXEC), frame_allocator)
+                        .expect("Failed to map L4 table with alternative VA")
+                        .flush();
+                    let table_addr = alt_temp_va.as_u64();
+                    return OffsetPageTable::new(&mut *(table_addr as *mut PageTable), VirtAddr::new(level_4_table_frame.start_address().as_u64()));
+                },
+            }
         };
         unsafe {
-            let table_addr = current_physical_memory_offset.as_u64()
-                + level_4_table_frame.start_address().as_u64();
-            OffsetPageTable::new(&mut *(table_addr as *mut PageTable), VirtAddr::new(0))
+            let table_addr = TEMP_VA_FOR_CLONE.as_u64();
+            OffsetPageTable::new(&mut *(table_addr as *mut PageTable), VirtAddr::new(level_4_table_frame.start_address().as_u64()))
         }
     }
 
