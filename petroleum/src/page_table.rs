@@ -962,6 +962,101 @@ unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
     }
 }
 
+// Implement petroleum's FrameAllocator trait for the BitmapFrameAllocator
+impl crate::initializer::FrameAllocator for BitmapFrameAllocator {
+    fn allocate_frame(&mut self) -> crate::common::logging::SystemResult<usize> {
+        <Self as FrameAllocator<Size4KiB>>::allocate_frame(self)
+            .map(|f| f.start_address().as_u64() as usize)
+            .ok_or(crate::common::logging::SystemError::FrameAllocationFailed)
+    }
+
+    fn free_frame(&mut self, frame_addr: usize) -> crate::common::logging::SystemResult<()> {
+        let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(
+            x86_64::PhysAddr::new(frame_addr as u64),
+        );
+        self.deallocate_frame(frame);
+        Ok(())
+    }
+
+    fn allocate_contiguous_frames(&mut self, count: usize) -> crate::common::logging::SystemResult<usize> {
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
+
+        let mut start_index = 0;
+        let mut found_count = 0;
+
+        for i in 0..self.frame_count {
+            if self.is_frame_free(i) {
+                if found_count == 0 {
+                    start_index = i;
+                }
+                found_count += 1;
+                if found_count == count {
+                    for j in 0..count {
+                        self.set_frame_used(start_index + j);
+                    }
+                    return Ok(start_index * 4096);
+                }
+            } else {
+                found_count = 0;
+            }
+        }
+        Err(crate::common::logging::SystemError::FrameAllocationFailed)
+    }
+
+    fn free_contiguous_frames(&mut self, start_addr: usize, count: usize) -> crate::common::logging::SystemResult<()> {
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
+
+        let start_frame = start_addr / 4096;
+        for frame_index in start_frame..(start_frame + count) {
+            if frame_index < self.frame_count {
+                self.set_frame_free(frame_index);
+            }
+        }
+        Ok(())
+    }
+
+    fn total_frames(&self) -> usize {
+        self.frame_count
+    }
+
+    fn available_frames(&self) -> usize {
+        if !self.initialized || self.bitmap.is_none() {
+            return 0;
+        }
+
+        let bitmap = self.bitmap.as_ref().unwrap();
+        let mut used = 0;
+        let chunks_to_check = self.frame_count.div_ceil(64);
+
+        for i in 0..chunks_to_check {
+            used += bitmap[i].count_ones() as usize;
+        }
+
+        self.frame_count - used
+    }
+
+    fn reserve_frames(&mut self, start_addr: usize, count: usize) -> crate::common::logging::SystemResult<()> {
+        self.allocate_frames_at(start_addr, count)
+    }
+
+    fn release_frames(&mut self, start_addr: usize, count: usize) -> crate::common::logging::SystemResult<()> {
+        self.free_contiguous_frames(start_addr, count)
+    }
+
+    fn is_frame_available(&self, frame_addr: usize) -> bool {
+        let frame_index = frame_addr / 4096;
+        frame_index < self.frame_count && self.is_frame_free(frame_index)
+    }
+
+    fn frame_size(&self) -> usize {
+        4096
+    }
+}
+
 // Type alias for backward compatibility
 pub type BootInfoFrameAllocator = BitmapFrameAllocator;
 
@@ -1985,6 +2080,13 @@ pub trait PageTableHelper {
     fn current_page_table(&self) -> usize;
 }
 
+impl PageTableManager {
+    /// Get the current pml4 frame (for backward compatibility)
+    pub fn pml4_frame(&self) -> Option<x86_64::structures::paging::PhysFrame> {
+        self.pml4_frame
+    }
+}
+
 pub type ProcessPageTable = PageTableManager;
 
 fn destroy_page_table_recursive(
@@ -2067,6 +2169,23 @@ impl PageTableManager {
             allocated_tables: alloc::collections::BTreeMap::new(),
             frame_allocator: None,
         }
+    }
+
+    pub fn new_with_frame(pml4_frame: x86_64::structures::paging::PhysFrame) -> Self {
+        Self {
+            current_page_table: pml4_frame.start_address().as_u64() as usize,
+            initialized: false,
+            pml4_frame: Some(pml4_frame),
+            mapper: None,
+            allocated_tables: alloc::collections::BTreeMap::new(),
+            frame_allocator: None,
+        }
+    }
+
+    /// Initialize paging (for compatibility)
+    pub fn init_paging(&mut self) -> crate::common::logging::SystemResult<()> {
+        // No-op for now
+        Ok(())
     }
 
     pub fn initialize_with_frame_allocator(
@@ -2460,6 +2579,22 @@ impl PageTableHelper for PageTableManager {
 
     fn current_page_table(&self) -> usize {
         self.current_page_table
+    }
+}
+
+impl crate::initializer::Initializable for PageTableManager {
+    fn init(&mut self) -> crate::common::logging::SystemResult<()> {
+        // This is a no-op for PageTableManager, initialization is done in initialize_with_frame_allocator
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "PageTableManager"
+    }
+
+    fn priority(&self) -> i32 {
+        // Lower priority than UnifiedMemoryManager
+        900
     }
 }
 

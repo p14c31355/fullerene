@@ -16,19 +16,15 @@ use petroleum::initializer::{
 };
 use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
 
-use frame_allocator::BitmapFrameAllocator;
-use page_table::PageTableManager;
+use petroleum::page_table::{BitmapFrameAllocator, PageTableManager};
 use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
 use process_memory::ProcessMemoryManagerImpl;
 pub mod convenience;
-pub mod frame_allocator;
-pub mod page_table;
 pub mod process_memory;
 pub mod user_space;
 
 // Re-export for external use
 pub use convenience::*;
-pub use frame_allocator::*;
 pub use petroleum::page_table::*;
 pub use process_memory::*;
 
@@ -103,7 +99,7 @@ impl UnifiedMemoryManager {
         memory_map: &'static [petroleum::page_table::EfiMemoryDescriptor],
     ) -> SystemResult<()> {
         // Initialize frame allocator with memory map
-        self.frame_allocator.init_with_memory_map(memory_map)?;
+        unsafe { self.frame_allocator.init_with_memory_map(memory_map)? };
         // Reserve the NULL frame to prevent allocation of invalid page tables
         self.frame_allocator.reserve_frames(0, 1)?;
 
