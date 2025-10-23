@@ -1,6 +1,7 @@
 use spin::Once;
 use x86_64::{
     structures::paging::{FrameAllocator, PhysFrame, Size4KiB},
+    PhysAddr,
 };
 
 use crate::{debug_log_no_alloc, ensure_initialized, log_memory_descriptor};
@@ -11,10 +12,10 @@ static mut BITMAP_STATIC: [u64; 131072] = [u64::MAX; 131072];
 
 /// Bitmap-based frame allocator implementation
 pub struct BitmapFrameAllocator {
-    pub bitmap: Option<&'static mut [u64]>,
-    pub frame_count: usize,
-    pub next_free_frame: usize,
-    pub initialized: bool,
+    bitmap: Option<&'static mut [u64]>,
+    frame_count: usize,
+    next_free_frame: usize,
+    initialized: bool,
 }
 
 impl BitmapFrameAllocator {
@@ -323,7 +324,7 @@ impl BitmapFrameAllocator {
     }
 
     /// Get available frames count
-        fn available_frames(&self) -> usize {
+    fn available_frames(&self) -> usize {
         if !self.initialized || self.bitmap.is_none() {
             return 0;
         }
@@ -344,6 +345,101 @@ impl BitmapFrameAllocator {
         }
 
         free_frames
+    }
+
+    /// Get total frames count
+    pub fn total_frames(&self) -> usize {
+        self.frame_count
+    }
+}
+
+unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
+    fn allocate_frame(&mut self) -> Option<PhysFrame> {
+        if !self.initialized {
+            return None;
+        }
+
+        if let Some(frame_index) = self.find_next_free_frame(self.next_free_frame) {
+            self.set_frame_used(frame_index);
+            self.next_free_frame = frame_index + 1;
+
+            let frame_addr = frame_index * 4096;
+            Some(PhysFrame::containing_address(PhysAddr::new(
+                frame_addr as u64,
+            )))
+        } else {
+            None
+        }
+    }
+}
+
+unsafe impl FrameAllocator<Size4KiB> for &mut BitmapFrameAllocator {
+    fn allocate_frame(&mut self) -> Option<PhysFrame> {
+        (**self).allocate_frame()
+    }
+}
+
+// Implement petroleum's FrameAllocator trait for the BitmapFrameAllocator
+impl crate::initializer::FrameAllocator for BitmapFrameAllocator {
+    fn allocate_frame(&mut self) -> crate::common::logging::SystemResult<usize> {
+        <Self as FrameAllocator<Size4KiB>>::allocate_frame(self)
+            .map(|f| f.start_address().as_u64() as usize)
+            .ok_or(crate::common::logging::SystemError::FrameAllocationFailed)
+    }
+
+    fn free_frame(&mut self, frame_addr: usize) -> crate::common::logging::SystemResult<()> {
+        let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(
+            x86_64::PhysAddr::new(frame_addr as u64),
+        );
+        self.deallocate_frame(frame);
+        Ok(())
+    }
+
+    fn allocate_contiguous_frames(
+        &mut self,
+        count: usize,
+    ) -> crate::common::logging::SystemResult<usize> {
+        self.allocate_contiguous_frames(count)
+    }
+
+    fn free_contiguous_frames(
+        &mut self,
+        start_addr: usize,
+        count: usize,
+    ) -> crate::common::logging::SystemResult<()> {
+        self.free_contiguous_frames(start_addr, count)
+    }
+
+    fn total_frames(&self) -> usize {
+        self.frame_count
+    }
+
+    fn available_frames(&self) -> usize {
+        self.available_frames()
+    }
+
+    fn reserve_frames(
+        &mut self,
+        start_addr: usize,
+        count: usize,
+    ) -> crate::common::logging::SystemResult<()> {
+        self.reserve_frames(start_addr, count)
+    }
+
+    fn release_frames(
+        &mut self,
+        start_addr: usize,
+        count: usize,
+    ) -> crate::common::logging::SystemResult<()> {
+        self.release_frames(start_addr, count)
+    }
+
+    fn is_frame_available(&self, frame_addr: usize) -> bool {
+        self.is_frame_available(frame_addr)
+    }
+
+    fn frame_size(&self) -> usize {
+        self.frame_size()
     }
 }
 

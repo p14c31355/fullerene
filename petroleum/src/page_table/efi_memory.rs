@@ -144,7 +144,7 @@ pub fn mark_available_frames(
     process_memory_descriptors_safely!(
         memory_map,
         |descriptor: &EfiMemoryDescriptor, start_frame: usize, end_frame: usize| {
-            let actual_end = end_frame.min(frame_allocator.frame_count);
+            let actual_end = end_frame.min(frame_allocator.total_frames());
             frame_allocator.set_frame_range(start_frame, actual_end, false);
         }
     );
