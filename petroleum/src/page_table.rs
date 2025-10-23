@@ -23,6 +23,9 @@ use x86_64::{
     },
 };
 
+// Import constants
+use constants::{BOOT_CODE_PAGES, BOOT_CODE_START, PAGE_SIZE, READ_ONLY, READ_WRITE, READ_WRITE_NO_EXEC, VGA_MEMORY_END, VGA_MEMORY_START};
+
 // Macros and constants
 // Helper macros and functions to reduce repetitive code
 macro_rules! read_unaligned {
@@ -144,20 +147,7 @@ macro_rules! map_range_with_log_macro {
     }};
 }
 
-// Module for all constants to reduce namespace pollution and lines
-mod memory_constants {
-    pub const PAGE_SIZE: u64 = 4096;
-    pub const MAX_DESCRIPTOR_PAGES: u64 = 1_048_576;
-    pub const MAX_SYSTEM_MEMORY: u64 = 512 * 1024 * 1024 * 1024u64;
-    pub const EFI_MEMORY_TYPE_FIRMWARE_SPECIFIC: u32 = 15;
-    pub const UEFI_COMPAT_PAGES: u64 = 16383;
-    pub const KERNEL_MEMORY_PADDING: u64 = 1024 * 1024;
-    pub const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024;
-    pub const VGA_MEMORY_START: u64 = 0xA0000u64;
-    pub const VGA_MEMORY_END: u64 = 0xC0000u64;
-    pub const BOOT_CODE_START: u64 = 0x100000u64;
-    pub const BOOT_CODE_PAGES: u64 = 0x8000u64;
-}
+// Removed in favor of constants.rs
 
 // Generic validation trait for different descriptor types
 trait MemoryDescriptorValidator {
@@ -310,12 +300,6 @@ const MAX_DESCRIPTOR_PAGES: u64 = 1_048_576;
 
 /// Maximum reasonable system memory limit (512GB)
 const MAX_SYSTEM_MEMORY: u64 = 512 * 1024 * 1024 * 1024u64;
-
-/// Boot code physical start address
-const BOOT_CODE_START: u64 = 0x100000;
-
-/// Boot code size in pages (0x8000 pages = 128MB)
-const BOOT_CODE_PAGES: u64 = 0x8000;
 
 /// Validate an EFI memory descriptor for safety
 fn is_valid_memory_descriptor(descriptor: &EfiMemoryDescriptor) -> bool {
@@ -626,7 +610,7 @@ impl<'a> MemoryMapper<'a> {
         if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
             let fb_pages = fb_size.div_ceil(4096);
             let fb_phys = fb_addr.as_u64();
-            let flags = page_flags_const!(READ_WRITE_NO_EXEC);
+            let flags = READ_WRITE_NO_EXEC;
             unsafe {
                 self.map_to_higher_half(fb_phys, fb_pages, flags)?;
                 self.identity_map_range(fb_phys, fb_pages, flags)?;
@@ -636,21 +620,19 @@ impl<'a> MemoryMapper<'a> {
     }
 
     pub fn map_vga(&mut self) {
-        const VGA_MEMORY_START: u64 = memory_region_const_macro!(VGA_START);
-        const VGA_MEMORY_END: u64 = memory_region_const_macro!(VGA_END);
         const VGA_PAGES: u64 = (VGA_MEMORY_END - VGA_MEMORY_START) / 4096;
-        let flags = page_flags_const!(READ_WRITE_NO_EXEC);
+        let flags = READ_WRITE_NO_EXEC;
         unsafe {
             let _ = self.map_to_higher_half(VGA_MEMORY_START, VGA_PAGES, flags);
         }
     }
 
     pub fn map_boot_code(&mut self) {
-        let flags = page_flags_const!(READ_WRITE);
+        let flags = READ_WRITE;
         unsafe {
             let _ = self.map_to_higher_half(
-                memory_region_const_macro!(BOOT_CODE_START),
-                memory_region_const_macro!(BOOT_CODE_PAGES),
+                BOOT_CODE_START,
+                BOOT_CODE_PAGES,
                 flags,
             );
         }
@@ -1204,7 +1186,7 @@ unsafe fn map_kernel_segments_inner(
         // Fallback: map 64MB region for the kernel if PE parsing fails
         let kernel_size = FALLBACK_KERNEL_SIZE;
         let kernel_pages = kernel_size.div_ceil(4096);
-        let flags = page_flags_const!(READ_WRITE);
+        let flags = READ_WRITE;
         unsafe {
             map_identity_range(
                 mapper,

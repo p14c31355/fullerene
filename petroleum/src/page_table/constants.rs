@@ -1,3 +1,5 @@
+use x86_64::{VirtAddr, structures::paging::PageTableFlags};
+
 // Consolidated constants to reduce pollution and duplication
 
 pub const PAGE_SIZE: u64 = 4096;
@@ -12,9 +14,14 @@ pub const VGA_MEMORY_END: u64 = 0xC0000u64;
 pub const BOOT_CODE_START: u64 = 0x100000u64;
 pub const BOOT_CODE_PAGES: u64 = 0x8000u64;
 
+// Page table flags constants
+// Note: Using hardcoded bit values since const expressions don't support | operator
+pub const READ_WRITE_NO_EXEC: PageTableFlags = unsafe { core::mem::transmute(9223372036854775811u64) }; // PRESENT|WRITABLE|NO_EXECUTE
+pub const READ_ONLY: PageTableFlags = unsafe { core::mem::transmute(1u64) }; // PRESENT
+pub const READ_WRITE: PageTableFlags = unsafe { core::mem::transmute(3u64) }; // PRESENT|WRITABLE
+pub const EXECUTE_ONLY: PageTableFlags = unsafe { core::mem::transmute(1u64) }; // PRESENT
+
 // Page table offsets
 pub const HIGHER_HALF_OFFSET: VirtAddr = VirtAddr::new(0xFFFF_8000_0000_0000);
 pub const TEMP_VA_FOR_DESTROY: VirtAddr = VirtAddr::new(0xFFFF_A000_0000_0000);
 pub const TEMP_VA_FOR_CLONE: VirtAddr = VirtAddr::new(0xFFFF_9000_0000_0000);
-
-use x86_64::VirtAddr;
