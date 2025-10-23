@@ -1052,7 +1052,7 @@ pub const HIGHER_HALF_OFFSET: VirtAddr = VirtAddr::new(0xFFFF_8000_0000_0000);
 /// Temporary virtual address for page table destruction operations.
 /// WARNING: Assumes this address range is not already mapped or in use.
 /// A dedicated temporary VA allocation pool would be safer but is not implemented here.
-const TEMP_VA_FOR_DESTROY: VirtAddr = VirtAddr::new(0xFFFF_8000_0000_0000);
+const TEMP_VA_FOR_DESTROY: VirtAddr = VirtAddr::new(0xFFFF_A000_0000_0000);
 
 /// Temporary virtual address for page table cloning operations.
 /// WARNING: Assumes this address range is not already mapped or in use.
