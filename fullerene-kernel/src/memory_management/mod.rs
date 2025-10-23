@@ -16,19 +16,14 @@ use petroleum::initializer::{
 };
 use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
 
-use frame_allocator::BitmapFrameAllocator;
-use page_table::PageTableManager;
+use petroleum::page_table::{BitmapFrameAllocator, PageTableManager};
 use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
 use process_memory::ProcessMemoryManagerImpl;
 pub mod convenience;
-pub mod frame_allocator;
-pub mod page_table;
 pub mod process_memory;
-pub mod user_space;
 
 // Re-export for external use
 pub use convenience::*;
-pub use frame_allocator::*;
 pub use petroleum::page_table::*;
 pub use process_memory::*;
 
@@ -103,7 +98,7 @@ impl UnifiedMemoryManager {
         memory_map: &'static [petroleum::page_table::EfiMemoryDescriptor],
     ) -> SystemResult<()> {
         // Initialize frame allocator with memory map
-        self.frame_allocator.init_with_memory_map(memory_map)?;
+        unsafe { self.frame_allocator.init_with_memory_map(memory_map)? };
         // Reserve the NULL frame to prevent allocation of invalid page tables
         self.frame_allocator.reserve_frames(0, 1)?;
 
@@ -753,49 +748,56 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
     // Debug: log the allocation result
     log::info!("Allocated page table frame: 0x{:x}", pml4_frame);
 
+    // Temporarily map the page table frame before accessing it
+    manager.page_table_manager.map_page(
+        TEMP_PHY_ACCESS,
+        pml4_frame,
+        PageFlags::PRESENT | PageFlags::WRITABLE,
+        &mut manager.frame_allocator,
+    )?;
+
     // Zero the allocated page table frame to ensure it's a valid page table
-    let physical_offset = get_physical_memory_offset();
-    let new_table_virt_raw = physical_to_virtual(pml4_frame);
-    let new_table_virt = new_table_virt_raw as *mut u64;
-
-    // Debug: log the conversion
-    log::info!(
-        "Physical offset: 0x{:x}, virtual addr: 0x{:x}",
-        physical_offset,
-        new_table_virt_raw
-    );
-
-    // Debug: check if the address is valid
-    if new_table_virt.is_null()
-        || (new_table_virt as usize) < physical_offset
-        || (new_table_virt as usize) % 8 != 0
-    {
-        log::error!(
-            "Invalid page table virtual address: 0x{:x}",
-            new_table_virt as usize
-        );
-        return Err(SystemError::InternalError);
-    }
-
     unsafe {
-        core::slice::from_raw_parts_mut(new_table_virt, 512).fill(0);
+        let table_ptr = TEMP_PHY_ACCESS as *mut u64;
+        core::slice::from_raw_parts_mut(table_ptr, 512).fill(0);
     }
 
     // Copy kernel mappings to the new page table
     // This involves copying the higher half kernel mappings from the current page table
     let current_cr3 = unsafe { x86_64::registers::control::Cr3::read() };
-    let kernel_table_phys = current_cr3.0.start_address().as_u64();
+    let kernel_table_phys = current_cr3.0.start_address().as_u64() as usize;
 
-    // Map the new page table temporarily to copy kernel mappings
-    let kernel_table_virt = physical_to_virtual(kernel_table_phys.try_into().unwrap());
-    let new_table_virt_u64 = new_table_virt as u64;
+    // Temporarily map kernel table for reading
+    manager.page_table_manager.map_page(
+        TEMP_PHY_ACCESS + 4096,
+        kernel_table_phys,
+        PageFlags::PRESENT,
+        &mut manager.frame_allocator,
+    )?;
 
     // Copy the kernel page table entries (PML4[256..512])
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            (kernel_table_virt + 256 * 8) as *const u64,
-            (new_table_virt_u64 + 256 * 8) as *mut u64,
-            256,
+        let kernel_entries_src = (TEMP_PHY_ACCESS + 4096 + 256 * 8) as *const u64;
+        let new_entries_dst = (TEMP_PHY_ACCESS + 256 * 8) as *mut u64;
+        core::ptr::copy_nonoverlapping(kernel_entries_src, new_entries_dst, 256);
+    }
+
+    // Unmap temporary mappings
+    if let Err(e) = manager.page_table_manager.unmap_page(TEMP_PHY_ACCESS) {
+        log::warn!(
+            "Failed to unmap temporary page at 0x{:x}: {:?}",
+            TEMP_PHY_ACCESS,
+            e
+        );
+    }
+    if let Err(e) = manager
+        .page_table_manager
+        .unmap_page(TEMP_PHY_ACCESS + 4096)
+    {
+        log::warn!(
+            "Failed to unmap temporary page at 0x{:x}: {:?}",
+            TEMP_PHY_ACCESS + 4096,
+            e
         );
     }
 
@@ -842,8 +844,29 @@ pub fn get_memory_manager() -> &'static Mutex<Option<UnifiedMemoryManager>> {
     &MEMORY_MANAGER
 }
 
+// User space memory validation functions
+// Integrated from user_space.rs to reduce file count
+
+/// Map a user page for kernel access
+pub fn map_user_page(
+    virtual_addr: usize,
+    physical_addr: usize,
+    flags: PageFlags,
+) -> SystemResult<()> {
+    if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
+        manager.page_table_manager.map_page(
+            virtual_addr,
+            physical_addr,
+            flags,
+            &mut manager.frame_allocator,
+        )
+    } else {
+        Err(SystemError::InternalError)
+    }
+}
+
 // Re-export functions for easier access
-pub use user_space::{is_user_address, map_user_page};
+pub use petroleum::{is_user_address, validate_user_buffer};
 
 /// Physical memory offset for virtual to physical address translation
 static PHYSICAL_MEMORY_OFFSET: spin::Mutex<usize> = spin::Mutex::new(0);

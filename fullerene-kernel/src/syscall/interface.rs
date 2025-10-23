@@ -48,40 +48,6 @@ impl From<petroleum::common::logging::SystemError> for SyscallError {
     }
 }
 
-/// Helper function to validate user buffer access
-pub fn validate_user_buffer(
-    ptr: usize,
-    count: usize,
-    allow_kernel: bool,
-) -> Result<(), SyscallError> {
-    use crate::memory_management::is_user_address;
-    use x86_64::VirtAddr;
-
-    if ptr == 0 && count == 0 {
-        return Ok(());
-    }
-
-    let start = VirtAddr::new(ptr as u64);
-    if !allow_kernel && !is_user_address(start) {
-        return Err(SyscallError::InvalidArgument);
-    }
-
-    if count == 0 {
-        return Ok(());
-    }
-
-    if let Some(end_ptr) = ptr.checked_add(count - 1) {
-        let end = VirtAddr::new(end_ptr as u64);
-        if !allow_kernel && !is_user_address(end) {
-            return Err(SyscallError::InvalidArgument);
-        }
-    } else {
-        return Err(SyscallError::InvalidArgument);
-    }
-
-    Ok(())
-}
-
 /// Helper function to safely copy a null-terminated string from user space
 /// Returns the string if successful, or an error if validation fails
 pub fn copy_user_string(ptr: *const u8, max_len: usize) -> Result<String, SyscallError> {
@@ -90,9 +56,8 @@ pub fn copy_user_string(ptr: *const u8, max_len: usize) -> Result<String, Syscal
     }
 
     // Validate that the initial pointer range is in user space
-    use crate::memory_management::is_user_address;
     let start_addr = VirtAddr::new(ptr as u64);
-    if !is_user_address(start_addr) {
+    if !petroleum::is_user_address(start_addr) {
         return Err(SyscallError::InvalidArgument);
     }
 
@@ -108,7 +73,7 @@ pub fn copy_user_string(ptr: *const u8, max_len: usize) -> Result<String, Syscal
         // Check if current pointer is in user space
         if let Some(next_addr) = (ptr as u64).checked_add(len as u64) {
             let addr = VirtAddr::new(next_addr);
-            if !is_user_address(addr) {
+            if !petroleum::is_user_address(addr) {
                 return Err(SyscallError::InvalidArgument);
             }
         } else {

@@ -23,7 +23,7 @@ pub mod uefi_helpers;
 pub use apic::{IoApic, IoApicRedirectionEntry, init_io_apic};
 // Macros with #[macro_export] are automatically available at root, no need to re-export
 pub use common::logging::{SystemError, SystemResult};
-pub use common::macros::InitSequence;
+pub use common::memory::*;
 pub use common::syscall::*;
 pub use common::{check_memory_initialized, set_memory_initialized};
 pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
@@ -268,13 +268,13 @@ pub fn detect_standard_modes(
                 "[BM-GFX] {} framebuffer mode {}x{} appears valid\n",
                 device_type, width, height
             ));
-            return Some(create_framebuffer_config!(
+            return Some(crate::common::memory::create_framebuffer_config(
                 *addr,
                 *width,
                 *height,
                 crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                 *bpp,
-                *width * (*bpp / 8)
+                *width * (*bpp / 8),
             ));
         }
     }
@@ -424,48 +424,42 @@ pub fn test_qemu_framebuffer_access(address: u64) -> bool {
     }
 }
 
-/// Detect virtualized framebuffer for QEMU/VirtualBox environments
-/// This consolidates the duplicated logic between bootloader and kernel
-pub fn detect_qemu_framebuffer(
-    standard_configs: &[QemuConfig],
-) -> Option<FullereneFramebufferConfig> {
-    const MAX_FRAMEBUFFER_SIZE: u64 = 0x10000000; // 256MB limit - named constant
+/// Generic helper to test QEMU framebuffer configurations
+/// Returns the first working configuration from the provided configs
+pub fn find_working_qemu_config(configs: &[QemuConfig]) -> Option<FullereneFramebufferConfig> {
+    const MAX_FRAMEBUFFER_SIZE: u64 = 0x10000000; // 256MB limit
 
-    serial::_print(format_args!("Testing QEMU framebuffer configurations...\n"));
-
-    for config in standard_configs.iter() {
+    for config in configs.iter() {
         let QemuConfig {
             address,
             width,
             height,
             bpp,
         } = *config;
+
         serial::_print(format_args!(
-            "Testing QEMU framebuffer at {:#x}, {}x{}, {} BPP\n",
+            "Testing QEMU config at {:#x}, {}x{}, {} BPP\n",
             address, width, height, bpp
         ));
 
-        // Check if framebuffer memory size is reasonable
         let framebuffer_size = (height as u64) * (width as u64) * (bpp as u64 / 8);
         if address == 0 || framebuffer_size > MAX_FRAMEBUFFER_SIZE {
             continue;
         }
 
-        // Test framebuffer access
         if test_qemu_framebuffer_access(address) {
             serial::_print(format_args!(
                 "QEMU framebuffer address {:#x} is accessible\n",
                 address
             ));
 
-            // Create framebuffer configuration
-            let fb_config = create_framebuffer_config!(
+            let fb_config = crate::common::memory::create_framebuffer_config(
                 address,
                 width,
                 height,
                 crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                 bpp,
-                width * (bpp / 8)
+                width * (bpp / 8),
             );
 
             serial::_print(format_args!(
@@ -477,10 +471,17 @@ pub fn detect_qemu_framebuffer(
         }
     }
 
-    serial::_print(format_args!(
-        "No working QEMU framebuffer configurations found\n"
-    ));
+    serial::_print(format_args!("No working QEMU configurations found\n"));
     None
+}
+
+/// Detect virtualized framebuffer for QEMU/VirtualBox environments
+/// This consolidates the duplicated logic between bootloader and kernel
+pub fn detect_qemu_framebuffer(
+    standard_configs: &[QemuConfig],
+) -> Option<FullereneFramebufferConfig> {
+    serial::_print(format_args!("Testing QEMU framebuffer configurations...\n"));
+    find_working_qemu_config(standard_configs)
 }
 
 /// Alternative GOP detection for QEMU environments
@@ -491,45 +492,7 @@ pub fn init_gop_framebuffer_alternative(
         "GOP: Trying alternative detection methods for QEMU...\n"
     ));
 
-    // Loop through all QEMU configs, testing accessibility and attempting installation for each
-    for config in QEMU_CONFIGS.iter() {
-        let address = config.address;
-        let width = config.width;
-        let height = config.height;
-        let bpp = config.bpp;
-
-        serial::_print(format_args!(
-            "GOP: Testing QEMU config at {:#x}, {}x{}, {} BPP\n",
-            address, width, height, bpp
-        ));
-
-        // Check if framebuffer memory size is reasonable
-        let framebuffer_size = (height as u64) * (width as u64) * (bpp as u64 / 8);
-        const MAX_FRAMEBUFFER_SIZE: u64 = 0x10000000; // 256MB limit
-        if address == 0 || framebuffer_size > MAX_FRAMEBUFFER_SIZE {
-            continue;
-        }
-
-        // Test framebuffer access
-        if !test_qemu_framebuffer_access(address) {
-            continue;
-        }
-
-        serial::_print(format_args!(
-            "GOP: QEMU framebuffer address {:#x} is accessible, attempting installation\n",
-            address
-        ));
-
-        // Create and try to install the configuration
-        let fb_config = create_framebuffer_config!(
-            address,
-            width,
-            height,
-            crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-            bpp,
-            width * (bpp / 8)
-        );
-
+    if let Some(fb_config) = find_working_qemu_config(&QEMU_CONFIGS) {
         serial::_print(format_args!(
             "GOP: Attempting to install framebuffer config table...\n"
         ));
@@ -545,22 +508,22 @@ pub fn init_gop_framebuffer_alternative(
                     "GOP: Successfully initialized QEMU framebuffer: {}x{} @ {:#x}\n",
                     fb_config.width, fb_config.height, fb_config.address
                 ));
-                return Some(fb_config);
+                Some(fb_config)
             }
             Err(status) => {
                 serial::_print(format_args!(
-                    "GOP: Failed to install framebuffer config table (status: {:#x}), trying next config\n",
+                    "GOP: Failed to install framebuffer config table (status: {:#x})\n",
                     status as u32
                 ));
-                // Continue to next config
+                None
             }
         }
+    } else {
+        serial::_print(format_args!(
+            "GOP: No QEMU framebuffer configurations succeeded\n"
+        ));
+        None
     }
-
-    serial::_print(format_args!(
-        "GOP: No QEMU framebuffer configurations succeeded\n"
-    ));
-    None
 }
 
 /// Helper to initialize GOP and framebuffer
@@ -665,13 +628,13 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
         return None;
     }
 
-    let config = create_framebuffer_config!(
+    let config = crate::common::memory::create_framebuffer_config(
         fb_addr as u64,
         info.horizontal_resolution,
         info.vertical_resolution,
         info.pixel_format,
         crate::common::get_bpp_from_pixel_format(info.pixel_format),
-        info.pixels_per_scan_line
+        info.pixels_per_scan_line,
     );
 
     serial::_print(format_args!(

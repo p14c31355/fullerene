@@ -282,7 +282,7 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
         if let Some(page_table) = process.page_table.take() {
             // For now, skip deallocation if no allocated pml4_frame
             // This handles the case where page table was created with current CR3 (fallback)
-            if let Some(pml4_frame) = page_table.pml4_frame {
+            if let Some(pml4_frame) = page_table.pml4_frame() {
                 drop(page_table); // Explicit drop to release the mapper
                 crate::memory_management::deallocate_process_page_table(pml4_frame);
             }

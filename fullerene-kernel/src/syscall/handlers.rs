@@ -1,4 +1,4 @@
-use super::interface::{SyscallError, SyscallResult, copy_user_string, validate_user_buffer};
+use super::interface::{SyscallError, SyscallResult, copy_user_string};
 use crate::process;
 use petroleum::write_serial_bytes;
 
@@ -87,21 +87,13 @@ fn syscall_fork() -> SyscallResult {
 
 /// Read system call
 fn syscall_read(fd: core::ffi::c_int, buffer: *mut u8, count: usize) -> SyscallResult {
-    if fd < 0 {
-        return Err(SyscallError::InvalidArgument);
-    }
-
-    if buffer.is_null() {
-        return Err(SyscallError::InvalidArgument);
-    }
-
+    petroleum::validate_syscall_fd(fd)?;
     // POSIX: reading 0 bytes should return 0 immediately
     if count == 0 {
         return Ok(0);
     }
-
     // Check if buffer is valid for user space
-    validate_user_buffer(buffer as usize, count, false)?;
+    petroleum::validate_user_buffer(buffer as usize, count, false)?;
 
     // For now, only support reading from stdin (fd 0)
     if fd == 0 {
@@ -132,17 +124,13 @@ fn syscall_read(fd: core::ffi::c_int, buffer: *mut u8, count: usize) -> SyscallR
 
 /// Write system call
 fn syscall_write(fd: core::ffi::c_int, buffer: *const u8, count: usize) -> SyscallResult {
-    if fd < 0 || buffer.is_null() {
-        return Err(SyscallError::InvalidArgument);
-    }
-
+    petroleum::validate_syscall_fd(fd)?;
+    let allow_kernel = fd == 1 || fd == 2;
     if count == 0 {
         return Ok(0);
     }
-
-    // Validate that the buffer range is valid; allow kernel pointers for stdout/stderr
-    let allow_kernel = fd == 1 || fd == 2;
-    validate_user_buffer(buffer as usize, count, allow_kernel)?;
+    // Validate that the entire buffer range is valid.
+    petroleum::validate_user_buffer(buffer as usize, count, allow_kernel)?;
 
     // Create a slice from the buffer pointer
     let data = unsafe { core::slice::from_raw_parts(buffer, count) };
@@ -239,13 +227,11 @@ fn syscall_getpid() -> SyscallResult {
 
 /// Get process name
 fn syscall_get_process_name(buffer: *mut u8, size: usize) -> SyscallResult {
-    if buffer.is_null() || size == 0 {
+    if size == 0 {
         return Err(SyscallError::InvalidArgument);
     }
-
     // Check if buffer is valid for user space
-    validate_user_buffer(buffer as usize, size, false)?;
-
+    petroleum::validate_user_buffer(buffer as usize, size, false)?;
     let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
     let process_list = crate::process::PROCESS_LIST.lock();
