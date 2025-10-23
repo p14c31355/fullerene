@@ -217,7 +217,7 @@ pub struct PeParser {
 
 impl PeParser {
     pub unsafe fn new(kernel_ptr: *const u8) -> Option<Self> {
-        find_pe_base(kernel_ptr).map(|base| {
+        unsafe { find_pe_base(kernel_ptr) }.map(|base| {
             let pe_offset = unsafe { read_unaligned!(base, 0x3c, u32) } as usize;
             Self {
                 pe_base: base,
@@ -1163,7 +1163,7 @@ unsafe fn map_kernel_segments_inner(
     phys_offset: VirtAddr,
 ) {
     if let Some(sections) =
-        unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8).and_then(|p| p.sections()) }
+        unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8) }.and_then(|p| unsafe { p.sections() })
     {
         for section in sections.into_iter().filter(|s| s.virtual_size > 0) {
             unsafe {

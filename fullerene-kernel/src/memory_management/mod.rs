@@ -19,8 +19,8 @@ use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
 use petroleum::page_table::{BitmapFrameAllocator, PageTableManager};
 use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
 use process_memory::ProcessMemoryManagerImpl;
-// pub mod convenience;
-// pub mod process_memory;
+pub mod convenience;
+pub mod process_memory;
 
 // Re-export for external use
 pub use convenience::*;
