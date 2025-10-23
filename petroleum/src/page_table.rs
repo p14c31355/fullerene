@@ -5,11 +5,12 @@ pub mod bitmap_allocator;
 pub mod constants;
 pub mod efi_memory;
 
+pub use bitmap_allocator::BitmapFrameAllocator;
+
 use crate::{
     calc_offset_addr, create_page_and_frame, debug_log_no_alloc, flush_tlb_and_verify,
     log_memory_descriptor, map_and_flush, map_identity_range_checked, map_with_offset,
 };
-use crate::page_table::bitmap_allocator::BitmapFrameAllocator;
 
 // Macros are automatically available from common module
 // BTreeMap will be available through std when compiled as std crate
@@ -268,30 +269,8 @@ impl PeParser {
     }
 }
 
-/// EFI Memory Descriptor as defined in UEFI spec
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct EfiMemoryDescriptor {
-    pub type_: crate::common::EfiMemoryType,
-    pub padding: u32,
-    pub physical_start: u64,
-    pub virtual_start: u64,
-    pub number_of_pages: u64,
-    pub attribute: u64,
-}
-
-impl core::fmt::Debug for EfiMemoryDescriptor {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("EfiMemoryDescriptor")
-            .field("type_", &self.type_)
-            .field("padding", &self.padding)
-            .field("physical_start", &self.physical_start)
-            .field("virtual_start", &self.virtual_start)
-            .field("number_of_pages", &self.number_of_pages)
-            .field("attribute", &self.attribute)
-            .finish()
-    }
-}
+// Re-export EfiMemoryDescriptor from efi_memory module
+pub use efi_memory::EfiMemoryDescriptor;
 
 /// Named constant for UEFI firmware specific memory type (replace magic number)
 const EFI_MEMORY_TYPE_FIRMWARE_SPECIFIC: u32 = 15;
