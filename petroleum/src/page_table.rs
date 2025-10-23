@@ -956,6 +956,17 @@ impl BitmapFrameAllocator {
             }
         }
     }
+
+    /// Deallocate a specific frame back to the free pool
+    pub fn deallocate_frame(&mut self, frame: PhysFrame) {
+        if !self.initialized {
+            return;
+        }
+        let frame_index = (frame.start_address().as_u64() / 4096) as usize;
+        if frame_index < self.frame_count {
+            self.set_frame_free(frame_index);
+        }
+    }
 }
 
 unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
@@ -1942,6 +1953,52 @@ pub trait PageTableHelper {
 
 pub type ProcessPageTable = PageTableManager;
 
+fn destroy_page_table_recursive(
+    mapper: &mut OffsetPageTable<'static>,
+    frame_alloc: &mut BootInfoFrameAllocator,
+    table_phys: PhysAddr,
+    level: usize,
+    temp_va: VirtAddr,
+) -> crate::common::logging::SystemResult<()> {
+    if level == 0 || level > 4 {
+        return Ok(());
+    }
+
+    // Temporarily map the table
+    let page = Page::<Size4KiB>::containing_address(temp_va);
+    let frame = PhysFrame::<Size4KiB>::containing_address(table_phys);
+    unsafe {
+        mapper.map_to(page, frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, frame_alloc).expect("temp map failed").flush();
+    }
+    let table = unsafe { &mut *(temp_va.as_mut_ptr() as *mut PageTable) };
+
+    let base_va = temp_va + 0x1000;
+
+    for (i, entry) in table.iter_mut().enumerate() {
+        if entry.flags().contains(PageTableFlags::PRESENT) {
+            if level > 1 && !((level == 2) && entry.flags().contains(PageTableFlags::HUGE_PAGE)) {
+                // it's a table pointer
+                match entry.frame() {
+                    Ok(child_frame) => {
+                        let child_va = base_va + (i * 0x1000) as u64;
+                        destroy_page_table_recursive(mapper, frame_alloc, child_frame.start_address(), level - 1, child_va)?;
+                        // deallocate the child frame
+                        frame_alloc.deallocate_frame(child_frame);
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+    }
+
+    // Unmap temp
+    if let Ok((_frame, flush)) = mapper.unmap(page) {
+        flush.flush();
+    }
+
+    Ok(())
+}
+
 pub struct PageTableManager {
     current_page_table: usize,
     initialized: bool,
@@ -2002,6 +2059,8 @@ impl PageTableManager {
         self.initialized = true;
         Ok(())
     }
+
+
 }
 
 impl PageTableHelper for PageTableManager {
@@ -2173,26 +2232,26 @@ impl PageTableHelper for PageTableManager {
         Ok(table_addr)
     }
 
-    /// # CRITICAL BUG: Memory Leak
-    /// This function only deallocates the L4 page table frame but does NOT recursively
-    /// traverse and deallocate lower-level page tables (L3/L2/L1) that are referenced
-    /// by this L4 table. Any page table frames allocated for L3, L2, or L1 levels
-    /// will be leaked, consuming memory without being freed.
-    /// FIX: Implement recursive traversal to deallocate all referenced page table frames
-    /// before deallocating the L4 frame itself.
+
+
     fn destroy_page_table(
         &mut self,
         table_addr: usize,
     ) -> crate::common::logging::SystemResult<()> {
         ensure_initialized!(self);
 
-        // Remove frame from tracking - this effectively deallocates it
-        // by removing the reference, but doesn't handle lower-level tables
-        if self.allocated_tables.remove(&table_addr).is_none() {
-            return Err(crate::common::logging::SystemError::InvalidArgument);
+        let table_phys = PhysAddr::new(table_addr as u64);
+        if let Some(frame) = self.allocated_tables.remove(&table_addr) {
+            let mapper = self.mapper.as_mut().unwrap();
+            let frame_alloc = self.frame_allocator.as_deref_mut().unwrap();
+            // Recursively destroy lower level tables
+            destroy_page_table_recursive(mapper, frame_alloc, table_phys, 4, VirtAddr::new(0xFFFF_8000_0000_0000))?;
+            // Now deallocate the L4 frame
+            frame_alloc.deallocate_frame(frame);
+            Ok(())
+        } else {
+            Err(crate::common::logging::SystemError::InvalidArgument)
         }
-
-        Ok(())
     }
 
     /// # CRITICAL BUG: Shallow Copy Problem
