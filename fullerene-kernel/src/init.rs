@@ -7,8 +7,7 @@ use alloc::{
     string::String,
     vec::{self, Vec},
 };
-use petroleum::common::InitSequence;
-use petroleum::{init_log, write_serial_bytes};
+use petroleum::{common::InitSequence, init_log, write_serial_bytes};
 use spin::Once;
 
 #[cfg(target_os = "uefi")]
