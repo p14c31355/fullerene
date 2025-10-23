@@ -1032,10 +1032,10 @@ fn create_new_page_table(
 ) -> crate::common::logging::SystemResult<PhysFrame> {
     debug_log_no_alloc!("Allocating new L4 page table frame");
 
-        let level_4_table_frame: PhysFrame = match frame_allocator.allocate_frame() {
-            Some(frame) => frame,
-            None => return Err(crate::common::logging::SystemError::MemOutOfMemory),
-        };
+    let level_4_table_frame: PhysFrame = match frame_allocator.allocate_frame() {
+        Some(frame) => frame,
+        None => return Err(crate::common::logging::SystemError::MemOutOfMemory),
+    };
 
     // Temporarily create an identity mapper for this context to zero the allocated frame
     let mut temp_mapper = unsafe { init(VirtAddr::new(0)) };
