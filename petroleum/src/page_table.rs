@@ -161,35 +161,18 @@ macro_rules! map_range_with_log_macro {
     }};
 }
 
-// Additional macros for further reducing repetition
-macro_rules! calc_page_addr {
-    ($base:expr, $index:expr) => {
-        $base + $index * 4096
+macro_rules! page_flags {
+    (READ_WRITE_NO_EXEC) => {
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
     };
-}
-
-macro_rules! derive_memory_flags {
-    ($mem_type:expr, $code_flags:expr, $data_flags:expr) => {
-        if $mem_type == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-            $code_flags
-        } else {
-            $data_flags
-        }
+    (READ_ONLY) => {
+        PageTableFlags::PRESENT
     };
-}
-
-macro_rules! validate_and_process_descriptor {
-    ($desc:expr, $processor:expr) => {
-        if $desc.is_valid() {
-            $processor($desc);
-        }
+    (READ_WRITE) => {
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
     };
-}
-
-macro_rules! log_and_panic {
-    ($msg:expr, $err:expr) => {
-        debug_log_no_alloc!($msg);
-        panic!($err);
+    (EXECUTE_ONLY) => {
+        PageTableFlags::PRESENT
     };
 }
 
@@ -216,21 +199,7 @@ trait MemoryDescriptorValidator {
     fn is_memory_available(&self) -> bool;
 }
 
-// Generic flag derivation trait for memory types
-trait FlagDeriver {
-    fn derive_flags(&self) -> PageTableFlags;
-}
 
-// Implement for EfiMemoryType
-impl FlagDeriver for crate::common::EfiMemoryType {
-    fn derive_flags(&self) -> PageTableFlags {
-        use x86_64::structures::paging::PageTableFlags as Flags;
-        match self {
-            crate::common::EfiMemoryType::EfiRuntimeServicesCode => Flags::PRESENT,
-            _ => Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
-        }
-    }
-}
 
 // Implementation for EFI memory descriptors
 impl MemoryDescriptorValidator for EfiMemoryDescriptor {
@@ -597,8 +566,8 @@ fn calculate_frame_allocation_params(memory_map: &[EfiMemoryDescriptor]) -> (u64
     (max_addr, total_frames, bitmap_size)
 }
 
-// Helper trait for memory region mapping operations
-trait MemoryRegionMapper {
+// Generic mapping interface
+trait MemoryMappable {
     fn map_region_with_flags(
         &mut self,
         phys_start: u64,
@@ -629,7 +598,8 @@ pub struct MemoryMapper<'a> {
     phys_offset: VirtAddr,
 }
 
-impl<'a> MemoryRegionMapper for MemoryMapper<'a> {
+// Generic mapping interface
+impl<'a> MemoryMappable for MemoryMapper<'a> {
     fn map_region_with_flags(
         &mut self,
         phys_start: u64,
@@ -1313,7 +1283,7 @@ trait PageTableUtils {
         F: Fn(&MappingConfig);
 }
 
-impl<T: MemoryRegionMapper + ?Sized> PageTableUtils for T {
+impl<T: MemoryMappable + ?Sized> PageTableUtils for T {
     fn map_multiple_ranges<F>(
         &mut self,
         frame_allocator: &mut BootInfoFrameAllocator,
