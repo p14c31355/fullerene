@@ -1958,21 +1958,24 @@ fn destroy_page_table_recursive(
     frame_alloc: &mut BootInfoFrameAllocator,
     table_phys: PhysAddr,
     level: usize,
-    temp_va: VirtAddr,
+    temp_base_va: VirtAddr,
+    temp_offset: u64,
 ) -> crate::common::logging::SystemResult<()> {
     if level == 0 || level > 4 {
         return Ok(());
     }
 
+    let temp_va = temp_base_va + temp_offset;
+
     // Temporarily map the table
     let page = Page::<Size4KiB>::containing_address(temp_va);
     let frame = PhysFrame::<Size4KiB>::containing_address(table_phys);
     unsafe {
-        mapper.map_to(page, frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, frame_alloc).expect("temp map failed").flush();
+        mapper.map_to(page, frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, frame_alloc).map_err(|_| crate::common::logging::SystemError::MappingFailed)?.flush();
     }
     let table = unsafe { &mut *(temp_va.as_mut_ptr() as *mut PageTable) };
 
-    let base_va = temp_va + 0x1000;
+    let next_offset = temp_offset + 0x1000;
 
     for (i, entry) in table.iter_mut().enumerate() {
         if entry.flags().contains(PageTableFlags::PRESENT) {
@@ -1980,8 +1983,7 @@ fn destroy_page_table_recursive(
                 // it's a table pointer
                 match entry.frame() {
                     Ok(child_frame) => {
-                        let child_va = base_va + (i * 0x1000) as u64;
-                        destroy_page_table_recursive(mapper, frame_alloc, child_frame.start_address(), level - 1, child_va)?;
+                        destroy_page_table_recursive(mapper, frame_alloc, child_frame.start_address(), level - 1, temp_base_va, next_offset + (i * 0x1000) as u64)?;
                         // deallocate the child frame
                         frame_alloc.deallocate_frame(child_frame);
                     }
@@ -2060,7 +2062,93 @@ impl PageTableManager {
         Ok(())
     }
 
+    fn clone_page_table_recursive(
+        mapper: &mut OffsetPageTable<'static>,
+        frame_alloc: &mut BootInfoFrameAllocator,
+        source_table_phys: PhysAddr,
+        level: usize,
+        temp_va: VirtAddr,
+        allocated_tables: &mut alloc::collections::BTreeMap<usize, PhysFrame>,
+    ) -> crate::common::logging::SystemResult<PhysAddr> {
+        if level == 0 || level > 4 {
+            return Err(crate::common::logging::SystemError::InvalidArgument);
+        }
 
+        // Allocate new frame for destination table
+        let dest_frame = match frame_alloc.allocate_frame() {
+            Some(frame) => frame,
+            None => return Err(crate::common::logging::SystemError::FrameAllocationFailed),
+        };
+
+        // Zero the new table
+        unsafe {
+            core::ptr::write_bytes(dest_frame.start_address().as_u64() as *mut PageTable, 0, 1);
+        }
+
+        // Track the allocated frame
+        allocated_tables.insert(dest_frame.start_address().as_u64() as usize, dest_frame);
+
+        // Temporarily map source table for reading
+        let source_page = Page::<Size4KiB>::containing_address(temp_va);
+        let source_phys_frame = PhysFrame::<Size4KiB>::containing_address(source_table_phys);
+        unsafe {
+            mapper.map_to(source_page, source_phys_frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, frame_alloc)
+                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?.flush();
+        }
+
+        let source_table = unsafe { &mut *(temp_va.as_mut_ptr() as *mut PageTable) };
+
+        // Temporarily map destination table for writing
+        let dest_page = Page::<Size4KiB>::containing_address(temp_va + 0x1000u64);
+        unsafe {
+            mapper.map_to(dest_page, dest_frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, frame_alloc)
+                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?.flush();
+        }
+
+        let dest_table = unsafe { &mut *((temp_va.as_u64() + 0x1000) as *mut PageTable) };
+
+        let mut child_va = temp_va + 0x2000u64;
+
+        // Copy all entries
+        for (_i, (source_entry, dest_entry)) in source_table.iter().zip(dest_table.iter_mut()).enumerate() {
+            if source_entry.flags().contains(PageTableFlags::PRESENT) {
+                if level > 1 && !((level == 2) && source_entry.flags().contains(PageTableFlags::HUGE_PAGE)) {
+                    // Entry points to a sub-table, recursively clone it
+                    match source_entry.frame() {
+                        Ok(child_frame) => {
+                            let cloned_child_phys = Self::clone_page_table_recursive(
+                                mapper,
+                                frame_alloc,
+                                child_frame.start_address(),
+                                level - 1,
+                                child_va,
+                                allocated_tables,
+                            )?;
+                            // Update entry to point to cloned child table
+                            dest_entry.set_addr(cloned_child_phys, source_entry.flags());
+                            child_va += 0x1000u64;
+                        }
+                        Err(_) => {
+                            // Invalid frame, skip
+                        }
+                    }
+                } else {
+                    // Leaf entry, copy directly
+                    dest_entry.set_addr(source_entry.addr(), source_entry.flags());
+                }
+            }
+        }
+
+        // Unmap temp mappings
+        if let Ok((_frame, flush)) = mapper.unmap(source_page) {
+            flush.flush();
+        }
+        if let Ok((_frame, flush)) = mapper.unmap(dest_page) {
+            flush.flush();
+        }
+
+        Ok(dest_frame.start_address())
+    }
 }
 
 impl PageTableHelper for PageTableManager {
@@ -2245,7 +2333,7 @@ impl PageTableHelper for PageTableManager {
             let mapper = self.mapper.as_mut().unwrap();
             let frame_alloc = self.frame_allocator.as_deref_mut().unwrap();
             // Recursively destroy lower level tables
-            destroy_page_table_recursive(mapper, frame_alloc, table_phys, 4, VirtAddr::new(0xFFFF_8000_0000_0000))?;
+            destroy_page_table_recursive(mapper, frame_alloc, table_phys, 4, VirtAddr::new(0xFFFF_8000_0000_0000), 0)?;
             // Now deallocate the L4 frame
             frame_alloc.deallocate_frame(frame);
             Ok(())
@@ -2254,13 +2342,6 @@ impl PageTableHelper for PageTableManager {
         }
     }
 
-    /// # CRITICAL BUG: Shallow Copy Problem
-    /// This function performs a shallow copy by directly copying only the L4 table frame
-    /// content, but it copies raw physical addresses which assumes identity mapping
-    /// (virtual address == physical address). In most systems, this mapping does not hold,
-    /// causing the copied table to contain invalid/misaligned physical addresses.
-    /// FIX: Implement deep copy with proper address translation or use virtual address
-    /// space isolation to ensure address correctness.
     fn clone_page_table(
         &mut self,
         source_table: usize,
@@ -2272,23 +2353,21 @@ impl PageTableHelper for PageTableManager {
             None => return Err(crate::common::logging::SystemError::InvalidArgument),
         };
 
-        // Allocate new frame using configured allocator
-        let new_frame = match self.frame_allocator.as_mut().unwrap().allocate_frame() {
-            Some(frame) => frame,
-            None => return Err(crate::common::logging::SystemError::FrameAllocationFailed),
-        };
+        let mapper = self.mapper.as_mut().unwrap();
+        let frame_alloc = self.frame_allocator.as_mut().unwrap();
 
-        // Copy source table to new frame
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                source_frame.start_address().as_u64() as *const u8,
-                new_frame.start_address().as_u64() as *mut u8,
-                4096,
-            );
-        }
+        // Clone recursively starting from L4 level (level 4)
+        let cloned_phys = Self::clone_page_table_recursive(
+            mapper,
+            frame_alloc,
+            source_frame.start_address(),
+            4,
+            VirtAddr::new(0xFFFF_9000_0000_0000), // Use a different temp VA than destroy
+            &mut self.allocated_tables,
+        )?;
 
-        let new_table_addr = new_frame.start_address().as_u64() as usize;
-        self.allocated_tables.insert(new_table_addr, new_frame);
+        let new_table_addr = cloned_phys.as_u64() as usize;
+        // Note: allocated_tables tracking is done inside the recursive function
 
         Ok(new_table_addr)
     }
