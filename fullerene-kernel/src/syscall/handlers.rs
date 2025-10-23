@@ -96,7 +96,7 @@ fn syscall_read(fd: core::ffi::c_int, buffer: *mut u8, count: usize) -> SyscallR
     }
 
     // Check if buffer is valid for user space
-    petroleum::validate_user_buffer(buffer as usize, count, false).map_err(|e| SyscallError::from(e))?;
+    petroleum::validate_user_buffer(buffer as usize, count, false)?;
 
     // For now, only support reading from stdin (fd 0)
     if fd == 0 {
