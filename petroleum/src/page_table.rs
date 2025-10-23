@@ -26,7 +26,10 @@ use x86_64::{
 };
 
 // Import constants
-use constants::{BOOT_CODE_PAGES, BOOT_CODE_START, PAGE_SIZE, READ_ONLY, READ_WRITE, READ_WRITE_NO_EXEC, TEMP_LOW_VA, VGA_MEMORY_END, VGA_MEMORY_START};
+use constants::{
+    BOOT_CODE_PAGES, BOOT_CODE_START, PAGE_SIZE, READ_ONLY, READ_WRITE, READ_WRITE_NO_EXEC,
+    TEMP_LOW_VA, VGA_MEMORY_END, VGA_MEMORY_START,
+};
 
 // Macros and constants
 // Helper macros and functions to reduce repetitive code
@@ -610,11 +613,7 @@ impl<'a> MemoryMapper<'a> {
     pub fn map_boot_code(&mut self) {
         let flags = READ_WRITE;
         unsafe {
-            let _ = self.map_to_higher_half(
-                BOOT_CODE_START,
-                BOOT_CODE_PAGES,
-                flags,
-            );
+            let _ = self.map_to_higher_half(BOOT_CODE_START, BOOT_CODE_PAGES, flags);
         }
     }
 
@@ -672,8 +671,6 @@ where
 
 // Type alias for backward compatibility
 pub type BootInfoFrameAllocator = BitmapFrameAllocator;
-
-
 
 /// Initialize a new OffsetPageTable.
 ///
@@ -1039,9 +1036,7 @@ fn create_new_page_table(
 
     // Temporarily create an identity mapper for this context to zero the allocated frame
     let mut temp_mapper = unsafe { init(VirtAddr::new(0)) };
-    let temp_page = unsafe {
-        Page::<Size4KiB>::containing_address(TEMP_LOW_VA)
-    };
+    let temp_page = unsafe { Page::<Size4KiB>::containing_address(TEMP_LOW_VA) };
     unsafe {
         temp_mapper
             .map_to(
@@ -1113,8 +1108,6 @@ unsafe fn map_stack_region(
         }
     }
 }
-
-
 
 struct PageTableReinitializer {
     phys_offset: VirtAddr,

@@ -15,7 +15,9 @@ pub const BOOT_CODE_START: u64 = 0x100000u64;
 pub const BOOT_CODE_PAGES: u64 = 0x8000u64;
 
 // Page table flags constants
-pub static READ_WRITE_NO_EXEC: PageTableFlags = PageTableFlags::PRESENT.union(PageTableFlags::WRITABLE).union(PageTableFlags::NO_EXECUTE);
+pub static READ_WRITE_NO_EXEC: PageTableFlags = PageTableFlags::PRESENT
+    .union(PageTableFlags::WRITABLE)
+    .union(PageTableFlags::NO_EXECUTE);
 pub static READ_ONLY: PageTableFlags = PageTableFlags::PRESENT;
 pub static READ_WRITE: PageTableFlags = PageTableFlags::PRESENT.union(PageTableFlags::WRITABLE);
 pub static READ_EXECUTE: PageTableFlags = PageTableFlags::PRESENT;

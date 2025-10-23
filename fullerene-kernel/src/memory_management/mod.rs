@@ -784,13 +784,21 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
 
     // Unmap temporary mappings
     if let Err(e) = manager.page_table_manager.unmap_page(TEMP_PHY_ACCESS) {
-        log::warn!("Failed to unmap temporary page at 0x{:x}: {:?}", TEMP_PHY_ACCESS, e);
+        log::warn!(
+            "Failed to unmap temporary page at 0x{:x}: {:?}",
+            TEMP_PHY_ACCESS,
+            e
+        );
     }
     if let Err(e) = manager
         .page_table_manager
         .unmap_page(TEMP_PHY_ACCESS + 4096)
     {
-        log::warn!("Failed to unmap temporary page at 0x{:x}: {:?}", TEMP_PHY_ACCESS + 4096, e);
+        log::warn!(
+            "Failed to unmap temporary page at 0x{:x}: {:?}",
+            TEMP_PHY_ACCESS + 4096,
+            e
+        );
     }
 
     // Initialize the new page table manager with the allocated frame

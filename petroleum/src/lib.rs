@@ -453,7 +453,7 @@ pub fn find_working_qemu_config(configs: &[QemuConfig]) -> Option<FullereneFrame
                 address
             ));
 
-                        let fb_config = crate::common::memory::create_framebuffer_config(
+            let fb_config = crate::common::memory::create_framebuffer_config(
                 address,
                 width,
                 height,

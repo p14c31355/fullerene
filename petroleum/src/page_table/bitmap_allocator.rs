@@ -1,7 +1,7 @@
 use spin::Once;
 use x86_64::{
-    structures::paging::{FrameAllocator, PhysFrame, Size4KiB},
     PhysAddr,
+    structures::paging::{FrameAllocator, PhysFrame, Size4KiB},
 };
 
 use crate::{debug_log_no_alloc, ensure_initialized, log_memory_descriptor};
