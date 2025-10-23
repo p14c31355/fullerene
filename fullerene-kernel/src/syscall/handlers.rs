@@ -134,7 +134,7 @@ fn syscall_write(fd: core::ffi::c_int, buffer: *const u8, count: usize) -> Sysca
 
     // Validate that the buffer range is valid; allow kernel pointers for stdout/stderr
     let allow_kernel = fd == 1 || fd == 2;
-    petroleum::validate_syscall_buffer(buffer as usize, allow_kernel)?;
+    petroleum::validate_user_buffer(buffer as usize, count, allow_kernel)?;
 
     // Create a slice from the buffer pointer
     let data = unsafe { core::slice::from_raw_parts(buffer, count) };
