@@ -5,8 +5,8 @@ use crate::{
 };
 
 // Macros are automatically available from common module
-use spin::Once;
 use alloc::collections::BTreeMap;
+use spin::Once;
 use x86_64::{
     PhysAddr, VirtAddr,
     instructions::tlb,
@@ -132,7 +132,8 @@ macro_rules! bit_test {
 macro_rules! map_identity_range_macro {
     ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{
         unsafe {
-            map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags).expect("Failed to identity map range")
+            map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags)
+                .expect("Failed to identity map range")
         }
     }};
 }
@@ -147,15 +148,15 @@ macro_rules! map_range_with_log_macro {
             let (page, frame) = create_page_and_frame!(virt_addr, phys_addr);
             match $mapper.map_to(page, frame, $flags, $frame_allocator) {
                 Ok(flush) => flush.flush(),
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => continue,
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                    continue;
+                }
                 Err(e) => return Err(e),
             }
         }
         Ok(())
     }};
 }
-
-
 
 // Module for all constants to reduce namespace pollution and lines
 mod memory_constants {
@@ -1127,7 +1128,7 @@ unsafe fn map_memory_descriptors_with_config<F>(
                     config.phys_start,
                     config.virt_start,
                     config.num_pages,
-                    config.flags
+                    config.flags,
                 );
             }
         }
@@ -1391,12 +1392,22 @@ impl PageTableReinitializer {
         debug_log_no_alloc!("Page table reinitialization starting");
 
         let level_4_table_frame = self.create_page_table(frame_allocator);
-        let mut mapper = self.setup_new_mapper(level_4_table_frame, current_physical_memory_offset, frame_allocator);
-        let mut initializer = PageTableInitializer::new(&mut mapper, frame_allocator, self.phys_offset, memory_map);
-        let _kernel_size = initializer.setup_identity_mappings(kernel_phys_start, level_4_table_frame);
+        let mut mapper = self.setup_new_mapper(
+            level_4_table_frame,
+            current_physical_memory_offset,
+            frame_allocator,
+        );
+        let mut initializer =
+            PageTableInitializer::new(&mut mapper, frame_allocator, self.phys_offset, memory_map);
+        let _kernel_size =
+            initializer.setup_identity_mappings(kernel_phys_start, level_4_table_frame);
         initializer.setup_higher_half_mappings(kernel_phys_start, fb_addr, fb_size);
         self.setup_recursive_mapping(&mut mapper, level_4_table_frame);
-        self.perform_page_table_switch(level_4_table_frame, frame_allocator, current_physical_memory_offset);
+        self.perform_page_table_switch(
+            level_4_table_frame,
+            frame_allocator,
+            current_physical_memory_offset,
+        );
         self.adjust_return_address_and_log();
         self.phys_offset
     }
@@ -1408,43 +1419,80 @@ impl PageTableReinitializer {
             None => panic!("Failed to allocate L4 page table frame"),
         };
         unsafe {
-            core::ptr::write_bytes(level_4_table_frame.start_address().as_u64() as *mut PageTable, 0, 1);
+            core::ptr::write_bytes(
+                level_4_table_frame.start_address().as_u64() as *mut PageTable,
+                0,
+                1,
+            );
         }
         debug_log_no_alloc!("New L4 page table created and zeroed");
         level_4_table_frame
     }
 
-    fn setup_new_mapper(&self, level_4_table_frame: PhysFrame, current_physical_memory_offset: VirtAddr, frame_allocator: &mut BootInfoFrameAllocator) -> OffsetPageTable<'static> {
+    fn setup_new_mapper(
+        &self,
+        level_4_table_frame: PhysFrame,
+        current_physical_memory_offset: VirtAddr,
+        frame_allocator: &mut BootInfoFrameAllocator,
+    ) -> OffsetPageTable<'static> {
         let mut current_mapper = unsafe { init(current_physical_memory_offset) };
         unsafe {
-            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(level_4_table_frame.start_address().as_u64()));
+            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(
+                level_4_table_frame.start_address().as_u64(),
+            ));
             let frame = level_4_table_frame;
-            let _ = current_mapper.map_to(page, frame, page_flags_const!(READ_WRITE_NO_EXEC), frame_allocator);
+            let _ = current_mapper.map_to(
+                page,
+                frame,
+                page_flags_const!(READ_WRITE_NO_EXEC),
+                frame_allocator,
+            );
         };
         unsafe {
-            let table_addr = current_physical_memory_offset.as_u64() + level_4_table_frame.start_address().as_u64();
+            let table_addr = current_physical_memory_offset.as_u64()
+                + level_4_table_frame.start_address().as_u64();
             OffsetPageTable::new(&mut *(table_addr as *mut PageTable), VirtAddr::new(0))
         }
     }
 
-    fn setup_recursive_mapping(&self, mapper: &mut OffsetPageTable, level_4_table_frame: PhysFrame) {
+    fn setup_recursive_mapping(
+        &self,
+        mapper: &mut OffsetPageTable,
+        level_4_table_frame: PhysFrame,
+    ) {
         unsafe {
             let table = mapper.level_4_table() as *const PageTable as *mut PageTable;
-            (&mut *table.cast::<x86_64::structures::paging::page_table::PageTableEntry>().add(511)).set_addr(
-                level_4_table_frame.start_address(),
-                page_flags_const!(READ_WRITE),
-            );
+            (&mut *table
+                .cast::<x86_64::structures::paging::page_table::PageTableEntry>()
+                .add(511))
+                .set_addr(
+                    level_4_table_frame.start_address(),
+                    page_flags_const!(READ_WRITE),
+                );
         }
     }
 
-    fn perform_page_table_switch(&self, level_4_table_frame: PhysFrame, frame_allocator: &mut BootInfoFrameAllocator, current_physical_memory_offset: VirtAddr) {
-        debug_log_no_alloc!("New L4 table phys addr: ", level_4_table_frame.start_address().as_u64() as usize);
+    fn perform_page_table_switch(
+        &self,
+        level_4_table_frame: PhysFrame,
+        frame_allocator: &mut BootInfoFrameAllocator,
+        current_physical_memory_offset: VirtAddr,
+    ) {
+        debug_log_no_alloc!(
+            "New L4 table phys addr: ",
+            level_4_table_frame.start_address().as_u64() as usize
+        );
         debug_log_no_alloc!("Phys offset: ", self.phys_offset.as_u64() as usize);
 
-        let mut current_mapper = unsafe { let l4_table = active_level_4_table(current_physical_memory_offset); OffsetPageTable::new(l4_table, current_physical_memory_offset) };
+        let mut current_mapper = unsafe {
+            let l4_table = active_level_4_table(current_physical_memory_offset);
+            OffsetPageTable::new(l4_table, current_physical_memory_offset)
+        };
         unsafe {
-                        match current_mapper.map_to(
-                Page::containing_address(self.phys_offset + level_4_table_frame.start_address().as_u64()),
+            match current_mapper.map_to(
+                Page::containing_address(
+                    self.phys_offset + level_4_table_frame.start_address().as_u64(),
+                ),
                 level_4_table_frame,
                 page_flags_const!(READ_WRITE),
                 frame_allocator,
@@ -1459,7 +1507,12 @@ impl PageTableReinitializer {
             }
         }
         debug_log_no_alloc!("About to switch CR3 to new page table");
-        unsafe { Cr3::write(level_4_table_frame, x86_64::registers::control::Cr3Flags::empty()); }
+        unsafe {
+            Cr3::write(
+                level_4_table_frame,
+                x86_64::registers::control::Cr3Flags::empty(),
+            );
+        }
         debug_log_no_alloc!("CR3 switched, flushing TLB");
         flush_tlb_and_verify!();
         debug_log_no_alloc!("TLB flushed, page table switch complete");
@@ -1505,13 +1558,37 @@ impl<'a> PageTableInitializer<'a> {
         // Map essential regions inline to reduce function count
         let kernel_size;
         unsafe {
-            map_identity_range_macro!(self.mapper, self.frame_allocator, level_4_table_frame.start_address().as_u64(), 1, page_flags_const!(READ_WRITE_NO_EXEC));
-            map_identity_range_macro!(self.mapper, self.frame_allocator, 4096, UEFI_COMPAT_PAGES, page_flags_const!(READ_WRITE_NO_EXEC));
+            map_identity_range_macro!(
+                self.mapper,
+                self.frame_allocator,
+                level_4_table_frame.start_address().as_u64(),
+                1,
+                page_flags_const!(READ_WRITE_NO_EXEC)
+            );
+            map_identity_range_macro!(
+                self.mapper,
+                self.frame_allocator,
+                4096,
+                UEFI_COMPAT_PAGES,
+                page_flags_const!(READ_WRITE_NO_EXEC)
+            );
             let calc_kernel_size = calculate_kernel_memory_size(kernel_phys_start);
             let kernel_pages = calc_kernel_size.div_ceil(4096);
-            map_identity_range_macro!(self.mapper, self.frame_allocator, kernel_phys_start.as_u64(), kernel_pages, page_flags_const!(READ_WRITE));
+            map_identity_range_macro!(
+                self.mapper,
+                self.frame_allocator,
+                kernel_phys_start.as_u64(),
+                kernel_pages,
+                page_flags_const!(READ_WRITE)
+            );
             kernel_size = calc_kernel_size;
-            map_identity_range_macro!(self.mapper, self.frame_allocator, BOOT_CODE_START, BOOT_CODE_PAGES, page_flags_const!(READ_WRITE));
+            map_identity_range_macro!(
+                self.mapper,
+                self.frame_allocator,
+                BOOT_CODE_START,
+                BOOT_CODE_PAGES,
+                page_flags_const!(READ_WRITE)
+            );
             map_stack_region(self.mapper, self.frame_allocator, self.memory_map);
             map_bitmap_region(self.mapper, self.frame_allocator);
             self.map_page_aligned_descriptors_safely();
@@ -1905,13 +1982,22 @@ impl PageTableManager {
             let mut temp_mapper = unsafe { init(phys_offset) };
             let virt_addr = phys_offset + table_phys_addr;
             let page = Page::containing_address(virt_addr);
-            let _map_result = temp_mapper.map_to(page, current_pml4, page_flags_const!(READ_WRITE_NO_EXEC), frame_allocator);
-            OffsetPageTable::new(&mut *(virt_addr.as_mut_ptr() as *mut PageTable), phys_offset)
+            let _map_result = temp_mapper.map_to(
+                page,
+                current_pml4,
+                page_flags_const!(READ_WRITE_NO_EXEC),
+                frame_allocator,
+            );
+            OffsetPageTable::new(
+                &mut *(virt_addr.as_mut_ptr() as *mut PageTable),
+                phys_offset,
+            )
         });
 
         self.pml4_frame = Some(current_pml4);
         self.current_page_table = table_phys_addr as usize;
-        self.allocated_tables.insert(table_phys_addr as usize, current_pml4);
+        self.allocated_tables
+            .insert(table_phys_addr as usize, current_pml4);
         self.frame_allocator = Some(frame_allocator);
         self.initialized = true;
         Ok(())
@@ -2078,11 +2164,7 @@ impl PageTableHelper for PageTableManager {
 
         // Zero the new page table frame
         unsafe {
-            core::ptr::write_bytes(
-                new_frame.start_address().as_u64() as *mut PageTable,
-                0,
-                1,
-            );
+            core::ptr::write_bytes(new_frame.start_address().as_u64() as *mut PageTable, 0, 1);
         }
 
         let table_addr = new_frame.start_address().as_u64() as usize;
@@ -2091,7 +2173,7 @@ impl PageTableHelper for PageTableManager {
         Ok(table_addr)
     }
 
-        fn destroy_page_table(
+    fn destroy_page_table(
         &mut self,
         table_addr: usize,
     ) -> crate::common::logging::SystemResult<()> {
@@ -2229,7 +2311,11 @@ pub struct PeSection {
 }
 
 pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
-    log_page_table_op!("PE size calculation", "starting", kernel_phys_start.as_u64() as usize);
+    log_page_table_op!(
+        "PE size calculation",
+        "starting",
+        kernel_phys_start.as_u64() as usize
+    );
 
     if kernel_phys_start.as_u64() == 0 {
         debug_log_no_alloc!("Kernel phys start is 0, using fallback size");
@@ -2242,7 +2328,11 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
             p
         }
         None => {
-            log_page_table_op!("PE size calculation", "parser creation failed, using fallback", 0);
+            log_page_table_op!(
+                "PE size calculation",
+                "parser creation failed, using fallback",
+                0
+            );
             return FALLBACK_KERNEL_SIZE;
         }
     };
@@ -2250,11 +2340,19 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     match unsafe { parser.size_of_image() } {
         Some(size) => {
             let padded_size = (size + KERNEL_MEMORY_PADDING).div_ceil(4096) * 4096;
-            log_page_table_op!("PE size calculation", "parsing successful", padded_size as usize);
+            log_page_table_op!(
+                "PE size calculation",
+                "parsing successful",
+                padded_size as usize
+            );
             padded_size
         }
         None => {
-            log_page_table_op!("PE size calculation", "size_of_image failed, using fallback", 0);
+            log_page_table_op!(
+                "PE size calculation",
+                "size_of_image failed, using fallback",
+                0
+            );
             FALLBACK_KERNEL_SIZE
         }
     }

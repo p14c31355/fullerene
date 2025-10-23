@@ -63,8 +63,22 @@ impl Button {
     }
 
     pub fn draw<W: FramebufferLike>(&self, writer: &mut W) {
-        draw_filled_rect!(writer, self.x as i32, self.y as i32, self.width, self.height, self.bg_color);
-        draw_centered_text(writer, &self.text, self.x as i32, self.y as i32 + (self.height as i32 / 2) - 5, self.width, self.text_color);
+        draw_filled_rect!(
+            writer,
+            self.x as i32,
+            self.y as i32,
+            self.width,
+            self.height,
+            self.bg_color
+        );
+        draw_centered_text(
+            writer,
+            &self.text,
+            self.x as i32,
+            self.y as i32 + (self.height as i32 / 2) - 5,
+            self.width,
+            self.text_color,
+        );
     }
 
     pub fn contains_point(&self, x: u32, y: u32) -> bool {
