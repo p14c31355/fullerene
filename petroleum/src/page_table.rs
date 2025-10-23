@@ -74,6 +74,24 @@ macro_rules! log_page_table_op {
     };
 }
 
+// Removed unused macro
+
+// Macro for memory descriptor processing with validation
+macro_rules! process_memory_descriptors_safely {
+    ($descriptors:expr, $processor:expr) => {{
+        for descriptor in $descriptors.iter() {
+            if is_valid_memory_descriptor(descriptor) && descriptor.is_memory_available() {
+                let start_frame = (descriptor.get_physical_start() / 4096) as usize;
+                let end_frame = start_frame.saturating_add(descriptor.get_page_count() as usize);
+
+                if start_frame < end_frame {
+                    $processor(descriptor, start_frame, end_frame);
+                }
+            }
+        }
+    }};
+}
+
 // Page table flags constants macro for reducing duplication
 macro_rules! page_flags_const {
     (READ_WRITE_NO_EXEC) => {
@@ -695,7 +713,7 @@ fn mark_available_frames(
     frame_allocator: &mut BitmapFrameAllocator,
     memory_map: &[EfiMemoryDescriptor],
 ) {
-    process_memory_descriptors(memory_map, |_descriptor, start_frame, end_frame| {
+    process_memory_descriptors_safely!(memory_map, |descriptor: &EfiMemoryDescriptor, start_frame: usize, end_frame: usize| {
         let actual_end = end_frame.min(frame_allocator.frame_count);
         frame_allocator.set_frame_range(start_frame, actual_end, false);
     });
