@@ -16,10 +16,10 @@ pub const BOOT_CODE_PAGES: u64 = 0x8000u64;
 
 // Page table flags constants
 // Note: Using hardcoded bit values since const expressions don't support | operator
-pub const READ_WRITE_NO_EXEC: PageTableFlags = unsafe { core::mem::transmute(9223372036854775811u64) }; // PRESENT|WRITABLE|NO_EXECUTE
-pub const READ_ONLY: PageTableFlags = unsafe { core::mem::transmute(1u64) }; // PRESENT
-pub const READ_WRITE: PageTableFlags = unsafe { core::mem::transmute(3u64) }; // PRESENT|WRITABLE
-pub const EXECUTE_ONLY: PageTableFlags = unsafe { core::mem::transmute(1u64) }; // PRESENT
+pub static READ_WRITE_NO_EXEC: PageTableFlags = PageTableFlags::PRESENT.union(PageTableFlags::WRITABLE).union(PageTableFlags::NO_EXECUTE);
+pub static READ_ONLY: PageTableFlags = PageTableFlags::PRESENT;
+pub static READ_WRITE: PageTableFlags = PageTableFlags::PRESENT.union(PageTableFlags::WRITABLE);
+pub static EXECUTE_ONLY: PageTableFlags = PageTableFlags::PRESENT;
 
 // Page table offsets
 pub const HIGHER_HALF_OFFSET: VirtAddr = VirtAddr::new(0xFFFF_8000_0000_0000);
