@@ -83,7 +83,7 @@ macro_rules! page_flags_const {
         PageTableFlags::PRESENT | PageTableFlags::WRITABLE
     };
     (EXECUTE_ONLY) => {
-        PageTableFlags::PRESENT | PageTableFlags::NO_EXECUTE
+        PageTableFlags::PRESENT
     };
 }
 
