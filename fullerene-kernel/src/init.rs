@@ -7,9 +7,7 @@ use alloc::{
     string::String,
     vec::{self, Vec},
 };
-use petroleum::{write_serial_bytes, init_log, 
-    
-};
+use petroleum::{init_log, write_serial_bytes};
 use petroleum::common::InitSequence;
 use spin::Once;
 

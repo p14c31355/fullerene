@@ -1628,13 +1628,13 @@ impl PageTableReinitializer {
                         .expect("Failed to map L4 table with alternative VA")
                         .flush();
                     let table_addr = alt_temp_va.as_u64();
-                    return OffsetPageTable::new(&mut *(table_addr as *mut PageTable), VirtAddr::new(level_4_table_frame.start_address().as_u64()));
+                    return OffsetPageTable::new(&mut *(table_addr as *mut PageTable), current_physical_memory_offset);
                 },
             }
         };
         unsafe {
             let table_addr = TEMP_VA_FOR_CLONE.as_u64();
-            OffsetPageTable::new(&mut *(table_addr as *mut PageTable), VirtAddr::new(level_4_table_frame.start_address().as_u64()))
+            OffsetPageTable::new(&mut *(table_addr as *mut PageTable), current_physical_memory_offset)
         }
     }
 
