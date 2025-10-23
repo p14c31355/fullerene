@@ -1,14 +1,13 @@
 // Internal submodules for modularization
 #[macro_use]
 pub mod macros;
+pub mod bitmap_allocator;
 pub mod constants;
 pub mod efi_memory;
-pub mod bitmap_allocator;
 
 use crate::{
-    calc_offset_addr, create_page_and_frame, debug_log_no_alloc,
-    flush_tlb_and_verify, log_memory_descriptor, map_and_flush, map_identity_range_checked,
-    map_with_offset,
+    calc_offset_addr, create_page_and_frame, debug_log_no_alloc, flush_tlb_and_verify,
+    log_memory_descriptor, map_and_flush, map_identity_range_checked, map_with_offset,
 };
 
 // Macros are automatically available from common module
@@ -115,8 +114,6 @@ macro_rules! page_flags_const {
     };
 }
 
-
-
 // Integrated mapping macro to reduce functions calling map_identity_range
 macro_rules! map_identity_range_macro {
     ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{
@@ -147,8 +144,6 @@ macro_rules! map_range_with_log_macro {
     }};
 }
 
-
-
 // Module for all constants to reduce namespace pollution and lines
 mod memory_constants {
     pub const PAGE_SIZE: u64 = 4096;
@@ -171,8 +166,6 @@ trait MemoryDescriptorValidator {
     fn get_page_count(&self) -> u64;
     fn is_memory_available(&self) -> bool;
 }
-
-
 
 // Implementation for EFI memory descriptors
 impl MemoryDescriptorValidator for EfiMemoryDescriptor {
@@ -720,10 +713,13 @@ fn mark_available_frames(
     frame_allocator: &mut BitmapFrameAllocator,
     memory_map: &[EfiMemoryDescriptor],
 ) {
-    process_memory_descriptors_safely!(memory_map, |descriptor: &EfiMemoryDescriptor, start_frame: usize, end_frame: usize| {
-        let actual_end = end_frame.min(frame_allocator.frame_count);
-        frame_allocator.set_frame_range(start_frame, actual_end, false);
-    });
+    process_memory_descriptors_safely!(
+        memory_map,
+        |descriptor: &EfiMemoryDescriptor, start_frame: usize, end_frame: usize| {
+            let actual_end = end_frame.min(frame_allocator.frame_count);
+            frame_allocator.set_frame_range(start_frame, actual_end, false);
+        }
+    );
 
     // Mark frame 0 as used to avoid allocating the null page
     frame_allocator.set_frame_used(0);
@@ -1009,7 +1005,10 @@ impl crate::initializer::FrameAllocator for BitmapFrameAllocator {
         Ok(())
     }
 
-    fn allocate_contiguous_frames(&mut self, count: usize) -> crate::common::logging::SystemResult<usize> {
+    fn allocate_contiguous_frames(
+        &mut self,
+        count: usize,
+    ) -> crate::common::logging::SystemResult<usize> {
         if !self.initialized {
             return Err(crate::common::logging::SystemError::InternalError);
         }
@@ -1036,7 +1035,11 @@ impl crate::initializer::FrameAllocator for BitmapFrameAllocator {
         Err(crate::common::logging::SystemError::FrameAllocationFailed)
     }
 
-    fn free_contiguous_frames(&mut self, start_addr: usize, count: usize) -> crate::common::logging::SystemResult<()> {
+    fn free_contiguous_frames(
+        &mut self,
+        start_addr: usize,
+        count: usize,
+    ) -> crate::common::logging::SystemResult<()> {
         if !self.initialized {
             return Err(crate::common::logging::SystemError::InternalError);
         }
@@ -1070,11 +1073,19 @@ impl crate::initializer::FrameAllocator for BitmapFrameAllocator {
         self.frame_count - used
     }
 
-    fn reserve_frames(&mut self, start_addr: usize, count: usize) -> crate::common::logging::SystemResult<()> {
+    fn reserve_frames(
+        &mut self,
+        start_addr: usize,
+        count: usize,
+    ) -> crate::common::logging::SystemResult<()> {
         self.allocate_frames_at(start_addr, count)
     }
 
-    fn release_frames(&mut self, start_addr: usize, count: usize) -> crate::common::logging::SystemResult<()> {
+    fn release_frames(
+        &mut self,
+        start_addr: usize,
+        count: usize,
+    ) -> crate::common::logging::SystemResult<()> {
         self.free_contiguous_frames(start_addr, count)
     }
 
@@ -1175,8 +1186,8 @@ unsafe fn map_kernel_segments_inner(
     kernel_phys_start: PhysAddr,
     phys_offset: VirtAddr,
 ) {
-    if let Some(sections) =
-        unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8) }.and_then(|p| unsafe { p.sections() })
+    if let Some(sections) = unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8) }
+        .and_then(|p| unsafe { p.sections() })
     {
         for section in sections.into_iter().filter(|s| s.virtual_size > 0) {
             unsafe {
@@ -1455,10 +1466,17 @@ fn create_new_page_table(
 
     // Temporarily create an identity mapper for this context to zero the allocated frame
     let mut temp_mapper = unsafe { init(VirtAddr::new(0)) };
-    let temp_page = unsafe { Page::<Size4KiB>::containing_address(VirtAddr::new(TEMP_VA_FOR_CLONE.as_u64() + 0x2000u64)) };
+    let temp_page = unsafe {
+        Page::<Size4KiB>::containing_address(VirtAddr::new(TEMP_VA_FOR_CLONE.as_u64() + 0x2000u64))
+    };
     unsafe {
         temp_mapper
-            .map_to(temp_page, level_4_table_frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, frame_allocator)
+            .map_to(
+                temp_page,
+                level_4_table_frame,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                frame_allocator,
+            )
             .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
             .flush();
     }
@@ -1496,7 +1514,9 @@ unsafe fn map_stack_region(
         frame_allocator,
         stack_start,
         stack_pages,
-        x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
+        x86_64::structures::paging::PageTableFlags::PRESENT
+            | x86_64::structures::paging::PageTableFlags::WRITABLE
+            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
     )
     .expect("Failed to map current stack region");
 
@@ -1510,7 +1530,9 @@ unsafe fn map_stack_region(
                     frame_allocator,
                     desc.physical_start,
                     desc.number_of_pages,
-                    x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
+                    x86_64::structures::paging::PageTableFlags::PRESENT
+                        | x86_64::structures::paging::PageTableFlags::WRITABLE
+                        | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
                 )
                 .expect("Failed to map stack region");
                 break;
@@ -1624,17 +1646,28 @@ impl PageTableReinitializer {
                     let alt_temp_va = TEMP_VA_FOR_DESTROY;
                     let alt_page = Page::<Size4KiB>::containing_address(alt_temp_va);
                     current_mapper
-                        .map_to(alt_page, frame, page_flags_const!(READ_WRITE_NO_EXEC), frame_allocator)
+                        .map_to(
+                            alt_page,
+                            frame,
+                            page_flags_const!(READ_WRITE_NO_EXEC),
+                            frame_allocator,
+                        )
                         .expect("Failed to map L4 table with alternative VA")
                         .flush();
                     let table_addr = alt_temp_va.as_u64();
-                    return OffsetPageTable::new(&mut *(table_addr as *mut PageTable), current_physical_memory_offset);
-                },
+                    return OffsetPageTable::new(
+                        &mut *(table_addr as *mut PageTable),
+                        current_physical_memory_offset,
+                    );
+                }
             }
         };
         unsafe {
             let table_addr = TEMP_VA_FOR_CLONE.as_u64();
-            OffsetPageTable::new(&mut *(table_addr as *mut PageTable), current_physical_memory_offset)
+            OffsetPageTable::new(
+                &mut *(table_addr as *mut PageTable),
+                current_physical_memory_offset,
+            )
         }
     }
 
@@ -2546,10 +2579,19 @@ impl PageTableHelper for PageTableManager {
 
         // Temporarily map the page table frame before accessing it
         let mapper = self.mapper.as_mut().unwrap();
-        let temp_page = unsafe { Page::<Size4KiB>::containing_address(VirtAddr::new(TEMP_VA_FOR_CLONE.as_u64() + 0x3000u64)) };
+        let temp_page = unsafe {
+            Page::<Size4KiB>::containing_address(VirtAddr::new(
+                TEMP_VA_FOR_CLONE.as_u64() + 0x3000u64,
+            ))
+        };
         unsafe {
             mapper
-                .map_to(temp_page, new_frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, frame_alloc)
+                .map_to(
+                    temp_page,
+                    new_frame,
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                    frame_alloc,
+                )
                 .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
                 .flush();
         }

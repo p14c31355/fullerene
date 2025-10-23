@@ -274,7 +274,7 @@ pub fn detect_standard_modes(
                 *height,
                 crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                 *bpp,
-                *width * (*bpp / 8)
+                *width * (*bpp / 8),
             ));
         }
     }
@@ -459,7 +459,7 @@ pub fn find_working_qemu_config(configs: &[QemuConfig]) -> Option<FullereneFrame
                 height,
                 crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                 bpp,
-                width * (bpp / 8)
+                width * (bpp / 8),
             ));
         }
     }
@@ -627,7 +627,7 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
         info.vertical_resolution,
         info.pixel_format,
         crate::common::get_bpp_from_pixel_format(info.pixel_format),
-        info.pixels_per_scan_line
+        info.pixels_per_scan_line,
     );
 
     serial::_print(format_args!(

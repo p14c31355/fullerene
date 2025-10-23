@@ -2,7 +2,6 @@
 ///
 /// Provides functions for validating user space memory access,
 /// used by syscall handlers and memory management.
-
 use crate::common::logging::{SystemError, SystemResult};
 use x86_64::VirtAddr;
 
@@ -14,11 +13,7 @@ pub fn is_user_address(addr: VirtAddr) -> bool {
 }
 
 /// Validate user buffer access
-pub fn validate_user_buffer(
-    ptr: usize,
-    count: usize,
-    allow_kernel: bool,
-) -> SystemResult<()> {
+pub fn validate_user_buffer(ptr: usize, count: usize, allow_kernel: bool) -> SystemResult<()> {
     if ptr == 0 && count == 0 {
         return Ok(());
     }

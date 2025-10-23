@@ -237,7 +237,8 @@ fn syscall_get_process_name(buffer: *mut u8, size: usize) -> SyscallResult {
     }
 
     // Check if buffer is valid for user space
-    petroleum::validate_user_buffer(buffer as usize, size, false).map_err(|e| SyscallError::from(e))?;
+    petroleum::validate_user_buffer(buffer as usize, size, false)
+        .map_err(|e| SyscallError::from(e))?;
 
     let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 

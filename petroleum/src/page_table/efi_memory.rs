@@ -141,17 +141,22 @@ pub fn mark_available_frames(
     frame_allocator: &mut crate::page_table::bitmap_allocator::BitmapFrameAllocator,
     memory_map: &[EfiMemoryDescriptor],
 ) {
-    process_memory_descriptors_safely!(memory_map, |descriptor: &EfiMemoryDescriptor, start_frame: usize, end_frame: usize| {
-        let actual_end = end_frame.min(frame_allocator.frame_count);
-        frame_allocator.set_frame_range(start_frame, actual_end, false);
-    });
+    process_memory_descriptors_safely!(
+        memory_map,
+        |descriptor: &EfiMemoryDescriptor, start_frame: usize, end_frame: usize| {
+            let actual_end = end_frame.min(frame_allocator.frame_count);
+            frame_allocator.set_frame_range(start_frame, actual_end, false);
+        }
+    );
 
     // Mark frame 0 as used to avoid allocating the null page
     frame_allocator.set_frame_used(0);
 }
 
 // Calculate frame allocation parameters from memory map
-pub fn calculate_frame_allocation_params(memory_map: &[EfiMemoryDescriptor]) -> (u64, usize, usize) {
+pub fn calculate_frame_allocation_params(
+    memory_map: &[EfiMemoryDescriptor],
+) -> (u64, usize, usize) {
     // Only consider valid descriptors to prevent corrupted data from causing excessive bitmap allocation
     let mut max_addr: u64 = 0;
 

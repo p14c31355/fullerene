@@ -1,10 +1,10 @@
 use core::alloc::{GlobalAlloc, Layout};
 use linked_list_allocator::LockedHeap;
-use x86_64::{
-    structures::paging::{FrameAllocator, Page, PageTableFlags, PhysFrame, Size4KiB, Translate},
-    PhysAddr, VirtAddr,
-};
 use spin::Once;
+use x86_64::{
+    PhysAddr, VirtAddr,
+    structures::paging::{FrameAllocator, Page, PageTableFlags, PhysFrame, Size4KiB, Translate},
+};
 
 use super::constants::{PAGE_SIZE, UEFI_COMPAT_PAGES};
 use crate::{
@@ -251,7 +251,10 @@ impl BitmapFrameAllocator {
     }
 
     /// Allocate contiguous frames for large allocations
-    fn allocate_contiguous_frames(&mut self, count: usize) -> crate::common::logging::SystemResult<usize> {
+    fn allocate_contiguous_frames(
+        &mut self,
+        count: usize,
+    ) -> crate::common::logging::SystemResult<usize> {
         if !self.initialized {
             return Err(crate::common::logging::SystemError::InternalError);
         }
@@ -279,7 +282,11 @@ impl BitmapFrameAllocator {
     }
 
     /// Deallocate contiguous frames
-    fn free_contiguous_frames(&mut self, start_addr: usize, count: usize) -> crate::common::logging::SystemResult<()> {
+    fn free_contiguous_frames(
+        &mut self,
+        start_addr: usize,
+        count: usize,
+    ) -> crate::common::logging::SystemResult<()> {
         if !self.initialized {
             return Err(crate::common::logging::SystemError::InternalError);
         }
@@ -294,12 +301,20 @@ impl BitmapFrameAllocator {
     }
 
     /// Reserve frames at a specific address
-    fn reserve_frames(&mut self, start_addr: usize, count: usize) -> crate::common::logging::SystemResult<()> {
+    fn reserve_frames(
+        &mut self,
+        start_addr: usize,
+        count: usize,
+    ) -> crate::common::logging::SystemResult<()> {
         self.allocate_frames_at(start_addr, count)
     }
 
     /// Release frames at a specific address
-    fn release_frames(&mut self, start_addr: usize, count: usize) -> crate::common::logging::SystemResult<()> {
+    fn release_frames(
+        &mut self,
+        start_addr: usize,
+        count: usize,
+    ) -> crate::common::logging::SystemResult<()> {
         self.free_contiguous_frames(start_addr, count)
     }
 
@@ -330,7 +345,6 @@ impl BitmapFrameAllocator {
 
         self.frame_count - used
     }
-
 }
 
 // Global heap allocator
@@ -342,9 +356,13 @@ pub static HEAP_INITIALIZED: Once<bool> = Once::new();
 /// complete physical memory is mapped to virtual memory at the passed
 /// `physical_memory_offset`. Also, this function must be only called once
 /// to avoid aliasing `&mut` references (which is undefined behavior).
-pub unsafe fn init(physical_memory_offset: VirtAddr) -> x86_64::structures::paging::OffsetPageTable<'static> {
+pub unsafe fn init(
+    physical_memory_offset: VirtAddr,
+) -> x86_64::structures::paging::OffsetPageTable<'static> {
     let level_4_table = unsafe { active_level_4_table(physical_memory_offset) };
-    unsafe { x86_64::structures::paging::OffsetPageTable::new(level_4_table, physical_memory_offset) }
+    unsafe {
+        x86_64::structures::paging::OffsetPageTable::new(level_4_table, physical_memory_offset)
+    }
 }
 
 /// Returns a mutable reference to the active level 4 table.
@@ -353,7 +371,9 @@ pub unsafe fn init(physical_memory_offset: VirtAddr) -> x86_64::structures::pagi
 /// complete physical memory is mapped to virtual memory at the passed
 /// `physical_memory_offset`. Also, this function must be only called once
 /// to avoid aliasing `&mut` references (which is undefined behavior).
-unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static mut x86_64::structures::paging::PageTable {
+unsafe fn active_level_4_table(
+    physical_memory_offset: VirtAddr,
+) -> &'static mut x86_64::structures::paging::PageTable {
     use x86_64::registers::control::Cr3;
 
     let (level_4_table_frame, _) = Cr3::read();

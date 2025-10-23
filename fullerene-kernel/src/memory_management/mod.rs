@@ -786,7 +786,9 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
     }
 
     // Unmap kernel table temporary mapping
-    let _ = manager.page_table_manager.unmap_page(TEMP_PHY_ACCESS + 4096)?;
+    let _ = manager
+        .page_table_manager
+        .unmap_page(TEMP_PHY_ACCESS + 4096)?;
 
     // Initialize the new page table manager with the allocated frame
     let mut page_table_manager = PageTableManager::new_with_frame(
