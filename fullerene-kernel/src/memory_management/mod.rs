@@ -762,10 +762,7 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
         core::slice::from_raw_parts_mut(table_ptr, 512).fill(0);
     }
 
-    // Unmap the temporary mapping
-    let _ = manager.page_table_manager.unmap_page(TEMP_PHY_ACCESS)?;
-
-    // Copy kernel mappings to the new page table
+        // Copy kernel mappings to the new page table
     // This involves copying the higher half kernel mappings from the current page table
     let current_cr3 = unsafe { x86_64::registers::control::Cr3::read() };
     let kernel_table_phys = current_cr3.0.start_address().as_u64() as usize;
@@ -785,7 +782,8 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
         core::ptr::copy_nonoverlapping(kernel_entries_src, new_entries_dst, 256);
     }
 
-    // Unmap kernel table temporary mapping
+    // Unmap temporary mappings
+    let _ = manager.page_table_manager.unmap_page(TEMP_PHY_ACCESS)?;
     let _ = manager
         .page_table_manager
         .unmap_page(TEMP_PHY_ACCESS + 4096)?;

@@ -453,14 +453,21 @@ pub fn find_working_qemu_config(configs: &[QemuConfig]) -> Option<FullereneFrame
                 address
             ));
 
-            return Some(crate::common::memory::create_framebuffer_config(
+                        let fb_config = crate::common::memory::create_framebuffer_config(
                 address,
                 width,
                 height,
                 crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                 bpp,
                 width * (bpp / 8),
+            );
+
+            serial::_print(format_args!(
+                "QEMU framebuffer candidate: {}x{} @ {:#x}\n",
+                fb_config.width, fb_config.height, fb_config.address
             ));
+
+            return Some(fb_config);
         }
     }
 

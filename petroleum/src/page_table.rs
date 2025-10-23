@@ -1039,20 +1039,16 @@ impl crate::initializer::FrameAllocator for BitmapFrameAllocator {
         self.frame_count
     }
 
-    fn available_frames(&self) -> usize {
+        fn available_frames(&self) -> usize {
         if !self.initialized || self.bitmap.is_none() {
             return 0;
         }
 
         let bitmap = self.bitmap.as_ref().unwrap();
-        let mut used = 0;
-        let chunks_to_check = self.frame_count.div_ceil(64);
+        let used_bits: usize = bitmap.iter().map(|chunk| chunk.count_ones() as usize).sum();
+        let total_bits_in_bitmap = bitmap.len() * 64;
 
-        for i in 0..chunks_to_check {
-            used += bitmap[i].count_ones() as usize;
-        }
-
-        self.frame_count - used
+        total_bits_in_bitmap - used_bits
     }
 
     fn reserve_frames(

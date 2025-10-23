@@ -50,9 +50,6 @@ pub fn validate_syscall_fd(fd: i32) -> SystemResult<()> {
 }
 
 pub fn validate_syscall_buffer(ptr: usize, allow_kernel: bool) -> SystemResult<()> {
-    if ptr == 0 {
-        return Err(SystemError::InvalidArgument);
-    }
     validate_user_buffer(ptr, 1, allow_kernel)
 }
 
