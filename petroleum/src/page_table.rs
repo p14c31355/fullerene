@@ -80,10 +80,10 @@ macro_rules! page_flags_const {
         PageTableFlags::PRESENT
     };
     (READ_WRITE) => {
-        PageTableFlags::PRESENT | PageTableFlags::WRITABLE
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
     };
     (EXECUTE_ONLY) => {
-        PageTableFlags::PRESENT | PageTableFlags::NO_EXECUTE
+        PageTableFlags::PRESENT
     };
 }
 
@@ -1441,12 +1441,12 @@ impl PageTableReinitializer {
                 level_4_table_frame.start_address().as_u64(),
             ));
             let frame = level_4_table_frame;
-            let _ = current_mapper.map_to(
+            current_mapper.map_to(
                 page,
                 frame,
                 page_flags_const!(READ_WRITE_NO_EXEC),
                 frame_allocator,
-            );
+            ).expect("Failed to identity-map new L4 table for mapper setup").flush();
         };
         unsafe {
             let table_addr = current_physical_memory_offset.as_u64()
@@ -1982,12 +1982,12 @@ impl PageTableManager {
             let mut temp_mapper = unsafe { init(phys_offset) };
             let virt_addr = phys_offset + table_phys_addr;
             let page = Page::containing_address(virt_addr);
-            let _map_result = temp_mapper.map_to(
+            temp_mapper.map_to(
                 page,
                 current_pml4,
                 page_flags_const!(READ_WRITE_NO_EXEC),
                 frame_allocator,
-            );
+            ).map_err(|_| crate::common::logging::SystemError::MappingFailed)?.flush();
             OffsetPageTable::new(
                 &mut *(virt_addr.as_mut_ptr() as *mut PageTable),
                 phys_offset,
