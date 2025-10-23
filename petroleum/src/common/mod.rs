@@ -35,8 +35,9 @@ pub fn set_memory_initialized(initialized: bool) {
     *MEMORY_INITIALIZED.lock() = initialized;
 }
 
-// Re-exports to maintain compatibility and new macros
+// Re-exports to maintain compatibility
 pub use error::*;
+pub use macros::*;
 pub use memory::*;
 pub use syscall::*;
 pub use uefi::*;

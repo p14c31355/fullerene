@@ -19,9 +19,8 @@ use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
 use petroleum::page_table::{BitmapFrameAllocator, PageTableManager};
 use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
 use process_memory::ProcessMemoryManagerImpl;
-pub mod convenience;
-pub mod process_memory;
-pub mod user_space;
+// pub mod convenience;
+// pub mod process_memory;
 
 // Re-export for external use
 pub use convenience::*;
@@ -838,8 +837,29 @@ pub fn get_memory_manager() -> &'static Mutex<Option<UnifiedMemoryManager>> {
     &MEMORY_MANAGER
 }
 
+// User space memory validation functions
+// Integrated from user_space.rs to reduce file count
+
+/// Map a user page for kernel access
+pub fn map_user_page(
+    virtual_addr: usize,
+    physical_addr: usize,
+    flags: PageFlags,
+) -> SystemResult<()> {
+    if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
+        manager.page_table_manager.map_page(
+            virtual_addr,
+            physical_addr,
+            flags,
+            &mut manager.frame_allocator,
+        )
+    } else {
+        Err(SystemError::InternalError)
+    }
+}
+
 // Re-export functions for easier access
-pub use user_space::{is_user_address, map_user_page};
+pub use petroleum::{is_user_address, validate_user_buffer};
 
 /// Physical memory offset for virtual to physical address translation
 static PHYSICAL_MEMORY_OFFSET: spin::Mutex<usize> = spin::Mutex::new(0);

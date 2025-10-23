@@ -87,13 +87,8 @@ fn syscall_fork() -> SyscallResult {
 
 /// Read system call
 fn syscall_read(fd: core::ffi::c_int, buffer: *mut u8, count: usize) -> SyscallResult {
-    if fd < 0 {
-        return Err(SyscallError::InvalidArgument);
-    }
-
-    if buffer.is_null() {
-        return Err(SyscallError::InvalidArgument);
-    }
+    petroleum::validate_syscall_fd(fd)?;
+    petroleum::validate_syscall_buffer(buffer as usize, false)?;
 
     // POSIX: reading 0 bytes should return 0 immediately
     if count == 0 {
@@ -132,7 +127,8 @@ fn syscall_read(fd: core::ffi::c_int, buffer: *mut u8, count: usize) -> SyscallR
 
 /// Write system call
 fn syscall_write(fd: core::ffi::c_int, buffer: *const u8, count: usize) -> SyscallResult {
-    if fd < 0 || buffer.is_null() {
+    petroleum::validate_syscall_fd(fd)?;
+    if buffer.is_null() {
         return Err(SyscallError::InvalidArgument);
     }
 
@@ -239,7 +235,8 @@ fn syscall_getpid() -> SyscallResult {
 
 /// Get process name
 fn syscall_get_process_name(buffer: *mut u8, size: usize) -> SyscallResult {
-    if buffer.is_null() || size == 0 {
+    petroleum::validate_syscall_buffer(buffer as usize, false)?;
+    if size == 0 {
         return Err(SyscallError::InvalidArgument);
     }
 

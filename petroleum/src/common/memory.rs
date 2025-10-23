@@ -43,3 +43,38 @@ pub fn validate_user_buffer(
 
     Ok(())
 }
+
+/// Common syscall argument validation helper
+pub fn validate_syscall_fd(fd: i32) -> SystemResult<()> {
+    if fd < 0 {
+        Err(SystemError::InvalidArgument)
+    } else {
+        Ok(())
+    }
+}
+
+pub fn validate_syscall_buffer(ptr: usize, allow_kernel: bool) -> SystemResult<()> {
+    if ptr == 0 {
+        return Err(SystemError::InvalidArgument);
+    }
+    validate_user_buffer(ptr, 1, allow_kernel)
+}
+
+/// Helper function to create framebuffer configuration
+pub fn create_framebuffer_config(
+    address: u64,
+    width: u32,
+    height: u32,
+    pixel_format: super::uefi::EfiGraphicsPixelFormat,
+    bpp: u32,
+    stride: u32,
+) -> super::uefi::FullereneFramebufferConfig {
+    super::uefi::FullereneFramebufferConfig {
+        address,
+        width,
+        height,
+        pixel_format,
+        bpp,
+        stride,
+    }
+}
