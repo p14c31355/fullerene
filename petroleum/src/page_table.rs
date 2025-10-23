@@ -1982,12 +1982,12 @@ impl PageTableManager {
             let mut temp_mapper = unsafe { init(phys_offset) };
             let virt_addr = phys_offset + table_phys_addr;
             let page = Page::containing_address(virt_addr);
-            let _map_result = temp_mapper.map_to(
+            temp_mapper.map_to(
                 page,
                 current_pml4,
                 page_flags_const!(READ_WRITE_NO_EXEC),
                 frame_allocator,
-            );
+            ).map_err(|_| crate::common::logging::SystemError::MappingFailed)?.flush();
             OffsetPageTable::new(
                 &mut *(virt_addr.as_mut_ptr() as *mut PageTable),
                 phys_offset,
