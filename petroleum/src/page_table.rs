@@ -1958,44 +1958,43 @@ fn destroy_page_table_recursive(
     frame_alloc: &mut BootInfoFrameAllocator,
     table_phys: PhysAddr,
     level: usize,
-    temp_base_va: VirtAddr,
-    temp_offset: u64,
+    temp_va: VirtAddr,
 ) -> crate::common::logging::SystemResult<()> {
     if level == 0 || level > 4 {
         return Ok(());
     }
 
-    let temp_va = temp_base_va + temp_offset;
-
-    // Temporarily map the table
+    // Temporarily map the table to read its entries
     let page = Page::<Size4KiB>::containing_address(temp_va);
     let frame = PhysFrame::<Size4KiB>::containing_address(table_phys);
-    unsafe {
-        mapper.map_to(page, frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, frame_alloc).map_err(|_| crate::common::logging::SystemError::MappingFailed)?.flush();
-    }
-    let table = unsafe { &mut *(temp_va.as_mut_ptr() as *mut PageTable) };
+    let flush = unsafe {
+        mapper.map_to(page, frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, frame_alloc)
+            .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
+    };
+    flush.flush();
 
-    let next_offset = temp_offset + 0x1000;
+    let table = unsafe { &*(temp_va.as_ptr() as *const PageTable) };
 
-    for (i, entry) in table.iter_mut().enumerate() {
-        if entry.flags().contains(PageTableFlags::PRESENT) {
-            if level > 1 && !((level == 2) && entry.flags().contains(PageTableFlags::HUGE_PAGE)) {
-                // it's a table pointer
-                match entry.frame() {
-                    Ok(child_frame) => {
-                        destroy_page_table_recursive(mapper, frame_alloc, child_frame.start_address(), level - 1, temp_base_va, next_offset + (i * 0x1000) as u64)?;
-                        // deallocate the child frame
-                        frame_alloc.deallocate_frame(child_frame);
-                    }
-                    Err(_) => {}
+    let mut child_frames_to_free = alloc::vec::Vec::new();
+    if level > 1 {
+        for entry in table.iter() {
+            if entry.flags().contains(PageTableFlags::PRESENT) && !entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                if let Ok(child_frame) = entry.frame() {
+                    child_frames_to_free.push(child_frame);
                 }
             }
         }
     }
 
-    // Unmap temp
+    // Unmap the temporary page before recursing
     if let Ok((_frame, flush)) = mapper.unmap(page) {
         flush.flush();
+    }
+
+    // Now recurse on children
+    for child_frame in child_frames_to_free {
+        destroy_page_table_recursive(mapper, frame_alloc, child_frame.start_address(), level - 1, temp_va)?;
+        frame_alloc.deallocate_frame(child_frame);
     }
 
     Ok(())
