@@ -1049,6 +1049,17 @@ pub unsafe fn translate_addr(addr: VirtAddr, physical_memory_offset: VirtAddr) -
 /// Returns the higher-half kernel mapping offset.
 pub const HIGHER_HALF_OFFSET: VirtAddr = VirtAddr::new(0xFFFF_8000_0000_0000);
 
+/// Temporary virtual address for page table destruction operations.
+/// WARNING: Assumes this address range is not already mapped or in use.
+/// A dedicated temporary VA allocation pool would be safer but is not implemented here.
+const TEMP_VA_FOR_DESTROY: VirtAddr = VirtAddr::new(0xFFFF_8000_0000_0000);
+
+/// Temporary virtual address for page table cloning operations.
+/// WARNING: Assumes this address range is not already mapped or in use.
+/// A dedicated temporary VA allocation pool would be safer but is not implemented here.
+/// This is distinct from TEMP_VA_FOR_DESTROY to avoid conflicts during recursive operations.
+const TEMP_VA_FOR_CLONE: VirtAddr = VirtAddr::new(0xFFFF_9000_0000_0000);
+
 /// Helper function to map a range of physical addresses to the same virtual addresses (identity mapping)
 unsafe fn map_identity_range(
     mapper: &mut impl Mapper<Size4KiB>,
@@ -1993,7 +2004,7 @@ fn destroy_page_table_recursive(
 
     // Now recurse on children
     for child_frame in child_frames_to_free {
-        destroy_page_table_recursive(mapper, frame_alloc, child_frame.start_address(), level - 1, temp_va)?;
+        destroy_page_table_recursive(mapper, frame_alloc, child_frame.start_address(), level - 1, TEMP_VA_FOR_DESTROY)?;
         frame_alloc.deallocate_frame(child_frame);
     }
 
@@ -2336,7 +2347,7 @@ impl PageTableHelper for PageTableManager {
             let mapper = self.mapper.as_mut().unwrap();
             let frame_alloc = self.frame_allocator.as_deref_mut().unwrap();
             // Recursively destroy lower level tables
-            destroy_page_table_recursive(mapper, frame_alloc, table_phys, 4, VirtAddr::new(0xFFFF_8000_0000_0000))?;
+            destroy_page_table_recursive(mapper, frame_alloc, table_phys, 4, TEMP_VA_FOR_DESTROY)?;
             // Now deallocate the L4 frame
             frame_alloc.deallocate_frame(frame);
             Ok(())
@@ -2365,7 +2376,7 @@ impl PageTableHelper for PageTableManager {
             frame_alloc,
             source_frame.start_address(),
             4,
-            VirtAddr::new(0xFFFF_9000_0000_0000), // Use a different temp VA than destroy
+            TEMP_VA_FOR_CLONE, // Use a different temp VA than destroy
             &mut self.allocated_tables,
         )?;
 
