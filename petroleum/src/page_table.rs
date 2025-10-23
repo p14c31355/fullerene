@@ -90,46 +90,7 @@ macro_rules! page_flags_const {
     };
 }
 
-// Bit manipulation macros to reduce repeated code in BitmapFrameAllocator
-macro_rules! bit_set {
-    ($bitmap:expr, $index:expr) => {
-        if let Some(ref mut bmp) = $bitmap {
-            let chunk_index = $index / 64;
-            let bit_index = $index % 64;
-            if chunk_index < bmp.len() {
-                bmp[chunk_index] |= 1 << bit_index;
-            }
-        }
-    };
-}
 
-macro_rules! bit_clear {
-    ($bitmap:expr, $index:expr) => {
-        if let Some(ref mut bmp) = $bitmap {
-            let chunk_index = $index / 64;
-            let bit_index = $index % 64;
-            if chunk_index < bmp.len() {
-                bmp[chunk_index] &= !(1 << bit_index);
-            }
-        }
-    };
-}
-
-macro_rules! bit_test {
-    ($bitmap:expr, $index:expr) => {
-        if let Some(ref bmp) = $bitmap {
-            let chunk_index = $index / 64;
-            let bit_index = $index % 64;
-            if chunk_index < bmp.len() {
-                (bmp[chunk_index] & (1 << bit_index)) == 0
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    };
-}
 
 // Integrated mapping macro to reduce functions calling map_identity_range
 macro_rules! map_identity_range_macro {
@@ -161,20 +122,7 @@ macro_rules! map_range_with_log_macro {
     }};
 }
 
-macro_rules! page_flags {
-    (READ_WRITE_NO_EXEC) => {
-        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
-    };
-    (READ_ONLY) => {
-        PageTableFlags::PRESENT
-    };
-    (READ_WRITE) => {
-        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
-    };
-    (EXECUTE_ONLY) => {
-        PageTableFlags::PRESENT
-    };
-}
+
 
 // Module for all constants to reduce namespace pollution and lines
 mod memory_constants {
@@ -657,7 +605,6 @@ impl<'a> MemoryMapper<'a> {
         fb_addr: Option<VirtAddr>,
         fb_size: Option<u64>,
     ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-        use x86_64::structures::paging::PageTableFlags as Flags;
         if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
             let fb_pages = fb_size.div_ceil(4096);
             let fb_phys = fb_addr.as_u64();
@@ -671,7 +618,6 @@ impl<'a> MemoryMapper<'a> {
     }
 
     pub fn map_vga(&mut self) {
-        use x86_64::structures::paging::PageTableFlags as Flags;
         const VGA_MEMORY_START: u64 = memory_region_const_macro!(VGA_START);
         const VGA_MEMORY_END: u64 = memory_region_const_macro!(VGA_END);
         const VGA_PAGES: u64 = (VGA_MEMORY_END - VGA_MEMORY_START) / 4096;
@@ -749,7 +695,7 @@ fn mark_available_frames(
     frame_allocator: &mut BitmapFrameAllocator,
     memory_map: &[EfiMemoryDescriptor],
 ) {
-    process_memory_descriptors(memory_map, |descriptor, start_frame, end_frame| {
+    process_memory_descriptors(memory_map, |_descriptor, start_frame, end_frame| {
         let actual_end = end_frame.min(frame_allocator.frame_count);
         frame_allocator.set_frame_range(start_frame, actual_end, false);
     });
@@ -864,17 +810,39 @@ impl BitmapFrameAllocator {
 
     /// Set a frame as free in the bitmap
     fn set_frame_free(&mut self, frame_index: usize) {
-        bit_clear!(self.bitmap, frame_index);
+        if let Some(ref mut bitmap) = self.bitmap {
+            let chunk_index = frame_index / 64;
+            let bit_index = frame_index % 64;
+            if chunk_index < bitmap.len() {
+                bitmap[chunk_index] &= !(1 << bit_index);
+            }
+        }
     }
 
     /// Set a frame as used in the bitmap
     fn set_frame_used(&mut self, frame_index: usize) {
-        bit_set!(self.bitmap, frame_index);
+        if let Some(ref mut bitmap) = self.bitmap {
+            let chunk_index = frame_index / 64;
+            let bit_index = frame_index % 64;
+            if chunk_index < bitmap.len() {
+                bitmap[chunk_index] |= 1 << bit_index;
+            }
+        }
     }
 
     /// Check if a frame is free
     fn is_frame_free(&self, frame_index: usize) -> bool {
-        bit_test!(self.bitmap, frame_index)
+        if let Some(ref bitmap) = self.bitmap {
+            let chunk_index = frame_index / 64;
+            let bit_index = frame_index % 64;
+            if chunk_index < bitmap.len() {
+                (bitmap[chunk_index] & (1 << bit_index)) == 0
+            } else {
+                false
+            }
+        } else {
+            false
+        }
     }
 
     /// Find the next free frame starting from a given index
@@ -1032,10 +1000,8 @@ pub fn create_example_mapping(
     mapper: &mut OffsetPageTable,
     frame_allocator: &mut impl FrameAllocator<Size4KiB>,
 ) {
-    use x86_64::structures::paging::PageTableFlags as Flags;
-
     let frame = PhysFrame::containing_address(PhysAddr::new(0xb8000));
-    let flags = Flags::PRESENT | Flags::WRITABLE;
+    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
 
     let map_to_result = unsafe { mapper.map_to(page, frame, flags, frame_allocator) };
     map_to_result.expect("map_to failed").flush();
@@ -1387,13 +1353,12 @@ unsafe fn map_stack_region(
     unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp) };
     let stack_pages = 256; // 1MB stack
     let stack_start = rsp & !4095; // page align
-    use x86_64::structures::paging::PageTableFlags as Flags;
     map_identity_range(
         mapper,
         frame_allocator,
         stack_start,
         stack_pages,
-        Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+        x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
     )
     .expect("Failed to map current stack region");
 
@@ -1407,7 +1372,7 @@ unsafe fn map_stack_region(
                     frame_allocator,
                     desc.physical_start,
                     desc.number_of_pages,
-                    Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+                    x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
                 )
                 .expect("Failed to map stack region");
                 break;
