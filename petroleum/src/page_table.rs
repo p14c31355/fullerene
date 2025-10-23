@@ -2021,7 +2021,7 @@ fn destroy_page_table_recursive(
             child_frame.start_address(),
             level - 1,
             TEMP_VA_FOR_DESTROY,
-            temp_va,
+        )?;
         frame_alloc.deallocate_frame(child_frame);
     }
 
