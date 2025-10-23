@@ -24,7 +24,7 @@ use x86_64::{
 };
 
 // Import constants
-use constants::{BOOT_CODE_PAGES, BOOT_CODE_START, PAGE_SIZE, READ_ONLY, READ_WRITE, READ_WRITE_NO_EXEC, VGA_MEMORY_END, VGA_MEMORY_START};
+use constants::{BOOT_CODE_PAGES, BOOT_CODE_START, PAGE_SIZE, READ_ONLY, READ_WRITE, READ_WRITE_NO_EXEC, TEMP_LOW_VA, VGA_MEMORY_END, VGA_MEMORY_START};
 
 // Macros and constants
 // Helper macros and functions to reduce repetitive code
@@ -112,7 +112,7 @@ macro_rules! page_flags_const {
     (READ_WRITE) => {
         PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
     };
-    (EXECUTE_ONLY) => {
+    (READ_EXECUTE) => {
         PageTableFlags::PRESENT
     };
 }
@@ -1445,7 +1445,7 @@ fn create_new_page_table(
     // Temporarily create an identity mapper for this context to zero the allocated frame
     let mut temp_mapper = unsafe { init(VirtAddr::new(0)) };
     let temp_page = unsafe {
-        Page::<Size4KiB>::containing_address(VirtAddr::new(TEMP_VA_FOR_CLONE.as_u64() + 0x2000u64))
+        Page::<Size4KiB>::containing_address(TEMP_LOW_VA)
     };
     unsafe {
         temp_mapper
@@ -1461,7 +1461,7 @@ fn create_new_page_table(
 
     // Zero the new L4 table through the temporary mapping
     unsafe {
-        let table_addr = TEMP_VA_FOR_CLONE.as_u64() + 0x2000u64;
+        let table_addr = TEMP_LOW_VA.as_u64();
         core::ptr::write_bytes(table_addr as *mut PageTable, 0, 1);
     }
 

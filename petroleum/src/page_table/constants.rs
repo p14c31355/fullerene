@@ -15,13 +15,13 @@ pub const BOOT_CODE_START: u64 = 0x100000u64;
 pub const BOOT_CODE_PAGES: u64 = 0x8000u64;
 
 // Page table flags constants
-// Note: Using hardcoded bit values since const expressions don't support | operator
 pub static READ_WRITE_NO_EXEC: PageTableFlags = PageTableFlags::PRESENT.union(PageTableFlags::WRITABLE).union(PageTableFlags::NO_EXECUTE);
 pub static READ_ONLY: PageTableFlags = PageTableFlags::PRESENT;
 pub static READ_WRITE: PageTableFlags = PageTableFlags::PRESENT.union(PageTableFlags::WRITABLE);
-pub static EXECUTE_ONLY: PageTableFlags = PageTableFlags::PRESENT;
+pub static READ_EXECUTE: PageTableFlags = PageTableFlags::PRESENT;
 
 // Page table offsets
 pub const HIGHER_HALF_OFFSET: VirtAddr = VirtAddr::new(0xFFFF_8000_0000_0000);
 pub const TEMP_VA_FOR_DESTROY: VirtAddr = VirtAddr::new(0xFFFF_A000_0000_0000);
 pub const TEMP_VA_FOR_CLONE: VirtAddr = VirtAddr::new(0xFFFF_9000_0000_0000);
+pub const TEMP_LOW_VA: VirtAddr = VirtAddr::new(0x2000u64);
