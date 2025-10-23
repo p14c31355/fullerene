@@ -1463,12 +1463,15 @@ impl PageTableReinitializer {
                 level_4_table_frame.start_address().as_u64(),
             ));
             let frame = level_4_table_frame;
-            current_mapper.map_to(
-                page,
-                frame,
-                page_flags_const!(READ_WRITE_NO_EXEC),
-                frame_allocator,
-            ).expect("Failed to identity-map new L4 table for mapper setup").flush();
+            current_mapper
+                .map_to(
+                    page,
+                    frame,
+                    page_flags_const!(READ_WRITE_NO_EXEC),
+                    frame_allocator,
+                )
+                .expect("Failed to identity-map new L4 table for mapper setup")
+                .flush();
         };
         unsafe {
             let table_addr = current_physical_memory_offset.as_u64()
@@ -1979,7 +1982,13 @@ fn destroy_page_table_recursive(
     let page = Page::<Size4KiB>::containing_address(temp_va);
     let frame = PhysFrame::<Size4KiB>::containing_address(table_phys);
     let flush = unsafe {
-        mapper.map_to(page, frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, frame_alloc)
+        mapper
+            .map_to(
+                page,
+                frame,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                frame_alloc,
+            )
             .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
     };
     flush.flush();
@@ -1989,7 +1998,9 @@ fn destroy_page_table_recursive(
     let mut child_frames_to_free = alloc::vec::Vec::new();
     if level > 1 {
         for entry in table.iter() {
-            if entry.flags().contains(PageTableFlags::PRESENT) && !entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            if entry.flags().contains(PageTableFlags::PRESENT)
+                && !entry.flags().contains(PageTableFlags::HUGE_PAGE)
+            {
                 if let Ok(child_frame) = entry.frame() {
                     child_frames_to_free.push(child_frame);
                 }
@@ -2004,7 +2015,13 @@ fn destroy_page_table_recursive(
 
     // Now recurse on children
     for child_frame in child_frames_to_free {
-        destroy_page_table_recursive(mapper, frame_alloc, child_frame.start_address(), level - 1, TEMP_VA_FOR_DESTROY)?;
+        destroy_page_table_recursive(
+            mapper,
+            frame_alloc,
+            child_frame.start_address(),
+            level - 1,
+            TEMP_VA_FOR_DESTROY,
+        )?;
         frame_alloc.deallocate_frame(child_frame);
     }
 
@@ -2058,7 +2075,8 @@ impl PageTableManager {
                 frame_allocator,
             ) {
                 Ok(flush) => flush.flush(),
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => { /* Already mapped, which is fine. */ }
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => { /* Already mapped, which is fine. */
+                }
                 Err(_) => return Err(crate::common::logging::SystemError::MappingFailed),
             };
             OffsetPageTable::new(
@@ -2106,8 +2124,15 @@ impl PageTableManager {
         let source_page = Page::<Size4KiB>::containing_address(temp_va);
         let source_phys_frame = PhysFrame::<Size4KiB>::containing_address(source_table_phys);
         unsafe {
-            mapper.map_to(source_page, source_phys_frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, frame_alloc)
-                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?.flush();
+            mapper
+                .map_to(
+                    source_page,
+                    source_phys_frame,
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                    frame_alloc,
+                )
+                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
+                .flush();
         }
 
         let source_table = unsafe { &mut *(temp_va.as_mut_ptr() as *mut PageTable) };
@@ -2115,8 +2140,15 @@ impl PageTableManager {
         // Temporarily map destination table for writing
         let dest_page = Page::<Size4KiB>::containing_address(temp_va + 0x1000u64);
         unsafe {
-            mapper.map_to(dest_page, dest_frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, frame_alloc)
-                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?.flush();
+            mapper
+                .map_to(
+                    dest_page,
+                    dest_frame,
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                    frame_alloc,
+                )
+                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
+                .flush();
         }
 
         let dest_table = unsafe { &mut *((temp_va.as_u64() + 0x1000) as *mut PageTable) };
@@ -2124,9 +2156,13 @@ impl PageTableManager {
         let mut child_va = temp_va + 0x2000u64;
 
         // Copy all entries
-        for (_i, (source_entry, dest_entry)) in source_table.iter().zip(dest_table.iter_mut()).enumerate() {
+        for (_i, (source_entry, dest_entry)) in
+            source_table.iter().zip(dest_table.iter_mut()).enumerate()
+        {
             if source_entry.flags().contains(PageTableFlags::PRESENT) {
-                if level > 1 && !((level == 2) && source_entry.flags().contains(PageTableFlags::HUGE_PAGE)) {
+                if level > 1
+                    && !((level == 2) && source_entry.flags().contains(PageTableFlags::HUGE_PAGE))
+                {
                     // Entry points to a sub-table, recursively clone it
                     match source_entry.frame() {
                         Ok(child_frame) => {
@@ -2333,8 +2369,6 @@ impl PageTableHelper for PageTableManager {
 
         Ok(table_addr)
     }
-
-
 
     fn destroy_page_table(
         &mut self,
