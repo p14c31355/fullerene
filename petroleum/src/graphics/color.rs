@@ -322,43 +322,22 @@ pub const COLOR_LIGHT_BLUE: u32 = 0xADD8E6;
 pub const COLOR_TASKBAR: u32 = 0xC0C0C0;
 pub const COLOR_WINDOW_BG: u32 = 0xF8F8F8;
 
+// Trait for drawable elements
+pub trait WindowElement {
+    fn draw_element<
+        W: embedded_graphics::prelude::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb888>,
+    >(
+        &self,
+        writer: &mut W,
+    );
+}
+
 // GUI Drawing macros to reduce repetitive code - kept simple for no_std compatibility
 #[macro_export]
 macro_rules! create_button {
     ($x:expr, $y:expr, $width:expr, $height:expr, $text:expr, $bg:expr, $text_color:expr) => {
         Button::new($x, $y, $width, $height, $text).with_colors($bg, $text_color)
     };
-}
-
-// Simplified drawing macros for common UI elements
-#[macro_export]
-macro_rules! draw_filled_rect {
-    ($writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $color:expr) => {{
-        let rect = Rectangle::new(
-            embedded_graphics::geometry::Point::new($x, $y),
-            embedded_graphics::geometry::Size::new($w, $h),
-        );
-        let style = PrimitiveStyleBuilder::new()
-            .fill_color($crate::graphics::color::u32_to_rgb888($color))
-            .build();
-        rect.into_styled(style).draw($writer).ok();
-    }};
-}
-
-#[macro_export]
-macro_rules! draw_border_rect {
-    ($writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $fill_color:expr, $stroke_color:expr, $stroke_width:expr) => {{
-        let rect = Rectangle::new(
-            embedded_graphics::geometry::Point::new($x, $y),
-            embedded_graphics::geometry::Size::new($w, $h),
-        );
-        let style = PrimitiveStyleBuilder::new()
-            .fill_color($crate::graphics::color::u32_to_rgb888($fill_color))
-            .stroke_color($crate::graphics::color::u32_to_rgb888($stroke_color))
-            .stroke_width($stroke_width)
-            .build();
-        rect.into_styled(style).draw($writer).ok();
-    }};
 }
 
 // Simple GUI element definitions (basic structs without complex trait impls)
@@ -396,6 +375,101 @@ impl Button {
     }
 }
 
+impl WindowElement for Button {
+    fn draw_element<
+        W: embedded_graphics::prelude::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb888>,
+    >(
+        &self,
+        writer: &mut W,
+    ) {
+        use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
+
+        let rect = Rectangle::new(
+            Point::new(self.x as i32, self.y as i32),
+            Size::new(self.width, self.height),
+        );
+        let style = PrimitiveStyleBuilder::new()
+            .fill_color(u32_to_rgb888(self.bg_color))
+            .build();
+        rect.into_styled(style).draw(writer).ok();
+        draw_centered_text(
+            writer,
+            &self.text,
+            self.x as i32,
+            self.y as i32 + (self.height as i32 / 2) - 5,
+            self.width,
+            self.text_color,
+        );
+    }
+}
+
+impl Window {
+    pub fn draw<
+        W: embedded_graphics::prelude::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb888>,
+    >(
+        &self,
+        writer: &mut W,
+    ) {
+        use embedded_graphics::text::Text;
+        use embedded_graphics::{
+            mono_font::{MonoTextStyle, ascii::FONT_6X10},
+            prelude::*,
+            primitives::{PrimitiveStyleBuilder, Rectangle},
+        };
+
+        let rect = Rectangle::new(
+            Point::new(self.x as i32, self.y as i32),
+            Size::new(self.width, self.height),
+        );
+        let style = PrimitiveStyleBuilder::new()
+            .fill_color(u32_to_rgb888(self.bg_color))
+            .stroke_color(u32_to_rgb888(COLOR_BLACK))
+            .stroke_width(2)
+            .build();
+        rect.into_styled(style).draw(writer).ok();
+
+        let title_rect = Rectangle::new(
+            Point::new(self.x as i32, self.y as i32),
+            Size::new(self.width, 25),
+        );
+        let title_style = PrimitiveStyleBuilder::new()
+            .fill_color(u32_to_rgb888(COLOR_DARK_GRAY))
+            .build();
+        title_rect.into_styled(title_style).draw(writer).ok();
+
+        let title_text_style = MonoTextStyle::new(&FONT_6X10, u32_to_rgb888(COLOR_BLACK));
+        let title_width = calc_text_width(&self.title);
+        let title_x = self.x as i32 + ((self.width as i32 / 2) - (title_width as i32 / 2));
+        Text::new(
+            &self.title,
+            Point::new(title_x, self.y as i32 + 8),
+            title_text_style,
+        )
+        .draw(writer)
+        .ok();
+    }
+}
+
+impl Icon {
+    pub fn draw<
+        W: embedded_graphics::prelude::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb888>,
+    >(
+        &self,
+        writer: &mut W,
+    ) {
+        use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
+
+        let rect = Rectangle::new(
+            Point::new(self.x as i32, self.y as i32),
+            Size::new(self.size, self.size),
+        );
+        let style = PrimitiveStyleBuilder::new()
+            .fill_color(u32_to_rgb888(self.color))
+            .build();
+        rect.into_styled(style).draw(writer).ok();
+    }
+}
+
 // Text width calculation for monospaced font
 pub fn calc_text_width(text: &str) -> i32 {
     (text.len() * 6) as i32
@@ -417,4 +491,70 @@ pub fn u32_to_rgb888(color: u32) -> Rgb888 {
 // Define rgb_pixel here as it's used within this file.
 pub fn rgb_pixel(r: u8, g: u8, b: u8) -> u32 {
     ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+}
+
+// Generic Window struct
+pub struct Window {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub title: alloc::string::String,
+    pub bg_color: u32,
+}
+
+impl Window {
+    pub fn new(x: u32, y: u32, width: u32, height: u32, title: &str) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+            title: alloc::string::ToString::to_string(title),
+            bg_color: COLOR_WINDOW_BG,
+        }
+    }
+
+    pub fn with_bg_color(mut self, color: u32) -> Self {
+        self.bg_color = color;
+        self
+    }
+}
+
+// Generic Icon struct
+pub struct Icon {
+    pub x: u32,
+    pub y: u32,
+    pub size: u32,
+    pub color: u32,
+}
+
+impl Icon {
+    pub fn new(x: u32, y: u32, size: u32, color: u32) -> Self {
+        Self { x, y, size, color }
+    }
+}
+
+// Helper function for drawing centered text
+pub fn draw_centered_text<
+    W: embedded_graphics::prelude::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb888>,
+>(
+    writer: &mut W,
+    text: &str,
+    x: i32,
+    y: i32,
+    width: u32,
+    color: u32,
+) {
+    use embedded_graphics::{
+        mono_font::{MonoTextStyle, ascii::FONT_6X10},
+        prelude::*,
+        text::Text,
+    };
+
+    let style = MonoTextStyle::new(&FONT_6X10, u32_to_rgb888(color));
+    let text_width = calc_text_width(text);
+    let text_x = x + (width as i32 / 2) - (text_width as i32 / 2);
+    let text_obj = Text::new(text, Point::new(text_x, y), style);
+    text_obj.draw(writer).ok();
 }

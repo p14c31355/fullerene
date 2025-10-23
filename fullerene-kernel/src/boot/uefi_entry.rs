@@ -148,6 +148,7 @@ impl UefiInitContext {
             fb_size,
             &mut frame_allocator,
             *memory_map_ref,
+            x86_64::VirtAddr::new(0),
         );
 
         // Basic setup without full page table reinit
@@ -159,7 +160,10 @@ impl UefiInitContext {
         // Set kernel CR3 - CRITICAL: this might cause issues if page table has wrong mappings
         debug_log_no_alloc!("About to read kernel CR3");
         let kernel_cr3 = x86_64::registers::control::Cr3::read();
-        debug_log_no_alloc!("Kernel CR3 read: ", kernel_cr3.0.start_address().as_u64() as usize);
+        debug_log_no_alloc!(
+            "Kernel CR3 read: ",
+            kernel_cr3.0.start_address().as_u64() as usize
+        );
         debug_log_no_alloc!("About to set kernel CR3 in syscall");
         crate::interrupts::syscall::set_kernel_cr3(kernel_cr3.0.start_address().as_u64());
         debug_log_no_alloc!("Kernel CR3 set in syscall");
@@ -167,7 +171,10 @@ impl UefiInitContext {
         write_serial_bytes!(0x3F8, 0x3FD, b"About to set physical memory offset\n");
 
         // Set physical memory offset - CRITICAL: this changes virtual address calculation
-        debug_log_no_alloc!("About to set physical memory offset to ", crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as usize);
+        debug_log_no_alloc!(
+            "About to set physical memory offset to ",
+            crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as usize
+        );
         crate::memory_management::set_physical_memory_offset(
             crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE,
         );
@@ -184,8 +191,9 @@ impl UefiInitContext {
         } else {
             heap_phys_start
         };
-                // Allocate and map heap memory
-        let heap_phys_addr = petroleum::allocate_heap_from_map(heap_phys_start_addr, heap::HEAP_SIZE);
+        // Allocate and map heap memory
+        let heap_phys_addr =
+            petroleum::allocate_heap_from_map(heap_phys_start_addr, heap::HEAP_SIZE);
         let heap_pages = (heap::HEAP_SIZE + 4095) / 4096;
 
         // Reserve heap memory region in frame allocator to prevent corruption
@@ -194,9 +202,7 @@ impl UefiInitContext {
             .expect("Failed to reserve heap frames");
 
         // Create mapper for heap allocation
-        let mut mapper = unsafe {
-            petroleum::page_table::init(self.physical_memory_offset)
-        };
+        let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset) };
 
         // Map heap to higher half
         let heap_flags = x86_64::structures::paging::PageTableFlags::PRESENT
@@ -262,9 +268,7 @@ impl UefiInitContext {
             .expect("Frame allocator not initialized")
             .lock();
 
-        let mut mapper = unsafe {
-            petroleum::page_table::init(physical_memory_offset)
-        };
+        let mut mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
 
         let stack_flags = x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE
@@ -285,10 +289,12 @@ impl UefiInitContext {
 
         // Switch to the kernel stack
         unsafe {
-            let kernel_stack_top = (self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64 - 8).as_u64();
+            let kernel_stack_top =
+                (self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64 - 8).as_u64();
             core::arch::asm!("mov rsp, {}", in(reg) kernel_stack_top);
         }
-        self.heap_start_after_stack = self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64;
+        self.heap_start_after_stack =
+            self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64;
         write_serial_bytes!(0x3F8, 0x3FD, b"Basic GDT and stack setup completed\n");
     }
 

@@ -1,18 +1,19 @@
-
 use crate::{
-    calc_offset_addr, create_page_and_frame, debug_log_no_alloc,
-    ensure_initialized, flush_tlb_and_verify, log_memory_descriptor, map_and_flush,
-    map_identity_range_checked, map_with_offset,
+    calc_offset_addr, create_page_and_frame, debug_log_no_alloc, ensure_initialized,
+    flush_tlb_and_verify, log_memory_descriptor, map_and_flush, map_identity_range_checked,
+    map_with_offset,
 };
 
 // Macros are automatically available from common module
+// BTreeMap will be available through std when compiled as std crate
 use spin::Once;
 use x86_64::{
     PhysAddr, VirtAddr,
     instructions::tlb,
     registers::control::Cr3,
     structures::paging::{
-        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PhysFrame, Size4KiB, Translate,
+        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
+        Size4KiB, Translate,
     },
 };
 
@@ -22,23 +23,154 @@ macro_rules! read_unaligned {
     ($ptr:expr, $offset:expr, $ty:ty) => {{ core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) }};
 }
 
-// Structured logging helper for PE parsing operations
-fn log_pe_parsing(message: &str, addr: usize) {
-    debug_log_no_alloc!("PE parsing: addr=", addr);
+// Consolidated validation logging macro
+macro_rules! debug_log_validate_macro {
+    ($field:expr, $value:expr) => {
+        debug_log_no_alloc!($field, " validated: ", $value);
+    };
 }
 
-// Batch logging helper for memory mapping operations
-fn log_memory_mapping(stage: &str, phys_addr: u64, virt_addr: u64, pages: u64) {
-    debug_log_no_alloc!("Memory mapping stage=", stage, " phys=0x", phys_addr, " virt=0x", virt_addr, " pages=", pages);
+// Unified constants for memory mapping regions
+macro_rules! memory_region_const_macro {
+    (VGA_START) => {
+        0xA0000u64
+    };
+    (VGA_END) => {
+        0xC0000u64
+    };
+    (BOOT_CODE_START) => {
+        0x100000u64
+    };
+    (BOOT_CODE_PAGES) => {
+        0x8000u64
+    };
 }
 
-// Consolidated PE base finding log helper
-fn log_pe_base_stage(msg: &str, addr: Option<usize>) {
-    if let Some(addr) = addr {
-        debug_log_no_alloc!("PE base: ", msg, " addr=", addr);
-    } else {
-        debug_log_no_alloc!("PE base: ", msg);
-    }
+// Consolidated logging macro for page table operations
+macro_rules! log_page_table_op {
+    ($operation:expr) => {
+        debug_log_no_alloc!($operation);
+    };
+    ($operation:expr, $msg:expr, $addr:expr) => {
+        debug_log_no_alloc!($operation, $msg, " addr=", $addr);
+    };
+    ($stage:expr, $phys:expr, $virt:expr, $pages:expr) => {
+        debug_log_no_alloc!(
+            "Memory mapping stage=",
+            $stage,
+            " phys=0x",
+            $phys,
+            " virt=0x",
+            $virt,
+            " pages=",
+            $pages
+        );
+    };
+    ($operation:expr, $msg:expr) => {
+        debug_log_no_alloc!($operation, $msg);
+    };
+}
+
+// Page table flags constants macro for reducing duplication
+macro_rules! page_flags_const {
+    (READ_WRITE_NO_EXEC) => {
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
+    };
+    (READ_ONLY) => {
+        PageTableFlags::PRESENT
+    };
+    (READ_WRITE) => {
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
+    };
+    (EXECUTE_ONLY) => {
+        PageTableFlags::PRESENT
+    };
+}
+
+// Bit manipulation macros to reduce repeated code in BitmapFrameAllocator
+macro_rules! bit_set {
+    ($bitmap:expr, $index:expr) => {
+        if let Some(ref mut bmp) = $bitmap {
+            let chunk_index = $index / 64;
+            let bit_index = $index % 64;
+            if chunk_index < bmp.len() {
+                bmp[chunk_index] |= 1 << bit_index;
+            }
+        }
+    };
+}
+
+macro_rules! bit_clear {
+    ($bitmap:expr, $index:expr) => {
+        if let Some(ref mut bmp) = $bitmap {
+            let chunk_index = $index / 64;
+            let bit_index = $index % 64;
+            if chunk_index < bmp.len() {
+                bmp[chunk_index] &= !(1 << bit_index);
+            }
+        }
+    };
+}
+
+macro_rules! bit_test {
+    ($bitmap:expr, $index:expr) => {
+        if let Some(ref bmp) = $bitmap {
+            let chunk_index = $index / 64;
+            let bit_index = $index % 64;
+            if chunk_index < bmp.len() {
+                (bmp[chunk_index] & (1 << bit_index)) == 0
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+}
+
+// Integrated mapping macro to reduce functions calling map_identity_range
+macro_rules! map_identity_range_macro {
+    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{
+        unsafe {
+            map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags)
+                .expect("Failed to identity map range")
+        }
+    }};
+}
+
+// Macro to inline mapping range for reduced function calls
+macro_rules! map_range_with_log_macro {
+    ($mapper:expr, $frame_allocator:expr, $phys_start:expr, $virt_start:expr, $num_pages:expr, $flags:expr) => {{
+        log_page_table_op!("Mapping range", $phys_start, $virt_start, $num_pages);
+        for i in 0..$num_pages {
+            let phys_addr = $phys_start + i * 4096;
+            let virt_addr = $virt_start + i * 4096;
+            let (page, frame) = create_page_and_frame!(virt_addr, phys_addr);
+            match $mapper.map_to(page, frame, $flags, $frame_allocator) {
+                Ok(flush) => flush.flush(),
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }};
+}
+
+// Module for all constants to reduce namespace pollution and lines
+mod memory_constants {
+    pub const PAGE_SIZE: u64 = 4096;
+    pub const MAX_DESCRIPTOR_PAGES: u64 = 1_048_576;
+    pub const MAX_SYSTEM_MEMORY: u64 = 512 * 1024 * 1024 * 1024u64;
+    pub const EFI_MEMORY_TYPE_FIRMWARE_SPECIFIC: u32 = 15;
+    pub const UEFI_COMPAT_PAGES: u64 = 16383;
+    pub const KERNEL_MEMORY_PADDING: u64 = 1024 * 1024;
+    pub const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024;
+    pub const VGA_MEMORY_START: u64 = 0xA0000u64;
+    pub const VGA_MEMORY_END: u64 = 0xC0000u64;
+    pub const BOOT_CODE_START: u64 = 0x100000u64;
+    pub const BOOT_CODE_PAGES: u64 = 0x8000u64;
 }
 
 // Generic validation trait for different descriptor types
@@ -47,6 +179,22 @@ trait MemoryDescriptorValidator {
     fn get_physical_start(&self) -> u64;
     fn get_page_count(&self) -> u64;
     fn is_memory_available(&self) -> bool;
+}
+
+// Generic flag derivation trait for memory types
+trait FlagDeriver {
+    fn derive_flags(&self) -> PageTableFlags;
+}
+
+// Implement for EfiMemoryType
+impl FlagDeriver for crate::common::EfiMemoryType {
+    fn derive_flags(&self) -> PageTableFlags {
+        use x86_64::structures::paging::PageTableFlags as Flags;
+        match self {
+            crate::common::EfiMemoryType::EfiRuntimeServicesCode => Flags::PRESENT,
+            _ => Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+        }
+    }
 }
 
 // Implementation for EFI memory descriptors
@@ -63,16 +211,20 @@ impl MemoryDescriptorValidator for EfiMemoryDescriptor {
         self.number_of_pages
     }
 
-        fn is_memory_available(&self) -> bool {
+    fn is_memory_available(&self) -> bool {
         use crate::common::EfiMemoryType;
         const EFI_ACPI_RECLAIM_MEMORY: u32 = 9; // Memory that holds ACPI tables that can be reclaimed after ACPI initialization
         const EFI_PERSISTENT_MEMORY: u32 = 14; // Memory that persists across reboot, typically NVDIMM-backed
 
         let mem_type = self.type_;
-        matches!(mem_type,
+        matches!(
+            mem_type,
             EfiMemoryType::EfiBootServicesData |     // 4
-            EfiMemoryType::EfiConventionalMemory     // 7
-        ) || matches!(mem_type as u32, EFI_ACPI_RECLAIM_MEMORY | EFI_PERSISTENT_MEMORY)
+            EfiMemoryType::EfiConventionalMemory // 7
+        ) || matches!(
+            mem_type as u32,
+            EFI_ACPI_RECLAIM_MEMORY | EFI_PERSISTENT_MEMORY
+        )
     }
 }
 
@@ -105,7 +257,10 @@ impl PeParser {
     }
 
     pub unsafe fn size_of_image(&self) -> Option<u64> {
-        if self.pe_offset == 0 || self.pe_offset >= PeParser::MAX_PE_HEADER_OFFSET || self.pe_base.is_null() {
+        if self.pe_offset == 0
+            || self.pe_offset >= PeParser::MAX_PE_HEADER_OFFSET
+            || self.pe_base.is_null()
+        {
             return None;
         }
         let magic = unsafe { read_unaligned!(self.pe_base, self.pe_offset + 24, u16) };
@@ -116,11 +271,16 @@ impl PeParser {
     }
 
     pub unsafe fn sections(&self) -> Option<[PeSection; PeParser::MAX_PE_SECTIONS]> {
-        if self.pe_offset == 0 || self.pe_offset >= PeParser::MAX_PE_HEADER_OFFSET || self.pe_base.is_null() {
+        if self.pe_offset == 0
+            || self.pe_offset >= PeParser::MAX_PE_HEADER_OFFSET
+            || self.pe_base.is_null()
+        {
             return None;
         }
-        let num_sections = unsafe { read_unaligned!(self.pe_base, self.pe_offset + 6, u16) } as usize;
-        let optional_header_size = unsafe { read_unaligned!(self.pe_base, self.pe_offset + 20, u16) } as usize;
+        let num_sections =
+            unsafe { read_unaligned!(self.pe_base, self.pe_offset + 6, u16) } as usize;
+        let optional_header_size =
+            unsafe { read_unaligned!(self.pe_base, self.pe_offset + 20, u16) } as usize;
         let section_table_offset = self.pe_offset + 24 + optional_header_size;
 
         let mut sections = [PeSection {
@@ -146,7 +306,6 @@ impl PeParser {
         Some(sections)
     }
 }
-
 
 /// EFI Memory Descriptor as defined in UEFI spec
 #[repr(C)]
@@ -198,31 +357,39 @@ fn is_valid_memory_descriptor(descriptor: &EfiMemoryDescriptor) -> bool {
         debug_log_no_alloc!("Invalid memory type (too high): ", mem_type);
         return false;
     }
-    debug_log_no_alloc!("Memory type validated: ", mem_type);
+    debug_log_validate_macro!("Memory type", mem_type);
 
     // Check physical start is page-aligned
     if descriptor.physical_start % 4096 != 0 {
-        debug_log_no_alloc!("Unaligned physical_start: 0x", descriptor.physical_start as usize);
+        debug_log_no_alloc!(
+            "Unaligned physical_start: 0x",
+            descriptor.physical_start as usize
+        );
         return false;
     }
-    debug_log_no_alloc!("Physical start page-aligned: 0x", descriptor.physical_start as usize);
+    debug_log_validate_macro!("Physical start", descriptor.physical_start as usize);
 
     // Check number of pages is reasonable
     if descriptor.number_of_pages == 0 || descriptor.number_of_pages > MAX_DESCRIPTOR_PAGES {
         debug_log_no_alloc!("Invalid page count: ", descriptor.number_of_pages as usize);
         return false;
     }
-    debug_log_no_alloc!("Page count validated: ", descriptor.number_of_pages as usize);
+    debug_log_validate_macro!("Page count", descriptor.number_of_pages as usize);
 
     // Check for potential overflow when calculating end address
     let page_size = 4096u64;
-    if let Some(end_addr) = descriptor.physical_start.checked_add(descriptor.number_of_pages.checked_mul(page_size).unwrap_or(u64::MAX)) {
+    if let Some(end_addr) = descriptor.physical_start.checked_add(
+        descriptor
+            .number_of_pages
+            .checked_mul(page_size)
+            .unwrap_or(u64::MAX),
+    ) {
         // Ensure end address doesn't exceed reasonable system limits (512GB)
         if end_addr > MAX_SYSTEM_MEMORY {
             debug_log_no_alloc!("Memory region too large: end_addr=0x", end_addr as usize);
             return false;
         }
-        debug_log_no_alloc!("End address validated: 0x", end_addr as usize);
+        debug_log_validate_macro!("End address", end_addr as usize);
     } else {
         debug_log_no_alloc!("Overflow in address calculation");
         return false;
@@ -293,7 +460,7 @@ pub struct PeSectionHeader {
 
 // Helper function to find the PE base address by searching backwards for MZ signature
 unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
-    log_pe_base_stage("starting search", Some(start_ptr as usize));
+    log_page_table_op!("PE base", "starting search", start_ptr as usize);
 
     for i in 0..PeParser::MAX_PE_SEARCH_DISTANCE {
         let candidate_addr = unsafe {
@@ -305,13 +472,13 @@ unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
 
         unsafe {
             if candidate_addr.read() == b'M' && candidate_addr.add(1).read() == b'Z' {
-                log_pe_base_stage("found MZ candidate", Some(candidate_addr as usize));
+                log_page_table_op!("PE base", "found MZ candidate", candidate_addr as usize);
                 let pe_offset = read_unaligned!(candidate_addr, 0x3c, u32) as usize;
 
                 if pe_offset > 0 && pe_offset < PeParser::MAX_PE_OFFSET {
                     let pe_sig = read_unaligned!(candidate_addr, pe_offset, u32);
                     if pe_sig == 0x00004550 {
-                        log_pe_base_stage("found valid PE", Some(candidate_addr as usize));
+                        log_page_table_op!("PE base", "found valid PE", candidate_addr as usize);
                         return Some(candidate_addr);
                     }
                 }
@@ -320,16 +487,16 @@ unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
 
         // Progress logging
         if i % 100000 == 0 && i != 0 {
-            log_pe_base_stage("progress", Some(i));
+            log_page_table_op!("PE base", "progress", i);
         }
 
         // Early exit check
         if i >= PeParser::MAX_PE_SEARCH_DISTANCE / 4 {
-            log_pe_base_stage("long search warning", Some(i));
+            log_page_table_op!("PE base", "long search warning", i);
         }
     }
 
-    log_pe_base_stage("search complete - no PE found", None);
+    log_page_table_op!("PE base", "search complete - no PE found");
     None
 }
 
@@ -375,7 +542,8 @@ fn calculate_frame_allocation_params(memory_map: &[EfiMemoryDescriptor]) -> (u64
 
     for descriptor in memory_map {
         if is_valid_memory_descriptor(descriptor) {
-            let end_addr = descriptor.physical_start
+            let end_addr = descriptor
+                .physical_start
                 .saturating_add(descriptor.number_of_pages.saturating_mul(4096));
             if end_addr > max_addr {
                 max_addr = end_addr;
@@ -394,11 +562,76 @@ fn calculate_frame_allocation_params(memory_map: &[EfiMemoryDescriptor]) -> (u64
     (max_addr, total_frames, bitmap_size)
 }
 
+// Helper trait for memory region mapping operations
+trait MemoryRegionMapper {
+    fn map_region_with_flags(
+        &mut self,
+        phys_start: u64,
+        virt_start: u64,
+        num_pages: u64,
+        flags: x86_64::structures::paging::PageTableFlags,
+    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>>;
+
+    fn map_to_identity(
+        &mut self,
+        phys_start: u64,
+        num_pages: u64,
+        flags: x86_64::structures::paging::PageTableFlags,
+    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>>;
+
+    fn map_to_higher_half(
+        &mut self,
+        phys_start: u64,
+        num_pages: u64,
+        flags: x86_64::structures::paging::PageTableFlags,
+    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>>;
+}
+
 // Consolidated MemoryMapper to reduce lines in mapping functions
 pub struct MemoryMapper<'a> {
     mapper: &'a mut OffsetPageTable<'static>,
     frame_allocator: &'a mut BootInfoFrameAllocator,
     phys_offset: VirtAddr,
+}
+
+impl<'a> MemoryRegionMapper for MemoryMapper<'a> {
+    fn map_region_with_flags(
+        &mut self,
+        phys_start: u64,
+        virt_start: u64,
+        num_pages: u64,
+        flags: x86_64::structures::paging::PageTableFlags,
+    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+        unsafe {
+            map_range_with_log_macro!(
+                self.mapper,
+                self.frame_allocator,
+                phys_start,
+                virt_start,
+                num_pages,
+                flags
+            )
+        }
+    }
+
+    fn map_to_identity(
+        &mut self,
+        phys_start: u64,
+        num_pages: u64,
+        flags: x86_64::structures::paging::PageTableFlags,
+    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+        self.map_region_with_flags(phys_start, phys_start, num_pages, flags)
+    }
+
+    fn map_to_higher_half(
+        &mut self,
+        phys_start: u64,
+        num_pages: u64,
+        flags: x86_64::structures::paging::PageTableFlags,
+    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+        let virt_start = self.phys_offset.as_u64() + phys_start;
+        self.map_region_with_flags(phys_start, virt_start, num_pages, flags)
+    }
 }
 
 impl<'a> MemoryMapper<'a> {
@@ -414,14 +647,19 @@ impl<'a> MemoryMapper<'a> {
         }
     }
 
-        pub fn map_framebuffer(&mut self, fb_addr: Option<VirtAddr>, fb_size: Option<u64>) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    pub fn map_framebuffer(
+        &mut self,
+        fb_addr: Option<VirtAddr>,
+        fb_size: Option<u64>,
+    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
         use x86_64::structures::paging::PageTableFlags as Flags;
         if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
             let fb_pages = fb_size.div_ceil(4096);
             let fb_phys = fb_addr.as_u64();
+            let flags = page_flags_const!(READ_WRITE_NO_EXEC);
             unsafe {
-                self.map_to_higher_half(fb_phys, fb_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE)?;
-                self.identity_map_range(fb_phys, fb_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE)?;
+                self.map_to_higher_half(fb_phys, fb_pages, flags)?;
+                self.identity_map_range(fb_phys, fb_pages, flags)?;
             }
         }
         Ok(())
@@ -429,18 +667,23 @@ impl<'a> MemoryMapper<'a> {
 
     pub fn map_vga(&mut self) {
         use x86_64::structures::paging::PageTableFlags as Flags;
-        const VGA_MEMORY_START: u64 = 0xA0000;
-        const VGA_MEMORY_END: u64 = 0xC0000;
+        const VGA_MEMORY_START: u64 = memory_region_const_macro!(VGA_START);
+        const VGA_MEMORY_END: u64 = memory_region_const_macro!(VGA_END);
         const VGA_PAGES: u64 = (VGA_MEMORY_END - VGA_MEMORY_START) / 4096;
+        let flags = page_flags_const!(READ_WRITE_NO_EXEC);
         unsafe {
-            let _ = self.map_to_higher_half(VGA_MEMORY_START, VGA_PAGES, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE);
+            let _ = self.map_to_higher_half(VGA_MEMORY_START, VGA_PAGES, flags);
         }
     }
 
     pub fn map_boot_code(&mut self) {
-        use x86_64::structures::paging::PageTableFlags as Flags;
+        let flags = page_flags_const!(READ_WRITE);
         unsafe {
-            let _ = self.map_to_higher_half(BOOT_CODE_START, BOOT_CODE_PAGES, Flags::PRESENT | Flags::WRITABLE);
+            let _ = self.map_to_higher_half(
+                memory_region_const_macro!(BOOT_CODE_START),
+                memory_region_const_macro!(BOOT_CODE_PAGES),
+                flags,
+            );
         }
     }
 
@@ -451,7 +694,14 @@ impl<'a> MemoryMapper<'a> {
         flags: x86_64::structures::paging::PageTableFlags,
     ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
         let virt_start = self.phys_offset.as_u64() + phys_start;
-        map_range_with_log(self.mapper, self.frame_allocator, phys_start, virt_start, num_pages, flags)
+        map_range_with_log_macro!(
+            self.mapper,
+            self.frame_allocator,
+            phys_start,
+            virt_start,
+            num_pages,
+            flags
+        )
     }
 
     unsafe fn identity_map_range(
@@ -460,15 +710,20 @@ impl<'a> MemoryMapper<'a> {
         num_pages: u64,
         flags: x86_64::structures::paging::PageTableFlags,
     ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-        map_range_with_log(self.mapper, self.frame_allocator, start_addr, start_addr, num_pages, flags)
+        map_range_with_log(
+            self.mapper,
+            self.frame_allocator,
+            start_addr,
+            start_addr,
+            num_pages,
+            flags,
+        )
     }
 }
 
-// Generic function to process memory descriptors using traits
-fn process_memory_descriptors<T, F>(
-    descriptors: &[T],
-    mut processor: F,
-) where
+// Generic function to process memory descriptors using traits with integrated frame calculation
+fn process_memory_descriptors<T, F>(descriptors: &[T], mut processor: F)
+where
     T: MemoryDescriptorValidator,
     F: FnMut(&T, usize, usize), // (descriptor, start_frame, end_frame)
 {
@@ -604,39 +859,17 @@ impl BitmapFrameAllocator {
 
     /// Set a frame as free in the bitmap
     fn set_frame_free(&mut self, frame_index: usize) {
-        if let Some(ref mut bitmap) = self.bitmap {
-            let chunk_index = frame_index / 64;
-            let bit_index = frame_index % 64;
-            if chunk_index < bitmap.len() {
-                bitmap[chunk_index] &= !(1 << bit_index);
-            }
-        }
+        bit_clear!(self.bitmap, frame_index);
     }
 
     /// Set a frame as used in the bitmap
     fn set_frame_used(&mut self, frame_index: usize) {
-        if let Some(ref mut bitmap) = self.bitmap {
-            let chunk_index = frame_index / 64;
-            let bit_index = frame_index % 64;
-            if chunk_index < bitmap.len() {
-                bitmap[chunk_index] |= 1 << bit_index;
-            }
-        }
+        bit_set!(self.bitmap, frame_index);
     }
 
     /// Check if a frame is free
     fn is_frame_free(&self, frame_index: usize) -> bool {
-        if let Some(ref bitmap) = self.bitmap {
-            let chunk_index = frame_index / 64;
-            let bit_index = frame_index % 64;
-            if chunk_index < bitmap.len() {
-                (bitmap[chunk_index] & (1 << bit_index)) == 0
-            } else {
-                false
-            }
-        } else {
-            false
-        }
+        bit_test!(self.bitmap, frame_index)
     }
 
     /// Find the next free frame starting from a given index
@@ -723,6 +956,17 @@ impl BitmapFrameAllocator {
             }
         }
     }
+
+    /// Deallocate a specific frame back to the free pool
+    pub fn deallocate_frame(&mut self, frame: PhysFrame) {
+        if !self.initialized {
+            return;
+        }
+        let frame_index = (frame.start_address().as_u64() / 4096) as usize;
+        if frame_index < self.frame_count {
+            self.set_frame_free(frame_index);
+        }
+    }
 }
 
 unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
@@ -805,6 +1049,17 @@ pub unsafe fn translate_addr(addr: VirtAddr, physical_memory_offset: VirtAddr) -
 /// Returns the higher-half kernel mapping offset.
 pub const HIGHER_HALF_OFFSET: VirtAddr = VirtAddr::new(0xFFFF_8000_0000_0000);
 
+/// Temporary virtual address for page table destruction operations.
+/// WARNING: Assumes this address range is not already mapped or in use.
+/// A dedicated temporary VA allocation pool would be safer but is not implemented here.
+const TEMP_VA_FOR_DESTROY: VirtAddr = VirtAddr::new(0xFFFF_A000_0000_0000);
+
+/// Temporary virtual address for page table cloning operations.
+/// WARNING: Assumes this address range is not already mapped or in use.
+/// A dedicated temporary VA allocation pool would be safer but is not implemented here.
+/// This is distinct from TEMP_VA_FOR_DESTROY to avoid conflicts during recursive operations.
+const TEMP_VA_FOR_CLONE: VirtAddr = VirtAddr::new(0xFFFF_9000_0000_0000);
+
 /// Helper function to map a range of physical addresses to the same virtual addresses (identity mapping)
 unsafe fn map_identity_range(
     mapper: &mut impl Mapper<Size4KiB>,
@@ -841,8 +1096,7 @@ unsafe fn map_kernel_segments_inner(
         // Fallback: map 64MB region for the kernel if PE parsing fails
         let kernel_size = FALLBACK_KERNEL_SIZE;
         let kernel_pages = kernel_size.div_ceil(4096);
-        let flags = x86_64::structures::paging::PageTableFlags::PRESENT
-            | x86_64::structures::paging::PageTableFlags::WRITABLE;
+        let flags = page_flags_const!(READ_WRITE);
         unsafe {
             map_identity_range(
                 mapper,
@@ -856,29 +1110,204 @@ unsafe fn map_kernel_segments_inner(
     }
 }
 
-// Consolidated mapping using MemoryMapper (removed standalone function)
+// Unified mapping configuration structure to reduce parameters and lines
+#[derive(Clone, Copy)]
+struct MappingConfig {
+    phys_start: u64,
+    virt_start: u64,
+    num_pages: u64,
+    flags: PageTableFlags,
+}
+
+// Macro to create mapping configurations for common patterns
+
+macro_rules! higher_half_config {
+    ($phys_offset:expr, $phys_start:expr, $num_pages:expr, $flags:expr) => {
+        MappingConfig {
+            phys_start: $phys_start,
+            virt_start: $phys_offset.as_u64() + $phys_start,
+            num_pages: $num_pages,
+            flags: $flags,
+        }
+    };
+}
+
+// Generic function to map descriptors with custom configuration using MappingConfig macros
+unsafe fn map_memory_descriptors_with_config<F>(
+    mapper: &mut OffsetPageTable,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    memory_map: &[EfiMemoryDescriptor],
+    config_fn: F,
+) where
+    F: Fn(&EfiMemoryDescriptor) -> Option<MappingConfig>,
+{
+    for desc in memory_map.iter() {
+        if let Some(config) = config_fn(desc) {
+            unsafe {
+                let _ = map_range_with_log(
+                    mapper,
+                    frame_allocator,
+                    config.phys_start,
+                    config.virt_start,
+                    config.num_pages,
+                    config.flags,
+                );
+            }
+        }
+    }
+}
+
+// Unified function to map UEFI runtime to higher half using macros
+unsafe fn map_uefi_runtime_to_higher_half(
+    mapper: &mut OffsetPageTable,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    phys_offset: VirtAddr,
+    memory_map: &[EfiMemoryDescriptor],
+) {
+    unsafe {
+        map_memory_descriptors_with_config(mapper, frame_allocator, memory_map, move |desc| {
+            if is_valid_memory_descriptor(desc)
+                && matches!(
+                    desc.type_,
+                    crate::common::EfiMemoryType::EfiRuntimeServicesCode
+                        | crate::common::EfiMemoryType::EfiRuntimeServicesData
+                )
+            {
+                let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+                    PageTableFlags::PRESENT
+                } else {
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
+                };
+                Some(higher_half_config!(
+                    phys_offset,
+                    desc.physical_start,
+                    desc.number_of_pages,
+                    flags
+                ))
+            } else {
+                None
+            }
+        });
+    }
+}
+
+// Consolidated mapping for available memory to higher half with reduced duplication
+unsafe fn map_available_memory_to_higher_half(
+    mapper: &mut OffsetPageTable,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    phys_offset: VirtAddr,
+    memory_map: &[EfiMemoryDescriptor],
+) {
+    process_memory_descriptors(memory_map, |desc, start_frame, end_frame| {
+        let phys_start = desc.get_physical_start();
+        let pages = (end_frame - start_frame) as u64;
+        let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+            PageTableFlags::PRESENT
+        } else {
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
+        };
+        unsafe {
+            let _ = map_to_higher_half_with_log(
+                mapper,
+                frame_allocator,
+                phys_offset,
+                phys_start,
+                pages,
+                flags,
+            );
+        }
+    });
+}
+
+// Simplified stack mapping using rsp detection macro
+macro_rules! get_current_stack_pointer {
+    () => {{
+        let rsp: u64;
+        unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp); }
+        rsp
+    }};
+}
+
+unsafe fn map_stack_to_higher_half(
+    mapper: &mut OffsetPageTable,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    phys_offset: VirtAddr,
+    memory_map: &[EfiMemoryDescriptor],
+) {
+    let rsp = get_current_stack_pointer!();
+
+    for desc in memory_map.iter() {
+        if is_valid_memory_descriptor(desc) {
+            let start = desc.physical_start;
+            let end = start + desc.number_of_pages * 4096;
+            if rsp >= start && rsp < end {
+                unsafe {
+                    map_to_higher_half_with_log(
+                        mapper,
+                        frame_allocator,
+                        phys_offset,
+                        desc.physical_start,
+                        desc.number_of_pages,
+                        PageTableFlags::PRESENT
+                            | PageTableFlags::WRITABLE
+                            | PageTableFlags::NO_EXECUTE,
+                    )
+                    .expect("Failed to map stack region to higher half");
+                }
+                break;
+            }
+        }
+    }
+}
 
 // Helper to adjust return address after page table switch
-fn adjust_return_address(phys_offset: VirtAddr) {
+fn adjust_return_address_and_stack(phys_offset: VirtAddr) {
     // WARNING: This code assumes frame pointers (rbp) are available and enabled, and relies on
     // the standard stack layout where the return address is at [rbp + 8]. This may not hold for
     // all compiler versions or optimization levels, especially in debug builds where
     // force-frame-pointers is not set by default. Violation could lead to stack corruption or crash.
     // This is acknowledged as fragile but necessary for the higher-half kernel transition.
-    debug_log_no_alloc!("Adjusting return address for higher half");
+    debug_log_no_alloc!("Adjusting return address and stack for higher half");
 
     unsafe {
         let mut base_pointer: u64;
         core::arch::asm!("mov {}, rbp", out(reg) base_pointer);
+
         let return_address_ptr = (base_pointer as *mut u64).add(1);
-        *return_address_ptr = phys_offset.as_u64() + *return_address_ptr;
+        let old_return_address = *return_address_ptr;
+        *return_address_ptr = old_return_address + phys_offset.as_u64();
+
+        let new_base_pointer = base_pointer + phys_offset.as_u64();
+        core::arch::asm!("mov rbp, {}", in(reg) new_base_pointer);
+
+        let old_rsp: u64;
+        core::arch::asm!("mov {}, rsp", out(reg) old_rsp);
+
+        let new_rsp = old_rsp + phys_offset.as_u64();
+        core::arch::asm!("mov rsp, {}", in(reg) new_rsp);
     }
 
-    debug_log_no_alloc!("Return address adjusted successfully");
+    debug_log_no_alloc!("Return address and stack adjusted successfully");
+}
+
+// Helper function to setup recursive mapping
+unsafe fn setup_recursive_mapping(mapper: &mut OffsetPageTable, level_4_table_frame: PhysFrame) {
+    unsafe {
+        let table = mapper.level_4_table() as *const PageTable as *mut PageTable;
+        (&mut *table
+            .cast::<x86_64::structures::paging::page_table::PageTableEntry>()
+            .add(511))
+            .set_addr(
+                level_4_table_frame.start_address(),
+                page_flags_const!(READ_WRITE),
+            );
+    }
 }
 
 // Create and initialize a new page table
-fn create_new_page_table(frame_allocator: &mut BootInfoFrameAllocator) -> crate::common::logging::SystemResult<PhysFrame> {
+fn create_new_page_table(
+    frame_allocator: &mut BootInfoFrameAllocator,
+) -> crate::common::logging::SystemResult<PhysFrame> {
     debug_log_no_alloc!("Allocating new L4 page table frame");
 
     let level_4_table_frame = match frame_allocator.allocate_frame() {
@@ -899,188 +1328,488 @@ fn create_new_page_table(frame_allocator: &mut BootInfoFrameAllocator) -> crate:
     Ok(level_4_table_frame)
 }
 
-// Setup identity mappings needed for CR3 switch
-fn setup_identity_mappings(
+// Consolidated identity mapping functions using macro for uniformity
+// These were replaced with inline macro calls to reduce function count
+
+// Helper function to map stack region
+unsafe fn map_stack_region(
     mapper: &mut OffsetPageTable,
     frame_allocator: &mut BootInfoFrameAllocator,
-    kernel_phys_start: PhysAddr,
     memory_map: &[EfiMemoryDescriptor],
-) -> u64 {
+) {
+    let rsp: u64;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp) };
+    let stack_pages = 256; // 1MB stack
+    let stack_start = rsp & !4095; // page align
     use x86_64::structures::paging::PageTableFlags as Flags;
+    map_identity_range(
+        mapper,
+        frame_allocator,
+        stack_start,
+        stack_pages,
+        Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+    )
+    .expect("Failed to map current stack region");
 
-    debug_log_no_alloc!("Setting up identity mappings for CR3 switch");
-
-    // Map identity range for UEFI compatibility (64MB - first page)
-    unsafe {
-        map_identity_range(
-            mapper,
-            frame_allocator,
-            4096,
-            UEFI_COMPAT_PAGES,
-            Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
-        )
-        .expect("Failed to map identity range for UEFI compatibility");
-    }
-
-    // Calculate kernel size and identity map kernel
-    let kernel_size = unsafe { calculate_kernel_memory_size(kernel_phys_start) };
-    let kernel_pages = kernel_size.div_ceil(4096);
-
-    unsafe {
-        map_identity_range(
-            mapper,
-            frame_allocator,
-            kernel_phys_start.as_u64(),
-            kernel_pages,
-            Flags::PRESENT | Flags::WRITABLE,
-        )
-        .expect("Failed to identity map kernel for CR3 switch");
-    }
-
-    // Identity map boot code
-    unsafe {
-        map_identity_range(
-            mapper,
-            frame_allocator,
-            0x190000,  // Map from approximately where boot code starts
-            0x10000,   // Map generous 64MB range for boot code
-            Flags::PRESENT | Flags::WRITABLE,
-        )
-        .expect("Failed to identity map boot code");
-    }
-
-    // Map UEFI runtime services regions to allow continuation
     for desc in memory_map.iter() {
-        if is_valid_memory_descriptor(desc) && matches!(desc.type_, crate::common::EfiMemoryType::EfiRuntimeServicesCode | crate::common::EfiMemoryType::EfiRuntimeServicesData) {
+        if is_valid_memory_descriptor(desc) {
+            let start = desc.physical_start;
+            let end = start + desc.number_of_pages * 4096;
+            if rsp >= start && rsp < end && desc.number_of_pages <= MAX_DESCRIPTOR_PAGES {
+                map_identity_range(
+                    mapper,
+                    frame_allocator,
+                    desc.physical_start,
+                    desc.number_of_pages,
+                    Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+                )
+                .expect("Failed to map stack region");
+                break;
+            }
+        }
+    }
+}
+
+// Helper function to map bitmap region
+unsafe fn map_bitmap_region(
+    mapper: &mut OffsetPageTable,
+    frame_allocator: &mut BootInfoFrameAllocator,
+) {
+    let bitmap_ptr = &raw const BITMAP_STATIC as *const u8;
+    let bitmap_start = bitmap_ptr as usize as u64 & !(4095);
+    let bitmap_end = bitmap_ptr as usize as u64 + core::mem::size_of::<[u64; 131072]>() as u64;
+    let bitmap_end_page = ((bitmap_end - 1) & !(4095)) + 4096;
+    let pages = ((bitmap_end_page - bitmap_start) / 4096) as u64;
+    use x86_64::structures::paging::PageTableFlags as Flags;
+    map_identity_range(
+        mapper,
+        frame_allocator,
+        bitmap_start,
+        pages,
+        Flags::PRESENT | Flags::WRITABLE,
+    )
+    .expect("Failed to map bitmap region");
+}
+
+struct PageTableReinitializer {
+    phys_offset: VirtAddr,
+}
+
+impl PageTableReinitializer {
+    fn new() -> Self {
+        Self {
+            phys_offset: HIGHER_HALF_OFFSET,
+        }
+    }
+
+    fn reinitialize(
+        &mut self,
+        kernel_phys_start: PhysAddr,
+        fb_addr: Option<VirtAddr>,
+        fb_size: Option<u64>,
+        frame_allocator: &mut BootInfoFrameAllocator,
+        memory_map: &[EfiMemoryDescriptor],
+        current_physical_memory_offset: VirtAddr,
+    ) -> VirtAddr {
+        debug_log_no_alloc!("Page table reinitialization starting");
+
+        let level_4_table_frame = self.create_page_table(frame_allocator);
+        let mut mapper = self.setup_new_mapper(
+            level_4_table_frame,
+            current_physical_memory_offset,
+            frame_allocator,
+        );
+        let mut initializer =
+            PageTableInitializer::new(&mut mapper, frame_allocator, self.phys_offset, memory_map);
+        let _kernel_size =
+            initializer.setup_identity_mappings(kernel_phys_start, level_4_table_frame);
+        initializer.setup_higher_half_mappings(kernel_phys_start, fb_addr, fb_size);
+        self.setup_recursive_mapping(&mut mapper, level_4_table_frame);
+        self.perform_page_table_switch(
+            level_4_table_frame,
+            frame_allocator,
+            current_physical_memory_offset,
+        );
+        self.adjust_return_address_and_log();
+        self.phys_offset
+    }
+
+    fn create_page_table(&self, frame_allocator: &mut BootInfoFrameAllocator) -> PhysFrame {
+        debug_log_no_alloc!("Allocating new L4 page table frame");
+        let level_4_table_frame = match frame_allocator.allocate_frame() {
+            Some(frame) => frame,
+            None => panic!("Failed to allocate L4 page table frame"),
+        };
+        unsafe {
+            core::ptr::write_bytes(
+                level_4_table_frame.start_address().as_u64() as *mut PageTable,
+                0,
+                1,
+            );
+        }
+        debug_log_no_alloc!("New L4 page table created and zeroed");
+        level_4_table_frame
+    }
+
+    fn setup_new_mapper(
+        &self,
+        level_4_table_frame: PhysFrame,
+        current_physical_memory_offset: VirtAddr,
+        frame_allocator: &mut BootInfoFrameAllocator,
+    ) -> OffsetPageTable<'static> {
+        let mut current_mapper = unsafe { init(current_physical_memory_offset) };
+        unsafe {
+            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(
+                level_4_table_frame.start_address().as_u64(),
+            ));
+            let frame = level_4_table_frame;
+            current_mapper
+                .map_to(
+                    page,
+                    frame,
+                    page_flags_const!(READ_WRITE_NO_EXEC),
+                    frame_allocator,
+                )
+                .expect("Failed to identity-map new L4 table for mapper setup")
+                .flush();
+        };
+        unsafe {
+            let table_addr = current_physical_memory_offset.as_u64()
+                + level_4_table_frame.start_address().as_u64();
+            OffsetPageTable::new(&mut *(table_addr as *mut PageTable), VirtAddr::new(0))
+        }
+    }
+
+    fn setup_recursive_mapping(
+        &self,
+        mapper: &mut OffsetPageTable,
+        level_4_table_frame: PhysFrame,
+    ) {
+        unsafe {
+            let table = mapper.level_4_table() as *const PageTable as *mut PageTable;
+            (&mut *table
+                .cast::<x86_64::structures::paging::page_table::PageTableEntry>()
+                .add(511))
+                .set_addr(
+                    level_4_table_frame.start_address(),
+                    page_flags_const!(READ_WRITE),
+                );
+        }
+    }
+
+    fn perform_page_table_switch(
+        &self,
+        level_4_table_frame: PhysFrame,
+        frame_allocator: &mut BootInfoFrameAllocator,
+        current_physical_memory_offset: VirtAddr,
+    ) {
+        debug_log_no_alloc!(
+            "New L4 table phys addr: ",
+            level_4_table_frame.start_address().as_u64() as usize
+        );
+        debug_log_no_alloc!("Phys offset: ", self.phys_offset.as_u64() as usize);
+
+        let mut current_mapper = unsafe {
+            let l4_table = active_level_4_table(current_physical_memory_offset);
+            OffsetPageTable::new(l4_table, current_physical_memory_offset)
+        };
+        unsafe {
+            match current_mapper.map_to(
+                Page::containing_address(
+                    self.phys_offset + level_4_table_frame.start_address().as_u64(),
+                ),
+                level_4_table_frame,
+                page_flags_const!(READ_WRITE),
+                frame_allocator,
+            ) {
+                Ok(flush) => flush.flush(),
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                    // This is acceptable, the page is already mapped.
+                }
+                Err(e) => {
+                    panic!("Failed to map new L4 table to higher half: {:?}", e);
+                }
+            }
+        }
+        debug_log_no_alloc!("About to switch CR3 to new page table");
+        unsafe {
+            Cr3::write(
+                level_4_table_frame,
+                x86_64::registers::control::Cr3Flags::empty(),
+            );
+        }
+        debug_log_no_alloc!("CR3 switched, flushing TLB");
+        flush_tlb_and_verify!();
+        debug_log_no_alloc!("TLB flushed, page table switch complete");
+    }
+
+    fn adjust_return_address_and_log(&self) {
+        adjust_return_address_and_stack(self.phys_offset);
+        debug_log_no_alloc!("Page table reinitialization completed");
+    }
+}
+
+// Consolidated page table initializer to reduce lines and improve organization
+struct PageTableInitializer<'a> {
+    mapper: &'a mut OffsetPageTable<'static>,
+    frame_allocator: &'a mut BootInfoFrameAllocator,
+    phys_offset: VirtAddr,
+    memory_map: &'a [EfiMemoryDescriptor],
+}
+
+impl<'a> PageTableInitializer<'a> {
+    fn new(
+        mapper: &'a mut OffsetPageTable<'static>,
+        frame_allocator: &'a mut BootInfoFrameAllocator,
+        phys_offset: VirtAddr,
+        memory_map: &'a [EfiMemoryDescriptor],
+    ) -> Self {
+        Self {
+            mapper,
+            frame_allocator,
+            phys_offset,
+            memory_map,
+        }
+    }
+
+    // Setup identity mappings needed for CR3 switch - now inline for reduced lines
+    fn setup_identity_mappings(
+        &mut self,
+        kernel_phys_start: PhysAddr,
+        level_4_table_frame: PhysFrame,
+    ) -> u64 {
+        debug_log_no_alloc!("Setting up identity mappings for CR3 switch");
+
+        // Map essential regions inline to reduce function count
+        let kernel_size;
+        unsafe {
+            map_identity_range_macro!(
+                self.mapper,
+                self.frame_allocator,
+                level_4_table_frame.start_address().as_u64(),
+                1,
+                page_flags_const!(READ_WRITE_NO_EXEC)
+            );
+            map_identity_range_macro!(
+                self.mapper,
+                self.frame_allocator,
+                4096,
+                UEFI_COMPAT_PAGES,
+                page_flags_const!(READ_WRITE_NO_EXEC)
+            );
+            let calc_kernel_size = calculate_kernel_memory_size(kernel_phys_start);
+            let kernel_pages = calc_kernel_size.div_ceil(4096);
+            map_identity_range_macro!(
+                self.mapper,
+                self.frame_allocator,
+                kernel_phys_start.as_u64(),
+                kernel_pages,
+                page_flags_const!(READ_WRITE)
+            );
+            kernel_size = calc_kernel_size;
+            map_identity_range_macro!(
+                self.mapper,
+                self.frame_allocator,
+                BOOT_CODE_START,
+                BOOT_CODE_PAGES,
+                page_flags_const!(READ_WRITE)
+            );
+            map_stack_region(self.mapper, self.frame_allocator, self.memory_map);
+            map_bitmap_region(self.mapper, self.frame_allocator);
+            self.map_page_aligned_descriptors_safely();
+        }
+
+        debug_log_no_alloc!("Identity mappings completed");
+        kernel_size
+    }
+
+    // Setup higher-half mappings
+    fn setup_higher_half_mappings(
+        &mut self,
+        kernel_phys_start: PhysAddr,
+        fb_addr: Option<VirtAddr>,
+        fb_size: Option<u64>,
+    ) {
+        debug_log_no_alloc!("Setting up higher-half mappings");
+
+        // Map kernel segments to higher half
+        unsafe {
+            map_kernel_segments_inner(
+                self.mapper,
+                self.frame_allocator,
+                kernel_phys_start,
+                self.phys_offset,
+            );
+        }
+
+        debug_log_no_alloc!("Kernel segments mapped to higher half");
+
+        // Map additional regions using MemoryMapper
+        let mut memory_mapper =
+            MemoryMapper::new(self.mapper, self.frame_allocator, self.phys_offset);
+        memory_mapper.map_framebuffer(fb_addr, fb_size);
+        memory_mapper.map_vga();
+        memory_mapper.map_boot_code();
+
+        // Map UEFI runtime services regions to higher half
+        unsafe {
+            self.map_uefi_runtime_to_higher_half();
+        }
+
+        // Map all available memory regions to higher half for complete UEFI compatibility
+        unsafe {
+            self.map_available_memory_to_higher_half();
+        }
+
+        // Map current stack region to higher half
+        unsafe {
+            self.map_stack_to_higher_half();
+        }
+
+        debug_log_no_alloc!("Additional regions mapped to higher half");
+    }
+
+    unsafe fn map_page_aligned_descriptors_safely(&mut self) {
+        use x86_64::structures::paging::PageTableFlags as Flags;
+        for desc in self.memory_map.iter() {
+            if desc.physical_start % 4096 != 0 {
+                continue;
+            }
             let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
                 Flags::PRESENT
             } else {
                 Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE
             };
-            let pages = desc.number_of_pages;
-
-            unsafe {
-                map_identity_range(mapper, frame_allocator, desc.physical_start, pages, flags)
-                    .expect("Failed to map UEFI runtime region");
-            }
+            let _ = map_identity_range(
+                self.mapper,
+                self.frame_allocator,
+                desc.physical_start,
+                1,
+                flags,
+            );
         }
     }
 
-    // Map current stack region to allow continuation
-    let rsp: u64;
-    unsafe {
-        core::arch::asm!("mov {}, rsp", out(reg) rsp);
-    }
-    for desc in memory_map.iter() {
-        if is_valid_memory_descriptor(desc) {
-            let start = desc.physical_start;
-            let end = start + desc.number_of_pages * 4096;
-            if rsp >= start && rsp < end {
-                unsafe {
-                    map_identity_range(mapper, frame_allocator, desc.physical_start, desc.number_of_pages, Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE)
-                        .expect("Failed to map stack region");
-                }
-                break;
-            }
-        }
-    }
-
-    debug_log_no_alloc!("Identity mappings completed");
-    kernel_size
-}
-
-// Setup higher-half mappings
-fn setup_higher_half_mappings<'a>(
-    mapper: &'a mut OffsetPageTable<'static>,
-    frame_allocator: &'a mut BootInfoFrameAllocator,
-    kernel_phys_start: PhysAddr,
-    _kernel_size: u64,
-    fb_addr: Option<VirtAddr>,
-    fb_size: Option<u64>,
-    phys_offset: VirtAddr,
-    memory_map: &[EfiMemoryDescriptor],
-) {
-    debug_log_no_alloc!("Setting up higher-half mappings");
-
-    // Map kernel segments to higher half
-    unsafe {
-        map_kernel_segments_inner(mapper, frame_allocator, kernel_phys_start, phys_offset);
-    }
-
-    debug_log_no_alloc!("Kernel segments mapped to higher half");
-
-    // Map additional regions using MemoryMapper
-    let mut memory_mapper = MemoryMapper::new(mapper, frame_allocator, phys_offset);
-    memory_mapper.map_framebuffer(fb_addr, fb_size);
-    memory_mapper.map_vga();
-    memory_mapper.map_boot_code();
-
-    // Map UEFI runtime services regions to higher half
-    for desc in memory_map.iter() {
+    unsafe fn map_uefi_runtime_to_higher_half(&mut self) {
+        let phys_offset = self.phys_offset; // Copy since VirtAddr is Copy
+        map_memory_descriptors_with_config(
+            self.mapper,
+            self.frame_allocator,
+            self.memory_map,
+            move |desc| {
                 if is_valid_memory_descriptor(desc)
-           && matches!(desc.type_, crate::common::EfiMemoryType::EfiRuntimeServicesCode | crate::common::EfiMemoryType::EfiRuntimeServicesData)
-        {
-            let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-                x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE
-            } else {
-                x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE | x86_64::structures::paging::PageTableFlags::NO_EXECUTE
-            };
-            let pages = desc.number_of_pages;
-            unsafe {
-                map_range_with_log(mapper, frame_allocator, desc.physical_start, desc.physical_start + phys_offset.as_u64(), pages, flags)
-                    .expect("Failed to map UEFI runtime region to higher half");
-            }
-        }
-    }
-
-    // Map current stack region to higher half
-    let rsp: u64;
-    unsafe {
-        core::arch::asm!("mov {}, rsp", out(reg) rsp);
-    }
-    for desc in memory_map.iter() {
-        if is_valid_memory_descriptor(desc) {
-            let start = desc.physical_start;
-            let end = start + desc.number_of_pages * 4096;
-            if rsp >= start && rsp < end {
-                unsafe {
-                    map_range_with_log(mapper, frame_allocator, desc.physical_start, desc.physical_start + phys_offset.as_u64(), desc.number_of_pages, x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE | x86_64::structures::paging::PageTableFlags::NO_EXECUTE)
-                        .expect("Failed to map stack region to higher half");
+                    && matches!(
+                        desc.type_,
+                        crate::common::EfiMemoryType::EfiRuntimeServicesCode
+                            | crate::common::EfiMemoryType::EfiRuntimeServicesData
+                    )
+                {
+                    let flags =
+                        if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+                            PageTableFlags::PRESENT
+                        } else {
+                            PageTableFlags::PRESENT
+                                | PageTableFlags::WRITABLE
+                                | PageTableFlags::NO_EXECUTE
+                        };
+                    Some(higher_half_config!(
+                        phys_offset,
+                        desc.physical_start,
+                        desc.number_of_pages,
+                        flags
+                    ))
+                } else {
+                    None
                 }
-                break;
+            },
+        );
+    }
+
+    unsafe fn map_available_memory_to_higher_half(&mut self) {
+        process_memory_descriptors(self.memory_map, |desc, start_frame, end_frame| {
+            let phys_start = desc.get_physical_start();
+            let pages = (end_frame - start_frame) as u64;
+            let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+                PageTableFlags::PRESENT
+            } else {
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
+            };
+            let _ = map_to_higher_half_with_log(
+                self.mapper,
+                self.frame_allocator,
+                self.phys_offset,
+                phys_start,
+                pages,
+                flags,
+            );
+        });
+    }
+
+    unsafe fn map_stack_to_higher_half(&mut self) {
+        let rsp = get_current_stack_pointer!();
+        for desc in self.memory_map.iter() {
+            if is_valid_memory_descriptor(desc) {
+                let start = desc.physical_start;
+                let end = start + desc.number_of_pages * 4096;
+                if rsp >= start && rsp < end {
+                    map_to_higher_half_with_log(
+                        self.mapper,
+                        self.frame_allocator,
+                        self.phys_offset,
+                        desc.physical_start,
+                        desc.number_of_pages,
+                        PageTableFlags::PRESENT
+                            | PageTableFlags::WRITABLE
+                            | PageTableFlags::NO_EXECUTE,
+                    )
+                    .expect("Failed to map stack region to higher half");
+                    break;
+                }
             }
         }
     }
-
-    debug_log_no_alloc!("Additional regions mapped to higher half");
 }
 
 // Perform the page table switch
-fn switch_to_new_page_table(level_4_table_frame: PhysFrame, phys_offset: VirtAddr, frame_allocator: &mut BootInfoFrameAllocator) {
+// Function to assist with page table debugging
+fn debug_page_table_info(level_4_table_frame: PhysFrame, phys_offset: VirtAddr) {
+    debug_log_no_alloc!(
+        "New L4 table phys addr: ",
+        level_4_table_frame.start_address().as_u64() as usize
+    );
+    debug_log_no_alloc!("Phys offset: ", phys_offset.as_u64() as usize);
+}
+
+fn switch_to_new_page_table(
+    level_4_table_frame: PhysFrame,
+    phys_offset: VirtAddr,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    current_physical_memory_offset: VirtAddr,
+) {
     use x86_64::structures::paging::PageTableFlags as Flags;
 
-    // Map L4 table to higher half first
-    let mut temp_mapper = unsafe {
-        OffsetPageTable::new(
-            &mut *(level_4_table_frame.start_address().as_u64() as *mut PageTable),
-            VirtAddr::new(0),
-        )
+    debug_page_table_info(level_4_table_frame, phys_offset);
+
+    // Use the current active page table to map the L4 table to higher half
+    let mut current_mapper = unsafe {
+        let l4_table = crate::page_table::active_level_4_table(current_physical_memory_offset);
+        OffsetPageTable::new(l4_table, current_physical_memory_offset)
     };
 
     unsafe {
-        match temp_mapper.map_to(
-            Page::containing_address(
-                phys_offset + level_4_table_frame.start_address().as_u64(),
-            ),
+        match current_mapper.map_to(
+            Page::containing_address(phys_offset + level_4_table_frame.start_address().as_u64()),
             level_4_table_frame,
             Flags::PRESENT | Flags::WRITABLE,
             frame_allocator,
         ) {
             Ok(flush) => flush.flush(),
             Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                // Already mapped, skip
+                debug_log_no_alloc!("L4 table already mapped to higher half");
             }
-            Err(e) => panic!("Failed to map L4 table to higher half: {:?}", e),
+            Err(e) => {
+                panic!("Failed to map L4 table to higher half: {:?}", e);
+            }
         }
     }
 
@@ -1099,7 +1828,7 @@ fn switch_to_new_page_table(level_4_table_frame: PhysFrame, phys_offset: VirtAdd
     // Flush TLB
     flush_tlb_and_verify!();
 
-    debug_log_no_alloc!("TLB flushed");
+    debug_log_no_alloc!("TLB flushed, page table switch complete");
 }
 
 pub fn reinit_page_table_with_allocator(
@@ -1108,45 +1837,17 @@ pub fn reinit_page_table_with_allocator(
     fb_size: Option<u64>,
     frame_allocator: &mut BootInfoFrameAllocator,
     memory_map: &[EfiMemoryDescriptor],
+    current_physical_memory_offset: VirtAddr,
 ) -> VirtAddr {
-    debug_log_no_alloc!("Page table reinitialization starting");
-
-    let phys_offset = HIGHER_HALF_OFFSET;
-
-    // Create new page table
-    let level_4_table_frame = create_new_page_table(frame_allocator).expect("Failed to create new page table");
-
-    // Create mapper for new page table
-    let mut mapper = unsafe {
-        OffsetPageTable::new(
-            &mut *(level_4_table_frame.start_address().as_u64() as *mut PageTable),
-            VirtAddr::new(0),
-        )
-    };
-
-    // Setup identity mappings
-    let kernel_size = setup_identity_mappings(&mut mapper, frame_allocator, kernel_phys_start, memory_map);
-
-    // Setup higher-half mappings
-    setup_higher_half_mappings(
-        &mut mapper,
-        frame_allocator,
+    let mut reinitializer = PageTableReinitializer::new();
+    reinitializer.reinitialize(
         kernel_phys_start,
-        kernel_size,
         fb_addr,
         fb_size,
-        phys_offset,
+        frame_allocator,
         memory_map,
-    );
-
-    // Perform the page table switch
-    switch_to_new_page_table(level_4_table_frame, phys_offset, frame_allocator);
-
-    // Adjust return address
-    adjust_return_address(phys_offset);
-
-    debug_log_no_alloc!("Page table reinitialization completed");
-    phys_offset
+        current_physical_memory_offset,
+    )
 }
 
 /// Allocate heap memory from EFI memory map
@@ -1165,31 +1866,6 @@ pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> PhysAdd
 
 use x86_64::structures::paging::PageTableFlags as PageFlags;
 
-// Generic function to map a range with given flags (consolidated from MemoryMapper)
-unsafe fn map_range_with_log(
-    mapper: &mut OffsetPageTable,
-    frame_allocator: &mut BootInfoFrameAllocator,
-    phys_start: u64,
-    virt_start: u64,
-    num_pages: u64,
-    flags: x86_64::structures::paging::PageTableFlags,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-    log_memory_mapping("Mapping range", phys_start, virt_start, num_pages);
-    for i in 0..num_pages {
-        let phys_addr = phys_start + i * 4096;
-        let virt_addr = virt_start + i * 4096;
-        let (page, frame) = create_page_and_frame!(virt_addr, phys_addr);
-        match mapper.map_to(page, frame, flags, frame_allocator) {
-            Ok(flush) => flush.flush(),
-            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                continue;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
-}
-
 // Helper to identity map a memory range
 unsafe fn identity_map_range_with_log(
     mapper: &mut OffsetPageTable,
@@ -1198,7 +1874,33 @@ unsafe fn identity_map_range_with_log(
     num_pages: u64,
     flags: x86_64::structures::paging::PageTableFlags,
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-    map_range_with_log(mapper, frame_allocator, start_addr, start_addr, num_pages, flags)
+    map_range_with_log_macro!(
+        mapper,
+        frame_allocator,
+        start_addr,
+        start_addr,
+        num_pages,
+        flags
+    )
+}
+
+// Helper to map range with log
+unsafe fn map_range_with_log(
+    mapper: &mut OffsetPageTable,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    phys_start: u64,
+    virt_start: u64,
+    num_pages: u64,
+    flags: x86_64::structures::paging::PageTableFlags,
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    map_range_with_log_macro!(
+        mapper,
+        frame_allocator,
+        phys_start,
+        virt_start,
+        num_pages,
+        flags
+    )
 }
 
 // Helper to map to higher half
@@ -1211,7 +1913,14 @@ unsafe fn map_to_higher_half_with_log(
     flags: x86_64::structures::paging::PageTableFlags,
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
     let virt_start = phys_offset.as_u64() + phys_start;
-    map_range_with_log(mapper, frame_allocator, phys_start, virt_start, num_pages, flags)
+    map_range_with_log_macro!(
+        mapper,
+        frame_allocator,
+        phys_start,
+        virt_start,
+        num_pages,
+        flags
+    )
 }
 
 // Global heap allocator
@@ -1228,26 +1937,104 @@ pub trait PageTableHelper {
         flags: PageFlags,
         frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
     ) -> crate::common::logging::SystemResult<()>;
-    fn unmap_page(&mut self, virtual_addr: usize) -> crate::common::logging::SystemResult<PhysFrame>;
-    fn translate_address(&self, virtual_addr: usize) -> crate::common::logging::SystemResult<usize>;
-    fn set_page_flags(&mut self, virtual_addr: usize, flags: PageFlags) -> crate::common::logging::SystemResult<()>;
-    fn get_page_flags(&self, virtual_addr: usize) -> crate::common::logging::SystemResult<PageFlags>;
+    fn unmap_page(
+        &mut self,
+        virtual_addr: usize,
+    ) -> crate::common::logging::SystemResult<PhysFrame>;
+    fn translate_address(&self, virtual_addr: usize)
+    -> crate::common::logging::SystemResult<usize>;
+    fn set_page_flags(
+        &mut self,
+        virtual_addr: usize,
+        flags: PageFlags,
+    ) -> crate::common::logging::SystemResult<()>;
+    fn get_page_flags(
+        &self,
+        virtual_addr: usize,
+    ) -> crate::common::logging::SystemResult<PageFlags>;
     fn flush_tlb(&mut self, virtual_addr: usize) -> crate::common::logging::SystemResult<()>;
     fn flush_tlb_all(&mut self) -> crate::common::logging::SystemResult<()>;
     fn create_page_table(&mut self) -> crate::common::logging::SystemResult<usize>;
-    fn destroy_page_table(&mut self, table_addr: usize) -> crate::common::logging::SystemResult<()>;
-    fn clone_page_table(&mut self, source_table: usize) -> crate::common::logging::SystemResult<usize>;
+    fn destroy_page_table(&mut self, table_addr: usize)
+    -> crate::common::logging::SystemResult<()>;
+    fn clone_page_table(
+        &mut self,
+        source_table: usize,
+    ) -> crate::common::logging::SystemResult<usize>;
     fn switch_page_table(&mut self, table_addr: usize) -> crate::common::logging::SystemResult<()>;
     fn current_page_table(&self) -> usize;
 }
 
 pub type ProcessPageTable = PageTableManager;
 
+fn destroy_page_table_recursive(
+    mapper: &mut OffsetPageTable<'static>,
+    frame_alloc: &mut BootInfoFrameAllocator,
+    table_phys: PhysAddr,
+    level: usize,
+    temp_va: VirtAddr,
+) -> crate::common::logging::SystemResult<()> {
+    if level == 0 || level > 4 {
+        return Ok(());
+    }
+
+    // Temporarily map the table to read its entries
+    let page = Page::<Size4KiB>::containing_address(temp_va);
+    let frame = PhysFrame::<Size4KiB>::containing_address(table_phys);
+    let flush = unsafe {
+        mapper
+            .map_to(
+                page,
+                frame,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                frame_alloc,
+            )
+            .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
+    };
+    flush.flush();
+
+    let table = unsafe { &*(temp_va.as_ptr() as *const PageTable) };
+
+    let mut child_frames_to_free = alloc::vec::Vec::new();
+    if level > 1 {
+        for entry in table.iter() {
+            if entry.flags().contains(PageTableFlags::PRESENT)
+                && !entry.flags().contains(PageTableFlags::HUGE_PAGE)
+            {
+                if let Ok(child_frame) = entry.frame() {
+                    child_frames_to_free.push(child_frame);
+                }
+            }
+        }
+    }
+
+    // Unmap the temporary page before recursing
+    if let Ok((_frame, flush)) = mapper.unmap(page) {
+        flush.flush();
+    }
+
+    // Now recurse on children
+    for child_frame in child_frames_to_free {
+        destroy_page_table_recursive(
+            mapper,
+            frame_alloc,
+            child_frame.start_address(),
+            level - 1,
+            TEMP_VA_FOR_DESTROY,
+        )?;
+        frame_alloc.deallocate_frame(child_frame);
+    }
+
+    Ok(())
+}
+
 pub struct PageTableManager {
     current_page_table: usize,
     initialized: bool,
     pml4_frame: Option<PhysFrame>,
     mapper: Option<OffsetPageTable<'static>>,
+    allocated_tables: alloc::collections::BTreeMap<usize, PhysFrame>,
+    frame_allocator: Option<&'static mut BootInfoFrameAllocator>,
 }
 
 impl PageTableManager {
@@ -1257,7 +2044,160 @@ impl PageTableManager {
             initialized: false,
             pml4_frame: None,
             mapper: None,
+            allocated_tables: alloc::collections::BTreeMap::new(),
+            frame_allocator: None,
         }
+    }
+
+    pub fn initialize_with_frame_allocator(
+        &mut self,
+        phys_offset: VirtAddr,
+        frame_allocator: &'static mut BootInfoFrameAllocator,
+    ) -> crate::common::logging::SystemResult<()> {
+        if self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
+
+        // Get the current active page table
+        let (current_pml4, _) = Cr3::read();
+        let table_phys_addr = current_pml4.start_address().as_u64();
+
+        // Initialize the mapper with the current table
+        self.mapper = Some(unsafe {
+            // Temporarily map the current table to access it
+            let mut temp_mapper = unsafe { init(phys_offset) };
+            let virt_addr = phys_offset + table_phys_addr;
+            let page = Page::containing_address(virt_addr);
+            match temp_mapper.map_to(
+                page,
+                current_pml4,
+                page_flags_const!(READ_WRITE_NO_EXEC),
+                frame_allocator,
+            ) {
+                Ok(flush) => flush.flush(),
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => { /* Already mapped, which is fine. */
+                }
+                Err(_) => return Err(crate::common::logging::SystemError::MappingFailed),
+            };
+            OffsetPageTable::new(
+                &mut *(virt_addr.as_mut_ptr() as *mut PageTable),
+                phys_offset,
+            )
+        });
+
+        self.pml4_frame = Some(current_pml4);
+        self.current_page_table = table_phys_addr as usize;
+        self.allocated_tables
+            .insert(table_phys_addr as usize, current_pml4);
+        self.frame_allocator = Some(frame_allocator);
+        self.initialized = true;
+        Ok(())
+    }
+
+    fn clone_page_table_recursive(
+        mapper: &mut OffsetPageTable<'static>,
+        frame_alloc: &mut BootInfoFrameAllocator,
+        source_table_phys: PhysAddr,
+        level: usize,
+        temp_va: VirtAddr,
+        allocated_tables: &mut alloc::collections::BTreeMap<usize, PhysFrame>,
+    ) -> crate::common::logging::SystemResult<PhysAddr> {
+        if level == 0 || level > 4 {
+            return Err(crate::common::logging::SystemError::InvalidArgument);
+        }
+
+        // Allocate new frame for destination table
+        let dest_frame = match frame_alloc.allocate_frame() {
+            Some(frame) => frame,
+            None => return Err(crate::common::logging::SystemError::FrameAllocationFailed),
+        };
+
+        // Zero the new table
+        unsafe {
+            core::ptr::write_bytes(dest_frame.start_address().as_u64() as *mut PageTable, 0, 1);
+        }
+
+        // Track the allocated frame
+        allocated_tables.insert(dest_frame.start_address().as_u64() as usize, dest_frame);
+
+        // Temporarily map source table for reading
+        let source_page = Page::<Size4KiB>::containing_address(temp_va);
+        let source_phys_frame = PhysFrame::<Size4KiB>::containing_address(source_table_phys);
+        unsafe {
+            mapper
+                .map_to(
+                    source_page,
+                    source_phys_frame,
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                    frame_alloc,
+                )
+                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
+                .flush();
+        }
+
+        let source_table = unsafe { &mut *(temp_va.as_mut_ptr() as *mut PageTable) };
+
+        // Temporarily map destination table for writing
+        let dest_page = Page::<Size4KiB>::containing_address(temp_va + 0x1000u64);
+        unsafe {
+            mapper
+                .map_to(
+                    dest_page,
+                    dest_frame,
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                    frame_alloc,
+                )
+                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
+                .flush();
+        }
+
+        let dest_table = unsafe { &mut *((temp_va.as_u64() + 0x1000) as *mut PageTable) };
+
+        let mut child_va = temp_va + 0x2000u64;
+
+        // Copy all entries
+        for (_i, (source_entry, dest_entry)) in
+            source_table.iter().zip(dest_table.iter_mut()).enumerate()
+        {
+            if source_entry.flags().contains(PageTableFlags::PRESENT) {
+                if level > 1
+                    && !((level == 2) && source_entry.flags().contains(PageTableFlags::HUGE_PAGE))
+                {
+                    // Entry points to a sub-table, recursively clone it
+                    match source_entry.frame() {
+                        Ok(child_frame) => {
+                            let cloned_child_phys = Self::clone_page_table_recursive(
+                                mapper,
+                                frame_alloc,
+                                child_frame.start_address(),
+                                level - 1,
+                                child_va,
+                                allocated_tables,
+                            )?;
+                            // Update entry to point to cloned child table
+                            dest_entry.set_addr(cloned_child_phys, source_entry.flags());
+                            child_va += 0x1000u64;
+                        }
+                        Err(_) => {
+                            // Invalid frame, skip
+                        }
+                    }
+                } else {
+                    // Leaf entry, copy directly
+                    dest_entry.set_addr(source_entry.addr(), source_entry.flags());
+                }
+            }
+        }
+
+        // Unmap temp mappings
+        if let Ok((_frame, flush)) = mapper.unmap(source_page) {
+            flush.flush();
+        }
+        if let Ok((_frame, flush)) = mapper.unmap(dest_page) {
+            flush.flush();
+        }
+
+        Ok(dest_frame.start_address())
     }
 }
 
@@ -1413,32 +2353,88 @@ impl PageTableHelper for PageTableManager {
     fn create_page_table(&mut self) -> crate::common::logging::SystemResult<usize> {
         ensure_initialized!(self);
 
-        // Return a dummy address
-        Ok(0x1000)
+        // Use the configured frame allocator
+        let new_frame = match self.frame_allocator.as_mut().unwrap().allocate_frame() {
+            Some(frame) => frame,
+            None => return Err(crate::common::logging::SystemError::FrameAllocationFailed),
+        };
+
+        // Zero the new page table frame
+        unsafe {
+            core::ptr::write_bytes(new_frame.start_address().as_u64() as *mut PageTable, 0, 1);
+        }
+
+        let table_addr = new_frame.start_address().as_u64() as usize;
+        self.allocated_tables.insert(table_addr, new_frame);
+
+        Ok(table_addr)
     }
 
     fn destroy_page_table(
         &mut self,
-        _table_addr: usize,
+        table_addr: usize,
     ) -> crate::common::logging::SystemResult<()> {
         ensure_initialized!(self);
 
-        Ok(())
+        let table_phys = PhysAddr::new(table_addr as u64);
+        if let Some(frame) = self.allocated_tables.remove(&table_addr) {
+            let mapper = self.mapper.as_mut().unwrap();
+            let frame_alloc = self.frame_allocator.as_deref_mut().unwrap();
+            // Recursively destroy lower level tables
+            destroy_page_table_recursive(mapper, frame_alloc, table_phys, 4, TEMP_VA_FOR_DESTROY)?;
+            // Now deallocate the L4 frame
+            frame_alloc.deallocate_frame(frame);
+            Ok(())
+        } else {
+            Err(crate::common::logging::SystemError::InvalidArgument)
+        }
     }
 
     fn clone_page_table(
         &mut self,
-        _source_table: usize,
+        source_table: usize,
     ) -> crate::common::logging::SystemResult<usize> {
         ensure_initialized!(self);
 
-        Ok(_source_table + 0x1000) // Dummy offset
+        let source_frame = match self.allocated_tables.get(&source_table) {
+            Some(frame) => frame,
+            None => return Err(crate::common::logging::SystemError::InvalidArgument),
+        };
+
+        let mapper = self.mapper.as_mut().unwrap();
+        let frame_alloc = self.frame_allocator.as_mut().unwrap();
+
+        // Clone recursively starting from L4 level (level 4)
+        let cloned_phys = Self::clone_page_table_recursive(
+            mapper,
+            frame_alloc,
+            source_frame.start_address(),
+            4,
+            TEMP_VA_FOR_CLONE, // Use a different temp VA than destroy
+            &mut self.allocated_tables,
+        )?;
+
+        let new_table_addr = cloned_phys.as_u64() as usize;
+        // Note: allocated_tables tracking is done inside the recursive function
+
+        Ok(new_table_addr)
     }
 
     fn switch_page_table(&mut self, table_addr: usize) -> crate::common::logging::SystemResult<()> {
         ensure_initialized!(self);
 
+        let new_frame = match self.allocated_tables.get(&table_addr) {
+            Some(frame) => frame,
+            None => return Err(crate::common::logging::SystemError::InvalidArgument),
+        };
+
+        unsafe {
+            Cr3::write(*new_frame, x86_64::registers::control::Cr3Flags::empty());
+        }
+
+        self.pml4_frame = Some(*new_frame);
         self.current_page_table = table_addr;
+
         Ok(())
     }
 
@@ -1513,7 +2509,11 @@ pub struct PeSection {
 }
 
 pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
-    debug_log_no_alloc!("calculate_kernel_memory_size: starting");
+    log_page_table_op!(
+        "PE size calculation",
+        "starting",
+        kernel_phys_start.as_u64() as usize
+    );
 
     if kernel_phys_start.as_u64() == 0 {
         debug_log_no_alloc!("Kernel phys start is 0, using fallback size");
@@ -1522,11 +2522,15 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
 
     let parser = match unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8) } {
         Some(p) => {
-            debug_log_no_alloc!("PE parser created successfully");
+            log_page_table_op!("PE size calculation", "parser created successfully", 0);
             p
         }
         None => {
-            debug_log_no_alloc!("Failed to create PE parser, using fallback");
+            log_page_table_op!(
+                "PE size calculation",
+                "parser creation failed, using fallback",
+                0
+            );
             return FALLBACK_KERNEL_SIZE;
         }
     };
@@ -1534,11 +2538,19 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
     match unsafe { parser.size_of_image() } {
         Some(size) => {
             let padded_size = (size + KERNEL_MEMORY_PADDING).div_ceil(4096) * 4096;
-            debug_log_no_alloc!("PE parsing successful, size=0x", padded_size as usize);
+            log_page_table_op!(
+                "PE size calculation",
+                "parsing successful",
+                padded_size as usize
+            );
             padded_size
         }
         None => {
-            debug_log_no_alloc!("PE parsing failed for size_of_image, using fallback size");
+            log_page_table_op!(
+                "PE size calculation",
+                "size_of_image failed, using fallback",
+                0
+            );
             FALLBACK_KERNEL_SIZE
         }
     }

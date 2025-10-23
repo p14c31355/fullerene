@@ -7,7 +7,8 @@ use crate::graphics;
 use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::{
-    Color, ColorCode, ScreenChar, TextBufferOperations, check_periodic, periodic_task, write_serial_bytes,
+    Color, ColorCode, ScreenChar, TextBufferOperations, check_periodic, periodic_task,
+    write_serial_bytes,
 };
 use x86_64::VirtAddr;
 
@@ -22,6 +23,12 @@ static IO_EVENTS: spin::Mutex<VecDeque<IoEvent>> = spin::Mutex::new(VecDeque::ne
 const DESKTOP_UPDATE_INTERVAL_TICKS: u64 = 5000;
 const LOG_INTERVAL_TICKS: u64 = 5000;
 const DISPLAY_INTERVAL_TICKS: u64 = 5000;
+
+// Configurable thresholds
+const HIGH_MEMORY_THRESHOLD: usize = 50; // %
+const MAX_PROCESSES_THRESHOLD: usize = 10;
+const EMERGENCY_MEMORY_THRESHOLD: usize = 80; // %
+const MAX_PROCESSES_EMERGENCY: usize = 100;
 
 // System diagnostics structure
 #[derive(Clone, Copy)]
@@ -78,27 +85,35 @@ fn process_io_events() {
 
 /// Perform system health checks (memory, processes, etc.)
 fn perform_system_health_checks() {
-    // Check memory usage
+    check_memory_usage();
+    check_process_count();
+    check_keyboard_buffer();
+}
+
+/// Check memory usage and log warnings if high
+fn check_memory_usage() {
     let (used, total, _) = petroleum::get_memory_stats!();
 
-    // Log warning if memory usage is high
-    if used > total / 2 {
+    if total > 0 && (used as u128 * 100 / total as u128) > HIGH_MEMORY_THRESHOLD as u128 {
         log::warn!(
             "High memory usage: {} bytes used out of {} bytes",
             used,
             total
         );
     }
+}
 
-    // Check for too many processes
+/// Check process count and warn if too many active
+fn check_process_count() {
     let active_count = crate::process::get_active_process_count();
-    if active_count > 10 {
+    if active_count > MAX_PROCESSES_THRESHOLD {
         log::warn!("High process count: {} active processes", active_count);
     }
+}
 
-    // Check keyboard buffer for overflow
+/// Check and drain keyboard buffer if needed
+fn check_keyboard_buffer() {
     if crate::keyboard::input_available() {
-        // Drain excess input to prevent buffer overflow
         let drained = crate::keyboard::drain_line_buffer(&mut []);
         if drained > 256 {
             log::debug!("Drained {} bytes from keyboard buffer", drained);
@@ -402,7 +417,8 @@ fn initialize_shell_process() -> crate::process::ProcessId {
     let shell_pid = crate::process::create_process(
         "shell_process",
         VirtAddr::new(shell_process_main as usize as u64),
-    ).expect("Failed to create shell process");
+    )
+    .expect("Failed to create shell process");
     log::info!("Created shell process with PID {}", shell_pid);
     crate::process::unblock_process(shell_pid);
     shell_pid
@@ -411,14 +427,31 @@ fn initialize_shell_process() -> crate::process::ProcessId {
 /// Main kernel scheduler loop - orchestrates all system functionality
 pub fn scheduler_loop() -> ! {
     log::info!("Starting enhanced OS scheduler with integrated system features...");
-    write_serial_bytes!(0x3F8, 0x3FD, b"Scheduler: About to initialize shell process\n");
+    write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"Scheduler: About to initialize shell process\n"
+    );
 
     let _ = initialize_shell_process();
-    write_serial_bytes!(0x3F8, 0x3FD, b"Scheduler: Shell process initialized successfully\n");
+    write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"Scheduler: Shell process initialized successfully\n"
+    );
 
     // Main scheduler loop - continuously execute processes with integrated OS functionality
     log::info!("Scheduler: Entering main loop");
     write_serial_bytes!(0x3F8, 0x3FD, b"Scheduler: Main loop starting\n");
+
+    // Print to VGA if available for GUI output
+    if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {
+        let mut writer = vga_buffer.lock();
+        writer.write_string("Scheduler loop started - VGA output enabled\n");
+        writer.write_string("System is running...\n");
+        writer.update_cursor();
+    }
+
     loop {
         // Increment system counters for this iteration
         SYSTEM_TICK.fetch_add(1, Ordering::Relaxed);
@@ -431,19 +464,25 @@ pub fn scheduler_loop() -> ! {
 
 /// Handle emergency system conditions (OOM, process limits, etc.)
 fn emergency_condition_handler() {
-    // Check for out-of-memory condition
+    check_emergency_memory();
+    check_emergency_process_count();
+}
+
+/// Check for critical memory emergency conditions
+fn check_emergency_memory() {
     let (used, total, _) = petroleum::get_memory_stats!();
-    if used > (total * 4) / 5 {
-        // >80% usage
+    if total > 0 && (used as u128 * 100 / total as u128) > EMERGENCY_MEMORY_THRESHOLD as u128 {
         log::error!("EMERGENCY: Critical memory usage detected!");
         // In a full implementation, this would:
         // 1. Kill memory-hog processes
         // 2. Perform emergency memory cleanup
         // 3. Log diagnostic information
     }
+}
 
-    // Check process limits
-    if crate::process::get_active_process_count() > 100 {
+/// Check for emergency process count limits
+fn check_emergency_process_count() {
+    if crate::process::get_active_process_count() > MAX_PROCESSES_EMERGENCY {
         log::error!("EMERGENCY: Too many active processes!");
         // Would implement process cleanup here
     }

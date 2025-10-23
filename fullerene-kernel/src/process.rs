@@ -3,11 +3,11 @@
 //! This module provides process creation, scheduling, and context switching
 //! capabilities for user-space programs.
 
+use crate::errors::SystemError;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, Ordering};
-use crate::errors::SystemError;
 use petroleum::{page_table::PageTableHelper, write_serial_bytes};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
@@ -202,7 +202,10 @@ pub fn init() {
 }
 
 /// Create a new process and add it to the process list
-pub fn create_process(name: &'static str, entry_point_address: VirtAddr) -> Result<ProcessId, petroleum::common::logging::SystemError> {
+pub fn create_process(
+    name: &'static str,
+    entry_point_address: VirtAddr,
+) -> Result<ProcessId, petroleum::common::logging::SystemError> {
     write_serial_bytes!(0x3F8, 0x3FD, b"Process: create_process starting\n");
 
     let mut process = Process::new(name, entry_point_address);
@@ -223,7 +226,9 @@ pub fn create_process(name: &'static str, entry_point_address: VirtAddr) -> Resu
         Err(e) => {
             log::error!("Failed to create process page table: {:?}", e);
             // Deallocate stack to prevent memory leak on error
-            unsafe { alloc::alloc::dealloc(stack_ptr, stack_layout); }
+            unsafe {
+                alloc::alloc::dealloc(stack_ptr, stack_layout);
+            }
             return Err(e);
         }
     };
