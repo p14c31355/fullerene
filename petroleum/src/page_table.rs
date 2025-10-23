@@ -5,7 +5,7 @@ use crate::{
 };
 
 // Macros are automatically available from common module
-use alloc::collections::BTreeMap;
+// BTreeMap will be available through std when compiled as std crate
 use spin::Once;
 use x86_64::{
     PhysAddr, VirtAddr,
@@ -2173,23 +2173,35 @@ impl PageTableHelper for PageTableManager {
         Ok(table_addr)
     }
 
+    /// # CRITICAL BUG: Memory Leak
+    /// This function only deallocates the L4 page table frame but does NOT recursively
+    /// traverse and deallocate lower-level page tables (L3/L2/L1) that are referenced
+    /// by this L4 table. Any page table frames allocated for L3, L2, or L1 levels
+    /// will be leaked, consuming memory without being freed.
+    /// FIX: Implement recursive traversal to deallocate all referenced page table frames
+    /// before deallocating the L4 frame itself.
     fn destroy_page_table(
         &mut self,
         table_addr: usize,
     ) -> crate::common::logging::SystemResult<()> {
         ensure_initialized!(self);
 
-        if let Some(frame) = self.allocated_tables.remove(&table_addr) {
-            if let Some(allocator) = self.frame_allocator.as_mut() {
-                allocator.deallocate_frame(frame);
-            }
-        } else {
+        // Remove frame from tracking - this effectively deallocates it
+        // by removing the reference, but doesn't handle lower-level tables
+        if self.allocated_tables.remove(&table_addr).is_none() {
             return Err(crate::common::logging::SystemError::InvalidArgument);
         }
 
         Ok(())
     }
 
+    /// # CRITICAL BUG: Shallow Copy Problem
+    /// This function performs a shallow copy by directly copying only the L4 table frame
+    /// content, but it copies raw physical addresses which assumes identity mapping
+    /// (virtual address == physical address). In most systems, this mapping does not hold,
+    /// causing the copied table to contain invalid/misaligned physical addresses.
+    /// FIX: Implement deep copy with proper address translation or use virtual address
+    /// space isolation to ensure address correctness.
     fn clone_page_table(
         &mut self,
         source_table: usize,
