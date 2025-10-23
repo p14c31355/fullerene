@@ -987,6 +987,12 @@ unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
     }
 }
 
+unsafe impl FrameAllocator<Size4KiB> for &mut BitmapFrameAllocator {
+    fn allocate_frame(&mut self) -> Option<PhysFrame> {
+        (**self).allocate_frame()
+    }
+}
+
 // Implement petroleum's FrameAllocator trait for the BitmapFrameAllocator
 impl crate::initializer::FrameAllocator for BitmapFrameAllocator {
     fn allocate_frame(&mut self) -> crate::common::logging::SystemResult<usize> {
@@ -1447,13 +1453,25 @@ fn create_new_page_table(
         None => return Err(crate::common::logging::SystemError::MemOutOfMemory),
     };
 
-    // Zero the new L4 table
+    // Temporarily create an identity mapper for this context to zero the allocated frame
+    let mut temp_mapper = unsafe { init(VirtAddr::new(0)) };
+    let temp_page = unsafe { Page::<Size4KiB>::containing_address(VirtAddr::new(TEMP_VA_FOR_CLONE.as_u64() + 0x2000u64)) };
     unsafe {
-        core::ptr::write_bytes(
-            level_4_table_frame.start_address().as_u64() as *mut PageTable,
-            0,
-            1,
-        );
+        temp_mapper
+            .map_to(temp_page, level_4_table_frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, frame_allocator)
+            .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
+            .flush();
+    }
+
+    // Zero the new L4 table through the temporary mapping
+    unsafe {
+        let table_addr = TEMP_VA_FOR_CLONE.as_u64() + 0x2000u64;
+        core::ptr::write_bytes(table_addr as *mut PageTable, 0, 1);
+    }
+
+    // Unmap the temporary page
+    if let Ok((_frame, flush)) = temp_mapper.unmap(temp_page) {
+        flush.flush();
     }
 
     debug_log_no_alloc!("New L4 page table created and zeroed");
@@ -2517,15 +2535,34 @@ impl PageTableHelper for PageTableManager {
     fn create_page_table(&mut self) -> crate::common::logging::SystemResult<usize> {
         ensure_initialized!(self);
 
+        // Get a reference to the frame allocator
+        let frame_alloc = self.frame_allocator.as_mut().unwrap();
+
         // Use the configured frame allocator
-        let new_frame = match self.frame_allocator.as_mut().unwrap().allocate_frame() {
+        let new_frame = match frame_alloc.allocate_frame() {
             Some(frame) => frame,
             None => return Err(crate::common::logging::SystemError::FrameAllocationFailed),
         };
 
+        // Temporarily map the page table frame before accessing it
+        let mapper = self.mapper.as_mut().unwrap();
+        let temp_page = unsafe { Page::<Size4KiB>::containing_address(VirtAddr::new(TEMP_VA_FOR_CLONE.as_u64() + 0x3000u64)) };
+        unsafe {
+            mapper
+                .map_to(temp_page, new_frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, frame_alloc)
+                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
+                .flush();
+        }
+
         // Zero the new page table frame
         unsafe {
-            core::ptr::write_bytes(new_frame.start_address().as_u64() as *mut PageTable, 0, 1);
+            let table_va = (TEMP_VA_FOR_CLONE.as_u64() + 0x3000) as *mut u8;
+            core::ptr::write_bytes(table_va, 0, 4096);
+        }
+
+        // Unmap the temporary mapping
+        if let Ok((_frame, flush)) = mapper.unmap(temp_page) {
+            flush.flush();
         }
 
         let table_addr = new_frame.start_address().as_u64() as usize;
