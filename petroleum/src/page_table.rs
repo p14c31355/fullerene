@@ -2332,7 +2332,7 @@ impl PageTableHelper for PageTableManager {
             let mapper = self.mapper.as_mut().unwrap();
             let frame_alloc = self.frame_allocator.as_deref_mut().unwrap();
             // Recursively destroy lower level tables
-            destroy_page_table_recursive(mapper, frame_alloc, table_phys, 4, VirtAddr::new(0xFFFF_8000_0000_0000), 0)?;
+            destroy_page_table_recursive(mapper, frame_alloc, table_phys, 4, VirtAddr::new(0xFFFF_8000_0000_0000))?;
             // Now deallocate the L4 frame
             frame_alloc.deallocate_frame(frame);
             Ok(())
