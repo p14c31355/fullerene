@@ -485,7 +485,7 @@ pub fn init_gop_framebuffer_alternative(
         "GOP: Trying alternative detection methods for QEMU...\n"
     ));
 
-    if let Some(mut fb_config) = find_working_qemu_config(&QEMU_CONFIGS) {
+    if let Some(fb_config) = find_working_qemu_config(&QEMU_CONFIGS) {
         serial::_print(format_args!(
             "GOP: Attempting to install framebuffer config table...\n"
         ));
