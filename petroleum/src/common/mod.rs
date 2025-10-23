@@ -12,6 +12,7 @@ pub struct VgaFramebufferConfig {
 pub mod error;
 pub mod logging;
 pub mod macros;
+pub mod memory;
 pub mod syscall;
 
 // Common VGA mode setup helper to avoid code duplication
@@ -36,5 +37,6 @@ pub fn set_memory_initialized(initialized: bool) {
 
 // Re-exports to maintain compatibility and new macros
 pub use error::*;
+pub use memory::*;
 pub use syscall::*;
 pub use uefi::*;
