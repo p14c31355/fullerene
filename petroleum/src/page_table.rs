@@ -28,7 +28,7 @@ use x86_64::{
 // Import constants
 use constants::{
     BOOT_CODE_PAGES, BOOT_CODE_START, PAGE_SIZE, READ_ONLY, READ_WRITE, READ_WRITE_NO_EXEC,
-    TEMP_LOW_VA, VGA_MEMORY_END, VGA_MEMORY_START,
+    TEMP_LOW_VA, TEMP_VA_FOR_ZERO, VGA_MEMORY_END, VGA_MEMORY_START,
 };
 
 // Macros and constants
@@ -1051,8 +1051,8 @@ fn create_new_page_table(
 
     // Zero the new L4 table through the temporary mapping
     unsafe {
-        let table_addr = TEMP_LOW_VA.as_u64();
-        core::ptr::write_bytes(table_addr as *mut PageTable, 0, 1);
+        let table_addr = TEMP_LOW_VA.as_mut_ptr() as *mut PageTable;
+        *table_addr = PageTable::new();
     }
 
     // Unmap the temporary page
@@ -1131,7 +1131,7 @@ impl PageTableReinitializer {
     ) -> VirtAddr {
         debug_log_no_alloc!("Page table reinitialization starting");
 
-        let level_4_table_frame = self.create_page_table(frame_allocator);
+        let level_4_table_frame = self.create_page_table(current_physical_memory_offset, frame_allocator);
         let mut mapper = self.setup_new_mapper(
             level_4_table_frame,
             current_physical_memory_offset,
@@ -1152,19 +1152,38 @@ impl PageTableReinitializer {
         self.phys_offset
     }
 
-    fn create_page_table(&self, frame_allocator: &mut BootInfoFrameAllocator) -> PhysFrame {
+    fn create_page_table(&self, current_physical_memory_offset: VirtAddr, frame_allocator: &mut BootInfoFrameAllocator) -> PhysFrame {
         debug_log_no_alloc!("Allocating new L4 page table frame");
         let level_4_table_frame = match frame_allocator.allocate_frame() {
             Some(frame) => frame,
             None => panic!("Failed to allocate L4 page table frame"),
         };
+        // Temporarily create a mapper with the current physical offset to zero the allocated frame in higher half
+        let mut current_mapper = unsafe { init(current_physical_memory_offset) };
+        let temp_page = unsafe { Page::<Size4KiB>::containing_address(TEMP_VA_FOR_ZERO) };
         unsafe {
-            core::ptr::write_bytes(
-                level_4_table_frame.start_address().as_u64() as *mut PageTable,
-                0,
-                1,
-            );
+            current_mapper
+                .map_to(
+                    temp_page,
+                    level_4_table_frame,
+                    page_flags_const!(READ_WRITE_NO_EXEC),
+                    frame_allocator,
+                )
+                .expect("Failed to map L4 table frame")
+                .flush();
         }
+
+        // Zero the new L4 table through the temporary mapping
+        unsafe {
+            let table_addr = TEMP_VA_FOR_ZERO.as_mut_ptr() as *mut PageTable;
+            *table_addr = PageTable::new();
+        }
+
+        // Unmap the temporary page
+        if let Ok((_frame, flush)) = current_mapper.unmap(temp_page) {
+            flush.flush();
+        }
+
         debug_log_no_alloc!("New L4 page table created and zeroed");
         level_4_table_frame
     }
