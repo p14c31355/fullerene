@@ -1,3 +1,10 @@
+// Internal submodules for modularization
+#[macro_use]
+pub mod macros;
+pub mod constants;
+pub mod efi_memory;
+pub mod bitmap_allocator;
+
 use crate::{
     calc_offset_addr, create_page_and_frame, debug_log_no_alloc, ensure_initialized,
     flush_tlb_and_verify, log_memory_descriptor, map_and_flush, map_identity_range_checked,
