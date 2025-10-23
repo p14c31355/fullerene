@@ -323,20 +323,27 @@ impl BitmapFrameAllocator {
     }
 
     /// Get available frames count
-    fn available_frames(&self) -> usize {
+        fn available_frames(&self) -> usize {
         if !self.initialized || self.bitmap.is_none() {
             return 0;
         }
 
         let bitmap = self.bitmap.as_ref().unwrap();
-        let mut used = 0;
-        let chunks_to_check = self.frame_count.div_ceil(64);
+        let mut free_frames = 0;
+        let full_chunks = self.frame_count / 64;
 
-        for i in 0..chunks_to_check {
-            used += bitmap[i].count_ones() as usize;
+        for i in 0..full_chunks {
+            free_frames += bitmap[i].count_zeros() as usize;
         }
 
-        self.frame_count - used
+        let remainder_bits = self.frame_count % 64;
+        if remainder_bits > 0 {
+            let last_chunk = bitmap[full_chunks];
+            let mask = (1u64 << remainder_bits) - 1;
+            free_frames += (!last_chunk & mask).count_ones() as usize;
+        }
+
+        free_frames
     }
 }
 
