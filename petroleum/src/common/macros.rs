@@ -981,10 +981,9 @@ macro_rules! map_range_with_log_macro {
                 Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
                     continue;
                 }
-                Err(e) => return Err(e),
+                Err(e) => panic!("Failed to map page: {:?}", e),
             }
         }
-        Ok(())
     }};
 }
 
@@ -1005,7 +1004,7 @@ macro_rules! map_to_higher_half_with_log_macro {
     ($mapper:expr, $frame_allocator:expr, $phys_offset:expr, $phys_start:expr, $num_pages:expr, $flags:expr) => {{
         let virt_start = $phys_offset.as_u64() + $phys_start;
         log_page_table_op!("Higher half mapping start", $phys_start, virt_start, $num_pages);
-        map_range_with_log_macro!($mapper, $frame_allocator, $phys_start, virt_start, $num_pages, $flags)?;
+        map_range_with_log_macro!($mapper, $frame_allocator, $phys_start, virt_start, $num_pages, $flags);
         log_page_table_op!("Higher half mapping complete", $phys_start, virt_start, $num_pages);
         Ok(())
     }};

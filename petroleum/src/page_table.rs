@@ -1,6 +1,4 @@
 // Internal submodules for modularization
-#[macro_use]
-pub mod macros;
 pub mod bitmap_allocator;
 pub mod constants;
 pub mod efi_memory;
@@ -425,7 +423,8 @@ impl<'a> MemoryMappable for MemoryMapper<'a> {
                 virt_start,
                 num_pages,
                 flags
-            )
+            );
+            Ok(())
         }
     }
 
@@ -508,7 +507,8 @@ impl<'a> MemoryMapper<'a> {
             virt_start,
             num_pages,
             flags
-        )
+        );
+        Ok(())
     }
 
     unsafe fn identity_map_range(
@@ -1397,7 +1397,7 @@ impl<'a> PageTableInitializer<'a> {
             let pages = (end_frame - start_frame) as u64;
             // Always give writable access to available memory regions for compatibility
             let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
-            let _ = identity_map_range_with_log_macro!(
+            let _ : core::result::Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> = identity_map_range_with_log_macro!(
                 self.mapper,
                 self.frame_allocator,
                 phys_start,
@@ -1525,7 +1525,8 @@ unsafe fn map_to_higher_half_with_log(
         virt_start,
         num_pages,
         flags
-    )
+    );
+    Ok(())
 }
 
 // Global heap allocator
