@@ -458,6 +458,119 @@ macro_rules! log {
     };
 }
 
+/// Macro for defining health check functions with consistent logging and thresholds
+/// Reduces boilerplate in system monitoring by providing a unified interface
+#[macro_export]
+macro_rules! health_check {
+    ($fn_name:ident, $threshold_expr:expr, $log_level:ident, $msg:expr, $body:block) => {
+        fn $fn_name() {
+            $body
+            if $threshold_expr {
+                log::$log_level!($msg);
+            }
+        }
+    };
+}
+
+/// Macro for periodic VGA stat display to reduce code duplication in scheduler
+/// Automatically handles cursor positioning and line clearing
+#[macro_export]
+macro_rules! vga_stat_display {
+    ($vga_buffer:expr, $stats:expr, $current_tick:expr, $interval_ticks:expr, $start_row:expr, $($display_line:tt)*) => {{
+        static LAST_DISPLAY_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
+        petroleum::check_periodic!(LAST_DISPLAY_TICK, $interval_ticks, $current_tick, {
+            if let Some(vga_buffer) = $vga_buffer.get() {
+                const TICKS_PER_SECOND: u64 = 1000;
+                let uptime_minutes = $stats.upptime_ticks / (60 * TICKS_PER_SECOND);
+                let uptime_seconds = ($stats.uptime_ticks % (60 * TICKS_PER_SECOND)) / TICKS_PER_SECOND;
+
+                let mut vga_writer = vga_buffer.lock();
+
+                let blank_char = ScreenChar {
+                    ascii_character: b' ',
+                    color_code: ColorCode::new(Color::Black, Color::Black),
+                };
+
+                petroleum::clear_line_range!(vga_writer, $start_row, $start_row + 3, 0, 80, blank_char);
+
+                vga_writer.set_position($start_row, 0);
+                use core::fmt::Write;
+                vga_writer.set_color_code(ColorCode::new(Color::Cyan, Color::Black));
+
+                $(
+                    vga_stat_display_line!(vga_writer, $display_line);
+                )*
+
+                vga_writer.update_cursor();
+            }
+        });
+    }};
+}
+
+/// Helper macro for vga_stat_display to process each display line
+#[macro_export]
+macro_rules! vga_stat_display_line {
+    ($vga_writer:expr, ($row:expr, $format:expr, $($args:tt)*)) => {{
+        $vga_writer.set_position($row, 0);
+        let _ = write!($vga_writer, $format, $($args)*);
+    }};
+}
+
+/// Macro for unified periodic stat logging to filesystem with auto-file creation
+/// Reduces duplication between different stat logging functions
+#[macro_export]
+macro_rules! periodic_fs_log {
+    ($filename:expr, $interval_ticks:expr, $current_tick:expr, $($stats_expr:tt)*) => {{
+        static LAST_LOG_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
+        static LOG_FILE_CREATED: spin::Mutex<bool> = spin::Mutex::new(false);
+
+        petroleum::check_periodic!(LAST_LOG_TICK, $interval_ticks, $current_tick, {
+            let log_content = alloc::format!($($stats_expr)*);
+
+            let mut log_file_created = LOG_FILE_CREATED.lock();
+
+            if !*log_file_created {
+                match $crate::fs::create_file($filename, log_content.as_bytes()) {
+                    Ok(_) => {
+                        *log_file_created = true;
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to create {}: {:?}", $filename, e);
+                        return;
+                    }
+                }
+            } else {
+                match $crate::fs::open_file($filename) {
+                    Ok(fd) => {
+                        if let Err(e) = $crate::fs::seek_file(fd, 0) {
+                            log::warn!("Failed to seek in {}: {:?}", $filename, e);
+                        } else if let Err(e) = $crate::fs::write_file(fd, log_content.as_bytes()) {
+                            log::warn!("Failed to write to {}: {:?}", $filename, e);
+                        }
+                        let _ = $crate::fs::close_file(fd);
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to open {}: {:?}", $filename, e);
+                    }
+                }
+            }
+        });
+    }};
+}
+
+/// Macro for common system maintenance task scheduling
+/// Wraps multiple functions with periodic execution
+#[macro_export]
+macro_rules! maintenance_tasks {
+    ($current_tick:expr, $(($interval:expr, $fn_call:expr)),* $(,)?) => {
+        $(
+            petroleum::periodic_task!($current_tick, $interval, {
+                $fn_call
+            });
+        )*
+    };
+}
+
 /// Common logging macros (note: some may be defined in serial.rs)
 #[macro_export]
 macro_rules! info_log {
