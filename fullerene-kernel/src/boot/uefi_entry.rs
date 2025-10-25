@@ -12,7 +12,7 @@ use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::uefi::{efi_print, find_gop_framebuffer, write_vga_string};
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
-use petroleum::{allocate_heap_from_map, debug_log, debug_log_no_alloc, write_serial_bytes};
+use petroleum::{allocate_heap_from_map, debug_log, debug_log_no_alloc, mem_debug, write_serial_bytes};
 use spin::Mutex;
 use x86_64::{
     PhysAddr, VirtAddr,
@@ -58,9 +58,9 @@ impl UefiInitContext {
         _memory_map: *mut c_void,
         memory_map_size: usize,
     ) -> PhysAddr {
-        debug_log_no_alloc!("Kernel: efi_main entered");
+        mem_debug!("Kernel: efi_main entered\n");
         petroleum::serial::serial_init();
-        debug_log_no_alloc!("Kernel: efi_main located at ", efi_main as usize);
+        mem_debug!("Kernel: efi_main located at ", efi_main as usize, "\n");
 
         // UEFI uses framebuffer graphics, not legacy VGA hardware programming
         // Graphics initialization happens later with initialize_graphics_with_config()
