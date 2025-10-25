@@ -169,7 +169,7 @@ fn display_system_stats_on_vga(stats: &SystemStats, interval_ticks: u64) {
             ));
 
             // Clear the status lines first
-            petroleum::clear_line_range!(vga_writer, 23, 25, 0, 80, blank_char);
+            petroleum::clear_line_range!(vga_writer, 23, 26, 0, 80, blank_char);
 
             // Display system info on bottom rows using macro to reduce repetition
             petroleum::display_vga_stats_lines!(vga_writer,
