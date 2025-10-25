@@ -90,17 +90,18 @@ fn perform_system_health_checks() {
     check_keyboard_buffer();
 }
 
-petroleum::health_check!(check_memory_usage, {
+/// Check memory usage and log warnings if high
+fn check_memory_usage() {
     let (used, total, _) = petroleum::get_memory_stats!();
-    total > 0 && (used as u128 * 100 / total as u128) > HIGH_MEMORY_THRESHOLD as u128
-}, warn, "High memory usage detected", {
-    let (used, total, _) = petroleum::get_memory_stats!();
-    log::warn!(
-        "High memory usage: {} bytes used out of {} bytes",
-        used,
-        total
-    );
-});
+
+    if total > 0 && (used as u128 * 100 / total as u128) > HIGH_MEMORY_THRESHOLD as u128 {
+        log::warn!(
+            "High memory usage: {} bytes used out of {} bytes",
+            used,
+            total
+        );
+    }
+}
 
 petroleum::health_check!(check_process_count, {
     crate::process::get_active_process_count() > MAX_PROCESSES_THRESHOLD
