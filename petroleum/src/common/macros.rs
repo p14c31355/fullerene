@@ -74,6 +74,27 @@ macro_rules! map_to_higher_half {
     }};
 }
 
+/// Macro for mapping pages to a specified offset in virtual address space, panicking on error
+#[macro_export]
+macro_rules! map_pages_to_offset {
+    ($mapper:expr, $allocator:expr, $phys_base:expr, $virt_offset:expr, $num_pages:expr, $flags:expr) => {{
+        use x86_64::{PhysAddr, VirtAddr, structures::paging::{Page, PhysFrame, Size4KiB, mapper::MapToError}};
+        for i in 0..$num_pages {
+            let phys_addr = PhysAddr::new($phys_base + (i * 4096) as u64);
+            let virt_addr = VirtAddr::new(($virt_offset) + phys_addr.as_u64());
+            let page = Page::<Size4KiB>::containing_address(virt_addr);
+            let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
+            unsafe {
+                match $mapper.map_to(page, frame, $flags, $allocator) {
+                    Ok(flush) => flush.flush(),
+                    Err(MapToError::PageAlreadyMapped(_)) => {}
+                    Err(e) => panic!("Mapping error: {:?}", e),
+                }
+            }
+        }
+    }};
+}
+
 /// Macro to reduce repetitive serial debug strings
 ///
 /// # Warning
@@ -984,6 +1005,29 @@ macro_rules! map_identity_range_checked {
             }
         }
         Ok(())
+    }};
+}
+
+/// Macro for mapping a range of pages using map_page
+#[macro_export]
+macro_rules! map_page_range {
+    ($mapper:expr, $allocator:expr, $base_virt:expr, $base_phys:expr, $num_pages:expr, $flags:expr) => {{
+        for i in 0..$num_pages {
+            let phys_addr = $base_phys + (i * 4096);
+            let virt_addr = $base_virt + (i * 4096);
+            $mapper.map_page(virt_addr, phys_addr, $flags, $allocator)?;
+        }
+    }};
+}
+
+/// Macro for unmapping a range of pages using unmap_page
+#[macro_export]
+macro_rules! unmap_page_range {
+    ($mapper:expr, $base_virt:expr, $num_pages:expr) => {{
+        for i in 0..$num_pages {
+            let vaddr = $base_virt + (i * 4096);
+            $mapper.unmap_page(vaddr)?;
+        }
     }};
 }
 

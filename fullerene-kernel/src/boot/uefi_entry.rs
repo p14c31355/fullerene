@@ -23,32 +23,7 @@ use x86_64::{
 #[cfg(target_os = "uefi")]
 const VIRTUAL_HEAP_START_OFFSET: u64 = crate::memory_management::VIRTUAL_HEAP_START_OFFSET;
 
-/// Helper function to map a range of memory pages
-/// Takes the base physical address, number of pages, mapper, frame allocator, and flags
-#[cfg(target_os = "uefi")]
-fn map_memory_range(
-    base_phys_addr: PhysAddr,
-    num_pages: u64,
-    physical_memory_offset: VirtAddr,
-    mapper: &mut impl Mapper<Size4KiB>,
-    frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
-    flags: x86_64::structures::paging::PageTableFlags,
-) -> Result<(), MapToError<Size4KiB>> {
-    for i in 0..num_pages {
-        let phys_addr_u64 = base_phys_addr.as_u64() + (i * 4096);
-        let phys_addr = PhysAddr::new(phys_addr_u64);
-        let virt_addr = physical_memory_offset + phys_addr_u64;
 
-        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
-        let frame =
-            x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys_addr);
-
-        unsafe {
-            mapper.map_to(page, frame, flags, frame_allocator)?.flush();
-        }
-    }
-    Ok(())
-}
 
 /// Helper struct for UEFI initialization context
 #[cfg(target_os = "uefi")]
@@ -208,17 +183,14 @@ impl UefiInitContext {
         let heap_flags = x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE
             | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-        unsafe {
-            map_memory_range(
-                heap_phys_addr,
-                heap_pages as u64,
-                self.physical_memory_offset,
-                &mut mapper,
-                &mut *frame_allocator,
-                heap_flags,
-            )
-            .expect("Failed to map heap memory");
-        }
+        petroleum::map_pages_to_offset!(
+            mapper,
+            &mut *frame_allocator,
+            heap_phys_addr.as_u64(),
+            self.physical_memory_offset.as_u64(),
+            heap_pages as u64,
+            heap_flags
+        );
 
         self.virtual_heap_start = self.physical_memory_offset + heap_phys_addr.as_u64();
         write_serial_bytes!(0x3F8, 0x3FD, b"Heap allocated and mapped\n");
@@ -273,17 +245,14 @@ impl UefiInitContext {
         let stack_flags = x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE
             | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-        unsafe {
-            map_memory_range(
-                PhysAddr::new(stack_phys_start),
-                stack_pages as u64,
-                physical_memory_offset,
-                &mut mapper,
-                &mut *frame_allocator,
-                stack_flags,
-            )
-            .expect("Failed to map kernel stack memory");
-        }
+        petroleum::map_pages_to_offset!(
+            mapper,
+            &mut *frame_allocator,
+            stack_phys_start,
+            physical_memory_offset.as_u64(),
+            stack_pages as u64,
+            stack_flags
+        );
 
         write_serial_bytes!(0x3F8, 0x3FD, b"Kernel stack allocated and mapped\n");
 
