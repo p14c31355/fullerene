@@ -522,38 +522,10 @@ macro_rules! vga_stat_display_line {
 macro_rules! periodic_fs_log {
     ($filename:expr, $interval_ticks:expr, $current_tick:expr, $($stats_expr:tt)*) => {{
         static LAST_LOG_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
-        static LOG_FILE_CREATED: spin::Mutex<bool> = spin::Mutex::new(false);
 
         petroleum::check_periodic!(LAST_LOG_TICK, $interval_ticks, $current_tick, {
             let log_content = alloc::format!($($stats_expr)*);
-
-            let mut log_file_created = LOG_FILE_CREATED.lock();
-
-            if !*log_file_created {
-                match $crate::fs::create_file($filename, log_content.as_bytes()) {
-                    Ok(_) => {
-                        *log_file_created = true;
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to create {}: {:?}", $filename, e);
-                        return;
-                    }
-                }
-            } else {
-                match $crate::fs::open_file($filename) {
-                    Ok(fd) => {
-                        if let Err(e) = $crate::fs::seek_file(fd, 0) {
-                            log::warn!("Failed to seek in {}: {:?}", $filename, e);
-                        } else if let Err(e) = $crate::fs::write_file(fd, log_content.as_bytes()) {
-                            log::warn!("Failed to write to {}: {:?}", $filename, e);
-                        }
-                        let _ = $crate::fs::close_file(fd);
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to open {}: {:?}", $filename, e);
-                    }
-                }
-            }
+            log::info!("{}", log_content);
         });
     }};
 }

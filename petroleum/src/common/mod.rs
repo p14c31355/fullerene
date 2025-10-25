@@ -11,6 +11,7 @@ pub struct VgaFramebufferConfig {
 
 pub mod error;
 pub mod logging;
+#[macro_use]
 pub mod macros;
 pub mod memory;
 pub mod syscall;

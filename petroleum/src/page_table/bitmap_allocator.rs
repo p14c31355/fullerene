@@ -113,39 +113,17 @@ impl BitmapFrameAllocator {
 
     /// Set a frame as free in the bitmap
     fn set_frame_free(&mut self, frame_index: usize) {
-        if let Some(ref mut bitmap) = self.bitmap {
-            let chunk_index = frame_index / 64;
-            let bit_index = frame_index % 64;
-            if chunk_index < bitmap.len() {
-                bitmap[chunk_index] &= !(1 << bit_index);
-            }
-        }
+        bitmap_operation!(self.bitmap, frame_index, set_free);
     }
 
     /// Set a frame as used in the bitmap
     pub fn set_frame_used(&mut self, frame_index: usize) {
-        if let Some(ref mut bitmap) = self.bitmap {
-            let chunk_index = frame_index / 64;
-            let bit_index = frame_index % 64;
-            if chunk_index < bitmap.len() {
-                bitmap[chunk_index] |= 1 << bit_index;
-            }
-        }
+        bitmap_operation!(self.bitmap, frame_index, set_used);
     }
 
     /// Check if a frame is free
     fn is_frame_free(&self, frame_index: usize) -> bool {
-        if let Some(ref bitmap) = self.bitmap {
-            let chunk_index = frame_index / 64;
-            let bit_index = frame_index % 64;
-            if chunk_index < bitmap.len() {
-                (bitmap[chunk_index] & (1 << bit_index)) == 0
-            } else {
-                false
-            }
-        } else {
-            false
-        }
+        bitmap_operation!(self.bitmap, frame_index, is_free)
     }
 
     /// Find the next free frame starting from a given index
