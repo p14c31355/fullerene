@@ -137,12 +137,3 @@ macro_rules! get_current_stack_pointer {
         rsp
     }};
 }
-
-// Initialization check macro
-macro_rules! ensure_initialized {
-    ($self:expr) => {
-        if !$self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
-    };
-}

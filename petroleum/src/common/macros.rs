@@ -64,15 +64,16 @@ macro_rules! map_pages_loop {
 
 /// Macro for creating and mapping pages at higher-half offset
 #[macro_export]
-macro_rules! map_to_higher_half {
-    ($mapper:expr, $allocator:expr, $phys_addr:expr, $num_pages:expr, $flags:expr, $offset:expr) => {{
-        use x86_64::VirtAddr;
-        let virt_base = $offset + $phys_addr;
-        map_pages_loop!(
-            $mapper, $allocator, $phys_addr, virt_base, $num_pages, $flags
-        );
-    }};
+macro_rules! display_vga_stats_lines {
+    ($vga_writer:expr, $($row:expr, $format:expr, $($args:expr),*);* $(;)?) => {
+        $(
+            $vga_writer.set_position($row, 0);
+            let _ = write!($vga_writer, $format, $($args),*);
+
+        )*
+    };
 }
+
 
 /// Macro for mapping pages to a specified offset in virtual address space, panicking on error
 #[macro_export]
@@ -164,28 +165,6 @@ macro_rules! ensure_initialized {
     };
 }
 
-/// Macro for flushing TLB and checking CR3
-#[macro_export]
-macro_rules! flush_tlb_and_verify {
-    () => {{
-        x86_64::instructions::tlb::flush_all();
-        let (cr3_after, _) = x86_64::registers::control::Cr3::read();
-        debug_log_no_alloc!("CR3 verified: ", cr3_after.start_address().as_u64());
-    }};
-}
-
-/// Macro for common initialization patterns with cleanup
-#[macro_export]
-macro_rules! init_with_cleanup {
-    ($name:expr, $init:block, $cleanup:block) => {{
-        $crate::serial::serial_log(format_args!("Initializing {}\n", $name));
-        $init;
-        $crate::serial::serial_log(format_args!("{} initialized successfully\n", $name));
-        // Store cleanup for later if needed - would be part of an RAII pattern
-        || $cleanup
-    }};
-}
-
 /// Macro for modifying contents protected by a Mutex lock
 #[macro_export]
 macro_rules! lock_and_modify {
@@ -231,22 +210,6 @@ macro_rules! init_component {
                 log::error!("Failed to initialize {}: {:?}", $name, e);
                 Err(e)
             }
-        }
-    }};
-}
-
-/// Ensure a condition is true, otherwise log an error and return it
-///
-/// # Examples
-/// ```
-/// ensure!(ptr.is_some(), SystemError::InvalidArgument);
-/// ```
-#[macro_export]
-macro_rules! ensure {
-    ($condition:expr, $error:expr) => {
-        if !$condition {
-            $crate::log_error!($error, stringify!($condition));
-            return Err(*$error);
         }
     };
 }
@@ -415,16 +378,6 @@ macro_rules! debug_print {
 ///     perform_hourly_task();
 /// });
 /// ```
-#[macro_export]
-macro_rules! display_vga_stats_lines {
-    ($vga_writer:expr, $($row:expr, $format:expr, $($args:expr),*);* $(;)?) => {
-        $(
-            $vga_writer.set_position($row, 0);
-            let _ = write!($vga_writer, $format, $($args),*);
-
-        )*
-    };
-};
 
 /// Macro for simple periodic task execution based on tick intervals
 /// Executes block every 'interval' ticks
