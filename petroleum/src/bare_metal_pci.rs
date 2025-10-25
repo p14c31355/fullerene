@@ -47,19 +47,20 @@ pub fn pci_config_read_dword(bus: u8, device: u8, function: u8, register: u8) ->
     data_reader.read_safe()
 }
 
-/// Read 16-bit value from PCI configuration space
+/// Read 16-bit value with bit alignment to reduce redundant calculations
 pub fn pci_config_read_word(bus: u8, device: u8, function: u8, register: u8) -> u16 {
     let aligned_register = register & !3; // Align to 32-bit boundary
+    let shift = (register & 0x2) * 8; // 0 or 16
     let dword = pci_config_read_dword(bus, device, function, aligned_register);
-    let offset_in_dword = register & 0x2; // 0 or 2
-    (dword >> (offset_in_dword * 8)) as u16
+    ((dword >> shift) & 0xFFFF) as u16
 }
 
-/// Read 8-bit value from PCI configuration space
+/// Read 8-bit value with bit alignment to reduce redundant calculations
 pub fn pci_config_read_byte(bus: u8, device: u8, function: u8, register: u8) -> u8 {
-    let dword = pci_config_read_dword(bus, device, function, register & !0x3); // Align to 32-bit boundary
-    let offset = register & 0x3;
-    (dword >> (offset * 8)) as u8
+    let aligned_register = register & !0x3; // Align to 32-bit boundary
+    let shift = (register & 0x3) * 8; // 0, 8, 16, or 24
+    let dword = pci_config_read_dword(bus, device, function, aligned_register);
+    ((dword >> shift) & 0xFF) as u8
 }
 
 /// Check if PCI device exists (valid vendor ID)

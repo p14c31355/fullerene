@@ -1066,3 +1066,45 @@ macro_rules! create_framebuffer_config {
         }
     };
 }
+
+/// Unified PCI configuration space read macro to reduce separate function duplication
+/// Supports reading 8, 16, or 32-bit values based on the size parameter
+///
+/// # Examples
+/// ```
+/// let vendor_id = pci_config_read!(bus, device, function, 0x00, 16);
+/// let class_code = pci_config_read!(bus, device, function, 0x0B, 8);
+/// ```
+#[macro_export]
+macro_rules! pci_config_read {
+    ($bus:expr, $device:expr, $function:expr, $reg:expr, 32) => {
+        $crate::bare_metal_pci::pci_config_read_dword($bus, $device, $function, $reg)
+    };
+    ($bus:expr, $device:expr, $function:expr, $reg:expr, 16) => {
+        $crate::bare_metal_pci::pci_config_read_word($bus, $device, $function, $reg) as u32
+    };
+    ($bus:expr, $device:expr, $function:expr, $reg:expr, 8) => {
+        $crate::bare_metal_pci::pci_config_read_byte($bus, $device, $function, $reg) as u32
+    };
+}
+
+/// Macro for displaying multiple lines of statistics on VGA buffer to reduce repetitive position/write calls
+/// Automatically positions cursor and writes formatted text for each line
+///
+/// # Examples
+/// ```
+/// display_vga_stats_lines!(vga_writer,
+///     23, "Processes: {}/{}", active, total;
+///     24, "Memory: {} KB", mem_kb;
+///     25, "Uptime: {}", uptime
+/// );
+/// ```
+#[macro_export]
+macro_rules! display_vga_stats_lines {
+    ($vga_writer:expr, $($row:expr, $format:expr, $($args:expr),*);* $(;)?) => {
+        $(
+            $vga_writer.set_position($row, 0);
+            let _ = write!($vga_writer, $format, $($args),*);
+        )*
+    };
+}

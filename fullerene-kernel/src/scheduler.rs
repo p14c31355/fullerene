@@ -172,15 +172,12 @@ fn display_system_stats_on_vga(stats: &SystemStats, interval_ticks: u64) {
             // Clear the status lines first
             petroleum::clear_line_range!(vga_writer, 23, 25, 0, 80, blank_char);
 
-            // Display system info on bottom rows
-            vga_writer.set_position(23, 0);
-            let _ = write!(
-                vga_writer,
-                "Processes: {}/{}  ",
-                stats.active_processes, stats.total_processes
+            // Display system info on bottom rows using macro to reduce repetition
+            petroleum::display_vga_stats_lines!(vga_writer,
+                23, "Processes: {}/{}", stats.active_processes, stats.total_processes;
+                24, "Memory: {} KB", stats.memory_used / 1024;
+                25, "Tick: {}", stats.uptime_ticks
             );
-            let _ = write!(vga_writer, "Memory: {} KB  ", stats.memory_used / 1024);
-            let _ = write!(vga_writer, "Tick: {}", stats.uptime_ticks);
             vga_writer.update_cursor();
         }
     });
@@ -252,49 +249,7 @@ fn manage_background_services() {
     }
 }
 
-/// Helper function for logging system stats to filesystem
-fn log_system_stats_to_fs(stats: &SystemStats) {
-    // Use alloc::format! to create a log string with actual stats.
-    let log_content = alloc::format!(
-        "Uptime: {}, Processes: {}/{}, Memory Used: {}\n",
-        stats.uptime_ticks,
-        stats.active_processes,
-        stats.total_processes,
-        stats.memory_used
-    );
 
-    static LOG_FILE_CREATED: spin::Mutex<bool> = spin::Mutex::new(false);
-    let mut log_file_created = LOG_FILE_CREATED.lock();
-
-    if !*log_file_created {
-        match crate::fs::create_file("system.log", log_content.as_bytes()) {
-            Ok(_) => {
-                *log_file_created = true;
-                log::debug!("Created system.log file");
-            }
-            Err(e) => {
-                log::warn!("Failed to create system.log file: {:?}", e);
-            }
-        }
-    } else {
-        match crate::fs::open_file("system.log") {
-            Ok(fd) => {
-                if let Err(e) = crate::fs::seek_file(fd, 0) {
-                    log::warn!("Failed to seek in system.log: {:?}", e);
-                }
-                if let Err(e) = crate::fs::write_file(fd, log_content.as_bytes()) {
-                    log::warn!("Failed to write to system.log: {:?}", e);
-                }
-                if let Err(e) = crate::fs::close_file(fd) {
-                    log::warn!("Failed to close system.log: {:?}", e);
-                }
-            }
-            Err(e) => {
-                log::warn!("Failed to open system.log file: {:?}", e);
-            }
-        }
-    }
-}
 
 /// Periodic OS feature: automated filesystem backup
 fn perform_automated_backup() {
@@ -343,7 +298,7 @@ fn perform_periodic_health_checks(stats: &SystemStats, current_tick: u64) {
 /// Perform periodic filesystem and maintenance tasks
 fn perform_periodic_system_tasks(stats: &SystemStats, current_tick: u64, iteration_count: u64) {
     periodic_task!(current_tick, 3000, {
-        log_system_stats_to_fs(stats);
+        petroleum::periodic_fs_log!("system.log", 3000, current_tick, "Uptime: {}, Processes: {}/{}, Memory Used: {}\n", stats.uptime_ticks, stats.active_processes, stats.total_processes, stats.memory_used);
         perform_automated_backup();
     });
 
