@@ -90,26 +90,24 @@ fn perform_system_health_checks() {
     check_keyboard_buffer();
 }
 
-/// Check memory usage and log warnings if high
-fn check_memory_usage() {
+petroleum::health_check!(check_memory_usage, {
     let (used, total, _) = petroleum::get_memory_stats!();
+    total > 0 && (used as u128 * 100 / total as u128) > HIGH_MEMORY_THRESHOLD as u128
+}, warn, "High memory usage detected", {
+    let (used, total, _) = petroleum::get_memory_stats!();
+    log::warn!(
+        "High memory usage: {} bytes used out of {} bytes",
+        used,
+        total
+    );
+});
 
-    if total > 0 && (used as u128 * 100 / total as u128) > HIGH_MEMORY_THRESHOLD as u128 {
-        log::warn!(
-            "High memory usage: {} bytes used out of {} bytes",
-            used,
-            total
-        );
-    }
-}
-
-/// Check process count and warn if too many active
-fn check_process_count() {
+petroleum::health_check!(check_process_count, {
+    crate::process::get_active_process_count() > MAX_PROCESSES_THRESHOLD
+}, warn, "High process count detected", {
     let active_count = crate::process::get_active_process_count();
-    if active_count > MAX_PROCESSES_THRESHOLD {
-        log::warn!("High process count: {} active processes", active_count);
-    }
-}
+    log::warn!("High process count: {} active processes", active_count);
+});
 
 /// Check and drain keyboard buffer if needed
 fn check_keyboard_buffer() {
@@ -297,17 +295,15 @@ fn perform_periodic_health_checks(stats: &SystemStats, current_tick: u64) {
 
 /// Perform periodic filesystem and maintenance tasks
 fn perform_periodic_system_tasks(stats: &SystemStats, current_tick: u64, iteration_count: u64) {
-    periodic_task!(current_tick, 3000, {
-        petroleum::periodic_fs_log!("system.log", 3000, current_tick, "Uptime: {}, Processes: {}/{}, Memory Used: {}\n", stats.uptime_ticks, stats.active_processes, stats.total_processes, stats.memory_used);
-        perform_automated_backup();
-    });
-
-    periodic_task!(current_tick, 2000, {
-        perform_system_maintenance();
-    });
-
-    perform_memory_capacity_check(current_tick);
-    perform_process_cleanup_check(iteration_count);
+    petroleum::maintenance_tasks!(current_tick,
+        (3000, || {
+            petroleum::periodic_fs_log!("system.log", 3000, current_tick, "Uptime: {}, Processes: {}/{}, Memory Used: {}\n", stats.uptime_ticks, stats.active_processes, stats.total_processes, stats.memory_used);
+            perform_automated_backup();
+        }),
+        (2000, perform_system_maintenance),
+        (10000, || perform_memory_capacity_check(current_tick)),
+        (100, || perform_process_cleanup_check(iteration_count))
+    );
 }
 
 /// Check and log memory utilization periodically
@@ -412,25 +408,21 @@ fn emergency_condition_handler() {
     check_emergency_process_count();
 }
 
-/// Check for critical memory emergency conditions
-fn check_emergency_memory() {
+petroleum::health_check!(check_emergency_memory, {
     let (used, total, _) = petroleum::get_memory_stats!();
-    if total > 0 && (used as u128 * 100 / total as u128) > EMERGENCY_MEMORY_THRESHOLD as u128 {
-        log::error!("EMERGENCY: Critical memory usage detected!");
-        // In a full implementation, this would:
-        // 1. Kill memory-hog processes
-        // 2. Perform emergency memory cleanup
-        // 3. Log diagnostic information
-    }
-}
+    total > 0 && (used as u128 * 100 / total as u128) > EMERGENCY_MEMORY_THRESHOLD as u128
+}, error, "EMERGENCY: Critical memory usage detected!", {
+    // In a full implementation, this would:
+    // 1. Kill memory-hog processes
+    // 2. Perform emergency memory cleanup
+    // 3. Log diagnostic information
+});
 
-/// Check for emergency process count limits
-fn check_emergency_process_count() {
-    if crate::process::get_active_process_count() > MAX_PROCESSES_EMERGENCY {
-        log::error!("EMERGENCY: Too many active processes!");
-        // Would implement process cleanup here
-    }
-}
+petroleum::health_check!(check_emergency_process_count, {
+    crate::process::get_active_process_count() > MAX_PROCESSES_EMERGENCY
+}, error, "EMERGENCY: Too many active processes!", {
+    // Would implement process cleanup here
+});
 
 /// Shell process main function
 pub extern "C" fn shell_process_main() -> ! {
