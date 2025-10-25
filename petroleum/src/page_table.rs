@@ -1152,16 +1152,17 @@ impl PageTableReinitializer {
         self.phys_offset
     }
 
-    fn create_page_table(&self, frame_allocator: &mut BootInfoFrameAllocator, current_physical_memory_offset: VirtAddr) -> PhysFrame {
-        use constants::TEMP_VA_FOR_ZERO;
+    fn create_page_table(&self, frame_allocator: &mut BootInfoFrameAllocator, _current_physical_memory_offset: VirtAddr) -> PhysFrame {
         debug_log_no_alloc!("Allocating new L4 page table frame");
         let level_4_table_frame = match frame_allocator.allocate_frame() {
             Some(frame) => frame,
             None => panic!("Failed to allocate L4 page table frame"),
         };
-        // Temporarily create a mapper with the current physical offset for this context to zero the allocated frame
-        let mut temp_mapper = unsafe { init(current_physical_memory_offset) };
-        let temp_page = unsafe { Page::<Size4KiB>::containing_address(TEMP_VA_FOR_ZERO) };
+        // Use identity mapping to zero the frame directly at its physical address
+        let frame_phys = level_4_table_frame.start_address().as_u64();
+        let temp_page = unsafe { Page::<Size4KiB>::containing_address(VirtAddr::new(frame_phys)) };
+        // Create identity mapper (offset 0)
+        let mut temp_mapper = unsafe { init(VirtAddr::new(0)) };
         unsafe {
             temp_mapper
                 .map_to(
@@ -1170,13 +1171,13 @@ impl PageTableReinitializer {
                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
                     frame_allocator,
                 )
-                .expect("Failed to map L4 table frame")
+                .expect("Failed to identity map L4 table frame")
                 .flush();
         }
 
-        // Zero the new L4 table through the temporary mapping
+        // Zero the new L4 table through the identity mapping
         unsafe {
-            let table_addr = TEMP_VA_FOR_ZERO.as_mut_ptr() as *mut u8;
+            let table_addr = frame_phys as *mut u8;
             core::ptr::write_bytes(table_addr, 0, 4096);
         }
 
@@ -1374,6 +1375,8 @@ impl<'a> PageTableInitializer<'a> {
             );
             map_stack_region(self.mapper, self.frame_allocator, self.memory_map);
             self.map_page_aligned_descriptors_safely();
+            // Identity map all available memory to ensure compatibility
+            self.map_available_memory_identity();
         }
 
         debug_log_no_alloc!("Identity mappings completed");
@@ -1524,6 +1527,27 @@ impl<'a> PageTableInitializer<'a> {
                 }
             }
         }
+    }
+
+    unsafe fn map_available_memory_identity(&mut self) {
+        process_memory_descriptors(self.memory_map, |desc, start_frame, end_frame| {
+            let phys_start = desc.get_physical_start();
+            let virt_start = phys_start; // Identity mapping
+            let pages = (end_frame - start_frame) as u64;
+            let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+                PageTableFlags::PRESENT
+            } else {
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
+            };
+            let _ = map_range_with_log(
+                self.mapper,
+                self.frame_allocator,
+                phys_start,
+                virt_start,
+                pages,
+                flags,
+            );
+        });
     }
 }
 
