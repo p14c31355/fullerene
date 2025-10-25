@@ -62,17 +62,7 @@ macro_rules! map_pages_loop {
     }};
 }
 
-/// Macro for creating and mapping pages at higher-half offset
-#[macro_export]
-macro_rules! display_vga_stats_lines {
-    ($vga_writer:expr, $($row:expr, $format:expr, $($args:expr),*);* $(;)?) => {
-        $(
-            $vga_writer.set_position($row, 0);
-            let _ = write!($vga_writer, $format, $($args),*);
 
-        )*
-    };
-}
 
 
 /// Macro for mapping pages to a specified offset in virtual address space, panicking on error
@@ -211,7 +201,7 @@ macro_rules! init_component {
                 Err(e)
             }
         }
-    };
+    }};
 }
 
 /// Ensure a condition is true with a custom error message
@@ -299,6 +289,12 @@ macro_rules! scheduler_log {
     };
 }
 
+/// Macro for reading unaligned data from memory with offset
+#[macro_export]
+macro_rules! read_unaligned {
+    ($ptr:expr, $offset:expr, $ty:ty) => {{ unsafe { core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) } }};
+}
+
 /// Macro to clear a specific range in a 2D buffer for fixed-width buffers like VGA
 /// Reduces repetitive loops for clearing display lines
 ///
@@ -307,19 +303,17 @@ macro_rules! scheduler_log {
 /// clear_line_range!(vga_writer, 23, 24, 0, 80, blank_char);
 /// ```
 #[macro_export]
-macro_rules! read_unaligned {
-    ($ptr:expr, $offset:expr, $ty:ty) => {{ unsafe { core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) } }};
-};
+macro_rules! clear_line_range {
+    ($vga_writer:expr, $start_row:expr, $end_row:expr, $col_start:expr, $col_end:expr, $blank_char:expr) => {{
+        for row in $start_row..$end_row {
+            for col in $col_start..$col_end {
+                $vga_writer.set_position(row, col);
+                $vga_writer.write_byte($blank_char.ascii_character);
+            }
+        }
+    }};
+}
 
-#[macro_export]
-macro_rules! display_vga_stats_lines {
-    ($vga_writer:expr, $($row:expr, $format:expr, $($args:expr),*);* $(;)?) => {
-        $(
-            $vga_writer.set_position($row, 0);
-            let _ = write!($vga_writer, $format, $($args),*);
-        )*
-    };
-};
 
 /// Enhanced memory debugging macro that supports formatted output with mixed strings and values
 ///
@@ -378,6 +372,16 @@ macro_rules! debug_print {
 ///     perform_hourly_task();
 /// });
 /// ```
+#[macro_export]
+macro_rules! check_periodic {
+    ($last_tick:expr, $interval:expr, $current_tick:expr, $block:block) => {{
+        let mut last = $last_tick.lock();
+        if $current_tick - *last >= $interval {
+            *last = $current_tick;
+            $block;
+        }
+    }};
+}
 
 /// Macro for simple periodic task execution based on tick intervals
 /// Executes block every 'interval' ticks
@@ -678,18 +682,8 @@ macro_rules! volatile_read {
 /// Macro for volatile memory write operations
 #[macro_export]
 macro_rules! volatile_write {
-    ($addr:expr, $value:expr) => {{ unsafe { core::ptr::write_volatile($addr, $value) } }};
-}
-
-/// Macro for safe buffer index access with bounds checking
-#[macro_export]
-macro_rules! safe_buffer_access {
-    ($buffer:expr, $index:expr, $default:expr) => {
-        if $index < $buffer.len() {
-            &$buffer[$index]
-        } else {
-            &$default
-        }
+    ($addr:expr, $val:expr) => {
+        unsafe { core::ptr::write_volatile($addr as *mut _, $val) }
     };
 }
 
@@ -874,6 +868,19 @@ macro_rules! halt {
     };
 }
 
+/// Flush TLB and verify the flush was successful
+#[macro_export]
+macro_rules! flush_tlb_and_verify {
+    () => {{
+        use x86_64::instructions::tlb;
+        use x86_64::registers::control::Cr3;
+        tlb::flush_all();
+        // Verify by reading CR3 to force a TLB reload
+        let (frame, flags) = Cr3::read();
+        unsafe { Cr3::write(frame, flags) };
+    }};
+}
+
 pub struct InitSequence<'a> {
     steps: &'a [(&'static str, Box<dyn Fn() -> Result<(), &'static str>>)],
 }
@@ -882,11 +889,11 @@ pub struct InitSequence<'a> {
 #[macro_export]
 macro_rules! calc_offset_addr {
     ($base:expr, $i:expr) => {
-        $base + ($i * 4096) as u64
+        $base + ($i * 4096)
     };
 }
 
-/// Create page and frame from addresses in one call
+/// Create page and frame from virtual and physical addresses
 #[macro_export]
 macro_rules! create_page_and_frame {
     ($virt_addr:expr, $phys_addr:expr) => {{
