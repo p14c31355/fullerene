@@ -28,7 +28,7 @@ use x86_64::{
 // Import constants
 use constants::{
     BOOT_CODE_PAGES, BOOT_CODE_START, PAGE_SIZE, READ_ONLY, READ_WRITE, READ_WRITE_NO_EXEC,
-    TEMP_LOW_VA, VGA_MEMORY_END, VGA_MEMORY_START,
+    TEMP_LOW_VA, TEMP_VA_FOR_ZERO, VGA_MEMORY_END, VGA_MEMORY_START,
 };
 
 // Macros and constants
@@ -1152,37 +1152,34 @@ impl PageTableReinitializer {
         self.phys_offset
     }
 
-    fn create_page_table(&self, frame_allocator: &mut BootInfoFrameAllocator, _current_physical_memory_offset: VirtAddr) -> PhysFrame {
+    fn create_page_table(&self, frame_allocator: &mut BootInfoFrameAllocator, current_physical_memory_offset: VirtAddr) -> PhysFrame {
         debug_log_no_alloc!("Allocating new L4 page table frame");
         let level_4_table_frame = match frame_allocator.allocate_frame() {
             Some(frame) => frame,
             None => panic!("Failed to allocate L4 page table frame"),
         };
-        // Use identity mapping to zero the frame directly at its physical address
-        let frame_phys = level_4_table_frame.start_address().as_u64();
-        let temp_page = unsafe { Page::<Size4KiB>::containing_address(VirtAddr::new(frame_phys)) };
-        // Create identity mapper (offset 0)
-        let mut temp_mapper = unsafe { init(VirtAddr::new(0)) };
+        // Use the current active page table to temporarily map the new frame for zeroing
+        let mut current_mapper = unsafe { init(current_physical_memory_offset) };
+        let temp_page = unsafe { Page::<Size4KiB>::containing_address(TEMP_VA_FOR_ZERO) };
         unsafe {
-            temp_mapper
+            current_mapper
                 .map_to(
                     temp_page,
                     level_4_table_frame,
                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
                     frame_allocator,
                 )
-                .expect("Failed to identity map L4 table frame")
+                .expect("Failed to temporarily map L4 table frame")
                 .flush();
         }
 
-        // Zero the new L4 table through the identity mapping
+        // Zero the new L4 table through the temporary mapping
         unsafe {
-            let table_addr = frame_phys as *mut u8;
-            core::ptr::write_bytes(table_addr, 0, 4096);
+            core::ptr::write_bytes(TEMP_VA_FOR_ZERO.as_mut_ptr::<u8>(), 0, 4096);
         }
 
         // Unmap the temporary page
-        if let Ok((_frame, flush)) = temp_mapper.unmap(temp_page) {
+        if let Ok((_frame, flush)) = current_mapper.unmap(temp_page) {
             flush.flush();
         }
 
