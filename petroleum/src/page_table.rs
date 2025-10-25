@@ -879,11 +879,8 @@ unsafe fn map_available_memory_to_higher_half(
     process_memory_descriptors(memory_map, |desc, start_frame, end_frame| {
         let phys_start = desc.get_physical_start();
         let pages = (end_frame - start_frame) as u64;
-        let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-            PageTableFlags::PRESENT
-        } else {
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
-        };
+        // Always give writable access to available memory regions for compatibility
+        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
         unsafe {
             let _ = map_to_higher_half_with_log(
                 mapper,
@@ -1336,9 +1333,24 @@ impl<'a> PageTableInitializer<'a> {
     ) -> u64 {
         debug_log_no_alloc!("Setting up identity mappings for CR3 switch");
 
+        // FIRST: Always identity map the bitmap static area (0x7F801900) to preserve write permissions during reinitialization
+        // This must be done FIRST before any allocations, as the bitmap allocator needs to access this memory
+        unsafe {
+            let bitmap_start = 0x7F801900;
+            let bitmap_pages = ((131072 * 8) + 4095) / 4096; // 131072 u64s * 8 bytes/u64 = 1MB, rounded up to pages
+            map_identity_range_macro!(
+                self.mapper,
+                self.frame_allocator,
+                bitmap_start,
+                bitmap_pages,
+                page_flags_const!(READ_WRITE_NO_EXEC)
+            );
+        }
+
         // Map essential regions inline to reduce function count
         let kernel_size;
         unsafe {
+
             map_identity_range_macro!(
                 self.mapper,
                 self.frame_allocator,
@@ -1371,7 +1383,6 @@ impl<'a> PageTableInitializer<'a> {
                 page_flags_const!(READ_WRITE)
             );
             map_stack_region(self.mapper, self.frame_allocator, self.memory_map);
-            self.map_page_aligned_descriptors_safely();
             // Identity map all available memory to ensure compatibility
             self.map_available_memory_identity();
         }
@@ -1426,26 +1437,7 @@ impl<'a> PageTableInitializer<'a> {
         debug_log_no_alloc!("Additional regions mapped to higher half");
     }
 
-    unsafe fn map_page_aligned_descriptors_safely(&mut self) {
-        use x86_64::structures::paging::PageTableFlags as Flags;
-        for desc in self.memory_map.iter() {
-            if desc.physical_start % 4096 != 0 {
-                continue;
-            }
-            let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-                Flags::PRESENT
-            } else {
-                Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE
-            };
-            let _ = map_identity_range(
-                self.mapper,
-                self.frame_allocator,
-                desc.physical_start,
-                1,
-                flags,
-            );
-        }
-    }
+    // Removed redundant map_page_aligned_descriptors_safely function
 
     unsafe fn map_uefi_runtime_to_higher_half(&mut self) {
         let phys_offset = self.phys_offset; // Copy since VirtAddr is Copy
@@ -1486,11 +1478,8 @@ impl<'a> PageTableInitializer<'a> {
         process_memory_descriptors(self.memory_map, |desc, start_frame, end_frame| {
             let phys_start = desc.get_physical_start();
             let pages = (end_frame - start_frame) as u64;
-            let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-                PageTableFlags::PRESENT
-            } else {
-                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
-            };
+            // Always give writable access to available memory regions for compatibility
+            let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
             let _ = map_to_higher_half_with_log(
                 self.mapper,
                 self.frame_allocator,
@@ -1531,11 +1520,8 @@ impl<'a> PageTableInitializer<'a> {
             let phys_start = desc.get_physical_start();
             let virt_start = phys_start; // Identity mapping
             let pages = (end_frame - start_frame) as u64;
-            let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-                PageTableFlags::PRESENT
-            } else {
-                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
-            };
+            // Always give writable access to available memory regions for compatibility
+            let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
             let _ = map_range_with_log(
                 self.mapper,
                 self.frame_allocator,
