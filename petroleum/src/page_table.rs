@@ -517,13 +517,12 @@ impl<'a> MemoryMapper<'a> {
         num_pages: u64,
         flags: x86_64::structures::paging::PageTableFlags,
     ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-        map_range_with_log(
+        identity_map_range_with_log_macro!(
             self.mapper,
             self.frame_allocator,
             start_addr,
-            start_addr,
             num_pages,
-            flags,
+            flags
         )
     }
 }
@@ -699,13 +698,13 @@ unsafe fn map_memory_descriptors_with_config<F>(
     for desc in memory_map.iter() {
         if let Some(config) = config_fn(desc) {
             unsafe {
-                let _ = map_range_with_log(
+                map_range_with_log_macro!(
                     mapper,
                     frame_allocator,
                     config.phys_start,
                     config.virt_start,
                     config.num_pages,
-                    config.flags,
+                    config.flags
                 );
             }
         }
@@ -1395,17 +1394,15 @@ impl<'a> PageTableInitializer<'a> {
     unsafe fn map_available_memory_identity(&mut self) {
         process_memory_descriptors(self.memory_map, |desc, start_frame, end_frame| {
             let phys_start = desc.get_physical_start();
-            let virt_start = phys_start; // Identity mapping
             let pages = (end_frame - start_frame) as u64;
             // Always give writable access to available memory regions for compatibility
             let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
-            let _ = map_range_with_log(
+            let _ = identity_map_range_with_log_macro!(
                 self.mapper,
                 self.frame_allocator,
                 phys_start,
-                virt_start,
                 pages,
-                flags,
+                flags
             );
         });
     }
@@ -1507,42 +1504,9 @@ pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> PhysAdd
 
 use x86_64::structures::paging::PageTableFlags as PageFlags;
 
-// Helper to identity map a memory range
-unsafe fn identity_map_range_with_log(
-    mapper: &mut OffsetPageTable,
-    frame_allocator: &mut BootInfoFrameAllocator,
-    start_addr: u64,
-    num_pages: u64,
-    flags: x86_64::structures::paging::PageTableFlags,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-    map_range_with_log_macro!(
-        mapper,
-        frame_allocator,
-        start_addr,
-        start_addr,
-        num_pages,
-        flags
-    )
-}
 
-// Helper to map range with log
-unsafe fn map_range_with_log(
-    mapper: &mut OffsetPageTable,
-    frame_allocator: &mut BootInfoFrameAllocator,
-    phys_start: u64,
-    virt_start: u64,
-    num_pages: u64,
-    flags: x86_64::structures::paging::PageTableFlags,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-    map_range_with_log_macro!(
-        mapper,
-        frame_allocator,
-        phys_start,
-        virt_start,
-        num_pages,
-        flags
-    )
-}
+
+
 
 // Helper to map to higher half
 unsafe fn map_to_higher_half_with_log(

@@ -137,3 +137,37 @@ macro_rules! get_current_stack_pointer {
         rsp
     }};
 }
+
+// Identity mapping with detailed logging
+macro_rules! identity_map_range_with_log_macro {
+    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $num_pages:expr, $flags:expr) => {{
+        log_page_table_op!("Identity mapping start", $start_addr, 0, $num_pages);
+        map_identity_range_macro!($mapper, $frame_allocator, $start_addr, $num_pages, $flags);
+        log_page_table_op!("Identity mapping complete", $start_addr, 0, $num_pages);
+        Ok(())
+    }};
+}
+
+// Map to higher half with logging
+macro_rules! map_to_higher_half_with_log_macro {
+    ($mapper:expr, $frame_allocator:expr, $phys_offset:expr, $phys_start:expr, $num_pages:expr, $flags:expr) => {{
+        let virt_start = $phys_offset.as_u64() + $phys_start;
+        log_page_table_op!("Higher half mapping start", $phys_start, virt_start, $num_pages);
+        map_range_with_log_macro!($mapper, $frame_allocator, $phys_start, virt_start, $num_pages, $flags)?;
+        log_page_table_op!("Higher half mapping complete", $phys_start, virt_start, $num_pages);
+        Ok(())
+    }};
+}
+
+// Consolidated memory mapping with log support
+macro_rules! map_with_log_macro {
+    ($mapper:expr, $allocator:expr, $phys:expr, $virt:expr, $pages:expr, $flags:expr) => {{
+        log_page_table_op!("Mapping", $phys, $virt, $pages);
+        for i in 0..$pages {
+            let phys_addr = $phys + i * 4096;
+            let virt_addr = $virt + i * 4096;
+            map_with_offset!($mapper, $allocator, phys_addr, virt_addr, $flags);
+        }
+        Ok(())
+    }};
+}
