@@ -1131,7 +1131,7 @@ impl PageTableReinitializer {
     ) -> VirtAddr {
         debug_log_no_alloc!("Page table reinitialization starting");
 
-        let level_4_table_frame = self.create_page_table(frame_allocator);
+        let level_4_table_frame = self.create_page_table(frame_allocator, current_physical_memory_offset);
         let mut mapper = self.setup_new_mapper(
             level_4_table_frame,
             current_physical_memory_offset,
@@ -1152,15 +1152,16 @@ impl PageTableReinitializer {
         self.phys_offset
     }
 
-    fn create_page_table(&self, frame_allocator: &mut BootInfoFrameAllocator) -> PhysFrame {
+    fn create_page_table(&self, frame_allocator: &mut BootInfoFrameAllocator, current_physical_memory_offset: VirtAddr) -> PhysFrame {
+        use constants::TEMP_VA_FOR_ZERO;
         debug_log_no_alloc!("Allocating new L4 page table frame");
         let level_4_table_frame = match frame_allocator.allocate_frame() {
             Some(frame) => frame,
             None => panic!("Failed to allocate L4 page table frame"),
         };
-        // Temporarily create an identity mapper for this context to zero the allocated frame
-        let mut temp_mapper = unsafe { init(VirtAddr::new(0)) };
-        let temp_page = unsafe { Page::<Size4KiB>::containing_address(TEMP_LOW_VA) };
+        // Temporarily create a mapper with the current physical offset for this context to zero the allocated frame
+        let mut temp_mapper = unsafe { init(current_physical_memory_offset) };
+        let temp_page = unsafe { Page::<Size4KiB>::containing_address(TEMP_VA_FOR_ZERO) };
         unsafe {
             temp_mapper
                 .map_to(
@@ -1175,7 +1176,7 @@ impl PageTableReinitializer {
 
         // Zero the new L4 table through the temporary mapping
         unsafe {
-            let table_addr = TEMP_LOW_VA.as_mut_ptr() as *mut u8;
+            let table_addr = TEMP_VA_FOR_ZERO.as_mut_ptr() as *mut u8;
             core::ptr::write_bytes(table_addr, 0, 4096);
         }
 
