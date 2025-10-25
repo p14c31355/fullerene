@@ -103,12 +103,13 @@ fn check_memory_usage() {
     }
 }
 
-petroleum::health_check!(check_process_count, {
-    crate::process::get_active_process_count() > MAX_PROCESSES_THRESHOLD
-}, warn, "High process count detected", {
+/// Check process count and log warnings only when threshold exceeded
+fn check_process_count() {
     let active_count = crate::process::get_active_process_count();
-    log::warn!("High process count: {} active processes", active_count);
-});
+    if active_count > MAX_PROCESSES_THRESHOLD {
+        log::warn!("High process count: {} active processes", active_count);
+    }
+}
 
 /// Check and drain keyboard buffer if needed
 fn check_keyboard_buffer() {
@@ -296,15 +297,38 @@ fn perform_periodic_health_checks(stats: &SystemStats, current_tick: u64) {
 
 /// Perform periodic filesystem and maintenance tasks
 fn perform_periodic_system_tasks(stats: &SystemStats, current_tick: u64, iteration_count: u64) {
-    petroleum::maintenance_tasks!(current_tick,
-        (3000, || {
-            petroleum::periodic_fs_log!("system.log", 3000, current_tick, "Uptime: {}, Processes: {}/{}, Memory Used: {}\n", stats.uptime_ticks, stats.active_processes, stats.total_processes, stats.memory_used);
-            perform_automated_backup();
-        }),
-        (2000, perform_system_maintenance),
-        (10000, || perform_memory_capacity_check(current_tick)),
-        (100, || perform_process_cleanup_check(iteration_count))
-    );
+    // Log to system.log every 3000 ticks
+    if current_tick % 3000 == 0 {
+        use core::fmt::Write;
+        let mut log_content = alloc::string::String::new();
+        write!(log_content, "Uptime: {}, Processes: {}/{}, Memory Used: {}\n",
+            stats.uptime_ticks, stats.active_processes, stats.total_processes, stats.memory_used).ok();
+
+        match crate::fs::create_file("system.log", log_content.as_bytes()) {
+            Ok(_) => {
+                log::info!("System statistics logged to system.log");
+            }
+            Err(e) => {
+                log::warn!("Failed to log to system.log: {:?}", e);
+            }
+        }
+        perform_automated_backup();
+    }
+
+    // Run system maintenance every 2000 ticks
+    if current_tick % 2000 == 0 {
+        perform_system_maintenance();
+    }
+
+    // Memory capacity check every 10000 ticks
+    if current_tick % 10000 == 0 {
+        perform_memory_capacity_check(current_tick);
+    }
+
+    // Process cleanup check every 100 iterations
+    if iteration_count % 100 == 0 {
+        perform_process_cleanup_check(iteration_count);
+    }
 }
 
 /// Check and log memory utilization periodically

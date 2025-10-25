@@ -1209,10 +1209,10 @@ impl<'a> PageTableInitializer<'a> {
     ) -> u64 {
         debug_log_no_alloc!("Setting up identity mappings for CR3 switch");
 
-        // FIRST: Always identity map the bitmap static area (0x7F801900) to preserve write permissions during reinitialization
+        // FIRST: Always identity map the bitmap static area to preserve write permissions during reinitialization
         // This must be done FIRST before any allocations, as the bitmap allocator needs to access this memory
         unsafe {
-            let bitmap_start = 0x7F801900;
+            let bitmap_start = (&raw const bitmap_allocator::BITMAP_STATIC) as *const _ as usize as u64;
             let bitmap_pages = ((131072 * 8) + 4095) / 4096; // 131072 u64s * 8 bytes/u64 = 1MB, rounded up to pages
             map_identity_range_macro!(
                 self.mapper,

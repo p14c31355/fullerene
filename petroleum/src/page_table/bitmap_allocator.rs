@@ -8,7 +8,7 @@ use crate::{debug_log_no_alloc, ensure_initialized, log_memory_descriptor};
 
 /// Static buffer for bitmap - sized for up to 32GiB of RAM (8M frames)
 /// Each bit represents one 4KB frame, so size is (8M / 64) = 128K u64s = 1MB
-static mut BITMAP_STATIC: [u64; 131072] = [u64::MAX; 131072];
+pub(crate) static mut BITMAP_STATIC: [u64; 131072] = [u64::MAX; 131072];
 
 /// Bitmap-based frame allocator implementation
 pub struct BitmapFrameAllocator {
@@ -287,7 +287,7 @@ impl BitmapFrameAllocator {
         start_addr: usize,
         count: usize,
     ) -> crate::common::logging::SystemResult<()> {
-        self.free_contiguous_frames(start_addr, count)
+        self.release_frames(start_addr, count)
     }
 
     /// Check if a frame is available
