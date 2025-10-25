@@ -287,7 +287,7 @@ impl BitmapFrameAllocator {
         start_addr: usize,
         count: usize,
     ) -> crate::common::logging::SystemResult<()> {
-        self.release_frames(start_addr, count)
+        self.free_contiguous_frames(start_addr, count)
     }
 
     /// Check if a frame is available
