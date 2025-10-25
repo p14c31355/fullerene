@@ -206,10 +206,10 @@ pub fn create_process(
     name: &'static str,
     entry_point_address: VirtAddr,
 ) -> Result<ProcessId, petroleum::common::logging::SystemError> {
-    write_serial_bytes!(0x3F8, 0x3FD, b"Process: create_process starting\n");
+    debug_log!("Process: create_process starting");
 
     let mut process = Process::new(name, entry_point_address);
-    write_serial_bytes!(0x3F8, 0x3FD, b"Process: Process::new done\n");
+    debug_log!("Process: Process::new done");
 
     // Allocate kernel stack for the process
     let stack_layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
@@ -218,7 +218,7 @@ pub fn create_process(
         return Err(petroleum::common::logging::SystemError::MemOutOfMemory);
     }
     let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
-    write_serial_bytes!(0x3F8, 0x3FD, b"Process: Kernel stack allocated\n");
+    debug_log!("Process: Kernel stack allocated");
 
     // Create page table for the process
     let page_table = match crate::memory_management::create_process_page_table() {
@@ -236,12 +236,12 @@ pub fn create_process(
     process.page_table = Some(page_table);
 
     process.init_context(kernel_stack_top);
-    write_serial_bytes!(0x3F8, 0x3FD, b"Process: Context initialized\n");
+    debug_log!("Process: Context initialized");
 
     let pid = process.id;
     let mut process_list = PROCESS_LIST.lock();
     process_list.push(Box::new(process));
-    write_serial_bytes!(0x3F8, 0x3FD, b"Process: Process added to list\n");
+    debug_log!("Process: Process added to list");
 
     Ok(pid)
 }
