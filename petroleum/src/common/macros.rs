@@ -462,7 +462,7 @@ macro_rules! vga_stat_display {
         petroleum::check_periodic!(LAST_DISPLAY_TICK, $interval_ticks, $current_tick, {
             if let Some(vga_buffer) = $vga_buffer.get() {
                 const TICKS_PER_SECOND: u64 = 1000;
-                let uptime_minutes = $stats.upptime_ticks / (60 * TICKS_PER_SECOND);
+                let uptime_minutes = $stats.uptime_ticks / (60 * TICKS_PER_SECOND);
                 let uptime_seconds = ($stats.uptime_ticks % (60 * TICKS_PER_SECOND)) / TICKS_PER_SECOND;
 
                 let mut vga_writer = vga_buffer.lock();
