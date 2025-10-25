@@ -1,5 +1,6 @@
 use core::{ffi::c_void, mem, mem::offset_of, ptr};
 use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
+use petroleum::read_unaligned;
 
 use super::headers::*;
 use log;
@@ -71,7 +72,7 @@ pub fn load_efi_image(
     let mut preferred_base = {
         let offset = offset_of!(ImageNtHeaders64, optional_header)
             + offset_of!(ImageOptionalHeader64, image_base);
-        read_field!(nt_headers_ptr, offset, u64)
+        petroleum::read_unaligned!(nt_headers_ptr, offset, u64)
     } as usize;
     let mut status;
     // Try to allocate at the preferred base if it's a high address.

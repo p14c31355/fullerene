@@ -2,9 +2,7 @@
 
 use crate::debug_log_no_alloc;
 
-macro_rules! read_unaligned {
-    ($ptr:expr, $offset:expr, $ty:ty) => {{ core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) }};
-}
+// read_unaligned moved to common/macros.rs
 
 // Consolidated validation logging macro
 macro_rules! debug_log_validate_macro {

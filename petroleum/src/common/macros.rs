@@ -344,15 +344,19 @@ macro_rules! scheduler_log {
 /// clear_line_range!(vga_writer, 23, 24, 0, 80, blank_char);
 /// ```
 #[macro_export]
-macro_rules! clear_line_range {
-    ($buffer:expr, $start_row:expr, $end_row:expr, $col_start:expr, $col_end:expr, $value:expr) => {
-        for row in $start_row..$end_row {
-            for col in $col_start..$col_end {
-                $buffer.set_char_at(row, col, $value);
-            }
-        }
+macro_rules! read_unaligned {
+    ($ptr:expr, $offset:expr, $ty:ty) => {{ unsafe { core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) } }};
+};
+
+#[macro_export]
+macro_rules! display_vga_stats_lines {
+    ($vga_writer:expr, $($row:expr, $format:expr, $($args:expr),*);* $(;)?) => {
+        $(
+            $vga_writer.set_position($row, 0);
+            let _ = write!($vga_writer, $format, $($args),*);
+        )*
     };
-}
+};
 
 /// Enhanced memory debugging macro that supports formatted output with mixed strings and values
 ///
@@ -412,16 +416,15 @@ macro_rules! debug_print {
 /// });
 /// ```
 #[macro_export]
-macro_rules! check_periodic {
-    ($last_tick:expr, $interval:expr, $current_tick:expr, $block:block) => {{
-        let mut last = $last_tick.lock();
-        let elapsed = $current_tick - *last;
-        if elapsed >= $interval {
-            $block;
-            *last = $current_tick;
-        }
-    }};
-}
+macro_rules! display_vga_stats_lines {
+    ($vga_writer:expr, $($row:expr, $format:expr, $($args:expr),*);* $(;)?) => {
+        $(
+            $vga_writer.set_position($row, 0);
+            let _ = write!($vga_writer, $format, $($args),*);
+
+        )*
+    };
+};
 
 /// Macro for simple periodic task execution based on tick intervals
 /// Executes block every 'interval' ticks
