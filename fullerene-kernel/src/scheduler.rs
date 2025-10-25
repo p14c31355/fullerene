@@ -170,10 +170,7 @@ fn display_system_stats_on_vga(stats: &SystemStats, interval_ticks: u64) {
             ));
 
             // Clear the status lines first
-            for col in 0..80 {
-                vga_writer.set_char_at(23, col, blank_char);
-                vga_writer.set_char_at(24, col, blank_char);
-            }
+            petroleum::clear_line_range!(vga_writer, 23, 25, 0, 80, blank_char);
 
             // Display system info on bottom rows
             vga_writer.set_position(23, 0);
@@ -336,7 +333,7 @@ fn process_scheduler_iteration() {
 /// Perform periodic health checks and statistics
 fn perform_periodic_health_checks(stats: &SystemStats, current_tick: u64) {
     static LAST_HEALTH_CHECK_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
-    check_periodic!(LAST_HEALTH_CHECK_TICK, 1000, current_tick, {
+    petroleum::check_periodic!(LAST_HEALTH_CHECK_TICK, 1000, current_tick, {
         perform_system_health_checks();
         log_system_stats(stats, LOG_INTERVAL_TICKS);
         display_system_stats_on_vga(stats, DISPLAY_INTERVAL_TICKS);

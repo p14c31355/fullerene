@@ -298,6 +298,41 @@ macro_rules! static_str {
     }};
 }
 
+/// Unified logging macro for scheduler operations to reduce repetition
+///
+/// # Examples
+/// ```
+/// scheduler_log!("Starting process scheduling");
+/// scheduler_log!("Found process at index {}", index);
+/// ```
+#[macro_export]
+macro_rules! scheduler_log {
+    ($msg:literal) => {
+        log::info!("Scheduler: {}", $msg);
+    };
+    ($msg:literal, $($arg:tt)*) => {
+        log::info!("Scheduler: {}", format_args!($msg, $($arg)*));
+    };
+}
+
+/// Macro to clear a specific range in a 2D buffer for fixed-width buffers like VGA
+/// Reduces repetitive loops for clearing display lines
+///
+/// # Examples
+/// ```
+/// clear_line_range!(vga_writer, 23, 24, 0, 80, blank_char);
+/// ```
+#[macro_export]
+macro_rules! clear_line_range {
+    ($buffer:expr, $start_row:expr, $end_row:expr, $col_start:expr, $col_end:expr, $value:expr) => {
+        for row in $start_row..$end_row {
+            for col in $col_start..$col_end {
+                $buffer.set_char_at(row, col, $value);
+            }
+        }
+    };
+}
+
 /// Enhanced memory debugging macro that supports formatted output with mixed strings and values
 ///
 /// # Examples
