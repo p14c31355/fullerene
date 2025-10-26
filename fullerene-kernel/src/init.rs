@@ -33,14 +33,6 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             crate::graphics::text::init_fallback_graphics()?;
             Ok(())
         }),
-        init_step!("LOCAL_APIC", || {
-            *petroleum::LOCAL_APIC_ADDRESS.lock() = petroleum::LocalApicAddress(0xfee00000 as *mut u32);
-            Ok(())
-        }),
-        init_step!("APIC", || {
-            interrupts::init_apic();
-            Ok(())
-        }),
         init_step!("process", || {
             crate::process::init();
             Ok(())

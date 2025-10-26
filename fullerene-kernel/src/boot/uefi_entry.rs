@@ -18,7 +18,7 @@ use petroleum::{
 use spin::Mutex;
 use x86_64::{
     PhysAddr, VirtAddr,
-    structures::paging::{Mapper, Size4KiB, mapper::MapToError},
+    structures::paging::{Mapper, Page, PageTableFlags, PhysFrame, Size4KiB, mapper::MapToError},
 };
 
 /// Virtual heap start offset from physical memory offset
@@ -294,6 +294,42 @@ impl UefiInitContext {
         }
         log::info!("Allocator initialized");
     }
+
+    fn map_mmio(&mut self) {
+        log::info!("Mapping MMIO regions for APIC and IOAPIC");
+
+        let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
+            .get()
+            .expect("Frame allocator not initialized")
+            .lock();
+
+        let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset) };
+
+        let flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::NO_EXECUTE;
+
+        // Map Local APIC at identity address 0xfee00000
+        let apic_phys = PhysAddr::new(0xfee00000);
+        let apic_virt = VirtAddr::new(0xfee00000);
+        let page = Page::<Size4KiB>::containing_address(apic_virt);
+        let frame = PhysFrame::<Size4KiB>::containing_address(apic_phys);
+        unsafe {
+            mapper.map_to(page, frame, flags, &mut *frame_allocator).unwrap();
+        }
+        *petroleum::LOCAL_APIC_ADDRESS.lock() = petroleum::LocalApicAddress(0xfee00000 as *mut u32);
+        log::info!("LOCAL APIC mapped at virt {:#x}", apic_virt.as_u64());
+
+        // Map IO APIC at identity address 0xfec00000
+        let io_apic_phys = PhysAddr::new(0xfec00000);
+        let io_apic_virt = VirtAddr::new(0xfec00000);
+        let page = Page::<Size4KiB>::containing_address(io_apic_virt);
+        let frame = PhysFrame::<Size4KiB>::containing_address(io_apic_phys);
+        unsafe {
+            mapper.map_to(page, frame, flags, &mut *frame_allocator).unwrap();
+        }
+        log::info!("IO APIC mapped at virt {:#x}", io_apic_virt.as_u64());
+    }
 }
 
 #[cfg(target_os = "uefi")]
@@ -358,6 +394,14 @@ pub extern "efiapi" fn efi_main(
     // Initialize interrupts and other components call init_common here
     crate::init::init_common(physical_memory_offset);
     log::info!("init_common completed");
+
+    // Map MMIO regions
+    ctx.map_mmio();
+    log::info!("MMIO mapping completed");
+
+    // Initialize APIC
+    crate::interrupts::init_apic();
+    log::info!("APIC initialized");
 
     // Initialize graphics with framebuffer configuration
     log::info!("Initialize graphics with framebuffer configuration");
