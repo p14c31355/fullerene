@@ -307,8 +307,7 @@ macro_rules! clear_line_range {
     ($vga_writer:expr, $start_row:expr, $end_row:expr, $col_start:expr, $col_end:expr, $blank_char:expr) => {{
         for row in $start_row..$end_row {
             for col in $col_start..$col_end {
-                $vga_writer.set_position(row, col);
-                $vga_writer.write_byte($blank_char.ascii_character);
+                $vga_writer.set_char_at(row, col, $blank_char);
             }
         }
     }};

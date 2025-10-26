@@ -341,19 +341,17 @@ fn perform_periodic_system_tasks(stats: &SystemStats, current_tick: u64, iterati
     });
 
     // Run system maintenance every 2000 ticks
-    if current_tick % 2000 == 0 {
+    petroleum::periodic_task!(current_tick, 2000, {
         perform_system_maintenance();
-    }
-
+    });
     // Memory capacity check every 10000 ticks
-    if current_tick % 10000 == 0 {
+    petroleum::periodic_task!(current_tick, 10000, {
         perform_memory_capacity_check(current_tick);
-    }
-
+    });
     // Process cleanup check every 100 iterations
-    if iteration_count % 100 == 0 {
+    petroleum::periodic_task!(iteration_count, 100, {
         perform_process_cleanup_check(iteration_count);
-    }
+    });
 }
 
 /// Check and log memory utilization periodically
