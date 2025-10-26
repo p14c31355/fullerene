@@ -1,6 +1,4 @@
-use super::constants::{
-    EFI_MEMORY_TYPE_FIRMWARE_SPECIFIC, MAX_DESCRIPTOR_PAGES, MAX_SYSTEM_MEMORY,
-};
+use super::constants::{MAX_DESCRIPTOR_PAGES, MAX_SYSTEM_MEMORY};
 use crate::common::EfiMemoryType;
 
 // EFI Memory Descriptor as defined in UEFI spec
@@ -74,6 +72,61 @@ impl MemoryDescriptorValidator for MemoryMapDescriptor {
 
     fn is_valid(&self) -> bool {
         is_valid_memory_descriptor(self)
+    }
+
+    fn is_memory_available(&self) -> bool {
+        let mem_type = self.get_type();
+        matches!(mem_type, 4u32 | 7u32) || matches!(mem_type, 9u32 | 14u32)
+    }
+}
+
+impl MemoryDescriptorValidator for EfiMemoryDescriptor {
+    fn get_type(&self) -> u32 {
+        self.type_ as u32
+    }
+
+    fn get_physical_start(&self) -> u64 {
+        self.physical_start
+    }
+
+    fn get_page_count(&self) -> u64 {
+        self.number_of_pages
+    }
+
+    fn is_valid(&self) -> bool {
+        let mem_type = self.get_type();
+        if mem_type > 15 {
+            debug_log_no_alloc!("Invalid memory type (out of range): 0x", mem_type as usize);
+            return false;
+        }
+
+        let phys = self.get_physical_start();
+        if phys % 4096 != 0 {
+            debug_log_no_alloc!("Unaligned physical_start: 0x", phys as usize);
+            return false;
+        }
+
+        let pages = self.get_page_count();
+        if pages == 0 || pages > MAX_DESCRIPTOR_PAGES {
+            debug_log_no_alloc!("Invalid page count: ", pages as usize);
+            return false;
+        }
+
+        let page_size = 4096u64;
+        let end_addr = match phys.checked_add(pages.saturating_mul(page_size)) {
+            Some(end) if end > 0 => end,
+            _ => {
+                debug_log_no_alloc!("Overflow in address calculation");
+                return false;
+            }
+        };
+
+        if end_addr > MAX_SYSTEM_MEMORY {
+            debug_log_no_alloc!("Memory region too large: end_addr=0x", end_addr as usize);
+            return false;
+        }
+
+        true
     }
 
     fn is_memory_available(&self) -> bool {

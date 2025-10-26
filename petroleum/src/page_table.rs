@@ -5,11 +5,10 @@ pub mod efi_memory;
 
 pub use bitmap_allocator::BitmapFrameAllocator;
 
-// Import functions from efi_memory to avoid duplication
-use efi_memory::{is_valid_memory_descriptor, calculate_frame_allocation_params};
+
 
 use crate::{
-    calc_offset_addr, create_page_and_frame, debug_log_no_alloc, flush_tlb_and_verify,
+    calc_offset_addr, debug_log_no_alloc, flush_tlb_and_verify,
     log_memory_descriptor, map_and_flush, map_identity_range_checked, map_with_offset,
 };
 
@@ -29,8 +28,8 @@ use x86_64::{
 
 // Import constants
 use constants::{
-    BOOT_CODE_PAGES, BOOT_CODE_START, PAGE_SIZE, READ_ONLY, READ_WRITE, READ_WRITE_NO_EXEC,
-    TEMP_LOW_VA, TEMP_VA_FOR_ZERO, VGA_MEMORY_END, VGA_MEMORY_START,
+    BOOT_CODE_PAGES, BOOT_CODE_START, READ_WRITE, READ_WRITE_NO_EXEC,
+    TEMP_LOW_VA, VGA_MEMORY_END, VGA_MEMORY_START,
 };
 
 
@@ -613,7 +612,7 @@ unsafe fn map_uefi_runtime_to_higher_half(
 ) {
     unsafe {
         map_memory_descriptors_with_config(mapper, frame_allocator, memory_map, move |desc| {
-            if is_valid_memory_descriptor(desc)
+            if desc.is_valid()
                 && matches!(
                     desc.type_,
                     crate::common::EfiMemoryType::EfiRuntimeServicesCode
@@ -683,7 +682,7 @@ unsafe fn map_stack_to_higher_half(
     let rsp = get_current_stack_pointer!();
 
     for desc in memory_map.iter() {
-        if is_valid_memory_descriptor(desc) {
+        if desc.is_valid() {
             let start = desc.physical_start;
             let end = start + desc.number_of_pages * 4096;
             if rsp >= start && rsp < end {
@@ -857,7 +856,7 @@ unsafe fn map_stack_region(
     .expect("Failed to map current stack region");
 
     for desc in memory_map.iter() {
-        if is_valid_memory_descriptor(desc) {
+        if desc.is_valid() {
             let start = desc.physical_start;
             let end = start + desc.number_of_pages * 4096;
             if rsp >= start && rsp < end && desc.number_of_pages <= MAX_DESCRIPTOR_PAGES {
@@ -1191,7 +1190,7 @@ impl<'a> PageTableInitializer<'a> {
             self.frame_allocator,
             self.memory_map,
             move |desc| {
-                if is_valid_memory_descriptor(desc)
+                if desc.is_valid()
                     && matches!(
                         desc.type_,
                         crate::common::EfiMemoryType::EfiRuntimeServicesCode
@@ -1243,7 +1242,7 @@ impl<'a> PageTableInitializer<'a> {
     unsafe fn map_stack_to_higher_half(&mut self) {
         let rsp = get_current_stack_pointer!();
         for desc in self.memory_map.iter() {
-            if is_valid_memory_descriptor(desc) {
+            if desc.is_valid() {
                 let start = desc.physical_start;
                 let end = start + desc.number_of_pages * 4096;
                 if rsp >= start && rsp < end {
@@ -1266,7 +1265,7 @@ impl<'a> PageTableInitializer<'a> {
 
     unsafe fn map_available_memory_identity(&mut self) {
         for desc in self.memory_map.iter() {
-            if is_valid_memory_descriptor(desc) {
+            if desc.is_valid() {
                 // Include available memory and UEFI runtime services regions
                 let should_identity_map = desc.is_memory_available()
                     || matches!(
