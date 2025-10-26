@@ -4,12 +4,34 @@
 /// used by syscall handlers and memory management.
 use crate::common::logging::{SystemError, SystemResult};
 use x86_64::VirtAddr;
+use spin::Once;
+
+/// Heap start address
+pub static HEAP_START: Once<usize> = Once::new();
+
+/// Heap end address (start + size)
+pub static HEAP_END: Once<usize> = Once::new();
+
+/// Set heap range for allocator-related page fault detection
+pub fn set_heap_range(start: usize, size: usize) {
+    HEAP_START.call_once(|| start);
+    HEAP_END.call_once(|| start + size);
+}
 
 /// Check if an address is in user space
 pub fn is_user_address(addr: VirtAddr) -> bool {
     // User space is typically 0x0000000000000000 to 0x00007FFFFFFFFFFF
     // Kernel space is 0xFFFF800000000000 and above
     addr.as_u64() < 0x0000800000000000
+}
+
+/// Check if an address is within the allocator's heap range
+pub fn is_allocator_related_address(addr: usize) -> bool {
+    if let (Some(&start), Some(&end)) = (HEAP_START.get(), HEAP_END.get()) {
+        addr >= start && addr < end
+    } else {
+        false
+    }
 }
 
 /// Validate user buffer access

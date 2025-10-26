@@ -7,6 +7,8 @@ use crate::memory_management;
 use core::fmt::Write;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
+use petroleum::debug::print_backtrace;
+use petroleum::common::memory::is_allocator_related_address;
 
 /// Breakpoint exception handler
 #[unsafe(no_mangle)]
@@ -39,7 +41,7 @@ pub extern "x86-interrupt" fn page_fault_handler(
 pub fn handle_page_fault(
     fault_addr: x86_64::VirtAddr,
     error_code: PageFaultErrorCode,
-    _stack_frame: InterruptStackFrame,
+    stack_frame: InterruptStackFrame,
 ) {
     let is_present = error_code.intersects(PageFaultErrorCode::PROTECTION_VIOLATION);
     let is_write = error_code.intersects(PageFaultErrorCode::CAUSED_BY_WRITE);
@@ -47,6 +49,9 @@ pub fn handle_page_fault(
 
     petroleum::lock_and_modify!(petroleum::SERIAL1, writer, {
         write!(writer, "Page fault at {:x}: ", fault_addr.as_u64()).ok();
+        if is_allocator_related_address(fault_addr.as_u64() as usize) {
+            write!(writer, "Allocator-related ").ok();
+        }
         if is_present {
             write!(writer, "Protection violation ").ok();
         } else {
@@ -60,6 +65,14 @@ pub fn handle_page_fault(
         }
         writeln!(writer).ok();
         writeln!(writer, "Error code: {:?}", error_code).ok();
+        if let Some(pid) = crate::process::current_pid() {
+            writeln!(writer, "Current process ID: {}", pid).ok();
+        }
+        writeln!(writer, "Instruction pointer (RIP): {:#x}", stack_frame.instruction_pointer.as_u64()).ok();
+        writeln!(writer, "Stack pointer (RSP): {:#x}", stack_frame.stack_pointer.as_u64()).ok();
+        writeln!(writer).ok();
+        writeln!(writer, "Backtrace:").ok();
+        print_backtrace(&mut *writer);
     });
 
     if !is_user {

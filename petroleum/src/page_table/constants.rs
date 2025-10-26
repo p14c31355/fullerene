@@ -24,7 +24,7 @@ pub static READ_EXECUTE: PageTableFlags = PageTableFlags::PRESENT;
 
 // Page table offsets
 pub const HIGHER_HALF_OFFSET: VirtAddr = VirtAddr::new(0xFFFF_8000_0000_0000);
-pub const TEMP_VA_FOR_DESTROY: VirtAddr = VirtAddr::new(0xFFFF_A000_0000_0000);
-pub const TEMP_VA_FOR_CLONE: VirtAddr = VirtAddr::new(0xFFFF_9000_0000_0000);
-pub const TEMP_VA_FOR_ZERO: VirtAddr = VirtAddr::new(0xFFFF_9000_0000_1000);
+pub const TEMP_VA_FOR_DESTROY: VirtAddr = VirtAddr::new(0x50000000u64);
+pub const TEMP_VA_FOR_CLONE: VirtAddr = VirtAddr::new(0x48000000u64);
+pub const TEMP_VA_FOR_ZERO: VirtAddr = VirtAddr::new(0x40000000u64);
 pub const TEMP_LOW_VA: VirtAddr = VirtAddr::new(0x200000000u64); // 8GB - high enough to avoid huge page mappings

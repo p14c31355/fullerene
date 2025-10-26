@@ -5,12 +5,16 @@ pub mod efi_memory;
 
 pub use bitmap_allocator::BitmapFrameAllocator;
 
+// Import functions from efi_memory to avoid duplication
+use efi_memory::{is_valid_memory_descriptor, calculate_frame_allocation_params};
+
 use crate::{
     calc_offset_addr, create_page_and_frame, debug_log_no_alloc, flush_tlb_and_verify,
     log_memory_descriptor, map_and_flush, map_identity_range_checked, map_with_offset,
 };
 
-// Macros are automatically available from common module
+// Import for heap range setting
+use crate::common::memory::set_heap_range;
 // BTreeMap will be available through std when compiled as std crate
 use spin::Once;
 use x86_64::{
@@ -29,44 +33,7 @@ use constants::{
     TEMP_LOW_VA, TEMP_VA_FOR_ZERO, VGA_MEMORY_END, VGA_MEMORY_START,
 };
 
-//// Generic validation trait for different descriptor types
-trait MemoryDescriptorValidator {
-    fn is_valid(&self) -> bool;
-    fn get_physical_start(&self) -> u64;
-    fn get_page_count(&self) -> u64;
-    fn is_memory_available(&self) -> bool;
-}
 
-// Implementation for EFI memory descriptors
-impl MemoryDescriptorValidator for EfiMemoryDescriptor {
-    fn is_valid(&self) -> bool {
-        is_valid_memory_descriptor(self)
-    }
-
-    fn get_physical_start(&self) -> u64 {
-        self.physical_start
-    }
-
-    fn get_page_count(&self) -> u64 {
-        self.number_of_pages
-    }
-
-    fn is_memory_available(&self) -> bool {
-        use crate::common::EfiMemoryType;
-        const EFI_ACPI_RECLAIM_MEMORY: u32 = 9; // Memory that holds ACPI tables that can be reclaimed after ACPI initialization
-        const EFI_PERSISTENT_MEMORY: u32 = 14; // Memory that persists across reboot, typically NVDIMM-backed
-
-        let mem_type = self.type_;
-        matches!(
-            mem_type,
-            EfiMemoryType::EfiBootServicesData |     // 4
-            EfiMemoryType::EfiConventionalMemory // 7
-        ) || matches!(
-            mem_type as u32,
-            EFI_ACPI_RECLAIM_MEMORY | EFI_PERSISTENT_MEMORY
-        )
-    }
-}
 
 pub static HEAP_INITIALIZED: Once<bool> = Once::new();
 
@@ -75,6 +42,7 @@ pub fn init_global_heap(ptr: *mut u8, size: usize) {
         unsafe {
             ALLOCATOR.lock().init(ptr, size);
         }
+        set_heap_range(ptr as usize, size);
         HEAP_INITIALIZED.call_once(|| true);
     }
 }
@@ -147,8 +115,8 @@ impl PeParser {
     }
 }
 
-// Re-export EfiMemoryDescriptor from efi_memory module
-pub use efi_memory::EfiMemoryDescriptor;
+// Re-export EfiMemoryDescriptor and MemoryDescriptorValidator from efi_memory module
+pub use efi_memory::{EfiMemoryDescriptor, MemoryDescriptorValidator};
 
 /// Named constant for UEFI firmware specific memory type (replace magic number)
 const EFI_MEMORY_TYPE_FIRMWARE_SPECIFIC: u32 = 15;
@@ -159,56 +127,7 @@ const MAX_DESCRIPTOR_PAGES: u64 = 1_048_576;
 /// Maximum reasonable system memory limit (512GB)
 const MAX_SYSTEM_MEMORY: u64 = 512 * 1024 * 1024 * 1024u64;
 
-/// Validate an EFI memory descriptor for safety
-fn is_valid_memory_descriptor(descriptor: &EfiMemoryDescriptor) -> bool {
-    // Check memory type is within valid UEFI range (0x0-0x7FFFFFFF)
-    // Allow OEM-specific memory types up to the UEFI maximum
-    // But still be conservative about obviously garbage values
-    let mem_type = descriptor.type_ as u32;
-    if mem_type >= 0x80000000 {
-        debug_log_no_alloc!("Invalid memory type (too high): ", mem_type);
-        return false;
-    }
-    debug_log_validate_macro!("Memory type", mem_type);
 
-    // Check physical start is page-aligned
-    if descriptor.physical_start % 4096 != 0 {
-        debug_log_no_alloc!(
-            "Unaligned physical_start: 0x",
-            descriptor.physical_start as usize
-        );
-        return false;
-    }
-    debug_log_validate_macro!("Physical start", descriptor.physical_start as usize);
-
-    // Check number of pages is reasonable
-    if descriptor.number_of_pages == 0 || descriptor.number_of_pages > MAX_DESCRIPTOR_PAGES {
-        debug_log_no_alloc!("Invalid page count: ", descriptor.number_of_pages as usize);
-        return false;
-    }
-    debug_log_validate_macro!("Page count", descriptor.number_of_pages as usize);
-
-    // Check for potential overflow when calculating end address
-    let page_size = 4096u64;
-    if let Some(end_addr) = descriptor.physical_start.checked_add(
-        descriptor
-            .number_of_pages
-            .checked_mul(page_size)
-            .unwrap_or(u64::MAX),
-    ) {
-        // Ensure end address doesn't exceed reasonable system limits (512GB)
-        if end_addr > MAX_SYSTEM_MEMORY {
-            debug_log_no_alloc!("Memory region too large: end_addr=0x", end_addr as usize);
-            return false;
-        }
-        debug_log_validate_macro!("End address", end_addr as usize);
-    } else {
-        debug_log_no_alloc!("Overflow in address calculation");
-        return false;
-    }
-
-    true
-}
 
 /// Constant for UEFI compatibility pages (disabled - first page)
 const UEFI_COMPAT_PAGES: u64 = 16383;
@@ -347,32 +266,7 @@ unsafe fn map_pe_section(
     }
 }
 
-// Calculate frame allocation parameters from memory map
-fn calculate_frame_allocation_params(memory_map: &[EfiMemoryDescriptor]) -> (u64, usize, usize) {
-    // Only consider valid descriptors to prevent corrupted data from causing excessive bitmap allocation
-    let mut max_addr: u64 = 0;
 
-    for descriptor in memory_map {
-        if is_valid_memory_descriptor(descriptor) {
-            let end_addr = descriptor
-                .physical_start
-                .saturating_add(descriptor.number_of_pages.saturating_mul(4096));
-            if end_addr > max_addr {
-                max_addr = end_addr;
-            }
-        }
-    }
-
-    if max_addr == 0 {
-        debug_log_no_alloc!("No valid descriptors found in memory map");
-        return (0, 0, 0);
-    }
-
-    let capped_max_addr = max_addr.min(32 * 1024 * 1024 * 1024u64);
-    let total_frames = (capped_max_addr.div_ceil(4096)) as usize;
-    let bitmap_size = (total_frames + 63) / 64;
-    (max_addr, total_frames, bitmap_size)
-}
 
 // Generic mapping interface
 trait MemoryMappable {
@@ -1039,29 +933,13 @@ impl PageTableReinitializer {
             Some(frame) => frame,
             None => panic!("Failed to allocate L4 page table frame"),
         };
-        // Use the current active page table to temporarily map the new frame for zeroing
-        let mut current_mapper = unsafe { init(current_physical_memory_offset) };
-        let temp_page = unsafe { Page::<Size4KiB>::containing_address(TEMP_VA_FOR_ZERO) };
-        unsafe {
-            current_mapper
-                .map_to(
-                    temp_page,
-                    level_4_table_frame,
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                    frame_allocator,
-                )
-                .expect("Failed to temporarily map L4 table frame")
-                .flush();
-        }
 
-        // Zero the new L4 table through the temporary mapping
+        // Zero the new L4 table directly through identity mapping (UEFI identity maps all memory)
         unsafe {
-            core::ptr::write_bytes(TEMP_VA_FOR_ZERO.as_mut_ptr::<u8>(), 0, 4096);
-        }
-
-        // Unmap the temporary page
-        if let Ok((_frame, flush)) = current_mapper.unmap(temp_page) {
-            flush.flush();
+            let table_phys = level_4_table_frame.start_address().as_u64();
+            let table_virt = current_physical_memory_offset + table_phys;
+            let table_ptr = table_virt.as_mut_ptr() as *mut PageTable;
+            *table_ptr = PageTable::new();
         }
 
         debug_log_no_alloc!("New L4 page table created and zeroed");
@@ -1074,47 +952,32 @@ impl PageTableReinitializer {
         current_physical_memory_offset: VirtAddr,
         frame_allocator: &mut BootInfoFrameAllocator,
     ) -> OffsetPageTable<'static> {
-        let mut current_mapper = unsafe { init(current_physical_memory_offset) };
-        unsafe {
-            // Use a temporary virtual address that doesn't conflict with huge pages
-            let temp_virt_addr = TEMP_VA_FOR_CLONE; // Use the clone temp VA for this
-            let page = Page::<Size4KiB>::containing_address(temp_virt_addr);
-            let frame = level_4_table_frame;
-            match current_mapper.map_to(
-                page,
-                frame,
-                page_flags_const!(READ_WRITE_NO_EXEC),
-                frame_allocator,
-            ) {
-                Ok(flush) => flush.flush(),
-                Err(e) => {
-                    // Try different temp VA for any mapping error, including huge page conflicts
-                    let alt_temp_va = TEMP_VA_FOR_DESTROY;
-                    let alt_page = Page::<Size4KiB>::containing_address(alt_temp_va);
-                    current_mapper
-                        .map_to(
-                            alt_page,
-                            frame,
-                            page_flags_const!(READ_WRITE_NO_EXEC),
-                            frame_allocator,
-                        )
-                        .expect("Failed to map L4 table with alternative VA")
-                        .flush();
-                    let table_addr = alt_temp_va.as_u64();
-                    return OffsetPageTable::new(
-                        &mut *(table_addr as *mut PageTable),
-                        current_physical_memory_offset,
-                    );
-                }
+        debug_log_no_alloc!("Setting up new page table mapper");
+
+        // Since all virtual addresses seem to be obstructed by huge pages in UEFI,
+        // we need to create the OffsetPageTable after the page table switch.
+        // For now, return a minimal placeholder that can be used to build the mappings
+        // using the fact that we can access physical memory through existing mappings.
+
+        // We'll map the L4 table at its own physical address as a last resort
+        let temp_phys_addr = level_4_table_frame.start_address().as_u64();
+        let temp_virt_addr = current_physical_memory_offset + temp_phys_addr;
+        let temp_page = Page::<Size4KiB>::containing_address(temp_virt_addr);
+
+        debug_log_no_alloc!("Using existing phys offset mapping at: 0x", temp_virt_addr.as_u64() as usize);
+
+        // Check if this page is already mapped (it should be in UEFI)
+        if temp_virt_addr.as_u64() < 0x800000000000 { // Reasonable sanity check for low memory
+            unsafe {
+                return OffsetPageTable::new(
+                    &mut *(temp_virt_addr.as_mut_ptr() as *mut PageTable),
+                    current_physical_memory_offset,
+                );
             }
-        };
-        unsafe {
-            let table_addr = TEMP_VA_FOR_CLONE.as_u64();
-            OffsetPageTable::new(
-                &mut *(table_addr as *mut PageTable),
-                current_physical_memory_offset,
-            )
         }
+
+        // If even that fails, we have a fundamental problem with UEFI memory layout
+        panic!("Cannot create any mapping for L4 table frame - UEFI huge page coverage is complete");
     }
 
     fn setup_recursive_mapping(
@@ -1404,26 +1267,38 @@ impl<'a> PageTableInitializer<'a> {
     }
 
     unsafe fn map_available_memory_identity(&mut self) {
-        process_memory_descriptors(self.memory_map, |desc, start_frame, end_frame| {
-            let phys_start = desc.get_physical_start();
-            let pages = (end_frame - start_frame) as u64;
-            // Always give writable access to available memory regions for compatibility, but executable code regions should not be writable
-            let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-                PageTableFlags::PRESENT
-            } else {
-                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
-            };
-            let _: core::result::Result<
-                (),
-                x86_64::structures::paging::mapper::MapToError<Size4KiB>,
-            > = identity_map_range_with_log_macro!(
-                self.mapper,
-                self.frame_allocator,
-                phys_start,
-                pages,
-                flags
-            );
-        });
+        for desc in self.memory_map.iter() {
+            if is_valid_memory_descriptor(desc) {
+                // Include available memory and UEFI runtime services regions
+                let should_identity_map = desc.is_memory_available()
+                    || matches!(
+                        desc.type_,
+                        crate::common::EfiMemoryType::EfiRuntimeServicesCode
+                            | crate::common::EfiMemoryType::EfiRuntimeServicesData
+                    );
+
+                if should_identity_map {
+                    let phys_start = desc.get_physical_start();
+                    let pages = desc.get_page_count();
+                    // Always give writable access to available memory regions for compatibility, but executable code regions should not be writable
+                    let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+                        PageTableFlags::PRESENT
+                    } else {
+                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
+                    };
+                    let _: core::result::Result<
+                        (),
+                        x86_64::structures::paging::mapper::MapToError<Size4KiB>,
+                    > = identity_map_range_with_log_macro!(
+                        self.mapper,
+                        self.frame_allocator,
+                        phys_start,
+                        pages,
+                        flags
+                    );
+                }
+            }
+        }
     }
 }
 

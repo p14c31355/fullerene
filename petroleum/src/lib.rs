@@ -12,6 +12,7 @@ pub mod bare_metal_graphics_detection;
 pub mod bare_metal_pci;
 #[macro_use]
 pub mod common;
+pub mod debug;
 pub mod filesystem;
 pub mod graphics;
 pub mod graphics_alternatives;
