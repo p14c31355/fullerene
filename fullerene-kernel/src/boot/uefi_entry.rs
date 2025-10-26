@@ -328,7 +328,9 @@ impl UefiInitContext {
         let page = Page::<Size4KiB>::containing_address(io_apic_virt);
         let frame = PhysFrame::<Size4KiB>::containing_address(io_apic_phys);
         unsafe {
-            mapper.map_to(page, frame, flags, &mut *frame_allocator).unwrap();
+            mapper.map_to(page, frame, flags, &mut *frame_allocator)
+                .expect("Failed to map IO APIC")
+                .flush();
         }
         log::info!("IO APIC mapped at virt {:#x}", io_apic_virt.as_u64());
 
