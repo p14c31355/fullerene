@@ -477,7 +477,7 @@ pub fn load_efi_image(
 
     if preferred_base >= 0x1000_0000 {
         phys_addr = 0x100000;
-        status = (bs.allocate_pages)(2, EfiMemoryType::EfiLoaderCode, _pages_needed, &mut phys_addr);
+        status = (bs.allocate_pages)(2, EfiMemoryType::EfiLoaderCode, pages_needed, &mut phys_addr);
         if EfiStatus::from(status) != EfiStatus::Success {
             phys_addr = 0;
             status = (bs.allocate_pages)(0, EfiMemoryType::EfiLoaderCode, _pages_needed, &mut phys_addr);
