@@ -9,7 +9,7 @@ use crate::memory::find_heap_start;
 use crate::{gdt, graphics, interrupts, memory};
 use alloc::boxed::Box;
 use core::ffi::c_void;
-use petroleum::common::EfiGraphicsOutputProtocol;
+use petroleum::common::{EfiGraphicsOutputProtocol, EfiSystemTable};
 use petroleum::common::uefi::{efi_print, find_gop_framebuffer, write_vga_string};
 
 use petroleum::{

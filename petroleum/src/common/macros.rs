@@ -292,7 +292,7 @@ macro_rules! scheduler_log {
 /// Macro for reading unaligned data from memory with offset
 #[macro_export]
 macro_rules! read_unaligned {
-    ($ptr:expr, $offset:expr, $ty:ty) => {{ unsafe { core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) } }};
+    ($ptr:expr, $offset:expr, $ty:ty) => {{ core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) }};
 }
 
 /// Macro to clear a specific range in a 2D buffer for fixed-width buffers like VGA
@@ -957,7 +957,7 @@ macro_rules! page_flags_const {
 /// Integrated identity mapping macro
 #[macro_export]
 macro_rules! map_identity_range_macro {
-    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{ unsafe { map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags) } }};
+    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{ map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags) }};
 }
 
 /// Range mapping with logging macro
@@ -970,7 +970,7 @@ macro_rules! map_range_with_log_macro {
             let phys_addr = $phys_start + i * 4096;
             let virt_addr = $virt_start + i * 4096;
             let (page, frame) = create_page_and_frame!(virt_addr, phys_addr);
-            match unsafe { $mapper.map_to(page, frame, $flags, $frame_allocator) } {
+            match $mapper.map_to(page, frame, $flags, $frame_allocator) {
                 Ok(flush) => flush.flush(),
                 Err(MapToError::<Size4KiB>::PageAlreadyMapped(_)) => {
                     continue;
@@ -1130,7 +1130,7 @@ macro_rules! map_identity_range_checked {
         for i in 0..$num_pages {
             let addr = calc_offset_addr!($phys_start, i);
             let (page, frame) = create_page_and_frame!(addr, addr);
-            match unsafe { $mapper.map_to(page, frame, $flags, $allocator) } {
+            match $mapper.map_to(page, frame, $flags, $allocator) {
                 Ok(flush) => flush.flush(),
                 Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
                     continue;
