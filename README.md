@@ -51,7 +51,7 @@ Dependencies include `x86_64` for architecture-specific code, `uefi` for bootloa
 - Rust nightly toolchain (required for `no_std` and UEFI targets): Install via `rustup toolchain install nightly`.
 - QEMU: Install on Linux/macOS via package manager (e.g., `apt install qemu-system-x86` on Ubuntu).
 - OVMF (UEFI firmware): Included in `flasks/ovmf/` (RELEASEX64 files). If missing, download from [TianoCore releases](https://github.com/tianocore/edk2/releases).
-- (Optional) VirtualBox: For VirtualBox support, install VirtualBox and create a VM named "fullerene-vm".
+- (Optional) VirtualBox: For VirtualBox support, install VirtualBox. A VM named "fullerene-vm" will be created automatically if missing.
 
 The project uses a custom target `x86_64-unknown-uefi` (ensure it's available via `rustup target add x86_64-unknown-uefi`).
 
