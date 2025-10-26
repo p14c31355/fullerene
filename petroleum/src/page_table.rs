@@ -620,11 +620,10 @@ unsafe fn map_uefi_runtime_to_higher_half(
                         | crate::common::EfiMemoryType::EfiRuntimeServicesData
                 )
             {
-                let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-                    PageTableFlags::PRESENT
-                } else {
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
-                };
+                let mut flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+                if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+                    flags |= PageTableFlags::NO_EXECUTE;
+                }
                 Some(higher_half_config!(
                     phys_offset,
                     desc.physical_start,
@@ -648,12 +647,11 @@ unsafe fn map_available_memory_to_higher_half(
     process_memory_descriptors(memory_map, |desc, start_frame, end_frame| {
         let phys_start = desc.get_physical_start();
         let pages = (end_frame - start_frame) as u64;
-        // Always give writable access to available memory regions for compatibility, but executable code regions should not be writable
-        let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-            PageTableFlags::PRESENT
-        } else {
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
-        };
+        // Always give writable access to available memory regions for compatibility
+        let mut flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+        if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+            flags |= PageTableFlags::NO_EXECUTE;
+        }
         unsafe {
             let _ = map_to_higher_half_with_log(
                 mapper,
@@ -847,7 +845,7 @@ unsafe fn map_stack_region(
     unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp) };
     let stack_pages = 256; // 1MB stack
     let stack_start = rsp & !4095; // page align
-    map_identity_range(
+    unsafe { map_identity_range(
         mapper,
         frame_allocator,
         stack_start,
@@ -855,7 +853,7 @@ unsafe fn map_stack_region(
         x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE
             | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
-    )
+    ) }
     .expect("Failed to map current stack region");
 
     for desc in memory_map.iter() {
@@ -863,7 +861,7 @@ unsafe fn map_stack_region(
             let start = desc.physical_start;
             let end = start + desc.number_of_pages * 4096;
             if rsp >= start && rsp < end && desc.number_of_pages <= MAX_DESCRIPTOR_PAGES {
-                map_identity_range(
+                unsafe { map_identity_range(
                     mapper,
                     frame_allocator,
                     desc.physical_start,
@@ -871,7 +869,7 @@ unsafe fn map_stack_region(
                     x86_64::structures::paging::PageTableFlags::PRESENT
                         | x86_64::structures::paging::PageTableFlags::WRITABLE
                         | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
-                )
+                ) }
                 .expect("Failed to map stack region");
                 break;
             }
@@ -1280,12 +1278,11 @@ impl<'a> PageTableInitializer<'a> {
                 if should_identity_map {
                     let phys_start = desc.get_physical_start();
                     let pages = desc.get_page_count();
-                    // Always give writable access to available memory regions for compatibility, but executable code regions should not be writable
-                    let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-                        PageTableFlags::PRESENT
-                    } else {
-                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
-                    };
+                    // Always give writable access to available memory regions for compatibility
+                    let mut flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+                    if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+                        flags |= PageTableFlags::NO_EXECUTE;
+                    }
                     let _: core::result::Result<
                         (),
                         x86_64::structures::paging::mapper::MapToError<Size4KiB>,

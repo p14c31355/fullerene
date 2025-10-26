@@ -129,6 +129,89 @@ pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
     let mut writer = VGA_BUFFER.get().unwrap().lock();
     writer.clear_screen();
     writer.set_color_code(ColorCode::new(Color::Green, Color::Black));
+
+    // Set VGA to text mode 3 (80x25 color text)
+    use petroleum::hardware::ports::*;
+    use x86_64::instructions::port::*;
+
+    // Temporarily use port writes directly
+    let mut port_u8_3c2: Port<u8> = Port::new(VGA_MISC_WRITE as u16);
+    unsafe { port_u8_3c2.write(0x67) };
+
+    let mut port_u8_3c4: Port<u8> = Port::new(VGA_SEQ_INDEX);
+    let mut port_u8_3c5: Port<u8> = Port::new(VGA_SEQ_DATA);
+
+    unsafe { port_u8_3c4.write(0x00); port_u8_3c5.write(0x03); } // Reset sequencer
+    unsafe { port_u8_3c4.write(0x01); port_u8_3c5.write(0x00); } // Disable screen
+    unsafe { port_u8_3c4.write(0x02); port_u8_3c5.write(0x03); } // Plane map mask
+    unsafe { port_u8_3c4.write(0x03); port_u8_3c5.write(0x00); } // Character map
+    unsafe { port_u8_3c4.write(0x04); port_u8_3c5.write(0x02); } // Memory mode
+
+    // CRTC registers for 80x25 text mode
+    let mut port_u8_3d4: Port<u8> = Port::new(VGA_CRTC_INDEX);
+    let mut port_u8_3d5: Port<u8> = Port::new(VGA_CRTC_DATA);
+
+    unsafe { port_u8_3d4.write(0x00); port_u8_3d5.write(0x5f); } // Horiz display end
+    unsafe { port_u8_3d4.write(0x01); port_u8_3d5.write(0x4f); } // Horiz display enable end
+    unsafe { port_u8_3d4.write(0x02); port_u8_3d5.write(0x50); } // Horiz retrace start
+    unsafe { port_u8_3d4.write(0x03); port_u8_3d5.write(0x82); } // Horiz retrace end
+    unsafe { port_u8_3d4.write(0x04); port_u8_3d5.write(0x55); } // Horiz retrace end
+    unsafe { port_u8_3d4.write(0x05); port_u8_3d5.write(0x81); } // Horiz blank start
+    unsafe { port_u8_3d4.write(0x06); port_u8_3d5.write(0xbf); } // Horiz blank end
+    unsafe { port_u8_3d4.write(0x07); port_u8_3d5.write(0x1f); } // Vertical sync start
+    unsafe { port_u8_3d4.write(0x08); port_u8_3d5.write(0x00); } // Vertical sync end
+    unsafe { port_u8_3d4.write(0x09); port_u8_3d5.write(0x4f); } // Vertical display end low
+    unsafe { port_u8_3d4.write(0x10); port_u8_3d5.write(0x9c); } // Vertical sync start
+    unsafe { port_u8_3d4.write(0x11); port_u8_3d5.write(0x8e); } // Vertical sync end
+    unsafe { port_u8_3d4.write(0x12); port_u8_3d5.write(0x8f); } // Vertical display enable end
+    unsafe { port_u8_3d4.write(0x13); port_u8_3d5.write(0x28); } // Offset
+    unsafe { port_u8_3d4.write(0x14); port_u8_3d5.write(0x1f); } // Underline location
+    unsafe { port_u8_3d4.write(0x15); port_u8_3d5.write(0x96); } // Vertical blank start
+    unsafe { port_u8_3d4.write(0x16); port_u8_3d5.write(0xb9); } // Vertical blank end
+    unsafe { port_u8_3d4.write(0x17); port_u8_3d5.write(0xa3); } // Mode control
+
+    // Enable screen
+    unsafe { port_u8_3c4.write(0x01); port_u8_3c5.write(0x00); } // Clocking mode
+
+    // Graphics controller
+    let mut port_u8_3ce: Port<u8> = Port::new(VGA_GC_INDEX);
+    let mut port_u8_3cf: Port<u8> = Port::new(VGA_GC_DATA);
+
+    unsafe { port_u8_3ce.write(0x00); port_u8_3cf.write(0x00); } // Set/reset
+    unsafe { port_u8_3ce.write(0x01); port_u8_3cf.write(0x00); } // Enable set/reset
+    unsafe { port_u8_3ce.write(0x02); port_u8_3cf.write(0x00); } // Color compare
+    unsafe { port_u8_3ce.write(0x03); port_u8_3cf.write(0x00); } // Data rotate
+    unsafe { port_u8_3ce.write(0x04); port_u8_3cf.write(0x00); } // Read map select
+    unsafe { port_u8_3ce.write(0x05); port_u8_3cf.write(0x10); } // Graphics mode
+    unsafe { port_u8_3ce.write(0x06); port_u8_3cf.write(0x0e); } // Memory map select
+    unsafe { port_u8_3ce.write(0x07); port_u8_3cf.write(0x00); } // Color don't care
+    unsafe { port_u8_3ce.write(0x08); port_u8_3cf.write(0xff); } // Bit mask
+
+    // Attribute controller (text mode) - needs special handling for address vs write
+    let mut port_u8_3c0: Port<u8> = Port::new(VGA_AC_INDEX);
+
+    let mut i = 0;
+    while i < 16 {
+        unsafe { port_u8_3c0.write(i); }
+        let mut port_u8_3c1: Port<u8> = Port::new(VGA_AC_WRITE);
+        unsafe { port_u8_3c1.write(i); }
+        i += 1;
+    }
+    unsafe { port_u8_3c0.write(0x10); }
+    let mut port_u8_3c1: Port<u8> = Port::new(VGA_AC_WRITE);
+    unsafe { port_u8_3c1.write(0x0c); } // Mode control
+    unsafe { port_u8_3c0.write(0x11); }
+    unsafe { port_u8_3c1.write(0x00); } // Overscan color
+    unsafe { port_u8_3c0.write(0x12); }
+    unsafe { port_u8_3c1.write(0x0f); } // Color plane enable
+    unsafe { port_u8_3c0.write(0x13); }
+    unsafe { port_u8_3c1.write(0x08); } // Pixel panning
+    unsafe { port_u8_3c0.write(0x14); }
+    unsafe { port_u8_3c1.write(0x00); } // Color select
+
+    // DAC registers (optional for text mode, simplified)
+    // Skip DAC initialization for now as it's not strictly necessary for text mode
+
     writer.write_string("Hello QEMU by FullereneOS!\n");
     writer.write_string("This is output directly to VGA.\n");
     writer.update_cursor();
