@@ -394,7 +394,7 @@ pub fn current_pid() -> Option<ProcessId> {
 pub fn yield_current() {
     let old_pid = current_pid();
     schedule_next();
-    let new_pid = current_pid().unwrap();
+    let new_pid = current_pid().expect("schedule_next failed to select a process");
     unsafe { context_switch(old_pid, new_pid); }
 }
 
