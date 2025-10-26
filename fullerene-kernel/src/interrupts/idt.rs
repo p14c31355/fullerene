@@ -23,11 +23,7 @@ lazy_static! {
         // Set up CPU exception handlers
         setup_idt_handler!(idt, breakpoint, breakpoint_handler);
         setup_idt_handler!(idt, page_fault, page_fault_handler);
-
-
-
         setup_idt_handler!(idt, double_fault, double_fault_handler);
-
         // Set up hardware interrupt handlers
         unsafe {
             idt[TIMER_INTERRUPT_INDEX as u8].set_handler_fn(timer_handler);
