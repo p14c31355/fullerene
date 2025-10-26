@@ -1,6 +1,13 @@
 use super::interface::{SyscallError, SyscallResult, copy_user_string};
 use crate::process;
 use petroleum::write_serial_bytes;
+use alloc::boxed::Box;
+use core::alloc::Layout;
+use core::sync::atomic::Ordering;
+use x86_64::{PhysAddr, VirtAddr};
+use crate::process::{Process, ProcessState, NEXT_PID};
+
+const KERNEL_STACK_SIZE: usize = 4096;
 
 /// Handle system call from user space
 ///
@@ -63,24 +70,49 @@ fn syscall_fork() -> SyscallResult {
         .find(|p| p.id == current_pid)
         .ok_or(SyscallError::NoSuchProcess)?;
 
-    // Clone the parent process name (use parent name for now, full clone later)
-    let child_name = "fork_child"; // Use static string to avoid lifetime issues
+    // Clone the parent process page table
+    let parent_page_table = parent_process.page_table.as_ref().unwrap();
+    let cloned_table_addr = parent_page_table.clone_page_table()?;
+    let cloned_pml4_frame = x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(cloned_table_addr as u64));
 
-    // For now, create a basic child process
-    // In a full implementation, we would:
-    // 1. Clone the process memory space
-    // 2. Copy the page tables
-    // 3. Set up the child context to return 0 from fork
-    // 4. Set up the parent to return the child PID
+    // Create new page table manager with cloned frame
+    let mut child_page_table = petroleum::page_table::PageTableManager::new_with_frame(cloned_pml4_frame);
+    petroleum::initializer::Initializable::init(&mut child_page_table).map_err(|_| SyscallError::InvalidArgument)?;
 
-    let child_entry = parent_process.entry_point; // Same entry point for now
-    drop(process_list); // Release lock
+    // Allocate kernel stack for child
+    let stack_layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
+    let kernel_stack_ptr = unsafe { alloc::alloc::alloc(stack_layout) };
+    if kernel_stack_ptr.is_null() {
+        return Err(SyscallError::InvalidArgument);
+    }
+    let kernel_stack_top = VirtAddr::new(kernel_stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
 
-    let child_pid = process::create_process(child_name, child_entry)?;
+    // Create child process
+    let child_process = Process {
+        id: NEXT_PID.fetch_add(1, Ordering::Relaxed),
+        name: "child",
+        state: ProcessState::Ready,
+        context: parent_process.context, // Copy parent context
+        page_table_phys_addr: PhysAddr::new(cloned_table_addr as u64),
+        page_table: Some(child_page_table),
+        kernel_stack: kernel_stack_top,
+        user_stack: parent_process.user_stack, // Same stack for now (should copy)
+        entry_point: parent_process.entry_point,
+        exit_code: None,
+        parent_id: Some(current_pid),
+    };
 
-    // TODO: Implement full process cloning with memory copying
-    // For now, we return the child PID from fork (should return 0 in child, child_pid in parent)
-    // This is a significant simplification - a real fork would require context switching
+    let child_pid = child_process.id;
+    // Set child context to return 0 from fork
+    let mut child_box = Box::new(child_process);
+    child_box.context.rax = 0; // Child gets 0 from fork
+    child_box.init_context(kernel_stack_top);
+
+    // Add to process list
+    process_list.push(child_box);
+
+    // Note: Memory copying not implemented yet, only page table cloning
+    // Full implementation would copy parent memory pages to child
 
     Ok(child_pid)
 }

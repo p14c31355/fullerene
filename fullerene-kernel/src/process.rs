@@ -130,7 +130,7 @@ pub struct Process {
 impl Process {
     /// Create a new process
     pub fn new(name: &'static str, entry_point: VirtAddr) -> Self {
-        static NEXT_PID: AtomicU64 = AtomicU64::new(1);
+        pub static NEXT_PID: AtomicU64 = AtomicU64::new(1);
 
         let id = NEXT_PID.fetch_add(1, Ordering::Relaxed);
 

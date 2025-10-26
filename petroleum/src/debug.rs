@@ -128,8 +128,15 @@ pub fn print_backtrace(writer: &mut impl Write) {
 }
 
 /// Convert an address to human-readable format
-pub fn resolve_address(_addr: u64) -> Option<(&'static str, &'static str, u32)> {
-    // Placeholder implementation - returns basic information
-    // TODO: Replace with proper DWARF-based symbol resolution when Dwarf data is available
-    Some(("unknown", "unknown", 0))
+pub fn resolve_address(addr: u64) -> Option<(&'static str, &'static str, u32)> {
+    // Basic implementation without DWARF - classify addresses by known regions
+    // For proper DWARF resolution, Dwarf data would be parsed when available
+
+    if addr >= 0x100000 && addr < 0x200000 {
+        Some(("kernel code", "unknown", 0))
+    } else if addr >= 0xFFFF_8000_0000_0000 && addr < 0xFFFF_C000_0000_0000 {
+        Some(("kernel heap", "unknown", 0))
+    } else {
+        Some(("unknown", "unknown", 0))
+    }
 }
