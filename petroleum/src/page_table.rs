@@ -916,7 +916,7 @@ impl PageTableReinitializer {
             frame_allocator,
             current_physical_memory_offset,
         );
-        self.adjust_return_address_and_log();
+        adjust_return_address_and_stack(self.phys_offset);
         self.phys_offset
     }
 
@@ -1000,49 +1000,56 @@ impl PageTableReinitializer {
         frame_allocator: &mut BootInfoFrameAllocator,
         current_physical_memory_offset: VirtAddr,
     ) {
-        debug_log_no_alloc!(
-            "New L4 table phys addr: ",
-            level_4_table_frame.start_address().as_u64() as usize
-        );
-        debug_log_no_alloc!("Phys offset: ", self.phys_offset.as_u64() as usize);
+        debug_log_no_alloc!("Page table switch: setting recursive in new table");
 
-        let mut current_mapper = unsafe {
-            let l4_table = active_level_4_table(current_physical_memory_offset);
-            OffsetPageTable::new(l4_table, current_physical_memory_offset)
+        // Access the new L4 table at its physical address (since UEFI identity maps)
+        let new_l4_phys = level_4_table_frame.start_address().as_u64();
+        let new_l4_virt = if current_physical_memory_offset.as_u64() == 0 {
+            new_l4_phys  // identity mapped in UEFI
+        } else {
+            current_physical_memory_offset.as_u64() + new_l4_phys
         };
+
         unsafe {
-            match current_mapper.map_to(
-                Page::containing_address(
-                    self.phys_offset + level_4_table_frame.start_address().as_u64(),
-                ),
-                level_4_table_frame,
+            let new_l4_table = &mut *(new_l4_virt as *mut PageTable);
+            new_l4_table[511].set_addr(
+                level_4_table_frame.start_address(),
                 page_flags_const!(READ_WRITE),
-                frame_allocator,
-            ) {
-                Ok(flush) => flush.flush(),
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                    // This is acceptable, the page is already mapped.
-                }
-                Err(e) => {
-                    panic!("Failed to map new L4 table to higher half: {:?}", e);
-                }
-            }
+            );
         }
-        debug_log_no_alloc!("About to switch CR3 to new page table");
+
+        debug_log_no_alloc!("Switching CR3 to new table");
+
+        // Switch to new page table
         unsafe {
             Cr3::write(
                 level_4_table_frame,
                 x86_64::registers::control::Cr3Flags::empty(),
             );
         }
-        debug_log_no_alloc!("CR3 switched, flushing TLB");
-        flush_tlb_and_verify!();
-        debug_log_no_alloc!("TLB flushed, page table switch complete");
-    }
 
-    fn adjust_return_address_and_log(&self) {
-        adjust_return_address_and_stack(self.phys_offset);
-        debug_log_no_alloc!("Page table reinitialization completed");
+        flush_tlb_and_verify!();
+
+        debug_log_no_alloc!("CR3 switched, now mapping L4 to higher half");
+
+        // Now map the L4 to higher half using the new page table with recursive mapping
+        let mut mapper = unsafe { init(current_physical_memory_offset) };
+
+        unsafe {
+            map_to_higher_half_with_log(
+                &mut mapper,
+                frame_allocator,
+                self.phys_offset,
+                new_l4_phys,
+                1,
+                page_flags_const!(READ_WRITE_NO_EXEC)
+            )
+            .expect("Failed to map L4 to higher half");
+        }
+
+        debug_page_table_info(level_4_table_frame, self.phys_offset);
+
+        debug_log_no_alloc!("Page table switch complete");
     }
 }
 
