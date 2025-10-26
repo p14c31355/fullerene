@@ -112,15 +112,19 @@ pub fn setup_memory_maps(
     let config_with_metadata = unsafe { &*config_with_metadata_ptr };
     let has_config = config_with_metadata.magic == FRAMEBUFFER_CONFIG_MAGIC;
 
-    let actual_descriptors_size = memory_map_size - core::mem::size_of::<usize>() - if has_config { config_size } else { 0 };
+    let actual_descriptors_size =
+        memory_map_size - core::mem::size_of::<usize>() - if has_config { config_size } else { 0 };
     if config_with_metadata.magic == FRAMEBUFFER_CONFIG_MAGIC {
         debug_log_no_alloc!("Framebuffer config found in memory map");
-        petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config_with_metadata.config)));
+        petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+            .call_once(|| spin::Mutex::new(Some(config_with_metadata.config)));
     } else {
         debug_log_no_alloc!("No framebuffer config found in memory map (magic mismatch)");
     }
 
-    let descriptors_start = unsafe { (memory_map as *const u8).add(core::mem::size_of::<usize>()) as *const EfiMemoryDescriptor };
+    let descriptors_start = unsafe {
+        (memory_map as *const u8).add(core::mem::size_of::<usize>()) as *const EfiMemoryDescriptor
+    };
     let descriptors = unsafe {
         core::slice::from_raw_parts(
             descriptors_start,

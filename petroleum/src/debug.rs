@@ -52,8 +52,11 @@ impl BacktraceCollector {
 
         while !frame.is_null() && i < self.entries.len() {
             // Validate pointers before dereferencing to prevent double faults during page handling
-            if !is_address_valid(frame as u64) ||
-               !is_address_valid((frame as usize).wrapping_add(core::mem::size_of::<usize>()) as u64) {
+            if !is_address_valid(frame as u64)
+                || !is_address_valid(
+                    (frame as usize).wrapping_add(core::mem::size_of::<usize>()) as u64
+                )
+            {
                 break;
             }
 

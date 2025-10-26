@@ -28,12 +28,12 @@ pub use common::memory::*;
 pub use common::syscall::*;
 pub use common::{check_memory_initialized, set_memory_initialized};
 pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
+pub use graphics::*;
 pub use graphics::{
     Color, ColorCode, HardwarePorts, ScreenChar, TextBufferOperations, VgaPortOps,
     color::{self, *},
     init_vga_graphics,
 };
-pub use graphics::*;
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
 pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 // Heap allocation exports
@@ -96,7 +96,8 @@ unsafe impl Send for LocalApicAddress {}
 unsafe impl Sync for LocalApicAddress {}
 
 /// Global storage for Local APIC address
-pub static LOCAL_APIC_ADDRESS: Mutex<LocalApicAddress> = Mutex::new(LocalApicAddress(core::ptr::null_mut()));
+pub static LOCAL_APIC_ADDRESS: Mutex<LocalApicAddress> =
+    Mutex::new(LocalApicAddress(core::ptr::null_mut()));
 
 /// Global framebuffer config storage for kernel use after exit_boot_services
 pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferConfig>>> =

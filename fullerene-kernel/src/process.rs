@@ -395,7 +395,9 @@ pub fn yield_current() {
     let old_pid = current_pid();
     schedule_next();
     let new_pid = current_pid().expect("schedule_next failed to select a process");
-    unsafe { context_switch(old_pid, new_pid); }
+    unsafe {
+        context_switch(old_pid, new_pid);
+    }
 }
 
 /// Perform context switch between two processes
@@ -436,8 +438,11 @@ pub fn block_current() {
 
         let old_pid = Some(pid);
         schedule_next();
-        let new_pid = current_pid().expect("schedule_next failed to select a process after blocking");
-        unsafe { context_switch(old_pid, new_pid); }
+        let new_pid =
+            current_pid().expect("schedule_next failed to select a process after blocking");
+        unsafe {
+            context_switch(old_pid, new_pid);
+        }
     } else {
         // This case should ideally not be reached if the current_pid is valid.
         // Consider adding a panic or an error log here for robustness.

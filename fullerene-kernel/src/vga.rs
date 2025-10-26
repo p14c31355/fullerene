@@ -230,52 +230,141 @@ pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
     let mut port_u8_3c5: Port<u8> = Port::new(VGA_SEQ_DATA);
 
     unsafe {
-        port_u8_3c4.write(SEQUENCER_RESET); port_u8_3c5.write(SEQUENCER_RESET_VALUE); // Reset sequencer
-        port_u8_3c4.write(SEQUENCER_CLOCKING_MODE); port_u8_3c5.write(SEQUENCER_CLOCKING_MODE_VALUE); // Disable screen
-        port_u8_3c4.write(SEQUENCER_PLANE_MASK); port_u8_3c5.write(SEQUENCER_PLANE_MASK_VALUE); // Plane map mask
-        port_u8_3c4.write(SEQUENCER_CHARACTER_MAP); port_u8_3c5.write(SEQUENCER_CHARACTER_MAP_VALUE); // Character map
-        port_u8_3c4.write(SEQUENCER_MEMORY_MODE); port_u8_3c5.write(SEQUENCER_MEMORY_MODE_VALUE); // Memory mode
+        port_u8_3c4.write(SEQUENCER_RESET);
+        port_u8_3c5.write(SEQUENCER_RESET_VALUE); // Reset sequencer
+        port_u8_3c4.write(SEQUENCER_CLOCKING_MODE);
+        port_u8_3c5.write(SEQUENCER_CLOCKING_MODE_VALUE); // Disable screen
+        port_u8_3c4.write(SEQUENCER_PLANE_MASK);
+        port_u8_3c5.write(SEQUENCER_PLANE_MASK_VALUE); // Plane map mask
+        port_u8_3c4.write(SEQUENCER_CHARACTER_MAP);
+        port_u8_3c5.write(SEQUENCER_CHARACTER_MAP_VALUE); // Character map
+        port_u8_3c4.write(SEQUENCER_MEMORY_MODE);
+        port_u8_3c5.write(SEQUENCER_MEMORY_MODE_VALUE); // Memory mode
     }
 
     // CRTC registers for 80x25 text mode
     let mut port_u8_3d4: Port<u8> = Port::new(VGA_CRTC_INDEX);
     let mut port_u8_3d5: Port<u8> = Port::new(VGA_CRTC_DATA);
 
-    unsafe { port_u8_3d4.write(CRTC_HORIZ_DISPLAY_END); port_u8_3d5.write(CRTC_HORIZ_DISPLAY_END_VALUE); } // Horiz display end
-    unsafe { port_u8_3d4.write(CRTC_HORIZ_DISPLAY_ENABLE_END); port_u8_3d5.write(CRTC_HORIZ_DISPLAY_ENABLE_END_VALUE); } // Horiz display enable end
-    unsafe { port_u8_3d4.write(CRTC_HORIZ_RETRACE_START); port_u8_3d5.write(CRTC_HORIZ_RETRACE_START_VALUE); } // Horiz retrace start
-    unsafe { port_u8_3d4.write(CRTC_HORIZ_RETRACE_END); port_u8_3d5.write(CRTC_HORIZ_RETRACE_END_VALUE); } // Horiz retrace end
-    unsafe { port_u8_3d4.write(CRTC_HORIZ_RETRACE_END2); port_u8_3d5.write(CRTC_HORIZ_RETRACE_END2_VALUE); } // Horiz retrace end
-    unsafe { port_u8_3d4.write(CRTC_HORIZ_BLANK_START); port_u8_3d5.write(CRTC_HORIZ_BLANK_START_VALUE); } // Horiz blank start
-    unsafe { port_u8_3d4.write(CRTC_HORIZ_BLANK_END); port_u8_3d5.write(CRTC_HORIZ_BLANK_END_VALUE); } // Horiz blank end
-    unsafe { port_u8_3d4.write(CRTC_VERTICAL_SYNC_START); port_u8_3d5.write(CRTC_VERTICAL_SYNC_START_VALUE); } // Vertical sync start
-    unsafe { port_u8_3d4.write(CRTC_VERTICAL_SYNC_END); port_u8_3d5.write(CRTC_VERTICAL_SYNC_END_VALUE); } // Vertical sync end
-    unsafe { port_u8_3d4.write(CRTC_VERTICAL_SYNC_END_LOW); port_u8_3d5.write(CRTC_VERTICAL_SYNC_END_LOW_VALUE); } // Vertical display end low
-    unsafe { port_u8_3d4.write(CRTC_VERTICAL_SYNC_START2); port_u8_3d5.write(CRTC_VERTICAL_SYNC_START2_VALUE); } // Vertical sync start
-    unsafe { port_u8_3d4.write(CRTC_VERTICAL_SYNC_END2); port_u8_3d5.write(CRTC_VERTICAL_SYNC_END2_VALUE); } // Vertical sync end
-    unsafe { port_u8_3d4.write(CRTC_VERTICAL_DISPLAY_ENABLE_END); port_u8_3d5.write(CRTC_VERTICAL_DISPLAY_ENABLE_END_VALUE); } // Vertical display enable end
-    unsafe { port_u8_3d4.write(CRTC_OFFSET); port_u8_3d5.write(CRTC_OFFSET_VALUE); } // Offset
-    unsafe { port_u8_3d4.write(CRTC_UNDERLINE_LOCATION); port_u8_3d5.write(CRTC_UNDERLINE_LOCATION_VALUE); } // Underline location
-    unsafe { port_u8_3d4.write(CRTC_VERTICAL_BLANK_START); port_u8_3d5.write(CRTC_VERTICAL_BLANK_START_VALUE); } // Vertical blank start
-    unsafe { port_u8_3d4.write(CRTC_VERTICAL_BLANK_END); port_u8_3d5.write(CRTC_VERTICAL_BLANK_END_VALUE); } // Vertical blank end
-    unsafe { port_u8_3d4.write(CRTC_MODE_CONTROL); port_u8_3d5.write(CRTC_MODE_CONTROL_VALUE); } // Mode control
+    unsafe {
+        port_u8_3d4.write(CRTC_HORIZ_DISPLAY_END);
+        port_u8_3d5.write(CRTC_HORIZ_DISPLAY_END_VALUE);
+    } // Horiz display end
+    unsafe {
+        port_u8_3d4.write(CRTC_HORIZ_DISPLAY_ENABLE_END);
+        port_u8_3d5.write(CRTC_HORIZ_DISPLAY_ENABLE_END_VALUE);
+    } // Horiz display enable end
+    unsafe {
+        port_u8_3d4.write(CRTC_HORIZ_RETRACE_START);
+        port_u8_3d5.write(CRTC_HORIZ_RETRACE_START_VALUE);
+    } // Horiz retrace start
+    unsafe {
+        port_u8_3d4.write(CRTC_HORIZ_RETRACE_END);
+        port_u8_3d5.write(CRTC_HORIZ_RETRACE_END_VALUE);
+    } // Horiz retrace end
+    unsafe {
+        port_u8_3d4.write(CRTC_HORIZ_RETRACE_END2);
+        port_u8_3d5.write(CRTC_HORIZ_RETRACE_END2_VALUE);
+    } // Horiz retrace end
+    unsafe {
+        port_u8_3d4.write(CRTC_HORIZ_BLANK_START);
+        port_u8_3d5.write(CRTC_HORIZ_BLANK_START_VALUE);
+    } // Horiz blank start
+    unsafe {
+        port_u8_3d4.write(CRTC_HORIZ_BLANK_END);
+        port_u8_3d5.write(CRTC_HORIZ_BLANK_END_VALUE);
+    } // Horiz blank end
+    unsafe {
+        port_u8_3d4.write(CRTC_VERTICAL_SYNC_START);
+        port_u8_3d5.write(CRTC_VERTICAL_SYNC_START_VALUE);
+    } // Vertical sync start
+    unsafe {
+        port_u8_3d4.write(CRTC_VERTICAL_SYNC_END);
+        port_u8_3d5.write(CRTC_VERTICAL_SYNC_END_VALUE);
+    } // Vertical sync end
+    unsafe {
+        port_u8_3d4.write(CRTC_VERTICAL_SYNC_END_LOW);
+        port_u8_3d5.write(CRTC_VERTICAL_SYNC_END_LOW_VALUE);
+    } // Vertical display end low
+    unsafe {
+        port_u8_3d4.write(CRTC_VERTICAL_SYNC_START2);
+        port_u8_3d5.write(CRTC_VERTICAL_SYNC_START2_VALUE);
+    } // Vertical sync start
+    unsafe {
+        port_u8_3d4.write(CRTC_VERTICAL_SYNC_END2);
+        port_u8_3d5.write(CRTC_VERTICAL_SYNC_END2_VALUE);
+    } // Vertical sync end
+    unsafe {
+        port_u8_3d4.write(CRTC_VERTICAL_DISPLAY_ENABLE_END);
+        port_u8_3d5.write(CRTC_VERTICAL_DISPLAY_ENABLE_END_VALUE);
+    } // Vertical display enable end
+    unsafe {
+        port_u8_3d4.write(CRTC_OFFSET);
+        port_u8_3d5.write(CRTC_OFFSET_VALUE);
+    } // Offset
+    unsafe {
+        port_u8_3d4.write(CRTC_UNDERLINE_LOCATION);
+        port_u8_3d5.write(CRTC_UNDERLINE_LOCATION_VALUE);
+    } // Underline location
+    unsafe {
+        port_u8_3d4.write(CRTC_VERTICAL_BLANK_START);
+        port_u8_3d5.write(CRTC_VERTICAL_BLANK_START_VALUE);
+    } // Vertical blank start
+    unsafe {
+        port_u8_3d4.write(CRTC_VERTICAL_BLANK_END);
+        port_u8_3d5.write(CRTC_VERTICAL_BLANK_END_VALUE);
+    } // Vertical blank end
+    unsafe {
+        port_u8_3d4.write(CRTC_MODE_CONTROL);
+        port_u8_3d5.write(CRTC_MODE_CONTROL_VALUE);
+    } // Mode control
 
     // Enable screen
-    unsafe { port_u8_3c4.write(SEQUENCER_CLOCKING_MODE); port_u8_3c5.write(SEQUENCER_CLOCKING_MODE_VALUE); } // Clocking mode
+    unsafe {
+        port_u8_3c4.write(SEQUENCER_CLOCKING_MODE);
+        port_u8_3c5.write(SEQUENCER_CLOCKING_MODE_VALUE);
+    } // Clocking mode
 
     // Graphics controller
     let mut port_u8_3ce: Port<u8> = Port::new(VGA_GC_INDEX);
     let mut port_u8_3cf: Port<u8> = Port::new(VGA_GC_DATA);
 
-    unsafe { port_u8_3ce.write(GRAPHICS_SET_RESET); port_u8_3cf.write(GRAPHICS_SET_RESET_VALUE); } // Set/reset
-    unsafe { port_u8_3ce.write(GRAPHICS_ENABLE_SET_RESET); port_u8_3cf.write(GRAPHICS_ENABLE_SET_RESET_VALUE); } // Enable set/reset
-    unsafe { port_u8_3ce.write(GRAPHICS_COLOR_COMPARE); port_u8_3cf.write(GRAPHICS_COLOR_COMPARE_VALUE); } // Color compare
-    unsafe { port_u8_3ce.write(GRAPHICS_DATA_ROTATE); port_u8_3cf.write(GRAPHICS_DATA_ROTATE_VALUE); } // Data rotate
-    unsafe { port_u8_3ce.write(GRAPHICS_READ_MAP_SELECT); port_u8_3cf.write(GRAPHICS_READ_MAP_SELECT_VALUE); } // Read map select
-    unsafe { port_u8_3ce.write(GRAPHICS_GRAPHICS_MODE); port_u8_3cf.write(GRAPHICS_GRAPHICS_MODE_VALUE); } // Graphics mode
-    unsafe { port_u8_3ce.write(GRAPHICS_MEMORY_MAP_SELECT); port_u8_3cf.write(GRAPHICS_MEMORY_MAP_SELECT_VALUE); } // Memory map select
-    unsafe { port_u8_3ce.write(GRAPHICS_COLOR_DONT_CARE); port_u8_3cf.write(GRAPHICS_COLOR_DONT_CARE_VALUE); } // Color don't care
-    unsafe { port_u8_3ce.write(GRAPHICS_BIT_MASK); port_u8_3cf.write(GRAPHICS_BIT_MASK_VALUE); } // Bit mask
+    unsafe {
+        port_u8_3ce.write(GRAPHICS_SET_RESET);
+        port_u8_3cf.write(GRAPHICS_SET_RESET_VALUE);
+    } // Set/reset
+    unsafe {
+        port_u8_3ce.write(GRAPHICS_ENABLE_SET_RESET);
+        port_u8_3cf.write(GRAPHICS_ENABLE_SET_RESET_VALUE);
+    } // Enable set/reset
+    unsafe {
+        port_u8_3ce.write(GRAPHICS_COLOR_COMPARE);
+        port_u8_3cf.write(GRAPHICS_COLOR_COMPARE_VALUE);
+    } // Color compare
+    unsafe {
+        port_u8_3ce.write(GRAPHICS_DATA_ROTATE);
+        port_u8_3cf.write(GRAPHICS_DATA_ROTATE_VALUE);
+    } // Data rotate
+    unsafe {
+        port_u8_3ce.write(GRAPHICS_READ_MAP_SELECT);
+        port_u8_3cf.write(GRAPHICS_READ_MAP_SELECT_VALUE);
+    } // Read map select
+    unsafe {
+        port_u8_3ce.write(GRAPHICS_GRAPHICS_MODE);
+        port_u8_3cf.write(GRAPHICS_GRAPHICS_MODE_VALUE);
+    } // Graphics mode
+    unsafe {
+        port_u8_3ce.write(GRAPHICS_MEMORY_MAP_SELECT);
+        port_u8_3cf.write(GRAPHICS_MEMORY_MAP_SELECT_VALUE);
+    } // Memory map select
+    unsafe {
+        port_u8_3ce.write(GRAPHICS_COLOR_DONT_CARE);
+        port_u8_3cf.write(GRAPHICS_COLOR_DONT_CARE_VALUE);
+    } // Color don't care
+    unsafe {
+        port_u8_3ce.write(GRAPHICS_BIT_MASK);
+        port_u8_3cf.write(GRAPHICS_BIT_MASK_VALUE);
+    } // Bit mask
 
     // Attribute controller (text mode)
     let mut vga_input_status_1: PortReadOnly<u8> = PortReadOnly::new(0x3DA);
@@ -290,10 +379,15 @@ pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
     };
 
     // Set palette registers (0-15) and other registers
-    for i in 0..16 { write_ac_reg(i, i); }
+    for i in 0..16 {
+        write_ac_reg(i, i);
+    }
     write_ac_reg(ATTRIBUTE_MODE_CONTROL, ATTRIBUTE_MODE_CONTROL_VALUE);
     write_ac_reg(ATTRIBUTE_OVERSCAN_COLOR, ATTRIBUTE_OVERSCAN_COLOR_VALUE);
-    write_ac_reg(ATTRIBUTE_COLOR_PLANE_ENABLE, ATTRIBUTE_COLOR_PLANE_ENABLE_VALUE);
+    write_ac_reg(
+        ATTRIBUTE_COLOR_PLANE_ENABLE,
+        ATTRIBUTE_COLOR_PLANE_ENABLE_VALUE,
+    );
     write_ac_reg(ATTRIBUTE_PIXEL_PANNING, ATTRIBUTE_PIXEL_PANNING_VALUE);
     write_ac_reg(ATTRIBUTE_COLOR_SELECT, ATTRIBUTE_COLOR_SELECT_VALUE);
 

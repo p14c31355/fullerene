@@ -1,11 +1,11 @@
 use super::interface::{SyscallError, SyscallResult, copy_user_string};
 use crate::process;
-use petroleum::{page_table::PageTableHelper, write_serial_bytes};
+use crate::process::{NEXT_PID, Process, ProcessState};
 use alloc::boxed::Box;
 use core::alloc::Layout;
 use core::sync::atomic::Ordering;
+use petroleum::{page_table::PageTableHelper, write_serial_bytes};
 use x86_64::{PhysAddr, VirtAddr};
-use crate::process::{Process, ProcessState, NEXT_PID};
 
 const KERNEL_STACK_SIZE: usize = 4096;
 
@@ -73,13 +73,21 @@ fn syscall_fork() -> SyscallResult {
             .ok_or(SyscallError::NoSuchProcess)?;
 
         // Clone the parent process page table
-        let parent_page_table = parent_process.page_table.as_mut().ok_or(SyscallError::OutOfMemory)?;
-        let cloned_table_addr = parent_page_table.clone_page_table(parent_process.page_table_phys_addr.as_u64() as usize)?;
-        let cloned_pml4_frame = x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(cloned_table_addr as u64));
+        let parent_page_table = parent_process
+            .page_table
+            .as_mut()
+            .ok_or(SyscallError::OutOfMemory)?;
+        let cloned_table_addr = parent_page_table
+            .clone_page_table(parent_process.page_table_phys_addr.as_u64() as usize)?;
+        let cloned_pml4_frame = x86_64::structures::paging::PhysFrame::containing_address(
+            x86_64::PhysAddr::new(cloned_table_addr as u64),
+        );
 
         // Create new page table manager with cloned frame
-        let mut child_page_table = petroleum::page_table::PageTableManager::new_with_frame(cloned_pml4_frame);
-        petroleum::initializer::Initializable::init(&mut child_page_table).map_err(|_| SyscallError::InvalidArgument)?;
+        let mut child_page_table =
+            petroleum::page_table::PageTableManager::new_with_frame(cloned_pml4_frame);
+        petroleum::initializer::Initializable::init(&mut child_page_table)
+            .map_err(|_| SyscallError::InvalidArgument)?;
 
         // Allocate kernel stack for child
         let stack_layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();

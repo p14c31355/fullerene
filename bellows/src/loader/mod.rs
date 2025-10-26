@@ -34,7 +34,9 @@ pub fn exit_boot_services_and_jump(
     }
     // Pre-allocate buffer before loop to include it in map key
     let map_buffer_size: usize = 128 * 1024; // 128 KiB
-    let alloc_pages = (map_buffer_size + core::mem::size_of::<usize>()).div_ceil(4096).max(1);
+    let alloc_pages = (map_buffer_size + core::mem::size_of::<usize>())
+        .div_ceil(4096)
+        .max(1);
     #[cfg(feature = "debug_loader")]
     log::info!("Buffer vars setup");
 
@@ -180,7 +182,9 @@ pub fn exit_boot_services_and_jump(
     }
 
     // Write descriptor_size before the memory map
-    unsafe { *(map_phys_addr as *mut usize) = descriptor_size; }
+    unsafe {
+        *(map_phys_addr as *mut usize) = descriptor_size;
+    }
 
     // Check if framebuffer config is available and append it to memory map for kernel
     let mut final_map_size = map_size + core::mem::size_of::<usize>();
@@ -197,7 +201,9 @@ pub fn exit_boot_services_and_jump(
 
         // Check if buffer has space
         let config_offset = map_size + core::mem::size_of::<usize>();
-        if map_phys_addr + config_offset + config_size <= map_phys_addr + map_buffer_size + core::mem::size_of::<usize>() {
+        if map_phys_addr + config_offset + config_size
+            <= map_phys_addr + map_buffer_size + core::mem::size_of::<usize>()
+        {
             unsafe {
                 core::ptr::copy(
                     &config_with_metadata as *const _ as *const u8,

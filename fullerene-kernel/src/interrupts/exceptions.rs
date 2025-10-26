@@ -5,10 +5,10 @@
 
 use crate::memory_management;
 use core::fmt::Write;
+use petroleum::common::memory::is_allocator_related_address;
+use petroleum::debug::print_backtrace;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
-use petroleum::debug::print_backtrace;
-use petroleum::common::memory::is_allocator_related_address;
 
 /// Breakpoint exception handler
 #[unsafe(no_mangle)]
@@ -68,8 +68,18 @@ pub fn handle_page_fault(
         if let Some(pid) = crate::process::current_pid() {
             writeln!(writer, "Current process ID: {}", pid).ok();
         }
-        writeln!(writer, "Instruction pointer (RIP): {:#x}", stack_frame.instruction_pointer.as_u64()).ok();
-        writeln!(writer, "Stack pointer (RSP): {:#x}", stack_frame.stack_pointer.as_u64()).ok();
+        writeln!(
+            writer,
+            "Instruction pointer (RIP): {:#x}",
+            stack_frame.instruction_pointer.as_u64()
+        )
+        .ok();
+        writeln!(
+            writer,
+            "Stack pointer (RSP): {:#x}",
+            stack_frame.stack_pointer.as_u64()
+        )
+        .ok();
         writeln!(writer).ok();
         writeln!(writer, "Backtrace:").ok();
         print_backtrace(&mut *writer);

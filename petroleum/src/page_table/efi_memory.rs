@@ -21,7 +21,10 @@ pub struct MemoryMapDescriptor {
 
 impl MemoryMapDescriptor {
     pub fn new(ptr: *const u8, descriptor_size: usize) -> Self {
-        Self { ptr, descriptor_size }
+        Self {
+            ptr,
+            descriptor_size,
+        }
     }
 
     pub fn type_(&self) -> u32 {
@@ -174,7 +177,10 @@ where
     }
 }
 
-pub fn mark_available_frames<T: MemoryDescriptorValidator>(frame_allocator: &mut crate::page_table::bitmap_allocator::BitmapFrameAllocator, memory_map: &[T]) {
+pub fn mark_available_frames<T: MemoryDescriptorValidator>(
+    frame_allocator: &mut crate::page_table::bitmap_allocator::BitmapFrameAllocator,
+    memory_map: &[T],
+) {
     process_memory_descriptors(memory_map, |_, start_frame, end_frame| {
         let actual_end = end_frame.min(frame_allocator.total_frames());
         frame_allocator.set_frame_range(start_frame, actual_end, false);
@@ -182,12 +188,16 @@ pub fn mark_available_frames<T: MemoryDescriptorValidator>(frame_allocator: &mut
     frame_allocator.set_frame_used(0);
 }
 
-pub fn calculate_frame_allocation_params<T: MemoryDescriptorValidator>(memory_map: &[T]) -> (u64, usize, usize) {
+pub fn calculate_frame_allocation_params<T: MemoryDescriptorValidator>(
+    memory_map: &[T],
+) -> (u64, usize, usize) {
     let mut max_addr: u64 = 0;
 
     for descriptor in memory_map {
         if descriptor.is_valid() {
-            let end_addr = descriptor.get_physical_start().saturating_add(descriptor.get_page_count().saturating_mul(4096));
+            let end_addr = descriptor
+                .get_physical_start()
+                .saturating_add(descriptor.get_page_count().saturating_mul(4096));
             if end_addr > max_addr {
                 max_addr = end_addr;
             }
