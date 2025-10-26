@@ -88,6 +88,9 @@ use crate::common::{
     EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable, FullereneFramebufferConfig,
 };
 
+/// Global storage for Local APIC address
+pub static LOCAL_APIC_ADDRESS: Mutex<*mut u32> = Mutex::new(core::ptr::null_mut());
+
 /// Global framebuffer config storage for kernel use after exit_boot_services
 pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferConfig>>> =
     Once::new();
