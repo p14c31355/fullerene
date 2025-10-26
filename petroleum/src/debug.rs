@@ -10,8 +10,9 @@ use core::fmt::{self, Write};
 /// This is a basic check for stack frame pointers to prevent double faults
 /// during page fault handling when stacks might be corrupted.
 fn is_address_valid(addr: u64) -> bool {
-    // Basic checks: not within null page and reasonably aligned
-    addr >= 0x1000 && (addr as usize).wrapping_rem(core::mem::size_of::<usize>()) == 0 || addr == 0
+    // Basic checks: not within null page and reasonably aligned.
+    // The null pointer case is handled by the caller's loop.
+    addr >= 0x1000 && (addr as usize) % core::mem::size_of::<usize>() == 0
 }
 
 /// A simple backtrace entry
