@@ -443,12 +443,13 @@ macro_rules! log {
 macro_rules! health_check {
     ($fn_name:ident, $threshold_expr:expr, $log_level:ident, $msg:expr, $body:block) => {
         fn $fn_name() {
-            $body
             if $threshold_expr {
                 log::$log_level!($msg);
+                $body
             }
         }
     };
+}
 }
 
 /// Macro for periodic VGA stat display to reduce code duplication in scheduler
