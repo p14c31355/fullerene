@@ -465,11 +465,13 @@ pub fn load_efi_image(
         return Err(BellowsError::PeParse("Invalid PE32+ magic number."));
     }
     let image_size_ptr = unsafe { (nt_headers_ptr as *const u8).add(core::mem::offset_of!(ImageNtHeaders64, optional_header) + core::mem::offset_of!(ImageOptionalHeader64, size_of_image)) as *const u32 };
-    let address_of_entry_point = unsafe { read_unaligned!(file.as_ptr(), (e_lfanew + 40) as usize, u32) } as usize;
+    let address_of_entry_point_ptr = unsafe { (nt_headers_ptr as *const u8).add(core::mem::offset_of!(ImageNtHeaders64, optional_header) + core::mem::offset_of!(ImageOptionalHeader64, address_of_entry_point)) as *const u32 };
+    let address_of_entry_point = unsafe { core::ptr::read_unaligned(address_of_entry_point_ptr) } as usize;
     let image_size_val = unsafe { core::ptr::read_unaligned(image_size_ptr) as u64 };
     let _pages_needed = (image_size_val.max(address_of_entry_point as u64 + 4096)).div_ceil(4096) as usize;
 
-    let preferred_base = unsafe { read_unaligned!(file.as_ptr(), (e_lfanew + 48) as usize, u64) as usize };
+    let preferred_base_ptr = unsafe { (nt_headers_ptr as *const u8).add(core::mem::offset_of!(ImageNtHeaders64, optional_header) + core::mem::offset_of!(ImageOptionalHeader64, image_base)) as *const u64 };
+    let preferred_base = unsafe { core::ptr::read_unaligned(preferred_base_ptr) } as usize;
     let mut phys_addr: usize = 0;
     let mut status;
 
@@ -488,13 +490,16 @@ pub fn load_efi_image(
         return Err(BellowsError::AllocationFailed("Failed to allocate memory for PE image."));
     }
 
-    let size_of_headers = unsafe { read_unaligned!(file.as_ptr(), (e_lfanew + 84) as usize, u32) as usize };
+    let size_of_headers_ptr = unsafe { (nt_headers_ptr as *const u8).add(core::mem::offset_of!(ImageNtHeaders64, optional_header) + core::mem::offset_of!(ImageOptionalHeader64, _size_of_headers)) as *const u32 };
+    let size_of_headers = unsafe { core::ptr::read_unaligned(size_of_headers_ptr) } as usize;
     unsafe {
         core::ptr::copy_nonoverlapping(file.as_ptr(), phys_addr as *mut u8, size_of_headers);
     }
 
-    let number_of_sections = unsafe { read_unaligned!(file.as_ptr(), (e_lfanew + 6) as usize, u16) } as usize;
-    let size_of_optional_header = unsafe { read_unaligned!(file.as_ptr(), (e_lfanew + 20) as usize, u16) } as usize;
+    let number_of_sections_ptr = unsafe { (nt_headers_ptr as *const u8).add(core::mem::offset_of!(ImageNtHeaders64, _file_header) + core::mem::offset_of!(ImageFileHeader, number_of_sections)) as *const u16 };
+    let number_of_sections = unsafe { core::ptr::read_unaligned(number_of_sections_ptr) } as usize;
+    let size_of_optional_header_ptr = unsafe { (nt_headers_ptr as *const u8).add(core::mem::offset_of!(ImageNtHeaders64, _file_header) + core::mem::offset_of!(ImageFileHeader, size_of_optional_header)) as *const u16 };
+    let size_of_optional_header = unsafe { core::ptr::read_unaligned(size_of_optional_header_ptr) } as usize;
 
     let section_headers_offset = e_lfanew as usize + core::mem::size_of::<u32>() + core::mem::size_of::<ImageFileHeader>() + size_of_optional_header;
     let section_headers_size = number_of_sections * core::mem::size_of::<ImageSectionHeader>();
@@ -523,11 +528,37 @@ pub fn load_efi_image(
         }
     }
 
-    let image_base = unsafe { read_unaligned!(file.as_ptr(), (e_lfanew + 48) as usize, u64) } as usize;
+    let image_base_ptr = unsafe { (nt_headers_ptr as *const u8).add(core::mem::offset_of!(ImageNtHeaders64, optional_header) + core::mem::offset_of!(ImageOptionalHeader64, image_base)) as *const u64 };
+    let image_base = unsafe { core::ptr::read_unaligned(image_base_ptr) } as usize;
     let image_base_delta = (phys_addr as u64).wrapping_sub(image_base as u64);
 
     if image_base_delta != 0 {
-        // Handle relocations - minimal for now, assume no relocs for simplicity to reduce lines
+        let phys_nt_headers_ptr = phys_addr as *const ImageNtHeaders64;
+        let optional_header_ptr = unsafe { (phys_nt_headers_ptr as *const u8).add(core::mem::offset_of!(ImageNtHeaders64, optional_header)) as *const ImageOptionalHeader64 };
+        let optional_header = unsafe { &*optional_header_ptr };
+        let reloc_dir = &optional_header.data_directory[5]; // 5 is BASE_RELOCATION
+        if reloc_dir.size > 0 {
+            let mut reloc_offset = reloc_dir.virtual_address as usize;
+            while reloc_offset < reloc_dir.virtual_address as usize + reloc_dir.size as usize {
+                let block_ptr = (phys_addr as *const u8).add(reloc_offset);
+                let block_virtual_address = read_unaligned!(block_ptr, 0, u32);
+                let size_of_block = read_unaligned!(block_ptr, 4, u32);
+                let num_entries = (size_of_block - 8) / 2;
+                for i in 0..num_entries {
+                    let entry_offset = 8 + i * 2;
+                    let entry = read_unaligned!(block_ptr, entry_offset as usize, u16);
+                    let rel_type = (entry >> 12) as u8;
+                    let rel_offset = (entry & 0xFFF) as u16;
+                    if rel_type == ImageRelBasedType::Dir64 as u8 {
+                        let rva = block_virtual_address + rel_offset as u32;
+                        let ptr = (phys_addr + rva as usize) as *mut u64;
+                        let val = read_unaligned!(ptr as *const u8, 0, u64);
+                        unsafe { *(ptr as *mut u64) = val.wrapping_add(image_base_delta); }
+                    }
+                }
+                reloc_offset += size_of_block as usize;
+            }
+        }
     }
 
     let entry_point_addr = phys_addr.saturating_add(address_of_entry_point);

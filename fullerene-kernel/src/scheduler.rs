@@ -26,6 +26,14 @@ fn stats_task(_tick: u64, _iter: u64) {
     let stats = collect_system_stats();
     log_system_stats(&stats, LOG_INTERVAL_TICKS);
     display_system_stats_on_vga(&stats, DISPLAY_INTERVAL_TICKS);
+    // Add file logging
+    let log_content = alloc::format!("System Stats - Processes: {}/{}, Memory: {} bytes, Uptime: {} ticks\n",
+        stats.active_processes, stats.total_processes, stats.memory_used, stats.uptime_ticks);
+    if let Ok(_) = crate::fs::create_file("system.log", log_content.as_bytes()) {
+        // File written successfully
+    } else {
+        log::warn!("Failed to write system stats to system.log");
+    }
 }
 
 fn maintenance_task(_tick: u64, _iter: u64) {
@@ -40,8 +48,12 @@ fn process_cleanup_task(_tick: u64, iter: u64) {
     perform_process_cleanup_check(iter);
 }
 
+fn backup_task(_tick: u64, _iter: u64) {
+    perform_automated_backup();
+}
+
 lazy_static::lazy_static! {
-    static ref PERIODIC_TASKS: [PeriodicTask; 5] = [
+    static ref PERIODIC_TASKS: [PeriodicTask; 6] = [
         PeriodicTask {
             interval: 1000,
             last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
@@ -66,6 +78,11 @@ lazy_static::lazy_static! {
             interval: 100,
             last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
             task: process_cleanup_task,
+        },
+        PeriodicTask {
+            interval: 30000,
+            last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
+            task: backup_task,
         },
     ];
 }

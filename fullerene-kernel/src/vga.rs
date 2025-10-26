@@ -34,6 +34,12 @@ const GRAPHICS_CONFIG: [(u8, u8); 9] = [
 const MISC_REGISTER_VALUE: u8 = 0x67;
 const ATTRIBUTE_MODE_CONTROL_VALUE: u8 = 0x0c;
 
+const ATTRIBUTE_MODE_CONTROL_REGISTER: u8 = 0x10;
+const OVERSCAN_REGISTER: u8 = 0x11;
+const MEMORY_PLANE_ENABLE_REGISTER: u8 = 0x12;
+const HORIZONTAL_PIXEL_PANNING_REGISTER: u8 = 0x13;
+const COLOR_SELECT_REGISTER: u8 = 0x14;
+
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
 
@@ -210,11 +216,11 @@ pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
     for i in 0..16 {
         write_ac_reg(i, i);
     }
-    write_ac_reg(0x10, ATTRIBUTE_MODE_CONTROL_VALUE);
-    write_ac_reg(0x11, 0x00);
-    write_ac_reg(0x12, 0x0f);
-    write_ac_reg(0x13, 0x08);
-    write_ac_reg(0x14, 0x00);
+    write_ac_reg(ATTRIBUTE_MODE_CONTROL_REGISTER, ATTRIBUTE_MODE_CONTROL_VALUE);
+    write_ac_reg(OVERSCAN_REGISTER, 0x00);
+    write_ac_reg(MEMORY_PLANE_ENABLE_REGISTER, 0x0f);
+    write_ac_reg(HORIZONTAL_PIXEL_PANNING_REGISTER, 0x08);
+    write_ac_reg(COLOR_SELECT_REGISTER, 0x00);
 
     // Finally, enable video by writing 0x20 to the index port (with palette access enabled)
     unsafe {
