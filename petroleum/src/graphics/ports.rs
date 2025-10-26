@@ -70,7 +70,7 @@ macro_rules! port_write {
 #[macro_export]
 macro_rules! port_read_u8 {
     ($port_addr:expr) => {{
-        let mut reader = $crate::PortWriter::new($port_addr);
+        let mut reader: $crate::PortWriter<u8> = $crate::PortWriter::new($port_addr);
         reader.read_safe()
     }};
 }
@@ -80,6 +80,12 @@ macro_rules! port_read {
     ($port_addr:expr) => {
         port_read_u8!($port_addr)
     };
+}
+
+pub fn write_vga_attribute_register(index: u8, value: u8) {
+    port_read_u8!(0x3DA);
+    port_write!(0x3C0, index);
+    port_write!(0x3C0, value);
 }
 
 /// Generic port sequence writer trait
