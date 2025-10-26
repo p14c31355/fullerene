@@ -1040,29 +1040,13 @@ impl PageTableReinitializer {
             Some(frame) => frame,
             None => panic!("Failed to allocate L4 page table frame"),
         };
-        // Use the current active page table to temporarily map the new frame for zeroing
-        let mut current_mapper = unsafe { init(current_physical_memory_offset) };
-        let temp_page = unsafe { Page::<Size4KiB>::containing_address(TEMP_VA_FOR_ZERO) };
-        unsafe {
-            current_mapper
-                .map_to(
-                    temp_page,
-                    level_4_table_frame,
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                    frame_allocator,
-                )
-                .expect("Failed to temporarily map L4 table frame")
-                .flush();
-        }
 
-        // Zero the new L4 table through the temporary mapping
+        // Zero the new L4 table directly through identity mapping (UEFI identity maps all memory)
         unsafe {
-            core::ptr::write_bytes(TEMP_VA_FOR_ZERO.as_mut_ptr::<u8>(), 0, 4096);
-        }
-
-        // Unmap the temporary page
-        if let Ok((_frame, flush)) = current_mapper.unmap(temp_page) {
-            flush.flush();
+            let table_phys = level_4_table_frame.start_address().as_u64();
+            let table_virt = current_physical_memory_offset + table_phys;
+            let table_ptr = table_virt.as_mut_ptr() as *mut PageTable;
+            *table_ptr = PageTable::new();
         }
 
         debug_log_no_alloc!("New L4 page table created and zeroed");
@@ -1390,26 +1374,38 @@ impl<'a> PageTableInitializer<'a> {
     }
 
     unsafe fn map_available_memory_identity(&mut self) {
-        process_memory_descriptors(self.memory_map, |desc, start_frame, end_frame| {
-            let phys_start = desc.get_physical_start();
-            let pages = (end_frame - start_frame) as u64;
-            // Always give writable access to available memory regions for compatibility, but executable code regions should not be writable
-            let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-                PageTableFlags::PRESENT
-            } else {
-                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
-            };
-            let _: core::result::Result<
-                (),
-                x86_64::structures::paging::mapper::MapToError<Size4KiB>,
-            > = identity_map_range_with_log_macro!(
-                self.mapper,
-                self.frame_allocator,
-                phys_start,
-                pages,
-                flags
-            );
-        });
+        for desc in self.memory_map.iter() {
+            if is_valid_memory_descriptor(desc) {
+                // Include available memory and UEFI runtime services regions
+                let should_identity_map = desc.is_memory_available()
+                    || matches!(
+                        desc.type_,
+                        crate::common::EfiMemoryType::EfiRuntimeServicesCode
+                            | crate::common::EfiMemoryType::EfiRuntimeServicesData
+                    );
+
+                if should_identity_map {
+                    let phys_start = desc.get_physical_start();
+                    let pages = desc.get_page_count();
+                    // Always give writable access to available memory regions for compatibility, but executable code regions should not be writable
+                    let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+                        PageTableFlags::PRESENT
+                    } else {
+                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
+                    };
+                    let _: core::result::Result<
+                        (),
+                        x86_64::structures::paging::mapper::MapToError<Size4KiB>,
+                    > = identity_map_range_with_log_macro!(
+                        self.mapper,
+                        self.frame_allocator,
+                        phys_start,
+                        pages,
+                        flags
+                    );
+                }
+            }
+        }
     }
 }
 
