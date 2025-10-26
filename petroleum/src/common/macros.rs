@@ -62,14 +62,14 @@ macro_rules! map_pages_loop {
     }};
 }
 
-
-
-
 /// Macro for mapping pages to a specified offset in virtual address space, panicking on error
 #[macro_export]
 macro_rules! map_pages_to_offset {
     ($mapper:expr, $allocator:expr, $phys_base:expr, $virt_offset:expr, $num_pages:expr, $flags:expr) => {{
-        use x86_64::{PhysAddr, VirtAddr, structures::paging::{Page, PhysFrame, Size4KiB, mapper::MapToError}};
+        use x86_64::{
+            PhysAddr, VirtAddr,
+            structures::paging::{Page, PhysFrame, Size4KiB, mapper::MapToError},
+        };
         for i in 0..$num_pages {
             let phys_addr = PhysAddr::new($phys_base + (i * 4096) as u64);
             let virt_addr = VirtAddr::new(($virt_offset) + phys_addr.as_u64());
@@ -313,7 +313,6 @@ macro_rules! clear_line_range {
         }
     }};
 }
-
 
 /// Enhanced memory debugging macro that supports formatted output with mixed strings and values
 ///
@@ -959,11 +958,7 @@ macro_rules! page_flags_const {
 /// Integrated identity mapping macro
 #[macro_export]
 macro_rules! map_identity_range_macro {
-    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{
-        unsafe {
-            map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags)
-        }
-    }};
+    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{ unsafe { map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags) } }};
 }
 
 /// Range mapping with logging macro
@@ -991,7 +986,8 @@ macro_rules! map_range_with_log_macro {
 macro_rules! identity_map_range_with_log_macro {
     ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $num_pages:expr, $flags:expr) => {{
         log_page_table_op!("Identity mapping start", $start_addr, 0, $num_pages);
-        let result = map_identity_range_macro!($mapper, $frame_allocator, $start_addr, $num_pages, $flags);
+        let result =
+            map_identity_range_macro!($mapper, $frame_allocator, $start_addr, $num_pages, $flags);
         if result.is_ok() {
             log_page_table_op!("Identity mapping complete", $start_addr, 0, $num_pages);
         }
@@ -1004,9 +1000,26 @@ macro_rules! identity_map_range_with_log_macro {
 macro_rules! map_to_higher_half_with_log_macro {
     ($mapper:expr, $frame_allocator:expr, $phys_offset:expr, $phys_start:expr, $num_pages:expr, $flags:expr) => {{
         let virt_start = $phys_offset.as_u64() + $phys_start;
-        log_page_table_op!("Higher half mapping start", $phys_start, virt_start, $num_pages);
-        map_range_with_log_macro!($mapper, $frame_allocator, $phys_start, virt_start, $num_pages, $flags);
-        log_page_table_op!("Higher half mapping complete", $phys_start, virt_start, $num_pages);
+        log_page_table_op!(
+            "Higher half mapping start",
+            $phys_start,
+            virt_start,
+            $num_pages
+        );
+        map_range_with_log_macro!(
+            $mapper,
+            $frame_allocator,
+            $phys_start,
+            virt_start,
+            $num_pages,
+            $flags
+        );
+        log_page_table_op!(
+            "Higher half mapping complete",
+            $phys_start,
+            virt_start,
+            $num_pages
+        );
         Ok(())
     }};
 }

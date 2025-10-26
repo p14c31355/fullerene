@@ -356,10 +356,7 @@ pub fn schedule_next() {
             // All processes blocked, run idle
             if let Some(idle_idx) = process_list.iter().position(|p| p.name == "idle") {
                 next_index = idle_idx;
-                petroleum::scheduler_log!(
-                    "Switching to idle process at index {}",
-                    idle_idx
-                );
+                petroleum::scheduler_log!("Switching to idle process at index {}", idle_idx);
             } else {
                 petroleum::scheduler_log!("No idle process found, using first process");
                 next_index = 0;

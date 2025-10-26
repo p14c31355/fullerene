@@ -249,8 +249,6 @@ fn manage_background_services() {
     }
 }
 
-
-
 /// Periodic OS feature: automated filesystem backup
 fn perform_automated_backup() {
     // Simple backup: fixed message
@@ -301,8 +299,12 @@ fn perform_periodic_system_tasks(stats: &SystemStats, current_tick: u64, iterati
     petroleum::periodic_task!(current_tick, 3000, {
         use core::fmt::Write;
         let mut log_content = alloc::string::String::new();
-        write!(log_content, "Uptime: {}, Processes: {}/{}, Memory Used: {}\n",
-            stats.uptime_ticks, stats.active_processes, stats.total_processes, stats.memory_used).ok();
+        write!(
+            log_content,
+            "Uptime: {}, Processes: {}/{}, Memory Used: {}\n",
+            stats.uptime_ticks, stats.active_processes, stats.total_processes, stats.memory_used
+        )
+        .ok();
 
         static LOG_FILE_CREATED: spin::Mutex<bool> = spin::Mutex::new(false);
         let mut log_file_created = LOG_FILE_CREATED.lock();
@@ -318,10 +320,21 @@ fn perform_periodic_system_tasks(stats: &SystemStats, current_tick: u64, iterati
                 }
             }
         } else {
-            if let Ok(fd) = crate::fs::open_file("system.log") {
-                let _ = crate::fs::seek_file(fd, 0);
-                let _ = crate::fs::write_file(fd, log_content.as_bytes());
-                let _ = crate::fs::close_file(fd);
+            match crate::fs::open_file("system.log") {
+                Ok(fd) => {
+                    if let Err(e) = crate::fs::seek_file(fd, 0) {
+                        log::warn!("Failed to seek in system.log: {:?}", e);
+                    }
+                    if let Err(e) = crate::fs::write_file(fd, log_content.as_bytes()) {
+                        log::warn!("Failed to write to system.log: {:?}", e);
+                    }
+                    if let Err(e) = crate::fs::close_file(fd) {
+                        log::warn!("Failed to close system.log: {:?}", e);
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Failed to open system.log file: {:?}", e);
+                }
             }
         }
         perform_automated_backup();
@@ -445,21 +458,31 @@ fn emergency_condition_handler() {
     check_emergency_process_count();
 }
 
-petroleum::health_check!(check_emergency_memory, {
-    let (used, total, _) = petroleum::get_memory_stats!();
-    total > 0 && (used as u128 * 100 / total as u128) > EMERGENCY_MEMORY_THRESHOLD as u128
-}, error, "EMERGENCY: Critical memory usage detected!", {
-    // In a full implementation, this would:
-    // 1. Kill memory-hog processes
-    // 2. Perform emergency memory cleanup
-    // 3. Log diagnostic information
-});
+petroleum::health_check!(
+    check_emergency_memory,
+    {
+        let (used, total, _) = petroleum::get_memory_stats!();
+        total > 0 && (used as u128 * 100 / total as u128) > EMERGENCY_MEMORY_THRESHOLD as u128
+    },
+    error,
+    "EMERGENCY: Critical memory usage detected!",
+    {
+        // In a full implementation, this would:
+        // 1. Kill memory-hog processes
+        // 2. Perform emergency memory cleanup
+        // 3. Log diagnostic information
+    }
+);
 
-petroleum::health_check!(check_emergency_process_count, {
-    crate::process::get_active_process_count() > MAX_PROCESSES_EMERGENCY
-}, error, "EMERGENCY: Too many active processes!", {
-    // Would implement process cleanup here
-});
+petroleum::health_check!(
+    check_emergency_process_count,
+    { crate::process::get_active_process_count() > MAX_PROCESSES_EMERGENCY },
+    error,
+    "EMERGENCY: Too many active processes!",
+    {
+        // Would implement process cleanup here
+    }
+);
 
 /// Shell process main function
 pub extern "C" fn shell_process_main() -> ! {

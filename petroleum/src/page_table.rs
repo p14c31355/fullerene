@@ -1008,7 +1008,8 @@ impl PageTableReinitializer {
     ) -> VirtAddr {
         debug_log_no_alloc!("Page table reinitialization starting");
 
-        let level_4_table_frame = self.create_page_table(frame_allocator, current_physical_memory_offset);
+        let level_4_table_frame =
+            self.create_page_table(frame_allocator, current_physical_memory_offset);
         let mut mapper = self.setup_new_mapper(
             level_4_table_frame,
             current_physical_memory_offset,
@@ -1029,7 +1030,11 @@ impl PageTableReinitializer {
         self.phys_offset
     }
 
-    fn create_page_table(&self, frame_allocator: &mut BootInfoFrameAllocator, current_physical_memory_offset: VirtAddr) -> PhysFrame {
+    fn create_page_table(
+        &self,
+        frame_allocator: &mut BootInfoFrameAllocator,
+        current_physical_memory_offset: VirtAddr,
+    ) -> PhysFrame {
         debug_log_no_alloc!("Allocating new L4 page table frame");
         let level_4_table_frame = match frame_allocator.allocate_frame() {
             Some(frame) => frame,
@@ -1216,7 +1221,8 @@ impl<'a> PageTableInitializer<'a> {
         // FIRST: Always identity map the bitmap static area to preserve write permissions during reinitialization
         // This must be done FIRST before any allocations, as the bitmap allocator needs to access this memory
         unsafe {
-            let bitmap_start = (&raw const bitmap_allocator::BITMAP_STATIC) as *const _ as usize as u64;
+            let bitmap_start =
+                (&raw const bitmap_allocator::BITMAP_STATIC) as *const _ as usize as u64;
             let bitmap_pages = ((131072 * 8) + 4095) / 4096; // 131072 u64s * 8 bytes/u64 = 1MB, rounded up to pages
             map_identity_range_macro!(
                 self.mapper,
@@ -1230,7 +1236,6 @@ impl<'a> PageTableInitializer<'a> {
         // Map essential regions inline to reduce function count
         let kernel_size;
         unsafe {
-
             map_identity_range_macro!(
                 self.mapper,
                 self.frame_allocator,
@@ -1409,7 +1414,10 @@ impl<'a> PageTableInitializer<'a> {
             } else {
                 PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
             };
-            let _ : core::result::Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> = identity_map_range_with_log_macro!(
+            let _: core::result::Result<
+                (),
+                x86_64::structures::paging::mapper::MapToError<Size4KiB>,
+            > = identity_map_range_with_log_macro!(
                 self.mapper,
                 self.frame_allocator,
                 phys_start,
@@ -1515,10 +1523,6 @@ pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> PhysAdd
 }
 
 use x86_64::structures::paging::PageTableFlags as PageFlags;
-
-
-
-
 
 // Helper to map to higher half
 unsafe fn map_to_higher_half_with_log(

@@ -12,7 +12,9 @@ use core::ffi::c_void;
 use petroleum::common::EfiGraphicsOutputProtocol;
 use petroleum::common::uefi::{efi_print, find_gop_framebuffer, write_vga_string};
 use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
-use petroleum::{allocate_heap_from_map, debug_log, debug_log_no_alloc, mem_debug, write_serial_bytes};
+use petroleum::{
+    allocate_heap_from_map, debug_log, debug_log_no_alloc, mem_debug, write_serial_bytes,
+};
 use spin::Mutex;
 use x86_64::{
     PhysAddr, VirtAddr,
@@ -22,8 +24,6 @@ use x86_64::{
 /// Virtual heap start offset from physical memory offset
 #[cfg(target_os = "uefi")]
 const VIRTUAL_HEAP_START_OFFSET: u64 = crate::memory_management::VIRTUAL_HEAP_START_OFFSET;
-
-
 
 /// Helper struct for UEFI initialization context
 #[cfg(target_os = "uefi")]
