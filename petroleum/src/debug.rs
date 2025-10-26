@@ -4,7 +4,7 @@
 //! and resolving addresses to file names and line numbers.
 
 use core::arch::asm;
-use core::fmt::{self, Write};
+use core::fmt::Write;
 
 /// Validate if an address is safe to dereference
 /// This is a basic check for stack frame pointers to prevent double faults
@@ -128,7 +128,7 @@ pub fn print_backtrace(writer: &mut impl Write) {
 }
 
 /// Convert an address to human-readable format
-pub fn resolve_address(addr: u64) -> Option<(&'static str, &'static str, u32)> {
+pub fn resolve_address(_addr: u64) -> Option<(&'static str, &'static str, u32)> {
     // Placeholder implementation - returns basic information
     // TODO: Replace with proper DWARF-based symbol resolution when Dwarf data is available
     Some(("unknown", "unknown", 0))

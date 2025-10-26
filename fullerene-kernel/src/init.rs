@@ -34,7 +34,7 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             Ok(())
         }),
         init_step!("LOCAL_APIC", || {
-            *petroleum::LOCAL_APIC_ADDRESS.lock() = 0xfee00000 as *mut u32;
+            *petroleum::LOCAL_APIC_ADDRESS.lock() = petroleum::LocalApicAddress(0xfee00000 as *mut u32);
             Ok(())
         }),
         init_step!("APIC", || {
