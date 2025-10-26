@@ -30,7 +30,7 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             Ok(())
         }),
         init_step!("Graphics", || {
-            crate::graphics::text::init_fallback_graphics()?;
+            let _ = crate::graphics::text::init_fallback_graphics();
             Ok(())
         }),
         init_step!("process", || {

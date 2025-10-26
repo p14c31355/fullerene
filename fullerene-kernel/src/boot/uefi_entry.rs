@@ -329,6 +329,24 @@ impl UefiInitContext {
             mapper.map_to(page, frame, flags, &mut *frame_allocator).unwrap();
         }
         log::info!("IO APIC mapped at virt {:#x}", io_apic_virt.as_u64());
+
+        // Map VGA text buffer (0xB8000-0xC0000) for compatibility
+        let vga_text_phys = PhysAddr::new(0xb8000);
+        let vga_text_virt = VirtAddr::new(0xb8000);
+        let vga_pages_size = (0xc0000 - 0xb8000) / 4096; // 8 pages (32KB)
+        for i in 0..vga_pages_size {
+            let phys = PhysAddr::new(vga_text_phys.as_u64() + i * 4096);
+            let virt = VirtAddr::new(vga_text_virt.as_u64() + i * 4096);
+            let page = Page::<Size4KiB>::containing_address(virt);
+            let frame = PhysFrame::<Size4KiB>::containing_address(phys);
+            unsafe {
+                if let Err(_) = mapper.map_to(page, frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE, &mut *frame_allocator) {
+                    // Page already mapped, skip
+                    continue;
+                }
+            }
+        }
+        log::info!("VGA text buffer mapped at identity address {:#x}", vga_text_virt.as_u64());
     }
 }
 
