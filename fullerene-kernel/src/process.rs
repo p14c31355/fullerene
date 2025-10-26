@@ -153,10 +153,9 @@ impl Process {
     /// Initialize process context for first execution
     pub fn init_context(&mut self, kernel_stack_top: VirtAddr) {
         self.context.rsp = kernel_stack_top.as_u64();
-        // Set RIP to entry point through a trampoline that calls the function
-        self.context.rip = process_trampoline as u64;
-        // Store entry point in RAX for trampoline
-        self.context.rax = self.entry_point.as_u64();
+        // Set RIP to entry point directly, assuming it's an extern "C" function
+        self.context.rip = self.entry_point.as_u64();
+        self.context.rax = 0; // For C functions, RAX is return value, init to 0
         self.context.rflags = 0x202; // Set Interrupt Enable flag
 
         self.context.cs = crate::gdt::user_code_selector().0 as u64;
@@ -177,13 +176,6 @@ pub static CURRENT_PROCESS: Mutex<Option<ProcessId>> = Mutex::new(None);
 
 /// Kernel stack size per process (4KB)
 const KERNEL_STACK_SIZE: usize = 4096;
-
-/// Trampoline function to call process entry point
-#[unsafe(naked)]
-extern "C" fn process_trampoline() -> ! {
-    // The entry point function pointer is stored in RAX by context switch
-    core::arch::naked_asm!("jmp rax");
-}
 
 /// Initialize process management system
 pub fn init() {
@@ -400,9 +392,10 @@ pub fn current_pid() -> Option<ProcessId> {
 
 /// Yield current process
 pub fn yield_current() {
+    let old_pid = current_pid();
     schedule_next();
-    // Context switch would happen here
-    // For now, this just moves to next process in the list
+    let new_pid = current_pid().unwrap();
+    unsafe { context_switch(old_pid, new_pid); }
 }
 
 /// Perform context switch between two processes
@@ -433,14 +426,19 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
 
 /// Block current process
 pub fn block_current() {
-    let current_pid = current_pid().unwrap();
+    let pid = current_pid().unwrap();
     let mut process_list = PROCESS_LIST.lock();
 
-    if let Some(process) = process_list.iter_mut().find(|p| p.id == current_pid) {
+    if let Some(process) = process_list.iter_mut().find(|p| p.id == pid) {
         process.state = ProcessState::Blocked;
     }
 
+    drop(process_list);
+
+    let old_pid = Some(pid);
     schedule_next();
+    let new_pid = current_pid().unwrap();
+    unsafe { context_switch(old_pid, new_pid); }
 }
 
 /// Unblock a process

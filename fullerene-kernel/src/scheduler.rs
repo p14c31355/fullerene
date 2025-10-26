@@ -447,6 +447,9 @@ pub fn scheduler_loop() -> ! {
 
         // Process one complete scheduler iteration
         process_scheduler_iteration();
+
+        // Yield to user processes if any are ready
+        crate::process::yield_current();
     }
 }
 
