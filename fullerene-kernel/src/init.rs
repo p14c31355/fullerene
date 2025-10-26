@@ -29,8 +29,8 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             crate::vga::init_vga(physical_memory_offset);
             Ok(())
         }),
-        init_step!("APIC", || {
-            interrupts::init_apic();
+        init_step!("Graphics", || {
+            let _ = crate::graphics::text::init_fallback_graphics();
             Ok(())
         }),
         init_step!("process", || {
@@ -79,15 +79,17 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             .lock()
             .init(heap_start_ptr, crate::heap::HEAP_SIZE);
         // Set heap range for page fault detection
-        petroleum::common::memory::set_heap_range(
-            heap_start_ptr as usize,
-            crate::heap::HEAP_SIZE,
-        );
+        petroleum::common::memory::set_heap_range(heap_start_ptr as usize, crate::heap::HEAP_SIZE);
     }
 
     crate::gdt::init(heap_start_addr); // Pass the actual heap start address
     interrupts::init(); // Initialize IDT
+    // For UEFI, APIC is used, for BIOS, use PIC initially
     // Heap already initialized
     petroleum::serial::serial_init(); // Initialize serial early for debugging
     crate::vga::init_vga(physical_memory_offset);
+    crate::process::init();
+    crate::syscall::init();
+    crate::fs::init();
+    crate::loader::init();
 }

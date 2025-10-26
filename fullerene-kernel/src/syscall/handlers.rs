@@ -1,6 +1,13 @@
 use super::interface::{SyscallError, SyscallResult, copy_user_string};
 use crate::process;
-use petroleum::write_serial_bytes;
+use crate::process::{NEXT_PID, Process, ProcessState};
+use alloc::boxed::Box;
+use core::alloc::Layout;
+use core::sync::atomic::Ordering;
+use petroleum::{page_table::PageTableHelper, write_serial_bytes};
+use x86_64::{PhysAddr, VirtAddr};
+
+const KERNEL_STACK_SIZE: usize = 4096;
 
 /// Handle system call from user space
 ///
@@ -57,30 +64,84 @@ pub(crate) fn syscall_exit(exit_code: i32) -> SyscallResult {
 fn syscall_fork() -> SyscallResult {
     let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
-    let process_list = crate::process::PROCESS_LIST.lock();
-    let parent_process = process_list
-        .iter()
-        .find(|p| p.id == current_pid)
-        .ok_or(SyscallError::NoSuchProcess)?;
+    // First, find parent process and get info while holding lock briefly
+    let (parent_page_table_phys_addr, parent_context, parent_user_stack, parent_entry_point) = {
+        let process_list = crate::process::PROCESS_LIST.lock();
+        let parent_process = process_list
+            .iter()
+            .find(|p| p.id == current_pid)
+            .ok_or(SyscallError::NoSuchProcess)?;
 
-    // Clone the parent process name (use parent name for now, full clone later)
-    let child_name = "fork_child"; // Use static string to avoid lifetime issues
+        (
+            parent_process.page_table_phys_addr,
+            parent_process.context,
+            parent_process.user_stack,
+            parent_process.entry_point,
+        )
+    }; // Lock released here
 
-    // For now, create a basic child process
-    // In a full implementation, we would:
-    // 1. Clone the process memory space
-    // 2. Copy the page tables
-    // 3. Set up the child context to return 0 from fork
-    // 4. Set up the parent to return the child PID
+    // Perform expensive page table cloning outside the lock
+    let cloned_table_addr = {
+        let mut manager_guard = crate::memory_management::get_memory_manager().lock();
+        let manager = manager_guard.as_mut().ok_or(SyscallError::OutOfMemory)?;
+        manager.clone_page_table(parent_page_table_phys_addr.as_u64() as usize)?
+    };
 
-    let child_entry = parent_process.entry_point; // Same entry point for now
-    drop(process_list); // Release lock
+    let cloned_pml4_frame = x86_64::structures::paging::PhysFrame::containing_address(
+        x86_64::PhysAddr::new(cloned_table_addr as u64),
+    );
 
-    let child_pid = process::create_process(child_name, child_entry)?;
+    // Create new page table manager with cloned frame
+    let mut child_page_table =
+        petroleum::page_table::PageTableManager::new_with_frame(cloned_pml4_frame);
+    petroleum::initializer::Initializable::init(&mut child_page_table)
+        .map_err(|_| SyscallError::InvalidArgument)?;
 
-    // TODO: Implement full process cloning with memory copying
-    // For now, we return the child PID from fork (should return 0 in child, child_pid in parent)
-    // This is a significant simplification - a real fork would require context switching
+    // Allocate kernel stack for child
+    let stack_layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
+    let kernel_stack_ptr = unsafe { alloc::alloc::alloc(stack_layout) };
+    if kernel_stack_ptr.is_null() {
+        return Err(SyscallError::OutOfMemory);
+    }
+    let kernel_stack_top = VirtAddr::new(kernel_stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
+
+    let child_pid = NEXT_PID.fetch_add(1, Ordering::Relaxed);
+
+    // Create child process
+    let mut child_process = Process {
+        id: child_pid,
+        name: "child",
+        state: ProcessState::Ready,
+        context: parent_context, // Copy parent context
+        page_table_phys_addr: PhysAddr::new(cloned_table_addr as u64),
+        page_table: Some(child_page_table),
+        kernel_stack: kernel_stack_top,
+        user_stack: parent_user_stack, // Will be updated after copying
+        entry_point: parent_entry_point,
+        exit_code: None,
+        parent_id: Some(current_pid),
+    };
+
+    // Set child context to return 0 from fork
+    child_process.context.rax = 0; // Child gets 0 from fork
+    child_process.context.rsp = child_process.kernel_stack.as_u64();
+
+    // TODO: Implement full memory copying for user space
+    // This implementation of fork correctly clones the page tables, but it's important to highlight that it does not copy the user-space memory pages themselves.
+    // This results in the parent and child processes sharing the same physical memory, meaning a write in one process will be visible in the other.
+    // This is a significant deviation from the standard copy-on-write (COW) or full-copy semantics of fork and can lead to unexpected behavior and data corruption in user programs.
+    // While this is a reasonable simplification for an initial implementation, it should be prioritized for a future update to either perform a full memory copy or, ideally, implement a copy-on-write mechanism for efficiency.
+
+    let mut child_box = Box::new(child_process);
+
+    // Re-acquire lock briefly to add to process list
+    {
+        let mut process_list = crate::process::PROCESS_LIST.lock();
+        process_list.push(child_box);
+    } // Lock released here
+
+    // Note: Memory copying not implemented yet, only page table cloning
+    // Full implementation would copy parent memory pages to child
 
     Ok(child_pid)
 }

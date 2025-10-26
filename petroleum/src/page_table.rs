@@ -5,12 +5,9 @@ pub mod efi_memory;
 
 pub use bitmap_allocator::BitmapFrameAllocator;
 
-// Import functions from efi_memory to avoid duplication
-use efi_memory::{is_valid_memory_descriptor, calculate_frame_allocation_params};
-
 use crate::{
-    calc_offset_addr, create_page_and_frame, debug_log_no_alloc, flush_tlb_and_verify,
-    log_memory_descriptor, map_and_flush, map_identity_range_checked, map_with_offset,
+    calc_offset_addr, debug_log_no_alloc, flush_tlb_and_verify, log_memory_descriptor,
+    map_and_flush, map_identity_range_checked, map_with_offset,
 };
 
 // Import for heap range setting
@@ -29,11 +26,9 @@ use x86_64::{
 
 // Import constants
 use constants::{
-    BOOT_CODE_PAGES, BOOT_CODE_START, PAGE_SIZE, READ_ONLY, READ_WRITE, READ_WRITE_NO_EXEC,
-    TEMP_LOW_VA, TEMP_VA_FOR_ZERO, VGA_MEMORY_END, VGA_MEMORY_START,
+    BOOT_CODE_PAGES, BOOT_CODE_START, READ_WRITE, READ_WRITE_NO_EXEC, TEMP_LOW_VA, VGA_MEMORY_END,
+    VGA_MEMORY_START,
 };
-
-
 
 pub static HEAP_INITIALIZED: Once<bool> = Once::new();
 
@@ -126,8 +121,6 @@ const MAX_DESCRIPTOR_PAGES: u64 = 1_048_576;
 
 /// Maximum reasonable system memory limit (512GB)
 const MAX_SYSTEM_MEMORY: u64 = 512 * 1024 * 1024 * 1024u64;
-
-
 
 /// Constant for UEFI compatibility pages (disabled - first page)
 const UEFI_COMPAT_PAGES: u64 = 16383;
@@ -265,8 +258,6 @@ unsafe fn map_pe_section(
         map_with_offset!(mapper, frame_allocator, phys_addr, virt_addr, flags);
     }
 }
-
-
 
 // Generic mapping interface
 trait MemoryMappable {
@@ -613,18 +604,17 @@ unsafe fn map_uefi_runtime_to_higher_half(
 ) {
     unsafe {
         map_memory_descriptors_with_config(mapper, frame_allocator, memory_map, move |desc| {
-            if is_valid_memory_descriptor(desc)
+            if desc.is_valid()
                 && matches!(
                     desc.type_,
                     crate::common::EfiMemoryType::EfiRuntimeServicesCode
                         | crate::common::EfiMemoryType::EfiRuntimeServicesData
                 )
             {
-                let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-                    PageTableFlags::PRESENT
-                } else {
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
-                };
+                let mut flags = PageTableFlags::PRESENT;
+                if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesData {
+                    flags |= PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+                }
                 Some(higher_half_config!(
                     phys_offset,
                     desc.physical_start,
@@ -650,9 +640,9 @@ unsafe fn map_available_memory_to_higher_half(
         let pages = (end_frame - start_frame) as u64;
         // Always give writable access to available memory regions for compatibility, but executable code regions should not be writable
         let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-            PageTableFlags::PRESENT
+            PageTableFlags::PRESENT // Executable, read-only
         } else {
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE // Writable, not executable
         };
         unsafe {
             let _ = map_to_higher_half_with_log(
@@ -685,7 +675,7 @@ unsafe fn map_stack_to_higher_half(
     let rsp = get_current_stack_pointer!();
 
     for desc in memory_map.iter() {
-        if is_valid_memory_descriptor(desc) {
+        if desc.is_valid() {
             let start = desc.physical_start;
             let end = start + desc.number_of_pages * 4096;
             if rsp >= start && rsp < end {
@@ -847,31 +837,35 @@ unsafe fn map_stack_region(
     unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp) };
     let stack_pages = 256; // 1MB stack
     let stack_start = rsp & !4095; // page align
-    map_identity_range(
-        mapper,
-        frame_allocator,
-        stack_start,
-        stack_pages,
-        x86_64::structures::paging::PageTableFlags::PRESENT
-            | x86_64::structures::paging::PageTableFlags::WRITABLE
-            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
-    )
+    unsafe {
+        map_identity_range(
+            mapper,
+            frame_allocator,
+            stack_start,
+            stack_pages,
+            x86_64::structures::paging::PageTableFlags::PRESENT
+                | x86_64::structures::paging::PageTableFlags::WRITABLE
+                | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
+        )
+    }
     .expect("Failed to map current stack region");
 
     for desc in memory_map.iter() {
-        if is_valid_memory_descriptor(desc) {
+        if desc.is_valid() {
             let start = desc.physical_start;
             let end = start + desc.number_of_pages * 4096;
             if rsp >= start && rsp < end && desc.number_of_pages <= MAX_DESCRIPTOR_PAGES {
-                map_identity_range(
-                    mapper,
-                    frame_allocator,
-                    desc.physical_start,
-                    desc.number_of_pages,
-                    x86_64::structures::paging::PageTableFlags::PRESENT
-                        | x86_64::structures::paging::PageTableFlags::WRITABLE
-                        | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
-                )
+                unsafe {
+                    map_identity_range(
+                        mapper,
+                        frame_allocator,
+                        desc.physical_start,
+                        desc.number_of_pages,
+                        x86_64::structures::paging::PageTableFlags::PRESENT
+                            | x86_64::structures::paging::PageTableFlags::WRITABLE
+                            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
+                    )
+                }
                 .expect("Failed to map stack region");
                 break;
             }
@@ -919,7 +913,7 @@ impl PageTableReinitializer {
             frame_allocator,
             current_physical_memory_offset,
         );
-        self.adjust_return_address_and_log();
+        adjust_return_address_and_stack(self.phys_offset);
         self.phys_offset
     }
 
@@ -964,10 +958,14 @@ impl PageTableReinitializer {
         let temp_virt_addr = current_physical_memory_offset + temp_phys_addr;
         let temp_page = Page::<Size4KiB>::containing_address(temp_virt_addr);
 
-        debug_log_no_alloc!("Using existing phys offset mapping at: 0x", temp_virt_addr.as_u64() as usize);
+        debug_log_no_alloc!(
+            "Using existing phys offset mapping at: 0x",
+            temp_virt_addr.as_u64() as usize
+        );
 
         // Check if this page is already mapped (it should be in UEFI)
-        if temp_virt_addr.as_u64() < 0x800000000000 { // Reasonable sanity check for low memory
+        if temp_virt_addr.as_u64() < 0x800000000000 {
+            // Reasonable sanity check for low memory
             unsafe {
                 return OffsetPageTable::new(
                     &mut *(temp_virt_addr.as_mut_ptr() as *mut PageTable),
@@ -977,7 +975,9 @@ impl PageTableReinitializer {
         }
 
         // If even that fails, we have a fundamental problem with UEFI memory layout
-        panic!("Cannot create any mapping for L4 table frame - UEFI huge page coverage is complete");
+        panic!(
+            "Cannot create any mapping for L4 table frame - UEFI huge page coverage is complete"
+        );
     }
 
     fn setup_recursive_mapping(
@@ -1003,49 +1003,56 @@ impl PageTableReinitializer {
         frame_allocator: &mut BootInfoFrameAllocator,
         current_physical_memory_offset: VirtAddr,
     ) {
-        debug_log_no_alloc!(
-            "New L4 table phys addr: ",
-            level_4_table_frame.start_address().as_u64() as usize
-        );
-        debug_log_no_alloc!("Phys offset: ", self.phys_offset.as_u64() as usize);
+        debug_log_no_alloc!("Page table switch: setting recursive in new table");
 
-        let mut current_mapper = unsafe {
-            let l4_table = active_level_4_table(current_physical_memory_offset);
-            OffsetPageTable::new(l4_table, current_physical_memory_offset)
+        // Access the new L4 table at its physical address (since UEFI identity maps)
+        let new_l4_phys = level_4_table_frame.start_address().as_u64();
+        let new_l4_virt = if current_physical_memory_offset.as_u64() == 0 {
+            new_l4_phys // identity mapped in UEFI
+        } else {
+            current_physical_memory_offset.as_u64() + new_l4_phys
         };
+
         unsafe {
-            match current_mapper.map_to(
-                Page::containing_address(
-                    self.phys_offset + level_4_table_frame.start_address().as_u64(),
-                ),
-                level_4_table_frame,
+            let new_l4_table = &mut *(new_l4_virt as *mut PageTable);
+            new_l4_table[511].set_addr(
+                level_4_table_frame.start_address(),
                 page_flags_const!(READ_WRITE),
-                frame_allocator,
-            ) {
-                Ok(flush) => flush.flush(),
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                    // This is acceptable, the page is already mapped.
-                }
-                Err(e) => {
-                    panic!("Failed to map new L4 table to higher half: {:?}", e);
-                }
-            }
+            );
         }
-        debug_log_no_alloc!("About to switch CR3 to new page table");
+
+        debug_log_no_alloc!("Switching CR3 to new table");
+
+        // Switch to new page table
         unsafe {
             Cr3::write(
                 level_4_table_frame,
                 x86_64::registers::control::Cr3Flags::empty(),
             );
         }
-        debug_log_no_alloc!("CR3 switched, flushing TLB");
-        flush_tlb_and_verify!();
-        debug_log_no_alloc!("TLB flushed, page table switch complete");
-    }
 
-    fn adjust_return_address_and_log(&self) {
-        adjust_return_address_and_stack(self.phys_offset);
-        debug_log_no_alloc!("Page table reinitialization completed");
+        flush_tlb_and_verify!();
+
+        debug_log_no_alloc!("CR3 switched, now mapping L4 to higher half");
+
+        // Now map the L4 to higher half using the new page table with recursive mapping
+        let mut mapper = unsafe { init(current_physical_memory_offset) };
+
+        unsafe {
+            map_to_higher_half_with_log(
+                &mut mapper,
+                frame_allocator,
+                self.phys_offset,
+                new_l4_phys,
+                1,
+                page_flags_const!(READ_WRITE_NO_EXEC),
+            )
+            .expect("Failed to map L4 to higher half");
+        }
+
+        debug_page_table_info(level_4_table_frame, self.phys_offset);
+
+        debug_log_no_alloc!("Page table switch complete");
     }
 }
 
@@ -1193,7 +1200,7 @@ impl<'a> PageTableInitializer<'a> {
             self.frame_allocator,
             self.memory_map,
             move |desc| {
-                if is_valid_memory_descriptor(desc)
+                if desc.is_valid()
                     && matches!(
                         desc.type_,
                         crate::common::EfiMemoryType::EfiRuntimeServicesCode
@@ -1245,7 +1252,7 @@ impl<'a> PageTableInitializer<'a> {
     unsafe fn map_stack_to_higher_half(&mut self) {
         let rsp = get_current_stack_pointer!();
         for desc in self.memory_map.iter() {
-            if is_valid_memory_descriptor(desc) {
+            if desc.is_valid() {
                 let start = desc.physical_start;
                 let end = start + desc.number_of_pages * 4096;
                 if rsp >= start && rsp < end {
@@ -1268,7 +1275,7 @@ impl<'a> PageTableInitializer<'a> {
 
     unsafe fn map_available_memory_identity(&mut self) {
         for desc in self.memory_map.iter() {
-            if is_valid_memory_descriptor(desc) {
+            if desc.is_valid() {
                 // Include available memory and UEFI runtime services regions
                 let should_identity_map = desc.is_memory_available()
                     || matches!(
@@ -1281,11 +1288,14 @@ impl<'a> PageTableInitializer<'a> {
                     let phys_start = desc.get_physical_start();
                     let pages = desc.get_page_count();
                     // Always give writable access to available memory regions for compatibility, but executable code regions should not be writable
-                    let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-                        PageTableFlags::PRESENT
-                    } else {
-                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
-                    };
+                    let flags =
+                        if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+                            PageTableFlags::PRESENT // Executable, read-only
+                        } else {
+                            PageTableFlags::PRESENT
+                                | PageTableFlags::WRITABLE
+                                | PageTableFlags::NO_EXECUTE // Writable, not executable
+                        };
                     let _: core::result::Result<
                         (),
                         x86_64::structures::paging::mapper::MapToError<Size4KiB>,

@@ -3,8 +3,8 @@
 /// Provides functions for validating user space memory access,
 /// used by syscall handlers and memory management.
 use crate::common::logging::{SystemError, SystemResult};
-use x86_64::VirtAddr;
 use spin::Once;
+use x86_64::VirtAddr;
 
 /// Heap start address
 pub static HEAP_START: Once<usize> = Once::new();

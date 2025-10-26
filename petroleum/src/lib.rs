@@ -28,6 +28,7 @@ pub use common::memory::*;
 pub use common::syscall::*;
 pub use common::{check_memory_initialized, set_memory_initialized};
 pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
+pub use graphics::*;
 pub use graphics::{
     Color, ColorCode, HardwarePorts, ScreenChar, TextBufferOperations, VgaPortOps,
     color::{self, *},
@@ -87,11 +88,20 @@ use crate::common::{
     EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable, FullereneFramebufferConfig,
 };
 
+/// Wrapper for Local APIC address pointer to make it Send/Sync
+#[derive(Clone, Copy)]
+pub struct LocalApicAddress(pub *mut u32);
+
+unsafe impl Send for LocalApicAddress {}
+unsafe impl Sync for LocalApicAddress {}
+
+/// Global storage for Local APIC address
+pub static LOCAL_APIC_ADDRESS: Mutex<LocalApicAddress> =
+    Mutex::new(LocalApicAddress(core::ptr::null_mut()));
+
 /// Global framebuffer config storage for kernel use after exit_boot_services
 pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferConfig>>> =
     Once::new();
-
-/// Shared QEMU framebuffer configurations for both bootloader and kernel
 
 pub const QEMU_CONFIGS: [QemuConfig; 8] = [
     // Cirrus VGA specific addresses (common with -vga cirrus) - start with successfully tested ones

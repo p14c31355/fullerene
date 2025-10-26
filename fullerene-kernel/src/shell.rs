@@ -255,10 +255,9 @@ fn free_command(_args: &[&str]) -> i32 {
 }
 
 fn uptime_command(_args: &[&str]) -> i32 {
-    // For now, use approximate tick count
-    // In a real system, we'd track real time
+    // Use tick count tracked by the scheduler
     const TICKS_PER_SECOND: u64 = 1000; // Assuming 1000 ticks per second
-    let ticks = get_system_tick(); // TODO: Get actual system tick
+    let ticks = get_system_tick();
     let uptime_seconds = ticks / TICKS_PER_SECOND;
     let hours = uptime_seconds / 3600;
     let minutes = (uptime_seconds % 3600) / 60;
@@ -274,7 +273,7 @@ fn uptime_command(_args: &[&str]) -> i32 {
 fn date_command(_args: &[&str]) -> i32 {
     // Simple date/time - would be enhanced with RTC in real implementation
     print!("Current date/time: ");
-    print!("System tick: {}\n", get_system_tick()); // TODO: Get actual system tick
+    print!("System tick: {}\n", get_system_tick());
     print!("(RTC integration pending)\n");
     0
 }

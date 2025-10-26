@@ -18,7 +18,7 @@ use petroleum::{
 use spin::Mutex;
 use x86_64::{
     PhysAddr, VirtAddr,
-    structures::paging::{Mapper, Size4KiB, mapper::MapToError},
+    structures::paging::{Mapper, Page, PageTableFlags, PhysFrame, Size4KiB, mapper::MapToError},
 };
 
 /// Virtual heap start offset from physical memory offset
@@ -294,6 +294,75 @@ impl UefiInitContext {
         }
         log::info!("Allocator initialized");
     }
+
+    fn map_mmio(&mut self) {
+        log::info!("Mapping MMIO regions for APIC and IOAPIC");
+
+        let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
+            .get()
+            .expect("Frame allocator not initialized")
+            .lock();
+
+        let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset) };
+
+        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+
+        const LOCAL_APIC_ADDR: u64 = 0xfee00000;
+        const IO_APIC_ADDR: u64 = 0xfec00000;
+        const VGA_TEXT_BUFFER_ADDR: u64 = 0xb8000;
+
+        // Map Local APIC at identity address 0xfee00000
+        let apic_phys = PhysAddr::new(LOCAL_APIC_ADDR);
+        let apic_virt = VirtAddr::new(LOCAL_APIC_ADDR);
+        let page = Page::<Size4KiB>::containing_address(apic_virt);
+        let frame = PhysFrame::<Size4KiB>::containing_address(apic_phys);
+        unsafe {
+            mapper
+                .map_to(page, frame, flags, &mut *frame_allocator)
+                .expect("Failed to map Local APIC")
+                .flush();
+        }
+        *petroleum::LOCAL_APIC_ADDRESS.lock() =
+            petroleum::LocalApicAddress(LOCAL_APIC_ADDR as *mut u32);
+        log::info!("LOCAL APIC mapped at virt {:#x}", apic_virt.as_u64());
+
+        // Map IO APIC at identity address 0xfec00000
+        let io_apic_phys = PhysAddr::new(IO_APIC_ADDR);
+        let io_apic_virt = VirtAddr::new(IO_APIC_ADDR);
+        let page = Page::<Size4KiB>::containing_address(io_apic_virt);
+        let frame = PhysFrame::<Size4KiB>::containing_address(io_apic_phys);
+        unsafe {
+            mapper
+                .map_to(page, frame, flags, &mut *frame_allocator)
+                .expect("Failed to map IO APIC")
+                .flush();
+        }
+        log::info!("IO APIC mapped at virt {:#x}", io_apic_virt.as_u64());
+
+        // Map VGA text buffer (0xB8000-0xC0000) for compatibility
+        let vga_text_phys = PhysAddr::new(VGA_TEXT_BUFFER_ADDR);
+        let vga_text_virt = VirtAddr::new(VGA_TEXT_BUFFER_ADDR);
+        let vga_pages_size = (0xc0000 - VGA_TEXT_BUFFER_ADDR) / 4096; // 8 pages (32KB)
+        for i in 0..vga_pages_size {
+            let phys = PhysAddr::new(vga_text_phys.as_u64() + i * 4096);
+            let virt = VirtAddr::new(vga_text_virt.as_u64() + i * 4096);
+            let page = Page::<Size4KiB>::containing_address(virt);
+            let frame = PhysFrame::<Size4KiB>::containing_address(phys);
+            unsafe {
+                match mapper.map_to(page, frame, flags, &mut *frame_allocator) {
+                    Ok(flush) => flush.flush(),
+                    Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                        continue;
+                    } // Page already mapped, skip
+                    Err(e) => log::error!("Failed to map VGA page: {:?}", e),
+                }
+            }
+        }
+        log::info!(
+            "VGA text buffer mapped at identity address {:#x}",
+            vga_text_virt.as_u64()
+        );
+    }
 }
 
 #[cfg(target_os = "uefi")]
@@ -358,6 +427,14 @@ pub extern "efiapi" fn efi_main(
     // Initialize interrupts and other components call init_common here
     crate::init::init_common(physical_memory_offset);
     log::info!("init_common completed");
+
+    // Map MMIO regions
+    ctx.map_mmio();
+    log::info!("MMIO mapping completed");
+
+    // Initialize APIC
+    crate::interrupts::init_apic();
+    log::info!("APIC initialized");
 
     // Initialize graphics with framebuffer configuration
     log::info!("Initialize graphics with framebuffer configuration");

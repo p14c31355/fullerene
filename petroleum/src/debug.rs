@@ -4,7 +4,7 @@
 //! and resolving addresses to file names and line numbers.
 
 use core::arch::asm;
-use core::fmt::{self, Write};
+use core::fmt::Write;
 
 /// Validate if an address is safe to dereference
 /// This is a basic check for stack frame pointers to prevent double faults
@@ -52,8 +52,11 @@ impl BacktraceCollector {
 
         while !frame.is_null() && i < self.entries.len() {
             // Validate pointers before dereferencing to prevent double faults during page handling
-            if !is_address_valid(frame as u64) ||
-               !is_address_valid((frame as usize).wrapping_add(core::mem::size_of::<usize>()) as u64) {
+            if !is_address_valid(frame as u64)
+                || !is_address_valid(
+                    (frame as usize).wrapping_add(core::mem::size_of::<usize>()) as u64
+                )
+            {
                 break;
             }
 
@@ -72,13 +75,23 @@ impl BacktraceCollector {
                     break;
                 }
 
-                self.entries[i] = BacktraceEntry {
-                    ip: return_addr as u64,
-                    sp: (frame as usize + 16) as u64, // Approximate SP
-                    symbol: None, // TODO: Symbol resolution
-                    file: None,   // TODO: File resolution
-                    line: None,   // TODO: Line resolution
-                };
+                if let Some((symbol, file, line)) = resolve_address(return_addr as u64) {
+                    self.entries[i] = BacktraceEntry {
+                        ip: return_addr as u64,
+                        sp: (frame as usize + 16) as u64,
+                        symbol: Some(symbol),
+                        file: Some(file),
+                        line: Some(line),
+                    };
+                } else {
+                    self.entries[i] = BacktraceEntry {
+                        ip: return_addr as u64,
+                        sp: (frame as usize + 16) as u64,
+                        symbol: None,
+                        file: None,
+                        line: None,
+                    };
+                }
 
                 frame = next_frame_ptr;
                 i += 1;
@@ -118,9 +131,15 @@ pub fn print_backtrace(writer: &mut impl Write) {
 }
 
 /// Convert an address to human-readable format
-/// This is a placeholder for more advanced symbol resolution
 pub fn resolve_address(addr: u64) -> Option<(&'static str, &'static str, u32)> {
-    // TODO: Implement proper symbol resolution using addr2line and DWARF
-    // For now, return None - will be implemented when DWARF data is available
-    None
+    // Basic implementation without DWARF - classify addresses by known regions
+    // For proper DWARF resolution, Dwarf data would be parsed when available
+
+    if addr >= 0x100000 && addr < 0x200000 {
+        Some(("kernel code", "unknown", 0))
+    } else if addr >= 0xFFFF_8000_0000_0000 && addr < 0xFFFF_C000_0000_0000 {
+        Some(("kernel heap", "unknown", 0))
+    } else {
+        Some(("unknown", "unknown", 0))
+    }
 }

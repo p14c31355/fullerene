@@ -6,23 +6,31 @@
 
 ---
 
-Fullerene is an experimental operating system kernel written in Rust, targeting x86_64 architecture with UEFI booting. It aims to explore low-level systems programming concepts in a safe and modern language. Currently, it provides a basic UEFI-compatible bootloader, kernel initialization, and support for essential hardware interfaces like VGA text mode, serial output, and a framebuffer.
+Fullerene is a complete operating system kernel written in Rust, targeting x86_64 architecture with UEFI booting. It explores modern systems programming concepts including process scheduling, virtual memory management, filesystem abstraction, and syscall interfaces, all implemented in a safe, no_std environment.
 
-This project is in its early stages and serves as a learning platform for OS development in Rust.
+Fullerene provides a full-featured kernel with multitasking capabilities, running in both QEMU and VirtualBox virtual machines. The system includes a bootloader, kernel scheduler, process management, memory allocation, device drivers, and user-space support scaffolding.
 
 ## Features
 
-- **UEFI Bootloader (Bellows)**: A no_std UEFI application that loads the kernel ELF, initializes a Graphics Output Protocol (GOP) framebuffer, installs a custom configuration table for the kernel, and jumps to the kernel entry point after exiting boot services.
-- **Kernel Initialization (Fullerene-Kernel)**:
-  - Global Descriptor Table (GDT) setup.
-  - Interrupt Descriptor Table (IDT) and Programmable Interrupt Controller (PIC) initialization.
-  - Basic VGA text mode output for early logging.
-  - Serial port output (COM1) for debugging.
-  - Detection of a custom framebuffer configuration table passed from the bootloader.
-- **Build and Emulation Support**: Automated build process using Cargo, creating a bootable ISO, and running in QEMU with OVMF UEFI firmware.
-- **Interrupts**: Basic handling of hardware interrupts (though currently enters a halt loop after init).
+- **UEFI Bootloader (Bellows)**: A no_std UEFI application that loads the kernel ELF, initializes framebuffer graphics via Graphics Output Protocol (GOP), sets up custom configuration tables, and transitions to kernel execution after exiting boot services.
 
-The kernel currently enters an infinite halt loop after initialization. Future work includes implementing a pager, real memory allocator, process scheduling, and userland support.
+- **Full-Featured Kernel (Fullerene-Kernel)** with components including:
+  - **Memory Management**: Virtual memory with page tables, heap allocation (linked-list allocator), and physical memory tracking
+  - **Process Management**: Full process creation, scheduling, and context switching capabilities
+  - **Scheduler**: Preemptive round-robin scheduler with interrupt-driven task switching
+  - **Syscall Interface**: Complete system call implementation for user-kernel communication
+  - **Filesystem**: Abstraction layer for file operations (currently in-memory implementation)
+  - **Graphics Support**: VGA text mode and framebuffer graphics with embedded-graphics integration
+  - **Hardware Interfaces**: Keyboard input, serial output, and interrupt handling (APIC/PIC)
+  - **Shell**: Basic command-line interface for process interaction
+
+- **Common Library (Petroleum)**: Shared no_std utilities for UEFI types, serial logging, memory operations, graphics primitives, and bare-metal hardware detection.
+
+- **Build System (Flasks)**: Automated task runner for building, ISO creation (using isobemak crate), and virtualization with optional VirtualBox support.
+
+- **Userland placeholder (Toluene)**: Scaffolding for user-space programs in Rust.
+
+The system boots from UEFI firmware, initializes all hardware interfaces, and runs a kernel scheduler that manages multiple processes concurrently. User interaction occurs through a shell interface, with full debugging support via serial logging.
 
 ## Workspace Structure
 
@@ -43,6 +51,7 @@ Dependencies include `x86_64` for architecture-specific code, `uefi` for bootloa
 - Rust nightly toolchain (required for `no_std` and UEFI targets): Install via `rustup toolchain install nightly`.
 - QEMU: Install on Linux/macOS via package manager (e.g., `apt install qemu-system-x86` on Ubuntu).
 - OVMF (UEFI firmware): Included in `flasks/ovmf/` (RELEASEX64 files). If missing, download from [TianoCore releases](https://github.com/tianocore/edk2/releases).
+- (Optional) VirtualBox: For VirtualBox support, install VirtualBox. A VM named "fullerene-vm" will be created automatically if missing.
 
 The project uses a custom target `x86_64-unknown-uefi` (ensure it's available via `rustup target add x86_64-unknown-uefi`).
 
@@ -58,22 +67,37 @@ This command:
 1. Builds `fullerene-kernel` and `bellows` for the UEFI target.
 2. Creates a FAT image and ISO (`fullerene.iso`) with the bootloader and kernel.
 3. Launches QEMU with:
-   - 512MB RAM.
-   - Std VGA.
+   - 4GB RAM.
+   - Cirrus VGA with GTK display.
    - Serial output to stdout (for logs).
    - OVMF firmware for UEFI booting.
-   - Boot from the ISO (order=d).
+   - Boot from the ISO.
 
 Expected output:
 - Serial logs from bootloader: Heap init, GOP init, kernel load.
-- VGA text: Kernel init messages, framebuffer config (if found), "Initialization complete. Entering kernel main loop."
-- The VM will boot into the kernel and halt (no further activity).
+- VGA/graphics framebuffer initialization and basic graphics setup.
+- Shell interface becomes available after scheduler starts running processes.
+- System runs multi-tasking kernel with shell interaction available via serial/graphics.
 
 To debug:
 - QEMU logs are written to `qemu_log.txt` (interrupts and other debug info).
 - Use `RUST_LOG=debug cargo run --bin flasks` for more verbose output.
 
 For release builds, edit `flasks/src/main.rs` to use `--profile release` or run `cargo build --release`.
+
+### VirtualBox Support
+
+To run in VirtualBox instead of QEMU:
+
+```bash
+cargo run --bin flasks -- --virtualbox
+```
+
+This requires:
+- A VirtualBox VM named "fullerene-vm" (created automatically if missing).
+- The VM will be configured for UEFI booting with 4GB RAM and appropriate settings.
+- Serial output is available on TCP port 6000 for debugging.
+- Use `--gui` flag for GUI mode instead of headless.
 
 ### Manual Build
 
@@ -94,35 +118,45 @@ If you prefer manual steps:
 4. Run in QEMU:
    ```bash
    qemu-system-x86_64 \
-     -m 512M \
-     -cpu qemu64,+smap \
-     -vga std \
+     -m 4G \
+     -cpu qemu64,+smap,-invtsc \
+     -smp 1 \
+     -M q35 \
+     -vga cirrus \
+     -display gtk,gl=off,window-close=on,zoom-to-fit=on \
      -serial stdio \
-     -drive if=pflash,format=raw,readonly=on,file=flasks/ovmf/RELEASEX64_OVMF_CODE.fd \
+     -accel tcg,thread=single \
+     -d guest_errors,unimp \
+     -D qemu_log.txt \
+     -monitor none \
+     -drive if=pflash,format=raw,unit=0,readonly=on,file=flasks/ovmf/RELEASEX64_OVMF_CODE.fd \
      -drive if=pflash,format=raw,unit=1,file=flasks/ovmf/RELEASEX64_OVMF_VARS.fd \
-     -cdrom fullerene.iso \
-     -boot order=d \
+     -drive file=fullerene.iso,media=cdrom,if=ide,format=raw \
      -no-reboot \
-     -d int \
-     -D qemu_log.txt
+     -no-shutdown \
+     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+     -rtc base=utc \
+     -boot menu=on,order=d \
+     -nodefaults
    ```
 
 ## Development
 
 - **Toolchain**: Use `rust-toolchain.toml` for pinning nightly.
 - **Panic Policy**: Aborts in dev/release for no_std compatibility.
-- **Allocator**: Currently a dummy that panics; implement a real one (e.g., linked list or bump) next.
+- **Memory Allocation**: Uses `linked_list_allocator` for heap management with frame allocation tracking.
 - **Testing**: Run in QEMU as above. For unit tests, add `#[test]` in crates (note no_std limitations).
-- **Debugging**: Use serial output and QEMU's `-s -S` for GDB attachment.
+- **Debugging**: Use serial output and QEMU logging. For GDB debugging, enable QEMU GDB stub with `-s -S`.
 
 ## TODO / Next Steps
 
-- Implement a real global allocator and memory management (pager, page frames).
-- Handle interrupts properly (e.g., timer, keyboard).
-- Port or develop userland applications in `toluene`.
-- Add syscall interface between kernel and userland.
-- Support for file systems (e.g., FAT from ISO).
-- Graphics mode beyond VGA text (use framebuffer).
+- Expand filesystem support (block device drivers, persistent storage, FAT filesystem implementation).
+- Enhance userspace with full process isolation and multiple user programs.
+- Implement advanced memory management (copy-on-write, shared memory, virtual filesystem).
+- Add network stack support and device drivers.
+- Improve graphics and GUI framework.
+- Performance optimizations and kernel hardening.
+- Add comprehensive test suite and fuzzing.
 
 See issues on GitHub for tracked tasks.
 

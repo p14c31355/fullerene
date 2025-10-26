@@ -34,7 +34,9 @@ pub fn exit_boot_services_and_jump(
     }
     // Pre-allocate buffer before loop to include it in map key
     let map_buffer_size: usize = 128 * 1024; // 128 KiB
-    let alloc_pages = map_buffer_size.div_ceil(4096).max(1);
+    let alloc_pages = (map_buffer_size + core::mem::size_of::<usize>())
+        .div_ceil(4096)
+        .max(1);
     #[cfg(feature = "debug_loader")]
     log::info!("Buffer vars setup");
 
@@ -57,7 +59,7 @@ pub fn exit_boot_services_and_jump(
         ));
     }
 
-    let map_ptr: *mut c_void = map_phys_addr as *mut c_void;
+    let map_ptr: *mut c_void = (map_phys_addr + core::mem::size_of::<usize>()) as *mut c_void;
 
     // Setup variables for memory map
     let mut map_size: usize = map_buffer_size; // Start with full buffer size
@@ -179,8 +181,13 @@ pub fn exit_boot_services_and_jump(
         }
     }
 
+    // Write descriptor_size before the memory map
+    unsafe {
+        *(map_phys_addr as *mut usize) = descriptor_size;
+    }
+
     // Check if framebuffer config is available and append it to memory map for kernel
-    let mut final_map_size = map_size;
+    let mut final_map_size = map_size + core::mem::size_of::<usize>();
     if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
         .get()
         .and_then(|mutex| *mutex.lock())
@@ -193,11 +200,14 @@ pub fn exit_boot_services_and_jump(
         let config_size = core::mem::size_of::<petroleum::common::uefi::ConfigWithMetadata>();
 
         // Check if buffer has space
-        if map_phys_addr + map_size + config_size <= map_phys_addr + map_buffer_size {
+        let config_offset = map_size + core::mem::size_of::<usize>();
+        if map_phys_addr + config_offset + config_size
+            <= map_phys_addr + map_buffer_size + core::mem::size_of::<usize>()
+        {
             unsafe {
                 core::ptr::copy(
                     &config_with_metadata as *const _ as *const u8,
-                    (map_phys_addr as *mut u8).add(map_size),
+                    (map_phys_addr as *mut u8).add(config_offset),
                     config_size,
                 );
             }
@@ -224,5 +234,5 @@ pub fn exit_boot_services_and_jump(
         );
         log::info!("About to call kernel entry.");
     }
-    entry(image_handle, system_table, map_ptr, final_map_size);
+    entry(image_handle, system_table, map_phys_addr as *mut c_void, final_map_size);
 }

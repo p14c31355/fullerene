@@ -23,25 +23,13 @@ lazy_static! {
         // Set up CPU exception handlers
         setup_idt_handler!(idt, breakpoint, breakpoint_handler);
         setup_idt_handler!(idt, page_fault, page_fault_handler);
-
-
-
-        setup_idt_handler!(idt, double_fault, double_fault_handler);
-        // TODO: Re-enable stack index setting when x86_64 API stabilizes
-        /*
-        let mut double_fault_entry = &mut idt.double_fault;
-        double_fault_entry.set_handler_fn(double_fault_handler);
-        #[cfg(not(target_os = "uefi"))]
         unsafe {
-            double_fault_entry.set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
+            idt.double_fault.set_handler_fn(double_fault_handler)
+                .set_stack_index(crate::gdt::DOUBLE_FAULT_IST_INDEX);
         }
-        */
-
         // Set up hardware interrupt handlers
         unsafe {
-            idt[TIMER_INTERRUPT_INDEX as u8].set_handler_fn(timer_handler);
-            // TODO: Re-enable when set_stack_index API is stable
-            //timer_entry.set_stack_index(gdt::TIMER_IST_INDEX);
+            idt[TIMER_INTERRUPT_INDEX as u8].set_handler_fn(timer_handler).set_stack_index(crate::gdt::TIMER_IST_INDEX);
             idt[KEYBOARD_INTERRUPT_INDEX as u8].set_handler_fn(keyboard_handler);
             idt[MOUSE_INTERRUPT_INDEX as u8].set_handler_fn(mouse_handler);
         }

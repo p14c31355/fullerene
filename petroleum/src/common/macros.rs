@@ -964,7 +964,7 @@ macro_rules! map_identity_range_macro {
 #[macro_export]
 macro_rules! map_range_with_log_macro {
     ($mapper:expr, $frame_allocator:expr, $phys_start:expr, $virt_start:expr, $num_pages:expr, $flags:expr) => {{
-        use x86_64::structures::paging::{mapper::MapToError, Size4KiB};
+        use x86_64::structures::paging::{Size4KiB, mapper::MapToError};
         log_page_table_op!("Mapping range", $phys_start, $virt_start, $num_pages);
         for i in 0..$num_pages {
             let phys_addr = $phys_start + i * 4096;

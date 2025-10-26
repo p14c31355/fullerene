@@ -209,4 +209,38 @@ pub fn _print(args: fmt::Arguments) {
     }
 }
 
+// Fallback graphics initialization for when framebuffer config is not available
+pub fn init_fallback_graphics() -> Result<(), &'static str> {
+    #[cfg(target_os = "uefi")]
+    {
+        // Initialize VGA graphics mode for UEFI fallback
+        petroleum::graphics::detect_and_init_vga_graphics();
+
+        // Create a basic VGA framebuffer config
+        let vga_config_base = petroleum::common::VgaFramebufferConfig {
+            address: 0xA0000, // Standard VGA frame buffer
+            width: 320,
+            height: 200,
+            bpp: 8,
+        };
+        let fullerene_config = petroleum::common::FullereneFramebufferConfig {
+            address: vga_config_base.address,
+            width: vga_config_base.width,
+            height: vga_config_base.height,
+            pixel_format: petroleum::common::EfiGraphicsPixelFormat::PixelFormatMax, // VGA mode
+            bpp: vga_config_base.bpp,
+            stride: vga_config_base.width * vga_config_base.bpp / 8,
+        };
+        petroleum::info_log!("Graphics: Initializing VGA fallback framebuffer");
+        init(&fullerene_config);
+        petroleum::info_log!("Graphics: VGA fallback framebuffer initialized");
+    }
+    #[cfg(not(target_os = "uefi"))]
+    {
+        // For BIOS, VGA graphics is handled separately if needed
+        petroleum::info_log!("Graphics: Skipping graphics init on BIOS (handled elsewhere)");
+    }
+    Ok(())
+}
+
 // print! and println! macros moved to petroleum::common::macros for consistency
