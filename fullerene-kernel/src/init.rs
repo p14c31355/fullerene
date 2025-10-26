@@ -29,6 +29,10 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             crate::vga::init_vga(physical_memory_offset);
             Ok(())
         }),
+        init_step!("Graphics", || {
+            crate::graphics::text::init_fallback_graphics()?;
+            Ok(())
+        }),
         init_step!("APIC", || {
             interrupts::init_apic();
             Ok(())

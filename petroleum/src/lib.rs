@@ -33,6 +33,7 @@ pub use graphics::{
     color::{self, *},
     init_vga_graphics,
 };
+pub use graphics::*;
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
 pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 // Heap allocation exports

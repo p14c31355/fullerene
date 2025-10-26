@@ -4,6 +4,17 @@ use petroleum::{
 };
 use spin::{Mutex, Once};
 
+// VGA port constants
+const VGA_MISC_WRITE: u16 = 0x3C2;
+const VGA_SEQ_INDEX: u16 = 0x3C4;
+const VGA_SEQ_DATA: u16 = 0x3C5;
+const VGA_CRTC_INDEX: u16 = 0x3D4;
+const VGA_CRTC_DATA: u16 = 0x3D5;
+const VGA_GC_INDEX: u16 = 0x3CE;
+const VGA_GC_DATA: u16 = 0x3CF;
+const VGA_AC_INDEX: u16 = 0x3C0;
+const VGA_AC_WRITE: u16 = 0x3C1;
+
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
 

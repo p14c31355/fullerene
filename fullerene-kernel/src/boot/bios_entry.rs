@@ -28,5 +28,7 @@ pub unsafe extern "C" fn _start() -> ! {
 
     // Keep kernel running instead of exiting
     log::info!("BIOS boot complete, kernel running...");
-    petroleum::halt_loop();
+
+    // Enter the main kernel scheduler loop
+    crate::scheduler::scheduler_loop();
 }
