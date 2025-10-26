@@ -79,10 +79,10 @@ pub fn read_pci_device_info(
         return None;
     }
 
-    let vendor_id = pci_config_read!(bus, device, function, PCI_VENDOR_ID_OFFSET, 16) as u16;
-    let device_id = pci_config_read!(bus, device, function, PCI_DEVICE_ID_OFFSET, 16) as u16;
-    let class_code = pci_config_read!(bus, device, function, PCI_CLASS_CODE_OFFSET, 8) as u8;
-    let subclass = pci_config_read!(bus, device, function, PCI_SUBCLASS_OFFSET, 8) as u8;
+    let vendor_id = pci_config_read!(bus, device, function, PCI_VENDOR_ID_OFFSET, 16);
+    let device_id = pci_config_read!(bus, device, function, PCI_DEVICE_ID_OFFSET, 16);
+    let class_code = pci_config_read!(bus, device, function, PCI_CLASS_CODE_OFFSET, 8);
+    let subclass = pci_config_read!(bus, device, function, PCI_SUBCLASS_OFFSET, 8);
 
     let handle = build_pci_config_address(bus, device, function, 0) as usize;
 
