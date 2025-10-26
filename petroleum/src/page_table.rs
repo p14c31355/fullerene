@@ -646,11 +646,12 @@ unsafe fn map_available_memory_to_higher_half(
     process_memory_descriptors(memory_map, |desc, start_frame, end_frame| {
         let phys_start = desc.get_physical_start();
         let pages = (end_frame - start_frame) as u64;
-        // Always give writable access to available memory regions for compatibility
-        let mut flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-        if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-            flags |= PageTableFlags::NO_EXECUTE;
-        }
+        // Always give writable access to available memory regions for compatibility, but executable code regions should not be writable
+        let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+            PageTableFlags::PRESENT // Executable, read-only
+        } else {
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE // Writable, not executable
+        };
         unsafe {
             let _ = map_to_higher_half_with_log(
                 mapper,
@@ -1284,11 +1285,12 @@ impl<'a> PageTableInitializer<'a> {
                 if should_identity_map {
                     let phys_start = desc.get_physical_start();
                     let pages = desc.get_page_count();
-                    // Always give writable access to available memory regions for compatibility
-                    let mut flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-                    if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-                        flags |= PageTableFlags::NO_EXECUTE;
-                    }
+                    // Always give writable access to available memory regions for compatibility, but executable code regions should not be writable
+                    let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+                        PageTableFlags::PRESENT // Executable, read-only
+                    } else {
+                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE // Writable, not executable
+                    };
                     let _: core::result::Result<
                         (),
                         x86_64::structures::paging::mapper::MapToError<Size4KiB>,
