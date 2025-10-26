@@ -468,7 +468,7 @@ pub fn load_efi_image(
     let address_of_entry_point_ptr = unsafe { (nt_headers_ptr as *const u8).add(core::mem::offset_of!(ImageNtHeaders64, optional_header) + core::mem::offset_of!(ImageOptionalHeader64, address_of_entry_point)) as *const u32 };
     let address_of_entry_point = unsafe { core::ptr::read_unaligned(address_of_entry_point_ptr) } as usize;
     let image_size_val = unsafe { core::ptr::read_unaligned(image_size_ptr) as u64 };
-    let _pages_needed = (image_size_val.max(address_of_entry_point as u64 + 4096)).div_ceil(4096) as usize;
+    let pages_needed = (image_size_val.max(address_of_entry_point as u64 + 4096)).div_ceil(4096) as usize;
 
     let preferred_base_ptr = unsafe { (nt_headers_ptr as *const u8).add(core::mem::offset_of!(ImageNtHeaders64, optional_header) + core::mem::offset_of!(ImageOptionalHeader64, image_base)) as *const u64 };
     let preferred_base = unsafe { core::ptr::read_unaligned(preferred_base_ptr) } as usize;
