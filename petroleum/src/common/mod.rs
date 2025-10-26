@@ -23,6 +23,32 @@ pub fn setup_vga_mode_common() {
 
 pub mod uefi;
 
+/// System diagnostics structure for monitoring
+#[derive(Clone, Copy)]
+pub struct SystemStats {
+    pub total_processes: usize,
+    pub active_processes: usize,
+    pub memory_used: usize,
+    pub uptime_ticks: u64,
+}
+
+/// Collect current system statistics
+pub fn collect_system_stats() -> SystemStats {
+    // Count total and active processes - would need to call from kernel functions
+    // For now, use placeholder or move logic here when integrating
+    let total_processes = 0; // Placeholder, actual from fullerene-kernel::process
+    let active_processes = 0; // Placeholder
+    let (memory_used, _, _) = crate::get_memory_stats!();
+    let uptime_ticks = 0; // Placeholder
+
+    SystemStats {
+        total_processes,
+        active_processes,
+        memory_used,
+        uptime_ticks,
+    }
+}
+
 // Memory initialization state tracking
 static MEMORY_INITIALIZED: spin::Mutex<bool> = spin::Mutex::new(false);
 
