@@ -444,9 +444,7 @@ pub fn block_current() {
             context_switch(old_pid, new_pid);
         }
     } else {
-        // This case should ideally not be reached if the current_pid is valid.
-        // Consider adding a panic or an error log here for robustness.
-        drop(process_list);
+        panic!("State inconsistency: current PID {} not found in process list", pid);
     }
 }
 
