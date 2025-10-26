@@ -64,63 +64,72 @@ pub(crate) fn syscall_exit(exit_code: i32) -> SyscallResult {
 fn syscall_fork() -> SyscallResult {
     let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
-    // Start lock, find parent and perform expensive page table operation inside lock
-    let (child_pid, child_process_result) = {
-        let mut process_list = crate::process::PROCESS_LIST.lock();
+    // First, find parent process and get info while holding lock briefly
+    let (parent_page_table_phys_addr, parent_context, parent_user_stack, parent_entry_point) = {
+        let process_list = crate::process::PROCESS_LIST.lock();
         let parent_process = process_list
-            .iter_mut()
+            .iter()
             .find(|p| p.id == current_pid)
             .ok_or(SyscallError::NoSuchProcess)?;
 
-        // Clone the parent process page table
-        let parent_page_table = parent_process
-            .page_table
-            .as_mut()
-            .ok_or(SyscallError::OutOfMemory)?;
-        let cloned_table_addr = parent_page_table
-            .clone_page_table(parent_process.page_table_phys_addr.as_u64() as usize)?;
-        let cloned_pml4_frame = x86_64::structures::paging::PhysFrame::containing_address(
-            x86_64::PhysAddr::new(cloned_table_addr as u64),
-        );
-
-        // Create new page table manager with cloned frame
-        let mut child_page_table =
-            petroleum::page_table::PageTableManager::new_with_frame(cloned_pml4_frame);
-        petroleum::initializer::Initializable::init(&mut child_page_table)
-            .map_err(|_| SyscallError::InvalidArgument)?;
-
-        // Allocate kernel stack for child
-        let stack_layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
-        let kernel_stack_ptr = unsafe { alloc::alloc::alloc(stack_layout) };
-        if kernel_stack_ptr.is_null() {
-            return Err(SyscallError::OutOfMemory);
-        }
-        let kernel_stack_top = VirtAddr::new(kernel_stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
-
-        let child_pid = NEXT_PID.fetch_add(1, Ordering::Relaxed);
-
-        // Create child process
-        let child_process = Process {
-            id: child_pid,
-            name: "child",
-            state: ProcessState::Ready,
-            context: parent_process.context, // Copy parent context
-            page_table_phys_addr: PhysAddr::new(cloned_table_addr as u64),
-            page_table: Some(child_page_table),
-            kernel_stack: kernel_stack_top,
-            user_stack: parent_process.user_stack, // Same stack for now (should copy)
-            entry_point: parent_process.entry_point,
-            exit_code: None,
-            parent_id: Some(current_pid),
-        };
-
-        (child_pid, child_process)
+        (
+            parent_process.page_table_phys_addr,
+            parent_process.context,
+            parent_process.user_stack,
+            parent_process.entry_point,
+        )
     }; // Lock released here
 
-    // Set child context to return 0 from fork (outside lock)
-    let mut child_box = Box::new(child_process_result);
-    child_box.context.rax = 0; // Child gets 0 from fork
-    child_box.init_context(child_box.kernel_stack);
+    // Perform expensive page table cloning outside the lock
+    let cloned_table_addr = {
+        let mut manager_guard = crate::memory_management::get_memory_manager().lock();
+        let manager = manager_guard.as_mut().ok_or(SyscallError::OutOfMemory)?;
+        manager.clone_page_table(parent_page_table_phys_addr.as_u64() as usize)?
+    };
+
+    let cloned_pml4_frame = x86_64::structures::paging::PhysFrame::containing_address(
+        x86_64::PhysAddr::new(cloned_table_addr as u64),
+    );
+
+    // Create new page table manager with cloned frame
+    let mut child_page_table =
+        petroleum::page_table::PageTableManager::new_with_frame(cloned_pml4_frame);
+    petroleum::initializer::Initializable::init(&mut child_page_table)
+        .map_err(|_| SyscallError::InvalidArgument)?;
+
+    // Allocate kernel stack for child
+    let stack_layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
+    let kernel_stack_ptr = unsafe { alloc::alloc::alloc(stack_layout) };
+    if kernel_stack_ptr.is_null() {
+        return Err(SyscallError::OutOfMemory);
+    }
+    let kernel_stack_top = VirtAddr::new(kernel_stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
+
+    let child_pid = NEXT_PID.fetch_add(1, Ordering::Relaxed);
+
+    // Create child process
+    let mut child_process = Process {
+        id: child_pid,
+        name: "child",
+        state: ProcessState::Ready,
+        context: parent_context, // Copy parent context
+        page_table_phys_addr: PhysAddr::new(cloned_table_addr as u64),
+        page_table: Some(child_page_table),
+        kernel_stack: kernel_stack_top,
+        user_stack: parent_user_stack, // Will be updated after copying
+        entry_point: parent_entry_point,
+        exit_code: None,
+        parent_id: Some(current_pid),
+    };
+
+    // Set child context to return 0 from fork
+    child_process.context.rax = 0; // Child gets 0 from fork
+    child_process.init_context(child_process.kernel_stack);
+
+    // TODO: Implement full memory copying for user space
+    // For now, we only copy page tables. User memory is shared (copy-on-write not implemented)
+
+    let mut child_box = Box::new(child_process);
 
     // Re-acquire lock briefly to add to process list
     {
