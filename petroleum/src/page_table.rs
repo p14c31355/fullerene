@@ -619,9 +619,9 @@ unsafe fn map_uefi_runtime_to_higher_half(
                         | crate::common::EfiMemoryType::EfiRuntimeServicesData
                 )
             {
-                let mut flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-                if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-                    flags |= PageTableFlags::NO_EXECUTE;
+                let mut flags = PageTableFlags::PRESENT;
+                if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesData {
+                    flags |= PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
                 }
                 Some(higher_half_config!(
                     phys_offset,
