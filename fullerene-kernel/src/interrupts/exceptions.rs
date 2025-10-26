@@ -72,9 +72,6 @@ pub fn handle_page_fault(
         writeln!(writer, "Stack pointer (RSP): {:#x}", stack_frame.stack_pointer.as_u64()).ok();
         writeln!(writer).ok();
         writeln!(writer, "Backtrace:").ok();
-    });
-    // Note: Backtrace printing is done outside the lock_and_modify to avoid nested locks
-    petroleum::lock_and_modify!(petroleum::SERIAL1, writer, {
         print_backtrace(&mut *writer);
     });
 
