@@ -69,12 +69,11 @@ impl MemoryDescriptorValidator for EfiMemoryDescriptor {
 
 /// Validate an EFI memory descriptor for safety
 pub fn is_valid_memory_descriptor(descriptor: &EfiMemoryDescriptor) -> bool {
-    // Check memory type is within valid UEFI range (0x0-0x7FFFFFFF)
-    // Allow OEM-specific memory types up to the UEFI maximum
-    // But still be conservative about obviously garbage values
+    // Check memory type is within valid UEFI range (0x0-0x0F)
+    // UEFI spec defines EfiMaxMemoryType = 15 (0x0F)
     let mem_type = descriptor.type_ as u32;
-    if mem_type >= 0x80000000 {
-        debug_log_no_alloc!("Invalid memory type (too high): ", mem_type);
+    if mem_type > 15 {
+        debug_log_no_alloc!("Invalid memory type (out of range): 0x", mem_type as usize);
         return false;
     }
     debug_log_validate_macro!("Memory type", mem_type);

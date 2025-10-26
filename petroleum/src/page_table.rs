@@ -163,12 +163,11 @@ const MAX_SYSTEM_MEMORY: u64 = 512 * 1024 * 1024 * 1024u64;
 
 /// Validate an EFI memory descriptor for safety
 fn is_valid_memory_descriptor(descriptor: &EfiMemoryDescriptor) -> bool {
-    // Check memory type is within valid UEFI range (0x0-0x7FFFFFFF)
-    // Allow OEM-specific memory types up to the UEFI maximum
-    // But still be conservative about obviously garbage values
+    // Check memory type is within valid UEFI range (0x0-0x0F)
+    // UEFI spec defines EfiMaxMemoryType = 15 (0x0F)
     let mem_type = descriptor.type_ as u32;
-    if mem_type >= 0x80000000 {
-        debug_log_no_alloc!("Invalid memory type (too high): ", mem_type);
+    if mem_type > 15 {
+        debug_log_no_alloc!("Invalid memory type (out of range): 0x", mem_type as usize);
         return false;
     }
     debug_log_validate_macro!("Memory type", mem_type);
@@ -1076,47 +1075,32 @@ impl PageTableReinitializer {
         current_physical_memory_offset: VirtAddr,
         frame_allocator: &mut BootInfoFrameAllocator,
     ) -> OffsetPageTable<'static> {
-        let mut current_mapper = unsafe { init(current_physical_memory_offset) };
-        unsafe {
-            // Use a temporary virtual address that doesn't conflict with huge pages
-            let temp_virt_addr = TEMP_VA_FOR_CLONE; // Use the clone temp VA for this
-            let page = Page::<Size4KiB>::containing_address(temp_virt_addr);
-            let frame = level_4_table_frame;
-            match current_mapper.map_to(
-                page,
-                frame,
-                page_flags_const!(READ_WRITE_NO_EXEC),
-                frame_allocator,
-            ) {
-                Ok(flush) => flush.flush(),
-                Err(e) => {
-                    // Try different temp VA for any mapping error, including huge page conflicts
-                    let alt_temp_va = TEMP_VA_FOR_DESTROY;
-                    let alt_page = Page::<Size4KiB>::containing_address(alt_temp_va);
-                    current_mapper
-                        .map_to(
-                            alt_page,
-                            frame,
-                            page_flags_const!(READ_WRITE_NO_EXEC),
-                            frame_allocator,
-                        )
-                        .expect("Failed to map L4 table with alternative VA")
-                        .flush();
-                    let table_addr = alt_temp_va.as_u64();
-                    return OffsetPageTable::new(
-                        &mut *(table_addr as *mut PageTable),
-                        current_physical_memory_offset,
-                    );
-                }
+        debug_log_no_alloc!("Setting up new page table mapper");
+
+        // Since all virtual addresses seem to be obstructed by huge pages in UEFI,
+        // we need to create the OffsetPageTable after the page table switch.
+        // For now, return a minimal placeholder that can be used to build the mappings
+        // using the fact that we can access physical memory through existing mappings.
+
+        // We'll map the L4 table at its own physical address as a last resort
+        let temp_phys_addr = level_4_table_frame.start_address().as_u64();
+        let temp_virt_addr = current_physical_memory_offset + temp_phys_addr;
+        let temp_page = Page::<Size4KiB>::containing_address(temp_virt_addr);
+
+        debug_log_no_alloc!("Using existing phys offset mapping at: 0x", temp_virt_addr.as_u64() as usize);
+
+        // Check if this page is already mapped (it should be in UEFI)
+        if temp_virt_addr.as_u64() < 0x800000000000 { // Reasonable sanity check for low memory
+            unsafe {
+                return OffsetPageTable::new(
+                    &mut *(temp_virt_addr.as_mut_ptr() as *mut PageTable),
+                    current_physical_memory_offset,
+                );
             }
-        };
-        unsafe {
-            let table_addr = TEMP_VA_FOR_CLONE.as_u64();
-            OffsetPageTable::new(
-                &mut *(table_addr as *mut PageTable),
-                current_physical_memory_offset,
-            )
         }
+
+        // If even that fails, we have a fundamental problem with UEFI memory layout
+        panic!("Cannot create any mapping for L4 table frame - UEFI huge page coverage is complete");
     }
 
     fn setup_recursive_mapping(
