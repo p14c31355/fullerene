@@ -29,7 +29,7 @@ lazy_static! {
         }
         // Set up hardware interrupt handlers
         unsafe {
-            idt[TIMER_INTERRUPT_INDEX as u8].set_handler_fn(timer_handler);
+            idt[TIMER_INTERRUPT_INDEX as u8].set_handler_fn(timer_handler).set_stack_index(crate::gdt::TIMER_IST_INDEX);
             idt[KEYBOARD_INTERRUPT_INDEX as u8].set_handler_fn(keyboard_handler);
             idt[MOUSE_INTERRUPT_INDEX as u8].set_handler_fn(mouse_handler);
         }
