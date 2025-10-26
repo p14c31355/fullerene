@@ -1,6 +1,6 @@
 use super::interface::{SyscallError, SyscallResult, copy_user_string};
 use crate::process;
-use petroleum::write_serial_bytes;
+use petroleum::{page_table::PageTableHelper, write_serial_bytes};
 use alloc::boxed::Box;
 use core::alloc::Layout;
 use core::sync::atomic::Ordering;
@@ -64,15 +64,15 @@ pub(crate) fn syscall_exit(exit_code: i32) -> SyscallResult {
 fn syscall_fork() -> SyscallResult {
     let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
-    let process_list = crate::process::PROCESS_LIST.lock();
+    let mut process_list = crate::process::PROCESS_LIST.lock();
     let parent_process = process_list
-        .iter()
+        .iter_mut()
         .find(|p| p.id == current_pid)
         .ok_or(SyscallError::NoSuchProcess)?;
 
     // Clone the parent process page table
-    let parent_page_table = parent_process.page_table.as_ref().unwrap();
-    let cloned_table_addr = parent_page_table.clone_page_table()?;
+    let parent_page_table = parent_process.page_table.as_mut().unwrap();
+    let cloned_table_addr = parent_page_table.create_page_table()?;
     let cloned_pml4_frame = x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(cloned_table_addr as u64));
 
     // Create new page table manager with cloned frame
