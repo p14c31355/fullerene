@@ -298,7 +298,8 @@ fn perform_periodic_health_checks(stats: &SystemStats, current_tick: u64) {
 /// Perform periodic filesystem and maintenance tasks
 fn perform_periodic_system_tasks(stats: &SystemStats, current_tick: u64, iteration_count: u64) {
     // Log to system.log every 3000 ticks
-            use core::fmt::Write;
+    petroleum::periodic_task!(current_tick, 3000, {
+        use core::fmt::Write;
         let mut log_content = alloc::string::String::new();
         write!(log_content, "Uptime: {}, Processes: {}/{}, Memory Used: {}\n",
             stats.uptime_ticks, stats.active_processes, stats.total_processes, stats.memory_used).ok();
@@ -324,6 +325,7 @@ fn perform_periodic_system_tasks(stats: &SystemStats, current_tick: u64, iterati
             }
         }
         perform_automated_backup();
+    });
 
     // Run system maintenance every 2000 ticks
     if current_tick % 2000 == 0 {
