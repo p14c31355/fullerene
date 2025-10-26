@@ -33,6 +33,10 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             crate::graphics::text::init_fallback_graphics()?;
             Ok(())
         }),
+        init_step!("LOCAL_APIC", || {
+            *petroleum::LOCAL_APIC_ADDRESS.lock() = 0xfee00000 as *mut u32;
+            Ok(())
+        }),
         init_step!("APIC", || {
             interrupts::init_apic();
             Ok(())
@@ -91,7 +95,12 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
 
     crate::gdt::init(heap_start_addr); // Pass the actual heap start address
     interrupts::init(); // Initialize IDT
+    // For UEFI, APIC is used, for BIOS, use PIC initially
     // Heap already initialized
     petroleum::serial::serial_init(); // Initialize serial early for debugging
     crate::vga::init_vga(physical_memory_offset);
+    crate::process::init();
+    crate::syscall::init();
+    crate::fs::init();
+    crate::loader::init();
 }
