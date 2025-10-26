@@ -206,10 +206,10 @@ pub fn create_process(
     name: &'static str,
     entry_point_address: VirtAddr,
 ) -> Result<ProcessId, petroleum::common::logging::SystemError> {
-    write_serial_bytes!(0x3F8, 0x3FD, b"Process: create_process starting\n");
+    debug_log!("Process: create_process starting");
 
     let mut process = Process::new(name, entry_point_address);
-    write_serial_bytes!(0x3F8, 0x3FD, b"Process: Process::new done\n");
+    debug_log!("Process: Process::new done");
 
     // Allocate kernel stack for the process
     let stack_layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
@@ -218,7 +218,7 @@ pub fn create_process(
         return Err(petroleum::common::logging::SystemError::MemOutOfMemory);
     }
     let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
-    write_serial_bytes!(0x3F8, 0x3FD, b"Process: Kernel stack allocated\n");
+    debug_log!("Process: Kernel stack allocated");
 
     // Create page table for the process
     let page_table = match crate::memory_management::create_process_page_table() {
@@ -236,12 +236,12 @@ pub fn create_process(
     process.page_table = Some(page_table);
 
     process.init_context(kernel_stack_top);
-    write_serial_bytes!(0x3F8, 0x3FD, b"Process: Context initialized\n");
+    debug_log!("Process: Context initialized");
 
     let pid = process.id;
     let mut process_list = PROCESS_LIST.lock();
     process_list.push(Box::new(process));
-    write_serial_bytes!(0x3F8, 0x3FD, b"Process: Process added to list\n");
+    debug_log!("Process: Process added to list");
 
     Ok(pid)
 }
@@ -314,22 +314,22 @@ fn idle_loop() {
 
 /// Schedule next process (round-robin)
 pub fn schedule_next() {
-    log::info!("Schedule_next: Starting process scheduling");
+    petroleum::scheduler_log!("Starting process scheduling");
 
     let mut process_list = PROCESS_LIST.lock();
-    log::info!(
-        "Schedule_next: Acquired process list lock, {} processes",
+    petroleum::scheduler_log!(
+        "Acquired process list lock, {} processes",
         process_list.len()
     );
 
     // Handle empty process list
     if process_list.is_empty() {
-        log::info!("Schedule_next: No processes in list, cannot schedule");
+        petroleum::scheduler_log!("No processes in list, cannot schedule");
         return;
     }
 
     let current_index = *CURRENT_PROCESS_INDEX.lock();
-    log::info!("Schedule_next: Current index: {}", current_index);
+    petroleum::scheduler_log!("Current index: {}", current_index);
 
     // Find next ready process
     let mut next_index = current_index;
@@ -338,30 +338,27 @@ pub fn schedule_next() {
 
     loop {
         next_index = (next_index + 1) % process_list.len();
-        log::info!(
-            "Schedule_next: Checking process at index {}, name: {}, state: {:?}",
+        petroleum::scheduler_log!(
+            "Checking process at index {}, name: {}, state: {:?}",
             next_index,
             process_list[next_index].name,
             process_list[next_index].state
         );
 
         if process_list[next_index].state == ProcessState::Ready {
-            log::info!("Schedule_next: Found ready process at index {}", next_index);
+            petroleum::scheduler_log!("Found ready process at index {}", next_index);
             found_ready = true;
             break;
         }
 
         if next_index == start_index {
-            log::info!("Schedule_next: Wrapped around, all processes blocked or completed check");
+            petroleum::scheduler_log!("Wrapped around, all processes blocked or completed check");
             // All processes blocked, run idle
             if let Some(idle_idx) = process_list.iter().position(|p| p.name == "idle") {
                 next_index = idle_idx;
-                log::info!(
-                    "Schedule_next: Switching to idle process at index {}",
-                    idle_idx
-                );
+                petroleum::scheduler_log!("Switching to idle process at index {}", idle_idx);
             } else {
-                log::info!("Schedule_next: No idle process found, using first process");
+                petroleum::scheduler_log!("No idle process found, using first process");
                 next_index = 0;
             }
             break;
@@ -371,8 +368,8 @@ pub fn schedule_next() {
     // Update current process tracking
     *CURRENT_PROCESS_INDEX.lock() = next_index;
     *CURRENT_PROCESS.lock() = Some(process_list[next_index].id);
-    log::info!(
-        "Schedule_next: Set current process index to {}, PID {}",
+    petroleum::scheduler_log!(
+        "Set current process index to {}, PID {}",
         next_index,
         process_list[next_index].id
     );
@@ -382,17 +379,17 @@ pub fn schedule_next() {
         if let Some(current) = process_list.get_mut(current_index) {
             if current.state == ProcessState::Running {
                 current.state = ProcessState::Ready;
-                log::info!("Schedule_next: Marked current process as ready");
+                petroleum::scheduler_log!("Marked current process as ready");
             }
         }
 
         if let Some(next) = process_list.get_mut(next_index) {
             next.state = ProcessState::Running;
-            log::info!("Schedule_next: Marked next process as running");
+            petroleum::scheduler_log!("Marked next process as running");
         }
     }
 
-    log::info!("Schedule_next: Process scheduling completed");
+    petroleum::scheduler_log!("Process scheduling completed");
 }
 
 /// Get current process ID

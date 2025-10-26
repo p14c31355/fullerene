@@ -103,7 +103,7 @@ fn check_memory_usage() {
     }
 }
 
-/// Check process count and warn if too many active
+/// Check process count and log warnings only when threshold exceeded
 fn check_process_count() {
     let active_count = crate::process::get_active_process_count();
     if active_count > MAX_PROCESSES_THRESHOLD {
@@ -170,20 +170,14 @@ fn display_system_stats_on_vga(stats: &SystemStats, interval_ticks: u64) {
             ));
 
             // Clear the status lines first
-            for col in 0..80 {
-                vga_writer.set_char_at(23, col, blank_char);
-                vga_writer.set_char_at(24, col, blank_char);
-            }
+            petroleum::clear_line_range!(vga_writer, 23, 26, 0, 80, blank_char);
 
-            // Display system info on bottom rows
-            vga_writer.set_position(23, 0);
-            let _ = write!(
-                vga_writer,
-                "Processes: {}/{}  ",
-                stats.active_processes, stats.total_processes
+            // Display system info on bottom rows using macro to reduce repetition
+            petroleum::display_vga_stats_lines!(vga_writer,
+                23, "Processes: {}/{}", stats.active_processes, stats.total_processes;
+                24, "Memory: {} KB", stats.memory_used / 1024;
+                25, "Tick: {}", stats.uptime_ticks
             );
-            let _ = write!(vga_writer, "Memory: {} KB  ", stats.memory_used / 1024);
-            let _ = write!(vga_writer, "Tick: {}", stats.uptime_ticks);
             vga_writer.update_cursor();
         }
     });
@@ -255,50 +249,6 @@ fn manage_background_services() {
     }
 }
 
-/// Helper function for logging system stats to filesystem
-fn log_system_stats_to_fs(stats: &SystemStats) {
-    // Use alloc::format! to create a log string with actual stats.
-    let log_content = alloc::format!(
-        "Uptime: {}, Processes: {}/{}, Memory Used: {}\n",
-        stats.uptime_ticks,
-        stats.active_processes,
-        stats.total_processes,
-        stats.memory_used
-    );
-
-    static LOG_FILE_CREATED: spin::Mutex<bool> = spin::Mutex::new(false);
-    let mut log_file_created = LOG_FILE_CREATED.lock();
-
-    if !*log_file_created {
-        match crate::fs::create_file("system.log", log_content.as_bytes()) {
-            Ok(_) => {
-                *log_file_created = true;
-                log::debug!("Created system.log file");
-            }
-            Err(e) => {
-                log::warn!("Failed to create system.log file: {:?}", e);
-            }
-        }
-    } else {
-        match crate::fs::open_file("system.log") {
-            Ok(fd) => {
-                if let Err(e) = crate::fs::seek_file(fd, 0) {
-                    log::warn!("Failed to seek in system.log: {:?}", e);
-                }
-                if let Err(e) = crate::fs::write_file(fd, log_content.as_bytes()) {
-                    log::warn!("Failed to write to system.log: {:?}", e);
-                }
-                if let Err(e) = crate::fs::close_file(fd) {
-                    log::warn!("Failed to close system.log: {:?}", e);
-                }
-            }
-            Err(e) => {
-                log::warn!("Failed to open system.log file: {:?}", e);
-            }
-        }
-    }
-}
-
 /// Periodic OS feature: automated filesystem backup
 fn perform_automated_backup() {
     // Simple backup: fixed message
@@ -336,7 +286,7 @@ fn process_scheduler_iteration() {
 /// Perform periodic health checks and statistics
 fn perform_periodic_health_checks(stats: &SystemStats, current_tick: u64) {
     static LAST_HEALTH_CHECK_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
-    check_periodic!(LAST_HEALTH_CHECK_TICK, 1000, current_tick, {
+    petroleum::check_periodic!(LAST_HEALTH_CHECK_TICK, 1000, current_tick, {
         perform_system_health_checks();
         log_system_stats(stats, LOG_INTERVAL_TICKS);
         display_system_stats_on_vga(stats, DISPLAY_INTERVAL_TICKS);
@@ -345,17 +295,63 @@ fn perform_periodic_health_checks(stats: &SystemStats, current_tick: u64) {
 
 /// Perform periodic filesystem and maintenance tasks
 fn perform_periodic_system_tasks(stats: &SystemStats, current_tick: u64, iteration_count: u64) {
-    periodic_task!(current_tick, 3000, {
-        log_system_stats_to_fs(stats);
+    // Log to system.log every 3000 ticks
+    petroleum::periodic_task!(current_tick, 3000, {
+        use core::fmt::Write;
+        let mut log_content = alloc::string::String::new();
+        write!(
+            log_content,
+            "Uptime: {}, Processes: {}/{}, Memory Used: {}\n",
+            stats.uptime_ticks, stats.active_processes, stats.total_processes, stats.memory_used
+        )
+        .ok();
+
+        static LOG_FILE_CREATED: spin::Mutex<bool> = spin::Mutex::new(false);
+        let mut log_file_created = LOG_FILE_CREATED.lock();
+
+        if !*log_file_created {
+            match crate::fs::create_file("system.log", log_content.as_bytes()) {
+                Ok(_) => {
+                    *log_file_created = true;
+                    log::info!("System statistics logged to system.log");
+                }
+                Err(e) => {
+                    log::warn!("Failed to create system.log: {:?}", e);
+                }
+            }
+        } else {
+            match crate::fs::open_file("system.log") {
+                Ok(fd) => {
+                    if let Err(e) = crate::fs::seek_file(fd, 0) {
+                        log::warn!("Failed to seek in system.log: {:?}", e);
+                    }
+                    if let Err(e) = crate::fs::write_file(fd, log_content.as_bytes()) {
+                        log::warn!("Failed to write to system.log: {:?}", e);
+                    }
+                    if let Err(e) = crate::fs::close_file(fd) {
+                        log::warn!("Failed to close system.log: {:?}", e);
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Failed to open system.log file: {:?}", e);
+                }
+            }
+        }
         perform_automated_backup();
     });
 
-    periodic_task!(current_tick, 2000, {
+    // Run system maintenance every 2000 ticks
+    petroleum::periodic_task!(current_tick, 2000, {
         perform_system_maintenance();
     });
-
-    perform_memory_capacity_check(current_tick);
-    perform_process_cleanup_check(iteration_count);
+    // Memory capacity check every 10000 ticks
+    petroleum::periodic_task!(current_tick, 10000, {
+        perform_memory_capacity_check(current_tick);
+    });
+    // Process cleanup check every 100 iterations
+    petroleum::periodic_task!(iteration_count, 100, {
+        perform_process_cleanup_check(iteration_count);
+    });
 }
 
 /// Check and log memory utilization periodically
@@ -427,22 +423,14 @@ fn initialize_shell_process() -> crate::process::ProcessId {
 /// Main kernel scheduler loop - orchestrates all system functionality
 pub fn scheduler_loop() -> ! {
     log::info!("Starting enhanced OS scheduler with integrated system features...");
-    write_serial_bytes!(
-        0x3F8,
-        0x3FD,
-        b"Scheduler: About to initialize shell process\n"
-    );
+    debug_log!("Scheduler: About to initialize shell process");
 
     let _ = initialize_shell_process();
-    write_serial_bytes!(
-        0x3F8,
-        0x3FD,
-        b"Scheduler: Shell process initialized successfully\n"
-    );
+    debug_log!("Scheduler: Shell process initialized successfully");
 
     // Main scheduler loop - continuously execute processes with integrated OS functionality
     log::info!("Scheduler: Entering main loop");
-    write_serial_bytes!(0x3F8, 0x3FD, b"Scheduler: Main loop starting\n");
+    debug_log!("Scheduler: Main loop starting");
 
     // Print to VGA if available for GUI output
     if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {
@@ -468,25 +456,31 @@ fn emergency_condition_handler() {
     check_emergency_process_count();
 }
 
-/// Check for critical memory emergency conditions
-fn check_emergency_memory() {
-    let (used, total, _) = petroleum::get_memory_stats!();
-    if total > 0 && (used as u128 * 100 / total as u128) > EMERGENCY_MEMORY_THRESHOLD as u128 {
-        log::error!("EMERGENCY: Critical memory usage detected!");
+petroleum::health_check!(
+    check_emergency_memory,
+    {
+        let (used, total, _) = petroleum::get_memory_stats!();
+        total > 0 && (used as u128 * 100 / total as u128) > EMERGENCY_MEMORY_THRESHOLD as u128
+    },
+    error,
+    "EMERGENCY: Critical memory usage detected!",
+    {
         // In a full implementation, this would:
         // 1. Kill memory-hog processes
         // 2. Perform emergency memory cleanup
         // 3. Log diagnostic information
     }
-}
+);
 
-/// Check for emergency process count limits
-fn check_emergency_process_count() {
-    if crate::process::get_active_process_count() > MAX_PROCESSES_EMERGENCY {
-        log::error!("EMERGENCY: Too many active processes!");
+petroleum::health_check!(
+    check_emergency_process_count,
+    { crate::process::get_active_process_count() > MAX_PROCESSES_EMERGENCY },
+    error,
+    "EMERGENCY: Too many active processes!",
+    {
         // Would implement process cleanup here
     }
-}
+);
 
 /// Shell process main function
 pub extern "C" fn shell_process_main() -> ! {

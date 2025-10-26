@@ -8,7 +8,7 @@ use crate::{debug_log_no_alloc, ensure_initialized, log_memory_descriptor};
 
 /// Static buffer for bitmap - sized for up to 32GiB of RAM (8M frames)
 /// Each bit represents one 4KB frame, so size is (8M / 64) = 128K u64s = 1MB
-static mut BITMAP_STATIC: [u64; 131072] = [u64::MAX; 131072];
+pub(crate) static mut BITMAP_STATIC: [u64; 131072] = [u64::MAX; 131072];
 
 /// Bitmap-based frame allocator implementation
 pub struct BitmapFrameAllocator {
@@ -113,39 +113,17 @@ impl BitmapFrameAllocator {
 
     /// Set a frame as free in the bitmap
     fn set_frame_free(&mut self, frame_index: usize) {
-        if let Some(ref mut bitmap) = self.bitmap {
-            let chunk_index = frame_index / 64;
-            let bit_index = frame_index % 64;
-            if chunk_index < bitmap.len() {
-                bitmap[chunk_index] &= !(1 << bit_index);
-            }
-        }
+        bitmap_operation!(self.bitmap, frame_index, set_free);
     }
 
     /// Set a frame as used in the bitmap
     pub fn set_frame_used(&mut self, frame_index: usize) {
-        if let Some(ref mut bitmap) = self.bitmap {
-            let chunk_index = frame_index / 64;
-            let bit_index = frame_index % 64;
-            if chunk_index < bitmap.len() {
-                bitmap[chunk_index] |= 1 << bit_index;
-            }
-        }
+        bitmap_operation!(self.bitmap, frame_index, set_used);
     }
 
     /// Check if a frame is free
     fn is_frame_free(&self, frame_index: usize) -> bool {
-        if let Some(ref bitmap) = self.bitmap {
-            let chunk_index = frame_index / 64;
-            let bit_index = frame_index % 64;
-            if chunk_index < bitmap.len() {
-                (bitmap[chunk_index] & (1 << bit_index)) == 0
-            } else {
-                false
-            }
-        } else {
-            false
-        }
+        bitmap_operation!(self.bitmap, frame_index, is_free)
     }
 
     /// Find the next free frame starting from a given index

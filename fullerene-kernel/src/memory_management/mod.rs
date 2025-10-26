@@ -152,16 +152,14 @@ impl MemoryManager for UnifiedMemoryManager {
             // Map to kernel virtual address space
             let virtual_addr = self.find_free_virtual_address(count * 4096)?;
 
-            for i in 0..count {
-                let phys_addr = frame_addr + (i * 4096);
-                let virt_addr = virtual_addr + (i * 4096);
-                self.page_table_manager.map_page(
-                    virt_addr,
-                    phys_addr,
-                    PageFlags::PRESENT | PageFlags::WRITABLE,
-                    &mut self.frame_allocator,
-                )?;
-            }
+            petroleum::map_page_range!(
+                self.page_table_manager,
+                &mut self.frame_allocator,
+                virtual_addr,
+                frame_addr,
+                count,
+                PageFlags::PRESENT | PageFlags::WRITABLE
+            );
 
             Ok(virtual_addr)
         })
@@ -197,26 +195,21 @@ impl MemoryManager for UnifiedMemoryManager {
         count: usize,
     ) -> SystemResult<()> {
         memory_operation_mut!(self, {
-            for i in 0..count {
-                let vaddr = virtual_addr + (i * 4096);
-                let paddr = physical_addr + (i * 4096);
-                self.page_table_manager.map_page(
-                    vaddr,
-                    paddr,
-                    PageFlags::PRESENT | PageFlags::WRITABLE,
-                    &mut self.frame_allocator,
-                )?;
-            }
+            petroleum::map_page_range!(
+                self.page_table_manager,
+                &mut self.frame_allocator,
+                virtual_addr,
+                physical_addr,
+                count,
+                PageFlags::PRESENT | PageFlags::WRITABLE
+            );
             Ok(())
         })
     }
 
     fn unmap_address(&mut self, virtual_addr: usize, count: usize) -> SystemResult<()> {
         memory_operation_mut!(self, {
-            for i in 0..count {
-                let vaddr = virtual_addr + (i * 4096);
-                self.page_table_manager.unmap_page(vaddr)?;
-            }
+            petroleum::unmap_page_range!(self.page_table_manager, virtual_addr, count);
             Ok(())
         })
     }

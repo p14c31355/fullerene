@@ -62,15 +62,27 @@ macro_rules! map_pages_loop {
     }};
 }
 
-/// Macro for creating and mapping pages at higher-half offset
+/// Macro for mapping pages to a specified offset in virtual address space, panicking on error
 #[macro_export]
-macro_rules! map_to_higher_half {
-    ($mapper:expr, $allocator:expr, $phys_addr:expr, $num_pages:expr, $flags:expr, $offset:expr) => {{
-        use x86_64::VirtAddr;
-        let virt_base = $offset + $phys_addr;
-        map_pages_loop!(
-            $mapper, $allocator, $phys_addr, virt_base, $num_pages, $flags
-        );
+macro_rules! map_pages_to_offset {
+    ($mapper:expr, $allocator:expr, $phys_base:expr, $virt_offset:expr, $num_pages:expr, $flags:expr) => {{
+        use x86_64::{
+            PhysAddr, VirtAddr,
+            structures::paging::{Page, PhysFrame, Size4KiB, mapper::MapToError},
+        };
+        for i in 0..$num_pages {
+            let phys_addr = PhysAddr::new($phys_base + (i * 4096) as u64);
+            let virt_addr = VirtAddr::new(($virt_offset) + phys_addr.as_u64());
+            let page = Page::<Size4KiB>::containing_address(virt_addr);
+            let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
+            unsafe {
+                match $mapper.map_to(page, frame, $flags, $allocator) {
+                    Ok(flush) => flush.flush(),
+                    Err(MapToError::PageAlreadyMapped(_)) => {}
+                    Err(e) => panic!("Mapping error: {:?}", e),
+                }
+            }
+        }
     }};
 }
 
@@ -143,28 +155,6 @@ macro_rules! ensure_initialized {
     };
 }
 
-/// Macro for flushing TLB and checking CR3
-#[macro_export]
-macro_rules! flush_tlb_and_verify {
-    () => {{
-        x86_64::instructions::tlb::flush_all();
-        let (cr3_after, _) = x86_64::registers::control::Cr3::read();
-        debug_log_no_alloc!("CR3 verified: ", cr3_after.start_address().as_u64());
-    }};
-}
-
-/// Macro for common initialization patterns with cleanup
-#[macro_export]
-macro_rules! init_with_cleanup {
-    ($name:expr, $init:block, $cleanup:block) => {{
-        $crate::serial::serial_log(format_args!("Initializing {}\n", $name));
-        $init;
-        $crate::serial::serial_log(format_args!("{} initialized successfully\n", $name));
-        // Store cleanup for later if needed - would be part of an RAII pattern
-        || $cleanup
-    }};
-}
-
 /// Macro for modifying contents protected by a Mutex lock
 #[macro_export]
 macro_rules! lock_and_modify {
@@ -212,22 +202,6 @@ macro_rules! init_component {
             }
         }
     }};
-}
-
-/// Ensure a condition is true, otherwise log an error and return it
-///
-/// # Examples
-/// ```
-/// ensure!(ptr.is_some(), SystemError::InvalidArgument);
-/// ```
-#[macro_export]
-macro_rules! ensure {
-    ($condition:expr, $error:expr) => {
-        if !$condition {
-            $crate::log_error!($error, stringify!($condition));
-            return Err(*$error);
-        }
-    };
 }
 
 /// Ensure a condition is true with a custom error message
@@ -298,6 +272,47 @@ macro_rules! static_str {
     }};
 }
 
+/// Unified logging macro for scheduler operations to reduce repetition
+///
+/// # Examples
+/// ```
+/// scheduler_log!("Starting process scheduling");
+/// scheduler_log!("Found process at index {}", index);
+/// ```
+#[macro_export]
+macro_rules! scheduler_log {
+    ($msg:literal) => {
+        log::info!("Scheduler: {}", $msg);
+    };
+    ($msg:literal, $($arg:tt)*) => {
+        log::info!("Scheduler: {}", format_args!($msg, $($arg)*));
+    };
+}
+
+/// Macro for reading unaligned data from memory with offset
+#[macro_export]
+macro_rules! read_unaligned {
+    ($ptr:expr, $offset:expr, $ty:ty) => {{ unsafe { core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) } }};
+}
+
+/// Macro to clear a specific range in a 2D buffer for fixed-width buffers like VGA
+/// Reduces repetitive loops for clearing display lines
+///
+/// # Examples
+/// ```
+/// clear_line_range!(vga_writer, 23, 24, 0, 80, blank_char);
+/// ```
+#[macro_export]
+macro_rules! clear_line_range {
+    ($vga_writer:expr, $start_row:expr, $end_row:expr, $col_start:expr, $col_end:expr, $blank_char:expr) => {{
+        for row in $start_row..$end_row {
+            for col in $col_start..$col_end {
+                $vga_writer.set_char_at(row, col, $blank_char);
+            }
+        }
+    }};
+}
+
 /// Enhanced memory debugging macro that supports formatted output with mixed strings and values
 ///
 /// # Examples
@@ -359,10 +374,9 @@ macro_rules! debug_print {
 macro_rules! check_periodic {
     ($last_tick:expr, $interval:expr, $current_tick:expr, $block:block) => {{
         let mut last = $last_tick.lock();
-        let elapsed = $current_tick - *last;
-        if elapsed >= $interval {
-            $block;
+        if $current_tick - *last >= $interval {
             *last = $current_tick;
+            $block;
         }
     }};
 }
@@ -420,6 +434,92 @@ macro_rules! log {
     };
     ($prefix:literal, $format:expr, $($args:tt)*) => {
         $crate::serial::_print(format_args!(concat!($prefix, ": ", $format, "\n"), $($args)*));
+    };
+}
+
+/// Macro for defining health check functions with consistent logging and thresholds
+/// Reduces boilerplate in system monitoring by providing a unified interface
+#[macro_export]
+macro_rules! health_check {
+    ($fn_name:ident, $threshold_expr:expr, $log_level:ident, $msg:expr, $body:block) => {
+        fn $fn_name() {
+            if $threshold_expr {
+                log::$log_level!($msg);
+                $body
+            }
+        }
+    };
+}
+}
+
+/// Macro for periodic VGA stat display to reduce code duplication in scheduler
+/// Automatically handles cursor positioning and line clearing
+#[macro_export]
+macro_rules! vga_stat_display {
+    ($vga_buffer:expr, $stats:expr, $current_tick:expr, $interval_ticks:expr, $start_row:expr, $($display_line:tt)*) => {{
+        static LAST_DISPLAY_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
+        petroleum::check_periodic!(LAST_DISPLAY_TICK, $interval_ticks, $current_tick, {
+            if let Some(vga_buffer) = $vga_buffer.get() {
+                const TICKS_PER_SECOND: u64 = 1000;
+                let uptime_minutes = $stats.uptime_ticks / (60 * TICKS_PER_SECOND);
+                let uptime_seconds = ($stats.uptime_ticks % (60 * TICKS_PER_SECOND)) / TICKS_PER_SECOND;
+
+                let mut vga_writer = vga_buffer.lock();
+
+                let blank_char = ScreenChar {
+                    ascii_character: b' ',
+                    color_code: ColorCode::new(Color::Black, Color::Black),
+                };
+
+                petroleum::clear_line_range!(vga_writer, $start_row, $start_row + 3, 0, 80, blank_char);
+
+                vga_writer.set_position($start_row, 0);
+                use core::fmt::Write;
+                vga_writer.set_color_code(ColorCode::new(Color::Cyan, Color::Black));
+
+                $(
+                    vga_stat_display_line!(vga_writer, $display_line);
+                )*
+
+                vga_writer.update_cursor();
+            }
+        });
+    }};
+}
+
+/// Helper macro for vga_stat_display to process each display line
+#[macro_export]
+macro_rules! vga_stat_display_line {
+    ($vga_writer:expr, ($row:expr, $format:expr, $($args:tt)*)) => {{
+        $vga_writer.set_position($row, 0);
+        let _ = write!($vga_writer, $format, $($args)*);
+    }};
+}
+
+/// Macro for unified periodic stat logging to filesystem with auto-file creation
+/// Reduces duplication between different stat logging functions
+#[macro_export]
+macro_rules! periodic_fs_log {
+    ($filename:expr, $interval_ticks:expr, $current_tick:expr, $($stats_expr:tt)*) => {{
+        static LAST_LOG_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
+
+        petroleum::check_periodic!(LAST_LOG_TICK, $interval_ticks, $current_tick, {
+            let log_content = alloc::format!($($stats_expr)*);
+            log::info!("{}", log_content);
+        });
+    }};
+}
+
+/// Macro for common system maintenance task scheduling
+/// Wraps multiple functions with periodic execution
+#[macro_export]
+macro_rules! maintenance_tasks {
+    ($current_tick:expr, $(($interval:expr, $fn_call:expr)),* $(,)?) => {
+        $(
+            petroleum::periodic_task!($current_tick, $interval, {
+                $fn_call
+            });
+        )*
     };
 }
 
@@ -581,18 +681,8 @@ macro_rules! volatile_read {
 /// Macro for volatile memory write operations
 #[macro_export]
 macro_rules! volatile_write {
-    ($addr:expr, $value:expr) => {{ unsafe { core::ptr::write_volatile($addr, $value) } }};
-}
-
-/// Macro for safe buffer index access with bounds checking
-#[macro_export]
-macro_rules! safe_buffer_access {
-    ($buffer:expr, $index:expr, $default:expr) => {
-        if $index < $buffer.len() {
-            &$buffer[$index]
-        } else {
-            &$default
-        }
+    ($addr:expr, $val:expr) => {
+        unsafe { core::ptr::write_volatile($addr as *mut _, $val) }
     };
 }
 
@@ -777,6 +867,192 @@ macro_rules! halt {
     };
 }
 
+/// Consolidated validation logging macro
+#[macro_export]
+macro_rules! debug_log_validate_macro {
+    ($field:expr, $value:expr) => {
+        debug_log_no_alloc!($field, " validated: ", $value);
+    };
+}
+
+/// Unified memory region constants macro
+#[macro_export]
+macro_rules! memory_region_const_macro {
+    (VGA_START) => {
+        0xA0000u64
+    };
+    (VGA_END) => {
+        0xC0000u64
+    };
+    (BOOT_CODE_START) => {
+        0x100000u64
+    };
+    (BOOT_CODE_PAGES) => {
+        0x8000u64
+    };
+    (PAGE_SIZE) => {
+        4096u64
+    };
+}
+
+/// Consolidated logging macro for page table operations
+#[macro_export]
+macro_rules! log_page_table_op {
+    ($operation:expr) => {
+        debug_log_no_alloc!($operation);
+    };
+    ($operation:expr, $msg:expr, $addr:expr) => {
+        debug_log_no_alloc!($operation, $msg, " addr=", $addr);
+    };
+    ($stage:expr, $phys:expr, $virt:expr, $pages:expr) => {
+        debug_log_no_alloc!(
+            "Memory mapping stage=",
+            $stage,
+            " phys=0x",
+            $phys,
+            " virt=0x",
+            $virt,
+            " pages=",
+            $pages
+        );
+    };
+    ($operation:expr, $msg:expr) => {
+        debug_log_no_alloc!($operation, $msg);
+    };
+}
+
+/// Memory descriptor processing macro
+#[macro_export]
+macro_rules! process_memory_descriptors_safely {
+    ($descriptors:expr, $processor:expr) => {{
+        for descriptor in $descriptors.iter() {
+            if is_valid_memory_descriptor(descriptor) && descriptor.is_memory_available() {
+                let start_frame = (descriptor.get_physical_start() / 4096) as usize;
+                let end_frame = start_frame.saturating_add(descriptor.get_page_count() as usize);
+
+                if start_frame < end_frame {
+                    $processor(descriptor, start_frame, end_frame);
+                }
+            }
+        }
+    }};
+}
+
+/// Page table flags constants macro
+#[macro_export]
+macro_rules! page_flags_const {
+    (READ_WRITE_NO_EXEC) => {
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
+    };
+    (READ_ONLY) => {
+        PageTableFlags::PRESENT
+    };
+    (READ_WRITE) => {
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
+    };
+    (READ_EXECUTE) => {
+        PageTableFlags::PRESENT
+    };
+}
+
+/// Integrated identity mapping macro
+#[macro_export]
+macro_rules! map_identity_range_macro {
+    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{ unsafe { map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags) } }};
+}
+
+/// Range mapping with logging macro
+#[macro_export]
+macro_rules! map_range_with_log_macro {
+    ($mapper:expr, $frame_allocator:expr, $phys_start:expr, $virt_start:expr, $num_pages:expr, $flags:expr) => {{
+        use x86_64::structures::paging::{mapper::MapToError, Size4KiB};
+        log_page_table_op!("Mapping range", $phys_start, $virt_start, $num_pages);
+        for i in 0..$num_pages {
+            let phys_addr = $phys_start + i * 4096;
+            let virt_addr = $virt_start + i * 4096;
+            let (page, frame) = create_page_and_frame!(virt_addr, phys_addr);
+            match unsafe { $mapper.map_to(page, frame, $flags, $frame_allocator) } {
+                Ok(flush) => flush.flush(),
+                Err(MapToError::<Size4KiB>::PageAlreadyMapped(_)) => {
+                    continue;
+                }
+                Err(e) => panic!("Failed to map page: {:?}", e),
+            }
+        }
+        Ok::<(), MapToError<Size4KiB>>(())
+    }};
+}
+
+/// Identity mapping with detailed logging
+#[macro_export]
+macro_rules! identity_map_range_with_log_macro {
+    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $num_pages:expr, $flags:expr) => {{
+        log_page_table_op!("Identity mapping start", $start_addr, 0, $num_pages);
+        let result =
+            map_identity_range_macro!($mapper, $frame_allocator, $start_addr, $num_pages, $flags);
+        if result.is_ok() {
+            log_page_table_op!("Identity mapping complete", $start_addr, 0, $num_pages);
+        }
+        result
+    }};
+}
+
+/// Map to higher half with logging
+#[macro_export]
+macro_rules! map_to_higher_half_with_log_macro {
+    ($mapper:expr, $frame_allocator:expr, $phys_offset:expr, $phys_start:expr, $num_pages:expr, $flags:expr) => {{
+        let virt_start = $phys_offset.as_u64() + $phys_start;
+        log_page_table_op!(
+            "Higher half mapping start",
+            $phys_start,
+            virt_start,
+            $num_pages
+        );
+        map_range_with_log_macro!(
+            $mapper,
+            $frame_allocator,
+            $phys_start,
+            virt_start,
+            $num_pages,
+            $flags
+        );
+        log_page_table_op!(
+            "Higher half mapping complete",
+            $phys_start,
+            virt_start,
+            $num_pages
+        );
+        Ok(())
+    }};
+}
+
+/// Consolidated memory mapping with log support
+#[macro_export]
+macro_rules! map_with_log_macro {
+    ($mapper:expr, $allocator:expr, $phys:expr, $virt:expr, $pages:expr, $flags:expr) => {{
+        log_page_table_op!("Mapping", $phys, $virt, $pages);
+        for i in 0..$pages {
+            let phys_addr = $phys + i * 4096;
+            let virt_addr = $virt + i * 4096;
+            map_with_offset!($mapper, $allocator, phys_addr, virt_addr, $flags);
+        }
+        Ok(())
+    }};
+}
+
+/// Flush TLB and verify the flush was successful
+#[macro_export]
+macro_rules! flush_tlb_and_verify {
+    () => {{
+        use x86_64::instructions::tlb;
+        use x86_64::registers::control::Cr3;
+        tlb::flush_all();
+        // Verify by reading CR3 to force a TLB reload
+        let (frame, flags) = Cr3::read();
+        unsafe { Cr3::write(frame, flags) };
+    }};
+}
+
 pub struct InitSequence<'a> {
     steps: &'a [(&'static str, Box<dyn Fn() -> Result<(), &'static str>>)],
 }
@@ -785,11 +1061,11 @@ pub struct InitSequence<'a> {
 #[macro_export]
 macro_rules! calc_offset_addr {
     ($base:expr, $i:expr) => {
-        $base + ($i * 4096) as u64
+        $base + ($i * 4096)
     };
 }
 
-/// Create page and frame from addresses in one call
+/// Create page and frame from virtual and physical addresses
 #[macro_export]
 macro_rules! create_page_and_frame {
     ($virt_addr:expr, $phys_addr:expr) => {{
@@ -867,6 +1143,29 @@ macro_rules! map_identity_range_checked {
     }};
 }
 
+/// Macro for mapping a range of pages using map_page
+#[macro_export]
+macro_rules! map_page_range {
+    ($mapper:expr, $allocator:expr, $base_virt:expr, $base_phys:expr, $num_pages:expr, $flags:expr) => {{
+        for i in 0..$num_pages {
+            let phys_addr = $base_phys + (i * 4096);
+            let virt_addr = $base_virt + (i * 4096);
+            $mapper.map_page(virt_addr, phys_addr, $flags, $allocator)?;
+        }
+    }};
+}
+
+/// Macro for unmapping a range of pages using unmap_page
+#[macro_export]
+macro_rules! unmap_page_range {
+    ($mapper:expr, $base_virt:expr, $num_pages:expr) => {{
+        for i in 0..$num_pages {
+            let vaddr = $base_virt + (i * 4096);
+            $mapper.unmap_page(vaddr)?;
+        }
+    }};
+}
+
 /// Calculate kernel size from ELF headers
 #[macro_export]
 macro_rules! calculate_kernel_pages {
@@ -916,5 +1215,47 @@ macro_rules! create_framebuffer_config {
             bpp: $bpp,
             stride: $stride,
         }
+    };
+}
+
+/// Unified PCI configuration space read macro to reduce separate function duplication
+/// Supports reading 8, 16, or 32-bit values based on the size parameter
+///
+/// # Examples
+/// ```
+/// let vendor_id = pci_config_read!(bus, device, function, 0x00, 16);
+/// let class_code = pci_config_read!(bus, device, function, 0x0B, 8);
+/// ```
+#[macro_export]
+macro_rules! pci_config_read {
+    ($bus:expr, $device:expr, $function:expr, $reg:expr, 32) => {
+        $crate::bare_metal_pci::pci_config_read_dword($bus, $device, $function, $reg)
+    };
+    ($bus:expr, $device:expr, $function:expr, $reg:expr, 16) => {
+        $crate::bare_metal_pci::pci_config_read_word($bus, $device, $function, $reg)
+    };
+    ($bus:expr, $device:expr, $function:expr, $reg:expr, 8) => {
+        $crate::bare_metal_pci::pci_config_read_byte($bus, $device, $function, $reg)
+    };
+}
+
+/// Macro for displaying multiple lines of statistics on VGA buffer to reduce repetitive position/write calls
+/// Automatically positions cursor and writes formatted text for each line
+///
+/// # Examples
+/// ```
+/// display_vga_stats_lines!(vga_writer,
+///     23, "Processes: {}/{}", active, total;
+///     24, "Memory: {} KB", mem_kb;
+///     25, "Uptime: {}", uptime
+/// );
+/// ```
+#[macro_export]
+macro_rules! display_vga_stats_lines {
+    ($vga_writer:expr, $($row:expr, $format:expr, $($args:expr),*);* $(;)?) => {
+        $(
+            $vga_writer.set_position($row, 0);
+            let _ = write!($vga_writer, $format, $($args),*);
+        )*
     };
 }
