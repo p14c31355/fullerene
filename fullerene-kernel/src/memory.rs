@@ -107,13 +107,14 @@ pub fn setup_memory_maps(
     debug_log_no_alloc!("Descriptor size: ", descriptor_item_size);
 
     let config_size = core::mem::size_of::<ConfigWithMetadata>();
-    let actual_descriptors_size = memory_map_size - core::mem::size_of::<usize>() - config_size;
-
     // Check for framebuffer config appended to memory map
     let config_with_metadata_ptr = unsafe {
         (memory_map as *const u8).add(memory_map_size - config_size) as *const ConfigWithMetadata
     };
     let config_with_metadata = unsafe { &*config_with_metadata_ptr };
+    let has_config = config_with_metadata.magic == FRAMEBUFFER_CONFIG_MAGIC;
+
+    let actual_descriptors_size = memory_map_size - core::mem::size_of::<usize>() - if has_config { config_size } else { 0 };
     if config_with_metadata.magic == FRAMEBUFFER_CONFIG_MAGIC {
         debug_log_no_alloc!("Framebuffer config found in memory map");
         petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config_with_metadata.config)));

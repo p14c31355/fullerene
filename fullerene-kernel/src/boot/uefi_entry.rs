@@ -344,9 +344,10 @@ impl UefiInitContext {
             let page = Page::<Size4KiB>::containing_address(virt);
             let frame = PhysFrame::<Size4KiB>::containing_address(phys);
             unsafe {
-                if let Err(_) = mapper.map_to(page, frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE, &mut *frame_allocator) {
-                    // Page already mapped, skip
-                    continue;
+                match mapper.map_to(page, frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE, &mut *frame_allocator) {
+                    Ok(flush) => flush.flush(),
+                    Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => continue, // Page already mapped, skip
+                    Err(e) => log::error!("Failed to map VGA page: {:?}", e),
                 }
             }
         }
