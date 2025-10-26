@@ -1,3 +1,5 @@
+// file_content from the error message, but modified
+
 //! Memory management module containing memory map parsing and initialization
 
 use crate::heap;
@@ -99,35 +101,30 @@ pub fn setup_memory_maps(
     memory_map_size: usize,
     kernel_virt_addr: u64,
 ) -> PhysAddr {
-    // Check for framebuffer config appended to memory map
-    let total_map_size = memory_map_size;
+    // Read descriptor_size from the beginning of the memory map
+    debug_log_no_alloc!("setup_memory_maps called with size: ", memory_map_size);
+    let descriptor_item_size = unsafe { *(memory_map as *const usize) };
+    debug_log_no_alloc!("Descriptor size: ", descriptor_item_size);
+
     let config_size = core::mem::size_of::<ConfigWithMetadata>();
+    let actual_descriptors_size = memory_map_size - core::mem::size_of::<usize>() - config_size;
 
-    let (actual_descriptors_size, descriptor_item_size) = if total_map_size > config_size {
-        let config_ptr = unsafe {
-            (memory_map as *const u8).add(total_map_size - config_size) as *const ConfigWithMetadata
-        };
-        let config_with_metadata = unsafe { &*config_ptr };
-        if config_with_metadata.magic == FRAMEBUFFER_CONFIG_MAGIC {
-            debug_log_no_alloc!("Framebuffer config found in memory map");
-            petroleum::FULLERENE_FRAMEBUFFER_CONFIG
-                .call_once(|| spin::Mutex::new(Some(config_with_metadata.config)));
-            (
-                total_map_size - config_size,
-                config_with_metadata.descriptor_size,
-            )
-        } else {
-            debug_log_no_alloc!("No framebuffer config found in memory map (magic mismatch)");
-            (total_map_size, core::mem::size_of::<EfiMemoryDescriptor>())
-        }
-    } else {
-        debug_log_no_alloc!("Not enough size for framebuffer config in memory map");
-        (total_map_size, core::mem::size_of::<EfiMemoryDescriptor>())
+    // Check for framebuffer config appended to memory map
+    let config_with_metadata_ptr = unsafe {
+        (memory_map as *const u8).add(memory_map_size - config_size) as *const ConfigWithMetadata
     };
+    let config_with_metadata = unsafe { &*config_with_metadata_ptr };
+    if config_with_metadata.magic == FRAMEBUFFER_CONFIG_MAGIC {
+        debug_log_no_alloc!("Framebuffer config found in memory map");
+        petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config_with_metadata.config)));
+    } else {
+        debug_log_no_alloc!("No framebuffer config found in memory map (magic mismatch)");
+    }
 
+    let descriptors_start = unsafe { (memory_map as *const u8).add(core::mem::size_of::<usize>()) as *const EfiMemoryDescriptor };
     let descriptors = unsafe {
         core::slice::from_raw_parts(
-            memory_map as *const EfiMemoryDescriptor,
+            descriptors_start,
             actual_descriptors_size / descriptor_item_size,
         )
     };
