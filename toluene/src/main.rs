@@ -5,7 +5,7 @@
 
 use petroleum::syscall::{exit, getpid, sleep, write};
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn main() -> i32 {
     // Write to stdout
     let message = b"Hello from toluene user program!\n";

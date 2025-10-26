@@ -1,7 +1,6 @@
 // Fullerene OS Kernel
 // Spacer in main.rs due to Rust unstable features
 #![feature(abi_x86_interrupt)]
-#![feature(naked_functions)]
 #![feature(non_exhaustive_omitted_patterns_lint)]
 // fullerene-kernel/src/main.rs
 #![no_std]
@@ -10,7 +9,6 @@
 // Kernel modules
 mod boot;
 mod context_switch; // Context switching
-mod errors; // System error types
 mod fs; // Basic filesystem
 mod gdt; // Add GDT module
 mod graphics;
