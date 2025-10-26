@@ -423,8 +423,7 @@ impl<'a> MemoryMappable for MemoryMapper<'a> {
                 virt_start,
                 num_pages,
                 flags
-            );
-            Ok(())
+            )
         }
     }
 
