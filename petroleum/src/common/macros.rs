@@ -450,7 +450,6 @@ macro_rules! health_check {
         }
     };
 }
-}
 
 /// Macro for periodic VGA stat display to reduce code duplication in scheduler
 /// Automatically handles cursor positioning and line clearing

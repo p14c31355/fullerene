@@ -39,7 +39,7 @@ pub extern "x86-interrupt" fn page_fault_handler(
 pub fn handle_page_fault(
     fault_addr: x86_64::VirtAddr,
     error_code: PageFaultErrorCode,
-    _stack_frame: InterruptStackFrame,
+    stack_frame: InterruptStackFrame,
 ) {
     let is_present = error_code.intersects(PageFaultErrorCode::PROTECTION_VIOLATION);
     let is_write = error_code.intersects(PageFaultErrorCode::CAUSED_BY_WRITE);
@@ -60,6 +60,11 @@ pub fn handle_page_fault(
         }
         writeln!(writer).ok();
         writeln!(writer, "Error code: {:?}", error_code).ok();
+        if let Some(pid) = crate::process::current_pid() {
+            writeln!(writer, "Current process ID: {}", pid).ok();
+        }
+        writeln!(writer, "Instruction pointer (RIP): {:#x}", stack_frame.instruction_pointer.as_u64()).ok();
+        writeln!(writer, "Stack pointer (RSP): {:#x}", stack_frame.stack_pointer.as_u64()).ok();
     });
 
     if !is_user {
