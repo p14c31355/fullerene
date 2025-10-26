@@ -292,7 +292,7 @@ macro_rules! scheduler_log {
 /// Macro for reading unaligned data from memory with offset
 #[macro_export]
 macro_rules! read_unaligned {
-    ($ptr:expr, $offset:expr, $ty:ty) => {{ core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) }};
+    ($ptr:expr, $offset:expr, $ty:ty) => { unsafe { core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) } };
 }
 
 /// Macro to clear a specific range in a 2D buffer for fixed-width buffers like VGA
