@@ -3,6 +3,7 @@ use petroleum::{
     update_vga_cursor,
 };
 use spin::{Mutex, Once};
+use alloc::vec::Vec;
 
 // VGA port constants
 const VGA_MISC_WRITE: u16 = 0x3C2;

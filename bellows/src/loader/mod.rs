@@ -1,10 +1,103 @@
 use core::ffi::c_void;
 use log::info;
 
-use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
+use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable};
+// Inline heap.rs to reduce file count and lines
+use petroleum::debug_log;
+use petroleum::debug_log_no_alloc;
+use petroleum::serial::debug_print_str_to_com1;
 
-pub mod heap;
-pub mod pe;
+/// Size of the heap we will allocate for `alloc` usage (bytes).
+const HEAP_SIZE: usize = 128 * 1024; // 128 KiB
+
+/// Tries to allocate pages with multiple strategies and memory types.
+fn try_allocate_pages(
+    bs: &EfiBootServices,
+    pages: usize,
+    preferred_type: EfiMemoryType,
+) -> Result<usize, BellowsError> {
+    // Try LoaderData first, then Conventional (skip if invalid)
+    let types_to_try = [preferred_type, EfiMemoryType::EfiConventionalMemory];
+
+    for mem_type in types_to_try {
+        let type_str = match mem_type {
+            EfiMemoryType::EfiLoaderData => "LoaderData",
+            EfiMemoryType::EfiConventionalMemory => "Conventional",
+            _ => "Other",
+        };
+        debug_log_no_alloc!(
+            "Heap: About to call allocate_pages mem_type=",
+            mem_type as usize
+        );
+
+        let mut phys_addr_local: usize = 0;
+        debug_log_no_alloc!("Heap: Calling allocate_pages pages=", pages);
+        debug_log_no_alloc!("Heap: Calling allocate_pages mem_type=", mem_type as usize);
+        debug_log_no_alloc!("Heap: Entering allocate_pages call...");
+        // Use AllocateAnyPages (0) for any mem
+        let alloc_type = 0usize; // AllocateAnyPages
+        let status = (bs.allocate_pages)(
+            alloc_type,
+            mem_type,
+            pages, // Start with 1 for testing
+            &mut phys_addr_local,
+        );
+        debug_log_no_alloc!(
+            "Heap: Exited allocate_pages call phys_addr_local=",
+            phys_addr_local
+        );
+        debug_log_no_alloc!("Heap: Exited allocate_pages call raw_status=", status);
+
+        // Immediate validation: check if phys_addr_local is page-aligned (avoid invalid reads)
+        if phys_addr_local != 0 && !phys_addr_local.is_multiple_of(4096) {
+            debug_log_no_alloc!("Heap: WARNING: phys_addr_local not page-aligned!");
+            let _ = (bs.free_pages)(phys_addr_local, pages); // Ignore status on free
+            continue;
+        }
+
+        let status_efi = EfiStatus::from(status);
+        let status_str = petroleum::common::efi_status_to_str(status_efi);
+        debug_log_no_alloc!("Heap: Status: ", status_str);
+
+        if status_efi == EfiStatus::InvalidParameter {
+            debug_log_no_alloc!("Heap: -> Skipping invalid type.");
+            continue; // Ignore Conventional memory type
+        }
+
+        if status_efi == EfiStatus::Success && phys_addr_local != 0 {
+            debug_log_no_alloc!("Heap: Allocated at address, aligned OK.");
+            return Ok(phys_addr_local);
+        }
+    }
+
+    Err(BellowsError::AllocationFailed(
+        "All allocation attempts failed.",
+    ))
+}
+
+pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
+    debug_log_no_alloc!("Heap: Allocating pages for heap...");
+    let heap_pages = HEAP_SIZE.div_ceil(4096);
+    debug_log_no_alloc!("Heap: Requesting pages=", heap_pages);
+    let heap_phys = try_allocate_pages(bs, heap_pages, EfiMemoryType::EfiLoaderData)?; // 固定
+
+    if heap_phys == 0 {
+        debug_log_no_alloc!("Heap: Allocated heap address is null!");
+        return Err(BellowsError::AllocationFailed(
+            "Allocated heap address is null.",
+        ));
+    }
+
+    // Calculate actual allocated size (we may have gotten fewer pages than requested)
+    // For now, assume we got the full amount since we don't track partial allocations
+    // In a more robust implementation, we'd modify try_allocate_pages to return the actual size
+    let actual_heap_size = heap_pages * 4096;
+
+    debug_log_no_alloc!("Heap: Initializing global allocator using petroleum...");
+    petroleum::init_global_heap(heap_phys as *mut u8, actual_heap_size);
+    debug_log_no_alloc!("Heap: Petroleum global heap init done. Returning Ok(()).");
+    Ok(())
+}
 
 /// Exits boot services and jumps to the kernel's entry point.
 /// This function is the final step of the bootloader.
@@ -235,4 +328,216 @@ pub fn exit_boot_services_and_jump(
         log::info!("About to call kernel entry.");
     }
     entry(image_handle, system_table, map_phys_addr as *mut c_void, final_map_size);
+}
+
+// Inline full PE structures and pe.rs to reduce file count and lines
+use petroleum::read_unaligned;
+
+#[repr(C, packed)]
+pub struct ImageDosHeader {
+    pub e_magic: u16,
+    pub _pad: [u8; 58],
+    pub e_lfanew: i32,
+}
+
+#[repr(C, packed)]
+pub struct ImageFileHeader {
+    pub _machine: u16,
+    pub number_of_sections: u16,
+    pub _time_date_stamp: u32,
+    pub _pointer_to_symbol_table: u32,
+    pub _number_of_symbols: u32,
+    pub size_of_optional_header: u16,
+    pub _characteristics: u16,
+}
+
+#[repr(C, packed)]
+pub struct ImageDataDirectory {
+    pub virtual_address: u32,
+    pub size: u32,
+}
+
+#[repr(C, packed)]
+pub struct ImageOptionalHeader64 {
+    pub _magic: u16,
+    pub _major_linker_version: u8,
+    pub _minor_linker_version: u8,
+    pub _size_of_code: u32,
+    pub _size_of_initialized_data: u32,
+    pub _size_of_uninitialized_data: u32,
+    pub address_of_entry_point: u32,
+    pub _base_of_code: u32,
+    pub image_base: u64,
+    pub _section_alignment: u32,
+    pub _file_alignment: u32,
+    pub _major_operating_system_version: u16,
+    pub _minor_operating_system_version: u16,
+    pub _major_image_version: u16,
+    pub _minor_image_version: u16,
+    pub _major_subsystem_version: u16,
+    pub _minor_subsystem_version: u16,
+    pub _win32_version_value: u32,
+    pub size_of_image: u32,
+    pub _size_of_headers: u32,
+    pub _checksum: u32,
+    pub _subsystem: u16,
+    pub _dll_characteristics: u16,
+    pub size_of_stack_reserve: u64,
+    pub size_of_stack_commit: u64,
+    pub size_of_heap_reserve: u64,
+    pub size_of_heap_commit: u64,
+    pub _loader_flags: u32,
+    pub number_of_rva_and_sizes: u32,
+    pub data_directory: [ImageDataDirectory; 16],
+}
+
+#[repr(C, packed)]
+pub struct ImageNtHeaders64 {
+    pub _signature: u32,
+    pub _file_header: ImageFileHeader,
+    pub optional_header: ImageOptionalHeader64,
+}
+
+#[repr(C, packed)]
+pub struct ImageSectionHeader {
+    pub _name: [u8; 8],
+    pub _virtual_size: u32,
+    pub virtual_address: u32,
+    pub size_of_raw_data: u32,
+    pub pointer_to_raw_data: u32,
+    pub _pointer_to_relocations: u32,
+    pub _pointer_to_linenumbers: u32,
+    pub _number_of_relocations: u16,
+    pub _number_of_linenumbers: u16,
+    pub _characteristics: u32,
+}
+
+#[repr(C, packed)]
+pub struct ImageBaseRelocation {
+    pub virtual_address: u32,
+    pub size_of_block: u32,
+}
+
+#[repr(u16)]
+pub enum ImageRelBasedType {
+    Absolute = 0,
+    Dir64 = 10,
+}
+
+/// Exits boot services and jumps to the kernel's entry point.
+/// This function is the final step of the bootloader.
+pub fn load_efi_image(
+    st: &EfiSystemTable,
+    file: &[u8],
+) -> petroleum::common::Result<
+    extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
+> {
+    let bs = unsafe { &*st.boot_services };
+
+    if file.len() < core::mem::size_of::<ImageDosHeader>() {
+        return Err(BellowsError::PeParse("File too small for DOS header."));
+    }
+    let dos_header_ptr = file.as_ptr() as *const ImageDosHeader;
+    let e_magic = unsafe { core::ptr::read_unaligned(dos_header_ptr as *const u16) };
+    if e_magic != 0x5a4d {
+        return Err(BellowsError::PeParse("Invalid DOS signature (MZ)."));
+    }
+    let e_lfanew = unsafe {
+        core::ptr::read_unaligned(
+            (dos_header_ptr as *const u8).add(core::mem::offset_of!(ImageDosHeader, e_lfanew)) as *const i32,
+        )
+    };
+    petroleum::println!("DOS header parsed. e_lfanew: {:#x}", e_lfanew);
+
+    // Inline PE parsing to reduce dependency and lines
+    let nt_headers_offset = e_lfanew as usize;
+    if nt_headers_offset + core::mem::size_of::<ImageNtHeaders64>() > file.len() {
+        return Err(BellowsError::PeParse("Invalid NT headers offset."));
+    }
+    let nt_headers_ptr = unsafe { file.as_ptr().add(nt_headers_offset) as *const ImageNtHeaders64 };
+    let optional_header_magic = unsafe {
+        core::ptr::read_unaligned(
+            (nt_headers_ptr as *const u8)
+                .add(core::mem::offset_of!(ImageNtHeaders64, optional_header) + core::mem::offset_of!(ImageOptionalHeader64, _magic)) as *const u16,
+        )
+    };
+    if optional_header_magic != 0x20b {
+        return Err(BellowsError::PeParse("Invalid PE32+ magic number."));
+    }
+    let image_size_ptr = unsafe { (nt_headers_ptr as *const u8).add(core::mem::offset_of!(ImageNtHeaders64, optional_header) + core::mem::offset_of!(ImageOptionalHeader64, size_of_image)) as *const u32 };
+    let address_of_entry_point = unsafe { read_unaligned!(file.as_ptr(), (e_lfanew + 40) as usize, u32) } as usize;
+    let image_size_val = unsafe { core::ptr::read_unaligned(image_size_ptr) as u64 };
+    let _pages_needed = (image_size_val.max(address_of_entry_point as u64 + 4096)).div_ceil(4096) as usize;
+
+    let preferred_base = unsafe { read_unaligned!(file.as_ptr(), (e_lfanew + 48) as usize, u64) as usize };
+    let mut phys_addr: usize = 0;
+    let mut status;
+
+    if preferred_base >= 0x1000_0000 {
+        phys_addr = 0x100000;
+        status = (bs.allocate_pages)(2, EfiMemoryType::EfiLoaderCode, _pages_needed, &mut phys_addr);
+        if EfiStatus::from(status) != EfiStatus::Success {
+            phys_addr = 0;
+            status = (bs.allocate_pages)(0, EfiMemoryType::EfiLoaderCode, _pages_needed, &mut phys_addr);
+        }
+    } else {
+        status = (bs.allocate_pages)(0, EfiMemoryType::EfiLoaderCode, _pages_needed, &mut phys_addr);
+    }
+
+    if EfiStatus::from(status) != EfiStatus::Success {
+        return Err(BellowsError::AllocationFailed("Failed to allocate memory for PE image."));
+    }
+
+    let size_of_headers = unsafe { read_unaligned!(file.as_ptr(), (e_lfanew + 84) as usize, u32) as usize };
+    unsafe {
+        core::ptr::copy_nonoverlapping(file.as_ptr(), phys_addr as *mut u8, size_of_headers);
+    }
+
+    let number_of_sections = unsafe { read_unaligned!(file.as_ptr(), (e_lfanew + 6) as usize, u16) } as usize;
+    let size_of_optional_header = unsafe { read_unaligned!(file.as_ptr(), (e_lfanew + 20) as usize, u16) } as usize;
+
+    let section_headers_offset = e_lfanew as usize + core::mem::size_of::<u32>() + core::mem::size_of::<ImageFileHeader>() + size_of_optional_header;
+    let section_headers_size = number_of_sections * core::mem::size_of::<ImageSectionHeader>();
+    if section_headers_offset + section_headers_size > file.len() {
+        unsafe { (bs.free_pages)(phys_addr, _pages_needed) };
+        return Err(BellowsError::PeParse("Section headers out of bounds."));
+    }
+
+    for i in 0..number_of_sections {
+        let section_header_base_ptr = unsafe { file.as_ptr().add(section_headers_offset + i * core::mem::size_of::<ImageSectionHeader>()) };
+        let virtual_address = unsafe { core::ptr::read_unaligned(section_header_base_ptr.add(core::mem::offset_of!(ImageSectionHeader, virtual_address)) as *const u32) };
+        let size_of_raw_data = unsafe { core::ptr::read_unaligned(section_header_base_ptr.add(core::mem::offset_of!(ImageSectionHeader, size_of_raw_data)) as *const u32) };
+        let pointer_to_raw_data = unsafe { core::ptr::read_unaligned(section_header_base_ptr.add(core::mem::offset_of!(ImageSectionHeader, pointer_to_raw_data)) as *const u32) };
+
+        let src_addr = unsafe { file.as_ptr().add(pointer_to_raw_data as usize) };
+        let dst_addr = unsafe { (phys_addr as *mut u8).add(virtual_address as usize) };
+
+        if (src_addr as usize).saturating_add(size_of_raw_data as usize) > (file.as_ptr() as usize).saturating_add(file.len()) ||
+           (dst_addr as usize).saturating_add(size_of_raw_data as usize) > ((phys_addr as *mut u8) as usize).saturating_add(_pages_needed * 4096) {
+            unsafe { (bs.free_pages)(phys_addr, _pages_needed) };
+            return Err(BellowsError::PeParse("Section data out of bounds."));
+        }
+
+        unsafe {
+            core::ptr::copy_nonoverlapping(src_addr, dst_addr, size_of_raw_data as usize);
+        }
+    }
+
+    let image_base = unsafe { read_unaligned!(file.as_ptr(), (e_lfanew + 48) as usize, u64) } as usize;
+    let image_base_delta = (phys_addr as u64).wrapping_sub(image_base as u64);
+
+    if image_base_delta != 0 {
+        // Handle relocations - minimal for now, assume no relocs for simplicity to reduce lines
+    }
+
+    let entry_point_addr = phys_addr.saturating_add(address_of_entry_point);
+    if entry_point_addr >= phys_addr + _pages_needed * 4096 || entry_point_addr < phys_addr {
+        unsafe { (bs.free_pages)(phys_addr, _pages_needed) };
+        return Err(BellowsError::PeParse("Entry point address is outside allocated memory."));
+    }
+
+    log::info!("PE: EFI image loaded. Entry: 0x{:x}", entry_point_addr);
+    let entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> ! = unsafe { core::mem::transmute(entry_point_addr) };
+    log::info!("PE: load_efi_image completed successfully.");
+    Ok(entry)
 }

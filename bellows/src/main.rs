@@ -36,7 +36,7 @@ static KERNEL_BINARY: &[u8] = include_bytes!("kernel.bin");
 
 mod loader;
 
-use loader::{exit_boot_services_and_jump, heap::init_heap, pe::load_efi_image};
+use loader::{exit_boot_services_and_jump, init_heap, load_efi_image};
 
 use petroleum::common::{
     EfiGraphicsPixelFormat, EfiStatus, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
