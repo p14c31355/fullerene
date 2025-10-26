@@ -41,12 +41,9 @@ pub fn init() {
     OPEN_FILES.lock().clear();
 }
 
-/// Create a new file
+/// Create a new file, overwriting if it exists
 pub fn create_file(name: &str, data: &[u8]) -> Result<(), FsError> {
     let mut fs = FILESYSTEM.lock();
-    if fs.contains_key(name) {
-        return Err(FsError::FileExists);
-    }
 
     let file = File {
         name: String::from(name),

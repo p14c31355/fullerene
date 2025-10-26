@@ -34,11 +34,18 @@ const GRAPHICS_CONFIG: [(u8, u8); 9] = [
 const MISC_REGISTER_VALUE: u8 = 0x67;
 const ATTRIBUTE_MODE_CONTROL_VALUE: u8 = 0x0c;
 
+// VGA attribute controller register indices
 const ATTRIBUTE_MODE_CONTROL_REGISTER: u8 = 0x10;
 const OVERSCAN_REGISTER: u8 = 0x11;
 const MEMORY_PLANE_ENABLE_REGISTER: u8 = 0x12;
 const HORIZONTAL_PIXEL_PANNING_REGISTER: u8 = 0x13;
 const COLOR_SELECT_REGISTER: u8 = 0x14;
+
+// VGA attribute controller register values
+const OVERSCAN_COLOR: u8 = 0x00;
+const MEMORY_PLANE_ENABLE_ALL: u8 = 0x0f;
+const HORIZONTAL_PIXEL_PANNING_DEFAULT: u8 = 0x08;
+const COLOR_SELECT_DEFAULT: u8 = 0x00;
 
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
@@ -217,10 +224,10 @@ pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
         write_ac_reg(i, i);
     }
     write_ac_reg(ATTRIBUTE_MODE_CONTROL_REGISTER, ATTRIBUTE_MODE_CONTROL_VALUE);
-    write_ac_reg(OVERSCAN_REGISTER, 0x00);
-    write_ac_reg(MEMORY_PLANE_ENABLE_REGISTER, 0x0f);
-    write_ac_reg(HORIZONTAL_PIXEL_PANNING_REGISTER, 0x08);
-    write_ac_reg(COLOR_SELECT_REGISTER, 0x00);
+    write_ac_reg(OVERSCAN_REGISTER, OVERSCAN_COLOR);
+    write_ac_reg(MEMORY_PLANE_ENABLE_REGISTER, MEMORY_PLANE_ENABLE_ALL);
+    write_ac_reg(HORIZONTAL_PIXEL_PANNING_REGISTER, HORIZONTAL_PIXEL_PANNING_DEFAULT);
+    write_ac_reg(COLOR_SELECT_REGISTER, COLOR_SELECT_DEFAULT);
 
     // Finally, enable video by writing 0x20 to the index port (with palette access enabled)
     unsafe {
