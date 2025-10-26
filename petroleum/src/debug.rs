@@ -7,7 +7,7 @@ use core::arch::asm;
 use core::fmt::{self, Write};
 
 /// A simple backtrace entry
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct BacktraceEntry {
     pub ip: u64,
     pub sp: u64,
@@ -17,6 +17,7 @@ pub struct BacktraceEntry {
 }
 
 /// A basic backtrace collector
+#[derive(Default)]
 pub struct BacktraceCollector {
     entries: [BacktraceEntry; 32],
     count: usize,
@@ -24,16 +25,7 @@ pub struct BacktraceCollector {
 
 impl BacktraceCollector {
     pub fn new() -> Self {
-        Self {
-            entries: [BacktraceEntry {
-                ip: 0,
-                sp: 0,
-                symbol: None,
-                file: None,
-                line: None,
-            }; 32],
-            count: 0,
-        }
+        Default::default()
     }
 
     /// Capture a basic stack backtrace using frame pointers

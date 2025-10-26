@@ -27,12 +27,11 @@ pub fn is_user_address(addr: VirtAddr) -> bool {
 
 /// Check if an address is within the allocator's heap range
 pub fn is_allocator_related_address(addr: usize) -> bool {
-    if let Some(&start) = HEAP_START.get() {
-        if let Some(&end) = HEAP_END.get() {
-            return addr >= start && addr < end;
-        }
+    if let (Some(&start), Some(&end)) = (HEAP_START.get(), HEAP_END.get()) {
+        addr >= start && addr < end
+    } else {
+        false
     }
-    false
 }
 
 /// Validate user buffer access
