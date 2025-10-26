@@ -71,7 +71,7 @@ fn syscall_fork() -> SyscallResult {
         .ok_or(SyscallError::NoSuchProcess)?;
 
     // Clone the parent process page table
-    let parent_page_table = parent_process.page_table.as_mut().ok_or(SyscallError::NoMemory)?;
+    let parent_page_table = parent_process.page_table.as_mut().ok_or(SyscallError::OutOfMemory)?;
     let cloned_table_addr = parent_page_table.create_page_table()?;
     let cloned_pml4_frame = x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(cloned_table_addr as u64));
 
