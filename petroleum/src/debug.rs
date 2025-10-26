@@ -42,10 +42,16 @@ impl BacktraceCollector {
         let mut i = 0;
 
         while !frame.is_null() && i < self.entries.len() {
-            unsafe {
+                        unsafe {
                 // Read return address from stack frame
                 let return_addr = *frame.offset(1);
-                let next_frame = *frame;
+                let next_frame_ptr = *frame as *const usize;
+
+                if next_frame_ptr <= frame {
+                    // Stack grows downwards, so the next frame pointer should be at a higher address.
+                    // If not, the stack is likely corrupted or we've reached the end of the call chain.
+                    break;
+                }
 
                 if return_addr == 0 {
                     break;
@@ -59,7 +65,7 @@ impl BacktraceCollector {
                     line: None,   // TODO: Line resolution
                 };
 
-                frame = next_frame as *const usize;
+                frame = next_frame_ptr;
                 i += 1;
             }
         }
