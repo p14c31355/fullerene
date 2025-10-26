@@ -1,5 +1,3 @@
-// file_content from the error message, but modified
-
 //! Memory management module containing memory map parsing and initialization
 
 use crate::heap;

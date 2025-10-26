@@ -275,27 +275,31 @@ pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
     unsafe { port_u8_3ce.write(GRAPHICS_COLOR_DONT_CARE); port_u8_3cf.write(GRAPHICS_COLOR_DONT_CARE_VALUE); } // Color don't care
     unsafe { port_u8_3ce.write(GRAPHICS_BIT_MASK); port_u8_3cf.write(GRAPHICS_BIT_MASK_VALUE); } // Bit mask
 
-    // Attribute controller (text mode) - needs special handling for address vs write
-    let mut port_u8_3c0: Port<u8> = Port::new(VGA_AC_INDEX);
+    // Attribute controller (text mode)
+    let mut vga_input_status_1: PortReadOnly<u8> = PortReadOnly::new(0x3DA);
+    let mut vga_ac_port: Port<u8> = Port::new(VGA_AC_INDEX); // 0x3C0 is used for both index and data
 
-    let mut i = 0;
-    let mut port_u8_3c1: Port<u8> = Port::new(VGA_AC_WRITE);
-    while i < 16 {
-        unsafe { port_u8_3c0.write(i); }
-        unsafe { port_u8_3c1.write(i); }
-        i += 1;
+    let mut write_ac_reg = |index: u8, value: u8| {
+        unsafe {
+            vga_input_status_1.read(); // Reset flip-flop
+            vga_ac_port.write(index);
+            vga_ac_port.write(value);
+        }
+    };
+
+    // Set palette registers (0-15) and other registers
+    for i in 0..16 { write_ac_reg(i, i); }
+    write_ac_reg(ATTRIBUTE_MODE_CONTROL, ATTRIBUTE_MODE_CONTROL_VALUE);
+    write_ac_reg(ATTRIBUTE_OVERSCAN_COLOR, ATTRIBUTE_OVERSCAN_COLOR_VALUE);
+    write_ac_reg(ATTRIBUTE_COLOR_PLANE_ENABLE, ATTRIBUTE_COLOR_PLANE_ENABLE_VALUE);
+    write_ac_reg(ATTRIBUTE_PIXEL_PANNING, ATTRIBUTE_PIXEL_PANNING_VALUE);
+    write_ac_reg(ATTRIBUTE_COLOR_SELECT, ATTRIBUTE_COLOR_SELECT_VALUE);
+
+    // Finally, enable video by writing 0x20 to the index port (with palette access enabled)
+    unsafe {
+        vga_input_status_1.read();
+        vga_ac_port.write(0x20);
     }
-    unsafe { port_u8_3c0.write(ATTRIBUTE_MODE_CONTROL); }
-    let mut port_u8_3c1: Port<u8> = Port::new(VGA_AC_WRITE);
-    unsafe { port_u8_3c1.write(ATTRIBUTE_MODE_CONTROL_VALUE); } // Mode control
-    unsafe { port_u8_3c0.write(ATTRIBUTE_OVERSCAN_COLOR); }
-    unsafe { port_u8_3c1.write(ATTRIBUTE_OVERSCAN_COLOR_VALUE); } // Overscan color
-    unsafe { port_u8_3c0.write(ATTRIBUTE_COLOR_PLANE_ENABLE); }
-    unsafe { port_u8_3c1.write(ATTRIBUTE_COLOR_PLANE_ENABLE_VALUE); } // Color plane enable
-    unsafe { port_u8_3c0.write(ATTRIBUTE_PIXEL_PANNING); }
-    unsafe { port_u8_3c1.write(ATTRIBUTE_PIXEL_PANNING_VALUE); } // Pixel panning
-    unsafe { port_u8_3c0.write(ATTRIBUTE_COLOR_SELECT); }
-    unsafe { port_u8_3c1.write(ATTRIBUTE_COLOR_SELECT_VALUE); } // Color select
 
     // DAC registers (optional for text mode, simplified)
     // Skip DAC initialization for now as it's not strictly necessary for text mode

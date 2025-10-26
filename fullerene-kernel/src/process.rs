@@ -426,7 +426,7 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
 
 /// Block current process
 pub fn block_current() {
-    let pid = current_pid().unwrap();
+    let pid = current_pid().expect("block_current called with no current process");
     let mut process_list = PROCESS_LIST.lock();
 
     if let Some(process) = process_list.iter_mut().find(|p| p.id == pid) {
@@ -437,7 +437,7 @@ pub fn block_current() {
 
     let old_pid = Some(pid);
     schedule_next();
-    let new_pid = current_pid().unwrap();
+    let new_pid = current_pid().expect("schedule_next failed to select a process after blocking");
     unsafe { context_switch(old_pid, new_pid); }
 }
 
