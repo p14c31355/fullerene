@@ -10,6 +10,47 @@ use petroleum::{
     Color, ColorCode, ScreenChar, TextBufferOperations, check_periodic, periodic_task,
     write_serial_bytes,
 };
+
+// Define periodic tasks in a struct for clarity
+struct PeriodicTask {
+    interval: u64,
+    last_tick: alloc::sync::Arc<spin::Mutex<u64>>,
+    task: fn(),
+}
+
+lazy_static::lazy_static! {
+    static ref PERIODIC_TASKS: [PeriodicTask; 5] = [
+        PeriodicTask {
+            interval: 1000,
+            last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
+            task: || perform_system_health_checks(),
+        },
+        PeriodicTask {
+            interval: 5000,
+            last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
+            task: || {
+                collect_system_stats();
+                log_system_stats(&collect_system_stats(), LOG_INTERVAL_TICKS);
+                display_system_stats_on_vga(&collect_system_stats(), DISPLAY_INTERVAL_TICKS);
+            },
+        },
+        PeriodicTask {
+            interval: 2000,
+            last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
+            task: perform_system_maintenance,
+        },
+        PeriodicTask {
+            interval: 10000,
+            last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
+            task: || perform_memory_capacity_check(current_tick),
+        },
+        PeriodicTask {
+            interval: 100,
+            last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
+            task: || perform_process_cleanup_check(SCHEDULER_ITERATIONS.load(Ordering::Relaxed)),
+        },
+    ];
+}
 use x86_64::VirtAddr;
 
 // System-wide counters and statistics
@@ -268,19 +309,29 @@ fn perform_automated_backup() {
 fn process_scheduler_iteration() {
     let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
     let iteration_count = SCHEDULER_ITERATIONS.load(Ordering::Relaxed);
-    let system_stats = collect_system_stats();
 
-    // Process I/O events and perform periodic tasks
+    // Process I/O events
     process_io_events();
-    perform_periodic_health_checks(&system_stats, current_tick);
-    perform_periodic_system_tasks(&system_stats, current_tick, iteration_count);
+
+    // Run periodic tasks from PERIODIC_TASKS array
+    for task in PERIODIC_TASKS.iter() {
+        let mut last_tick = task.last_tick.lock();
+        if current_tick - *last_tick >= task.interval {
+            *last_tick = current_tick;
+            (task.task)();
+        }
+    }
+
+    // Additional tasks that don't fit the pattern
+    if current_tick % DESKTOP_UPDATE_INTERVAL_TICKS == 0 {
+        graphics::draw_os_desktop();
+    }
+    if current_tick % 10000 == 0 {
+        emergency_condition_handler();
+    }
 
     // Yield and handle system calls
     yield_and_process_system_calls();
-
-    // Periodic desktop update and emergency checks
-    perform_periodic_ui_operations(current_tick);
-    perform_emergency_checks(current_tick);
 }
 
 /// Perform periodic health checks and statistics

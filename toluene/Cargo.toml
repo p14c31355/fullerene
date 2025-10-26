@@ -6,7 +6,6 @@ edition = "2024"
 [[bin]]
 name = "toluene"
 path = "src/main.rs"
-crate-type = ["bin"]
 
 [[test]]
 name = "unit_tests"

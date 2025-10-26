@@ -15,82 +15,23 @@ const VGA_GC_DATA: u16 = 0x3CF;
 const VGA_AC_INDEX: u16 = 0x3C0;
 const VGA_AC_WRITE: u16 = 0x3C1;
 
-// VGA register values for 80x25 text mode
+// VGA configuration sequences for 80x25 text mode
+const SEQUENCER_CONFIG: [(u8, u8); 5] = [
+    (0x00, 0x03), (0x01, 0x00), (0x02, 0x03), (0x03, 0x00), (0x04, 0x02),
+];
+const CRTC_CONFIG: [(u8, u8); 18] = [
+    (0x00, 0x5f), (0x01, 0x4f), (0x02, 0x50), (0x03, 0x82), (0x04, 0x55),
+    (0x05, 0x81), (0x06, 0xbf), (0x07, 0x1f), (0x08, 0x00), (0x09, 0x4f),
+    (0x10, 0x9c), (0x11, 0x8e), (0x12, 0x8f), (0x13, 0x28), (0x14, 0x1f),
+    (0x15, 0x96), (0x16, 0xb9), (0x17, 0xa3),
+];
+const GRAPHICS_CONFIG: [(u8, u8); 9] = [
+    (0x00, 0x00), (0x01, 0x00), (0x02, 0x00), (0x03, 0x00), (0x04, 0x00),
+    (0x05, 0x10), (0x06, 0x0e), (0x07, 0x00), (0x08, 0xff),
+];
+
 const MISC_REGISTER_VALUE: u8 = 0x67;
-const SEQUENCER_RESET: u8 = 0x00;
-const SEQUENCER_RESET_VALUE: u8 = 0x03;
-const SEQUENCER_CLOCKING_MODE: u8 = 0x01;
-const SEQUENCER_CLOCKING_MODE_VALUE: u8 = 0x00;
-const SEQUENCER_PLANE_MASK: u8 = 0x02;
-const SEQUENCER_PLANE_MASK_VALUE: u8 = 0x03;
-const SEQUENCER_CHARACTER_MAP: u8 = 0x03;
-const SEQUENCER_CHARACTER_MAP_VALUE: u8 = 0x00;
-const SEQUENCER_MEMORY_MODE: u8 = 0x04;
-const SEQUENCER_MEMORY_MODE_VALUE: u8 = 0x02;
-const CRTC_HORIZ_DISPLAY_END: u8 = 0x00;
-const CRTC_HORIZ_DISPLAY_END_VALUE: u8 = 0x5f;
-const CRTC_HORIZ_DISPLAY_ENABLE_END: u8 = 0x01;
-const CRTC_HORIZ_DISPLAY_ENABLE_END_VALUE: u8 = 0x4f;
-const CRTC_HORIZ_RETRACE_START: u8 = 0x02;
-const CRTC_HORIZ_RETRACE_START_VALUE: u8 = 0x50;
-const CRTC_HORIZ_RETRACE_END: u8 = 0x03;
-const CRTC_HORIZ_RETRACE_END_VALUE: u8 = 0x82;
-const CRTC_HORIZ_RETRACE_END2: u8 = 0x04;
-const CRTC_HORIZ_RETRACE_END2_VALUE: u8 = 0x55;
-const CRTC_HORIZ_BLANK_START: u8 = 0x05;
-const CRTC_HORIZ_BLANK_START_VALUE: u8 = 0x81;
-const CRTC_HORIZ_BLANK_END: u8 = 0x06;
-const CRTC_HORIZ_BLANK_END_VALUE: u8 = 0xbf;
-const CRTC_VERTICAL_SYNC_START: u8 = 0x07;
-const CRTC_VERTICAL_SYNC_START_VALUE: u8 = 0x1f;
-const CRTC_VERTICAL_SYNC_END: u8 = 0x08;
-const CRTC_VERTICAL_SYNC_END_VALUE: u8 = 0x00;
-const CRTC_VERTICAL_SYNC_END_LOW: u8 = 0x09;
-const CRTC_VERTICAL_SYNC_END_LOW_VALUE: u8 = 0x4f;
-const CRTC_VERTICAL_SYNC_START2: u8 = 0x10;
-const CRTC_VERTICAL_SYNC_START2_VALUE: u8 = 0x9c;
-const CRTC_VERTICAL_SYNC_END2: u8 = 0x11;
-const CRTC_VERTICAL_SYNC_END2_VALUE: u8 = 0x8e;
-const CRTC_VERTICAL_DISPLAY_ENABLE_END: u8 = 0x12;
-const CRTC_VERTICAL_DISPLAY_ENABLE_END_VALUE: u8 = 0x8f;
-const CRTC_OFFSET: u8 = 0x13;
-const CRTC_OFFSET_VALUE: u8 = 0x28;
-const CRTC_UNDERLINE_LOCATION: u8 = 0x14;
-const CRTC_UNDERLINE_LOCATION_VALUE: u8 = 0x1f;
-const CRTC_VERTICAL_BLANK_START: u8 = 0x15;
-const CRTC_VERTICAL_BLANK_START_VALUE: u8 = 0x96;
-const CRTC_VERTICAL_BLANK_END: u8 = 0x16;
-const CRTC_VERTICAL_BLANK_END_VALUE: u8 = 0xb9;
-const CRTC_MODE_CONTROL: u8 = 0x17;
-const CRTC_MODE_CONTROL_VALUE: u8 = 0xa3;
-const GRAPHICS_SET_RESET: u8 = 0x00;
-const GRAPHICS_SET_RESET_VALUE: u8 = 0x00;
-const GRAPHICS_ENABLE_SET_RESET: u8 = 0x01;
-const GRAPHICS_ENABLE_SET_RESET_VALUE: u8 = 0x00;
-const GRAPHICS_COLOR_COMPARE: u8 = 0x02;
-const GRAPHICS_COLOR_COMPARE_VALUE: u8 = 0x00;
-const GRAPHICS_DATA_ROTATE: u8 = 0x03;
-const GRAPHICS_DATA_ROTATE_VALUE: u8 = 0x00;
-const GRAPHICS_READ_MAP_SELECT: u8 = 0x04;
-const GRAPHICS_READ_MAP_SELECT_VALUE: u8 = 0x00;
-const GRAPHICS_GRAPHICS_MODE: u8 = 0x05;
-const GRAPHICS_GRAPHICS_MODE_VALUE: u8 = 0x10;
-const GRAPHICS_MEMORY_MAP_SELECT: u8 = 0x06;
-const GRAPHICS_MEMORY_MAP_SELECT_VALUE: u8 = 0x0e;
-const GRAPHICS_COLOR_DONT_CARE: u8 = 0x07;
-const GRAPHICS_COLOR_DONT_CARE_VALUE: u8 = 0x00;
-const GRAPHICS_BIT_MASK: u8 = 0x08;
-const GRAPHICS_BIT_MASK_VALUE: u8 = 0xff;
-const ATTRIBUTE_MODE_CONTROL: u8 = 0x10;
 const ATTRIBUTE_MODE_CONTROL_VALUE: u8 = 0x0c;
-const ATTRIBUTE_OVERSCAN_COLOR: u8 = 0x11;
-const ATTRIBUTE_OVERSCAN_COLOR_VALUE: u8 = 0x00;
-const ATTRIBUTE_COLOR_PLANE_ENABLE: u8 = 0x12;
-const ATTRIBUTE_COLOR_PLANE_ENABLE_VALUE: u8 = 0x0f;
-const ATTRIBUTE_PIXEL_PANNING: u8 = 0x13;
-const ATTRIBUTE_PIXEL_PANNING_VALUE: u8 = 0x08;
-const ATTRIBUTE_COLOR_SELECT: u8 = 0x14;
-const ATTRIBUTE_COLOR_SELECT_VALUE: u8 = 0x00;
 
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
@@ -228,56 +169,27 @@ pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
     port_write!(VGA_MISC_WRITE, MISC_REGISTER_VALUE);
 
     // Sequencer registers
-    let sequencer_configs = [
-        RegisterConfig { index: SEQUENCER_RESET, value: SEQUENCER_RESET_VALUE },
-        RegisterConfig { index: SEQUENCER_CLOCKING_MODE, value: SEQUENCER_CLOCKING_MODE_VALUE },
-        RegisterConfig { index: SEQUENCER_PLANE_MASK, value: SEQUENCER_PLANE_MASK_VALUE },
-        RegisterConfig { index: SEQUENCER_CHARACTER_MAP, value: SEQUENCER_CHARACTER_MAP_VALUE },
-        RegisterConfig { index: SEQUENCER_MEMORY_MODE, value: SEQUENCER_MEMORY_MODE_VALUE },
-    ];
+    let sequencer_configs: Vec<RegisterConfig> = SEQUENCER_CONFIG.iter()
+        .map(|(index, value)| RegisterConfig { index: *index, value: *value })
+        .collect();
     let mut sequencer_ops = VgaPortOps::new(HardwarePorts::SEQUENCER_INDEX, HardwarePorts::SEQUENCER_DATA);
     sequencer_ops.write_sequence(&sequencer_configs);
 
     // CRTC registers for 80x25 text mode
-    let crtc_configs = [
-        RegisterConfig { index: CRTC_HORIZ_DISPLAY_END, value: CRTC_HORIZ_DISPLAY_END_VALUE },
-        RegisterConfig { index: CRTC_HORIZ_DISPLAY_ENABLE_END, value: CRTC_HORIZ_DISPLAY_ENABLE_END_VALUE },
-        RegisterConfig { index: CRTC_HORIZ_RETRACE_START, value: CRTC_HORIZ_RETRACE_START_VALUE },
-        RegisterConfig { index: CRTC_HORIZ_RETRACE_END, value: CRTC_HORIZ_RETRACE_END_VALUE },
-        RegisterConfig { index: CRTC_HORIZ_RETRACE_END2, value: CRTC_HORIZ_RETRACE_END2_VALUE },
-        RegisterConfig { index: CRTC_HORIZ_BLANK_START, value: CRTC_HORIZ_BLANK_START_VALUE },
-        RegisterConfig { index: CRTC_HORIZ_BLANK_END, value: CRTC_HORIZ_BLANK_END_VALUE },
-        RegisterConfig { index: CRTC_VERTICAL_SYNC_START, value: CRTC_VERTICAL_SYNC_START_VALUE },
-        RegisterConfig { index: CRTC_VERTICAL_SYNC_END, value: CRTC_VERTICAL_SYNC_END_VALUE },
-        RegisterConfig { index: CRTC_VERTICAL_SYNC_END_LOW, value: CRTC_VERTICAL_SYNC_END_LOW_VALUE },
-        RegisterConfig { index: CRTC_VERTICAL_SYNC_START2, value: CRTC_VERTICAL_SYNC_START2_VALUE },
-        RegisterConfig { index: CRTC_VERTICAL_SYNC_END2, value: CRTC_VERTICAL_SYNC_END2_VALUE },
-        RegisterConfig { index: CRTC_VERTICAL_DISPLAY_ENABLE_END, value: CRTC_VERTICAL_DISPLAY_ENABLE_END_VALUE },
-        RegisterConfig { index: CRTC_OFFSET, value: CRTC_OFFSET_VALUE },
-        RegisterConfig { index: CRTC_UNDERLINE_LOCATION, value: CRTC_UNDERLINE_LOCATION_VALUE },
-        RegisterConfig { index: CRTC_VERTICAL_BLANK_START, value: CRTC_VERTICAL_BLANK_START_VALUE },
-        RegisterConfig { index: CRTC_VERTICAL_BLANK_END, value: CRTC_VERTICAL_BLANK_END_VALUE },
-        RegisterConfig { index: CRTC_MODE_CONTROL, value: CRTC_MODE_CONTROL_VALUE },
-    ];
+    let crtc_configs: Vec<RegisterConfig> = CRTC_CONFIG.iter()
+        .map(|(index, value)| RegisterConfig { index: *index, value: *value })
+        .collect();
     let mut crtc_ops = VgaPortOps::new(HardwarePorts::CRTC_INDEX, HardwarePorts::CRTC_DATA);
     crtc_ops.write_sequence(&crtc_configs);
 
     // Enable screen
-    let mut sequencer_ops_enable = VgaPortOps::new(HardwarePorts::SEQUENCER_INDEX, HardwarePorts::SEQUENCER_DATA);
-    sequencer_ops_enable.write_register(SEQUENCER_CLOCKING_MODE, SEQUENCER_CLOCKING_MODE_VALUE);
+    //let mut sequencer_ops_enable = VgaPortOps::new(HardwarePorts::SEQUENCER_INDEX, HardwarePorts::SEQUENCER_DATA);
+    //sequencer_ops_enable.write_register(1, 0x00); // Already set in config
 
     // Graphics controller
-    let graphics_configs = [
-        RegisterConfig { index: GRAPHICS_SET_RESET, value: GRAPHICS_SET_RESET_VALUE },
-        RegisterConfig { index: GRAPHICS_ENABLE_SET_RESET, value: GRAPHICS_ENABLE_SET_RESET_VALUE },
-        RegisterConfig { index: GRAPHICS_COLOR_COMPARE, value: GRAPHICS_COLOR_COMPARE_VALUE },
-        RegisterConfig { index: GRAPHICS_DATA_ROTATE, value: GRAPHICS_DATA_ROTATE_VALUE },
-        RegisterConfig { index: GRAPHICS_READ_MAP_SELECT, value: GRAPHICS_READ_MAP_SELECT_VALUE },
-        RegisterConfig { index: GRAPHICS_GRAPHICS_MODE, value: GRAPHICS_GRAPHICS_MODE_VALUE },
-        RegisterConfig { index: GRAPHICS_MEMORY_MAP_SELECT, value: GRAPHICS_MEMORY_MAP_SELECT_VALUE },
-        RegisterConfig { index: GRAPHICS_COLOR_DONT_CARE, value: GRAPHICS_COLOR_DONT_CARE_VALUE },
-        RegisterConfig { index: GRAPHICS_BIT_MASK, value: GRAPHICS_BIT_MASK_VALUE },
-    ];
+    let graphics_configs: Vec<RegisterConfig> = GRAPHICS_CONFIG.iter()
+        .map(|(index, value)| RegisterConfig { index: *index, value: *value })
+        .collect();
     let mut graphics_ops = VgaPortOps::new(HardwarePorts::GRAPHICS_INDEX, HardwarePorts::GRAPHICS_DATA);
     graphics_ops.write_sequence(&graphics_configs);
 
@@ -297,14 +209,11 @@ pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
     for i in 0..16 {
         write_ac_reg(i, i);
     }
-    write_ac_reg(ATTRIBUTE_MODE_CONTROL, ATTRIBUTE_MODE_CONTROL_VALUE);
-    write_ac_reg(ATTRIBUTE_OVERSCAN_COLOR, ATTRIBUTE_OVERSCAN_COLOR_VALUE);
-    write_ac_reg(
-        ATTRIBUTE_COLOR_PLANE_ENABLE,
-        ATTRIBUTE_COLOR_PLANE_ENABLE_VALUE,
-    );
-    write_ac_reg(ATTRIBUTE_PIXEL_PANNING, ATTRIBUTE_PIXEL_PANNING_VALUE);
-    write_ac_reg(ATTRIBUTE_COLOR_SELECT, ATTRIBUTE_COLOR_SELECT_VALUE);
+    write_ac_reg(0x10, ATTRIBUTE_MODE_CONTROL_VALUE);
+    write_ac_reg(0x11, 0x00);
+    write_ac_reg(0x12, 0x0f);
+    write_ac_reg(0x13, 0x08);
+    write_ac_reg(0x14, 0x00);
 
     // Finally, enable video by writing 0x20 to the index port (with palette access enabled)
     unsafe {
