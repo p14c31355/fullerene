@@ -431,14 +431,18 @@ pub fn block_current() {
 
     if let Some(process) = process_list.iter_mut().find(|p| p.id == pid) {
         process.state = ProcessState::Blocked;
+
+        drop(process_list);
+
+        let old_pid = Some(pid);
+        schedule_next();
+        let new_pid = current_pid().expect("schedule_next failed to select a process after blocking");
+        unsafe { context_switch(old_pid, new_pid); }
+    } else {
+        // This case should ideally not be reached if the current_pid is valid.
+        // Consider adding a panic or an error log here for robustness.
+        drop(process_list);
     }
-
-    drop(process_list);
-
-    let old_pid = Some(pid);
-    schedule_next();
-    let new_pid = current_pid().expect("schedule_next failed to select a process after blocking");
-    unsafe { context_switch(old_pid, new_pid); }
 }
 
 /// Unblock a process
