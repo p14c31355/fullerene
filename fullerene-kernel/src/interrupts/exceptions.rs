@@ -7,6 +7,7 @@ use crate::memory_management;
 use core::fmt::Write;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
+use petroleum::debug::print_backtrace;
 
 /// Breakpoint exception handler
 #[unsafe(no_mangle)]
@@ -65,6 +66,12 @@ pub fn handle_page_fault(
         }
         writeln!(writer, "Instruction pointer (RIP): {:#x}", stack_frame.instruction_pointer.as_u64()).ok();
         writeln!(writer, "Stack pointer (RSP): {:#x}", stack_frame.stack_pointer.as_u64()).ok();
+        writeln!(writer).ok();
+        writeln!(writer, "Backtrace:").ok();
+    });
+    // Note: Backtrace printing is done outside the lock_and_modify to avoid nested locks
+    petroleum::lock_and_modify!(petroleum::SERIAL1, writer, {
+        print_backtrace(&mut *writer);
     });
 
     if !is_user {

@@ -29,6 +29,9 @@ static_assertions = "1.1"
 log = { version = "0.4.28", default-features = false }
 paste = "1.0"
 bitfield = "0.19"
+addr2line = { version = "0.24", default-features = false }
+gimli = { version = "0.30", default-features = false }
+goblin = { version = "0.9", default-features = false }
 
 [lib]
 name = "petroleum"
