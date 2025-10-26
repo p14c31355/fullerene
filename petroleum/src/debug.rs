@@ -6,6 +6,14 @@
 use core::arch::asm;
 use core::fmt::{self, Write};
 
+/// Validate if an address is safe to dereference
+/// This is a basic check for stack frame pointers to prevent double faults
+/// during page fault handling when stacks might be corrupted.
+fn is_address_valid(addr: u64) -> bool {
+    // Basic checks: not within null page and reasonably aligned
+    addr >= 0x1000 && (addr as usize).wrapping_rem(core::mem::size_of::<usize>()) == 0 || addr == 0
+}
+
 /// A simple backtrace entry
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BacktraceEntry {
@@ -42,7 +50,13 @@ impl BacktraceCollector {
         let mut i = 0;
 
         while !frame.is_null() && i < self.entries.len() {
-                        unsafe {
+            // Validate pointers before dereferencing to prevent double faults during page handling
+            if !is_address_valid(frame as u64) ||
+               !is_address_valid((frame as usize).wrapping_add(core::mem::size_of::<usize>()) as u64) {
+                break;
+            }
+
+            unsafe {
                 // Read return address from stack frame
                 let return_addr = *frame.offset(1);
                 let next_frame_ptr = *frame as *const usize;
