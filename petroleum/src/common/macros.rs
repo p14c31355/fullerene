@@ -962,7 +962,6 @@ macro_rules! map_identity_range_macro {
     ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{
         unsafe {
             map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags)
-                .expect("Failed to identity map range")
         }
     }};
 }
@@ -992,9 +991,11 @@ macro_rules! map_range_with_log_macro {
 macro_rules! identity_map_range_with_log_macro {
     ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $num_pages:expr, $flags:expr) => {{
         log_page_table_op!("Identity mapping start", $start_addr, 0, $num_pages);
-        map_identity_range_macro!($mapper, $frame_allocator, $start_addr, $num_pages, $flags);
-        log_page_table_op!("Identity mapping complete", $start_addr, 0, $num_pages);
-        Ok(())
+        let result = map_identity_range_macro!($mapper, $frame_allocator, $start_addr, $num_pages, $flags);
+        if result.is_ok() {
+            log_page_table_op!("Identity mapping complete", $start_addr, 0, $num_pages);
+        }
+        result
     }};
 }
 
