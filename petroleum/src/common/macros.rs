@@ -964,6 +964,7 @@ macro_rules! map_identity_range_macro {
 #[macro_export]
 macro_rules! map_range_with_log_macro {
     ($mapper:expr, $frame_allocator:expr, $phys_start:expr, $virt_start:expr, $num_pages:expr, $flags:expr) => {{
+        use x86_64::structures::paging::{mapper::MapToError, Size4KiB};
         log_page_table_op!("Mapping range", $phys_start, $virt_start, $num_pages);
         for i in 0..$num_pages {
             let phys_addr = $phys_start + i * 4096;
@@ -971,12 +972,13 @@ macro_rules! map_range_with_log_macro {
             let (page, frame) = create_page_and_frame!(virt_addr, phys_addr);
             match unsafe { $mapper.map_to(page, frame, $flags, $frame_allocator) } {
                 Ok(flush) => flush.flush(),
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                Err(MapToError::<Size4KiB>::PageAlreadyMapped(_)) => {
                     continue;
                 }
                 Err(e) => panic!("Failed to map page: {:?}", e),
             }
         }
+        Ok::<(), MapToError<Size4KiB>>(())
     }};
 }
 
@@ -1229,10 +1231,10 @@ macro_rules! pci_config_read {
         $crate::bare_metal_pci::pci_config_read_dword($bus, $device, $function, $reg)
     };
     ($bus:expr, $device:expr, $function:expr, $reg:expr, 16) => {
-        $crate::bare_metal_pci::pci_config_read_word($bus, $device, $function, $reg) as u32
+        $crate::bare_metal_pci::pci_config_read_word($bus, $device, $function, $reg)
     };
     ($bus:expr, $device:expr, $function:expr, $reg:expr, 8) => {
-        $crate::bare_metal_pci::pci_config_read_byte($bus, $device, $function, $reg) as u32
+        $crate::bare_metal_pci::pci_config_read_byte($bus, $device, $function, $reg)
     };
 }
 
