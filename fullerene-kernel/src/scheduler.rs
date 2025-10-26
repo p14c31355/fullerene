@@ -304,6 +304,9 @@ fn perform_periodic_system_tasks(stats: &SystemStats, current_tick: u64, iterati
         write!(log_content, "Uptime: {}, Processes: {}/{}, Memory Used: {}\n",
             stats.uptime_ticks, stats.active_processes, stats.total_processes, stats.memory_used).ok();
 
+        // Note: crate::fs::create_file will fail if "system.log" already exists, as it doesn't handle overwriting.
+        // This logic will work only on the first call; subsequent calls every 3000 ticks will fail.
+        // Consider implementing overwrite functionality or using a different approach (e.g., open and write).
         match crate::fs::create_file("system.log", log_content.as_bytes()) {
             Ok(_) => {
                 log::info!("System statistics logged to system.log");
