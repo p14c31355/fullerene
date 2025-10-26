@@ -219,152 +219,67 @@ pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
     writer.set_color_code(ColorCode::new(Color::Green, Color::Black));
 
     // Set VGA to text mode 3 (80x25 color text)
+    use petroleum::graphics::ports::{HardwarePorts, RegisterConfig, VgaPortOps};
     use petroleum::hardware::ports::*;
+    use petroleum::port_write;
     use x86_64::instructions::port::*;
 
-    // Temporarily use port writes directly
-    let mut port_u8_3c2: Port<u8> = Port::new(VGA_MISC_WRITE as u16);
-    unsafe { port_u8_3c2.write(MISC_REGISTER_VALUE) };
+    // Write misc register
+    port_write!(VGA_MISC_WRITE, MISC_REGISTER_VALUE);
 
-    let mut port_u8_3c4: Port<u8> = Port::new(VGA_SEQ_INDEX);
-    let mut port_u8_3c5: Port<u8> = Port::new(VGA_SEQ_DATA);
-
-    unsafe {
-        port_u8_3c4.write(SEQUENCER_RESET);
-        port_u8_3c5.write(SEQUENCER_RESET_VALUE); // Reset sequencer
-        port_u8_3c4.write(SEQUENCER_CLOCKING_MODE);
-        port_u8_3c5.write(SEQUENCER_CLOCKING_MODE_VALUE); // Disable screen
-        port_u8_3c4.write(SEQUENCER_PLANE_MASK);
-        port_u8_3c5.write(SEQUENCER_PLANE_MASK_VALUE); // Plane map mask
-        port_u8_3c4.write(SEQUENCER_CHARACTER_MAP);
-        port_u8_3c5.write(SEQUENCER_CHARACTER_MAP_VALUE); // Character map
-        port_u8_3c4.write(SEQUENCER_MEMORY_MODE);
-        port_u8_3c5.write(SEQUENCER_MEMORY_MODE_VALUE); // Memory mode
-    }
+    // Sequencer registers
+    let sequencer_configs = [
+        RegisterConfig { index: SEQUENCER_RESET, value: SEQUENCER_RESET_VALUE },
+        RegisterConfig { index: SEQUENCER_CLOCKING_MODE, value: SEQUENCER_CLOCKING_MODE_VALUE },
+        RegisterConfig { index: SEQUENCER_PLANE_MASK, value: SEQUENCER_PLANE_MASK_VALUE },
+        RegisterConfig { index: SEQUENCER_CHARACTER_MAP, value: SEQUENCER_CHARACTER_MAP_VALUE },
+        RegisterConfig { index: SEQUENCER_MEMORY_MODE, value: SEQUENCER_MEMORY_MODE_VALUE },
+    ];
+    let mut sequencer_ops = VgaPortOps::new(HardwarePorts::SEQUENCER_INDEX, HardwarePorts::SEQUENCER_DATA);
+    sequencer_ops.write_sequence(&sequencer_configs);
 
     // CRTC registers for 80x25 text mode
-    let mut port_u8_3d4: Port<u8> = Port::new(VGA_CRTC_INDEX);
-    let mut port_u8_3d5: Port<u8> = Port::new(VGA_CRTC_DATA);
-
-    unsafe {
-        port_u8_3d4.write(CRTC_HORIZ_DISPLAY_END);
-        port_u8_3d5.write(CRTC_HORIZ_DISPLAY_END_VALUE);
-    } // Horiz display end
-    unsafe {
-        port_u8_3d4.write(CRTC_HORIZ_DISPLAY_ENABLE_END);
-        port_u8_3d5.write(CRTC_HORIZ_DISPLAY_ENABLE_END_VALUE);
-    } // Horiz display enable end
-    unsafe {
-        port_u8_3d4.write(CRTC_HORIZ_RETRACE_START);
-        port_u8_3d5.write(CRTC_HORIZ_RETRACE_START_VALUE);
-    } // Horiz retrace start
-    unsafe {
-        port_u8_3d4.write(CRTC_HORIZ_RETRACE_END);
-        port_u8_3d5.write(CRTC_HORIZ_RETRACE_END_VALUE);
-    } // Horiz retrace end
-    unsafe {
-        port_u8_3d4.write(CRTC_HORIZ_RETRACE_END2);
-        port_u8_3d5.write(CRTC_HORIZ_RETRACE_END2_VALUE);
-    } // Horiz retrace end
-    unsafe {
-        port_u8_3d4.write(CRTC_HORIZ_BLANK_START);
-        port_u8_3d5.write(CRTC_HORIZ_BLANK_START_VALUE);
-    } // Horiz blank start
-    unsafe {
-        port_u8_3d4.write(CRTC_HORIZ_BLANK_END);
-        port_u8_3d5.write(CRTC_HORIZ_BLANK_END_VALUE);
-    } // Horiz blank end
-    unsafe {
-        port_u8_3d4.write(CRTC_VERTICAL_SYNC_START);
-        port_u8_3d5.write(CRTC_VERTICAL_SYNC_START_VALUE);
-    } // Vertical sync start
-    unsafe {
-        port_u8_3d4.write(CRTC_VERTICAL_SYNC_END);
-        port_u8_3d5.write(CRTC_VERTICAL_SYNC_END_VALUE);
-    } // Vertical sync end
-    unsafe {
-        port_u8_3d4.write(CRTC_VERTICAL_SYNC_END_LOW);
-        port_u8_3d5.write(CRTC_VERTICAL_SYNC_END_LOW_VALUE);
-    } // Vertical display end low
-    unsafe {
-        port_u8_3d4.write(CRTC_VERTICAL_SYNC_START2);
-        port_u8_3d5.write(CRTC_VERTICAL_SYNC_START2_VALUE);
-    } // Vertical sync start
-    unsafe {
-        port_u8_3d4.write(CRTC_VERTICAL_SYNC_END2);
-        port_u8_3d5.write(CRTC_VERTICAL_SYNC_END2_VALUE);
-    } // Vertical sync end
-    unsafe {
-        port_u8_3d4.write(CRTC_VERTICAL_DISPLAY_ENABLE_END);
-        port_u8_3d5.write(CRTC_VERTICAL_DISPLAY_ENABLE_END_VALUE);
-    } // Vertical display enable end
-    unsafe {
-        port_u8_3d4.write(CRTC_OFFSET);
-        port_u8_3d5.write(CRTC_OFFSET_VALUE);
-    } // Offset
-    unsafe {
-        port_u8_3d4.write(CRTC_UNDERLINE_LOCATION);
-        port_u8_3d5.write(CRTC_UNDERLINE_LOCATION_VALUE);
-    } // Underline location
-    unsafe {
-        port_u8_3d4.write(CRTC_VERTICAL_BLANK_START);
-        port_u8_3d5.write(CRTC_VERTICAL_BLANK_START_VALUE);
-    } // Vertical blank start
-    unsafe {
-        port_u8_3d4.write(CRTC_VERTICAL_BLANK_END);
-        port_u8_3d5.write(CRTC_VERTICAL_BLANK_END_VALUE);
-    } // Vertical blank end
-    unsafe {
-        port_u8_3d4.write(CRTC_MODE_CONTROL);
-        port_u8_3d5.write(CRTC_MODE_CONTROL_VALUE);
-    } // Mode control
+    let crtc_configs = [
+        RegisterConfig { index: CRTC_HORIZ_DISPLAY_END, value: CRTC_HORIZ_DISPLAY_END_VALUE },
+        RegisterConfig { index: CRTC_HORIZ_DISPLAY_ENABLE_END, value: CRTC_HORIZ_DISPLAY_ENABLE_END_VALUE },
+        RegisterConfig { index: CRTC_HORIZ_RETRACE_START, value: CRTC_HORIZ_RETRACE_START_VALUE },
+        RegisterConfig { index: CRTC_HORIZ_RETRACE_END, value: CRTC_HORIZ_RETRACE_END_VALUE },
+        RegisterConfig { index: CRTC_HORIZ_RETRACE_END2, value: CRTC_HORIZ_RETRACE_END2_VALUE },
+        RegisterConfig { index: CRTC_HORIZ_BLANK_START, value: CRTC_HORIZ_BLANK_START_VALUE },
+        RegisterConfig { index: CRTC_HORIZ_BLANK_END, value: CRTC_HORIZ_BLANK_END_VALUE },
+        RegisterConfig { index: CRTC_VERTICAL_SYNC_START, value: CRTC_VERTICAL_SYNC_START_VALUE },
+        RegisterConfig { index: CRTC_VERTICAL_SYNC_END, value: CRTC_VERTICAL_SYNC_END_VALUE },
+        RegisterConfig { index: CRTC_VERTICAL_SYNC_END_LOW, value: CRTC_VERTICAL_SYNC_END_LOW_VALUE },
+        RegisterConfig { index: CRTC_VERTICAL_SYNC_START2, value: CRTC_VERTICAL_SYNC_START2_VALUE },
+        RegisterConfig { index: CRTC_VERTICAL_SYNC_END2, value: CRTC_VERTICAL_SYNC_END2_VALUE },
+        RegisterConfig { index: CRTC_VERTICAL_DISPLAY_ENABLE_END, value: CRTC_VERTICAL_DISPLAY_ENABLE_END_VALUE },
+        RegisterConfig { index: CRTC_OFFSET, value: CRTC_OFFSET_VALUE },
+        RegisterConfig { index: CRTC_UNDERLINE_LOCATION, value: CRTC_UNDERLINE_LOCATION_VALUE },
+        RegisterConfig { index: CRTC_VERTICAL_BLANK_START, value: CRTC_VERTICAL_BLANK_START_VALUE },
+        RegisterConfig { index: CRTC_VERTICAL_BLANK_END, value: CRTC_VERTICAL_BLANK_END_VALUE },
+        RegisterConfig { index: CRTC_MODE_CONTROL, value: CRTC_MODE_CONTROL_VALUE },
+    ];
+    let mut crtc_ops = VgaPortOps::new(HardwarePorts::CRTC_INDEX, HardwarePorts::CRTC_DATA);
+    crtc_ops.write_sequence(&crtc_configs);
 
     // Enable screen
-    unsafe {
-        port_u8_3c4.write(SEQUENCER_CLOCKING_MODE);
-        port_u8_3c5.write(SEQUENCER_CLOCKING_MODE_VALUE);
-    } // Clocking mode
+    let mut sequencer_ops_enable = VgaPortOps::new(HardwarePorts::SEQUENCER_INDEX, HardwarePorts::SEQUENCER_DATA);
+    sequencer_ops_enable.write_register(SEQUENCER_CLOCKING_MODE, SEQUENCER_CLOCKING_MODE_VALUE);
 
     // Graphics controller
-    let mut port_u8_3ce: Port<u8> = Port::new(VGA_GC_INDEX);
-    let mut port_u8_3cf: Port<u8> = Port::new(VGA_GC_DATA);
-
-    unsafe {
-        port_u8_3ce.write(GRAPHICS_SET_RESET);
-        port_u8_3cf.write(GRAPHICS_SET_RESET_VALUE);
-    } // Set/reset
-    unsafe {
-        port_u8_3ce.write(GRAPHICS_ENABLE_SET_RESET);
-        port_u8_3cf.write(GRAPHICS_ENABLE_SET_RESET_VALUE);
-    } // Enable set/reset
-    unsafe {
-        port_u8_3ce.write(GRAPHICS_COLOR_COMPARE);
-        port_u8_3cf.write(GRAPHICS_COLOR_COMPARE_VALUE);
-    } // Color compare
-    unsafe {
-        port_u8_3ce.write(GRAPHICS_DATA_ROTATE);
-        port_u8_3cf.write(GRAPHICS_DATA_ROTATE_VALUE);
-    } // Data rotate
-    unsafe {
-        port_u8_3ce.write(GRAPHICS_READ_MAP_SELECT);
-        port_u8_3cf.write(GRAPHICS_READ_MAP_SELECT_VALUE);
-    } // Read map select
-    unsafe {
-        port_u8_3ce.write(GRAPHICS_GRAPHICS_MODE);
-        port_u8_3cf.write(GRAPHICS_GRAPHICS_MODE_VALUE);
-    } // Graphics mode
-    unsafe {
-        port_u8_3ce.write(GRAPHICS_MEMORY_MAP_SELECT);
-        port_u8_3cf.write(GRAPHICS_MEMORY_MAP_SELECT_VALUE);
-    } // Memory map select
-    unsafe {
-        port_u8_3ce.write(GRAPHICS_COLOR_DONT_CARE);
-        port_u8_3cf.write(GRAPHICS_COLOR_DONT_CARE_VALUE);
-    } // Color don't care
-    unsafe {
-        port_u8_3ce.write(GRAPHICS_BIT_MASK);
-        port_u8_3cf.write(GRAPHICS_BIT_MASK_VALUE);
-    } // Bit mask
+    let graphics_configs = [
+        RegisterConfig { index: GRAPHICS_SET_RESET, value: GRAPHICS_SET_RESET_VALUE },
+        RegisterConfig { index: GRAPHICS_ENABLE_SET_RESET, value: GRAPHICS_ENABLE_SET_RESET_VALUE },
+        RegisterConfig { index: GRAPHICS_COLOR_COMPARE, value: GRAPHICS_COLOR_COMPARE_VALUE },
+        RegisterConfig { index: GRAPHICS_DATA_ROTATE, value: GRAPHICS_DATA_ROTATE_VALUE },
+        RegisterConfig { index: GRAPHICS_READ_MAP_SELECT, value: GRAPHICS_READ_MAP_SELECT_VALUE },
+        RegisterConfig { index: GRAPHICS_GRAPHICS_MODE, value: GRAPHICS_GRAPHICS_MODE_VALUE },
+        RegisterConfig { index: GRAPHICS_MEMORY_MAP_SELECT, value: GRAPHICS_MEMORY_MAP_SELECT_VALUE },
+        RegisterConfig { index: GRAPHICS_COLOR_DONT_CARE, value: GRAPHICS_COLOR_DONT_CARE_VALUE },
+        RegisterConfig { index: GRAPHICS_BIT_MASK, value: GRAPHICS_BIT_MASK_VALUE },
+    ];
+    let mut graphics_ops = VgaPortOps::new(HardwarePorts::GRAPHICS_INDEX, HardwarePorts::GRAPHICS_DATA);
+    graphics_ops.write_sequence(&graphics_configs);
 
     // Attribute controller (text mode)
     let mut vga_input_status_1: PortReadOnly<u8> = PortReadOnly::new(0x3DA);
