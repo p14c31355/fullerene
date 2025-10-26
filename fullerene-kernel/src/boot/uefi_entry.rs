@@ -315,7 +315,9 @@ impl UefiInitContext {
         let page = Page::<Size4KiB>::containing_address(apic_virt);
         let frame = PhysFrame::<Size4KiB>::containing_address(apic_phys);
         unsafe {
-            mapper.map_to(page, frame, flags, &mut *frame_allocator).unwrap();
+            mapper.map_to(page, frame, flags, &mut *frame_allocator)
+                .expect("Failed to map Local APIC")
+                .flush();
         }
         *petroleum::LOCAL_APIC_ADDRESS.lock() = petroleum::LocalApicAddress(0xfee00000 as *mut u32);
         log::info!("LOCAL APIC mapped at virt {:#x}", apic_virt.as_u64());
