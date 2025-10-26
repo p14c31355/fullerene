@@ -298,25 +298,32 @@ fn perform_periodic_health_checks(stats: &SystemStats, current_tick: u64) {
 /// Perform periodic filesystem and maintenance tasks
 fn perform_periodic_system_tasks(stats: &SystemStats, current_tick: u64, iteration_count: u64) {
     // Log to system.log every 3000 ticks
-    if current_tick % 3000 == 0 {
-        use core::fmt::Write;
+            use core::fmt::Write;
         let mut log_content = alloc::string::String::new();
         write!(log_content, "Uptime: {}, Processes: {}/{}, Memory Used: {}\n",
             stats.uptime_ticks, stats.active_processes, stats.total_processes, stats.memory_used).ok();
 
-        // Note: crate::fs::create_file will fail if "system.log" already exists, as it doesn't handle overwriting.
-        // This logic will work only on the first call; subsequent calls every 3000 ticks will fail.
-        // Consider implementing overwrite functionality or using a different approach (e.g., open and write).
-        match crate::fs::create_file("system.log", log_content.as_bytes()) {
-            Ok(_) => {
-                log::info!("System statistics logged to system.log");
+        static LOG_FILE_CREATED: spin::Mutex<bool> = spin::Mutex::new(false);
+        let mut log_file_created = LOG_FILE_CREATED.lock();
+
+        if !*log_file_created {
+            match crate::fs::create_file("system.log", log_content.as_bytes()) {
+                Ok(_) => {
+                    *log_file_created = true;
+                    log::info!("System statistics logged to system.log");
+                }
+                Err(e) => {
+                    log::warn!("Failed to create system.log: {:?}", e);
+                }
             }
-            Err(e) => {
-                log::warn!("Failed to log to system.log: {:?}", e);
+        } else {
+            if let Ok(fd) = crate::fs::open_file("system.log") {
+                let _ = crate::fs::seek_file(fd, 0);
+                let _ = crate::fs::write_file(fd, log_content.as_bytes());
+                let _ = crate::fs::close_file(fd);
             }
         }
         perform_automated_backup();
-    }
 
     // Run system maintenance every 2000 ticks
     if current_tick % 2000 == 0 {
