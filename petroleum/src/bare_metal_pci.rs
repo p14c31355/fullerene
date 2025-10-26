@@ -65,7 +65,7 @@ pub fn pci_config_read_byte(bus: u8, device: u8, function: u8, register: u8) -> 
 
 /// Check if PCI device exists (valid vendor ID)
 pub fn pci_device_exists(bus: u8, device: u8, function: u8) -> bool {
-    let vendor_id = pci_config_read!(bus, device, function, PCI_VENDOR_ID_OFFSET, 16) as u16;
+    let vendor_id = pci_config_read!(bus, device, function, PCI_VENDOR_ID_OFFSET, 16);
     vendor_id != 0xFFFF
 }
 
