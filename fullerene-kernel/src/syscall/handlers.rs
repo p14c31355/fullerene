@@ -124,7 +124,7 @@ fn syscall_fork() -> SyscallResult {
 
     // Set child context to return 0 from fork
     child_process.context.rax = 0; // Child gets 0 from fork
-    child_process.init_context(child_process.kernel_stack);
+    child_process.context.rsp = child_process.kernel_stack.as_u64();
 
     // TODO: Implement full memory copying for user space
     // For now, we only copy page tables. User memory is shared (copy-on-write not implemented)
