@@ -25,8 +25,14 @@ lazy_static = { version = "1.5.0", default-features = false, features = [
 petroleum = { path = "../petroleum" }
 embedded-graphics = { version = "0.8", default-features = false }
 memoffset = { version = "0.9", default-features = false }
-linked_list_allocator = { version = "0.10", default-features = false, features = ["alloc_ref"] }
-goblin = { version = "0.10.2", default-features = false, features = ["elf32", "elf64", "endian_fd"] }
+linked_list_allocator = { version = "0.10", default-features = false, features = [
+  "alloc_ref",
+] }
+goblin = { version = "0.10.2", default-features = false, features = [
+  "elf32",
+  "elf64",
+  "endian_fd",
+] }
 bitfield = { version = "0.19.3", default-features = false }
 static_assertions = { version = "1.1", default-features = false }
 bitflags = { version = "2.4", default-features = false }

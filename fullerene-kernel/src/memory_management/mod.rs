@@ -54,22 +54,37 @@ macro_rules! memory_operation_mut {
 
 // Memory management error types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllocError {
+    OutOfMemory,
+    MappingFailed,
+}
+
+petroleum::error_chain!(AllocError, petroleum::common::logging::SystemError,
+    AllocError::OutOfMemory => petroleum::common::logging::SystemError::MemOutOfMemory,
+    AllocError::MappingFailed => petroleum::common::logging::SystemError::MappingFailed,
+);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreeError {
+    UnmappingFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapError {
     MappingFailed,
     UnmappingFailed,
     FrameAllocationFailed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AllocError {
-    OutOfMemory,
-    MappingFailed,
-}
+petroleum::error_chain!(MapError, petroleum::common::logging::SystemError,
+    MapError::MappingFailed => petroleum::common::logging::SystemError::MappingFailed,
+    MapError::UnmappingFailed => petroleum::common::logging::SystemError::UnmappingFailed,
+    MapError::FrameAllocationFailed => petroleum::common::logging::SystemError::FrameAllocationFailed,
+);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FreeError {
-    UnmappingFailed,
-}
+petroleum::error_chain!(FreeError, petroleum::common::logging::SystemError,
+    FreeError::UnmappingFailed => petroleum::common::logging::SystemError::UnmappingFailed,
+);
 
 /// Unified memory manager implementing all memory management traits
 pub struct UnifiedMemoryManager {

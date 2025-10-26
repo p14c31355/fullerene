@@ -1,12 +1,7 @@
 //! Initialization module containing common initialization logic for both UEFI and BIOS boot
-
+use alloc::boxed::Box;
 use crate::interrupts;
-use alloc::{
-    boxed::Box,
-    collections::{BTreeMap, BTreeSet},
-    string::String,
-    vec::{self, Vec},
-};
+
 use petroleum::{common::InitSequence, init_log, write_serial_bytes};
 use spin::Once;
 
