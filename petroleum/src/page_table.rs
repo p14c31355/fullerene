@@ -10,7 +10,8 @@ use crate::{
     log_memory_descriptor, map_and_flush, map_identity_range_checked, map_with_offset,
 };
 
-// Macros are automatically available from common module
+// Import for heap range setting
+use crate::common::memory::set_heap_range;
 // BTreeMap will be available through std when compiled as std crate
 use spin::Once;
 use x86_64::{
@@ -75,6 +76,7 @@ pub fn init_global_heap(ptr: *mut u8, size: usize) {
         unsafe {
             ALLOCATOR.lock().init(ptr, size);
         }
+        set_heap_range(ptr as usize, size);
         HEAP_INITIALIZED.call_once(|| true);
     }
 }

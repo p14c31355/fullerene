@@ -211,6 +211,11 @@ impl UefiInitContext {
             );
         }
         HEAP_INITIALIZED.call_once(|| true);
+        // Set heap range for page fault detection
+        petroleum::common::memory::set_heap_range(
+            heap_start_for_allocator.as_u64() as usize,
+            heap_size_for_allocator,
+        );
         debug_log_no_alloc!("Basic heap allocator initialized");
         write_serial_bytes!(0x3F8, 0x3FD, b"Basic heap allocator initialized\n");
 

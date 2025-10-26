@@ -8,6 +8,7 @@ use core::fmt::Write;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
 use petroleum::debug::print_backtrace;
+use petroleum::common::memory::is_allocator_related_address;
 
 /// Breakpoint exception handler
 #[unsafe(no_mangle)]
@@ -48,6 +49,9 @@ pub fn handle_page_fault(
 
     petroleum::lock_and_modify!(petroleum::SERIAL1, writer, {
         write!(writer, "Page fault at {:x}: ", fault_addr.as_u64()).ok();
+        if is_allocator_related_address(fault_addr.as_u64() as usize) {
+            write!(writer, "Allocator-related ").ok();
+        }
         if is_present {
             write!(writer, "Protection violation ").ok();
         } else {
