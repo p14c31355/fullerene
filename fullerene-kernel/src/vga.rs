@@ -229,11 +229,13 @@ pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
     let mut port_u8_3c4: Port<u8> = Port::new(VGA_SEQ_INDEX);
     let mut port_u8_3c5: Port<u8> = Port::new(VGA_SEQ_DATA);
 
-    unsafe { port_u8_3c4.write(SEQUENCER_RESET); port_u8_3c5.write(SEQUENCER_RESET_VALUE); } // Reset sequencer
-    unsafe { port_u8_3c4.write(SEQUENCER_CLOCKING_MODE); port_u8_3c5.write(SEQUENCER_CLOCKING_MODE_VALUE); } // Disable screen
-    unsafe { port_u8_3c4.write(SEQUENCER_PLANE_MASK); port_u8_3c5.write(SEQUENCER_PLANE_MASK_VALUE); } // Plane map mask
-    unsafe { port_u8_3c4.write(SEQUENCER_CHARACTER_MAP); port_u8_3c5.write(SEQUENCER_CHARACTER_MAP_VALUE); } // Character map
-    unsafe { port_u8_3c4.write(SEQUENCER_MEMORY_MODE); port_u8_3c5.write(SEQUENCER_MEMORY_MODE_VALUE); } // Memory mode
+    unsafe {
+        port_u8_3c4.write(SEQUENCER_RESET); port_u8_3c5.write(SEQUENCER_RESET_VALUE); // Reset sequencer
+        port_u8_3c4.write(SEQUENCER_CLOCKING_MODE); port_u8_3c5.write(SEQUENCER_CLOCKING_MODE_VALUE); // Disable screen
+        port_u8_3c4.write(SEQUENCER_PLANE_MASK); port_u8_3c5.write(SEQUENCER_PLANE_MASK_VALUE); // Plane map mask
+        port_u8_3c4.write(SEQUENCER_CHARACTER_MAP); port_u8_3c5.write(SEQUENCER_CHARACTER_MAP_VALUE); // Character map
+        port_u8_3c4.write(SEQUENCER_MEMORY_MODE); port_u8_3c5.write(SEQUENCER_MEMORY_MODE_VALUE); // Memory mode
+    }
 
     // CRTC registers for 80x25 text mode
     let mut port_u8_3d4: Port<u8> = Port::new(VGA_CRTC_INDEX);
