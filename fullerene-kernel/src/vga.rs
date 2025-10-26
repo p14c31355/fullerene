@@ -279,9 +279,9 @@ pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
     let mut port_u8_3c0: Port<u8> = Port::new(VGA_AC_INDEX);
 
     let mut i = 0;
+    let mut port_u8_3c1: Port<u8> = Port::new(VGA_AC_WRITE);
     while i < 16 {
         unsafe { port_u8_3c0.write(i); }
-        let mut port_u8_3c1: Port<u8> = Port::new(VGA_AC_WRITE);
         unsafe { port_u8_3c1.write(i); }
         i += 1;
     }
