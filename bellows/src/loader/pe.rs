@@ -340,7 +340,7 @@ pub fn load_efi_image(
                         let rva = block_virtual_address + rel_offset as u32;
                         let ptr = (phys_addr + rva as usize) as *mut u64;
                         let val = read_unaligned!(ptr as *const u8, 0, u64);
-                        unsafe { *(ptr as *mut u64) = val.wrapping_add(image_base_delta); }
+                        unsafe { core::ptr::write_unaligned(ptr, val.wrapping_add(image_base_delta)); }
                     }
                 }
                 reloc_offset += size_of_block as usize;
