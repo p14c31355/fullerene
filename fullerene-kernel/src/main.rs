@@ -2,7 +2,15 @@
 #![no_main]
 #![feature(abi_x86_interrupt)]
 
+use petroleum::{scheduler_log, debug_log, periodic_task, mem_debug, draw_filled_rect, draw_border_rect, info_log, warn_log};
+
 extern crate alloc;
+
+// Constants
+pub const VGA_BUFFER_ADDRESS: usize = 0xb8000;
+
+// Exported globals
+pub use heap::MEMORY_MAP;
 
 // Module declarations
 pub mod boot;

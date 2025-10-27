@@ -384,6 +384,19 @@ macro_rules! health_check {
     };
 }
 
+/// Macro for drawing filled rectangles on framebuffer writers
+/// Reduces repetition in desktop rendering operations
+#[macro_export]
+macro_rules! draw_filled_rect {
+    ($writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $color:expr) => {{
+        for y_coord in $y..($y + $h) {
+            for x_coord in $x..($x + $w) {
+                $writer.draw_pixel(x_coord, y_coord, $color);
+            }
+        }
+    }};
+}
+
 /// Macro for periodic VGA stat display to reduce code duplication in scheduler
 /// Automatically handles cursor positioning and line clearing
 #[macro_export]
