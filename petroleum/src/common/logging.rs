@@ -40,6 +40,14 @@ static LOGGER: FullereneLogger = FullereneLogger::new();
 pub fn init_global_logger() -> Result<(), log::SetLoggerError> {
     log::set_logger(&LOGGER)?;
     log::set_max_level(LOGGER.level);
+
+    // Mark logger as initialized
+    static INIT_ONCE: spin::Once<()> = spin::Once::new();
+    INIT_ONCE.call_once(|| {});
+
+    // Log successful initialization (using serial directly to avoid recursion)
+    crate::serial::serial_log(format_args!("[INIT] Logger initialized at level {:?}\n", LOGGER.level));
+
     Ok(())
 }
 
@@ -143,3 +151,9 @@ impl ErrorLogging for ErrorLogger {
 
 // Global instance for convenience
 pub static ERROR_LOGGER: ErrorLogger = ErrorLogger;
+
+/// Returns true if global logger has been initialized
+pub fn is_logger_initialized() -> bool {
+    static INIT_FLAG: spin::Once<()> = spin::Once::new();
+    INIT_FLAG.get().is_some()
+}

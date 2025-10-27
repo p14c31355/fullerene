@@ -86,30 +86,6 @@ macro_rules! map_pages_to_offset {
     }};
 }
 
-/// Macro to reduce repetitive serial debug strings
-///
-/// # Warning
-/// The formatted variant (`debug_log!("format", args...)`) uses `alloc::format!`,
-/// which allocates memory on the heap. This will panic if called before the
-/// heap allocator is initialized, which is common in early boot code.
-/// Consider using `debug_log_no_alloc!` during early boot stages.
-///
-/// # Examples
-/// ```
-/// debug_log!("Starting initialization");
-/// debug_log!("Value: {}", some_value); // May panic if heap not ready
-/// ```
-#[macro_export]
-macro_rules! debug_log {
-    ($msg:literal) => {{
-        $crate::write_serial_bytes!(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes());
-    }};
-    ($fmt:literal, $($arg:tt)*) => {{
-        let msg = alloc::format!(concat!($fmt, "\n"), $($arg)*);
-        $crate::write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
-    }};
-}
-
 /// Non-allocating debug log macro for early boot code
 ///
 /// Supports limited formatting for numeric types without heap allocation.
@@ -164,13 +140,6 @@ macro_rules! lock_and_modify {
     }};
 }
 
-/// Macro for logging errors with context
-#[macro_export]
-macro_rules! log_error {
-    ($error:expr, $context:expr) => {{
-        log::error!("{}: {}", *$error as u64, $context);
-    }};
-}
 
 /// Macro for reading contents protected by a Mutex lock (returns a copy/clone)
 #[macro_export]
@@ -400,25 +369,33 @@ macro_rules! periodic_task {
 }
 
 /// Unified print macros using the log crate for consistent logging across all crates
-/// Uses log::info! for println! and serial output for print!
+/// Fallback to serial if logger not initialized yet
 #[macro_export]
 macro_rules! println {
     () => {
-        log::info!("");
+        if $crate::common::logging::is_logger_initialized() {
+            log::info!("");
+        } else {
+            $crate::serial::_print(format_args!("\n"));
+        }
     };
     ($($arg:tt)*) => {
-        log::info!("{}", format_args!($($arg)*));
+        if $crate::common::logging::is_logger_initialized() {
+            log::info!("{}", format_args!($($arg)*));
+        } else {
+            $crate::serial::_print(format_args!("{}\n", format_args!($($arg)*)));
+        }
     };
 }
 
-/// Unified print macro using serial output for direct serial logging
+/// Unified print macro - same as print! for consistency
 #[macro_export]
 macro_rules! print {
     () => {
-        $crate::serial::_print(format_args!(""));
+        $crate::println!();
     };
     ($($arg:tt)*) => {
-        $crate::serial::_print(format_args!($($arg)*));
+        $crate::println!($($arg)*);
     };
 }
 
@@ -522,26 +499,59 @@ macro_rules! maintenance_tasks {
     };
 }
 
-/// Common logging macros (note: some may be defined in serial.rs)
+/// Unified logging macros that use log crate when initialized, fallback to serial
+
+/// Common logging macros - use log crate when initialized, fallback to serial
 #[macro_export]
 macro_rules! info_log {
     ($($arg:tt)*) => {
-        $crate::serial::_print(format_args!("[INFO] {}\n", format_args!($($arg)*)));
+        if $crate::common::logging::is_logger_initialized() {
+            log::info!("{}", format_args!($($arg)*));
+        } else {
+            $crate::serial::_print(format_args!("[INFO] {}\n", format_args!($($arg)*)));
+        }
     };
 }
 
 #[macro_export]
 macro_rules! error_log {
     ($($arg:tt)*) => {
-        $crate::serial::_print(format_args!("[ERROR] {}\n", format_args!($($arg)*)));
+        if $crate::common::logging::is_logger_initialized() {
+            log::error!("{}", format_args!($($arg)*));
+        } else {
+            $crate::serial::_print(format_args!("[ERROR] {}\n", format_args!($($arg)*)));
+        }
     };
 }
 
 #[macro_export]
 macro_rules! warn_log {
     ($($arg:tt)*) => {
-        $crate::serial::_print(format_args!("[WARN] {}\n", format_args!($($arg)*)));
+        if $crate::common::logging::is_logger_initialized() {
+            log::warn!("{}", format_args!($($arg)*));
+        } else {
+            $crate::serial::_print(format_args!("[WARN] {}\n", format_args!($($arg)*)));
+        }
     };
+}
+
+#[macro_export]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        if $crate::common::logging::is_logger_initialized() {
+            log::debug!("{}", format_args!($($arg)*));
+        } else {
+            $crate::debug_log_no_alloc!($($arg)*);
+        }
+    };
+}
+
+/// Macro for logging errors with context
+#[macro_export]
+macro_rules! log_error {
+    ($error:expr, $context:expr) => {{
+        log::error!("{}: {}", *$error as u64, $context);
+    }};
 }
 
 /// PCI operation helper macros to reduce repetition in PCI handling
