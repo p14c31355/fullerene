@@ -200,27 +200,10 @@ pub fn load_efi_image(
             file.as_ptr()
                 .add(section_headers_offset + i * core::mem::size_of::<ImageSectionHeader>())
         };
-        let virtual_address = unsafe {
-            core::ptr::read_unaligned(
-                section_header_base_ptr
-                    .add(core::mem::offset_of!(ImageSectionHeader, virtual_address))
-                    .cast::<u32>(),
-            )
-        };
-        let size_of_raw_data = unsafe {
-            core::ptr::read_unaligned(
-                section_header_base_ptr
-                    .add(core::mem::offset_of!(ImageSectionHeader, size_of_raw_data))
-                    .cast::<u32>(),
-            )
-        };
-        let pointer_to_raw_data = unsafe {
-            core::ptr::read_unaligned(
-                section_header_base_ptr
-                    .add(core::mem::offset_of!(ImageSectionHeader, pointer_to_raw_data))
-                    .cast::<u32>(),
-            )
-        };
+        let section_header: ImageSectionHeader = unsafe { core::ptr::read_unaligned(section_header_base_ptr.cast()) };
+        let virtual_address = section_header.virtual_address;
+        let size_of_raw_data = section_header.size_of_raw_data;
+        let pointer_to_raw_data = section_header.pointer_to_raw_data;
 
         let src_addr = unsafe { file.as_ptr().add(pointer_to_raw_data as usize) };
         let dst_addr = unsafe { (phys_addr as *mut u8).add(virtual_address as usize) };
@@ -242,7 +225,7 @@ pub fn load_efi_image(
     let image_base_delta = (phys_addr as u64).wrapping_sub(image_base as u64);
 
     if image_base_delta != 0 {
-        let phys_nt_headers_ptr = phys_addr as *const ImageNtHeaders64;
+        let phys_nt_headers_ptr = (phys_addr as *const u8).wrapping_add(nt_headers_offset) as *const ImageNtHeaders64;
         let optional_header_ptr = unsafe {
             (phys_nt_headers_ptr as *const u8)
                 .add(core::mem::offset_of!(ImageNtHeaders64, optional_header))

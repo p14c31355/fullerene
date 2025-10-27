@@ -7,7 +7,7 @@ use crate::graphics;
 use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::{
-    Color, ColorCode, ScreenChar, TextBufferOperations,
+    Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats,
 };
 
 // Define periodic tasks in a struct for clarity
@@ -106,14 +106,7 @@ const MAX_PROCESSES_THRESHOLD: usize = 10;
 const EMERGENCY_MEMORY_THRESHOLD: usize = 80; // %
 const MAX_PROCESSES_EMERGENCY: usize = 100;
 
-// System diagnostics structure
-#[derive(Clone, Copy)]
-struct SystemStats {
-    total_processes: usize,
-    active_processes: usize,
-    memory_used: usize,
-    uptime_ticks: u64,
-}
+
 
 /// I/O event type for future I/O handling
 #[derive(Clone, Copy)]
