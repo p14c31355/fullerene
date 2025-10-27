@@ -474,14 +474,14 @@ fn initialize_shell_process() -> crate::process::ProcessId {
 /// Main kernel scheduler loop - orchestrates all system functionality
 pub fn scheduler_loop() -> ! {
     log::info!("Starting enhanced OS scheduler with integrated system features...");
-    debug_log!("Scheduler: About to initialize shell process");
+    scheduler_log!("About to initialize shell process");
 
     let _ = initialize_shell_process();
-    debug_log!("Scheduler: Shell process initialized successfully");
+    scheduler_log!("Shell process initialized successfully");
 
     // Main scheduler loop - continuously execute processes with integrated OS functionality
-    log::info!("Scheduler: Entering main loop");
-    debug_log!("Scheduler: Main loop starting");
+    scheduler_log!("Entering main loop");
+    scheduler_log!("Main loop starting");
 
     // Print to VGA if available for GUI output
     if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {

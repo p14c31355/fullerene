@@ -1258,3 +1258,48 @@ macro_rules! display_vga_stats_lines {
         )*
     };
 }
+
+/// Macro for subsystem initialization with consistent logging and error handling
+/// Reduces boilerplate in component startup code
+///
+/// # Examples
+/// ```
+/// init_with_log!("Scheduler", || scheduler.init());
+/// init_with_log!("Memory Manager", || mem_manager.init());
+/// ```
+#[macro_export]
+macro_rules! init_with_log {
+    ($name:expr, $init_fn:expr) => {{
+        debug_log!(concat!($name, " initializing"));
+        match $init_fn() {
+            Ok(_) => debug_log!(concat!($name, " initialized successfully")),
+            Err(e) => {
+                error_log!(concat!($name, " initialization failed: {:?}"), e);
+                panic!("{} initialization failed", $name);
+            }
+        }
+    }};
+}
+
+/// Macro for unified error checking with optional logging
+/// Reduces repetitive if condition with return Err pattern
+///
+/// # Examples
+/// ```
+/// ensure!(ptr.is_some(), SystemError::InvalidArgument, "Pointer is null");
+/// ensure_with_log!(value > 0, "Value must be positive", SystemError::InvalidArgument);
+/// ```
+#[macro_export]
+macro_rules! ensure {
+    ($condition:expr, $error_ty:ty, $error_val:expr) => {
+        if !$condition {
+            return Err(<$error_ty>::$error_val as $error_ty);
+        }
+    };
+    ($condition:expr, $error_ty:ty, $error_val:expr, $msg:expr) => {
+        if !$condition {
+            error_log!($msg);
+            return Err(<$error_ty>::$error_val as $error_ty);
+        }
+    };
+}

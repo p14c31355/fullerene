@@ -1,6 +1,6 @@
 use petroleum::{
-    Color, ColorCode, ScreenChar, TextBufferOperations, handle_write_byte, port_write,
-    update_vga_cursor,
+    Color, ColorCode, ScreenChar, TextBufferOperations, clear_buffer, clear_line_range,
+    handle_write_byte, port_write, scroll_char_buffer_up, update_vga_cursor,
 };
 use spin::{Mutex, Once};
 use alloc::vec::Vec;
@@ -158,6 +158,28 @@ impl TextBufferOperations for VgaBuffer {
         } else {
             self.scroll_up();
         }
+    }
+
+    fn clear_row(&mut self, row: usize) {
+        let blank_char = ScreenChar {
+            ascii_character: b' ',
+            color_code: self.color_code,
+        };
+        clear_line_range!(self, row, row + 1, 0, self.get_width(), blank_char);
+    }
+
+    fn clear_screen(&mut self) {
+        self.row_position = 0;
+        self.column_position = 0;
+        let blank_char = ScreenChar {
+            ascii_character: b' ',
+            color_code: ColorCode(0),
+        };
+        clear_buffer!(self, self.get_height(), self.get_width(), blank_char);
+    }
+
+    fn scroll_up(&mut self) {
+        scroll_char_buffer_up!(self.buffer, BUFFER_HEIGHT, BUFFER_WIDTH, ScreenChar { ascii_character: b' ', color_code: self.color_code });
     }
 }
 
