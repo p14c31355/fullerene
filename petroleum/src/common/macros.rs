@@ -970,7 +970,7 @@ macro_rules! map_range_with_log_macro {
             let phys_addr = $phys_start + i * 4096;
             let virt_addr = $virt_start + i * 4096;
             let (page, frame) = create_page_and_frame!(virt_addr, phys_addr);
-            match $mapper.map_to(page, frame, $flags, $frame_allocator) {
+            match unsafe { $mapper.map_to(page, frame, $flags, $frame_allocator) } {
                 Ok(flush) => flush.flush(),
                 Err(MapToError::<Size4KiB>::PageAlreadyMapped(_)) => {
                     continue;
