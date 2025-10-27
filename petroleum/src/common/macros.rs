@@ -1130,7 +1130,7 @@ macro_rules! map_identity_range_checked {
         for i in 0..$num_pages {
             let addr = calc_offset_addr!($phys_start, i);
             let (page, frame) = create_page_and_frame!(addr, addr);
-            match $mapper.map_to(page, frame, $flags, $allocator) {
+            match unsafe { $mapper.map_to(page, frame, $flags, $allocator) } {
                 Ok(flush) => flush.flush(),
                 Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
                     continue;
