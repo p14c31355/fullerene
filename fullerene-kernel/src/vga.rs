@@ -197,9 +197,7 @@ pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
     //sequencer_ops_enable.write_register(1, 0x00); // Already set in config
 
     // Graphics controller
-    let graphics_configs: Vec<RegisterConfig> = GRAPHICS_CONFIG.iter()
-        .map(|(index, value)| RegisterConfig { index: *index, value: *value })
-        .collect();
+    let graphics_configs = GRAPHICS_CONFIG.map(|(index, value)| RegisterConfig { index, value });
     let mut graphics_ops = VgaPortOps::new(HardwarePorts::GRAPHICS_INDEX, HardwarePorts::GRAPHICS_DATA);
     graphics_ops.write_sequence(&graphics_configs);
 
