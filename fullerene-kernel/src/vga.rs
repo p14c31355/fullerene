@@ -188,9 +188,7 @@ pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
     sequencer_ops.write_sequence(&sequencer_configs);
 
     // CRTC registers for 80x25 text mode
-    let crtc_configs: Vec<RegisterConfig> = CRTC_CONFIG.iter()
-        .map(|(index, value)| RegisterConfig { index: *index, value: *value })
-        .collect();
+    let crtc_configs = CRTC_CONFIG.map(|(index, value)| RegisterConfig { index, value });
     let mut crtc_ops = VgaPortOps::new(HardwarePorts::CRTC_INDEX, HardwarePorts::CRTC_DATA);
     crtc_ops.write_sequence(&crtc_configs);
 
