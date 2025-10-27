@@ -405,9 +405,11 @@ pub extern "efiapi" fn efi_main(
         petroleum::halt_loop();
     }
 
-    // Now that allocator is set up, initialize VGA buffer writer (will be done in init_common)
+    // Common initialization for both UEFI and BIOS with correct physical memory offset
+    log::info!("About to call init_common");
+    crate::init::init_common(physical_memory_offset);
+    log::info!("init_common completed");
 
-    // Early serial log works now
     write_serial_bytes!(0x3F8, 0x3FD, b"About to complete basic init\n");
     petroleum::serial::serial_log(format_args!("About to log basic init complete...\n"));
     log::info!("Kernel: basic init complete");
@@ -416,17 +418,9 @@ pub extern "efiapi" fn efi_main(
 
     write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: About to init interrupts\n");
 
-    // Common initialization for both UEFI and BIOS
     // Initialize IDT before enabling interrupts
     interrupts::init();
     log::info!("Kernel: IDT init done");
-
-    log::info!("Kernel: Jumping straight to graphics testing");
-
-    log::info!("About to call init_common");
-    // Initialize interrupts and other components call init_common here
-    crate::init::init_common(physical_memory_offset);
-    log::info!("init_common completed");
 
     // Map MMIO regions
     ctx.map_mmio();
@@ -436,12 +430,17 @@ pub extern "efiapi" fn efi_main(
     crate::interrupts::init_apic();
     log::info!("APIC initialized");
 
-    // Initialize graphics with framebuffer configuration
-    log::info!("Initialize graphics with framebuffer configuration");
-    let success = petroleum::initialize_graphics_with_config();
-    log::info!("Graphics initialization result: {}", success);
-    if !success {
-        log::info!("Graphics initialization failed, continuing without graphics for debugging");
+    // Initialize graphics protocols using petroleum
+    log::info!("Initialize graphics protocols with framebuffer detection");
+    let _ = petroleum::init_graphics_protocols(system_table);
+
+    // Initialize text/graphics output if framebuffer config is available
+    if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().map(|m| *m.lock()).flatten() {
+        log::info!("Initializing framebuffer text output");
+        crate::graphics::text::init(&config);
+    } else {
+        log::info!("No framebuffer config found, falling back to VGA text mode");
+        crate::graphics::text::init_fallback_graphics().ok();
     }
 
     // Always enable interrupts and proceed to scheduler
