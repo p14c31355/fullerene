@@ -3,10 +3,10 @@
 
 //! User space system call wrappers for toluene
 
-use petroleum::syscall::{exit, getpid, sleep, write};
+use petroleum::common::syscall::{exit, getpid, sleep, write};
 
 #[unsafe(no_mangle)]
-pub extern "C" fn main() -> i32 {
+pub extern "C" fn main() -> ! {
     // Write to stdout
     let message = b"Hello from toluene user program!\n";
     let _ = write(1, message);

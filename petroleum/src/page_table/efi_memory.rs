@@ -216,5 +216,5 @@ pub fn calculate_frame_allocation_params<T: MemoryDescriptorValidator>(
     (max_addr, total_frames, bitmap_size)
 }
 
-use crate::debug_log_no_alloc;
+// debug_log_no_alloc imported from macros
 use crate::page_table::bitmap_allocator::BitmapFrameAllocator;
