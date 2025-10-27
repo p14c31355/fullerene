@@ -6,9 +6,10 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use spin::Mutex;
+use log;
 
-use crate::traits::{ErrorLogging, HardwareDevice, Initializable};
-use crate::{SystemError, SystemResult};
+use petroleum::initializer::{ErrorLogging, HardwareDevice, Initializable};
+use petroleum::{SystemError, SystemResult};
 
 /// Device information structure
 #[derive(Debug, Clone)]
@@ -41,6 +42,16 @@ pub struct DeviceManager {
     devices: Mutex<BTreeMap<&'static str, DeviceEntry>>,
 }
 
+
+    /// Helper function to extract device info without borrowing the device long-term
+    fn extract_device_info(device: &alloc::boxed::Box<dyn HardwareDevice + Send>) -> (&'static str, &'static str, &'static str, i32) {
+        let name = device.name();
+        let device_name = device.device_name();
+        let device_type = device.device_type();
+        let priority = device.priority();
+        (name, device_name, device_type, priority)
+    }
+
 impl DeviceManager {
     /// Create a new device manager
     pub const fn new() -> Self {
@@ -54,14 +65,10 @@ impl DeviceManager {
         &self,
         device: alloc::boxed::Box<dyn HardwareDevice + Send>,
     ) -> SystemResult<()> {
-        let name = device.name();
+        // Get all device info using helper function to avoid borrowing issues
+        let (name, device_name, device_type, priority) = extract_device_info(&device);
 
-        // Get device info before moving the device
-        let device_info = DeviceInfo::new(
-            device.device_name(),
-            device.device_type(),
-            HardwareDevice::priority(&*device),
-        );
+        let device_info = DeviceInfo::new(device_name, device_type, priority);
 
         // Store device and its info
         let mut devices = self.devices.lock();
@@ -238,7 +245,7 @@ pub fn register_device(device: alloc::boxed::Box<dyn HardwareDevice + Send>) -> 
 
 /// Convenience function to register VGA device
 pub fn register_vga_device() -> SystemResult<()> {
-    use crate::graphics::vga_device::VgaDevice;
+    use petroleum::graphics::text::VgaDevice;
 
     let vga_device = alloc::boxed::Box::new(VgaDevice::new());
     register_device(vga_device)
@@ -284,19 +291,19 @@ mod tests {
         }
 
         fn log_warning(&self, message: &'static str) {
-            petroleum::log_warning!(message);
+            log::warn!("{}", message);
         }
 
         fn log_info(&self, message: &'static str) {
-            petroleum::log_info!(message);
+            log::info!("{}", message);
         }
 
         fn log_debug(&self, message: &'static str) {
-            petroleum::log_debug!(message);
+            log::debug!("{}", message);
         }
 
         fn log_trace(&self, message: &'static str) {
-            petroleum::log_trace!(message);
+            log::trace!("{}", message);
         }
     }
 
