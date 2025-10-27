@@ -183,9 +183,7 @@ pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
     port_write!(VGA_MISC_WRITE, MISC_REGISTER_VALUE);
 
     // Sequencer registers
-    let sequencer_configs: Vec<RegisterConfig> = SEQUENCER_CONFIG.iter()
-        .map(|(index, value)| RegisterConfig { index: *index, value: *value })
-        .collect();
+    let sequencer_configs = SEQUENCER_CONFIG.map(|(index, value)| RegisterConfig { index, value });
     let mut sequencer_ops = VgaPortOps::new(HardwarePorts::SEQUENCER_INDEX, HardwarePorts::SEQUENCER_DATA);
     sequencer_ops.write_sequence(&sequencer_configs);
 
