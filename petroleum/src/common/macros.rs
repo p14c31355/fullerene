@@ -970,7 +970,7 @@ macro_rules! map_range_with_log_macro {
             let phys_addr = $phys_start + i * 4096;
             let virt_addr = $virt_start + i * 4096;
             let (page, frame) = create_page_and_frame!(virt_addr, phys_addr);
-            match $mapper.map_to(page, frame, $flags, $frame_allocator) {
+            match unsafe { $mapper.map_to(page, frame, $flags, $frame_allocator) } {
                 Ok(flush) => flush.flush(),
                 Err(MapToError::<Size4KiB>::PageAlreadyMapped(_)) => {
                     continue;
@@ -1130,7 +1130,7 @@ macro_rules! map_identity_range_checked {
         for i in 0..$num_pages {
             let addr = calc_offset_addr!($phys_start, i);
             let (page, frame) = create_page_and_frame!(addr, addr);
-            match $mapper.map_to(page, frame, $flags, $allocator) {
+            match unsafe { $mapper.map_to(page, frame, $flags, $allocator) } {
                 Ok(flush) => flush.flush(),
                 Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
                     continue;
