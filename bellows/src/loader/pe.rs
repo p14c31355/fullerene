@@ -200,10 +200,9 @@ pub fn load_efi_image(
             file.as_ptr()
                 .add(section_headers_offset + i * core::mem::size_of::<ImageSectionHeader>())
         };
-        let section_header: ImageSectionHeader = unsafe { core::ptr::read_unaligned(section_header_base_ptr.cast()) };
-        let virtual_address = section_header.virtual_address;
-        let size_of_raw_data = section_header.size_of_raw_data;
-        let pointer_to_raw_data = section_header.pointer_to_raw_data;
+        let virtual_address = read_unaligned!(section_header_base_ptr, core::mem::offset_of!(ImageSectionHeader, virtual_address), u32);
+        let size_of_raw_data = read_unaligned!(section_header_base_ptr, core::mem::offset_of!(ImageSectionHeader, size_of_raw_data), u32);
+        let pointer_to_raw_data = read_unaligned!(section_header_base_ptr, core::mem::offset_of!(ImageSectionHeader, pointer_to_raw_data), u32);
 
         let src_addr = unsafe { file.as_ptr().add(pointer_to_raw_data as usize) };
         let dst_addr = unsafe { (phys_addr as *mut u8).add(virtual_address as usize) };
