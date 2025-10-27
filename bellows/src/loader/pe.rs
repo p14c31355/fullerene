@@ -130,7 +130,9 @@ pub fn load_efi_image(
     }
     let nt_headers_ptr =
         unsafe { file.as_ptr().add(nt_headers_offset) as *const ImageNtHeaders64 };
-    let optional_header_ptr = unsafe { &(*nt_headers_ptr).optional_header };
+    let optional_header_ptr = unsafe {
+        nt_headers_ptr.cast::<u8>().add(core::mem::offset_of!(ImageNtHeaders64, optional_header)) as *const ImageOptionalHeader64
+    };
 
     let optional_header_magic = read_unaligned!(optional_header_ptr, core::mem::offset_of!(ImageOptionalHeader64, _magic), u16);
     if optional_header_magic != 0x20b {
