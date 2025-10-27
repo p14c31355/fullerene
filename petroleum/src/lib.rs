@@ -31,7 +31,7 @@ pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig}
 pub use graphics::*;
 pub use graphics::{
     Color, ColorCode, HardwarePorts, ScreenChar, TextBufferOperations, VgaPortOps,
-    color::{self, *},
+    color::{self},
     init_vga_graphics,
 };
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
