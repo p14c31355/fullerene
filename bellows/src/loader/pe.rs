@@ -140,6 +140,10 @@ pub fn load_efi_image(
     let address_of_entry_point = read_unaligned!(optional_header_ptr, core::mem::offset_of!(ImageOptionalHeader64, address_of_entry_point), u32) as usize;
     let image_size_val = read_unaligned!(optional_header_ptr, core::mem::offset_of!(ImageOptionalHeader64, size_of_image), u32) as u64;
     let pages_needed =
+    if address_of_entry_point > usize::MAX - 4096 {
+        return Err(BellowsError::PeParse("Entry point address too large."));
+    }
+    let pages_needed =
         (image_size_val.max(address_of_entry_point as u64 + 4096)).div_ceil(4096) as usize;
 
     let preferred_base = read_unaligned!(optional_header_ptr, core::mem::offset_of!(ImageOptionalHeader64, image_base), u64) as usize;
