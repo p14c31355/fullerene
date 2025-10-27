@@ -9,9 +9,9 @@ use crate::memory::find_heap_start;
 use crate::{gdt, graphics, interrupts, memory};
 use alloc::boxed::Box;
 use core::ffi::c_void;
-use petroleum::common::EfiGraphicsOutputProtocol;
+use petroleum::common::{EfiGraphicsOutputProtocol, EfiSystemTable};
 use petroleum::common::uefi::{efi_print, find_gop_framebuffer, write_vga_string};
-use petroleum::common::{EfiSystemTable, FullereneFramebufferConfig};
+
 use petroleum::{
     allocate_heap_from_map, debug_log, debug_log_no_alloc, mem_debug, write_serial_bytes,
 };

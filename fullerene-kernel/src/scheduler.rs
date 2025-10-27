@@ -7,9 +7,81 @@ use crate::graphics;
 use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::{
-    Color, ColorCode, ScreenChar, TextBufferOperations, check_periodic, periodic_task,
-    write_serial_bytes,
+    Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats,
 };
+
+// Define periodic tasks in a struct for clarity
+struct PeriodicTask {
+    interval: u64,
+    last_tick: alloc::sync::Arc<spin::Mutex<u64>>,
+    task: fn(u64, u64), // current_tick, iteration_count
+}
+
+// Wrapper functions for tasks that need parameters
+fn health_check_task(_tick: u64, _iter: u64) {
+    perform_system_health_checks();
+}
+
+fn stats_task(_tick: u64, _iter: u64) {
+    let stats = collect_system_stats();
+    log_system_stats(&stats, LOG_INTERVAL_TICKS);
+    display_system_stats_on_vga(&stats, DISPLAY_INTERVAL_TICKS);
+    // Add file logging
+    const SYSTEM_LOG_FILE: &str = "system.log";
+    if let Ok(_) = crate::fs::create_file(SYSTEM_LOG_FILE, log_content.as_bytes()) {
+        // File written successfully
+    } else {
+
+fn maintenance_task(_tick: u64, _iter: u64) {
+    perform_system_maintenance();
+}
+
+fn memory_check_task(tick: u64, _iter: u64) {
+    perform_memory_capacity_check(tick);
+}
+
+fn process_cleanup_task(_tick: u64, iter: u64) {
+    perform_process_cleanup_check(iter);
+}
+
+fn backup_task(_tick: u64, _iter: u64) {
+    perform_automated_backup();
+}
+
+lazy_static::lazy_static! {
+    static ref PERIODIC_TASKS: [PeriodicTask; 6] = [
+        PeriodicTask {
+            interval: 1000,
+            last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
+            task: health_check_task,
+        },
+        PeriodicTask {
+            interval: 5000,
+            last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
+            task: stats_task,
+        },
+        PeriodicTask {
+            interval: 2000,
+            last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
+            task: maintenance_task,
+        },
+        PeriodicTask {
+            interval: 10000,
+            last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
+            task: memory_check_task,
+        },
+        PeriodicTask {
+            interval: 100,
+            last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
+            task: process_cleanup_task,
+        },
+        PeriodicTask {
+            interval: 30000,
+            last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
+            task: backup_task,
+        },
+    ];
+}
 use x86_64::VirtAddr;
 
 // System-wide counters and statistics
@@ -30,14 +102,7 @@ const MAX_PROCESSES_THRESHOLD: usize = 10;
 const EMERGENCY_MEMORY_THRESHOLD: usize = 80; // %
 const MAX_PROCESSES_EMERGENCY: usize = 100;
 
-// System diagnostics structure
-#[derive(Clone, Copy)]
-struct SystemStats {
-    total_processes: usize,
-    active_processes: usize,
-    memory_used: usize,
-    uptime_ticks: u64,
-}
+
 
 /// I/O event type for future I/O handling
 #[derive(Clone, Copy)]
@@ -48,22 +113,11 @@ struct IoEvent {
 
 /// Collect current system statistics
 fn collect_system_stats() -> SystemStats {
-    // Count total and active processes
-    // For now, we'll use a simple implementation
-    let total_processes = crate::process::get_process_count();
-    let active_processes = crate::process::get_active_process_count();
-
-    // Get memory usage from the global allocator
-    let (memory_used, _, _) = petroleum::get_memory_stats!();
-
-    let uptime_ticks = SYSTEM_TICK.load(Ordering::Relaxed);
-
-    SystemStats {
-        total_processes,
-        active_processes,
-        memory_used,
-        uptime_ticks,
-    }
+    petroleum::common::collect_system_stats(
+        crate::process::get_process_count,
+        crate::process::get_active_process_count,
+        || SYSTEM_TICK.load(Ordering::Relaxed),
+    )
 }
 
 /// Process I/O events (placeholder for future expansion)
@@ -268,91 +322,32 @@ fn perform_automated_backup() {
 fn process_scheduler_iteration() {
     let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
     let iteration_count = SCHEDULER_ITERATIONS.load(Ordering::Relaxed);
-    let system_stats = collect_system_stats();
 
-    // Process I/O events and perform periodic tasks
+    // Process I/O events
     process_io_events();
-    perform_periodic_health_checks(&system_stats, current_tick);
-    perform_periodic_system_tasks(&system_stats, current_tick, iteration_count);
+
+    // Run periodic tasks from PERIODIC_TASKS array
+    for task in PERIODIC_TASKS.iter() {
+        let mut last_tick = task.last_tick.lock();
+        if current_tick - *last_tick >= task.interval {
+            *last_tick = current_tick;
+            (task.task)(current_tick, iteration_count);
+        }
+    }
+
+    // Additional tasks that don't fit the pattern
+    if current_tick % DESKTOP_UPDATE_INTERVAL_TICKS == 0 {
+        graphics::draw_os_desktop();
+    }
+    if current_tick % 10000 == 0 {
+        emergency_condition_handler();
+    }
 
     // Yield and handle system calls
     yield_and_process_system_calls();
-
-    // Periodic desktop update and emergency checks
-    perform_periodic_ui_operations(current_tick);
-    perform_emergency_checks(current_tick);
 }
 
-/// Perform periodic health checks and statistics
-fn perform_periodic_health_checks(stats: &SystemStats, current_tick: u64) {
-    static LAST_HEALTH_CHECK_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
-    petroleum::check_periodic!(LAST_HEALTH_CHECK_TICK, 1000, current_tick, {
-        perform_system_health_checks();
-        log_system_stats(stats, LOG_INTERVAL_TICKS);
-        display_system_stats_on_vga(stats, DISPLAY_INTERVAL_TICKS);
-    });
-}
-
-/// Perform periodic filesystem and maintenance tasks
-fn perform_periodic_system_tasks(stats: &SystemStats, current_tick: u64, iteration_count: u64) {
-    // Log to system.log every 3000 ticks
-    petroleum::periodic_task!(current_tick, 3000, {
-        use core::fmt::Write;
-        let mut log_content = alloc::string::String::new();
-        write!(
-            log_content,
-            "Uptime: {}, Processes: {}/{}, Memory Used: {}\n",
-            stats.uptime_ticks, stats.active_processes, stats.total_processes, stats.memory_used
-        )
-        .ok();
-
-        static LOG_FILE_CREATED: spin::Mutex<bool> = spin::Mutex::new(false);
-        let mut log_file_created = LOG_FILE_CREATED.lock();
-
-        if !*log_file_created {
-            match crate::fs::create_file("system.log", log_content.as_bytes()) {
-                Ok(_) => {
-                    *log_file_created = true;
-                    log::info!("System statistics logged to system.log");
-                }
-                Err(e) => {
-                    log::warn!("Failed to create system.log: {:?}", e);
-                }
-            }
-        } else {
-            match crate::fs::open_file("system.log") {
-                Ok(fd) => {
-                    if let Err(e) = crate::fs::seek_file(fd, 0) {
-                        log::warn!("Failed to seek in system.log: {:?}", e);
-                    }
-                    if let Err(e) = crate::fs::write_file(fd, log_content.as_bytes()) {
-                        log::warn!("Failed to write to system.log: {:?}", e);
-                    }
-                    if let Err(e) = crate::fs::close_file(fd) {
-                        log::warn!("Failed to close system.log: {:?}", e);
-                    }
-                }
-                Err(e) => {
-                    log::warn!("Failed to open system.log file: {:?}", e);
-                }
-            }
-        }
-        perform_automated_backup();
-    });
-
-    // Run system maintenance every 2000 ticks
-    petroleum::periodic_task!(current_tick, 2000, {
-        perform_system_maintenance();
-    });
-    // Memory capacity check every 10000 ticks
-    petroleum::periodic_task!(current_tick, 10000, {
-        perform_memory_capacity_check(current_tick);
-    });
-    // Process cleanup check every 100 iterations
-    petroleum::periodic_task!(iteration_count, 100, {
-        perform_process_cleanup_check(iteration_count);
-    });
-}
+// Autmoated backup function moved to use in stats_task
 
 /// Check and log memory utilization periodically
 fn perform_memory_capacity_check(current_tick: u64) {

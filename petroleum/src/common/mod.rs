@@ -23,6 +23,36 @@ pub fn setup_vga_mode_common() {
 
 pub mod uefi;
 
+/// System diagnostics structure for monitoring
+#[derive(Clone, Copy)]
+pub struct SystemStats {
+    pub total_processes: usize,
+    pub active_processes: usize,
+    pub memory_used: usize,
+    pub uptime_ticks: u64,
+}
+
+/// Collect system statistics using provided getters
+/// This allows petroleum to define the collection logic while kernel provides the data
+pub fn collect_system_stats(
+    get_total_processes: fn() -> usize,
+    get_active_processes: fn() -> usize,
+    get_uptime_ticks: fn() -> u64,
+) -> SystemStats {
+    let total_processes = get_total_processes();
+    let active_processes = get_active_processes();
+    let (memory_used, _, _) = get_memory_stats!();
+    let uptime_ticks = get_uptime_ticks();
+    SystemStats {
+        total_processes,
+        active_processes,
+        memory_used,
+        uptime_ticks,
+    }
+}
+
+
+
 // Memory initialization state tracking
 static MEMORY_INITIALIZED: spin::Mutex<bool> = spin::Mutex::new(false);
 

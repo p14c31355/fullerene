@@ -41,12 +41,9 @@ pub fn init() {
     OPEN_FILES.lock().clear();
 }
 
-/// Create a new file
+/// Create a new file, overwriting if it exists
 pub fn create_file(name: &str, data: &[u8]) -> Result<(), FsError> {
     let mut fs = FILESYSTEM.lock();
-    if fs.contains_key(name) {
-        return Err(FsError::FileExists);
-    }
 
     let file = File {
         name: String::from(name),
@@ -167,6 +164,15 @@ pub enum FsError {
     InvalidSeek,
     DiskFull,
 }
+
+petroleum::error_chain!(FsError, petroleum::common::logging::SystemError,
+    FsError::FileNotFound => petroleum::common::logging::SystemError::FileNotFound,
+    FsError::FileExists => petroleum::common::logging::SystemError::FileExists,
+    FsError::PermissionDenied => petroleum::common::logging::SystemError::PermissionDenied,
+    FsError::InvalidFileDescriptor => petroleum::common::logging::SystemError::BadFileDescriptor,
+    FsError::InvalidSeek => petroleum::common::logging::SystemError::InvalidSeek,
+    FsError::DiskFull => petroleum::common::logging::SystemError::DiskFull,
+);
 
 #[cfg(test)]
 mod tests {

@@ -1,10 +1,19 @@
 use core::ffi::c_void;
 use log::info;
 
-use petroleum::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
+use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable};
+use petroleum::debug_log;
+use petroleum::debug_log_no_alloc;
+use petroleum::serial::debug_print_str_to_com1;
 
+// Module declarations for separated functionality
 pub mod heap;
 pub mod pe;
+
+/// Initialize heap using separated heap module
+pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
+    heap::init_heap(bs)
+}
 
 /// Exits boot services and jumps to the kernel's entry point.
 /// This function is the final step of the bootloader.
@@ -235,4 +244,16 @@ pub fn exit_boot_services_and_jump(
         log::info!("About to call kernel entry.");
     }
     entry(image_handle, system_table, map_phys_addr as *mut c_void, final_map_size);
+}
+
+
+
+/// Load EFI PE image using separated PE module
+pub fn load_efi_image(
+    st: &petroleum::common::EfiSystemTable,
+    file: &[u8],
+) -> petroleum::common::Result<
+    extern "efiapi" fn(usize, *mut petroleum::common::EfiSystemTable, *mut c_void, usize) -> !,
+> {
+    pe::load_efi_image(st, file)
 }

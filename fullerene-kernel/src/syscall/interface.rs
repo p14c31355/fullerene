@@ -27,6 +27,16 @@ pub enum SyscallError {
     OutOfMemory = 12,
 }
 
+petroleum::error_chain!(SyscallError, petroleum::common::logging::SystemError,
+    SyscallError::InvalidSyscall => petroleum::common::logging::SystemError::InvalidSyscall,
+    SyscallError::BadFileDescriptor => petroleum::common::logging::SystemError::BadFileDescriptor,
+    SyscallError::PermissionDenied => petroleum::common::logging::SystemError::PermissionDenied,
+    SyscallError::FileNotFound => petroleum::common::logging::SystemError::FileNotFound,
+    SyscallError::NoSuchProcess => petroleum::common::logging::SystemError::NoSuchProcess,
+    SyscallError::InvalidArgument => petroleum::common::logging::SystemError::InvalidArgument,
+    SyscallError::OutOfMemory => petroleum::common::logging::SystemError::SyscallOutOfMemory,
+);
+
 impl From<petroleum::common::logging::SystemError> for SyscallError {
     fn from(error: petroleum::common::logging::SystemError) -> Self {
         match error {

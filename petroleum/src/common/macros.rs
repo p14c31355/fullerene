@@ -292,7 +292,7 @@ macro_rules! scheduler_log {
 /// Macro for reading unaligned data from memory with offset
 #[macro_export]
 macro_rules! read_unaligned {
-    ($ptr:expr, $offset:expr, $ty:ty) => {{ unsafe { core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) } }};
+    ($ptr:expr, $offset:expr, $ty:ty) => { unsafe { core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) } };
 }
 
 /// Macro to clear a specific range in a 2D buffer for fixed-width buffers like VGA
@@ -957,7 +957,7 @@ macro_rules! page_flags_const {
 /// Integrated identity mapping macro
 #[macro_export]
 macro_rules! map_identity_range_macro {
-    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{ unsafe { map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags) } }};
+    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{ map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags) }};
 }
 
 /// Range mapping with logging macro

@@ -181,6 +181,18 @@ pub enum LoadError {
     AddressAlreadyMapped,
 }
 
+impl From<LoadError> for petroleum::common::logging::SystemError {
+    fn from(error: LoadError) -> Self {
+        match error {
+            LoadError::InvalidFormat => petroleum::common::logging::SystemError::InvalidFormat,
+            LoadError::OutOfMemory => petroleum::common::logging::SystemError::MemOutOfMemory,
+            LoadError::AddressAlreadyMapped => petroleum::common::logging::SystemError::MappingFailed,
+            LoadError::MappingFailed => petroleum::common::logging::SystemError::MappingFailed,
+            LoadError::NotExecutable | LoadError::UnsupportedArchitecture => petroleum::common::logging::SystemError::LoadFailed,
+        }
+    }
+}
+
 petroleum::error_chain!(crate::memory_management::AllocError, LoadError,
     crate::memory_management::AllocError::OutOfMemory => LoadError::OutOfMemory,
     crate::memory_management::AllocError::MappingFailed => LoadError::MappingFailed,

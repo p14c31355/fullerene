@@ -6,7 +6,7 @@
 // Note: MAPPER and FRAME_ALLOCATOR are pub(crate), not re-exportable
 
 pub use petroleum::page_table::{
-    BootInfoFrameAllocator, HIGHER_HALF_OFFSET, reinit_page_table_with_allocator,
+    BootInfoFrameAllocator, reinit_page_table_with_allocator,
 };
 
 // Heap size constant moved to petroleum - for now define locally

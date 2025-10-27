@@ -1,9 +1,8 @@
-// bellows/src/loader/heap.rs
+//! Heap allocation logic for the bootloader
+//!
+//! This module handles EFI-based memory allocation for the global heap.
 
-use petroleum::common::{
-    BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, efi_status_to_str,
-};
-use petroleum::debug_log;
+use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus};
 use petroleum::debug_log_no_alloc;
 use petroleum::serial::debug_print_str_to_com1;
 
@@ -56,7 +55,7 @@ fn try_allocate_pages(
         }
 
         let status_efi = EfiStatus::from(status);
-        let status_str = efi_status_to_str(status_efi);
+        let status_str = petroleum::common::efi_status_to_str(status_efi);
         debug_log_no_alloc!("Heap: Status: ", status_str);
 
         if status_efi == EfiStatus::InvalidParameter {
