@@ -27,14 +27,10 @@ fn stats_task(_tick: u64, _iter: u64) {
     log_system_stats(&stats, LOG_INTERVAL_TICKS);
     display_system_stats_on_vga(&stats, DISPLAY_INTERVAL_TICKS);
     // Add file logging
-    let log_content = alloc::format!("System Stats - Processes: {}/{}, Memory: {} bytes, Uptime: {} ticks\n",
-        stats.active_processes, stats.total_processes, stats.memory_used, stats.uptime_ticks);
-    if let Ok(_) = crate::fs::create_file("system.log", log_content.as_bytes()) {
+    const SYSTEM_LOG_FILE: &str = "system.log";
+    if let Ok(_) = crate::fs::create_file(SYSTEM_LOG_FILE, log_content.as_bytes()) {
         // File written successfully
     } else {
-        log::warn!("Failed to write system stats to system.log");
-    }
-}
 
 fn maintenance_task(_tick: u64, _iter: u64) {
     perform_system_maintenance();
