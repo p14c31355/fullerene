@@ -1,5 +1,6 @@
 use super::constants::{MAX_DESCRIPTOR_PAGES, MAX_SYSTEM_MEMORY};
 use crate::common::EfiMemoryType;
+use crate::debug_log_validate_macro;
 
 // EFI Memory Descriptor as defined in UEFI spec
 #[derive(Clone, Copy, Debug)]

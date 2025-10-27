@@ -368,51 +368,7 @@ macro_rules! periodic_task {
     };
 }
 
-/// Unified print macros using the log crate for consistent logging across all crates
-/// Fallback to serial if logger not initialized yet
-#[macro_export]
-macro_rules! println {
-    () => {
-        if $crate::common::logging::is_logger_initialized() {
-            log::info!("");
-        } else {
-            $crate::serial::_print(format_args!("\n"));
-        }
-    };
-    ($($arg:tt)*) => {
-        if $crate::common::logging::is_logger_initialized() {
-            log::info!("{}", format_args!($($arg)*));
-        } else {
-            $crate::serial::_print(format_args!("{}\n", format_args!($($arg)*)));
-        }
-    };
-}
 
-/// Unified print macro - same as print! for consistency
-#[macro_export]
-macro_rules! print {
-    () => {
-        $crate::println!();
-    };
-    ($($arg:tt)*) => {
-        $crate::println!($($arg)*);
-    };
-}
-
-/// Enhanced logging macro for common patterns throughout the codebase
-/// Provides consistent prefixes and formatting
-#[macro_export]
-macro_rules! log {
-    ($prefix:literal) => {
-        $crate::serial::_print(format_args!(concat!($prefix, "\n")));
-    };
-    ($prefix:literal, $msg:expr) => {
-        $crate::serial::_print(format_args!(concat!($prefix, ": {}\n"), $msg));
-    };
-    ($prefix:literal, $format:expr, $($args:tt)*) => {
-        $crate::serial::_print(format_args!(concat!($prefix, ": ", $format, "\n"), $($args)*));
-    };
-}
 
 /// Macro for defining health check functions with consistent logging and thresholds
 /// Reduces boilerplate in system monitoring by providing a unified interface
@@ -499,60 +455,7 @@ macro_rules! maintenance_tasks {
     };
 }
 
-/// Unified logging macros that use log crate when initialized, fallback to serial
 
-/// Common logging macros - use log crate when initialized, fallback to serial
-#[macro_export]
-macro_rules! info_log {
-    ($($arg:tt)*) => {
-        if $crate::common::logging::is_logger_initialized() {
-            log::info!("{}", format_args!($($arg)*));
-        } else {
-            $crate::serial::_print(format_args!("[INFO] {}\n", format_args!($($arg)*)));
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! error_log {
-    ($($arg:tt)*) => {
-        if $crate::common::logging::is_logger_initialized() {
-            log::error!("{}", format_args!($($arg)*));
-        } else {
-            $crate::serial::_print(format_args!("[ERROR] {}\n", format_args!($($arg)*)));
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! warn_log {
-    ($($arg:tt)*) => {
-        if $crate::common::logging::is_logger_initialized() {
-            log::warn!("{}", format_args!($($arg)*));
-        } else {
-            $crate::serial::_print(format_args!("[WARN] {}\n", format_args!($($arg)*)));
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! debug_log {
-    ($($arg:tt)*) => {
-        if $crate::common::logging::is_logger_initialized() {
-            log::debug!("{}", format_args!($($arg)*));
-        } else {
-            $crate::debug_log_no_alloc!($($arg)*);
-        }
-    };
-}
-
-/// Macro for logging errors with context
-#[macro_export]
-macro_rules! log_error {
-    ($error:expr, $context:expr) => {{
-        log::error!("{}: {}", *$error as u64, $context);
-    }};
-}
 
 /// PCI operation helper macros to reduce repetition in PCI handling
 #[macro_export]
@@ -813,25 +716,7 @@ macro_rules! check_uefi_status {
     };
 }
 
-/// Macro for simple module initialization with logging
-#[macro_export]
-macro_rules! declare_init {
-    ($mod_name:expr) => {{
-        $crate::serial::serial_log(format_args!("{} initialized\n", $mod_name));
-    }};
-}
 
-/// Macro for initialization steps/done with serial logging
-#[macro_export]
-macro_rules! init_log {
-    ($msg:literal) => {{
-        let msg = concat!($msg, "\n");
-        $crate::write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
-    }};
-    ($fmt:expr $(, $($arg:tt)*)?) => {{
-        $crate::serial::serial_log(format_args!(concat!($fmt, "\n") $(, $($arg)*)?));
-    }};
-}
 
 /// Macro to update VGA cursor position by writing to ports
 #[macro_export]
@@ -876,76 +761,7 @@ macro_rules! halt {
     };
 }
 
-/// Consolidated validation logging macro
-#[macro_export]
-macro_rules! debug_log_validate_macro {
-    ($field:expr, $value:expr) => {
-        debug_log_no_alloc!($field, " validated: ", $value);
-    };
-}
 
-/// Unified memory region constants macro
-#[macro_export]
-macro_rules! memory_region_const_macro {
-    (VGA_START) => {
-        0xA0000u64
-    };
-    (VGA_END) => {
-        0xC0000u64
-    };
-    (BOOT_CODE_START) => {
-        0x100000u64
-    };
-    (BOOT_CODE_PAGES) => {
-        0x8000u64
-    };
-    (PAGE_SIZE) => {
-        4096u64
-    };
-}
-
-/// Consolidated logging macro for page table operations
-#[macro_export]
-macro_rules! log_page_table_op {
-    ($operation:expr) => {
-        debug_log_no_alloc!($operation);
-    };
-    ($operation:expr, $msg:expr, $addr:expr) => {
-        debug_log_no_alloc!($operation, $msg, " addr=", $addr);
-    };
-    ($stage:expr, $phys:expr, $virt:expr, $pages:expr) => {
-        debug_log_no_alloc!(
-            "Memory mapping stage=",
-            $stage,
-            " phys=0x",
-            $phys,
-            " virt=0x",
-            $virt,
-            " pages=",
-            $pages
-        );
-    };
-    ($operation:expr, $msg:expr) => {
-        debug_log_no_alloc!($operation, $msg);
-    };
-}
-
-/// Memory descriptor processing macro
-#[macro_export]
-macro_rules! process_memory_descriptors_safely {
-    ($descriptors:expr, $processor:expr) => {{
-        for descriptor in $descriptors.iter() {
-            if is_valid_memory_descriptor(descriptor) && descriptor.is_memory_available() {
-                let start_frame = (descriptor.get_physical_start() / 4096) as usize;
-                let end_frame = start_frame.saturating_add(descriptor.get_page_count() as usize);
-
-                if start_frame < end_frame {
-                    $processor(descriptor, start_frame, end_frame);
-                }
-            }
-        }
-    }};
-}
 
 /// Page table flags constants macro
 #[macro_export]
@@ -1202,12 +1018,12 @@ impl<'a> InitSequence<'a> {
 
     pub fn run(&self) {
         for (name, init_fn) in self.steps {
-            init_log!("About to init {}", name);
+            crate::serial::serial_log(format_args!("About to init {}\n", name));
             if let Err(e) = init_fn() {
-                init_log!("Init {} failed: {}", name, e);
+                crate::serial::serial_log(format_args!("Init {} failed: {}\n", name, e));
                 panic!("{}", e);
             }
-            init_log!("{} init done", name);
+            crate::serial::serial_log(format_args!("{} init done\n", name));
         }
     }
 }
