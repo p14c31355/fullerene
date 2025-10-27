@@ -4,7 +4,7 @@
 //! including process scheduling, shell execution, and system-wide orchestration.
 
 use crate::graphics;
-use alloc::collections::VecDeque;
+use alloc::{collections::VecDeque, format};
 use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::{
     Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats,
@@ -28,9 +28,19 @@ fn stats_task(_tick: u64, _iter: u64) {
     display_system_stats_on_vga(&stats, DISPLAY_INTERVAL_TICKS);
     // Add file logging
     const SYSTEM_LOG_FILE: &str = "system.log";
+    let log_content = format!(
+        "System Stats - Processes: {}/{}, Memory: {} bytes, Uptime: {} ticks\n",
+        stats.active_processes,
+        stats.total_processes,
+        stats.memory_used,
+        stats.uptime_ticks
+    );
     if let Ok(_) = crate::fs::create_file(SYSTEM_LOG_FILE, log_content.as_bytes()) {
-        // File written successfully
+        log::info!("System log file written successfully");
     } else {
+        log::warn!("Failed to write system log file");
+    }
+}
 
 fn maintenance_task(_tick: u64, _iter: u64) {
     perform_system_maintenance();

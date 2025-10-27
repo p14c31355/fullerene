@@ -116,6 +116,7 @@ pub fn load_efi_image(
     if e_magic != 0x5a4d {
         return Err(BellowsError::PeParse("Invalid DOS signature (MZ)."));
     }
+    let e_lfanew = unsafe { core::ptr::read_unaligned((dos_header_ptr as *const u8).add(60) as *const i32) };
     if e_lfanew < 0 {
         return Err(BellowsError::PeParse("Invalid NT headers offset."));
     }
@@ -142,7 +143,7 @@ pub fn load_efi_image(
     let pages_needed =
     if address_of_entry_point > usize::MAX - 4096 {
         return Err(BellowsError::PeParse("Entry point address too large."));
-    }
+    };
     let pages_needed =
         (image_size_val.max(address_of_entry_point as u64 + 4096)).div_ceil(4096) as usize;
 
