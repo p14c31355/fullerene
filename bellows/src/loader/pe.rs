@@ -229,7 +229,9 @@ pub fn load_efi_image(
             (phys_nt_headers_ptr as *const u8)
                 .add(core::mem::offset_of!(ImageNtHeaders64, optional_header))
                 .cast::<ImageOptionalHeader64>()
-                if (reloc_dir.virtual_address as u64).saturating_add(reloc_dir.size as u64) > image_size_val {
+        };
+        let reloc_dir = unsafe { &(*optional_header_ptr).data_directory[IMAGE_DIRECTORY_ENTRY_BASERELOC] };
+        if (reloc_dir.virtual_address as u64).saturating_add(reloc_dir.size as u64) > image_size_val {
             unsafe { (bs.free_pages)(phys_addr, pages_needed) };
             return Err(BellowsError::PeParse("Relocation directory out of bounds."));
         }
