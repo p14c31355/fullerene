@@ -5,44 +5,36 @@ use crate::interrupts;
 use petroleum::{common::InitSequence, init_log, write_serial_bytes};
 use spin::Once;
 
-#[cfg(target_os = "uefi")]
-macro_rules! init_step {
-    ($name:expr, $closure:expr) => {
-        (
-            $name,
-            Box::new($closure) as Box<dyn Fn() -> Result<(), &'static str>>,
-        )
-    };
-}
+
 
 #[cfg(target_os = "uefi")]
 pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     init_log!("Initializing common components");
 
     let steps = [
-        init_step!("VGA", move || {
+        petroleum::init_step!("VGA", move || {
             crate::vga::init_vga(physical_memory_offset);
-            Ok(())
+            Ok("")
         }),
-        init_step!("Graphics", || {
+        petroleum::init_step!("Graphics", || {
             let _ = crate::graphics::text::init_fallback_graphics();
-            Ok(())
+            Ok("")
         }),
-        init_step!("process", || {
+        petroleum::init_step!("process", || {
             crate::process::init();
-            Ok(())
+            Ok("")
         }),
-        init_step!("syscall", || {
+        petroleum::init_step!("syscall", || {
             crate::syscall::init();
-            Ok(())
+            Ok("")
         }),
-        init_step!("fs", || {
+        petroleum::init_step!("fs", || {
             crate::fs::init();
-            Ok(())
+            Ok("")
         }),
-        init_step!("loader", || {
+        petroleum::init_step!("loader", || {
             crate::loader::init();
-            Ok(())
+            Ok("")
         }),
     ];
     InitSequence::new(&steps).run();
@@ -62,26 +54,33 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
 pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     use core::mem::MaybeUninit;
 
-    // Static heap for BIOS
-    static mut HEAP: [MaybeUninit<u8>; crate::heap::HEAP_SIZE] =
-        [MaybeUninit::uninit(); crate::heap::HEAP_SIZE];
-    let heap_start_addr: x86_64::VirtAddr;
-    unsafe {
-        let heap_start_ptr: *mut u8 = core::ptr::addr_of_mut!(HEAP) as *mut u8;
-        heap_start_addr = x86_64::VirtAddr::from_ptr(heap_start_ptr);
-        use petroleum::page_table::ALLOCATOR;
-        ALLOCATOR
-            .lock()
-            .init(heap_start_ptr, crate::heap::HEAP_SIZE);
-        // Set heap range for page fault detection
-        petroleum::common::memory::set_heap_range(heap_start_ptr as usize, crate::heap::HEAP_SIZE);
-    }
+    // Higher-order initialization sequence for BIOS to reduce code duplication with UEFI
+    let bios_heap_init = Box::new(|| {
+        static mut HEAP: [MaybeUninit<u8>; crate::heap::HEAP_SIZE] =
+            [MaybeUninit::uninit(); crate::heap::HEAP_SIZE];
+        let heap_start_addr: x86_64::VirtAddr;
+        unsafe {
+            let heap_start_ptr: *mut u8 = core::ptr::addr_of_mut!(HEAP) as *mut u8;
+            heap_start_addr = x86_64::VirtAddr::from_ptr(heap_start_ptr);
+            use petroleum::page_table::ALLOCATOR;
+            ALLOCATOR
+                .lock()
+                .init(heap_start_ptr, crate::heap::HEAP_SIZE);
+            // Set heap range for page fault detection
+            petroleum::common::memory::set_heap_range(heap_start_ptr as usize, crate::heap::HEAP_SIZE);
+        }
+        crate::gdt::init(heap_start_addr); // Pass the actual heap start address
+        Ok("")
+    });
 
-    crate::gdt::init(heap_start_addr); // Pass the actual heap start address
-    interrupts::init(); // Initialize IDT
-    // For UEFI, APIC is used, for BIOS, use PIC initially
-    // Heap already initialized
-    petroleum::serial::serial_init(); // Initialize serial early for debugging
+    let bios_init_steps = [
+        ("BIOS Heap and GDT", bios_heap_init),
+        petroleum::init_step!("Interrupts", || { interrupts::init(); Ok("") }),
+        petroleum::init_step!("Serial", || { petroleum::serial::serial_init(); Ok("") }),
+    ];
+    InitSequence::new(&bios_init_steps).run();
+
+    // Remaining non-sequence initializations
     crate::vga::init_vga(physical_memory_offset);
     crate::process::init();
     crate::syscall::init();

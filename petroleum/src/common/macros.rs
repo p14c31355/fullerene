@@ -258,6 +258,31 @@ macro_rules! scheduler_log {
     };
 }
 
+/// Macro for bootloader initialization steps with consistent logging and error handling
+/// Reduces boilerplate in bootloader code while providing debug output
+///
+/// # Examples
+/// ```
+/// init_boot_step!("Initializing heap", || init_heap(service));
+/// init_boot_step!("Loading kernel", || load_kernel());
+/// ```
+#[macro_export]
+macro_rules! init_boot_step {
+    ($step_name:expr, $init_fn:expr) => {{
+        $crate::println!($step_name);
+        $crate::serial::_print(format_args!("{} \n", $step_name));
+        $init_fn.expect(concat!("Bootloader initialization failed at: ", $step_name))
+    }};
+}
+
+/// Helper for init_step in sequences
+#[macro_export]
+macro_rules! init_step {
+    ($name:expr, $closure:expr) => {
+        ($name, Box::new($closure) as Box<dyn Fn() -> Result<(), &'static str>>)
+    };
+}
+
 /// Macro for reading unaligned data from memory with offset
 #[macro_export]
 macro_rules! read_unaligned {
@@ -389,9 +414,9 @@ macro_rules! health_check {
 #[macro_export]
 macro_rules! draw_filled_rect {
     ($writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $color:expr) => {{
-        for y_coord in $y..($y + $h) {
-            for x_coord in $x..($x + $w) {
-                $writer.draw_pixel(x_coord, y_coord, $color);
+        for y_coord in ($y as i32)..(($y as i32) + ($h as i32)) {
+            for x_coord in ($x as i32)..(($x as i32) + ($w as i32)) {
+                $writer.put_pixel(x_coord as u32, y_coord as u32, $color);
             }
         }
     }};
