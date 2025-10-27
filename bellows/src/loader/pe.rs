@@ -6,6 +6,8 @@ use core::ffi::c_void;
 use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus};
 use petroleum::read_unaligned;
 
+const IMAGE_DIRECTORY_ENTRY_BASERELOC: usize = 5;
+
 #[repr(C, packed)]
 pub struct ImageDosHeader {
     pub e_magic: u16,
@@ -114,13 +116,7 @@ pub fn load_efi_image(
     if e_magic != 0x5a4d {
         return Err(BellowsError::PeParse("Invalid DOS signature (MZ)."));
     }
-    let e_lfanew = unsafe {
-        core::ptr::read_unaligned(
-            (dos_header_ptr as *const u8)
-                .add(core::mem::offset_of!(ImageDosHeader, e_lfanew))
-                .cast::<i32>(),
-        )
-    };
+    let e_lfanew = read_unaligned!(dos_header_ptr, core::mem::offset_of!(ImageDosHeader, e_lfanew), i32);
     petroleum::println!("DOS header parsed. e_lfanew: {:#x}", e_lfanew);
 
     // Parse NT headers
@@ -130,52 +126,18 @@ pub fn load_efi_image(
     }
     let nt_headers_ptr =
         unsafe { file.as_ptr().add(nt_headers_offset) as *const ImageNtHeaders64 };
-    let optional_header_magic = unsafe {
-        core::ptr::read_unaligned(
-            (nt_headers_ptr as *const u8)
-                .add(
-                    core::mem::offset_of!(ImageNtHeaders64, optional_header)
-                        + core::mem::offset_of!(ImageOptionalHeader64, _magic),
-                )
-                .cast::<u16>(),
-        )
-    };
+    let optional_header_magic = read_unaligned!(nt_headers_ptr, core::mem::offset_of!(ImageNtHeaders64, optional_header) + core::mem::offset_of!(ImageOptionalHeader64, _magic), u16);
     if optional_header_magic != 0x20b {
         return Err(BellowsError::PeParse("Invalid PE32+ magic number."));
     }
 
     // Read image size and entry point
-    let image_size_ptr = unsafe {
-        (nt_headers_ptr as *const u8)
-            .add(
-                core::mem::offset_of!(ImageNtHeaders64, optional_header)
-                    + core::mem::offset_of!(ImageOptionalHeader64, size_of_image),
-            )
-            .cast::<u32>()
-    };
-    let address_of_entry_point_ptr = unsafe {
-        (nt_headers_ptr as *const u8)
-            .add(
-                core::mem::offset_of!(ImageNtHeaders64, optional_header)
-                    + core::mem::offset_of!(ImageOptionalHeader64, address_of_entry_point),
-            )
-            .cast::<u32>()
-    };
-    let address_of_entry_point =
-        unsafe { core::ptr::read_unaligned(address_of_entry_point_ptr) } as usize;
-    let image_size_val = unsafe { core::ptr::read_unaligned(image_size_ptr) as u64 };
+    let address_of_entry_point = read_unaligned!(nt_headers_ptr, core::mem::offset_of!(ImageNtHeaders64, optional_header) + core::mem::offset_of!(ImageOptionalHeader64, address_of_entry_point), u32) as usize;
+    let image_size_val = read_unaligned!(nt_headers_ptr, core::mem::offset_of!(ImageNtHeaders64, optional_header) + core::mem::offset_of!(ImageOptionalHeader64, size_of_image), u32) as u64;
     let pages_needed =
         (image_size_val.max(address_of_entry_point as u64 + 4096)).div_ceil(4096) as usize;
 
-    let preferred_base_ptr = unsafe {
-        (nt_headers_ptr as *const u8)
-            .add(
-                core::mem::offset_of!(ImageNtHeaders64, optional_header)
-                    + core::mem::offset_of!(ImageOptionalHeader64, image_base),
-            )
-            .cast::<u64>()
-    };
-    let preferred_base = unsafe { core::ptr::read_unaligned(preferred_base_ptr) } as usize;
+    let preferred_base = read_unaligned!(nt_headers_ptr, core::mem::offset_of!(ImageNtHeaders64, optional_header) + core::mem::offset_of!(ImageOptionalHeader64, image_base), u64) as usize;
     let mut phys_addr: usize = 0;
     let mut status;
 
@@ -211,15 +173,7 @@ pub fn load_efi_image(
         ));
     }
 
-    let size_of_headers_ptr = unsafe {
-        (nt_headers_ptr as *const u8)
-            .add(
-                core::mem::offset_of!(ImageNtHeaders64, optional_header)
-                    + core::mem::offset_of!(ImageOptionalHeader64, _size_of_headers),
-            )
-            .cast::<u32>()
-    };
-    let size_of_headers = unsafe { core::ptr::read_unaligned(size_of_headers_ptr) } as usize;
+    let size_of_headers = read_unaligned!(nt_headers_ptr, core::mem::offset_of!(ImageNtHeaders64, optional_header) + core::mem::offset_of!(ImageOptionalHeader64, _size_of_headers), u32) as usize;
     unsafe {
         core::ptr::copy_nonoverlapping(
             file.as_ptr(),
@@ -228,25 +182,8 @@ pub fn load_efi_image(
         );
     }
 
-    let number_of_sections_ptr = unsafe {
-        (nt_headers_ptr as *const u8)
-            .add(
-                core::mem::offset_of!(ImageNtHeaders64, _file_header)
-                    + core::mem::offset_of!(ImageFileHeader, number_of_sections),
-            )
-            .cast::<u16>()
-    };
-    let number_of_sections = unsafe { core::ptr::read_unaligned(number_of_sections_ptr) } as usize;
-    let size_of_optional_header_ptr = unsafe {
-        (nt_headers_ptr as *const u8)
-            .add(
-                core::mem::offset_of!(ImageNtHeaders64, _file_header)
-                    + core::mem::offset_of!(ImageFileHeader, size_of_optional_header),
-            )
-            .cast::<u16>()
-    };
-    let size_of_optional_header =
-        unsafe { core::ptr::read_unaligned(size_of_optional_header_ptr) } as usize;
+    let number_of_sections = read_unaligned!(nt_headers_ptr, core::mem::offset_of!(ImageNtHeaders64, _file_header) + core::mem::offset_of!(ImageFileHeader, number_of_sections), u16) as usize;
+    let size_of_optional_header = read_unaligned!(nt_headers_ptr, core::mem::offset_of!(ImageNtHeaders64, _file_header) + core::mem::offset_of!(ImageFileHeader, size_of_optional_header), u16) as usize;
 
     let section_headers_offset = e_lfanew as usize
         + core::mem::size_of::<u32>()
@@ -301,15 +238,7 @@ pub fn load_efi_image(
         }
     }
 
-    let image_base_ptr = unsafe {
-        (nt_headers_ptr as *const u8)
-            .add(
-                core::mem::offset_of!(ImageNtHeaders64, optional_header)
-                    + core::mem::offset_of!(ImageOptionalHeader64, image_base),
-            )
-            .cast::<u64>()
-    };
-    let image_base = unsafe { core::ptr::read_unaligned(image_base_ptr) } as usize;
+    let image_base = read_unaligned!(nt_headers_ptr, core::mem::offset_of!(ImageNtHeaders64, optional_header) + core::mem::offset_of!(ImageOptionalHeader64, image_base), u64) as usize;
     let image_base_delta = (phys_addr as u64).wrapping_sub(image_base as u64);
 
     if image_base_delta != 0 {
@@ -320,7 +249,7 @@ pub fn load_efi_image(
                 .cast::<ImageOptionalHeader64>()
         };
         let optional_header = unsafe { &*optional_header_ptr };
-        let reloc_dir = &optional_header.data_directory[5]; // 5 is BASE_RELOCATION
+        let reloc_dir = &optional_header.data_directory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
         if reloc_dir.size > 0 {
             let mut reloc_offset = reloc_dir.virtual_address as usize;
             while reloc_offset < reloc_dir.virtual_address as usize + reloc_dir.size as usize {
