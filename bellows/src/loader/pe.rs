@@ -116,7 +116,10 @@ pub fn load_efi_image(
     if e_magic != 0x5a4d {
         return Err(BellowsError::PeParse("Invalid DOS signature (MZ)."));
     }
-    let e_lfanew = read_unaligned!(dos_header_ptr, core::mem::offset_of!(ImageDosHeader, e_lfanew), i32);
+    if e_lfanew < 0 {
+        return Err(BellowsError::PeParse("Invalid NT headers offset."));
+    }
+    let e_lfanew = e_lfanew as usize;
     petroleum::println!("DOS header parsed. e_lfanew: {:#x}", e_lfanew);
 
     // Parse NT headers
