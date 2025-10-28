@@ -37,8 +37,6 @@ pub mod vga;
 fn panic(info: &core::panic::PanicInfo) -> ! {
     use core::fmt::Write;
     use petroleum::println;
-    let mut writer = petroleum::serial::SERIAL_PORT_WRITER.lock();
-    let _ = write!(writer, "Kernel Panic: {}\n", info);
     println!("Kernel Panic: {}", info);
     loop {}
 }
