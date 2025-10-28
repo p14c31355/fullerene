@@ -340,24 +340,15 @@ impl UefiInitContext {
         log::info!("IO APIC mapped at virt {:#x}", io_apic_virt.as_u64());
 
         // Map VGA text buffer (0xB8000-0xC0000) for compatibility
-        let vga_text_phys = PhysAddr::new(VGA_TEXT_BUFFER_ADDR);
-        let vga_text_virt = VirtAddr::new(VGA_TEXT_BUFFER_ADDR);
         let vga_pages_size = (0xc0000 - VGA_TEXT_BUFFER_ADDR) / 4096; // 8 pages (32KB)
-        for i in 0..vga_pages_size {
-            let phys = PhysAddr::new(vga_text_phys.as_u64() + i * 4096);
-            let virt = VirtAddr::new(vga_text_virt.as_u64() + i * 4096);
-            let page = Page::<Size4KiB>::containing_address(virt);
-            let frame = PhysFrame::<Size4KiB>::containing_address(phys);
-            unsafe {
-                match mapper.map_to(page, frame, flags, &mut *frame_allocator) {
-                    Ok(flush) => flush.flush(),
-                    Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                        continue;
-                    } // Page already mapped, skip
-                    Err(e) => log::error!("Failed to map VGA page: {:?}", e),
-                }
-            }
-        }
+        petroleum::map_pages_loop!(
+            mapper,
+            &mut *frame_allocator,
+            VGA_TEXT_BUFFER_ADDR,
+            VGA_TEXT_BUFFER_ADDR,
+            vga_pages_size,
+            flags
+        );
         log::info!(
             "VGA text buffer mapped at identity address {:#x}",
             vga_text_virt.as_u64()
