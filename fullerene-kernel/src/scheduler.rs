@@ -7,7 +7,7 @@ use crate::graphics;
 use alloc::{collections::VecDeque, format};
 use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::{
-    Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats, periodic_task, scheduler_log,
+    Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats, display_stats_on_available_display, periodic_task, scheduler_log,
 };
 
 // Define periodic tasks in a struct for clarity
@@ -204,93 +204,7 @@ fn log_system_stats(stats: &SystemStats, interval_ticks: u64) {
 
 /// Display system statistics on VGA or framebuffer periodically
 fn display_system_stats_on_display(stats: &SystemStats, interval_ticks: u64) {
-    static LAST_DISPLAY_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
-
-    let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
-    petroleum::check_periodic!(LAST_DISPLAY_TICK, interval_ticks, current_tick, {
-        // Try framebuffer first (UEFI), then VGA
-        #[cfg(target_os = "uefi")]
-        if let Some(fb_writer) = crate::graphics::text::WRITER_UEFI.get() {
-            let mut writer = fb_writer.lock();
-            // Use simpler text output for framebuffer
-            use core::fmt::Write;
-            let _ = writer.write_fmt(format_args!(
-                "\nSystem Stats - Processes: {}/{}, Memory: {} KB, Uptime: {} ticks\n",
-                stats.active_processes, stats.total_processes, stats.memory_used / 1024, stats.uptime_ticks
-            ));
-        } else if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {
-            const TICKS_PER_SECOND: u64 = 1000; // Assuming ~1000 ticks per second
-            let uptime_minutes = stats.uptime_ticks / (60 * TICKS_PER_SECOND);
-            let uptime_seconds = (stats.uptime_ticks % (60 * TICKS_PER_SECOND)) / TICKS_PER_SECOND;
-
-            let mut vga_writer = vga_buffer.lock();
-
-            // Clear bottom rows for system info display
-            let blank_char = petroleum::ScreenChar {
-                ascii_character: b' ',
-                color_code: petroleum::ColorCode::new(
-                    petroleum::Color::Black,
-                    petroleum::Color::Black,
-                ),
-            };
-
-            // Set position to bottom left for system info
-            vga_writer.set_position(22, 0);
-            use core::fmt::Write;
-            use petroleum::ColorCode;
-            vga_writer.set_color_code(ColorCode::new(
-                petroleum::Color::Cyan,
-                petroleum::Color::Black,
-            ));
-
-            // Clear the status lines first
-            petroleum::clear_line_range!(vga_writer, 23, 26, 0, 80, blank_char);
-
-            // Display system info on bottom rows using macro to reduce repetition
-            petroleum::display_vga_stats_lines!(vga_writer,
-                23, "Processes: {}/{}", stats.active_processes, stats.total_processes;
-                24, "Memory: {} KB", stats.memory_used / 1024;
-                25, "Tick: {}", stats.uptime_ticks
-            );
-            vga_writer.update_cursor();
-        }
-
-        #[cfg(not(target_os = "uefi"))]
-        if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {
-            const TICKS_PER_SECOND: u64 = 1000; // Assuming ~1000 ticks per second
-
-            let mut vga_writer = vga_buffer.lock();
-
-            // Clear bottom rows for system info display
-            let blank_char = petroleum::ScreenChar {
-                ascii_character: b' ',
-                color_code: petroleum::ColorCode::new(
-                    petroleum::Color::Black,
-                    petroleum::Color::Black,
-                ),
-            };
-
-            // Set position to bottom left for system info
-            vga_writer.set_position(22, 0);
-            use core::fmt::Write;
-            use petroleum::ColorCode;
-            vga_writer.set_color_code(ColorCode::new(
-                petroleum::Color::Cyan,
-                petroleum::Color::Black,
-            ));
-
-            // Clear the status lines first
-            petroleum::clear_line_range!(vga_writer, 23, 26, 0, 80, blank_char);
-
-            // Display system info on bottom rows using macro to reduce repetition
-            petroleum::display_vga_stats_lines!(vga_writer,
-                23, "Processes: {}/{}", stats.active_processes, stats.total_processes;
-                24, "Memory: {} KB", stats.memory_used / 1024;
-                25, "Tick: {}", stats.uptime_ticks
-            );
-            vga_writer.update_cursor();
-        }
-    });
+    petroleum::display_stats_on_available_display!(stats, SYSTEM_TICK.load(Ordering::Relaxed), interval_ticks, &crate::vga::VGA_BUFFER);
 }
 
 /// Get the current system tick count

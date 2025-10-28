@@ -1168,6 +1168,55 @@ macro_rules! ensure {
     };
 }
 
+/// Macro for displaying system stats on VGA display with periodic checks
+/// Reduces code for stat display functionality
+///
+/// # Examples
+/// ```
+/// display_stats_on_available_display!(stats, current_tick, interval_ticks, vga_buffer);
+/// ```
+#[macro_export]
+macro_rules! display_stats_on_available_display {
+    ($stats:expr, $current_tick:expr, $interval_ticks:expr, $vga_buffer:expr) => {{
+        static LAST_DISPLAY_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
+
+        petroleum::check_periodic!(LAST_DISPLAY_TICK, $interval_ticks, $current_tick, {
+            if let Some(vga_buffer_ref) = $vga_buffer.get() {
+                let mut writer = vga_buffer_ref.lock();
+
+                // Clear bottom rows for system info display
+                let blank_char = petroleum::ScreenChar {
+                    ascii_character: b' ',
+                    color_code: petroleum::ColorCode::new(
+                        petroleum::Color::Black,
+                        petroleum::Color::Black,
+                    ),
+                };
+
+                // Set position to bottom left for system info
+                writer.set_position(22, 0);
+                use core::fmt::Write;
+
+                writer.set_color_code(petroleum::ColorCode::new(
+                    petroleum::Color::Cyan,
+                    petroleum::Color::Black,
+                ));
+
+                // Clear the status lines first
+                petroleum::clear_line_range!(writer, 23, 26, 0, 80, blank_char);
+
+                // Display system info on bottom rows using macro to reduce repetition
+                petroleum::display_vga_stats_lines!(writer,
+                    23, "Processes: {}/{}", $stats.active_processes, $stats.total_processes;
+                    24, "Memory: {} KB", $stats.memory_used / 1024;
+                    25, "Tick: {}", $stats.uptime_ticks
+                );
+                writer.update_cursor();
+            }
+        });
+    }};
+}
+
 /// Macro for defining simple shell command functions that print a message and return 0
 /// Reduces boilerplate in command implementations
 ///
