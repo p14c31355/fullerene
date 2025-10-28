@@ -340,27 +340,18 @@ impl UefiInitContext {
         log::info!("IO APIC mapped at virt {:#x}", io_apic_virt.as_u64());
 
         // Map VGA text buffer (0xB8000-0xC0000) for compatibility
-        let vga_text_phys = PhysAddr::new(VGA_TEXT_BUFFER_ADDR);
-        let vga_text_virt = VirtAddr::new(VGA_TEXT_BUFFER_ADDR);
         let vga_pages_size = (0xc0000 - VGA_TEXT_BUFFER_ADDR) / 4096; // 8 pages (32KB)
-        for i in 0..vga_pages_size {
-            let phys = PhysAddr::new(vga_text_phys.as_u64() + i * 4096);
-            let virt = VirtAddr::new(vga_text_virt.as_u64() + i * 4096);
-            let page = Page::<Size4KiB>::containing_address(virt);
-            let frame = PhysFrame::<Size4KiB>::containing_address(phys);
-            unsafe {
-                match mapper.map_to(page, frame, flags, &mut *frame_allocator) {
-                    Ok(flush) => flush.flush(),
-                    Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                        continue;
-                    } // Page already mapped, skip
-                    Err(e) => log::error!("Failed to map VGA page: {:?}", e),
-                }
-            }
-        }
+        petroleum::map_pages_loop!(
+            mapper,
+            &mut *frame_allocator,
+            VGA_TEXT_BUFFER_ADDR,
+            VGA_TEXT_BUFFER_ADDR,
+            vga_pages_size,
+            flags
+        );
         log::info!(
             "VGA text buffer mapped at identity address {:#x}",
-            vga_text_virt.as_u64()
+            VGA_TEXT_BUFFER_ADDR
         );
     }
 }
@@ -405,9 +396,11 @@ pub extern "efiapi" fn efi_main(
         petroleum::halt_loop();
     }
 
-    // Now that allocator is set up, initialize VGA buffer writer (will be done in init_common)
+    // Common initialization for both UEFI and BIOS with correct physical memory offset
+    log::info!("About to call init_common");
+    crate::init::init_common(physical_memory_offset);
+    log::info!("init_common completed");
 
-    // Early serial log works now
     write_serial_bytes!(0x3F8, 0x3FD, b"About to complete basic init\n");
     petroleum::serial::serial_log(format_args!("About to log basic init complete...\n"));
     log::info!("Kernel: basic init complete");
@@ -416,17 +409,9 @@ pub extern "efiapi" fn efi_main(
 
     write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: About to init interrupts\n");
 
-    // Common initialization for both UEFI and BIOS
     // Initialize IDT before enabling interrupts
     interrupts::init();
     log::info!("Kernel: IDT init done");
-
-    log::info!("Kernel: Jumping straight to graphics testing");
-
-    log::info!("About to call init_common");
-    // Initialize interrupts and other components call init_common here
-    crate::init::init_common(physical_memory_offset);
-    log::info!("init_common completed");
 
     // Map MMIO regions
     ctx.map_mmio();
@@ -436,12 +421,16 @@ pub extern "efiapi" fn efi_main(
     crate::interrupts::init_apic();
     log::info!("APIC initialized");
 
-    // Initialize graphics with framebuffer configuration
-    log::info!("Initialize graphics with framebuffer configuration");
-    let success = petroleum::initialize_graphics_with_config();
-    log::info!("Graphics initialization result: {}", success);
-    if !success {
-        log::info!("Graphics initialization failed, continuing without graphics for debugging");
+    // Initialize graphics protocols using petroleum
+    log::info!("Initialize graphics protocols with framebuffer detection");
+    let _ = petroleum::init_graphics_protocols(system_table);
+
+    // Initialize text/graphics output if framebuffer config is available
+    if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().map(|m| *m.lock()).flatten() {
+        log::info!("Initializing framebuffer text output");
+        crate::graphics::text::init(&config);
+    } else {
+        log::info!("No framebuffer config found, falling back to VGA text mode");
     }
 
     // Always enable interrupts and proceed to scheduler

@@ -1,3 +1,4 @@
+use petroleum::mem_debug;
 use spin::Once;
 use x86_64::VirtAddr;
 use x86_64::instructions::tables::load_tss;

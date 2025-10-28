@@ -116,6 +116,7 @@ pub fn load_efi_image(
     if e_magic != 0x5a4d {
         return Err(BellowsError::PeParse("Invalid DOS signature (MZ)."));
     }
+    let e_lfanew = unsafe { core::ptr::read_unaligned((dos_header_ptr as *const u8).add(core::mem::offset_of!(ImageDosHeader, e_lfanew)) as *const i32) };
     if e_lfanew < 0 {
         return Err(BellowsError::PeParse("Invalid NT headers offset."));
     }
@@ -129,7 +130,9 @@ pub fn load_efi_image(
     }
     let nt_headers_ptr =
         unsafe { file.as_ptr().add(nt_headers_offset) as *const ImageNtHeaders64 };
-    let optional_header_ptr = unsafe { &(*nt_headers_ptr).optional_header };
+    let optional_header_ptr = unsafe {
+        nt_headers_ptr.cast::<u8>().add(core::mem::offset_of!(ImageNtHeaders64, optional_header)) as *const ImageOptionalHeader64
+    };
 
     let optional_header_magic = read_unaligned!(optional_header_ptr, core::mem::offset_of!(ImageOptionalHeader64, _magic), u16);
     if optional_header_magic != 0x20b {
@@ -139,7 +142,6 @@ pub fn load_efi_image(
     // Read image size and entry point
     let address_of_entry_point = read_unaligned!(optional_header_ptr, core::mem::offset_of!(ImageOptionalHeader64, address_of_entry_point), u32) as usize;
     let image_size_val = read_unaligned!(optional_header_ptr, core::mem::offset_of!(ImageOptionalHeader64, size_of_image), u32) as u64;
-    let pages_needed =
     if address_of_entry_point > usize::MAX - 4096 {
         return Err(BellowsError::PeParse("Entry point address too large."));
     }
@@ -239,7 +241,8 @@ pub fn load_efi_image(
                 .add(core::mem::offset_of!(ImageNtHeaders64, optional_header))
                 .cast::<ImageOptionalHeader64>()
         };
-        let reloc_dir = unsafe { &(*optional_header_ptr).data_directory[IMAGE_DIRECTORY_ENTRY_BASERELOC] };
+        let reloc_dir_offset = core::mem::offset_of!(ImageOptionalHeader64, data_directory) + IMAGE_DIRECTORY_ENTRY_BASERELOC * core::mem::size_of::<ImageDataDirectory>();
+        let reloc_dir: ImageDataDirectory = unsafe { core::ptr::read_unaligned((optional_header_ptr as *const u8).add(reloc_dir_offset) as *const ImageDataDirectory) };
         if (reloc_dir.virtual_address as u64).saturating_add(reloc_dir.size as u64) > image_size_val {
             unsafe { (bs.free_pages)(phys_addr, pages_needed) };
             return Err(BellowsError::PeParse("Relocation directory out of bounds."));

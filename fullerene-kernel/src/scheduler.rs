@@ -4,10 +4,10 @@
 //! including process scheduling, shell execution, and system-wide orchestration.
 
 use crate::graphics;
-use alloc::collections::VecDeque;
+use alloc::{collections::VecDeque, format};
 use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::{
-    Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats,
+    Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats, display_stats_on_available_display, periodic_task, scheduler_log,
 };
 
 // Define periodic tasks in a struct for clarity
@@ -25,12 +25,22 @@ fn health_check_task(_tick: u64, _iter: u64) {
 fn stats_task(_tick: u64, _iter: u64) {
     let stats = collect_system_stats();
     log_system_stats(&stats, LOG_INTERVAL_TICKS);
-    display_system_stats_on_vga(&stats, DISPLAY_INTERVAL_TICKS);
+    display_system_stats_on_display(&stats, DISPLAY_INTERVAL_TICKS);
     // Add file logging
     const SYSTEM_LOG_FILE: &str = "system.log";
+    let log_content = format!(
+        "System Stats - Processes: {}/{}, Memory: {} bytes, Uptime: {} ticks\n",
+        stats.active_processes,
+        stats.total_processes,
+        stats.memory_used,
+        stats.uptime_ticks
+    );
     if let Ok(_) = crate::fs::create_file(SYSTEM_LOG_FILE, log_content.as_bytes()) {
-        // File written successfully
+        log::info!("System log file written successfully");
     } else {
+        log::warn!("Failed to write system log file");
+    }
+}
 
 fn maintenance_task(_tick: u64, _iter: u64) {
     perform_system_maintenance();
@@ -192,49 +202,9 @@ fn log_system_stats(stats: &SystemStats, interval_ticks: u64) {
     });
 }
 
-/// Display system statistics on VGA periodically
-fn display_system_stats_on_vga(stats: &SystemStats, interval_ticks: u64) {
-    static LAST_DISPLAY_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
-
-    let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
-    petroleum::check_periodic!(LAST_DISPLAY_TICK, interval_ticks, current_tick, {
-        if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {
-            const TICKS_PER_SECOND: u64 = 1000; // Assuming ~1000 ticks per second
-            let uptime_minutes = stats.uptime_ticks / (60 * TICKS_PER_SECOND);
-            let uptime_seconds = (stats.uptime_ticks % (60 * TICKS_PER_SECOND)) / TICKS_PER_SECOND;
-
-            let mut vga_writer = vga_buffer.lock();
-
-            // Clear bottom rows for system info display
-            let blank_char = petroleum::ScreenChar {
-                ascii_character: b' ',
-                color_code: petroleum::ColorCode::new(
-                    petroleum::Color::Black,
-                    petroleum::Color::Black,
-                ),
-            };
-
-            // Set position to bottom left for system info
-            vga_writer.set_position(22, 0);
-            use core::fmt::Write;
-            use petroleum::ColorCode;
-            vga_writer.set_color_code(ColorCode::new(
-                petroleum::Color::Cyan,
-                petroleum::Color::Black,
-            ));
-
-            // Clear the status lines first
-            petroleum::clear_line_range!(vga_writer, 23, 26, 0, 80, blank_char);
-
-            // Display system info on bottom rows using macro to reduce repetition
-            petroleum::display_vga_stats_lines!(vga_writer,
-                23, "Processes: {}/{}", stats.active_processes, stats.total_processes;
-                24, "Memory: {} KB", stats.memory_used / 1024;
-                25, "Tick: {}", stats.uptime_ticks
-            );
-            vga_writer.update_cursor();
-        }
-    });
+/// Display system statistics on VGA or framebuffer periodically
+fn display_system_stats_on_display(stats: &SystemStats, interval_ticks: u64) {
+    petroleum::display_stats_on_available_display!(stats, SYSTEM_TICK.load(Ordering::Relaxed), interval_ticks, &crate::vga::VGA_BUFFER);
 }
 
 /// Get the current system tick count
@@ -418,14 +388,14 @@ fn initialize_shell_process() -> crate::process::ProcessId {
 /// Main kernel scheduler loop - orchestrates all system functionality
 pub fn scheduler_loop() -> ! {
     log::info!("Starting enhanced OS scheduler with integrated system features...");
-    debug_log!("Scheduler: About to initialize shell process");
+    scheduler_log!("About to initialize shell process");
 
     let _ = initialize_shell_process();
-    debug_log!("Scheduler: Shell process initialized successfully");
+    scheduler_log!("Shell process initialized successfully");
 
     // Main scheduler loop - continuously execute processes with integrated OS functionality
-    log::info!("Scheduler: Entering main loop");
-    debug_log!("Scheduler: Main loop starting");
+    scheduler_log!("Entering main loop");
+    scheduler_log!("Main loop starting");
 
     // Print to VGA if available for GUI output
     if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {

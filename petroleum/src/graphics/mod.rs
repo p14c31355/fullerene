@@ -1,15 +1,3 @@
-/// Generic filled rectangle drawing to reduce boilerplate
-#[macro_export]
-macro_rules! draw_filled_rect {
-    ($writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $color:expr) => {{
-        use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
-        let rect = Rectangle::new(Point::new($x, $y), Size::new($w, $h));
-        let style = PrimitiveStyleBuilder::new()
-            .fill_color($crate::u32_to_rgb888($color))
-            .build();
-        rect.into_styled(style).draw($writer).ok();
-    }};
-}
 
 /// Generic border rectangle drawing
 #[macro_export]

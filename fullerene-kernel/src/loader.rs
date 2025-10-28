@@ -76,7 +76,7 @@ pub fn load_program(
 
             // Check that the virtual address range is not already mapped
             for page_idx in 0..num_pages {
-                let page_vaddr = x86_64::VirtAddr::new(vaddr + page_idx * 4096);
+                let page_vaddr = x86_64::VirtAddr::new(petroleum::calc_offset_addr!(vaddr, page_idx));
                 if process_page_table
                     .translate_address(page_vaddr.as_u64() as usize)
                     .is_ok()

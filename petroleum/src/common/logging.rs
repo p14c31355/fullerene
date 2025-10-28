@@ -37,9 +37,18 @@ impl log::Log for FullereneLogger {
 // Initialize global logger
 static LOGGER: FullereneLogger = FullereneLogger::new();
 
+static LOGGER_INITIALIZED: spin::Once<()> = spin::Once::new();
+
 pub fn init_global_logger() -> Result<(), log::SetLoggerError> {
     log::set_logger(&LOGGER)?;
     log::set_max_level(LOGGER.level);
+
+    // Mark logger as initialized
+    LOGGER_INITIALIZED.call_once(|| {});
+
+    // Log successful initialization (using serial directly to avoid recursion)
+    crate::serial::serial_log(format_args!("[INIT] Logger initialized at level {:?}\n", LOGGER.level));
+
     Ok(())
 }
 
@@ -143,3 +152,129 @@ impl ErrorLogging for ErrorLogger {
 
 // Global instance for convenience
 pub static ERROR_LOGGER: ErrorLogger = ErrorLogger;
+
+/// Returns true if global logger has been initialized
+pub fn is_logger_initialized() -> bool {
+    LOGGER_INITIALIZED.is_completed()
+}
+
+/// Unified print macros using the log crate for consistent logging across all crates
+/// Fallback to serial if logger not initialized yet
+#[macro_export]
+macro_rules! println {
+    () => {
+        if $crate::common::logging::is_logger_initialized() {
+            log::info!("");
+        } else {
+            $crate::serial::_print(format_args!("\n"));
+        }
+    };
+    ($($arg:tt)*) => {
+        if $crate::common::logging::is_logger_initialized() {
+            log::info!("{}", format_args!($($arg)*));
+        } else {
+            $crate::serial::_print(format_args!("{}\n", format_args!($($arg)*)));
+        }
+    };
+}
+
+/// Unified print macro - same as print! for consistency
+#[macro_export]
+macro_rules! print {
+    () => {
+        $crate::println!();
+    };
+    ($($arg:tt)*) => {
+        $crate::println!($($arg)*);
+    };
+}
+
+/// Enhanced logging macro for common patterns throughout the codebase
+/// Provides consistent prefixes and formatting
+#[macro_export]
+macro_rules! log {
+    ($prefix:literal) => {
+        $crate::serial::_print(format_args!(concat!($prefix, "\n")));
+    };
+    ($prefix:literal, $msg:expr) => {
+        $crate::serial::_print(format_args!(concat!($prefix, ": {}\n"), $msg));
+    };
+    ($prefix:literal, $format:expr, $($args:tt)*) => {
+        $crate::serial::_print(format_args!(concat!($prefix, ": ", $format, "\n"), $($args)*));
+    };
+}
+
+/// Unified logging macros that use log crate when initialized, fallback to serial
+
+/// Common logging macros - use log crate when initialized, fallback to serial
+#[macro_export]
+macro_rules! info_log {
+    ($($arg:tt)*) => {
+        if $crate::common::logging::is_logger_initialized() {
+            log::info!("{}", format_args!($($arg)*));
+        } else {
+            $crate::serial::_print(format_args!("[INFO] {}\n", format_args!($($arg)*)));
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! error_log {
+    ($($arg:tt)*) => {
+        if $crate::common::logging::is_logger_initialized() {
+            log::error!("{}", format_args!($($arg)*));
+        } else {
+            $crate::serial::_print(format_args!("[ERROR] {}\n", format_args!($($arg)*)));
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! warn_log {
+    ($($arg:tt)*) => {
+        if $crate::common::logging::is_logger_initialized() {
+            log::warn!("{}", format_args!($($arg)*));
+        } else {
+            $crate::serial::_print(format_args!("[WARN] {}\n", format_args!($($arg)*)));
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        if $crate::common::logging::is_logger_initialized() {
+            log::debug!("{}", format_args!($($arg)*));
+        } else {
+            $crate::debug_log_no_alloc!($($arg)*);
+        }
+    };
+}
+
+/// Macro for logging errors with context
+#[macro_export]
+macro_rules! log_error {
+    ($error:expr, $context:expr) => {{
+        log::error!("{}: {}", *$error as u64, $context);
+    }};
+}
+
+/// Macro for initialization steps/done with serial logging
+#[macro_export]
+macro_rules! init_log {
+    ($msg:literal) => {{
+        let msg = concat!($msg, "\n");
+        $crate::write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
+    }};
+    ($fmt:expr $(, $($arg:tt)*)?) => {{
+        $crate::serial::serial_log(format_args!(concat!($fmt, "\n") $(, $($arg)*)?));
+    }};
+}
+
+/// Macro for simple module initialization with logging
+#[macro_export]
+macro_rules! declare_init {
+    ($mod_name:expr) => {{
+        $crate::serial::serial_log(format_args!("{} initialized\n", $mod_name));
+    }};
+}

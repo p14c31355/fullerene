@@ -53,7 +53,7 @@ macro_rules! map_pages_loop {
                     Err(e) => {
                         // Log mapping errors gracefully instead of panicking - use serial directly to avoid log crate issues
                         const MSG: &[u8] = b"Mapping error\n";
-                        let _ = unsafe { crate::write_serial_bytes!(0x3F8, 0x3FD, MSG) };
+                        let _ = unsafe { $crate::write_serial_bytes!(0x3F8, 0x3FD, MSG) };
                         continue;
                     }
                 }
@@ -83,30 +83,6 @@ macro_rules! map_pages_to_offset {
                 }
             }
         }
-    }};
-}
-
-/// Macro to reduce repetitive serial debug strings
-///
-/// # Warning
-/// The formatted variant (`debug_log!("format", args...)`) uses `alloc::format!`,
-/// which allocates memory on the heap. This will panic if called before the
-/// heap allocator is initialized, which is common in early boot code.
-/// Consider using `debug_log_no_alloc!` during early boot stages.
-///
-/// # Examples
-/// ```
-/// debug_log!("Starting initialization");
-/// debug_log!("Value: {}", some_value); // May panic if heap not ready
-/// ```
-#[macro_export]
-macro_rules! debug_log {
-    ($msg:literal) => {{
-        $crate::write_serial_bytes!(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes());
-    }};
-    ($fmt:literal, $($arg:tt)*) => {{
-        let msg = alloc::format!(concat!($fmt, "\n"), $($arg)*);
-        $crate::write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
     }};
 }
 
@@ -164,13 +140,6 @@ macro_rules! lock_and_modify {
     }};
 }
 
-/// Macro for logging errors with context
-#[macro_export]
-macro_rules! log_error {
-    ($error:expr, $context:expr) => {{
-        log::error!("{}: {}", *$error as u64, $context);
-    }};
-}
 
 /// Macro for reading contents protected by a Mutex lock (returns a copy/clone)
 #[macro_export]
@@ -289,6 +258,31 @@ macro_rules! scheduler_log {
     };
 }
 
+/// Macro for bootloader initialization steps with consistent logging and error handling
+/// Reduces boilerplate in bootloader code while providing debug output
+///
+/// # Examples
+/// ```
+/// init_boot_step!("Initializing heap", || init_heap(service));
+/// init_boot_step!("Loading kernel", || load_kernel());
+/// ```
+#[macro_export]
+macro_rules! init_boot_step {
+    ($step_name:expr, $init_fn:expr) => {{
+        $crate::println!($step_name);
+        $crate::serial::_print(format_args!("{} \n", $step_name));
+        $init_fn.expect(concat!("Bootloader initialization failed at: ", $step_name))
+    }};
+}
+
+/// Helper for init_step in sequences
+#[macro_export]
+macro_rules! init_step {
+    ($name:expr, $closure:expr) => {
+        ($name, Box::new($closure) as Box<dyn Fn() -> Result<(), &'static str>>)
+    };
+}
+
 /// Macro for reading unaligned data from memory with offset
 #[macro_export]
 macro_rules! read_unaligned {
@@ -399,43 +393,7 @@ macro_rules! periodic_task {
     };
 }
 
-/// Unified print macros using the log crate for consistent logging across all crates
-/// Uses log::info! for println! and serial output for print!
-#[macro_export]
-macro_rules! println {
-    () => {
-        log::info!("");
-    };
-    ($($arg:tt)*) => {
-        log::info!("{}", format_args!($($arg)*));
-    };
-}
 
-/// Unified print macro using serial output for direct serial logging
-#[macro_export]
-macro_rules! print {
-    () => {
-        $crate::serial::_print(format_args!(""));
-    };
-    ($($arg:tt)*) => {
-        $crate::serial::_print(format_args!($($arg)*));
-    };
-}
-
-/// Enhanced logging macro for common patterns throughout the codebase
-/// Provides consistent prefixes and formatting
-#[macro_export]
-macro_rules! log {
-    ($prefix:literal) => {
-        $crate::serial::_print(format_args!(concat!($prefix, "\n")));
-    };
-    ($prefix:literal, $msg:expr) => {
-        $crate::serial::_print(format_args!(concat!($prefix, ": {}\n"), $msg));
-    };
-    ($prefix:literal, $format:expr, $($args:tt)*) => {
-        $crate::serial::_print(format_args!(concat!($prefix, ": ", $format, "\n"), $($args)*));
-    };
-}
 
 /// Macro for defining health check functions with consistent logging and thresholds
 /// Reduces boilerplate in system monitoring by providing a unified interface
@@ -449,6 +407,19 @@ macro_rules! health_check {
             }
         }
     };
+}
+
+/// Macro for drawing filled rectangles on framebuffer writers
+/// Reduces repetition in desktop rendering operations
+#[macro_export]
+macro_rules! draw_filled_rect {
+    ($writer:expr, $x:expr, $y:expr, $w:expr, $h:expr, $color:expr) => {{
+        for y_coord in ($y as i32)..(($y as i32) + ($h as i32)) {
+            for x_coord in ($x as i32)..(($x as i32) + ($w as i32)) {
+                $writer.put_pixel(x_coord as u32, y_coord as u32, $color);
+            }
+        }
+    }};
 }
 
 /// Macro for periodic VGA stat display to reduce code duplication in scheduler
@@ -522,27 +493,7 @@ macro_rules! maintenance_tasks {
     };
 }
 
-/// Common logging macros (note: some may be defined in serial.rs)
-#[macro_export]
-macro_rules! info_log {
-    ($($arg:tt)*) => {
-        $crate::serial::_print(format_args!("[INFO] {}\n", format_args!($($arg)*)));
-    };
-}
 
-#[macro_export]
-macro_rules! error_log {
-    ($($arg:tt)*) => {
-        $crate::serial::_print(format_args!("[ERROR] {}\n", format_args!($($arg)*)));
-    };
-}
-
-#[macro_export]
-macro_rules! warn_log {
-    ($($arg:tt)*) => {
-        $crate::serial::_print(format_args!("[WARN] {}\n", format_args!($($arg)*)));
-    };
-}
 
 /// PCI operation helper macros to reduce repetition in PCI handling
 #[macro_export]
@@ -803,25 +754,7 @@ macro_rules! check_uefi_status {
     };
 }
 
-/// Macro for simple module initialization with logging
-#[macro_export]
-macro_rules! declare_init {
-    ($mod_name:expr) => {{
-        $crate::serial::serial_log(format_args!("{} initialized\n", $mod_name));
-    }};
-}
 
-/// Macro for initialization steps/done with serial logging
-#[macro_export]
-macro_rules! init_log {
-    ($msg:literal) => {{
-        let msg = concat!($msg, "\n");
-        $crate::write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
-    }};
-    ($fmt:expr $(, $($arg:tt)*)?) => {{
-        $crate::serial::serial_log(format_args!(concat!($fmt, "\n") $(, $($arg)*)?));
-    }};
-}
 
 /// Macro to update VGA cursor position by writing to ports
 #[macro_export]
@@ -844,54 +777,6 @@ macro_rules! update_vga_cursor {
             ((($pos >> 8) & 0xFFusize) as u8)
         );
     }};
-}
-
-/// CPU pause instruction for busy-waiting
-#[macro_export]
-macro_rules! pause {
-    () => {
-        unsafe {
-            core::arch::asm!("pause", options(nomem, nostack, preserves_flags));
-        }
-    };
-}
-
-/// CPU halt instruction (use with caution, can hang)
-#[macro_export]
-macro_rules! halt {
-    () => {
-        unsafe {
-            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
-        }
-    };
-}
-
-/// Consolidated validation logging macro
-#[macro_export]
-macro_rules! debug_log_validate_macro {
-    ($field:expr, $value:expr) => {
-        debug_log_no_alloc!($field, " validated: ", $value);
-    };
-}
-
-/// Unified memory region constants macro
-#[macro_export]
-macro_rules! memory_region_const_macro {
-    (VGA_START) => {
-        0xA0000u64
-    };
-    (VGA_END) => {
-        0xC0000u64
-    };
-    (BOOT_CODE_START) => {
-        0x100000u64
-    };
-    (BOOT_CODE_PAGES) => {
-        0x8000u64
-    };
-    (PAGE_SIZE) => {
-        4096u64
-    };
 }
 
 /// Consolidated logging macro for page table operations
@@ -925,7 +810,7 @@ macro_rules! log_page_table_op {
 macro_rules! process_memory_descriptors_safely {
     ($descriptors:expr, $processor:expr) => {{
         for descriptor in $descriptors.iter() {
-            if is_valid_memory_descriptor(descriptor) && descriptor.is_memory_available() {
+            if $crate::page_table::efi_memory::is_valid_memory_descriptor(descriptor) && descriptor.is_memory_available() {
                 let start_frame = (descriptor.get_physical_start() / 4096) as usize;
                 let end_frame = start_frame.saturating_add(descriptor.get_page_count() as usize);
 
@@ -936,6 +821,36 @@ macro_rules! process_memory_descriptors_safely {
         }
     }};
 }
+
+/// Consolidated validation logging macro
+#[macro_export]
+macro_rules! debug_log_validate_macro {
+    ($field:expr, $value:expr) => {
+        debug_log_no_alloc!($field, " validated: ", $value);
+    };
+}
+
+/// CPU pause instruction for busy-waiting
+#[macro_export]
+macro_rules! pause {
+    () => {
+        unsafe {
+            core::arch::asm!("pause", options(nomem, nostack, preserves_flags));
+        }
+    };
+}
+
+/// CPU halt instruction (use with caution, can hang)
+#[macro_export]
+macro_rules! halt {
+    () => {
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+        }
+    };
+}
+
+
 
 /// Page table flags constants macro
 #[macro_export]
@@ -1192,12 +1107,12 @@ impl<'a> InitSequence<'a> {
 
     pub fn run(&self) {
         for (name, init_fn) in self.steps {
-            init_log!("About to init {}", name);
+            crate::serial::serial_log(format_args!("About to init {}\n", name));
             if let Err(e) = init_fn() {
-                init_log!("Init {} failed: {}", name, e);
+                crate::serial::serial_log(format_args!("Init {} failed: {}\n", name, e));
                 panic!("{}", e);
             }
-            init_log!("{} init done", name);
+            crate::serial::serial_log(format_args!("{} init done\n", name));
         }
     }
 }
@@ -1256,5 +1171,249 @@ macro_rules! display_vga_stats_lines {
             $vga_writer.set_position($row, 0);
             let _ = write!($vga_writer, $format, $($args),*);
         )*
+    };
+}
+
+/// Macro for subsystem initialization with consistent logging and error handling
+/// Reduces boilerplate in component startup code
+///
+/// # Examples
+/// ```
+/// init_with_log!("Scheduler", || scheduler.init());
+/// init_with_log!("Memory Manager", || mem_manager.init());
+/// ```
+#[macro_export]
+macro_rules! init_with_log {
+    ($name:expr, $init_fn:expr) => {{
+        debug_log!(concat!($name, " initializing"));
+        match $init_fn() {
+            Ok(_) => debug_log!(concat!($name, " initialized successfully")),
+            Err(e) => {
+                error_log!(concat!($name, " initialization failed: {:?}"), e);
+                panic!("{} initialization failed", $name);
+            }
+        }
+    }};
+}
+
+/// Macro for unified error checking with optional logging
+/// Reduces repetitive if condition with return Err pattern
+///
+/// # Examples
+/// ```
+/// ensure!(ptr.is_some(), SystemError::InvalidArgument, "Pointer is null");
+/// ensure_with_log!(value > 0, "Value must be positive", SystemError::InvalidArgument);
+/// ```
+#[macro_export]
+macro_rules! ensure {
+    ($condition:expr, $error_ty:ty, $error_val:expr) => {
+        if !$condition {
+            return Err(<$error_ty>::$error_val as $error_ty);
+        }
+    };
+    ($condition:expr, $error_ty:ty, $error_val:expr, $msg:expr) => {
+        if !$condition {
+            error_log!($msg);
+            return Err(<$error_ty>::$error_val as $error_ty);
+        }
+    };
+}
+
+/// Macro for displaying system stats on VGA display with periodic checks
+/// Reduces code for stat display functionality
+///
+/// # Examples
+/// ```
+/// display_stats_on_available_display!(stats, current_tick, interval_ticks, vga_buffer);
+/// ```
+#[macro_export]
+macro_rules! display_stats_on_available_display {
+    ($stats:expr, $current_tick:expr, $interval_ticks:expr, $vga_buffer:expr) => {{
+        static LAST_DISPLAY_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
+
+        petroleum::check_periodic!(LAST_DISPLAY_TICK, $interval_ticks, $current_tick, {
+            if let Some(vga_buffer_ref) = $vga_buffer.get() {
+                let mut writer = vga_buffer_ref.lock();
+
+                // Clear bottom rows for system info display
+                let blank_char = petroleum::ScreenChar {
+                    ascii_character: b' ',
+                    color_code: petroleum::ColorCode::new(
+                        petroleum::Color::Black,
+                        petroleum::Color::Black,
+                    ),
+                };
+
+                // Set position to bottom left for system info
+                writer.set_position(22, 0);
+                use core::fmt::Write;
+
+                writer.set_color_code(petroleum::ColorCode::new(
+                    petroleum::Color::Cyan,
+                    petroleum::Color::Black,
+                ));
+
+                // Clear the status lines first
+                petroleum::clear_line_range!(writer, 23, 26, 0, 80, blank_char);
+
+                // Display system info on bottom rows using macro to reduce repetition
+                petroleum::display_vga_stats_lines!(writer,
+                    23, "Processes: {}/{}", $stats.active_processes, $stats.total_processes;
+                    24, "Memory: {} KB", $stats.memory_used / 1024;
+                    25, "Tick: {}", $stats.uptime_ticks
+                );
+                writer.update_cursor();
+            }
+        });
+    }};
+}
+
+/// Macro for defining simple shell command functions that print a message and return 0
+/// Reduces boilerplate in command implementations
+///
+/// # Examples
+/// ```
+/// simple_command_fn!(uname_command, "Fullerene OS 0.1.0 x86_64\n");
+/// simple_command_fn!(ps_command, "Process list not implemented\n", 1); // With exit code
+/// ```
+#[macro_export]
+macro_rules! simple_command_fn {
+    ($fn_name:ident, $message:literal) => {
+        fn $fn_name(_args: &[&str]) -> i32 {
+            petroleum::print!($message);
+            0
+        }
+    };
+    ($fn_name:ident, $message:literal, $exit_code:expr) => {
+        fn $fn_name(_args: &[&str]) -> i32 {
+            petroleum::print!($message);
+            $exit_code
+        }
+    };
+}
+
+/// Macro for implementing TextBufferOperations trait for buffer-like structs
+/// Generates all 7 required methods using the buffer, dimensions, and other fields
+///
+/// # Examples
+/// ```
+/// impl_text_buffer_operations!(VgaBuffer,
+///     buffer, row_position, column_position, color_code,
+///     BUFFER_HEIGHT, BUFFER_WIDTH
+/// );
+/// ```
+#[macro_export]
+macro_rules! impl_text_buffer_operations {
+    ($struct_name:ident, $buffer_field:ident, $row_pos:ident, $col_pos:ident, $color_field:ident, $height:ident, $width:ident) => {
+        fn get_width(&self) -> usize {
+            $width
+        }
+
+        fn get_height(&self) -> usize {
+            $height
+        }
+
+        fn get_color_code(&self) -> ColorCode {
+            self.$color_field
+        }
+
+        fn get_position(&self) -> (usize, usize) {
+            (self.$row_pos, self.$col_pos)
+        }
+
+        fn set_position(&mut self, row: usize, col: usize) {
+            self.$row_pos = row;
+            self.$col_pos = col;
+        }
+
+        fn set_char_at(&mut self, row: usize, col: usize, chr: ScreenChar) {
+            if row < $height && col < $width {
+                self.$buffer_field[row][col] = chr;
+            }
+        }
+
+        fn get_char_at(&self, row: usize, col: usize) -> ScreenChar {
+            if row < $height && col < $width {
+                self.$buffer_field[row][col]
+            } else {
+                ScreenChar {
+                    ascii_character: 0,
+                    color_code: self.$color_field,
+                }
+            }
+        }
+
+        #[inline]
+        fn write_byte(&mut self, byte: u8) {
+            handle_write_byte!(self, byte, { self.new_line() }, {
+                if self.$col_pos >= $width {
+                    self.new_line();
+                }
+                if self.$row_pos >= $height {
+                    self.scroll_up();
+                    self.$row_pos = $height - 1;
+                }
+                let screen_char = ScreenChar {
+                    ascii_character: byte,
+                    color_code: self.$color_field,
+                };
+                self.$buffer_field[self.$row_pos][self.$col_pos] = screen_char;
+                self.$col_pos += 1;
+            });
+        }
+
+        fn new_line(&mut self) {
+            self.$col_pos = 0;
+            if self.$row_pos < $height - 1 {
+                self.$row_pos += 1;
+            } else {
+                self.scroll_up();
+            }
+        }
+
+        fn clear_row(&mut self, row: usize) {
+            let blank_char = ScreenChar {
+                ascii_character: b' ',
+                color_code: self.$color_field,
+            };
+            petroleum::clear_line_range!(self, row, row + 1, 0, self.get_width(), blank_char);
+        }
+
+        fn clear_screen(&mut self) {
+            self.$row_pos = 0;
+            self.$col_pos = 0;
+            let blank_char = ScreenChar {
+                ascii_character: b' ',
+                color_code: ColorCode(0),
+            };
+            petroleum::clear_buffer!(self, self.get_height(), self.get_width(), blank_char);
+        }
+
+        fn scroll_up(&mut self) {
+            $crate::scroll_char_buffer_up!(self.$buffer_field, $height, $width, ScreenChar { ascii_character: b' ', color_code: self.$color_field });
+        }
+    };
+}
+
+/// Macro for defining extension trait getter/setter methods
+/// Reduces boilerplate for simple property accessors
+///
+/// # Examples
+/// ```
+/// impl_getter_setter!(ColorCode, foreground, u4);
+/// impl_getter_setter!(ColorCode, background, u4);
+/// ```
+#[macro_export]
+macro_rules! impl_getter_setter {
+    ($struct:ident, $field:ident, $type:ty) => {
+        #[inline]
+        pub fn $field(&self) -> $type {
+            self.$field
+        }
+
+        #[inline]
+        pub fn set_$field(&mut self, value: $type) {
+            self.$field = value;
+        }
     };
 }

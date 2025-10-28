@@ -1,7 +1,18 @@
 use petroleum::{
-    Color, ColorCode, ScreenChar, TextBufferOperations, handle_write_byte, port_write,
-    update_vga_cursor,
+    Color, ColorCode, ScreenChar, TextBufferOperations, clear_buffer, clear_line_range,
+    handle_write_byte, impl_text_buffer_operations, port_write, scroll_char_buffer_up, update_vga_cursor,
 };
+
+// Local macro for writing to attribute controller registers
+macro_rules! write_ac_register {
+    ($vga_input_status_1:expr, $vga_ac_port:expr, $index:expr, $value:expr) => {
+        unsafe {
+            $vga_input_status_1.read(); // Reset flip-flop
+            $vga_ac_port.write($index);
+            $vga_ac_port.write($value);
+        }
+    };
+}
 use spin::{Mutex, Once};
 use alloc::vec::Vec;
 
@@ -159,6 +170,28 @@ impl TextBufferOperations for VgaBuffer {
             self.scroll_up();
         }
     }
+
+    fn clear_row(&mut self, row: usize) {
+        let blank_char = ScreenChar {
+            ascii_character: b' ',
+            color_code: self.color_code,
+        };
+        clear_line_range!(self, row, row + 1, 0, self.get_width(), blank_char);
+    }
+
+    fn clear_screen(&mut self) {
+        self.row_position = 0;
+        self.column_position = 0;
+        let blank_char = ScreenChar {
+            ascii_character: b' ',
+            color_code: ColorCode(0),
+        };
+        clear_buffer!(self, self.get_height(), self.get_width(), blank_char);
+    }
+
+    fn scroll_up(&mut self) {
+        scroll_char_buffer_up!(self.buffer, BUFFER_HEIGHT, BUFFER_WIDTH, ScreenChar { ascii_character: b' ', color_code: self.color_code });
+    }
 }
 
 // Global singleton
@@ -205,23 +238,15 @@ pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
     let mut vga_input_status_1: PortReadOnly<u8> = PortReadOnly::new(0x3DA);
     let mut vga_ac_port: Port<u8> = Port::new(VGA_AC_INDEX); // 0x3C0 is used for both index and data
 
-    let mut write_ac_reg = |index: u8, value: u8| {
-        unsafe {
-            vga_input_status_1.read(); // Reset flip-flop
-            vga_ac_port.write(index);
-            vga_ac_port.write(value);
-        }
-    };
-
     // Set palette registers (0-15) and other registers
     for i in 0..16 {
-        write_ac_reg(i, i);
+        write_ac_register!(vga_input_status_1, vga_ac_port, i, i);
     }
-    write_ac_reg(ATTRIBUTE_MODE_CONTROL_REGISTER, ATTRIBUTE_MODE_CONTROL_VALUE);
-    write_ac_reg(OVERSCAN_REGISTER, OVERSCAN_COLOR);
-    write_ac_reg(MEMORY_PLANE_ENABLE_REGISTER, MEMORY_PLANE_ENABLE_ALL);
-    write_ac_reg(HORIZONTAL_PIXEL_PANNING_REGISTER, HORIZONTAL_PIXEL_PANNING_DEFAULT);
-    write_ac_reg(COLOR_SELECT_REGISTER, COLOR_SELECT_DEFAULT);
+    write_ac_register!(vga_input_status_1, vga_ac_port, ATTRIBUTE_MODE_CONTROL_REGISTER, ATTRIBUTE_MODE_CONTROL_VALUE);
+    write_ac_register!(vga_input_status_1, vga_ac_port, OVERSCAN_REGISTER, OVERSCAN_COLOR);
+    write_ac_register!(vga_input_status_1, vga_ac_port, MEMORY_PLANE_ENABLE_REGISTER, MEMORY_PLANE_ENABLE_ALL);
+    write_ac_register!(vga_input_status_1, vga_ac_port, HORIZONTAL_PIXEL_PANNING_REGISTER, HORIZONTAL_PIXEL_PANNING_DEFAULT);
+    write_ac_register!(vga_input_status_1, vga_ac_port, COLOR_SELECT_REGISTER, COLOR_SELECT_DEFAULT);
 
     // Finally, enable video by writing 0x20 to the index port (with palette access enabled)
     unsafe {

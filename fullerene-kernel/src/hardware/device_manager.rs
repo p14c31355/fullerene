@@ -6,9 +6,10 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use spin::Mutex;
+use log;
 
-use crate::traits::{ErrorLogging, HardwareDevice, Initializable};
-use crate::{SystemError, SystemResult};
+use petroleum::initializer::{ErrorLogging, HardwareDevice, Initializable};
+use petroleum::{SystemError, SystemResult};
 
 /// Device information structure
 #[derive(Debug, Clone)]
@@ -36,7 +37,6 @@ pub struct DeviceEntry {
     pub device_info: DeviceInfo,
 }
 
-/// Device manager for handling hardware devices
 pub struct DeviceManager {
     devices: Mutex<BTreeMap<&'static str, DeviceEntry>>,
 }
@@ -54,19 +54,16 @@ impl DeviceManager {
         &self,
         device: alloc::boxed::Box<dyn HardwareDevice + Send>,
     ) -> SystemResult<()> {
-        let name = device.name();
-
-        // Get device info before moving the device
         let device_info = DeviceInfo::new(
-            device.device_name(),
-            device.device_type(),
-            HardwareDevice::priority(&*device),
+            (&*device).device_name(),
+            (&*device).device_type(),
+            (&*device).priority(),
         );
 
         // Store device and its info
         let mut devices = self.devices.lock();
         devices.insert(
-            name,
+            (&*device).name(),
             DeviceEntry {
                 device,
                 device_info,
@@ -238,7 +235,7 @@ pub fn register_device(device: alloc::boxed::Box<dyn HardwareDevice + Send>) -> 
 
 /// Convenience function to register VGA device
 pub fn register_vga_device() -> SystemResult<()> {
-    use crate::graphics::vga_device::VgaDevice;
+    use petroleum::graphics::text::VgaDevice;
 
     let vga_device = alloc::boxed::Box::new(VgaDevice::new());
     register_device(vga_device)
@@ -284,19 +281,19 @@ mod tests {
         }
 
         fn log_warning(&self, message: &'static str) {
-            petroleum::log_warning!(message);
+            log::warn!("{}", message);
         }
 
         fn log_info(&self, message: &'static str) {
-            petroleum::log_info!(message);
+            log::info!("{}", message);
         }
 
         fn log_debug(&self, message: &'static str) {
-            petroleum::log_debug!(message);
+            log::debug!("{}", message);
         }
 
         fn log_trace(&self, message: &'static str) {
-            petroleum::log_trace!(message);
+            log::trace!("{}", message);
         }
     }
 
@@ -325,10 +322,6 @@ mod tests {
 
         fn is_enabled(&self) -> bool {
             self.enabled
-        }
-
-        fn priority(&self) -> i32 {
-            50 // Default priority for mock devices
         }
     }
 

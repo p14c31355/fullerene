@@ -5,10 +5,7 @@ pub mod efi_memory;
 
 pub use bitmap_allocator::BitmapFrameAllocator;
 
-use crate::{
-    calc_offset_addr, debug_log_no_alloc, flush_tlb_and_verify, log_memory_descriptor,
-    map_and_flush, map_identity_range_checked, map_with_offset,
-};
+use crate::log_page_table_op;
 
 // Import for heap range setting
 use crate::common::memory::set_heap_range;

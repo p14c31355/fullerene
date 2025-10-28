@@ -5,7 +5,7 @@ use embedded_graphics::{
     prelude::*,
     text::Text,
 };
-use petroleum::serial::debug_print_str_to_com1 as debug_print_str;
+use petroleum::{draw_border_rect, draw_filled_rect, serial::debug_print_str_to_com1 as debug_print_str};
 
 use super::text; // For re-exporting statics or accessing
 
