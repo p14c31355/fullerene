@@ -20,7 +20,7 @@ struct Args {
     controller: String,
 
     /// Start VM in GUI mode instead of headless (useful for debugging)
-    #[arg(long)]
+    #[arg(long, default_value = "true")]
     gui: bool,
 }
 

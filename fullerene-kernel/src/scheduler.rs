@@ -404,6 +404,8 @@ pub fn scheduler_loop() -> ! {
         writer.write_string("System is running...\n");
         writer.update_cursor();
     }
+    // Log that scheduler is running for confirmation
+    log::info!("Scheduler loop started - framebuffer text system active");
 
     loop {
         // Increment system counters for this iteration
