@@ -351,7 +351,7 @@ impl UefiInitContext {
         );
         log::info!(
             "VGA text buffer mapped at identity address {:#x}",
-            vga_text_virt.as_u64()
+            VGA_TEXT_BUFFER_ADDR
         );
     }
 }
