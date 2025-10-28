@@ -37,20 +37,9 @@ pub struct DeviceEntry {
     pub device_info: DeviceInfo,
 }
 
-/// Device manager for handling hardware devices
 pub struct DeviceManager {
     devices: Mutex<BTreeMap<&'static str, DeviceEntry>>,
 }
-
-
-    /// Helper function to extract device info without borrowing the device long-term
-    fn extract_device_info(device: &alloc::boxed::Box<dyn HardwareDevice + Send>) -> (&'static str, &'static str, &'static str, i32) {
-        let name = device.name();
-        let device_name = device.device_name();
-        let device_type = device.device_type();
-        let priority = device.priority();
-        (name, device_name, device_type, priority)
-    }
 
 impl DeviceManager {
     /// Create a new device manager
@@ -65,15 +54,18 @@ impl DeviceManager {
         &self,
         device: alloc::boxed::Box<dyn HardwareDevice + Send>,
     ) -> SystemResult<()> {
-        // Get all device info using helper function to avoid borrowing issues
-        let (name, device_name, device_type, priority) = extract_device_info(&device);
+        // Extract device info into variables
+        let device_name_value = device.name();
+        let device_name_str = device.device_name();
+        let device_type_str = device.device_type();
+        let priority_value = device.priority();
 
-        let device_info = DeviceInfo::new(device_name, device_type, priority);
+        let device_info = DeviceInfo::new(device_name_str, device_type_str, priority_value);
 
         // Store device and its info
         let mut devices = self.devices.lock();
         devices.insert(
-            name,
+            device_name_value,
             DeviceEntry {
                 device,
                 device_info,
@@ -332,10 +324,6 @@ mod tests {
 
         fn is_enabled(&self) -> bool {
             self.enabled
-        }
-
-        fn priority(&self) -> i32 {
-            50 // Default priority for mock devices
         }
     }
 

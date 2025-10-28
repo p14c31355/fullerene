@@ -1167,3 +1167,153 @@ macro_rules! ensure {
         }
     };
 }
+
+/// Macro for defining simple shell command functions that print a message and return 0
+/// Reduces boilerplate in command implementations
+///
+/// # Examples
+/// ```
+/// simple_command_fn!(uname_command, "Fullerene OS 0.1.0 x86_64\n");
+/// simple_command_fn!(ps_command, "Process list not implemented\n", 1); // With exit code
+/// ```
+#[macro_export]
+macro_rules! simple_command_fn {
+    ($fn_name:ident, $message:literal) => {
+        fn $fn_name(_args: &[&str]) -> i32 {
+            petroleum::print!($message);
+            0
+        }
+    };
+    ($fn_name:ident, $message:literal, $exit_code:expr) => {
+        fn $fn_name(_args: &[&str]) -> i32 {
+            petroleum::print!($message);
+            $exit_code
+        }
+    };
+}
+
+/// Macro for implementing TextBufferOperations trait for buffer-like structs
+/// Generates all 7 required methods using the buffer, dimensions, and other fields
+///
+/// # Examples
+/// ```
+/// impl_text_buffer_operations!(VgaBuffer,
+///     buffer, row_position, column_position, color_code,
+///     BUFFER_HEIGHT, BUFFER_WIDTH
+/// );
+/// ```
+#[macro_export]
+macro_rules! impl_text_buffer_operations {
+    ($struct_name:ident, $buffer_field:ident, $row_pos:ident, $col_pos:ident, $color_field:ident, $height:ident, $width:ident) => {
+        fn get_width(&self) -> usize {
+            $width
+        }
+
+        fn get_height(&self) -> usize {
+            $height
+        }
+
+        fn get_color_code(&self) -> ColorCode {
+            self.$color_field
+        }
+
+        fn get_position(&self) -> (usize, usize) {
+            (self.$row_pos, self.$col_pos)
+        }
+
+        fn set_position(&mut self, row: usize, col: usize) {
+            self.$row_pos = row;
+            self.$col_pos = col;
+        }
+
+        fn set_char_at(&mut self, row: usize, col: usize, chr: ScreenChar) {
+            if row < $height && col < $width {
+                self.$buffer_field[row][col] = chr;
+            }
+        }
+
+        fn get_char_at(&self, row: usize, col: usize) -> ScreenChar {
+            if row < $height && col < $width {
+                self.$buffer_field[row][col]
+            } else {
+                ScreenChar {
+                    ascii_character: 0,
+                    color_code: self.$color_field,
+                }
+            }
+        }
+
+        #[inline]
+        fn write_byte(&mut self, byte: u8) {
+            handle_write_byte!(self, byte, { self.new_line() }, {
+                if self.$col_pos >= $width {
+                    self.new_line();
+                }
+                if self.$row_pos >= $height {
+                    self.scroll_up();
+                    self.$row_pos = $height - 1;
+                }
+                let screen_char = ScreenChar {
+                    ascii_character: byte,
+                    color_code: self.$color_field,
+                };
+                self.$buffer_field[self.$row_pos][self.$col_pos] = screen_char;
+                self.$col_pos += 1;
+            });
+        }
+
+        fn new_line(&mut self) {
+            self.$col_pos = 0;
+            if self.$row_pos < $height - 1 {
+                self.$row_pos += 1;
+            } else {
+                self.scroll_up();
+            }
+        }
+
+        fn clear_row(&mut self, row: usize) {
+            let blank_char = ScreenChar {
+                ascii_character: b' ',
+                color_code: self.$color_field,
+            };
+            petroleum::clear_line_range!(self, row, row + 1, 0, self.get_width(), blank_char);
+        }
+
+        fn clear_screen(&mut self) {
+            self.$row_pos = 0;
+            self.$col_pos = 0;
+            let blank_char = ScreenChar {
+                ascii_character: b' ',
+                color_code: ColorCode(0),
+            };
+            petroleum::clear_buffer!(self, self.get_height(), self.get_width(), blank_char);
+        }
+
+        fn scroll_up(&mut self) {
+            petroleum::scroll_buffer_up!(self.$buffer_field, $height, $width, ScreenChar { ascii_character: b' ', color_code: self.$color_field });
+        }
+    };
+}
+
+/// Macro for defining extension trait getter/setter methods
+/// Reduces boilerplate for simple property accessors
+///
+/// # Examples
+/// ```
+/// impl_getter_setter!(ColorCode, foreground, u4);
+/// impl_getter_setter!(ColorCode, background, u4);
+/// ```
+#[macro_export]
+macro_rules! impl_getter_setter {
+    ($struct:ident, $field:ident, $type:ty) => {
+        #[inline]
+        pub fn $field(&self) -> $type {
+            self.$field
+        }
+
+        #[inline]
+        pub fn set_$field(&mut self, value: $type) {
+            self.$field = value;
+        }
+    };
+}

@@ -189,15 +189,9 @@ fn echo_command(args: &[&str]) -> i32 {
     0
 }
 
-fn clear_command(_args: &[&str]) -> i32 {
-    print!("\x1b[2J\x1b[H"); // ANSI clear screen and home
-    0
-}
+petroleum::simple_command_fn!(clear_command, "\x1b[2J\x1b[H"); // ANSI clear screen and home
 
-fn uname_command(_args: &[&str]) -> i32 {
-    print!("Fullerene OS 0.1.0 x86_64\n");
-    0
-}
+petroleum::simple_command_fn!(uname_command, "Fullerene OS 0.1.0 x86_64\n");
 
 fn kill_command(args: &[&str]) -> i32 {
     if args.len() < 2 {
