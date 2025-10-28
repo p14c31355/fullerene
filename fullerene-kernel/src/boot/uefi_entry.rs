@@ -431,7 +431,6 @@ pub extern "efiapi" fn efi_main(
         crate::graphics::text::init(&config);
     } else {
         log::info!("No framebuffer config found, falling back to VGA text mode");
-        crate::graphics::text::init_fallback_graphics().ok();
     }
 
     // Always enable interrupts and proceed to scheduler

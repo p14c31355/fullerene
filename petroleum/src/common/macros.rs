@@ -779,6 +779,57 @@ macro_rules! update_vga_cursor {
     }};
 }
 
+/// Consolidated logging macro for page table operations
+#[macro_export]
+macro_rules! log_page_table_op {
+    ($operation:expr) => {
+        debug_log_no_alloc!($operation);
+    };
+    ($operation:expr, $msg:expr, $addr:expr) => {
+        debug_log_no_alloc!($operation, $msg, " addr=", $addr);
+    };
+    ($stage:expr, $phys:expr, $virt:expr, $pages:expr) => {
+        debug_log_no_alloc!(
+            "Memory mapping stage=",
+            $stage,
+            " phys=0x",
+            $phys,
+            " virt=0x",
+            $virt,
+            " pages=",
+            $pages
+        );
+    };
+    ($operation:expr, $msg:expr) => {
+        debug_log_no_alloc!($operation, $msg);
+    };
+}
+
+/// Memory descriptor processing macro
+#[macro_export]
+macro_rules! process_memory_descriptors_safely {
+    ($descriptors:expr, $processor:expr) => {{
+        for descriptor in $descriptors.iter() {
+            if $crate::page_table::efi_memory::is_valid_memory_descriptor(descriptor) && descriptor.is_memory_available() {
+                let start_frame = (descriptor.get_physical_start() / 4096) as usize;
+                let end_frame = start_frame.saturating_add(descriptor.get_page_count() as usize);
+
+                if start_frame < end_frame {
+                    $processor(descriptor, start_frame, end_frame);
+                }
+            }
+        }
+    }};
+}
+
+/// Consolidated validation logging macro
+#[macro_export]
+macro_rules! debug_log_validate_macro {
+    ($field:expr, $value:expr) => {
+        debug_log_no_alloc!($field, " validated: ", $value);
+    };
+}
+
 /// CPU pause instruction for busy-waiting
 #[macro_export]
 macro_rules! pause {
