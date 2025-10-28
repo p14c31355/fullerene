@@ -6,6 +6,7 @@
 use petroleum::common::logging::SystemError;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use petroleum::debug_log;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::page_table::PageTableHelper;

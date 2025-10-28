@@ -7,7 +7,7 @@ use crate::graphics;
 use alloc::{collections::VecDeque, format};
 use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::{
-    Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats,
+    Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats, periodic_task, scheduler_log,
 };
 
 // Define periodic tasks in a struct for clarity
