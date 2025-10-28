@@ -53,7 +53,7 @@ macro_rules! map_pages_loop {
                     Err(e) => {
                         // Log mapping errors gracefully instead of panicking - use serial directly to avoid log crate issues
                         const MSG: &[u8] = b"Mapping error\n";
-                        let _ = unsafe { crate::write_serial_bytes!(0x3F8, 0x3FD, MSG) };
+                        let _ = unsafe { $crate::write_serial_bytes!(0x3F8, 0x3FD, MSG) };
                         continue;
                     }
                 }
