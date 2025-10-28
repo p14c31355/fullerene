@@ -116,7 +116,7 @@ pub fn load_efi_image(
     if e_magic != 0x5a4d {
         return Err(BellowsError::PeParse("Invalid DOS signature (MZ)."));
     }
-    let e_lfanew = unsafe { core::ptr::read_unaligned((dos_header_ptr as *const u8).add(60) as *const i32) };
+    let e_lfanew = unsafe { core::ptr::read_unaligned((dos_header_ptr as *const u8).add(core::mem::offset_of!(ImageDosHeader, e_lfanew)) as *const i32) };
     if e_lfanew < 0 {
         return Err(BellowsError::PeParse("Invalid NT headers offset."));
     }
