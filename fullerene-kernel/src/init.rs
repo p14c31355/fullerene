@@ -14,27 +14,27 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     let steps = [
         petroleum::init_step!("VGA", move || {
             crate::vga::init_vga(physical_memory_offset);
-            Ok("")
+            Ok(())
         }),
         petroleum::init_step!("Graphics", || {
             let _ = crate::graphics::text::init_fallback_graphics();
-            Ok("")
+            Ok(())
         }),
         petroleum::init_step!("process", || {
             crate::process::init();
-            Ok("")
+            Ok(())
         }),
         petroleum::init_step!("syscall", || {
             crate::syscall::init();
-            Ok("")
+            Ok(())
         }),
         petroleum::init_step!("fs", || {
             crate::fs::init();
-            Ok("")
+            Ok(())
         }),
         petroleum::init_step!("loader", || {
             crate::loader::init();
-            Ok("")
+            Ok(())
         }),
     ];
     InitSequence::new(&steps).run();
@@ -55,28 +55,26 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     use core::mem::MaybeUninit;
 
     // Higher-order initialization sequence for BIOS to reduce code duplication with UEFI
-    let bios_heap_init = Box::new(|| {
-        static mut HEAP: [MaybeUninit<u8>; crate::heap::HEAP_SIZE] =
-            [MaybeUninit::uninit(); crate::heap::HEAP_SIZE];
-        let heap_start_addr: x86_64::VirtAddr;
-        unsafe {
-            let heap_start_ptr: *mut u8 = core::ptr::addr_of_mut!(HEAP) as *mut u8;
-            heap_start_addr = x86_64::VirtAddr::from_ptr(heap_start_ptr);
-            use petroleum::page_table::ALLOCATOR;
-            ALLOCATOR
-                .lock()
-                .init(heap_start_ptr, crate::heap::HEAP_SIZE);
-            // Set heap range for page fault detection
-            petroleum::common::memory::set_heap_range(heap_start_ptr as usize, crate::heap::HEAP_SIZE);
-        }
-        crate::gdt::init(heap_start_addr); // Pass the actual heap start address
-        Ok("")
-    });
-
     let bios_init_steps = [
-        ("BIOS Heap and GDT", bios_heap_init),
-        petroleum::init_step!("Interrupts", || { interrupts::init(); Ok("") }),
-        petroleum::init_step!("Serial", || { petroleum::serial::serial_init(); Ok("") }),
+        petroleum::init_step!("BIOS Heap and GDT", || {
+            static mut HEAP: [MaybeUninit<u8>; crate::heap::HEAP_SIZE] =
+                [MaybeUninit::uninit(); crate::heap::HEAP_SIZE];
+            let heap_start_addr: x86_64::VirtAddr;
+            unsafe {
+                let heap_start_ptr: *mut u8 = core::ptr::addr_of_mut!(HEAP) as *mut u8;
+                heap_start_addr = x86_64::VirtAddr::from_ptr(heap_start_ptr);
+                use petroleum::page_table::ALLOCATOR;
+                ALLOCATOR
+                    .lock()
+                    .init(heap_start_ptr, crate::heap::HEAP_SIZE);
+                // Set heap range for page fault detection
+                petroleum::common::memory::set_heap_range(heap_start_ptr as usize, crate::heap::HEAP_SIZE);
+            }
+            crate::gdt::init(heap_start_addr); // Pass the actual heap start address
+            Ok(())
+        }),
+        petroleum::init_step!("Interrupts", || { interrupts::init(); Ok(()) }),
+        petroleum::init_step!("Serial", || { petroleum::serial::serial_init(); Ok(()) }),
     ];
     InitSequence::new(&bios_init_steps).run();
 
