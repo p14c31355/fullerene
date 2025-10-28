@@ -11,7 +11,7 @@ use crate::common::logging::{SystemError, SystemResult};
 
 /// Initializable trait for components
 pub trait Initializable {
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
     fn init(&mut self) -> SystemResult<()>;
     fn priority(&self) -> i32 {
         0 // Default priority

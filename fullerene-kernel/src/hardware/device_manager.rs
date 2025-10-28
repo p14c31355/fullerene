@@ -54,18 +54,16 @@ impl DeviceManager {
         &self,
         device: alloc::boxed::Box<dyn HardwareDevice + Send>,
     ) -> SystemResult<()> {
-        // Extract device info into variables
-        let device_name_value = device.name();
-        let device_name_str = device.device_name();
-        let device_type_str = device.device_type();
-        let priority_value = device.priority();
-
-        let device_info = DeviceInfo::new(device_name_str, device_type_str, priority_value);
+        let device_info = DeviceInfo::new(
+            (&*device).device_name(),
+            (&*device).device_type(),
+            (&*device).priority(),
+        );
 
         // Store device and its info
         let mut devices = self.devices.lock();
         devices.insert(
-            device_name_value,
+            (&*device).name(),
             DeviceEntry {
                 device,
                 device_info,
