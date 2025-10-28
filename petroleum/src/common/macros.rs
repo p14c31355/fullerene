@@ -1339,7 +1339,7 @@ macro_rules! impl_text_buffer_operations {
         }
 
         fn scroll_up(&mut self) {
-            petroleum::scroll_buffer_up!(self.$buffer_field, $height, $width, ScreenChar { ascii_character: b' ', color_code: self.$color_field });
+            $crate::scroll_char_buffer_up!(self.$buffer_field, $height, $width, ScreenChar { ascii_character: b' ', color_code: self.$color_field });
         }
     };
 }
