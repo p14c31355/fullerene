@@ -13,19 +13,7 @@ macro_rules! bitmap_chunk_bit {
     }};
 }
 
-#[macro_export]
-macro_rules! set_bool_bit {
-    ($($tt:tt)*) => {
-        bit_ops!(set_bool_bit, $($tt)*);
-    };
-}
 
-#[macro_export]
-macro_rules! bit_field_set {
-    ($($tt:tt)*) => {
-        bit_ops!(set_field, $($tt)*);
-    };
-}
 
 #[macro_export]
 macro_rules! map_range_with_log_macro {
@@ -146,49 +134,35 @@ macro_rules! command_args {
 #[macro_export]
 macro_rules! debug_mem_descriptor {
     ($i:expr, $desc:expr) => {{
-        mem_debug!("Memory descriptor ");
-        $crate::serial::debug_print_hex($i);
-        mem_debug!(", type=");
-        $crate::serial::debug_print_hex($desc.get_type() as usize);
-        mem_debug!(", phys_start=");
-        $crate::serial::debug_print_hex($desc.get_physical_start() as usize);
-        mem_debug!(", pages=");
-        $crate::serial::debug_print_hex($desc.get_page_count() as usize);
-        mem_debug!("\n");
+        mem_debug!("Memory descriptor ", $i, ", type=", $desc.get_type() as usize, ", phys_start=", $desc.get_physical_start() as usize, ", pages=", $desc.get_page_count() as usize, "\n");
     }};
 }
 
-//// Helper macro for mapping a single page with error handling
-#[macro_export]
-macro_rules! map_single_page {
-    ($mapper:expr, $allocator:expr, $phys_addr:expr, $virt_addr:expr, $flags:expr, $behavior:tt) => {{
-        use x86_64::{
-            PhysAddr, VirtAddr,
-            structures::paging::{Page, PhysFrame, Size4KiB, mapper::MapToError},
-        };
-        let page = Page::<Size4KiB>::containing_address(VirtAddr::new($virt_addr));
-        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new($phys_addr));
-        unsafe {
-            match $mapper.map_to(page, frame, $flags, $allocator) {
-                Ok(flush) => flush.flush(),
-                Err(MapToError::PageAlreadyMapped(_)) => {},
-                Err(e) => match $behavior {
-                    "continue" => continue,
-                    "panic" => panic!("Mapping error: {:?}", e),
-                    _ => {},
-                }
-            }
-        }
-    }};
-}
+
 
 #[macro_export]
 macro_rules! map_pages {
     ($mapper:expr, $allocator:expr, $phys_base:expr, $virt_calc:expr, $num_pages:expr, $flags:expr, $behavior:tt) => {{
+        use x86_64::{
+            PhysAddr, VirtAddr,
+            structures::paging::{Page, PhysFrame, Size4KiB, mapper::MapToError},
+        };
         for i in 0..$num_pages {
             let phys_addr = $phys_base + i * 4096;
             let virt_addr = $virt_calc + i * 4096;
-            $crate::map_single_page!($mapper, $allocator, phys_addr, virt_addr, $flags, $behavior);
+            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(virt_addr));
+            let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(phys_addr));
+            unsafe {
+                match $mapper.map_to(page, frame, $flags, $allocator) {
+                    Ok(flush) => flush.flush(),
+                    Err(MapToError::PageAlreadyMapped(_)) => {},
+                    Err(e) => match $behavior {
+                        "continue" => continue,
+                        "panic" => panic!("Mapping error: {:?}", e),
+                        _ => {},
+                    }
+                }
+            }
         }
     }};
 }
@@ -400,23 +374,7 @@ macro_rules! read_unaligned {
     };
 }
 
-/// Macro to clear a specific range in a 2D buffer for fixed-width buffers like VGA
-/// Reduces repetitive loops for clearing display lines
-///
-/// # Examples
-/// ```
-/// clear_line_range!(vga_writer, 23, 24, 0, 80, blank_char);
-/// ```
-#[macro_export]
-macro_rules! clear_line_range {
-    ($vga_writer:expr, $start_row:expr, $end_row:expr, $col_start:expr, $col_end:expr, $blank_char:expr) => {{
-        for row in $start_row..$end_row {
-            for col in $col_start..$col_end {
-                $vga_writer.set_char_at(row, col, $blank_char);
-            }
-        }
-    }};
-}
+
 
 /// Enhanced memory debugging macro that supports formatted output with mixed strings and values
 ///
@@ -1510,15 +1468,17 @@ macro_rules! impl_text_buffer_operations {
         }
 
         fn scroll_up(&mut self) {
-            $crate::scroll_char_buffer_up!(
-                self.$buffer_field,
-                $height,
-                $width,
-                ScreenChar {
+            for row in 1..$height {
+                for col in 0..$width {
+                    self.$buffer_field[row - 1][col] = self.$buffer_field[row][col];
+                }
+            }
+            for col in 0..$width {
+                self.$buffer_field[$height - 1][col] = ScreenChar {
                     ascii_character: b' ',
                     color_code: self.$color_field
-                }
-            );
+                };
+            }
         }
     };
 }
