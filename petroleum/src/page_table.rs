@@ -5,7 +5,7 @@ pub mod efi_memory;
 
 pub use bitmap_allocator::BitmapFrameAllocator;
 
-use crate::log_page_table_op;
+
 
 // Import for heap range setting
 use crate::common::memory::set_heap_range;
@@ -256,8 +256,10 @@ unsafe fn map_pe_section(
     }
 }
 
-// Generic mapping interface
-trait MemoryMappable {
+
+
+//// Generic mapping interface
+pub trait MemoryMappable {
     fn map_region_with_flags(
         &mut self,
         phys_start: u64,
@@ -695,11 +697,7 @@ unsafe fn map_stack_to_higher_half(
     }
 }
 
-// Generic mapping configuration builder trait for reducing configuration duplication
-trait MappingConfigurator {
-    fn configure_identity(&self, phys_start: u64, num_pages: u64) -> MappingConfig;
-    fn configure_higher_half(&self, phys_start: u64, num_pages: u64) -> MappingConfig;
-}
+
 
 // Generic page table utilities to reduce duplication between different mappers
 trait PageTableUtils {
