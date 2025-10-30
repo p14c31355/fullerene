@@ -84,6 +84,9 @@ impl MemoryDescriptorValidator for MemoryMapDescriptor {
     }
 }
 
+unsafe impl Send for MemoryMapDescriptor {}
+unsafe impl Sync for MemoryMapDescriptor {}
+
 impl MemoryDescriptorValidator for EfiMemoryDescriptor {
     fn get_type(&self) -> u32 {
         self.type_ as u32

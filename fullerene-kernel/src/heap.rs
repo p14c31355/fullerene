@@ -36,17 +36,17 @@ pub fn reinit_page_table(
 }
 
 use petroleum::common::EfiMemoryType;
-use petroleum::page_table::EfiMemoryDescriptor;
+use petroleum::page_table::efi_memory::{EfiMemoryDescriptor, MemoryMapDescriptor, MemoryDescriptorValidator};
 use spin::{Mutex, Once};
 
 /// Global frame allocator
 pub(crate) static FRAME_ALLOCATOR: Once<Mutex<BootInfoFrameAllocator>> = Once::new();
 
 /// Global memory map storage
-pub static MEMORY_MAP: Once<&'static [EfiMemoryDescriptor]> = Once::new();
+pub static MEMORY_MAP: Once<&[MemoryMapDescriptor]> = Once::new();
 
 /// Initialize the boot frame allocator with memory map
-pub fn init_frame_allocator(memory_map: &'static [EfiMemoryDescriptor]) {
+pub fn init_frame_allocator<T: MemoryDescriptorValidator>(memory_map: &[T]) {
     let allocator = unsafe { BootInfoFrameAllocator::init(memory_map) };
     FRAME_ALLOCATOR.call_once(|| Mutex::new(allocator));
     // MEMORY_MAP is already initialized in setup_memory_maps

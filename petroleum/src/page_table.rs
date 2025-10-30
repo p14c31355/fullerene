@@ -235,11 +235,12 @@ fn derive_pe_flags(characteristics: u32) -> x86_64::structures::paging::PageTabl
 }
 
 // Derive page table flags from UEFI memory descriptor type
-fn derive_memory_descriptor_flags(desc: &EfiMemoryDescriptor) -> PageTableFlags {
+fn derive_memory_descriptor_flags<T: MemoryDescriptorValidator>(desc: &T) -> PageTableFlags {
     use x86_64::structures::paging::PageTableFlags as Flags;
-    match desc.type_ {
-        crate::common::EfiMemoryType::EfiRuntimeServicesCode => Flags::PRESENT,
-        _ => Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+    if desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32 {
+        Flags::PRESENT
+    } else {
+        Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE
     }
 }
 
@@ -605,13 +606,13 @@ macro_rules! higher_half_config {
 }
 
 // Generic function to map descriptors with custom configuration using MappingConfig macros
-unsafe fn map_memory_descriptors_with_config<F>(
+unsafe fn map_memory_descriptors_with_config<T: MemoryDescriptorValidator, F>(
     mapper: &mut OffsetPageTable,
     frame_allocator: &mut BootInfoFrameAllocator,
-    memory_map: &[EfiMemoryDescriptor],
+    memory_map: &[T],
     config_fn: F,
 ) where
-    F: Fn(&EfiMemoryDescriptor) -> Option<MappingConfig>,
+    F: Fn(&T) -> Option<MappingConfig>,
 {
     for desc in memory_map.iter() {
         if let Some(config) = config_fn(desc) {
@@ -653,11 +654,11 @@ macro_rules! map_memory_with_flag_fn {
 }
 
 // Consolidated mapping for available memory to higher half with reduced duplication
-unsafe fn map_available_memory_to_higher_half(
+unsafe fn map_available_memory_to_higher_half<T: MemoryDescriptorValidator>(
     mapper: &mut OffsetPageTable,
     frame_allocator: &mut BootInfoFrameAllocator,
     phys_offset: VirtAddr,
-    memory_map: &[EfiMemoryDescriptor],
+    memory_map: &[T],
 ) {
     memory_map.iter().for_each(|desc| {
         if desc.is_valid() {
@@ -687,25 +688,25 @@ macro_rules! get_current_stack_pointer {
     }};
 }
 
-unsafe fn map_stack_to_higher_half(
+unsafe fn map_stack_to_higher_half<T: MemoryDescriptorValidator>(
     mapper: &mut OffsetPageTable,
     frame_allocator: &mut BootInfoFrameAllocator,
     phys_offset: VirtAddr,
-    memory_map: &[EfiMemoryDescriptor],
+    memory_map: &[T],
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
     let rsp = get_current_stack_pointer!();
 
     for desc in memory_map.iter() {
         if desc.is_valid() {
-            let start = desc.physical_start;
-            let end = start + desc.number_of_pages * 4096;
+            let start = desc.get_physical_start();
+            let end = start + desc.get_page_count() * 4096;
             if rsp >= start && rsp < end {
                 map_to_higher_half_with_log(
                     mapper,
                     frame_allocator,
                     phys_offset,
-                    desc.physical_start,
-                    desc.number_of_pages,
+                    desc.get_physical_start(),
+                    desc.get_page_count(),
                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE,
                 )?;
                 break;
@@ -852,15 +853,15 @@ macro_rules! map_current_stack {
         // Map actual stack descriptor if found
         for desc in $memory_map.iter() {
             if desc.is_valid() {
-                let start = desc.physical_start;
-                let end = start + desc.number_of_pages * 4096;
-                if rsp >= start && rsp < end && desc.number_of_pages <= MAX_DESCRIPTOR_PAGES {
+                let start = desc.get_physical_start();
+                let end = start + desc.get_page_count() * 4096;
+                if rsp >= start && rsp < end && desc.get_page_count() <= MAX_DESCRIPTOR_PAGES {
                     unsafe {
                         map_identity_range(
                             $mapper,
                             $frame_allocator,
-                            desc.physical_start,
-                            desc.number_of_pages,
+                            desc.get_physical_start(),
+                            desc.get_page_count(),
                             $flags,
                         )
                     }
@@ -883,13 +884,13 @@ impl PageTableReinitializer {
         }
     }
 
-    fn reinitialize(
+    fn reinitialize<T: MemoryDescriptorValidator>(
         &mut self,
         kernel_phys_start: PhysAddr,
         fb_addr: Option<VirtAddr>,
         fb_size: Option<u64>,
         frame_allocator: &mut BootInfoFrameAllocator,
-        memory_map: &[EfiMemoryDescriptor],
+        memory_map: &[T],
         current_physical_memory_offset: VirtAddr,
     ) -> VirtAddr {
         debug_log_no_alloc!("Page table reinitialization starting");
@@ -1056,19 +1057,19 @@ impl PageTableReinitializer {
 }
 
 // Consolidated page table initializer to reduce lines and improve organization
-struct PageTableInitializer<'a> {
+struct PageTableInitializer<'a, T: MemoryDescriptorValidator> {
     mapper: &'a mut OffsetPageTable<'static>,
     frame_allocator: &'a mut BootInfoFrameAllocator,
     phys_offset: VirtAddr,
-    memory_map: &'a [EfiMemoryDescriptor],
+    memory_map: &'a [T],
 }
 
-impl<'a> PageTableInitializer<'a> {
+impl<'a, T: MemoryDescriptorValidator> PageTableInitializer<'a, T> {
     fn new(
         mapper: &'a mut OffsetPageTable<'static>,
         frame_allocator: &'a mut BootInfoFrameAllocator,
         phys_offset: VirtAddr,
-        memory_map: &'a [EfiMemoryDescriptor],
+        memory_map: &'a [T],
     ) -> Self {
         Self {
             mapper,
@@ -1215,16 +1216,13 @@ impl<'a> PageTableInitializer<'a> {
             self.frame_allocator,
             self.phys_offset,
             self.memory_map,
-            |desc: &EfiMemoryDescriptor| {
+            |desc: &T| {
                 desc.is_valid()
-                    && matches!(
-                        desc.type_,
-                        crate::common::EfiMemoryType::EfiRuntimeServicesCode
-                            | crate::common::EfiMemoryType::EfiRuntimeServicesData
-                    )
+                    && (desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32
+                        || desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesData as u32)
             },
-            |desc: &EfiMemoryDescriptor| {
-                if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+            |desc: &T| {
+                if desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32 {
                     PageTableFlags::PRESENT
                 } else {
                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
@@ -1238,7 +1236,7 @@ impl<'a> PageTableInitializer<'a> {
             let phys_start = desc.get_physical_start();
             let pages = (end_frame - start_frame) as u64;
             // Always give writable access to available memory regions for compatibility, but executable code regions should not be writable
-            let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+            let flags = if desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32 {
                 PageTableFlags::PRESENT
             } else {
                 PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
@@ -1269,18 +1267,15 @@ impl<'a> PageTableInitializer<'a> {
             if desc.is_valid() {
                 // Include available memory and UEFI runtime services regions
                 let should_identity_map = desc.is_memory_available()
-                    || matches!(
-                        desc.type_,
-                        crate::common::EfiMemoryType::EfiRuntimeServicesCode
-                            | crate::common::EfiMemoryType::EfiRuntimeServicesData
-                    );
+                    || (desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32
+                        || desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesData as u32);
 
                 if should_identity_map {
                     let phys_start = desc.get_physical_start();
                     let pages = desc.get_page_count();
                     // Always give writable access to available memory regions for compatibility, but executable code regions should not be writable
                     let flags =
-                        if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+                        if desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32 {
                             PageTableFlags::PRESENT // Executable, read-only
                         } else {
                             PageTableFlags::PRESENT
@@ -1369,7 +1364,7 @@ pub fn reinit_page_table_with_allocator(
     fb_addr: Option<VirtAddr>,
     fb_size: Option<u64>,
     frame_allocator: &mut BootInfoFrameAllocator,
-    memory_map: &[EfiMemoryDescriptor],
+    memory_map: &[impl MemoryDescriptorValidator],
     current_physical_memory_offset: VirtAddr,
 ) -> VirtAddr {
     let mut reinitializer = PageTableReinitializer::new();
