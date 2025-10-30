@@ -236,6 +236,15 @@ fn derive_pe_flags(characteristics: u32) -> x86_64::structures::paging::PageTabl
     flags
 }
 
+// Derive page table flags from UEFI memory descriptor type
+fn derive_memory_descriptor_flags(desc: &EfiMemoryDescriptor) -> PageTableFlags {
+    use x86_64::structures::paging::PageTableFlags as Flags;
+    match desc.type_ {
+        crate::common::EfiMemoryType::EfiRuntimeServicesCode => Flags::PRESENT,
+        _ => Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE,
+    }
+}
+
 // Map a single PE section to virtual memory
 unsafe fn map_pe_section(
     mapper: &mut OffsetPageTable,
@@ -624,37 +633,27 @@ unsafe fn map_memory_descriptors_with_config<F>(
     }
 }
 
-// Unified function to map UEFI runtime to higher half using macros
-unsafe fn map_uefi_runtime_to_higher_half(
-    mapper: &mut OffsetPageTable,
-    frame_allocator: &mut BootInfoFrameAllocator,
-    phys_offset: VirtAddr,
-    memory_map: &[EfiMemoryDescriptor],
-) {
-    unsafe {
-        map_memory_descriptors_with_config(mapper, frame_allocator, memory_map, move |desc| {
-            if desc.is_valid()
-                && matches!(
-                    desc.type_,
-                    crate::common::EfiMemoryType::EfiRuntimeServicesCode
-                        | crate::common::EfiMemoryType::EfiRuntimeServicesData
-                )
-            {
-                let mut flags = PageTableFlags::PRESENT;
-                if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesData {
-                    flags |= PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+// Macro to consolidate memory descriptor mapping patterns using flag derivation functions
+macro_rules! map_memory_with_flag_fn {
+    ($mapper:expr, $frame_allocator:expr, $phys_offset:expr, $memory_map:expr, $filter_fn:expr, $flag_fn:expr) => {
+        for desc in $memory_map.iter() {
+            if desc.is_valid() && $filter_fn(desc) {
+                let phys_start = desc.get_physical_start();
+                let pages = desc.get_page_count();
+                let flags = $flag_fn(desc);
+                unsafe {
+                    let _ = map_to_higher_half_with_log(
+                        $mapper,
+                        $frame_allocator,
+                        $phys_offset,
+                        phys_start,
+                        pages,
+                        flags,
+                    );
                 }
-                Some(higher_half_config!(
-                    phys_offset,
-                    desc.physical_start,
-                    desc.number_of_pages,
-                    flags
-                ))
-            } else {
-                None
             }
-        });
-    }
+        }
+    };
 }
 
 // Consolidated mapping for available memory to higher half with reduced duplication
@@ -664,24 +663,21 @@ unsafe fn map_available_memory_to_higher_half(
     phys_offset: VirtAddr,
     memory_map: &[EfiMemoryDescriptor],
 ) {
-    process_memory_descriptors(memory_map, |desc, start_frame, end_frame| {
-        let phys_start = desc.get_physical_start();
-        let pages = (end_frame - start_frame) as u64;
-        // Always give writable access to available memory regions for compatibility, but executable code regions should not be writable
-        let flags = if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-            PageTableFlags::PRESENT // Executable, read-only
-        } else {
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE // Writable, not executable
-        };
-        unsafe {
-            let _ = map_to_higher_half_with_log(
-                mapper,
-                frame_allocator,
-                phys_offset,
-                phys_start,
-                pages,
-                flags,
-            );
+    memory_map.iter().for_each(|desc| {
+        if desc.is_valid() {
+            let phys_start = desc.get_physical_start();
+            let pages = desc.get_page_count();
+            let flags = derive_memory_descriptor_flags(desc);
+            unsafe {
+                let _ = map_to_higher_half_with_log(
+                    mapper,
+                    frame_allocator,
+                    phys_offset,
+                    phys_start,
+                    pages,
+                    flags,
+                );
+            }
         }
     });
 }
@@ -1198,37 +1194,26 @@ impl<'a> PageTableInitializer<'a> {
     // Removed redundant map_page_aligned_descriptors_safely function
 
     unsafe fn map_uefi_runtime_to_higher_half(&mut self) {
-        let phys_offset = self.phys_offset; // Copy since VirtAddr is Copy
-        map_memory_descriptors_with_config(
+        map_memory_with_flag_fn!(
             self.mapper,
             self.frame_allocator,
+            self.phys_offset,
             self.memory_map,
-            move |desc| {
-                if desc.is_valid()
+            |desc: &EfiMemoryDescriptor| {
+                desc.is_valid()
                     && matches!(
                         desc.type_,
                         crate::common::EfiMemoryType::EfiRuntimeServicesCode
                             | crate::common::EfiMemoryType::EfiRuntimeServicesData
                     )
-                {
-                    let flags =
-                        if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
-                            PageTableFlags::PRESENT
-                        } else {
-                            PageTableFlags::PRESENT
-                                | PageTableFlags::WRITABLE
-                                | PageTableFlags::NO_EXECUTE
-                        };
-                    Some(higher_half_config!(
-                        phys_offset,
-                        desc.physical_start,
-                        desc.number_of_pages,
-                        flags
-                    ))
-                } else {
-                    None
-                }
             },
+            |desc: &EfiMemoryDescriptor| {
+                if desc.type_ == crate::common::EfiMemoryType::EfiRuntimeServicesCode {
+                    PageTableFlags::PRESENT
+                } else {
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
+                }
+            }
         );
     }
 
