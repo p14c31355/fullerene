@@ -29,33 +29,49 @@ macro_rules! debug_mem_descriptor {
     }};
 }
 
-/// Macro for loop-based page mapping with simplified syntax
+//// Helper macro for mapping a single page with error handling
 #[macro_export]
-macro_rules! map_pages_loop {
-    ($mapper:expr, $allocator:expr, $base_phys:expr, $base_virt:expr, $num_pages:expr, $flags:expr) => {{
+macro_rules! map_single_page {
+    ($mapper:expr, $allocator:expr, $phys_addr:expr, $virt_addr:expr, $flags:expr, continue_on_error) => {{
         use x86_64::{
             PhysAddr, VirtAddr,
             structures::paging::{Page, PhysFrame, Size4KiB},
         };
-        for i in 0..$num_pages {
-            let phys_addr = PhysAddr::new($base_phys + i * 4096);
-            let virt_addr = VirtAddr::new($base_virt + i * 4096);
-            let page = Page::<Size4KiB>::containing_address(virt_addr);
-            let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
-            unsafe {
-                match $mapper.map_to(page, frame, $flags, $allocator) {
-                    Ok(flush) => flush.flush(),
-                    Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                        // Page already mapped, skip
-                    }
-                    Err(e) => {
-                        // Log mapping errors gracefully instead of panicking - use serial directly to avoid log crate issues
-                        const MSG: &[u8] = b"Mapping error\n";
-                        let _ = unsafe { $crate::write_serial_bytes!(0x3F8, 0x3FD, MSG) };
-                        continue;
-                    }
-                }
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new($virt_addr));
+        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new($phys_addr));
+        unsafe {
+            match $mapper.map_to(page, frame, $flags, $allocator) {
+                Ok(flush) => flush.flush(),
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {},
+                Err(_) => continue,
             }
+        }
+    }};
+    ($mapper:expr, $allocator:expr, $phys_addr:expr, $virt_addr:expr, $flags:expr, panic_on_error) => {{
+        use x86_64::{
+            PhysAddr, VirtAddr,
+            structures::paging::{Page, PhysFrame, Size4KiB, mapper::MapToError},
+        };
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new($virt_addr));
+        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new($phys_addr));
+        unsafe {
+            match $mapper.map_to(page, frame, $flags, $allocator) {
+                Ok(flush) => flush.flush(),
+                Err(MapToError::PageAlreadyMapped(_)) => {},
+                Err(e) => panic!("Mapping error: {:?}", e),
+            }
+        }
+    }};
+}
+
+/// Macro for loop-based page mapping with simplified syntax
+#[macro_export]
+macro_rules! map_pages_loop {
+    ($mapper:expr, $allocator:expr, $base_phys:expr, $base_virt:expr, $num_pages:expr, $flags:expr) => {{
+        for i in 0..$num_pages {
+            let phys_addr = $base_phys + i * 4096;
+            let virt_addr = $base_virt + i * 4096;
+            $crate::map_single_page!($mapper, $allocator, phys_addr, virt_addr, $flags, continue_on_error);
         }
     }};
 }
@@ -64,22 +80,10 @@ macro_rules! map_pages_loop {
 #[macro_export]
 macro_rules! map_pages_to_offset {
     ($mapper:expr, $allocator:expr, $phys_base:expr, $virt_offset:expr, $num_pages:expr, $flags:expr) => {{
-        use x86_64::{
-            PhysAddr, VirtAddr,
-            structures::paging::{Page, PhysFrame, Size4KiB, mapper::MapToError},
-        };
         for i in 0..$num_pages {
-            let phys_addr = PhysAddr::new($phys_base + (i * 4096) as u64);
-            let virt_addr = VirtAddr::new(($virt_offset) + phys_addr.as_u64());
-            let page = Page::<Size4KiB>::containing_address(virt_addr);
-            let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
-            unsafe {
-                match $mapper.map_to(page, frame, $flags, $allocator) {
-                    Ok(flush) => flush.flush(),
-                    Err(MapToError::PageAlreadyMapped(_)) => {}
-                    Err(e) => panic!("Mapping error: {:?}", e),
-                }
-            }
+            let phys_addr = ($phys_base + (i * 4096) as u64) as u64;
+            let virt_addr = ($virt_offset) + phys_addr;
+            $crate::map_single_page!($mapper, $allocator, phys_addr, virt_addr, $flags, panic_on_error);
         }
     }};
 }
@@ -429,31 +433,30 @@ macro_rules! vga_stat_display {
     ($vga_buffer:expr, $stats:expr, $current_tick:expr, $interval_ticks:expr, $start_row:expr, $($display_line:tt)*) => {{
         static LAST_DISPLAY_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
         petroleum::check_periodic!(LAST_DISPLAY_TICK, $interval_ticks, $current_tick, {
-            if let Some(vga_buffer) = $vga_buffer.get() {
-                const TICKS_PER_SECOND: u64 = 1000;
-                let uptime_minutes = $stats.uptime_ticks / (60 * TICKS_PER_SECOND);
-                let uptime_seconds = ($stats.uptime_ticks % (60 * TICKS_PER_SECOND)) / TICKS_PER_SECOND;
-
-                let mut vga_writer = vga_buffer.lock();
-
-                let blank_char = ScreenChar {
-                    ascii_character: b' ',
-                    color_code: ColorCode::new(Color::Black, Color::Black),
-                };
-
-                petroleum::clear_line_range!(vga_writer, $start_row, $start_row + 3, 0, 80, blank_char);
-
-                vga_writer.set_position($start_row, 0);
-                use core::fmt::Write;
-                vga_writer.set_color_code(ColorCode::new(Color::Cyan, Color::Black));
-
-                $(
-                    vga_stat_display_line!(vga_writer, $display_line);
-                )*
-
-                vga_writer.update_cursor();
-            }
+            petroleum::vga_stat_display_impl!($vga_buffer, $start_row, $($display_line)*);
         });
+    }};
+}
+
+/// Helper macro for implementing VGA stat display logic
+#[macro_export]
+macro_rules! vga_stat_display_impl {
+    ($vga_buffer:expr, $start_row:expr, $($display_line:tt)*) => {{
+        if let Some(vga_buffer) = $vga_buffer.get() {
+            let mut vga_writer = vga_buffer.lock();
+            let blank_char = ScreenChar {
+                ascii_character: b' ',
+                color_code: ColorCode::new(Color::Black, Color::Black),
+            };
+            petroleum::clear_line_range!(vga_writer, $start_row, $start_row + 3, 0, 80, blank_char);
+            vga_writer.set_position($start_row, 0);
+            use core::fmt::Write;
+            vga_writer.set_color_code(ColorCode::new(Color::Cyan, Color::Black));
+            $(
+                vga_stat_display_line!(vga_writer, $display_line);
+            )*
+            vga_writer.update_cursor();
+        }
     }};
 }
 
@@ -466,7 +469,9 @@ macro_rules! vga_stat_display_line {
     }};
 }
 
-/// Macro for unified periodic stat logging to filesystem with auto-file creation
+
+
+/// Unified periodic stat logging to filesystem with auto-file creation
 /// Reduces duplication between different stat logging functions
 #[macro_export]
 macro_rules! periodic_fs_log {
@@ -958,20 +963,9 @@ macro_rules! map_identity_range_macro {
 #[macro_export]
 macro_rules! map_range_with_log_macro {
     ($mapper:expr, $frame_allocator:expr, $phys_start:expr, $virt_start:expr, $num_pages:expr, $flags:expr) => {{
-        use x86_64::structures::paging::{Size4KiB, mapper::MapToError};
+        use x86_64::structures::paging::mapper::MapToError;
         log_page_table_op!("Mapping range", $phys_start, $virt_start, $num_pages);
-        for i in 0..$num_pages {
-            let phys_addr = $phys_start + i * 4096;
-            let virt_addr = $virt_start + i * 4096;
-            let (page, frame) = create_page_and_frame!(virt_addr, phys_addr);
-            match unsafe { $mapper.map_to(page, frame, $flags, $frame_allocator) } {
-                Ok(flush) => flush.flush(),
-                Err(MapToError::<Size4KiB>::PageAlreadyMapped(_)) => {
-                    continue;
-                }
-                Err(e) => panic!("Failed to map page: {:?}", e),
-            }
-        }
+        $crate::map_pages_loop!($mapper, $frame_allocator, $phys_start, $virt_start, $num_pages, $flags);
         Ok::<(), MapToError<Size4KiB>>(())
     }};
 }
@@ -1247,10 +1241,18 @@ macro_rules! pci_config_read {
 macro_rules! display_vga_stats_lines {
     ($vga_writer:expr, $($row:expr, $format:expr, $($args:expr),*);* $(;)?) => {
         $(
-            $vga_writer.set_position($row, 0);
-            let _ = write!($vga_writer, $format, $($args),*);
+            vga_stat_line!($vga_writer, $row, $format, $($args),*)
         )*
     };
+}
+
+/// Helper macro for a single stat line display
+#[macro_export]
+macro_rules! vga_stat_line {
+    ($vga_writer:expr, $row:expr, $format:expr, $($args:expr),*) => {{
+        $vga_writer.set_position($row, 0);
+        let _ = write!($vga_writer, $format, $($args),*);
+    }};
 }
 
 /// Macro for subsystem initialization with consistent logging and error handling
