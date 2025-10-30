@@ -37,7 +37,7 @@ impl BitmapFrameAllocator {
     /// mutable aliasing of the global static `BITMAP_STATIC` buffer, leading
     /// to undefined behavior. It must only be called once during system initialization.
     /// (for compatibility)
-    pub unsafe fn init(memory_map: &[super::efi_memory::EfiMemoryDescriptor]) -> Self {
+    pub unsafe fn init(memory_map: &[impl super::efi_memory::MemoryDescriptorValidator]) -> Self {
         let mut allocator = BitmapFrameAllocator::new();
         unsafe {
             allocator
@@ -50,7 +50,7 @@ impl BitmapFrameAllocator {
     /// Initialize with EFI memory map
     pub unsafe fn init_with_memory_map(
         &mut self,
-        memory_map: &[super::efi_memory::EfiMemoryDescriptor],
+        memory_map: &[impl super::efi_memory::MemoryDescriptorValidator],
     ) -> crate::common::logging::SystemResult<()> {
         // Debug: Log memory map information
         debug_log_no_alloc!("Memory map contains ", memory_map.len(), " descriptors");

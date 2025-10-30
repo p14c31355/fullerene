@@ -20,13 +20,11 @@ macro_rules! debug_mem_descriptor {
         mem_debug!("Memory descriptor ");
         $crate::serial::debug_print_hex($i);
         mem_debug!(", type=");
-        $crate::serial::debug_print_hex($desc.type_ as usize);
+        $crate::serial::debug_print_hex($desc.get_type() as usize);
         mem_debug!(", phys_start=");
-        $crate::serial::debug_print_hex($desc.physical_start as usize);
-        mem_debug!(", virt_start=");
-        $crate::serial::debug_print_hex($desc.virtual_start as usize);
+        $crate::serial::debug_print_hex($desc.get_physical_start() as usize);
         mem_debug!(", pages=");
-        $crate::serial::debug_print_hex($desc.number_of_pages as usize);
+        $crate::serial::debug_print_hex($desc.get_page_count() as usize);
         mem_debug!("\n");
     }};
 }

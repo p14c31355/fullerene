@@ -46,7 +46,7 @@ pub(crate) static FRAME_ALLOCATOR: Once<Mutex<BootInfoFrameAllocator>> = Once::n
 pub static MEMORY_MAP: Once<&[MemoryMapDescriptor]> = Once::new();
 
 /// Initialize the boot frame allocator with memory map
-pub fn init_frame_allocator(memory_map: &[EfiMemoryDescriptor]) {
+pub fn init_frame_allocator(memory_map: &[impl MemoryDescriptorValidator]) {
     let allocator = unsafe { BootInfoFrameAllocator::init(memory_map) };
     FRAME_ALLOCATOR.call_once(|| Mutex::new(allocator));
     // MEMORY_MAP is already initialized in setup_memory_maps
