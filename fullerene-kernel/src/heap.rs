@@ -5,9 +5,7 @@
 
 // Note: MAPPER and FRAME_ALLOCATOR are pub(crate), not re-exportable
 
-pub use petroleum::page_table::{
-    BootInfoFrameAllocator, reinit_page_table_with_allocator,
-};
+pub use petroleum::page_table::{BootInfoFrameAllocator, reinit_page_table_with_allocator};
 
 // Heap size constant moved to petroleum - for now define locally
 pub const HEAP_SIZE: usize = 1024 * 1024; // 1MB heap

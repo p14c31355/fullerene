@@ -7,6 +7,18 @@ use core::sync::atomic::Ordering;
 use petroleum::{page_table::PageTableHelper, write_serial_bytes};
 use x86_64::{PhysAddr, VirtAddr};
 
+// Helper function to reduce duplication in syscall buffer validation
+fn validate_syscall_buffer(
+    fd: core::ffi::c_int,
+    buffer: usize,
+    count: usize,
+    allow_kernel: bool,
+) -> Result<(), SyscallError> {
+    petroleum::validate_syscall_fd(fd)?;
+    petroleum::validate_user_buffer(buffer, count, allow_kernel)?;
+    Ok(())
+}
+
 const KERNEL_STACK_SIZE: usize = 4096;
 
 /// Handle system call from user space
@@ -132,7 +144,7 @@ fn syscall_fork() -> SyscallResult {
     // This is a significant deviation from the standard copy-on-write (COW) or full-copy semantics of fork and can lead to unexpected behavior and data corruption in user programs.
     // While this is a reasonable simplification for an initial implementation, it should be prioritized for a future update to either perform a full memory copy or, ideally, implement a copy-on-write mechanism for efficiency.
 
-    let mut child_box = Box::new(child_process);
+    let child_box = Box::new(child_process);
 
     // Re-acquire lock briefly to add to process list
     {
@@ -148,13 +160,10 @@ fn syscall_fork() -> SyscallResult {
 
 /// Read system call
 fn syscall_read(fd: core::ffi::c_int, buffer: *mut u8, count: usize) -> SyscallResult {
-    petroleum::validate_syscall_fd(fd)?;
-    // POSIX: reading 0 bytes should return 0 immediately
     if count == 0 {
         return Ok(0);
     }
-    // Check if buffer is valid for user space
-    petroleum::validate_user_buffer(buffer as usize, count, false)?;
+    validate_syscall_buffer(fd, buffer as usize, count, false)?;
 
     // For now, only support reading from stdin (fd 0)
     if fd == 0 {

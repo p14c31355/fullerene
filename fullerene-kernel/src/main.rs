@@ -2,7 +2,10 @@
 #![no_main]
 #![feature(abi_x86_interrupt)]
 
-use petroleum::{scheduler_log, debug_log, periodic_task, mem_debug, draw_filled_rect, draw_border_rect, info_log, warn_log};
+use petroleum::{
+    debug_log, draw_border_rect, draw_filled_rect, info_log, mem_debug, periodic_task,
+    scheduler_log, warn_log,
+};
 
 extern crate alloc;
 

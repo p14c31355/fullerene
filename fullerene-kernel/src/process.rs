@@ -3,12 +3,12 @@
 //! This module provides process creation, scheduling, and context switching
 //! capabilities for user-space programs.
 
-use petroleum::common::logging::SystemError;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use petroleum::debug_log;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, Ordering};
+use petroleum::common::logging::SystemError;
+use petroleum::debug_log;
 use petroleum::page_table::PageTableHelper;
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
@@ -328,7 +328,7 @@ pub fn schedule_next() {
     // Find next ready process
     let mut next_index = current_index;
     let start_index = current_index;
-    let mut found_ready = false;
+    let mut _found_ready = false;
 
     loop {
         next_index = (next_index + 1) % process_list.len();
@@ -341,7 +341,7 @@ pub fn schedule_next() {
 
         if process_list[next_index].state == ProcessState::Ready {
             petroleum::scheduler_log!("Found ready process at index {}", next_index);
-            found_ready = true;
+            _found_ready = true;
             break;
         }
 
@@ -445,7 +445,10 @@ pub fn block_current() {
             context_switch(old_pid, new_pid);
         }
     } else {
-        panic!("State inconsistency: current PID {} not found in process list", pid);
+        panic!(
+            "State inconsistency: current PID {} not found in process list",
+            pid
+        );
     }
 }
 

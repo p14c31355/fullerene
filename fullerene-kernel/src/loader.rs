@@ -76,7 +76,8 @@ pub fn load_program(
 
             // Check that the virtual address range is not already mapped
             for page_idx in 0..num_pages {
-                let page_vaddr = x86_64::VirtAddr::new(petroleum::calc_offset_addr!(vaddr, page_idx));
+                let page_vaddr =
+                    x86_64::VirtAddr::new(petroleum::calc_offset_addr!(vaddr, page_idx));
                 if process_page_table
                     .translate_address(page_vaddr.as_u64() as usize)
                     .is_ok()
@@ -186,9 +187,13 @@ impl From<LoadError> for petroleum::common::logging::SystemError {
         match error {
             LoadError::InvalidFormat => petroleum::common::logging::SystemError::InvalidFormat,
             LoadError::OutOfMemory => petroleum::common::logging::SystemError::MemOutOfMemory,
-            LoadError::AddressAlreadyMapped => petroleum::common::logging::SystemError::MappingFailed,
+            LoadError::AddressAlreadyMapped => {
+                petroleum::common::logging::SystemError::MappingFailed
+            }
             LoadError::MappingFailed => petroleum::common::logging::SystemError::MappingFailed,
-            LoadError::NotExecutable | LoadError::UnsupportedArchitecture => petroleum::common::logging::SystemError::LoadFailed,
+            LoadError::NotExecutable | LoadError::UnsupportedArchitecture => {
+                petroleum::common::logging::SystemError::LoadFailed
+            }
         }
     }
 }

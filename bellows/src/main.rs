@@ -165,7 +165,6 @@ fn init_basic_vga_text_mode() {
     petroleum::serial::_print(format_args!(
         "Basic VGA text mode initialized as fallback.\n"
     ));
-
 }
 
 /// Installs a basic VGA framebuffer configuration for UEFI environments when GOP is not available.

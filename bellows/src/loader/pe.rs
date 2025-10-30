@@ -116,7 +116,12 @@ pub fn load_efi_image(
     if e_magic != 0x5a4d {
         return Err(BellowsError::PeParse("Invalid DOS signature (MZ)."));
     }
-    let e_lfanew = unsafe { core::ptr::read_unaligned((dos_header_ptr as *const u8).add(core::mem::offset_of!(ImageDosHeader, e_lfanew)) as *const i32) };
+    let e_lfanew = unsafe {
+        core::ptr::read_unaligned(
+            (dos_header_ptr as *const u8).add(core::mem::offset_of!(ImageDosHeader, e_lfanew))
+                as *const i32,
+        )
+    };
     if e_lfanew < 0 {
         return Err(BellowsError::PeParse("Invalid NT headers offset."));
     }
@@ -128,27 +133,45 @@ pub fn load_efi_image(
     if nt_headers_offset + core::mem::size_of::<ImageNtHeaders64>() > file.len() {
         return Err(BellowsError::PeParse("Invalid NT headers offset."));
     }
-    let nt_headers_ptr =
-        unsafe { file.as_ptr().add(nt_headers_offset) as *const ImageNtHeaders64 };
+    let nt_headers_ptr = unsafe { file.as_ptr().add(nt_headers_offset) as *const ImageNtHeaders64 };
     let optional_header_ptr = unsafe {
-        nt_headers_ptr.cast::<u8>().add(core::mem::offset_of!(ImageNtHeaders64, optional_header)) as *const ImageOptionalHeader64
+        nt_headers_ptr
+            .cast::<u8>()
+            .add(core::mem::offset_of!(ImageNtHeaders64, optional_header))
+            as *const ImageOptionalHeader64
     };
 
-    let optional_header_magic = read_unaligned!(optional_header_ptr, core::mem::offset_of!(ImageOptionalHeader64, _magic), u16);
+    let optional_header_magic = read_unaligned!(
+        optional_header_ptr,
+        core::mem::offset_of!(ImageOptionalHeader64, _magic),
+        u16
+    );
     if optional_header_magic != 0x20b {
         return Err(BellowsError::PeParse("Invalid PE32+ magic number."));
     }
 
     // Read image size and entry point
-    let address_of_entry_point = read_unaligned!(optional_header_ptr, core::mem::offset_of!(ImageOptionalHeader64, address_of_entry_point), u32) as usize;
-    let image_size_val = read_unaligned!(optional_header_ptr, core::mem::offset_of!(ImageOptionalHeader64, size_of_image), u32) as u64;
+    let address_of_entry_point = read_unaligned!(
+        optional_header_ptr,
+        core::mem::offset_of!(ImageOptionalHeader64, address_of_entry_point),
+        u32
+    ) as usize;
+    let image_size_val = read_unaligned!(
+        optional_header_ptr,
+        core::mem::offset_of!(ImageOptionalHeader64, size_of_image),
+        u32
+    ) as u64;
     if address_of_entry_point > usize::MAX - 4096 {
         return Err(BellowsError::PeParse("Entry point address too large."));
     }
     let pages_needed =
         (image_size_val.max(address_of_entry_point as u64 + 4096)).div_ceil(4096) as usize;
 
-    let preferred_base = read_unaligned!(optional_header_ptr, core::mem::offset_of!(ImageOptionalHeader64, image_base), u64) as usize;
+    let preferred_base = read_unaligned!(
+        optional_header_ptr,
+        core::mem::offset_of!(ImageOptionalHeader64, image_base),
+        u64
+    ) as usize;
     let mut phys_addr: usize = 0;
     let mut status;
 
@@ -184,17 +207,28 @@ pub fn load_efi_image(
         ));
     }
 
-    let size_of_headers = read_unaligned!(nt_headers_ptr, core::mem::offset_of!(ImageNtHeaders64, optional_header) + core::mem::offset_of!(ImageOptionalHeader64, _size_of_headers), u32) as usize;
+    let size_of_headers = read_unaligned!(
+        nt_headers_ptr,
+        core::mem::offset_of!(ImageNtHeaders64, optional_header)
+            + core::mem::offset_of!(ImageOptionalHeader64, _size_of_headers),
+        u32
+    ) as usize;
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            file.as_ptr(),
-            phys_addr as *mut u8,
-            size_of_headers,
-        );
+        core::ptr::copy_nonoverlapping(file.as_ptr(), phys_addr as *mut u8, size_of_headers);
     }
 
-    let number_of_sections = read_unaligned!(nt_headers_ptr, core::mem::offset_of!(ImageNtHeaders64, _file_header) + core::mem::offset_of!(ImageFileHeader, number_of_sections), u16) as usize;
-    let size_of_optional_header = read_unaligned!(nt_headers_ptr, core::mem::offset_of!(ImageNtHeaders64, _file_header) + core::mem::offset_of!(ImageFileHeader, size_of_optional_header), u16) as usize;
+    let number_of_sections = read_unaligned!(
+        nt_headers_ptr,
+        core::mem::offset_of!(ImageNtHeaders64, _file_header)
+            + core::mem::offset_of!(ImageFileHeader, number_of_sections),
+        u16
+    ) as usize;
+    let size_of_optional_header = read_unaligned!(
+        nt_headers_ptr,
+        core::mem::offset_of!(ImageNtHeaders64, _file_header)
+            + core::mem::offset_of!(ImageFileHeader, size_of_optional_header),
+        u16
+    ) as usize;
 
     let section_headers_offset = e_lfanew as usize
         + core::mem::size_of::<u32>()
@@ -211,14 +245,27 @@ pub fn load_efi_image(
             file.as_ptr()
                 .add(section_headers_offset + i * core::mem::size_of::<ImageSectionHeader>())
         };
-        let virtual_address = read_unaligned!(section_header_base_ptr, core::mem::offset_of!(ImageSectionHeader, virtual_address), u32);
-        let size_of_raw_data = read_unaligned!(section_header_base_ptr, core::mem::offset_of!(ImageSectionHeader, size_of_raw_data), u32);
-        let pointer_to_raw_data = read_unaligned!(section_header_base_ptr, core::mem::offset_of!(ImageSectionHeader, pointer_to_raw_data), u32);
+        let virtual_address = read_unaligned!(
+            section_header_base_ptr,
+            core::mem::offset_of!(ImageSectionHeader, virtual_address),
+            u32
+        );
+        let size_of_raw_data = read_unaligned!(
+            section_header_base_ptr,
+            core::mem::offset_of!(ImageSectionHeader, size_of_raw_data),
+            u32
+        );
+        let pointer_to_raw_data = read_unaligned!(
+            section_header_base_ptr,
+            core::mem::offset_of!(ImageSectionHeader, pointer_to_raw_data),
+            u32
+        );
 
         let src_addr = unsafe { file.as_ptr().add(pointer_to_raw_data as usize) };
         let dst_addr = unsafe { (phys_addr as *mut u8).add(virtual_address as usize) };
 
-        if (src_addr as usize).saturating_add(size_of_raw_data as usize) > (file.as_ptr() as usize).saturating_add(file.len())
+        if (src_addr as usize).saturating_add(size_of_raw_data as usize)
+            > (file.as_ptr() as usize).saturating_add(file.len())
             || (dst_addr as usize).saturating_add(size_of_raw_data as usize)
                 > ((phys_addr as *mut u8) as usize).saturating_add(pages_needed * 4096)
         {
@@ -231,19 +278,30 @@ pub fn load_efi_image(
         }
     }
 
-    let image_base = read_unaligned!(nt_headers_ptr, core::mem::offset_of!(ImageNtHeaders64, optional_header) + core::mem::offset_of!(ImageOptionalHeader64, image_base), u64) as usize;
+    let image_base = read_unaligned!(
+        nt_headers_ptr,
+        core::mem::offset_of!(ImageNtHeaders64, optional_header)
+            + core::mem::offset_of!(ImageOptionalHeader64, image_base),
+        u64
+    ) as usize;
     let image_base_delta = (phys_addr as u64).wrapping_sub(image_base as u64);
 
     if image_base_delta != 0 {
-        let phys_nt_headers_ptr = (phys_addr as *const u8).wrapping_add(nt_headers_offset) as *const ImageNtHeaders64;
+        let phys_nt_headers_ptr =
+            (phys_addr as *const u8).wrapping_add(nt_headers_offset) as *const ImageNtHeaders64;
         let optional_header_ptr = unsafe {
             (phys_nt_headers_ptr as *const u8)
                 .add(core::mem::offset_of!(ImageNtHeaders64, optional_header))
                 .cast::<ImageOptionalHeader64>()
         };
-        let reloc_dir_offset = core::mem::offset_of!(ImageOptionalHeader64, data_directory) + IMAGE_DIRECTORY_ENTRY_BASERELOC * core::mem::size_of::<ImageDataDirectory>();
-        let reloc_dir: ImageDataDirectory = unsafe { core::ptr::read_unaligned((optional_header_ptr as *const u8).add(reloc_dir_offset) as *const ImageDataDirectory) };
-        if (reloc_dir.virtual_address as u64).saturating_add(reloc_dir.size as u64) > image_size_val {
+        let reloc_dir_offset = core::mem::offset_of!(ImageOptionalHeader64, data_directory)
+            + IMAGE_DIRECTORY_ENTRY_BASERELOC * core::mem::size_of::<ImageDataDirectory>();
+        let reloc_dir: ImageDataDirectory = unsafe {
+            core::ptr::read_unaligned((optional_header_ptr as *const u8).add(reloc_dir_offset)
+                as *const ImageDataDirectory)
+        };
+        if (reloc_dir.virtual_address as u64).saturating_add(reloc_dir.size as u64) > image_size_val
+        {
             unsafe { (bs.free_pages)(phys_addr, pages_needed) };
             return Err(BellowsError::PeParse("Relocation directory out of bounds."));
         }
@@ -266,7 +324,9 @@ pub fn load_efi_image(
                         let rva = block_virtual_address + rel_offset as u32;
                         let ptr = (phys_addr + rva as usize) as *mut u64;
                         let val = read_unaligned!(ptr as *const u8, 0, u64);
-                        unsafe { core::ptr::write_unaligned(ptr, val.wrapping_add(image_base_delta)); }
+                        unsafe {
+                            core::ptr::write_unaligned(ptr, val.wrapping_add(image_base_delta));
+                        }
                     }
                 }
                 reloc_offset += size_of_block as usize;
@@ -277,7 +337,9 @@ pub fn load_efi_image(
     let entry_point_addr = phys_addr.saturating_add(address_of_entry_point);
     if entry_point_addr >= phys_addr + pages_needed * 4096 || entry_point_addr < phys_addr {
         unsafe { (bs.free_pages)(phys_addr, pages_needed) };
-        return Err(BellowsError::PeParse("Entry point address is outside allocated memory."));
+        return Err(BellowsError::PeParse(
+            "Entry point address is outside allocated memory.",
+        ));
     }
 
     log::info!("PE: EFI image loaded. Entry: 0x{:x}", entry_point_addr);

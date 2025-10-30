@@ -20,7 +20,7 @@ struct Args {
     controller: String,
 
     /// Start VM in GUI mode instead of headless (useful for debugging)
-    #[arg(long)]
+    #[arg(long, default_value = "true")]
     gui: bool,
 }
 
@@ -547,7 +547,7 @@ fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {
         "-M",
         "q35",
         "-vga",
-        "cirrus",
+        "std",
         "-display",
         "gtk,gl=off,window-close=on,zoom-to-fit=on",
         "-serial",

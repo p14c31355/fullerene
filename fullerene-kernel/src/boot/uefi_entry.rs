@@ -2,15 +2,15 @@
 use crate::scheduler::scheduler_loop;
 
 use crate::MEMORY_MAP;
-use crate::graphics::framebuffer::FramebufferLike;
 use crate::heap;
+use petroleum::FramebufferLike;
 
 use crate::memory::find_heap_start;
 use crate::{gdt, graphics, interrupts, memory};
 use alloc::boxed::Box;
 use core::ffi::c_void;
-use petroleum::common::{EfiGraphicsOutputProtocol, EfiSystemTable};
 use petroleum::common::uefi::{efi_print, find_gop_framebuffer, write_vga_string};
+use petroleum::common::{EfiGraphicsOutputProtocol, EfiSystemTable};
 
 use petroleum::{
     allocate_heap_from_map, debug_log, debug_log_no_alloc, mem_debug, write_serial_bytes,
@@ -67,6 +67,12 @@ impl UefiInitContext {
         unsafe {
             let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
             write_vga_string(vga_buffer, 0, b"Kernel boot (UEFI)", 0x1F00);
+            write_vga_string(vga_buffer, 1, b"Early init start", 0x1F00);
+        }
+        petroleum::serial::serial_init();
+        unsafe {
+            let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
+            write_vga_string(vga_buffer, 2, b"Serial init done", 0x1F00);
         }
         write_serial_bytes!(0x3F8, 0x3FD, b"Early setup completed\n");
 
@@ -317,10 +323,11 @@ impl UefiInitContext {
         let page = Page::<Size4KiB>::containing_address(apic_virt);
         let frame = PhysFrame::<Size4KiB>::containing_address(apic_phys);
         unsafe {
-            mapper
-                .map_to(page, frame, flags, &mut *frame_allocator)
-                .expect("Failed to map Local APIC")
-                .flush();
+            match mapper.map_to(page, frame, flags, &mut *frame_allocator) {
+                Ok(flush) => flush.flush(),
+                Err(MapToError::PageAlreadyMapped(_)) => {}
+                Err(e) => panic!("Failed to map Local APIC: {:?}", e),
+            }
         }
         *petroleum::LOCAL_APIC_ADDRESS.lock() =
             petroleum::LocalApicAddress(LOCAL_APIC_ADDR as *mut u32);
@@ -332,23 +339,29 @@ impl UefiInitContext {
         let page = Page::<Size4KiB>::containing_address(io_apic_virt);
         let frame = PhysFrame::<Size4KiB>::containing_address(io_apic_phys);
         unsafe {
-            mapper
-                .map_to(page, frame, flags, &mut *frame_allocator)
-                .expect("Failed to map IO APIC")
-                .flush();
+            match mapper.map_to(page, frame, flags, &mut *frame_allocator) {
+                Ok(flush) => flush.flush(),
+                Err(MapToError::PageAlreadyMapped(_)) => {}
+                Err(e) => panic!("Failed to map IO APIC: {:?}", e),
+            }
         }
         log::info!("IO APIC mapped at virt {:#x}", io_apic_virt.as_u64());
 
         // Map VGA text buffer (0xB8000-0xC0000) for compatibility
         let vga_pages_size = (0xc0000 - VGA_TEXT_BUFFER_ADDR) / 4096; // 8 pages (32KB)
-        petroleum::map_pages_loop!(
-            mapper,
-            &mut *frame_allocator,
-            VGA_TEXT_BUFFER_ADDR,
-            VGA_TEXT_BUFFER_ADDR,
-            vga_pages_size,
-            flags
-        );
+        for i in 0..vga_pages_size {
+            let vga_phys = PhysAddr::new(VGA_TEXT_BUFFER_ADDR + i * 4096);
+            let vga_virt = VirtAddr::new(VGA_TEXT_BUFFER_ADDR + i * 4096);
+            let page = Page::<Size4KiB>::containing_address(vga_virt);
+            let frame = PhysFrame::<Size4KiB>::containing_address(vga_phys);
+            unsafe {
+                match mapper.map_to(page, frame, flags, &mut *frame_allocator) {
+                    Ok(flush) => flush.flush(),
+                    Err(MapToError::PageAlreadyMapped(_)) => {}
+                    Err(e) => panic!("Failed to map VGA buffer page {}: {:?}", i, e),
+                }
+            }
+        }
         log::info!(
             "VGA text buffer mapped at identity address {:#x}",
             VGA_TEXT_BUFFER_ADDR
@@ -417,23 +430,15 @@ pub extern "efiapi" fn efi_main(
     ctx.map_mmio();
     log::info!("MMIO mapping completed");
 
-    // Initialize APIC
+    // Initialize VGA for UEFI
+    crate::vga::init_vga(physical_memory_offset);
+    log::info!("VGA initialized for UEFI");
+
+    // Initialize APIC before enabling interrupts for safety
     crate::interrupts::init_apic();
     log::info!("APIC initialized");
 
-    // Initialize graphics protocols using petroleum
-    log::info!("Initialize graphics protocols with framebuffer detection");
-    let _ = petroleum::init_graphics_protocols(system_table);
-
-    // Initialize text/graphics output if framebuffer config is available
-    if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().map(|m| *m.lock()).flatten() {
-        log::info!("Initializing framebuffer text output");
-        crate::graphics::text::init(&config);
-    } else {
-        log::info!("No framebuffer config found, falling back to VGA text mode");
-    }
-
-    // Always enable interrupts and proceed to scheduler
+    // Enable interrupts now that all handlers and controllers are set up.
     log::info!("Enabling interrupts...");
     x86_64::instructions::interrupts::enable();
     log::info!("Interrupts enabled");
@@ -441,10 +446,6 @@ pub extern "efiapi" fn efi_main(
     // Initialize keyboard input driver
     crate::keyboard::init();
     log::info!("Keyboard initialized");
-
-    // Initialize process management system
-    crate::process::init();
-    log::info!("Process management initialized");
 
     // Start the main kernel scheduler that orchestrates all system functionality
     log::info!("Starting full system scheduler...");

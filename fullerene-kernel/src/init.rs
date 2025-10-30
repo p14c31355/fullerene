@@ -1,21 +1,15 @@
 //! Initialization module containing common initialization logic for both UEFI and BIOS boot
-use alloc::boxed::Box;
 use crate::interrupts;
+use alloc::boxed::Box;
 
 use petroleum::{common::InitSequence, init_log, write_serial_bytes};
 use spin::Once;
 
-
-
 #[cfg(target_os = "uefi")]
-pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
+pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
     init_log!("Initializing common components");
 
     let steps = [
-        petroleum::init_step!("VGA", move || {
-            crate::vga::init_vga(physical_memory_offset);
-            Ok(())
-        }),
         petroleum::init_step!("Graphics", || {
             let _ = crate::graphics::text::init_fallback_graphics();
             Ok(())
@@ -68,13 +62,22 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
                     .lock()
                     .init(heap_start_ptr, crate::heap::HEAP_SIZE);
                 // Set heap range for page fault detection
-                petroleum::common::memory::set_heap_range(heap_start_ptr as usize, crate::heap::HEAP_SIZE);
+                petroleum::common::memory::set_heap_range(
+                    heap_start_ptr as usize,
+                    crate::heap::HEAP_SIZE,
+                );
             }
             crate::gdt::init(heap_start_addr); // Pass the actual heap start address
             Ok(())
         }),
-        petroleum::init_step!("Interrupts", || { interrupts::init(); Ok(()) }),
-        petroleum::init_step!("Serial", || { petroleum::serial::serial_init(); Ok(()) }),
+        petroleum::init_step!("Interrupts", || {
+            interrupts::init();
+            Ok(())
+        }),
+        petroleum::init_step!("Serial", || {
+            petroleum::serial::serial_init();
+            Ok(())
+        }),
     ];
     InitSequence::new(&bios_init_steps).run();
 

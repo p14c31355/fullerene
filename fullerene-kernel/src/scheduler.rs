@@ -4,10 +4,12 @@
 //! including process scheduling, shell execution, and system-wide orchestration.
 
 use crate::graphics;
+use crate::graphics::text;
 use alloc::{collections::VecDeque, format};
 use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::{
-    Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats, display_stats_on_available_display, periodic_task, scheduler_log,
+    Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats,
+    display_stats_on_available_display, periodic_task, scheduler_log, write_serial_bytes,
 };
 
 // Define periodic tasks in a struct for clarity
@@ -30,10 +32,7 @@ fn stats_task(_tick: u64, _iter: u64) {
     const SYSTEM_LOG_FILE: &str = "system.log";
     let log_content = format!(
         "System Stats - Processes: {}/{}, Memory: {} bytes, Uptime: {} ticks\n",
-        stats.active_processes,
-        stats.total_processes,
-        stats.memory_used,
-        stats.uptime_ticks
+        stats.active_processes, stats.total_processes, stats.memory_used, stats.uptime_ticks
     );
     if let Ok(_) = crate::fs::create_file(SYSTEM_LOG_FILE, log_content.as_bytes()) {
         log::info!("System log file written successfully");
@@ -111,8 +110,6 @@ const HIGH_MEMORY_THRESHOLD: usize = 50; // %
 const MAX_PROCESSES_THRESHOLD: usize = 10;
 const EMERGENCY_MEMORY_THRESHOLD: usize = 80; // %
 const MAX_PROCESSES_EMERGENCY: usize = 100;
-
-
 
 /// I/O event type for future I/O handling
 #[derive(Clone, Copy)]
@@ -204,7 +201,12 @@ fn log_system_stats(stats: &SystemStats, interval_ticks: u64) {
 
 /// Display system statistics on VGA or framebuffer periodically
 fn display_system_stats_on_display(stats: &SystemStats, interval_ticks: u64) {
-    petroleum::display_stats_on_available_display!(stats, SYSTEM_TICK.load(Ordering::Relaxed), interval_ticks, &crate::vga::VGA_BUFFER);
+    petroleum::display_stats_on_available_display!(
+        stats,
+        SYSTEM_TICK.load(Ordering::Relaxed),
+        interval_ticks,
+        &crate::vga::VGA_BUFFER
+    );
 }
 
 /// Get the current system tick count
@@ -307,7 +309,7 @@ fn process_scheduler_iteration() {
 
     // Additional tasks that don't fit the pattern
     if current_tick % DESKTOP_UPDATE_INTERVAL_TICKS == 0 {
-        graphics::draw_os_desktop();
+        draw_desktop_on_available_framebuffer();
     }
     if current_tick % 10000 == 0 {
         emergency_condition_handler();
@@ -359,10 +361,18 @@ fn yield_and_process_system_calls() {
     }
 }
 
-/// Handle periodic UI operations (desktop updates)
-fn perform_periodic_ui_operations(current_tick: u64) {
-    if current_tick % DESKTOP_UPDATE_INTERVAL_TICKS == 0 {
-        graphics::draw_os_desktop();
+
+
+/// Draw the OS desktop on the available framebuffer (UEFI or BIOS)
+fn draw_desktop_on_available_framebuffer() {
+    #[cfg(target_os = "uefi")]
+    let fb_option = text::FRAMEBUFFER_UEFI.get();
+    #[cfg(not(target_os = "uefi"))]
+    let fb_option = text::FRAMEBUFFER_BIOS.get();
+
+    if let Some(framebuffer) = fb_option {
+        let mut fb = framebuffer.lock();
+        graphics::draw_os_desktop(&mut *fb);
     }
 }
 
@@ -386,16 +396,15 @@ fn initialize_shell_process() -> crate::process::ProcessId {
 }
 
 /// Main kernel scheduler loop - orchestrates all system functionality
+// Main kernel scheduler loop - orchestrates all system functionality
 pub fn scheduler_loop() -> ! {
-    log::info!("Starting enhanced OS scheduler with integrated system features...");
     scheduler_log!("About to initialize shell process");
 
     let _ = initialize_shell_process();
     scheduler_log!("Shell process initialized successfully");
 
     // Main scheduler loop - continuously execute processes with integrated OS functionality
-    scheduler_log!("Entering main loop");
-    scheduler_log!("Main loop starting");
+    log::info!("Scheduler loop started");
 
     // Print to VGA if available for GUI output
     if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {
@@ -404,6 +413,8 @@ pub fn scheduler_loop() -> ! {
         writer.write_string("System is running...\n");
         writer.update_cursor();
     }
+    // Log that scheduler is running for confirmation
+    log::info!("Scheduler loop active - framebuffer text system running");
 
     loop {
         // Increment system counters for this iteration

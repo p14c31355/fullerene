@@ -1,19 +1,17 @@
-use super::framebuffer::FramebufferLike;
+use super::framebuffer::{FramebufferLike, FramebufferWriter};
+use crate::{
+    COLOR_BLACK, COLOR_DARK_GRAY, COLOR_LIGHT_BLUE, COLOR_LIGHT_GRAY, COLOR_TASKBAR, COLOR_WHITE,
+    COLOR_WINDOW_BG, calc_text_width, draw_border_rect, draw_filled_rect,
+    serial::debug_print_str_to_com1 as debug_print_str,
+};
 use alloc::string::{String, ToString};
 use embedded_graphics::{
     mono_font::{MonoTextStyle, ascii::FONT_6X10},
     prelude::*,
     text::Text,
 };
-use petroleum::{draw_border_rect, draw_filled_rect, serial::debug_print_str_to_com1 as debug_print_str};
 
-use super::text; // For re-exporting statics or accessing
-
-// Use consolidated colors from petroleum
-use petroleum::{
-    COLOR_BLACK, COLOR_DARK_GRAY, COLOR_LIGHT_BLUE, COLOR_LIGHT_GRAY, COLOR_TASKBAR, COLOR_WHITE,
-    COLOR_WINDOW_BG, calc_text_width,
-};
+// Assuming framebuffer mod is in petroleum
 
 // Helper function to draw centered text
 fn draw_centered_text<W: FramebufferLike>(
@@ -30,8 +28,6 @@ fn draw_centered_text<W: FramebufferLike>(
     let text_obj = Text::new(text, Point::new(text_x, y), style);
     text_obj.draw(writer).ok();
 }
-
-// Using calc_text_width from petroleum
 
 pub struct Button {
     pub x: u32,
@@ -86,49 +82,13 @@ impl Button {
     }
 }
 
-// Generic draw functions
-pub fn draw_os_desktop() {
-    #[cfg(target_os = "uefi")]
-    let fb_option = text::FRAMEBUFFER_UEFI.get();
-    #[cfg(not(target_os = "uefi"))]
-    let fb_option = text::FRAMEBUFFER_BIOS.get();
-
+pub fn draw_os_desktop<W: FramebufferLike>(writer: &mut W) {
     let mode = if cfg!(target_os = "uefi") {
         "UEFI"
     } else {
         "BIOS"
     };
-    crate::graphics::_print(format_args!(
-        "Graphics: draw_os_desktop() called in {} mode\n",
-        mode
-    ));
-
-    if let Some(fb_writer) = fb_option {
-        crate::graphics::_print(format_args!(
-            "Graphics: {} framebuffer found, locking...\n",
-            mode
-        ));
-        let mut locked = fb_writer.lock();
-        crate::graphics::_print(format_args!(
-            "Graphics: framebuffer locked, checking mode...\n"
-        ));
-        if locked.is_vga() {
-            crate::graphics::_print(format_args!(
-                "Graphics: VGA text mode active, desktop drawing skipped\n"
-            ));
-        } else {
-            crate::graphics::_print(format_args!(
-                "Graphics: proceeding to draw {} desktop...\n",
-                mode
-            ));
-            draw_desktop_internal(&mut *locked, mode);
-        }
-    } else {
-        crate::graphics::_print(format_args!(
-            "Graphics: ERROR - {} framebuffer not initialized - this is BAD!\n",
-            mode
-        ));
-    }
+    draw_desktop_internal(writer, mode);
 }
 
 fn draw_desktop_internal<W: FramebufferLike>(writer: &mut W, mode: &str) {
@@ -141,11 +101,6 @@ fn draw_desktop_internal<W: FramebufferLike>(writer: &mut W, mode: &str) {
     draw_icons(writer);
     draw_taskbar_with_buttons(writer);
     draw_application_windows(writer);
-
-    crate::graphics::_print(format_args!(
-        "Graphics: {} desktop drawing completed\n",
-        mode
-    ));
 }
 
 fn fill_background<W: FramebufferLike>(writer: &mut W, color: u32) {
@@ -207,11 +162,11 @@ fn draw_app_window<W: FramebufferLike>(
     height: u32,
     title: &str,
 ) {
-    petroleum::draw_window_shell!(writer, x as i32, y as i32, width, height, title, {});
+    draw_window_shell!(writer, x as i32, y as i32, width, height, title, {});
 }
 
 fn draw_shell_window<W: FramebufferLike>(writer: &mut W, x: u32, y: u32, width: u32, height: u32) {
-    petroleum::draw_window_shell!(writer, x as i32, y as i32, width, height, "Shell", {
+    draw_window_shell!(writer, x as i32, y as i32, width, height, "Shell", {
         let text_style = MonoTextStyle::new(&FONT_6X10, super::u32_to_rgb888(COLOR_BLACK));
         Text::new(
             "fullerene> ",

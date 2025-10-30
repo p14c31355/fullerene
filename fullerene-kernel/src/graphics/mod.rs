@@ -1,11 +1,10 @@
-// Graphics submodules
-pub mod desktop;
-pub mod framebuffer;
-pub mod text;
+use petroleum::graphics::*;
 
-// Re-export public API
-pub use desktop::*;
-pub use petroleum::graphics::*;
+// Re-export specific functions from petroleum to maintain consistency
+pub use petroleum::graphics::draw_os_desktop;
+
+// Keep local text module for configuration-specific init
+pub mod text;
 pub use text::*;
 
 // Re-export color conversion utility for use within the module

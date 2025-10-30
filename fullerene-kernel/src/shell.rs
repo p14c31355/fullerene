@@ -42,6 +42,7 @@ static COMMANDS: &[CommandEntry] = define_commands!(
 
 // Shell main loop
 pub fn shell_main() {
+    petroleum::debug_log!("Shell main started");
     print!("Welcome to Fullerene OS Shell");
     print!("\n");
     print!("Type 'help' for available commands.");
@@ -52,14 +53,17 @@ pub fn shell_main() {
         print!("fullerene> ");
 
         // Read line from keyboard
+        petroleum::debug_log!("About to read line from keyboard");
         let mut input_buffer = [0u8; 256];
         match read_line(&mut input_buffer) {
             Ok(len) => {
+                petroleum::debug_log!("read_line returned len: {}", len);
                 let line = &input_buffer[..len];
 
                 // Convert to string and process
                 match core::str::from_utf8(line) {
                     Ok(line_str) => {
+                        petroleum::debug_log!("Processed line: '{}'", line_str);
                         if !process_command(line_str.trim()) {
                             break; // Exit shell
                         }

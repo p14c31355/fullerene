@@ -51,8 +51,6 @@ pub fn collect_system_stats(
     }
 }
 
-
-
 // Memory initialization state tracking
 static MEMORY_INITIALIZED: spin::Mutex<bool> = spin::Mutex::new(false);
 

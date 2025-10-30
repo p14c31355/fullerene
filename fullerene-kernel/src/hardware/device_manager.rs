@@ -5,8 +5,8 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use spin::Mutex;
 use log;
+use spin::Mutex;
 
 use petroleum::initializer::{ErrorLogging, HardwareDevice, Initializable};
 use petroleum::{SystemError, SystemResult};

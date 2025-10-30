@@ -1,12 +1,18 @@
-use embedded_graphics::{geometry::Size, pixelcolor::Rgb888, prelude::*};
-use petroleum::common::EfiGraphicsPixelFormat;
-use petroleum::common::FullereneFramebufferConfig;
-use petroleum::common::VgaFramebufferConfig;
-use petroleum::graphics::color::{
+use crate::common::EfiGraphicsPixelFormat;
+use crate::common::FullereneFramebufferConfig;
+use crate::common::VgaFramebufferConfig;
+use crate::graphics::color::{
     ColorScheme, FramebufferInfo, PixelType, SIMPLE_FRAMEBUFFER_CONFIG, SimpleFramebuffer,
     SimpleFramebufferConfig, rgb_pixel, vga_color_index,
 };
-use petroleum::{clear_buffer_pixels, scroll_buffer_pixels};
+use crate::{clear_buffer_pixels, scroll_buffer_pixels};
+use embedded_graphics::{
+    geometry::{Point, Size},
+    mono_font::{MonoTextStyle, ascii::FONT_6X10},
+    pixelcolor::Rgb888,
+    prelude::*,
+    text::Text,
+};
 use spin::{Mutex, Once};
 
 // Generic type aliases for cleaner code
@@ -177,6 +183,70 @@ impl<T: PixelType> FramebufferWriter<T> {
                 vga_color_index(color.r(), color.g(), color.b())
             }
         }
+    }
+}
+
+// Text rendering function for framebuffers
+fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result {
+    const CHAR_WIDTH: i32 = FONT_6X10.character_size.width as i32;
+    const CHAR_HEIGHT: i32 = FONT_6X10.character_size.height as i32;
+
+    let fg_color = crate::graphics::color::u32_to_rgb888(writer.get_fg_color());
+
+    let style = MonoTextStyle::new(&FONT_6X10, fg_color);
+    let lines = s.split_inclusive('\n');
+    let mut current_pos = Point::new(
+        writer.get_position().0 as i32,
+        writer.get_position().1 as i32,
+    );
+
+    for line_with_newline in lines {
+        // Handle the line (including newline if present)
+        let has_newline = line_with_newline.ends_with('\n');
+        let line_content = if has_newline {
+            &line_with_newline[..line_with_newline.len() - 1]
+        } else {
+            line_with_newline
+        };
+
+        // Render the entire line at once for efficiency
+        if !line_content.is_empty() {
+            let text = Text::new(line_content, current_pos, style);
+            text.draw(writer).ok();
+
+            // Advance position by the rendered text width
+            current_pos.x += CHAR_WIDTH * line_content.chars().count() as i32;
+        }
+
+        if has_newline {
+            current_pos.x = 0;
+            current_pos.y += CHAR_HEIGHT; // Font height
+
+            // Handle scrolling if needed
+            if current_pos.y + CHAR_HEIGHT > writer.get_height() as i32 {
+                writer.scroll_up();
+                current_pos.y -= CHAR_HEIGHT;
+            }
+        } else {
+            // Handle line wrapping for lines without explicit newlines
+            if current_pos.x >= writer.get_width() as i32 {
+                current_pos.x = 0;
+                current_pos.y += CHAR_HEIGHT;
+                if current_pos.y + CHAR_HEIGHT > writer.get_height() as i32 {
+                    writer.scroll_up();
+                    current_pos.y -= CHAR_HEIGHT;
+                }
+            }
+        }
+    }
+
+    writer.set_position(current_pos.x as u32, current_pos.y as u32);
+    Ok(())
+}
+
+impl<T: PixelType> core::fmt::Write for FramebufferWriter<T> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        write_text(self, s)
     }
 }
 
