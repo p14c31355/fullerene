@@ -582,8 +582,6 @@ struct MappingConfig {
     flags: PageTableFlags,
 }
 
-
-
 // Generic function to map descriptors with custom configuration using MappingConfig macros
 unsafe fn map_memory_descriptors_with_config<T: MemoryDescriptorValidator, F>(
     mapper: &mut OffsetPageTable,
@@ -1197,8 +1195,10 @@ impl<'a, T: MemoryDescriptorValidator> PageTableInitializer<'a, T> {
             self.memory_map,
             |desc: &T| {
                 desc.is_valid()
-                    && (desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32
-                        || desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesData as u32)
+                    && (desc.get_type()
+                        == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32
+                        || desc.get_type()
+                            == crate::common::EfiMemoryType::EfiRuntimeServicesData as u32)
             },
             |desc: &T| {
                 if desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32 {
@@ -1215,11 +1215,12 @@ impl<'a, T: MemoryDescriptorValidator> PageTableInitializer<'a, T> {
             let phys_start = desc.get_physical_start();
             let pages = (end_frame - start_frame) as u64;
             // Always give writable access to available memory regions for compatibility, but executable code regions should not be writable
-            let flags = if desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32 {
-                PageTableFlags::PRESENT
-            } else {
-                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
-            };
+            let flags =
+                if desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32 {
+                    PageTableFlags::PRESENT
+                } else {
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
+                };
             let _ = map_to_higher_half_with_log(
                 self.mapper,
                 self.frame_allocator,
@@ -1246,21 +1247,24 @@ impl<'a, T: MemoryDescriptorValidator> PageTableInitializer<'a, T> {
             if desc.is_valid() {
                 // Include available memory and UEFI runtime services regions
                 let should_identity_map = desc.is_memory_available()
-                    || (desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32
-                        || desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesData as u32);
+                    || (desc.get_type()
+                        == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32
+                        || desc.get_type()
+                            == crate::common::EfiMemoryType::EfiRuntimeServicesData as u32);
 
                 if should_identity_map {
                     let phys_start = desc.get_physical_start();
                     let pages = desc.get_page_count();
                     // Always give writable access to available memory regions for compatibility, but executable code regions should not be writable
-                    let flags =
-                        if desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32 {
-                            PageTableFlags::PRESENT // Executable, read-only
-                        } else {
-                            PageTableFlags::PRESENT
-                                | PageTableFlags::WRITABLE
-                                | PageTableFlags::NO_EXECUTE // Writable, not executable
-                        };
+                    let flags = if desc.get_type()
+                        == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32
+                    {
+                        PageTableFlags::PRESENT // Executable, read-only
+                    } else {
+                        PageTableFlags::PRESENT
+                            | PageTableFlags::WRITABLE
+                            | PageTableFlags::NO_EXECUTE // Writable, not executable
+                    };
                     let _: core::result::Result<
                         (),
                         x86_64::structures::paging::mapper::MapToError<Size4KiB>,
@@ -1374,12 +1378,19 @@ pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> PhysAdd
 /// Minimal page table copy test
 /// Clones current CR3 frame, switches to it (then switches back)
 /// Used for debugging CR3 switching issues
-pub fn test_page_table_copy_switch(phys_offset: VirtAddr, frame_allocator: &mut BootInfoFrameAllocator, memory_map: &[impl MemoryDescriptorValidator]) -> crate::common::logging::SystemResult<()> {
+pub fn test_page_table_copy_switch(
+    phys_offset: VirtAddr,
+    frame_allocator: &mut BootInfoFrameAllocator,
+    memory_map: &[impl MemoryDescriptorValidator],
+) -> crate::common::logging::SystemResult<()> {
     debug_log_no_alloc!("[PT TEST] Starting minimal page table copy test");
 
     // Get current CR3
     let (original_cr3, _) = Cr3::read();
-    debug_log_no_alloc!("[PT TEST] Original CR3: 0x", original_cr3.start_address().as_u64() as usize);
+    debug_log_no_alloc!(
+        "[PT TEST] Original CR3: 0x",
+        original_cr3.start_address().as_u64() as usize
+    );
 
     // Allocate new frame for cloned table
     let new_l4_frame = match frame_allocator.allocate_frame() {
@@ -1389,7 +1400,10 @@ pub fn test_page_table_copy_switch(phys_offset: VirtAddr, frame_allocator: &mut 
             return Err(crate::common::logging::SystemError::FrameAllocationFailed);
         }
     };
-    debug_log_no_alloc!("[PT TEST] Allocated new L4 frame at: 0x", new_l4_frame.start_address().as_u64() as usize);
+    debug_log_no_alloc!(
+        "[PT TEST] Allocated new L4 frame at: 0x",
+        new_l4_frame.start_address().as_u64() as usize
+    );
 
     // Zero the new frame using identity mapping (UEFI maps all memory)
     unsafe {
@@ -1425,7 +1439,10 @@ pub fn test_page_table_copy_switch(phys_offset: VirtAddr, frame_allocator: &mut 
         tlb::flush_all();
         debug_log_no_alloc!("[PT TEST] TLB flushed after switch");
     } else {
-        debug_log_no_alloc!("[PT TEST ERROR] CR3 switch failed - still at: 0x", current_cr3.start_address().as_u64() as usize);
+        debug_log_no_alloc!(
+            "[PT TEST ERROR] CR3 switch failed - still at: 0x",
+            current_cr3.start_address().as_u64() as usize
+        );
         // Clean up allocated frame
         frame_allocator.deallocate_frame(new_l4_frame);
         return Err(crate::common::logging::SystemError::InternalError);
@@ -1442,7 +1459,10 @@ pub fn test_page_table_copy_switch(phys_offset: VirtAddr, frame_allocator: &mut 
     if final_cr3 == original_cr3 {
         debug_log_no_alloc!("[PT TEST] Successfully switched back to original CR3");
     } else {
-        debug_log_no_alloc!("[PT TEST ERROR] Failed to switch back to original CR3 - stuck at: 0x", final_cr3.start_address().as_u64() as usize);
+        debug_log_no_alloc!(
+            "[PT TEST ERROR] Failed to switch back to original CR3 - stuck at: 0x",
+            final_cr3.start_address().as_u64() as usize
+        );
         // Clean up allocated frame
         frame_allocator.deallocate_frame(new_l4_frame);
         return Err(crate::common::logging::SystemError::InternalError);
@@ -2035,7 +2055,12 @@ impl PageTableHelper for PageTableManager {
             None => return Err(crate::common::logging::SystemError::InvalidArgument),
         };
 
-        debug_log_no_alloc!("[PT SWITCH] About to switch CR3 from 0x", self.current_page_table as usize, " to 0x", table_addr);
+        debug_log_no_alloc!(
+            "[PT SWITCH] About to switch CR3 from 0x",
+            self.current_page_table as usize,
+            " to 0x",
+            table_addr
+        );
 
         unsafe {
             Cr3::write(*new_frame, x86_64::registers::control::Cr3Flags::empty());

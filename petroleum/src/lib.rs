@@ -34,13 +34,68 @@ pub use graphics::{
     color::{self},
     init_vga_graphics,
 };
+
+/// Text buffer operation functions
+pub fn clear_buffer<B: TextBufferOperations<Char = ScreenChar>>(
+    buffer: &mut B,
+    height: usize,
+    width: usize,
+    value: ScreenChar,
+) {
+    for row in 0..height {
+        for col in 0..width {
+            buffer.set_char_at(row, col, value);
+        }
+    }
+}
+
+pub fn clear_line_range<B: TextBufferOperations<Char = ScreenChar>>(
+    buffer: &mut B,
+    start_row: usize,
+    end_row: usize,
+    col_start: usize,
+    col_end: usize,
+    blank_char: ScreenChar,
+) {
+    for row in start_row..end_row {
+        for col in col_start..col_end {
+            buffer.set_char_at(row, col, blank_char);
+        }
+    }
+}
+
+pub fn scroll_char_buffer_up<B: TextBufferOperations<Char = ScreenChar>>(
+    buffer: &mut B,
+    height: usize,
+    width: usize,
+    blank: ScreenChar,
+) {
+    for row in 1..height {
+        for col in 0..width {
+            let cell = buffer.get_char_at(row, col);
+            buffer.set_char_at(row - 1, col, cell);
+        }
+    }
+    for col in 0..width {
+        buffer.set_char_at(height - 1, col, blank);
+    }
+}
+
+/// Debug memory descriptor function
+pub fn debug_mem_descriptor(desc: &crate::page_table::efi_memory::MemoryMapDescriptor) {
+    crate::serial::_print(format_args!(
+        "Memory descriptor: type={} phys=0x{:x} pages={}\n",
+        desc.type_, desc.physical_start, desc.number_of_pages
+    ));
+}
+
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
 pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 // Heap allocation exports
 pub use page_table::ALLOCATOR;
 pub use page_table::allocate_heap_from_map;
 pub use page_table::init_global_heap;
-pub use page_table::{bitmap_allocator, BitmapFrameAllocator};
+pub use page_table::{BitmapFrameAllocator, bitmap_allocator};
 // Removed reinit_page_table export - implemented in higher-level crates
 // UEFI helper exports
 pub use uefi_helpers::{initialize_graphics_with_config, kernel_fallback_framebuffer_detection};

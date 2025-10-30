@@ -361,8 +361,6 @@ fn yield_and_process_system_calls() {
     }
 }
 
-
-
 /// Draw the OS desktop on the available framebuffer (UEFI or BIOS)
 fn draw_desktop_on_available_framebuffer() {
     #[cfg(target_os = "uefi")]

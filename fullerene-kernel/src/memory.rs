@@ -6,7 +6,9 @@ use petroleum::common::{
     EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
     FullereneFramebufferConfig,
 };
-use petroleum::page_table::efi_memory::{EfiMemoryDescriptor, MemoryDescriptorValidator, MemoryMapDescriptor};
+use petroleum::page_table::efi_memory::{
+    EfiMemoryDescriptor, MemoryDescriptorValidator, MemoryMapDescriptor,
+};
 
 use crate::MEMORY_MAP;
 
@@ -20,8 +22,6 @@ use x86_64::{PhysAddr, VirtAddr};
 
 // Add a constant for the higher-half kernel virtual base address
 const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000; // Common higher-half address
-
-
 
 // Helper function to find framebuffer config (using generic)
 pub fn find_framebuffer_config(

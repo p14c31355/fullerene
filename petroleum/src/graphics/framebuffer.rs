@@ -1,7 +1,5 @@
 use crate::common::EfiGraphicsPixelFormat;
-use crate::graphics::color::{
-    FramebufferInfo, PixelType, rgb_pixel, vga_color_index,
-};
+use crate::graphics::color::{FramebufferInfo, PixelType, rgb_pixel, vga_color_index};
 use crate::{clear_buffer_pixels, scroll_buffer_pixels};
 use embedded_graphics::{
     geometry::{Point, Size},

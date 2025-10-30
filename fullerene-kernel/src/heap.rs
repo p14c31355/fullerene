@@ -36,7 +36,9 @@ pub fn reinit_page_table(
 }
 
 use petroleum::common::EfiMemoryType;
-use petroleum::page_table::efi_memory::{EfiMemoryDescriptor, MemoryMapDescriptor, MemoryDescriptorValidator};
+use petroleum::page_table::efi_memory::{
+    EfiMemoryDescriptor, MemoryDescriptorValidator, MemoryMapDescriptor,
+};
 use spin::{Mutex, Once};
 
 /// Global frame allocator
@@ -50,9 +52,10 @@ const MAX_DESCRIPTORS: usize = 1024;
 pub(crate) static mut MEMORY_MAP_BUFFER: [MemoryMapDescriptor; MAX_DESCRIPTORS] = [const {
     MemoryMapDescriptor {
         ptr: core::ptr::null(),
-        descriptor_size: 0
+        descriptor_size: 0,
     }
-}; MAX_DESCRIPTORS];
+};
+    MAX_DESCRIPTORS];
 
 /// Initialize the boot frame allocator with memory map
 pub fn init_frame_allocator(memory_map: &[impl MemoryDescriptorValidator]) {

@@ -10,12 +10,14 @@ use crate::{gdt, graphics, interrupts, memory};
 use alloc::boxed::Box;
 use core::ffi::c_void;
 use petroleum::common::uefi::{efi_print, find_gop_framebuffer, write_vga_string};
-use petroleum::common::{ConfigWithMetadata, EfiGraphicsOutputProtocol, EfiSystemTable, FRAMEBUFFER_CONFIG_MAGIC};
+use petroleum::common::{
+    ConfigWithMetadata, EfiGraphicsOutputProtocol, EfiSystemTable, FRAMEBUFFER_CONFIG_MAGIC,
+};
 
+use petroleum::page_table::efi_memory::MemoryMapDescriptor;
 use petroleum::{
     allocate_heap_from_map, debug_log, debug_log_no_alloc, mem_debug, write_serial_bytes,
 };
-use petroleum::page_table::efi_memory::MemoryMapDescriptor;
 use spin::Mutex;
 use x86_64::{
     PhysAddr, VirtAddr,
@@ -47,7 +49,6 @@ struct UefiInitContext {
 
 #[cfg(target_os = "uefi")]
 impl UefiInitContext {
-
     /// Early initialization: serial, VGA, memory maps
     fn early_initialization(&mut self) -> PhysAddr {
         mem_debug!("Kernel: efi_main entered\n");
@@ -69,7 +70,11 @@ impl UefiInitContext {
         write_serial_bytes!(0x3F8, 0x3FD, b"Early setup completed\n");
 
         let kernel_virt_addr = efi_main as u64;
-        crate::memory::setup_kernel_location(self.memory_map, self.memory_map_size, kernel_virt_addr)
+        crate::memory::setup_kernel_location(
+            self.memory_map,
+            self.memory_map_size,
+            kernel_virt_addr,
+        )
     }
 
     fn memory_management_initialization(
@@ -132,7 +137,11 @@ impl UefiInitContext {
 
         // Run minimal page table copy test to verify CR3 switching works
         debug_log_no_alloc!("About to run page table copy test");
-        if let Err(e) = petroleum::page_table::test_page_table_copy_switch(self.physical_memory_offset, &mut frame_allocator, *memory_map_ref) {
+        if let Err(e) = petroleum::page_table::test_page_table_copy_switch(
+            self.physical_memory_offset,
+            &mut frame_allocator,
+            *memory_map_ref,
+        ) {
             debug_log_no_alloc!("Page table copy test failed: ", e as usize);
             // Continue anyway for now
         } else {
@@ -375,11 +384,15 @@ impl UefiInitContext {
         debug_log_no_alloc!("init_memory_map: descriptor_size: ", descriptor_item_size);
         let config_size = core::mem::size_of::<ConfigWithMetadata>();
         let has_config = unsafe {
-            let ptr = (self.memory_map as *const u8).add(self.memory_map_size - config_size) as *const ConfigWithMetadata;
+            let ptr = (self.memory_map as *const u8).add(self.memory_map_size - config_size)
+                as *const ConfigWithMetadata;
             !ptr.is_null() && (*ptr).magic == FRAMEBUFFER_CONFIG_MAGIC
         };
-        let actual_descriptors_size = self.memory_map_size - core::mem::size_of::<usize>() - if has_config { config_size } else { 0 };
-        let descriptors_base = unsafe { (self.memory_map as *const u8).add(core::mem::size_of::<usize>()) };
+        let actual_descriptors_size = self.memory_map_size
+            - core::mem::size_of::<usize>()
+            - if has_config { config_size } else { 0 };
+        let descriptors_base =
+            unsafe { (self.memory_map as *const u8).add(core::mem::size_of::<usize>()) };
         let num_descriptors = actual_descriptors_size / descriptor_item_size;
         debug_log_no_alloc!("init_memory_map: num_descriptors: ", num_descriptors);
         let actual_num = num_descriptors.min(MAX_DESCRIPTORS);
@@ -389,7 +402,8 @@ impl UefiInitContext {
         unsafe {
             for i in 0..actual_num {
                 let desc_ptr = descriptors_base.add(i * descriptor_item_size);
-                crate::heap::MEMORY_MAP_BUFFER[i] = MemoryMapDescriptor::new(desc_ptr, descriptor_item_size);
+                crate::heap::MEMORY_MAP_BUFFER[i] =
+                    MemoryMapDescriptor::new(desc_ptr, descriptor_item_size);
             }
             crate::heap::MEMORY_MAP.call_once(|| &crate::heap::MEMORY_MAP_BUFFER[0..actual_num]);
         }

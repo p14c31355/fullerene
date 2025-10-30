@@ -13,8 +13,6 @@ macro_rules! bitmap_chunk_bit {
     }};
 }
 
-
-
 #[macro_export]
 macro_rules! map_range_with_log_macro {
     ($($tt:tt)*) => {
@@ -50,17 +48,21 @@ macro_rules! bit_ops {
             }
         }
     };
-    (bitmap_is_free, $bitmap:expr, $frame:expr) => {{
-        if let Some(ref bitmap) = $bitmap {
-            let (chunk_index, bit_index) = bitmap_chunk_bit!($frame);
-            if chunk_index < bitmap.len() {
-                (bitmap[chunk_index] & (1 << bit_index)) == 0
-            } else {
-                false
-            }
-        } else {
-            false
-        }
+}
+
+/// Map pages to offset addresses (phys + offset = virt)
+#[macro_export]
+macro_rules! map_pages_to_offset {
+    ($mapper:expr, $allocator:expr, $phys_base:expr, $virt_offset:expr, $num_pages:expr, $flags:expr) => {{
+        map_pages!(
+            $mapper,
+            $allocator,
+            $phys_base,
+            ($virt_offset + $phys_base),
+            $num_pages,
+            $flags,
+            "panic"
+        );
     }};
 }
 
@@ -130,10 +132,6 @@ macro_rules! command_args {
     };
 }
 
-
-
-
-
 #[macro_export]
 macro_rules! map_pages {
     ($mapper:expr, $allocator:expr, $phys_base:expr, $virt_calc:expr, $num_pages:expr, $flags:expr, $behavior:tt) => {{
@@ -149,12 +147,12 @@ macro_rules! map_pages {
             unsafe {
                 match $mapper.map_to(page, frame, $flags, $allocator) {
                     Ok(flush) => flush.flush(),
-                    Err(MapToError::PageAlreadyMapped(_)) => {},
+                    Err(MapToError::PageAlreadyMapped(_)) => {}
                     Err(e) => match $behavior {
                         "continue" => continue,
                         "panic" => panic!("Mapping error: {:?}", e),
-                        _ => {},
-                    }
+                        _ => {}
+                    },
                 }
             }
         }
@@ -368,8 +366,6 @@ macro_rules! read_unaligned {
     };
 }
 
-
-
 /// Enhanced memory debugging macro that supports formatted output with mixed strings and values
 ///
 /// # Examples
@@ -526,8 +522,6 @@ macro_rules! vga_stat_display_line {
     }};
 }
 
-
-
 /// Unified periodic stat logging to filesystem with auto-file creation
 /// Reduces duplication between different stat logging functions
 #[macro_export]
@@ -645,10 +639,6 @@ macro_rules! volatile_ops {
     };
 }
 
-
-
-
-
 /// Macro for generic text buffer operations in write_byte
 #[macro_export]
 macro_rules! handle_write_byte {
@@ -692,7 +682,7 @@ macro_rules! error_variant_map {
 #[macro_export]
 macro_rules! init_vga_palette_registers {
     () => {{
-        for i: u8 in 0u8..16u8 {
+        for i in 0u8..16u8 {
             $crate::graphics::ports::write_vga_attribute_register(i, i);
         }
     }};
@@ -829,14 +819,7 @@ macro_rules! log_page_table_op {
     };
     ($operation:literal, $phys:expr, $virt:expr, $pages:expr) => {
         mem_debug!(
-            $operation,
-            " phys=0x",
-            $phys,
-            " virt=0x",
-            $virt,
-            " pages=",
-            $pages,
-            "\n"
+            $operation, " phys=0x", $phys, " virt=0x", $virt, " pages=", $pages, "\n"
         );
     };
     ($stage:literal, $phys:expr, $virt:expr, $pages:expr) => {
@@ -924,24 +907,28 @@ macro_rules! page_flags_const {
 /// Integrated identity mapping macro
 #[macro_export]
 macro_rules! map_identity_range_macro {
-    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{
-        unsafe {
-            map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags)
-        }
-    }};
+    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{ unsafe { map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags) } }};
 }
-
-
 
 //// Identity mapping with detailed logging
 #[macro_export]
 macro_rules! identity_map_range_with_log_macro {
     ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $num_pages:expr, $flags:expr) => {{
-        log_page_table_op!("Identity mapping start", $start_addr, $start_addr, $num_pages);
+        log_page_table_op!(
+            "Identity mapping start",
+            $start_addr,
+            $start_addr,
+            $num_pages
+        );
         let result =
             map_identity_range_macro!($mapper, $frame_allocator, $start_addr, $num_pages, $flags);
         if result.is_ok() {
-            log_page_table_op!("Identity mapping complete", $start_addr, $start_addr, $num_pages);
+            log_page_table_op!(
+                "Identity mapping complete",
+                $start_addr,
+                $start_addr,
+                $num_pages
+            );
         }
         result
     }};
@@ -998,7 +985,10 @@ macro_rules! flush_tlb_and_verify {
         use x86_64::registers::control::{Cr3, Cr3Flags};
         tlb::flush_all();
         // Verify by reading CR3 to force a TLB reload
-        let (frame, flags): (x86_64::structures::paging::PhysFrame<x86_64::structures::paging::Size4KiB>, Cr3Flags) = Cr3::read();
+        let (frame, flags): (
+            x86_64::structures::paging::PhysFrame<x86_64::structures::paging::Size4KiB>,
+            Cr3Flags,
+        ) = Cr3::read();
         unsafe { Cr3::write(frame, flags) };
     }};
 }
@@ -1473,7 +1463,7 @@ macro_rules! impl_text_buffer_operations {
             for col in 0..$width {
                 self.$buffer_field[$height - 1][col] = ScreenChar {
                     ascii_character: b' ',
-                    color_code: self.$color_field
+                    color_code: self.$color_field,
                 };
             }
         }

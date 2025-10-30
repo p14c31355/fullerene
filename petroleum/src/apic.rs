@@ -2,8 +2,8 @@
 //!
 //! Provides functions for configuring LAPIC and I/O APIC during UEFI boot.
 
-use crate::volatile_ops;
 use crate::bit_ops;
+use crate::volatile_ops;
 
 /// I/O APIC register offsets
 const IOAPIC_VER: u8 = 0x01;

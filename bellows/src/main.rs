@@ -38,9 +38,7 @@ mod loader;
 
 use loader::{exit_boot_services_and_jump, init_heap, load_efi_image};
 
-use petroleum::common::{
-    EfiGraphicsPixelFormat, EfiSystemTable, FullereneFramebufferConfig,
-};
+use petroleum::common::{EfiGraphicsPixelFormat, EfiSystemTable, FullereneFramebufferConfig};
 
 /// Main entry point of the bootloader.
 ///

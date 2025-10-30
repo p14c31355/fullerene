@@ -63,7 +63,17 @@ impl BitmapFrameAllocator {
 
         // Debug: Log each descriptor
         for (i, desc) in memory_map.iter().enumerate() {
-            mem_debug!("Memory descriptor ", i, ", type=", desc.get_type() as usize, ", phys_start=", desc.get_physical_start() as usize, ", pages=", desc.get_page_count() as usize, "\n");
+            mem_debug!(
+                "Memory descriptor ",
+                i,
+                ", type=",
+                desc.get_type() as usize,
+                ", phys_start=",
+                desc.get_physical_start() as usize,
+                ", pages=",
+                desc.get_page_count() as usize,
+                "\n"
+            );
         }
 
         let (max_addr, total_frames, bitmap_size) =
