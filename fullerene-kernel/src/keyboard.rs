@@ -48,91 +48,90 @@ static MODIFIERS: Mutex<KeyboardModifiers> = Mutex::new(KeyboardModifiers {
 /// Flag for extended scancode handling
 static EXTENDED_SCANCODE: Mutex<bool> = Mutex::new(false);
 
-/// Scancode set 1 to ASCII conversion
-/// This is a simplified mapping - in a real system you'd handle extended codes
-fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> {
+// Key mapping tables for scancode to ASCII conversion
+const NUMBERS_BASE: &[u8] = b"1234567890";
+const NUMBERS_SHIFT: &[u8] = b"!@#$%^&*()";
+
+// QWERTY row characters
+const QWERTY_BASE: &[u8] = b"qwertyuiop";
+const ASDF_BASE: &[u8] = b"asdfghjkl";
+const ZXCV_BASE: &[u8] = b"zxcvbnm";
+
+// Punctuation mappings (scancode, base, shifted)
+const PUNCTUATION: &[(u8, u8, u8)] = &[
+    (0x0C, b'-', b')'),
+    (0x0D, b'=', b'='),
+    (0x1A, b'[', b'{'),
+    (0x1B, b']', b'}'),
+    (0x27, b';', b':'),
+    (0x28, b'\'', b'"'),
+    (0x29, b'`', b'~'),
+    (0x2B, b'\\', b'|'),
+    (0x33, b',', b'<'),
+    (0x34, b'.', b'>'),
+    (0x35, b'/', b'?'),
+];
+
+// Special keys (scancode, ascii)
+const SPECIAL_KEYS: &[(u8, u8)] = &[
+    (0x1C, b'\n'),  // Enter
+    (0x0E, 0x08),   // Backspace
+    (0x0F, b'\t'),  // Tab
+    (0x01, 27),     // Escape
+    (0x39, b' '),   // Space
+];
+
+/// Helper function to apply case and ctrl modifications to alphabetic characters
+fn process_alphabetic(scancode: u8, base: u8, modifiers: &KeyboardModifiers) -> u8 {
     let shift_pressed = modifiers.lshift || modifiers.rshift;
     let caps_lock = modifiers.caps_lock;
     let ctrl_pressed = modifiers.lctrl || modifiers.rctrl;
 
-    // Handle extended scancodes (0xE0 prefix)
-    // This is simplified - real implementation needs state machine
+    let mut ch = base;
+    if shift_pressed ^ caps_lock {
+        ch = ch.to_ascii_uppercase();
+    }
+    if ctrl_pressed {
+        ch &= 0x1F; // Ctrl modifies ASCII
+    }
+    ch
+}
+
+/// Scancode set 1 to ASCII conversion using lookup tables
+fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> {
+    let shift_pressed = modifiers.lshift || modifiers.rshift;
+    let ctrl_pressed = modifiers.lctrl || modifiers.rctrl;
 
     match scancode {
-        // Numbers row
-        0x02 => Some(if shift_pressed { b'!' } else { b'1' }),
-        0x03 => Some(if shift_pressed { b'@' } else { b'2' }),
-        0x04 => Some(if shift_pressed { b'#' } else { b'3' }),
-        0x05 => Some(if shift_pressed { b'$' } else { b'4' }),
-        0x06 => Some(if shift_pressed { b'%' } else { b'5' }),
-        0x07 => Some(if shift_pressed { b'^' } else { b'6' }),
-        0x08 => Some(if shift_pressed { b'&' } else { b'7' }),
-        0x09 => Some(if shift_pressed { b'*' } else { b'8' }),
-        0x0A => Some(if shift_pressed { b'(' } else { b'9' }),
-        0x0B => Some(if shift_pressed { b')' } else { b'0' }),
-
-        // QWERTY row
-        0x10..=0x19 => {
-            let base_chars = ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'];
-            let mut ch = base_chars[(scancode - 0x10) as usize];
-            if shift_pressed ^ caps_lock {
-                ch = ch.to_ascii_uppercase();
-            }
-            if ctrl_pressed {
-                return Some(ch as u8 & 0x1F); // Ctrl modifies ASCII
-            }
-            Some(ch as u8)
+        0x02..=0x0B => { // Numbers 1-0
+            let index = (scancode - 0x02) as usize;
+            let chars = if shift_pressed { NUMBERS_SHIFT } else { NUMBERS_BASE };
+            Some(chars[index])
         }
-
-        // ASDF row
-        0x1E..=0x26 => {
-            let base_chars = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'];
-            let mut ch = base_chars[(scancode - 0x1E) as usize];
-            if shift_pressed ^ caps_lock {
-                ch = ch.to_ascii_uppercase();
-            }
-            if ctrl_pressed {
-                return Some(ch as u8 & 0x1F);
-            }
-            Some(ch as u8)
+        0x10..=0x19 => { // QWERTY row
+            let index = (scancode - 0x10) as usize;
+            Some(process_alphabetic(scancode, QWERTY_BASE[index], modifiers))
         }
-
-        // ZXCV row
-        0x2C..=0x32 => {
-            let base_chars = ['z', 'x', 'c', 'v', 'b', 'n', 'm'];
-            let mut ch = base_chars[(scancode - 0x2C) as usize];
-            if shift_pressed ^ caps_lock {
-                ch = ch.to_ascii_uppercase();
-            }
-            if ctrl_pressed {
-                return Some(ch as u8 & 0x1F);
-            }
-            Some(ch as u8)
+        0x1E..=0x26 => { // ASDF row
+            let index = (scancode - 0x1E) as usize;
+            Some(process_alphabetic(scancode, ASDF_BASE[index], modifiers))
         }
-
-        // Space
-        0x39 => Some(b' '),
-
-        // Punctuation on shift
-        0x0C => Some(if shift_pressed { b')' } else { b'-' }),
-        0x0D => Some(if shift_pressed { b'=' } else { b'=' }),
-        0x1A => Some(if shift_pressed { b'{' } else { b'[' }),
-        0x1B => Some(if shift_pressed { b'}' } else { b']' }),
-        0x27 => Some(if shift_pressed { b':' } else { b';' }),
-        0x28 => Some(if shift_pressed { b'"' } else { b'\'' }),
-        0x29 => Some(if shift_pressed { b'~' } else { b'`' }),
-        0x2B => Some(if shift_pressed { b'|' } else { b'\\' }),
-        0x33 => Some(if shift_pressed { b'<' } else { b',' }),
-        0x34 => Some(if shift_pressed { b'>' } else { b'.' }),
-        0x35 => Some(if shift_pressed { b'?' } else { b'/' }),
-
-        // Special keys - we handle a few important ones
-        0x1C => Some(b'\n'), // Enter
-        0x0E => Some(0x08),  // Backspace
-        0x0F => Some(b'\t'), // Tab
-        0x01 => Some(27),    // Escape
-
-        _ => None,
+        0x2C..=0x32 => { // ZXCV row
+            let index = (scancode - 0x2C) as usize;
+            Some(process_alphabetic(scancode, ZXCV_BASE[index], modifiers))
+        }
+        0x0C | 0x0D | 0x1A | 0x1B | 0x27 | 0x28 | 0x29 | 0x2B | 0x33 | 0x34 | 0x35 => {
+            for &(code, base, shifted) in PUNCTUATION.iter() {
+                if code == scancode {
+                    return Some(if shift_pressed { shifted } else { base });
+                }
+            }
+            None
+        }
+        _ => {
+            // Lookup in special keys
+            SPECIAL_KEYS.iter().find(|&&(code, _)| code == scancode).map(|&(_, ascii)| ascii)
+        }
     }
 }
 

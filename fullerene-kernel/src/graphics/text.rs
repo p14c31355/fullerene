@@ -37,7 +37,7 @@ pub static FRAMEBUFFER_UEFI: Once<Mutex<petroleum::UefiFramebuffer>> = Once::new
 pub static WRITER_BIOS: Once<Mutex<Box<dyn core::fmt::Write + Send + Sync>>> = Once::new();
 
 #[cfg(not(target_os = "uefi"))]
-pub static FRAMEBUFFER_BIOS: Once<Mutex<super::framebuffer::FramebufferWriter<u8>>> = Once::new();
+pub static FRAMEBUFFER_BIOS: Once<Mutex<petroleum::FramebufferWriter<u8>>> = Once::new();
 
 #[cfg(target_os = "uefi")]
 pub fn init(config: &FullereneFramebufferConfig) {
