@@ -32,22 +32,7 @@ macro_rules! debug_mem_descriptor {
 //// Helper macro for mapping a single page with error handling
 #[macro_export]
 macro_rules! map_single_page {
-    ($mapper:expr, $allocator:expr, $phys_addr:expr, $virt_addr:expr, $flags:expr, continue_on_error) => {{
-        use x86_64::{
-            PhysAddr, VirtAddr,
-            structures::paging::{Page, PhysFrame, Size4KiB},
-        };
-        let page = Page::<Size4KiB>::containing_address(VirtAddr::new($virt_addr));
-        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new($phys_addr));
-        unsafe {
-            match $mapper.map_to(page, frame, $flags, $allocator) {
-                Ok(flush) => flush.flush(),
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {},
-                Err(_) => continue,
-            }
-        }
-    }};
-    ($mapper:expr, $allocator:expr, $phys_addr:expr, $virt_addr:expr, $flags:expr, panic_on_error) => {{
+    ($mapper:expr, $allocator:expr, $phys_addr:expr, $virt_addr:expr, $flags:expr, $behavior:tt) => {{
         use x86_64::{
             PhysAddr, VirtAddr,
             structures::paging::{Page, PhysFrame, Size4KiB, mapper::MapToError},
@@ -58,32 +43,24 @@ macro_rules! map_single_page {
             match $mapper.map_to(page, frame, $flags, $allocator) {
                 Ok(flush) => flush.flush(),
                 Err(MapToError::PageAlreadyMapped(_)) => {},
-                Err(e) => panic!("Mapping error: {:?}", e),
+                Err(e) => match $behavior {
+                    'continue => continue,
+                    'panic => panic!("Mapping error: {:?}", e),
+                    _ => {},
+                }
             }
         }
     }};
 }
 
-/// Macro for loop-based page mapping with simplified syntax
+/// Consolidated page mapping macro with flexible virtual address calculation
 #[macro_export]
-macro_rules! map_pages_loop {
-    ($mapper:expr, $allocator:expr, $base_phys:expr, $base_virt:expr, $num_pages:expr, $flags:expr) => {{
+macro_rules! map_pages {
+    ($mapper:expr, $allocator:expr, $phys_base:expr, $virt_calc:expr, $num_pages:expr, $flags:expr, $behavior:tt) => {{
         for i in 0..$num_pages {
-            let phys_addr = $base_phys + i * 4096;
-            let virt_addr = $base_virt + i * 4096;
-            $crate::map_single_page!($mapper, $allocator, phys_addr, virt_addr, $flags, continue_on_error);
-        }
-    }};
-}
-
-/// Macro for mapping pages to a specified offset in virtual address space, panicking on error
-#[macro_export]
-macro_rules! map_pages_to_offset {
-    ($mapper:expr, $allocator:expr, $phys_base:expr, $virt_offset:expr, $num_pages:expr, $flags:expr) => {{
-        for i in 0..$num_pages {
-            let phys_addr = ($phys_base + (i * 4096) as u64) as u64;
-            let virt_addr = ($virt_offset) + phys_addr;
-            $crate::map_single_page!($mapper, $allocator, phys_addr, virt_addr, $flags, panic_on_error);
+            let phys_addr = $phys_base + i * 4096;
+            let virt_addr = $virt_calc;
+            $crate::map_single_page!($mapper, $allocator, phys_addr, virt_addr, $flags, $behavior);
         }
     }};
 }
@@ -863,13 +840,13 @@ macro_rules! update_vga_cursor {
 #[macro_export]
 macro_rules! log_page_table_op {
     ($operation:expr) => {
-        debug_log_no_alloc!($operation);
+        mem_debug!($operation, "\n");
     };
     ($operation:expr, $msg:expr, $addr:expr) => {
-        debug_log_no_alloc!($operation, $msg, " addr=", $addr);
+        mem_debug!($operation, $msg, " addr=", $addr, "\n");
     };
     ($stage:expr, $phys:expr, $virt:expr, $pages:expr) => {
-        debug_log_no_alloc!(
+        mem_debug!(
             "Memory mapping stage=",
             $stage,
             " phys=0x",
@@ -877,11 +854,12 @@ macro_rules! log_page_table_op {
             " virt=0x",
             $virt,
             " pages=",
-            $pages
+            $pages,
+            "\n"
         );
     };
     ($operation:expr, $msg:expr) => {
-        debug_log_no_alloc!($operation, $msg);
+        mem_debug!($operation, $msg, "\n");
     };
 }
 
@@ -908,7 +886,7 @@ macro_rules! process_memory_descriptors_safely {
 #[macro_export]
 macro_rules! debug_log_validate_macro {
     ($field:expr, $value:expr) => {
-        debug_log_no_alloc!($field, " validated: ", $value);
+        mem_debug!($field, " validated: ", $value, "\n");
     };
 }
 
@@ -959,13 +937,13 @@ macro_rules! map_identity_range_macro {
     }};
 }
 
-/// Range mapping with logging macro
+//// Range mapping with logging macro
 #[macro_export]
 macro_rules! map_range_with_log_macro {
     ($mapper:expr, $frame_allocator:expr, $phys_start:expr, $virt_start:expr, $num_pages:expr, $flags:expr) => {{
         use x86_64::structures::paging::mapper::MapToError;
         log_page_table_op!("Mapping range", $phys_start, $virt_start, $num_pages);
-        $crate::map_pages_loop!($mapper, $frame_allocator, $phys_start, $virt_start, $num_pages, $flags);
+        $crate::map_pages!($mapper, $frame_allocator, $phys_start, $virt_start + i * 4096, $num_pages, $flags, 'continue');
         Ok::<(), MapToError<Size4KiB>>(())
     }};
 }
