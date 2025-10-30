@@ -4,6 +4,7 @@
 //! including process scheduling, shell execution, and system-wide orchestration.
 
 use crate::graphics;
+use crate::graphics::text;
 use alloc::{collections::VecDeque, format};
 use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::{
@@ -307,7 +308,16 @@ fn process_scheduler_iteration() {
 
     // Additional tasks that don't fit the pattern
     if current_tick % DESKTOP_UPDATE_INTERVAL_TICKS == 0 {
-        graphics::draw_os_desktop();
+        #[cfg(target_os = "uefi")]
+        if let Some(framebuffer) = text::FRAMEBUFFER_UEFI.get() {
+            let mut fb = framebuffer.lock();
+            graphics::draw_os_desktop(&mut *fb);
+        }
+        #[cfg(not(target_os = "uefi"))]
+        if let Some(framebuffer) = text::FRAMEBUFFER_BIOS.get() {
+            let mut fb = framebuffer.lock();
+            graphics::draw_os_desktop(&mut *fb);
+        }
     }
     if current_tick % 10000 == 0 {
         emergency_condition_handler();
@@ -362,7 +372,16 @@ fn yield_and_process_system_calls() {
 /// Handle periodic UI operations (desktop updates)
 fn perform_periodic_ui_operations(current_tick: u64) {
     if current_tick % DESKTOP_UPDATE_INTERVAL_TICKS == 0 {
-        graphics::draw_os_desktop();
+        #[cfg(target_os = "uefi")]
+        if let Some(framebuffer) = text::FRAMEBUFFER_UEFI.get() {
+            let mut fb = framebuffer.lock();
+            graphics::draw_os_desktop(&mut *fb);
+        }
+        #[cfg(not(target_os = "uefi"))]
+        if let Some(framebuffer) = text::FRAMEBUFFER_BIOS.get() {
+            let mut fb = framebuffer.lock();
+            graphics::draw_os_desktop(&mut *fb);
+        }
     }
 }
 

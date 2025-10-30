@@ -1,7 +1,7 @@
 use petroleum::graphics::*;
 
 // Re-export specific functions from petroleum to maintain consistency
-pub use petroleum::graphics::{draw_os_desktop, draw_desktop_internal, Button};
+pub use petroleum::graphics::draw_os_desktop;
 
 // Keep local text module for configuration-specific init
 pub mod text;

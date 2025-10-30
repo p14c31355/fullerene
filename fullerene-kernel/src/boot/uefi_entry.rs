@@ -2,7 +2,7 @@
 use crate::scheduler::scheduler_loop;
 
 use crate::MEMORY_MAP;
-use crate::graphics::framebuffer::FramebufferLike;
+use petroleum::FramebufferLike;
 use crate::heap;
 
 use crate::memory::find_heap_start;
