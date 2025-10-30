@@ -8,7 +8,7 @@ use crate::graphics::text;
 use alloc::{collections::VecDeque, format};
 use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::{
-    Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats, display_stats_on_available_display, periodic_task, scheduler_log,
+    Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats, display_stats_on_available_display, periodic_task, scheduler_log, write_serial_bytes,
 };
 
 // Define periodic tasks in a struct for clarity
@@ -406,15 +406,21 @@ fn initialize_shell_process() -> crate::process::ProcessId {
 
 /// Main kernel scheduler loop - orchestrates all system functionality
 pub fn scheduler_loop() -> ! {
+    // Test if we enter scheduler loop
+    petroleum::halt_loop();
+    write_serial_bytes!(0x3F8, 0x3FD, b"Scheduler loop entered\n");
     log::info!("Starting enhanced OS scheduler with integrated system features...");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Log initialized\n");
     scheduler_log!("About to initialize shell process");
 
     let _ = initialize_shell_process();
+    write_serial_bytes!(0x3F8, 0x3FD, b"Shell process created\n");
     scheduler_log!("Shell process initialized successfully");
 
     // Main scheduler loop - continuously execute processes with integrated OS functionality
     scheduler_log!("Entering main loop");
     scheduler_log!("Main loop starting");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Main loop started\n");
 
     // Print to VGA if available for GUI output
     if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {
