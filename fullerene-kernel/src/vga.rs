@@ -148,10 +148,10 @@ impl TextBufferOperations for VgaBuffer {
 pub static VGA_BUFFER: Once<Mutex<VgaBuffer>> = Once::new();
 
 // Initialize the VGA screen with the given physical memory offset
-pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
+pub fn init_vga(_physical_memory_offset: x86_64::VirtAddr) {
     const VGA_PHY_ADDR: usize = 0xb8000;
-    let vga_virt_addr = physical_memory_offset.as_u64() as usize + VGA_PHY_ADDR;
-    petroleum::debug_log!("Initializing VGA at virtual addr: {:x}", vga_virt_addr);
+    let vga_virt_addr = VGA_PHY_ADDR; // VGA is identity mapped
+    petroleum::debug_log!("Initializing VGA at identity addr: {:x}", vga_virt_addr);
     VGA_BUFFER.call_once(|| Mutex::new(VgaBuffer::new(vga_virt_addr)));
     let mut writer = VGA_BUFFER.get().unwrap().lock();
     writer.clear_screen();
