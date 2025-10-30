@@ -260,7 +260,7 @@ unsafe fn map_pe_section(
     for p in 0..pages {
         let phys_addr = calc_offset_addr!(section_start_phys, p);
         let virt_addr = calc_offset_addr!(section_start_virt, p);
-        map_with_offset!(mapper, frame_allocator, phys_addr, virt_addr, flags);
+        map_with_offset!(mapper, frame_allocator, phys_addr, virt_addr, flags, "panic");
     }
 }
 

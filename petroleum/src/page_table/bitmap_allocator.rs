@@ -79,7 +79,7 @@ impl BitmapFrameAllocator {
         let (max_addr, total_frames, bitmap_size) =
             super::efi_memory::calculate_frame_allocation_params(memory_map);
 
-        debug_log_no_alloc!("Max address: 0x", max_addr as usize);
+        debug_log_no_alloc!("Max address: ", max_addr as usize);
         debug_log_no_alloc!("Calculated total frames: ", total_frames);
 
         if total_frames == 0 {

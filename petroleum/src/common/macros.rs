@@ -16,7 +16,7 @@ macro_rules! bitmap_chunk_bit {
 #[macro_export]
 macro_rules! map_range_with_log_macro {
     ($($tt:tt)*) => {
-        map_with_log_macro!($($tt)*)
+        map_with_log_macro!($($tt)*, "panic")
     };
 }
 
@@ -985,12 +985,12 @@ macro_rules! map_to_higher_half_with_log_macro {
 /// Consolidated memory mapping with log support
 #[macro_export]
 macro_rules! map_with_log_macro {
-    ($mapper:expr, $allocator:expr, $phys:expr, $virt:expr, $pages:expr, $flags:expr) => {{
+    ($mapper:expr, $allocator:expr, $phys:expr, $virt:expr, $pages:expr, $flags:expr, $behavior:tt) => {{
         log_page_table_op!("Mapping", $phys, $virt, $pages);
         for i in 0..$pages {
             let phys_addr = $phys + i * 4096;
             let virt_addr = $virt + i * 4096;
-            map_with_offset!($mapper, $allocator, phys_addr, virt_addr, $flags);
+            map_with_offset!($mapper, $allocator, phys_addr, virt_addr, $flags, $behavior);
         }
         Ok::<(), x86_64::structures::paging::mapper::MapToError<x86_64::structures::paging::Size4KiB>>(())
     }};
@@ -1056,9 +1056,19 @@ macro_rules! map_and_flush {
 /// Map a physical address to virtual address with offset
 #[macro_export]
 macro_rules! map_with_offset {
-    ($mapper:expr, $allocator:expr, $phys_addr:expr, $virt_addr:expr, $flags:expr) => {{
+    ($mapper:expr, $allocator:expr, $phys_addr:expr, $virt_addr:expr, $flags:expr, $behavior:tt) => {{
         let (page, frame) = create_page_and_frame!($virt_addr, $phys_addr);
-        map_and_flush!($mapper, page, frame, $flags, $allocator);
+        unsafe {
+            match $mapper.map_to(page, frame, $flags, $allocator) {
+                Ok(flush) => flush.flush(),
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {}
+                Err(e) => match $behavior {
+                    "continue" => {}
+                    "panic" => panic!("Mapping error: {:?}", e),
+                    _ => {}
+                }
+            }
+        }
     }};
 }
 
