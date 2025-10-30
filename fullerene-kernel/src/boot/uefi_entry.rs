@@ -140,7 +140,7 @@ impl UefiInitContext {
 
         // Run minimal page table copy test to verify CR3 switching works
         debug_log_no_alloc!("About to run page table copy test");
-        if let Err(e) = unsafe { petroleum::page_table::page_table_copy_test(&mut frame_allocator) } {
+        if let Err(e) = petroleum::page_table::test_page_table_copy_switch(self.physical_memory_offset, &mut frame_allocator, *memory_map_ref) {
             debug_log_no_alloc!("Page table copy test failed: ", e as usize);
             // Continue anyway for now
         } else {

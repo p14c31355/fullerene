@@ -1397,6 +1397,90 @@ pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> PhysAdd
     aligned_start
 }
 
+/// Minimal page table copy test
+/// Clones current CR3 frame, switches to it (then switches back)
+/// Used for debugging CR3 switching issues
+pub fn test_page_table_copy_switch(phys_offset: VirtAddr, frame_allocator: &mut BootInfoFrameAllocator, memory_map: &[EfiMemoryDescriptor]) -> crate::common::logging::SystemResult<()> {
+    debug_log_no_alloc!("[PT TEST] Starting minimal page table copy test");
+
+    // Get current CR3
+    let (original_cr3, _) = Cr3::read();
+    debug_log_no_alloc!("[PT TEST] Original CR3: 0x", original_cr3.start_address().as_u64() as usize);
+
+    // Allocate new frame for cloned table
+    let new_l4_frame = match frame_allocator.allocate_frame() {
+        Some(frame) => frame,
+        None => {
+            debug_log_no_alloc!("[PT TEST ERROR] Failed to allocate new L4 frame");
+            return Err(crate::common::logging::SystemError::FrameAllocationFailed);
+        }
+    };
+    debug_log_no_alloc!("[PT TEST] Allocated new L4 frame at: 0x", new_l4_frame.start_address().as_u64() as usize);
+
+    // Zero the new frame using identity mapping (UEFI maps all memory)
+    unsafe {
+        let new_l4_virt = phys_offset + new_l4_frame.start_address().as_u64();
+        let table_ptr = new_l4_virt.as_mut_ptr() as *mut PageTable;
+        *table_ptr = PageTable::new();
+    }
+    debug_log_no_alloc!("[PT TEST] Zeroed new L4 table");
+
+    // Copy from original table - just duplicate the frame contents
+    unsafe {
+        let original_virt = phys_offset + original_cr3.start_address().as_u64();
+        let original_table = &*(original_virt.as_ptr() as *const PageTable);
+
+        let new_l4_virt = phys_offset + new_l4_frame.start_address().as_u64();
+        let new_table = &mut *(new_l4_virt.as_mut_ptr() as *mut PageTable);
+
+        // Simple memcpy of the table contents
+        core::ptr::copy_nonoverlapping(original_table as *const PageTable, new_table, 1);
+    }
+    debug_log_no_alloc!("[PT TEST] Copied original L4 table contents");
+
+    // Try the CR3 switch
+    debug_log_no_alloc!("[PT TEST] Attempting CR3 switch...");
+    unsafe {
+        Cr3::write(new_l4_frame, x86_64::registers::control::Cr3Flags::empty());
+    }
+
+    // Verify switch
+    let (current_cr3, _) = Cr3::read();
+    if current_cr3 == new_l4_frame {
+        debug_log_no_alloc!("[PT TEST] CR3 switch succeeded!");
+        tlb::flush_all();
+        debug_log_no_alloc!("[PT TEST] TLB flushed after switch");
+    } else {
+        debug_log_no_alloc!("[PT TEST ERROR] CR3 switch failed - still at: 0x", current_cr3.start_address().as_u64() as usize);
+        // Clean up allocated frame
+        frame_allocator.deallocate_frame(new_l4_frame);
+        return Err(crate::common::logging::SystemError::InternalError);
+    }
+
+    // Switch back to original
+    debug_log_no_alloc!("[PT TEST] Switching back to original CR3...");
+    unsafe {
+        Cr3::write(original_cr3, x86_64::registers::control::Cr3Flags::empty());
+    }
+
+    // Verify back-switch
+    let (final_cr3, _) = Cr3::read();
+    if final_cr3 == original_cr3 {
+        debug_log_no_alloc!("[PT TEST] Successfully switched back to original CR3");
+    } else {
+        debug_log_no_alloc!("[PT TEST ERROR] Failed to switch back to original CR3 - stuck at: 0x", final_cr3.start_address().as_u64() as usize);
+        // Clean up allocated frame
+        frame_allocator.deallocate_frame(new_l4_frame);
+        return Err(crate::common::logging::SystemError::InternalError);
+    }
+
+    // Clean up
+    frame_allocator.deallocate_frame(new_l4_frame);
+    debug_log_no_alloc!("[PT TEST] Test completed successfully");
+
+    Ok(())
+}
+
 use x86_64::structures::paging::PageTableFlags as PageFlags;
 
 // Helper to map to higher half
@@ -1977,12 +2061,26 @@ impl PageTableHelper for PageTableManager {
             None => return Err(crate::common::logging::SystemError::InvalidArgument),
         };
 
+        debug_log_no_alloc!("[PT SWITCH] About to switch CR3 from 0x", self.current_page_table as usize, " to 0x", table_addr);
+
         unsafe {
             Cr3::write(*new_frame, x86_64::registers::control::Cr3Flags::empty());
         }
 
+        debug_log_no_alloc!("[PT SWITCH] CR3 switched successfully, verifying...");
+
+        // Verify the switch worked
+        let (current_cr3, _) = Cr3::read();
+        if current_cr3 == *new_frame {
+            debug_log_no_alloc!("[PT SWITCH] CR3 switch verified - page table active");
+        } else {
+            debug_log_no_alloc!("[PT SWITCH ERROR] CR3 switch failed - still at old table");
+        }
+
         self.pml4_frame = Some(*new_frame);
         self.current_page_table = table_addr;
+
+        debug_log_no_alloc!("[PT SWITCH] Complete - table_addr: 0x", table_addr);
 
         Ok(())
     }
