@@ -309,16 +309,7 @@ fn process_scheduler_iteration() {
 
     // Additional tasks that don't fit the pattern
     if current_tick % DESKTOP_UPDATE_INTERVAL_TICKS == 0 {
-        #[cfg(target_os = "uefi")]
-        if let Some(framebuffer) = text::FRAMEBUFFER_UEFI.get() {
-            let mut fb = framebuffer.lock();
-            graphics::draw_os_desktop(&mut *fb);
-        }
-        #[cfg(not(target_os = "uefi"))]
-        if let Some(framebuffer) = text::FRAMEBUFFER_BIOS.get() {
-            let mut fb = framebuffer.lock();
-            graphics::draw_os_desktop(&mut *fb);
-        }
+        draw_desktop_on_available_framebuffer();
     }
     if current_tick % 10000 == 0 {
         emergency_condition_handler();
@@ -373,16 +364,20 @@ fn yield_and_process_system_calls() {
 /// Handle periodic UI operations (desktop updates)
 fn perform_periodic_ui_operations(current_tick: u64) {
     if current_tick % DESKTOP_UPDATE_INTERVAL_TICKS == 0 {
-        #[cfg(target_os = "uefi")]
-        if let Some(framebuffer) = text::FRAMEBUFFER_UEFI.get() {
-            let mut fb = framebuffer.lock();
-            graphics::draw_os_desktop(&mut *fb);
-        }
-        #[cfg(not(target_os = "uefi"))]
-        if let Some(framebuffer) = text::FRAMEBUFFER_BIOS.get() {
-            let mut fb = framebuffer.lock();
-            graphics::draw_os_desktop(&mut *fb);
-        }
+        draw_desktop_on_available_framebuffer();
+    }
+}
+
+/// Draw the OS desktop on the available framebuffer (UEFI or BIOS)
+fn draw_desktop_on_available_framebuffer() {
+    #[cfg(target_os = "uefi")]
+    let fb_option = text::FRAMEBUFFER_UEFI.get();
+    #[cfg(not(target_os = "uefi"))]
+    let fb_option = text::FRAMEBUFFER_BIOS.get();
+
+    if let Some(framebuffer) = fb_option {
+        let mut fb = framebuffer.lock();
+        graphics::draw_os_desktop(&mut *fb);
     }
 }
 
@@ -408,19 +403,13 @@ fn initialize_shell_process() -> crate::process::ProcessId {
 /// Main kernel scheduler loop - orchestrates all system functionality
 // Main kernel scheduler loop - orchestrates all system functionality
 pub fn scheduler_loop() -> ! {
-    write_serial_bytes!(0x3F8, 0x3FD, b"Scheduler loop entered\n");
-    log::info!("Starting enhanced OS scheduler with integrated system features...");
-    write_serial_bytes!(0x3F8, 0x3FD, b"Log initialized\n");
     scheduler_log!("About to initialize shell process");
 
     let _ = initialize_shell_process();
-    write_serial_bytes!(0x3F8, 0x3FD, b"Shell process created\n");
     scheduler_log!("Shell process initialized successfully");
 
     // Main scheduler loop - continuously execute processes with integrated OS functionality
-    scheduler_log!("Entering main loop");
-    scheduler_log!("Main loop starting");
-    write_serial_bytes!(0x3F8, 0x3FD, b"Main loop started\n");
+    log::info!("Scheduler loop started");
 
     // Print to VGA if available for GUI output
     if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {
@@ -430,7 +419,7 @@ pub fn scheduler_loop() -> ! {
         writer.update_cursor();
     }
     // Log that scheduler is running for confirmation
-    log::info!("Scheduler loop started - framebuffer text system active");
+    log::info!("Scheduler loop active - framebuffer text system running");
 
     loop {
         // Increment system counters for this iteration

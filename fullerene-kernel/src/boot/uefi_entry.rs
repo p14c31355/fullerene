@@ -434,39 +434,13 @@ pub extern "efiapi" fn efi_main(
     crate::vga::init_vga(physical_memory_offset);
     log::info!("VGA initialized for UEFI");
 
-    // Always enable interrupts and proceed to scheduler
-    log::info!("Enabling interrupts...");
-    x86_64::instructions::interrupts::enable();
-    log::info!("Interrupts enabled");
-
-    // After enabling interrupts, initialize APIC
+    // Initialize APIC before enabling interrupts for safety
     crate::interrupts::init_apic();
     log::info!("APIC initialized");
 
     // Initialize keyboard input driver
-    // crate::keyboard::init();
-    log::info!("Keyboard initialization skipped");
-
-    // Initialize process management system
-    // crate::process::init(); // Already called in init_common
-    log::info!("Process management initialized");
-
-    // Initialize graphics protocols using petroleum
-    log::info!("Skipping graphics protocols initialization for now");
-    // let _ = petroleum::init_graphics_protocols(system_table);
-
-    // Initialize text/graphics output if framebuffer config is available
-    if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
-        .get()
-        .map(|m| *m.lock())
-        .flatten()
-    {
-        log::info!("Initializing framebuffer text output");
-        crate::graphics::text::init(&config);
-    } else {
-        log::info!("No framebuffer config found, skipping fallback VGA graphics for now");
-        // let _ = crate::graphics::text::init_fallback_graphics();
-    }
+    crate::keyboard::init();
+    log::info!("Keyboard initialized");
 
     // Start the main kernel scheduler that orchestrates all system functionality
     log::info!("Starting full system scheduler...");
