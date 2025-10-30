@@ -1395,7 +1395,7 @@ pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> PhysAdd
 /// Minimal page table copy test
 /// Clones current CR3 frame, switches to it (then switches back)
 /// Used for debugging CR3 switching issues
-pub fn test_page_table_copy_switch(phys_offset: VirtAddr, frame_allocator: &mut BootInfoFrameAllocator, memory_map: &[EfiMemoryDescriptor]) -> crate::common::logging::SystemResult<()> {
+pub fn test_page_table_copy_switch(phys_offset: VirtAddr, frame_allocator: &mut BootInfoFrameAllocator, memory_map: &[impl MemoryDescriptorValidator]) -> crate::common::logging::SystemResult<()> {
     debug_log_no_alloc!("[PT TEST] Starting minimal page table copy test");
 
     // Get current CR3

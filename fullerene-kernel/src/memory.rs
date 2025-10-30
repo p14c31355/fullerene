@@ -6,10 +6,11 @@ use petroleum::common::{
     EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
     FullereneFramebufferConfig,
 };
-use petroleum::page_table::EfiMemoryDescriptor;
+use petroleum::page_table::efi_memory::{EfiMemoryDescriptor, MemoryDescriptorValidator, MemoryMapDescriptor};
 
 use crate::MEMORY_MAP;
 
+use alloc::vec::Vec;
 use core::ffi::c_void;
 use petroleum::{
     check_memory_initialized, debug_log, debug_log_no_alloc, debug_mem_descriptor, debug_print,
@@ -20,19 +21,7 @@ use x86_64::{PhysAddr, VirtAddr};
 // Add a constant for the higher-half kernel virtual base address
 const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000; // Common higher-half address
 
-// Generic helper for searching memory descriptors
-fn find_memory_descriptor_address<F>(
-    descriptors: &[EfiMemoryDescriptor],
-    predicate: F,
-) -> Option<u64>
-where
-    F: Fn(&EfiMemoryDescriptor) -> bool,
-{
-    descriptors
-        .iter()
-        .find(|desc| predicate(desc))
-        .map(|desc| desc.physical_start)
-}
+
 
 // Helper function to find framebuffer config (using generic)
 pub fn find_framebuffer_config(
@@ -76,18 +65,18 @@ pub fn find_framebuffer_config(
     None
 }
 
-pub fn find_heap_start(descriptors: &[EfiMemoryDescriptor]) -> PhysAddr {
+pub fn find_heap_start(descriptors: &[impl MemoryDescriptorValidator]) -> PhysAddr {
     // Find the lowest suitable memory region within first 64MB from EfiConventionalMemory with sufficient size for heap
     // This ensures heap is within the identity-mapped range during page table reinitialization
     const HEAP_PAGES: u64 = 256; // approx 1MB for heap + structures
     for desc in descriptors {
-        if desc.type_ == EfiMemoryType::EfiConventionalMemory
-            && desc.number_of_pages >= HEAP_PAGES
-            && desc.physical_start < 0x4000000 // within first 64MB
-            && desc.physical_start + (desc.number_of_pages * 4096) <= 0x4000000
+        if desc.get_type() == EfiMemoryType::EfiConventionalMemory as u32
+            && desc.get_page_count() >= HEAP_PAGES
+            && desc.get_physical_start() < 0x4000000 // within first 64MB
+            && desc.get_physical_start() + (desc.get_page_count() * 4096) <= 0x4000000
         // ensure entire region fits
         {
-            return PhysAddr::new(desc.physical_start);
+            return PhysAddr::new(desc.get_physical_start());
         }
     }
     // Fallback if no suitable memory found within first 64MB
@@ -122,22 +111,21 @@ pub fn setup_memory_maps(
         debug_log_no_alloc!("No framebuffer config found in memory map (magic mismatch)");
     }
 
-    let descriptors_start = unsafe {
-        (memory_map as *const u8).add(core::mem::size_of::<usize>()) as *const EfiMemoryDescriptor
+    let descriptors_base = unsafe {
+        (memory_map as *const u8).add(core::mem::size_of::<usize>())
     };
-    let descriptors = unsafe {
-        core::slice::from_raw_parts(
-            descriptors_start,
-            actual_descriptors_size / descriptor_item_size,
-        )
-    };
+    let num_descriptors = actual_descriptors_size / descriptor_item_size;
+    let descriptors = (0..num_descriptors)
+        .map(|i| {
+            let desc_ptr = unsafe { descriptors_base.add(i * descriptor_item_size) };
+            MemoryMapDescriptor::new(desc_ptr, descriptor_item_size)
+        })
+        .collect::<alloc::vec::Vec<_>>();
     debug_log_no_alloc!("Memory map descriptor count: ", descriptors.len());
 
     // Initialize MEMORY_MAP with descriptors
-    MEMORY_MAP.call_once(|| {
-        // Since UEFI memory map is static until exit_boot_services, this is safe
-        unsafe { &*(descriptors as *const _) }
-    });
+    let leaked = descriptors.leak();
+    MEMORY_MAP.call_once(|| leaked);
     write_serial_bytes!(0x3F8, 0x3FD, b"MEMORY_MAP initialized\n");
 
     let physical_memory_offset;

@@ -43,7 +43,7 @@ use spin::{Mutex, Once};
 pub(crate) static FRAME_ALLOCATOR: Once<Mutex<BootInfoFrameAllocator>> = Once::new();
 
 /// Global memory map storage
-pub static MEMORY_MAP: Once<&[EfiMemoryDescriptor]> = Once::new();
+pub static MEMORY_MAP: Once<&[MemoryMapDescriptor]> = Once::new();
 
 /// Initialize the boot frame allocator with memory map
 pub fn init_frame_allocator(memory_map: &[EfiMemoryDescriptor]) {
