@@ -642,6 +642,13 @@ macro_rules! define_commands {
 
 /// Macro for volatile memory operations
 #[macro_export]
+macro_rules! volatile_write {
+    ($ptr:expr, $val:expr) => {
+        unsafe { core::ptr::write_volatile($ptr, $val) }
+    };
+}
+
+#[macro_export]
 macro_rules! volatile_ops {
     (read, $addr:expr, $ty:ty) => {
         unsafe { core::ptr::read_volatile($addr as *const $ty) }

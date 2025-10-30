@@ -6,14 +6,11 @@
 #![feature(never_type)]
 extern crate alloc;
 
-use alloc::boxed::Box;
-
 use core::{ffi::c_void, ptr};
 
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    use core::fmt::Write;
     use petroleum::println;
     // Simple panic handler for UEFI bootloader
     unsafe {

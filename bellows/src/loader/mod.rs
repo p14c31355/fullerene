@@ -1,10 +1,6 @@
 use core::ffi::c_void;
-use log::info;
 
 use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable};
-use petroleum::debug_log;
-use petroleum::debug_log_no_alloc;
-use petroleum::serial::debug_print_str_to_com1;
 
 // Module declarations for separated functionality
 pub mod heap;

@@ -236,7 +236,7 @@ pub fn load_efi_image(
         + size_of_optional_header;
     let section_headers_size = number_of_sections * core::mem::size_of::<ImageSectionHeader>();
     if section_headers_offset + section_headers_size > file.len() {
-        unsafe { (bs.free_pages)(phys_addr, pages_needed) };
+        (bs.free_pages)(phys_addr, pages_needed);
         return Err(BellowsError::PeParse("Section headers out of bounds."));
     }
 
@@ -269,7 +269,8 @@ pub fn load_efi_image(
             || (dst_addr as usize).saturating_add(size_of_raw_data as usize)
                 > ((phys_addr as *mut u8) as usize).saturating_add(pages_needed * 4096)
         {
-            unsafe { (bs.free_pages)(phys_addr, pages_needed) };
+
+            (bs.free_pages)(phys_addr, pages_needed);
             return Err(BellowsError::PeParse("Section data out of bounds."));
         }
 
@@ -306,7 +307,7 @@ pub fn load_efi_image(
         };
         if (reloc_dir.virtual_address as u64).saturating_add(reloc_dir.size as u64) > image_size_val
         {
-            unsafe { (bs.free_pages)(phys_addr, pages_needed) };
+            (bs.free_pages)(phys_addr, pages_needed);
             return Err(BellowsError::PeParse("Relocation directory out of bounds."));
         }
         if reloc_dir.size > 0 {
@@ -340,7 +341,7 @@ pub fn load_efi_image(
 
     let entry_point_addr = phys_addr.saturating_add(address_of_entry_point);
     if entry_point_addr >= phys_addr + pages_needed * 4096 || entry_point_addr < phys_addr {
-        unsafe { (bs.free_pages)(phys_addr, pages_needed) };
+        (bs.free_pages)(phys_addr, pages_needed);
         return Err(BellowsError::PeParse(
             "Entry point address is outside allocated memory.",
         ));
