@@ -83,15 +83,15 @@ pub fn find_heap_start(descriptors: &[impl MemoryDescriptorValidator]) -> PhysAd
     PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR)
 }
 
-pub fn setup_memory_maps(
+pub fn setup_kernel_location(
     memory_map: *mut c_void,
     memory_map_size: usize,
     kernel_virt_addr: u64,
 ) -> PhysAddr {
     // Read descriptor_size from the beginning of the memory map
-    debug_log_no_alloc!("setup_memory_maps called with size: ", memory_map_size);
-    let descriptor_item_size = unsafe { *(memory_map as *const usize) };
-    debug_log_no_alloc!("Descriptor size: ", descriptor_item_size);
+    debug_log_no_alloc!("setup_kernel_location called with size: ", memory_map_size);
+    let _descriptor_item_size = unsafe { *(memory_map as *const usize) };
+    debug_log_no_alloc!("Descriptor size: ", _descriptor_item_size);
 
     let config_size = core::mem::size_of::<ConfigWithMetadata>();
     // Check for framebuffer config appended to memory map
@@ -101,8 +101,6 @@ pub fn setup_memory_maps(
     let config_with_metadata = unsafe { &*config_with_metadata_ptr };
     let has_config = config_with_metadata.magic == FRAMEBUFFER_CONFIG_MAGIC;
 
-    let actual_descriptors_size =
-        memory_map_size - core::mem::size_of::<usize>() - if has_config { config_size } else { 0 };
     if config_with_metadata.magic == FRAMEBUFFER_CONFIG_MAGIC {
         debug_log_no_alloc!("Framebuffer config found in memory map");
         petroleum::FULLERENE_FRAMEBUFFER_CONFIG
@@ -111,60 +109,18 @@ pub fn setup_memory_maps(
         debug_log_no_alloc!("No framebuffer config found in memory map (magic mismatch)");
     }
 
-    let descriptors_base = unsafe {
-        (memory_map as *const u8).add(core::mem::size_of::<usize>())
-    };
-    let num_descriptors = actual_descriptors_size / descriptor_item_size;
-    let descriptors = (0..num_descriptors)
-        .map(|i| {
-            let desc_ptr = unsafe { descriptors_base.add(i * descriptor_item_size) };
-            MemoryMapDescriptor::new(desc_ptr, descriptor_item_size)
-        })
-        .collect::<alloc::vec::Vec<_>>();
-    debug_log_no_alloc!("Memory map descriptor count: ", descriptors.len());
-
-    // Initialize MEMORY_MAP with descriptors
-    let leaked = descriptors.leak();
-    MEMORY_MAP.call_once(|| leaked);
-    write_serial_bytes!(0x3F8, 0x3FD, b"MEMORY_MAP initialized\n");
-
-    let physical_memory_offset;
-    let kernel_phys_start;
-
-    write_serial_bytes!(
-        0x3F8,
-        0x3FD,
-        b"Scanning memory descriptors to find kernel location...\n"
-    );
-
-    // Find the memory descriptor containing the kernel (efi_main is virtual address,
+    // Find the kernel physical start (efi_main is virtual address,
     // but UEFI uses identity mapping initially, so check physical range containing kernel_virt_addr)
     // Since UEFI identity-maps initially, kernel_virt_addr should equal its physical address
-    if kernel_virt_addr >= 0x1000 {
-        kernel_phys_start = PhysAddr::new(kernel_virt_addr);
-        mem_debug!(
-            "Using identity-mapped kernel physical start: ",
-            kernel_phys_start.as_u64() as usize,
-            "\n"
-        );
+    let kernel_phys_start = if kernel_virt_addr >= 0x1000 {
+        PhysAddr::new(kernel_virt_addr)
     } else {
-        mem_debug!(
-            "Warning: Invalid kernel address ",
-            kernel_virt_addr as usize,
-            ", falling back to hardcoded value\n"
-        );
-        kernel_phys_start = PhysAddr::new(0x100000);
-    }
-
-    // Calculate the physical_memory_offset for the higher-half kernel mapping.
-    // This offset is such that physical_address + offset = higher_half_virtual_address.
-    // Use a simpler offset that maps physical addresses to the higher half directly
-    physical_memory_offset = VirtAddr::new(HIGHER_HALF_KERNEL_VIRT_BASE);
+        debug_log_no_alloc!("Warning: Invalid kernel address, falling back");
+        PhysAddr::new(0x100000)
+    };
 
     mem_debug!(
-        "Physical memory offset calculation complete: offset=",
-        physical_memory_offset.as_u64() as usize,
-        ", kernel_phys_start=",
+        "Kernel physical start set to: ",
         kernel_phys_start.as_u64() as usize,
         "\n"
     );
