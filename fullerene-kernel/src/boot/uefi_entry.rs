@@ -67,6 +67,12 @@ impl UefiInitContext {
         unsafe {
             let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
             write_vga_string(vga_buffer, 0, b"Kernel boot (UEFI)", 0x1F00);
+            write_vga_string(vga_buffer, 1, b"Early init start", 0x1F00);
+        }
+        petroleum::serial::serial_init();
+        unsafe {
+            let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
+            write_vga_string(vga_buffer, 2, b"Serial init done", 0x1F00);
         }
         write_serial_bytes!(0x3F8, 0x3FD, b"Early setup completed\n");
 
@@ -316,11 +322,10 @@ impl UefiInitContext {
         let apic_virt = VirtAddr::new(LOCAL_APIC_ADDR);
         let page = Page::<Size4KiB>::containing_address(apic_virt);
         let frame = PhysFrame::<Size4KiB>::containing_address(apic_phys);
-        unsafe {
-            mapper
-                .map_to(page, frame, flags, &mut *frame_allocator)
-                .expect("Failed to map Local APIC")
-                .flush();
+        match mapper.map_to(page, frame, flags, &mut *frame_allocator) {
+            Ok(flush) => flush.flush(),
+            Err(MapToError::PageAlreadyMapped(_)) => {},
+            Err(e) => panic!("Failed to map Local APIC: {:?}", e),
         }
         *petroleum::LOCAL_APIC_ADDRESS.lock() =
             petroleum::LocalApicAddress(LOCAL_APIC_ADDR as *mut u32);
@@ -331,24 +336,26 @@ impl UefiInitContext {
         let io_apic_virt = VirtAddr::new(IO_APIC_ADDR);
         let page = Page::<Size4KiB>::containing_address(io_apic_virt);
         let frame = PhysFrame::<Size4KiB>::containing_address(io_apic_phys);
-        unsafe {
-            mapper
-                .map_to(page, frame, flags, &mut *frame_allocator)
-                .expect("Failed to map IO APIC")
-                .flush();
+        match mapper.map_to(page, frame, flags, &mut *frame_allocator) {
+            Ok(flush) => flush.flush(),
+            Err(MapToError::PageAlreadyMapped(_)) => {},
+            Err(e) => panic!("Failed to map IO APIC: {:?}", e),
         }
         log::info!("IO APIC mapped at virt {:#x}", io_apic_virt.as_u64());
 
         // Map VGA text buffer (0xB8000-0xC0000) for compatibility
         let vga_pages_size = (0xc0000 - VGA_TEXT_BUFFER_ADDR) / 4096; // 8 pages (32KB)
-        petroleum::map_pages_loop!(
-            mapper,
-            &mut *frame_allocator,
-            VGA_TEXT_BUFFER_ADDR,
-            VGA_TEXT_BUFFER_ADDR,
-            vga_pages_size,
-            flags
-        );
+        for i in 0..vga_pages_size {
+            let vga_phys = PhysAddr::new(VGA_TEXT_BUFFER_ADDR + i * 4096);
+            let vga_virt = VirtAddr::new(VGA_TEXT_BUFFER_ADDR + i * 4096);
+            let page = Page::<Size4KiB>::containing_address(vga_virt);
+            let frame = PhysFrame::<Size4KiB>::containing_address(vga_phys);
+            match mapper.map_to(page, frame, flags, &mut *frame_allocator) {
+                Ok(flush) => flush.flush(),
+                Err(MapToError::PageAlreadyMapped(_)) => {},
+                Err(e) => panic!("Failed to map VGA buffer page {}: {:?}", i, e),
+            }
+        }
         log::info!(
             "VGA text buffer mapped at identity address {:#x}",
             VGA_TEXT_BUFFER_ADDR
@@ -430,7 +437,8 @@ pub extern "efiapi" fn efi_main(
         log::info!("Initializing framebuffer text output");
         crate::graphics::text::init(&config);
     } else {
-        log::info!("No framebuffer config found, falling back to VGA text mode");
+        log::info!("No framebuffer config found, initializing fallback VGA graphics");
+        let _ = crate::graphics::text::init_fallback_graphics();
     }
 
     // Always enable interrupts and proceed to scheduler

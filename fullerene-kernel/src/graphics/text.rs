@@ -138,6 +138,7 @@ fn print_to_graphics(args: &fmt::Arguments) {
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     print_to_graphics(&args);
+    #[cfg(not(target_os = "uefi"))]
     // Also output to VGA text buffer for reliable visibility
     if let Some(vga) = crate::vga::VGA_BUFFER.get() {
         let mut vga_writer = vga.lock();

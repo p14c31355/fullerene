@@ -8,14 +8,10 @@ use spin::Once;
 
 
 #[cfg(target_os = "uefi")]
-pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
+pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
     init_log!("Initializing common components");
 
     let steps = [
-        petroleum::init_step!("VGA", move || {
-            crate::vga::init_vga(physical_memory_offset);
-            Ok(())
-        }),
         petroleum::init_step!("Graphics", || {
             let _ = crate::graphics::text::init_fallback_graphics();
             Ok(())
