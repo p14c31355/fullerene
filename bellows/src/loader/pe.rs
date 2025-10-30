@@ -278,6 +278,10 @@ pub fn load_efi_image(
         }
     }
 
+    // Log PE sections mapped successfully
+    let end_addr = phys_addr.saturating_add(image_size_val as usize);
+    log::info!("PE: sections mapped successfully up to 0x{:x}", end_addr);
+
     let image_base = read_unaligned!(
         nt_headers_ptr,
         core::mem::offset_of!(ImageNtHeaders64, optional_header)
