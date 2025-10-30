@@ -176,44 +176,7 @@ pub fn init_vga(_physical_memory_offset: x86_64::VirtAddr) {
     petroleum::debug_log!("VGA buffer created and cleared");
 
     // Set VGA to text mode 3 (80x25 color text)
-    use x86_64::instructions::port::*;
-
-    // Write misc register
-    port_write!(HardwarePorts::MISC_OUTPUT, 0x67u8);
-
-    // Sequencer registers
-    let sequencer_configs = SEQUENCER_CONFIG;
-    let mut sequencer_ops = VgaPortOps::new(
-        HardwarePorts::SEQUENCER_INDEX,
-        HardwarePorts::SEQUENCER_DATA,
-    );
-    sequencer_ops.write_sequence(sequencer_configs);
-
-    // CRTC registers for 80x25 text mode
-    let crtc_configs = CRTC_CONFIG;
-    let mut crtc_ops = VgaPortOps::new(HardwarePorts::CRTC_INDEX, HardwarePorts::CRTC_DATA);
-    crtc_ops.write_sequence(crtc_configs);
-
-    // Graphics controller
-    let graphics_configs = GRAPHICS_CONFIG;
-    let mut graphics_ops =
-        VgaPortOps::new(HardwarePorts::GRAPHICS_INDEX, HardwarePorts::GRAPHICS_DATA);
-    graphics_ops.write_sequence(graphics_configs);
-
-    // Attribute controller (text mode)
-    // Set palette registers (0-15) and other registers
-    for i in 0..16 {
-        write_vga_attribute_register(i, i as u8);
-    }
-    write_vga_attribute_register(0x10, 0x0C);
-    write_vga_attribute_register(0x11, 0x00);
-    write_vga_attribute_register(0x12, 0x0F);
-    write_vga_attribute_register(0x13, 0x08);
-    write_vga_attribute_register(0x14, 0x00);
-
-    // Finally, enable video by writing 0x20 to the index port (with palette access enabled)
-    port_read_u8!(HardwarePorts::STATUS);
-    port_write!(0x3C0u16, 0x20u8);
+    petroleum::init_vga_text_mode_3!();
 
     // DAC registers (optional for text mode, simplified)
     // Skip DAC initialization for now as it's not strictly necessary for text mode

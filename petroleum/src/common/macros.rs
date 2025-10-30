@@ -725,6 +725,85 @@ macro_rules! error_variant_map {
     };
 }
 
+/// Helper macros for common attributes during bitmap manipulation
+/// Reduces line count for repetitive bitmap operation
+#[macro_export]
+macro_rules! init_vga_palette_registers {
+    () => {{
+        for i in 0..16u8 {
+            $crate::graphics::ports::write_vga_attribute_register(i, i);
+        }
+    }};
+}
+
+/// Macro for setting multiple VGA attribute registers with arbitrary index => value pairs
+/// Reduces line count for attribute register initialization
+#[macro_export]
+macro_rules! set_vga_attribute_registers {
+    ($($index:expr => $value:expr),* $(,)?) => {{
+        $(
+            $crate::graphics::ports::write_vga_attribute_register($index, $value);
+        )*
+    }};
+}
+
+/// Macro for enabling VGA video output after attribute controller setup
+/// Reduces boilerplate for video enable sequence
+#[macro_export]
+macro_rules! enable_vga_video {
+    () => {{
+        $crate::port_read_u8!(0x3DA);
+        $crate::port_write!(0x3C0u16, 0x20u8);
+    }};
+}
+
+/// Macro for VGA mode 3 (80x25 text mode) setup sequence
+/// Reduces repetition in VGA initialization code across crates
+#[macro_export]
+macro_rules! init_vga_text_mode_3 {
+    () => {{
+        // Write misc register
+        $crate::port_write!($crate::graphics::ports::HardwarePorts::MISC_OUTPUT, 0x67u8);
+
+        // Sequencer registers
+        let sequencer_configs = $crate::graphics::registers::SEQUENCER_TEXT_CONFIG;
+        let mut sequencer_ops = $crate::graphics::ports::VgaPortOps::new(
+            $crate::graphics::ports::HardwarePorts::SEQUENCER_INDEX,
+            $crate::graphics::ports::HardwarePorts::SEQUENCER_DATA,
+        );
+        sequencer_ops.write_sequence(sequencer_configs);
+
+        // CRTC registers for 80x25 text mode
+        let crtc_configs = $crate::graphics::registers::CRTC_TEXT_CONFIG;
+        let mut crtc_ops = $crate::graphics::ports::VgaPortOps::new(
+            $crate::graphics::ports::HardwarePorts::CRTC_INDEX,
+            $crate::graphics::ports::HardwarePorts::CRTC_DATA,
+        );
+        crtc_ops.write_sequence(crtc_configs);
+
+        // Graphics controller
+        let graphics_configs = $crate::graphics::registers::GRAPHICS_TEXT_CONFIG;
+        let mut graphics_ops = $crate::graphics::ports::VgaPortOps::new(
+            $crate::graphics::ports::HardwarePorts::GRAPHICS_INDEX,
+            $crate::graphics::ports::HardwarePorts::GRAPHICS_DATA,
+        );
+        graphics_ops.write_sequence(graphics_configs);
+
+        // Attribute controller
+        $crate::init_vga_palette_registers!();
+        $crate::set_vga_attribute_registers!(
+            0x10 => 0x0C,
+            0x11 => 0x00,
+            0x12 => 0x0F,
+            0x13 => 0x08,
+            0x14 => 0x00
+        );
+
+        // Enable video output
+        $crate::enable_vga_video!();
+    }};
+}
+
 /// Macro for chained error conversions
 #[macro_export]
 macro_rules! error_chain {
@@ -868,7 +947,11 @@ macro_rules! page_flags_const {
 /// Integrated identity mapping macro
 #[macro_export]
 macro_rules! map_identity_range_macro {
-    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{ map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags) }};
+    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{
+        unsafe {
+            map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags)
+        }
+    }};
 }
 
 /// Range mapping with logging macro
