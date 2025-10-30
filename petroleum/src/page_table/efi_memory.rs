@@ -49,7 +49,7 @@ impl MemoryMapDescriptor {
     }
 
     pub fn attribute(&self) -> u64 {
-        unsafe { core::ptr::read_unaligned(self.ptr.add(32) as *const u64) }
+        unsafe { core::ptr::read_unaligned(self.ptr.add(self.descriptor_size - 8) as *const u64) }
     }
 }
 

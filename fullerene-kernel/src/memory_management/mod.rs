@@ -14,7 +14,7 @@ use petroleum::initializer::{
     ErrorLogging, FrameAllocator, Initializable, MemoryManager, ProcessMemoryManager,
     SyscallHandler,
 };
-use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
+use x86_64::structures::paging::{Page, PageTableFlags as PageFlags, Size4KiB};
 
 use petroleum::page_table::{BitmapFrameAllocator, PageTableManager};
 use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
