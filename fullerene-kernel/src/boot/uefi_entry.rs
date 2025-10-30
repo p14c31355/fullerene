@@ -138,6 +138,15 @@ impl UefiInitContext {
         write_serial_bytes!(0x3F8, 0x3FD, b"page table reinit completed\n");
         debug_log_no_alloc!("Page table reinit completed");
 
+        // Run minimal page table copy test to verify CR3 switching works
+        debug_log_no_alloc!("About to run page table copy test");
+        if let Err(e) = unsafe { petroleum::page_table::page_table_copy_test(&mut frame_allocator) } {
+            debug_log_no_alloc!("Page table copy test failed: ", e as usize);
+            // Continue anyway for now
+        } else {
+            debug_log_no_alloc!("Page table copy test passed");
+        }
+
         // Set kernel CR3 - CRITICAL: this might cause issues if page table has wrong mappings
         debug_log_no_alloc!("About to read kernel CR3");
         let kernel_cr3 = x86_64::registers::control::Cr3::read();
