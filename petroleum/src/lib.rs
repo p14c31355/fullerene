@@ -48,7 +48,7 @@ pub fn clear_buffer<B: TextBufferOperations>(
     }
 }
 
-pub fn clear_line_range<B: TextBufferOperations>(
+pub fn clear_line_range<B: TextBufferOperations + ?Sized>(
     buffer: &mut B,
     start_row: usize,
     end_row: usize,

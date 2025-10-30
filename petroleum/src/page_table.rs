@@ -998,7 +998,10 @@ impl PageTableReinitializer {
             );
         }
 
-        debug_log_no_alloc!("Switching CR3 to new table");
+        // Disable interrupts before CR3 switch
+        x86_64::instructions::interrupts::disable();
+
+        debug_log_no_alloc!("About to switch CR3 to new table: 0x", level_4_table_frame.start_address().as_u64() as usize);
 
         // Switch to new page table
         unsafe {
@@ -1008,9 +1011,18 @@ impl PageTableReinitializer {
             );
         }
 
+        debug_log_no_alloc!("CR3 switched successfully");
+
         flush_tlb_and_verify!();
 
-        debug_log_no_alloc!("CR3 switched, now mapping L4 to higher half");
+        debug_log_no_alloc!("TLB flushed");
+
+        // Re-enable interrupts after CR3 switch
+        x86_64::instructions::interrupts::enable();
+
+        debug_log_no_alloc!("Interrupts re-enabled");
+
+        debug_log_no_alloc!("Now mapping L4 to higher half: 0x", self.phys_offset.as_u64() as usize);
 
         // Now map the L4 to higher half using the new page table with recursive mapping
         let mut mapper = unsafe { init(current_physical_memory_offset) };
