@@ -4,7 +4,7 @@ use x86_64::{
     structures::paging::{FrameAllocator, PhysFrame, Size4KiB},
 };
 
-use crate::debug_log_no_alloc;
+use crate::{debug_log_no_alloc, mem_debug};
 
 /// Static buffer for bitmap - sized for up to 32GiB of RAM (8M frames)
 /// Each bit represents one 4KB frame, so size is (8M / 64) = 128K u64s = 1MB
@@ -63,7 +63,7 @@ impl BitmapFrameAllocator {
 
         // Debug: Log each descriptor
         for (i, desc) in memory_map.iter().enumerate() {
-            debug_mem_descriptor!(i, desc);
+            mem_debug!("Memory descriptor ", i, ", type=", desc.get_type() as usize, ", phys_start=", desc.get_physical_start() as usize, ", pages=", desc.get_page_count() as usize, "\n");
         }
 
         let (max_addr, total_frames, bitmap_size) =

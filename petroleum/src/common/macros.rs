@@ -130,13 +130,7 @@ macro_rules! command_args {
     };
 }
 
-/// Enhanced delegate call macro using generic patterns
-#[macro_export]
-macro_rules! debug_mem_descriptor {
-    ($i:expr, $desc:expr) => {{
-        mem_debug!("Memory descriptor ", $i, ", type=", $desc.get_type() as usize, ", phys_start=", $desc.get_physical_start() as usize, ", pages=", $desc.get_page_count() as usize, "\n");
-    }};
-}
+
 
 
 
@@ -653,20 +647,7 @@ macro_rules! volatile_ops {
 
 
 
-/// Macro for scrolling up a 2D character buffer (generic version)
-#[macro_export]
-macro_rules! scroll_char_buffer_up {
-    ($buffer:expr, $height:expr, $width:expr, $blank:expr) => {
-        for row in 1..$height {
-            for col in 0..$width {
-                $buffer[row - 1][col] = $buffer[row][col];
-            }
-        }
-        for col in 0..$width {
-            $buffer[$height - 1][col] = $blank;
-        }
-    };
-}
+
 
 /// Macro for generic text buffer operations in write_byte
 #[macro_export]
@@ -844,6 +825,18 @@ macro_rules! log_page_table_op {
     ($operation:literal, $msg:literal, $addr:expr) => {
         mem_debug!($operation, $msg, " addr=", $addr, "\n");
     };
+    ($operation:literal, $phys:expr, $virt:expr, $pages:expr) => {
+        mem_debug!(
+            $operation,
+            " phys=0x",
+            $phys,
+            " virt=0x",
+            $virt,
+            " pages=",
+            $pages,
+            "\n"
+        );
+    };
     ($stage:literal, $phys:expr, $virt:expr, $pages:expr) => {
         mem_debug!(
             "Memory mapping stage=",
@@ -936,15 +929,17 @@ macro_rules! map_identity_range_macro {
     }};
 }
 
+
+
 //// Identity mapping with detailed logging
 #[macro_export]
 macro_rules! identity_map_range_with_log_macro {
     ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $num_pages:expr, $flags:expr) => {{
-        log_page_table_op!("Identity mapping start", $start_addr, 0, $num_pages);
+        log_page_table_op!("Identity mapping start", $start_addr, $start_addr, $num_pages);
         let result =
             map_identity_range_macro!($mapper, $frame_allocator, $start_addr, $num_pages, $flags);
         if result.is_ok() {
-            log_page_table_op!("Identity mapping complete", $start_addr, 0, $num_pages);
+            log_page_table_op!("Identity mapping complete", $start_addr, $start_addr, $num_pages);
         }
         result
     }};
@@ -975,7 +970,7 @@ macro_rules! map_to_higher_half_with_log_macro {
             virt_start,
             $num_pages
         );
-        Ok(())
+        Ok::<(), x86_64::structures::paging::mapper::MapToError<x86_64::structures::paging::Size4KiB>>(())
     }};
 }
 
@@ -989,7 +984,7 @@ macro_rules! map_with_log_macro {
             let virt_addr = $virt + i * 4096;
             map_with_offset!($mapper, $allocator, phys_addr, virt_addr, $flags);
         }
-        Ok(())
+        Ok::<(), x86_64::structures::paging::mapper::MapToError<x86_64::structures::paging::Size4KiB>>(())
     }};
 }
 
@@ -998,10 +993,10 @@ macro_rules! map_with_log_macro {
 macro_rules! flush_tlb_and_verify {
     () => {{
         use x86_64::instructions::tlb;
-        use x86_64::registers::control::Cr3;
+        use x86_64::registers::control::{Cr3, Cr3Flags};
         tlb::flush_all();
         // Verify by reading CR3 to force a TLB reload
-        let (frame, flags) = Cr3::read();
+        let (frame, flags): (x86_64::structures::paging::PhysFrame<x86_64::structures::paging::Size4KiB>, Cr3Flags) = Cr3::read();
         unsafe { Cr3::write(frame, flags) };
     }};
 }
