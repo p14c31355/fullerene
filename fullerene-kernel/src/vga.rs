@@ -1,62 +1,12 @@
 use petroleum::{
-    Color, ColorCode, ScreenChar, TextBufferOperations, clear_buffer, clear_line_range,
-    handle_write_byte, impl_text_buffer_operations, port_write, scroll_char_buffer_up, update_vga_cursor,
+    Color, ColorCode, ScreenChar, TextBufferOperations, clear_buffer, clear_line_range, graphics::{ports::{HardwarePorts, VgaPortOps}, registers::{
+        ATTRIBUTE_TEXT_CONFIG as ATTRIBUTE_CONFIG, CRTC_TEXT_CONFIG as CRTC_CONFIG, GRAPHICS_TEXT_CONFIG as GRAPHICS_CONFIG, SEQUENCER_TEXT_CONFIG as SEQUENCER_CONFIG
+    }}, handle_write_byte, impl_text_buffer_operations, port_read_u8, port_write, ports::write_vga_attribute_register, scroll_char_buffer_up, update_vga_cursor
 };
 
-// Local macro for writing to attribute controller registers
-macro_rules! write_ac_register {
-    ($vga_input_status_1:expr, $vga_ac_port:expr, $index:expr, $value:expr) => {
-        unsafe {
-            $vga_input_status_1.read(); // Reset flip-flop
-            $vga_ac_port.write($index);
-            $vga_ac_port.write($value);
-        }
-    };
-}
+// Consolidated port operations from petroleum crate
 use spin::{Mutex, Once};
 use alloc::vec::Vec;
-
-// VGA port constants
-const VGA_MISC_WRITE: u16 = 0x3C2;
-const VGA_SEQ_INDEX: u16 = 0x3C4;
-const VGA_SEQ_DATA: u16 = 0x3C5;
-const VGA_CRTC_INDEX: u16 = 0x3D4;
-const VGA_CRTC_DATA: u16 = 0x3D5;
-const VGA_GC_INDEX: u16 = 0x3CE;
-const VGA_GC_DATA: u16 = 0x3CF;
-const VGA_AC_INDEX: u16 = 0x3C0;
-const VGA_AC_WRITE: u16 = 0x3C1;
-
-// VGA configuration sequences for 80x25 text mode
-const SEQUENCER_CONFIG: [(u8, u8); 5] = [
-    (0x00, 0x03), (0x01, 0x00), (0x02, 0x03), (0x03, 0x00), (0x04, 0x02),
-];
-const CRTC_CONFIG: [(u8, u8); 18] = [
-    (0x00, 0x5f), (0x01, 0x4f), (0x02, 0x50), (0x03, 0x82), (0x04, 0x55),
-    (0x05, 0x81), (0x06, 0xbf), (0x07, 0x1f), (0x08, 0x00), (0x09, 0x4f),
-    (0x10, 0x9c), (0x11, 0x8e), (0x12, 0x8f), (0x13, 0x28), (0x14, 0x1f),
-    (0x15, 0x96), (0x16, 0xb9), (0x17, 0xa3),
-];
-const GRAPHICS_CONFIG: [(u8, u8); 9] = [
-    (0x00, 0x00), (0x01, 0x00), (0x02, 0x00), (0x03, 0x00), (0x04, 0x00),
-    (0x05, 0x10), (0x06, 0x0e), (0x07, 0x00), (0x08, 0xff),
-];
-
-const MISC_REGISTER_VALUE: u8 = 0x67;
-const ATTRIBUTE_MODE_CONTROL_VALUE: u8 = 0x0c;
-
-// VGA attribute controller register indices
-const ATTRIBUTE_MODE_CONTROL_REGISTER: u8 = 0x10;
-const OVERSCAN_REGISTER: u8 = 0x11;
-const MEMORY_PLANE_ENABLE_REGISTER: u8 = 0x12;
-const HORIZONTAL_PIXEL_PANNING_REGISTER: u8 = 0x13;
-const COLOR_SELECT_REGISTER: u8 = 0x14;
-
-// VGA attribute controller register values
-const OVERSCAN_COLOR: u8 = 0x00;
-const MEMORY_PLANE_ENABLE_ALL: u8 = 0x0f;
-const HORIZONTAL_PIXEL_PANNING_DEFAULT: u8 = 0x08;
-const COLOR_SELECT_DEFAULT: u8 = 0x00;
 
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
@@ -64,7 +14,7 @@ const BUFFER_WIDTH: usize = 80;
 const CURSOR_POS_LOW_REG: u8 = 0x0F;
 const CURSOR_POS_HIGH_REG: u8 = 0x0E;
 
-/// Represents the VGA text buffer writer.
+/// Representsthe VGA text buffer writer.
 pub struct VgaBuffer {
     buffer: &'static mut [[ScreenChar; BUFFER_WIDTH]; BUFFER_HEIGHT],
     column_position: usize,
@@ -207,52 +157,40 @@ pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
     writer.set_color_code(ColorCode::new(Color::Green, Color::Black));
 
     // Set VGA to text mode 3 (80x25 color text)
-    use petroleum::graphics::ports::{HardwarePorts, RegisterConfig, VgaPortOps};
-    use petroleum::hardware::ports::*;
-    use petroleum::port_write;
     use x86_64::instructions::port::*;
 
     // Write misc register
-    port_write!(VGA_MISC_WRITE, MISC_REGISTER_VALUE);
+    port_write!(HardwarePorts::MISC_OUTPUT, 0x67u8);
 
     // Sequencer registers
-    let sequencer_configs = SEQUENCER_CONFIG.map(|(index, value)| RegisterConfig { index, value });
+    let sequencer_configs = SEQUENCER_CONFIG;
     let mut sequencer_ops = VgaPortOps::new(HardwarePorts::SEQUENCER_INDEX, HardwarePorts::SEQUENCER_DATA);
-    sequencer_ops.write_sequence(&sequencer_configs);
+    sequencer_ops.write_sequence(sequencer_configs);
 
     // CRTC registers for 80x25 text mode
-    let crtc_configs = CRTC_CONFIG.map(|(index, value)| RegisterConfig { index, value });
+    let crtc_configs = CRTC_CONFIG;
     let mut crtc_ops = VgaPortOps::new(HardwarePorts::CRTC_INDEX, HardwarePorts::CRTC_DATA);
-    crtc_ops.write_sequence(&crtc_configs);
-
-    // Enable screen
-    //let mut sequencer_ops_enable = VgaPortOps::new(HardwarePorts::SEQUENCER_INDEX, HardwarePorts::SEQUENCER_DATA);
-    //sequencer_ops_enable.write_register(1, 0x00); // Already set in config
+    crtc_ops.write_sequence(crtc_configs);
 
     // Graphics controller
-    let graphics_configs = GRAPHICS_CONFIG.map(|(index, value)| RegisterConfig { index, value });
+    let graphics_configs = GRAPHICS_CONFIG;
     let mut graphics_ops = VgaPortOps::new(HardwarePorts::GRAPHICS_INDEX, HardwarePorts::GRAPHICS_DATA);
-    graphics_ops.write_sequence(&graphics_configs);
+    graphics_ops.write_sequence(graphics_configs);
 
     // Attribute controller (text mode)
-    let mut vga_input_status_1: PortReadOnly<u8> = PortReadOnly::new(0x3DA);
-    let mut vga_ac_port: Port<u8> = Port::new(VGA_AC_INDEX); // 0x3C0 is used for both index and data
-
     // Set palette registers (0-15) and other registers
     for i in 0..16 {
-        write_ac_register!(vga_input_status_1, vga_ac_port, i, i);
+        write_vga_attribute_register(i, i as u8);
     }
-    write_ac_register!(vga_input_status_1, vga_ac_port, ATTRIBUTE_MODE_CONTROL_REGISTER, ATTRIBUTE_MODE_CONTROL_VALUE);
-    write_ac_register!(vga_input_status_1, vga_ac_port, OVERSCAN_REGISTER, OVERSCAN_COLOR);
-    write_ac_register!(vga_input_status_1, vga_ac_port, MEMORY_PLANE_ENABLE_REGISTER, MEMORY_PLANE_ENABLE_ALL);
-    write_ac_register!(vga_input_status_1, vga_ac_port, HORIZONTAL_PIXEL_PANNING_REGISTER, HORIZONTAL_PIXEL_PANNING_DEFAULT);
-    write_ac_register!(vga_input_status_1, vga_ac_port, COLOR_SELECT_REGISTER, COLOR_SELECT_DEFAULT);
+    write_vga_attribute_register(0x10, 0x0C);
+    write_vga_attribute_register(0x11, 0x00);
+    write_vga_attribute_register(0x12, 0x0F);
+    write_vga_attribute_register(0x13, 0x08);
+    write_vga_attribute_register(0x14, 0x00);
 
     // Finally, enable video by writing 0x20 to the index port (with palette access enabled)
-    unsafe {
-        vga_input_status_1.read();
-        vga_ac_port.write(0x20);
-    }
+    port_read_u8!(HardwarePorts::STATUS);
+    port_write!(0x3C0u16, 0x20u8);
 
     // DAC registers (optional for text mode, simplified)
     // Skip DAC initialization for now as it's not strictly necessary for text mode
@@ -261,7 +199,7 @@ pub fn init_vga(physical_memory_offset: x86_64::VirtAddr) {
     writer.write_string("This is output directly to VGA.\n");
     writer.update_cursor();
     // Force display refresh by reading status register
-    let _: u8 = petroleum::port_read_u8!(petroleum::graphics::ports::HardwarePorts::STATUS);
+    let _: u8 = port_read_u8!(HardwarePorts::STATUS);
 }
 
 #[cfg(test)]

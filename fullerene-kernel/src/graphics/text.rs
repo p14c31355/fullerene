@@ -12,89 +12,26 @@ use petroleum::common::VgaFramebufferConfig;
 use petroleum::graphics::init_vga_graphics;
 use spin::{Mutex, Once};
 
-// Imports from other modules
-use super::framebuffer::{FramebufferLike, FramebufferWriter};
+// Imports from petroleum
+use petroleum::FramebufferLike;
+use petroleum::FramebufferWriter;
 use petroleum::graphics::color::{
     FramebufferInfo, PixelType, SimpleFramebufferConfig, init_simple_framebuffer_config,
 };
 
-// Optimized text rendering using embedded-graphics
-// Batcher processing for efficiency and reduced code complexity
-fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result {
-    const CHAR_WIDTH: i32 = FONT_6X10.character_size.width as i32;
-    const CHAR_HEIGHT: i32 = FONT_6X10.character_size.height as i32;
-
-    let fg_color = super::u32_to_rgb888(writer.get_fg_color());
-
-    let style = MonoTextStyle::new(&FONT_6X10, fg_color);
-    let lines = s.split_inclusive('\n');
-    let mut current_pos = Point::new(
-        writer.get_position().0 as i32,
-        writer.get_position().1 as i32,
-    );
-
-    for line_with_newline in lines {
-        // Handle the line (including newline if present)
-        let has_newline = line_with_newline.ends_with('\n');
-        let line_content = if has_newline {
-            &line_with_newline[..line_with_newline.len() - 1]
-        } else {
-            line_with_newline
-        };
-
-        // Render the entire line at once for efficiency
-        if !line_content.is_empty() {
-            let text = Text::new(line_content, current_pos, style);
-            text.draw(writer).ok();
-
-            // Advance position by the rendered text width
-            current_pos.x += CHAR_WIDTH * line_content.chars().count() as i32;
-        }
-
-        if has_newline {
-            current_pos.x = 0;
-            current_pos.y += CHAR_HEIGHT; // Font height
-
-            // Handle scrolling if needed
-            if current_pos.y + CHAR_HEIGHT > writer.get_height() as i32 {
-                writer.scroll_up();
-                current_pos.y -= CHAR_HEIGHT;
-            }
-        } else {
-            // Handle line wrapping for lines without explicit newlines
-            if current_pos.x >= writer.get_width() as i32 {
-                current_pos.x = 0;
-                current_pos.y += CHAR_HEIGHT;
-                if current_pos.y + CHAR_HEIGHT > writer.get_height() as i32 {
-                    writer.scroll_up();
-                    current_pos.y -= CHAR_HEIGHT;
-                }
-            }
-        }
-    }
-
-    writer.set_position(current_pos.x as u32, current_pos.y as u32);
-    Ok(())
-}
+// Text rendering handled by FramebufferWriter::write_str in petroleum
 
 // Convenience type aliases
 type UefiFramebufferWriter = FramebufferWriter<u32>;
 type VgaFramebufferWriter = FramebufferWriter<u8>;
 
-impl<T> core::fmt::Write for FramebufferWriter<T>
-where
-    T: PixelType,
-{
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        write_text(self, s)
-    }
-}
+// FramebufferWriter now implements Write in petroleum
 
 #[cfg(target_os = "uefi")]
 pub static WRITER_UEFI: Once<Mutex<Box<dyn core::fmt::Write + Send + Sync>>> = Once::new();
 
 #[cfg(target_os = "uefi")]
-pub static FRAMEBUFFER_UEFI: Once<Mutex<super::framebuffer::UefiFramebuffer>> = Once::new();
+pub static FRAMEBUFFER_UEFI: Once<Mutex<petroleum::UefiFramebuffer>> = Once::new();
 
 #[cfg(not(target_os = "uefi"))]
 pub static WRITER_BIOS: Once<Mutex<Box<dyn core::fmt::Write + Send + Sync>>> = Once::new();
@@ -139,7 +76,7 @@ pub fn init(config: &FullereneFramebufferConfig) {
             let writer = FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(&vga_config));
             (
                 Box::new(writer.clone()) as Box<dyn core::fmt::Write + Send + Sync>,
-                super::framebuffer::UefiFramebuffer::Vga8(writer),
+                petroleum::UefiFramebuffer::Vga8(writer),
             )
         }
         _ => {
@@ -148,7 +85,7 @@ pub fn init(config: &FullereneFramebufferConfig) {
             let writer = FramebufferWriter::<u32>::new(FramebufferInfo::new(config));
             (
                 Box::new(writer.clone()) as Box<dyn core::fmt::Write + Send + Sync>,
-                super::framebuffer::UefiFramebuffer::Uefi32(writer),
+                petroleum::UefiFramebuffer::Uefi32(writer),
             )
         }
     };
@@ -174,7 +111,7 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
     {
         WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer.clone())));
         FRAMEBUFFER_UEFI
-            .call_once(|| Mutex::new(super::framebuffer::UefiFramebuffer::Vga8(writer)));
+            .call_once(|| Mutex::new(petroleum::UefiFramebuffer::Vga8(writer)));
     }
 
     #[cfg(not(target_os = "uefi"))]

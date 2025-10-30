@@ -66,6 +66,8 @@ macro_rules! draw_window_base {
 
 pub mod color;
 pub mod constants;
+pub mod desktop;
+pub mod framebuffer;
 #[macro_use]
 pub mod ports;
 pub mod registers;
@@ -86,3 +88,9 @@ pub use setup::{
 
 // VGA text operations
 pub use text::{Color, ColorCode, ScreenChar, TextBufferOperations};
+
+// Desktop drawing
+pub use desktop::*;
+
+// Framebuffer
+pub use framebuffer::*;
