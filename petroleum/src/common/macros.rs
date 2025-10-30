@@ -1206,7 +1206,10 @@ macro_rules! pci_config_read {
 macro_rules! display_vga_stats_lines {
     ($vga_writer:expr, $($row:expr, $format:expr, $($args:expr),*);*) => {
         $(
-            vga_stat_line!($vga_writer, $row, $format, $($args),*)
+            {
+                (*$vga_writer).set_position($row, 0);
+                let _ = write!(*$vga_writer, $format, $($args),* );
+            }
         )*
     };
 }
