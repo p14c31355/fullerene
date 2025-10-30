@@ -1,11 +1,15 @@
+use super::framebuffer::{FramebufferLike, FramebufferWriter};
+use crate::{
+    COLOR_BLACK, COLOR_DARK_GRAY, COLOR_LIGHT_BLUE, COLOR_LIGHT_GRAY, COLOR_TASKBAR, COLOR_WHITE,
+    COLOR_WINDOW_BG, calc_text_width, draw_border_rect, draw_filled_rect,
+    serial::debug_print_str_to_com1 as debug_print_str,
+};
 use alloc::string::{String, ToString};
 use embedded_graphics::{
     mono_font::{MonoTextStyle, ascii::FONT_6X10},
     prelude::*,
     text::Text,
 };
-use crate::{draw_border_rect, draw_filled_rect, serial::debug_print_str_to_com1 as debug_print_str, COLOR_BLACK, COLOR_DARK_GRAY, COLOR_LIGHT_BLUE, COLOR_LIGHT_GRAY, COLOR_TASKBAR, COLOR_WHITE, COLOR_WINDOW_BG, calc_text_width};
-use super::framebuffer::{FramebufferLike, FramebufferWriter};
 
 // Assuming framebuffer mod is in petroleum
 
@@ -79,7 +83,11 @@ impl Button {
 }
 
 pub fn draw_os_desktop<W: FramebufferLike>(writer: &mut W) {
-    let mode = if cfg!(target_os = "uefi") { "UEFI" } else { "BIOS" };
+    let mode = if cfg!(target_os = "uefi") {
+        "UEFI"
+    } else {
+        "BIOS"
+    };
     draw_desktop_internal(writer, mode);
 }
 

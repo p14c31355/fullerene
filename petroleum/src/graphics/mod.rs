@@ -1,4 +1,3 @@
-
 /// Generic border rectangle drawing
 #[macro_export]
 macro_rules! draw_border_rect {

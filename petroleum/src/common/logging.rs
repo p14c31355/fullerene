@@ -48,7 +48,10 @@ pub fn init_global_logger() -> Result<(), log::SetLoggerError> {
     LOGGER_INITIALIZED.call_once(|| {});
 
     // Log successful initialization (using serial directly to avoid recursion)
-    crate::serial::serial_log(format_args!("[INIT] Logger initialized at level {:?}\n", LOGGER.level));
+    crate::serial::serial_log(format_args!(
+        "[INIT] Logger initialized at level {:?}\n",
+        LOGGER.level
+    ));
 
     Ok(())
 }

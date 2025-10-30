@@ -5,8 +5,6 @@ pub mod efi_memory;
 
 pub use bitmap_allocator::BitmapFrameAllocator;
 
-
-
 // Import for heap range setting
 use crate::common::memory::set_heap_range;
 // BTreeMap will be available through std when compiled as std crate
@@ -46,9 +44,9 @@ pub struct PeParser {
 }
 
 impl PeParser {
-pub unsafe fn new(kernel_ptr: *const u8) -> Option<Self> {
-    unsafe { find_pe_base(kernel_ptr) }.map(|base| {
-        let pe_offset = read_unaligned!(base, 0x3c, u32) as usize;
+    pub unsafe fn new(kernel_ptr: *const u8) -> Option<Self> {
+        unsafe { find_pe_base(kernel_ptr) }.map(|base| {
+            let pe_offset = read_unaligned!(base, 0x3c, u32) as usize;
             Self {
                 pe_base: base,
                 pe_offset,
@@ -264,8 +262,6 @@ unsafe fn map_pe_section(
         map_with_offset!(mapper, frame_allocator, phys_addr, virt_addr, flags);
     }
 }
-
-
 
 //// Generic mapping interface
 pub trait MemoryMappable {
@@ -710,9 +706,7 @@ unsafe fn map_stack_to_higher_half(
                     phys_offset,
                     desc.physical_start,
                     desc.number_of_pages,
-                    PageTableFlags::PRESENT
-                        | PageTableFlags::WRITABLE
-                        | PageTableFlags::NO_EXECUTE,
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE,
                 )?;
                 break;
             }
@@ -720,8 +714,6 @@ unsafe fn map_stack_to_higher_half(
     }
     Ok(())
 }
-
-
 
 // Generic page table utilities to reduce duplication between different mappers
 trait PageTableUtils {
@@ -854,10 +846,8 @@ macro_rules! map_current_stack {
         let stack_start = rsp & !4095; // page align
 
         // Map current stack area
-        unsafe {
-            map_identity_range($mapper, $frame_allocator, stack_start, stack_pages, $flags)
-        }
-        .expect("Failed to map current stack region");
+        unsafe { map_identity_range($mapper, $frame_allocator, stack_start, stack_pages, $flags) }
+            .expect("Failed to map current stack region");
 
         // Map actual stack descriptor if found
         for desc in $memory_map.iter() {
@@ -1103,22 +1093,33 @@ impl<'a> PageTableInitializer<'a> {
         self.map_current_stack_identity();
 
         // Helper for memory descriptor mappings
-        unsafe { self.map_available_memory_identity(); }
+        unsafe {
+            self.map_available_memory_identity();
+        }
 
         debug_log_no_alloc!("Identity mappings completed");
         kernel_size
     }
 
     // Helper to map essential fixed regions and kernel
-    fn map_essential_regions(&mut self, kernel_phys_start: PhysAddr, level_4_table_frame: PhysFrame) -> u64 {
+    fn map_essential_regions(
+        &mut self,
+        kernel_phys_start: PhysAddr,
+        level_4_table_frame: PhysFrame,
+    ) -> u64 {
         unsafe {
             // Bitmap area - must be first
-            let bitmap_start = (&raw const bitmap_allocator::BITMAP_STATIC) as *const _ as usize as u64;
+            let bitmap_start =
+                (&raw const bitmap_allocator::BITMAP_STATIC) as *const _ as usize as u64;
             let bitmap_pages = ((131072 * 8) + 4095) / 4096;
             self.map_identity_config(bitmap_start, bitmap_pages, READ_WRITE_NO_EXEC);
 
             // L4 table, UEFI compat, kernel
-            self.map_identity_config(level_4_table_frame.start_address().as_u64(), 1, READ_WRITE_NO_EXEC);
+            self.map_identity_config(
+                level_4_table_frame.start_address().as_u64(),
+                1,
+                READ_WRITE_NO_EXEC,
+            );
             self.map_identity_config(4096, UEFI_COMPAT_PAGES, READ_WRITE_NO_EXEC);
 
             let kernel_size = calculate_kernel_memory_size(kernel_phys_start);
@@ -1133,8 +1134,19 @@ impl<'a> PageTableInitializer<'a> {
     }
 
     // Consolidated identity mapping helper using unified stack macro
-    unsafe fn map_identity_config(&mut self, phys_start: u64, num_pages: u64, flags: PageTableFlags) {
-        identity_map_range_with_log_macro!(self.mapper, self.frame_allocator, phys_start, num_pages, flags);
+    unsafe fn map_identity_config(
+        &mut self,
+        phys_start: u64,
+        num_pages: u64,
+        flags: PageTableFlags,
+    ) {
+        identity_map_range_with_log_macro!(
+            self.mapper,
+            self.frame_allocator,
+            phys_start,
+            num_pages,
+            flags
+        );
     }
 
     // Streamlined stack region mapping with macro integration
@@ -1165,16 +1177,20 @@ impl<'a> PageTableInitializer<'a> {
 
     // Helper to map kernel segments with fallback
     fn map_kernel_segments(&mut self, kernel_phys_start: PhysAddr) {
-        let mut kernel_mapper = KernelMapper::new(self.mapper, self.frame_allocator, self.phys_offset);
+        let mut kernel_mapper =
+            KernelMapper::new(self.mapper, self.frame_allocator, self.phys_offset);
         if !unsafe { kernel_mapper.map_pe_sections(kernel_phys_start) } {
-            unsafe { kernel_mapper.map_fallback_kernel_region(kernel_phys_start); }
+            unsafe {
+                kernel_mapper.map_fallback_kernel_region(kernel_phys_start);
+            }
         }
         debug_log_no_alloc!("Kernel segments mapped to higher half");
     }
 
     // Helper to map additional standard regions
     fn map_additional_regions(&mut self, fb_addr: Option<VirtAddr>, fb_size: Option<u64>) {
-        let mut memory_mapper = MemoryMapper::new(self.mapper, self.frame_allocator, self.phys_offset);
+        let mut memory_mapper =
+            MemoryMapper::new(self.mapper, self.frame_allocator, self.phys_offset);
         memory_mapper.map_framebuffer(fb_addr, fb_size);
         memory_mapper.map_vga();
         memory_mapper.map_boot_code();

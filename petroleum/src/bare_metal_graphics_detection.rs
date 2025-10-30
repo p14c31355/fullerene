@@ -25,61 +25,61 @@ pub mod bare_metal_graphics_detection {
             ));
 
             // Check for supported device types
-        match (device.vendor_id, device.device_id) {
-            (0x1af4, id) if id >= 0x1050 => {
-                // virtio-gpu device
-                _print(format_args!(
-                    "[BM-GFX] Detected virtio-gpu, attempting bare-metal framebuffer detection\n"
-                ));
-                if let Some(config) = detect_bare_metal_virtio_gpu_framebuffer(device) {
+            match (device.vendor_id, device.device_id) {
+                (0x1af4, id) if id >= 0x1050 => {
+                    // virtio-gpu device
                     _print(format_args!(
-                        "[BM-GFX] Bare-metal virtio-gpu framebuffer detection successful!\n"
+                        "[BM-GFX] Detected virtio-gpu, attempting bare-metal framebuffer detection\n"
                     ));
-                    return Some(config);
+                    if let Some(config) = detect_bare_metal_virtio_gpu_framebuffer(device) {
+                        _print(format_args!(
+                            "[BM-GFX] Bare-metal virtio-gpu framebuffer detection successful!\n"
+                        ));
+                        return Some(config);
+                    }
+                }
+                (0x1b36, 0x0100) => {
+                    // QEMU QXL device
+                    _print(format_args!(
+                        "[BM-GFX] Detected QXL device, attempting bare-metal framebuffer detection\n"
+                    ));
+                    if let Some(config) = detect_bare_metal_qxl_framebuffer(device) {
+                        _print(format_args!(
+                            "[BM-GFX] Bare-metal QXL framebuffer detection successful!\n"
+                        ));
+                        return Some(config);
+                    }
+                }
+                (0x1013, _) => {
+                    // Cirrus Logic VGA device
+                    _print(format_args!(
+                        "[BM-GFX] Detected Cirrus Logic VGA device, attempting bare-metal framebuffer detection\n"
+                    ));
+                    if let Some(config) = detect_bare_metal_cirrus_framebuffer(device) {
+                        _print(format_args!(
+                            "[BM-GFX] Bare-metal Cirrus VGA framebuffer detection successful!\n"
+                        ));
+                        return Some(config);
+                    }
+                }
+                (0x15ad, 0x0405) => {
+                    // VMware SVGA II
+                    _print(format_args!(
+                        "[BM-GFX] Detected VMware SVGA, attempting bare-metal framebuffer detection\n"
+                    ));
+                    if let Some(config) = detect_bare_metal_vmware_svga_framebuffer(device) {
+                        _print(format_args!(
+                            "[BM-GFX] Bare-metal VMware SVGA framebuffer detection successful!\n"
+                        ));
+                        return Some(config);
+                    }
+                }
+                _ => {
+                    _print(format_args!(
+                        "[BM-GFX] Unknown graphics device type, skipping\n"
+                    ));
                 }
             }
-            (0x1b36, 0x0100) => {
-                // QEMU QXL device
-                _print(format_args!(
-                    "[BM-GFX] Detected QXL device, attempting bare-metal framebuffer detection\n"
-                ));
-                if let Some(config) = detect_bare_metal_qxl_framebuffer(device) {
-                    _print(format_args!(
-                        "[BM-GFX] Bare-metal QXL framebuffer detection successful!\n"
-                    ));
-                    return Some(config);
-                }
-            }
-            (0x1013, _) => {
-                // Cirrus Logic VGA device
-                _print(format_args!(
-                    "[BM-GFX] Detected Cirrus Logic VGA device, attempting bare-metal framebuffer detection\n"
-                ));
-                if let Some(config) = detect_bare_metal_cirrus_framebuffer(device) {
-                    _print(format_args!(
-                        "[BM-GFX] Bare-metal Cirrus VGA framebuffer detection successful!\n"
-                    ));
-                    return Some(config);
-                }
-            }
-            (0x15ad, 0x0405) => {
-                // VMware SVGA II
-                _print(format_args!(
-                    "[BM-GFX] Detected VMware SVGA, attempting bare-metal framebuffer detection\n"
-                ));
-                if let Some(config) = detect_bare_metal_vmware_svga_framebuffer(device) {
-                    _print(format_args!(
-                        "[BM-GFX] Bare-metal VMware SVGA framebuffer detection successful!\n"
-                    ));
-                    return Some(config);
-                }
-            }
-            _ => {
-                _print(format_args!(
-                    "[BM-GFX] Unknown graphics device type, skipping\n"
-                ));
-            }
-        }
         }
 
         _print(format_args!(
@@ -165,17 +165,24 @@ pub mod bare_metal_graphics_detection {
     fn detect_bare_metal_cirrus_framebuffer(
         device: &crate::graphics_alternatives::PciDevice,
     ) -> Option<crate::common::FullereneFramebufferConfig> {
-        _print(format_args!("[BM-GFX] Cirrus VGA bare-metal detection starting\n"));
+        _print(format_args!(
+            "[BM-GFX] Cirrus VGA bare-metal detection starting\n"
+        ));
 
         // Try BAR0 first
         let fb_base_addr =
             crate::bare_metal_pci::read_pci_bar(device.bus, device.device, device.function, 0);
 
-        _print(format_args!("[BM-GFX] Cirrus VGA BAR0: {:#x}\n", fb_base_addr));
+        _print(format_args!(
+            "[BM-GFX] Cirrus VGA BAR0: {:#x}\n",
+            fb_base_addr
+        ));
 
         // If BAR0 is 0, try standard VGA address for Cirrus
         let fb_addr = if fb_base_addr == 0 {
-            _print(format_args!("[BM-GFX] Using standard VGA address for Cirrus\n"));
+            _print(format_args!(
+                "[BM-GFX] Using standard VGA address for Cirrus\n"
+            ));
             0xA0000 // Standard VGA graphics buffer for Cirrus VGA
         } else {
             fb_base_addr

@@ -110,8 +110,7 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
     #[cfg(target_os = "uefi")]
     {
         WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer.clone())));
-        FRAMEBUFFER_UEFI
-            .call_once(|| Mutex::new(petroleum::UefiFramebuffer::Vga8(writer)));
+        FRAMEBUFFER_UEFI.call_once(|| Mutex::new(petroleum::UefiFramebuffer::Vga8(writer)));
     }
 
     #[cfg(not(target_os = "uefi"))]

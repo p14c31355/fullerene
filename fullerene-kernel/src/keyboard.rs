@@ -74,11 +74,11 @@ const PUNCTUATION: &[(u8, u8, u8)] = &[
 
 // Special keys (scancode, ascii)
 const SPECIAL_KEYS: &[(u8, u8)] = &[
-    (0x1C, b'\n'),  // Enter
-    (0x0E, 0x08),   // Backspace
-    (0x0F, b'\t'),  // Tab
-    (0x01, 27),     // Escape
-    (0x39, b' '),   // Space
+    (0x1C, b'\n'), // Enter
+    (0x0E, 0x08),  // Backspace
+    (0x0F, b'\t'), // Tab
+    (0x01, 27),    // Escape
+    (0x39, b' '),  // Space
 ];
 
 /// Helper function to apply case and ctrl modifications to alphabetic characters
@@ -103,20 +103,28 @@ fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> 
     let ctrl_pressed = modifiers.lctrl || modifiers.rctrl;
 
     match scancode {
-        0x02..=0x0B => { // Numbers 1-0
+        0x02..=0x0B => {
+            // Numbers 1-0
             let index = (scancode - 0x02) as usize;
-            let chars = if shift_pressed { NUMBERS_SHIFT } else { NUMBERS_BASE };
+            let chars = if shift_pressed {
+                NUMBERS_SHIFT
+            } else {
+                NUMBERS_BASE
+            };
             Some(chars[index])
         }
-        0x10..=0x19 => { // QWERTY row
+        0x10..=0x19 => {
+            // QWERTY row
             let index = (scancode - 0x10) as usize;
             Some(process_alphabetic(scancode, QWERTY_BASE[index], modifiers))
         }
-        0x1E..=0x26 => { // ASDF row
+        0x1E..=0x26 => {
+            // ASDF row
             let index = (scancode - 0x1E) as usize;
             Some(process_alphabetic(scancode, ASDF_BASE[index], modifiers))
         }
-        0x2C..=0x32 => { // ZXCV row
+        0x2C..=0x32 => {
+            // ZXCV row
             let index = (scancode - 0x2C) as usize;
             Some(process_alphabetic(scancode, ZXCV_BASE[index], modifiers))
         }
@@ -130,7 +138,10 @@ fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> 
         }
         _ => {
             // Lookup in special keys
-            SPECIAL_KEYS.iter().find(|&&(code, _)| code == scancode).map(|&(_, ascii)| ascii)
+            SPECIAL_KEYS
+                .iter()
+                .find(|&&(code, _)| code == scancode)
+                .map(|&(_, ascii)| ascii)
         }
     }
 }

@@ -8,7 +8,8 @@ use crate::graphics::text;
 use alloc::{collections::VecDeque, format};
 use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::{
-    Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats, display_stats_on_available_display, periodic_task, scheduler_log, write_serial_bytes,
+    Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats,
+    display_stats_on_available_display, periodic_task, scheduler_log, write_serial_bytes,
 };
 
 // Define periodic tasks in a struct for clarity
@@ -31,10 +32,7 @@ fn stats_task(_tick: u64, _iter: u64) {
     const SYSTEM_LOG_FILE: &str = "system.log";
     let log_content = format!(
         "System Stats - Processes: {}/{}, Memory: {} bytes, Uptime: {} ticks\n",
-        stats.active_processes,
-        stats.total_processes,
-        stats.memory_used,
-        stats.uptime_ticks
+        stats.active_processes, stats.total_processes, stats.memory_used, stats.uptime_ticks
     );
     if let Ok(_) = crate::fs::create_file(SYSTEM_LOG_FILE, log_content.as_bytes()) {
         log::info!("System log file written successfully");
@@ -112,8 +110,6 @@ const HIGH_MEMORY_THRESHOLD: usize = 50; // %
 const MAX_PROCESSES_THRESHOLD: usize = 10;
 const EMERGENCY_MEMORY_THRESHOLD: usize = 80; // %
 const MAX_PROCESSES_EMERGENCY: usize = 100;
-
-
 
 /// I/O event type for future I/O handling
 #[derive(Clone, Copy)]
@@ -205,7 +201,12 @@ fn log_system_stats(stats: &SystemStats, interval_ticks: u64) {
 
 /// Display system statistics on VGA or framebuffer periodically
 fn display_system_stats_on_display(stats: &SystemStats, interval_ticks: u64) {
-    petroleum::display_stats_on_available_display!(stats, SYSTEM_TICK.load(Ordering::Relaxed), interval_ticks, &crate::vga::VGA_BUFFER);
+    petroleum::display_stats_on_available_display!(
+        stats,
+        SYSTEM_TICK.load(Ordering::Relaxed),
+        interval_ticks,
+        &crate::vga::VGA_BUFFER
+    );
 }
 
 /// Get the current system tick count

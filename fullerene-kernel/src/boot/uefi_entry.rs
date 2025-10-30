@@ -2,15 +2,15 @@
 use crate::scheduler::scheduler_loop;
 
 use crate::MEMORY_MAP;
-use petroleum::FramebufferLike;
 use crate::heap;
+use petroleum::FramebufferLike;
 
 use crate::memory::find_heap_start;
 use crate::{gdt, graphics, interrupts, memory};
 use alloc::boxed::Box;
 use core::ffi::c_void;
-use petroleum::common::{EfiGraphicsOutputProtocol, EfiSystemTable};
 use petroleum::common::uefi::{efi_print, find_gop_framebuffer, write_vga_string};
+use petroleum::common::{EfiGraphicsOutputProtocol, EfiSystemTable};
 
 use petroleum::{
     allocate_heap_from_map, debug_log, debug_log_no_alloc, mem_debug, write_serial_bytes,
@@ -325,7 +325,7 @@ impl UefiInitContext {
         unsafe {
             match mapper.map_to(page, frame, flags, &mut *frame_allocator) {
                 Ok(flush) => flush.flush(),
-                Err(MapToError::PageAlreadyMapped(_)) => {},
+                Err(MapToError::PageAlreadyMapped(_)) => {}
                 Err(e) => panic!("Failed to map Local APIC: {:?}", e),
             }
         }
@@ -341,7 +341,7 @@ impl UefiInitContext {
         unsafe {
             match mapper.map_to(page, frame, flags, &mut *frame_allocator) {
                 Ok(flush) => flush.flush(),
-                Err(MapToError::PageAlreadyMapped(_)) => {},
+                Err(MapToError::PageAlreadyMapped(_)) => {}
                 Err(e) => panic!("Failed to map IO APIC: {:?}", e),
             }
         }
@@ -357,7 +357,7 @@ impl UefiInitContext {
             unsafe {
                 match mapper.map_to(page, frame, flags, &mut *frame_allocator) {
                     Ok(flush) => flush.flush(),
-                    Err(MapToError::PageAlreadyMapped(_)) => {},
+                    Err(MapToError::PageAlreadyMapped(_)) => {}
                     Err(e) => panic!("Failed to map VGA buffer page {}: {:?}", i, e),
                 }
             }
@@ -456,7 +456,11 @@ pub extern "efiapi" fn efi_main(
     // let _ = petroleum::init_graphics_protocols(system_table);
 
     // Initialize text/graphics output if framebuffer config is available
-    if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().map(|m| *m.lock()).flatten() {
+    if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+        .get()
+        .map(|m| *m.lock())
+        .flatten()
+    {
         log::info!("Initializing framebuffer text output");
         crate::graphics::text::init(&config);
     } else {

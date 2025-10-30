@@ -1,4 +1,3 @@
-use embedded_graphics::{geometry::{Point, Size}, mono_font::{MonoTextStyle, ascii::FONT_6X10}, pixelcolor::Rgb888, prelude::*, text::Text};
 use crate::common::EfiGraphicsPixelFormat;
 use crate::common::FullereneFramebufferConfig;
 use crate::common::VgaFramebufferConfig;
@@ -7,6 +6,13 @@ use crate::graphics::color::{
     SimpleFramebufferConfig, rgb_pixel, vga_color_index,
 };
 use crate::{clear_buffer_pixels, scroll_buffer_pixels};
+use embedded_graphics::{
+    geometry::{Point, Size},
+    mono_font::{MonoTextStyle, ascii::FONT_6X10},
+    pixelcolor::Rgb888,
+    prelude::*,
+    text::Text,
+};
 use spin::{Mutex, Once};
 
 // Generic type aliases for cleaner code

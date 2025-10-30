@@ -8,7 +8,12 @@ use petroleum::{page_table::PageTableHelper, write_serial_bytes};
 use x86_64::{PhysAddr, VirtAddr};
 
 // Helper function to reduce duplication in syscall buffer validation
-fn validate_syscall_buffer(fd: core::ffi::c_int, buffer: usize, count: usize, allow_kernel: bool) -> Result<(), SyscallError> {
+fn validate_syscall_buffer(
+    fd: core::ffi::c_int,
+    buffer: usize,
+    count: usize,
+    allow_kernel: bool,
+) -> Result<(), SyscallError> {
     petroleum::validate_syscall_fd(fd)?;
     petroleum::validate_user_buffer(buffer, count, allow_kernel)?;
     Ok(())

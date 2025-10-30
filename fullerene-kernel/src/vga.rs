@@ -1,12 +1,20 @@
 use petroleum::{
-    Color, ColorCode, ScreenChar, TextBufferOperations, clear_buffer, clear_line_range, graphics::{ports::{HardwarePorts, VgaPortOps}, registers::{
-        ATTRIBUTE_TEXT_CONFIG as ATTRIBUTE_CONFIG, CRTC_TEXT_CONFIG as CRTC_CONFIG, GRAPHICS_TEXT_CONFIG as GRAPHICS_CONFIG, SEQUENCER_TEXT_CONFIG as SEQUENCER_CONFIG
-    }}, handle_write_byte, impl_text_buffer_operations, port_read_u8, port_write, ports::write_vga_attribute_register, scroll_char_buffer_up, update_vga_cursor
+    Color, ColorCode, ScreenChar, TextBufferOperations, clear_buffer, clear_line_range,
+    graphics::{
+        ports::{HardwarePorts, VgaPortOps},
+        registers::{
+            ATTRIBUTE_TEXT_CONFIG as ATTRIBUTE_CONFIG, CRTC_TEXT_CONFIG as CRTC_CONFIG,
+            GRAPHICS_TEXT_CONFIG as GRAPHICS_CONFIG, SEQUENCER_TEXT_CONFIG as SEQUENCER_CONFIG,
+        },
+    },
+    handle_write_byte, impl_text_buffer_operations, port_read_u8, port_write,
+    ports::write_vga_attribute_register,
+    scroll_char_buffer_up, update_vga_cursor,
 };
 
 // Consolidated port operations from petroleum crate
-use spin::{Mutex, Once};
 use alloc::vec::Vec;
+use spin::{Mutex, Once};
 
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
@@ -140,7 +148,15 @@ impl TextBufferOperations for VgaBuffer {
     }
 
     fn scroll_up(&mut self) {
-        scroll_char_buffer_up!(self.buffer, BUFFER_HEIGHT, BUFFER_WIDTH, ScreenChar { ascii_character: b' ', color_code: self.color_code });
+        scroll_char_buffer_up!(
+            self.buffer,
+            BUFFER_HEIGHT,
+            BUFFER_WIDTH,
+            ScreenChar {
+                ascii_character: b' ',
+                color_code: self.color_code
+            }
+        );
     }
 }
 
@@ -167,7 +183,10 @@ pub fn init_vga(_physical_memory_offset: x86_64::VirtAddr) {
 
     // Sequencer registers
     let sequencer_configs = SEQUENCER_CONFIG;
-    let mut sequencer_ops = VgaPortOps::new(HardwarePorts::SEQUENCER_INDEX, HardwarePorts::SEQUENCER_DATA);
+    let mut sequencer_ops = VgaPortOps::new(
+        HardwarePorts::SEQUENCER_INDEX,
+        HardwarePorts::SEQUENCER_DATA,
+    );
     sequencer_ops.write_sequence(sequencer_configs);
 
     // CRTC registers for 80x25 text mode
@@ -177,7 +196,8 @@ pub fn init_vga(_physical_memory_offset: x86_64::VirtAddr) {
 
     // Graphics controller
     let graphics_configs = GRAPHICS_CONFIG;
-    let mut graphics_ops = VgaPortOps::new(HardwarePorts::GRAPHICS_INDEX, HardwarePorts::GRAPHICS_DATA);
+    let mut graphics_ops =
+        VgaPortOps::new(HardwarePorts::GRAPHICS_INDEX, HardwarePorts::GRAPHICS_DATA);
     graphics_ops.write_sequence(graphics_configs);
 
     // Attribute controller (text mode)

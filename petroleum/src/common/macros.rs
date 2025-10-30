@@ -140,7 +140,6 @@ macro_rules! lock_and_modify {
     }};
 }
 
-
 /// Macro for reading contents protected by a Mutex lock (returns a copy/clone)
 #[macro_export]
 macro_rules! lock_and_read {
@@ -279,14 +278,19 @@ macro_rules! init_boot_step {
 #[macro_export]
 macro_rules! init_step {
     ($name:expr, $closure:expr) => {
-        ($name, Box::new($closure) as Box<dyn Fn() -> Result<(), &'static str>>)
+        (
+            $name,
+            Box::new($closure) as Box<dyn Fn() -> Result<(), &'static str>>,
+        )
     };
 }
 
 /// Macro for reading unaligned data from memory with offset
 #[macro_export]
 macro_rules! read_unaligned {
-    ($ptr:expr, $offset:expr, $ty:ty) => { unsafe { core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) } };
+    ($ptr:expr, $offset:expr, $ty:ty) => {
+        unsafe { core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) }
+    };
 }
 
 /// Macro to clear a specific range in a 2D buffer for fixed-width buffers like VGA
@@ -393,8 +397,6 @@ macro_rules! periodic_task {
     };
 }
 
-
-
 /// Macro for defining health check functions with consistent logging and thresholds
 /// Reduces boilerplate in system monitoring by providing a unified interface
 #[macro_export]
@@ -492,8 +494,6 @@ macro_rules! maintenance_tasks {
         )*
     };
 }
-
-
 
 /// PCI operation helper macros to reduce repetition in PCI handling
 #[macro_export]
@@ -754,8 +754,6 @@ macro_rules! check_uefi_status {
     };
 }
 
-
-
 /// Macro to update VGA cursor position by writing to ports
 #[macro_export]
 macro_rules! update_vga_cursor {
@@ -810,7 +808,9 @@ macro_rules! log_page_table_op {
 macro_rules! process_memory_descriptors_safely {
     ($descriptors:expr, $processor:expr) => {{
         for descriptor in $descriptors.iter() {
-            if $crate::page_table::efi_memory::is_valid_memory_descriptor(descriptor) && descriptor.is_memory_available() {
+            if $crate::page_table::efi_memory::is_valid_memory_descriptor(descriptor)
+                && descriptor.is_memory_available()
+            {
                 let start_frame = (descriptor.get_physical_start() / 4096) as usize;
                 let end_frame = start_frame.saturating_add(descriptor.get_page_count() as usize);
 
@@ -849,8 +849,6 @@ macro_rules! halt {
         }
     };
 }
-
-
 
 /// Page table flags constants macro
 #[macro_export]
@@ -1421,7 +1419,15 @@ macro_rules! impl_text_buffer_operations {
         }
 
         fn scroll_up(&mut self) {
-            $crate::scroll_char_buffer_up!(self.$buffer_field, $height, $width, ScreenChar { ascii_character: b' ', color_code: self.$color_field });
+            $crate::scroll_char_buffer_up!(
+                self.$buffer_field,
+                $height,
+                $width,
+                ScreenChar {
+                    ascii_character: b' ',
+                    color_code: self.$color_field
+                }
+            );
         }
     };
 }

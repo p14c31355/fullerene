@@ -243,10 +243,13 @@ pub fn exit_boot_services_and_jump(
         );
         log::info!("About to call kernel entry.");
     }
-    entry(image_handle, system_table, map_phys_addr as *mut c_void, final_map_size);
+    entry(
+        image_handle,
+        system_table,
+        map_phys_addr as *mut c_void,
+        final_map_size,
+    );
 }
-
-
 
 /// Load EFI PE image using separated PE module
 pub fn load_efi_image(
