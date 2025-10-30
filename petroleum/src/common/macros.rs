@@ -655,59 +655,18 @@ macro_rules! define_commands {
     };
 }
 
-/// Macro for volatile memory read operations
+/// Macro for volatile memory operations
 #[macro_export]
-macro_rules! volatile_read {
-    ($addr:expr, $ty:ty) => {
+macro_rules! volatile_ops {
+    (read, $addr:expr, $ty:ty) => {
         unsafe { core::ptr::read_volatile($addr as *const $ty) }
     };
-}
-
-/// Macro for volatile memory write operations
-#[macro_export]
-macro_rules! volatile_write {
-    ($addr:expr, $val:expr) => {
+    (write, $addr:expr, $val:expr) => {
         unsafe { core::ptr::write_volatile($addr as *mut _, $val) }
     };
 }
 
-/// Bitmap operations macro to reduce repetitive bitmap manipulation
-/// Reduces line count for bitmap frame allocation operations by consolidating
-/// the common pattern of chunk/bit index calculation and bounds checking.
-#[macro_export]
-macro_rules! bitmap_operation {
-    ($bitmap:expr, $frame_index:expr, set_free) => {{
-        if let Some(ref mut bitmap) = $bitmap {
-            let chunk_index = $frame_index / 64;
-            let bit_index = $frame_index % 64;
-            if chunk_index < bitmap.len() {
-                bitmap[chunk_index] &= !(1 << bit_index);
-            }
-        }
-    }};
-    ($bitmap:expr, $frame_index:expr, set_used) => {{
-        if let Some(ref mut bitmap) = $bitmap {
-            let chunk_index = $frame_index / 64;
-            let bit_index = $frame_index % 64;
-            if chunk_index < bitmap.len() {
-                bitmap[chunk_index] |= 1 << bit_index;
-            }
-        }
-    }};
-    ($bitmap:expr, $frame_index:expr, is_free) => {{
-        if let Some(ref bitmap) = $bitmap {
-            let chunk_index = $frame_index / 64;
-            let bit_index = $frame_index % 64;
-            if chunk_index < bitmap.len() {
-                (bitmap[chunk_index] & (1 << bit_index)) == 0
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    }};
-}
+
 
 /// Macro for scrolling up a 2D character buffer (generic version)
 #[macro_export]
@@ -992,18 +951,7 @@ macro_rules! map_identity_range_macro {
     }};
 }
 
-//// Range mapping with logging macro
-#[macro_export]
-macro_rules! map_range_with_log_macro {
-    ($mapper:expr, $frame_allocator:expr, $phys_start:expr, $virt_start:expr, $num_pages:expr, $flags:expr) => {{
-        use x86_64::structures::paging::mapper::MapToError;
-        log_page_table_op!("Mapping range", $phys_start, $virt_start, $num_pages);
-        $crate::map_pages!($mapper, $frame_allocator, $phys_start, $virt_start + i * 4096, $num_pages, $flags, 'continue');
-        Ok::<(), MapToError<Size4KiB>>(())
-    }};
-}
-
-/// Identity mapping with detailed logging
+//// Identity mapping with detailed logging
 #[macro_export]
 macro_rules! identity_map_range_with_log_macro {
     ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $num_pages:expr, $flags:expr) => {{

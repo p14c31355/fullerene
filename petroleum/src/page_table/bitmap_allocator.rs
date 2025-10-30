@@ -113,17 +113,17 @@ impl BitmapFrameAllocator {
 
     /// Set a frame as free in the bitmap
     fn set_frame_free(&mut self, frame_index: usize) {
-        bitmap_operation!(self.bitmap, frame_index, set_free);
+        bit_ops!(bitmap_set_free, self.bitmap, frame_index);
     }
 
     /// Set a frame as used in the bitmap
     pub fn set_frame_used(&mut self, frame_index: usize) {
-        bitmap_operation!(self.bitmap, frame_index, set_used);
+        bit_ops!(bitmap_set_used, self.bitmap, frame_index);
     }
 
     /// Check if a frame is free
     fn is_frame_free(&self, frame_index: usize) -> bool {
-        bitmap_operation!(self.bitmap, frame_index, is_free)
+        bit_ops!(bitmap_is_free, self.bitmap, frame_index)
     }
 
     /// Find the next free frame starting from a given index

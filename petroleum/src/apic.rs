@@ -2,7 +2,7 @@
 //!
 //! Provides functions for configuring LAPIC and I/O APIC during UEFI boot.
 
-use crate::{volatile_read, volatile_write};
+use crate::volatile_ops;
 
 /// I/O APIC register offsets
 const IOAPIC_VER: u8 = 0x01;
@@ -92,8 +92,8 @@ impl IoApic {
         let reg_addr = self.base_addr as *mut u32;
         let value_addr = (self.base_addr + 0x10) as *mut u32;
 
-        volatile_write!(reg_addr, reg as u32);
-        volatile_read!(value_addr, u32)
+        volatile_ops!(write, reg_addr, reg as u32);
+        volatile_ops!(read, value_addr, u32)
     }
 
     /// Write to I/O APIC register (volatile)
@@ -101,8 +101,8 @@ impl IoApic {
         let reg_addr = self.base_addr as *mut u32;
         let value_addr = (self.base_addr + 0x10) as *mut u32;
 
-        volatile_write!(reg_addr, reg as u32);
-        volatile_write!(value_addr, value);
+        volatile_ops!(write, reg_addr, reg as u32);
+        volatile_ops!(write, value_addr, value);
     }
 
     /// Read redirection table entry
@@ -158,7 +158,7 @@ pub fn configure_io_apic_for_legacy_irqs(io_apic: &mut IoApic, local_apic_id: u8
 /// Get local APIC ID from the LAPIC
 pub unsafe fn get_local_apic_id(lapic_base: u64) -> u8 {
     let lapic_id_reg = (lapic_base + 0x20) as *const u32;
-    (volatile_read!(lapic_id_reg, u32) >> 24) as u8
+    (volatile_ops!(read, lapic_id_reg, u32) >> 24) as u8
 }
 
 /// Initialize I/O APIC for legacy interrupts
