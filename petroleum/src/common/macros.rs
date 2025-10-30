@@ -16,6 +16,37 @@ macro_rules! bit_ops {
             $field &= !(1 << $bit);
         }
     };
+    (bitmap_set_free, $bitmap:expr, $frame:expr) => {
+        if let Some(ref mut bitmap) = $bitmap {
+            let chunk_index = $frame / 64;
+            let bit_index = $frame % 64;
+            if chunk_index < bitmap.len() {
+                bitmap[chunk_index] &= !(1 << bit_index);
+            }
+        }
+    };
+    (bitmap_set_used, $bitmap:expr, $frame:expr) => {
+        if let Some(ref mut bitmap) = $bitmap {
+            let chunk_index = $frame / 64;
+            let bit_index = $frame % 64;
+            if chunk_index < bitmap.len() {
+                bitmap[chunk_index] |= 1 << bit_index;
+            }
+        }
+    };
+    (bitmap_is_free, $bitmap:expr, $frame:expr) => {{
+        if let Some(ref bitmap) = $bitmap {
+            let chunk_index = $frame / 64;
+            let bit_index = $frame % 64;
+            if chunk_index < bitmap.len() {
+                (bitmap[chunk_index] & (1 << bit_index)) == 0
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }};
 }
 
 #[macro_export]
@@ -115,8 +146,8 @@ macro_rules! map_single_page {
                 Ok(flush) => flush.flush(),
                 Err(MapToError::PageAlreadyMapped(_)) => {},
                 Err(e) => match $behavior {
-                    'continue => continue,
-                    'panic => panic!("Mapping error: {:?}", e),
+                    "continue" => continue,
+                    "panic" => panic!("Mapping error: {:?}", e),
                     _ => {},
                 }
             }
@@ -124,13 +155,12 @@ macro_rules! map_single_page {
     }};
 }
 
-/// Consolidated page mapping macro with flexible virtual address calculation
 #[macro_export]
 macro_rules! map_pages {
     ($mapper:expr, $allocator:expr, $phys_base:expr, $virt_calc:expr, $num_pages:expr, $flags:expr, $behavior:tt) => {{
         for i in 0..$num_pages {
             let phys_addr = $phys_base + i * 4096;
-            let virt_addr = $virt_calc;
+            let virt_addr = $virt_calc + i * 4096;
             $crate::map_single_page!($mapper, $allocator, phys_addr, virt_addr, $flags, $behavior);
         }
     }};
