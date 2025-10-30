@@ -46,9 +46,9 @@ pub struct PeParser {
 }
 
 impl PeParser {
-    pub unsafe fn new(kernel_ptr: *const u8) -> Option<Self> {
-        unsafe { find_pe_base(kernel_ptr) }.map(|base| {
-            let pe_offset = unsafe { read_unaligned!(base, 0x3c, u32) } as usize;
+pub unsafe fn new(kernel_ptr: *const u8) -> Option<Self> {
+    unsafe { find_pe_base(kernel_ptr) }.map(|base| {
+        let pe_offset = read_unaligned!(base, 0x3c, u32) as usize;
             Self {
                 pe_base: base,
                 pe_offset,
@@ -63,11 +63,11 @@ impl PeParser {
         {
             return None;
         }
-        let magic = unsafe { read_unaligned!(self.pe_base, self.pe_offset + 24, u16) };
+        let magic = read_unaligned!(self.pe_base, self.pe_offset + 24, u16);
         if magic != 0x10B && magic != 0x20B {
             return None;
         }
-        Some(unsafe { read_unaligned!(self.pe_base, self.pe_offset + 24 + 0x38, u32) } as u64)
+        Some(read_unaligned!(self.pe_base, self.pe_offset + 24 + 0x38, u32) as u64)
     }
 
     pub unsafe fn sections(&self) -> Option<[PeSection; PeParser::MAX_PE_SECTIONS]> {
@@ -918,7 +918,7 @@ impl PageTableReinitializer {
         let mut initializer =
             PageTableInitializer::new(&mut mapper, frame_allocator, self.phys_offset, memory_map);
         let _kernel_size =
-            initializer.setup_identity_mappings(kernel_phys_start, level_4_table_frame);
+            unsafe { initializer.setup_identity_mappings(kernel_phys_start, level_4_table_frame) };
         initializer.setup_higher_half_mappings(kernel_phys_start, fb_addr, fb_size);
         self.setup_recursive_mapping(&mut mapper, level_4_table_frame);
         self.perform_page_table_switch(
@@ -1104,7 +1104,7 @@ impl<'a> PageTableInitializer<'a> {
         let kernel_size = self.map_essential_regions(kernel_phys_start, level_4_table_frame);
 
         // Helper for memory descriptor mappings
-        self.map_memory_regions_identity();
+        unsafe { self.map_available_memory_identity(); }
 
         debug_log_no_alloc!("Identity mappings completed");
         kernel_size
@@ -1136,7 +1136,7 @@ impl<'a> PageTableInitializer<'a> {
     // Helper to map stack region
     fn map_memory_regions_identity(&mut self) {
         self.map_stack_region_identity();
-        self.map_available_memory_identity();
+        unsafe { self.map_available_memory_identity() };
     }
 
     // Consolidated identity mapping helper
@@ -1147,7 +1147,8 @@ impl<'a> PageTableInitializer<'a> {
     // Extract stack mapping to separate helper
     fn map_stack_region_identity(&mut self) {
         unsafe {
-            let rsp = core::arch::asm!("mov {}, rsp", out(reg) u64);
+            let rsp: u64;
+            core::arch::asm!("mov {}, rsp", out(reg) rsp);
             let stack_pages = 256; // 1MB stack
             let stack_start = rsp & !4095; // page align
             self.map_identity_config(stack_start, stack_pages, READ_WRITE_NO_EXEC);
