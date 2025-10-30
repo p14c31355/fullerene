@@ -1239,9 +1239,9 @@ macro_rules! pci_config_read {
 /// ```
 #[macro_export]
 macro_rules! display_vga_stats_lines {
-    ($vga_writer:expr, $($row:expr, $format:expr, $($args:expr),*);* $(;)?) => {
+    ($vga_writer:expr, $($row:expr, $format:expr, $($args:expr),*);*) => {
         $(
-            vga_stat_line!($vga_writer, $row, $format, $($args),*)
+            $crate::vga_stat_line!($vga_writer, $row, $format, $($args),*)
         )*
     };
 }
