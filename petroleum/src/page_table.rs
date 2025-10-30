@@ -344,6 +344,7 @@ impl<'a> MemoryMapper<'a> {
         }
     }
 
+    // Combine framebuffer mapping into a single helper
     pub fn map_framebuffer(
         &mut self,
         fb_addr: Option<VirtAddr>,
@@ -353,10 +354,7 @@ impl<'a> MemoryMapper<'a> {
             let fb_pages = fb_size.div_ceil(4096);
             let fb_phys = fb_addr.as_u64();
             let flags = READ_WRITE_NO_EXEC;
-            unsafe {
-                self.map_to_higher_half(fb_phys, fb_pages, flags)?;
-                self.identity_map_range(fb_phys, fb_pages, flags)?;
-            }
+            self.map_region_dual(fb_phys, fb_pages, flags)?;
         }
         Ok(())
     }
@@ -374,6 +372,20 @@ impl<'a> MemoryMapper<'a> {
         unsafe {
             let _ = self.map_to_higher_half(BOOT_CODE_START, BOOT_CODE_PAGES, flags);
         }
+    }
+
+    // Helper to map both identity and higher-half for regions like framebuffer
+    fn map_region_dual(
+        &mut self,
+        phys_start: u64,
+        num_pages: u64,
+        flags: x86_64::structures::paging::PageTableFlags,
+    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+        unsafe {
+            self.map_to_higher_half(phys_start, num_pages, flags)?;
+            self.identity_map_range(phys_start, num_pages, flags)?;
+        }
+        Ok(())
     }
 
     unsafe fn map_to_higher_half(
@@ -410,23 +422,8 @@ impl<'a> MemoryMapper<'a> {
     }
 }
 
-// Generic function to process memory descriptors using traits with integrated frame calculation
-fn process_memory_descriptors<T, F>(descriptors: &[T], mut processor: F)
-where
-    T: MemoryDescriptorValidator,
-    F: FnMut(&T, usize, usize), // (descriptor, start_frame, end_frame)
-{
-    for descriptor in descriptors {
-        if descriptor.is_valid() && descriptor.is_memory_available() {
-            let start_frame = (descriptor.get_physical_start() / 4096) as usize;
-            let end_frame = start_frame.saturating_add(descriptor.get_page_count() as usize);
-
-            if start_frame < end_frame {
-                processor(descriptor, start_frame, end_frame);
-            }
-        }
-    }
-}
+// Import process_memory_descriptors from efi_memory submodule
+pub use efi_memory::process_memory_descriptors;
 
 // Type alias for backward compatibility
 pub type BootInfoFrameAllocator = BitmapFrameAllocator;
@@ -508,42 +505,65 @@ unsafe fn map_identity_range(
     map_identity_range_checked!(mapper, frame_allocator, phys_start, num_pages, flags)
 }
 
-// Helper to map kernel segments with proper permissions
-unsafe fn map_kernel_segments_inner(
-    mapper: &mut OffsetPageTable,
-    frame_allocator: &mut BootInfoFrameAllocator,
-    kernel_phys_start: PhysAddr,
+// Helper struct for kernel mapping operations
+struct KernelMapper<'a, 'b> {
+    mapper: &'a mut OffsetPageTable<'b>,
+    frame_allocator: &'a mut BootInfoFrameAllocator,
     phys_offset: VirtAddr,
-) {
-    if let Some(sections) = unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8) }
-        .and_then(|p| unsafe { p.sections() })
-    {
-        for section in sections.into_iter().filter(|s| s.virtual_size > 0) {
-            unsafe {
-                map_pe_section(
-                    mapper,
-                    section,
-                    kernel_phys_start,
-                    phys_offset,
-                    frame_allocator,
-                );
-            }
+}
+
+impl<'a, 'b> KernelMapper<'a, 'b> {
+    fn new(
+        mapper: &'a mut OffsetPageTable<'b>,
+        frame_allocator: &'a mut BootInfoFrameAllocator,
+        phys_offset: VirtAddr,
+    ) -> Self {
+        Self {
+            mapper,
+            frame_allocator,
+            phys_offset,
         }
-    } else {
-        // Fallback: map 64MB region for the kernel if PE parsing fails
+    }
+
+    unsafe fn map_pe_sections(&mut self, kernel_phys_start: PhysAddr) -> bool {
+        if let Some(sections) = unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8) }
+            .and_then(|p| unsafe { p.sections() })
+        {
+            for section in sections.into_iter().filter(|s| s.virtual_size > 0) {
+                unsafe {
+                    self.map_single_pe_section(section, kernel_phys_start);
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    unsafe fn map_fallback_kernel_region(&mut self, kernel_phys_start: PhysAddr) {
         let kernel_size = FALLBACK_KERNEL_SIZE;
         let kernel_pages = kernel_size.div_ceil(4096);
         let flags = READ_WRITE;
         unsafe {
             map_identity_range(
-                mapper,
-                frame_allocator,
+                self.mapper,
+                self.frame_allocator,
                 kernel_phys_start.as_u64(),
                 kernel_pages,
                 flags,
             )
             .expect("Failed to map fallback kernel range");
         }
+    }
+
+    unsafe fn map_single_pe_section(&mut self, section: PeSection, kernel_phys_start: PhysAddr) {
+        map_pe_section(
+            self.mapper,
+            section,
+            kernel_phys_start,
+            self.phys_offset,
+            self.frame_allocator,
+        );
     }
 }
 
@@ -1147,14 +1167,10 @@ impl<'a> PageTableInitializer<'a> {
     ) {
         debug_log_no_alloc!("Setting up higher-half mappings");
 
-        // Map kernel segments to higher half
-        unsafe {
-            map_kernel_segments_inner(
-                self.mapper,
-                self.frame_allocator,
-                kernel_phys_start,
-                self.phys_offset,
-            );
+        // Map kernel segments to higher half using KernelMapper
+        let mut kernel_mapper = KernelMapper::new(self.mapper, self.frame_allocator, self.phys_offset);
+        if !unsafe { kernel_mapper.map_pe_sections(kernel_phys_start) } {
+            unsafe { kernel_mapper.map_fallback_kernel_region(kernel_phys_start); }
         }
 
         debug_log_no_alloc!("Kernel segments mapped to higher half");
