@@ -101,15 +101,7 @@ pub trait TextBufferOperations {
             ascii_character: b' ',
             color_code: self.get_color_code(),
         };
-        crate::buffer_ops!(
-            clear_line_range,
-            self,
-            row,
-            row + 1,
-            0,
-            self.get_width(),
-            blank_char
-        );
+        crate::clear_line_range(self, row, row + 1, 0, self.get_width(), blank_char);
     }
 
     fn clear_screen(&mut self) {
