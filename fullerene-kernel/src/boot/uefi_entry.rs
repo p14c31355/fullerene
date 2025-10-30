@@ -382,18 +382,17 @@ impl UefiInitContext {
         let descriptors_base = unsafe { (self.memory_map as *const u8).add(core::mem::size_of::<usize>()) };
         let num_descriptors = actual_descriptors_size / descriptor_item_size;
         debug_log_no_alloc!("init_memory_map: num_descriptors: ", num_descriptors);
+        let actual_num = num_descriptors.min(MAX_DESCRIPTORS);
         if num_descriptors > MAX_DESCRIPTORS {
             debug_log_no_alloc!("init_memory_map: too many descriptors, truncating");
-            return;
         }
-        let descriptors: alloc::vec::Vec<MemoryMapDescriptor> = (0..num_descriptors)
-            .map(|i| {
-                let desc_ptr = unsafe { descriptors_base.add(i * descriptor_item_size) };
-                MemoryMapDescriptor::new(desc_ptr, descriptor_item_size)
-            })
-            .collect();
-        let leaked = descriptors.leak();
-        MEMORY_MAP.call_once(|| leaked);
+        unsafe {
+            for i in 0..actual_num {
+                let desc_ptr = descriptors_base.add(i * descriptor_item_size);
+                crate::heap::MEMORY_MAP_BUFFER[i] = MemoryMapDescriptor::new(desc_ptr, descriptor_item_size);
+            }
+            crate::heap::MEMORY_MAP.call_once(|| &crate::heap::MEMORY_MAP_BUFFER[0..actual_num]);
+        }
         debug_log_no_alloc!("MEMORY_MAP initialized in init_memory_map\n");
     }
 }

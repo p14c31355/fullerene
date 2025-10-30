@@ -16,8 +16,8 @@ pub struct EfiMemoryDescriptor {
 
 #[derive(Clone, Copy)]
 pub struct MemoryMapDescriptor {
-    ptr: *const u8,
-    descriptor_size: usize,
+    pub ptr: *const u8,
+    pub descriptor_size: usize,
 }
 
 impl MemoryMapDescriptor {
