@@ -243,6 +243,24 @@ mod tests {
                 }
             }
         }
+
+        fn scroll_up(&mut self) {
+            let blank_char = ScreenChar {
+                ascii_character: b' ',
+                color_code: self.color_code,
+            };
+            for row in 1..self.height {
+                for col in 0..self.width {
+                    let index = row * self.width + col;
+                    let next_index = (row - 1) * self.width + col;
+                    self.buffer[next_index] = self.buffer[index];
+                }
+            }
+            for col in 0..self.width {
+                let index = (self.height - 1) * self.width + col;
+                self.buffer[index] = blank_char;
+            }
+        }
     }
 
     impl MockVgaBuffer {
