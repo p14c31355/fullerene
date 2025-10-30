@@ -518,7 +518,7 @@ macro_rules! vga_stat_display_impl {
             use core::fmt::Write;
             vga_writer.set_color_code(ColorCode::new(Color::Cyan, Color::Black));
             $(
-                vga_stat_display_line!(vga_writer, $display_line);
+                vga_stat_line!(vga_writer, $display_line);
             )*
             vga_writer.update_cursor();
         }
