@@ -134,7 +134,7 @@ impl TextBufferOperations for VgaBuffer {
             ascii_character: b' ',
             color_code: self.color_code,
         };
-        clear_line_range!(self, row, row + 1, 0, self.get_width(), blank_char);
+        clear_line_range(self, row, row + 1, 0, self.get_width(), blank_char);
     }
 
     fn clear_screen(&mut self) {
@@ -144,12 +144,12 @@ impl TextBufferOperations for VgaBuffer {
             ascii_character: b' ',
             color_code: ColorCode(0),
         };
-        clear_buffer!(self, self.get_height(), self.get_width(), blank_char);
+        clear_buffer(self, self.get_height(), self.get_width(), blank_char);
     }
 
     fn scroll_up(&mut self) {
-        scroll_char_buffer_up!(
-            self.buffer,
+        scroll_char_buffer_up(
+            self,
             BUFFER_HEIGHT,
             BUFFER_WIDTH,
             ScreenChar {

@@ -563,13 +563,13 @@ impl<'a, 'b> KernelMapper<'a, 'b> {
     }
 
     unsafe fn map_single_pe_section(&mut self, section: PeSection, kernel_phys_start: PhysAddr) {
-        map_pe_section(
+        unsafe { map_pe_section(
             self.mapper,
             section,
             kernel_phys_start,
             self.phys_offset,
             self.frame_allocator,
-        );
+        ); }
     }
 }
 

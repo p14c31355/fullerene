@@ -66,7 +66,7 @@ macro_rules! bit_ops {
 #[macro_export]
 macro_rules! map_pages_to_offset {
     ($mapper:expr, $allocator:expr, $phys_base:expr, $virt_offset:expr, $num_pages:expr, $flags:expr) => {{
-        map_pages!(
+        $crate::map_pages!(
             $mapper,
             $allocator,
             $phys_base,
@@ -527,10 +527,10 @@ macro_rules! vga_stat_display_impl {
 
 /// Helper macro for vga_stat_display to process each display line
 #[macro_export]
-macro_rules! vga_stat_display_line {
-    ($vga_writer:expr, ($row:expr, $format:expr, $($args:tt)*)) => {{
-        $vga_writer.set_position($row, 0);
-        let _ = write!($vga_writer, $format, $($args)*);
+macro_rules! vga_stat_line {
+    ($vga_writer:expr, $row:expr, $format:expr, $($args:expr),*) => {{
+        (*$vga_writer).set_position($row, 0);
+        let _ = write!(*$vga_writer, $format, $($args),* );
     }};
 }
 
@@ -1206,19 +1206,12 @@ macro_rules! pci_config_read {
 macro_rules! display_vga_stats_lines {
     ($vga_writer:expr, $($row:expr, $format:expr, $($args:expr),*);*) => {
         $(
-            $crate::vga_stat_line!($vga_writer, $row, $format, $($args),*)
+            vga_stat_line!($vga_writer, $row, $format, $($args),*)
         )*
     };
 }
 
-/// Helper macro for a single stat line display
-#[macro_export]
-macro_rules! vga_stat_line {
-    ($vga_writer:expr, $row:expr, $format:expr, $($args:expr),*) => {{
-        $vga_writer.set_position($row, 0);
-        let _ = write!($vga_writer, $format, $($args),*);
-    }};
-}
+
 
 /// Macro for subsystem initialization with consistent logging and error handling
 /// Reduces boilerplate in component startup code
@@ -1291,16 +1284,16 @@ macro_rules! display_stats_on_available_display {
                 };
 
                 // Set position to bottom left for system info
-                writer.set_position(22, 0);
+                (*writer).set_position(22, 0);
                 use core::fmt::Write;
 
-                writer.set_color_code(petroleum::ColorCode::new(
+                (*writer).set_color_code(petroleum::ColorCode::new(
                     petroleum::Color::Cyan,
                     petroleum::Color::Black,
                 ));
 
                 // Clear the status lines first
-                petroleum::clear_line_range!(writer, 23, 26, 0, 80, blank_char);
+                petroleum::clear_line_range(&mut *writer, 23, 26, 0, 80, blank_char);
 
                 // Display system info on bottom rows using macro to reduce repetition
                 petroleum::display_vga_stats_lines!(writer,
@@ -1308,7 +1301,7 @@ macro_rules! display_stats_on_available_display {
                     24, "Memory: {} KB", $stats.memory_used / 1024;
                     25, "Tick: {}", $stats.uptime_ticks
                 );
-                writer.update_cursor();
+                (*writer).update_cursor();
             }
         });
     }};
