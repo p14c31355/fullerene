@@ -719,6 +719,15 @@ macro_rules! enable_vga_video {
     }};
 }
 
+/// Helper macro for setting up VGA register groups
+#[macro_export]
+macro_rules! vga_write_registers {
+    ($configs:expr, $index_port:expr, $data_port:expr) => {
+        let mut ops = $crate::graphics::ports::VgaPortOps::new($index_port, $data_port);
+        ops.write_sequence($configs);
+    };
+}
+
 /// Macro for VGA mode 3 (80x25 text mode) setup sequence
 /// Reduces repetition in VGA initialization code across crates
 #[macro_export]
@@ -727,29 +736,22 @@ macro_rules! init_vga_text_mode_3 {
         // Write misc register
         $crate::port_write!($crate::graphics::ports::HardwarePorts::MISC_OUTPUT, 0x67u8);
 
-        // Sequencer registers
-        let sequencer_configs = $crate::graphics::registers::SEQUENCER_TEXT_CONFIG;
-        let mut sequencer_ops = $crate::graphics::ports::VgaPortOps::new(
+        // Sequencer, CRTC, Graphics registers using helper macro
+        vga_write_registers!(
+            $crate::graphics::registers::SEQUENCER_TEXT_CONFIG,
             $crate::graphics::ports::HardwarePorts::SEQUENCER_INDEX,
-            $crate::graphics::ports::HardwarePorts::SEQUENCER_DATA,
+            $crate::graphics::ports::HardwarePorts::SEQUENCER_DATA
         );
-        sequencer_ops.write_sequence(sequencer_configs);
-
-        // CRTC registers for 80x25 text mode
-        let crtc_configs = $crate::graphics::registers::CRTC_TEXT_CONFIG;
-        let mut crtc_ops = $crate::graphics::ports::VgaPortOps::new(
+        vga_write_registers!(
+            $crate::graphics::registers::CRTC_TEXT_CONFIG,
             $crate::graphics::ports::HardwarePorts::CRTC_INDEX,
-            $crate::graphics::ports::HardwarePorts::CRTC_DATA,
+            $crate::graphics::ports::HardwarePorts::CRTC_DATA
         );
-        crtc_ops.write_sequence(crtc_configs);
-
-        // Graphics controller
-        let graphics_configs = $crate::graphics::registers::GRAPHICS_TEXT_CONFIG;
-        let mut graphics_ops = $crate::graphics::ports::VgaPortOps::new(
+        vga_write_registers!(
+            $crate::graphics::registers::GRAPHICS_TEXT_CONFIG,
             $crate::graphics::ports::HardwarePorts::GRAPHICS_INDEX,
-            $crate::graphics::ports::HardwarePorts::GRAPHICS_DATA,
+            $crate::graphics::ports::HardwarePorts::GRAPHICS_DATA
         );
-        graphics_ops.write_sequence(graphics_configs);
 
         // Attribute controller
         $crate::init_vga_palette_registers!();
