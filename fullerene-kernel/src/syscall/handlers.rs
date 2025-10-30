@@ -132,7 +132,7 @@ fn syscall_fork() -> SyscallResult {
     // This is a significant deviation from the standard copy-on-write (COW) or full-copy semantics of fork and can lead to unexpected behavior and data corruption in user programs.
     // While this is a reasonable simplification for an initial implementation, it should be prioritized for a future update to either perform a full memory copy or, ideally, implement a copy-on-write mechanism for efficiency.
 
-    let mut child_box = Box::new(child_process);
+    let child_box = Box::new(child_process);
 
     // Re-acquire lock briefly to add to process list
     {

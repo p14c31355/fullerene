@@ -322,10 +322,12 @@ impl UefiInitContext {
         let apic_virt = VirtAddr::new(LOCAL_APIC_ADDR);
         let page = Page::<Size4KiB>::containing_address(apic_virt);
         let frame = PhysFrame::<Size4KiB>::containing_address(apic_phys);
-        match mapper.map_to(page, frame, flags, &mut *frame_allocator) {
-            Ok(flush) => flush.flush(),
-            Err(MapToError::PageAlreadyMapped(_)) => {},
-            Err(e) => panic!("Failed to map Local APIC: {:?}", e),
+        unsafe {
+            match mapper.map_to(page, frame, flags, &mut *frame_allocator) {
+                Ok(flush) => flush.flush(),
+                Err(MapToError::PageAlreadyMapped(_)) => {},
+                Err(e) => panic!("Failed to map Local APIC: {:?}", e),
+            }
         }
         *petroleum::LOCAL_APIC_ADDRESS.lock() =
             petroleum::LocalApicAddress(LOCAL_APIC_ADDR as *mut u32);
@@ -336,10 +338,12 @@ impl UefiInitContext {
         let io_apic_virt = VirtAddr::new(IO_APIC_ADDR);
         let page = Page::<Size4KiB>::containing_address(io_apic_virt);
         let frame = PhysFrame::<Size4KiB>::containing_address(io_apic_phys);
-        match mapper.map_to(page, frame, flags, &mut *frame_allocator) {
-            Ok(flush) => flush.flush(),
-            Err(MapToError::PageAlreadyMapped(_)) => {},
-            Err(e) => panic!("Failed to map IO APIC: {:?}", e),
+        unsafe {
+            match mapper.map_to(page, frame, flags, &mut *frame_allocator) {
+                Ok(flush) => flush.flush(),
+                Err(MapToError::PageAlreadyMapped(_)) => {},
+                Err(e) => panic!("Failed to map IO APIC: {:?}", e),
+            }
         }
         log::info!("IO APIC mapped at virt {:#x}", io_apic_virt.as_u64());
 
@@ -350,10 +354,12 @@ impl UefiInitContext {
             let vga_virt = VirtAddr::new(VGA_TEXT_BUFFER_ADDR + i * 4096);
             let page = Page::<Size4KiB>::containing_address(vga_virt);
             let frame = PhysFrame::<Size4KiB>::containing_address(vga_phys);
-            match mapper.map_to(page, frame, flags, &mut *frame_allocator) {
-                Ok(flush) => flush.flush(),
-                Err(MapToError::PageAlreadyMapped(_)) => {},
-                Err(e) => panic!("Failed to map VGA buffer page {}: {:?}", i, e),
+            unsafe {
+                match mapper.map_to(page, frame, flags, &mut *frame_allocator) {
+                    Ok(flush) => flush.flush(),
+                    Err(MapToError::PageAlreadyMapped(_)) => {},
+                    Err(e) => panic!("Failed to map VGA buffer page {}: {:?}", i, e),
+                }
             }
         }
         log::info!(

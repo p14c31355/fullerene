@@ -64,7 +64,7 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
 
     mem_debug!("GDT: TSS created\n");
 
-    let gdt = GDT.call_once(|| {
+    let _gdt = GDT.call_once(|| {
         let mut gdt = GlobalDescriptorTable::new();
         let code_selector = gdt.append(Descriptor::kernel_code_segment());
         // Add kernel data segment (ring 0)
@@ -90,7 +90,7 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
     {
         // Load GDT - required for proper segmentation in BIOS mode
         mem_debug!("About to load GDT...\n");
-        gdt.load();
+        _gdt.load();
         mem_debug!("GDT: GDT loaded\n");
 
         unsafe {

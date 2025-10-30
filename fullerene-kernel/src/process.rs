@@ -328,7 +328,7 @@ pub fn schedule_next() {
     // Find next ready process
     let mut next_index = current_index;
     let start_index = current_index;
-    let mut found_ready = false;
+    let mut _found_ready = false;
 
     loop {
         next_index = (next_index + 1) % process_list.len();
@@ -341,7 +341,7 @@ pub fn schedule_next() {
 
         if process_list[next_index].state == ProcessState::Ready {
             petroleum::scheduler_log!("Found ready process at index {}", next_index);
-            found_ready = true;
+            _found_ready = true;
             break;
         }
 
