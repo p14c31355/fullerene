@@ -582,28 +582,7 @@ struct MappingConfig {
     flags: PageTableFlags,
 }
 
-// Macro to create mapping configurations for common patterns
-macro_rules! create_mapping_config {
-    ($phys_start:expr, $virt_start:expr, $num_pages:expr, $flags:expr) => {
-        MappingConfig {
-            phys_start: $phys_start,
-            virt_start: $virt_start,
-            num_pages: $num_pages,
-            flags: $flags,
-        }
-    };
-}
 
-macro_rules! higher_half_config {
-    ($phys_offset:expr, $phys_start:expr, $num_pages:expr, $flags:expr) => {
-        MappingConfig {
-            phys_start: $phys_start,
-            virt_start: $phys_offset.as_u64() + $phys_start,
-            num_pages: $num_pages,
-            flags: $flags,
-        }
-    };
-}
 
 // Generic function to map descriptors with custom configuration using MappingConfig macros
 unsafe fn map_memory_descriptors_with_config<T: MemoryDescriptorValidator, F>(

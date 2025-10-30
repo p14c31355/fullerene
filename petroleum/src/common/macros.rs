@@ -381,19 +381,19 @@ macro_rules! read_unaligned {
 #[macro_export]
 macro_rules! mem_debug {
     () => {};
-    ($msg:literal, $($rest:tt)*) => {
-        $crate::serial::debug_print_str_to_com1($msg);
-        $crate::mem_debug!($($rest)*);
-    };
-    ($msg:literal) => {
-        $crate::serial::debug_print_str_to_com1($msg);
-    };
     ($value:expr, $($rest:tt)*) => {
         $crate::serial::debug_print_hex($value);
         $crate::mem_debug!($($rest)*);
     };
     ($value:expr) => {
         $crate::serial::debug_print_hex($value);
+    };
+    ($msg:literal, $($rest:tt)*) => {
+        $crate::serial::debug_print_str_to_com1($msg);
+        $crate::mem_debug!($($rest)*);
+    };
+    ($msg:literal) => {
+        $crate::serial::debug_print_str_to_com1($msg);
     };
 }
 

@@ -40,6 +40,7 @@ pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 pub use page_table::ALLOCATOR;
 pub use page_table::allocate_heap_from_map;
 pub use page_table::init_global_heap;
+pub use page_table::{bitmap_allocator, BitmapFrameAllocator};
 // Removed reinit_page_table export - implemented in higher-level crates
 // UEFI helper exports
 pub use uefi_helpers::{initialize_graphics_with_config, kernel_fallback_framebuffer_detection};
