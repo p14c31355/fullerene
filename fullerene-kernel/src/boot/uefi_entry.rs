@@ -383,14 +383,18 @@ impl UefiInitContext {
         let descriptor_item_size = unsafe { *(self.memory_map as *const usize) };
         debug_log_no_alloc!("init_memory_map: descriptor_size: ", descriptor_item_size);
         let config_size = core::mem::size_of::<ConfigWithMetadata>();
-        let has_config = unsafe {
-            let ptr = (self.memory_map as *const u8).add(self.memory_map_size - config_size)
-                as *const ConfigWithMetadata;
-            !ptr.is_null() && (*ptr).magic == FRAMEBUFFER_CONFIG_MAGIC
+        let has_config = if self.memory_map_size >= config_size {
+            unsafe {
+                let ptr = (self.memory_map as *const u8).add(self.memory_map_size - config_size)
+                    as *const ConfigWithMetadata;
+                !ptr.is_null() && (*ptr).magic == FRAMEBUFFER_CONFIG_MAGIC
+            }
+        } else {
+            false
         };
         let actual_descriptors_size = self.memory_map_size
-            - core::mem::size_of::<usize>()
-            - if has_config { config_size } else { 0 };
+            .saturating_sub(core::mem::size_of::<usize>())
+            .saturating_sub(if has_config { config_size } else { 0 });
         let descriptors_base =
             unsafe { (self.memory_map as *const u8).add(core::mem::size_of::<usize>()) };
         let num_descriptors = actual_descriptors_size / descriptor_item_size;
