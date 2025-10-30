@@ -361,12 +361,7 @@ fn yield_and_process_system_calls() {
     }
 }
 
-/// Handle periodic UI operations (desktop updates)
-fn perform_periodic_ui_operations(current_tick: u64) {
-    if current_tick % DESKTOP_UPDATE_INTERVAL_TICKS == 0 {
-        draw_desktop_on_available_framebuffer();
-    }
-}
+
 
 /// Draw the OS desktop on the available framebuffer (UEFI or BIOS)
 fn draw_desktop_on_available_framebuffer() {
