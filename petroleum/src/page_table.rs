@@ -728,31 +728,42 @@ impl<T: MemoryMappable + ?Sized> PageTableUtils for T {
     }
 }
 
-// Helper to adjust return address after page table switch
+// Helper to adjust all return addresses and stack frames after page table switch
 fn adjust_return_address_and_stack(phys_offset: VirtAddr) {
-    // WARNING: This code assumes frame pointers (rbp) are available and enabled, and relies on
-    // the standard stack layout where the return address is at [rbp + 8]. This may not hold for
-    // all compiler versions or optimization levels, especially in debug builds where
-    // force-frame-pointers is not set by default. Violation could lead to stack corruption or crash.
-    // This is acknowledged as fragile but is necessary for the higher-half kernel transition.
-    debug_log_no_alloc!("Adjusting return address and stack for higher half");
+    // Traverse the entire stack frame chain and adjust all return addresses to higher half
+    debug_log_no_alloc!("Adjusting all return addresses and stack for higher half");
 
     unsafe {
-        let mut base_pointer: u64;
-        core::arch::asm!("mov {}, rbp", out(reg) base_pointer);
+        let mut rbp: u64;
+        core::arch::asm!("mov {}, rbp", out(reg) rbp);
 
-        let return_address_ptr = (base_pointer as *mut u64).add(1);
-        let old_return_address = *return_address_ptr;
-        *return_address_ptr = old_return_address + phys_offset.as_u64();
+        // Traverse the entire stack frame chain and adjust all return addresses
+        if rbp != 0 {
+            let mut current_rbp = rbp;
+            loop {
+                let frame_base_ptr = current_rbp as *mut u64;
+                let next_rbp = frame_base_ptr.read(); // saved rbp
+                let return_address_ptr = frame_base_ptr.add(1);
+                let old_return = return_address_ptr.read();
+                return_address_ptr.write(old_return.wrapping_add(phys_offset.as_u64()));
 
-        let new_base_pointer = base_pointer + phys_offset.as_u64();
-        core::arch::asm!("mov rbp, {}", in(reg) new_base_pointer);
+                // Adjust the saved rbp itself if valid
+                if next_rbp != 0 {
+                    frame_base_ptr.write(next_rbp.wrapping_add(phys_offset.as_u64()));
+                } else {
+                    break;
+                }
+                current_rbp = next_rbp.wrapping_add(phys_offset.as_u64());
+            }
+        }
 
-        let old_rsp: u64;
-        core::arch::asm!("mov {}, rsp", out(reg) old_rsp);
+        // Adjust current RBP and RSP
+        let mut rsp: u64;
+        core::arch::asm!("mov {}, rsp", out(reg) rsp);
+        rsp = rsp.wrapping_add(phys_offset.as_u64());
+        core::arch::asm!("mov rsp, {}", in(reg) rsp);
 
-        let new_rsp = old_rsp + phys_offset.as_u64();
-        core::arch::asm!("mov rsp, {}", in(reg) new_rsp);
+        core::arch::asm!("mov rbp, {}", in(reg) rbp.wrapping_add(phys_offset.as_u64()));
     }
 
     debug_log_no_alloc!("Return address and stack adjusted successfully");
