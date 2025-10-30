@@ -405,9 +405,8 @@ fn initialize_shell_process() -> crate::process::ProcessId {
 }
 
 /// Main kernel scheduler loop - orchestrates all system functionality
+// Main kernel scheduler loop - orchestrates all system functionality
 pub fn scheduler_loop() -> ! {
-    // Test if we enter scheduler loop
-    petroleum::halt_loop();
     write_serial_bytes!(0x3F8, 0x3FD, b"Scheduler loop entered\n");
     log::info!("Starting enhanced OS scheduler with integrated system features...");
     write_serial_bytes!(0x3F8, 0x3FD, b"Log initialized\n");

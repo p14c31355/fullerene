@@ -467,8 +467,6 @@ pub extern "efiapi" fn efi_main(
     // Start the main kernel scheduler that orchestrates all system functionality
     log::info!("Starting full system scheduler...");
     write_serial_bytes!(0x3F8, 0x3FD, b"About to enter scheduler_loop\n");
-    // Test: halt before scheduler_loop
-    petroleum::halt_loop();
     scheduler_loop();
     // scheduler_loop should never return in normal operation
     panic!("scheduler_loop returned unexpectedly - kernel critical failure!");
