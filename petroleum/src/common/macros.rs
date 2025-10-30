@@ -1469,11 +1469,19 @@ macro_rules! impl_text_buffer_operations {
             petroleum::clear_buffer!(self, self.get_height(), self.get_width(), blank_char);
         }
 
-        fn scroll_up(&mut self) {
-            petroleum::scroll_char_buffer_up!(self.$buffer_field, $height, $width, ScreenChar {
+                fn scroll_up(&mut self) {
+            let blank = ScreenChar {
                 ascii_character: b' ',
                 color_code: self.$color_field,
-            });
+            };
+            for row in 1..$height {
+                for col in 0..$width {
+                    self.$buffer_field[row - 1][col] = self.$buffer_field[row][col];
+                }
+            }
+            for col in 0..$width {
+                self.$buffer_field[$height - 1][col] = blank;
+            }
         }
     };
 }
