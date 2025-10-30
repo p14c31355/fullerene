@@ -670,7 +670,7 @@ unsafe fn map_stack_to_higher_half(
     frame_allocator: &mut BootInfoFrameAllocator,
     phys_offset: VirtAddr,
     memory_map: &[EfiMemoryDescriptor],
-) {
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
     let rsp = get_current_stack_pointer!();
 
     for desc in memory_map.iter() {
@@ -678,23 +678,21 @@ unsafe fn map_stack_to_higher_half(
             let start = desc.physical_start;
             let end = start + desc.number_of_pages * 4096;
             if rsp >= start && rsp < end {
-                unsafe {
-                    map_to_higher_half_with_log(
-                        mapper,
-                        frame_allocator,
-                        phys_offset,
-                        desc.physical_start,
-                        desc.number_of_pages,
-                        PageTableFlags::PRESENT
-                            | PageTableFlags::WRITABLE
-                            | PageTableFlags::NO_EXECUTE,
-                    )
-                    .expect("Failed to map stack region to higher half");
-                }
+                map_to_higher_half_with_log(
+                    mapper,
+                    frame_allocator,
+                    phys_offset,
+                    desc.physical_start,
+                    desc.number_of_pages,
+                    PageTableFlags::PRESENT
+                        | PageTableFlags::WRITABLE
+                        | PageTableFlags::NO_EXECUTE,
+                )?;
                 break;
             }
         }
     }
+    Ok(())
 }
 
 
@@ -1245,27 +1243,13 @@ impl<'a> PageTableInitializer<'a> {
     }
 
     unsafe fn map_stack_to_higher_half(&mut self) {
-        let rsp = get_current_stack_pointer!();
-        for desc in self.memory_map.iter() {
-            if desc.is_valid() {
-                let start = desc.physical_start;
-                let end = start + desc.number_of_pages * 4096;
-                if rsp >= start && rsp < end {
-                    map_to_higher_half_with_log(
-                        self.mapper,
-                        self.frame_allocator,
-                        self.phys_offset,
-                        desc.physical_start,
-                        desc.number_of_pages,
-                        PageTableFlags::PRESENT
-                            | PageTableFlags::WRITABLE
-                            | PageTableFlags::NO_EXECUTE,
-                    )
-                    .expect("Failed to map stack region to higher half");
-                    break;
-                }
-            }
-        }
+        map_stack_to_higher_half(
+            self.mapper,
+            self.frame_allocator,
+            self.phys_offset,
+            self.memory_map,
+        )
+        .expect("Failed to map stack region to higher half");
     }
 
     unsafe fn map_available_memory_identity(&mut self) {
