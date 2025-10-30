@@ -5,6 +5,36 @@ use alloc::boxed::Box;
 /// Unified macros to reduce repetitions across the file
 
 #[macro_export]
+macro_rules! bitmap_chunk_bit {
+    ($frame:expr) => {{
+        let chunk_index = $frame / 64;
+        let bit_index = $frame % 64;
+        (chunk_index, bit_index)
+    }};
+}
+
+#[macro_export]
+macro_rules! set_bool_bit {
+    ($($tt:tt)*) => {
+        bit_ops!(set_bool_bit, $($tt)*);
+    };
+}
+
+#[macro_export]
+macro_rules! bit_field_set {
+    ($($tt:tt)*) => {
+        bit_ops!(set_field, $($tt)*);
+    };
+}
+
+#[macro_export]
+macro_rules! map_range_with_log_macro {
+    ($($tt:tt)*) => {
+        map_with_log_macro!($($tt)*)
+    };
+}
+
+#[macro_export]
 macro_rules! bit_ops {
     (set_field, $field:expr, $mask:expr, $shift:expr, $value:expr) => {
         $field = ($field & !($mask << $shift)) | (($value as u32 & $mask) << $shift);
@@ -18,8 +48,7 @@ macro_rules! bit_ops {
     };
     (bitmap_set_free, $bitmap:expr, $frame:expr) => {
         if let Some(ref mut bitmap) = $bitmap {
-            let chunk_index = $frame / 64;
-            let bit_index = $frame % 64;
+            let (chunk_index, bit_index) = bitmap_chunk_bit!($frame);
             if chunk_index < bitmap.len() {
                 bitmap[chunk_index] &= !(1 << bit_index);
             }
@@ -27,8 +56,7 @@ macro_rules! bit_ops {
     };
     (bitmap_set_used, $bitmap:expr, $frame:expr) => {
         if let Some(ref mut bitmap) = $bitmap {
-            let chunk_index = $frame / 64;
-            let bit_index = $frame % 64;
+            let (chunk_index, bit_index) = bitmap_chunk_bit!($frame);
             if chunk_index < bitmap.len() {
                 bitmap[chunk_index] |= 1 << bit_index;
             }
@@ -36,8 +64,7 @@ macro_rules! bit_ops {
     };
     (bitmap_is_free, $bitmap:expr, $frame:expr) => {{
         if let Some(ref bitmap) = $bitmap {
-            let chunk_index = $frame / 64;
-            let bit_index = $frame % 64;
+            let (chunk_index, bit_index) = bitmap_chunk_bit!($frame);
             if chunk_index < bitmap.len() {
                 (bitmap[chunk_index] & (1 << bit_index)) == 0
             } else {
@@ -726,7 +753,7 @@ macro_rules! error_variant_map {
 #[macro_export]
 macro_rules! init_vga_palette_registers {
     () => {{
-        for i in 0..16u8 {
+        for i: u8 in 0u8..16u8 {
             $crate::graphics::ports::write_vga_attribute_register(i, i);
         }
     }};
@@ -853,13 +880,13 @@ macro_rules! update_vga_cursor {
 /// Consolidated logging macro for page table operations
 #[macro_export]
 macro_rules! log_page_table_op {
-    ($operation:expr) => {
+    ($operation:literal) => {
         mem_debug!($operation, "\n");
     };
-    ($operation:expr, $msg:expr, $addr:expr) => {
+    ($operation:literal, $msg:literal, $addr:expr) => {
         mem_debug!($operation, $msg, " addr=", $addr, "\n");
     };
-    ($stage:expr, $phys:expr, $virt:expr, $pages:expr) => {
+    ($stage:literal, $phys:expr, $virt:expr, $pages:expr) => {
         mem_debug!(
             "Memory mapping stage=",
             $stage,
@@ -872,7 +899,7 @@ macro_rules! log_page_table_op {
             "\n"
         );
     };
-    ($operation:expr, $msg:expr) => {
+    ($operation:literal, $msg:literal) => {
         mem_debug!($operation, $msg, "\n");
     };
 }
