@@ -29,8 +29,6 @@ impl ColorCode {
     }
 }
 
-use crate::{clear_buffer, scroll_buffer_up};
-
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct ScreenChar {
