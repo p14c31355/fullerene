@@ -113,13 +113,7 @@ pub trait TextBufferOperations {
         self.set_position(0, 0);
     }
 
-    fn scroll_up(&mut self) {
-        let blank_char = ScreenChar {
-            ascii_character: b' ',
-            color_code: self.get_color_code(),
-        };
-        scroll_char_buffer_up!(self, self.get_height(), self.get_width(), blank_char);
-    }
+    fn scroll_up(&mut self);
 }
 
 // Constants to reduce magic numbers and consolidate VGA implementation
@@ -216,6 +210,25 @@ impl TextBufferOperations for VgaBuffer {
             ScreenChar {
                 ascii_character: b' ',
                 color_code: self.color_code,
+            }
+        }
+    }
+
+    fn scroll_up(&mut self) {
+        let blank_char = ScreenChar {
+            ascii_character: b' ',
+            color_code: self.get_color_code(),
+        };
+        let height = self.get_height();
+        let width = self.get_width();
+        if let Some(ref mut buffer) = self.get_buffer() {
+            for row in 1..height {
+                for col in 0..width {
+                    buffer[row - 1][col] = buffer[row][col];
+                }
+            }
+            for col in 0..width {
+                buffer[height - 1][col] = blank_char;
             }
         }
     }
