@@ -438,6 +438,11 @@ pub extern "efiapi" fn efi_main(
     crate::interrupts::init_apic();
     log::info!("APIC initialized");
 
+    // Enable interrupts now that all handlers and controllers are set up.
+    log::info!("Enabling interrupts...");
+    x86_64::instructions::interrupts::enable();
+    log::info!("Interrupts enabled");
+
     // Initialize keyboard input driver
     crate::keyboard::init();
     log::info!("Keyboard initialized");
