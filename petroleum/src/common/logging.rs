@@ -3,6 +3,7 @@
 //! This module provides unified logging macros and functions using the
 //! log crate for all sub-crates, reducing duplication and improving maintainability.
 
+// Note: log crate is configured with default-features = false in Cargo.toml
 // Re-export log crate macros for easy access
 pub use log::{debug, error, info, trace, warn};
 
@@ -156,37 +157,6 @@ pub static ERROR_LOGGER: ErrorLogger = ErrorLogger;
 /// Returns true if global logger has been initialized
 pub fn is_logger_initialized() -> bool {
     LOGGER_INITIALIZED.is_completed()
-}
-
-/// Unified print macros using the log crate for consistent logging across all crates
-/// Fallback to serial if logger not initialized yet
-#[macro_export]
-macro_rules! println {
-    () => {
-        if $crate::common::logging::is_logger_initialized() {
-            log::info!("");
-        } else {
-            $crate::serial::_print(format_args!("\n"));
-        }
-    };
-    ($($arg:tt)*) => {
-        if $crate::common::logging::is_logger_initialized() {
-            log::info!("{}", format_args!($($arg)*));
-        } else {
-            $crate::serial::_print(format_args!("{}\n", format_args!($($arg)*)));
-        }
-    };
-}
-
-/// Unified print macro - same as print! for consistency
-#[macro_export]
-macro_rules! print {
-    () => {
-        $crate::println!();
-    };
-    ($($arg:tt)*) => {
-        $crate::println!($($arg)*);
-    };
 }
 
 /// Enhanced logging macro for common patterns throughout the codebase

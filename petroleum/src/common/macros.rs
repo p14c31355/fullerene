@@ -1292,6 +1292,37 @@ macro_rules! simple_command_fn {
     };
 }
 
+/// Unified print macros using the log crate for consistent logging across all crates
+/// Fallback to serial if logger not initialized yet
+#[macro_export]
+macro_rules! println {
+    () => {
+        if $crate::common::logging::is_logger_initialized() {
+            log::info!("");
+        } else {
+            $crate::serial::_print(format_args!("\n"));
+        }
+    };
+    ($($arg:tt)*) => {
+        if $crate::common::logging::is_logger_initialized() {
+            log::info!("{}", format_args!($($arg)*));
+        } else {
+            $crate::serial::_print(format_args!("{}\n", format_args!($($arg)*)));
+        }
+    };
+}
+
+/// Unified print macro - same as print! for consistency
+#[macro_export]
+macro_rules! print {
+    () => {
+        $crate::println!();
+    };
+    ($($arg:tt)*) => {
+        $crate::println!($($arg)*);
+    };
+}
+
 /// Macro for implementing TextBufferOperations trait for buffer-like structs
 /// Generates all 7 required methods using the buffer, dimensions, and other fields
 ///
