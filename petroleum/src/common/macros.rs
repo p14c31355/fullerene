@@ -2,6 +2,77 @@
 
 use alloc::boxed::Box;
 
+/// Unified macros to reduce repetitions across the file
+
+#[macro_export]
+macro_rules! bit_ops {
+    (set_field, $field:expr, $mask:expr, $shift:expr, $value:expr) => {
+        $field = ($field & !($mask << $shift)) | (($value as u32 & $mask) << $shift);
+    };
+    (set_bool_bit, $field:expr, $bit:expr, $value:expr) => {
+        if $value {
+            $field |= 1 << $bit;
+        } else {
+            $field &= !(1 << $bit);
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! buffer_ops {
+    (clear_line_range, $buffer:expr, $start_row:expr, $end_row:expr, $col_start:expr, $col_end:expr, $blank_char:expr) => {{
+        for row in $start_row..$end_row {
+            for col in $col_start..$col_end {
+                $buffer.set_char_at(row, col, $blank_char);
+            }
+        }
+    }};
+    (clear_buffer, $buffer:expr, $height:expr, $width:expr, $value:expr) => {
+        for row in 0..$height {
+            for col in 0..$width {
+                $buffer.set_char_at(row, col, $value);
+            }
+        }
+    };
+    (scroll_char_buffer_up, $buffer:expr, $height:expr, $width:expr, $blank:expr) => {
+        for row in 1..$height {
+            for col in 0..$width {
+                $buffer[row - 1][col] = $buffer[row][col];
+            }
+        }
+        for col in 0..$width {
+            $buffer[$height - 1][col] = $blank;
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! unified_logging {
+    (mem_debug, $($args:tt)*) => {
+        $crate::mem_debug!($($args)*);
+    };
+    (serial_str, $msg:literal) => {
+        $crate::serial::debug_print_str_to_com1($msg);
+    };
+    (serial_hex, $value:expr) => {
+        $crate::serial::debug_print_hex($value);
+    };
+    (verbose_print, literal, $msg:literal) => {
+        if $crate::common::logging::is_logger_initialized() {
+            log::info!($msg);
+        } else {
+            $crate::serial::_print(format_args!("{}\n", $msg));
+        }
+    };
+    (verbose_print, args, $($arg:tt)*) => {
+        if $crate::common::logging::is_logger_initialized() {
+            log::info!("{}", format_args!($($arg)*));
+        } else {
+            $crate::serial::_print(format_args!("{}\n", format_args!($($arg)*)));
+        }
+    };
+}
+
 /// Macro for reduce code duplication in command arrays
 #[macro_export]
 macro_rules! command_args {
@@ -528,53 +599,7 @@ macro_rules! test_framebuffer_mode {
     }};
 }
 
-/// Macro to set a bit field in a u32 word, reducing line count for repetitive bit operations
-#[macro_export]
-macro_rules! bit_field_set {
-    ($field:expr, $mask:expr, $shift:expr, $value:expr) => {
-        $field = ($field & !($mask << $shift)) | (($value as u32 & $mask) << $shift);
-    };
-}
-
-/// Macro to set or clear a single bit based on bool value
-#[macro_export]
-macro_rules! set_bool_bit {
-    ($field:expr, $bit:expr, $value:expr) => {
-        if $value {
-            $field |= 1 << $bit;
-        } else {
-            $field &= !(1 << $bit);
-        }
-    };
-}
-
-/// Macro to clear a 2D buffer with a value for trait-based buffers, reducing nested loop code
-#[macro_export]
-macro_rules! clear_buffer {
-    ($buffer:expr, $height:expr, $width:expr, $value:expr) => {
-        for row in 0..$height {
-            for col in 0..$width {
-                $buffer.set_char_at(row, col, $value);
-            }
-        }
-    };
-}
-
-/// Macro to scroll up a 2D buffer for trait-based buffers, reducing loop code
-#[macro_export]
-macro_rules! scroll_buffer_up {
-    ($buffer:expr, $height:expr, $width:expr, $blank:expr) => {
-        for row in 1..$height {
-            for col in 0..$width {
-                let chr = $buffer.get_char_at(row, col);
-                $buffer.set_char_at(row - 1, col, chr);
-            }
-        }
-        for col in 0..$width {
-            $buffer.set_char_at($height - 1, col, $blank);
-        }
-    };
-}
+////////////// Old macros removed to use unified bit_ops! and buffer_ops! above
 
 /// Command definition macro to reduce repetitive command array initialization scatter
 ///

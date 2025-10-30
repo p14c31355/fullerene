@@ -96,12 +96,12 @@ pub trait TextBufferOperations {
         }
     }
 
-    fn clear_row(&mut self, _row: usize) {
+    fn clear_row(&mut self, row: usize) {
         let blank_char = ScreenChar {
             ascii_character: b' ',
             color_code: self.get_color_code(),
         };
-        clear_buffer!(self, 1, self.get_width(), blank_char);
+        crate::buffer_ops!(clear_line_range, self, row, row + 1, 0, self.get_width(), blank_char);
     }
 
     fn clear_screen(&mut self) {
@@ -109,7 +109,7 @@ pub trait TextBufferOperations {
             ascii_character: b' ',
             color_code: self.get_color_code(),
         };
-        clear_buffer!(self, self.get_height(), self.get_width(), blank_char);
+        crate::buffer_ops!(clear_buffer, self, self.get_height(), self.get_width(), blank_char);
         self.set_position(0, 0);
     }
 
