@@ -35,8 +35,7 @@ pub use graphics::{
     init_vga_graphics,
 };
 
-/// Text buffer operation functions
-pub fn clear_buffer<B: TextBufferOperations<Char = ScreenChar>>(
+pub fn clear_buffer<B: TextBufferOperations>(
     buffer: &mut B,
     height: usize,
     width: usize,
@@ -49,7 +48,7 @@ pub fn clear_buffer<B: TextBufferOperations<Char = ScreenChar>>(
     }
 }
 
-pub fn clear_line_range<B: TextBufferOperations<Char = ScreenChar>>(
+pub fn clear_line_range<B: TextBufferOperations>(
     buffer: &mut B,
     start_row: usize,
     end_row: usize,
@@ -64,7 +63,7 @@ pub fn clear_line_range<B: TextBufferOperations<Char = ScreenChar>>(
     }
 }
 
-pub fn scroll_char_buffer_up<B: TextBufferOperations<Char = ScreenChar>>(
+pub fn scroll_char_buffer_up<B: TextBufferOperations>(
     buffer: &mut B,
     height: usize,
     width: usize,
@@ -85,7 +84,7 @@ pub fn scroll_char_buffer_up<B: TextBufferOperations<Char = ScreenChar>>(
 pub fn debug_mem_descriptor(desc: &crate::page_table::efi_memory::MemoryMapDescriptor) {
     crate::serial::_print(format_args!(
         "Memory descriptor: type={} phys=0x{:x} pages={}\n",
-        desc.type_, desc.physical_start, desc.number_of_pages
+        desc.type_(), desc.physical_start(), desc.number_of_pages()
     ));
 }
 

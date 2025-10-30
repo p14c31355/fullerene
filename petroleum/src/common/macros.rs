@@ -48,6 +48,18 @@ macro_rules! bit_ops {
             }
         }
     };
+    (bitmap_is_free, $bitmap:expr, $frame:expr) => {
+        if let Some(ref bitmap) = $bitmap {
+            let (chunk_index, bit_index) = bitmap_chunk_bit!($frame);
+            if chunk_index < bitmap.len() {
+                (bitmap[chunk_index] & (1 << bit_index)) == 0
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
 }
 
 /// Map pages to offset addresses (phys + offset = virt)
@@ -727,17 +739,17 @@ macro_rules! init_vga_text_mode_3 {
         $crate::port_write!($crate::graphics::ports::HardwarePorts::MISC_OUTPUT, 0x67u8);
 
         // Sequencer, CRTC, Graphics registers using helper macro
-        vga_write_registers!(
+        $crate::vga_write_registers!(
             $crate::graphics::registers::SEQUENCER_TEXT_CONFIG,
             $crate::graphics::ports::HardwarePorts::SEQUENCER_INDEX,
             $crate::graphics::ports::HardwarePorts::SEQUENCER_DATA
         );
-        vga_write_registers!(
+        $crate::vga_write_registers!(
             $crate::graphics::registers::CRTC_TEXT_CONFIG,
             $crate::graphics::ports::HardwarePorts::CRTC_INDEX,
             $crate::graphics::ports::HardwarePorts::CRTC_DATA
         );
-        vga_write_registers!(
+        $crate::vga_write_registers!(
             $crate::graphics::registers::GRAPHICS_TEXT_CONFIG,
             $crate::graphics::ports::HardwarePorts::GRAPHICS_INDEX,
             $crate::graphics::ports::HardwarePorts::GRAPHICS_DATA
