@@ -14,7 +14,7 @@ use petroleum::initializer::{
     ErrorLogging, FrameAllocator, Initializable, MemoryManager, ProcessMemoryManager,
     SyscallHandler,
 };
-use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
+use x86_64::structures::paging::{Page, PageTableFlags as PageFlags, Size4KiB};
 
 use petroleum::page_table::{BitmapFrameAllocator, PageTableManager};
 use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
@@ -110,7 +110,7 @@ impl UnifiedMemoryManager {
     /// Initialize the memory management system
     pub fn init(
         &mut self,
-        memory_map: &'static [petroleum::page_table::EfiMemoryDescriptor],
+        memory_map: &[impl petroleum::page_table::efi_memory::MemoryDescriptorValidator],
     ) -> SystemResult<()> {
         // Initialize frame allocator with memory map
         unsafe { self.frame_allocator.init_with_memory_map(memory_map)? };
@@ -554,7 +554,7 @@ impl Initializable for UnifiedMemoryManager {
     fn init(&mut self) -> SystemResult<()> {
         // Initialize with a dummy memory map for now
         // In a real implementation, this would be called with the actual EFI memory map
-        let dummy_memory_map = &[];
+        let dummy_memory_map: &[EfiMemoryDescriptor] = &[];
         self.init(dummy_memory_map)
     }
 
@@ -836,7 +836,7 @@ pub fn deallocate_process_page_table(pml4_frame: x86_64::structures::paging::Phy
 
 /// Initialize the global memory manager
 pub fn init_memory_manager(
-    memory_map: &'static [petroleum::page_table::EfiMemoryDescriptor],
+    memory_map: &[impl petroleum::page_table::efi_memory::MemoryDescriptorValidator],
 ) -> SystemResult<()> {
     let mut manager = MEMORY_MANAGER.lock();
     let mut memory_manager = UnifiedMemoryManager::new();

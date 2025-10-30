@@ -1,10 +1,6 @@
 use core::ffi::c_void;
-use log::info;
 
 use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable};
-use petroleum::debug_log;
-use petroleum::debug_log_no_alloc;
-use petroleum::serial::debug_print_str_to_com1;
 
 // Module declarations for separated functionality
 pub mod heap;
@@ -233,6 +229,16 @@ pub fn exit_boot_services_and_jump(
     // Jump to the kernel. This is the point of no return. We are calling the kernel entry point,
     // passing the memory map and other data. The validity of the `entry`
     // function pointer is assumed based on the successful PE file loading.
+
+    // Read current CR3 before jumping to kernel
+    let cr3_value = unsafe {
+        let cr3: u64;
+        core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
+        cr3
+    };
+    log::info!("Switching to new page table (cr3 = 0x{:x})", cr3_value);
+    log::info!("Jumping to kernel entry point: 0x{:x}", entry as usize);
+
     #[cfg(feature = "debug_loader")]
     {
         log::info!(

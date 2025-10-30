@@ -16,8 +16,8 @@ pub struct EfiMemoryDescriptor {
 
 #[derive(Clone, Copy)]
 pub struct MemoryMapDescriptor {
-    ptr: *const u8,
-    descriptor_size: usize,
+    pub ptr: *const u8,
+    pub descriptor_size: usize,
 }
 
 impl MemoryMapDescriptor {
@@ -49,7 +49,7 @@ impl MemoryMapDescriptor {
     }
 
     pub fn attribute(&self) -> u64 {
-        unsafe { core::ptr::read_unaligned(self.ptr.add(32) as *const u64) }
+        unsafe { core::ptr::read_unaligned(self.ptr.add(self.descriptor_size - 8) as *const u64) }
     }
 }
 
@@ -83,6 +83,9 @@ impl MemoryDescriptorValidator for MemoryMapDescriptor {
         matches!(mem_type, 4u32 | 7u32) || matches!(mem_type, 9u32 | 14u32)
     }
 }
+
+unsafe impl Send for MemoryMapDescriptor {}
+unsafe impl Sync for MemoryMapDescriptor {}
 
 impl MemoryDescriptorValidator for EfiMemoryDescriptor {
     fn get_type(&self) -> u32 {

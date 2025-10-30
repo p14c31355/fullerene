@@ -4,7 +4,7 @@ use x86_64::{
     structures::paging::{FrameAllocator, PhysFrame, Size4KiB},
 };
 
-use crate::debug_log_no_alloc;
+use crate::{debug_log_no_alloc, mem_debug};
 
 /// Static buffer for bitmap - sized for up to 32GiB of RAM (8M frames)
 /// Each bit represents one 4KB frame, so size is (8M / 64) = 128K u64s = 1MB
@@ -37,7 +37,7 @@ impl BitmapFrameAllocator {
     /// mutable aliasing of the global static `BITMAP_STATIC` buffer, leading
     /// to undefined behavior. It must only be called once during system initialization.
     /// (for compatibility)
-    pub unsafe fn init(memory_map: &[super::efi_memory::EfiMemoryDescriptor]) -> Self {
+    pub unsafe fn init(memory_map: &[impl super::efi_memory::MemoryDescriptorValidator]) -> Self {
         let mut allocator = BitmapFrameAllocator::new();
         unsafe {
             allocator
@@ -50,7 +50,7 @@ impl BitmapFrameAllocator {
     /// Initialize with EFI memory map
     pub unsafe fn init_with_memory_map(
         &mut self,
-        memory_map: &[super::efi_memory::EfiMemoryDescriptor],
+        memory_map: &[impl super::efi_memory::MemoryDescriptorValidator],
     ) -> crate::common::logging::SystemResult<()> {
         // Debug: Log memory map information
         debug_log_no_alloc!("Memory map contains ", memory_map.len(), " descriptors");
@@ -63,7 +63,17 @@ impl BitmapFrameAllocator {
 
         // Debug: Log each descriptor
         for (i, desc) in memory_map.iter().enumerate() {
-            debug_mem_descriptor!(i, desc);
+            mem_debug!(
+                "Memory descriptor ",
+                i,
+                ", type=",
+                desc.get_type() as usize,
+                ", phys_start=",
+                desc.get_physical_start() as usize,
+                ", pages=",
+                desc.get_page_count() as usize,
+                "\n"
+            );
         }
 
         let (max_addr, total_frames, bitmap_size) =
@@ -113,17 +123,17 @@ impl BitmapFrameAllocator {
 
     /// Set a frame as free in the bitmap
     fn set_frame_free(&mut self, frame_index: usize) {
-        bitmap_operation!(self.bitmap, frame_index, set_free);
+        bit_ops!(bitmap_set_free, self.bitmap, frame_index);
     }
 
     /// Set a frame as used in the bitmap
     pub fn set_frame_used(&mut self, frame_index: usize) {
-        bitmap_operation!(self.bitmap, frame_index, set_used);
+        bit_ops!(bitmap_set_used, self.bitmap, frame_index);
     }
 
     /// Check if a frame is free
     fn is_frame_free(&self, frame_index: usize) -> bool {
-        bitmap_operation!(self.bitmap, frame_index, is_free)
+        bit_ops!(bitmap_is_free, self.bitmap, frame_index)
     }
 
     /// Find the next free frame starting from a given index

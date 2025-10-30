@@ -1,10 +1,5 @@
 use crate::common::EfiGraphicsPixelFormat;
-use crate::common::FullereneFramebufferConfig;
-use crate::common::VgaFramebufferConfig;
-use crate::graphics::color::{
-    ColorScheme, FramebufferInfo, PixelType, SIMPLE_FRAMEBUFFER_CONFIG, SimpleFramebuffer,
-    SimpleFramebufferConfig, rgb_pixel, vga_color_index,
-};
+use crate::graphics::color::{FramebufferInfo, PixelType, rgb_pixel, vga_color_index};
 use crate::{clear_buffer_pixels, scroll_buffer_pixels};
 use embedded_graphics::{
     geometry::{Point, Size},
@@ -13,7 +8,6 @@ use embedded_graphics::{
     prelude::*,
     text::Text,
 };
-use spin::{Mutex, Once};
 
 // Generic type aliases for cleaner code
 type FramebufferWriter32 = FramebufferWriter<u32>;
@@ -171,7 +165,6 @@ impl<T: PixelType> FramebufferWriter<T> {
     pub fn rgb888_to_pixel_format(&self, color: Rgb888) -> u32 {
         let rgb = || rgb_pixel(color.r(), color.g(), color.b());
         let bgr = || rgb_pixel(color.b(), color.g(), color.r());
-        #[allow(non_exhaustive_omitted_patterns)]
         match self.info.pixel_format {
             Some(EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor) => rgb(),
             Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor) => bgr(),

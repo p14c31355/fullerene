@@ -4,7 +4,6 @@
 
 use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus};
 use petroleum::debug_log_no_alloc;
-use petroleum::serial::debug_print_str_to_com1;
 
 /// Size of the heap we will allocate for `alloc` usage (bytes).
 const HEAP_SIZE: usize = 128 * 1024; // 128 KiB
@@ -19,11 +18,6 @@ fn try_allocate_pages(
     let types_to_try = [preferred_type, EfiMemoryType::EfiConventionalMemory];
 
     for mem_type in types_to_try {
-        let type_str = match mem_type {
-            EfiMemoryType::EfiLoaderData => "LoaderData",
-            EfiMemoryType::EfiConventionalMemory => "Conventional",
-            _ => "Other",
-        };
         debug_log_no_alloc!(
             "Heap: About to call allocate_pages mem_type=",
             mem_type as usize

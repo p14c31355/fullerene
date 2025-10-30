@@ -10,8 +10,11 @@ use crate::{gdt, graphics, interrupts, memory};
 use alloc::boxed::Box;
 use core::ffi::c_void;
 use petroleum::common::uefi::{efi_print, find_gop_framebuffer, write_vga_string};
-use petroleum::common::{EfiGraphicsOutputProtocol, EfiSystemTable};
+use petroleum::common::{
+    ConfigWithMetadata, EfiGraphicsOutputProtocol, EfiSystemTable, FRAMEBUFFER_CONFIG_MAGIC,
+};
 
+use petroleum::page_table::efi_memory::MemoryMapDescriptor;
 use petroleum::{
     allocate_heap_from_map, debug_log, debug_log_no_alloc, mem_debug, write_serial_bytes,
 };
@@ -30,6 +33,10 @@ const VIRTUAL_HEAP_START_OFFSET: u64 = crate::memory_management::VIRTUAL_HEAP_ST
 struct UefiInitContext {
     /// Reference to EFI system table
     system_table: &'static EfiSystemTable,
+    /// EFI memory map data
+    memory_map: *mut c_void,
+    /// Memory map size
+    memory_map_size: usize,
     /// Physical memory offset after page table reconfiguration
     physical_memory_offset: VirtAddr,
     /// Virtual heap start address
@@ -42,22 +49,8 @@ struct UefiInitContext {
 
 #[cfg(target_os = "uefi")]
 impl UefiInitContext {
-    fn new(system_table: &'static EfiSystemTable) -> Self {
-        Self {
-            system_table,
-            physical_memory_offset: VirtAddr::new(0),
-            virtual_heap_start: VirtAddr::new(0),
-            heap_start_after_gdt: VirtAddr::new(0),
-            heap_start_after_stack: VirtAddr::new(0),
-        }
-    }
-
     /// Early initialization: serial, VGA, memory maps
-    fn early_initialization(
-        &mut self,
-        _memory_map: *mut c_void,
-        memory_map_size: usize,
-    ) -> PhysAddr {
+    fn early_initialization(&mut self) -> PhysAddr {
         mem_debug!("Kernel: efi_main entered\n");
         petroleum::serial::serial_init();
         mem_debug!("Kernel: efi_main located at ", efi_main as usize, "\n");
@@ -77,15 +70,19 @@ impl UefiInitContext {
         write_serial_bytes!(0x3F8, 0x3FD, b"Early setup completed\n");
 
         let kernel_virt_addr = efi_main as u64;
-        crate::memory::setup_memory_maps(_memory_map, memory_map_size, kernel_virt_addr)
+        crate::memory::setup_kernel_location(
+            self.memory_map,
+            self.memory_map_size,
+            kernel_virt_addr,
+        )
     }
 
     fn memory_management_initialization(
         &mut self,
         kernel_phys_start: PhysAddr,
-        system_table: &EfiSystemTable,
     ) -> (VirtAddr, PhysAddr, VirtAddr) {
         debug_log_no_alloc!("Entering memory_management_initialization");
+        self.init_memory_map();
         let memory_map_ref = MEMORY_MAP.get().expect("Memory map not initialized");
         // Get framebuffer config from petroleum global
         let framebuffer_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
@@ -137,6 +134,19 @@ impl UefiInitContext {
         #[cfg(feature = "verbose_boot_log")]
         write_serial_bytes!(0x3F8, 0x3FD, b"page table reinit completed\n");
         debug_log_no_alloc!("Page table reinit completed");
+
+        // Run minimal page table copy test to verify CR3 switching works
+        debug_log_no_alloc!("About to run page table copy test");
+        if let Err(e) = petroleum::page_table::test_page_table_copy_switch(
+            VirtAddr::zero(),
+            &mut frame_allocator,
+            *memory_map_ref,
+        ) {
+            debug_log_no_alloc!("Page table copy test failed: ", e as usize);
+            // Continue anyway for now
+        } else {
+            debug_log_no_alloc!("Page table copy test passed");
+        }
 
         // Set kernel CR3 - CRITICAL: this might cause issues if page table has wrong mappings
         debug_log_no_alloc!("About to read kernel CR3");
@@ -367,6 +377,42 @@ impl UefiInitContext {
             VGA_TEXT_BUFFER_ADDR
         );
     }
+
+    fn init_memory_map(&self) {
+        const MAX_DESCRIPTORS: usize = 1024;
+        let descriptor_item_size = unsafe { *(self.memory_map as *const usize) };
+        debug_log_no_alloc!("init_memory_map: descriptor_size: ", descriptor_item_size);
+        let config_size = core::mem::size_of::<ConfigWithMetadata>();
+        let has_config = if self.memory_map_size >= config_size {
+            unsafe {
+                let ptr = (self.memory_map as *const u8).add(self.memory_map_size - config_size)
+                    as *const ConfigWithMetadata;
+                !ptr.is_null() && (*ptr).magic == FRAMEBUFFER_CONFIG_MAGIC
+            }
+        } else {
+            false
+        };
+        let actual_descriptors_size = self.memory_map_size
+            .saturating_sub(core::mem::size_of::<usize>())
+            .saturating_sub(if has_config { config_size } else { 0 });
+        let descriptors_base =
+            unsafe { (self.memory_map as *const u8).add(core::mem::size_of::<usize>()) };
+        let num_descriptors = actual_descriptors_size / descriptor_item_size;
+        debug_log_no_alloc!("init_memory_map: num_descriptors: ", num_descriptors);
+        let actual_num = num_descriptors.min(MAX_DESCRIPTORS);
+        if num_descriptors > MAX_DESCRIPTORS {
+            debug_log_no_alloc!("init_memory_map: too many descriptors, truncating");
+        }
+        unsafe {
+            for i in 0..actual_num {
+                let desc_ptr = descriptors_base.add(i * descriptor_item_size);
+                crate::heap::MEMORY_MAP_BUFFER[i] =
+                    MemoryMapDescriptor::new(desc_ptr, descriptor_item_size);
+            }
+            crate::heap::MEMORY_MAP.call_once(|| &crate::heap::MEMORY_MAP_BUFFER[0..actual_num]);
+        }
+        debug_log_no_alloc!("MEMORY_MAP initialized in init_memory_map\n");
+    }
 }
 
 #[cfg(target_os = "uefi")]
@@ -379,11 +425,19 @@ pub extern "efiapi" fn efi_main(
     memory_map_size: usize,
 ) -> ! {
     let system_table = unsafe { &*system_table };
-    let mut ctx = UefiInitContext::new(system_table);
+    let mut ctx = UefiInitContext {
+        system_table,
+        memory_map,
+        memory_map_size,
+        physical_memory_offset: VirtAddr::zero(),
+        virtual_heap_start: VirtAddr::zero(),
+        heap_start_after_gdt: VirtAddr::zero(),
+        heap_start_after_stack: VirtAddr::zero(),
+    };
 
-    let kernel_phys_start = ctx.early_initialization(memory_map, memory_map_size);
+    let kernel_phys_start = ctx.early_initialization();
     let (physical_memory_offset, heap_start, virtual_heap_start) =
-        ctx.memory_management_initialization(kernel_phys_start, system_table);
+        ctx.memory_management_initialization(kernel_phys_start);
 
     ctx.setup_gdt_and_stack(virtual_heap_start, physical_memory_offset);
     write_serial_bytes!(0x3F8, 0x3FD, b"GDT and stack setup completed\n");

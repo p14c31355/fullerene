@@ -6,14 +6,11 @@
 #![feature(never_type)]
 extern crate alloc;
 
-use alloc::boxed::Box;
-
 use core::{ffi::c_void, ptr};
 
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    use core::fmt::Write;
     use petroleum::println;
     // Simple panic handler for UEFI bootloader
     unsafe {
@@ -38,10 +35,7 @@ mod loader;
 
 use loader::{exit_boot_services_and_jump, init_heap, load_efi_image};
 
-use petroleum::common::{
-    EfiGraphicsPixelFormat, EfiStatus, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
-    FullereneFramebufferConfig,
-};
+use petroleum::common::{EfiGraphicsPixelFormat, EfiSystemTable, FullereneFramebufferConfig};
 
 /// Main entry point of the bootloader.
 ///
