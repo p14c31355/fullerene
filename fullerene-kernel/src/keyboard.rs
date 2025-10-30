@@ -138,6 +138,8 @@ fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> 
 
 /// Handle keyboard interrupt and process scancodes
 pub fn handle_keyboard_scancode(scancode: u8) {
+    use petroleum::debug_log_no_alloc;
+    debug_log_no_alloc!("Keyboard scancode received: {:x}", scancode);
     // Check if this is an extended scancode prefix
     let mut extended_flag = EXTENDED_SCANCODE.lock();
     if scancode == 0xE0 {
