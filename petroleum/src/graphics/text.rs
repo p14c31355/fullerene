@@ -237,13 +237,13 @@ impl TextBufferOperations for VgaBuffer {
         let width = self.get_width();
         if let Some(ref mut buffer) = self.get_buffer() {
             for row in 1..height {
-                for col in 0..width {
-                    buffer[row - 1][col] = buffer[row][col];
+                unsafe {
+                    let src = buffer[row].as_ptr();
+                    let dst = buffer[row - 1].as_mut_ptr();
+                    core::ptr::copy_nonoverlapping(src, dst, width);
                 }
             }
-            for col in 0..width {
-                buffer[height - 1][col] = blank_char;
-            }
+            buffer[height - 1].fill(blank_char);
         }
     }
 }
