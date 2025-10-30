@@ -43,10 +43,10 @@ use spin::{Mutex, Once};
 pub(crate) static FRAME_ALLOCATOR: Once<Mutex<BootInfoFrameAllocator>> = Once::new();
 
 /// Global memory map storage
-pub static MEMORY_MAP: Once<&[MemoryMapDescriptor]> = Once::new();
+pub static MEMORY_MAP: Once<&[EfiMemoryDescriptor]> = Once::new();
 
 /// Initialize the boot frame allocator with memory map
-pub fn init_frame_allocator<T: MemoryDescriptorValidator>(memory_map: &[T]) {
+pub fn init_frame_allocator(memory_map: &[EfiMemoryDescriptor]) {
     let allocator = unsafe { BootInfoFrameAllocator::init(memory_map) };
     FRAME_ALLOCATOR.call_once(|| Mutex::new(allocator));
     // MEMORY_MAP is already initialized in setup_memory_maps
