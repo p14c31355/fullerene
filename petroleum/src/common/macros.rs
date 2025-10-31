@@ -1327,6 +1327,111 @@ macro_rules! display_stats_on_available_display {
     }};
 }
 
+/// Macro for finding a process in the process list by ID
+/// Reduces repetitive process list searching code
+///
+/// # Examples
+/// ```
+/// find_process_by_id!(process_list, pid, |proc| {
+///     proc.state = ProcessState::Ready;
+/// });
+/// ```
+#[macro_export]
+macro_rules! find_process_by_id {
+    ($process_list:expr, $pid:expr, $action:block) => {{
+        if let Some(process) = $process_list.iter_mut().find(|p| p.id == $pid) {
+            $action
+        }
+    }};
+}
+
+/// Macro for safe process list locking and modification
+/// Reduces boilerplate for process list operations
+///
+/// # Examples
+/// ```
+/// with_process_list!(PROCESS_LIST, |list| {
+///     find_process_by_id!(list, pid, {
+///         process.state = ProcessState::Ready;
+///     });
+/// });
+/// ```
+#[macro_export]
+macro_rules! with_process_list {
+    ($list:expr, $action:block) => {{
+        let mut process_list = $list.lock();
+        $action
+    }};
+}
+
+/// Macro for initializing system components with consistent logging
+/// Reduces repetitive initialization patterns
+///
+/// # Examples
+/// ```
+/// init_system_component!("Graphics", init_graphics());
+/// init_system_component!("Scheduler", init_scheduler());
+/// ```
+#[macro_export]
+macro_rules! init_system_component {
+    ($name:expr, $init_expr:expr) => {{
+        petroleum::println!(concat!($name, " initializing..."));
+        match $init_expr {
+            Ok(_) => petroleum::println!(concat!($name, " initialized successfully")),
+            Err(e) => {
+                petroleum::println!(concat!($name, " initialization failed: {:?}"), e);
+                return Err(e);
+            }
+        }
+    }};
+}
+
+/// Macro for periodic task definition with automatic registration
+/// Reduces boilerplate for defining periodic tasks
+///
+/// # Examples
+/// ```
+/// define_periodic_task!(health_check, 1000, |tick, iter| {
+///     perform_health_check(tick);
+/// });
+/// ```
+#[macro_export]
+macro_rules! define_periodic_task {
+    ($name:ident, $interval:expr, $task_fn:expr) => {
+        fn $name(tick: u64, iter: u64) {
+            $task_fn(tick, iter);
+        }
+
+        lazy_static::lazy_static! {
+            static ref $name: PeriodicTask = PeriodicTask {
+                interval: $interval,
+                last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
+                task: $name,
+            };
+        }
+    };
+}
+
+/// Macro for unified debug output in bootloader
+/// Reduces repetitive debug prints
+///
+/// # Examples
+/// ```
+/// bootloader_debug!("Heap initialized");
+/// bootloader_debug!("Graphics config: {}x{}", width, height);
+/// ```
+#[macro_export]
+macro_rules! bootloader_debug {
+    ($msg:literal) => {{
+        petroleum::println!($msg);
+        petroleum::serial::_print(format_args!(concat!($msg, "\n")));
+    }};
+    ($msg:literal, $($args:expr),*) => {{
+        petroleum::println!($msg, $($args),*);
+        petroleum::serial::_print(format_args!(concat!($msg, "\n"), $($args),*));
+    }};
+}
+
 /// Macro for defining simple shell command functions that print a message and return 0
 /// Reduces boilerplate in command implementations
 ///
