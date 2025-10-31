@@ -1865,3 +1865,188 @@ macro_rules! define_shell_commands {
         ]
     };
 }
+
+/// Macro for implementing VgaBuffer struct with TextBufferOperations
+/// Reduces duplication between petroleum and fullerene-kernel
+///
+/// # Examples
+/// ```
+/// impl_vga_buffer!(VgaBuffer, BUFFER_HEIGHT, BUFFER_WIDTH);
+/// ```
+#[macro_export]
+macro_rules! impl_vga_buffer {
+    ($struct_name:ident, $height:ident, $width:ident) => {
+        /// Represents the VGA text buffer writer.
+        pub struct $struct_name {
+            buffer: &'static mut [[ScreenChar; $width]; $height],
+            column_position: usize,
+            row_position: usize,
+            color_code: ColorCode,
+        }
+
+        impl $struct_name {
+            /// Creates a new VgaBuffer instance with the given VGA address.
+            pub fn new(vga_address: usize) -> $struct_name {
+                $struct_name {
+                    buffer: unsafe { &mut *(vga_address as *mut _) },
+                    column_position: 0,
+                    row_position: 0,
+                    color_code: ColorCode::new(Color::Green, Color::Black),
+                }
+            }
+
+            /// Sets the color code for text output.
+            pub fn set_color_code(&mut self, color_code: ColorCode) {
+                self.color_code = color_code;
+            }
+
+            /// Updates the hardware cursor position.
+            pub fn update_cursor(&self) {
+                let pos = self.row_position * $width + self.column_position;
+                update_vga_cursor!(pos);
+            }
+        }
+
+        impl core::fmt::Write for $struct_name {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                self.write_string(s);
+                Ok(())
+            }
+        }
+
+        unsafe impl Send for $struct_name {}
+        unsafe impl Sync for $struct_name {}
+
+        impl TextBufferOperations for $struct_name {
+            impl_text_buffer_operations!($struct_name,
+                buffer, row_position, column_position, color_code,
+                $height, $width
+            );
+        }
+    };
+}
+
+/// Macro for implementing MockVgaBuffer for testing
+/// Reduces duplication in test code
+///
+/// # Examples
+/// ```
+/// impl_mock_vga_buffer!(MockVgaBuffer, BUFFER_HEIGHT, BUFFER_WIDTH);
+/// ```
+#[macro_export]
+macro_rules! impl_mock_vga_buffer {
+    ($struct_name:ident, $height:ident, $width:ident) => {
+        struct $struct_name {
+            buffer: Vec<ScreenChar>,
+            column_position: usize,
+            row_position: usize,
+            color_code: ColorCode,
+            height: usize,
+            width: usize,
+        }
+
+        impl TextBufferOperations for $struct_name {
+            fn get_width(&self) -> usize {
+                self.width
+            }
+
+            fn get_height(&self) -> usize {
+                self.height
+            }
+
+            fn get_color_code(&self) -> ColorCode {
+                self.color_code
+            }
+
+            fn get_position(&self) -> (usize, usize) {
+                (self.row_position, self.column_position)
+            }
+
+            fn set_position(&mut self, row: usize, col: usize) {
+                self.row_position = row;
+                self.column_position = col;
+            }
+
+            fn set_char_at(&mut self, row: usize, col: usize, chr: ScreenChar) {
+                if row < self.height && col < self.width {
+                    let index = row * self.width + col;
+                    self.buffer[index] = chr;
+                }
+            }
+
+            fn get_char_at(&self, row: usize, col: usize) -> ScreenChar {
+                if row < self.height && col < self.width {
+                    let index = row * self.width + col;
+                    self.buffer[index]
+                } else {
+                    ScreenChar {
+                        ascii_character: 0,
+                        color_code: self.color_code,
+                    }
+                }
+            }
+
+            fn scroll_up(&mut self) {
+                let blank_char = ScreenChar {
+                    ascii_character: b' ',
+                    color_code: self.color_code,
+                };
+                for row in 1..self.height {
+                    for col in 0..self.width {
+                        let index = row * self.width + col;
+                        let next_index = (row - 1) * self.width + col;
+                        self.buffer[next_index] = self.buffer[index];
+                    }
+                }
+                for col in 0..self.width {
+                    let index = (self.height - 1) * self.width + col;
+                    self.buffer[index] = blank_char;
+                }
+            }
+        }
+
+        impl $struct_name {
+            fn new(width: usize, height: usize) -> Self {
+                $struct_name {
+                    buffer: vec![
+                        ScreenChar {
+                            ascii_character: b' ',
+                            color_code: ColorCode::new(Color::White, Color::Black),
+                        };
+                        width * height
+                    ],
+                    column_position: 0,
+                    row_position: 0,
+                    color_code: ColorCode::new(Color::White, Color::Black),
+                    height,
+                    width,
+                }
+            }
+
+            fn get_char(&self, row: usize, col: usize) -> Option<ScreenChar> {
+                if row < self.height && col < self.width {
+                    let index = row * self.width + col;
+                    Some(self.buffer[index])
+                } else {
+                    None
+                }
+            }
+        }
+    };
+}
+
+
+
+/// Macro for creating global VGA buffer singleton
+/// Reduces boilerplate in VGA initialization
+///
+/// # Examples
+/// ```
+/// create_vga_singleton!(VGA_BUFFER, VgaBuffer);
+/// ```
+#[macro_export]
+macro_rules! create_vga_singleton {
+    ($name:ident, $buffer_ty:ty) => {
+        pub static $name: Once<Mutex<$buffer_ty>> = Once::new();
+    };
+}

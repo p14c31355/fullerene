@@ -9,7 +9,7 @@ use petroleum::{
     },
     handle_write_byte, impl_text_buffer_operations, port_read_u8, port_write,
     ports::write_vga_attribute_register,
-    scroll_char_buffer_up, update_vga_cursor,
+    scroll_char_buffer_up, update_vga_cursor, impl_vga_buffer,
 };
 
 // Consolidated port operations from petroleum crate
@@ -22,53 +22,8 @@ const BUFFER_WIDTH: usize = 80;
 const CURSOR_POS_LOW_REG: u8 = 0x0F;
 const CURSOR_POS_HIGH_REG: u8 = 0x0E;
 
-/// Representsthe VGA text buffer writer.
-pub struct VgaBuffer {
-    buffer: &'static mut [[ScreenChar; BUFFER_WIDTH]; BUFFER_HEIGHT],
-    column_position: usize,
-    row_position: usize,
-    color_code: ColorCode,
-}
-
-impl VgaBuffer {
-    /// Creates a new VgaBuffer instance with the given VGA address.
-    pub fn new(vga_address: usize) -> VgaBuffer {
-        VgaBuffer {
-            buffer: unsafe { &mut *(vga_address as *mut _) },
-            column_position: 0,
-            row_position: 0,
-            color_code: ColorCode::new(Color::Green, Color::Black),
-        }
-    }
-
-    /// Sets the color code for text output.
-    pub fn set_color_code(&mut self, color_code: ColorCode) {
-        self.color_code = color_code;
-    }
-
-    /// Updates the hardware cursor position.
-    pub fn update_cursor(&self) {
-        let pos = self.row_position * BUFFER_WIDTH + self.column_position;
-        update_vga_cursor!(pos);
-    }
-}
-
-impl core::fmt::Write for VgaBuffer {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        self.write_string(s);
-        Ok(())
-    }
-}
-
-unsafe impl Send for VgaBuffer {}
-unsafe impl Sync for VgaBuffer {}
-
-impl TextBufferOperations for VgaBuffer {
-    impl_text_buffer_operations!(VgaBuffer,
-        buffer, row_position, column_position, color_code,
-        BUFFER_HEIGHT, BUFFER_WIDTH
-    );
-}
+// Use macro to implement VgaBuffer
+impl_vga_buffer!(VgaBuffer, BUFFER_HEIGHT, BUFFER_WIDTH);
 
 // Global singleton
 pub static VGA_BUFFER: Once<Mutex<VgaBuffer>> = Once::new();
@@ -106,102 +61,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    struct MockVgaBuffer {
-        buffer: Vec<ScreenChar>,
-        column_position: usize,
-        row_position: usize,
-        color_code: ColorCode,
-        height: usize,
-        width: usize,
-    }
-
-    impl TextBufferOperations for MockVgaBuffer {
-        fn get_width(&self) -> usize {
-            self.width
-        }
-
-        fn get_height(&self) -> usize {
-            self.height
-        }
-
-        fn get_color_code(&self) -> ColorCode {
-            self.color_code
-        }
-
-        fn get_position(&self) -> (usize, usize) {
-            (self.row_position, self.column_position)
-        }
-
-        fn set_position(&mut self, row: usize, col: usize) {
-            self.row_position = row;
-            self.column_position = col;
-        }
-
-        fn set_char_at(&mut self, row: usize, col: usize, chr: ScreenChar) {
-            if row < self.height && col < self.width {
-                let index = row * self.width + col;
-                self.buffer[index] = chr;
-            }
-        }
-
-        fn get_char_at(&self, row: usize, col: usize) -> ScreenChar {
-            if row < self.height && col < self.width {
-                let index = row * self.width + col;
-                self.buffer[index]
-            } else {
-                ScreenChar {
-                    ascii_character: 0,
-                    color_code: self.color_code,
-                }
-            }
-        }
-
-        fn scroll_up(&mut self) {
-            let blank_char = ScreenChar {
-                ascii_character: b' ',
-                color_code: self.color_code,
-            };
-            for row in 1..self.height {
-                for col in 0..self.width {
-                    let index = row * self.width + col;
-                    let next_index = (row - 1) * self.width + col;
-                    self.buffer[next_index] = self.buffer[index];
-                }
-            }
-            for col in 0..self.width {
-                let index = (self.height - 1) * self.width + col;
-                self.buffer[index] = blank_char;
-            }
-        }
-    }
-
-    impl MockVgaBuffer {
-        fn new(width: usize, height: usize) -> Self {
-            MockVgaBuffer {
-                buffer: vec![
-                    ScreenChar {
-                        ascii_character: b' ',
-                        color_code: ColorCode::new(Color::White, Color::Black),
-                    };
-                    width * height
-                ],
-                column_position: 0,
-                row_position: 0,
-                color_code: ColorCode::new(Color::White, Color::Black),
-                height,
-                width,
-            }
-        }
-
-        fn get_char(&self, row: usize, col: usize) -> Option<ScreenChar> {
-            if row < self.height && col < self.width {
-                let index = row * self.width + col;
-                Some(self.buffer[index])
-            } else {
-                None
-            }
-        }
-    }
+    petroleum::impl_mock_vga_buffer!(MockVgaBuffer, BUFFER_HEIGHT, BUFFER_WIDTH);
 
     #[test]
     fn test_color_code_new() {
