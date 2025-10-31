@@ -97,11 +97,12 @@ macro_rules! buffer_ops {
     (scroll_char_buffer_up, $buffer:expr, $height:expr, $width:expr, $blank:expr) => {
         for row in 1..$height {
             for col in 0..$width {
-                $buffer[row - 1][col] = $buffer[row][col];
+                let cell = $buffer.get_char_at(row, col);
+                $buffer.set_char_at(row - 1, col, cell);
             }
         }
         for col in 0..$width {
-            $buffer[$height - 1][col] = $blank;
+            $buffer.set_char_at($height - 1, col, $blank);
         }
     };
 }
