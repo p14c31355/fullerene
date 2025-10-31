@@ -43,10 +43,8 @@ static COMMANDS: &[CommandEntry] = define_commands!(
 // Shell main loop
 pub fn shell_main() {
     petroleum::debug_log!("Shell main started");
-    print!("Welcome to Fullerene OS Shell");
-    print!("\n");
-    print!("Type 'help' for available commands.");
-    print!("\n\n");
+    petroleum::shell_response!("Welcome to Fullerene OS Shell\n");
+    petroleum::shell_response!("Type 'help' for available commands.\n\n");
 
     loop {
         // Print prompt

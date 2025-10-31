@@ -181,8 +181,10 @@ pub fn init_vga(_physical_memory_offset: x86_64::VirtAddr) {
     // DAC registers (optional for text mode, simplified)
     // Skip DAC initialization for now as it's not strictly necessary for text mode
 
-    writer.write_string("Hello QEMU by FullereneOS!\n");
-    writer.write_string("This is output directly to VGA.\n");
+    petroleum::vga_write_lines!(writer,
+        "Hello QEMU by FullereneOS!\n";
+        "This is output directly to VGA.\n"
+    );
     writer.update_cursor();
     // Force display refresh by reading status register
     let _: u8 = port_read_u8!(HardwarePorts::STATUS);

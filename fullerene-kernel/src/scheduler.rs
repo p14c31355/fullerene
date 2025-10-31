@@ -407,8 +407,10 @@ pub fn scheduler_loop() -> ! {
     // Print to VGA if available for GUI output
     if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {
         let mut writer = vga_buffer.lock();
-        writer.write_string("Scheduler loop started - VGA output enabled\n");
-        writer.write_string("System is running...\n");
+        petroleum::vga_write_lines!(writer,
+            "Scheduler loop started - VGA output enabled\n";
+            "System is running...\n"
+        );
         writer.update_cursor();
     }
     // Log that scheduler is running for confirmation

@@ -1328,6 +1328,60 @@ macro_rules! display_stats_on_available_display {
     }};
 }
 
+/// Macro for writing multiple lines to VGA buffer
+/// Reduces repetition of write_string calls
+///
+/// # Examples
+/// ```
+/// vga_write_lines!(writer,
+///     "Hello QEMU by FullereneOS!\n";
+///     "This is output directly to VGA.\n"
+/// );
+/// ```
+#[macro_export]
+macro_rules! vga_write_lines {
+    ($writer:expr, $($line:expr);* $(;)?) => {{
+        $(
+            $writer.write_string($line);
+        )*
+    }};
+}
+
+/// Macro for bootloader logging with both serial and print output
+/// Reduces repetition in bootloader code
+///
+/// # Examples
+/// ```
+/// bootloader_log!("Heap initialized successfully.");
+/// bootloader_log!("Graphics config: {}x{}", width, height);
+/// ```
+#[macro_export]
+macro_rules! bootloader_log {
+    ($msg:literal) => {{
+        petroleum::println!($msg);
+        petroleum::serial::_print(format_args!("{}\n", $msg));
+    }};
+    ($msg:literal, $($args:expr),*) => {{
+        petroleum::println!($msg, $($args),*);
+        petroleum::serial::_print(format_args!("{}\n", format_args!($msg, $($args),*)));
+    }};
+}
+
+/// Macro for shell command responses
+/// Reduces repetition in shell command implementations
+///
+/// # Examples
+/// ```
+/// shell_response!("Available commands:\n");
+/// shell_response!("  {:10} - {}\n", cmd.name, cmd.description);
+/// ```
+#[macro_export]
+macro_rules! shell_response {
+    ($($arg:tt)*) => {{
+        petroleum::print!($($arg)*);
+    }};
+}
+
 /// Macro for finding a process in the process list by ID
 /// Reduces repetitive process list searching code
 ///

@@ -48,28 +48,28 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     }
 
     petroleum::init_uefi_system_table(system_table);
-    petroleum::bootloader_debug!("UEFI_SYSTEM_TABLE initialized.");
+    petroleum::bootloader_log!("UEFI_SYSTEM_TABLE initialized.");
     let st = unsafe { &*system_table };
     let bs = unsafe { &*st.boot_services };
 
-    petroleum::bootloader_debug!("UEFI system table and boot services acquired.");
+    petroleum::bootloader_log!("UEFI system table and boot services acquired.");
 
     // Initialize the serial writer with the console output pointer.
     petroleum::serial::UEFI_WRITER.lock().init(st.con_out);
-    petroleum::bootloader_debug!("UEFI_WRITER initialized.");
+    petroleum::bootloader_log!("UEFI_WRITER initialized.");
 
-    petroleum::bootloader_debug!("Bellows UEFI Bootloader starting...");
-    petroleum::bootloader_debug!("Image Handle: {:#x}, System Table: {:#p}", image_handle, system_table);
+    petroleum::bootloader_log!("Bellows UEFI Bootloader starting...");
+    petroleum::bootloader_log!("Image Handle: {:#x}, System Table: {:#p}", image_handle, system_table);
     // Initialize heap
-    petroleum::bootloader_debug!("Attempting to initialize heap...");
+    petroleum::bootloader_log!("Attempting to initialize heap...");
     init_heap(bs).expect("Heap initialization failed");
-    petroleum::bootloader_debug!("Heap initialized successfully.");
+    petroleum::bootloader_log!("Heap initialized successfully.");
 
     // Initialize graphics protocols for framebuffer setup
-    petroleum::bootloader_debug!("Attempting to initialize graphics protocols...");
+    petroleum::bootloader_log!("Attempting to initialize graphics protocols...");
     match petroleum::init_graphics_protocols(st) {
         Some(config) => {
-            petroleum::bootloader_debug!(
+            petroleum::bootloader_log!(
                 "Graphics framebuffer initialized at {:#x} ({}x{}).",
                 config.address,
                 config.width,
@@ -77,14 +77,14 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             );
         }
         None => {
-            petroleum::bootloader_debug!("No graphics protocols found, initializing VGA text mode.");
+            petroleum::bootloader_log!("No graphics protocols found, initializing VGA text mode.");
             init_basic_vga_text_mode();
             // For UEFI fallback, try to install a basic VGA framebuffer config for kernel use
             install_vga_framebuffer_config(st);
-            petroleum::bootloader_debug!("VGA framebuffer config installed, continuing with kernel load.");
+            petroleum::bootloader_log!("VGA framebuffer config installed, continuing with kernel load.");
         }
     }
-    petroleum::bootloader_debug!("Graphics initialization complete.");
+    petroleum::bootloader_log!("Graphics initialization complete.");
 
     let efi_image_file = KERNEL_BINARY;
     let efi_image_size = KERNEL_BINARY.len();
