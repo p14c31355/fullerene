@@ -1232,6 +1232,29 @@ macro_rules! display_vga_stats_lines {
     };
 }
 
+/// Macro for serial port initialization to reduce repetitive port writes
+/// Reduces boilerplate in serial port setup across different implementations
+///
+/// # Examples
+/// ```
+/// init_serial_port!(self,
+///     0x80, 0x03, 0x00, 0x03, 0xC7, 0x0B  // Standard 38400bps, 8N1 config
+/// );
+/// ```
+#[macro_export]
+macro_rules! init_serial_port {
+    ($self:expr, $dlab:expr, $divisor_low:expr, $irq:expr, $line_ctrl:expr, $fifo:expr, $modem:expr) => {{
+        unsafe {
+            $self.ops.line_ctrl_port().write($dlab); // Enable DLAB
+            $self.ops.data_port().write($divisor_low); // Baud rate divisor low byte
+            $self.ops.irq_enable_port().write($irq);
+            $self.ops.line_ctrl_port().write($line_ctrl); // 8 bits, no parity, one stop bit
+            $self.ops.fifo_ctrl_port().write($fifo); // Enable FIFO, clear, 14-byte threshold
+            $self.ops.modem_ctrl_port().write($modem); // IRQs enabled, OUT2
+        }
+    }};
+}
+
 
 
 /// Macro for subsystem initialization with consistent logging and error handling
