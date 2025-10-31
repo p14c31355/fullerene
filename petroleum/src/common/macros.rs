@@ -1626,7 +1626,9 @@ macro_rules! impl_text_buffer_operations {
                 ascii_character: b' ',
                 color_code: self.$color_field,
             };
-            petroleum::clear_line_range!(self, row, row + 1, 0, self.get_width(), blank_char);
+            for col in 0..self.get_width() {
+                self.set_char_at(row, col, blank_char);
+            }
         }
 
         fn clear_screen(&mut self) {
@@ -1636,7 +1638,11 @@ macro_rules! impl_text_buffer_operations {
                 ascii_character: b' ',
                 color_code: ColorCode(0),
             };
-            petroleum::clear_buffer!(self, self.get_height(), self.get_width(), blank_char);
+            for row in 0..self.get_height() {
+                for col in 0..self.get_width() {
+                    self.set_char_at(row, col, blank_char);
+                }
+            }
         }
 
                 fn scroll_up(&mut self) {

@@ -90,8 +90,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     let efi_image_size = KERNEL_BINARY.len();
 
     if efi_image_size == 0 {
-        petroleum::println!("Bellows: Kernel file is empty!");
-        petroleum::println!("Kernel file is empty.");
+        petroleum::bootloader_log!("Bellows: Kernel file is empty!");
         panic!("Kernel file is empty.");
     }
 

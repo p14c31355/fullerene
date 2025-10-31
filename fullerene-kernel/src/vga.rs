@@ -64,100 +64,10 @@ unsafe impl Send for VgaBuffer {}
 unsafe impl Sync for VgaBuffer {}
 
 impl TextBufferOperations for VgaBuffer {
-    fn get_width(&self) -> usize {
-        BUFFER_WIDTH
-    }
-
-    fn get_height(&self) -> usize {
-        BUFFER_HEIGHT
-    }
-
-    fn get_color_code(&self) -> ColorCode {
-        self.color_code
-    }
-
-    fn get_position(&self) -> (usize, usize) {
-        (self.row_position, self.column_position)
-    }
-
-    fn set_position(&mut self, row: usize, col: usize) {
-        self.row_position = row;
-        self.column_position = col;
-    }
-
-    fn set_char_at(&mut self, row: usize, col: usize, chr: ScreenChar) {
-        if row < BUFFER_HEIGHT && col < BUFFER_WIDTH {
-            self.buffer[row][col] = chr;
-        }
-    }
-
-    fn get_char_at(&self, row: usize, col: usize) -> ScreenChar {
-        if row < BUFFER_HEIGHT && col < BUFFER_WIDTH {
-            self.buffer[row][col]
-        } else {
-            ScreenChar {
-                ascii_character: 0,
-                color_code: self.color_code,
-            }
-        }
-    }
-
-    fn write_byte(&mut self, byte: u8) {
-        handle_write_byte!(self, byte, { self.new_line() }, {
-            if self.column_position >= BUFFER_WIDTH {
-                self.new_line();
-            }
-            if self.row_position >= BUFFER_HEIGHT {
-                self.scroll_up();
-                self.row_position = BUFFER_HEIGHT - 1;
-            }
-            let screen_char = ScreenChar {
-                ascii_character: byte,
-                color_code: self.color_code,
-            };
-            self.buffer[self.row_position][self.column_position] = screen_char;
-            self.column_position += 1;
-        });
-    }
-
-    fn new_line(&mut self) {
-        self.column_position = 0;
-        if self.row_position < BUFFER_HEIGHT - 1 {
-            self.row_position += 1;
-        } else {
-            self.scroll_up();
-        }
-    }
-
-    fn clear_row(&mut self, row: usize) {
-        let blank_char = ScreenChar {
-            ascii_character: b' ',
-            color_code: self.color_code,
-        };
-        clear_line_range(self, row, row + 1, 0, self.get_width(), blank_char);
-    }
-
-    fn clear_screen(&mut self) {
-        self.row_position = 0;
-        self.column_position = 0;
-        let blank_char = ScreenChar {
-            ascii_character: b' ',
-            color_code: ColorCode(0),
-        };
-        clear_buffer(self, self.get_height(), self.get_width(), blank_char);
-    }
-
-    fn scroll_up(&mut self) {
-        scroll_char_buffer_up(
-            self,
-            BUFFER_HEIGHT,
-            BUFFER_WIDTH,
-            ScreenChar {
-                ascii_character: b' ',
-                color_code: self.color_code
-            }
-        );
-    }
+    impl_text_buffer_operations!(VgaBuffer,
+        buffer, row_position, column_position, color_code,
+        BUFFER_HEIGHT, BUFFER_WIDTH
+    );
 }
 
 // Global singleton
