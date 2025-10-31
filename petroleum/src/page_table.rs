@@ -628,6 +628,74 @@ macro_rules! map_memory_with_flag_fn {
     };
 }
 
+// Macro to reduce repetitive mapping operations with logging
+macro_rules! map_region_with_validation {
+    ($mapper:expr, $frame_allocator:expr, $phys_start:expr, $virt_start:expr, $num_pages:expr, $flags:expr, $desc:expr) => {
+        unsafe {
+            map_range_with_log_macro!(
+                $mapper,
+                $frame_allocator,
+                $phys_start,
+                $virt_start,
+                $num_pages,
+                $flags
+            )
+        }.unwrap_or_else(|_| panic!("Failed to map {} region", $desc))
+    };
+}
+
+// Macro to consolidate page table entry flag checks and frame extraction
+macro_rules! extract_frame_if_present {
+    ($entry:expr) => {
+        if $entry.flags().contains(PageTableFlags::PRESENT) {
+            $entry.frame().ok()
+        } else {
+            None
+        }
+    };
+}
+
+// Macro to reduce repetitive temporary mapping operations
+macro_rules! with_temp_mapping {
+    ($mapper:expr, $frame_allocator:expr, $temp_va:expr, $frame:expr, $body:block) => {{
+        let page = Page::<Size4KiB>::containing_address($temp_va);
+        unsafe {
+            $mapper
+                .map_to(
+                    page,
+                    $frame,
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                    $frame_allocator,
+                )
+                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
+                .flush();
+        }
+        let result = $body;
+        if let Ok((_frame, flush)) = $mapper.unmap(page) {
+            flush.flush();
+        }
+        result
+    }};
+}
+
+// Macro to consolidate CR3 read and validation operations
+macro_rules! read_and_validate_cr3 {
+    () => {{
+        let (cr3_frame, _) = Cr3::read();
+        debug_log_no_alloc!("CR3 read: 0x", cr3_frame.start_address().as_u64() as usize);
+        cr3_frame
+    }};
+}
+
+// Macro to reduce repetitive TLB flush operations
+macro_rules! flush_tlb_safely {
+    () => {{
+        let (current, flags) = Cr3::read();
+        unsafe { Cr3::write(current, flags) };
+        debug_log_no_alloc!("TLB flushed");
+    }};
+}
+
 // Consolidated mapping for available memory to higher half with reduced duplication
 unsafe fn map_available_memory_to_higher_half<T: MemoryDescriptorValidator>(
     mapper: &mut OffsetPageTable,
@@ -1405,11 +1473,7 @@ pub fn test_page_table_copy_switch(
     debug_log_no_alloc!("[PT TEST] Starting minimal page table copy test");
 
     // Get current CR3
-    let (original_cr3, _) = Cr3::read();
-    debug_log_no_alloc!(
-        "[PT TEST] Original CR3: 0x",
-        original_cr3.start_address().as_u64() as usize
-    );
+    let original_cr3 = read_and_validate_cr3!();
 
     // Allocate new frame for cloned table
     let new_l4_frame = match frame_allocator.allocate_frame() {
@@ -1579,54 +1643,43 @@ fn destroy_page_table_recursive(
         return Ok(());
     }
 
-    // Temporarily map the table to read its entries
-    let page = Page::<Size4KiB>::containing_address(temp_va);
     let frame = PhysFrame::<Size4KiB>::containing_address(table_phys);
-    let flush = unsafe {
-        mapper
-            .map_to(
-                page,
-                frame,
-                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                frame_alloc,
-            )
-            .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
-    };
-    flush.flush();
+    let result: crate::common::logging::SystemResult<()> = with_temp_mapping!(
+        mapper,
+        frame_alloc,
+        temp_va,
+        frame,
+        {
+            let table = unsafe { &*(temp_va.as_ptr() as *const PageTable) };
 
-    let table = unsafe { &*(temp_va.as_ptr() as *const PageTable) };
-
-    let mut child_frames_to_free = alloc::vec::Vec::new();
-    if level > 1 {
-        for entry in table.iter() {
-            if entry.flags().contains(PageTableFlags::PRESENT)
-                && !entry.flags().contains(PageTableFlags::HUGE_PAGE)
-            {
-                if let Ok(child_frame) = entry.frame() {
-                    child_frames_to_free.push(child_frame);
+            let mut child_frames_to_free = alloc::vec::Vec::new();
+            if level > 1 {
+                for entry in table.iter() {
+                    if let Some(child_frame) = extract_frame_if_present!(entry) {
+                        if !entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                            child_frames_to_free.push(child_frame);
+                        }
+                    }
                 }
             }
+
+            // Recurse on children
+            for child_frame in child_frames_to_free {
+                destroy_page_table_recursive(
+                    mapper,
+                    frame_alloc,
+                    child_frame.start_address(),
+                    level - 1,
+                    TEMP_VA_FOR_DESTROY,
+                )?;
+                frame_alloc.deallocate_frame(child_frame);
+            }
+
+            Ok(())
         }
-    }
+    );
 
-    // Unmap the temporary page before recursing
-    if let Ok((_frame, flush)) = mapper.unmap(page) {
-        flush.flush();
-    }
-
-    // Now recurse on children
-    for child_frame in child_frames_to_free {
-        destroy_page_table_recursive(
-            mapper,
-            frame_alloc,
-            child_frame.start_address(),
-            level - 1,
-            TEMP_VA_FOR_DESTROY,
-        )?;
-        frame_alloc.deallocate_frame(child_frame);
-    }
-
-    Ok(())
+    result
 }
 
 pub struct PageTableManager {
@@ -1738,84 +1791,63 @@ impl PageTableManager {
         // Track the allocated frame
         allocated_tables.insert(dest_frame.start_address().as_u64() as usize, dest_frame);
 
-        // Temporarily map source table for reading
-        let source_page = Page::<Size4KiB>::containing_address(temp_va);
         let source_phys_frame = PhysFrame::<Size4KiB>::containing_address(source_table_phys);
-        unsafe {
-            mapper
-                .map_to(
-                    source_page,
-                    source_phys_frame,
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+        let result: crate::common::logging::SystemResult<PhysAddr> = with_temp_mapping!(
+            mapper,
+            frame_alloc,
+            temp_va,
+            source_phys_frame,
+            {
+                let source_table = unsafe { &mut *(temp_va.as_mut_ptr() as *mut PageTable) };
+
+                let dest_result: crate::common::logging::SystemResult<PhysAddr> = with_temp_mapping!(
+                    mapper,
                     frame_alloc,
-                )
-                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
-                .flush();
-        }
-
-        let source_table = unsafe { &mut *(temp_va.as_mut_ptr() as *mut PageTable) };
-
-        // Temporarily map destination table for writing
-        let dest_page = Page::<Size4KiB>::containing_address(temp_va + 0x1000u64);
-        unsafe {
-            mapper
-                .map_to(
-                    dest_page,
+                    temp_va + 0x1000u64,
                     dest_frame,
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                    frame_alloc,
-                )
-                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
-                .flush();
-        }
+                    {
+                        let dest_table = unsafe { &mut *((temp_va.as_u64() + 0x1000) as *mut PageTable) };
 
-        let dest_table = unsafe { &mut *((temp_va.as_u64() + 0x1000) as *mut PageTable) };
+                        let mut child_va = temp_va + 0x2000u64;
 
-        let mut child_va = temp_va + 0x2000u64;
-
-        // Copy all entries
-        for (_i, (source_entry, dest_entry)) in
-            source_table.iter().zip(dest_table.iter_mut()).enumerate()
-        {
-            if source_entry.flags().contains(PageTableFlags::PRESENT) {
-                if level > 1
-                    && !((level == 2) && source_entry.flags().contains(PageTableFlags::HUGE_PAGE))
-                {
-                    // Entry points to a sub-table, recursively clone it
-                    match source_entry.frame() {
-                        Ok(child_frame) => {
-                            let cloned_child_phys = Self::clone_page_table_recursive(
-                                mapper,
-                                frame_alloc,
-                                child_frame.start_address(),
-                                level - 1,
-                                child_va,
-                                allocated_tables,
-                            )?;
-                            // Update entry to point to cloned child table
-                            dest_entry.set_addr(cloned_child_phys, source_entry.flags());
-                            child_va += 0x1000u64;
+                        // Copy all entries
+                        for (_i, (source_entry, dest_entry)) in
+                            source_table.iter().zip(dest_table.iter_mut()).enumerate()
+                        {
+                            if source_entry.flags().contains(PageTableFlags::PRESENT) {
+                                if level > 1
+                                    && !((level == 2) && source_entry.flags().contains(PageTableFlags::HUGE_PAGE))
+                                {
+                                    // Entry points to a sub-table, recursively clone it
+                                    if let Some(child_frame) = extract_frame_if_present!(source_entry) {
+                                        let cloned_child_phys = Self::clone_page_table_recursive(
+                                            mapper,
+                                            frame_alloc,
+                                            child_frame.start_address(),
+                                            level - 1,
+                                            child_va,
+                                            allocated_tables,
+                                        )?;
+                                        // Update entry to point to cloned child table
+                                        dest_entry.set_addr(cloned_child_phys, source_entry.flags());
+                                        child_va += 0x1000u64;
+                                    }
+                                } else {
+                                    // Leaf entry, copy directly
+                                    dest_entry.set_addr(source_entry.addr(), source_entry.flags());
+                                }
+                            }
                         }
-                        Err(_) => {
-                            // Invalid frame, skip
-                        }
+
+                        Ok(dest_frame.start_address())
                     }
-                } else {
-                    // Leaf entry, copy directly
-                    dest_entry.set_addr(source_entry.addr(), source_entry.flags());
-                }
+                );
+
+                dest_result
             }
-        }
+        );
 
-        // Unmap temp mappings
-        if let Ok((_frame, flush)) = mapper.unmap(source_page) {
-            flush.flush();
-        }
-        if let Ok((_frame, flush)) = mapper.unmap(dest_page) {
-            flush.flush();
-        }
-
-        Ok(dest_frame.start_address())
+        result
     }
 }
 
@@ -1963,8 +1995,7 @@ impl PageTableHelper for PageTableManager {
     fn flush_tlb_all(&mut self) -> crate::common::logging::SystemResult<()> {
         ensure_initialized!(self);
 
-        let (current, flags) = Cr3::read();
-        unsafe { Cr3::write(current, flags) };
+        flush_tlb_safely!();
         Ok(())
     }
 
