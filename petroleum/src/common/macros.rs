@@ -1707,3 +1707,161 @@ macro_rules! impl_getter_setter {
         }
     };
 }
+
+/// Macro for defining periodic tasks array
+/// Reduces boilerplate in scheduler initialization
+///
+/// # Examples
+/// ```
+/// define_periodic_tasks!(PeriodicTask,
+///     (1000, health_check_task, "health check"),
+///     (5000, stats_task, "stats logging")
+/// );
+/// ```
+#[macro_export]
+macro_rules! define_periodic_tasks {
+    ($task_ty:ident, $(($interval:expr, $task_fn:ident, $desc:expr)),* $(,)?) => {
+        lazy_static::lazy_static! {
+            static ref PERIODIC_TASKS: [$task_ty; count!($($task_fn),*)] = [
+                $(
+                    $task_ty {
+                        interval: $interval,
+                        last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
+                        task: $task_fn,
+                        description: $desc,
+                    }
+                ),*
+            ];
+        }
+    };
+}
+
+/// Helper macro to count items in a list
+#[macro_export]
+macro_rules! count {
+    () => { 0 };
+    ($head:expr $(, $tail:expr)*) => { 1 + count!($($tail),*) };
+}
+
+/// Macro for defining VirtualBox VM settings
+/// Reduces repetitive command execution in VM configuration
+///
+/// # Examples
+/// ```
+/// define_vbox_settings!(vm_name,
+///     (&["--memory", "4096"], "Failed to set VM memory."),
+///     (&["--vram", "128"], "Failed to set VM video memory.")
+/// );
+/// ```
+#[macro_export]
+macro_rules! define_vbox_settings {
+    ($vm_name:expr, $(($args:expr, $failure_msg:expr)),* $(,)?) => {{
+        $(
+            let status = ::std::process::Command::new("VBoxManage")
+                .arg("modifyvm")
+                .arg($vm_name)
+                .args($args)
+                .status()?;
+            if !status.success() {
+                return Err(::std::io::Error::new(::std::io::ErrorKind::Other, $failure_msg));
+            }
+        )*
+        Ok(()) as ::std::io::Result<()>
+    }};
+}
+
+/// Macro for building cargo packages with common arguments
+/// Reduces repetitive build commands
+///
+/// # Examples
+/// ```
+/// build_package!("fullerene-kernel", "x86_64-unknown-uefi", ["--features", "debug"]);
+/// ```
+#[macro_export]
+macro_rules! build_package {
+    ($package:expr, $target:expr, [$($features:expr),* $(,)?]) => {{
+        let mut args = vec!["+nightly", "build", "-q", "-Zbuild-std=core,alloc"];
+        $(
+            args.push($features);
+        )*
+        args.extend_from_slice(&["--package", $package, "--target", $target, "--profile", "dev"]);
+
+        let status = std::process::Command::new("cargo")
+            .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap().parent().unwrap())
+            .args(&args)
+            .status()?;
+        if !status.success() {
+            return Err(std::io::Error::other(concat!($package, " build failed")));
+        }
+        Ok(())
+    }};
+}
+
+/// Macro for creating ISO image files array
+/// Reduces boilerplate in ISO creation
+///
+/// # Examples
+/// ```
+/// create_iso_files!(
+///     (kernel_path, "EFI\\BOOT\\KERNEL.EFI"),
+///     (bellows_path, "EFI\\BOOT\\BOOTX64.EFI")
+/// );
+/// ```
+#[macro_export]
+macro_rules! create_iso_files {
+    ($(($source:expr, $dest:expr)),* $(,)?) => {
+        vec![
+            $(
+                isobemak::IsoImageFile {
+                    source: $source.clone(),
+                    destination: $dest.to_string(),
+                }
+            ),*
+        ]
+    };
+}
+
+/// Macro for unified error handling in bootloaders
+/// Reduces repetitive error logging and panic
+///
+/// # Examples
+/// ```
+/// bootloader_expect!(load_kernel(), "Failed to load kernel");
+/// ```
+#[macro_export]
+macro_rules! bootloader_expect {
+    ($expr:expr, $msg:expr) => {
+        match $expr {
+            Ok(val) => val,
+            Err(e) => {
+                petroleum::println!(concat!($msg, ": {:?}"), e);
+                panic!($msg);
+            }
+        }
+    };
+}
+
+/// Macro for defining command arrays for shell
+/// Reduces repetitive command definition
+///
+/// # Examples
+/// ```
+/// define_shell_commands!(CommandEntry,
+///     ("help", "Show help", help_fn),
+///     ("exit", "Exit", exit_fn)
+/// );
+/// ```
+#[macro_export]
+macro_rules! define_shell_commands {
+    ($entry_ty:ident, $(($name:expr, $desc:expr, $func:expr)),* $(,)?) => {
+        &[
+            $(
+                $entry_ty {
+                    name: $name,
+                    description: $desc,
+                    function: $func,
+                }
+            ),*
+        ]
+    };
+}

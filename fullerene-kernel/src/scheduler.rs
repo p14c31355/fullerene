@@ -17,6 +17,7 @@ struct PeriodicTask {
     interval: u64,
     last_tick: alloc::sync::Arc<spin::Mutex<u64>>,
     task: fn(u64, u64), // current_tick, iteration_count
+    description: &'static str,
 }
 
 // Wrapper functions for tasks that need parameters
@@ -63,31 +64,37 @@ lazy_static::lazy_static! {
             interval: 1000,
             last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
             task: health_check_task,
+            description: "health check",
         },
         PeriodicTask {
             interval: 5000,
             last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
             task: stats_task,
+            description: "stats logging",
         },
         PeriodicTask {
             interval: 2000,
             last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
             task: maintenance_task,
+            description: "system maintenance",
         },
         PeriodicTask {
             interval: 10000,
             last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
             task: memory_check_task,
+            description: "memory capacity check",
         },
         PeriodicTask {
             interval: 100,
             last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
             task: process_cleanup_task,
+            description: "process cleanup",
         },
         PeriodicTask {
             interval: 30000,
             last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
             task: backup_task,
+            description: "automated backup",
         },
     ];
 }

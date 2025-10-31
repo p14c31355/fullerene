@@ -5,6 +5,24 @@ use std::{env, io, path::PathBuf, process::Command};
 
 use env_logger;
 
+/// Macro for defining VirtualBox VM settings
+/// Reduces repetitive command execution in VM configuration
+macro_rules! define_vbox_settings {
+    ($vm_name:expr, $(($args:expr, $failure_msg:expr)),* $(,)?) => {{
+        $(
+            let status = std::process::Command::new("VBoxManage")
+                .arg("modifyvm")
+                .arg($vm_name)
+                .args($args)
+                .status()?;
+            if !status.success() {
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, $failure_msg));
+            }
+        )*
+        Ok(()) as std::io::Result<()>
+    }};
+}
+
 #[derive(Parser)]
 struct Args {
     /// Use VirtualBox instead of QEMU for virtualization
@@ -182,78 +200,23 @@ struct VmSetting<'a> {
 fn configure_vm_settings(vm_name: &str) -> io::Result<()> {
     log::info!("Configuring VM settings for '{}'...", vm_name);
 
-    let settings = &[
-        VmSetting {
-            args: &["--memory", "4096"],
-            failure_msg: "Failed to set VM memory.",
-            success_msg: None,
-        },
-        VmSetting {
-            args: &["--vram", "128"],
-            failure_msg: "Failed to set VM video memory.",
-            success_msg: None,
-        },
-        VmSetting {
-            args: &["--acpi", "on"],
-            failure_msg: "Failed to enable ACPI.",
-            success_msg: None,
-        },
-        VmSetting {
-            args: &["--nic1", "nat"],
-            failure_msg: "Failed to configure network NAT.",
-            success_msg: None,
-        },
-        VmSetting {
-            args: &["--cpus", "1"],
-            failure_msg: "Failed to set CPU count.",
-            success_msg: None,
-        },
-        VmSetting {
-            args: &["--chipset", "ich9"],
-            failure_msg: "Failed to set chipset.",
-            success_msg: None,
-        },
-        VmSetting {
-            args: &["--firmware", "efi"],
-            failure_msg: "Failed to set firmware to EFI.",
-            success_msg: Some("Firmware set to EFI for UEFI boot."),
-        },
-        VmSetting {
-            args: &["--hwvirtex", "off"],
-            failure_msg: "Failed to disable hardware virtualization. This may cause issues in nested VM environments.",
-            success_msg: Some("Hardware virtualization disabled for compatibility with nested VMs"),
-        },
-        VmSetting {
-            args: &["--nested-paging", "off"],
-            failure_msg: "Failed to disable nested paging.",
-            success_msg: None,
-        },
-        VmSetting {
-            args: &["--large-pages", "off"],
-            failure_msg: "Failed to disable large pages.",
-            success_msg: None,
-        },
-        VmSetting {
-            args: &["--nested-hw-virt", "off"],
-            failure_msg: "Failed to disable nested hardware virtualization.",
-            success_msg: None,
-        },
-    ];
+    // Use macro to reduce repetitive command execution
+    define_vbox_settings!(vm_name,
+        (&["--memory", "4096"], "Failed to set VM memory."),
+        (&["--vram", "128"], "Failed to set VM video memory."),
+        (&["--acpi", "on"], "Failed to enable ACPI."),
+        (&["--nic1", "nat"], "Failed to configure network NAT."),
+        (&["--cpus", "1"], "Failed to set CPU count."),
+        (&["--chipset", "ich9"], "Failed to set chipset."),
+        (&["--firmware", "efi"], "Failed to set firmware to EFI."),
+        (&["--hwvirtex", "off"], "Failed to disable hardware virtualization. This may cause issues in nested VM environments."),
+        (&["--nested-paging", "off"], "Failed to disable nested paging."),
+        (&["--large-pages", "off"], "Failed to disable large pages."),
+        (&["--nested-hw-virt", "off"], "Failed to disable nested hardware virtualization.")
+    )?;
 
-    for setting in settings {
-        let mut command = Command::new("VBoxManage");
-        command.arg("modifyvm").arg(vm_name).args(setting.args);
-
-        let status = command.status()?;
-        if !status.success() {
-            log::warn!("{}", setting.failure_msg);
-            return Err(io::Error::new(io::ErrorKind::Other, setting.failure_msg));
-        }
-
-        if let Some(msg) = setting.success_msg {
-            log::info!("{}", msg);
-        }
-    }
+    log::info!("Firmware set to EFI for UEFI boot.");
+    log::info!("Hardware virtualization disabled for compatibility with nested VMs");
 
     Ok(())
 }
