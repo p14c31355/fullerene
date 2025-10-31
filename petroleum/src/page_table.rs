@@ -678,6 +678,53 @@ macro_rules! with_temp_mapping {
     }};
 }
 
+// Macro to safely map to higher half with logging
+macro_rules! safe_map_to_higher_half {
+    ($mapper:expr, $frame_allocator:expr, $phys_offset:expr, $phys_start:expr, $num_pages:expr, $flags:expr) => {{
+        unsafe {
+            map_to_higher_half_with_log(
+                $mapper,
+                $frame_allocator,
+                $phys_offset,
+                $phys_start,
+                $num_pages,
+                $flags,
+            )
+        }
+    }};
+}
+
+// Macro to safely perform identity mapping with logging
+macro_rules! safe_identity_map {
+    ($mapper:expr, $frame_allocator:expr, $phys_start:expr, $num_pages:expr, $flags:expr) => {{
+        unsafe {
+            identity_map_range_with_log_macro!(
+                $mapper,
+                $frame_allocator,
+                $phys_start,
+                $num_pages,
+                $flags
+            )
+        }
+    }};
+}
+
+// Macro to safely perform CR3 operations
+macro_rules! safe_cr3_write {
+    ($frame:expr) => {{
+        unsafe {
+            Cr3::write($frame, x86_64::registers::control::Cr3Flags::empty());
+        }
+    }};
+}
+
+// Macro to safely read CR3
+macro_rules! safe_cr3_read {
+    () => {{
+        Cr3::read()
+    }};
+}
+
 // Macro to consolidate CR3 read and validation operations
 macro_rules! read_and_validate_cr3 {
     () => {{
@@ -697,7 +744,7 @@ macro_rules! flush_tlb_safely {
 }
 
 // Consolidated mapping for available memory to higher half with reduced duplication
-unsafe fn map_available_memory_to_higher_half<T: MemoryDescriptorValidator>(
+fn map_available_memory_to_higher_half<T: MemoryDescriptorValidator>(
     mapper: &mut OffsetPageTable,
     frame_allocator: &mut BootInfoFrameAllocator,
     phys_offset: VirtAddr,
@@ -708,16 +755,14 @@ unsafe fn map_available_memory_to_higher_half<T: MemoryDescriptorValidator>(
             let phys_start = desc.get_physical_start();
             let pages = desc.get_page_count();
             let flags = derive_memory_descriptor_flags(desc);
-            unsafe {
-                let _ = map_to_higher_half_with_log(
-                    mapper,
-                    frame_allocator,
-                    phys_offset,
-                    phys_start,
-                    pages,
-                    flags,
-                );
-            }
+            let _ = safe_map_to_higher_half!(
+                mapper,
+                frame_allocator,
+                phys_offset,
+                phys_start,
+                pages,
+                flags
+            );
         }
     });
 }
@@ -731,7 +776,7 @@ macro_rules! get_current_stack_pointer {
     }};
 }
 
-unsafe fn map_stack_to_higher_half<T: MemoryDescriptorValidator>(
+fn map_stack_to_higher_half<T: MemoryDescriptorValidator>(
     mapper: &mut OffsetPageTable,
     frame_allocator: &mut BootInfoFrameAllocator,
     phys_offset: VirtAddr,
@@ -744,13 +789,13 @@ unsafe fn map_stack_to_higher_half<T: MemoryDescriptorValidator>(
             let start = desc.get_physical_start();
             let end = start + desc.get_page_count() * 4096;
             if rsp >= start && rsp < end {
-                map_to_higher_half_with_log(
+                safe_map_to_higher_half!(
                     mapper,
                     frame_allocator,
                     phys_offset,
                     desc.get_physical_start(),
                     desc.get_page_count(),
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE,
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
                 )?;
                 break;
             }
@@ -1081,12 +1126,7 @@ impl PageTableReinitializer {
         debug_log_no_alloc!("About to switch CR3 to new table: 0x", level_4_table_frame.start_address().as_u64() as usize);
 
         // Switch to new page table
-        unsafe {
-            Cr3::write(
-                level_4_table_frame,
-                x86_64::registers::control::Cr3Flags::empty(),
-            );
-        }
+        safe_cr3_write!(level_4_table_frame);
 
         debug_log_no_alloc!("CR3 switched successfully");
 
@@ -1414,12 +1454,7 @@ fn switch_to_new_page_table(
     debug_log_no_alloc!("About to switch CR3 to new page table");
 
     // Switch to new page table
-    unsafe {
-        Cr3::write(
-            level_4_table_frame,
-            x86_64::registers::control::Cr3Flags::empty(),
-        );
-    }
+    safe_cr3_write!(level_4_table_frame);
 
     debug_log_no_alloc!("CR3 switched, flushing TLB");
 
@@ -1511,12 +1546,10 @@ pub fn test_page_table_copy_switch(
 
     // Try the CR3 switch
     debug_log_no_alloc!("[PT TEST] Attempting CR3 switch...");
-    unsafe {
-        Cr3::write(new_l4_frame, x86_64::registers::control::Cr3Flags::empty());
-    }
+    safe_cr3_write!(new_l4_frame);
 
     // Verify switch
-    let (current_cr3, _) = Cr3::read();
+    let (current_cr3, _) = safe_cr3_read!();
     if current_cr3 == new_l4_frame {
         debug_log_no_alloc!("[PT TEST] CR3 switch succeeded!");
         tlb::flush_all();
@@ -1533,12 +1566,10 @@ pub fn test_page_table_copy_switch(
 
     // Switch back to original
     debug_log_no_alloc!("[PT TEST] Switching back to original CR3...");
-    unsafe {
-        Cr3::write(original_cr3, x86_64::registers::control::Cr3Flags::empty());
-    }
+    safe_cr3_write!(original_cr3);
 
     // Verify back-switch
-    let (final_cr3, _) = Cr3::read();
+    let (final_cr3, _) = safe_cr3_read!();
     if final_cr3 == original_cr3 {
         debug_log_no_alloc!("[PT TEST] Successfully switched back to original CR3");
     } else {
@@ -2112,9 +2143,7 @@ impl PageTableHelper for PageTableManager {
             table_addr
         );
 
-        unsafe {
-            Cr3::write(*new_frame, x86_64::registers::control::Cr3Flags::empty());
-        }
+        safe_cr3_write!(*new_frame);
 
         debug_log_no_alloc!("[PT SWITCH] CR3 switched successfully, verifying...");
 
