@@ -368,9 +368,7 @@ impl<'a> MemoryMapper<'a> {
     pub fn map_vga(&mut self) {
         const VGA_PAGES: u64 = (VGA_MEMORY_END - VGA_MEMORY_START) / 4096;
         let flags = READ_WRITE_NO_EXEC;
-        unsafe {
-            let _ = self.map_to_higher_half(VGA_MEMORY_START, VGA_PAGES, flags);
-        }
+        let _ = self.map_region_dual(VGA_MEMORY_START, VGA_PAGES, flags);
     }
 
     pub fn map_boot_code(&mut self) {
@@ -1093,10 +1091,8 @@ impl<'a, T: MemoryDescriptorValidator> PageTableInitializer<'a, T> {
         // Map current stack area
         self.map_current_stack_identity();
 
-        // Helper for memory descriptor mappings
-        unsafe {
-            self.map_available_memory_identity();
-        }
+        // UEFI already provides identity mappings for all physical memory,
+        // so we don't need to identity map available memory regions
 
         debug_log_no_alloc!("Identity mappings completed");
         kernel_size
