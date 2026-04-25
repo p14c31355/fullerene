@@ -3,7 +3,8 @@ use x86_64::{
     registers::control::Cr3,
     structures::paging::{
         FrameAllocator, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
-        Size4KiB, Translate,
+        Size4KiB, Translate, Mapper,
+        mapper::TranslateResult,
     },
 };
 use alloc::collections::BTreeMap;
@@ -252,7 +253,10 @@ impl PageTableHelper for PageTableManager {
         let virt_addr = VirtAddr::new(virtual_addr as u64);
 
         match mapper.translate(virt_addr) {
-            x86_64::structures::paging::TranslateResult::Mapped(phys_addr) => Ok(phys_addr.as_u64() as usize),
+            TranslateResult::Mapped { frame, offset, .. } => {
+                let phys_addr = frame.start_address() + offset;
+                Ok(phys_addr.as_u64() as usize)
+            }
             _ => Err(crate::common::logging::SystemError::InvalidArgument),
         }
     }

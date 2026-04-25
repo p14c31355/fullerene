@@ -628,7 +628,7 @@ impl PageTableReinitializer {
         frame_allocator: &mut BootInfoFrameAllocator,
         current_physical_memory_offset: VirtAddr,
     ) -> PhysFrame {
-        crate::common::logging::debug_log_no_alloc!("Allocating new L4 page table frame");
+        crate::debug_log_no_alloc!("Allocating new L4 page table frame");
         let level_4_table_frame = match frame_allocator.allocate_frame() {
             Some(frame) => frame,
             None => panic!("Failed to allocate L4 page table frame"),
@@ -639,7 +639,7 @@ impl PageTableReinitializer {
             let table_ptr = table_virt.as_mut_ptr() as *mut PageTable;
             *table_ptr = PageTable::new();
         }
-        crate::common::logging::debug_log_no_alloc!("New L4 page table created and zeroed");
+        crate::debug_log_no_alloc!("New L4 page table created and zeroed");
         level_4_table_frame
     }
 
@@ -649,11 +649,11 @@ impl PageTableReinitializer {
         current_physical_memory_offset: VirtAddr,
         frame_allocator: &mut BootInfoFrameAllocator,
     ) -> OffsetPageTable<'static> {
-        crate::common::logging::debug_log_no_alloc!("Setting up new page table mapper");
+        crate::debug_log_no_alloc!("Setting up new page table mapper");
         let temp_phys_addr = level_4_table_frame.start_address().as_u64();
         let temp_virt_addr = current_physical_memory_offset + temp_phys_addr;
         let temp_page = Page::<Size4KiB>::containing_address(temp_virt_addr);
-        crate::common::logging::debug_log_no_alloc!(
+        crate::debug_log_no_alloc!(
             "Using existing phys offset mapping at: 0x",
             temp_virt_addr.as_u64() as usize
         );
@@ -693,7 +693,7 @@ impl PageTableReinitializer {
         frame_allocator: &mut BootInfoFrameAllocator,
         current_physical_memory_offset: VirtAddr,
     ) {
-        crate::common::logging::debug_log_no_alloc!("Page table switch: setting recursive in new table");
+        crate::debug_log_no_alloc!("Page table switch: setting recursive in new table");
         let new_l4_phys = level_4_table_frame.start_address().as_u64();
         let new_l4_virt = new_l4_phys;
         unsafe {
@@ -704,14 +704,14 @@ impl PageTableReinitializer {
             );
         }
         x86_64::instructions::interrupts::disable();
-        crate::common::logging::debug_log_no_alloc!("About to switch CR3 to new table: 0x", level_4_table_frame.start_address().as_u64() as usize);
+        crate::debug_log_no_alloc!("About to switch CR3 to new table: 0x", level_4_table_frame.start_address().as_u64() as usize);
         crate::safe_cr3_write!(level_4_table_frame);
-        crate::common::logging::debug_log_no_alloc!("CR3 switched successfully");
+        crate::debug_log_no_alloc!("CR3 switched successfully");
         crate::flush_tlb_and_verify!();
-        crate::common::logging::debug_log_no_alloc!("TLB flushed");
+        crate::debug_log_no_alloc!("TLB flushed");
         x86_64::instructions::interrupts::enable();
-        crate::common::logging::debug_log_no_alloc!("Interrupts re-enabled");
-        crate::common::logging::debug_log_no_alloc!("Now mapping L4 to higher half: 0x", self.phys_offset.as_u64() as usize);
+        crate::debug_log_no_alloc!("Interrupts re-enabled");
+        crate::debug_log_no_alloc!("Now mapping L4 to higher half: 0x", self.phys_offset.as_u64() as usize);
         let mut mapper = unsafe { crate::page_table::utils::init(current_physical_memory_offset) };
         unsafe {
             map_to_higher_half_with_log(
@@ -725,7 +725,7 @@ impl PageTableReinitializer {
             .expect("Failed to map L4 to higher half");
         }
         crate::page_table::utils::debug_page_table_info(level_4_table_frame, self.phys_offset);
-        crate::common::logging::debug_log_no_alloc!("Page table switch complete");
+        crate::debug_log_no_alloc!("Page table switch complete");
     }
 }
 
