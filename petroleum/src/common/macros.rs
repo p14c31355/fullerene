@@ -15,9 +15,19 @@ macro_rules! bitmap_chunk_bit {
 
 #[macro_export]
 macro_rules! map_range_with_log_macro {
-    ($($tt:tt)*) => {
-        map_with_log_macro!($($tt)*, "panic")
-    };
+    ($mapper:expr, $allocator:expr, $phys:expr, $virt:expr, $pages:expr, $flags:expr) => {{
+        unsafe {
+            $crate::page_table::map_range_with_huge_pages(
+                $mapper,
+                $allocator,
+                $phys,
+                $virt,
+                $pages,
+                $flags,
+                "panic",
+            )
+        }
+    }};
 }
 
 #[macro_export]
@@ -984,16 +994,24 @@ macro_rules! map_to_higher_half_with_log_macro {
 }
 
 /// Consolidated memory mapping with log support
+// map_with_log_macro is now superseded by map_range_with_huge_pages for range mappings
+// but kept for backward compatibility with single page mappings if needed.
+// map_with_log_macro is now superseded by map_range_with_huge_pages for range mappings
+// but kept for backward compatibility with single page mappings if needed.
 #[macro_export]
 macro_rules! map_with_log_macro {
     ($mapper:expr, $allocator:expr, $phys:expr, $virt:expr, $pages:expr, $flags:expr, $behavior:tt) => {{
-        log_page_table_op!("Mapping", $phys, $virt, $pages);
-        for i in 0..$pages {
-            let phys_addr = $phys + i * 4096;
-            let virt_addr = $virt + i * 4096;
-            map_with_offset!($mapper, $allocator, phys_addr, virt_addr, $flags, $behavior);
+        unsafe {
+            $crate::page_table::map_range_with_huge_pages(
+                $mapper,
+                $allocator,
+                $phys,
+                $virt,
+                $pages,
+                $flags,
+                $behavior,
+            )
         }
-        Ok::<(), x86_64::structures::paging::mapper::MapToError<x86_64::structures::paging::Size4KiB>>(())
     }};
 }
 
@@ -1098,18 +1116,17 @@ macro_rules! log_memory_descriptor {
 #[macro_export]
 macro_rules! map_identity_range_checked {
     ($mapper:expr, $allocator:expr, $phys_start:expr, $num_pages:expr, $flags:expr) => {{
-        for i in 0..$num_pages {
-            let addr = calc_offset_addr!($phys_start, i);
-            let (page, frame) = create_page_and_frame!(addr, addr);
-            match unsafe { $mapper.map_to(page, frame, $flags, $allocator) } {
-                Ok(flush) => flush.flush(),
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
+        unsafe {
+            $crate::page_table::map_range_with_huge_pages(
+                $mapper,
+                $allocator,
+                $phys_start,
+                $phys_start,
+                $num_pages,
+                $flags,
+                "panic",
+            )
         }
-        Ok(())
     }};
 }
 

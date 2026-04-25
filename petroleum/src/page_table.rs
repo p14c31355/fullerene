@@ -500,7 +500,7 @@ const TEMP_VA_FOR_CLONE: VirtAddr = VirtAddr::new(0xFFFF_9000_0000_0000);
 
 /// Helper function to map a range of physical addresses to the same virtual addresses (identity mapping)
 unsafe fn map_identity_range(
-    mapper: &mut impl Mapper<Size4KiB>,
+    mapper: &mut OffsetPageTable,
     frame_allocator: &mut impl FrameAllocator<Size4KiB>,
     phys_start: u64,
     num_pages: u64,
@@ -941,12 +941,23 @@ fn create_new_page_table(
 // Unified helper function for stack mapping using RSP detection macro
 macro_rules! map_current_stack {
     ($mapper:expr, $frame_allocator:expr, $memory_map:expr, $flags:expr) => {{
-        let rsp = get_current_stack_pointer!();
+        let rsp_virt = get_current_stack_pointer!();
         let stack_pages = 256; // 1MB stack
-        let stack_start = rsp & !4095; // page align
+        
+        // Translate the current RSP (virtual) to physical address using UEFI identity mapping
+        // In UEFI, virtual addresses are typically identity mapped or accessible via a known offset.
+        // We use the current active page table to find the physical address.
+        let rsp_phys = unsafe {
+            let (current_cr3, _) = x86_64::registers::control::Cr3::read();
+            let phys_offset = VirtAddr::new(0); // Assuming UEFI identity map for translation
+            translate_addr(VirtAddr::new(rsp_virt), phys_offset)
+                .expect("Failed to translate RSP to physical address")
+                .as_u64()
+        };
+        let stack_start_phys = rsp_phys & !4095; // page align
 
-        // Map current stack area
-        unsafe { map_identity_range($mapper, $frame_allocator, stack_start, stack_pages, $flags) }
+        // Map current stack area using the physical address
+        unsafe { map_identity_range($mapper, $frame_allocator, stack_start_phys, stack_pages, $flags) }
             .expect("Failed to map current stack region");
 
         // Map actual stack descriptor if found
@@ -954,7 +965,7 @@ macro_rules! map_current_stack {
             if desc.is_valid() {
                 let start = desc.get_physical_start();
                 let end = start + desc.get_page_count() * 4096;
-                if rsp >= start && rsp < end && desc.get_page_count() <= MAX_DESCRIPTOR_PAGES {
+                if rsp_phys >= start && rsp_phys < end && desc.get_page_count() <= MAX_DESCRIPTOR_PAGES {
                     unsafe {
                         map_identity_range(
                             $mapper,
@@ -1104,13 +1115,10 @@ impl PageTableReinitializer {
     ) {
         debug_log_no_alloc!("Page table switch: setting recursive in new table");
 
-        // Access the new L4 table at its physical address (since UEFI identity maps)
+        // Access the new L4 table at its physical address. 
+        // Since we identity map it in map_essential_regions, we use the physical address directly.
         let new_l4_phys = level_4_table_frame.start_address().as_u64();
-        let new_l4_virt = if current_physical_memory_offset.as_u64() == 0 {
-            new_l4_phys // identity mapped in UEFI
-        } else {
-            current_physical_memory_offset.as_u64() + new_l4_phys
-        };
+        let new_l4_virt = new_l4_phys;
 
         unsafe {
             let new_l4_table = &mut *(new_l4_virt as *mut PageTable);
@@ -1462,6 +1470,81 @@ fn switch_to_new_page_table(
     flush_tlb_and_verify!();
 
     debug_log_no_alloc!("TLB flushed, page table switch complete");
+}
+
+/// Maps a range of memory, using 2MiB huge pages where possible.
+pub unsafe fn map_range_with_huge_pages<A: FrameAllocator<Size4KiB>>(
+    mapper: &mut OffsetPageTable,
+    allocator: &mut A,
+    phys: u64,
+    virt: u64,
+    pages: u64,
+    flags: PageTableFlags,
+    behavior: &str,
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    let mut current_page = 0;
+    while current_page < pages {
+        let p_addr = phys + current_page * 4096;
+        let v_addr = virt + current_page * 4096;
+
+        if p_addr % 0x200000 == 0 && v_addr % 0x200000 == 0 && (current_page + 512 <= pages) {
+            // Attempt to map as a 2MiB huge page
+            if let Err(e) = map_huge_page(mapper, allocator, p_addr, v_addr, flags) {
+                if behavior == "panic" {
+                    panic!("Huge page mapping error: {:?}", e);
+                }
+                return Err(e);
+            }
+            current_page += 512;
+        } else {
+            // Map as a 4KiB page
+            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(v_addr));
+            let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_addr));
+            match mapper.map_to(page, frame, flags, allocator) {
+                Ok(flush) => flush.flush(),
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {},
+                Err(e) => {
+                    if behavior == "panic" {
+                        panic!("Mapping error: {:?}", e);
+                    }
+                    return Err(e);
+                }
+            }
+            current_page += 1;
+        }
+    }
+    Ok(())
+}
+
+unsafe fn map_huge_page<A: FrameAllocator<Size4KiB>>(
+    mapper: &mut OffsetPageTable,
+    allocator: &mut A,
+    phys: u64,
+    virt: u64,
+    flags: PageTableFlags,
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    // Use the 4KiB mapper to ensure L3 and L2 tables are created
+    let page = Page::<Size4KiB>::containing_address(VirtAddr::new(virt));
+    let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(phys));
+    mapper.map_to(page, frame, flags, allocator)?;
+
+    let l4 = mapper.level_4_table();
+    let p4_idx = VirtAddr::new(virt).p4_index();
+    let p3_idx = VirtAddr::new(virt).p3_index();
+    let p2_idx = VirtAddr::new(virt).p2_index();
+
+    let l3_frame = l4[p4_idx].frame().expect("Failed to retrieve L3 frame for huge page");
+    let l3 = &mut *((mapper.phys_offset() + l3_frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable);
+    let l2_frame = l3[p3_idx].frame().expect("Failed to retrieve L2 frame for huge page");
+    let l2 = &mut *((mapper.phys_offset() + l2_frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable);
+
+    // Set L2 entry as Huge Page (2MiB)
+    l2[p2_idx].set_addr(PhysAddr::new(phys), flags | PageTableFlags::HUGE_PAGE);
+    
+    // Flush TLB for the entire range
+    x86_64::instructions::tlb::flush_all();
+    
+    Ok(())
 }
 
 pub fn reinit_page_table_with_allocator(
