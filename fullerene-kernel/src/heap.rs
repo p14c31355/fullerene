@@ -32,6 +32,7 @@ pub fn reinit_page_table(
         &mut *frame_allocator,
         memory_map,
         x86_64::VirtAddr::new(0),
+        None,
     )
 }
 

@@ -633,6 +633,7 @@ impl PageTableReinitializer {
         frame_allocator: &mut BootInfoFrameAllocator,
         memory_map: &[T],
         current_physical_memory_offset: VirtAddr,
+        load_idt: Option<fn()>,
     ) -> VirtAddr {
         crate::debug_log_no_alloc!("Page table reinitialization starting");
         let level_4_table_frame =
@@ -682,6 +683,7 @@ impl PageTableReinitializer {
             level_4_table_frame,
             frame_allocator,
             current_physical_memory_offset,
+            load_idt,
         );
         
         crate::page_table::utils::adjust_return_address_and_stack(self.phys_offset);
@@ -757,16 +759,21 @@ impl PageTableReinitializer {
         level_4_table_frame: PhysFrame,
         frame_allocator: &mut BootInfoFrameAllocator,
         current_physical_memory_offset: VirtAddr,
+        load_idt: Option<fn()>,
     ) {
         // Recursive mapping is already set up by setup_recursive_mapping, no need to do it again.
         x86_64::instructions::interrupts::disable();
         crate::debug_log_no_alloc!("About to switch CR3 to new table: 0x", level_4_table_frame.start_address().as_u64() as usize);
         crate::safe_cr3_write!(level_4_table_frame);
         crate::debug_log_no_alloc!("CR3 switched successfully");
+        
+        if let Some(load_fn) = load_idt {
+            load_fn();
+            crate::debug_log_no_alloc!("IDT reloaded after CR3 switch");
+        }
+
         crate::flush_tlb_and_verify!();
         crate::debug_log_no_alloc!("TLB flushed");
-        x86_64::instructions::interrupts::enable();
-        crate::debug_log_no_alloc!("Interrupts re-enabled");
         crate::debug_log_no_alloc!("Now mapping L4 to higher half: 0x", self.phys_offset.as_u64() as usize);
         
         // Use self.phys_offset instead of current_physical_memory_offset because we have already switched to the new page table,
@@ -795,6 +802,7 @@ pub fn reinit_page_table_with_allocator(
     frame_allocator: &mut BootInfoFrameAllocator,
     memory_map: &[impl crate::page_table::efi_memory::MemoryDescriptorValidator],
     current_physical_memory_offset: VirtAddr,
+    load_idt: Option<fn()>,
 ) -> VirtAddr {
     let mut reinitializer = PageTableReinitializer::new();
     reinitializer.reinitialize(
@@ -804,5 +812,6 @@ pub fn reinit_page_table_with_allocator(
         frame_allocator,
         memory_map,
         current_physical_memory_offset,
+        load_idt,
     )
 }

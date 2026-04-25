@@ -127,6 +127,7 @@ impl UefiInitContext {
             &mut frame_allocator,
             *memory_map_ref,
             x86_64::VirtAddr::new(0),
+            Some(crate::interrupts::init),
         );
 
         // Basic setup without full page table reinit
