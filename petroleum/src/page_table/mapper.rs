@@ -366,7 +366,7 @@ pub struct PageTableInitializer<'a, T: crate::page_table::efi_memory::MemoryDesc
     pub memory_map: &'a [T],
 }
 
-impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableInitializer<'a> {
+impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableInitializer<'a, T> {
     pub fn new(
         mapper: &'a mut OffsetPageTable<'static>,
         frame_allocator: &'a mut BootInfoFrameAllocator,
