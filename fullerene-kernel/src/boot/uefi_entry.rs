@@ -98,7 +98,7 @@ impl UefiInitContext {
         
         let tss_stack_pages = (crate::gdt::GDT_TSS_STACK_COUNT * crate::gdt::GDT_TSS_STACK_SIZE) / 4096;
         let tss_phys_addr = petroleum::allocate_heap_from_map(
-            petroleum::FALLBACK_HEAP_START_ADDR, 
+            PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR), 
             tss_stack_pages * 4096
         );
 
@@ -107,13 +107,13 @@ impl UefiInitContext {
             | x86_64::structures::paging::PageTableFlags::WRITABLE;
         
         unsafe {
-            let tss_virt_start = crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE + tss_phys_addr.as_u64();
-            crate::map_range_with_log_macro!(
+            let tss_virt_start = (crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64) + tss_phys_addr.as_u64();
+            petroleum::map_range_with_log_macro!(
                 &mut temp_mapper,
                 &mut *frame_allocator,
                 tss_phys_addr.as_u64(),
                 tss_virt_start,
-                tss_stack_pages,
+                tss_stack_pages as u64,
                 tss_flags
             );
         }

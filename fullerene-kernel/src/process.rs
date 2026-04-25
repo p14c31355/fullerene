@@ -423,8 +423,10 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
             // Switch page table to the new process's page table before switching registers.
             // This ensures that the subsequent register restoration (including RSP) happens
             // within the correct address space.
-            let new_cr3 = (*new_ptr).page_table_phys_addr.as_u64();
-            core::arch::asm!("mov cr3, {}", in(reg) new_cr3);
+            unsafe {
+                let new_cr3 = (*new_ptr).page_table_phys_addr.as_u64();
+                core::arch::asm!("mov cr3, {}", in(reg) new_cr3);
+            }
 
             // Drop the lock before the context switch to prevent deadlocks.
             drop(process_list);
