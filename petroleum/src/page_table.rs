@@ -17,6 +17,7 @@ use x86_64::{
         FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
         Size4KiB, Translate,
     },
+    structures::paging::page_table::PageTableEntry,
 };
 
 // Import constants
@@ -1488,30 +1489,37 @@ pub unsafe fn map_range_with_huge_pages<A: FrameAllocator<Size4KiB>>(
         let v_addr = virt + current_page * 4096;
 
         if p_addr % 0x200000 == 0 && v_addr % 0x200000 == 0 && (current_page + 512 <= pages) {
-            // Attempt to map as a 2MiB huge page
-            if let Err(e) = map_huge_page(mapper, allocator, p_addr, v_addr, flags) {
-                if behavior == "panic" {
-                    panic!("Huge page mapping error: {:?}", e);
+            match map_huge_page(mapper, allocator, p_addr, v_addr, flags) {
+                Ok(_) => {
+                    current_page += 512;
+                    continue;
                 }
-                return Err(e);
-            }
-            current_page += 512;
-        } else {
-            // Map as a 4KiB page
-            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(v_addr));
-            let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_addr));
-            match mapper.map_to(page, frame, flags, allocator) {
-                Ok(flush) => flush.flush(),
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {},
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                    // Collision: fall back to 4KiB mapping for this range
+                }
                 Err(e) => {
                     if behavior == "panic" {
-                        panic!("Mapping error: {:?}", e);
+                        panic!("Huge page mapping error: {:?}", e);
                     }
                     return Err(e);
                 }
             }
-            current_page += 1;
         }
+
+        // Map as a 4KiB page (either because huge page wasn't possible or it collided)
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(v_addr));
+        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_addr));
+        match mapper.map_to(page, frame, flags, allocator) {
+            Ok(flush) => flush.flush(),
+            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {},
+            Err(e) => {
+                if behavior == "panic" {
+                    panic!("Mapping error: {:?}", e);
+                }
+                return Err(e);
+            }
+        }
+        current_page += 1;
     }
     Ok(())
 }
@@ -1523,20 +1531,44 @@ unsafe fn map_huge_page<A: FrameAllocator<Size4KiB>>(
     virt: u64,
     flags: PageTableFlags,
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-    // Use the 4KiB mapper to ensure L3 and L2 tables are created
-    let page = Page::<Size4KiB>::containing_address(VirtAddr::new(virt));
-    let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(phys));
-    mapper.map_to(page, frame, flags, allocator)?;
-
-    let l4 = mapper.level_4_table();
+    let l4_ptr = mapper.level_4_table() as *const PageTable as *mut PageTable;
     let p4_idx = VirtAddr::new(virt).p4_index();
     let p3_idx = VirtAddr::new(virt).p3_index();
     let p2_idx = VirtAddr::new(virt).p2_index();
 
-    let l3_frame = l4[p4_idx].frame().expect("Failed to retrieve L3 frame for huge page");
+    // Ensure L3 exists
+    let l4_entry_ptr = unsafe { &mut (*l4_ptr)[p4_idx] as *mut PageTableEntry };
+    if unsafe { !core::ptr::read(l4_entry_ptr).flags().contains(PageTableFlags::PRESENT) } {
+        let l3_frame = allocator.allocate_frame().ok_or(x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed)?;
+        let l3_virt = mapper.phys_offset() + l3_frame.start_address().as_u64();
+        core::ptr::write_bytes(l3_virt.as_mut_ptr() as *mut u8, 0, 4096);
+        unsafe {
+            let mut entry = core::ptr::read(l4_entry_ptr);
+            entry.set_addr(l3_frame.start_address(), PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+            core::ptr::write(l4_entry_ptr, entry);
+        }
+    }
+
+    let l3_frame = unsafe { core::ptr::read(l4_entry_ptr).frame().expect("L3 frame should be present") };
     let l3 = &mut *((mapper.phys_offset() + l3_frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable);
-    let l2_frame = l3[p3_idx].frame().expect("Failed to retrieve L2 frame for huge page");
+
+    // Ensure L2 exists
+    if !l3[p3_idx].flags().contains(PageTableFlags::PRESENT) {
+        let l2_frame = allocator.allocate_frame().ok_or(x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed)?;
+        let l2_virt = mapper.phys_offset() + l2_frame.start_address().as_u64();
+        core::ptr::write_bytes(l2_virt.as_mut_ptr() as *mut u8, 0, 4096);
+        l3[p3_idx].set_addr(l2_frame.start_address(), PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+    }
+
+    let l2_frame = l3[p3_idx].frame().expect("L2 frame should be present");
     let l2 = &mut *((mapper.phys_offset() + l2_frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable);
+
+    // Check if the 2MiB range is already mapped (either as a huge page or via L1 table)
+    if l2[p2_idx].flags().contains(PageTableFlags::PRESENT) {
+        return Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(
+            PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(phys)),
+        ));
+    }
 
     // Set L2 entry as Huge Page (2MiB)
     l2[p2_idx].set_addr(PhysAddr::new(phys), flags | PageTableFlags::HUGE_PAGE);
