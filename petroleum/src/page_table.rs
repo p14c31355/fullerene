@@ -1711,7 +1711,7 @@ pub fn test_page_table_copy_switch(
 
     // Verify switch
     let (current_cr3, _) = safe_cr3_read!();
-    if current_cr3 == *new_l4_frame {
+    if current_cr3 == new_l4_frame {
         debug_log_no_alloc!("[PT TEST] CR3 switch succeeded!");
         tlb::flush_all();
     } else {
@@ -2300,7 +2300,7 @@ impl PageTableHelper for PageTableManager {
             table_addr
         );
 
-        safe_cr3_write!(new_frame);
+        safe_cr3_write!(*new_frame);
 
         debug_log_no_alloc!("[PT SWITCH] CR3 switched, verifying...");
 
