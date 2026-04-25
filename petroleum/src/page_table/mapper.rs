@@ -693,16 +693,7 @@ impl PageTableReinitializer {
         frame_allocator: &mut BootInfoFrameAllocator,
         current_physical_memory_offset: VirtAddr,
     ) {
-        crate::debug_log_no_alloc!("Page table switch: setting recursive in new table");
-        let new_l4_phys = level_4_table_frame.start_address().as_u64();
-        let new_l4_virt = new_l4_phys;
-        unsafe {
-            let new_l4_table = &mut *(new_l4_virt as *mut PageTable);
-            new_l4_table[511].set_addr(
-                level_4_table_frame.start_address(),
-                crate::page_flags_const!(READ_WRITE),
-            );
-        }
+        // Recursive mapping is already set up by setup_recursive_mapping, no need to do it again.
         x86_64::instructions::interrupts::disable();
         crate::debug_log_no_alloc!("About to switch CR3 to new table: 0x", level_4_table_frame.start_address().as_u64() as usize);
         crate::safe_cr3_write!(level_4_table_frame);
@@ -712,13 +703,16 @@ impl PageTableReinitializer {
         x86_64::instructions::interrupts::enable();
         crate::debug_log_no_alloc!("Interrupts re-enabled");
         crate::debug_log_no_alloc!("Now mapping L4 to higher half: 0x", self.phys_offset.as_u64() as usize);
-        let mut mapper = unsafe { crate::page_table::utils::init(current_physical_memory_offset) };
+        
+        // Use self.phys_offset instead of current_physical_memory_offset because we have already switched to the new page table,
+        // which uses self.phys_offset for its higher-half mappings.
+        let mut mapper = unsafe { crate::page_table::utils::init(self.phys_offset) };
         unsafe {
             map_to_higher_half_with_log(
                 &mut mapper,
                 frame_allocator,
                 self.phys_offset,
-                new_l4_phys,
+                level_4_table_frame.start_address().as_u64(),
                 1,
                 crate::page_flags_const!(READ_WRITE_NO_EXEC),
             )
