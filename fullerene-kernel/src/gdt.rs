@@ -37,6 +37,64 @@ pub fn kernel_code_selector() -> SegmentSelector {
     *CODE_SELECTOR.get().expect("GDT not initialized")
 }
 
+pub fn load() {
+    let gdt = GDT.get().expect("GDT not initialized");
+    gdt.load();
+    unsafe {
+        CS::set_reg(*CODE_SELECTOR.get().unwrap());
+        load_tss(*TSS_SELECTOR.get().unwrap());
+    }
+}
+
+pub struct TssStacks {
+    pub double_fault: VirtAddr,
+    pub timer: VirtAddr,
+}
+
+pub fn init_with_stacks(stacks: TssStacks) {
+    if GDT_INITIALIZED.is_completed() {
+        mem_debug!("GDT: Already initialized, skipping\n");
+        return;
+    }
+
+    mem_debug!("GDT: Initializing with provided stacks\n");
+
+    mem_debug!("About to create TSS...\n");
+    let tss = TSS.call_once(|| {
+        let mut tss = TaskStateSegment::new();
+        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stacks.double_fault;
+        tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = stacks.timer;
+        tss
+    });
+    mem_debug!("TSS created successfully\n");
+
+    let _gdt = GDT.call_once(|| {
+        let mut gdt = GlobalDescriptorTable::new();
+        let code_selector = gdt.append(Descriptor::kernel_code_segment());
+        // Add kernel data segment (ring 0)
+        let data_selector = gdt.append(Descriptor::kernel_data_segment());
+        // Add user data segment (ring 3)
+        let user_data_selector = gdt.append(Descriptor::user_data_segment());
+        // Add user code segment (ring 3)
+        let user_code_selector = gdt.append(Descriptor::user_code_segment());
+        let tss_selector = gdt.append(Descriptor::tss_segment(tss));
+
+        CODE_SELECTOR.call_once(|| code_selector);
+        KERNEL_DATA_SELECTOR.call_once(|| data_selector);
+        TSS_SELECTOR.call_once(|| tss_selector);
+
+        USER_DATA_SELECTOR.call_once(|| user_data_selector);
+        USER_CODE_SELECTOR.call_once(|| user_code_selector);
+        gdt
+    });
+
+    mem_debug!("GDT: GDT built\n");
+
+    // Mark as initialized
+    GDT_INITIALIZED.call_once(|| {});
+    mem_debug!("GDT: About to return\n");
+}
+
 pub fn init(heap_start: VirtAddr) -> VirtAddr {
     // If already initialized, just return the heap start (don't modify)
     if GDT_INITIALIZED.is_completed() {

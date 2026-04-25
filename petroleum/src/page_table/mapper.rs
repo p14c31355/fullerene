@@ -585,7 +585,9 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
                     || (desc.get_type()
                         == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32
                         || desc.get_type()
-                            == crate::common::EfiMemoryType::EfiRuntimeServicesData as u32);
+                            == crate::common::EfiMemoryType::EfiRuntimeServicesData as u32)
+                    || desc.get_type() == crate::common::EfiMemoryType::EfiBootServicesCode as u32
+                    || desc.get_type() == crate::common::EfiMemoryType::EfiBootServicesData as u32;
                 if should_identity_map {
                     let phys_start = desc.get_physical_start();
                     let pages = desc.get_page_count();
