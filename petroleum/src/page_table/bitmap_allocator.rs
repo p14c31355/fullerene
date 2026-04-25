@@ -109,11 +109,15 @@ impl BitmapFrameAllocator {
         }
 
         self.frame_count = total_frames;
-        self.next_free_frame = 0;
+        // Remove self.next_free_frame = 0 to preserve the 1MB offset set in new()
         self.initialized = true;
 
         // Mark available frames as free based on memory map
         super::efi_memory::mark_available_frames(self, memory_map);
+
+        // CRITICAL: Explicitly mark the first 1MB (256 frames) as used to prevent 
+        // any allocation in the BIOS/UEFI reserved low-memory region.
+        self.set_frame_range(0, 256, true);
 
         debug_log_no_alloc!(
             "BitmapFrameAllocator initialized successfully with ",
