@@ -86,37 +86,22 @@ impl UefiInitContext {
         &mut self,
         kernel_phys_start: PhysAddr,
     ) -> (VirtAddr, PhysAddr, VirtAddr) {
-        // Pre-allocate TSS stacks to allow GDT initialization before CR3 switch
+        self.init_memory_map();
+        let memory_map_ref = MEMORY_MAP.get().expect("Memory map not initialized");
+        heap::init_frame_allocator(*memory_map_ref);
+        debug_log_no_alloc!("Heap frame allocator initialized");
+
         let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
             .get()
             .expect("Frame allocator not initialized")
             .lock();
 
-        // Use a temporary mapper to allocate and map TSS stacks
-        // Since we are still in the UEFI environment, we can use the current mappings
-        let mut temp_mapper = unsafe { petroleum::page_table::init(VirtAddr::zero()) };
-        
+        // Pre-allocate TSS stacks physically and set up GDT (without mapping yet)
         let tss_stack_pages = (crate::gdt::GDT_TSS_STACK_COUNT * crate::gdt::GDT_TSS_STACK_SIZE) / 4096;
         let tss_phys_addr = petroleum::allocate_heap_from_map(
             PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR), 
             tss_stack_pages * 4096
         );
-
-        // Map TSS stacks to higher half for later use
-        let tss_flags = x86_64::structures::paging::PageTableFlags::PRESENT 
-            | x86_64::structures::paging::PageTableFlags::WRITABLE;
-        
-        unsafe {
-            let tss_virt_start = (crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64) + tss_phys_addr.as_u64();
-            petroleum::map_range_with_log_macro!(
-                &mut temp_mapper,
-                &mut *frame_allocator,
-                tss_phys_addr.as_u64(),
-                tss_virt_start,
-                tss_stack_pages as u64,
-                tss_flags
-            );
-        }
 
         let tss_stacks = crate::gdt::TssStacks {
             double_fault: VirtAddr::new(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64 + tss_phys_addr.as_u64() + crate::gdt::GDT_TSS_STACK_SIZE as u64),
@@ -124,12 +109,7 @@ impl UefiInitContext {
         };
         crate::gdt::init_with_stacks(tss_stacks);
         
-        // Release lock for the rest of the function
-        drop(frame_allocator);
-
         debug_log_no_alloc!("Entering memory_management_initialization");
-        self.init_memory_map();
-        let memory_map_ref = MEMORY_MAP.get().expect("Memory map not initialized");
         // Get framebuffer config from petroleum global
         let framebuffer_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
             .get()
@@ -156,10 +136,6 @@ impl UefiInitContext {
             (None, None)
         };
 
-        // Initialize a basic frame allocator first
-        // Initialize heap frame allocator
-        heap::init_frame_allocator(*memory_map_ref);
-        debug_log_no_alloc!("Heap frame allocator initialized");
         let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
             .get()
             .expect("Frame allocator not initialized")
@@ -175,6 +151,22 @@ impl UefiInitContext {
             x86_64::VirtAddr::new(0),
             Some(Self::load_gdt_and_idt),
         );
+
+        // Now that CR3 is switched and we are in higher half, map the TSS stacks
+        let tss_flags = x86_64::structures::paging::PageTableFlags::PRESENT 
+            | x86_64::structures::paging::PageTableFlags::WRITABLE;
+        let mut tss_mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset) };
+        unsafe {
+            petroleum::map_range_with_log_macro!(
+                &mut tss_mapper,
+                &mut *frame_allocator,
+                tss_phys_addr.as_u64(),
+                (crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64) + tss_phys_addr.as_u64(),
+                tss_stack_pages as u64,
+                tss_flags
+            );
+        }
+        debug_log_no_alloc!("TSS stacks mapped to higher half");
 
         // Basic setup without full page table reinit
         debug_log_no_alloc!("Basic memory setup without page table reinit complete");
