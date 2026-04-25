@@ -298,7 +298,8 @@ pub unsafe fn map_range_with_huge_pages<A: FrameAllocator<Size4KiB>>(
         let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_addr));
         match mapper.map_to(page, frame, flags, allocator) {
             Ok(flush) => flush.flush(),
-            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {},
+            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) | 
+            Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {},
             Err(e) => {
                 if behavior == "panic" {
                     panic!("Mapping error: {:?}", e);
@@ -327,7 +328,8 @@ pub unsafe fn map_range_4kiB<A: FrameAllocator<Size4KiB>>(
         let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_addr));
         match mapper.map_to(page, frame, flags, allocator) {
             Ok(flush) => flush.flush(),
-            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {},
+            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) | 
+            Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {},
             Err(e) => {
                 if behavior == "panic" {
                     panic!("Mapping error: {:?}", e);
