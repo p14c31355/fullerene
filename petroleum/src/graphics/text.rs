@@ -136,6 +136,13 @@ pub struct VgaBuffer {
     cursor_col: usize,
 }
 
+impl core::fmt::Write for VgaBuffer {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.write_string(s);
+        Ok(())
+    }
+}
+
 impl VgaBuffer {
     pub fn new() -> Self {
         Self {
@@ -144,6 +151,15 @@ impl VgaBuffer {
             cursor_row: 0,
             cursor_col: 0,
         }
+    }
+
+    pub fn set_color_code(&mut self, color: ColorCode) {
+        self.color_code = color;
+    }
+
+    pub fn update_cursor(&mut self) {
+        let pos = self.cursor_row * VGA_WIDTH + self.cursor_col;
+        crate::update_vga_cursor!(pos);
     }
 
     pub fn get_buffer(&mut self) -> Option<&mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]> {
