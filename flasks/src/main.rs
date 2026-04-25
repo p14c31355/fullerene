@@ -126,6 +126,7 @@ fn create_iso_and_setup(
     std::fs::File::create(&dummy_boot_catalog_path)?;
 
     let image = IsoImage {
+        volume_id: None,
         files: vec![
             IsoImageFile {
                 source: kernel_path.clone(),
