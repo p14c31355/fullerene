@@ -362,36 +362,39 @@ pub struct PageTableInitializer<'a, T: crate::page_table::efi_memory::MemoryDesc
     pub mapper: &'a mut OffsetPageTable<'static>,
     pub frame_allocator: &'a mut BootInfoFrameAllocator,
     pub phys_offset: VirtAddr,
+    pub current_phys_offset: VirtAddr,
     pub memory_map: &'a [T],
 }
 
-impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableInitializer<'a, T> {
+impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableInitializer<'a> {
     pub fn new(
         mapper: &'a mut OffsetPageTable<'static>,
         frame_allocator: &'a mut BootInfoFrameAllocator,
         phys_offset: VirtAddr,
+        current_phys_offset: VirtAddr,
         memory_map: &'a [T],
     ) -> Self {
         Self {
             mapper,
             frame_allocator,
             phys_offset,
+            current_phys_offset,
             memory_map,
         }
     }
 
-    pub fn setup_identity_mappings(
+    pub fn setup_transition_mappings(
         &mut self,
         kernel_phys_start: PhysAddr,
         level_4_table_frame: PhysFrame,
     ) -> u64 {
-        crate::debug_log_no_alloc!("Setting up identity mappings for CR3 switch");
+        crate::debug_log_no_alloc!("Setting up transition mappings for CR3 switch");
         let kernel_size = self.map_essential_regions(kernel_phys_start, level_4_table_frame);
         self.map_current_stack_identity();
         unsafe {
             self.map_available_memory_identity();
         }
-        crate::debug_log_no_alloc!("Identity mappings completed");
+        crate::debug_log_no_alloc!("Transition mappings completed");
         kernel_size
     }
 
@@ -411,9 +414,21 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
                 crate::page_flags_const!(READ_WRITE_NO_EXEC),
             );
             self.map_identity_config_4kiB(4096, crate::page_table::constants::UEFI_COMPAT_PAGES, crate::page_flags_const!(READ_WRITE_NO_EXEC));
+            
             let kernel_size = crate::page_table::pe::calculate_kernel_memory_size(kernel_phys_start);
             let kernel_pages = kernel_size.div_ceil(4096);
+            
+            // Identity mapping for absolute low-address compatibility
             self.map_identity_config_4kiB(kernel_phys_start.as_u64(), kernel_pages, crate::page_flags_const!(READ_WRITE));
+            
+            // Current offset mapping to keep the CPU executing after CR3 switch
+            self.map_at_offset_config_4kiB(
+                self.current_phys_offset,
+                kernel_phys_start.as_u64(),
+                kernel_pages,
+                crate::page_flags_const!(READ_WRITE),
+            );
+            
             self.map_identity_config_4kiB(crate::page_table::constants::BOOT_CODE_START, crate::page_table::constants::BOOT_CODE_PAGES, crate::page_flags_const!(READ_WRITE));
             kernel_size
         }
@@ -445,6 +460,25 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
             self.frame_allocator,
             phys_start,
             phys_start,
+            num_pages,
+            flags,
+            "panic",
+        );
+    }
+
+    unsafe fn map_at_offset_config_4kiB(
+        &mut self,
+        offset: VirtAddr,
+        phys_start: u64,
+        num_pages: u64,
+        flags: PageTableFlags,
+    ) {
+        let virt_start = offset.as_u64() + phys_start;
+        let _ = crate::page_table::utils::map_range_4kiB(
+            self.mapper,
+            self.frame_allocator,
+            phys_start,
+            virt_start,
             num_pages,
             flags,
             "panic",
@@ -609,16 +643,47 @@ impl PageTableReinitializer {
             frame_allocator,
         );
         let mut initializer =
-            PageTableInitializer::new(&mut mapper, frame_allocator, self.phys_offset, memory_map);
+            PageTableInitializer::new(
+                &mut mapper,
+                frame_allocator,
+                self.phys_offset,
+                current_physical_memory_offset,
+                memory_map,
+            );
+        
+        // 1. Setup transition mappings (including current_physical_memory_offset)
         let _kernel_size =
-            unsafe { initializer.setup_identity_mappings(kernel_phys_start, level_4_table_frame) };
+            unsafe { initializer.setup_transition_mappings(kernel_phys_start, level_4_table_frame) };
+        
+        // 2. Setup higher-half mappings
         initializer.setup_higher_half_mappings(kernel_phys_start, fb_addr, fb_size);
+        
+        // 3. Recursive mapping
         self.setup_recursive_mapping(&mut mapper, level_4_table_frame);
+        
+        // 4. CRITICAL: Pre-map the new L4 table to the new phys_offset using the OLD mapper.
+        // This solves the "chicken and egg" problem where the new mapper needs L4 mapped to work.
+        unsafe {
+            let l4_phys = level_4_table_frame.start_address().as_u64();
+            let l4_virt = self.phys_offset.as_u64() + l4_phys;
+            crate::map_range_with_log_macro!(
+                &mut mapper,
+                frame_allocator,
+                l4_phys,
+                l4_virt,
+                1,
+                crate::page_flags_const!(READ_WRITE_NO_EXEC)
+            );
+            crate::debug_log_no_alloc!("Pre-mapped L4 table to new phys_offset: 0x", l4_virt as usize);
+        }
+
+        // 5. Switch CR3
         self.perform_page_table_switch(
             level_4_table_frame,
             frame_allocator,
             current_physical_memory_offset,
         );
+        
         crate::page_table::utils::adjust_return_address_and_stack(self.phys_offset);
         self.phys_offset
     }
