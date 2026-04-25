@@ -416,15 +416,21 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
         .find(|p| p.id == new_pid)
         .map(|p| p.as_ref() as *const Process);
 
-    if let Some(new_ptr) = new_proc_ptr {
-        let old_context = old_proc_ptr.map(|p| unsafe { &mut (*p).context });
-        let new_context = unsafe { &(*new_ptr).context };
+        if let Some(new_ptr) = new_proc_ptr {
+            let old_context = old_proc_ptr.map(|p| unsafe { &mut (*p).context });
+            let new_context = unsafe { &(*new_ptr).context };
 
-        // Drop the lock before the context switch to prevent deadlocks.
-        drop(process_list);
+            // Switch page table to the new process's page table before switching registers.
+            // This ensures that the subsequent register restoration (including RSP) happens
+            // within the correct address space.
+            let new_cr3 = (*new_ptr).page_table_phys_addr.as_u64();
+            core::arch::asm!("mov cr3, {}", in(reg) new_cr3);
 
-        switch_context(old_context, new_context);
-    }
+            // Drop the lock before the context switch to prevent deadlocks.
+            drop(process_list);
+
+            switch_context(old_context, new_context);
+        }
 }
 
 /// Block current process
