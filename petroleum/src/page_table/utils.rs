@@ -183,20 +183,51 @@ macro_rules! map_current_stack {
                 .as_u64()
         };
         let stack_start_phys = rsp_phys & !4095;
-        unsafe { $crate::page_table::utils::map_identity_range($mapper, $frame_allocator, stack_start_phys, stack_pages, $flags) }
-            .expect("Failed to map current stack region");
+        let stack_start_virt = rsp_virt & !4095;
+
+        // Map current stack identity (for absolute safety during transition)
+        unsafe {
+            $crate::page_table::utils::map_range_4kiB(
+                $mapper,
+                $frame_allocator,
+                stack_start_phys,
+                stack_start_phys,
+                stack_pages,
+                $flags,
+                "panic",
+            )
+        }
+        .expect("Failed to map current stack identity");
+
+        // Map current stack to its current virtual address
+        unsafe {
+            $crate::page_table::utils::map_range_4kiB(
+                $mapper,
+                $frame_allocator,
+                stack_start_phys,
+                stack_start_virt,
+                stack_pages,
+                $flags,
+                "panic",
+            )
+        }
+        .expect("Failed to map current stack virtual");
+
         for desc in $memory_map.iter() {
             if desc.is_valid() {
                 let start = desc.get_physical_start();
                 let end = start + desc.get_page_count() * 4096;
                 if rsp_phys >= start && rsp_phys < end && desc.get_page_count() <= $crate::page_table::constants::MAX_DESCRIPTOR_PAGES {
+                    let virt_offset = rsp_virt - rsp_phys;
                     unsafe {
-                        $crate::page_table::utils::map_identity_range(
+                        $crate::page_table::utils::map_range_4kiB(
                             $mapper,
                             $frame_allocator,
                             desc.get_physical_start(),
+                            desc.get_physical_start() + virt_offset,
                             desc.get_page_count(),
                             $flags,
+                            "panic",
                         )
                     }
                     .expect("Failed to map stack region");
@@ -298,7 +329,12 @@ pub unsafe fn map_range_with_huge_pages<A: FrameAllocator<Size4KiB>>(
         let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_addr));
         match mapper.map_to(page, frame, flags, allocator) {
             Ok(flush) => flush.flush(),
-            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) | 
+            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_frame)) => {
+                // Update flags for already mapped page
+                unsafe {
+                    x86_64::instructions::tlb::flush(page.start_address());
+                }
+            }
             Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {},
             Err(e) => {
                 if behavior == "panic" {
@@ -328,7 +364,12 @@ pub unsafe fn map_range_4kiB<A: FrameAllocator<Size4KiB>>(
         let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_addr));
         match mapper.map_to(page, frame, flags, allocator) {
             Ok(flush) => flush.flush(),
-            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) | 
+            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_frame)) => {
+                // Update flags for already mapped page
+                unsafe {
+                    x86_64::instructions::tlb::flush(page.start_address());
+                }
+            }
             Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {},
             Err(e) => {
                 if behavior == "panic" {
@@ -401,8 +442,63 @@ pub fn debug_page_table_info(level_4_table_frame: PhysFrame, phys_offset: VirtAd
     debug_log_no_alloc!("Phys offset: ", phys_offset.as_u64() as usize);
 }
 
-pub fn adjust_return_address_and_stack(phys_offset: VirtAddr) {
+/// Forcefully update flags for a given virtual address in the current page table.
+pub unsafe fn force_update_page_flags(mapper: &mut OffsetPageTable, addr: VirtAddr, flags: PageTableFlags) {
+    let p4_idx = addr.p4_index();
+    let p3_idx = addr.p3_index();
+    let p2_idx = addr.p2_index();
+    let p1_idx = addr.p1_index();
+
+    // 1. Update L4 entry
+    let l4_ptr = mapper.level_4_table() as *const PageTable as *mut PageTable;
+    let l4_entry_ptr = (l4_ptr as *mut x86_64::structures::paging::page_table::PageTableEntry).add(p4_idx.into());
+    let l4_entry = unsafe { &mut *l4_entry_ptr };
+    let mut l4_flags = l4_entry.flags();
+    l4_flags.remove(PageTableFlags::NO_EXECUTE);
+    l4_entry.set_flags(l4_flags);
+
+    let l3_frame = l4_entry.frame().expect("L3 not present");
+    let l3_ptr = (mapper.phys_offset() + l3_frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable;
+    
+    // 2. Update L3 entry
+    let l3_entry_ptr = (l3_ptr as *mut x86_64::structures::paging::page_table::PageTableEntry).add(p3_idx.into());
+    let l3_entry = unsafe { &mut *l3_entry_ptr };
+    let mut l3_flags = l3_entry.flags();
+    l3_flags.remove(PageTableFlags::NO_EXECUTE);
+    l3_entry.set_flags(l3_flags);
+
+    if l3_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+        // This case is rare for L3 but handled for completeness
+        l3_entry.set_flags(flags | PageTableFlags::HUGE_PAGE);
+    } else {
+        let l2_frame = l3_entry.frame().expect("L2 not present");
+        let l2_ptr = (mapper.phys_offset() + l2_frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable;
+        
+        let l2_entry_ptr = (l2_ptr as *mut x86_64::structures::paging::page_table::PageTableEntry).add(p2_idx.into());
+        let l2_entry = unsafe { &mut *l2_entry_ptr };
+        
+        if l2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            // 3. Update L2 entry (Huge Page)
+            l2_entry.set_flags(flags | PageTableFlags::HUGE_PAGE);
+        } else {
+            // 3. Update L2 entry (Pointer to L1)
+            let mut l2_flags = l2_entry.flags();
+            l2_flags.remove(PageTableFlags::NO_EXECUTE);
+            l2_entry.set_flags(l2_flags);
+            
+            // 4. Update L1 entry
+            let l1_frame = l2_entry.frame().expect("L1 not present");
+            let l1_ptr = (mapper.phys_offset() + l1_frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable;
+            let l1_entry_ptr = (l1_ptr as *mut x86_64::structures::paging::page_table::PageTableEntry).add(p1_idx.into());
+            unsafe { (*l1_entry_ptr).set_flags(flags) };
+        }
+    }
+    x86_64::instructions::tlb::flush(addr);
+}
+
+pub fn adjust_return_address_and_stack(current_phys_offset: VirtAddr, new_phys_offset: VirtAddr) {
     debug_log_no_alloc!("Adjusting all return addresses and stack for higher half");
+    let offset_diff = new_phys_offset.as_u64().wrapping_sub(current_phys_offset.as_u64());
     unsafe {
         let mut rbp: u64;
         core::arch::asm!("mov {}, rbp", out(reg) rbp);
@@ -413,26 +509,26 @@ pub fn adjust_return_address_and_stack(phys_offset: VirtAddr) {
                 let next_rbp = frame_base_ptr.read();
                 let return_address_ptr = frame_base_ptr.add(1);
                 let old_return = return_address_ptr.read();
-                return_address_ptr.write(old_return.wrapping_add(phys_offset.as_u64()));
+                return_address_ptr.write(old_return.wrapping_add(offset_diff));
                 if next_rbp != 0 {
-                    frame_base_ptr.write(next_rbp.wrapping_add(phys_offset.as_u64()));
+                    frame_base_ptr.write(next_rbp.wrapping_add(offset_diff));
                 } else {
                     break;
                 }
-                current_rbp = next_rbp.wrapping_add(phys_offset.as_u64());
+                current_rbp = next_rbp.wrapping_add(offset_diff);
             }
         }
         let mut rsp: u64;
         core::arch::asm!("mov {}, rsp", out(reg) rsp);
-        rsp = rsp.wrapping_add(phys_offset.as_u64());
+        rsp = rsp.wrapping_add(offset_diff);
         core::arch::asm!("mov rsp, {}", in(reg) rsp);
-        core::arch::asm!("mov rbp, {}", in(reg) rbp.wrapping_add(phys_offset.as_u64()));
+        core::arch::asm!("mov rbp, {}", in(reg) rbp.wrapping_add(offset_diff));
 
         // Explicit jump to higher half to ensure rip is also transitioned immediately.
         // This prevents the CPU from executing in the low-half after CR3 switch.
         let rip: u64;
         core::arch::asm!("lea {}, [rip]", out(reg) rip);
-        let target = rip.wrapping_add(phys_offset.as_u64());
+        let target = rip.wrapping_add(offset_diff);
         core::arch::asm!("jmp {}", in(reg) target);
     }
     debug_log_no_alloc!("Return address and stack adjusted successfully");

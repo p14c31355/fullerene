@@ -115,7 +115,26 @@ impl<'a> MemoryMapper<'a> {
         use crate::page_table::constants::{BOOT_CODE_PAGES, BOOT_CODE_START};
         let flags = crate::page_flags_const!(READ_WRITE);
         unsafe {
-            let _ = self.map_to_higher_half(BOOT_CODE_START, BOOT_CODE_PAGES, flags);
+            // First, try to map the region normally
+            let _ = crate::map_range_with_log_macro!(
+                self.mapper,
+                self.frame_allocator,
+                BOOT_CODE_START,
+                self.phys_offset.as_u64() + BOOT_CODE_START,
+                BOOT_CODE_PAGES,
+                flags
+            );
+
+            // Then, forcefully update flags for every page in the boot code region to ensure NX is cleared
+            for i in 0..BOOT_CODE_PAGES {
+                let virt_addr = self.phys_offset.as_u64() + BOOT_CODE_START + (i * 4096);
+                crate::page_table::utils::force_update_page_flags(
+                    self.mapper,
+                    x86_64::VirtAddr::new(virt_addr),
+                    flags,
+                );
+            }
+            crate::debug_log_no_alloc!("Boot code flags forcefully updated to READ_WRITE");
         }
     }
 
@@ -389,11 +408,29 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         level_4_table_frame: PhysFrame,
     ) -> u64 {
         crate::debug_log_no_alloc!("Setting up transition mappings for CR3 switch");
-        let kernel_size = self.map_essential_regions(kernel_phys_start, level_4_table_frame);
-        self.map_current_stack_identity();
+        
+        // Map first 1GB identity for absolute safety during transition using huge pages to avoid performance hang
         unsafe {
-            self.map_available_memory_identity();
+            crate::page_table::utils::map_range_with_huge_pages(
+                self.mapper,
+                self.frame_allocator,
+                0,
+                0,
+                (1024 * 1024 * 1024) / 4096,
+                crate::page_flags_const!(READ_WRITE),
+                "panic",
+            ).expect("Failed to identity map first 1GB");
         }
+        crate::debug_log_no_alloc!("First 1GB identity mapped");
+
+        let kernel_size = self.map_essential_regions(kernel_phys_start, level_4_table_frame);
+        crate::debug_log_no_alloc!("Essential regions mapped");
+        self.map_current_stack_identity();
+        crate::debug_log_no_alloc!("Current stack identity mapped");
+        
+        // Removed map_available_memory_identity() as it is too slow and unnecessary for the CR3 switch transition.
+        // Only essential regions, kernel, and stack need to be identity mapped.
+        
         crate::debug_log_no_alloc!("Transition mappings completed");
         kernel_size
     }
@@ -509,18 +546,22 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
             }
         }
         crate::debug_log_no_alloc!("Kernel segments mapped to higher half");
+        unsafe {
+            crate::debug_log_no_alloc!("Mapping available memory to higher half...");
+            self.map_available_memory_to_higher_half();
+            crate::debug_log_no_alloc!("Mapping UEFI runtime to higher half...");
+            self.map_uefi_runtime_to_higher_half();
+            crate::debug_log_no_alloc!("Mapping stack to higher half...");
+            self.map_stack_to_higher_half();
+        }
+        crate::debug_log_no_alloc!("Special regions mapped");
+
         let mut memory_mapper =
             MemoryMapper::new(self.mapper, self.frame_allocator, self.phys_offset);
         memory_mapper.map_framebuffer(fb_addr, fb_size);
         memory_mapper.map_vga();
         memory_mapper.map_boot_code();
         crate::debug_log_no_alloc!("Additional regions mapped");
-        unsafe {
-            self.map_uefi_runtime_to_higher_half();
-            self.map_available_memory_to_higher_half();
-            self.map_stack_to_higher_half();
-        }
-        crate::debug_log_no_alloc!("Special regions mapped");
         crate::debug_log_no_alloc!("Higher-half mappings completed");
     }
 
@@ -548,8 +589,13 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
     }
 
     unsafe fn map_available_memory_to_higher_half(&mut self) {
+        use crate::page_table::constants::{BOOT_CODE_START, BOOT_CODE_PAGES};
+        let boot_code_end = BOOT_CODE_START + BOOT_CODE_PAGES * 4096;
+
         crate::page_table::efi_memory::process_memory_descriptors(self.memory_map, |desc, start_frame, end_frame| {
             let phys_start = desc.get_physical_start();
+            let phys_end = phys_start + (end_frame - start_frame) as u64 * 4096;
+
             let pages = (end_frame - start_frame) as u64;
             let flags =
                 if desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32 {
@@ -557,14 +603,45 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
                 } else {
                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
                 };
-            let _ = map_to_higher_half_with_log(
-                self.mapper,
-                self.frame_allocator,
-                self.phys_offset,
-                phys_start,
-                pages,
-                flags,
-            );
+
+            // Split the region if it overlaps with boot code to ensure boot code area is NOT mapped with NX
+            if phys_start < boot_code_end && phys_end > BOOT_CODE_START {
+                // Part before boot code
+                if phys_start < BOOT_CODE_START {
+                    let pre_pages = (BOOT_CODE_START - phys_start) / 4096;
+                    let _ = map_to_higher_half_with_log(
+                        self.mapper,
+                        self.frame_allocator,
+                        self.phys_offset,
+                        phys_start,
+                        pre_pages,
+                        flags,
+                    );
+                }
+                // Part after boot code
+                if phys_end > boot_code_end {
+                    let post_start = boot_code_end;
+                    let post_pages = (phys_end - post_start) / 4096;
+                    let _ = map_to_higher_half_with_log(
+                        self.mapper,
+                        self.frame_allocator,
+                        self.phys_offset,
+                        post_start,
+                        post_pages,
+                        flags,
+                    );
+                }
+            } else {
+                // No overlap, map normally
+                let _ = map_to_higher_half_with_log(
+                    self.mapper,
+                    self.frame_allocator,
+                    self.phys_offset,
+                    phys_start,
+                    pages,
+                    flags,
+                );
+            }
         });
     }
 
@@ -688,7 +765,7 @@ impl PageTableReinitializer {
             load_idt,
         );
         
-        crate::page_table::utils::adjust_return_address_and_stack(self.phys_offset);
+        crate::page_table::utils::adjust_return_address_and_stack(current_physical_memory_offset, self.phys_offset);
         self.phys_offset
     }
 
@@ -767,16 +844,15 @@ impl PageTableReinitializer {
         x86_64::instructions::interrupts::disable();
         crate::debug_log_no_alloc!("About to switch CR3 to new table: 0x", level_4_table_frame.start_address().as_u64() as usize);
         crate::safe_cr3_write!(level_4_table_frame);
-        crate::debug_log_no_alloc!("CR3 switched successfully");
+        crate::debug_log_no_alloc!("CR3 switch executed");
         
         if let Some(load_fn) = load_idt {
             load_fn();
-            crate::debug_log_no_alloc!("IDT reloaded after CR3 switch");
+            crate::debug_log_no_alloc!("IDT loaded");
         }
 
         crate::flush_tlb_and_verify!();
         crate::debug_log_no_alloc!("TLB flushed");
-        crate::debug_log_no_alloc!("Now mapping L4 to higher half: 0x", self.phys_offset.as_u64() as usize);
         
         // Use self.phys_offset instead of current_physical_memory_offset because we have already switched to the new page table,
         // which uses self.phys_offset for its higher-half mappings.
@@ -793,7 +869,6 @@ impl PageTableReinitializer {
             .expect("Failed to map L4 to higher half");
         }
         crate::page_table::utils::debug_page_table_info(level_4_table_frame, self.phys_offset);
-        crate::debug_log_no_alloc!("Page table switch complete");
     }
 }
 

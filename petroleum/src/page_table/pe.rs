@@ -100,7 +100,7 @@ impl PeParser {
     }
 }
 
-unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
+pub unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
     log_page_table_op!("PE base", "starting search", start_ptr as usize);
 
     for i in 0..PeParser::MAX_PE_SEARCH_DISTANCE {

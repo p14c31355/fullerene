@@ -91,11 +91,6 @@ impl UefiInitContext {
         heap::init_frame_allocator(*memory_map_ref);
         debug_log_no_alloc!("Heap frame allocator initialized");
 
-        let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
-            .get()
-            .expect("Frame allocator not initialized")
-            .lock();
-
         // Pre-allocate TSS stacks physically and set up GDT (without mapping yet)
         let tss_stack_pages = (crate::gdt::GDT_TSS_STACK_COUNT * crate::gdt::GDT_TSS_STACK_SIZE) / 4096;
         let tss_phys_addr = petroleum::allocate_heap_from_map(
@@ -141,6 +136,7 @@ impl UefiInitContext {
             .expect("Frame allocator not initialized")
             .lock();
 
+        debug_log_no_alloc!("Calling reinit_page_table_with_allocator now...");
         // Initialize page table with higher half mappings for UEFI
         self.physical_memory_offset = petroleum::page_table::reinit_page_table_with_allocator(
             kernel_phys_start,
@@ -151,6 +147,7 @@ impl UefiInitContext {
             x86_64::VirtAddr::new(0),
             Some(Self::load_gdt_and_idt),
         );
+        debug_log_no_alloc!("Returned from reinit_page_table_with_allocator");
 
         // Now that CR3 is switched and we are in higher half, map the TSS stacks
         let tss_flags = x86_64::structures::paging::PageTableFlags::PRESENT 
