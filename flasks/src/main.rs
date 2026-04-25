@@ -40,6 +40,10 @@ struct Args {
     /// Start VM in GUI mode instead of headless (useful for debugging)
     #[arg(long, default_value = "true")]
     gui: bool,
+
+    /// Clone the stable version of OVMF (edk2) into flasks/ovmf/edk2
+    #[arg(long)]
+    clone_ovmf: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -51,11 +55,57 @@ fn main() -> io::Result<()> {
         .expect("Failed to get workspace root")
         .to_path_buf();
 
+    if args.clone_ovmf {
+        setup_ovmf(&workspace_root)?;
+        return Ok(());
+    }
+
     if args.virtualbox {
         run_virtualbox(&args, &workspace_root)?;
     } else {
         run_qemu(&workspace_root)?;
     }
+    Ok(())
+}
+
+fn setup_ovmf(workspace_root: &PathBuf) -> io::Result<()> {
+    // 1. Clean up previous failed clone attempts if they exist
+    let edk2_dir = workspace_root.join("flasks").join("ovmf").join("edk2");
+    if edk2_dir.exists() {
+        log::info!("Removing previous edk2 clone directory...");
+        std::fs::remove_dir_all(edk2_dir)?;
+    }
+
+    // 2. Check if OVMF is installed, if not, attempt to install or notify user
+    let src_code = PathBuf::from("/usr/share/OVMF/OVMF_CODE.fd");
+    if !src_code.exists() {
+        log::info!("OVMF not found. Attempting to install via apt-get...");
+        let install_status = Command::new("sudo")
+            .args(["apt-get", "install", "-y", "ovmf"])
+            .status();
+
+        if let Err(e) = install_status {
+            return Err(io::Error::new(io::ErrorKind::Other, format!("Failed to execute sudo apt-get: {}", e)));
+        } else if !install_status.unwrap().success() {
+            return Err(io::Error::other(
+                "Failed to install OVMF via apt-get. Please run 'sudo apt-get install -y ovmf' manually."
+            ));
+        }
+    } else {
+        log::info!("OVMF is already installed.");
+    }
+
+    // 3. Copy .fd files to flasks/ovmf/
+    let src_code = PathBuf::from("/usr/share/OVMF/OVMF_CODE.fd");
+    let src_vars = PathBuf::from("/usr/share/OVMF/OVMF_VARS.fd");
+    let dst_code = workspace_root.join("flasks").join("ovmf").join("RELEASEX64_OVMF_CODE.fd");
+    let dst_vars = workspace_root.join("flasks").join("ovmf").join("RELEASEX64_OVMF_VARS.fd");
+
+    log::info!("Copying OVMF binaries to {}...", workspace_root.join("flasks").join("ovmf").display());
+    std::fs::copy(&src_code, &dst_code)?;
+    std::fs::copy(&src_vars, &dst_vars)?;
+
+    log::info!("OVMF setup completed successfully.");
     Ok(())
 }
 
