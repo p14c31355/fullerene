@@ -24,7 +24,10 @@ impl BitmapFrameAllocator {
         Self {
             bitmap: None,
             frame_count: 0,
-            next_free_frame: 0,
+            // Start searching for free frames from 1MB (256 * 4KB) to avoid 
+            // conflicts with BIOS/UEFI reserved regions and prevent 
+            // page tables from being allocated at very low addresses.
+            next_free_frame: 256,
             initialized: false,
         }
     }
