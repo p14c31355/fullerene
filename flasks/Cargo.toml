@@ -13,7 +13,7 @@ name = "flasks"
 path = "src/main.rs"
 
 [dependencies]
-isobemak = {path = "../../isobemak"}
+isobemak = "0.2.4"
 tempfile = "3.27.0"
 clap = { version = "4.6.1", features = ["derive"] }
 log = { version = "0.4.28", default-features = false }
