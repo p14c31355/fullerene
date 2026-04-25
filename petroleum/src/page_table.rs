@@ -1537,7 +1537,7 @@ unsafe fn map_huge_page<A: FrameAllocator<Size4KiB>>(
     let p2_idx = VirtAddr::new(virt).p2_index();
 
     // Ensure L3 exists
-    let l4_entry_ptr = unsafe { &mut (*l4_ptr)[p4_idx] as *mut PageTableEntry };
+    let l4_entry_ptr = unsafe { l4_ptr.cast::<PageTableEntry>().add(p4_idx.into()) };
     if unsafe { !core::ptr::read(l4_entry_ptr).flags().contains(PageTableFlags::PRESENT) } {
         let l3_frame = allocator.allocate_frame().ok_or(x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed)?;
         let l3_virt = mapper.phys_offset() + l3_frame.start_address().as_u64();
