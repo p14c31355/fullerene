@@ -495,7 +495,6 @@ const TEMP_VA_FOR_DESTROY: VirtAddr = VirtAddr::new(0xFFFF_A000_0000_0000);
 
 /// Temporary virtual address for page table cloning operations.
 /// WARNING: Assumes this address range is not already mapped or in use.
-/// A dedicated temporary VA allocation pool would be safer but is not implemented here.
 /// This is distinct from TEMP_VA_FOR_DESTROY to avoid conflicts during recursive operations.
 const TEMP_VA_FOR_CLONE: VirtAddr = VirtAddr::new(0xFFFF_9000_0000_0000);
 
@@ -1208,8 +1207,10 @@ impl<'a, T: MemoryDescriptorValidator> PageTableInitializer<'a, T> {
         // Map current stack area
         self.map_current_stack_identity();
 
-        // UEFI already provides identity mappings for all physical memory,
-        // so we don't need to identity map available memory regions
+        // Map available memory regions as Huge pages after fine-grained mappings
+        unsafe {
+            self.map_available_memory_identity();
+        }
 
         debug_log_no_alloc!("Identity mappings completed");
         kernel_size
@@ -1226,22 +1227,22 @@ impl<'a, T: MemoryDescriptorValidator> PageTableInitializer<'a, T> {
             let bitmap_start =
                 (&raw const bitmap_allocator::BITMAP_STATIC) as *const _ as usize as u64;
             let bitmap_pages = ((131072 * 8) + 4095) / 4096;
-            self.map_identity_config(bitmap_start, bitmap_pages, READ_WRITE_NO_EXEC);
+            self.map_identity_config_4kiB(bitmap_start, bitmap_pages, READ_WRITE_NO_EXEC);
 
             // L4 table, UEFI compat, kernel
-            self.map_identity_config(
+            self.map_identity_config_4kiB(
                 level_4_table_frame.start_address().as_u64(),
                 1,
                 READ_WRITE_NO_EXEC,
             );
-            self.map_identity_config(4096, UEFI_COMPAT_PAGES, READ_WRITE_NO_EXEC);
+            self.map_identity_config_4kiB(4096, UEFI_COMPAT_PAGES, READ_WRITE_NO_EXEC);
 
             let kernel_size = calculate_kernel_memory_size(kernel_phys_start);
             let kernel_pages = kernel_size.div_ceil(4096);
-            self.map_identity_config(kernel_phys_start.as_u64(), kernel_pages, READ_WRITE);
+            self.map_identity_config_4kiB(kernel_phys_start.as_u64(), kernel_pages, READ_WRITE);
 
             // Boot code
-            self.map_identity_config(BOOT_CODE_START, BOOT_CODE_PAGES, READ_WRITE);
+            self.map_identity_config_4kiB(BOOT_CODE_START, BOOT_CODE_PAGES, READ_WRITE);
 
             kernel_size
         }
@@ -1260,6 +1261,23 @@ impl<'a, T: MemoryDescriptorValidator> PageTableInitializer<'a, T> {
             phys_start,
             num_pages,
             flags
+        );
+    }
+
+    unsafe fn map_identity_config_4kiB(
+        &mut self,
+        phys_start: u64,
+        num_pages: u64,
+        flags: PageTableFlags,
+    ) {
+        let _ = map_range_4kiB(
+            self.mapper,
+            self.frame_allocator,
+            phys_start,
+            phys_start,
+            num_pages,
+            flags,
+            "panic",
         );
     }
 
@@ -1524,6 +1542,35 @@ pub unsafe fn map_range_with_huge_pages<A: FrameAllocator<Size4KiB>>(
     Ok(())
 }
 
+/// Maps a range of memory using strictly 4KiB pages.
+pub unsafe fn map_range_4kiB<A: FrameAllocator<Size4KiB>>(
+    mapper: &mut OffsetPageTable,
+    allocator: &mut A,
+    phys: u64,
+    virt: u64,
+    pages: u64,
+    flags: PageTableFlags,
+    behavior: &str,
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    for i in 0..pages {
+        let p_addr = phys + i * 4096;
+        let v_addr = virt + i * 4096;
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(v_addr));
+        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_addr));
+        match mapper.map_to(page, frame, flags, allocator) {
+            Ok(flush) => flush.flush(),
+            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {},
+            Err(e) => {
+                if behavior == "panic" {
+                    panic!("Mapping error: {:?}", e);
+                }
+                return Err(e);
+            }
+        }
+    }
+    Ok(())
+}
+
 unsafe fn map_huge_page<A: FrameAllocator<Size4KiB>>(
     mapper: &mut OffsetPageTable,
     allocator: &mut A,
@@ -1614,7 +1661,6 @@ pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> PhysAdd
 
 /// Minimal page table copy test
 /// Clones current CR3 frame, switches to it (then switches back)
-/// Used for debugging CR3 switching issues
 pub fn test_page_table_copy_switch(
     phys_offset: VirtAddr,
     frame_allocator: &mut BootInfoFrameAllocator,
@@ -1629,7 +1675,7 @@ pub fn test_page_table_copy_switch(
     let new_l4_frame = match frame_allocator.allocate_frame() {
         Some(frame) => frame,
         None => {
-            debug_log_no_alloc!("[PT TEST ERROR] Failed to allocate new L4 frame");
+            debug_log_no_alloc!("[PT TEST ERROR] Failed to allocate L4 frame");
             return Err(crate::common::logging::SystemError::FrameAllocationFailed);
         }
     };
@@ -1665,13 +1711,12 @@ pub fn test_page_table_copy_switch(
 
     // Verify switch
     let (current_cr3, _) = safe_cr3_read!();
-    if current_cr3 == new_l4_frame {
+    if current_cr3 == *new_l4_frame {
         debug_log_no_alloc!("[PT TEST] CR3 switch succeeded!");
         tlb::flush_all();
-        debug_log_no_alloc!("[PT TEST] TLB flushed after switch");
     } else {
         debug_log_no_alloc!(
-            "[PT TEST ERROR] CR3 switch failed - still at: 0x",
+            "[PT TEST ERROR] CR3 switch failed - still at old table",
             current_cr3.start_address().as_u64() as usize
         );
         // Clean up allocated frame
@@ -1686,10 +1731,10 @@ pub fn test_page_table_copy_switch(
     // Verify back-switch
     let (final_cr3, _) = safe_cr3_read!();
     if final_cr3 == original_cr3 {
-        debug_log_no_alloc!("[PT TEST] Successfully switched back to original CR3");
+        debug_log_no_alloc!("[PT TEST] Switch back to original CR3 successful");
     } else {
         debug_log_no_alloc!(
-            "[PT TEST ERROR] Failed to switch back to original CR3 - stuck at: 0x",
+            "[PT TEST ERROR] Switch back to original CR3 failed",
             final_cr3.start_address().as_u64() as usize
         );
         // Clean up allocated frame
@@ -1892,8 +1937,7 @@ impl PageTableManager {
                 frame_allocator,
             ) {
                 Ok(flush) => flush.flush(),
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => { /* Already mapped, which is fine. */
-                }
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => { /* Already mapped, which is fine. */ }
                 Err(_) => return Err(crate::common::logging::SystemError::MappingFailed),
             };
             OffsetPageTable::new(
@@ -1961,27 +2005,27 @@ impl PageTableManager {
                             source_table.iter().zip(dest_table.iter_mut()).enumerate()
                         {
                             if source_entry.flags().contains(PageTableFlags::PRESENT) {
-                                if level > 1
-                                    && !((level == 2) && source_entry.flags().contains(PageTableFlags::HUGE_PAGE))
-                                {
-                                    // Entry points to a sub-table, recursively clone it
-                                    if let Some(child_frame) = extract_frame_if_present!(source_entry) {
-                                        let cloned_child_phys = Self::clone_page_table_recursive(
-                                            mapper,
-                                            frame_alloc,
-                                            child_frame.start_address(),
-                                            level - 1,
-                                            child_va,
-                                            allocated_tables,
-                                        )?;
-                                        // Update entry to point to cloned child table
-                                        dest_entry.set_addr(cloned_child_phys, source_entry.flags());
-                                        child_va += 0x1000u64;
-                                    }
-                                } else {
-                                    // Leaf entry, copy directly
-                                    dest_entry.set_addr(source_entry.addr(), source_entry.flags());
-                                }
+                                 if level > 1
+                                     && !((level == 2) && source_entry.flags().contains(PageTableFlags::HUGE_PAGE))
+                                 {
+                                     // Entry points to a sub-table, recursively clone it
+                                     if let Some(child_frame) = extract_frame_if_present!(source_entry) {
+                                         let cloned_child_phys = Self::clone_page_table_recursive(
+                                             mapper,
+                                             frame_alloc,
+                                             child_frame.start_address(),
+                                             level - 1,
+                                             child_va,
+                                             allocated_tables,
+                                         )?;
+                                         // Update entry to point to cloned child table
+                                         dest_entry.set_addr(cloned_child_phys, source_entry.flags());
+                                         child_va += 0x1000u64;
+                                     }
+                                 } else {
+                                     // Leaf entry, copy directly
+                                     dest_entry.set_addr(source_entry.addr(), source_entry.flags());
+                                 }
                             }
                         }
 
@@ -2044,10 +2088,8 @@ impl PageTableHelper for PageTableManager {
         Ok(frame)
     }
 
-    fn translate_address(
-        &self,
-        virtual_addr: usize,
-    ) -> crate::common::logging::SystemResult<usize> {
+    fn translate_address(&self, virtual_addr: usize)
+    -> crate::common::logging::SystemResult<usize> {
         ensure_initialized!(self);
 
         let mapper = self.mapper.as_ref().unwrap();
@@ -2258,9 +2300,9 @@ impl PageTableHelper for PageTableManager {
             table_addr
         );
 
-        safe_cr3_write!(*new_frame);
+        safe_cr3_write!(new_frame);
 
-        debug_log_no_alloc!("[PT SWITCH] CR3 switched successfully, verifying...");
+        debug_log_no_alloc!("[PT SWITCH] CR3 switched, verifying...");
 
         // Verify the switch worked
         let (current_cr3, _) = Cr3::read();
@@ -2382,11 +2424,7 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
             p
         }
         None => {
-            log_page_table_op!(
-                "PE size calculation",
-                "parser creation failed, using fallback",
-                0
-            );
+            log_page_table_op!("PE size calculation", "parser creation failed, using fallback", 0);
             return FALLBACK_KERNEL_SIZE;
         }
     };
@@ -2402,11 +2440,7 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
             padded_size
         }
         None => {
-            log_page_table_op!(
-                "PE size calculation",
-                "size_of_image failed, using fallback",
-                0
-            );
+            log_page_table_op!("PE size calculation", "size_of_image failed, using fallback", 0);
             FALLBACK_KERNEL_SIZE
         }
     }
