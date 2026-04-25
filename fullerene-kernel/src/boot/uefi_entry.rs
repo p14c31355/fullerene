@@ -119,8 +119,8 @@ impl UefiInitContext {
         }
 
         let tss_stacks = crate::gdt::TssStacks {
-            double_fault: VirtAddr::new(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE.as_u64() + tss_phys_addr.as_u64() + crate::gdt::GDT_TSS_STACK_SIZE as u64),
-            timer: VirtAddr::new(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE.as_u64() + tss_phys_addr.as_u64() + (crate::gdt::GDT_TSS_STACK_SIZE * 2) as u64),
+            double_fault: VirtAddr::new(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64 + tss_phys_addr.as_u64() + crate::gdt::GDT_TSS_STACK_SIZE as u64),
+            timer: VirtAddr::new(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64 + tss_phys_addr.as_u64() + (crate::gdt::GDT_TSS_STACK_SIZE * 2) as u64),
         };
         crate::gdt::init_with_stacks(tss_stacks);
         
