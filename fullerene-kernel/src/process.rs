@@ -175,8 +175,8 @@ static CURRENT_PROCESS_INDEX: Mutex<usize> = Mutex::new(0);
 /// Current running process
 pub static CURRENT_PROCESS: Mutex<Option<ProcessId>> = Mutex::new(None);
 
-/// Kernel stack size per process (4KB)
-const KERNEL_STACK_SIZE: usize = 4096;
+/// Kernel stack size per process (64KB)
+const KERNEL_STACK_SIZE: usize = 4096 * 16;
 
 /// Initialize process management system
 pub fn init() {
