@@ -765,7 +765,6 @@ impl PageTableReinitializer {
             load_idt,
         );
         
-        crate::page_table::utils::adjust_return_address_and_stack(current_physical_memory_offset, self.phys_offset);
         self.phys_offset
     }
 
