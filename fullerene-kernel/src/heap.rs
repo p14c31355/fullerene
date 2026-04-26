@@ -11,7 +11,7 @@ pub use petroleum::page_table::{BootInfoFrameAllocator, reinit_page_table_with_a
 pub const HEAP_SIZE: usize = 1024 * 1024; // 1MB heap
 
 // Kernel stack size for UEFI boot initialization
-pub const KERNEL_STACK_SIZE: usize = 4096 * 16; // 64KB
+pub const KERNEL_STACK_SIZE: usize = 4096 * 64; // 256KB
 
 /// Reinitialize the page table with identity mapping and higher-half kernel mapping
 /// This is a wrapper around reinit_page_table_with_allocator for simple cases
