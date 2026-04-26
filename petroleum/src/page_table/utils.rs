@@ -497,27 +497,12 @@ pub unsafe fn force_update_page_flags(mapper: &mut OffsetPageTable, addr: VirtAd
 }
 
 pub fn adjust_return_address_and_stack(current_phys_offset: VirtAddr, new_phys_offset: VirtAddr) {
-    debug_log_no_alloc!("Adjusting all return addresses and stack for higher half");
+    debug_log_no_alloc!("Adjusting current stack pointer for higher half");
     let offset_diff = new_phys_offset.as_u64().wrapping_sub(current_phys_offset.as_u64());
     unsafe {
         let mut rbp: u64;
         core::arch::asm!("mov {}, rbp", out(reg) rbp);
-        if rbp != 0 {
-            let mut current_rbp = rbp;
-            loop {
-                let frame_base_ptr = current_rbp as *mut u64;
-                let next_rbp = frame_base_ptr.read();
-                let return_address_ptr = frame_base_ptr.add(1);
-                let old_return = return_address_ptr.read();
-                return_address_ptr.write(old_return.wrapping_add(offset_diff));
-                if next_rbp != 0 {
-                    frame_base_ptr.write(next_rbp.wrapping_add(offset_diff));
-                } else {
-                    break;
-                }
-                current_rbp = next_rbp.wrapping_add(offset_diff);
-            }
-        }
+        
         let mut rsp: u64;
         core::arch::asm!("mov {}, rsp", out(reg) rsp);
         rsp = rsp.wrapping_add(offset_diff);
@@ -531,7 +516,7 @@ pub fn adjust_return_address_and_stack(current_phys_offset: VirtAddr, new_phys_o
         let target = rip.wrapping_add(offset_diff);
         core::arch::asm!("jmp {}", in(reg) target);
     }
-    debug_log_no_alloc!("Return address and stack adjusted successfully");
+    debug_log_no_alloc!("Stack pointer adjusted successfully");
 }
 
 pub fn map_stack_to_higher_half<T: crate::page_table::efi_memory::MemoryDescriptorValidator>(

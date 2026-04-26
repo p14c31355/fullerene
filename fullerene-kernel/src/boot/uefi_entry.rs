@@ -314,11 +314,15 @@ impl UefiInitContext {
         write_serial_bytes!(0x3F8, 0x3FD, b"Kernel stack allocated and mapped\n");
 
         // Switch to the kernel stack
-        unsafe {
-            let kernel_stack_top =
-                (self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64 - 8).as_u64();
-            core::arch::asm!("mov rsp, {}", in(reg) kernel_stack_top);
-        }
+    unsafe {
+        let kernel_stack_top =
+            (self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64 - 8).as_u64();
+        core::arch::asm!("mov rsp, {}", in(reg) kernel_stack_top);
+        
+        let current_rsp: u64;
+        core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
+        petroleum::init_log!("Boot Stack Initialized. Top: 0x{:x}, Current RSP: 0x{:x}", kernel_stack_top, current_rsp);
+    }
         self.heap_start_after_stack =
             self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64;
         write_serial_bytes!(0x3F8, 0x3FD, b"Basic GDT and stack setup completed\n");
@@ -501,7 +505,17 @@ pub extern "efiapi" fn efi_main(
 
     // Common initialization for both UEFI and BIOS with correct physical memory offset
     log::info!("About to call init_common");
+    unsafe {
+        let rsp: u64;
+        core::arch::asm!("mov {}, rsp", out(reg) rsp);
+        petroleum::init_log!("RSP before init_common: 0x{:x}", rsp);
+    }
     crate::init::init_common(physical_memory_offset);
+    unsafe {
+        let rsp: u64;
+        core::arch::asm!("mov {}, rsp", out(reg) rsp);
+        petroleum::init_log!("RSP after init_common: 0x{:x}", rsp);
+    }
     log::info!("init_common completed");
 
     write_serial_bytes!(0x3F8, 0x3FD, b"About to complete basic init\n");
@@ -530,6 +544,11 @@ pub extern "efiapi" fn efi_main(
 
     // Enable interrupts now that all handlers and controllers are set up.
     log::info!("Enabling interrupts...");
+    unsafe {
+        let rsp: u64;
+        core::arch::asm!("mov {}, rsp", out(reg) rsp);
+        petroleum::init_log!("RSP before enabling interrupts: 0x{:x}", rsp);
+    }
     x86_64::instructions::interrupts::enable();
     log::info!("Interrupts enabled");
 
@@ -539,6 +558,11 @@ pub extern "efiapi" fn efi_main(
 
     // Start the main kernel scheduler that orchestrates all system functionality
     log::info!("Starting full system scheduler...");
+    unsafe {
+        let rsp: u64;
+        core::arch::asm!("mov {}, rsp", out(reg) rsp);
+        petroleum::init_log!("RSP before scheduler_loop: 0x{:x}", rsp);
+    }
     write_serial_bytes!(0x3F8, 0x3FD, b"About to enter scheduler_loop\n");
     scheduler_loop();
     // scheduler_loop should never return in normal operation
