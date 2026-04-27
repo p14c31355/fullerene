@@ -411,17 +411,18 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         
         // Map first 1GB identity for absolute safety during transition using huge pages to avoid performance hang
         unsafe {
-            crate::page_table::utils::map_range_with_huge_pages(
+            // Map the first 4GB identity using 1GiB pages to minimize page table overhead
+            // and ensure absolute safety during the CR3 switch transition.
+            crate::page_table::utils::map_range_with_1gib_pages(
                 self.mapper,
                 self.frame_allocator,
                 0,
                 0,
-                (4 * 1024 * 1024 * 1024) / 4096,
+                4,
                 crate::page_flags_const!(READ_WRITE),
-                "panic",
-            ).expect("Failed to identity map first 4GB");
+            ).expect("Failed to identity map first 4GB using 1GiB pages");
         }
-        crate::debug_log_no_alloc!("First 4GB identity mapped");
+        crate::debug_log_no_alloc!("First 4GB identity mapped using 1GiB pages");
 
         let kernel_size = self.map_essential_regions(kernel_phys_start, level_4_table_frame);
         crate::debug_log_no_alloc!("Essential regions mapped");
@@ -558,6 +559,7 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
 
         let mut memory_mapper =
             MemoryMapper::new(self.mapper, self.frame_allocator, self.phys_offset);
+        // Explicitly map framebuffer first to ensure it is present before other mappings
         memory_mapper.map_framebuffer(fb_addr, fb_size);
         memory_mapper.map_vga();
         memory_mapper.map_boot_code();
@@ -593,7 +595,11 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         let boot_code_end = BOOT_CODE_START + BOOT_CODE_PAGES * 4096;
 
         crate::page_table::efi_memory::process_valid_descriptors(self.memory_map, |desc, start_frame, end_frame| {
+            if !desc.is_memory_available() {
+                return;
+            }
             let phys_start = desc.get_physical_start();
+            crate::debug_log_no_alloc!("Mapping available descriptor: phys=0x", phys_start as usize, " pages=", (end_frame - start_frame) as usize);
             let phys_end = phys_start + (end_frame - start_frame) as u64 * 4096;
 
             let pages = (end_frame - start_frame) as u64;

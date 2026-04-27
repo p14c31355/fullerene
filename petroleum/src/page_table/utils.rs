@@ -297,6 +297,24 @@ pub fn create_example_mapping(
     map_to_result.expect("map_to failed").flush();
 }
 
+pub unsafe fn map_range_with_1gib_pages<A: FrameAllocator<Size4KiB>>(
+    mapper: &mut OffsetPageTable,
+    allocator: &mut A,
+    phys: u64,
+    virt: u64,
+    gib_pages: u64,
+    flags: PageTableFlags,
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    for i in 0..gib_pages {
+        let p_addr = phys + i * 1024 * 1024 * 1024;
+        let v_addr = virt + i * 1024 * 1024 * 1024;
+        unsafe {
+            map_1gib_page(mapper, allocator, p_addr, v_addr, flags)?;
+        }
+    }
+    Ok(())
+}
+
 pub unsafe fn map_range_with_huge_pages<A: FrameAllocator<Size4KiB>>(
     mapper: &mut OffsetPageTable,
     allocator: &mut A,
@@ -380,6 +398,39 @@ pub unsafe fn map_range_4kiB<A: FrameAllocator<Size4KiB>>(
             }
         }
     }
+    Ok(())
+}
+
+unsafe fn map_1gib_page<A: FrameAllocator<Size4KiB>>(
+    mapper: &mut OffsetPageTable,
+    allocator: &mut A,
+    phys: u64,
+    virt: u64,
+    flags: PageTableFlags,
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    let l4_ptr = mapper.level_4_table() as *const PageTable as *mut PageTable;
+    let p4_idx = VirtAddr::new(virt).p4_index();
+    let p3_idx = VirtAddr::new(virt).p3_index();
+    let l4_entry_ptr = unsafe { l4_ptr.cast::<x86_64::structures::paging::page_table::PageTableEntry>().add(p4_idx.into()) };
+    if unsafe { !core::ptr::read(l4_entry_ptr).flags().contains(PageTableFlags::PRESENT) } {
+        let l3_frame = allocator.allocate_frame().ok_or(x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed)?;
+        let l3_virt = mapper.phys_offset() + l3_frame.start_address().as_u64();
+        core::ptr::write_bytes(l3_virt.as_mut_ptr() as *mut u8, 0, 4096);
+        unsafe {
+            let mut entry = core::ptr::read(l4_entry_ptr);
+            entry.set_addr(l3_frame.start_address(), PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+            core::ptr::write(l4_entry_ptr, entry);
+        }
+    }
+    let l3_frame = unsafe { core::ptr::read(l4_entry_ptr).frame().expect("L3 frame should be present") };
+    let l3 = &mut *((mapper.phys_offset() + l3_frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable);
+    if l3[p3_idx].flags().contains(PageTableFlags::PRESENT) {
+        return Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(
+            PhysFrame::containing_address(PhysAddr::new(phys)),
+        ));
+    }
+    l3[p3_idx].set_addr(PhysAddr::new(phys), flags | PageTableFlags::HUGE_PAGE);
+    x86_64::instructions::tlb::flush_all();
     Ok(())
 }
 
