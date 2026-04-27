@@ -80,7 +80,15 @@ impl MemoryDescriptorValidator for MemoryMapDescriptor {
 
     fn is_memory_available(&self) -> bool {
         let mem_type = self.get_type();
-        matches!(mem_type, 4u32 | 7u32) || matches!(mem_type, 9u32 | 14u32)
+        // Available memory types according to UEFI spec:
+        // 1: Conventional Memory
+        // 2: Boot Services Code
+        // 3: Boot Services Data
+        // 4: Loader Code
+        // 5: Loader Data
+        // 9: ACPI Reclaimed Memory
+        // 11: ACPI Memory
+        matches!(mem_type, 1u32 | 2u32 | 3u32 | 4u32 | 5u32 | 9u32 | 11u32)
     }
 }
 
@@ -110,7 +118,15 @@ impl MemoryDescriptorValidator for EfiMemoryDescriptor {
 
     fn is_memory_available(&self) -> bool {
         let mem_type = self.get_type();
-        matches!(mem_type, 4u32 | 7u32) || matches!(mem_type, 9u32 | 14u32)
+        // Available memory types according to UEFI spec:
+        // 1: Conventional Memory
+        // 2: Boot Services Code
+        // 3: Boot Services Data
+        // 4: Loader Code
+        // 5: Loader Data
+        // 9: ACPI Reclaimed Memory
+        // 11: ACPI Memory
+        matches!(mem_type, 1u32 | 2u32 | 3u32 | 4u32 | 5u32 | 9u32 | 11u32)
     }
 }
 

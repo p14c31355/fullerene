@@ -409,20 +409,11 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
     ) -> u64 {
         crate::debug_log_no_alloc!("Setting up transition mappings for CR3 switch");
         
-        // Map first 1GB identity for absolute safety during transition using huge pages to avoid performance hang
-        unsafe {
-            // Map the first 4GB identity using 1GiB pages to minimize page table overhead
-            // and ensure absolute safety during the CR3 switch transition.
-            crate::page_table::utils::map_range_with_1gib_pages(
-                self.mapper,
-                self.frame_allocator,
-                0,
-                0,
-                4,
-                crate::page_flags_const!(READ_WRITE),
-            ).expect("Failed to identity map first 4GB using 1GiB pages");
-        }
-        crate::debug_log_no_alloc!("First 4GB identity mapped using 1GiB pages");
+        // Removed the blanket 4GiB identity mapping using 1GiB pages.
+        // This blanket mapping could overlap with sensitive MMIO regions (e.g., APIC) 
+        // or conflict with specific 4KiB mappings, potentially causing hangs or #GP.
+        // We now rely on map_essential_regions and map_current_stack_identity 
+        // to provide the necessary transition mappings.
 
         let kernel_size = self.map_essential_regions(kernel_phys_start, level_4_table_frame);
         crate::debug_log_no_alloc!("Essential regions mapped");

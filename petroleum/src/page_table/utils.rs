@@ -309,7 +309,13 @@ pub unsafe fn map_range_with_1gib_pages<A: FrameAllocator<Size4KiB>>(
         let p_addr = phys + i * 1024 * 1024 * 1024;
         let v_addr = virt + i * 1024 * 1024 * 1024;
         unsafe {
-            map_1gib_page(mapper, allocator, p_addr, v_addr, flags)?;
+            match map_1gib_page(mapper, allocator, p_addr, v_addr, flags) {
+                Ok(_) => {},
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                    // Ignore already mapped regions to allow 4KiB mappings to take precedence
+                },
+                Err(e) => return Err(e),
+            }
         }
     }
     Ok(())
@@ -329,9 +335,10 @@ pub unsafe fn map_range_with_huge_pages<A: FrameAllocator<Size4KiB>>(
         let p_addr = phys + current_page * 4096;
         let v_addr = virt + current_page * 4096;
         if p_addr % 0x200000 == 0 && v_addr % 0x200000 == 0 && (current_page + 512 <= pages) {
-            crate::debug_log_no_alloc!("Mapping huge page: phys=0x", p_addr as usize, " virt=0x", v_addr as usize);
+            crate::debug_log_no_alloc!("Attempting huge page: phys=0x", p_addr as usize, " virt=0x", v_addr as usize);
             match map_huge_page(mapper, allocator, p_addr, v_addr, flags) {
                 Ok(_) => {
+                    crate::debug_log_no_alloc!("Huge page mapped successfully");
                     current_page += 512;
                     continue;
                 }
@@ -464,7 +471,15 @@ unsafe fn map_huge_page<A: FrameAllocator<Size4KiB>>(
         core::ptr::write_bytes(l2_virt.as_mut_ptr() as *mut u8, 0, 4096);
         l3[p3_idx].set_addr(l2_frame.start_address(), PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
     }
-    let l2_frame = l3[p3_idx].frame().expect("L2 frame should be present");
+    let l2_frame = match l3[p3_idx].frame() {
+        Ok(f) => f,
+        Err(x86_64::structures::paging::page_table::FrameError::HugeFrame) => {
+            return Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(
+                PhysFrame::containing_address(PhysAddr::new(phys)),
+            ));
+        }
+        Err(e) => panic!("Unexpected frame error in map_huge_page: {:?}", e),
+    };
     let l2 = &mut *((mapper.phys_offset() + l2_frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable);
     if l2[p2_idx].flags().contains(PageTableFlags::PRESENT) {
         return Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(
