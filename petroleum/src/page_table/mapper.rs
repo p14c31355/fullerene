@@ -868,6 +868,7 @@ impl PageTableReinitializer {
             .expect("Failed to map L4 to higher half");
         }
         crate::page_table::utils::debug_page_table_info(level_4_table_frame, self.phys_offset);
+        crate::page_table::utils::adjust_return_address_and_stack(current_physical_memory_offset, self.phys_offset);
     }
 }
 

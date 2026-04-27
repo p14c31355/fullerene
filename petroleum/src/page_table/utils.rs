@@ -509,6 +509,12 @@ pub fn adjust_return_address_and_stack(current_phys_offset: VirtAddr, new_phys_o
         core::arch::asm!("mov rsp, {}", in(reg) rsp);
         core::arch::asm!("mov rbp, {}", in(reg) rbp.wrapping_add(offset_diff));
 
+        // Adjust return address on the stack to higher half
+        let mut ret_addr: u64;
+        core::arch::asm!("mov {}, [rsp]", out(reg) ret_addr);
+        ret_addr = ret_addr.wrapping_add(offset_diff);
+        core::arch::asm!("mov [rsp], {}", in(reg) ret_addr);
+
         // Explicit jump to higher half to ensure rip is also transitioned immediately.
         // This prevents the CPU from executing in the low-half after CR3 switch.
         let rip: u64;
