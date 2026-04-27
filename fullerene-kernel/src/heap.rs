@@ -31,6 +31,8 @@ pub fn reinit_page_table(
         fb_size,
         &mut *frame_allocator,
         memory_map,
+        0,
+        0,
         x86_64::VirtAddr::new(0),
         None,
         None::<fn(&mut x86_64::structures::paging::OffsetPageTable, &mut BootInfoFrameAllocator, x86_64::VirtAddr)>,

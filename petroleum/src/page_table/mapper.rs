@@ -383,6 +383,8 @@ pub struct PageTableInitializer<'a, T: crate::page_table::efi_memory::MemoryDesc
     pub phys_offset: VirtAddr,
     pub current_phys_offset: VirtAddr,
     pub memory_map: &'a [T],
+    pub uefi_map_phys: u64,
+    pub uefi_map_size: u64,
 }
 
 impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableInitializer<'a, T> {
@@ -392,6 +394,8 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         phys_offset: VirtAddr,
         current_phys_offset: VirtAddr,
         memory_map: &'a [T],
+        uefi_map_phys: u64,
+        uefi_map_size: u64,
     ) -> Self {
         Self {
             mapper,
@@ -399,6 +403,8 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
             phys_offset,
             current_phys_offset,
             memory_map,
+            uefi_map_phys,
+            uefi_map_size,
         }
     }
 
@@ -433,6 +439,20 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         level_4_table_frame: PhysFrame,
     ) -> u64 {
         unsafe {
+            // 1. Identity map the first 512MB to ensure all early page tables and 
+            // common UEFI regions are accessible during the transition.
+            // Using huge pages (2MiB) to minimize page table overhead and avoid 
+            // triggering further page table allocations that might fault.
+            crate::page_table::utils::map_range_with_huge_pages(
+                self.mapper,
+                self.frame_allocator,
+                0,
+                0,
+                (512 * 1024 * 1024) / 4096,
+                crate::page_flags_const!(READ_WRITE),
+                "transition_low_mem",
+            ).expect("Failed to identity map first 512MB");
+
             let bitmap_start =
                 (&raw const crate::page_table::bitmap_allocator::BITMAP_STATIC) as *const _ as usize as u64;
             let bitmap_pages = ((131072 * 8) + 4095) / 4096;
@@ -443,6 +463,15 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
                 crate::page_flags_const!(READ_WRITE_NO_EXEC),
             );
             self.map_identity_config_4kiB(4096, crate::page_table::constants::UEFI_COMPAT_PAGES, crate::page_flags_const!(READ_WRITE_NO_EXEC));
+
+            // IMPORTANT: Map the original UEFI memory map buffer. 
+            // MemoryMapDescriptor holds pointers into this buffer.
+            let uefi_map_pages = (self.uefi_map_size + 4095) / 4096;
+            self.map_identity_config_4kiB(
+                self.uefi_map_phys,
+                uefi_map_pages,
+                crate::page_flags_const!(READ_WRITE_NO_EXEC),
+            );
             
             let kernel_size = crate::page_table::pe::calculate_kernel_memory_size(kernel_phys_start);
             let kernel_pages = kernel_size.div_ceil(4096);
@@ -559,92 +588,16 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
     }
 
     unsafe fn map_uefi_runtime_to_higher_half(&mut self) {
-        crate::map_memory_with_flag_fn!(
-            self.mapper,
-            self.frame_allocator,
-            self.phys_offset,
-            self.memory_map,
-            |desc: &T| {
-                desc.is_valid()
-                    && (desc.get_type()
-                        == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32
-                        || desc.get_type()
-                            == crate::common::EfiMemoryType::EfiRuntimeServicesData as u32)
-            },
-            |desc: &T| {
-                if desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32 {
-                    PageTableFlags::PRESENT
-                } else {
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
-                }
-            }
-        );
+        crate::page_table::efi_memory::process_valid_descriptors(self.memory_map, |desc, start_frame, end_frame| {
+            let phys_start = desc.get_physical_start();
+            crate::debug_log_no_alloc!("Skipping runtime mapping: phys=0x", phys_start as usize);
+        });
     }
 
     unsafe fn map_available_memory_to_higher_half(&mut self) {
-        use crate::page_table::constants::{BOOT_CODE_START, BOOT_CODE_PAGES};
-        let boot_code_end = BOOT_CODE_START + BOOT_CODE_PAGES * 4096;
-
         crate::page_table::efi_memory::process_valid_descriptors(self.memory_map, |desc, start_frame, end_frame| {
-            if !desc.is_memory_available() {
-                return;
-            }
             let phys_start = desc.get_physical_start();
-            crate::debug_log_no_alloc!("Mapping available descriptor: phys=0x", phys_start as usize, " pages=", (end_frame - start_frame) as usize);
-            let phys_end = phys_start + (end_frame - start_frame) as u64 * 4096;
-
-            let pages = (end_frame - start_frame) as u64;
-            let flags =
-                if desc.get_type() == crate::common::EfiMemoryType::EfiRuntimeServicesCode as u32 {
-                    PageTableFlags::PRESENT
-                } else {
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
-                };
-
-            // Split the region if it overlaps with boot code to ensure boot code area is NOT mapped with NX
-            if phys_start < boot_code_end && phys_end > BOOT_CODE_START {
-                // Part before boot code
-                if phys_start < BOOT_CODE_START {
-                    let pre_pages = (BOOT_CODE_START - phys_start) / 4096;
-                    let virt_start = self.phys_offset.as_u64() + phys_start;
-                    let _ = crate::page_table::utils::map_range_with_huge_pages(
-                        self.mapper,
-                        self.frame_allocator,
-                        phys_start,
-                        virt_start,
-                        pre_pages,
-                        flags,
-                        "available_memory_pre",
-                    );
-                }
-                // Part after boot code
-                if phys_end > boot_code_end {
-                    let post_start = boot_code_end;
-                    let post_pages = (phys_end - post_start) / 4096;
-                    let virt_start = self.phys_offset.as_u64() + post_start;
-                    let _ = crate::page_table::utils::map_range_with_huge_pages(
-                        self.mapper,
-                        self.frame_allocator,
-                        post_start,
-                        virt_start,
-                        post_pages,
-                        flags,
-                        "available_memory_post",
-                    );
-                }
-            } else {
-                // No overlap, map normally
-                let virt_start = self.phys_offset.as_u64() + phys_start;
-                let _ = crate::page_table::utils::map_range_with_huge_pages(
-                    self.mapper,
-                    self.frame_allocator,
-                    phys_start,
-                    virt_start,
-                    pages,
-                    flags,
-                    "available_memory",
-                );
-            }
+            crate::debug_log_no_alloc!("Skipping available mapping: phys=0x", phys_start as usize);
         });
     }
 
@@ -714,6 +667,8 @@ impl PageTableReinitializer {
         fb_size: Option<u64>,
         frame_allocator: &mut BootInfoFrameAllocator,
         memory_map: &[T],
+        uefi_map_phys: u64,
+        uefi_map_size: u64,
         current_physical_memory_offset: VirtAddr,
         load_idt: Option<fn()>,
         extra_mappings: Option<F>,
@@ -737,6 +692,8 @@ impl PageTableReinitializer {
                 self.phys_offset,
                 current_physical_memory_offset,
                 memory_map,
+                uefi_map_phys,
+                uefi_map_size,
             );
         
         // 1. Setup transition mappings (including current_physical_memory_offset)
@@ -892,6 +849,8 @@ pub fn reinit_page_table_with_allocator<F>(
     fb_size: Option<u64>,
     frame_allocator: &mut BootInfoFrameAllocator,
     memory_map: &[impl crate::page_table::efi_memory::MemoryDescriptorValidator],
+    uefi_map_phys: u64,
+    uefi_map_size: u64,
     current_physical_memory_offset: VirtAddr,
     load_idt: Option<fn()>,
     extra_mappings: Option<F>,
@@ -906,6 +865,8 @@ where
         fb_size,
         frame_allocator,
         memory_map,
+        uefi_map_phys,
+        uefi_map_size,
         current_physical_memory_offset,
         load_idt,
         extra_mappings,
