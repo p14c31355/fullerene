@@ -50,7 +50,7 @@ pub(crate) static FRAME_ALLOCATOR: Once<Mutex<BootInfoFrameAllocator>> = Once::n
 pub static MEMORY_MAP: Once<&[MemoryMapDescriptor]> = Once::new();
 
 /// Buffer for memory map descriptors to avoid heap allocation during init
-const MAX_DESCRIPTORS: usize = 1024;
+pub const MAX_DESCRIPTORS: usize = 2048;
 pub(crate) static mut MEMORY_MAP_BUFFER: [MemoryMapDescriptor; MAX_DESCRIPTORS] = [const {
     MemoryMapDescriptor {
         ptr: core::ptr::null(),

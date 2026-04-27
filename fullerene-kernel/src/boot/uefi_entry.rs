@@ -420,7 +420,6 @@ impl UefiInitContext {
     }
 
     fn init_memory_map(&self) {
-        const MAX_DESCRIPTORS: usize = 1024;
         let descriptor_item_size = unsafe { *(self.memory_map as *const usize) };
         debug_log_no_alloc!("init_memory_map: descriptor_size: ", descriptor_item_size);
         let config_size = core::mem::size_of::<ConfigWithMetadata>();
@@ -440,8 +439,8 @@ impl UefiInitContext {
             unsafe { (self.memory_map as *const u8).add(core::mem::size_of::<usize>()) };
         let num_descriptors = actual_descriptors_size / descriptor_item_size;
         debug_log_no_alloc!("init_memory_map: num_descriptors: ", num_descriptors);
-        let actual_num = num_descriptors.min(MAX_DESCRIPTORS);
-        if num_descriptors > MAX_DESCRIPTORS {
+        let actual_num = num_descriptors.min(crate::heap::MAX_DESCRIPTORS);
+        if num_descriptors > crate::heap::MAX_DESCRIPTORS {
             debug_log_no_alloc!("init_memory_map: too many descriptors, truncating");
         }
         unsafe {
