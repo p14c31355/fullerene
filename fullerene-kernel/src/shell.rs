@@ -7,7 +7,7 @@ use crate::keyboard;
 use crate::scheduler::get_system_tick;
 use crate::syscall::kernel_syscall;
 use alloc::{string::String, vec::Vec};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use petroleum::{define_commands, print};
 
 /// Shell prompt

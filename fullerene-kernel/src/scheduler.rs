@@ -6,7 +6,7 @@
 use crate::graphics;
 use crate::graphics::text;
 use alloc::{collections::VecDeque, format};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 use petroleum::{
     Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats,
     display_stats_on_available_display, periodic_task, scheduler_log, write_serial_bytes,
@@ -101,8 +101,8 @@ lazy_static::lazy_static! {
 use x86_64::VirtAddr;
 
 // System-wide counters and statistics
-static SYSTEM_TICK: AtomicU64 = AtomicU64::new(0);
-static SCHEDULER_ITERATIONS: AtomicU64 = AtomicU64::new(0);
+static SYSTEM_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
+static SCHEDULER_ITERATIONS: spin::Mutex<u64> = spin::Mutex::new(0);
 
 // I/O event queue (placeholder for future I/O operations)
 static IO_EVENTS: spin::Mutex<VecDeque<IoEvent>> = spin::Mutex::new(VecDeque::new());
@@ -130,7 +130,7 @@ fn collect_system_stats() -> SystemStats {
     petroleum::common::collect_system_stats(
         crate::process::get_process_count,
         crate::process::get_active_process_count,
-        || SYSTEM_TICK.load(Ordering::Relaxed),
+        || *SYSTEM_TICK.lock(),
     )
 }
 
@@ -194,7 +194,7 @@ fn log_system_stats(stats: &SystemStats, interval_ticks: u64) {
     static LAST_LOG_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
 
     // Only log every interval_ticks to avoid spam
-    let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
+    let current_tick = *SYSTEM_TICK.lock();
     petroleum::check_periodic!(LAST_LOG_TICK, interval_ticks, current_tick, {
         log::info!(
             "System Stats - Processes: {}/{}, Memory: {} bytes, Uptime: {} ticks",
@@ -210,7 +210,7 @@ fn log_system_stats(stats: &SystemStats, interval_ticks: u64) {
 fn display_system_stats_on_display(stats: &SystemStats, interval_ticks: u64) {
     petroleum::display_stats_on_available_display!(
         stats,
-        SYSTEM_TICK.load(Ordering::Relaxed),
+        *SYSTEM_TICK.lock(),
         interval_ticks,
         &crate::vga::VGA_BUFFER
     );
@@ -218,7 +218,7 @@ fn display_system_stats_on_display(stats: &SystemStats, interval_ticks: u64) {
 
 /// Get the current system tick count
 pub fn get_system_tick() -> u64 {
-    SYSTEM_TICK.load(Ordering::Relaxed)
+    *SYSTEM_TICK.lock()
 }
 
 /// Periodic system maintenance tasks
@@ -260,7 +260,7 @@ fn monitor_environment() {
 fn optimize_system_resources() {
     // Optimize memory layout periodically
     static LAST_OPTIMIZATION_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
-    let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
+    let current_tick = *SYSTEM_TICK.lock();
     petroleum::check_periodic!(LAST_OPTIMIZATION_TICK, 10000, current_tick, {
         // Every 10000 ticks
         // Run memory defragmentation or optimization
@@ -277,7 +277,7 @@ fn manage_background_services() {
     // Ideas: disk I/O scheduler, network protocol handlers, device monitoring
 
     // For now, just ensure system remains responsive
-    if SYSTEM_TICK.load(Ordering::Relaxed) % 5000 == 0 {
+    if *SYSTEM_TICK.lock() % 5000 == 0 {
         log::debug!("Background service check completed");
     }
 }
@@ -299,8 +299,8 @@ fn perform_automated_backup() {
 
 /// Process a single scheduler iteration
 fn process_scheduler_iteration() {
-    let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
-    let iteration_count = SCHEDULER_ITERATIONS.load(Ordering::Relaxed);
+    let current_tick = *SYSTEM_TICK.lock();
+    let iteration_count = *SCHEDULER_ITERATIONS.lock();
 
     // Process I/O events
     process_io_events();
@@ -425,8 +425,10 @@ pub fn scheduler_loop() -> ! {
 
     loop {
         // Increment system counters for this iteration
-        SYSTEM_TICK.fetch_add(1, Ordering::Relaxed);
-        SCHEDULER_ITERATIONS.fetch_add(1, Ordering::Relaxed);
+        {
+            *SYSTEM_TICK.lock() += 1;
+            *SCHEDULER_ITERATIONS.lock() += 1;
+        }
 
         // Process one complete scheduler iteration
         process_scheduler_iteration();

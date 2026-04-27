@@ -6,7 +6,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use petroleum::common::logging::SystemError;
 use petroleum::debug_log;
 use petroleum::page_table::PageTableHelper;
@@ -14,7 +14,7 @@ use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
 /// Next available process ID
-pub(crate) static NEXT_PID: AtomicU64 = AtomicU64::new(1);
+pub(crate) static NEXT_PID: AtomicUsize = AtomicUsize::new(1);
 
 /// Process ID type
 pub type ProcessId = u64;
@@ -134,7 +134,7 @@ pub struct Process {
 impl Process {
     /// Create a new process
     pub fn new(name: &'static str, entry_point: VirtAddr) -> Self {
-        let id = NEXT_PID.fetch_add(1, Ordering::Relaxed);
+        let id = NEXT_PID.fetch_add(1, Ordering::Relaxed) as u64;
 
         Self {
             id,

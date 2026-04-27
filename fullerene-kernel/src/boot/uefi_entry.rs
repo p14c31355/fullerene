@@ -148,6 +148,24 @@ impl UefiInitContext {
             None,
             None::<fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::constants::BootInfoFrameAllocator, x86_64::VirtAddr)>,
         );
+
+        // Map the original UEFI memory map buffer to ensure it's accessible after CR3 switch
+        let mem_map_ptr = self.memory_map as u64;
+        let mem_map_size = self.memory_map_size as u64;
+        let pages = (mem_map_size + 4095) / 4096;
+        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+        let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset) };
+        unsafe {
+            petroleum::page_table::map_range_4kiB(
+                &mut mapper,
+                &mut *frame_allocator,
+                mem_map_ptr,
+                mem_map_ptr,
+                pages,
+                flags,
+                "panic",
+            ).expect("Failed to map UEFI memory map");
+        }
         debug_log_no_alloc!("Returned from reinit_page_table_with_allocator");
 
         // Now that CR3 is switched and we are in higher half, map the TSS stacks
