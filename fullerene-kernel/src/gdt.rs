@@ -33,6 +33,15 @@ static USER_DATA_SELECTOR: Once<SegmentSelector> = Once::new();
 static USER_CODE_SELECTOR: Once<SegmentSelector> = Once::new();
 static GDT_INITIALIZED: Once<()> = Once::new();
 
+#[repr(align(4096))]
+struct EarlyGdtBuffer([u8; 0x20000]);
+static EARLY_GDT_BUFFER: EarlyGdtBuffer = EarlyGdtBuffer([0; 0x20000]);
+
+pub fn init_early() {
+    let addr = VirtAddr::from_ptr(&EARLY_GDT_BUFFER.0 as *const _ as *const u8);
+    init(addr);
+}
+
 pub fn kernel_code_selector() -> SegmentSelector {
     *CODE_SELECTOR.get().expect("GDT not initialized")
 }

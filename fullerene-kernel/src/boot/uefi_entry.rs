@@ -477,6 +477,11 @@ pub extern "efiapi" fn efi_main(
     };
 
     let kernel_phys_start = ctx.early_initialization();
+
+    // Load GDT early to ensure CS register is consistent before page table switch
+    crate::gdt::init_early();
+    crate::gdt::load();
+
     let (physical_memory_offset, heap_start, virtual_heap_start) =
         ctx.memory_management_initialization(kernel_phys_start);
 
