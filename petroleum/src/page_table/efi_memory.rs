@@ -170,13 +170,25 @@ where
     T: MemoryDescriptorValidator,
     F: FnMut(&T, usize, usize),
 {
+    process_valid_descriptors(descriptors, |desc, start_frame, end_frame| {
+        if desc.is_memory_available() {
+            processor(desc, start_frame, end_frame);
+        }
+    });
+}
+
+pub fn process_valid_descriptors<T, F>(descriptors: &[T], mut processor: F)
+where
+    T: MemoryDescriptorValidator,
+    F: FnMut(&T, usize, usize),
+{
     for descriptor in descriptors {
         // Skip descriptors with excessively large page counts to avoid overflow or invalid entries
         if descriptor.get_page_count() > super::constants::MAX_DESCRIPTOR_PAGES {
             debug_log_no_alloc!("Skipping descriptor with excessive page count: ", descriptor.get_page_count() as usize);
             continue;
         }
-        if descriptor.is_valid() && descriptor.is_memory_available() {
+        if descriptor.is_valid() {
             let start_frame = (descriptor.get_physical_start() / 4096) as usize;
             let end_frame = start_frame.saturating_add(descriptor.get_page_count() as usize);
             if start_frame < end_frame {

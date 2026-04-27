@@ -592,7 +592,7 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         use crate::page_table::constants::{BOOT_CODE_START, BOOT_CODE_PAGES};
         let boot_code_end = BOOT_CODE_START + BOOT_CODE_PAGES * 4096;
 
-        crate::page_table::efi_memory::process_memory_descriptors(self.memory_map, |desc, start_frame, end_frame| {
+        crate::page_table::efi_memory::process_valid_descriptors(self.memory_map, |desc, start_frame, end_frame| {
             let phys_start = desc.get_physical_start();
             let phys_end = phys_start + (end_frame - start_frame) as u64 * 4096;
 
