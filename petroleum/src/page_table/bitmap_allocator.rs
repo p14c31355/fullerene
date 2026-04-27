@@ -56,6 +56,7 @@ impl BitmapFrameAllocator {
         memory_map: &[impl super::efi_memory::MemoryDescriptorValidator],
     ) -> crate::common::logging::SystemResult<()> {
         // Debug: Log memory map information
+        debug_log_no_alloc!("Entering init_with_memory_map");
         debug_log_no_alloc!("Memory map contains ", memory_map.len(), " descriptors");
 
         // Validate memory map is not empty
@@ -66,6 +67,7 @@ impl BitmapFrameAllocator {
 
         // Debug: Log each descriptor
         for (i, desc) in memory_map.iter().enumerate() {
+            debug_log_no_alloc!("Processing bitmap desc [", i, "]: phys=0x", desc.get_physical_start() as usize);
             mem_debug!(
                 "Memory descriptor ",
                 i,
@@ -112,8 +114,10 @@ impl BitmapFrameAllocator {
         // Remove self.next_free_frame = 0 to preserve the 1MB offset set in new()
         self.initialized = true;
 
+        debug_log_no_alloc!("Marking available frames...");
         // Mark available frames as free based on memory map
         super::efi_memory::mark_available_frames(self, memory_map);
+        debug_log_no_alloc!("Finished marking available frames");
 
         // CRITICAL: Explicitly mark the first 1MB (256 frames) as used to prevent 
         // any allocation in the BIOS/UEFI reserved low-memory region.
