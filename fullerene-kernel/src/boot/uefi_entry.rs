@@ -145,7 +145,8 @@ impl UefiInitContext {
             &mut frame_allocator,
             *memory_map_ref,
             x86_64::VirtAddr::new(0),
-            Some(Self::load_gdt_and_idt),
+            None,
+            None::<fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::constants::BootInfoFrameAllocator, x86_64::VirtAddr)>,
         );
         debug_log_no_alloc!("Returned from reinit_page_table_with_allocator");
 

@@ -43,6 +43,16 @@ pub fn load() {
     unsafe {
         CS::set_reg(*CODE_SELECTOR.get().unwrap());
         load_tss(*TSS_SELECTOR.get().unwrap());
+
+        // Reload all data segment registers to ensure they point to the correct GDT entry
+        if let Some(data_sel) = KERNEL_DATA_SELECTOR.get() {
+            use x86_64::registers::segmentation::{DS, ES, FS, GS, SS};
+            DS::set_reg(*data_sel);
+            SS::set_reg(*data_sel);
+            ES::set_reg(*data_sel);
+            FS::set_reg(*data_sel);
+            GS::set_reg(*data_sel);
+        }
     }
 }
 

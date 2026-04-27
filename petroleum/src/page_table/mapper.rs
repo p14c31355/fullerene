@@ -704,7 +704,7 @@ impl PageTableReinitializer {
         }
     }
 
-    pub fn reinitialize<T: crate::page_table::efi_memory::MemoryDescriptorValidator>(
+    pub fn reinitialize<T, F>(
         &mut self,
         kernel_phys_start: PhysAddr,
         fb_addr: Option<VirtAddr>,
@@ -713,7 +713,12 @@ impl PageTableReinitializer {
         memory_map: &[T],
         current_physical_memory_offset: VirtAddr,
         load_idt: Option<fn()>,
-    ) -> VirtAddr {
+        extra_mappings: Option<F>,
+    ) -> VirtAddr 
+    where 
+        T: crate::page_table::efi_memory::MemoryDescriptorValidator,
+        F: FnOnce(&mut OffsetPageTable, &mut BootInfoFrameAllocator, VirtAddr),
+    {
         crate::debug_log_no_alloc!("Page table reinitialization starting");
         let level_4_table_frame =
             self.create_page_table(frame_allocator, current_physical_memory_offset);
@@ -737,6 +742,12 @@ impl PageTableReinitializer {
         
         // 2. Setup higher-half mappings
         initializer.setup_higher_half_mappings(kernel_phys_start, fb_addr, fb_size);
+
+        if let Some(mapping_fn) = extra_mappings {
+            unsafe {
+                mapping_fn(&mut mapper, frame_allocator, self.phys_offset);
+            }
+        }
         
         // 3. Recursive mapping
         self.setup_recursive_mapping(&mut mapper, level_4_table_frame);
@@ -872,7 +883,7 @@ impl PageTableReinitializer {
     }
 }
 
-pub fn reinit_page_table_with_allocator(
+pub fn reinit_page_table_with_allocator<F>(
     kernel_phys_start: PhysAddr,
     fb_addr: Option<VirtAddr>,
     fb_size: Option<u64>,
@@ -880,7 +891,11 @@ pub fn reinit_page_table_with_allocator(
     memory_map: &[impl crate::page_table::efi_memory::MemoryDescriptorValidator],
     current_physical_memory_offset: VirtAddr,
     load_idt: Option<fn()>,
-) -> VirtAddr {
+    extra_mappings: Option<F>,
+) -> VirtAddr 
+where 
+    F: FnOnce(&mut OffsetPageTable, &mut BootInfoFrameAllocator, VirtAddr),
+{
     let mut reinitializer = PageTableReinitializer::new();
     reinitializer.reinitialize(
         kernel_phys_start,
@@ -890,5 +905,6 @@ pub fn reinit_page_table_with_allocator(
         memory_map,
         current_physical_memory_offset,
         load_idt,
+        extra_mappings,
     )
 }
