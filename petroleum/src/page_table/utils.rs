@@ -311,6 +311,7 @@ pub unsafe fn map_range_with_huge_pages<A: FrameAllocator<Size4KiB>>(
         let p_addr = phys + current_page * 4096;
         let v_addr = virt + current_page * 4096;
         if p_addr % 0x200000 == 0 && v_addr % 0x200000 == 0 && (current_page + 512 <= pages) {
+            crate::debug_log_no_alloc!("Mapping huge page: phys=0x", p_addr as usize, " virt=0x", v_addr as usize);
             match map_huge_page(mapper, allocator, p_addr, v_addr, flags) {
                 Ok(_) => {
                     current_page += 512;

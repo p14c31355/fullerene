@@ -416,12 +416,12 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
                 self.frame_allocator,
                 0,
                 0,
-                (1024 * 1024 * 1024) / 4096,
+                (4 * 1024 * 1024 * 1024) / 4096,
                 crate::page_flags_const!(READ_WRITE),
                 "panic",
-            ).expect("Failed to identity map first 1GB");
+            ).expect("Failed to identity map first 4GB");
         }
-        crate::debug_log_no_alloc!("First 1GB identity mapped");
+        crate::debug_log_no_alloc!("First 4GB identity mapped");
 
         let kernel_size = self.map_essential_regions(kernel_phys_start, level_4_table_frame);
         crate::debug_log_no_alloc!("Essential regions mapped");
@@ -609,37 +609,43 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
                 // Part before boot code
                 if phys_start < BOOT_CODE_START {
                     let pre_pages = (BOOT_CODE_START - phys_start) / 4096;
-                    let _ = map_to_higher_half_with_log(
+                    let virt_start = self.phys_offset.as_u64() + phys_start;
+                    let _ = crate::page_table::utils::map_range_with_huge_pages(
                         self.mapper,
                         self.frame_allocator,
-                        self.phys_offset,
                         phys_start,
+                        virt_start,
                         pre_pages,
                         flags,
+                        "available_memory_pre",
                     );
                 }
                 // Part after boot code
                 if phys_end > boot_code_end {
                     let post_start = boot_code_end;
                     let post_pages = (phys_end - post_start) / 4096;
-                    let _ = map_to_higher_half_with_log(
+                    let virt_start = self.phys_offset.as_u64() + post_start;
+                    let _ = crate::page_table::utils::map_range_with_huge_pages(
                         self.mapper,
                         self.frame_allocator,
-                        self.phys_offset,
                         post_start,
+                        virt_start,
                         post_pages,
                         flags,
+                        "available_memory_post",
                     );
                 }
             } else {
                 // No overlap, map normally
-                let _ = map_to_higher_half_with_log(
+                let virt_start = self.phys_offset.as_u64() + phys_start;
+                let _ = crate::page_table::utils::map_range_with_huge_pages(
                     self.mapper,
                     self.frame_allocator,
-                    self.phys_offset,
                     phys_start,
+                    virt_start,
                     pages,
                     flags,
+                    "available_memory",
                 );
             }
         });
