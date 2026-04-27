@@ -27,7 +27,7 @@ pub use common::logging::{SystemError, SystemResult};
 pub use common::memory::*;
 pub use common::syscall::*;
 pub use common::{check_memory_initialized, set_memory_initialized};
-pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
+pub use hardware::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 pub use graphics::*;
 pub use graphics::{
     Color, ColorCode, HardwarePorts, ScreenChar, TextBufferOperations, VgaPortOps,

@@ -3,7 +3,7 @@
 //! This module provides PCI device abstraction and configuration space access
 //! for unified hardware management.
 
-use crate::graphics::ports::PortWriter;
+use crate::hardware::ports::PortWriter;
 
 /// PCI Configuration Space Header
 #[repr(packed)]
@@ -65,8 +65,8 @@ impl PciConfigSpace {
     /// Read a byte from PCI configuration space
     fn read_config_byte(bus: u8, device: u8, function: u8, offset: u8) -> u8 {
         let address = Self::build_config_address(bus, device, function, offset);
-        let mut addr_writer = PortWriter::new(crate::graphics::HardwarePorts::PCI_CONFIG_ADDRESS);
-        let mut data_reader = PortWriter::new(crate::graphics::HardwarePorts::PCI_CONFIG_DATA);
+        let mut addr_writer = PortWriter::new(crate::hardware::ports::HardwarePorts::PCI_CONFIG_ADDRESS);
+        let mut data_reader = PortWriter::new(crate::hardware::ports::HardwarePorts::PCI_CONFIG_DATA);
 
         addr_writer.write_safe(address);
         let dword: u32 = data_reader.read_safe();
@@ -83,8 +83,8 @@ impl PciConfigSpace {
     /// Read a dword from PCI configuration space
     pub fn read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
         let address = Self::build_config_address(bus, device, function, offset);
-        let mut addr_writer = PortWriter::new(crate::graphics::HardwarePorts::PCI_CONFIG_ADDRESS);
-        let mut data_reader = PortWriter::new(crate::graphics::HardwarePorts::PCI_CONFIG_DATA);
+        let mut addr_writer = PortWriter::new(crate::hardware::ports::HardwarePorts::PCI_CONFIG_ADDRESS);
+        let mut data_reader = PortWriter::new(crate::hardware::ports::HardwarePorts::PCI_CONFIG_DATA);
 
         addr_writer.write_safe(address);
         data_reader.read_safe()
@@ -153,9 +153,9 @@ impl PciConfigSpace {
     }
 
     fn write_config_byte_raw(address: u32, offset: u8, value: u8) {
-        let mut addr_writer = PortWriter::new(crate::graphics::HardwarePorts::PCI_CONFIG_ADDRESS);
-        let mut data_writer = PortWriter::new(crate::graphics::HardwarePorts::PCI_CONFIG_DATA);
-        let mut data_reader = PortWriter::new(crate::graphics::HardwarePorts::PCI_CONFIG_DATA);
+        let mut addr_writer = PortWriter::new(crate::hardware::ports::HardwarePorts::PCI_CONFIG_ADDRESS);
+        let mut data_writer = PortWriter::new(crate::hardware::ports::HardwarePorts::PCI_CONFIG_DATA);
+        let mut data_reader = PortWriter::new(crate::hardware::ports::HardwarePorts::PCI_CONFIG_DATA);
 
         addr_writer.write_safe(address);
         let current_dword: u32 = data_reader.read_safe();
@@ -167,8 +167,8 @@ impl PciConfigSpace {
 
     fn write_config_dword_raw(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
         let address = Self::build_config_address(bus, device, function, offset);
-        let mut addr_writer = PortWriter::new(crate::graphics::HardwarePorts::PCI_CONFIG_ADDRESS);
-        let mut data_writer = PortWriter::new(crate::graphics::HardwarePorts::PCI_CONFIG_DATA);
+        let mut addr_writer = PortWriter::new(crate::hardware::ports::HardwarePorts::PCI_CONFIG_ADDRESS);
+        let mut data_writer = PortWriter::new(crate::hardware::ports::HardwarePorts::PCI_CONFIG_DATA);
 
         addr_writer.write_safe(address);
         data_writer.write_safe(value);

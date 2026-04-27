@@ -4,7 +4,6 @@ use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus,
 
 // Module declarations for separated functionality
 pub mod heap;
-pub mod pe;
 
 /// Initialize heap using separated heap module
 pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
@@ -257,12 +256,12 @@ pub fn exit_boot_services_and_jump(
     );
 }
 
-/// Load EFI PE image using separated PE module
+/// Load EFI PE image using petroleum PE module
 pub fn load_efi_image(
     st: &petroleum::common::EfiSystemTable,
     file: &[u8],
 ) -> petroleum::common::Result<
     extern "efiapi" fn(usize, *mut petroleum::common::EfiSystemTable, *mut c_void, usize) -> !,
 > {
-    pe::load_efi_image(st, file)
+    petroleum::page_table::pe::load_efi_image(st, file)
 }

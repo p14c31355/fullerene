@@ -713,7 +713,7 @@ macro_rules! error_variant_map {
 macro_rules! init_vga_palette_registers {
     () => {{
         for i in 0u8..16u8 {
-            $crate::graphics::ports::write_vga_attribute_register(i, i);
+            $crate::hardware::ports::write_vga_attribute_register(i, i);
         }
     }};
 }
@@ -724,7 +724,7 @@ macro_rules! init_vga_palette_registers {
 macro_rules! set_vga_attribute_registers {
     ($($index:expr => $value:expr),* $(,)?) => {{
         $(
-            $crate::graphics::ports::write_vga_attribute_register($index, $value);
+            $crate::hardware::ports::write_vga_attribute_register($index, $value);
         )*
     }};
 }
@@ -743,7 +743,7 @@ macro_rules! enable_vga_video {
 #[macro_export]
 macro_rules! vga_write_registers {
     ($configs:expr, $index_port:expr, $data_port:expr) => {
-        let mut ops = $crate::graphics::ports::VgaPortOps::new($index_port, $data_port);
+        let mut ops = $crate::hardware::ports::VgaPortOps::new($index_port, $data_port);
         ops.write_sequence($configs);
     };
 }
@@ -754,23 +754,23 @@ macro_rules! vga_write_registers {
 macro_rules! init_vga_text_mode_3 {
     () => {{
         // Write misc register
-        $crate::port_write!($crate::graphics::ports::HardwarePorts::MISC_OUTPUT, 0x67u8);
+        $crate::port_write!($crate::hardware::ports::HardwarePorts::MISC_OUTPUT, 0x67u8);
 
         // Sequencer, CRTC, Graphics registers using helper macro
         $crate::vga_write_registers!(
             $crate::graphics::registers::SEQUENCER_TEXT_CONFIG,
-            $crate::graphics::ports::HardwarePorts::SEQUENCER_INDEX,
-            $crate::graphics::ports::HardwarePorts::SEQUENCER_DATA
+            $crate::hardware::ports::HardwarePorts::SEQUENCER_INDEX,
+            $crate::hardware::ports::HardwarePorts::SEQUENCER_DATA
         );
         $crate::vga_write_registers!(
             $crate::graphics::registers::CRTC_TEXT_CONFIG,
-            $crate::graphics::ports::HardwarePorts::CRTC_INDEX,
-            $crate::graphics::ports::HardwarePorts::CRTC_DATA
+            $crate::hardware::ports::HardwarePorts::CRTC_INDEX,
+            $crate::hardware::ports::HardwarePorts::CRTC_DATA
         );
         $crate::vga_write_registers!(
             $crate::graphics::registers::GRAPHICS_TEXT_CONFIG,
-            $crate::graphics::ports::HardwarePorts::GRAPHICS_INDEX,
-            $crate::graphics::ports::HardwarePorts::GRAPHICS_DATA
+            $crate::hardware::ports::HardwarePorts::GRAPHICS_INDEX,
+            $crate::hardware::ports::HardwarePorts::GRAPHICS_DATA
         );
 
         // Attribute controller
@@ -820,19 +820,19 @@ macro_rules! check_uefi_status {
 macro_rules! update_vga_cursor {
     ($pos:expr) => {{
         $crate::port_write!(
-            $crate::graphics::ports::HardwarePorts::CRTC_INDEX,
-            $crate::graphics::ports::HardwarePorts::CURSOR_POS_LOW_REG
+            $crate::hardware::ports::HardwarePorts::CRTC_INDEX,
+            $crate::hardware::ports::HardwarePorts::CURSOR_POS_LOW_REG
         );
         $crate::port_write!(
-            $crate::graphics::ports::HardwarePorts::CRTC_DATA,
+            $crate::hardware::ports::HardwarePorts::CRTC_DATA,
             (($pos & 0xFFusize) as u8)
         );
         $crate::port_write!(
-            $crate::graphics::ports::HardwarePorts::CRTC_INDEX,
-            $crate::graphics::ports::HardwarePorts::CURSOR_POS_HIGH_REG
+            $crate::hardware::ports::HardwarePorts::CRTC_INDEX,
+            $crate::hardware::ports::HardwarePorts::CURSOR_POS_HIGH_REG
         );
         $crate::port_write!(
-            $crate::graphics::ports::HardwarePorts::CRTC_DATA,
+            $crate::hardware::ports::HardwarePorts::CRTC_DATA,
             ((($pos >> 8) & 0xFFusize) as u8)
         );
     }};
