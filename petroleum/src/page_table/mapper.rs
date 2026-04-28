@@ -502,8 +502,9 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
             let code_pages = (4 * 1024 * 1024) / 4096;
 
             self.map_identity_config_4kiB(code_phys_start, code_pages, crate::page_flags_const!(READ_WRITE));
+            self.map_at_offset_config_4kiB(self.current_phys_offset, code_phys_start, code_pages, crate::page_flags_const!(READ_WRITE));
             self.map_at_offset_config_4kiB(self.phys_offset, code_phys_start, code_pages, crate::page_flags_const!(READ_WRITE));
-            crate::debug_log_no_alloc!("Current code region identity AND high-half mapped: 0x{:x}", code_phys_start);
+            crate::debug_log_no_alloc!("Current code region identity, current-offset, AND high-half mapped: 0x{:x}", code_phys_start);
         }
         
         // Removed map_available_memory_identity() as it is too slow and unnecessary for the CR3 switch transition.
@@ -519,10 +520,10 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         // range will fail with `ParentEntryHugePage`.
         unsafe {
             // CRITICAL: Ensure the current execution point (RIP) is identity-mapped.
-            // We map a generous range starting from 0 to cover the bootloader's 
-            // current location (typically around 0x100000) and the transition code.
+            // We map a massive range starting from 0 to cover almost any possible 
+            // UEFI load address (up to 4GiB).
             let low_mem_start = 0u64;
-            let low_mem_size = 256 * 1024 * 1024; // Increased to 256MB to be absolutely sure RIP is covered
+            let low_mem_size = 4 * 1024 * 1024 * 1024; // Increased to 4GiB
             let region_pages = low_mem_size / 4096;
             let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
             
@@ -539,7 +540,7 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
                 flags,
             );
             
-            crate::debug_log_no_alloc!("Low physical memory (256MB) identity AND high-half mapped for transition (4KiB pages)");
+            crate::debug_log_no_alloc!("Low physical memory (4GiB) identity AND high-half mapped for transition (4KiB pages)");
         }
 
         // CRITICAL: Ensure the transition GDT and its descriptor are identity mapped.
@@ -993,33 +994,74 @@ impl PageTableReinitializer {
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"CR3 switch: entering asm! block\n");
 
         unsafe {
+            // CRITICAL: Explicitly map the current RIP in the new page table.
+            // The dump showed RIP = 0x140019472, which was NOT mapped in the new table.
+            let rip: u64;
+            core::arch::asm!("lea {}, [rip]", out(reg) rip);
+            
+            // Calculate the physical address of the current RIP.
+            let rip_phys = rip.wrapping_sub(current_physical_memory_offset.as_u64());
+            
+            // Map a larger region (4MB) around the current RIP to be absolutely safe.
+            let rip_region_start = (rip_phys.wrapping_sub(2 * 1024 * 1024)) & !0xFFF;
+            let rip_region_pages = (4 * 1024 * 1024) / 4096;
+            
+            let l4_phys_u64 = level_4_table_frame.start_address().as_u64();
+            let l4_virt = VirtAddr::new(current_physical_memory_offset.as_u64() + l4_phys_u64);
+            let mut new_mapper = x86_64::structures::paging::OffsetPageTable::new(
+                &mut *(l4_virt.as_mut_ptr() as *mut x86_64::structures::paging::PageTable),
+                VirtAddr::new(current_physical_memory_offset.as_u64()),
+            );
+
+            for i in 0..rip_region_pages {
+                let p_phys = rip_region_start + (i * 4096);
+                // Identity map: Virtual Address == Physical Address
+                let _ = new_mapper.map_to(
+                    x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(p_phys)),
+                    x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_phys)),
+                    x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
+                    frame_allocator,
+                );
+            }
+            crate::debug_log_no_alloc!("Current RIP region (4MB) explicitly identity-mapped to new page table");
+        }
+
+        unsafe {
             core::arch::asm!(
-                // 1. Adjust RSP and RBP to high half BEFORE switching CR3.
-                // This ensures that the stack is already pointing to the high-half region
-                // (which is mapped in both old and new page tables) the moment CR3 changes.
-                "add rsp, {diff}",
-                "add rbp, {diff}",
+                // 1. Debug output before any changes.
+                "mov dx, 0x3f8", "mov al, 0x31", "out dx, al",
 
                 // 2. Switch CR3.
-                // RIP must be identity-mapped in the new page table.
+                // RIP and RSP are currently low and identity-mapped in the new table.
                 "mov cr3, {cr3}",
+                "mov dx, 0x3f8", "mov al, 0x32", "out dx, al",
                 
-                // 3. Load GDT pointer.
-                // Using the high-half virtual address of the descriptor.
+                // 3. Load GDT pointer while still in low-half.
                 "lgdt [rdi]",
+                "mov dx, 0x3f8", "mov al, 0x33", "out dx, al",
                 
                 // 4. Far jump to high half to reload CS.
+                // We push to the LOW-HALF stack, which is identity-mapped in the new table.
+                "mov dx, 0x3f8", "mov al, 0x34", "out dx, al",
                 "push {cs_selector}",
                 "lea rax, [rip + 2f]",
                 "add rax, {diff}",
                 "push rax",
                 "retfq",
-                "2:", // Landing zone in high half
+
+                // --- LANDING ZONE (Executing in High Half) ---
+                "2:", 
+                "mov dx, 0x3f8", "mov al, 0x35", "out dx, al",
+                // NOW it is safe to adjust RSP and RBP to high half.
+                "add rsp, {diff}",
+                "add rbp, {diff}",
                 
                 cr3 = in(reg) cr3_val,
                 diff = in(reg) offset_diff,
                 cs_selector = in(reg) 0x08,
                 in("rdi") final_gdt_ptr_high,
+                out("dx") _,
+                out("rax") _,
             );
         }
 
