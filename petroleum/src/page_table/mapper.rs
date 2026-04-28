@@ -460,9 +460,9 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
             self.map_identity_config_4kiB(
                 low_mem_start,
                 region_pages,
-                crate::page_flags_const!(READ_WRITE),
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
             );
-            crate::debug_log_no_alloc!("Low physical memory (1GB) identity mapped for transition");
+            crate::debug_log_no_alloc!("Low physical memory (1GB) identity mapped for transition (executable)");
 
             // Removed the higher-half mapping of low memory to prevent RIP divergence 
             // and potential CPU confusion during the transition.
@@ -865,11 +865,49 @@ impl PageTableReinitializer {
         current_physical_memory_offset: VirtAddr,
         load_idt: Option<fn()>,
     ) {
-        // Recursive mapping is already set up by setup_recursive_mapping, no need to do it again.
         x86_64::instructions::interrupts::disable();
         crate::debug_log_no_alloc!("About to switch CR3 to new table: 0x", level_4_table_frame.start_address().as_u64() as usize);
-        crate::safe_cr3_write!(level_4_table_frame);
-        crate::debug_log_no_alloc!("CR3 switch executed");
+        
+        let offset_diff = self.phys_offset.as_u64().wrapping_sub(current_physical_memory_offset.as_u64());
+        let cr3_val = level_4_table_frame.start_address().as_u64();
+
+        unsafe {
+            core::arch::asm!(
+                // 1. Switch CR3
+                "mov cr3, {cr3}",
+                
+                // 2. Adjust RSP and RBP immediately to high half
+                "mov {rbp}, rbp",
+                "mov {rsp}, rsp",
+                "add {rsp}, {diff}",
+                "mov rsp, {rsp}",
+                "add {rbp}, {diff}",
+                "mov rbp, {rbp}",
+                
+                // 3. Absolute jump to high half
+                "lea {rip}, [rip]",
+                "add {rip}, {diff}",
+                "jmp {rip}",
+                
+                cr3 = in(reg) cr3_val,
+                diff = in(reg) offset_diff,
+                rsp = out(reg) _,
+                rbp = out(reg) _,
+                rip = out(reg) _,
+                options(noreturn),
+            );
+        }
+
+        // This part is NEVER reached because of the absolute jump above.
+        // The high-half version of this function continues execution from the jump target.
+        // However, since we jumped to the high-half RIP, the CPU continues executing
+        // from the instruction immediately following the `jmp` in the high-half.
+        
+        // To handle the "return" to the Rust function flow in the high half, 
+        // we need to ensure the jump target is just before the next line of code.
+        // The `asm!` block above does exactly that.
+        
+        crate::debug_log_no_alloc!("CR3 switch and higher-half transition executed");
         
         if let Some(load_fn) = load_idt {
             load_fn();
@@ -879,8 +917,6 @@ impl PageTableReinitializer {
         crate::flush_tlb_and_verify!();
         crate::debug_log_no_alloc!("TLB flushed");
         
-        // Use self.phys_offset instead of current_physical_memory_offset because we have already switched to the new page table,
-        // which uses self.phys_offset for its higher-half mappings.
         let mut mapper = unsafe { crate::page_table::utils::init(self.phys_offset) };
         unsafe {
             map_to_higher_half_with_log(
@@ -894,7 +930,6 @@ impl PageTableReinitializer {
             .expect("Failed to map L4 to higher half");
         }
         crate::page_table::utils::debug_page_table_info(level_4_table_frame, self.phys_offset);
-        crate::page_table::utils::adjust_return_address_and_stack(current_physical_memory_offset, self.phys_offset);
     }
 }
 
