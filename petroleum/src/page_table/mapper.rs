@@ -423,25 +423,46 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
 
         let kernel_size = self.map_essential_regions(kernel_phys_start, level_4_table_frame);
         crate::debug_log_no_alloc!("Essential regions mapped");
-        self.map_current_stack_identity();
-        crate::debug_log_no_alloc!("Current stack identity mapped");
+        
+        // CRITICAL: Ensure the current stack (RSP) is identity-mapped.
+        // Instead of relying on map_current_stack_identity(), we map a generous 
+        // range around the current RSP to prevent #PF/#UD during transition.
+        unsafe {
+            let rsp: u64;
+            core::arch::asm!("mov {}, rsp", out(reg) rsp);
+            let stack_page_start = rsp & !0xFFF;
+            // Map 2MB around the current stack pointer to be absolutely safe.
+            // We map from (rsp & !0x1FFFFF) to cover a large enough region.
+            let region_start = rsp & !0x1FFFFF; 
+            let region_pages = (2 * 1024 * 1024) / 4096;
+            
+            self.map_identity_config_4kiB(
+                region_start,
+                region_pages,
+                crate::page_flags_const!(READ_WRITE),
+            );
+            crate::debug_log_no_alloc!("Current stack region (2MB) identity mapped: 0x{:x}", region_start);
+        }
         
         // Removed map_available_memory_identity() as it is too slow and unnecessary for the CR3 switch transition.
         // Only essential regions, kernel, and stack need to be identity mapped.
         
-        // CRITICAL: Identity map the current execution point (RIP) to prevent #UD/#PF 
+        // CRITICAL: Identity map a wide range of low physical memory to prevent #UD/#PF 
         // immediately after CR3 switch.
-        let rip: u64;
         unsafe {
-            core::arch::asm!("lea {}, [rip]", out(reg) rip);
+            let low_mem_start = 0u64;
+            let low_mem_size = 1024 * 1024 * 1024; // 1GB
+            let region_pages = low_mem_size / 4096;
             
-            let rip_page_start = rip & !0xFFF;
             self.map_identity_config_4kiB(
-                rip_page_start,
-                1,
+                low_mem_start,
+                region_pages,
                 crate::page_flags_const!(READ_WRITE),
             );
-            crate::debug_log_no_alloc!("Current RIP identity mapped: 0x", rip_page_start as usize);
+            crate::debug_log_no_alloc!("Low physical memory (1GB) identity mapped for transition");
+
+            // Removed the higher-half mapping of low memory to prevent RIP divergence 
+            // and potential CPU confusion during the transition.
         }
 
         crate::debug_log_no_alloc!("Transition mappings completed");

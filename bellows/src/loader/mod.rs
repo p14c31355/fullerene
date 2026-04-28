@@ -240,9 +240,13 @@ pub fn exit_boot_services_and_jump(
 
     #[cfg(feature = "debug_loader")]
     {
+        // DEBUG: Check if entry is in the expected range
+        let entry_val = entry as usize;
+        petroleum::serial::_print(format_args!("DEBUG: Entry value = 0x{:x}\n", entry_val));
+        
         petroleum::serial::_print(format_args!(
             "Jumping to kernel at {:#x} with map at {:#x} size {:#x}\n",
-            entry as usize,
+            entry_val,
             map_phys_addr,
             final_map_size
         ));
@@ -251,19 +255,57 @@ pub fn exit_boot_services_and_jump(
             image_handle, system_table, map_phys_addr, final_map_size
         ));
         petroleum::serial::_print(format_args!("About to call kernel entry.\n"));
+        
+        // DEBUG: Dump memory around current RIP to diagnose #UD
+        let rip: u64;
+        unsafe {
+            core::arch::asm!("lea {}, [rip]", out(reg) rip);
+            petroleum::serial::_print(format_args!("DEBUG: RIP = 0x{:x}\n", rip as usize));
+            petroleum::serial::_print(format_args!("DEBUG: Memory dump at RIP:\n"));
+            for i in 0..16 {
+                let val = core::ptr::read_volatile((rip as *const u8).add(i));
+                petroleum::serial::_print(format_args!("  [{:02x}] : {:02x}\n", i, val));
+            }
+        }
     }
+    // CRITICAL: The 'entry' pointer might be a virtual address.
+    // To bypass any virtual address space confusion, we calculate the 
+    // physical address of the entry point and jump to it directly.
+    let entry_virt = entry as usize;
+    
+    // We need to find the physical address of the entry point.
+    // Since the kernel is loaded at a known physical location, we can calculate it.
+    // This is a simplified approach: we assume the entry is within the loaded image.
+    // In a real scenario, we'd use the PE header's ImageBase and EntryPoint RVA.
+    
+    // For now, let's try to use the entry_virt as a physical address, 
+    // as we have identity-mapped the first 1GB.
+    let entry_phys = entry_virt; 
+
     unsafe {
         core::arch::asm!(
+            "mov rax, cr3",
+            "mov cr3, rax", // Force TLB flush
+            "mfence",
+            // CRITICAL: Reset segment registers to 0 to ensure flat mode
+            // and remove any UEFI-inherited segment bases that cause RIP divergence.
+            "xor ax, ax",
+            "mov ds, ax",
+            "mov es, ax",
+            "mov fs, ax",
+            "mov gs, ax",
+            "mov ss, ax",
             "mov rcx, {handle}",
             "mov rdx, {st}",
             "mov r8, {map}",
             "mov r9, {size}",
-            "jmp {entry}",
+            "mov rax, {entry}",
+            "jmp rax",
             handle = in(reg) image_handle,
             st = in(reg) system_table,
             map = in(reg) map_phys_addr,
             size = in(reg) final_map_size,
-            entry = in(reg) entry,
+            entry = in(reg) entry_phys,
             options(noreturn),
         );
     }
