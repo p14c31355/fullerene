@@ -88,7 +88,7 @@ impl MemoryDescriptorValidator for MemoryMapDescriptor {
         // 5: Loader Data
         // 9: ACPI Reclaimed Memory
         // 11: ACPI Memory
-        matches!(mem_type, 1u32 | 2u32 | 3u32 | 4u32 | 5u32 | 9u32 | 11u32)
+        matches!(mem_type, 7u32 | 3u32 | 4u32 | 1u32 | 2u32 | 9u32)
     }
 }
 
