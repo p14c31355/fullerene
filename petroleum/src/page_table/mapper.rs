@@ -971,25 +971,31 @@ impl PageTableReinitializer {
         }
         
         let final_gdt_ptr_virt = gdt_ptr.unwrap_or(unsafe { core::ptr::addr_of!((*core::ptr::addr_of!(TRANSITION_GDT)).descriptor) as *const _ as *const u8 });
-        let final_gdt_ptr = (final_gdt_ptr_virt as u64).wrapping_sub(current_physical_memory_offset.as_u64()) as *const u8;
+        // Calculate the high-half virtual address for the GDT descriptor.
+        // phys_addr = virt_addr - current_offset
+        // high_virt_addr = phys_addr + self.phys_offset
+        let final_gdt_ptr_high = (final_gdt_ptr_virt as u64)
+            .wrapping_sub(current_physical_memory_offset.as_u64())
+            .wrapping_add(self.phys_offset.as_u64()) as *const u8;
 
         // Use primitive serial output to mark the absolute last point before entering assembly.
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"CR3 switch: entering asm! block\n");
 
         unsafe {
             core::arch::asm!(
-                // 1. Switch CR3 first.
-                // The current RIP must be identity-mapped in the new page table.
-                "mov cr3, {cr3}",
-                
-                // 2. Load GDT pointer.
-                // Now that CR3 is switched, final_gdt_ptr (which is a high-half address)
-                // is accessible.
-                "lgdt [rdi]",
-                
-                // 3. Adjust RSP and RBP to high half.
+                // 1. Adjust RSP and RBP to high half BEFORE switching CR3.
+                // This ensures that the stack is already pointing to the high-half region
+                // (which is mapped in both old and new page tables) the moment CR3 changes.
                 "add rsp, {diff}",
                 "add rbp, {diff}",
+
+                // 2. Switch CR3.
+                // RIP must be identity-mapped in the new page table.
+                "mov cr3, {cr3}",
+                
+                // 3. Load GDT pointer.
+                // Using the high-half virtual address of the descriptor.
+                "lgdt [rdi]",
                 
                 // 4. Far jump to high half to reload CS.
                 "push {cs_selector}",
@@ -1002,7 +1008,7 @@ impl PageTableReinitializer {
                 cr3 = in(reg) cr3_val,
                 diff = in(reg) offset_diff,
                 cs_selector = in(reg) 0x08,
-                in("rdi") final_gdt_ptr,
+                in("rdi") final_gdt_ptr_high,
             );
         }
 
