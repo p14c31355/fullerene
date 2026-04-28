@@ -1091,17 +1091,29 @@ impl PageTableReinitializer {
             // Since retfq jumps directly to it, it MUST be mapped in the new page table.
             let landing_zone_virt = landing_zone as usize as u64;
             let landing_zone_phys = landing_zone_virt.wrapping_sub(current_physical_memory_offset.as_u64());
-            let lz_page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(landing_zone_virt));
-            let lz_frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(landing_zone_phys));
             
-            let _ = new_mapper.unmap(lz_page);
+            // 1. Map to the current virtual address (so the jump works if the linker kept it low)
+            let lz_page_low = x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(landing_zone_virt));
+            let lz_frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(landing_zone_phys));
+            let _ = new_mapper.unmap(lz_page_low);
             let _ = new_mapper.map_to(
-                lz_page,
+                lz_page_low,
                 lz_frame,
                 x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
                 frame_allocator,
             );
-            crate::debug_log_no_alloc!("landing_zone explicitly mapped in new page table: 0x{:x}", landing_zone_virt);
+            
+            // 2. Map to the high-half virtual address (because the function expects to be there)
+            let landing_zone_high = landing_zone_phys.wrapping_add(self.phys_offset.as_u64());
+            let lz_page_high = x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(landing_zone_high));
+            let _ = new_mapper.unmap(lz_page_high);
+            let _ = new_mapper.map_to(
+                lz_page_high,
+                lz_frame,
+                x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
+                frame_allocator,
+            );
+            crate::debug_log_no_alloc!("landing_zone mapped at low: 0x{:x} and high: 0x{:x}", landing_zone_virt, landing_zone_high);
         }
 
         unsafe {
@@ -1129,7 +1141,7 @@ impl PageTableReinitializer {
                 "push rax", // 5th argument on stack
                 
                 "push {cs_selector}",
-                "mov rax, {landing_zone}",
+                "mov rax, {landing_zone_high}",
                 "push rax",
                 "retfq",
 
@@ -1140,7 +1152,7 @@ impl PageTableReinitializer {
                 l4_frame = in(reg) level_4_table_frame.start_address().as_u64(),
                 allocator = in(reg) frame_allocator as *const _,
                 cs_selector = in(reg) 0x08,
-                landing_zone = in(reg) landing_zone as usize,
+                landing_zone_high = in(reg) ((landing_zone as usize) as u64).wrapping_sub(current_physical_memory_offset.as_u64()).wrapping_add(self.phys_offset.as_u64()) as usize,
                 in("rdi") final_gdt_ptr_high,
                 out("dx") _,
                 out("rax") _,
