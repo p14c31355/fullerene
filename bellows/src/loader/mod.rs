@@ -267,19 +267,24 @@ pub fn exit_boot_services_and_jump(
         0
     };
 
-    let memory_map_descriptors = unsafe {
-        if num_descriptors > 0 && !descriptors_ptr.is_null() {
-            core::slice::from_raw_parts(
-                descriptors_ptr as *const petroleum::page_table::efi_memory::MemoryMapDescriptor,
-                num_descriptors
-            )
-        } else {
-            &[]
+    let memory_map_descriptors = if num_descriptors > 0 && !descriptors_ptr.is_null() {
+        let mut descriptors = alloc::vec::Vec::with_capacity(num_descriptors);
+        for i in 0..num_descriptors {
+            unsafe {
+                let desc_ptr = descriptors_ptr.add(i * descriptor_size_val);
+                descriptors.push(petroleum::page_table::efi_memory::MemoryMapDescriptor::new(
+                    desc_ptr,
+                    descriptor_size_val,
+                ));
+            }
         }
+        descriptors
+    } else {
+        alloc::vec::Vec::new()
     };
 
     let mut frame_allocator = unsafe {
-        petroleum::page_table::BitmapFrameAllocator::init(memory_map_descriptors)
+        petroleum::page_table::BitmapFrameAllocator::init(&memory_map_descriptors)
     };
 
     let new_phys_offset = petroleum::page_table::reinit_page_table_with_allocator(
@@ -287,7 +292,7 @@ pub fn exit_boot_services_and_jump(
         fb_addr,
         fb_size,
         &mut frame_allocator,
-        memory_map_descriptors,
+        &memory_map_descriptors,
         map_phys_addr as u64,
         final_map_size as u64,
         x86_64::VirtAddr::zero(),
