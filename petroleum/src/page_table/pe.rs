@@ -207,33 +207,8 @@ pub fn load_efi_image(
         // we will skip relocation processing if the specific field is missing,
         // as full PE relocation implementation is complex and depends on the specific goblin version.
         // In a real scenario, we would use the correct goblin API to iterate over relocations.
-        let mut reloc_offset = 0; 
-        if false { // Disabled to fix build error
-            // This block is intentionally disabled to fix build errors related to goblin version differences
-            // and will be implemented properly once the correct API is verified.
-            reloc_offset = 0;
-            // We need to access the relocation data from the loaded image in memory
-            while reloc_offset < (reloc_dir.virtual_address as usize + reloc_dir.size as usize) {
-                let block_ptr = unsafe { (phys_addr as *const u8).add(reloc_offset) };
-                let block_virtual_address = crate::read_unaligned!(block_ptr, 0, u32);
-                let size_of_block = crate::read_unaligned!(block_ptr, 4, u32);
-                if size_of_block == 0 { break; }
-                
-                let num_entries = (size_of_block - 8) / 2;
-                for i in 0..num_entries {
-                    let entry = crate::read_unaligned!(block_ptr, (8 + i * 2) as usize, u16);
-                    let rel_type = (entry >> 12) as u8;
-                    let rel_offset = (entry & 0xFFF) as u16;
-                    if rel_type == 10 { // Dir64
-                        let rva = block_virtual_address + rel_offset as u32;
-                        let ptr = (phys_addr + rva as usize) as *mut u64;
-                        let val = crate::read_unaligned!(ptr as *const u8, 0, u64);
-                        unsafe { core::ptr::write_unaligned(ptr, val.wrapping_add(image_base_delta)) };
-                    }
-                }
-                reloc_offset += size_of_block as usize;
-            }
-        }
+        // Relocations are currently disabled due to goblin version differences.
+        // Implementation will be added once the correct API is verified.
     }
 
     let entry_point_addr = phys_addr.saturating_add(address_of_entry_point);

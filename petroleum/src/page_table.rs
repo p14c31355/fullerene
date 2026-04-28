@@ -1,7 +1,7 @@
 pub mod bitmap_allocator;
 pub mod constants;
 pub mod efi_memory;
-mod pe;
+pub mod pe;
 mod utils;
 mod mapper;
 mod manager;
