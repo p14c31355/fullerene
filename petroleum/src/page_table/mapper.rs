@@ -544,12 +544,19 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         // regardless of where the bootloader is located in memory.
         unsafe {
             let gdt_virt_addr = core::ptr::addr_of!(TRANSITION_GDT) as *const _ as u64;
-            // Map the entire TransitionGdt structure
+            // Map the entire TransitionGdt structure to BOTH identity and high-half.
+            // This is critical because lgdt [rdi] uses the high-half address after CR3 switch.
             let gdt_phys_addr = (gdt_virt_addr.wrapping_sub(self.current_phys_offset.as_u64())) & !0xFFF;
             
             self.map_identity_config_4kiB(gdt_phys_addr, 1, crate::page_flags_const!(READ_WRITE));
+            self.map_at_offset_config_4kiB(
+                self.phys_offset,
+                gdt_phys_addr,
+                1,
+                crate::page_flags_const!(READ_WRITE),
+            );
             
-            crate::debug_log_no_alloc!("Transition GDT identity mapped at phys: 0x{:x}", gdt_phys_addr);
+            crate::debug_log_no_alloc!("Transition GDT identity AND high-half mapped at phys: 0x{:x}", gdt_phys_addr);
         }
         
         crate::debug_log_no_alloc!("Transition mappings completed");
