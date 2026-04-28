@@ -136,20 +136,10 @@ impl UefiInitContext {
             .expect("Frame allocator not initialized")
             .lock();
 
-        debug_log_no_alloc!("Calling reinit_page_table_with_allocator now...");
-        // Initialize page table with higher half mappings for UEFI
-        self.physical_memory_offset = petroleum::page_table::reinit_page_table_with_allocator(
-            kernel_phys_start,
-            fb_addr,
-            fb_size,
-            &mut frame_allocator,
-            *memory_map_ref,
-            self.memory_map as u64,
-            self.memory_map_size as u64,
-            x86_64::VirtAddr::new(0),
-            None,
-            None::<fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::constants::BootInfoFrameAllocator, x86_64::VirtAddr)>,
-        );
+        debug_log_no_alloc!("Skipping reinit_page_table_with_allocator (already handled by Bellows)");
+        // Bellows has already set up the page tables and switched CR3.
+        // We just need to set the physical memory offset to match what Bellows used.
+        self.physical_memory_offset = x86_64::VirtAddr::new(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64);
 
         // The UEFI memory map buffer is now mapped as part of essential regions 
         // in reinit_page_table_with_allocator to ensure it's accessible after CR3 switch.

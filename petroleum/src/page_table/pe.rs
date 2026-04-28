@@ -40,8 +40,8 @@ struct BaseRelocationBlock {
 }
 
 pub struct PeParser {
-    pe_base: *const u8,
-    pe_offset: usize,
+    pub pe_base: *const u8,
+    pub pe_offset: usize,
 }
 
 impl PeParser {
@@ -183,8 +183,9 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
 pub fn load_efi_image(
     st: &EfiSystemTable,
     file: &[u8],
+    phys_offset: usize,
 ) -> Result<
-    extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
+    (PhysAddr, extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !),
     BellowsError,
 > {
     let bs = unsafe { &*st.boot_services };
@@ -245,7 +246,8 @@ pub fn load_efi_image(
 
     // Relocations
     let image_base = optional_header.windows_fields.image_base as usize;
-    let image_base_delta = (phys_addr as i64) - (image_base as i64);
+    let virtual_base = phys_offset + phys_addr;
+    let image_base_delta = (virtual_base as i64) - (image_base as i64);
 
     if image_base_delta != 0 {
         // Use DataDirectory to find the base relocation table
@@ -289,14 +291,15 @@ pub fn load_efi_image(
         }
     }
 
-    let entry_point_addr = phys_addr.saturating_add(address_of_entry_point);
-    if entry_point_addr >= phys_addr + pages_needed * 4096 || entry_point_addr < phys_addr {
+    let entry_point_phys = phys_addr.saturating_add(address_of_entry_point);
+    if entry_point_phys >= phys_addr + pages_needed * 4096 || entry_point_phys < phys_addr {
         (bs.free_pages)(phys_addr, pages_needed);
         return Err(BellowsError::PeParse("Entry point address is outside allocated memory."));
     }
-
-    let entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> ! = unsafe { core::mem::transmute(entry_point_addr) };
-    Ok(entry)
+    
+    let entry_point_virt = phys_offset + entry_point_phys;
+    let entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> ! = unsafe { core::mem::transmute(entry_point_virt) };
+    Ok((PhysAddr::new(phys_addr as u64), entry))
 }
 
 #[repr(C)]

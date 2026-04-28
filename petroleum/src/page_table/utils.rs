@@ -614,14 +614,22 @@ pub fn map_stack_to_higher_half<T: crate::page_table::efi_memory::MemoryDescript
     mapper: &mut OffsetPageTable,
     frame_allocator: &mut BootInfoFrameAllocator,
     phys_offset: VirtAddr,
+    current_phys_offset: VirtAddr,
     memory_map: &[T],
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-    let rsp = crate::get_current_stack_pointer!();
+    let rsp_virt = crate::get_current_stack_pointer!();
+    let rsp_phys = unsafe {
+        let (current_cr3, _) = x86_64::registers::control::Cr3::read();
+        let phys_offset = x86_64::VirtAddr::new(0);
+        crate::page_table::utils::translate_addr(x86_64::VirtAddr::new(rsp_virt), phys_offset)
+            .expect("Failed to translate RSP to physical address")
+            .as_u64()
+    };
     for desc in memory_map.iter() {
         if desc.is_valid() {
             let start = desc.get_physical_start();
             let end = start + desc.get_page_count() * 4096;
-            if rsp >= start && rsp < end {
+            if rsp_phys >= start && rsp_phys < end {
                 crate::safe_map_to_higher_half!(
                     mapper,
                     frame_allocator,

@@ -1,5 +1,6 @@
 use core::ffi::c_void;
 
+use x86_64::structures::paging::FrameAllocator;
 use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable};
 
 // Module declarations for separated functionality
@@ -15,6 +16,7 @@ pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
 pub fn exit_boot_services_and_jump(
     image_handle: usize,
     system_table: *mut EfiSystemTable,
+    kernel_phys_start: x86_64::PhysAddr,
     entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
 ) -> petroleum::common::Result<!> {
     // Immediate debug prints on entry to pinpoint exact hang location
@@ -186,8 +188,12 @@ pub fn exit_boot_services_and_jump(
     }
 
     // Write descriptor_size before the memory map
+    // map_phys_addr is a physical address. We must use the virtual address map_ptr.
+    // map_ptr was defined as (map_phys_addr + size_of::<usize>()) as *mut c_void.
+    // So the location for descriptor_size is map_ptr - size_of::<usize>().
     unsafe {
-        *(map_phys_addr as *mut usize) = descriptor_size;
+        let descriptor_size_ptr = (map_ptr as *mut u8).sub(core::mem::size_of::<usize>()) as *mut usize;
+        core::ptr::write_volatile(descriptor_size_ptr, descriptor_size);
     }
 
     // Check if framebuffer config is available and append it to memory map for kernel
@@ -211,7 +217,7 @@ pub fn exit_boot_services_and_jump(
             unsafe {
                 core::ptr::copy(
                     &config_with_metadata as *const _ as *const u8,
-                    (map_phys_addr as *mut u8).add(config_offset),
+                    (map_ptr as *mut u8).add(config_offset - core::mem::size_of::<usize>()),
                     config_size,
                 );
             }
@@ -228,84 +234,90 @@ pub fn exit_boot_services_and_jump(
     // Jump to the kernel. This is the point of no return. We are calling the kernel entry point,
     // passing the memory map and other data. The validity of the `entry`
     // function pointer is assumed based on the successful PE file loading.
+    //
+    // Note: The `entry` function pointer is obtained via `load_efi_image`, which now 
+    // handles high-half relocation and returns the virtual address.
 
-    // Read current CR3 before jumping to kernel
-    let cr3_value = unsafe {
-        let cr3: u64;
-        core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
-        cr3
+    // Setup Page Tables before jumping to kernel
+    petroleum::serial::_print(format_args!("Reinitializing page tables for kernel jump...\n"));
+    
+    let fb_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|m| *m.lock());
+    let (fb_addr, fb_size) = match fb_config {
+        Some(c) => (
+            Some(x86_64::VirtAddr::new(c.address)),
+            Some((c.width as u64 * c.height as u64 * c.bpp as u64) / 8),
+        ),
+        None => (None, None),
     };
-    petroleum::serial::_print(format_args!("Switching to new page table (cr3 = 0x{:x})\n", cr3_value));
-    petroleum::serial::_print(format_args!("Jumping to kernel entry point: 0x{:x}\n", entry as usize));
 
-    #[cfg(feature = "debug_loader")]
-    {
-        // DEBUG: Check if entry is in the expected range
-        let entry_val = entry as usize;
-        petroleum::serial::_print(format_args!("DEBUG: Entry value = 0x{:x}\n", entry_val));
-        
-        petroleum::serial::_print(format_args!(
-            "Jumping to kernel at {:#x} with map at {:#x} size {:#x}\n",
-            entry_val,
-            map_phys_addr,
-            final_map_size
-        ));
-        petroleum::serial::_print(format_args!(
-            "Args: handle={:#x}, st={:#p}, map={:#x}, size={:#x}\n", 
-            image_handle, system_table, map_phys_addr, final_map_size
-        ));
-        petroleum::serial::_print(format_args!("About to call kernel entry.\n"));
-        
-        // DEBUG: Dump memory around current RIP to diagnose #UD
-        let rip: u64;
-        unsafe {
-            core::arch::asm!("lea {}, [rip]", out(reg) rip);
-            petroleum::serial::_print(format_args!("DEBUG: RIP = 0x{:x}\n", rip as usize));
-            petroleum::serial::_print(format_args!("DEBUG: Memory dump at RIP:\n"));
-            for i in 0..16 {
-                let val = core::ptr::read_volatile((rip as *const u8).add(i));
-                petroleum::serial::_print(format_args!("  [{:02x}] : {:02x}\n", i, val));
-            }
+    // Prepare memory map descriptors
+    // The memory map buffer is at map_ptr. The first element is descriptor_size.
+    let descriptor_size_val = unsafe { *(map_ptr as *const usize) };
+    let descriptors_ptr = unsafe { (map_ptr as *const u8).add(core::mem::size_of::<usize>()) };
+    
+    // Ensure we don't underflow if map_size is smaller than size_of::<usize>()
+    let available_size = map_size.saturating_sub(core::mem::size_of::<usize>());
+    let num_descriptors = if descriptor_size_val > 0 {
+        available_size / descriptor_size_val
+    } else {
+        0
+    };
+
+    let memory_map_descriptors = unsafe {
+        if num_descriptors > 0 {
+            core::slice::from_raw_parts(
+                descriptors_ptr as *const petroleum::page_table::efi_memory::MemoryMapDescriptor,
+                num_descriptors
+            )
+        } else {
+            core::slice::from_raw_parts(core::ptr::NonNull::dangling().as_ptr(), 0)
         }
-    }
-    // CRITICAL: The 'entry' pointer might be a virtual address.
-    // To bypass any virtual address space confusion, we calculate the 
-    // physical address of the entry point and jump to it directly.
-    let entry_virt = entry as usize;
-    
-    // We need to find the physical address of the entry point.
-    // Since the kernel is loaded at a known physical location, we can calculate it.
-    // This is a simplified approach: we assume the entry is within the loaded image.
-    // In a real scenario, we'd use the PE header's ImageBase and EntryPoint RVA.
-    
-    // For now, let's try to use the entry_virt as a physical address, 
-    // as we have identity-mapped the first 1GB.
-    let entry_phys = entry_virt; 
+    };
 
+    let mut frame_allocator = unsafe {
+        petroleum::page_table::BitmapFrameAllocator::init(memory_map_descriptors)
+    };
+
+    let new_phys_offset = petroleum::page_table::reinit_page_table_with_allocator(
+        kernel_phys_start,
+        fb_addr,
+        fb_size,
+        &mut frame_allocator,
+        memory_map_descriptors,
+        map_phys_addr as u64,
+        final_map_size as u64,
+        x86_64::VirtAddr::zero(),
+        None::<fn()>,
+        None::<fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::BootInfoFrameAllocator, x86_64::VirtAddr)>,
+    );
+    
+    petroleum::serial::_print(format_args!("New physical memory offset: {:#x}\n", new_phys_offset.as_u64()));
+    petroleum::serial::_print(format_args!("Jumping to kernel entry point: {:#p}\n", entry));
+
+    // Now jump to the kernel.
     unsafe {
         core::arch::asm!(
-            "mov rax, cr3",
-            "mov cr3, rax", // Force TLB flush
-            "mfence",
-            // CRITICAL: Reset segment registers to 0 to ensure flat mode
-            // and remove any UEFI-inherited segment bases that cause RIP divergence.
             "xor ax, ax",
             "mov ds, ax",
             "mov es, ax",
             "mov fs, ax",
             "mov gs, ax",
             "mov ss, ax",
+
             "mov rcx, {handle}",
             "mov rdx, {st}",
             "mov r8, {map}",
             "mov r9, {size}",
-            "mov rax, {entry}",
-            "jmp rax",
+            
+            "push 0x38",
+            "push {entry_addr}",
+            "retfq",
+
             handle = in(reg) image_handle,
             st = in(reg) system_table,
             map = in(reg) map_phys_addr,
             size = in(reg) final_map_size,
-            entry = in(reg) entry_phys,
+            entry_addr = in(reg) entry as usize,
             options(noreturn),
         );
     }
@@ -315,8 +327,9 @@ pub fn exit_boot_services_and_jump(
 pub fn load_efi_image(
     st: &petroleum::common::EfiSystemTable,
     file: &[u8],
+    phys_offset: usize,
 ) -> petroleum::common::Result<
-    extern "efiapi" fn(usize, *mut petroleum::common::EfiSystemTable, *mut c_void, usize) -> !,
+    (x86_64::addr::PhysAddr, extern "efiapi" fn(usize, *mut petroleum::common::EfiSystemTable, *mut c_void, usize) -> !),
 > {
-    petroleum::page_table::pe::load_efi_image(st, file)
+    petroleum::page_table::pe::load_efi_image(st, file, phys_offset)
 }

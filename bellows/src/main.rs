@@ -109,13 +109,14 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     petroleum::serial::_print(format_args!("Attempting to load EFI image...\n"));
 
     // Load the kernel and get its entry point.
-    let entry = match load_efi_image(st, efi_image_file) {
-        Ok(e) => {
+    let (kernel_phys_start, entry) = match load_efi_image(st, efi_image_file, petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64() as usize) {
+        Ok((phys, e)) => {
             petroleum::serial::_print(format_args!(
-                "EFI image loaded successfully. Entry point: {:#p}\n",
-                e as *const ()
+                "EFI image loaded successfully. Entry point: {:#p}, Phys base: {:#x}\n",
+                e as *const (),
+                phys.as_u64()
             ));
-            e
+            (phys, e)
         }
         Err(err) => {
             petroleum::println!("Failed to load EFI image: {:?}", err);
@@ -131,7 +132,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     ));
     // Exit boot services and jump to the kernel.
     petroleum::println!("Bellows: About to exit boot services and jump to kernel."); // Debug print just before the call
-    match exit_boot_services_and_jump(image_handle, system_table, entry) {
+    match exit_boot_services_and_jump(image_handle, system_table, kernel_phys_start, entry) {
         Ok(_) => {
             unreachable!(); // This branch should never be reached if the function returns '!'
         }

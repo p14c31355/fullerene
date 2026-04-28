@@ -188,12 +188,12 @@ impl<'a> MemoryMapper<'a> {
 pub unsafe fn map_pe_section(
     mapper: &mut OffsetPageTable,
     section: PeSection,
-    kernel_phys_start: PhysAddr,
+    pe_base_phys: u64,
     phys_offset: VirtAddr,
     frame_allocator: &mut BootInfoFrameAllocator,
 ) {
     let flags = derive_pe_flags(section.characteristics);
-    let section_start_phys = kernel_phys_start.as_u64() + section.pointer_to_raw_data as u64;
+    let section_start_phys = pe_base_phys + section.pointer_to_raw_data as u64;
     let section_start_virt = phys_offset.as_u64() + section.virtual_address as u64;
     let section_size = section.virtual_size as u64;
     let pages = section_size.div_ceil(4096);
@@ -303,15 +303,18 @@ impl<'a, 'b> KernelMapper<'a, 'b> {
     }
 
     unsafe fn map_pe_sections(&mut self, kernel_phys_start: PhysAddr) -> bool {
-        if let Some(sections) = unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8) }
-            .and_then(|p| unsafe { p.sections() })
-        {
-            for section in sections.into_iter().filter(|s| s.virtual_size > 0) {
-                unsafe {
-                    self.map_single_pe_section(section, kernel_phys_start);
+        if let Some(parser) = unsafe { PeParser::new(kernel_phys_start.as_u64() as *const u8) } {
+            let pe_base_phys = parser.pe_base as u64;
+            if let Some(sections) = unsafe { parser.sections() } {
+                for section in sections.into_iter().filter(|s| s.virtual_size > 0) {
+                    unsafe {
+                        self.map_single_pe_section(section, pe_base_phys);
+                    }
                 }
+                true
+            } else {
+                false
             }
-            true
         } else {
             false
         }
@@ -334,11 +337,11 @@ impl<'a, 'b> KernelMapper<'a, 'b> {
         }
     }
 
-    unsafe fn map_single_pe_section(&mut self, section: PeSection, kernel_phys_start: PhysAddr) {
+    unsafe fn map_single_pe_section(&mut self, section: PeSection, pe_base_phys: u64) {
         unsafe { map_pe_section(
             self.mapper,
             section,
-            kernel_phys_start,
+            pe_base_phys,
             self.phys_offset,
             self.frame_allocator,
         ); }
@@ -509,16 +512,31 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
                 crate::page_flags_const!(READ_WRITE_NO_EXEC),
             );
             
-            let kernel_size = crate::page_table::pe::calculate_kernel_memory_size(kernel_phys_start);
+            // Try to find the actual PE base to ensure the entire kernel image is mapped
+            let (pe_base, kernel_size) = if let Some(parser) = unsafe { crate::page_table::pe::PeParser::new(kernel_phys_start.as_u64() as *const u8) } {
+                let base = parser.pe_base as u64;
+                let size = parser.size_of_image().unwrap_or(crate::page_table::pe::FALLBACK_KERNEL_SIZE);
+                (base, size)
+            } else {
+                (kernel_phys_start.as_u64(), crate::page_table::pe::FALLBACK_KERNEL_SIZE)
+            };
             let kernel_pages = kernel_size.div_ceil(4096);
             
             // Identity mapping for absolute low-address compatibility
-            self.map_identity_config_4kiB(kernel_phys_start.as_u64(), kernel_pages, crate::page_flags_const!(READ_WRITE));
+            self.map_identity_config_4kiB(pe_base, kernel_pages, crate::page_flags_const!(READ_WRITE));
             
             // Current offset mapping to keep the CPU executing after CR3 switch
             self.map_at_offset_config_4kiB(
                 self.current_phys_offset,
-                kernel_phys_start.as_u64(),
+                pe_base,
+                kernel_pages,
+                crate::page_flags_const!(READ_WRITE),
+            );
+
+            // High-half mapping for the kernel image to prevent #PF immediately after switch
+            self.map_at_offset_config_4kiB(
+                self.phys_offset,
+                pe_base,
                 kernel_pages,
                 crate::page_flags_const!(READ_WRITE),
             );
@@ -642,6 +660,7 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
             self.mapper,
             self.frame_allocator,
             self.phys_offset,
+            self.current_phys_offset,
             self.memory_map,
         )
         .expect("Failed to map stack region to higher half");
