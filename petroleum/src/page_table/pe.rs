@@ -273,7 +273,7 @@ pub fn load_efi_image(
                     };
                     
                     // Type 3 is DIR64 (64-bit absolute address)
-                    if (type_offset >> 12) == 3 {
+                    if (type_offset >> 12) == 10 {
                         let offset = (type_offset & 0x0FFF) as usize;
                         let target_addr = phys_addr + block.page_rva as usize + offset;
                         
