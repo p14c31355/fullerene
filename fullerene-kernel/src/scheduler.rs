@@ -426,8 +426,8 @@ pub fn scheduler_loop() -> ! {
     loop {
         // Increment system counters for this iteration
         {
-            *SYSTEM_TICK.lock() += 1;
-            *SCHEDULER_ITERATIONS.lock() += 1;
+            SYSTEM_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            SCHEDULER_ITERATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         }
 
         // Process one complete scheduler iteration
