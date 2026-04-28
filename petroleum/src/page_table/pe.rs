@@ -267,14 +267,12 @@ pub fn load_efi_image(
                 
                 for i in 0..num_entries {
                     let entry_offset = 8 + i * 2;
-                    let type_offset = unsafe { 
-                    // Type 10 is DIR64 (64-bit absolute address)
-                        core::ptr::read_volatile(entry_ptr) 
-                    };
-                    
-                    // Type 3 is DIR64 (64-bit absolute address)
-                    if (type_offset >> 12) == 10 {
-                        let offset = (type_offset & 0x0FFF) as usize;
+                    let entry_ptr = unsafe { current_reloc_ptr.add(entry_offset) };
+                    let entry = unsafe { core::ptr::read_volatile(entry_ptr as *const u16) };
+
+                    // Type 10 is IMAGE_REL_BASED_DIR64 (64-bit absolute address)
+                    if (entry >> 12) == 10 {
+                        let offset = (entry & 0x0FFF) as usize;
                         let target_addr = phys_addr + block.page_rva as usize + offset;
                         
                         unsafe {
