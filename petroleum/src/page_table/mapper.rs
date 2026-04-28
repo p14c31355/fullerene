@@ -473,21 +473,22 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
             let stack_page_start = rsp & !0xFFF;
             // Map 2MB around the current stack pointer to be absolutely safe.
             // We map from (rsp & !0x1FFFFF) to cover a large enough region.
-            let region_start = rsp & !0x1FFFFF; 
+            let region_virt_start = rsp & !0x1FFFFF;
+            let region_phys_start = region_virt_start.wrapping_sub(self.current_phys_offset.as_u64());
             let region_pages = (2 * 1024 * 1024) / 4096;
             
             self.map_identity_config_4kiB(
-                region_start,
+                region_phys_start,
                 region_pages,
                 crate::page_flags_const!(READ_WRITE),
             );
             self.map_at_offset_config_4kiB(
                 self.phys_offset,
-                region_start,
+                region_phys_start,
                 region_pages,
                 crate::page_flags_const!(READ_WRITE),
             );
-            crate::debug_log_no_alloc!("Current stack region (2MB) identity AND high-half mapped: 0x{:x}", region_start);
+            crate::debug_log_no_alloc!("Current stack region (2MB) identity AND high-half mapped: 0x{:x}", region_phys_start);
         }
         
         // Removed map_available_memory_identity() as it is too slow and unnecessary for the CR3 switch transition.
@@ -530,11 +531,12 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         // This allows the CPU to load and use the GDT immediately after the CR3 switch,
         // regardless of where the bootloader is located in memory.
         unsafe {
-            let gdt_addr = &TRANSITION_GDT as *const _ as u64;
+            let gdt_virt_addr = &TRANSITION_GDT as *const _ as u64;
+            let gdt_phys_addr = (gdt_virt_addr & !0xFFF).wrapping_sub(self.current_phys_offset.as_u64());
             
-            self.map_identity_config_4kiB(gdt_addr & !0xFFF, 1, crate::page_flags_const!(READ_WRITE));
+            self.map_identity_config_4kiB(gdt_phys_addr, 1, crate::page_flags_const!(READ_WRITE));
             
-            crate::debug_log_no_alloc!("Transition GDT identity mapped");
+            crate::debug_log_no_alloc!("Transition GDT identity mapped at phys: 0x{:x}", gdt_phys_addr);
         }
         
         crate::debug_log_no_alloc!("Transition mappings completed");
@@ -560,10 +562,11 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
                 );
             }
 
-            let bitmap_start =
+            let bitmap_virt_start =
                 (&raw const crate::page_table::bitmap_allocator::BITMAP_STATIC) as *const _ as usize as u64;
+            let bitmap_phys_start = bitmap_virt_start.wrapping_sub(self.current_phys_offset.as_u64());
             let bitmap_pages = ((131072 * 8) + 4095) / 4096;
-            self.map_identity_config_4kiB(bitmap_start, bitmap_pages, crate::page_flags_const!(READ_WRITE_NO_EXEC));
+            self.map_identity_config_4kiB(bitmap_phys_start, bitmap_pages, crate::page_flags_const!(READ_WRITE_NO_EXEC));
             self.map_identity_config_4kiB(
                 level_4_table_frame.start_address().as_u64(),
                 1,
@@ -950,9 +953,10 @@ impl PageTableReinitializer {
         // The stack is identity mapped, so this descriptor will be accessible after the CR3 switch.
         let transition_desc = GdtDescriptor {
             limit: (core::mem::size_of::<[GdtEntry; 3]>() - 1) as u16,
-            base: &TRANSITION_GDT as *const _ as u64,
+            base: (&TRANSITION_GDT as *const _ as u64).wrapping_sub(current_physical_memory_offset.as_u64()),
         };
-        let final_gdt_ptr = gdt_ptr.unwrap_or(&transition_desc as *const _ as *const u8);
+        let final_gdt_ptr_virt = gdt_ptr.unwrap_or(&transition_desc as *const _ as *const u8);
+        let final_gdt_ptr = (final_gdt_ptr_virt as u64).wrapping_sub(current_physical_memory_offset.as_u64()) as *const u8;
 
         // Use primitive serial output to mark the absolute last point before entering assembly.
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"CR3 switch: entering asm! block\n");
