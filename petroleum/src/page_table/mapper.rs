@@ -380,6 +380,47 @@ pub unsafe fn map_memory_descriptors_with_config<T: crate::page_table::efi_memor
     }
 }
 
+#[repr(C, packed)]
+struct GdtEntry {
+    limit_low: u16,
+    base_low: u16,
+    base_mid: u8,
+    access: u8,
+    flags: u8,
+    base_high: u8,
+}
+
+#[repr(C, packed)]
+struct GdtDescriptor {
+    limit: u16,
+    base: u64,
+}
+
+static TRANSITION_GDT: [GdtEntry; 3] = [
+    GdtEntry { limit_low: 0, base_low: 0, base_mid: 0, access: 0, flags: 0, base_high: 0 }, // 0x00: Null
+    GdtEntry { // 0x08: Kernel Code
+        limit_low: 0xFFFF,
+        base_low: 0,
+        base_mid: 0,
+        access: 0x9A, // Present, Ring 0, Code, Exec/Read
+        flags: 0xAF, // Long mode, 64-bit
+        base_high: 0,
+    },
+    GdtEntry { // 0x10: Kernel Data
+        limit_low: 0xFFFF,
+        base_low: 0,
+        base_mid: 0,
+        access: 0x92, // Present, Ring 0, Data, Read/Write
+        flags: 0,
+        base_high: 0,
+    },
+];
+
+static TRANSITION_GDT_DESC: GdtDescriptor = GdtDescriptor {
+    limit: (core::mem::size_of::<[GdtEntry; 3]>() - 1) as u16,
+    base: &TRANSITION_GDT as *const _ as u64,
+};
+
 pub struct PageTableInitializer<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> {
     pub mapper: &'a mut OffsetPageTable<'static>,
     pub frame_allocator: &'a mut BootInfoFrameAllocator,
@@ -742,6 +783,7 @@ impl PageTableReinitializer {
         load_gdt: Option<fn()>,
         load_idt: Option<fn()>,
         extra_mappings: Option<F>,
+        gdt_ptr: Option<*const u8>,
     ) -> VirtAddr 
     where 
         T: crate::page_table::efi_memory::MemoryDescriptorValidator,
@@ -805,6 +847,7 @@ impl PageTableReinitializer {
             current_physical_memory_offset,
             load_gdt,
             load_idt,
+            gdt_ptr,
         );
         
         self.phys_offset
@@ -881,29 +924,46 @@ impl PageTableReinitializer {
         current_physical_memory_offset: VirtAddr,
         load_gdt: Option<fn()>,
         load_idt: Option<fn()>,
+        gdt_ptr: Option<*const u8>,
     ) {
         x86_64::instructions::interrupts::disable();
         crate::debug_log_no_alloc!("About to switch CR3 to new table: 0x", level_4_table_frame.start_address().as_u64() as usize);
         
         let offset_diff = self.phys_offset.as_u64().wrapping_sub(current_physical_memory_offset.as_u64());
         let cr3_val = level_4_table_frame.start_address().as_u64();
+        let target_offset = self.phys_offset.as_u64();
 
         unsafe {
             core::arch::asm!(
                 // 1. Switch CR3
                 "mov cr3, {cr3}",
                 
-                // 2. Adjust RSP and RBP immediately to high half
+                // 2. Reload GDT immediately after CR3 switch if ptr is provided.
+                // This ensures the CPU can access the GDT even if the GDTR was pointing to
+                // a high-half address that is now mapped differently.
+                "test rdi, rdi",
+                "jz 2f",
+                "lgdt [rdi]",
+                "2:",
+                
+                // 3. Adjust RSP and RBP immediately to high half
                 "add rsp, {diff}",
                 "add rbp, {diff}",
                 
-                // 3. Absolute jump to high half
+                // 4. Robust jump to high half.
+                // Handle cases where RIP is already in the high half.
                 "lea rax, [rip]",
+                "mov rbx, {target_offset}",
+                "cmp rax, rbx",
+                "jae 3f",
                 "add rax, {diff}",
+                "3:",
                 "jmp rax",
                 
                 cr3 = in(reg) cr3_val,
                 diff = in(reg) offset_diff,
+                target_offset = in(reg) target_offset,
+                in("rdi") gdt_ptr.unwrap_or(core::ptr::null()),
             );
         }
 
@@ -956,6 +1016,7 @@ pub fn reinit_page_table_with_allocator<F>(
     load_gdt: Option<fn()>,
     load_idt: Option<fn()>,
     extra_mappings: Option<F>,
+    gdt_ptr: Option<*const u8>,
 ) -> VirtAddr 
 where 
     F: FnOnce(&mut OffsetPageTable, &mut BootInfoFrameAllocator, VirtAddr),
@@ -973,5 +1034,6 @@ where
         load_gdt,
         load_idt,
         extra_mappings,
+        gdt_ptr,
     )
 }

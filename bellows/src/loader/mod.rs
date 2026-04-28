@@ -299,6 +299,7 @@ pub fn exit_boot_services_and_jump(
         None::<fn()>,
         None::<fn()>,
         None::<fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::BootInfoFrameAllocator, x86_64::VirtAddr)>,
+        None,
     );
     
     petroleum::serial::_print(format_args!("New physical memory offset: {:#x}\n", new_phys_offset.as_u64()));

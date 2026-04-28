@@ -37,6 +37,7 @@ pub fn reinit_page_table(
         None,
         None,
         None::<fn(&mut x86_64::structures::paging::OffsetPageTable, &mut BootInfoFrameAllocator, x86_64::VirtAddr)>,
+        None,
     )
 }
 
