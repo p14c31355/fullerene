@@ -502,8 +502,11 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         // If we use huge pages here, any attempt to map a 4KiB page within that 
         // range will fail with `ParentEntryHugePage`.
         unsafe {
+            // CRITICAL: Ensure the current execution point (RIP) is identity-mapped.
+            // We map a generous range starting from 0 to cover the bootloader's 
+            // current location (typically around 0x100000) and the transition code.
             let low_mem_start = 0u64;
-            let low_mem_size = 128 * 1024 * 1024; // Reduced to 128MB to avoid slowness while staying safe
+            let low_mem_size = 256 * 1024 * 1024; // Increased to 256MB to be absolutely sure RIP is covered
             let region_pages = low_mem_size / 4096;
             let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
             
@@ -520,7 +523,7 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
                 flags,
             );
             
-            crate::debug_log_no_alloc!("Low physical memory (128MB) identity AND high-half mapped for transition (4KiB pages)");
+            crate::debug_log_no_alloc!("Low physical memory (256MB) identity AND high-half mapped for transition (4KiB pages)");
         }
 
         // CRITICAL: Ensure the transition GDT and its descriptor are identity mapped.
@@ -956,35 +959,30 @@ impl PageTableReinitializer {
 
         unsafe {
             core::arch::asm!(
-                // 1. Reload GDT BEFORE switching CR3.
-                // This avoids a Page Fault when accessing the GDT descriptor,
-                // as the pointer in RDI is a virtual address valid in the CURRENT page table.
-                "lgdt [rdi]",
-                
-                // 2. Switch CR3
+                // 1. Switch CR3 first.
+                // The current RIP must be identity-mapped in the new page table.
                 "mov cr3, {cr3}",
                 
-                // 3. Adjust RSP and RBP immediately to high half.
-                // The stack must be high-half mapped before we can push to it.
+                // 2. Load GDT pointer.
+                // Now that CR3 is switched, final_gdt_ptr (which is a high-half address)
+                // is accessible.
+                "lgdt [rdi]",
+                
+                // 3. Adjust RSP and RBP to high half.
                 "add rsp, {diff}",
                 "add rbp, {diff}",
                 
-                // 4. Robust far jump to high half to reload CS.
-                // A far jump (push CS, push RIP, retfq) is the most reliable way to ensure
-                // the CPU is in the correct segment and mode after a GDT reload.
-                "lea rax, [rip]",
-                "mov rbx, {target_offset}",
-                "cmp rax, rbx",
-                "jae 3f",
+                // 4. Far jump to high half to reload CS.
+                "push {cs_selector}",
+                "lea rax, [rip + 2f]",
                 "add rax, {diff}",
-                "3:",
-                "push 0x08", // Push CS selector for Kernel Code in TRANSITION_GDT
-                "push rax",   // Push the calculated high-half RIP
+                "push rax",
                 "retfq",
+                "2:", // Landing zone in high half
                 
                 cr3 = in(reg) cr3_val,
                 diff = in(reg) offset_diff,
-                target_offset = in(reg) target_offset,
+                cs_selector = in(reg) 0x08,
                 in("rdi") final_gdt_ptr,
             );
         }
