@@ -130,7 +130,7 @@ fn collect_system_stats() -> SystemStats {
     petroleum::common::collect_system_stats(
         crate::process::get_process_count,
         crate::process::get_active_process_count,
-        || *SYSTEM_TICK.lock(),
+        || SYSTEM_TICK.load(core::sync::atomic::Ordering::Relaxed),
     )
 }
 
