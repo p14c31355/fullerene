@@ -101,8 +101,8 @@ lazy_static::lazy_static! {
 use x86_64::VirtAddr;
 
 // System-wide counters and statistics
-static SYSTEM_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
-static SCHEDULER_ITERATIONS: spin::Mutex<u64> = spin::Mutex::new(0);
+static SYSTEM_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static SCHEDULER_ITERATIONS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 // I/O event queue (placeholder for future I/O operations)
 static IO_EVENTS: spin::Mutex<VecDeque<IoEvent>> = spin::Mutex::new(VecDeque::new());
