@@ -194,7 +194,7 @@ fn log_system_stats(stats: &SystemStats, interval_ticks: u64) {
     static LAST_LOG_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
 
     // Only log every interval_ticks to avoid spam
-    let current_tick = *SYSTEM_TICK.lock();
+    let current_tick = SYSTEM_TICK.load(core::sync::atomic::Ordering::Relaxed);
     petroleum::check_periodic!(LAST_LOG_TICK, interval_ticks, current_tick, {
         log::info!(
             "System Stats - Processes: {}/{}, Memory: {} bytes, Uptime: {} ticks",
