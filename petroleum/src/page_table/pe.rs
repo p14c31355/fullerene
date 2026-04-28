@@ -6,6 +6,21 @@ use core::ffi::c_void;
 pub const KERNEL_MEMORY_PADDING: u64 = 1024 * 1024;
 pub const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024;
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PeSectionHeader {
+    pub name: [u8; 8],
+    pub virtual_size: u32,
+    pub virtual_address: u32,
+    pub size_of_raw_data: u32,
+    pub pointer_to_raw_data: u32,
+    pub _pointer_to_relocations: u32,
+    pub _pointer_to_linenumbers: u32,
+    pub _number_of_relocations: u16,
+    pub _number_of_linenumbers: u16,
+    pub characteristics: u32,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct PeSection {
     pub name: [u8; 8],
@@ -16,28 +31,54 @@ pub struct PeSection {
     pub characteristics: u32,
 }
 
-pub struct PeParser<'a> {
-    pe: PE<'a>,
+pub struct PeParser {
+    pe_base: *const u8,
+    pe_offset: usize,
 }
 
-impl<'a> PeParser<'a> {
+impl PeParser {
     const MAX_PE_SEARCH_DISTANCE: usize = 10 * 1024 * 1024;
+    const MAX_PE_OFFSET: usize = 16 * 1024 * 1024;
+    const MAX_PE_HEADER_OFFSET: usize = 1024 * 1024;
+    const MAX_PE_SECTIONS: usize = 16;
 
     pub unsafe fn new(kernel_ptr: *const u8) -> Option<Self> {
-        let base = find_pe_base(kernel_ptr)?;
-        let pe_offset = crate::read_unaligned!(base, 0x3c, u32) as usize;
-        
-        // Create a slice from the PE header onwards
-        // We assume the image is large enough to contain the headers
-        let slice = core::slice::from_raw_parts(base.add(pe_offset), 4096);
-        PE::parse(slice).ok().map(|pe| Self { pe })
+        unsafe { find_pe_base(kernel_ptr) }.map(|base| {
+            let pe_offset = crate::read_unaligned!(base, 0x3c, u32) as usize;
+            Self {
+                pe_base: base,
+                pe_offset,
+            }
+        })
     }
 
-    pub fn size_of_image(&self) -> Option<u64> {
-        self.pe.header.optional_header.as_ref().map(|oh| oh.windows_fields.size_of_image as u64)
+    pub unsafe fn size_of_image(&self) -> Option<u64> {
+        if self.pe_offset == 0
+            || self.pe_offset >= PeParser::MAX_PE_HEADER_OFFSET
+            || self.pe_base.is_null()
+        {
+            return None;
+        }
+        let magic = crate::read_unaligned!(self.pe_base, self.pe_offset + 24, u16);
+        if magic != 0x10B && magic != 0x20B {
+            return None;
+        }
+        Some(crate::read_unaligned!(self.pe_base, self.pe_offset + 24 + 0x38, u32) as u64)
     }
 
-    pub fn sections(&self) -> Option<[PeSection; 16]> {
+    pub unsafe fn sections(&self) -> Option<[PeSection; PeParser::MAX_PE_SECTIONS]> {
+        if self.pe_offset == 0
+            || self.pe_offset >= PeParser::MAX_PE_HEADER_OFFSET
+            || self.pe_base.is_null()
+        {
+            return None;
+        }
+        let num_sections =
+            unsafe { crate::read_unaligned!(self.pe_base, self.pe_offset + 6, u16) } as usize;
+        let optional_header_size =
+            unsafe { crate::read_unaligned!(self.pe_base, self.pe_offset + 20, u16) } as usize;
+        let section_table_offset = self.pe_offset + 24 + optional_header_size;
+
         let mut sections = [PeSection {
             name: [0; 8],
             virtual_size: 0,
@@ -45,20 +86,17 @@ impl<'a> PeParser<'a> {
             size_of_raw_data: 0,
             pointer_to_raw_data: 0,
             characteristics: 0,
-        }; 16];
-
-        for (i, section) in self.pe.sections.iter().enumerate().take(16) {
-            let mut name = [0u8; 8];
-            let name_len = section.name.len().min(8);
-            name[..name_len].copy_from_slice(&section.name[..name_len]);
-
+        }; PeParser::MAX_PE_SECTIONS];
+        for i in 0..num_sections.min(PeParser::MAX_PE_SECTIONS) {
+            let offset = section_table_offset + i * 40;
+            let header = unsafe { crate::read_unaligned!(self.pe_base, offset, PeSectionHeader) };
             sections[i] = PeSection {
-                name,
-                virtual_size: section.virtual_size,
-                virtual_address: section.virtual_address,
-                size_of_raw_data: section.size_of_raw_data,
-                pointer_to_raw_data: section.pointer_to_raw_data,
-                characteristics: section.characteristics,
+                name: header.name,
+                virtual_size: header.virtual_size,
+                virtual_address: header.virtual_address,
+                size_of_raw_data: header.size_of_raw_data,
+                pointer_to_raw_data: header.pointer_to_raw_data,
+                characteristics: header.characteristics,
             };
         }
         Some(sections)
@@ -219,4 +257,34 @@ pub fn load_efi_image(
 
     let entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> ! = unsafe { core::mem::transmute(entry_point_addr) };
     Ok(entry)
+}
+
+#[repr(C)]
+pub struct Elf64Ehdr {
+    pub e_ident: [u8; 16],
+    pub e_type: u16,
+    pub e_machine: u16,
+    pub e_version: u32,
+    pub e_entry: u64,
+    pub e_phoff: u64,
+    pub e_shoff: u64,
+    pub e_flags: u32,
+    pub e_ehsize: u16,
+    pub e_phentsize: u16,
+    pub e_phnum: u16,
+    pub e_shentsize: u16,
+    pub e_shnum: u16,
+    pub e_shstrndx: u16,
+}
+
+#[repr(C)]
+pub struct Elf64Phdr {
+    pub p_type: u32,
+    pub p_flags: u32,
+    pub p_offset: u64,
+    pub p_vaddr: u64,
+    pub p_paddr: u64,
+    pub p_filesz: u64,
+    pub p_memsz: u64,
+    pub p_align: u64,
 }

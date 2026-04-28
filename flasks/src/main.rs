@@ -103,31 +103,26 @@ fn create_iso_and_setup(
     std::fs::copy(&kernel_path, "bellows/src/kernel.bin")?;
 
     // --- 2. Build bellows (no_std) ---
-    // For BIOS mode, skip bellows
     let bellows_path = target_dir.join("bellows.efi");
-    if bellows_path.exists() {
-        // Use existing
-    } else {
-        let status = Command::new("cargo")
-            .current_dir(workspace_root)
-            .args([
-                "+nightly",
-                "build",
-                "-q",
-                "-Zbuild-std=core,alloc",
-                "--features",
-                "debug_loader",
-                "--package",
-                "bellows",
-                "--target",
-                "x86_64-unknown-uefi",
-                "--profile",
-                "dev",
-            ])
-            .status()?;
-        if !status.success() {
-            return Err(io::Error::other("bellows build failed"));
-        }
+    let status = Command::new("cargo")
+        .current_dir(workspace_root)
+        .args([
+            "+nightly",
+            "build",
+            "-q",
+            "-Zbuild-std=core,alloc",
+            "--features",
+            "debug_loader",
+            "--package",
+            "bellows",
+            "--target",
+            "x86_64-unknown-uefi",
+            "--profile",
+            "dev",
+        ])
+        .status()?;
+    if !status.success() {
+        return Err(io::Error::other("bellows build failed"));
     }
 
     // --- 3. Create ISO using isobemak ---
