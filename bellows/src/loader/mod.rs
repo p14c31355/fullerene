@@ -187,13 +187,12 @@ pub fn exit_boot_services_and_jump(
         }
     }
 
-    // Write descriptor_size before the memory map
-    // map_phys_addr is a physical address. We must use the virtual address map_ptr.
-    // map_ptr was defined as (map_phys_addr + size_of::<usize>()) as *mut c_void.
-    // So the location for descriptor_size is map_ptr - size_of::<usize>().
+    // Write descriptor_size at the very beginning of the allocated buffer (map_phys_addr)
     unsafe {
-        let descriptor_size_ptr = (map_ptr as *mut u8).sub(core::mem::size_of::<usize>()) as *mut usize;
-        core::ptr::write_volatile(descriptor_size_ptr, descriptor_size);
+        let descriptor_size_ptr = map_phys_addr as *mut usize;
+        if !descriptor_size_ptr.is_null() {
+            core::ptr::write_volatile(descriptor_size_ptr, descriptor_size);
+        }
     }
 
     // Check if framebuffer config is available and append it to memory map for kernel
@@ -209,17 +208,22 @@ pub fn exit_boot_services_and_jump(
         };
         let config_size = core::mem::size_of::<petroleum::common::uefi::ConfigWithMetadata>();
 
-        // Check if buffer has space
-        let config_offset = map_size + core::mem::size_of::<usize>();
+        // The memory map data starts at map_ptr.
+        // The total size of the map data is map_size.
+        // We append the config immediately after the map data.
+        let config_offset = core::mem::size_of::<usize>() + map_size;
         if map_phys_addr + config_offset + config_size
             <= map_phys_addr + map_buffer_size + core::mem::size_of::<usize>()
         {
             unsafe {
-                core::ptr::copy(
-                    &config_with_metadata as *const _ as *const u8,
-                    (map_ptr as *mut u8).add(config_offset - core::mem::size_of::<usize>()),
-                    config_size,
-                );
+                let dest_ptr = (map_phys_addr as *mut u8).add(config_offset);
+                if !dest_ptr.is_null() {
+                    core::ptr::copy_nonoverlapping(
+                        &config_with_metadata as *const _ as *const u8,
+                        dest_ptr,
+                        config_size,
+                    );
+                }
             }
             final_map_size += config_size;
             #[cfg(feature = "debug_loader")]
@@ -251,26 +255,26 @@ pub fn exit_boot_services_and_jump(
     };
 
     // Prepare memory map descriptors
-    // The memory map buffer is at map_ptr. The first element is descriptor_size.
-    let descriptor_size_val = unsafe { *(map_ptr as *const usize) };
-    let descriptors_ptr = unsafe { (map_ptr as *const u8).add(core::mem::size_of::<usize>()) };
+    // The descriptor size is stored at the very beginning of the buffer (map_phys_addr)
+    let descriptor_size_val = unsafe { *(map_phys_addr as *const usize) };
+    // The actual descriptors start at map_ptr
+    let descriptors_ptr = map_ptr as *const u8;
     
-    // Ensure we don't underflow if map_size is smaller than size_of::<usize>()
-    let available_size = map_size.saturating_sub(core::mem::size_of::<usize>());
+    // map_size is the size of the memory map returned by get_memory_map
     let num_descriptors = if descriptor_size_val > 0 {
-        available_size / descriptor_size_val
+        map_size / descriptor_size_val
     } else {
         0
     };
 
     let memory_map_descriptors = unsafe {
-        if num_descriptors > 0 {
+        if num_descriptors > 0 && !descriptors_ptr.is_null() {
             core::slice::from_raw_parts(
                 descriptors_ptr as *const petroleum::page_table::efi_memory::MemoryMapDescriptor,
                 num_descriptors
             )
         } else {
-            core::slice::from_raw_parts(core::ptr::NonNull::dangling().as_ptr(), 0)
+            &[]
         }
     };
 
