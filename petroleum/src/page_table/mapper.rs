@@ -490,8 +490,9 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
             let stack_pages = (4 * 1024 * 1024) / 4096;
             
             self.map_identity_config_4kiB(stack_phys_start, stack_pages, crate::page_flags_const!(READ_WRITE));
+            self.map_at_offset_config_4kiB(self.current_phys_offset, stack_phys_start, stack_pages, crate::page_flags_const!(READ_WRITE));
             self.map_at_offset_config_4kiB(self.phys_offset, stack_phys_start, stack_pages, crate::page_flags_const!(READ_WRITE));
-            crate::debug_log_no_alloc!("Current stack region identity AND high-half mapped: 0x{:x}", stack_phys_start);
+            crate::debug_log_no_alloc!("Current stack region identity, current-offset, AND high-half mapped: 0x{:x}", stack_phys_start);
 
             // 2. Map current instruction pointer (RIP)
             // This is critical to ensure that the code executing the transition is mapped in the new page table.
@@ -1018,15 +1019,20 @@ impl PageTableReinitializer {
                 // Map the current virtual address to the corresponding physical address.
                 // This ensures that the CPU can continue fetching instructions using the same 
                 // virtual address after the CR3 switch.
-                let v_addr = VirtAddr::new(rip.wrapping_add((i * 4096).wrapping_sub(1024 * 1024)));
+                let v_addr = VirtAddr::new(p_phys.wrapping_add(current_physical_memory_offset.as_u64()));
+                let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(v_addr);
+                
+                // Unmap first to ensure flags are updated, as map_to fails if already mapped.
+                let _ = new_mapper.unmap(page);
+                
                 let _ = new_mapper.map_to(
-                    x86_64::structures::paging::Page::<Size4KiB>::containing_address(v_addr),
+                    page,
                     x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_phys)),
                     x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
                     frame_allocator,
                 );
             }
-            crate::debug_log_no_alloc!("Current RIP region (4MB) explicitly identity-mapped to new page table");
+            crate::debug_log_no_alloc!("Current RIP region (4MB) explicitly mapped to current virtual address in new page table");
         }
 
         unsafe {
