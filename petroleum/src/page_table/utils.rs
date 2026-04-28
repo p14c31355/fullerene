@@ -577,27 +577,13 @@ pub fn adjust_return_address_and_stack(current_phys_offset: VirtAddr, new_phys_o
         core::arch::asm!("mov rbp, {}", in(reg) rbp.wrapping_add(offset_diff));
         debug_log_no_alloc!("RSP/RBP adjusted");
 
-        // Adjust all return addresses on the stack to higher half.
-        // We scan a reasonable portion of the stack for addresses that look like 
-        // they belong to the low-half kernel code.
-        let mut current_rsp: u64;
-        core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
-        
-        let stack_scan_limit = 4096; // Scan up to 4KB of stack
-        let mut offset = 0;
-        while offset < stack_scan_limit {
-            let addr_ptr = (current_rsp + offset) as *mut u64;
-            let val = unsafe { core::ptr::read_volatile(addr_ptr) };
-            
-            // If the value is in the range of the low-half kernel (roughly 0 to 16MB)
-            // we treat it as a return address and adjust it.
-            if val > 0 && val < 0x1000000 {
-                let adjusted_val = val.wrapping_add(offset_diff);
-                unsafe { core::ptr::write_volatile(addr_ptr, adjusted_val) };
-            }
-            offset += 8;
-        }
-        debug_log_no_alloc!("Stack scan completed");
+        // The previous heuristic stack scanning logic was removed because it was 
+        // dangerous and could cause silent data corruption by patching non-address 
+        // values that happened to fall within the low-half kernel range.
+        //
+        // Transition to the higher half is now handled by ensuring the stack is 
+        // correctly mapped and using a deterministic jump.
+        debug_log_no_alloc!("Stack scanning skipped for safety");
 
         // Explicit jump to higher half to ensure rip is also transitioned immediately.
         // This prevents the CPU from executing in the low-half after CR3 switch.
