@@ -416,10 +416,6 @@ static TRANSITION_GDT: [GdtEntry; 3] = [
     },
 ];
 
-static TRANSITION_GDT_DESC: GdtDescriptor = GdtDescriptor {
-    limit: (core::mem::size_of::<[GdtEntry; 3]>() - 1) as u16,
-    base: &TRANSITION_GDT as *const _ as u64,
-};
 
 pub struct PageTableInitializer<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> {
     pub mapper: &'a mut OffsetPageTable<'static>,
@@ -499,30 +495,45 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         
         // CRITICAL: Identity map a wide range of low physical memory to prevent #UD/#PF 
         // immediately after CR3 switch.
+        // CRITICAL: Identity map a wide range of low physical memory to prevent #UD/#PF 
+        // immediately after CR3 switch.
+        // We use 4KiB pages here instead of huge pages because the subsequent 
+        // `setup_higher_half_mappings` performs fine-grained 4KiB mappings.
+        // If we use huge pages here, any attempt to map a 4KiB page within that 
+        // range will fail with `ParentEntryHugePage`.
         unsafe {
             let low_mem_start = 0u64;
-            let low_mem_size = 2 * 1024 * 1024 * 1024; // 2GB
+            let low_mem_size = 128 * 1024 * 1024; // Reduced to 128MB to avoid slowness while staying safe
             let region_pages = low_mem_size / 4096;
+            let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
             
-            // Identity map low memory for the immediate transition
             self.map_identity_config_4kiB(
                 low_mem_start,
                 region_pages,
-                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                flags,
             );
             
-            // ALSO map low memory to the higher half.
-            // This is CRITICAL because we perform an absolute jump to RIP + PHYS_OFFSET.
             self.map_at_offset_config_4kiB(
                 self.phys_offset,
                 low_mem_start,
                 region_pages,
-                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                flags,
             );
             
-            crate::debug_log_no_alloc!("Low physical memory (2GB) identity AND high-half mapped for transition");
+            crate::debug_log_no_alloc!("Low physical memory (128MB) identity AND high-half mapped for transition (4KiB pages)");
         }
 
+        // CRITICAL: Ensure the transition GDT and its descriptor are identity mapped.
+        // This allows the CPU to load and use the GDT immediately after the CR3 switch,
+        // regardless of where the bootloader is located in memory.
+        unsafe {
+            let gdt_addr = &TRANSITION_GDT as *const _ as u64;
+            
+            self.map_identity_config_4kiB(gdt_addr & !0xFFF, 1, crate::page_flags_const!(READ_WRITE));
+            
+            crate::debug_log_no_alloc!("Transition GDT identity mapped");
+        }
+        
         crate::debug_log_no_alloc!("Transition mappings completed");
         kernel_size
     }
@@ -535,17 +546,16 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         unsafe {
             // 1. Identity map the first 512MB to ensure all early page tables and 
             // common UEFI regions are accessible during the transition.
-            // Using huge pages (2MiB) to minimize page table overhead and avoid 
-            // triggering further page table allocations that might fault.
-            crate::page_table::utils::map_range_with_huge_pages(
-                self.mapper,
-                self.frame_allocator,
-                0,
-                0,
-                (512 * 1024 * 1024) / 4096,
-                crate::page_flags_const!(READ_WRITE),
-                "transition_low_mem",
-            ).expect("Failed to identity map first 512MB");
+            // We use 4KiB pages here to avoid `ParentEntryHugePage` errors when 
+            // subsequent fine-grained mappings are applied to the same region.
+            for i in 0..(512 * 1024 * 1024 / (2 * 1024 * 1024)) {
+                let start = i * 2 * 1024 * 1024;
+                self.map_identity_config_4kiB(
+                    start,
+                    (2 * 1024 * 1024) / 4096,
+                    crate::page_flags_const!(READ_WRITE),
+                );
+            }
 
             let bitmap_start =
                 (&raw const crate::page_table::bitmap_allocator::BITMAP_STATIC) as *const _ as usize as u64;
@@ -933,37 +943,49 @@ impl PageTableReinitializer {
         let cr3_val = level_4_table_frame.start_address().as_u64();
         let target_offset = self.phys_offset.as_u64();
 
+        // Create a transition GDT descriptor on the stack if none is provided.
+        // The stack is identity mapped, so this descriptor will be accessible after the CR3 switch.
+        let transition_desc = GdtDescriptor {
+            limit: (core::mem::size_of::<[GdtEntry; 3]>() - 1) as u16,
+            base: &TRANSITION_GDT as *const _ as u64,
+        };
+        let final_gdt_ptr = gdt_ptr.unwrap_or(&transition_desc as *const _ as *const u8);
+
+        // Use primitive serial output to mark the absolute last point before entering assembly.
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"CR3 switch: entering asm! block\n");
+
         unsafe {
             core::arch::asm!(
-                // 1. Switch CR3
+                // 1. Reload GDT BEFORE switching CR3.
+                // This avoids a Page Fault when accessing the GDT descriptor,
+                // as the pointer in RDI is a virtual address valid in the CURRENT page table.
+                "lgdt [rdi]",
+                
+                // 2. Switch CR3
                 "mov cr3, {cr3}",
                 
-                // 2. Reload GDT immediately after CR3 switch if ptr is provided.
-                // This ensures the CPU can access the GDT even if the GDTR was pointing to
-                // a high-half address that is now mapped differently.
-                "test rdi, rdi",
-                "jz 2f",
-                "lgdt [rdi]",
-                "2:",
-                
-                // 3. Adjust RSP and RBP immediately to high half
+                // 3. Adjust RSP and RBP immediately to high half.
+                // The stack must be high-half mapped before we can push to it.
                 "add rsp, {diff}",
                 "add rbp, {diff}",
                 
-                // 4. Robust jump to high half.
-                // Handle cases where RIP is already in the high half.
+                // 4. Robust far jump to high half to reload CS.
+                // A far jump (push CS, push RIP, retfq) is the most reliable way to ensure
+                // the CPU is in the correct segment and mode after a GDT reload.
                 "lea rax, [rip]",
                 "mov rbx, {target_offset}",
                 "cmp rax, rbx",
                 "jae 3f",
                 "add rax, {diff}",
                 "3:",
-                "jmp rax",
+                "push 0x08", // Push CS selector for Kernel Code in TRANSITION_GDT
+                "push rax",   // Push the calculated high-half RIP
+                "retfq",
                 
                 cr3 = in(reg) cr3_val,
                 diff = in(reg) offset_diff,
                 target_offset = in(reg) target_offset,
-                in("rdi") gdt_ptr.unwrap_or(core::ptr::null()),
+                in("rdi") final_gdt_ptr,
             );
         }
 
