@@ -245,39 +245,46 @@ pub fn load_efi_image(
 
     // Relocations
     let image_base = optional_header.windows_fields.image_base as usize;
-    let image_base_delta = (phys_addr as u64).wrapping_sub(image_base as u64);
+    let image_base_delta = (phys_addr as i64) - (image_base as i64);
 
     if image_base_delta != 0 {
-        for section in &pe.sections {
-            if &section.name == b".reloc\0\0" {
-                let reloc_data_ptr = unsafe { (phys_addr as *mut u8).add(section.virtual_address as usize) };
-                let mut current_reloc_ptr = reloc_data_ptr;
-                let end_reloc_ptr = unsafe { reloc_data_ptr.add(section.virtual_size as usize) };
+        // Use DataDirectory to find the base relocation table
+        if let Some(reloc_dir) = optional_header.data_directories.get_base_relocation_table() {
+            let reloc_rva = reloc_dir.virtual_address as usize;
+            let reloc_size = reloc_dir.size as usize;
+            
+            let reloc_data_ptr = unsafe { (phys_addr as *mut u8).add(reloc_rva) };
+            let mut current_reloc_ptr = reloc_data_ptr;
+            let end_reloc_ptr = unsafe { reloc_data_ptr.add(reloc_size) };
 
-                while current_reloc_ptr < end_reloc_ptr {
-                    let block = unsafe { &*(current_reloc_ptr as *const BaseRelocationBlock) };
-                    let num_entries = (block.block_size as usize).saturating_sub(8) / 2;
+            while current_reloc_ptr < end_reloc_ptr {
+                let block = unsafe { &*(current_reloc_ptr as *const BaseRelocationBlock) };
+                if block.block_size == 0 { break; }
+                
+                let num_entries = (block.block_size as usize).saturating_sub(8) / 2;
+                
+                for i in 0..num_entries {
+                    let entry_offset = 8 + i * 2;
+                    let type_offset = unsafe { 
+                        let entry_ptr = current_reloc_ptr.add(entry_offset) as *const u16;
+                        core::ptr::read_volatile(entry_ptr) 
+                    };
                     
-                    for i in 0..num_entries {
-                        let entry_offset = 8 + i * 2;
-                        let type_offset = unsafe { 
-                            let entry_ptr = current_reloc_ptr.add(entry_offset) as *const u16;
-                            core::ptr::read_volatile(entry_ptr) 
-                        };
-                        
-                        let offset = (type_offset >> 12) as usize;
+                    // Type 3 is DIR64 (64-bit absolute address)
+                    if (type_offset >> 12) == 3 {
+                        let offset = (type_offset & 0x0FFF) as usize;
                         let target_addr = phys_addr + block.page_rva as usize + offset;
                         
                         unsafe {
                             let ptr = target_addr as *mut u64;
                             if !ptr.is_null() {
                                 let val = core::ptr::read_volatile(ptr);
-                                core::ptr::write_volatile(ptr, val.wrapping_add(image_base_delta));
+                                core::ptr::write_volatile(ptr, (val as i64).wrapping_add(image_base_delta) as u64);
                             }
                         }
                     }
-                    current_reloc_ptr = unsafe { current_reloc_ptr.add(block.block_size as usize) };
                 }
+                current_reloc_ptr = unsafe { current_reloc_ptr.add(block.block_size as usize) };
             }
         }
     }

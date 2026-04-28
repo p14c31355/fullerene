@@ -429,6 +429,21 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         // Removed map_available_memory_identity() as it is too slow and unnecessary for the CR3 switch transition.
         // Only essential regions, kernel, and stack need to be identity mapped.
         
+        // CRITICAL: Identity map the current execution point (RIP) to prevent #UD/#PF 
+        // immediately after CR3 switch.
+        let rip: u64;
+        unsafe {
+            core::arch::asm!("lea {}, [rip]", out(reg) rip);
+            
+            let rip_page_start = rip & !0xFFF;
+            self.map_identity_config_4kiB(
+                rip_page_start,
+                1,
+                crate::page_flags_const!(READ_WRITE),
+            );
+            crate::debug_log_no_alloc!("Current RIP identity mapped: 0x", rip_page_start as usize);
+        }
+
         crate::debug_log_no_alloc!("Transition mappings completed");
         kernel_size
     }
