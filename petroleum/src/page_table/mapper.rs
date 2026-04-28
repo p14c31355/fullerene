@@ -482,25 +482,28 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         // Instead of relying on map_current_stack_identity(), we map a generous 
         // range around the current RSP to prevent #PF/#UD during transition.
         unsafe {
+            // 1. Map current stack (RSP)
             let rsp: u64;
             core::arch::asm!("mov {}, rsp", out(reg) rsp);
             let rsp_phys = rsp.wrapping_sub(self.current_phys_offset.as_u64());
-            // Map 2MB BELOW the current RSP to ensure stack growth is covered.
-            let region_phys_start = rsp_phys.wrapping_sub(2 * 1024 * 1024) & !0xFFF;
-            let region_pages = (4 * 1024 * 1024) / 4096; // Map 4MB to cover both above and below
+            let stack_phys_start = rsp_phys.wrapping_sub(2 * 1024 * 1024) & !0xFFF;
+            let stack_pages = (4 * 1024 * 1024) / 4096;
             
-            self.map_identity_config_4kiB(
-                region_phys_start,
-                region_pages,
-                crate::page_flags_const!(READ_WRITE),
-            );
-            self.map_at_offset_config_4kiB(
-                self.phys_offset,
-                region_phys_start,
-                region_pages,
-                crate::page_flags_const!(READ_WRITE),
-            );
-            crate::debug_log_no_alloc!("Current stack region (4MB) identity AND high-half mapped: 0x{:x}", region_phys_start);
+            self.map_identity_config_4kiB(stack_phys_start, stack_pages, crate::page_flags_const!(READ_WRITE));
+            self.map_at_offset_config_4kiB(self.phys_offset, stack_phys_start, stack_pages, crate::page_flags_const!(READ_WRITE));
+            crate::debug_log_no_alloc!("Current stack region identity AND high-half mapped: 0x{:x}", stack_phys_start);
+
+            // 2. Map current instruction pointer (RIP)
+            // This is critical to ensure that the code executing the transition is mapped in the new page table.
+            let rip: u64;
+            core::arch::asm!("lea {}, [rip]", out(reg) rip);
+            let rip_phys = rip.wrapping_sub(self.current_phys_offset.as_u64());
+            let code_phys_start = rip_phys.wrapping_sub(2 * 1024 * 1024) & !0xFFF;
+            let code_pages = (4 * 1024 * 1024) / 4096;
+
+            self.map_identity_config_4kiB(code_phys_start, code_pages, crate::page_flags_const!(READ_WRITE));
+            self.map_at_offset_config_4kiB(self.phys_offset, code_phys_start, code_pages, crate::page_flags_const!(READ_WRITE));
+            crate::debug_log_no_alloc!("Current code region identity AND high-half mapped: 0x{:x}", code_phys_start);
         }
         
         // Removed map_available_memory_identity() as it is too slow and unnecessary for the CR3 switch transition.
@@ -969,12 +972,13 @@ impl PageTableReinitializer {
         let cr3_val = level_4_table_frame.start_address().as_u64();
         let target_offset = self.phys_offset.as_u64();
 
-        // Use the static TransitionGdt and update its base address.
+        // Use the static TransitionGdt and update its base address to HIGH-HALF virtual address.
         unsafe {
             let gdt_ptr = core::ptr::addr_of_mut!(TRANSITION_GDT);
-            let entries_ptr = core::ptr::addr_of!((*gdt_ptr).entries) as *const _ as u64;
-            let gdt_phys_base = entries_ptr.wrapping_sub(current_physical_memory_offset.as_u64());
-            (*gdt_ptr).descriptor.base = gdt_phys_base;
+            let entries_virt_addr = core::ptr::addr_of!((*gdt_ptr).entries) as *const _ as u64;
+            let gdt_phys_base = entries_virt_addr.wrapping_sub(current_physical_memory_offset.as_u64());
+            let gdt_high_base = gdt_phys_base.wrapping_add(self.phys_offset.as_u64());
+            (*gdt_ptr).descriptor.base = gdt_high_base;
         }
         
         let final_gdt_ptr_virt = gdt_ptr.unwrap_or(unsafe { core::ptr::addr_of!((*core::ptr::addr_of!(TRANSITION_GDT)).descriptor) as *const _ as *const u8 });
