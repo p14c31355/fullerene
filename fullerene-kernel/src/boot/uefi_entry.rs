@@ -274,11 +274,11 @@ impl UefiInitContext {
         )
     }
 
-    fn setup_gdt_and_stack(
+    fn prepare_kernel_stack(
         &mut self,
         virtual_heap_start: VirtAddr,
         physical_memory_offset: VirtAddr,
-    ) {
+    ) -> u64 {
         log::info!("Setting up GDT and kernel stack");
         let gdt_heap_start = virtual_heap_start;
         self.heap_start_after_gdt = gdt::init(gdt_heap_start);
@@ -309,19 +309,13 @@ impl UefiInitContext {
 
         write_serial_bytes!(0x3F8, 0x3FD, b"Kernel stack allocated and mapped\n");
 
-        // Switch to the kernel stack
-    unsafe {
         let kernel_stack_top =
             (self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64 - 8).as_u64();
-        core::arch::asm!("mov rsp, {}", in(reg) kernel_stack_top);
         
-        let current_rsp: u64;
-        core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
-        petroleum::init_log!("Boot Stack Initialized. Top: 0x{:x}, Current RSP: 0x{:x}", kernel_stack_top, current_rsp);
-    }
         self.heap_start_after_stack =
             self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64;
-        write_serial_bytes!(0x3F8, 0x3FD, b"Basic GDT and stack setup completed\n");
+        
+        kernel_stack_top
     }
 
     fn setup_allocator(&mut self, virtual_heap_start: VirtAddr) {
@@ -451,39 +445,9 @@ impl UefiInitContext {
 }
 
 #[cfg(target_os = "uefi")]
-#[unsafe(export_name = "efi_main")]
-#[unsafe(link_section = ".text.efi_main")]
-pub extern "efiapi" fn efi_main(
-    _image_handle: usize,
-    system_table: *mut EfiSystemTable,
-    memory_map: *mut c_void,
-    memory_map_size: usize,
-) -> ! {
-    let system_table = unsafe { &*system_table };
-    let mut ctx = UefiInitContext {
-        system_table,
-        memory_map,
-        memory_map_size,
-        physical_memory_offset: VirtAddr::zero(),
-        virtual_heap_start: VirtAddr::zero(),
-        heap_start_after_gdt: VirtAddr::zero(),
-        heap_start_after_stack: VirtAddr::zero(),
-    };
-
-    let kernel_phys_start = ctx.early_initialization();
-
-    // Load GDT early to ensure CS register is consistent before page table switch
-    crate::gdt::init_early();
-    crate::gdt::load();
-
-    let (physical_memory_offset, heap_start, virtual_heap_start) =
-        ctx.memory_management_initialization(kernel_phys_start);
-
-    ctx.setup_gdt_and_stack(virtual_heap_start, physical_memory_offset);
-    write_serial_bytes!(0x3F8, 0x3FD, b"GDT and stack setup completed\n");
-    ctx.setup_allocator(virtual_heap_start);
-    write_serial_bytes!(0x3F8, 0x3FD, b"Allocator setup completed\n");
-
+fn efi_main_stage2(ctx: &mut UefiInitContext, physical_memory_offset: VirtAddr) -> ! {
+    write_serial_bytes!(0x3F8, 0x3FD, b"Entered efi_main_stage2 on new stack\n");
+    
     // Initialize the global memory manager with the EFI memory map
     log::info!("Initializing global memory manager...");
     write_serial_bytes!(0x3F8, 0x3FD, b"Calling MEMORY_MAP.get()\n");
@@ -567,6 +531,55 @@ pub extern "efiapi" fn efi_main(
     scheduler_loop();
     // scheduler_loop should never return in normal operation
     panic!("scheduler_loop returned unexpectedly - kernel critical failure!");
+}
+
+#[cfg(target_os = "uefi")]
+#[unsafe(export_name = "efi_main")]
+#[unsafe(link_section = ".text.efi_main")]
+pub extern "efiapi" fn efi_main(
+    _image_handle: usize,
+    system_table: *mut EfiSystemTable,
+    memory_map: *mut c_void,
+    memory_map_size: usize,
+) -> ! {
+    let system_table = unsafe { &*system_table };
+    let mut ctx = UefiInitContext {
+        system_table,
+        memory_map,
+        memory_map_size,
+        physical_memory_offset: VirtAddr::zero(),
+        virtual_heap_start: VirtAddr::zero(),
+        heap_start_after_gdt: VirtAddr::zero(),
+        heap_start_after_stack: VirtAddr::zero(),
+    };
+
+    let kernel_phys_start = ctx.early_initialization();
+
+    // Load GDT early to ensure CS register is consistent before page table switch
+    crate::gdt::init_early();
+    crate::gdt::load();
+
+    let (physical_memory_offset, heap_start, virtual_heap_start) =
+        ctx.memory_management_initialization(kernel_phys_start);
+
+    let kernel_stack_top = ctx.prepare_kernel_stack(virtual_heap_start, physical_memory_offset);
+    write_serial_bytes!(0x3F8, 0x3FD, b"GDT and stack prepared\n");
+    
+    // We must setup allocator while still on the old stack or handle it in stage 2.
+    // Since setup_allocator uses ctx, we can call it here or in stage 2.
+    // Let's do it here to ensure it's done before we potentially lose the old stack.
+    ctx.setup_allocator(virtual_heap_start);
+    write_serial_bytes!(0x3F8, 0x3FD, b"Allocator setup completed\n");
+
+    unsafe {
+        core::arch::asm!("mov rsp, {}", in(reg) kernel_stack_top);
+        
+        let current_rsp: u64;
+        core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
+        petroleum::init_log!("Switched to Kernel Stack. Top: 0x{:x}, Current RSP: 0x{:x}", kernel_stack_top, current_rsp);
+        
+        efi_main_stage2(&mut ctx, physical_memory_offset);
+    }
 }
 
 // Moved graphics initialization functions to petroleum::uefi_helpers
