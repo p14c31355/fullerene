@@ -263,6 +263,59 @@ pub fn map_stack_to_higher_half<T: crate::page_table::efi_memory::MemoryDescript
     Ok(())
 }
 
+#[unsafe(no_mangle)]
+#[inline(never)]
+pub extern "C" fn landing_zone(
+    load_gdt: Option<fn()>,
+    load_idt: Option<fn()>,
+    phys_offset: VirtAddr,
+    level_4_table_frame: PhysFrame,
+    frame_allocator: *mut BootInfoFrameAllocator,
+) {
+    unsafe {
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"High-half transition: landing zone reached!\n");
+
+        if let Some(gdt_fn) = load_gdt {
+            gdt_fn();
+            crate::debug_log_no_alloc!("GDT reloaded in landing zone");
+        }
+
+        if let Some(idt_fn) = load_idt {
+            idt_fn();
+            crate::debug_log_no_alloc!("IDT reloaded in landing zone");
+        }
+
+        crate::flush_tlb_and_verify!();
+        crate::debug_log_no_alloc!("TLB flushed in landing zone");
+
+        // Now we need to map the L4 table to the high half.
+        // Since we are in the landing zone, we can use the high-half mapping.
+        let l4_phys = level_4_table_frame.start_address().as_u64();
+        let l4_virt = phys_offset + l4_phys;
+        
+        let mut mapper = x86_64::structures::paging::OffsetPageTable::new(
+            &mut *(l4_virt.as_mut_ptr() as *mut PageTable),
+            phys_offset,
+        );
+
+        let _ = mapper.map_to(
+            x86_64::structures::paging::Page::<Size4KiB>::containing_address(l4_virt),
+            x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(l4_phys)),
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE,
+            &mut *frame_allocator,
+        );
+        
+        crate::debug_log_no_alloc!("L4 table mapped to high-half in landing zone");
+        crate::debug_log_no_alloc!("Landing zone completed. Jumping back to kernel...");
+        
+        // Now we can jump back to the kernel entry point or continue.
+        // For now, we'll loop here to avoid returning to a broken stack frame.
+        loop {
+            core::arch::asm!("hlt");
+        }
+    }
+}
+
 pub unsafe fn map_to_higher_half_with_log(
     mapper: &mut OffsetPageTable,
     frame_allocator: &mut BootInfoFrameAllocator,
@@ -1033,6 +1086,22 @@ impl PageTableReinitializer {
                 );
             }
             crate::debug_log_no_alloc!("Current RIP region (4MB) explicitly mapped to current virtual address in new page table");
+
+            // CRITICAL: Explicitly map the landing_zone function.
+            // Since retfq jumps directly to it, it MUST be mapped in the new page table.
+            let landing_zone_virt = landing_zone as usize as u64;
+            let landing_zone_phys = landing_zone_virt.wrapping_sub(current_physical_memory_offset.as_u64());
+            let lz_page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(landing_zone_virt));
+            let lz_frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(landing_zone_phys));
+            
+            let _ = new_mapper.unmap(lz_page);
+            let _ = new_mapper.map_to(
+                lz_page,
+                lz_frame,
+                x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
+                frame_allocator,
+            );
+            crate::debug_log_no_alloc!("landing_zone explicitly mapped in new page table: 0x{:x}", landing_zone_virt);
         }
 
         unsafe {
@@ -1041,7 +1110,6 @@ impl PageTableReinitializer {
                 "mov dx, 0x3f8", "mov al, 0x31", "out dx, al",
 
                 // 2. Switch CR3.
-                // RIP and RSP are currently low and identity-mapped in the new table.
                 "mov cr3, {cr3}",
                 "mov dx, 0x3f8", "mov al, 0x32", "out dx, al",
                 
@@ -1049,65 +1117,35 @@ impl PageTableReinitializer {
                 "lgdt [rdi]",
                 "mov dx, 0x3f8", "mov al, 0x33", "out dx, al",
                 
-                // 4. Far jump to high half to reload CS.
-                // We push to the LOW-HALF stack, which is identity-mapped in the new table.
+                // 4. Far jump to landing zone in high half.
                 "mov dx, 0x3f8", "mov al, 0x34", "out dx, al",
+                
+                // Pass arguments in registers (Windows x64 calling convention)
+                "mov rcx, {load_gdt}",
+                "mov rdx, {load_idt}",
+                "mov r8, {phys_offset}",
+                "mov r9, {l4_frame}",
+                "mov rax, {allocator}",
+                "push rax", // 5th argument on stack
+                
                 "push {cs_selector}",
-                "lea rax, [rip + 2f]",
-                "add rax, {diff}",
+                "mov rax, {landing_zone}",
                 "push rax",
                 "retfq",
 
-                // --- LANDING ZONE (Executing in High Half) ---
-                "2:", 
-                "mov dx, 0x3f8", "mov al, 0x35", "out dx, al",
-                // NOW it is safe to adjust RSP and RBP to high half.
-                "add rsp, {diff}",
-                "add rbp, {diff}",
-                
                 cr3 = in(reg) cr3_val,
-                diff = in(reg) offset_diff,
+                load_gdt = in(reg) load_gdt.map_or(core::ptr::null(), |f| f as *const ()),
+                load_idt = in(reg) load_idt.map_or(core::ptr::null(), |f| f as *const ()),
+                phys_offset = in(reg) self.phys_offset.as_u64(),
+                l4_frame = in(reg) level_4_table_frame.start_address().as_u64(),
+                allocator = in(reg) frame_allocator as *const _,
                 cs_selector = in(reg) 0x08,
+                landing_zone = in(reg) landing_zone as usize,
                 in("rdi") final_gdt_ptr_high,
                 out("dx") _,
                 out("rax") _,
             );
         }
-
-        // --- LANDING ZONE (Executing in High Half) ---
-        // Immediately use primitive serial output to verify jump success.
-        // This bypasses Mutexes and complex logging.
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"High-half transition: jump successful!\n");
-        
-        // Reload GDT/IDT as soon as possible in high half to ensure stable environment.
-        if let Some(load_gdt_fn) = load_gdt {
-            load_gdt_fn();
-            crate::debug_log_no_alloc!("GDT reloaded in high half");
-        }
-
-        if let Some(load_idt_fn) = load_idt {
-            load_idt_fn();
-            crate::debug_log_no_alloc!("IDT reloaded in high half");
-        }
-
-        crate::debug_log_no_alloc!("CR3 switch and higher-half transition executed");
-        
-        crate::flush_tlb_and_verify!();
-        crate::debug_log_no_alloc!("TLB flushed");
-        
-        let mut mapper = unsafe { crate::page_table::utils::init(self.phys_offset) };
-        unsafe {
-            map_to_higher_half_with_log(
-                &mut mapper,
-                frame_allocator,
-                self.phys_offset,
-                level_4_table_frame.start_address().as_u64(),
-                1,
-                crate::page_flags_const!(READ_WRITE_NO_EXEC),
-            )
-            .expect("Failed to map L4 to higher half");
-        }
-        crate::page_table::utils::debug_page_table_info(level_4_table_frame, self.phys_offset);
     }
 }
 
