@@ -380,6 +380,7 @@ pub unsafe fn map_memory_descriptors_with_config<T: crate::page_table::efi_memor
     }
 }
 
+#[derive(Clone, Copy)]
 #[repr(C, packed)]
 struct GdtEntry {
     limit_low: u16,
@@ -390,31 +391,44 @@ struct GdtEntry {
     base_high: u8,
 }
 
+#[derive(Clone, Copy)]
 #[repr(C, packed)]
 struct GdtDescriptor {
     limit: u16,
     base: u64,
 }
 
-static TRANSITION_GDT: [GdtEntry; 3] = [
-    GdtEntry { limit_low: 0, base_low: 0, base_mid: 0, access: 0, flags: 0, base_high: 0 }, // 0x00: Null
-    GdtEntry { // 0x08: Kernel Code
-        limit_low: 0xFFFF,
-        base_low: 0,
-        base_mid: 0,
-        access: 0x9A, // Present, Ring 0, Code, Exec/Read
-        flags: 0xAF, // Long mode, 64-bit
-        base_high: 0,
+#[repr(C, packed)]
+struct TransitionGdt {
+    descriptor: GdtDescriptor,
+    entries: [GdtEntry; 3],
+}
+
+static mut TRANSITION_GDT: TransitionGdt = TransitionGdt {
+    descriptor: GdtDescriptor {
+        limit: (core::mem::size_of::<[GdtEntry; 3]>() - 1) as u16,
+        base: 0,
     },
-    GdtEntry { // 0x10: Kernel Data
-        limit_low: 0xFFFF,
-        base_low: 0,
-        base_mid: 0,
-        access: 0x92, // Present, Ring 0, Data, Read/Write
-        flags: 0,
-        base_high: 0,
-    },
-];
+    entries: [
+        GdtEntry { limit_low: 0, base_low: 0, base_mid: 0, access: 0, flags: 0, base_high: 0 }, // 0x00: Null
+        GdtEntry { // 0x08: Kernel Code
+            limit_low: 0xFFFF,
+            base_low: 0,
+            base_mid: 0,
+            access: 0x9A, // Present, Ring 0, Code, Exec/Read
+            flags: 0xAF, // Long mode, 64-bit
+            base_high: 0,
+        },
+        GdtEntry { // 0x10: Kernel Data
+            limit_low: 0xFFFF,
+            base_low: 0,
+            base_mid: 0,
+            access: 0x92, // Present, Ring 0, Data, Read/Write
+            flags: 0,
+            base_high: 0,
+        },
+    ],
+};
 
 
 pub struct PageTableInitializer<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> {
@@ -470,12 +484,10 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         unsafe {
             let rsp: u64;
             core::arch::asm!("mov {}, rsp", out(reg) rsp);
-            let stack_page_start = rsp & !0xFFF;
-            // Map 2MB around the current stack pointer to be absolutely safe.
-            // We map from (rsp & !0x1FFFFF) to cover a large enough region.
-            let region_virt_start = rsp & !0x1FFFFF;
-            let region_phys_start = region_virt_start.wrapping_sub(self.current_phys_offset.as_u64());
-            let region_pages = (2 * 1024 * 1024) / 4096;
+            let rsp_phys = rsp.wrapping_sub(self.current_phys_offset.as_u64());
+            // Map 2MB BELOW the current RSP to ensure stack growth is covered.
+            let region_phys_start = rsp_phys.wrapping_sub(2 * 1024 * 1024) & !0xFFF;
+            let region_pages = (4 * 1024 * 1024) / 4096; // Map 4MB to cover both above and below
             
             self.map_identity_config_4kiB(
                 region_phys_start,
@@ -488,7 +500,7 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
                 region_pages,
                 crate::page_flags_const!(READ_WRITE),
             );
-            crate::debug_log_no_alloc!("Current stack region (2MB) identity AND high-half mapped: 0x{:x}", region_phys_start);
+            crate::debug_log_no_alloc!("Current stack region (4MB) identity AND high-half mapped: 0x{:x}", region_phys_start);
         }
         
         // Removed map_available_memory_identity() as it is too slow and unnecessary for the CR3 switch transition.
@@ -531,8 +543,9 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         // This allows the CPU to load and use the GDT immediately after the CR3 switch,
         // regardless of where the bootloader is located in memory.
         unsafe {
-            let gdt_virt_addr = &TRANSITION_GDT as *const _ as u64;
-            let gdt_phys_addr = (gdt_virt_addr & !0xFFF).wrapping_sub(self.current_phys_offset.as_u64());
+            let gdt_virt_addr = core::ptr::addr_of!(TRANSITION_GDT) as *const _ as u64;
+            // Map the entire TransitionGdt structure
+            let gdt_phys_addr = (gdt_virt_addr.wrapping_sub(self.current_phys_offset.as_u64())) & !0xFFF;
             
             self.map_identity_config_4kiB(gdt_phys_addr, 1, crate::page_flags_const!(READ_WRITE));
             
@@ -949,13 +962,15 @@ impl PageTableReinitializer {
         let cr3_val = level_4_table_frame.start_address().as_u64();
         let target_offset = self.phys_offset.as_u64();
 
-        // Create a transition GDT descriptor on the stack if none is provided.
-        // The stack is identity mapped, so this descriptor will be accessible after the CR3 switch.
-        let transition_desc = GdtDescriptor {
-            limit: (core::mem::size_of::<[GdtEntry; 3]>() - 1) as u16,
-            base: (&TRANSITION_GDT as *const _ as u64).wrapping_sub(current_physical_memory_offset.as_u64()),
-        };
-        let final_gdt_ptr_virt = gdt_ptr.unwrap_or(&transition_desc as *const _ as *const u8);
+        // Use the static TransitionGdt and update its base address.
+        unsafe {
+            let gdt_ptr = core::ptr::addr_of_mut!(TRANSITION_GDT);
+            let entries_ptr = core::ptr::addr_of!((*gdt_ptr).entries) as *const _ as u64;
+            let gdt_phys_base = entries_ptr.wrapping_sub(current_physical_memory_offset.as_u64());
+            (*gdt_ptr).descriptor.base = gdt_phys_base;
+        }
+        
+        let final_gdt_ptr_virt = gdt_ptr.unwrap_or(unsafe { core::ptr::addr_of!((*core::ptr::addr_of!(TRANSITION_GDT)).descriptor) as *const _ as *const u8 });
         let final_gdt_ptr = (final_gdt_ptr_virt as u64).wrapping_sub(current_physical_memory_offset.as_u64()) as *const u8;
 
         // Use primitive serial output to mark the absolute last point before entering assembly.
