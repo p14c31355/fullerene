@@ -1015,9 +1015,12 @@ impl PageTableReinitializer {
 
             for i in 0..rip_region_pages {
                 let p_phys = rip_region_start + (i * 4096);
-                // Identity map: Virtual Address == Physical Address
+                // Map the current virtual address to the corresponding physical address.
+                // This ensures that the CPU can continue fetching instructions using the same 
+                // virtual address after the CR3 switch.
+                let v_addr = VirtAddr::new(rip.wrapping_add((i * 4096).wrapping_sub(1024 * 1024)));
                 let _ = new_mapper.map_to(
-                    x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(p_phys)),
+                    x86_64::structures::paging::Page::<Size4KiB>::containing_address(v_addr),
                     x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_phys)),
                     x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
                     frame_allocator,
