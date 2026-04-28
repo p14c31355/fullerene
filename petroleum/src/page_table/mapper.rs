@@ -265,7 +265,7 @@ pub fn map_stack_to_higher_half<T: crate::page_table::efi_memory::MemoryDescript
 
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub extern "C" fn landing_zone(
+pub extern "sysv64" fn landing_zone(
     load_gdt: Option<fn()>,
     load_idt: Option<fn()>,
     phys_offset: VirtAddr,
@@ -1088,32 +1088,40 @@ impl PageTableReinitializer {
             crate::debug_log_no_alloc!("Current RIP region (4MB) explicitly mapped to current virtual address in new page table");
 
             // CRITICAL: Explicitly map the landing_zone function.
-            // Since retfq jumps directly to it, it MUST be mapped in the new page table.
+            // Map a larger region (2MB) around the landing_zone to ensure it's fully covered 
+            // and to avoid issues with page boundaries or alignment.
             let landing_zone_virt = landing_zone as usize as u64;
             let landing_zone_phys = landing_zone_virt.wrapping_sub(current_physical_memory_offset.as_u64());
             
-            // 1. Map to the current virtual address (so the jump works if the linker kept it low)
-            let lz_page_low = x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(landing_zone_virt));
-            let lz_frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(landing_zone_phys));
-            let _ = new_mapper.unmap(lz_page_low);
-            let _ = new_mapper.map_to(
-                lz_page_low,
-                lz_frame,
-                x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
-                frame_allocator,
-            );
+            let lz_region_start_phys = (landing_zone_phys.wrapping_sub(1024 * 1024)) & !0xFFF;
+            let lz_region_pages = (2 * 1024 * 1024) / 4096;
             
-            // 2. Map to the high-half virtual address (because the function expects to be there)
-            let landing_zone_high = landing_zone_phys.wrapping_add(self.phys_offset.as_u64());
-            let lz_page_high = x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(landing_zone_high));
-            let _ = new_mapper.unmap(lz_page_high);
-            let _ = new_mapper.map_to(
-                lz_page_high,
-                lz_frame,
-                x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
-                frame_allocator,
-            );
-            crate::debug_log_no_alloc!("landing_zone mapped at low: 0x{:x} and high: 0x{:x}", landing_zone_virt, landing_zone_high);
+            for i in 0..lz_region_pages {
+                let p_phys = lz_region_start_phys + (i * 4096);
+                
+                // Map to current virtual address
+                let v_low = VirtAddr::new(p_phys.wrapping_add(current_physical_memory_offset.as_u64()));
+                let page_low = x86_64::structures::paging::Page::<Size4KiB>::containing_address(v_low);
+                let _ = new_mapper.unmap(page_low);
+                let _ = new_mapper.map_to(
+                    page_low,
+                    x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_phys)),
+                    x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
+                    frame_allocator,
+                );
+                
+                // Map to high-half virtual address
+                let v_high = VirtAddr::new(p_phys.wrapping_add(self.phys_offset.as_u64()));
+                let page_high = x86_64::structures::paging::Page::<Size4KiB>::containing_address(v_high);
+                let _ = new_mapper.unmap(page_high);
+                let _ = new_mapper.map_to(
+                    page_high,
+                    x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_phys)),
+                    x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
+                    frame_allocator,
+                );
+            }
+            crate::mem_debug!("landing_zone region (2MB) mapped at low and high", "\n");
         }
 
         unsafe {
@@ -1132,13 +1140,19 @@ impl PageTableReinitializer {
                 // 4. Far jump to landing zone in high half.
                 "mov dx, 0x3f8", "mov al, 0x34", "out dx, al",
                 
-                // Pass arguments in registers (Windows x64 calling convention)
-                "mov rcx, {load_gdt}",
-                "mov rdx, {load_idt}",
-                "mov r8, {phys_offset}",
-                "mov r9, {l4_frame}",
-                "mov rax, {allocator}",
-                "push rax", // 5th argument on stack
+                // Final check before jump
+                "mov dx, 0x3f8", "mov al, 0x35", "out dx, al",
+
+                // Align stack to 16 bytes for System V ABI
+                "and rsp, -16",
+
+                // Pass arguments in registers (System V x64 calling convention)
+                // RDI: load_gdt, RSI: load_idt, RDX: phys_offset, RCX: l4_frame, R8: allocator
+                "mov rdi, {load_gdt}",
+                "mov rsi, {load_idt}",
+                "mov rdx, {phys_offset}",
+                "mov rcx, {l4_frame}",
+                "mov r8, {allocator}",
                 
                 "push {cs_selector}",
                 "mov rax, {landing_zone_high}",

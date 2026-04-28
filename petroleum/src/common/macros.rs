@@ -849,16 +849,16 @@ macro_rules! log_page_table_op {
     };
     ($operation:literal, $phys:expr, $virt:expr, $pages:expr) => {
         mem_debug!(
-            $operation, " phys=0x", $phys, " virt=0x", $virt, " pages=", $pages, "\n"
+            $operation, " phys=", $phys, " virt=", $virt, " pages=", $pages, "\n"
         );
     };
     ($stage:literal, $phys:expr, $virt:expr, $pages:expr) => {
         mem_debug!(
             "Memory mapping stage=",
             $stage,
-            " phys=0x",
+            " phys=",
             $phys,
-            " virt=0x",
+            " virt=",
             $virt,
             " pages=",
             $pages,
