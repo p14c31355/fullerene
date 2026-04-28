@@ -235,25 +235,38 @@ pub fn exit_boot_services_and_jump(
         core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
         cr3
     };
-    log::info!("Switching to new page table (cr3 = 0x{:x})", cr3_value);
-    log::info!("Jumping to kernel entry point: 0x{:x}", entry as usize);
+    petroleum::serial::_print(format_args!("Switching to new page table (cr3 = 0x{:x})\n", cr3_value));
+    petroleum::serial::_print(format_args!("Jumping to kernel entry point: 0x{:x}\n", entry as usize));
 
     #[cfg(feature = "debug_loader")]
     {
-        log::info!(
-            "Jumping to kernel at {:#x} with map at {:#x} size {:#x}",
+        petroleum::serial::_print(format_args!(
+            "Jumping to kernel at {:#x} with map at {:#x} size {:#x}\n",
             entry as usize,
             map_phys_addr,
             final_map_size
-        );
-        log::info!("About to call kernel entry.");
+        ));
+        petroleum::serial::_print(format_args!(
+            "Args: handle={:#x}, st={:#p}, map={:#x}, size={:#x}\n", 
+            image_handle, system_table, map_phys_addr, final_map_size
+        ));
+        petroleum::serial::_print(format_args!("About to call kernel entry.\n"));
     }
-    entry(
-        image_handle,
-        system_table,
-        map_phys_addr as *mut c_void,
-        final_map_size,
-    );
+    unsafe {
+        core::arch::asm!(
+            "mov rcx, {handle}",
+            "mov rdx, {st}",
+            "mov r8, {map}",
+            "mov r9, {size}",
+            "jmp {entry}",
+            handle = in(reg) image_handle,
+            st = in(reg) system_table,
+            map = in(reg) map_phys_addr,
+            size = in(reg) final_map_size,
+            entry = in(reg) entry,
+            options(noreturn),
+        );
+    }
 }
 
 /// Load EFI PE image using petroleum PE module

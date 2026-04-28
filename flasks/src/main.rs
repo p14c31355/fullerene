@@ -100,9 +100,20 @@ fn create_iso_and_setup(
         .join("debug");
     let kernel_path = target_dir.join("fullerene-kernel.efi");
     // Copy kernel to bellows/src for embedding
-    std::fs::copy(&kernel_path, "bellows/src/kernel.bin")?;
+    let kernel_bin_dest = workspace_root.join("bellows").join("src").join("kernel_final.bin");
+    std::fs::copy(&kernel_path, &kernel_bin_dest)?;
+    log::info!("Copied kernel to {} (size: {})", kernel_bin_dest.display(), kernel_path.metadata()?.len());
 
     // --- 2. Build bellows (no_std) ---
+    // Force rebuild of bellows to ensure the latest kernel_final.bin is embedded
+    let clean_status = Command::new("cargo")
+        .current_dir(workspace_root)
+        .args(["clean", "-p", "bellows"])
+        .status()?;
+    if !clean_status.success() {
+        log::warn!("Warning: cargo clean -p bellows failed, proceeding anyway");
+    }
+
     let bellows_path = target_dir.join("bellows.efi");
     let status = Command::new("cargo")
         .current_dir(workspace_root)

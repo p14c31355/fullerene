@@ -28,7 +28,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 use log;
 
 // Embedded kernel binary
-static KERNEL_BINARY: &[u8] = include_bytes!("kernel.bin");
+static KERNEL_BINARY: &[u8] = include_bytes!("kernel_final.bin");
 // Import Port for direct I/O
 
 mod loader;
@@ -89,6 +89,12 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     let efi_image_file = KERNEL_BINARY;
     let efi_image_size = KERNEL_BINARY.len();
 
+    petroleum::bootloader_log!("Bellows: Kernel file size check: {} bytes", efi_image_size);
+    if efi_image_size > 0 {
+        let first_bytes = &KERNEL_BINARY[..core::cmp::min(efi_image_size, 4)];
+        petroleum::bootloader_log!("Bellows: First 4 bytes: {:02x?}, {:02x?}, {:02x?}, {:02x?}", 
+            first_bytes[0], first_bytes[1], first_bytes[2], first_bytes[3]);
+    }
     if efi_image_size == 0 {
         petroleum::bootloader_log!("Bellows: Kernel file is empty!");
         panic!("Kernel file is empty.");

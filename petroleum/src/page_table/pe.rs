@@ -31,6 +31,14 @@ pub struct PeSection {
     pub characteristics: u32,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct BaseRelocationBlock {
+    pub page_rva: u32,
+    pub block_size: u32,
+    pub entries: [u32; 0],
+}
+
 pub struct PeParser {
     pe_base: *const u8,
     pe_offset: usize,
@@ -240,13 +248,38 @@ pub fn load_efi_image(
     let image_base_delta = (phys_addr as u64).wrapping_sub(image_base as u64);
 
     if image_base_delta != 0 {
-        // In goblin 0.9, relocations are not directly on the PE struct.
-        // For the purpose of this refactoring and to fix the build error,
-        // we will skip relocation processing if the specific field is missing,
-        // as full PE relocation implementation is complex and depends on the specific goblin version.
-        // In a real scenario, we would use the correct goblin API to iterate over relocations.
-        // Relocations are currently disabled due to goblin version differences.
-        // Implementation will be added once the correct API is verified.
+        for section in &pe.sections {
+            if &section.name == b".reloc\0\0" {
+                let reloc_data_ptr = unsafe { (phys_addr as *mut u8).add(section.virtual_address as usize) };
+                let mut current_reloc_ptr = reloc_data_ptr;
+                let end_reloc_ptr = unsafe { reloc_data_ptr.add(section.virtual_size as usize) };
+
+                while current_reloc_ptr < end_reloc_ptr {
+                    let block = unsafe { &*(current_reloc_ptr as *const BaseRelocationBlock) };
+                    let num_entries = (block.block_size as usize).saturating_sub(8) / 2;
+                    
+                    for i in 0..num_entries {
+                        let entry_offset = 8 + i * 2;
+                        let type_offset = unsafe { 
+                            let entry_ptr = current_reloc_ptr.add(entry_offset) as *const u16;
+                            core::ptr::read_volatile(entry_ptr) 
+                        };
+                        
+                        let offset = (type_offset >> 12) as usize;
+                        let target_addr = phys_addr + block.page_rva as usize + offset;
+                        
+                        unsafe {
+                            let ptr = target_addr as *mut u64;
+                            if !ptr.is_null() {
+                                let val = core::ptr::read_volatile(ptr);
+                                core::ptr::write_volatile(ptr, val.wrapping_add(image_base_delta));
+                            }
+                        }
+                    }
+                    current_reloc_ptr = unsafe { current_reloc_ptr.add(block.block_size as usize) };
+                }
+            }
+        }
     }
 
     let entry_point_addr = phys_addr.saturating_add(address_of_entry_point);

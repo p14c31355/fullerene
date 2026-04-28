@@ -51,9 +51,9 @@ struct UefiInitContext {
 impl UefiInitContext {
     /// Early initialization: serial, VGA, memory maps
     fn early_initialization(&mut self) -> PhysAddr {
-        mem_debug!("Kernel: efi_main entered\n");
+        petroleum::serial::_print(format_args!("Kernel: efi_main entered\n"));
         petroleum::serial::serial_init();
-        mem_debug!("Kernel: efi_main located at ", efi_main as usize, "\n");
+        petroleum::serial::_print(format_args!("Kernel: efi_main located at {:#x}\n", efi_main as usize));
 
         // UEFI uses framebuffer graphics, not legacy VGA hardware programming
         // Graphics initialization happens later with initialize_graphics_with_config()
