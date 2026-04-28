@@ -454,18 +454,26 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         // immediately after CR3 switch.
         unsafe {
             let low_mem_start = 0u64;
-            let low_mem_size = 1024 * 1024 * 1024; // 1GB
+            let low_mem_size = 2 * 1024 * 1024 * 1024; // 2GB
             let region_pages = low_mem_size / 4096;
             
+            // Identity map low memory for the immediate transition
             self.map_identity_config_4kiB(
                 low_mem_start,
                 region_pages,
                 PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
             );
-            crate::debug_log_no_alloc!("Low physical memory (1GB) identity mapped for transition (executable)");
-
-            // Removed the higher-half mapping of low memory to prevent RIP divergence 
-            // and potential CPU confusion during the transition.
+            
+            // ALSO map low memory to the higher half.
+            // This is CRITICAL because we perform an absolute jump to RIP + PHYS_OFFSET.
+            self.map_at_offset_config_4kiB(
+                self.phys_offset,
+                low_mem_start,
+                region_pages,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+            );
+            
+            crate::debug_log_no_alloc!("Low physical memory (2GB) identity AND high-half mapped for transition");
         }
 
         crate::debug_log_no_alloc!("Transition mappings completed");
@@ -877,23 +885,16 @@ impl PageTableReinitializer {
                 "mov cr3, {cr3}",
                 
                 // 2. Adjust RSP and RBP immediately to high half
-                "mov {rbp}, rbp",
-                "mov {rsp}, rsp",
-                "add {rsp}, {diff}",
-                "mov rsp, {rsp}",
-                "add {rbp}, {diff}",
-                "mov rbp, {rbp}",
+                "add rsp, {diff}",
+                "add rbp, {diff}",
                 
                 // 3. Absolute jump to high half
-                "lea {rip}, [rip]",
-                "add {rip}, {diff}",
-                "jmp {rip}",
+                "lea rax, [rip]",
+                "add rax, {diff}",
+                "jmp rax",
                 
                 cr3 = in(reg) cr3_val,
                 diff = in(reg) offset_diff,
-                rsp = out(reg) _,
-                rbp = out(reg) _,
-                rip = out(reg) _,
                 options(noreturn),
             );
         }
