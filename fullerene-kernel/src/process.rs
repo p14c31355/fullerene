@@ -11,7 +11,11 @@ use petroleum::common::logging::SystemError;
 use petroleum::debug_log;
 use petroleum::page_table::PageTableHelper;
 use spin::Mutex;
-use x86_64::{PhysAddr, VirtAddr};
+use x86_64::{
+    registers::control::Cr3,
+    structures::paging::PhysFrame,
+    PhysAddr, VirtAddr,
+};
 
 /// Next available process ID
 pub(crate) static NEXT_PID: AtomicUsize = AtomicUsize::new(1);
@@ -424,8 +428,8 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
             // This ensures that the subsequent register restoration (including RSP) happens
             // within the correct address space.
             unsafe {
-                let new_cr3 = (*new_ptr).page_table_phys_addr.as_u64();
-                core::arch::asm!("mov cr3, {}", in(reg) new_cr3);
+                let new_frame = PhysFrame::containing_address((*new_ptr).page_table_phys_addr);
+                Cr3::write(new_frame, x86_64::registers::control::Cr3Flags::empty());
             }
 
             // Drop the lock before the context switch to prevent deadlocks.
