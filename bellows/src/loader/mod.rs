@@ -297,6 +297,7 @@ pub fn exit_boot_services_and_jump(
         final_map_size as u64,
         x86_64::VirtAddr::zero(),
         None::<fn()>,
+        None::<fn()>,
         None::<fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::BootInfoFrameAllocator, x86_64::VirtAddr)>,
     );
     

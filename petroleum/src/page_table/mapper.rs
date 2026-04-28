@@ -444,7 +444,13 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
                 region_pages,
                 crate::page_flags_const!(READ_WRITE),
             );
-            crate::debug_log_no_alloc!("Current stack region (2MB) identity mapped: 0x{:x}", region_start);
+            self.map_at_offset_config_4kiB(
+                self.phys_offset,
+                region_start,
+                region_pages,
+                crate::page_flags_const!(READ_WRITE),
+            );
+            crate::debug_log_no_alloc!("Current stack region (2MB) identity AND high-half mapped: 0x{:x}", region_start);
         }
         
         // Removed map_available_memory_identity() as it is too slow and unnecessary for the CR3 switch transition.
@@ -733,6 +739,7 @@ impl PageTableReinitializer {
         uefi_map_phys: u64,
         uefi_map_size: u64,
         current_physical_memory_offset: VirtAddr,
+        load_gdt: Option<fn()>,
         load_idt: Option<fn()>,
         extra_mappings: Option<F>,
     ) -> VirtAddr 
@@ -796,6 +803,7 @@ impl PageTableReinitializer {
             level_4_table_frame,
             frame_allocator,
             current_physical_memory_offset,
+            load_gdt,
             load_idt,
         );
         
@@ -871,6 +879,7 @@ impl PageTableReinitializer {
         level_4_table_frame: PhysFrame,
         frame_allocator: &mut BootInfoFrameAllocator,
         current_physical_memory_offset: VirtAddr,
+        load_gdt: Option<fn()>,
         load_idt: Option<fn()>,
     ) {
         x86_64::instructions::interrupts::disable();
@@ -895,26 +904,27 @@ impl PageTableReinitializer {
                 
                 cr3 = in(reg) cr3_val,
                 diff = in(reg) offset_diff,
-                options(noreturn),
             );
         }
 
-        // This part is NEVER reached because of the absolute jump above.
-        // The high-half version of this function continues execution from the jump target.
-        // However, since we jumped to the high-half RIP, the CPU continues executing
-        // from the instruction immediately following the `jmp` in the high-half.
+        // --- LANDING ZONE (Executing in High Half) ---
+        // Immediately use primitive serial output to verify jump success.
+        // This bypasses Mutexes and complex logging.
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"High-half transition: jump successful!\n");
         
-        // To handle the "return" to the Rust function flow in the high half, 
-        // we need to ensure the jump target is just before the next line of code.
-        // The `asm!` block above does exactly that.
-        
-        crate::debug_log_no_alloc!("CR3 switch and higher-half transition executed");
-        
-        if let Some(load_fn) = load_idt {
-            load_fn();
-            crate::debug_log_no_alloc!("IDT loaded");
+        // Reload GDT/IDT as soon as possible in high half to ensure stable environment.
+        if let Some(load_gdt_fn) = load_gdt {
+            load_gdt_fn();
+            crate::debug_log_no_alloc!("GDT reloaded in high half");
         }
 
+        if let Some(load_idt_fn) = load_idt {
+            load_idt_fn();
+            crate::debug_log_no_alloc!("IDT reloaded in high half");
+        }
+
+        crate::debug_log_no_alloc!("CR3 switch and higher-half transition executed");
+        
         crate::flush_tlb_and_verify!();
         crate::debug_log_no_alloc!("TLB flushed");
         
@@ -943,6 +953,7 @@ pub fn reinit_page_table_with_allocator<F>(
     uefi_map_phys: u64,
     uefi_map_size: u64,
     current_physical_memory_offset: VirtAddr,
+    load_gdt: Option<fn()>,
     load_idt: Option<fn()>,
     extra_mappings: Option<F>,
 ) -> VirtAddr 
@@ -959,6 +970,7 @@ where
         uefi_map_phys,
         uefi_map_size,
         current_physical_memory_offset,
+        load_gdt,
         load_idt,
         extra_mappings,
     )
