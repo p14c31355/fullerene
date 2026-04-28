@@ -308,11 +308,8 @@ pub extern "sysv64" fn landing_zone(
         crate::debug_log_no_alloc!("L4 table mapped to high-half in landing zone");
         crate::debug_log_no_alloc!("Landing zone completed. Jumping back to kernel...");
         
-        // Now we can jump back to the kernel entry point or continue.
-        // For now, we'll loop here to avoid returning to a broken stack frame.
-        loop {
-            core::arch::asm!("hlt");
-        }
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Landing zone returning now\n");
+        // Now we can return to the caller in the higher half.
     }
 }
 
@@ -943,6 +940,7 @@ impl PageTableReinitializer {
             load_idt,
             gdt_ptr,
         );
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Page table switch: returned to reinitialize\n");
         
         self.phys_offset
     }
@@ -1045,9 +1043,10 @@ impl PageTableReinitializer {
             .wrapping_add(self.phys_offset.as_u64()) as *const u8;
 
         // Use primitive serial output to mark the absolute last point before entering assembly.
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"CR3 switch: entering asm! block\n");
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"CR3 switch: about to enter asm! block\n");
 
         unsafe {
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: inside unsafe block, getting RIP\n");
             // CRITICAL: Explicitly map the current RIP in the new page table.
             // The dump showed RIP = 0x140019472, which was NOT mapped in the new table.
             let rip: u64;
@@ -1085,12 +1084,13 @@ impl PageTableReinitializer {
                     frame_allocator,
                 );
             }
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: RIP region mapped\n");
             crate::debug_log_no_alloc!("Current RIP region (4MB) explicitly mapped to current virtual address in new page table");
 
             // CRITICAL: Explicitly map the landing_zone function.
             // Map a larger region (2MB) around the landing_zone to ensure it's fully covered 
             // and to avoid issues with page boundaries or alignment.
-            let landing_zone_virt = landing_zone as usize as u64;
+            let landing_zone_virt = landing_zone as *const () as usize as u64;
             let landing_zone_phys = landing_zone_virt.wrapping_sub(current_physical_memory_offset.as_u64());
             
             let lz_region_start_phys = (landing_zone_phys.wrapping_sub(1024 * 1024)) & !0xFFF;
@@ -1121,8 +1121,11 @@ impl PageTableReinitializer {
                     frame_allocator,
                 );
             }
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: Landing zone region mapped\n");
             crate::mem_debug!("landing_zone region (2MB) mapped at low and high", "\n");
         }
+
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"CR3 switch: about to enter asm! block\n");
 
         unsafe {
             core::arch::asm!(
@@ -1140,13 +1143,10 @@ impl PageTableReinitializer {
                 // 4. Far jump to landing zone in high half.
                 "mov dx, 0x3f8", "mov al, 0x34", "out dx, al",
                 
-                // Final check before jump
-                "mov dx, 0x3f8", "mov al, 0x35", "out dx, al",
+        // Final check before jump
+        "mov dx, 0x3f8", "mov al, 0x35", "out dx, al",
 
-                // Align stack to 16 bytes for System V ABI
-                "and rsp, -16",
-
-                // Pass arguments in registers (System V x64 calling convention)
+        // Pass arguments in registers (System V x64 calling convention)
                 // RDI: load_gdt, RSI: load_idt, RDX: phys_offset, RCX: l4_frame, R8: allocator
                 "mov rdi, {load_gdt}",
                 "mov rsi, {load_idt}",
@@ -1166,12 +1166,13 @@ impl PageTableReinitializer {
                 l4_frame = in(reg) level_4_table_frame.start_address().as_u64(),
                 allocator = in(reg) frame_allocator as *const _,
                 cs_selector = in(reg) 0x08,
-                landing_zone_high = in(reg) ((landing_zone as usize) as u64).wrapping_sub(current_physical_memory_offset.as_u64()).wrapping_add(self.phys_offset.as_u64()) as usize,
+                landing_zone_high = in(reg) ((landing_zone as *const () as usize) as u64).wrapping_sub(current_physical_memory_offset.as_u64()).wrapping_add(self.phys_offset.as_u64()) as usize,
                 in("rdi") final_gdt_ptr_high,
                 out("dx") _,
                 out("rax") _,
             );
         }
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"CR3 switch: returned from asm! block\n");
     }
 }
 
