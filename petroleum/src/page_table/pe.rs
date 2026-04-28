@@ -268,7 +268,7 @@ pub fn load_efi_image(
                 for i in 0..num_entries {
                     let entry_offset = 8 + i * 2;
                     let type_offset = unsafe { 
-                        let entry_ptr = current_reloc_ptr.add(entry_offset) as *const u16;
+                    // Type 10 is DIR64 (64-bit absolute address)
                         core::ptr::read_volatile(entry_ptr) 
                     };
                     
