@@ -311,11 +311,9 @@ pub extern "sysv64" fn landing_zone(
             "mov r10, rsp",
             // Ensure RSP is 16-byte aligned for the Rust function prologue
             "and rsp, -16",
-            "call r9",
-            // Restore RSP so that the return address pushed before retfq is at the top
-            "mov rsp, r10",
-            // After returning from logic, go back to the original caller (perform_page_table_switch)
-            "ret",
+            "call r12",
+            // Logic function is noreturn, but just in case it returns, we hlt instead of ret
+            "hlt",
         );
     }
 }
@@ -340,6 +338,7 @@ extern "sysv64" fn landing_zone_logic(
     kernel_args: *const KernelArgs,
 ) {
     unsafe {
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: Start\n");
         let l4_phys = l4_frame_raw;
         let local_phys_offset = VirtAddr::new(phys_offset_raw);
         let local_frame_allocator = frame_allocator;
@@ -1221,24 +1220,16 @@ impl PageTableReinitializer {
                 "mov cr3, {cr3}",
                 "mov dx, 0x3f8", "mov al, 0x32", "out dx, al",
                 
-                // 3. Load GDT pointer while still in low-half.
-                "lgdt [rdi]",
+                // 3. Load GDT pointer immediately after CR3 switch.
+                // We use an explicit register for GDT pointer to avoid conflicts.
+                "lgdt [{gdt_ptr}]",
                 "mov dx, 0x3f8", "mov al, 0x33", "out dx, al",
                 
-                // 4. Far jump to landing zone in high half.
-                "mov dx, 0x3f8", "mov al, 0x34", "out dx, al",
-
-                // CRITICAL: Shift RSP to higher-half.
-                // This ensures that the stack is accessed via high-half addresses 
-                // once we land in the Rust code of the landing zone.
+                // 4. Shift RSP to higher-half immediately.
                 "add rsp, {offset_diff}",
                 "mov dx, 0x3f8", "mov al, 0x36", "out dx, al",
-                
-        // Final check before jump
-        "mov dx, 0x3f8", "mov al, 0x35", "out dx, al",
 
-            // Pass arguments in registers (System V x64 calling convention)
-                // RDI: load_gdt, RSI: load_idt, RDX: phys_offset, RCX: l4_frame, R8: allocator, R9: kernel_entry
+                // 5. Set up arguments for landing_zone (System V ABI)
                 "mov rdi, {load_gdt}",
                 "mov rsi, {load_idt}",
                 "mov rdx, {phys_offset}",
@@ -1246,15 +1237,19 @@ impl PageTableReinitializer {
                 "mov r8, {allocator}",
                 "mov r9, {kernel_entry}",
                 
-                "push 0", // Alignment dummy
+                // Push 7th argument (KernelArgs)
                 "push {kernel_args_virt}",
-                "mov rax, {logic_fn_high}",
-                "call rax",
-                "add rsp, 16", // Clean up stack
-
+                
+                // Align stack to 16 bytes before the far jump
+                "and rsp, -16",
+                
+                // Set up the high-half address of the logic function in r12
+                "mov r12, {logic_fn_high}",
+                
+                // Final debug and absolute jump to high-half landing zone
+                "mov dx, 0x3f8", "mov al, 0x35", "out dx, al",
                 "push {cs_selector}",
-                "mov rax, {landing_zone_high}",
-                "push rax",
+                "push {landing_zone_high}",
                 "retfq",
 
                 cr3 = in(reg) cr3_val,
@@ -1269,7 +1264,7 @@ impl PageTableReinitializer {
                 cs_selector = in(reg) 0x08,
                 landing_zone_high = in(reg) ((landing_zone as *const () as usize) as u64).wrapping_sub(current_physical_memory_offset.as_u64()).wrapping_add(self.phys_offset.as_u64()) as usize,
                 offset_diff = in(reg) offset_diff,
-                in("rdi") final_gdt_ptr_high,
+                gdt_ptr = in(reg) final_gdt_ptr_high,
                 out("dx") _,
                 out("rax") _,
             );

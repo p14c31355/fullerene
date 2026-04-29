@@ -326,7 +326,7 @@ pub fn exit_boot_services_and_jump(
         None::<fn()>,
         None::<fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::BootInfoFrameAllocator, x86_64::VirtAddr)>,
         None,
-        None,
+        Some(entry as usize),
         Some(args_phys_addr as u64),
     );
     
