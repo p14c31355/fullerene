@@ -129,8 +129,8 @@ impl MemoryDescriptorValidator for EfiMemoryDescriptor {
     }
 }
 
-/// Private helper function to validate memory descriptor properties common to both descriptor types
-fn validate_descriptor_common(mem_type: u32, phys: u64, pages: u64) -> bool {
+/// Helper function to validate memory descriptor properties common to both descriptor types
+pub(crate) fn validate_descriptor_common(mem_type: u32, phys: u64, pages: u64) -> bool {
     if mem_type > 15 {
         debug_log_no_alloc!("Invalid memory type (out of range): 0x", mem_type as usize);
         return false;
@@ -222,6 +222,100 @@ pub fn mark_available_frames<T: MemoryDescriptorValidator>(
         frame_allocator.set_frame_range(start_frame, actual_end, false);
     });
     frame_allocator.set_frame_used(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_descriptor_common_valid() {
+        // Valid descriptor: type 7, aligned start, reasonable page count
+        assert!(validate_descriptor_common(7, 0x1000, 100));
+    }
+
+    #[test]
+    fn test_validate_descriptor_common_invalid_type() {
+        // Invalid type > 15
+        assert!(!validate_descriptor_common(16, 0x1000, 100));
+    }
+
+    #[test]
+    fn test_validate_descriptor_common_unaligned() {
+        // Unaligned physical start
+        assert!(!validate_descriptor_common(7, 0x1001, 100));
+    }
+
+    #[test]
+    fn test_validate_descriptor_common_invalid_pages() {
+        // Page count 0
+        assert!(!validate_descriptor_common(7, 0x1000, 0));
+        // Page count too large
+        assert!(!validate_descriptor_common(7, 0x1000, MAX_DESCRIPTOR_PAGES + 1));
+    }
+
+    #[test]
+    fn test_validate_descriptor_common_overflow() {
+        // Force overflow: phys + (pages * 4096) > u64::MAX
+        assert!(!validate_descriptor_common(7, 0xFFFF_FFFF_FFFF_0000, 0x1000));
+    }
+
+    #[test]
+    fn test_validate_descriptor_common_too_large() {
+        // End address > MAX_SYSTEM_MEMORY
+        assert!(!validate_descriptor_common(7, MAX_SYSTEM_MEMORY - 100, 1));
+    }
+
+    #[test]
+    fn test_calculate_frame_allocation_params_empty() {
+        let map: [EfiMemoryDescriptor; 0] = [];
+        assert_eq!(calculate_frame_allocation_params(&map), (0, 0, 0));
+    }
+
+    #[test]
+    fn test_calculate_frame_allocation_params_basic() {
+        let map = [
+            EfiMemoryDescriptor {
+                type_: crate::common::EfiMemoryType::EfiConventionalMemory,
+                padding: 0,
+                physical_start: 0x1000,
+                virtual_start: 0,
+                number_of_pages: 10,
+                attribute: 0,
+            },
+            EfiMemoryDescriptor {
+                type_: crate::common::EfiMemoryType::EfiConventionalMemory,
+                padding: 0,
+                physical_start: 0x5000,
+                virtual_start: 0,
+                number_of_pages: 20,
+                attribute: 0,
+            },
+        ];
+        // Max addr = 0x5000 + 20 * 4096 = 0x5000 + 0x14000 = 0x19000
+        let (max_addr, total_frames, bitmap_size) = calculate_frame_allocation_params(&map);
+        assert_eq!(max_addr, 0x19000);
+        assert_eq!(total_frames, (0x19000u64.div_ceil(4096)) as usize);
+        assert_eq!(bitmap_size, (total_frames + 63) / 64);
+    }
+
+    #[test]
+    fn test_calculate_frame_allocation_params_capped() {
+        let map = [
+            EfiMemoryDescriptor {
+                type_: crate::common::EfiMemoryType::EfiConventionalMemory,
+                padding: 0,
+                physical_start: 0x1000,
+                virtual_start: 0,
+                number_of_pages: (40 * 1024 * 1024 * 1024) / 4096, // 40GiB
+                attribute: 0,
+            },
+        ];
+        let (max_addr, total_frames, _) = calculate_frame_allocation_params(&map);
+        // max_addr is the actual max, but total_frames should be capped at 32GiB
+        assert!(max_addr > 32 * 1024 * 1024 * 1024);
+        assert_eq!(total_frames, (32 * 1024 * 1024 * 1024) / 4096);
+    }
 }
 
 pub fn calculate_frame_allocation_params<T: MemoryDescriptorValidator>(

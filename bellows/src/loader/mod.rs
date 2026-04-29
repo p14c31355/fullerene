@@ -40,9 +40,7 @@ pub fn exit_boot_services_and_jump(
     }
     // Pre-allocate buffer before loop to include it in map key
     let map_buffer_size: usize = 128 * 1024; // 128 KiB
-    let alloc_pages = (map_buffer_size + core::mem::size_of::<usize>())
-        .div_ceil(4096)
-        .max(1);
+    let alloc_pages = petroleum::common::utils::calculate_pages_for_buffer(map_buffer_size);
     #[cfg(feature = "debug_loader")]
     log::info!("Buffer vars setup");
 
@@ -65,7 +63,7 @@ pub fn exit_boot_services_and_jump(
         ));
     }
 
-    let map_ptr: *mut c_void = (map_phys_addr + core::mem::size_of::<usize>()) as *mut c_void;
+    let map_ptr: *mut c_void = petroleum::common::utils::calculate_map_data_ptr(map_phys_addr) as *mut c_void;
 
     // Setup variables for memory map
     let mut map_size: usize = map_buffer_size; // Start with full buffer size
@@ -207,12 +205,11 @@ pub fn exit_boot_services_and_jump(
         let config_size = core::mem::size_of::<petroleum::common::uefi::ConfigWithMetadata>();
 
         // The memory map data starts at map_ptr.
-        // The total size of the map data is map_size.
-        // We append the config immediately after the map data.
-        let config_offset = core::mem::size_of::<usize>() + map_size;
-        if map_phys_addr + config_offset + config_size
-            <= map_phys_addr + map_buffer_size + core::mem::size_of::<usize>()
-        {
+    // The total size of the map data is map_size.
+    // We append the config immediately after the map data.
+    let config_offset = petroleum::common::utils::calculate_config_offset(map_size);
+    if petroleum::common::utils::check_buffer_overflow(map_phys_addr, config_offset, config_size, map_buffer_size)
+    {
             unsafe {
                 let dest_ptr = (map_phys_addr as *mut u8).add(config_offset);
                 core::ptr::copy_nonoverlapping(
@@ -294,7 +291,7 @@ pub fn exit_boot_services_and_jump(
         let mut descriptors = alloc::vec::Vec::with_capacity(num_descriptors);
         for i in 0..num_descriptors {
             unsafe {
-                let desc_ptr = descriptors_ptr.add(i * descriptor_size_val);
+                let desc_ptr = petroleum::common::utils::calculate_descriptor_ptr(descriptors_ptr, i, descriptor_size_val);
                 descriptors.push(petroleum::page_table::efi_memory::MemoryMapDescriptor::new(
                     desc_ptr,
                     descriptor_size_val,

@@ -73,7 +73,7 @@ pub fn find_heap_start(descriptors: &[impl MemoryDescriptorValidator]) -> PhysAd
         if desc.get_type() == EfiMemoryType::EfiConventionalMemory as u32
             && desc.get_page_count() >= HEAP_PAGES
             && desc.get_physical_start() < 0x4000000 // within first 64MB
-            && desc.get_physical_start() + (desc.get_page_count() * 4096) <= 0x4000000
+            && petroleum::common::utils::calculate_region_end(desc.get_physical_start(), desc.get_page_count()) <= 0x4000000
         // ensure entire region fits
         {
             return PhysAddr::new(desc.get_physical_start());
@@ -81,6 +81,69 @@ pub fn find_heap_start(descriptors: &[impl MemoryDescriptorValidator]) -> PhysAd
     }
     // Fallback if no suitable memory found within first 64MB
     PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use petroleum::page_table::efi_memory::EfiMemoryDescriptor;
+    use petroleum::common::EfiMemoryType;
+    use x86_64::PhysAddr;
+
+    struct MockDescriptor {
+        type_: u32,
+        start: u64,
+        pages: u64,
+    }
+
+    impl petroleum::page_table::efi_memory::MemoryDescriptorValidator for MockDescriptor {
+        fn is_valid(&self) -> bool { true }
+        fn get_type(&self) -> u32 { self.type_ }
+        fn get_physical_start(&self) -> u64 { self.start }
+        fn get_page_count(&self) -> u64 { self.pages }
+        fn is_memory_available(&self) -> bool { true }
+    }
+
+    #[test]
+    fn test_find_heap_start_valid() {
+        let descriptors = [
+            MockDescriptor { type_: EfiMemoryType::EfiConventionalMemory as u32, start: 0x1000, pages: 512 },
+        ];
+        assert_eq!(find_heap_start(&descriptors), PhysAddr::new(0x1000));
+    }
+
+    #[test]
+    fn test_find_heap_start_too_small() {
+        let descriptors = [
+            MockDescriptor { type_: EfiMemoryType::EfiConventionalMemory as u32, start: 0x1000, pages: 128 },
+        ];
+        assert_eq!(find_heap_start(&descriptors), PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR));
+    }
+
+    #[test]
+    fn test_find_heap_start_out_of_range() {
+        let descriptors = [
+            MockDescriptor { type_: EfiMemoryType::EfiConventionalMemory as u32, start: 0x5000000, pages: 512 },
+        ];
+        assert_eq!(find_heap_start(&descriptors), PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR));
+    }
+
+    #[test]
+    fn test_find_heap_start_wrong_type() {
+        let descriptors = [
+            MockDescriptor { type_: EfiMemoryType::EfiReservedMemoryType as u32, start: 0x1000, pages: 512 },
+        ];
+        assert_eq!(find_heap_start(&descriptors), PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR));
+    }
+
+    #[test]
+    fn test_find_heap_start_multiple_pick_first() {
+        let descriptors = [
+            MockDescriptor { type_: EfiMemoryType::EfiConventionalMemory as u32, start: 0x1000, pages: 512 },
+            MockDescriptor { type_: EfiMemoryType::EfiConventionalMemory as u32, start: 0x2000, pages: 512 },
+        ];
+        assert_eq!(find_heap_start(&descriptors), PhysAddr::new(0x1000));
+    }
 }
 
 pub fn setup_kernel_location(

@@ -22,6 +22,7 @@ pub fn setup_vga_mode_common() {
 }
 
 pub mod uefi;
+pub mod utils;
 
 /// System diagnostics structure for monitoring
 #[derive(Clone, Copy)]
@@ -70,3 +71,4 @@ pub use macros::*;
 pub use memory::*;
 pub use syscall::*;
 pub use uefi::*;
+pub use utils::*;

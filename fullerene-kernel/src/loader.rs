@@ -72,7 +72,7 @@ pub fn load_program(
                 return Err(LoadError::UnsupportedArchitecture);
             }
 
-            let num_pages = ((mem_size + 4095) / 4096) as u64; // Round up to page size
+                    let num_pages = petroleum::common::utils::calculate_pages(mem_size);
 
             // Check that the virtual address range is not already mapped
             for page_idx in 0..num_pages {
@@ -88,7 +88,7 @@ pub fn load_program(
 
             // For each page needed by the segment, allocate a physical frame and map it
             for page_idx in 0..num_pages {
-                let page_vaddr = x86_64::VirtAddr::new(vaddr + page_idx * 4096);
+                let page_vaddr = x86_64::VirtAddr::new(petroleum::common::utils::calculate_offset_address(vaddr, page_idx));
 
                 // Allocate a physical frame for this page
                 let frame = crate::heap::FRAME_ALLOCATOR

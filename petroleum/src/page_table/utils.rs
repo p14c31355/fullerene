@@ -255,6 +255,18 @@ pub unsafe fn translate_addr(addr: VirtAddr, physical_memory_offset: VirtAddr) -
     translate_addr_inner(addr, physical_memory_offset)
 }
 
+/// Calculates the offset within a huge page based on the page table level.
+///
+/// L3 (level 1 in the loop) corresponds to 1GiB pages.
+/// L2 (level 2 in the loop) corresponds to 2MiB pages.
+pub fn calculate_huge_page_offset(level: usize, addr: u64) -> u64 {
+    match level {
+        1 => addr & 0x3FFFFFFF, // L3: 1GiB
+        2 => addr & 0x1FFFFF,   // L2: 2MiB
+        _ => panic!("Huge page at unexpected level: {}", level),
+    }
+}
+
 fn translate_addr_inner(addr: VirtAddr, physical_memory_offset: VirtAddr) -> Option<PhysAddr> {
     let (level_4_table_frame, _) = Cr3::read();
     let table_indexes = [
@@ -274,11 +286,7 @@ fn translate_addr_inner(addr: VirtAddr, physical_memory_offset: VirtAddr) -> Opt
             Err(x86_64::structures::paging::page_table::FrameError::FrameNotPresent) => return None,
             Err(x86_64::structures::paging::page_table::FrameError::HugeFrame) => {
                 let phys_addr = entry.addr().as_u64();
-                let offset = match i {
-                    1 => addr.as_u64() & 0x3FFFFFFF, // L3: 1GiB
-                    2 => addr.as_u64() & 0x1FFFFF,   // L2: 2MiB
-                    _ => panic!("Huge page at unexpected level: {}", i),
-                };
+                let offset = calculate_huge_page_offset(i, addr.as_u64());
                 return Some(PhysAddr::new(phys_addr + offset));
             }
         }
@@ -567,9 +575,55 @@ pub unsafe fn force_update_page_flags_no_flush(mapper: &mut OffsetPageTable, add
     }
 }
 
+/// Calculates the difference between two physical memory offsets.
+pub fn calculate_phys_offset_diff(current: VirtAddr, new: VirtAddr) -> u64 {
+    new.as_u64().wrapping_sub(current.as_u64())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use x86_64::VirtAddr;
+
+    #[test]
+    fn test_calculate_huge_page_offset_l3() {
+        let addr = 0x1234_5678_9ABC_DEF0;
+        let offset = calculate_huge_page_offset(1, addr);
+        assert_eq!(offset, addr & 0x3FFFFFFF);
+    }
+
+    #[test]
+    fn test_calculate_huge_page_offset_l2() {
+        let addr = 0x1234_5678_9ABC_DEF0;
+        let offset = calculate_huge_page_offset(2, addr);
+        assert_eq!(offset, addr & 0x1FFFFF);
+    }
+
+    #[test]
+    #[should_panic(expected = "Huge page at unexpected level")]
+    fn test_calculate_huge_page_offset_invalid_level() {
+        calculate_huge_page_offset(3, 0x1000);
+    }
+
+    #[test]
+    fn test_calculate_phys_offset_diff() {
+        let current = VirtAddr::new(0x1000);
+        let new = VirtAddr::new(0x2000);
+        assert_eq!(calculate_phys_offset_diff(current, new), 0x1000);
+    }
+
+    #[test]
+    fn test_calculate_phys_offset_diff_wrapping() {
+        let current = VirtAddr::new(0xFFFF_FFFF_FFFF_F000);
+        let new = VirtAddr::new(0x0000_0000_0000_1000);
+        // (0x1000 - 0xFF...F000) mod 2^64 = 0x2000
+        assert_eq!(calculate_phys_offset_diff(current, new), 0x2000);
+    }
+}
+
 pub fn adjust_return_address_and_stack(current_phys_offset: VirtAddr, new_phys_offset: VirtAddr) {
     debug_log_no_alloc!("Adjusting current stack pointer for higher half");
-    let offset_diff = new_phys_offset.as_u64().wrapping_sub(current_phys_offset.as_u64());
+    let offset_diff = calculate_phys_offset_diff(current_phys_offset, new_phys_offset);
     unsafe {
         let mut rbp: u64;
         core::arch::asm!("mov {}, rbp", out(reg) rbp);

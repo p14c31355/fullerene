@@ -1039,7 +1039,7 @@ pub struct InitSequence<'a> {
 #[macro_export]
 macro_rules! calc_offset_addr {
     ($base:expr, $i:expr) => {
-        $base + ($i * 4096)
+        $crate::common::utils::calculate_offset_address($base, $i)
     };
 }
 
