@@ -217,7 +217,7 @@ fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {
         "-accel",
         "tcg,thread=single",
         "-d",
-        "guest_errors,unimp",
+        "int,cpu_reset,guest_errors,unimp",
         "-D",
         "qemu_log.txt",
         "-monitor",

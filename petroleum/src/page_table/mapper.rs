@@ -320,6 +320,14 @@ pub extern "sysv64" fn landing_zone(
     }
 }
 
+#[repr(C)]
+pub struct KernelArgs {
+    pub handle: usize,
+    pub system_table: usize,
+    pub map_ptr: usize,
+    pub map_size: usize,
+}
+
 #[unsafe(no_mangle)]
 #[inline(never)]
 extern "sysv64" fn landing_zone_logic(
@@ -329,6 +337,7 @@ extern "sysv64" fn landing_zone_logic(
     l4_frame_raw: u64,
     frame_allocator: *mut BootInfoFrameAllocator,
     kernel_entry: usize,
+    kernel_args: *const KernelArgs,
 ) {
     unsafe {
         let l4_phys = l4_frame_raw;
@@ -361,7 +370,20 @@ extern "sysv64" fn landing_zone_logic(
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Landing zone jumping to kernel entry!\n");
         
         if kernel_entry != 0 {
-            core::arch::asm!("jmp {}", in(reg) kernel_entry);
+            let args = &*kernel_args;
+            core::arch::asm!(
+                "mov rcx, {handle}",
+                "mov rdx, {st}",
+                "mov r8, {map}",
+                "mov r9, {size}",
+                "jmp {}", 
+                in(reg) kernel_entry,
+                handle = in(reg) args.handle,
+                st = in(reg) args.system_table,
+                map = in(reg) args.map_ptr,
+                size = in(reg) args.map_size,
+                options(noreturn)
+            );
         }
     }
 }
@@ -933,6 +955,7 @@ impl PageTableReinitializer {
         extra_mappings: Option<F>,
         gdt_ptr: Option<*const u8>,
         kernel_entry: Option<usize>,
+        kernel_args_phys: Option<u64>,
     ) -> VirtAddr 
     where 
         T: crate::page_table::efi_memory::MemoryDescriptorValidator,
@@ -998,6 +1021,7 @@ impl PageTableReinitializer {
             load_idt,
             gdt_ptr,
             kernel_entry,
+            kernel_args_phys,
         );
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Page table switch: returned to reinitialize\n");
         
@@ -1077,6 +1101,7 @@ impl PageTableReinitializer {
         load_idt: Option<fn()>,
         gdt_ptr: Option<*const u8>,
         kernel_entry: Option<usize>,
+        kernel_args_phys: Option<u64>,
     ) {
         x86_64::instructions::interrupts::disable();
         crate::debug_log_no_alloc!("About to switch CR3 to new table: 0x", level_4_table_frame.start_address().as_u64() as usize);
@@ -1212,16 +1237,21 @@ impl PageTableReinitializer {
         // Final check before jump
         "mov dx, 0x3f8", "mov al, 0x35", "out dx, al",
 
-        // Pass arguments in registers (System V x64 calling convention)
-                // RDI: load_gdt, RSI: load_idt, RDX: phys_offset, RCX: l4_frame, R8: allocator
+            // Pass arguments in registers (System V x64 calling convention)
+                // RDI: load_gdt, RSI: load_idt, RDX: phys_offset, RCX: l4_frame, R8: allocator, R9: kernel_entry
                 "mov rdi, {load_gdt}",
                 "mov rsi, {load_idt}",
                 "mov rdx, {phys_offset}",
                 "mov rcx, {l4_frame}",
                 "mov r8, {allocator}",
-                "mov r9, {logic_fn_high}",
-                "mov r10, {kernel_entry}",
+                "mov r9, {kernel_entry}",
                 
+                "push 0", // Alignment dummy
+                "push {kernel_args_virt}",
+                "mov rax, {logic_fn_high}",
+                "call rax",
+                "add rsp, 16", // Clean up stack
+
                 "push {cs_selector}",
                 "mov rax, {landing_zone_high}",
                 "push rax",
@@ -1235,6 +1265,7 @@ impl PageTableReinitializer {
                 allocator = in(reg) frame_allocator as *const _,
                 logic_fn_high = in(reg) ((landing_zone_logic as *const () as usize) as u64).wrapping_sub(current_physical_memory_offset.as_u64()).wrapping_add(self.phys_offset.as_u64()) as usize,
                 kernel_entry = in(reg) kernel_entry.unwrap_or(0),
+                kernel_args_virt = in(reg) kernel_args_phys.map_or(0, |phys| phys + self.phys_offset.as_u64()),
                 cs_selector = in(reg) 0x08,
                 landing_zone_high = in(reg) ((landing_zone as *const () as usize) as u64).wrapping_sub(current_physical_memory_offset.as_u64()).wrapping_add(self.phys_offset.as_u64()) as usize,
                 offset_diff = in(reg) offset_diff,
@@ -1261,27 +1292,29 @@ pub fn reinit_page_table_with_allocator<T, F>(
     extra_mappings: Option<F>,
     gdt_ptr: Option<*const u8>,
     kernel_entry: Option<usize>,
+    kernel_args_phys: Option<u64>,
 ) -> VirtAddr 
 where 
     T: crate::page_table::efi_memory::MemoryDescriptorValidator,
     F: FnOnce(&mut OffsetPageTable, &mut BootInfoFrameAllocator, VirtAddr),
 {
     let mut reinitializer = PageTableReinitializer::new();
-    reinitializer.reinitialize(
-        kernel_phys_start,
-        fb_addr,
-        fb_size,
-        frame_allocator,
-        memory_map,
-        uefi_map_phys,
-        uefi_map_size,
-        current_physical_memory_offset,
-        load_gdt,
-        load_idt,
-        extra_mappings,
-        gdt_ptr,
-        kernel_entry,
-    )
+        reinitializer.reinitialize(
+            kernel_phys_start,
+            fb_addr,
+            fb_size,
+            frame_allocator,
+            memory_map,
+            uefi_map_phys,
+            uefi_map_size,
+            current_physical_memory_offset,
+            load_gdt,
+            load_idt,
+            extra_mappings,
+            gdt_ptr,
+            kernel_entry,
+            kernel_args_phys,
+        )
 }
 
 pub unsafe fn unmap_identity_range(

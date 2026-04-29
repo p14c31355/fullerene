@@ -3,7 +3,7 @@ pub mod constants;
 pub mod efi_memory;
 pub mod pe;
 mod utils;
-mod mapper;
+pub mod mapper;
 mod manager;
 mod heap;
 mod tests;

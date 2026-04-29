@@ -244,7 +244,33 @@ pub fn exit_boot_services_and_jump(
 
     // Setup Page Tables before jumping to kernel
     petroleum::serial::_print(format_args!("Reinitializing page tables for kernel jump...\n"));
-    
+
+    // Allocate and prepare KernelArgs
+    let mut args_phys_addr: usize = 0;
+    let args_status = (bs.allocate_pages)(
+        0usize,
+        EfiMemoryType::EfiLoaderData,
+        1,
+        &mut args_phys_addr,
+    );
+    if EfiStatus::from(args_status) != EfiStatus::Success {
+        return Err(BellowsError::AllocationFailed(
+            "Failed to allocate memory for KernelArgs.",
+        ));
+    }
+    let args_ptr = args_phys_addr as *mut petroleum::page_table::mapper::KernelArgs;
+    unsafe {
+        core::ptr::write_volatile(
+            args_ptr,
+            petroleum::page_table::mapper::KernelArgs {
+                handle: image_handle,
+                system_table: system_table as usize,
+                map_ptr: map_phys_addr,
+                map_size: final_map_size,
+            },
+        );
+    }
+
     let fb_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|m| *m.lock());
     let (fb_addr, fb_size) = match fb_config {
         Some(c) => (
@@ -301,6 +327,7 @@ pub fn exit_boot_services_and_jump(
         None::<fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::BootInfoFrameAllocator, x86_64::VirtAddr)>,
         None,
         None,
+        Some(args_phys_addr as u64),
     );
     
     petroleum::serial::_print(format_args!("New physical memory offset: {:#x}\n", new_phys_offset.as_u64()));
