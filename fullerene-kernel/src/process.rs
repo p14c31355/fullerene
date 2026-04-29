@@ -6,15 +6,19 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use petroleum::common::logging::SystemError;
 use petroleum::debug_log;
 use petroleum::page_table::PageTableHelper;
 use spin::Mutex;
-use x86_64::{PhysAddr, VirtAddr};
+use x86_64::{
+    registers::control::Cr3,
+    structures::paging::PhysFrame,
+    PhysAddr, VirtAddr,
+};
 
 /// Next available process ID
-pub(crate) static NEXT_PID: AtomicU64 = AtomicU64::new(1);
+pub(crate) static NEXT_PID: AtomicUsize = AtomicUsize::new(1);
 
 /// Process ID type
 pub type ProcessId = u64;
@@ -134,7 +138,7 @@ pub struct Process {
 impl Process {
     /// Create a new process
     pub fn new(name: &'static str, entry_point: VirtAddr) -> Self {
-        let id = NEXT_PID.fetch_add(1, Ordering::Relaxed);
+        let id = NEXT_PID.fetch_add(1, Ordering::Relaxed) as u64;
 
         Self {
             id,
@@ -175,8 +179,7 @@ static CURRENT_PROCESS_INDEX: Mutex<usize> = Mutex::new(0);
 /// Current running process
 pub static CURRENT_PROCESS: Mutex<Option<ProcessId>> = Mutex::new(None);
 
-/// Kernel stack size per process (4KB)
-const KERNEL_STACK_SIZE: usize = 4096;
+// Use KERNEL_STACK_SIZE from crate::heap
 
 /// Initialize process management system
 pub fn init() {
@@ -206,12 +209,12 @@ pub fn create_process(
     debug_log!("Process: Process::new done");
 
     // Allocate kernel stack for the process
-    let stack_layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
+    let stack_layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
     let stack_ptr = unsafe { alloc::alloc::alloc(stack_layout) };
     if stack_ptr.is_null() {
         return Err(petroleum::common::logging::SystemError::MemOutOfMemory);
     }
-    let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
+    let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
     debug_log!("Process: Kernel stack allocated");
 
     // Create page table for the process
@@ -268,8 +271,8 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
         process.exit_code = Some(exit_code);
 
         // Free resources
-        let kernel_stack_base = process.kernel_stack.as_u64() - KERNEL_STACK_SIZE as u64;
-        let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
+        let kernel_stack_base = process.kernel_stack.as_u64() - crate::heap::KERNEL_STACK_SIZE as u64;
+        let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
         unsafe { alloc::alloc::dealloc(kernel_stack_base as *mut u8, layout) };
 
         // Properly free page table frames recursively
@@ -416,15 +419,26 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
         .find(|p| p.id == new_pid)
         .map(|p| p.as_ref() as *const Process);
 
-    if let Some(new_ptr) = new_proc_ptr {
-        let old_context = old_proc_ptr.map(|p| unsafe { &mut (*p).context });
-        let new_context = unsafe { &(*new_ptr).context };
+        if let Some(new_ptr) = new_proc_ptr {
+            let old_context = old_proc_ptr.map(|p| unsafe { &mut (*p).context });
+            let new_context = unsafe { &(*new_ptr).context };
 
-        // Drop the lock before the context switch to prevent deadlocks.
-        drop(process_list);
+            // Switch page table to the new process's page table before switching registers.
+            // This ensures that the subsequent register restoration (including RSP) happens
+            // within the correct address space.
+            unsafe {
+                let new_frame = PhysFrame::containing_address((*new_ptr).page_table_phys_addr);
+                let (current_frame, _) = Cr3::read();
+                if new_frame != current_frame {
+                    Cr3::write(new_frame, x86_64::registers::control::Cr3Flags::empty());
+                }
+            }
 
-        switch_context(old_context, new_context);
-    }
+            // Drop the lock before the context switch to prevent deadlocks.
+            drop(process_list);
+
+            switch_context(old_context, new_context);
+        }
 }
 
 /// Block current process

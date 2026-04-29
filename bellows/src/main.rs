@@ -28,7 +28,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 use log;
 
 // Embedded kernel binary
-static KERNEL_BINARY: &[u8] = include_bytes!("kernel.bin");
+static KERNEL_BINARY: &[u8] = include_bytes!("kernel_final.bin");
 // Import Port for direct I/O
 
 mod loader;
@@ -48,63 +48,55 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     }
 
     petroleum::init_uefi_system_table(system_table);
-    petroleum::serial::_print(format_args!("Bellows: UEFI_SYSTEM_TABLE initialized.\n"));
+    petroleum::bootloader_log!("UEFI_SYSTEM_TABLE initialized.");
     let st = unsafe { &*system_table };
     let bs = unsafe { &*st.boot_services };
 
-    petroleum::serial::_print(format_args!(
-        "Bellows: UEFI system table and boot services acquired.\n"
-    ));
+    petroleum::bootloader_log!("UEFI system table and boot services acquired.");
 
     // Initialize the serial writer with the console output pointer.
     petroleum::serial::UEFI_WRITER.lock().init(st.con_out);
-    petroleum::println!("Bellows: UEFI_WRITER initialized."); // Debug print after UEFI_WRITER init
+    petroleum::bootloader_log!("UEFI_WRITER initialized.");
 
-    petroleum::println!("Bellows UEFI Bootloader starting...");
-    petroleum::println!("Bellows: 'Bellows UEFI Bootloader starting...' printed."); // Debug print after println!
-    petroleum::serial::_print(format_args!("Attempting to initialize GOP...\n"));
-    petroleum::println!("Image Handle: {:#x}", image_handle);
-    petroleum::println!("System Table: {:#p}", system_table);
+    petroleum::bootloader_log!("Bellows UEFI Bootloader starting...");
+    petroleum::bootloader_log!("Image Handle: {:#x}, System Table: {:#p}", image_handle, system_table);
     // Initialize heap
-    petroleum::serial::_print(format_args!("Attempting to initialize heap...\n"));
+    petroleum::bootloader_log!("Attempting to initialize heap...");
     init_heap(bs).expect("Heap initialization failed");
-    petroleum::serial::_print(format_args!("Heap initialized successfully.\n"));
-    petroleum::println!("Bellows: Heap OK.");
+    petroleum::bootloader_log!("Heap initialized successfully.");
 
     // Initialize graphics protocols for framebuffer setup
-    petroleum::serial::_print(format_args!(
-        "Attempting to initialize graphics protocols...\n"
-    ));
+    petroleum::bootloader_log!("Attempting to initialize graphics protocols...");
     match petroleum::init_graphics_protocols(st) {
         Some(config) => {
-            petroleum::println!(
-                "Bellows: Graphics framebuffer initialized at {:#x} ({}x{}).",
+            petroleum::bootloader_log!(
+                "Graphics framebuffer initialized at {:#x} ({}x{}).",
                 config.address,
                 config.width,
                 config.height
             );
         }
         None => {
-            petroleum::println!(
-                "Bellows: No graphics protocols found, initializing VGA text mode."
-            );
+            petroleum::bootloader_log!("No graphics protocols found, initializing VGA text mode.");
             init_basic_vga_text_mode();
             // For UEFI fallback, try to install a basic VGA framebuffer config for kernel use
             install_vga_framebuffer_config(st);
-            petroleum::println!(
-                "Bellows: VGA framebuffer config installed, continuing with kernel load."
-            );
+            petroleum::bootloader_log!("VGA framebuffer config installed, continuing with kernel load.");
         }
     }
-    petroleum::serial::_print(format_args!("Graphics initialization complete.\n"));
-    petroleum::println!("Bellows: Graphics initialized."); // Debug print after graphics initialization
+    petroleum::bootloader_log!("Graphics initialization complete.");
 
     let efi_image_file = KERNEL_BINARY;
     let efi_image_size = KERNEL_BINARY.len();
 
+    petroleum::bootloader_log!("Bellows: Kernel file size check: {} bytes", efi_image_size);
+    if efi_image_size > 0 {
+        let first_bytes = &KERNEL_BINARY[..core::cmp::min(efi_image_size, 4)];
+        petroleum::bootloader_log!("Bellows: First 4 bytes: {:02x?}, {:02x?}, {:02x?}, {:02x?}", 
+            first_bytes[0], first_bytes[1], first_bytes[2], first_bytes[3]);
+    }
     if efi_image_size == 0 {
-        petroleum::println!("Bellows: Kernel file is empty!");
-        petroleum::println!("Kernel file is empty.");
+        petroleum::bootloader_log!("Bellows: Kernel file is empty!");
         panic!("Kernel file is empty.");
     }
 
@@ -117,13 +109,14 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     petroleum::serial::_print(format_args!("Attempting to load EFI image...\n"));
 
     // Load the kernel and get its entry point.
-    let entry = match load_efi_image(st, efi_image_file) {
-        Ok(e) => {
+    let (kernel_phys_start, entry) = match load_efi_image(st, efi_image_file, petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64() as usize) {
+        Ok((phys, e)) => {
             petroleum::serial::_print(format_args!(
-                "EFI image loaded successfully. Entry point: {:#p}\n",
-                e as *const ()
+                "EFI image loaded successfully. Entry point: {:#p}, Phys base: {:#x}\n",
+                e as *const (),
+                phys.as_u64()
             ));
-            e
+            (phys, e)
         }
         Err(err) => {
             petroleum::println!("Failed to load EFI image: {:?}", err);
@@ -139,7 +132,7 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     ));
     // Exit boot services and jump to the kernel.
     petroleum::println!("Bellows: About to exit boot services and jump to kernel."); // Debug print just before the call
-    match exit_boot_services_and_jump(image_handle, system_table, entry) {
+    match exit_boot_services_and_jump(image_handle, system_table, kernel_phys_start, entry) {
         Ok(_) => {
             unreachable!(); // This branch should never be reached if the function returns '!'
         }

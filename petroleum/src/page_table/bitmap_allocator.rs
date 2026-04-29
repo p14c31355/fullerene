@@ -24,7 +24,10 @@ impl BitmapFrameAllocator {
         Self {
             bitmap: None,
             frame_count: 0,
-            next_free_frame: 0,
+            // Start searching for free frames from 1MB (256 * 4KB) to avoid 
+            // conflicts with BIOS/UEFI reserved regions and prevent 
+            // page tables from being allocated at very low addresses.
+            next_free_frame: 256,
             initialized: false,
         }
     }
@@ -53,6 +56,7 @@ impl BitmapFrameAllocator {
         memory_map: &[impl super::efi_memory::MemoryDescriptorValidator],
     ) -> crate::common::logging::SystemResult<()> {
         // Debug: Log memory map information
+        debug_log_no_alloc!("Entering init_with_memory_map");
         debug_log_no_alloc!("Memory map contains ", memory_map.len(), " descriptors");
 
         // Validate memory map is not empty
@@ -63,6 +67,7 @@ impl BitmapFrameAllocator {
 
         // Debug: Log each descriptor
         for (i, desc) in memory_map.iter().enumerate() {
+            debug_log_no_alloc!("Processing bitmap desc [", i, "]: phys=0x", desc.get_physical_start() as usize);
             mem_debug!(
                 "Memory descriptor ",
                 i,
@@ -79,7 +84,7 @@ impl BitmapFrameAllocator {
         let (max_addr, total_frames, bitmap_size) =
             super::efi_memory::calculate_frame_allocation_params(memory_map);
 
-        debug_log_no_alloc!("Max address: 0x", max_addr as usize);
+        debug_log_no_alloc!("Max address: ", max_addr as usize);
         debug_log_no_alloc!("Calculated total frames: ", total_frames);
 
         if total_frames == 0 {
@@ -106,11 +111,17 @@ impl BitmapFrameAllocator {
         }
 
         self.frame_count = total_frames;
-        self.next_free_frame = 0;
+        // Remove self.next_free_frame = 0 to preserve the 1MB offset set in new()
         self.initialized = true;
 
+        debug_log_no_alloc!("Marking available frames...");
         // Mark available frames as free based on memory map
         super::efi_memory::mark_available_frames(self, memory_map);
+        debug_log_no_alloc!("Finished marking available frames");
+
+        // CRITICAL: Explicitly mark the first 1MB (256 frames) as used to prevent 
+        // any allocation in the BIOS/UEFI reserved low-memory region.
+        self.set_frame_range(0, 256, true);
 
         debug_log_no_alloc!(
             "BitmapFrameAllocator initialized successfully with ",
@@ -233,7 +244,7 @@ impl BitmapFrameAllocator {
     }
 
     /// Allocate contiguous frames for large allocations
-    fn allocate_contiguous_frames(
+    pub fn allocate_contiguous_frames(
         &mut self,
         count: usize,
     ) -> crate::common::logging::SystemResult<usize> {

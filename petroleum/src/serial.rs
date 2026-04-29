@@ -38,14 +38,7 @@ impl<S: SerialPortOps> SerialPort<S> {
 
     /// Initializes the serial port.
     pub fn init(&mut self) {
-        unsafe {
-            self.ops.line_ctrl_port().write(0x80); // Enable DLAB
-            self.ops.data_port().write(0x03); // Baud rate divisor low byte (38400 bps)
-            self.ops.irq_enable_port().write(0x00);
-            self.ops.line_ctrl_port().write(0x03); // 8 bits, no parity, one stop bit
-            self.ops.fifo_ctrl_port().write(0xC7); // Enable FIFO, clear, 14-byte threshold
-            self.ops.modem_ctrl_port().write(0x0B); // IRQs enabled, OUT2
-        }
+        crate::init_serial_port!(self, 0x80, 0x03, 0x00, 0x03, 0xC7, 0x0B);
     }
 
     /// Writes a single byte to the serial port.
@@ -144,8 +137,8 @@ impl UefiWriter {
         let status = unsafe { ((*self.con_out).output_string)(self.con_out, utf16_buf.as_ptr()) };
         let efi_status = EfiStatus::from(status);
         if efi_status != EfiStatus::Success {
-            // Fallback to COM1 using the initialized global writer
-            SERIAL_PORT_WRITER.lock().write_string(s);
+            // Fallback to COM1 using direct write to avoid deadlock with SERIAL_PORT_WRITER lock
+            unsafe { write_serial_bytes(0x3F8, 0x3FD, s.as_bytes()) };
             return Err(efi_status);
         }
         Ok(())

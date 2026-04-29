@@ -114,8 +114,9 @@ impl UnifiedMemoryManager {
     ) -> SystemResult<()> {
         // Initialize frame allocator with memory map
         unsafe { self.frame_allocator.init_with_memory_map(memory_map)? };
-        // Reserve the NULL frame to prevent allocation of invalid page tables
-        self.frame_allocator.reserve_frames(0, 1)?;
+        // Reserve the first 1MB of physical memory to avoid conflicts with BIOS/UEFI reserved regions
+        // and prevent page tables from being allocated at very low addresses.
+        self.frame_allocator.reserve_frames(0, 256)?;
 
         // Page table manager will now use the active CR3 page table directly,
         // so no need to allocate a separate frame

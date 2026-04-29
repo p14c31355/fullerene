@@ -11,29 +11,8 @@ pub use petroleum::page_table::{BootInfoFrameAllocator, reinit_page_table_with_a
 pub const HEAP_SIZE: usize = 1024 * 1024; // 1MB heap
 
 // Kernel stack size for UEFI boot initialization
-pub const KERNEL_STACK_SIZE: usize = 4096 * 16; // 64KB
+pub const KERNEL_STACK_SIZE: usize = 4096 * 64; // 256KB
 
-/// Reinitialize the page table with identity mapping and higher-half kernel mapping
-/// This is a wrapper around reinit_page_table_with_allocator for simple cases
-pub fn reinit_page_table(
-    kernel_phys_start: x86_64::PhysAddr,
-    fb_addr: Option<x86_64::VirtAddr>,
-    fb_size: Option<u64>,
-) -> x86_64::VirtAddr {
-    let mut frame_allocator = FRAME_ALLOCATOR
-        .get()
-        .expect("Frame allocator not initialized")
-        .lock();
-    let memory_map = MEMORY_MAP.get().expect("Memory map not initialized");
-    reinit_page_table_with_allocator(
-        kernel_phys_start,
-        fb_addr,
-        fb_size,
-        &mut *frame_allocator,
-        memory_map,
-        x86_64::VirtAddr::new(0),
-    )
-}
 
 use petroleum::common::EfiMemoryType;
 use petroleum::page_table::efi_memory::{
@@ -48,7 +27,7 @@ pub(crate) static FRAME_ALLOCATOR: Once<Mutex<BootInfoFrameAllocator>> = Once::n
 pub static MEMORY_MAP: Once<&[MemoryMapDescriptor]> = Once::new();
 
 /// Buffer for memory map descriptors to avoid heap allocation during init
-const MAX_DESCRIPTORS: usize = 1024;
+pub const MAX_DESCRIPTORS: usize = 2048;
 pub(crate) static mut MEMORY_MAP_BUFFER: [MemoryMapDescriptor; MAX_DESCRIPTORS] = [const {
     MemoryMapDescriptor {
         ptr: core::ptr::null(),

@@ -80,7 +80,14 @@ impl MemoryDescriptorValidator for MemoryMapDescriptor {
 
     fn is_memory_available(&self) -> bool {
         let mem_type = self.get_type();
-        matches!(mem_type, 4u32 | 7u32) || matches!(mem_type, 9u32 | 14u32)
+        // Available memory types according to UEFI spec:
+        // 1: Loader Code
+        // 2: Loader Data
+        // 3: Boot Services Code
+        // 4: Boot Services Data
+        // 7: Conventional Memory
+        // 9: ACPI Reclaimed Memory
+        matches!(mem_type, 7u32 | 3u32 | 4u32 | 1u32 | 2u32 | 9u32)
     }
 }
 
@@ -110,7 +117,15 @@ impl MemoryDescriptorValidator for EfiMemoryDescriptor {
 
     fn is_memory_available(&self) -> bool {
         let mem_type = self.get_type();
-        matches!(mem_type, 4u32 | 7u32) || matches!(mem_type, 9u32 | 14u32)
+        // Available memory types according to UEFI spec:
+        // 1: Conventional Memory
+        // 2: Boot Services Code
+        // 3: Boot Services Data
+        // 4: Loader Code
+        // 5: Loader Data
+        // 9: ACPI Reclaimed Memory
+        // 11: ACPI Memory
+        matches!(mem_type, 7u32 | 3u32 | 4u32 | 1u32 | 2u32 | 9u32)
     }
 }
 
@@ -170,8 +185,25 @@ where
     T: MemoryDescriptorValidator,
     F: FnMut(&T, usize, usize),
 {
-    for descriptor in descriptors {
-        if descriptor.is_valid() && descriptor.is_memory_available() {
+    process_valid_descriptors(descriptors, |desc, start_frame, end_frame| {
+        if desc.is_memory_available() {
+            processor(desc, start_frame, end_frame);
+        }
+    });
+}
+
+pub fn process_valid_descriptors<T, F>(descriptors: &[T], mut processor: F)
+where
+    T: MemoryDescriptorValidator,
+    F: FnMut(&T, usize, usize),
+{
+    for descriptor in descriptors.iter() {
+        // Skip descriptors with excessively large page counts to avoid overflow or invalid entries
+        if descriptor.get_page_count() > super::constants::MAX_DESCRIPTOR_PAGES {
+            debug_log_no_alloc!("Skipping descriptor with excessive page count: ", descriptor.get_page_count() as usize);
+            continue;
+        }
+        if descriptor.is_valid() {
             let start_frame = (descriptor.get_physical_start() / 4096) as usize;
             let end_frame = start_frame.saturating_add(descriptor.get_page_count() as usize);
             if start_frame < end_frame {

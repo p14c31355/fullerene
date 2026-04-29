@@ -6,7 +6,7 @@
 use crate::graphics;
 use crate::graphics::text;
 use alloc::{collections::VecDeque, format};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 use petroleum::{
     Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats,
     display_stats_on_available_display, periodic_task, scheduler_log, write_serial_bytes,
@@ -17,6 +17,7 @@ struct PeriodicTask {
     interval: u64,
     last_tick: alloc::sync::Arc<spin::Mutex<u64>>,
     task: fn(u64, u64), // current_tick, iteration_count
+    description: &'static str,
 }
 
 // Wrapper functions for tasks that need parameters
@@ -63,39 +64,45 @@ lazy_static::lazy_static! {
             interval: 1000,
             last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
             task: health_check_task,
+            description: "health check",
         },
         PeriodicTask {
             interval: 5000,
             last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
             task: stats_task,
+            description: "stats logging",
         },
         PeriodicTask {
             interval: 2000,
             last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
             task: maintenance_task,
+            description: "system maintenance",
         },
         PeriodicTask {
             interval: 10000,
             last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
             task: memory_check_task,
+            description: "memory capacity check",
         },
         PeriodicTask {
             interval: 100,
             last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
             task: process_cleanup_task,
+            description: "process cleanup",
         },
         PeriodicTask {
             interval: 30000,
             last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
             task: backup_task,
+            description: "automated backup",
         },
     ];
 }
 use x86_64::VirtAddr;
 
 // System-wide counters and statistics
-static SYSTEM_TICK: AtomicU64 = AtomicU64::new(0);
-static SCHEDULER_ITERATIONS: AtomicU64 = AtomicU64::new(0);
+static SYSTEM_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static SCHEDULER_ITERATIONS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 // I/O event queue (placeholder for future I/O operations)
 static IO_EVENTS: spin::Mutex<VecDeque<IoEvent>> = spin::Mutex::new(VecDeque::new());
@@ -123,7 +130,7 @@ fn collect_system_stats() -> SystemStats {
     petroleum::common::collect_system_stats(
         crate::process::get_process_count,
         crate::process::get_active_process_count,
-        || SYSTEM_TICK.load(Ordering::Relaxed),
+        || SYSTEM_TICK.load(core::sync::atomic::Ordering::Relaxed),
     )
 }
 
@@ -187,7 +194,7 @@ fn log_system_stats(stats: &SystemStats, interval_ticks: u64) {
     static LAST_LOG_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
 
     // Only log every interval_ticks to avoid spam
-    let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
+    let current_tick = SYSTEM_TICK.load(core::sync::atomic::Ordering::Relaxed);
     petroleum::check_periodic!(LAST_LOG_TICK, interval_ticks, current_tick, {
         log::info!(
             "System Stats - Processes: {}/{}, Memory: {} bytes, Uptime: {} ticks",
@@ -396,6 +403,7 @@ fn initialize_shell_process() -> crate::process::ProcessId {
 /// Main kernel scheduler loop - orchestrates all system functionality
 // Main kernel scheduler loop - orchestrates all system functionality
 pub fn scheduler_loop() -> ! {
+    write_serial_bytes!(0x3F8, 0x3FD, b"S: Loop Start\n");
     scheduler_log!("About to initialize shell process");
 
     let _ = initialize_shell_process();
@@ -407,8 +415,10 @@ pub fn scheduler_loop() -> ! {
     // Print to VGA if available for GUI output
     if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {
         let mut writer = vga_buffer.lock();
-        writer.write_string("Scheduler loop started - VGA output enabled\n");
-        writer.write_string("System is running...\n");
+        petroleum::vga_write_lines!(writer,
+            "Scheduler loop started - VGA output enabled\n";
+            "System is running...\n"
+        );
         writer.update_cursor();
     }
     // Log that scheduler is running for confirmation
@@ -416,8 +426,10 @@ pub fn scheduler_loop() -> ! {
 
     loop {
         // Increment system counters for this iteration
-        SYSTEM_TICK.fetch_add(1, Ordering::Relaxed);
-        SCHEDULER_ITERATIONS.fetch_add(1, Ordering::Relaxed);
+        {
+            SYSTEM_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            SCHEDULER_ITERATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
 
         // Process one complete scheduler iteration
         process_scheduler_iteration();

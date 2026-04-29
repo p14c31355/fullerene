@@ -15,9 +15,19 @@ macro_rules! bitmap_chunk_bit {
 
 #[macro_export]
 macro_rules! map_range_with_log_macro {
-    ($($tt:tt)*) => {
-        map_with_log_macro!($($tt)*)
-    };
+    ($mapper:expr, $allocator:expr, $phys:expr, $virt:expr, $pages:expr, $flags:expr) => {{
+        unsafe {
+            $crate::page_table::map_range_with_huge_pages(
+                $mapper,
+                $allocator,
+                $phys,
+                $virt,
+                $pages,
+                $flags,
+                "panic",
+            )
+        }
+    }};
 }
 
 #[macro_export]
@@ -97,11 +107,12 @@ macro_rules! buffer_ops {
     (scroll_char_buffer_up, $buffer:expr, $height:expr, $width:expr, $blank:expr) => {
         for row in 1..$height {
             for col in 0..$width {
-                $buffer[row - 1][col] = $buffer[row][col];
+                let cell = $buffer.get_char_at(row, col);
+                $buffer.set_char_at(row - 1, col, cell);
             }
         }
         for col in 0..$width {
-            $buffer[$height - 1][col] = $blank;
+            $buffer.set_char_at($height - 1, col, $blank);
         }
     };
 }
@@ -702,7 +713,7 @@ macro_rules! error_variant_map {
 macro_rules! init_vga_palette_registers {
     () => {{
         for i in 0u8..16u8 {
-            $crate::graphics::ports::write_vga_attribute_register(i, i);
+            $crate::hardware::ports::write_vga_attribute_register(i, i);
         }
     }};
 }
@@ -713,7 +724,7 @@ macro_rules! init_vga_palette_registers {
 macro_rules! set_vga_attribute_registers {
     ($($index:expr => $value:expr),* $(,)?) => {{
         $(
-            $crate::graphics::ports::write_vga_attribute_register($index, $value);
+            $crate::hardware::ports::write_vga_attribute_register($index, $value);
         )*
     }};
 }
@@ -732,7 +743,7 @@ macro_rules! enable_vga_video {
 #[macro_export]
 macro_rules! vga_write_registers {
     ($configs:expr, $index_port:expr, $data_port:expr) => {
-        let mut ops = $crate::graphics::ports::VgaPortOps::new($index_port, $data_port);
+        let mut ops = $crate::hardware::ports::VgaPortOps::new($index_port, $data_port);
         ops.write_sequence($configs);
     };
 }
@@ -743,23 +754,23 @@ macro_rules! vga_write_registers {
 macro_rules! init_vga_text_mode_3 {
     () => {{
         // Write misc register
-        $crate::port_write!($crate::graphics::ports::HardwarePorts::MISC_OUTPUT, 0x67u8);
+        $crate::port_write!($crate::hardware::ports::HardwarePorts::MISC_OUTPUT, 0x67u8);
 
         // Sequencer, CRTC, Graphics registers using helper macro
         $crate::vga_write_registers!(
             $crate::graphics::registers::SEQUENCER_TEXT_CONFIG,
-            $crate::graphics::ports::HardwarePorts::SEQUENCER_INDEX,
-            $crate::graphics::ports::HardwarePorts::SEQUENCER_DATA
+            $crate::hardware::ports::HardwarePorts::SEQUENCER_INDEX,
+            $crate::hardware::ports::HardwarePorts::SEQUENCER_DATA
         );
         $crate::vga_write_registers!(
             $crate::graphics::registers::CRTC_TEXT_CONFIG,
-            $crate::graphics::ports::HardwarePorts::CRTC_INDEX,
-            $crate::graphics::ports::HardwarePorts::CRTC_DATA
+            $crate::hardware::ports::HardwarePorts::CRTC_INDEX,
+            $crate::hardware::ports::HardwarePorts::CRTC_DATA
         );
         $crate::vga_write_registers!(
             $crate::graphics::registers::GRAPHICS_TEXT_CONFIG,
-            $crate::graphics::ports::HardwarePorts::GRAPHICS_INDEX,
-            $crate::graphics::ports::HardwarePorts::GRAPHICS_DATA
+            $crate::hardware::ports::HardwarePorts::GRAPHICS_INDEX,
+            $crate::hardware::ports::HardwarePorts::GRAPHICS_DATA
         );
 
         // Attribute controller
@@ -808,20 +819,20 @@ macro_rules! check_uefi_status {
 #[macro_export]
 macro_rules! update_vga_cursor {
     ($pos:expr) => {{
-        port_write!(
-            $crate::graphics::ports::HardwarePorts::CRTC_INDEX,
-            $crate::graphics::ports::HardwarePorts::CURSOR_POS_LOW_REG
+        $crate::port_write!(
+            $crate::hardware::ports::HardwarePorts::CRTC_INDEX,
+            $crate::hardware::ports::HardwarePorts::CURSOR_POS_LOW_REG
         );
-        port_write!(
-            $crate::graphics::ports::HardwarePorts::CRTC_DATA,
+        $crate::port_write!(
+            $crate::hardware::ports::HardwarePorts::CRTC_DATA,
             (($pos & 0xFFusize) as u8)
         );
-        port_write!(
-            $crate::graphics::ports::HardwarePorts::CRTC_INDEX,
-            $crate::graphics::ports::HardwarePorts::CURSOR_POS_HIGH_REG
+        $crate::port_write!(
+            $crate::hardware::ports::HardwarePorts::CRTC_INDEX,
+            $crate::hardware::ports::HardwarePorts::CURSOR_POS_HIGH_REG
         );
-        port_write!(
-            $crate::graphics::ports::HardwarePorts::CRTC_DATA,
+        $crate::port_write!(
+            $crate::hardware::ports::HardwarePorts::CRTC_DATA,
             ((($pos >> 8) & 0xFFusize) as u8)
         );
     }};
@@ -838,16 +849,16 @@ macro_rules! log_page_table_op {
     };
     ($operation:literal, $phys:expr, $virt:expr, $pages:expr) => {
         mem_debug!(
-            $operation, " phys=0x", $phys, " virt=0x", $virt, " pages=", $pages, "\n"
+            $operation, " phys=", $phys, " virt=", $virt, " pages=", $pages, "\n"
         );
     };
     ($stage:literal, $phys:expr, $virt:expr, $pages:expr) => {
         mem_debug!(
             "Memory mapping stage=",
             $stage,
-            " phys=0x",
+            " phys=",
             $phys,
-            " virt=0x",
+            " virt=",
             $virt,
             " pages=",
             $pages,
@@ -926,7 +937,7 @@ macro_rules! page_flags_const {
 /// Integrated identity mapping macro
 #[macro_export]
 macro_rules! map_identity_range_macro {
-    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{ unsafe { map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags) } }};
+    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{ unsafe { $crate::page_table::utils::map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags) } }};
 }
 
 //// Identity mapping with detailed logging
@@ -983,16 +994,24 @@ macro_rules! map_to_higher_half_with_log_macro {
 }
 
 /// Consolidated memory mapping with log support
+// map_with_log_macro is now superseded by map_range_with_huge_pages for range mappings
+// but kept for backward compatibility with single page mappings if needed.
+// map_with_log_macro is now superseded by map_range_with_huge_pages for range mappings
+// but kept for backward compatibility with single page mappings if needed.
 #[macro_export]
 macro_rules! map_with_log_macro {
-    ($mapper:expr, $allocator:expr, $phys:expr, $virt:expr, $pages:expr, $flags:expr) => {{
-        log_page_table_op!("Mapping", $phys, $virt, $pages);
-        for i in 0..$pages {
-            let phys_addr = $phys + i * 4096;
-            let virt_addr = $virt + i * 4096;
-            map_with_offset!($mapper, $allocator, phys_addr, virt_addr, $flags);
+    ($mapper:expr, $allocator:expr, $phys:expr, $virt:expr, $pages:expr, $flags:expr, $behavior:tt) => {{
+        unsafe {
+            $crate::page_table::map_range_with_huge_pages(
+                $mapper,
+                $allocator,
+                $phys,
+                $virt,
+                $pages,
+                $flags,
+                $behavior,
+            )
         }
-        Ok::<(), x86_64::structures::paging::mapper::MapToError<x86_64::structures::paging::Size4KiB>>(())
     }};
 }
 
@@ -1056,9 +1075,19 @@ macro_rules! map_and_flush {
 /// Map a physical address to virtual address with offset
 #[macro_export]
 macro_rules! map_with_offset {
-    ($mapper:expr, $allocator:expr, $phys_addr:expr, $virt_addr:expr, $flags:expr) => {{
+    ($mapper:expr, $allocator:expr, $phys_addr:expr, $virt_addr:expr, $flags:expr, $behavior:tt) => {{
         let (page, frame) = create_page_and_frame!($virt_addr, $phys_addr);
-        map_and_flush!($mapper, page, frame, $flags, $allocator);
+        unsafe {
+            match $mapper.map_to(page, frame, $flags, $allocator) {
+                Ok(flush) => flush.flush(),
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {}
+                Err(e) => match $behavior {
+                    "continue" => {}
+                    "panic" => panic!("Mapping error: {:?}", e),
+                    _ => {}
+                }
+            }
+        }
     }};
 }
 
@@ -1087,18 +1116,17 @@ macro_rules! log_memory_descriptor {
 #[macro_export]
 macro_rules! map_identity_range_checked {
     ($mapper:expr, $allocator:expr, $phys_start:expr, $num_pages:expr, $flags:expr) => {{
-        for i in 0..$num_pages {
-            let addr = calc_offset_addr!($phys_start, i);
-            let (page, frame) = create_page_and_frame!(addr, addr);
-            match unsafe { $mapper.map_to(page, frame, $flags, $allocator) } {
-                Ok(flush) => flush.flush(),
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
+        unsafe {
+            $crate::page_table::map_range_with_huge_pages(
+                $mapper,
+                $allocator,
+                $phys_start,
+                $phys_start,
+                $num_pages,
+                $flags,
+                "panic",
+            )
         }
-        Ok(())
     }};
 }
 
@@ -1221,6 +1249,29 @@ macro_rules! display_vga_stats_lines {
     };
 }
 
+/// Macro for serial port initialization to reduce repetitive port writes
+/// Reduces boilerplate in serial port setup across different implementations
+///
+/// # Examples
+/// ```
+/// init_serial_port!(self,
+///     0x80, 0x03, 0x00, 0x03, 0xC7, 0x0B  // Standard 38400bps, 8N1 config
+/// );
+/// ```
+#[macro_export]
+macro_rules! init_serial_port {
+    ($self:expr, $dlab:expr, $divisor_low:expr, $irq:expr, $line_ctrl:expr, $fifo:expr, $modem:expr) => {{
+        unsafe {
+            $self.ops.line_ctrl_port().write($dlab); // Enable DLAB
+            $self.ops.data_port().write($divisor_low); // Baud rate divisor low byte
+            $self.ops.irq_enable_port().write($irq);
+            $self.ops.line_ctrl_port().write($line_ctrl); // 8 bits, no parity, one stop bit
+            $self.ops.fifo_ctrl_port().write($fifo); // Enable FIFO, clear, 14-byte threshold
+            $self.ops.modem_ctrl_port().write($modem); // IRQs enabled, OUT2
+        }
+    }};
+}
+
 
 
 /// Macro for subsystem initialization with consistent logging and error handling
@@ -1314,6 +1365,165 @@ macro_rules! display_stats_on_available_display {
                 (*writer).update_cursor();
             }
         });
+    }};
+}
+
+/// Macro for writing multiple lines to VGA buffer
+/// Reduces repetition of write_string calls
+///
+/// # Examples
+/// ```
+/// vga_write_lines!(writer,
+///     "Hello QEMU by FullereneOS!\n";
+///     "This is output directly to VGA.\n"
+/// );
+/// ```
+#[macro_export]
+macro_rules! vga_write_lines {
+    ($writer:expr, $($line:expr);* $(;)?) => {{
+        $(
+            $writer.write_string($line);
+        )*
+    }};
+}
+
+/// Macro for bootloader logging with both serial and print output
+/// Reduces repetition in bootloader code
+///
+/// # Examples
+/// ```
+/// bootloader_log!("Heap initialized successfully.");
+/// bootloader_log!("Graphics config: {}x{}", width, height);
+/// ```
+#[macro_export]
+macro_rules! bootloader_log {
+    ($msg:literal) => {{
+        petroleum::println!($msg);
+        petroleum::serial::_print(format_args!("{}\n", $msg));
+    }};
+    ($msg:literal, $($args:expr),*) => {{
+        petroleum::println!($msg, $($args),*);
+        petroleum::serial::_print(format_args!("{}\n", format_args!($msg, $($args),*)));
+    }};
+}
+
+/// Macro for shell command responses
+/// Reduces repetition in shell command implementations
+///
+/// # Examples
+/// ```
+/// shell_response!("Available commands:\n");
+/// shell_response!("  {:10} - {}\n", cmd.name, cmd.description);
+/// ```
+#[macro_export]
+macro_rules! shell_response {
+    ($($arg:tt)*) => {{
+        petroleum::print!($($arg)*);
+    }};
+}
+
+/// Macro for finding a process in the process list by ID
+/// Reduces repetitive process list searching code
+///
+/// # Examples
+/// ```
+/// find_process_by_id!(process_list, pid, |proc| {
+///     proc.state = ProcessState::Ready;
+/// });
+/// ```
+#[macro_export]
+macro_rules! find_process_by_id {
+    ($process_list:expr, $pid:expr, $action:block) => {{
+        if let Some(process) = $process_list.iter_mut().find(|p| p.id == $pid) {
+            $action
+        }
+    }};
+}
+
+/// Macro for safe process list locking and modification
+/// Reduces boilerplate for process list operations
+///
+/// # Examples
+/// ```
+/// with_process_list!(PROCESS_LIST, |list| {
+///     find_process_by_id!(list, pid, {
+///         process.state = ProcessState::Ready;
+///     });
+/// });
+/// ```
+#[macro_export]
+macro_rules! with_process_list {
+    ($list:expr, $action:block) => {{
+        let mut process_list = $list.lock();
+        $action
+    }};
+}
+
+/// Macro for initializing system components with consistent logging
+/// Reduces repetitive initialization patterns
+///
+/// # Examples
+/// ```
+/// init_system_component!("Graphics", init_graphics());
+/// init_system_component!("Scheduler", init_scheduler());
+/// ```
+#[macro_export]
+macro_rules! init_system_component {
+    ($name:expr, $init_expr:expr) => {{
+        petroleum::println!(concat!($name, " initializing..."));
+        match $init_expr {
+            Ok(_) => petroleum::println!(concat!($name, " initialized successfully")),
+            Err(e) => {
+                petroleum::println!(concat!($name, " initialization failed: {:?}"), e);
+                return Err(e);
+            }
+        }
+    }};
+}
+
+/// Macro for periodic task definition with automatic registration
+/// Reduces boilerplate for defining periodic tasks
+///
+/// # Examples
+/// ```
+/// define_periodic_task!(health_check, 1000, |tick, iter| {
+///     perform_health_check(tick);
+/// });
+/// ```
+#[macro_export]
+macro_rules! define_periodic_task {
+    ($name:ident, $interval:expr, $task_fn:expr) => {
+        fn $name(tick: u64, iter: u64) {
+            $task_fn(tick, iter);
+        }
+
+        lazy_static::lazy_static! {
+            static ref $name: PeriodicTask = PeriodicTask {
+                interval: $interval,
+                last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
+                task: $name,
+            };
+        }
+    };
+}
+
+/// Macro for unified debug output in bootloader
+/// Reduces repetitive debug prints
+///
+/// # Examples
+/// ```
+/// bootloader_debug!("Heap initialized");
+/// bootloader_debug!("Graphics config: {}x{}", width, height);
+/// ```
+#[macro_export]
+macro_rules! bootloader_debug {
+    ($msg:literal) => {{
+        petroleum::println!($msg);
+        petroleum::serial::_print(format_args!(concat!($msg, "\n")));
+    }};
+    ($msg:literal, $($args:expr),*) => {{
+        petroleum::println!($msg, $($args),*);
+        petroleum::serial::_print(format_args!(concat!($msg, "\n"), $($args),*));
     }};
 }
 
@@ -1456,7 +1666,9 @@ macro_rules! impl_text_buffer_operations {
                 ascii_character: b' ',
                 color_code: self.$color_field,
             };
-            petroleum::clear_line_range!(self, row, row + 1, 0, self.get_width(), blank_char);
+            for col in 0..self.get_width() {
+                self.set_char_at(row, col, blank_char);
+            }
         }
 
         fn clear_screen(&mut self) {
@@ -1466,7 +1678,11 @@ macro_rules! impl_text_buffer_operations {
                 ascii_character: b' ',
                 color_code: ColorCode(0),
             };
-            petroleum::clear_buffer!(self, self.get_height(), self.get_width(), blank_char);
+            for row in 0..self.get_height() {
+                for col in 0..self.get_width() {
+                    self.set_char_at(row, col, blank_char);
+                }
+            }
         }
 
                 fn scroll_up(&mut self) {
@@ -1506,5 +1722,348 @@ macro_rules! impl_getter_setter {
         pub fn set_$field(&mut self, value: $type) {
             self.$field = value;
         }
+    };
+}
+
+/// Macro for defining periodic tasks array
+/// Reduces boilerplate in scheduler initialization
+///
+/// # Examples
+/// ```
+/// define_periodic_tasks!(PeriodicTask,
+///     (1000, health_check_task, "health check"),
+///     (5000, stats_task, "stats logging")
+/// );
+/// ```
+#[macro_export]
+macro_rules! define_periodic_tasks {
+    ($task_ty:ident, $(($interval:expr, $task_fn:ident, $desc:expr)),* $(,)?) => {
+        lazy_static::lazy_static! {
+            static ref PERIODIC_TASKS: [$task_ty; count!($($task_fn),*)] = [
+                $(
+                    $task_ty {
+                        interval: $interval,
+                        last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
+                        task: $task_fn,
+                        description: $desc,
+                    }
+                ),*
+            ];
+        }
+    };
+}
+
+/// Helper macro to count items in a list
+#[macro_export]
+macro_rules! count {
+    () => { 0 };
+    ($head:expr $(, $tail:expr)*) => { 1 + count!($($tail),*) };
+}
+
+/// Macro for defining VirtualBox VM settings
+/// Reduces repetitive command execution in VM configuration
+///
+/// # Examples
+/// ```
+/// define_vbox_settings!(vm_name,
+///     (&["--memory", "4096"], "Failed to set VM memory."),
+///     (&["--vram", "128"], "Failed to set VM video memory.")
+/// );
+/// ```
+#[macro_export]
+macro_rules! define_vbox_settings {
+    ($vm_name:expr, $(($args:expr, $failure_msg:expr)),* $(,)?) => {{
+        $(
+            let status = ::std::process::Command::new("VBoxManage")
+                .arg("modifyvm")
+                .arg($vm_name)
+                .args($args)
+                .status()?;
+            if !status.success() {
+                return Err(::std::io::Error::new(::std::io::ErrorKind::Other, $failure_msg));
+            }
+        )*
+        Ok(()) as ::std::io::Result<()>
+    }};
+}
+
+/// Macro for building cargo packages with common arguments
+/// Reduces repetitive build commands
+///
+/// # Examples
+/// ```
+/// build_package!("fullerene-kernel", "x86_64-unknown-uefi", ["--features", "debug"]);
+/// ```
+#[macro_export]
+macro_rules! build_package {
+    ($package:expr, $target:expr, [$($features:expr),* $(,)?]) => {{
+        let mut args = vec!["+nightly", "build", "-q", "-Zbuild-std=core,alloc"];
+        $(
+            args.push($features);
+        )*
+        args.extend_from_slice(&["--package", $package, "--target", $target, "--profile", "dev"]);
+
+        let status = std::process::Command::new("cargo")
+            .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap().parent().unwrap())
+            .args(&args)
+            .status()?;
+        if !status.success() {
+            return Err(std::io::Error::other(concat!($package, " build failed")));
+        }
+        Ok(())
+    }};
+}
+
+/// Macro for creating ISO image files array
+/// Reduces boilerplate in ISO creation
+///
+/// # Examples
+/// ```
+/// create_iso_files!(
+///     (kernel_path, "EFI\\BOOT\\KERNEL.EFI"),
+///     (bellows_path, "EFI\\BOOT\\BOOTX64.EFI")
+/// );
+/// ```
+#[macro_export]
+macro_rules! create_iso_files {
+    ($(($source:expr, $dest:expr)),* $(,)?) => {
+        vec![
+            $(
+                isobemak::IsoImageFile {
+                    source: $source.clone(),
+                    destination: $dest.to_string(),
+                }
+            ),*
+        ]
+    };
+}
+
+/// Macro for unified error handling in bootloaders
+/// Reduces repetitive error logging and panic
+///
+/// # Examples
+/// ```
+/// bootloader_expect!(load_kernel(), "Failed to load kernel");
+/// ```
+#[macro_export]
+macro_rules! bootloader_expect {
+    ($expr:expr, $msg:expr) => {
+        match $expr {
+            Ok(val) => val,
+            Err(e) => {
+                petroleum::println!(concat!($msg, ": {:?}"), e);
+                panic!($msg);
+            }
+        }
+    };
+}
+
+/// Macro for defining command arrays for shell
+/// Reduces repetitive command definition
+///
+/// # Examples
+/// ```
+/// define_shell_commands!(CommandEntry,
+///     ("help", "Show help", help_fn),
+///     ("exit", "Exit", exit_fn)
+/// );
+/// ```
+#[macro_export]
+macro_rules! define_shell_commands {
+    ($entry_ty:ident, $(($name:expr, $desc:expr, $func:expr)),* $(,)?) => {
+        &[
+            $(
+                $entry_ty {
+                    name: $name,
+                    description: $desc,
+                    function: $func,
+                }
+            ),*
+        ]
+    };
+}
+
+/// Macro for implementing VgaBuffer struct with TextBufferOperations
+/// Reduces duplication between petroleum and fullerene-kernel
+///
+/// # Examples
+/// ```
+/// impl_vga_buffer!(VgaBuffer, BUFFER_HEIGHT, BUFFER_WIDTH);
+/// ```
+#[macro_export]
+macro_rules! impl_vga_buffer {
+    ($struct_name:ident, $height:ident, $width:ident) => {
+        /// Represents the VGA text buffer writer.
+        pub struct $struct_name {
+            buffer: &'static mut [[ScreenChar; $width]; $height],
+            column_position: usize,
+            row_position: usize,
+            color_code: ColorCode,
+        }
+
+        impl $struct_name {
+            /// Creates a new VgaBuffer instance with the given VGA address.
+            pub fn new(vga_address: usize) -> $struct_name {
+                $struct_name {
+                    buffer: unsafe { &mut *(vga_address as *mut _) },
+                    column_position: 0,
+                    row_position: 0,
+                    color_code: ColorCode::new(Color::Green, Color::Black),
+                }
+            }
+
+            /// Sets the color code for text output.
+            pub fn set_color_code(&mut self, color_code: ColorCode) {
+                self.color_code = color_code;
+            }
+
+            /// Updates the hardware cursor position.
+            pub fn update_cursor(&self) {
+                let pos = self.row_position * $width + self.column_position;
+                update_vga_cursor!(pos);
+            }
+        }
+
+        impl core::fmt::Write for $struct_name {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                self.write_string(s);
+                Ok(())
+            }
+        }
+
+        unsafe impl Send for $struct_name {}
+        unsafe impl Sync for $struct_name {}
+
+        impl TextBufferOperations for $struct_name {
+            impl_text_buffer_operations!($struct_name,
+                buffer, row_position, column_position, color_code,
+                $height, $width
+            );
+        }
+    };
+}
+
+/// Macro for implementing MockVgaBuffer for testing
+/// Reduces duplication in test code
+///
+/// # Examples
+/// ```
+/// impl_mock_vga_buffer!(MockVgaBuffer, BUFFER_HEIGHT, BUFFER_WIDTH);
+/// ```
+#[macro_export]
+macro_rules! impl_mock_vga_buffer {
+    ($struct_name:ident, $height:ident, $width:ident) => {
+        struct $struct_name {
+            buffer: Vec<ScreenChar>,
+            column_position: usize,
+            row_position: usize,
+            color_code: ColorCode,
+            height: usize,
+            width: usize,
+        }
+
+        impl TextBufferOperations for $struct_name {
+            fn get_width(&self) -> usize {
+                self.width
+            }
+
+            fn get_height(&self) -> usize {
+                self.height
+            }
+
+            fn get_color_code(&self) -> ColorCode {
+                self.color_code
+            }
+
+            fn get_position(&self) -> (usize, usize) {
+                (self.row_position, self.column_position)
+            }
+
+            fn set_position(&mut self, row: usize, col: usize) {
+                self.row_position = row;
+                self.column_position = col;
+            }
+
+            fn set_char_at(&mut self, row: usize, col: usize, chr: ScreenChar) {
+                if row < self.height && col < self.width {
+                    let index = row * self.width + col;
+                    self.buffer[index] = chr;
+                }
+            }
+
+            fn get_char_at(&self, row: usize, col: usize) -> ScreenChar {
+                if row < self.height && col < self.width {
+                    let index = row * self.width + col;
+                    self.buffer[index]
+                } else {
+                    ScreenChar {
+                        ascii_character: 0,
+                        color_code: self.color_code,
+                    }
+                }
+            }
+
+            fn scroll_up(&mut self) {
+                let blank_char = ScreenChar {
+                    ascii_character: b' ',
+                    color_code: self.color_code,
+                };
+                for row in 1..self.height {
+                    for col in 0..self.width {
+                        let index = row * self.width + col;
+                        let next_index = (row - 1) * self.width + col;
+                        self.buffer[next_index] = self.buffer[index];
+                    }
+                }
+                for col in 0..self.width {
+                    let index = (self.height - 1) * self.width + col;
+                    self.buffer[index] = blank_char;
+                }
+            }
+        }
+
+        impl $struct_name {
+            fn new(width: usize, height: usize) -> Self {
+                $struct_name {
+                    buffer: vec![
+                        ScreenChar {
+                            ascii_character: b' ',
+                            color_code: ColorCode::new(Color::White, Color::Black),
+                        };
+                        width * height
+                    ],
+                    column_position: 0,
+                    row_position: 0,
+                    color_code: ColorCode::new(Color::White, Color::Black),
+                    height,
+                    width,
+                }
+            }
+
+            fn get_char(&self, row: usize, col: usize) -> Option<ScreenChar> {
+                if row < self.height && col < self.width {
+                    let index = row * self.width + col;
+                    Some(self.buffer[index])
+                } else {
+                    None
+                }
+            }
+        }
+    };
+}
+
+
+
+/// Macro for creating global VGA buffer singleton
+/// Reduces boilerplate in VGA initialization
+///
+/// # Examples
+/// ```
+/// create_vga_singleton!(VGA_BUFFER, VgaBuffer);
+/// ```
+#[macro_export]
+macro_rules! create_vga_singleton {
+    ($name:ident, $buffer_ty:ty) => {
+        pub static $name: Once<Mutex<$buffer_ty>> = Once::new();
     };
 }

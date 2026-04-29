@@ -121,7 +121,7 @@ fn syscall_fork() -> SyscallResult {
 
     // Create child process
     let mut child_process = Process {
-        id: child_pid,
+        id: child_pid as u64,
         name: "child",
         state: ProcessState::Ready,
         context: parent_context, // Copy parent context
@@ -155,7 +155,7 @@ fn syscall_fork() -> SyscallResult {
     // Note: Memory copying not implemented yet, only page table cloning
     // Full implementation would copy parent memory pages to child
 
-    Ok(child_pid)
+    Ok(child_pid as u64)
 }
 
 /// Read system call

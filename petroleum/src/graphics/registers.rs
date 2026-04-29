@@ -1,4 +1,4 @@
-use super::ports::RegisterConfig;
+use crate::hardware::ports::RegisterConfig;
 
 macro_rules! reg {
     ($index:expr, $value:expr) => {

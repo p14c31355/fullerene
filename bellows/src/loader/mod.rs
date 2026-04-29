@@ -1,10 +1,10 @@
 use core::ffi::c_void;
 
+use x86_64::structures::paging::FrameAllocator;
 use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable};
 
 // Module declarations for separated functionality
 pub mod heap;
-pub mod pe;
 
 /// Initialize heap using separated heap module
 pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
@@ -16,6 +16,7 @@ pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
 pub fn exit_boot_services_and_jump(
     image_handle: usize,
     system_table: *mut EfiSystemTable,
+    kernel_phys_start: x86_64::PhysAddr,
     entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
 ) -> petroleum::common::Result<!> {
     // Immediate debug prints on entry to pinpoint exact hang location
@@ -186,9 +187,10 @@ pub fn exit_boot_services_and_jump(
         }
     }
 
-    // Write descriptor_size before the memory map
+    // Write descriptor_size at the very beginning of the allocated buffer (map_phys_addr)
     unsafe {
-        *(map_phys_addr as *mut usize) = descriptor_size;
+        let descriptor_size_ptr = map_phys_addr as *mut usize;
+        core::ptr::write_volatile(descriptor_size_ptr, descriptor_size);
     }
 
     // Check if framebuffer config is available and append it to memory map for kernel
@@ -204,15 +206,18 @@ pub fn exit_boot_services_and_jump(
         };
         let config_size = core::mem::size_of::<petroleum::common::uefi::ConfigWithMetadata>();
 
-        // Check if buffer has space
-        let config_offset = map_size + core::mem::size_of::<usize>();
+        // The memory map data starts at map_ptr.
+        // The total size of the map data is map_size.
+        // We append the config immediately after the map data.
+        let config_offset = core::mem::size_of::<usize>() + map_size;
         if map_phys_addr + config_offset + config_size
             <= map_phys_addr + map_buffer_size + core::mem::size_of::<usize>()
         {
             unsafe {
-                core::ptr::copy(
+                let dest_ptr = (map_phys_addr as *mut u8).add(config_offset);
+                core::ptr::copy_nonoverlapping(
                     &config_with_metadata as *const _ as *const u8,
-                    (map_phys_addr as *mut u8).add(config_offset),
+                    dest_ptr,
                     config_size,
                 );
             }
@@ -229,40 +234,138 @@ pub fn exit_boot_services_and_jump(
     // Jump to the kernel. This is the point of no return. We are calling the kernel entry point,
     // passing the memory map and other data. The validity of the `entry`
     // function pointer is assumed based on the successful PE file loading.
+    //
+    // Note: The `entry` function pointer is obtained via `load_efi_image`, which now 
+    // handles high-half relocation and returns the virtual address.
 
-    // Read current CR3 before jumping to kernel
-    let cr3_value = unsafe {
-        let cr3: u64;
-        core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
-        cr3
-    };
-    log::info!("Switching to new page table (cr3 = 0x{:x})", cr3_value);
-    log::info!("Jumping to kernel entry point: 0x{:x}", entry as usize);
+    // Setup Page Tables before jumping to kernel
+    petroleum::serial::_print(format_args!("Reinitializing page tables for kernel jump...\n"));
 
-    #[cfg(feature = "debug_loader")]
-    {
-        log::info!(
-            "Jumping to kernel at {:#x} with map at {:#x} size {:#x}",
-            entry as usize,
-            map_phys_addr,
-            final_map_size
-        );
-        log::info!("About to call kernel entry.");
-    }
-    entry(
-        image_handle,
-        system_table,
-        map_phys_addr as *mut c_void,
-        final_map_size,
+    // Allocate and prepare KernelArgs
+    let mut args_phys_addr: usize = 0;
+    let args_status = (bs.allocate_pages)(
+        0usize,
+        EfiMemoryType::EfiLoaderData,
+        1,
+        &mut args_phys_addr,
     );
+    if EfiStatus::from(args_status) != EfiStatus::Success {
+        return Err(BellowsError::AllocationFailed(
+            "Failed to allocate memory for KernelArgs.",
+        ));
+    }
+    let args_ptr = args_phys_addr as *mut petroleum::page_table::mapper::KernelArgs;
+    unsafe {
+        core::ptr::write_volatile(
+            args_ptr,
+            petroleum::page_table::mapper::KernelArgs {
+                handle: image_handle,
+                system_table: system_table as usize,
+                map_ptr: map_phys_addr,
+                map_size: final_map_size,
+                kernel_phys_start: kernel_phys_start.as_u64(),
+            },
+        );
+    }
+
+    let fb_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|m| *m.lock());
+    let (fb_addr, fb_size) = match fb_config {
+        Some(c) => (
+            Some(x86_64::VirtAddr::new(c.address)),
+            Some((c.width as u64 * c.height as u64 * c.bpp as u64) / 8),
+        ),
+        None => (None, None),
+    };
+
+    // Prepare memory map descriptors
+    // The descriptor size is stored at the very beginning of the buffer (map_phys_addr)
+    let descriptor_size_val = unsafe { *(map_phys_addr as *const usize) };
+    // The actual descriptors start at map_ptr
+    let descriptors_ptr = map_ptr as *const u8;
+    
+    // map_size is the size of the memory map returned by get_memory_map
+    let num_descriptors = if descriptor_size_val > 0 {
+        map_size / descriptor_size_val
+    } else {
+        0
+    };
+
+    let memory_map_descriptors = if num_descriptors > 0 && !descriptors_ptr.is_null() {
+        let mut descriptors = alloc::vec::Vec::with_capacity(num_descriptors);
+        for i in 0..num_descriptors {
+            unsafe {
+                let desc_ptr = descriptors_ptr.add(i * descriptor_size_val);
+                descriptors.push(petroleum::page_table::efi_memory::MemoryMapDescriptor::new(
+                    desc_ptr,
+                    descriptor_size_val,
+                ));
+            }
+        }
+        descriptors
+    } else {
+        alloc::vec::Vec::new()
+    };
+
+    let mut frame_allocator = unsafe {
+        petroleum::page_table::BitmapFrameAllocator::init(&memory_map_descriptors)
+    };
+
+    let new_phys_offset = petroleum::page_table::reinit_page_table_with_allocator(
+        kernel_phys_start,
+        fb_addr,
+        fb_size,
+        &mut frame_allocator,
+        &memory_map_descriptors,
+        map_phys_addr as u64,
+        final_map_size as u64,
+        x86_64::VirtAddr::zero(),
+        None::<fn()>,
+        None::<fn()>,
+        None::<fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::BootInfoFrameAllocator, x86_64::VirtAddr)>,
+        None,
+        Some(entry as usize),
+        Some(args_phys_addr as u64),
+    );
+    
+    petroleum::serial::_print(format_args!("New physical memory offset: {:#x}\n", new_phys_offset.as_u64()));
+    petroleum::serial::_print(format_args!("Jumping to kernel entry point: {:#p}\n", entry));
+
+    // Now jump to the kernel.
+    unsafe {
+        core::arch::asm!(
+            "xor ax, ax",
+            "mov ds, ax",
+            "mov es, ax",
+            "mov fs, ax",
+            "mov gs, ax",
+            "mov ss, ax",
+
+            "mov rcx, {handle}",
+            "mov rdx, {st}",
+            "mov r8, {map}",
+            "mov r9, {size}",
+            
+            "push 0x08",
+            "push {entry_addr}",
+            "retfq",
+
+            handle = in(reg) image_handle,
+            st = in(reg) system_table,
+            map = in(reg) map_phys_addr,
+            size = in(reg) final_map_size,
+            entry_addr = in(reg) entry as usize,
+            options(noreturn),
+        );
+    }
 }
 
-/// Load EFI PE image using separated PE module
+/// Load EFI PE image using petroleum PE module
 pub fn load_efi_image(
     st: &petroleum::common::EfiSystemTable,
     file: &[u8],
+    phys_offset: usize,
 ) -> petroleum::common::Result<
-    extern "efiapi" fn(usize, *mut petroleum::common::EfiSystemTable, *mut c_void, usize) -> !,
+    (x86_64::addr::PhysAddr, extern "efiapi" fn(usize, *mut petroleum::common::EfiSystemTable, *mut c_void, usize) -> !),
 > {
-    pe::load_efi_image(st, file)
+    petroleum::page_table::pe::load_efi_image(st, file, phys_offset)
 }

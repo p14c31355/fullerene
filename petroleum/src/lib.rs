@@ -27,7 +27,7 @@ pub use common::logging::{SystemError, SystemResult};
 pub use common::memory::*;
 pub use common::syscall::*;
 pub use common::{check_memory_initialized, set_memory_initialized};
-pub use graphics::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
+pub use hardware::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 pub use graphics::*;
 pub use graphics::{
     Color, ColorCode, HardwarePorts, ScreenChar, TextBufferOperations, VgaPortOps,
@@ -41,14 +41,10 @@ pub fn clear_buffer<B: TextBufferOperations>(
     width: usize,
     value: ScreenChar,
 ) {
-    for row in 0..height {
-        for col in 0..width {
-            buffer.set_char_at(row, col, value);
-        }
-    }
+    buffer_ops!(clear_buffer, buffer, height, width, value);
 }
 
-pub fn clear_line_range<B: TextBufferOperations>(
+pub fn clear_line_range<B: TextBufferOperations + ?Sized>(
     buffer: &mut B,
     start_row: usize,
     end_row: usize,
@@ -56,11 +52,7 @@ pub fn clear_line_range<B: TextBufferOperations>(
     col_end: usize,
     blank_char: ScreenChar,
 ) {
-    for row in start_row..end_row {
-        for col in col_start..col_end {
-            buffer.set_char_at(row, col, blank_char);
-        }
-    }
+    buffer_ops!(clear_line_range, buffer, start_row, end_row, col_start, col_end, blank_char);
 }
 
 pub fn scroll_char_buffer_up<B: TextBufferOperations>(
@@ -69,15 +61,7 @@ pub fn scroll_char_buffer_up<B: TextBufferOperations>(
     width: usize,
     blank: ScreenChar,
 ) {
-    for row in 1..height {
-        for col in 0..width {
-            let cell = buffer.get_char_at(row, col);
-            buffer.set_char_at(row - 1, col, cell);
-        }
-    }
-    for col in 0..width {
-        buffer.set_char_at(height - 1, col, blank);
-    }
+    buffer_ops!(scroll_char_buffer_up, buffer, height, width, blank);
 }
 
 /// Debug memory descriptor function

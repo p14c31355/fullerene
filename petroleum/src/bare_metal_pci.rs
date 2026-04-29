@@ -1,5 +1,5 @@
 use super::*;
-use crate::graphics::ports::PortWriter;
+use crate::hardware::ports::PortWriter;
 
 /// Macro to reduce repetitive nested loops in PCI enumeration
 #[macro_export]

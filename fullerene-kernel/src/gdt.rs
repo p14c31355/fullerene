@@ -33,8 +33,80 @@ static USER_DATA_SELECTOR: Once<SegmentSelector> = Once::new();
 static USER_CODE_SELECTOR: Once<SegmentSelector> = Once::new();
 static GDT_INITIALIZED: Once<()> = Once::new();
 
+#[repr(align(4096))]
+struct EarlyGdtBuffer([u8; 0x20000]);
+static EARLY_GDT_BUFFER: EarlyGdtBuffer = EarlyGdtBuffer([0; 0x20000]);
+
+pub fn init_early() {
+    let addr = VirtAddr::from_ptr(&EARLY_GDT_BUFFER.0 as *const _ as *const u8);
+    init(addr);
+}
+
 pub fn kernel_code_selector() -> SegmentSelector {
     *CODE_SELECTOR.get().expect("GDT not initialized")
+}
+
+pub fn load() {
+    let gdt = GDT.get().expect("GDT not initialized");
+    gdt.load();
+    unsafe {
+        CS::set_reg(*CODE_SELECTOR.get().unwrap());
+        load_tss(*TSS_SELECTOR.get().unwrap());
+
+        // Reload all data segment registers to ensure they point to the correct GDT entry
+        if let Some(data_sel) = KERNEL_DATA_SELECTOR.get() {
+            use x86_64::registers::segmentation::{DS, ES, FS, GS, SS};
+            DS::set_reg(*data_sel);
+            SS::set_reg(*data_sel);
+            ES::set_reg(*data_sel);
+            FS::set_reg(*data_sel);
+            GS::set_reg(*data_sel);
+        }
+    }
+}
+
+pub struct TssStacks {
+    pub double_fault: VirtAddr,
+    pub timer: VirtAddr,
+}
+
+pub fn init_with_stacks(stacks: TssStacks) {
+    mem_debug!("GDT: Updating TSS stacks\n");
+
+    mem_debug!("About to create TSS...\n");
+    let tss = TSS.call_once(|| {
+        let mut tss = TaskStateSegment::new();
+        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stacks.double_fault;
+        tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = stacks.timer;
+        tss
+    });
+    mem_debug!("TSS created successfully\n");
+
+    let _gdt = GDT.call_once(|| {
+        let mut gdt = GlobalDescriptorTable::new();
+        let code_selector = gdt.append(Descriptor::kernel_code_segment());
+        // Add kernel data segment (ring 0)
+        let data_selector = gdt.append(Descriptor::kernel_data_segment());
+        // Add user data segment (ring 3)
+        let user_data_selector = gdt.append(Descriptor::user_data_segment());
+        // Add user code segment (ring 3)
+        let user_code_selector = gdt.append(Descriptor::user_code_segment());
+        let tss_selector = gdt.append(Descriptor::tss_segment(tss));
+
+        CODE_SELECTOR.call_once(|| code_selector);
+        KERNEL_DATA_SELECTOR.call_once(|| data_selector);
+        TSS_SELECTOR.call_once(|| tss_selector);
+
+        USER_DATA_SELECTOR.call_once(|| user_data_selector);
+        USER_CODE_SELECTOR.call_once(|| user_code_selector);
+        gdt
+    });
+
+    mem_debug!("GDT: GDT built\n");
+
+    // Mark as initialized
+    GDT_INITIALIZED.call_once(|| {});
+    mem_debug!("GDT: About to return\n");
 }
 
 pub fn init(heap_start: VirtAddr) -> VirtAddr {
