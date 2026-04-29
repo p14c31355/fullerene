@@ -244,7 +244,7 @@ impl BitmapFrameAllocator {
     }
 
     /// Allocate contiguous frames for large allocations
-    fn allocate_contiguous_frames(
+    pub fn allocate_contiguous_frames(
         &mut self,
         count: usize,
     ) -> crate::common::logging::SystemResult<usize> {

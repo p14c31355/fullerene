@@ -34,7 +34,7 @@ static USER_CODE_SELECTOR: Once<SegmentSelector> = Once::new();
 static GDT_INITIALIZED: Once<()> = Once::new();
 
 #[repr(align(4096))]
-struct EarlyGdtBuffer([u8; 4096]);
+struct EarlyGdtBuffer([u8; 0x20000]);
 static EARLY_GDT_BUFFER: EarlyGdtBuffer = EarlyGdtBuffer([0; 0x20000]);
 
 pub fn init_early() {

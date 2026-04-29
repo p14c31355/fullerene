@@ -101,10 +101,10 @@ impl UefiInitContext {
             .expect("Frame allocator not initialized")
             .lock();
             
-        let tss_phys_addr = match frame_allocator.allocate_frames(tss_stack_pages) {
-            Ok(frame) => frame.start_address(),
+        let tss_phys_addr = match frame_allocator.allocate_contiguous_frames(tss_stack_pages) {
+            Ok(phys_addr) => PhysAddr::new(phys_addr as u64),
             Err(_) => {
-                panic!("Critical failure: Failed to allocate physical frames for TSS stacks. System cannot proceed safely.");
+                panic!("Critical failure: Failed to allocate contiguous physical frames for TSS stacks. System cannot proceed safely.");
             }
         };
 
