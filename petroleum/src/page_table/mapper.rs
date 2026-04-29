@@ -274,6 +274,7 @@ pub extern "sysv64" fn landing_zone(
     _phys_offset: VirtAddr,
     _level_4_table_frame: PhysFrame,
     _frame_allocator: *mut BootInfoFrameAllocator,
+    _logic_fn_high: usize,
 ) {
     unsafe {
         core::arch::naked_asm!(
@@ -281,9 +282,11 @@ pub extern "sysv64" fn landing_zone(
             "mov dx, 0x3f8", "mov al, 0x4c", "out dx, al", // 'L'
             "mov dx, 0x3f8", "mov al, 0x4d", "out dx, al", // 'M'
             "mov dx, 0x3f8", "mov al, 0x4e", "out dx, al", // 'N'
+            "mov dx, 0x3f8", "mov al, 0x58", "out dx, al", // 'X'
 
             // 2. IDT Load
             // System V ABI: load_idt is in RSI
+            "mov dx, 0x3f8", "mov al, 0x59", "out dx, al", // 'Y'
             "test rsi, rsi", 
             "jz 1f",
             "mov dx, 0x3f8", "mov al, 0x49", "out dx, al", // 'I'
@@ -293,6 +296,7 @@ pub extern "sysv64" fn landing_zone(
 
             // 3. GDT Load
             // System V ABI: load_gdt is in RDI
+            "mov dx, 0x3f8", "mov al, 0x5a", "out dx, al", // 'Z'
             "test rdi, rdi",
             "jz 2f",
             "mov dx, 0x3f8", "mov al, 0x4b", "out dx, al", // 'K'
@@ -302,8 +306,10 @@ pub extern "sysv64" fn landing_zone(
 
             // 4. Transition back to Rust logic
             // Use jump to landing_zone_logic to handle the rest of the process
-            "jmp {logic_fn}",
-            logic_fn = sym landing_zone_logic,
+            "mov dx, 0x3f8", "mov al, 0x57", "out dx, al", // 'W'
+            // Ensure RSP is 16-byte aligned for the Rust function prologue
+            "and rsp, -16",
+            "jmp r9",
         );
     }
 }
@@ -319,8 +325,9 @@ fn landing_zone_logic(
 ) {
     unsafe {
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"High-half transition: landing zone logic reached!\n");
-
+        
         crate::flush_tlb_and_verify!();
+        
         crate::debug_log_no_alloc!("TLB flushed in landing zone");
 
         let l4_phys = level_4_table_frame.start_address().as_u64();
@@ -1119,17 +1126,17 @@ impl PageTableReinitializer {
             crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: RIP region mapped\n");
             crate::debug_log_no_alloc!("Current RIP region (4MB) explicitly mapped to current virtual address in new page table");
 
-            // CRITICAL: Explicitly map the landing_zone function.
-            // Map a larger region (2MB) around the landing_zone to ensure it's fully covered 
-            // and to avoid issues with page boundaries or alignment.
-            let landing_zone_virt = landing_zone as *const () as usize as u64;
-            let landing_zone_phys = landing_zone_virt.wrapping_sub(current_physical_memory_offset.as_u64());
+            // CRITICAL: Map a broad region of the kernel to cover both .text and .rodata.
+            // This prevents #PF when accessing string literals or calling functions in the landing zone.
+            let kernel_base_virt = landing_zone as *const () as usize as u64;
+            let kernel_base_phys = kernel_base_virt.wrapping_sub(current_physical_memory_offset.as_u64());
             
-            let lz_region_start_phys = (landing_zone_phys.wrapping_sub(1024 * 1024)) & !0xFFF;
-            let lz_region_pages = (2 * 1024 * 1024) / 4096;
+            // Map 64MB starting from the landing_zone area to ensure all early boot code and data (.rodata) are covered.
+            let region_start_phys = (kernel_base_phys.wrapping_sub(1024 * 1024)) & !0xFFF;
+            let region_pages = (64 * 1024 * 1024) / 4096;
             
-            for i in 0..lz_region_pages {
-                let p_phys = lz_region_start_phys + (i * 4096);
+            for i in 0..region_pages {
+                let p_phys = region_start_phys + (i * 4096);
                 
                 // Map to current virtual address
                 let v_low = VirtAddr::new(p_phys.wrapping_add(current_physical_memory_offset.as_u64()));
@@ -1191,6 +1198,7 @@ impl PageTableReinitializer {
                 "mov rdx, {phys_offset}",
                 "mov rcx, {l4_frame}",
                 "mov r8, {allocator}",
+                "mov r9, {logic_fn_high}",
                 
                 "push {cs_selector}",
                 "mov rax, {landing_zone_high}",
@@ -1203,6 +1211,7 @@ impl PageTableReinitializer {
                 phys_offset = in(reg) self.phys_offset.as_u64(),
                 l4_frame = in(reg) level_4_table_frame.start_address().as_u64(),
                 allocator = in(reg) frame_allocator as *const _,
+                logic_fn_high = in(reg) ((landing_zone_logic as *const () as usize) as u64).wrapping_sub(current_physical_memory_offset.as_u64()).wrapping_add(self.phys_offset.as_u64()) as usize,
                 cs_selector = in(reg) 0x08,
                 landing_zone_high = in(reg) ((landing_zone as *const () as usize) as u64).wrapping_sub(current_physical_memory_offset.as_u64()).wrapping_add(self.phys_offset.as_u64()) as usize,
                 offset_diff = in(reg) offset_diff,
