@@ -403,6 +403,7 @@ fn initialize_shell_process() -> crate::process::ProcessId {
 /// Main kernel scheduler loop - orchestrates all system functionality
 // Main kernel scheduler loop - orchestrates all system functionality
 pub fn scheduler_loop() -> ! {
+    write_serial_bytes!(0x3F8, 0x3FD, b"S: Loop Start\n");
     scheduler_log!("About to initialize shell process");
 
     let _ = initialize_shell_process();

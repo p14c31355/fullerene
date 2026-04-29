@@ -523,25 +523,34 @@ fn kernel_main_higher_half(ctx: &mut UefiInitContext, physical_memory_offset: Vi
     crate::interrupts::init_apic();
     log::info!("APIC initialized");
 
-    // 5. UNMAP Low-address identity mappings
-    // This is the "final trap" mentioned by the reviewer. 
-    // We remove the 4GiB identity mapping used during transition.
-    log::info!("Removing low-address identity mappings to prevent NULL pointer bugs...");
-    unsafe {
-        let mut mapper = petroleum::page_table::init(physical_memory_offset);
-        // Unmap the 4GiB identity range (0 to 4GiB)
-        petroleum::page_table::unmap_identity_range(
-            &mut mapper,
-            0,
-            (4 * 1024 * 1024 * 1024) / 4096,
-        );
-    }
-    log::info!("Low-address identity mappings removed.");
-
-    // 6. Enable interrupts now that all handlers and controllers are set up.
+    // 5. Enable interrupts now that all handlers and controllers are set up.
+    // We do this BEFORE unmapping identity mappings, just in case, 
+    // but the critical part is that IDT is already re-initialized.
     log::info!("Enabling interrupts...");
     x86_64::instructions::interrupts::enable();
     log::info!("Interrupts enabled");
+
+    // 6. UNMAP Low-address identity mappings
+    // This is the "final trap" mentioned by the reviewer. 
+    // We remove the 4GiB identity mapping used during transition.
+    // We do this AFTER enabling interrupts and initializing everything else
+    // to ensure we don't trigger a PF during the setup process itself.
+    //
+    // NOTE: We move this to AFTER the scheduler_loop jump or remove it for now
+    // to debug the reset loop. If we unmap too early, any accidental access
+    // to low memory (including some UEFI runtime services or early boot data)
+    // will cause a Triple Fault.
+    //
+    // log::info!("Removing low-address identity mappings to prevent NULL pointer bugs...");
+    // unsafe {
+    //     let mut mapper = petroleum::page_table::init(physical_memory_offset);
+    //     petroleum::page_table::unmap_identity_range(
+    //         &mut mapper,
+    //         0,
+    //         (4 * 1024 * 1024 * 1024) / 4096,
+    //     );
+    // }
+    // log::info!("Low-address identity mappings removed.");
 
     // 7. Initialize keyboard input driver
     crate::keyboard::init();
@@ -551,7 +560,20 @@ fn kernel_main_higher_half(ctx: &mut UefiInitContext, physical_memory_offset: Vi
     log::info!("Starting full system scheduler loop...");
     write_serial_bytes!(0x3F8, 0x3FD, b"Entering scheduler_loop\n");
     
-    scheduler_loop();
+    // Use a direct jump to avoid any potential stack/return issues 
+    // that could trigger a triple fault during the final transition.
+    unsafe {
+        core::arch::asm!(
+            "mov dx, 0x3f8", "mov al, 0x53", "out dx, al", // 'S' for Scheduler
+            "cli", // Disable interrupts immediately before the jump
+            "mov rax, {}", 
+            "jmp rax", 
+            in(reg) scheduler_loop as usize
+        );
+    }
+    
+    // This point is unreachable, but we add a halt just in case
+    petroleum::halt_loop();
     
     // scheduler_loop should never return
     panic!("scheduler_loop returned unexpectedly - kernel critical failure!");
