@@ -100,10 +100,10 @@ mod address_integration_tests {
         
         // Max addr = 0x10000 + 100 * 4096 = 0x10000 + 0x64000 = 0x74000
         assert_eq!(max_addr, 0x74000);
-        // Total frames = 0x74000 / 4096 = 464
-        assert_eq!(total_frames, 464);
-        // Bitmap size = (464 + 63) / 64 = 8
-        assert_eq!(bitmap_size, 8);
+        // Total frames = 0x74000 / 4096 = 116
+        assert_eq!(total_frames, 116);
+        // Bitmap size = (116 + 63) / 64 = 2
+        assert_eq!(bitmap_size, 2);
     }
 
     #[test]
