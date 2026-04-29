@@ -158,9 +158,14 @@ impl<'a> MemoryMapper<'a> {
 
     pub fn map_framebuffer(&mut self, addr: Option<VirtAddr>, size: Option<u64>) {
         if let (Some(addr), Some(size)) = (addr, size) {
-            let pages = (size + 4095) / 4096;
+            // Sanity check for size to prevent overflow and excessive mapping
+            if size == 0 || size > 1024 * 1024 * 1024 * 10 { // 10 GiB limit
+                return;
+            }
+            let pages = size.wrapping_add(4095) / 4096;
             let flags = crate::page_flags_const!(READ_WRITE);
-            let phys_start = addr.as_u64().wrapping_sub(self.phys_offset.as_u64());
+            // addr is already the physical address from UEFI config
+            let phys_start = addr.as_u64();
             let _ = self.map_region_dual(phys_start, pages, flags);
         }
     }
