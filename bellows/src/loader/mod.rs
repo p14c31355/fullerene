@@ -320,7 +320,7 @@ pub fn exit_boot_services_and_jump(
             "mov r8, {map}",
             "mov r9, {size}",
             
-            "push 0x38",
+            "push 0x08",
             "push {entry_addr}",
             "retfq",
 
