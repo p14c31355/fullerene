@@ -81,13 +81,12 @@ impl MemoryDescriptorValidator for MemoryMapDescriptor {
     fn is_memory_available(&self) -> bool {
         let mem_type = self.get_type();
         // Available memory types according to UEFI spec:
-        // 1: Conventional Memory
-        // 2: Boot Services Code
-        // 3: Boot Services Data
-        // 4: Loader Code
-        // 5: Loader Data
+        // 1: Loader Code
+        // 2: Loader Data
+        // 3: Boot Services Code
+        // 4: Boot Services Data
+        // 7: Conventional Memory
         // 9: ACPI Reclaimed Memory
-        // 11: ACPI Memory
         matches!(mem_type, 7u32 | 3u32 | 4u32 | 1u32 | 2u32 | 9u32)
     }
 }
