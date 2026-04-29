@@ -264,8 +264,50 @@ pub fn map_stack_to_higher_half<T: crate::page_table::efi_memory::MemoryDescript
 }
 
 #[unsafe(no_mangle)]
-#[inline(never)]
+#[unsafe(naked)]
 pub extern "sysv64" fn landing_zone(
+    _load_gdt: Option<fn()>,
+    _load_idt: Option<fn()>,
+    _phys_offset: VirtAddr,
+    _level_4_table_frame: PhysFrame,
+    _frame_allocator: *mut BootInfoFrameAllocator,
+) {
+    unsafe {
+        core::arch::naked_asm!(
+            // 1. Immediate生存確認 (No stack usage)
+            "mov dx, 0x3f8", "mov al, 0x4c", "out dx, al", // 'L'
+            "mov dx, 0x3f8", "mov al, 0x4d", "out dx, al", // 'M'
+            "mov dx, 0x3f8", "mov al, 0x4e", "out dx, al", // 'N'
+
+            // 2. IDT Load
+            // System V ABI: load_idt is in RSI
+            "test rsi, rsi", 
+            "jz 1f",
+            "mov dx, 0x3f8", "mov al, 0x49", "out dx, al", // 'I'
+            "call rsi",
+            "mov dx, 0x3f8", "mov al, 0x4a", "out dx, al", // 'J'
+            "1:",
+
+            // 3. GDT Load
+            // System V ABI: load_gdt is in RDI
+            "test rdi, rdi",
+            "jz 2f",
+            "mov dx, 0x3f8", "mov al, 0x4b", "out dx, al", // 'K'
+            "call rdi",
+            "mov dx, 0x3f8", "mov al, 0x4f", "out dx, al", // 'O'
+            "2:",
+
+            // 4. Transition back to Rust logic
+            // Use jump to landing_zone_logic to handle the rest of the process
+            "jmp {logic_fn}",
+            logic_fn = sym landing_zone_logic,
+        );
+    }
+}
+
+#[unsafe(no_mangle)]
+#[inline(never)]
+fn landing_zone_logic(
     load_gdt: Option<fn()>,
     load_idt: Option<fn()>,
     phys_offset: VirtAddr,
@@ -273,23 +315,11 @@ pub extern "sysv64" fn landing_zone(
     frame_allocator: *mut BootInfoFrameAllocator,
 ) {
     unsafe {
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"High-half transition: landing zone reached!\n");
-
-        if let Some(gdt_fn) = load_gdt {
-            gdt_fn();
-            crate::debug_log_no_alloc!("GDT reloaded in landing zone");
-        }
-
-        if let Some(idt_fn) = load_idt {
-            idt_fn();
-            crate::debug_log_no_alloc!("IDT reloaded in landing zone");
-        }
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"High-half transition: landing zone logic reached!\n");
 
         crate::flush_tlb_and_verify!();
         crate::debug_log_no_alloc!("TLB flushed in landing zone");
 
-        // Now we need to map the L4 table to the high half.
-        // Since we are in the landing zone, we can use the high-half mapping.
         let l4_phys = level_4_table_frame.start_address().as_u64();
         let l4_virt = phys_offset + l4_phys;
         
@@ -309,7 +339,6 @@ pub extern "sysv64" fn landing_zone(
         crate::debug_log_no_alloc!("Landing zone completed. Jumping back to kernel...");
         
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Landing zone returning now\n");
-        // Now we can return to the caller in the higher half.
     }
 }
 
@@ -1142,6 +1171,13 @@ impl PageTableReinitializer {
                 
                 // 4. Far jump to landing zone in high half.
                 "mov dx, 0x3f8", "mov al, 0x34", "out dx, al",
+
+                // CRITICAL: Shift RSP to higher-half.
+                // This ensures that the stack is accessed via high-half addresses 
+                // once we land in the Rust code of the landing zone.
+                "add rsp, {offset_diff}",
+                "and rsp, -16", // CRITICAL: Ensure 16-byte stack alignment for sysv64 ABI
+                "mov dx, 0x3f8", "mov al, 0x36", "out dx, al",
                 
         // Final check before jump
         "mov dx, 0x3f8", "mov al, 0x35", "out dx, al",
@@ -1167,6 +1203,7 @@ impl PageTableReinitializer {
                 allocator = in(reg) frame_allocator as *const _,
                 cs_selector = in(reg) 0x08,
                 landing_zone_high = in(reg) ((landing_zone as *const () as usize) as u64).wrapping_sub(current_physical_memory_offset.as_u64()).wrapping_add(self.phys_offset.as_u64()) as usize,
+                offset_diff = in(reg) offset_diff,
                 in("rdi") final_gdt_ptr_high,
                 out("dx") _,
                 out("rax") _,
