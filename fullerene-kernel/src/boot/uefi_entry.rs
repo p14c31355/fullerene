@@ -582,19 +582,20 @@ pub extern "efiapi" fn efi_main(
     ctx.setup_allocator(virtual_heap_start);
     write_serial_bytes!(0x3F8, 0x3FD, b"Allocator setup completed\n");
 
+    let ctx_ptr = &mut ctx as *mut _;
     unsafe {
-        // Switch to kernel stack and immediately jump to stage 2 to avoid any 
-        // compiler-inserted stack usage on the old stack after the switch.
+        // Switch to kernel stack and call stage 2, passing arguments in registers.
         core::arch::asm!(
+            "mov rdi, {ctx_ptr}",
+            "mov rsi, {phys_offset}",
             "mov rsp, {stack_top}",
-            "jmp {stage2}",
+            "call {stage2}",
+            ctx_ptr = in(reg) ctx_ptr,
+            phys_offset = in(reg) physical_memory_offset.as_u64(),
             stack_top = in(reg) kernel_stack_top,
             stage2 = in(reg) efi_main_stage2 as usize,
             options(noreturn)
         );
-        
-        // The following code is unreachable
-        core::hint::unreachable_unchecked();
     }
 }
 
