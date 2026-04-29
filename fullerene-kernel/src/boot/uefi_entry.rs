@@ -158,7 +158,8 @@ impl UefiInitContext {
 
         // Now that CR3 is switched and we are in higher half, map the TSS stacks
         let tss_flags = x86_64::structures::paging::PageTableFlags::PRESENT 
-            | x86_64::structures::paging::PageTableFlags::WRITABLE;
+            | x86_64::structures::paging::PageTableFlags::WRITABLE
+            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
         let mut tss_mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset) };
         unsafe {
             petroleum::map_range_with_log_macro!(
