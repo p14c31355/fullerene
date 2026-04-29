@@ -305,44 +305,50 @@ pub extern "sysv64" fn landing_zone(
             "2:",
 
             // 4. Transition back to Rust logic
-            // Use jump to landing_zone_logic to handle the rest of the process
+            // Use call to landing_zone_logic so that the function prologue
+            // and return address are handled correctly.
             "mov dx, 0x3f8", "mov al, 0x57", "out dx, al", // 'W'
             // Ensure RSP is 16-byte aligned for the Rust function prologue
             "and rsp, -16",
-            "jmp r9",
+            "call r9",
+            // After returning from logic, go back to the original caller (perform_page_table_switch)
+            "ret",
         );
     }
 }
 
 #[unsafe(no_mangle)]
 #[inline(never)]
-fn landing_zone_logic(
-    load_gdt: Option<fn()>,
-    load_idt: Option<fn()>,
-    phys_offset: VirtAddr,
-    level_4_table_frame: PhysFrame,
+extern "sysv64" fn landing_zone_logic(
+    load_gdt: *const (),
+    load_idt: *const (),
+    phys_offset_raw: u64,
+    l4_frame_raw: u64,
     frame_allocator: *mut BootInfoFrameAllocator,
 ) {
     unsafe {
+        let l4_phys = l4_frame_raw;
+        let local_phys_offset = VirtAddr::new(phys_offset_raw);
+        let local_frame_allocator = frame_allocator;
+
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"High-half transition: landing zone logic reached!\n");
         
         crate::flush_tlb_and_verify!();
         
         crate::debug_log_no_alloc!("TLB flushed in landing zone");
 
-        let l4_phys = level_4_table_frame.start_address().as_u64();
-        let l4_virt = phys_offset + l4_phys;
+        let l4_virt = local_phys_offset + l4_phys;
         
         let mut mapper = x86_64::structures::paging::OffsetPageTable::new(
             &mut *(l4_virt.as_mut_ptr() as *mut PageTable),
-            phys_offset,
+            local_phys_offset,
         );
 
         let _ = mapper.map_to(
             x86_64::structures::paging::Page::<Size4KiB>::containing_address(l4_virt),
             x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(l4_phys)),
             PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE,
-            &mut *frame_allocator,
+            &mut *local_frame_allocator,
         );
         
         crate::debug_log_no_alloc!("L4 table mapped to high-half in landing zone");
