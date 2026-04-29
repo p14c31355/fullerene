@@ -37,6 +37,20 @@ pub struct MemoryMapper<'a> {
     pub phys_offset: VirtAddr,
 }
 
+impl<'a> MemoryMapper<'a> {
+    pub fn new(
+        mapper: &'a mut OffsetPageTable<'static>,
+        frame_allocator: &'a mut BootInfoFrameAllocator,
+        phys_offset: VirtAddr,
+    ) -> Self {
+        Self {
+            mapper,
+            frame_allocator,
+            phys_offset,
+        }
+    }
+}
+
 impl<'a> MemoryMappable for MemoryMapper<'a> {
     fn map_region_with_flags(
         &mut self,
@@ -53,8 +67,9 @@ impl<'a> MemoryMappable for MemoryMapper<'a> {
                 virt_start,
                 num_pages,
                 flags
-            )
+            );
         }
+        Ok(())
     }
 
     fn map_to_identity(
@@ -63,7 +78,16 @@ impl<'a> MemoryMappable for MemoryMapper<'a> {
         num_pages: u64,
         flags: PageTableFlags,
     ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-        self.map_region_with_flags(phys_start, phys_start, num_pages, flags)
+        unsafe {
+            crate::identity_map_range_with_log_macro!(
+                self.mapper,
+                self.frame_allocator,
+                phys_start,
+                num_pages,
+                flags
+            );
+        }
+        Ok(())
     }
 
     fn map_to_higher_half(
@@ -73,37 +97,21 @@ impl<'a> MemoryMappable for MemoryMapper<'a> {
         flags: PageTableFlags,
     ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
         let virt_start = self.phys_offset.as_u64() + phys_start;
-        self.map_region_with_flags(phys_start, virt_start, num_pages, flags)
+        unsafe {
+            crate::map_range_with_log_macro!(
+                self.mapper,
+                self.frame_allocator,
+                phys_start,
+                virt_start,
+                num_pages,
+                flags
+            );
+        }
+        Ok(())
     }
 }
 
 impl<'a> MemoryMapper<'a> {
-    pub fn new(
-        mapper: &'a mut OffsetPageTable<'static>,
-        frame_allocator: &'a mut BootInfoFrameAllocator,
-        phys_offset: VirtAddr,
-    ) -> Self {
-        Self {
-            mapper,
-            frame_allocator,
-            phys_offset,
-        }
-    }
-
-    pub fn map_framebuffer(
-        &mut self,
-        fb_addr: Option<VirtAddr>,
-        fb_size: Option<u64>,
-    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-        if let (Some(fb_addr), Some(fb_size)) = (fb_addr, fb_size) {
-            let fb_pages = fb_size.div_ceil(4096);
-            let fb_phys = fb_addr.as_u64();
-            let flags = crate::page_flags_const!(READ_WRITE_NO_EXEC);
-            self.map_region_dual(fb_phys, fb_pages, flags)?;
-        }
-        Ok(())
-    }
-
     pub fn map_vga(&mut self) {
         use crate::page_table::constants::{VGA_MEMORY_END, VGA_MEMORY_START};
         const VGA_PAGES: u64 = (VGA_MEMORY_END - VGA_MEMORY_START + 4095) / 4096;
@@ -115,7 +123,6 @@ impl<'a> MemoryMapper<'a> {
         use crate::page_table::constants::{BOOT_CODE_PAGES, BOOT_CODE_START};
         let flags = crate::page_flags_const!(READ_WRITE);
         unsafe {
-            // First, try to map the region normally
             let _ = crate::map_range_with_log_macro!(
                 self.mapper,
                 self.frame_allocator,
@@ -125,19 +132,14 @@ impl<'a> MemoryMapper<'a> {
                 flags
             );
 
-            // Then, forcefully update flags for every page in the boot code region to ensure NX is cleared.
-            // We update all entries first and then perform a single global TLB flush for efficiency.
             for i in 0..BOOT_CODE_PAGES {
                 let virt_addr = self.phys_offset.as_u64() + BOOT_CODE_START + (i * 4096);
-                // Use a modified version of force_update that doesn't flush TLB per page
                 crate::page_table::utils::force_update_page_flags_no_flush(
                     self.mapper,
                     x86_64::VirtAddr::new(virt_addr),
                     flags,
                 );
             }
-            // Use a safe TLB flush that handles potential inconsistencies across cores if necessary.
-            // In a single-core boot environment, flush_all is generally sufficient.
             x86_64::instructions::tlb::flush_all();
             crate::debug_log_no_alloc!("Boot code flags forcefully updated to READ_WRITE (global TLB flush)");
         }
@@ -149,44 +151,18 @@ impl<'a> MemoryMapper<'a> {
         num_pages: u64,
         flags: PageTableFlags,
     ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-        unsafe {
-            self.map_to_higher_half(phys_start, num_pages, flags)?;
-            self.identity_map_range(phys_start, num_pages, flags)?;
+        self.map_to_higher_half(phys_start, num_pages, flags)?;
+        self.map_to_identity(phys_start, num_pages, flags)?;
+        Ok(())
+    }
+
+    pub fn map_framebuffer(&mut self, addr: Option<VirtAddr>, size: Option<u64>) {
+        if let (Some(addr), Some(size)) = (addr, size) {
+            let pages = (size + 4095) / 4096;
+            let flags = crate::page_flags_const!(READ_WRITE);
+            let phys_start = addr.as_u64().wrapping_sub(self.phys_offset.as_u64());
+            let _ = self.map_region_dual(phys_start, pages, flags);
         }
-        Ok(())
-    }
-
-    unsafe fn map_to_higher_half(
-        &mut self,
-        phys_start: u64,
-        num_pages: u64,
-        flags: PageTableFlags,
-    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-        let virt_start = self.phys_offset.as_u64() + phys_start;
-        crate::map_range_with_log_macro!(
-            self.mapper,
-            self.frame_allocator,
-            phys_start,
-            virt_start,
-            num_pages,
-            flags
-        );
-        Ok(())
-    }
-
-    unsafe fn identity_map_range(
-        &mut self,
-        start_addr: u64,
-        num_pages: u64,
-        flags: PageTableFlags,
-    ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-        crate::identity_map_range_with_log_macro!(
-            self.mapper,
-            self.frame_allocator,
-            start_addr,
-            num_pages,
-            flags
-        )
     }
 }
 
@@ -293,7 +269,9 @@ pub unsafe extern "sysv64" fn landing_zone(
             "test rsi, rsi", 
             "jz 1f",
             "mov dx, 0x3f8", "mov al, 0x49", "out dx, al", // 'I'
+            "sub rsp, 8",
             "call rsi",
+            "add rsp, 8",
             "mov dx, 0x3f8", "mov al, 0x4a", "out dx, al", // 'J'
             "1:",
 
@@ -303,7 +281,9 @@ pub unsafe extern "sysv64" fn landing_zone(
             "test rdi, rdi",
             "jz 2f",
             "mov dx, 0x3f8", "mov al, 0x4b", "out dx, al", // 'K'
+            "sub rsp, 8",
             "call rdi",
+            "add rsp, 8",
             "mov dx, 0x3f8", "mov al, 0x4f", "out dx, al", // 'O'
             "2:",
 
