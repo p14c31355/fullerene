@@ -928,6 +928,136 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
     }
 }
 
+#[repr(C)]
+pub struct TransitionContext {
+    pub cr3: u64,
+    pub load_gdt: *const (),
+    pub load_idt: *const (),
+    pub phys_offset: u64,
+    pub l4_frame: u64,
+    pub allocator: *const BootInfoFrameAllocator,
+    pub logic_fn_high: usize,
+    pub kernel_entry: usize,
+    pub kernel_args_virt: u64,
+    pub cs_selector: u64,
+    pub landing_zone_high: usize,
+    pub offset_diff: u64,
+    pub gdt_ptr: *const u8,
+}
+
+impl TransitionContext {
+    pub fn prepare(
+        phys_offset: VirtAddr,
+        current_physical_memory_offset: VirtAddr,
+        level_4_table_frame: PhysFrame,
+        frame_allocator: &mut BootInfoFrameAllocator,
+        load_gdt: Option<fn()>,
+        load_idt: Option<fn()>,
+        gdt_ptr: Option<*const u8>,
+        kernel_entry: Option<usize>,
+        kernel_args_phys: Option<u64>,
+    ) -> Self {
+        let current_offset = current_physical_memory_offset.as_u64();
+        let target_offset = phys_offset.as_u64();
+        let offset_diff = target_offset.wrapping_sub(current_offset);
+
+        unsafe {
+            let gdt_ptr_static = core::ptr::addr_of_mut!(TRANSITION_GDT);
+            let entries_virt_addr = core::ptr::addr_of!((*gdt_ptr_static).entries) as *const _ as u64;
+            let gdt_phys_base = entries_virt_addr.wrapping_sub(current_offset);
+            let gdt_high_base = gdt_phys_base.wrapping_add(target_offset);
+            (*gdt_ptr_static).descriptor.base = gdt_high_base;
+        }
+
+        let final_gdt_ptr_virt = gdt_ptr.unwrap_or(unsafe {
+            core::ptr::addr_of!((*core::ptr::addr_of!(TRANSITION_GDT)).descriptor) as *const _ as *const u8
+        });
+        let final_gdt_ptr_high = (final_gdt_ptr_virt as u64)
+            .wrapping_sub(current_offset)
+            .wrapping_add(target_offset) as *const u8;
+
+        Self {
+            cr3: level_4_table_frame.start_address().as_u64(),
+            load_gdt: load_gdt.map_or(core::ptr::null(), |f| f as *const ()),
+            load_idt: load_idt.map_or(core::ptr::null(), |f| f as *const ()),
+            phys_offset: target_offset,
+            l4_frame: level_4_table_frame.start_address().as_u64(),
+            allocator: frame_allocator as *const _,
+            logic_fn_high: ((landing_zone_logic as *const () as usize) as u64)
+                .wrapping_sub(current_offset)
+                .wrapping_add(target_offset) as usize,
+            kernel_entry: kernel_entry.unwrap_or(0),
+            kernel_args_virt: kernel_args_phys.map_or(0, |phys| phys + target_offset),
+            cs_selector: 0x08,
+            landing_zone_high: ((landing_zone as *const () as usize) as u64)
+                .wrapping_sub(current_offset)
+                .wrapping_add(target_offset) as usize,
+            offset_diff,
+            gdt_ptr: final_gdt_ptr_high,
+        }
+    }
+}
+
+pub fn perform_world_switch(ctx: TransitionContext) -> ! {
+    unsafe {
+        core::arch::asm!(
+            // 1. Debug output
+            "mov dx, 0x3f8", "mov al, 0x31", "out dx, al",
+
+            // 2. Switch CR3
+            "mov cr3, {cr3}",
+            "mov dx, 0x3f8", "mov al, 0x32", "out dx, al",
+
+            // 3. Load GDT
+            "lgdt [{gdt_ptr}]",
+            "mov dx, 0x3f8", "mov al, 0x33", "out dx, al",
+
+            // 4. Shift RSP
+            "add rsp, {offset_diff}",
+            "mov dx, 0x3f8", "mov al, 0x36", "out dx, al",
+
+            // 5. Set up arguments for landing_zone (System V ABI)
+            "mov rdi, {load_gdt}",
+            "mov rsi, {load_idt}",
+            "mov rdx, {phys_offset}",
+            "mov rcx, {l4_frame}",
+            "mov r8, {allocator}",
+            "mov r9, {kernel_entry}",
+
+            // Push 7th argument (KernelArgs)
+            "push {kernel_args_virt}",
+
+            // Align stack to 16 bytes
+            "and rsp, -16",
+
+            // Set up the high-half address of the logic function in r12
+            "mov r12, {logic_fn_high}",
+
+            // Final debug and absolute jump to high-half landing zone
+            "mov dx, 0x3f8", "mov al, 0x35", "out dx, al",
+            "push {cs_selector}",
+            "push {landing_zone_high}",
+            "retfq",
+
+            cr3 = in(reg) ctx.cr3,
+            load_gdt = in(reg) ctx.load_gdt,
+            load_idt = in(reg) ctx.load_idt,
+            phys_offset = in(reg) ctx.phys_offset,
+            l4_frame = in(reg) ctx.l4_frame,
+            allocator = in(reg) ctx.allocator,
+            logic_fn_high = in(reg) ctx.logic_fn_high,
+            kernel_entry = in(reg) ctx.kernel_entry,
+            kernel_args_virt = in(reg) ctx.kernel_args_virt,
+            cs_selector = in(reg) ctx.cs_selector,
+            landing_zone_high = in(reg) ctx.landing_zone_high,
+            offset_diff = in(reg) ctx.offset_diff,
+            gdt_ptr = in(reg) ctx.gdt_ptr,
+            options(noreturn),
+        );
+        core::hint::unreachable_unchecked()
+    }
+}
+
 pub struct PageTableReinitializer {
     pub phys_offset: VirtAddr,
 }
@@ -1105,41 +1235,28 @@ impl PageTableReinitializer {
         x86_64::instructions::interrupts::disable();
         crate::debug_log_no_alloc!("About to switch CR3 to new table: 0x", level_4_table_frame.start_address().as_u64() as usize);
         
-        let offset_diff = self.phys_offset.as_u64().wrapping_sub(current_physical_memory_offset.as_u64());
-        let cr3_val = level_4_table_frame.start_address().as_u64();
-        let target_offset = self.phys_offset.as_u64();
+        let ctx = TransitionContext::prepare(
+            self.phys_offset,
+            current_physical_memory_offset,
+            level_4_table_frame,
+            frame_allocator,
+            load_gdt,
+            load_idt,
+            gdt_ptr,
+            kernel_entry,
+            kernel_args_phys,
+        );
 
-        // Use the static TransitionGdt and update its base address to HIGH-HALF virtual address.
-        unsafe {
-            let gdt_ptr = core::ptr::addr_of_mut!(TRANSITION_GDT);
-            let entries_virt_addr = core::ptr::addr_of!((*gdt_ptr).entries) as *const _ as u64;
-            let gdt_phys_base = entries_virt_addr.wrapping_sub(current_physical_memory_offset.as_u64());
-            let gdt_high_base = gdt_phys_base.wrapping_add(self.phys_offset.as_u64());
-            (*gdt_ptr).descriptor.base = gdt_high_base;
-        }
-        
-        let final_gdt_ptr_virt = gdt_ptr.unwrap_or(unsafe { core::ptr::addr_of!((*core::ptr::addr_of!(TRANSITION_GDT)).descriptor) as *const _ as *const u8 });
-        // Calculate the high-half virtual address for the GDT descriptor.
-        // phys_addr = virt_addr - current_offset
-        // high_virt_addr = phys_addr + self.phys_offset
-        let final_gdt_ptr_high = (final_gdt_ptr_virt as u64)
-            .wrapping_sub(current_physical_memory_offset.as_u64())
-            .wrapping_add(self.phys_offset.as_u64()) as *const u8;
-
-        // Use primitive serial output to mark the absolute last point before entering assembly.
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"CR3 switch: about to enter asm! block\n");
-
+        // The current perform_page_table_switch has significant side-effects: 
+        // It maps the current RIP and the landing zone area into the new page table.
+        // Since TransitionContext::prepare is a pure calculation, we must keep 
+        // these mapping operations here.
         unsafe {
             crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: inside unsafe block, getting RIP\n");
-            // CRITICAL: Explicitly map the current RIP in the new page table.
-            // The dump showed RIP = 0x140019472, which was NOT mapped in the new table.
             let rip: u64;
             core::arch::asm!("lea {}, [rip]", out(reg) rip);
             
-            // Calculate the physical address of the current RIP.
             let rip_phys = rip.wrapping_sub(current_physical_memory_offset.as_u64());
-            
-            // Map a larger region (4MB) around the current RIP to be absolutely safe.
             let rip_region_start = (rip_phys.wrapping_sub(2 * 1024 * 1024)) & !0xFFF;
             let rip_region_pages = (4 * 1024 * 1024) / 4096;
             
@@ -1152,15 +1269,9 @@ impl PageTableReinitializer {
 
             for i in 0..rip_region_pages {
                 let p_phys = rip_region_start + (i * 4096);
-                // Map the current virtual address to the corresponding physical address.
-                // This ensures that the CPU can continue fetching instructions using the same 
-                // virtual address after the CR3 switch.
                 let v_addr = VirtAddr::new(p_phys.wrapping_add(current_physical_memory_offset.as_u64()));
                 let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(v_addr);
-                
-                // Unmap first to ensure flags are updated, as map_to fails if already mapped.
                 let _ = new_mapper.unmap(page);
-                
                 let _ = new_mapper.map_to(
                     page,
                     x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_phys)),
@@ -1171,19 +1282,13 @@ impl PageTableReinitializer {
             crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: RIP region mapped\n");
             crate::debug_log_no_alloc!("Current RIP region (4MB) explicitly mapped to current virtual address in new page table");
 
-            // CRITICAL: Map a broad region of the kernel to cover both .text and .rodata.
-            // This prevents #PF when accessing string literals or calling functions in the landing zone.
             let kernel_base_virt = landing_zone as *const () as usize as u64;
             let kernel_base_phys = kernel_base_virt.wrapping_sub(current_physical_memory_offset.as_u64());
-            
-            // Map 64MB starting from the landing_zone area to ensure all early boot code and data (.rodata) are covered.
             let region_start_phys = (kernel_base_phys.wrapping_sub(1024 * 1024)) & !0xFFF;
             let region_pages = (64 * 1024 * 1024) / 4096;
             
             for i in 0..region_pages {
                 let p_phys = region_start_phys + (i * 4096);
-                
-                // Map to current virtual address
                 let v_low = VirtAddr::new(p_phys.wrapping_add(current_physical_memory_offset.as_u64()));
                 let page_low = x86_64::structures::paging::Page::<Size4KiB>::containing_address(v_low);
                 let _ = new_mapper.unmap(page_low);
@@ -1193,8 +1298,6 @@ impl PageTableReinitializer {
                     x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
                     frame_allocator,
                 );
-                
-                // Map to high-half virtual address
                 let v_high = VirtAddr::new(p_phys.wrapping_add(self.phys_offset.as_u64()));
                 let page_high = x86_64::structures::paging::Page::<Size4KiB>::containing_address(v_high);
                 let _ = new_mapper.unmap(page_high);
@@ -1210,65 +1313,7 @@ impl PageTableReinitializer {
         }
 
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"CR3 switch: about to enter asm! block\n");
-
-        unsafe {
-            core::arch::asm!(
-                // 1. Debug output before any changes.
-                "mov dx, 0x3f8", "mov al, 0x31", "out dx, al",
-
-                // 2. Switch CR3.
-                "mov cr3, {cr3}",
-                "mov dx, 0x3f8", "mov al, 0x32", "out dx, al",
-                
-                // 3. Load GDT pointer immediately after CR3 switch.
-                // We use an explicit register for GDT pointer to avoid conflicts.
-                "lgdt [{gdt_ptr}]",
-                "mov dx, 0x3f8", "mov al, 0x33", "out dx, al",
-                
-                // 4. Shift RSP to higher-half immediately.
-                "add rsp, {offset_diff}",
-                "mov dx, 0x3f8", "mov al, 0x36", "out dx, al",
-
-                // 5. Set up arguments for landing_zone (System V ABI)
-                "mov rdi, {load_gdt}",
-                "mov rsi, {load_idt}",
-                "mov rdx, {phys_offset}",
-                "mov rcx, {l4_frame}",
-                "mov r8, {allocator}",
-                "mov r9, {kernel_entry}",
-                
-                // Push 7th argument (KernelArgs)
-                "push {kernel_args_virt}",
-                
-                // Align stack to 16 bytes before the far jump
-                "and rsp, -16",
-                
-                // Set up the high-half address of the logic function in r12
-                "mov r12, {logic_fn_high}",
-                
-                // Final debug and absolute jump to high-half landing zone
-                "mov dx, 0x3f8", "mov al, 0x35", "out dx, al",
-                "push {cs_selector}",
-                "push {landing_zone_high}",
-                "retfq",
-
-                cr3 = in(reg) cr3_val,
-                load_gdt = in(reg) load_gdt.map_or(core::ptr::null(), |f| f as *const ()),
-                load_idt = in(reg) load_idt.map_or(core::ptr::null(), |f| f as *const ()),
-                phys_offset = in(reg) self.phys_offset.as_u64(),
-                l4_frame = in(reg) level_4_table_frame.start_address().as_u64(),
-                allocator = in(reg) frame_allocator as *const _,
-                logic_fn_high = in(reg) ((landing_zone_logic as *const () as usize) as u64).wrapping_sub(current_physical_memory_offset.as_u64()).wrapping_add(self.phys_offset.as_u64()) as usize,
-                kernel_entry = in(reg) kernel_entry.unwrap_or(0),
-                kernel_args_virt = in(reg) kernel_args_phys.map_or(0, |phys| phys + self.phys_offset.as_u64()),
-                cs_selector = in(reg) 0x08,
-                landing_zone_high = in(reg) ((landing_zone as *const () as usize) as u64).wrapping_sub(current_physical_memory_offset.as_u64()).wrapping_add(self.phys_offset.as_u64()) as usize,
-                offset_diff = in(reg) offset_diff,
-                gdt_ptr = in(reg) final_gdt_ptr_high,
-                out("dx") _,
-                out("rax") _,
-            );
-        }
+        perform_world_switch(ctx);
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"CR3 switch: returned from asm! block\n");
     }
 }
