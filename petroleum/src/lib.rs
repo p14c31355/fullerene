@@ -1,6 +1,6 @@
 #![no_std]
 #![feature(never_type)]
-#![feature(alloc_error_handler)]
+#![cfg_attr(not(feature = "std"), feature(alloc_error_handler))]
 
 extern crate alloc;
 
@@ -75,6 +75,7 @@ pub fn debug_mem_descriptor(desc: &crate::page_table::efi_memory::MemoryMapDescr
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
 pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 // Heap allocation exports
+#[cfg(not(feature = "std"))]
 pub use page_table::ALLOCATOR;
 pub use page_table::allocate_heap_from_map;
 pub use page_table::init_global_heap;
@@ -225,8 +226,15 @@ pub fn cpu_pause() {
 
 /// Helper to initialize serial for bootloader
 pub unsafe fn write_serial_bytes(port: u16, status_port: u16, bytes: &[u8]) {
+    #[cfg(not(feature = "std"))]
     unsafe {
         serial::write_serial_bytes(port, status_port, bytes);
+    }
+    #[cfg(feature = "std")]
+    {
+        // In std environment, we avoid direct port I/O to prevent SIGSEGV
+        // and optionally print to stdout for debugging.
+        // println!("Serial write: {:?}", core::str::from_utf8(bytes).unwrap_or("invalid utf8"));
     }
 }
 

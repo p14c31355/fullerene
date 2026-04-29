@@ -43,3 +43,6 @@ force-frame-pointers = true
 
 [profile.release]
 force-frame-pointers = true
+
+[dev-dependencies]
+toluene = { path = "../toluene" }

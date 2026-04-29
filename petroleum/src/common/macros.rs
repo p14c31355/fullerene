@@ -1165,11 +1165,18 @@ macro_rules! calculate_kernel_pages {
 #[macro_export]
 macro_rules! get_memory_stats {
     () => {{
-        let allocator = $crate::page_table::ALLOCATOR.lock();
-        let used = allocator.used();
-        let total = allocator.size();
-        let free = total.saturating_sub(used);
-        (used, total, free)
+        #[cfg(not(feature = "std"))]
+        {
+            let allocator = $crate::page_table::ALLOCATOR.lock();
+            let used = allocator.used();
+            let total = allocator.size();
+            let free = total.saturating_sub(used);
+            (used, total, free)
+        }
+        #[cfg(feature = "std")]
+        {
+            (0, 0, 0)
+        }
     }};
 }
 
