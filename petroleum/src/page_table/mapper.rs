@@ -106,7 +106,7 @@ impl<'a> MemoryMapper<'a> {
 
     pub fn map_vga(&mut self) {
         use crate::page_table::constants::{VGA_MEMORY_END, VGA_MEMORY_START};
-        const VGA_PAGES: u64 = (VGA_MEMORY_END - VGA_MEMORY_START) / 4096;
+        const VGA_PAGES: u64 = (VGA_MEMORY_END - VGA_MEMORY_START + 4095) / 4096;
         let flags = crate::page_flags_const!(READ_WRITE_NO_EXEC);
         let _ = self.map_region_dual(VGA_MEMORY_START, VGA_PAGES, flags);
     }
