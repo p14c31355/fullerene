@@ -833,17 +833,21 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
     }
 
     unsafe fn map_uefi_runtime_to_higher_half(&mut self) {
-        crate::page_table::efi_memory::process_valid_descriptors(self.memory_map, |desc, start_frame, end_frame| {
-            let phys_start = desc.get_physical_start();
-            crate::debug_log_no_alloc!("Skipping runtime mapping: phys=0x", phys_start as usize);
-        });
+        map_available_memory_to_higher_half(
+            self.mapper,
+            self.frame_allocator,
+            self.phys_offset,
+            self.memory_map,
+        );
     }
 
     unsafe fn map_available_memory_to_higher_half(&mut self) {
-        crate::page_table::efi_memory::process_valid_descriptors(self.memory_map, |desc, start_frame, end_frame| {
-            let phys_start = desc.get_physical_start();
-            crate::debug_log_no_alloc!("Skipping available mapping: phys=0x", phys_start as usize);
-        });
+        map_available_memory_to_higher_half(
+            self.mapper,
+            self.frame_allocator,
+            self.phys_offset,
+            self.memory_map,
+        );
     }
 
     unsafe fn map_stack_to_higher_half(&mut self) {
@@ -1262,4 +1266,16 @@ where
         extra_mappings,
         gdt_ptr,
     )
+}
+
+pub unsafe fn unmap_identity_range(
+    mapper: &mut OffsetPageTable,
+    start_addr: u64,
+    num_pages: u64,
+) {
+    for i in 0..num_pages {
+        let addr = start_addr + (i * 4096);
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
+        let _ = mapper.unmap(page);
+    }
 }

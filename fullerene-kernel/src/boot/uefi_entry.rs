@@ -498,48 +498,62 @@ fn efi_main_stage2(ctx: &mut UefiInitContext, physical_memory_offset: VirtAddr) 
     write_serial_bytes!(0x3F8, 0x3FD, b"Basic init complete logged\n");
     petroleum::serial::serial_log(format_args!("basic init complete logged successfully\n"));
 
-    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: About to init interrupts\n");
+    // Transition to the formal kernel main in the higher half
+    kernel_main_higher_half(ctx, physical_memory_offset);
+}
 
-    // Initialize IDT before enabling interrupts
+#[cfg(target_os = "uefi")]
+fn kernel_main_higher_half(ctx: &mut UefiInitContext, physical_memory_offset: VirtAddr) -> ! {
+    write_serial_bytes!(0x3F8, 0x3FD, b"Entering kernel_main_higher_half...\n");
+
+    // 1. Reload IDT to ensure it uses higher-half addresses
+    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: Reloading IDT for higher half\n");
     interrupts::init();
-    log::info!("Kernel: IDT init done");
+    log::info!("Kernel: IDT re-initialized in higher half");
 
-    // Map MMIO regions
+    // 2. Map MMIO regions
     ctx.map_mmio();
     log::info!("MMIO mapping completed");
 
-    // Initialize VGA for UEFI
+    // 3. Initialize VGA for UEFI
     crate::vga::init_vga(physical_memory_offset);
     log::info!("VGA initialized for UEFI");
 
-    // Initialize APIC before enabling interrupts for safety
+    // 4. Initialize APIC before enabling interrupts for safety
     crate::interrupts::init_apic();
     log::info!("APIC initialized");
 
-    // Enable interrupts now that all handlers and controllers are set up.
-    log::info!("Enabling interrupts...");
+    // 5. UNMAP Low-address identity mappings
+    // This is the "final trap" mentioned by the reviewer. 
+    // We remove the 4GiB identity mapping used during transition.
+    log::info!("Removing low-address identity mappings to prevent NULL pointer bugs...");
     unsafe {
-        let rsp: u64;
-        core::arch::asm!("mov {}, rsp", out(reg) rsp);
-        petroleum::init_log!("RSP before enabling interrupts: 0x{:x}", rsp);
+        let mut mapper = petroleum::page_table::init(physical_memory_offset);
+        // Unmap the 4GiB identity range (0 to 4GiB)
+        petroleum::page_table::unmap_identity_range(
+            &mut mapper,
+            0,
+            (4 * 1024 * 1024 * 1024) / 4096,
+        );
     }
+    log::info!("Low-address identity mappings removed.");
+
+    // 6. Enable interrupts now that all handlers and controllers are set up.
+    log::info!("Enabling interrupts...");
     x86_64::instructions::interrupts::enable();
     log::info!("Interrupts enabled");
 
-    // Initialize keyboard input driver
+    // 7. Initialize keyboard input driver
     crate::keyboard::init();
     log::info!("Keyboard initialized");
 
-    // Start the main kernel scheduler that orchestrates all system functionality
-    log::info!("Starting full system scheduler...");
-    unsafe {
-        let rsp: u64;
-        core::arch::asm!("mov {}, rsp", out(reg) rsp);
-        petroleum::init_log!("RSP before scheduler_loop: 0x{:x}", rsp);
-    }
-    write_serial_bytes!(0x3F8, 0x3FD, b"About to enter scheduler_loop\n");
+    // 8. Start the main kernel scheduler
+    log::info!("Starting full system scheduler loop...");
+    write_serial_bytes!(0x3F8, 0x3FD, b"Entering scheduler_loop\n");
+    
     scheduler_loop();
-    // scheduler_loop should never return in normal operation
+    
+    // scheduler_loop should never return
     panic!("scheduler_loop returned unexpectedly - kernel critical failure!");
 }
 
