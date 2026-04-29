@@ -1,5 +1,5 @@
 pub unsafe fn write_serial_bytes(port_addr: u16, status_port_addr: u16, bytes: &[u8]) {
-    #[cfg(not(feature = "std"))]
+    #[cfg(all(not(feature = "std"), not(test)))]
     {
         use x86_64::instructions::port::Port;
         let mut port = Port::<u8>::new(port_addr);
@@ -11,9 +11,9 @@ pub unsafe fn write_serial_bytes(port_addr: u16, status_port_addr: u16, bytes: &
             }
         }
     }
-    #[cfg(feature = "std")]
+    #[cfg(any(feature = "std", test))]
     {
-        // Avoid direct port I/O in std environment to prevent SIGSEGV
+        // Avoid direct port I/O in std environment or during tests to prevent SIGSEGV
     }
 }
 
@@ -50,14 +50,14 @@ impl<S: SerialPortOps> SerialPort<S> {
 
     /// Writes a single byte to the serial port.
     pub fn write_byte(&mut self, byte: u8) {
-        #[cfg(not(feature = "std"))]
+        #[cfg(all(not(feature = "std"), not(test)))]
         unsafe {
             while (self.ops.line_status_port().read() & 0x20) == 0 {}
             self.ops.data_port().write(byte);
         }
-        #[cfg(feature = "std")]
+        #[cfg(any(feature = "std", test))]
         {
-            // Avoid direct port I/O in std environment to prevent SIGSEGV
+            // Avoid direct port I/O in std environment or during tests to prevent SIGSEGV
         }
     }
 
@@ -296,12 +296,12 @@ pub fn format_hex(writer: &mut impl core::fmt::Write, value: usize) -> core::fmt
 
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
-    #[cfg(not(feature = "std"))]
+    #[cfg(all(not(feature = "std"), not(test)))]
     {
         (&mut *SERIAL_PORT_WRITER.lock()).write_fmt(args).ok();
         (&mut *UEFI_WRITER.lock()).write_fmt(args).ok();
     }
-    #[cfg(feature = "std")]
+    #[cfg(any(feature = "std", test))]
     {
         // Avoid direct port I/O and std usage in no_std crate to prevent SIGSEGV and compile errors
     }

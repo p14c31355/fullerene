@@ -130,7 +130,7 @@ pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
 }
 
 /// Alloc error handler required when using `alloc` in no_std.
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), not(test)))]
 #[alloc_error_handler]
 fn alloc_error(_layout: core::alloc::Layout) -> ! {
     // Avoid recursive panics by directly looping

@@ -307,14 +307,14 @@ mod tests {
                 padding: 0,
                 physical_start: 0x1000,
                 virtual_start: 0,
-                number_of_pages: (40 * 1024 * 1024 * 1024) / 4096, // 40GiB
+                number_of_pages: (40u64 * 1024 * 1024 * 1024) / 4096, // 40GiB
                 attribute: 0,
             },
         ];
         let (max_addr, total_frames, _) = calculate_frame_allocation_params(&map);
         // max_addr is the actual max, but total_frames should be capped at 32GiB
-        assert!(max_addr > 32 * 1024 * 1024 * 1024);
-        assert_eq!(total_frames, (32 * 1024 * 1024 * 1024) / 4096);
+        assert!(max_addr > 32u64 * 1024 * 1024 * 1024);
+        assert_eq!(total_frames, ((32u64 * 1024 * 1024 * 1024) / 4096) as usize);
     }
 }
 

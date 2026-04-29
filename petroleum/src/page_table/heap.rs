@@ -4,13 +4,17 @@ use x86_64::PhysAddr;
 
 pub static HEAP_INITIALIZED: Once<bool> = Once::new();
 
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), not(test)))]
 #[global_allocator]
 pub static ALLOCATOR: linked_list_allocator::LockedHeap =
     linked_list_allocator::LockedHeap::empty();
 
+#[cfg(all(not(feature = "std"), test))]
+pub static ALLOCATOR: linked_list_allocator::LockedHeap =
+    linked_list_allocator::LockedHeap::empty();
+
 pub fn init_global_heap(ptr: *mut u8, size: usize) {
-    #[cfg(not(feature = "std"))]
+    #[cfg(all(not(feature = "std"), not(test)))]
     if HEAP_INITIALIZED.get().is_none() {
         unsafe {
             ALLOCATOR.lock().init(ptr, size);

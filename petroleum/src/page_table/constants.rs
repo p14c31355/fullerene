@@ -8,7 +8,7 @@ pub const TEMP_LOW_VA: u64 = 0x1000;
 pub const VGA_MEMORY_START: u64 = 0xb8000;
 pub const VGA_MEMORY_END: u64 = 0xb8fa0;
 
-pub const MAX_DESCRIPTOR_PAGES: u64 = 1_048_576;
+pub const MAX_DESCRIPTOR_PAGES: u64 = 134_217_728; // 512 GiB / 4096
 pub const MAX_SYSTEM_MEMORY: u64 = 512 * 1024 * 1024 * 1024u64;
 pub const UEFI_COMPAT_PAGES: u64 = 16383;
 
