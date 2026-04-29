@@ -136,6 +136,8 @@ impl<'a> MemoryMapper<'a> {
                     flags,
                 );
             }
+            // Use a safe TLB flush that handles potential inconsistencies across cores if necessary.
+            // In a single-core boot environment, flush_all is generally sufficient.
             x86_64::instructions::tlb::flush_all();
             crate::debug_log_no_alloc!("Boot code flags forcefully updated to READ_WRITE (global TLB flush)");
         }
@@ -268,7 +270,7 @@ pub fn map_stack_to_higher_half<T: crate::page_table::efi_memory::MemoryDescript
 
 #[unsafe(no_mangle)]
 #[unsafe(naked)]
-pub extern "sysv64" fn landing_zone(
+pub unsafe extern "sysv64" fn landing_zone(
     _load_gdt: Option<fn()>,
     _load_idt: Option<fn()>,
     _phys_offset: VirtAddr,
@@ -324,11 +326,16 @@ pub struct KernelArgs {
     pub system_table: usize,
     pub map_ptr: usize,
     pub map_size: usize,
+    pub kernel_phys_start: u64,
 }
+
+/// Global pointer to kernel arguments, set during the high-half transition.
+#[unsafe(no_mangle)]
+pub static mut KERNEL_ARGS: *const KernelArgs = core::ptr::null();
 
 #[unsafe(no_mangle)]
 #[inline(never)]
-extern "sysv64" fn landing_zone_logic(
+unsafe extern "sysv64" fn landing_zone_logic(
     load_gdt: *const (),
     load_idt: *const (),
     phys_offset_raw: u64,
@@ -338,6 +345,7 @@ extern "sysv64" fn landing_zone_logic(
     kernel_args: *const KernelArgs,
 ) {
     unsafe {
+        KERNEL_ARGS = kernel_args;
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: Start\n");
         let l4_phys = l4_frame_raw;
         let local_phys_offset = VirtAddr::new(phys_offset_raw);

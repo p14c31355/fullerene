@@ -583,13 +583,18 @@ pub extern "efiapi" fn efi_main(
     write_serial_bytes!(0x3F8, 0x3FD, b"Allocator setup completed\n");
 
     unsafe {
-        core::arch::asm!("mov rsp, {}", in(reg) kernel_stack_top);
+        // Switch to kernel stack and immediately jump to stage 2 to avoid any 
+        // compiler-inserted stack usage on the old stack after the switch.
+        core::arch::asm!(
+            "mov rsp, {stack_top}",
+            "jmp {stage2}",
+            stack_top = in(reg) kernel_stack_top,
+            stage2 = in(reg) efi_main_stage2 as usize,
+            options(noreturn)
+        );
         
-        let current_rsp: u64;
-        core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
-        petroleum::init_log!("Switched to Kernel Stack. Top: 0x{:x}, Current RSP: 0x{:x}", kernel_stack_top, current_rsp);
-        
-        efi_main_stage2(&mut ctx, physical_memory_offset);
+        // The following code is unreachable
+        core::hint::unreachable_unchecked();
     }
 }
 

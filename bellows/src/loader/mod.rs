@@ -190,9 +190,7 @@ pub fn exit_boot_services_and_jump(
     // Write descriptor_size at the very beginning of the allocated buffer (map_phys_addr)
     unsafe {
         let descriptor_size_ptr = map_phys_addr as *mut usize;
-        if !descriptor_size_ptr.is_null() {
-            core::ptr::write_volatile(descriptor_size_ptr, descriptor_size);
-        }
+        core::ptr::write_volatile(descriptor_size_ptr, descriptor_size);
     }
 
     // Check if framebuffer config is available and append it to memory map for kernel
@@ -217,13 +215,11 @@ pub fn exit_boot_services_and_jump(
         {
             unsafe {
                 let dest_ptr = (map_phys_addr as *mut u8).add(config_offset);
-                if !dest_ptr.is_null() {
-                    core::ptr::copy_nonoverlapping(
-                        &config_with_metadata as *const _ as *const u8,
-                        dest_ptr,
-                        config_size,
-                    );
-                }
+                core::ptr::copy_nonoverlapping(
+                    &config_with_metadata as *const _ as *const u8,
+                    dest_ptr,
+                    config_size,
+                );
             }
             final_map_size += config_size;
             #[cfg(feature = "debug_loader")]
@@ -267,6 +263,7 @@ pub fn exit_boot_services_and_jump(
                 system_table: system_table as usize,
                 map_ptr: map_phys_addr,
                 map_size: final_map_size,
+                kernel_phys_start: kernel_phys_start.as_u64(),
             },
         );
     }
