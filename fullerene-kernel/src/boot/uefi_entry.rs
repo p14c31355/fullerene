@@ -104,8 +104,7 @@ impl UefiInitContext {
         let tss_phys_addr = match frame_allocator.allocate_frames(tss_stack_pages) {
             Ok(frame) => frame.start_address(),
             Err(_) => {
-                debug_log_no_alloc!("Failed to allocate physical frames for TSS stacks! Using fallback.");
-                PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR)
+                panic!("Critical failure: Failed to allocate physical frames for TSS stacks. System cannot proceed safely.");
             }
         };
 

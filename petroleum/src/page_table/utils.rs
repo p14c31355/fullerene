@@ -511,6 +511,11 @@ pub fn debug_page_table_info(level_4_table_frame: PhysFrame, phys_offset: VirtAd
 
 /// Forcefully update flags for a given virtual address in the current page table.
 pub unsafe fn force_update_page_flags(mapper: &mut OffsetPageTable, addr: VirtAddr, flags: PageTableFlags) {
+    force_update_page_flags_no_flush(mapper, addr, flags);
+    x86_64::instructions::tlb::flush(addr);
+}
+
+pub unsafe fn force_update_page_flags_no_flush(mapper: &mut OffsetPageTable, addr: VirtAddr, flags: PageTableFlags) {
     let p4_idx = addr.p4_index();
     let p3_idx = addr.p3_index();
     let p2_idx = addr.p2_index();
@@ -560,7 +565,6 @@ pub unsafe fn force_update_page_flags(mapper: &mut OffsetPageTable, addr: VirtAd
             unsafe { (*l1_entry_ptr).set_flags(flags) };
         }
     }
-    x86_64::instructions::tlb::flush(addr);
 }
 
 pub fn adjust_return_address_and_stack(current_phys_offset: VirtAddr, new_phys_offset: VirtAddr) {

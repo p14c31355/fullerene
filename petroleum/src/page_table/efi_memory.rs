@@ -197,11 +197,7 @@ where
     T: MemoryDescriptorValidator,
     F: FnMut(&T, usize, usize),
 {
-    for (i, descriptor) in descriptors.iter().enumerate() {
-        // Log the index of the descriptor being processed to pinpoint exactly where it stops
-        // Use a very simple log to avoid stack/heap issues
-        crate::debug_log_no_alloc!("Processing desc [", i, "]: phys=0x", descriptor.get_physical_start() as usize);
-
+    for descriptor in descriptors.iter() {
         // Skip descriptors with excessively large page counts to avoid overflow or invalid entries
         if descriptor.get_page_count() > super::constants::MAX_DESCRIPTOR_PAGES {
             debug_log_no_alloc!("Skipping descriptor with excessive page count: ", descriptor.get_page_count() as usize);

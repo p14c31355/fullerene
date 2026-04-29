@@ -428,7 +428,10 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
             // within the correct address space.
             unsafe {
                 let new_frame = PhysFrame::containing_address((*new_ptr).page_table_phys_addr);
-                Cr3::write(new_frame, x86_64::registers::control::Cr3Flags::empty());
+                let (current_frame, _) = Cr3::read();
+                if new_frame != current_frame {
+                    Cr3::write(new_frame, x86_64::registers::control::Cr3Flags::empty());
+                }
             }
 
             // Drop the lock before the context switch to prevent deadlocks.

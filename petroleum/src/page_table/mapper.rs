@@ -125,16 +125,19 @@ impl<'a> MemoryMapper<'a> {
                 flags
             );
 
-            // Then, forcefully update flags for every page in the boot code region to ensure NX is cleared
+            // Then, forcefully update flags for every page in the boot code region to ensure NX is cleared.
+            // We update all entries first and then perform a single global TLB flush for efficiency.
             for i in 0..BOOT_CODE_PAGES {
                 let virt_addr = self.phys_offset.as_u64() + BOOT_CODE_START + (i * 4096);
-                crate::page_table::utils::force_update_page_flags(
+                // Use a modified version of force_update that doesn't flush TLB per page
+                crate::page_table::utils::force_update_page_flags_no_flush(
                     self.mapper,
                     x86_64::VirtAddr::new(virt_addr),
                     flags,
                 );
             }
-            crate::debug_log_no_alloc!("Boot code flags forcefully updated to READ_WRITE");
+            x86_64::instructions::tlb::flush_all();
+            crate::debug_log_no_alloc!("Boot code flags forcefully updated to READ_WRITE (global TLB flush)");
         }
     }
 
@@ -1176,7 +1179,6 @@ impl PageTableReinitializer {
                 // This ensures that the stack is accessed via high-half addresses 
                 // once we land in the Rust code of the landing zone.
                 "add rsp, {offset_diff}",
-                "and rsp, -16", // CRITICAL: Ensure 16-byte stack alignment for sysv64 ABI
                 "mov dx, 0x3f8", "mov al, 0x36", "out dx, al",
                 
         // Final check before jump
