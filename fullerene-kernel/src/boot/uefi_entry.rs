@@ -472,7 +472,7 @@ fn efi_main_stage2(ctx: &mut UefiInitContext, physical_memory_offset: VirtAddr) 
     unsafe {
         let rsp: u64;
         core::arch::asm!("mov {}, rsp", out(reg) rsp);
-        petroleum::init_log!("RSP before init_common: 0x{:x}", rsp);
+        petroleum::bootloader_log!("RSP before init_common: 0x{:x}", rsp);
     }
     crate::init::init_common(physical_memory_offset);
     unsafe {
