@@ -13,33 +13,6 @@ pub const HEAP_SIZE: usize = 1024 * 1024; // 1MB heap
 // Kernel stack size for UEFI boot initialization
 pub const KERNEL_STACK_SIZE: usize = 4096 * 64; // 256KB
 
-/// Reinitialize the page table with identity mapping and higher-half kernel mapping
-/// This is a wrapper around reinit_page_table_with_allocator for simple cases
-pub fn reinit_page_table(
-    kernel_phys_start: x86_64::PhysAddr,
-    fb_addr: Option<x86_64::VirtAddr>,
-    fb_size: Option<u64>,
-) -> x86_64::VirtAddr {
-    let mut frame_allocator = FRAME_ALLOCATOR
-        .get()
-        .expect("Frame allocator not initialized")
-        .lock();
-    let memory_map = MEMORY_MAP.get().expect("Memory map not initialized");
-    reinit_page_table_with_allocator(
-        kernel_phys_start,
-        fb_addr,
-        fb_size,
-        &mut *frame_allocator,
-        memory_map,
-        0,
-        0,
-        x86_64::VirtAddr::new(0),
-        None,
-        None,
-        None::<fn(&mut x86_64::structures::paging::OffsetPageTable, &mut BootInfoFrameAllocator, x86_64::VirtAddr)>,
-        None,
-    )
-}
 
 use petroleum::common::EfiMemoryType;
 use petroleum::page_table::efi_memory::{

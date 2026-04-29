@@ -275,6 +275,7 @@ pub extern "sysv64" fn landing_zone(
     _level_4_table_frame: PhysFrame,
     _frame_allocator: *mut BootInfoFrameAllocator,
     _logic_fn_high: usize,
+    _kernel_entry: usize,
 ) {
     unsafe {
         core::arch::naked_asm!(
@@ -305,12 +306,14 @@ pub extern "sysv64" fn landing_zone(
             "2:",
 
             // 4. Transition back to Rust logic
-            // Use call to landing_zone_logic so that the function prologue
-            // and return address are handled correctly.
             "mov dx, 0x3f8", "mov al, 0x57", "out dx, al", // 'W'
+            // Save RSP before alignment to restore it before returning
+            "mov r10, rsp",
             // Ensure RSP is 16-byte aligned for the Rust function prologue
             "and rsp, -16",
             "call r9",
+            // Restore RSP so that the return address pushed before retfq is at the top
+            "mov rsp, r10",
             // After returning from logic, go back to the original caller (perform_page_table_switch)
             "ret",
         );
@@ -325,6 +328,7 @@ extern "sysv64" fn landing_zone_logic(
     phys_offset_raw: u64,
     l4_frame_raw: u64,
     frame_allocator: *mut BootInfoFrameAllocator,
+    kernel_entry: usize,
 ) {
     unsafe {
         let l4_phys = l4_frame_raw;
@@ -352,9 +356,13 @@ extern "sysv64" fn landing_zone_logic(
         );
         
         crate::debug_log_no_alloc!("L4 table mapped to high-half in landing zone");
-        crate::debug_log_no_alloc!("Landing zone completed. Jumping back to kernel...");
+        crate::debug_log_no_alloc!("Landing zone completed. Jumping directly to kernel entry...");
         
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Landing zone returning now\n");
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Landing zone jumping to kernel entry!\n");
+        
+        if kernel_entry != 0 {
+            core::arch::asm!("jmp {}", in(reg) kernel_entry);
+        }
     }
 }
 
@@ -924,6 +932,7 @@ impl PageTableReinitializer {
         load_idt: Option<fn()>,
         extra_mappings: Option<F>,
         gdt_ptr: Option<*const u8>,
+        kernel_entry: Option<usize>,
     ) -> VirtAddr 
     where 
         T: crate::page_table::efi_memory::MemoryDescriptorValidator,
@@ -988,6 +997,7 @@ impl PageTableReinitializer {
             load_gdt,
             load_idt,
             gdt_ptr,
+            kernel_entry,
         );
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Page table switch: returned to reinitialize\n");
         
@@ -1066,6 +1076,7 @@ impl PageTableReinitializer {
         load_gdt: Option<fn()>,
         load_idt: Option<fn()>,
         gdt_ptr: Option<*const u8>,
+        kernel_entry: Option<usize>,
     ) {
         x86_64::instructions::interrupts::disable();
         crate::debug_log_no_alloc!("About to switch CR3 to new table: 0x", level_4_table_frame.start_address().as_u64() as usize);
@@ -1209,6 +1220,7 @@ impl PageTableReinitializer {
                 "mov rcx, {l4_frame}",
                 "mov r8, {allocator}",
                 "mov r9, {logic_fn_high}",
+                "mov r10, {kernel_entry}",
                 
                 "push {cs_selector}",
                 "mov rax, {landing_zone_high}",
@@ -1222,6 +1234,7 @@ impl PageTableReinitializer {
                 l4_frame = in(reg) level_4_table_frame.start_address().as_u64(),
                 allocator = in(reg) frame_allocator as *const _,
                 logic_fn_high = in(reg) ((landing_zone_logic as *const () as usize) as u64).wrapping_sub(current_physical_memory_offset.as_u64()).wrapping_add(self.phys_offset.as_u64()) as usize,
+                kernel_entry = in(reg) kernel_entry.unwrap_or(0),
                 cs_selector = in(reg) 0x08,
                 landing_zone_high = in(reg) ((landing_zone as *const () as usize) as u64).wrapping_sub(current_physical_memory_offset.as_u64()).wrapping_add(self.phys_offset.as_u64()) as usize,
                 offset_diff = in(reg) offset_diff,
@@ -1234,12 +1247,12 @@ impl PageTableReinitializer {
     }
 }
 
-pub fn reinit_page_table_with_allocator<F>(
+pub fn reinit_page_table_with_allocator<T, F>(
     kernel_phys_start: PhysAddr,
     fb_addr: Option<VirtAddr>,
     fb_size: Option<u64>,
     frame_allocator: &mut BootInfoFrameAllocator,
-    memory_map: &[impl crate::page_table::efi_memory::MemoryDescriptorValidator],
+    memory_map: &[T],
     uefi_map_phys: u64,
     uefi_map_size: u64,
     current_physical_memory_offset: VirtAddr,
@@ -1247,8 +1260,10 @@ pub fn reinit_page_table_with_allocator<F>(
     load_idt: Option<fn()>,
     extra_mappings: Option<F>,
     gdt_ptr: Option<*const u8>,
+    kernel_entry: Option<usize>,
 ) -> VirtAddr 
 where 
+    T: crate::page_table::efi_memory::MemoryDescriptorValidator,
     F: FnOnce(&mut OffsetPageTable, &mut BootInfoFrameAllocator, VirtAddr),
 {
     let mut reinitializer = PageTableReinitializer::new();
@@ -1265,6 +1280,7 @@ where
         load_idt,
         extra_mappings,
         gdt_ptr,
+        kernel_entry,
     )
 }
 
