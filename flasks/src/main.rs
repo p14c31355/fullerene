@@ -38,28 +38,18 @@ fn setup_ovmf(workspace_root: &PathBuf) -> io::Result<()> {
         std::fs::remove_dir_all(edk2_dir)?;
     }
 
-    // 2. Check if OVMF is installed, if not, attempt to install or notify user
-    let src_code = PathBuf::from("/usr/share/OVMF/OVMF_CODE.fd");
-    if !src_code.exists() {
-        log::info!("OVMF not found. Attempting to install via apt-get...");
-        let install_status = Command::new("sudo")
-            .args(["apt-get", "install", "-y", "ovmf"])
-            .status();
-
-        if let Err(e) = install_status {
-            return Err(io::Error::new(io::ErrorKind::Other, format!("Failed to execute sudo apt-get: {}", e)));
-        } else if !install_status.unwrap().success() {
-            return Err(io::Error::other(
-                "Failed to install OVMF via apt-get. Please run 'sudo apt-get install -y ovmf' manually."
-            ));
-        }
-    } else {
-        log::info!("OVMF is already installed.");
-    }
-
-    // 3. Copy .fd files to flasks/ovmf/
+    // 2. Check if OVMF is installed.
     let src_code = PathBuf::from("/usr/share/OVMF/OVMF_CODE.fd");
     let src_vars = PathBuf::from("/usr/share/OVMF/OVMF_VARS.fd");
+    if !src_code.exists() || !src_vars.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "OVMF binaries not found in /usr/share/OVMF/. Please install the 'ovmf' package manually (e.g., 'sudo apt-get install -y ovmf' on Debian/Ubuntu)."
+        ));
+    }
+    log::info!("OVMF binaries found.");
+
+    // 3. Copy .fd files to flasks/ovmf/
     let dst_code = workspace_root.join("flasks").join("ovmf").join("RELEASEX64_OVMF_CODE.fd");
     let dst_vars = workspace_root.join("flasks").join("ovmf").join("RELEASEX64_OVMF_VARS.fd");
 

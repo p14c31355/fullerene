@@ -268,7 +268,7 @@ pub fn load_efi_image(
                 for i in 0..num_entries {
                     let entry_offset = 8 + i * 2;
                     let entry_ptr = unsafe { current_reloc_ptr.add(entry_offset) };
-                    let entry = unsafe { core::ptr::read_volatile(entry_ptr as *const u16) };
+                    let entry = unsafe { core::ptr::read_unaligned(entry_ptr as *const u16) };
 
                     // Type 10 is IMAGE_REL_BASED_DIR64 (64-bit absolute address)
                     if (entry >> 12) == 10 {
@@ -278,8 +278,8 @@ pub fn load_efi_image(
                         unsafe {
                             let ptr = target_addr as *mut u64;
                             if !ptr.is_null() {
-                                let val = core::ptr::read_volatile(ptr);
-                                core::ptr::write_volatile(ptr, (val as i64).wrapping_add(image_base_delta) as u64);
+                                let val = core::ptr::read_unaligned(ptr);
+                                core::ptr::write_unaligned(ptr, (val as i64).wrapping_add(image_base_delta) as u64);
                             }
                         }
                     }

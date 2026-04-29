@@ -71,12 +71,7 @@ pub struct TssStacks {
 }
 
 pub fn init_with_stacks(stacks: TssStacks) {
-    if GDT_INITIALIZED.is_completed() {
-        mem_debug!("GDT: Already initialized, skipping\n");
-        return;
-    }
-
-    mem_debug!("GDT: Initializing with provided stacks\n");
+    mem_debug!("GDT: Updating TSS stacks\n");
 
     mem_debug!("About to create TSS...\n");
     let tss = TSS.call_once(|| {

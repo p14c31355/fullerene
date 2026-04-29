@@ -93,10 +93,21 @@ impl UefiInitContext {
 
         // Pre-allocate TSS stacks physically and set up GDT (without mapping yet)
         let tss_stack_pages = (crate::gdt::GDT_TSS_STACK_COUNT * crate::gdt::GDT_TSS_STACK_SIZE) / 4096;
-        let tss_phys_addr = petroleum::allocate_heap_from_map(
-            PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR), 
-            tss_stack_pages * 4096
-        );
+        
+        // CRITICAL: Use the frame allocator to actually reserve physical memory for TSS stacks.
+        // allocate_heap_from_map only calculates an address and doesn't reserve it, leading to memory corruption.
+        let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
+            .get()
+            .expect("Frame allocator not initialized")
+            .lock();
+            
+        let tss_phys_addr = match frame_allocator.allocate_frames(tss_stack_pages) {
+            Ok(frame) => frame.start_address(),
+            Err(_) => {
+                debug_log_no_alloc!("Failed to allocate physical frames for TSS stacks! Using fallback.");
+                PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR)
+            }
+        };
 
         let tss_stacks = crate::gdt::TssStacks {
             double_fault: VirtAddr::new(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64 + tss_phys_addr.as_u64() + crate::gdt::GDT_TSS_STACK_SIZE as u64),

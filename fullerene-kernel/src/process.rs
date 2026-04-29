@@ -179,8 +179,7 @@ static CURRENT_PROCESS_INDEX: Mutex<usize> = Mutex::new(0);
 /// Current running process
 pub static CURRENT_PROCESS: Mutex<Option<ProcessId>> = Mutex::new(None);
 
-/// Kernel stack size per process (64KB)
-const KERNEL_STACK_SIZE: usize = 4096 * 16;
+// Use KERNEL_STACK_SIZE from crate::heap
 
 /// Initialize process management system
 pub fn init() {
@@ -210,12 +209,12 @@ pub fn create_process(
     debug_log!("Process: Process::new done");
 
     // Allocate kernel stack for the process
-    let stack_layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
+    let stack_layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
     let stack_ptr = unsafe { alloc::alloc::alloc(stack_layout) };
     if stack_ptr.is_null() {
         return Err(petroleum::common::logging::SystemError::MemOutOfMemory);
     }
-    let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
+    let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
     debug_log!("Process: Kernel stack allocated");
 
     // Create page table for the process
@@ -272,8 +271,8 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
         process.exit_code = Some(exit_code);
 
         // Free resources
-        let kernel_stack_base = process.kernel_stack.as_u64() - KERNEL_STACK_SIZE as u64;
-        let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
+        let kernel_stack_base = process.kernel_stack.as_u64() - crate::heap::KERNEL_STACK_SIZE as u64;
+        let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
         unsafe { alloc::alloc::dealloc(kernel_stack_base as *mut u8, layout) };
 
         // Properly free page table frames recursively
