@@ -142,6 +142,11 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
 
         // Manual mapping helper to avoid OffsetPageTable overflow panics
         let mut map_page_raw = |v_addr_raw: u64, p_addr_raw: u64, flags: PageTableFlags| {
+            let v_addr_sign_extended = if (v_addr_raw & (1 << 47)) != 0 {
+                v_addr_raw | 0xFFFF_0000_0000_0000
+            } else {
+                v_addr_raw & 0x0000_FFFF_FFFF_FFFF
+            };
             let p_addr = p_addr_raw & 0x000F_FFFF_FFFF_FFFF;
             
             // Use a temporary mapper with 0 offset to avoid overflow in internal calculations
@@ -150,7 +155,7 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
                 VirtAddr::new(0),
             );
             let _ = temp_mapper.map_to(
-                x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(v_addr_raw)),
+                x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(v_addr_sign_extended)),
                 x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(p_addr)),
                 flags,
                 &mut *local_frame_allocator,
@@ -256,9 +261,9 @@ impl TransitionContext {
         let final_gdt_ptr_virt = gdt_ptr.unwrap_or(unsafe {
             core::ptr::addr_of!((*core::ptr::addr_of!(TRANSITION_GDT)).descriptor) as *const _ as *const u8
         });
-        let final_gdt_ptr_high = ((final_gdt_ptr_virt as u64)
-            .wrapping_sub(current_offset) & 0x0000_FFFF_FFFF_FFFF)
-            .wrapping_add(target_offset) as *const u8;
+        let final_gdt_ptr_high = (((final_gdt_ptr_virt as u64)
+                .wrapping_sub(current_offset) & 0x0000_FFFF_FFFF_FFFF)
+                .wrapping_add(target_offset)) as *const u8;
 
         let l_idt = load_idt.map_or(core::ptr::null(), |f| f as *const ());
 
@@ -313,9 +318,23 @@ pub fn perform_world_switch(ctx: TransitionContext) -> ! {
         core::arch::asm!(
             "add rsp, {offset_diff}",
             "and rsp, -16",
+            "mov rdi, {load_gdt}",
+            "mov rsi, {load_idt}",
+            "mov rdx, {phys_offset}",
+            "mov rcx, {l4_frame}",
+            "mov r8, {allocator}",
+            "mov r9, {logic_fn_high}",
+            "push {kernel_entry}",
             "push {cs_selector}",
             "push {landing_zone_high}",
             "retfq",
+            load_gdt = in(reg) ctx.load_gdt,
+            load_idt = in(reg) ctx.load_idt,
+            phys_offset = in(reg) ctx.phys_offset,
+            l4_frame = in(reg) ctx.l4_frame,
+            allocator = in(reg) ctx.allocator,
+            logic_fn_high = in(reg) ctx.logic_fn_high,
+            kernel_entry = in(reg) ctx.kernel_entry,
             cs_selector = in(reg) ctx.cs_selector,
             landing_zone_high = in(reg) ctx.landing_zone_high,
             offset_diff = in(reg) ctx.offset_diff,
