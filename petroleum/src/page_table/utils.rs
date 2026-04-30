@@ -523,7 +523,9 @@ pub unsafe fn force_update_page_flags_no_flush(mapper: &mut OffsetPageTable, add
     
     let indices = [addr.p4_index(), addr.p3_index(), addr.p2_index()];
     for &idx in indices.iter() {
-        let entry = &mut (*table_ptr)[idx.into() as usize];
+        let idx_usize: usize = idx.into();
+        let entry_ptr = table_ptr.cast::<x86_64::structures::paging::page_table::PageTableEntry>().add(idx_usize);
+        let entry = &mut *entry_ptr;
         if entry.flags().contains(PageTableFlags::HUGE_PAGE) {
             entry.set_flags(flags | PageTableFlags::HUGE_PAGE);
             return;
@@ -532,7 +534,9 @@ pub unsafe fn force_update_page_flags_no_flush(mapper: &mut OffsetPageTable, add
         table_ptr = (phys_offset + frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable;
     }
     
-    let l1 = &mut (*table_ptr)[addr.p1_index().into() as usize];
+    let p1_idx_usize: usize = addr.p1_index().into();
+    let l1_ptr = table_ptr.cast::<x86_64::structures::paging::page_table::PageTableEntry>().add(p1_idx_usize);
+    let l1 = &mut *l1_ptr;
     l1.set_flags(flags);
 }
 
