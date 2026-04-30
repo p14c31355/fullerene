@@ -3,7 +3,7 @@ use x86_64::{
     registers::control::Cr3,
     structures::paging::{
         FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
-        Size4KiB, Translate,
+        Size4KiB,
     },
 };
 use crate::page_table::constants::BootInfoFrameAllocator;
@@ -337,7 +337,7 @@ pub unsafe fn map_range_with_huge_pages<A: FrameAllocator<Size4KiB>>(
     pages: u64,
     flags: PageTableFlags,
     behavior: &str,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> { unsafe {
     let mut current_page = 0;
     while current_page < pages {
         let p_addr = phys + current_page * 4096;
@@ -380,7 +380,7 @@ pub unsafe fn map_range_with_huge_pages<A: FrameAllocator<Size4KiB>>(
         current_page += 1;
     }
     Ok(())
-}
+}}
 
 pub unsafe fn map_range_4kiB<A: FrameAllocator<Size4KiB>>(
     mapper: &mut OffsetPageTable,
@@ -390,7 +390,7 @@ pub unsafe fn map_range_4kiB<A: FrameAllocator<Size4KiB>>(
     pages: u64,
     flags: PageTableFlags,
     behavior: &str,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> { unsafe {
     for i in 0..pages {
         let p_addr = phys + i * 4096;
         let v_addr = virt + i * 4096;
@@ -414,7 +414,7 @@ pub unsafe fn map_range_4kiB<A: FrameAllocator<Size4KiB>>(
         }
     }
     Ok(())
-}
+}}
 
 unsafe fn map_1gib_page<A: FrameAllocator<Size4KiB>>(
     mapper: &mut OffsetPageTable,
@@ -422,7 +422,7 @@ unsafe fn map_1gib_page<A: FrameAllocator<Size4KiB>>(
     phys: u64,
     virt: u64,
     flags: PageTableFlags,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> { unsafe {
     let l4_ptr = mapper.level_4_table() as *const PageTable as *mut PageTable;
     let p4_idx = VirtAddr::new(virt).p4_index();
     let p3_idx = VirtAddr::new(virt).p3_index();
@@ -447,7 +447,7 @@ unsafe fn map_1gib_page<A: FrameAllocator<Size4KiB>>(
     l3[p3_idx].set_addr(PhysAddr::new(phys), flags | PageTableFlags::HUGE_PAGE);
     x86_64::instructions::tlb::flush_all();
     Ok(())
-}
+}}
 
 unsafe fn map_huge_page<A: FrameAllocator<Size4KiB>>(
     mapper: &mut OffsetPageTable,
@@ -455,7 +455,7 @@ unsafe fn map_huge_page<A: FrameAllocator<Size4KiB>>(
     phys: u64,
     virt: u64,
     flags: PageTableFlags,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> { unsafe {
     let l4_ptr = mapper.level_4_table() as *const PageTable as *mut PageTable;
     let p4_idx = VirtAddr::new(virt).p4_index();
     let p3_idx = VirtAddr::new(virt).p3_index();
@@ -497,7 +497,7 @@ unsafe fn map_huge_page<A: FrameAllocator<Size4KiB>>(
     l2[p2_idx].set_addr(PhysAddr::new(phys), flags | PageTableFlags::HUGE_PAGE);
     x86_64::instructions::tlb::flush_all();
     Ok(())
-}
+}}
 
 pub unsafe fn map_identity_range(
     mapper: &mut OffsetPageTable,
@@ -505,9 +505,9 @@ pub unsafe fn map_identity_range(
     phys_start: u64,
     num_pages: u64,
     flags: PageTableFlags,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> { unsafe {
     map_range_4kiB(mapper, frame_allocator, phys_start, phys_start, num_pages, flags, "panic")
-}
+}}
 
 pub fn debug_page_table_info(level_4_table_frame: PhysFrame, phys_offset: VirtAddr) {
     debug_log_no_alloc!(
@@ -518,12 +518,12 @@ pub fn debug_page_table_info(level_4_table_frame: PhysFrame, phys_offset: VirtAd
 }
 
 /// Forcefully update flags for a given virtual address in the current page table.
-pub unsafe fn force_update_page_flags(mapper: &mut OffsetPageTable, addr: VirtAddr, flags: PageTableFlags) {
+pub unsafe fn force_update_page_flags(mapper: &mut OffsetPageTable, addr: VirtAddr, flags: PageTableFlags) { unsafe {
     force_update_page_flags_no_flush(mapper, addr, flags);
     x86_64::instructions::tlb::flush(addr);
-}
+}}
 
-pub unsafe fn force_update_page_flags_no_flush(mapper: &mut OffsetPageTable, addr: VirtAddr, flags: PageTableFlags) {
+pub unsafe fn force_update_page_flags_no_flush(mapper: &mut OffsetPageTable, addr: VirtAddr, flags: PageTableFlags) { unsafe {
     let p4_idx = addr.p4_index();
     let p3_idx = addr.p3_index();
     let p2_idx = addr.p2_index();
@@ -573,7 +573,7 @@ pub unsafe fn force_update_page_flags_no_flush(mapper: &mut OffsetPageTable, add
             unsafe { (*l1_entry_ptr).set_flags(flags) };
         }
     }
-}
+}}
 
 /// Calculates the difference between two physical memory offsets.
 pub fn calculate_phys_offset_diff(current: VirtAddr, new: VirtAddr) -> u64 {
@@ -658,12 +658,12 @@ pub fn map_stack_to_higher_half<T: crate::page_table::efi_memory::MemoryDescript
     mapper: &mut OffsetPageTable,
     frame_allocator: &mut BootInfoFrameAllocator,
     phys_offset: VirtAddr,
-    current_phys_offset: VirtAddr,
+    _current_phys_offset: VirtAddr,
     memory_map: &[T],
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
     let rsp_virt = crate::get_current_stack_pointer!();
     let rsp_phys = unsafe {
-        let (current_cr3, _) = x86_64::registers::control::Cr3::read();
+        let (_current_cr3, _) = x86_64::registers::control::Cr3::read();
         let phys_offset = x86_64::VirtAddr::new(0);
         crate::page_table::utils::translate_addr(x86_64::VirtAddr::new(rsp_virt), phys_offset)
             .expect("Failed to translate RSP to physical address")

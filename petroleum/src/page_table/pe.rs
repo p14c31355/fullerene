@@ -1,6 +1,6 @@
 use x86_64::{PhysAddr, structures::paging::PageTableFlags};
 use goblin::pe::PE;
-use crate::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable};
+use crate::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
 use core::ffi::c_void;
 
 pub const KERNEL_MEMORY_PADDING: u64 = 1024 * 1024;
@@ -111,7 +111,7 @@ impl PeParser {
     }
 }
 
-pub unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
+pub unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> { unsafe {
     log_page_table_op!("PE base", "starting search", start_ptr as usize);
 
     for i in 0..PeParser::MAX_PE_SEARCH_DISTANCE {
@@ -136,7 +136,7 @@ pub unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
 
     log_page_table_op!("PE base", "search complete - no PE found");
     None
-}
+}}
 
 pub fn derive_pe_flags(characteristics: u32) -> PageTableFlags {
     use x86_64::structures::paging::PageTableFlags as Flags;
@@ -150,7 +150,7 @@ pub fn derive_pe_flags(characteristics: u32) -> PageTableFlags {
     flags
 }
 
-pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
+pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 { unsafe {
     log_page_table_op!("PE size calculation", "starting", kernel_phys_start.as_u64() as usize);
 
     if kernel_phys_start.as_u64() == 0 {
@@ -177,7 +177,7 @@ pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
             FALLBACK_KERNEL_SIZE
         }
     }
-}
+}}
 
 /// Load and parse EFI PE image from file data
 pub fn load_efi_image(

@@ -1,11 +1,11 @@
-use x86_64::{VirtAddr, structures::paging::{PageTable, PhysFrame}};
+use x86_64::{VirtAddr, structures::paging::PageTable};
 use crate::page_table::constants::BootInfoFrameAllocator;
 use x86_64::structures::paging::FrameAllocator;
 
 pub fn test_page_table_copy_switch(
     phys_offset: VirtAddr,
     frame_allocator: &mut BootInfoFrameAllocator,
-    memory_map: &[impl crate::page_table::efi_memory::MemoryDescriptorValidator],
+    _memory_map: &[impl crate::page_table::efi_memory::MemoryDescriptorValidator],
 ) -> crate::common::logging::SystemResult<()> {
     crate::debug_log_no_alloc!("[PT TEST] Starting minimal page table copy test");
 

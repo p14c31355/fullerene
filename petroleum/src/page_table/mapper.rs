@@ -321,8 +321,8 @@ pub static mut KERNEL_ARGS: *const KernelArgs = core::ptr::null();
 #[unsafe(no_mangle)]
 #[inline(never)]
 unsafe extern "sysv64" fn landing_zone_logic(
-    load_gdt: *const (),
-    load_idt: *const (),
+    _load_gdt: *const (),
+    _load_idt: *const (),
     phys_offset_raw: u64,
     l4_frame_raw: u64,
     frame_allocator: *mut BootInfoFrameAllocator,
@@ -779,7 +779,7 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         phys_start: u64,
         num_pages: u64,
         flags: PageTableFlags,
-    ) {
+    ) { unsafe {
         let _ = crate::page_table::utils::map_range_4kiB(
             self.mapper,
             self.frame_allocator,
@@ -789,7 +789,7 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
             flags,
             "panic",
         );
-    }
+    }}
 
     unsafe fn map_at_offset_config_4kiB(
         &mut self,
@@ -797,7 +797,7 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         phys_start: u64,
         num_pages: u64,
         flags: PageTableFlags,
-    ) {
+    ) { unsafe {
         let virt_start = offset.as_u64() + phys_start;
         let _ = crate::page_table::utils::map_range_4kiB(
             self.mapper,
@@ -808,7 +808,7 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
             flags,
             "panic",
         );
-    }
+    }}
 
     fn map_current_stack_identity(&mut self) {
         crate::map_current_stack!(
@@ -854,23 +854,23 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         crate::debug_log_no_alloc!("Higher-half mappings completed");
     }
 
-    unsafe fn map_uefi_runtime_to_higher_half(&mut self) {
+    unsafe fn map_uefi_runtime_to_higher_half(&mut self) { unsafe {
         map_available_memory_to_higher_half(
             self.mapper,
             self.frame_allocator,
             self.phys_offset,
             self.memory_map,
         );
-    }
+    }}
 
-    unsafe fn map_available_memory_to_higher_half(&mut self) {
+    unsafe fn map_available_memory_to_higher_half(&mut self) { unsafe {
         map_available_memory_to_higher_half(
             self.mapper,
             self.frame_allocator,
             self.phys_offset,
             self.memory_map,
         );
-    }
+    }}
 
     unsafe fn map_stack_to_higher_half(&mut self) {
         crate::page_table::utils::map_stack_to_higher_half(
@@ -1174,12 +1174,12 @@ impl PageTableReinitializer {
         &self,
         level_4_table_frame: PhysFrame,
         current_physical_memory_offset: VirtAddr,
-        frame_allocator: &mut BootInfoFrameAllocator,
+        _frame_allocator: &mut BootInfoFrameAllocator,
     ) -> OffsetPageTable<'static> {
         crate::debug_log_no_alloc!("Setting up new page table mapper");
         let temp_phys_addr = level_4_table_frame.start_address().as_u64();
         let temp_virt_addr = current_physical_memory_offset + temp_phys_addr;
-        let temp_page = Page::<Size4KiB>::containing_address(temp_virt_addr);
+        let _temp_page = Page::<Size4KiB>::containing_address(temp_virt_addr);
         crate::debug_log_no_alloc!(
             "Using existing phys offset mapping at: 0x",
             temp_virt_addr.as_u64() as usize

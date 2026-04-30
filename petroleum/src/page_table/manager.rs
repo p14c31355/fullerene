@@ -9,7 +9,7 @@ use x86_64::{
 };
 use alloc::collections::BTreeMap;
 use crate::page_table::constants::{BootInfoFrameAllocator};
-use crate::{with_temp_mapping, extract_frame_if_present, safe_cr3_write, safe_cr3_read};
+use crate::{with_temp_mapping, extract_frame_if_present, safe_cr3_write};
 
 pub trait PageTableHelper {
     fn map_page(

@@ -21,7 +21,7 @@ pub fn calculate_config_offset(map_size: usize) -> usize {
 }
 
 /// Checks if adding a configuration block exceeds the allocated buffer size.
-pub fn check_buffer_overflow(phys_addr: usize, config_offset: usize, config_size: usize, buffer_size: usize) -> bool {
+pub fn check_buffer_overflow(_phys_addr: usize, config_offset: usize, config_size: usize, buffer_size: usize) -> bool {
     let total_capacity = buffer_size + core::mem::size_of::<usize>();
     (config_offset + config_size) <= total_capacity
 }
