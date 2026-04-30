@@ -544,15 +544,31 @@ fn kernel_main_higher_half(ctx: &mut UefiInitContext, physical_memory_offset: Vi
     }
 }
 
+
 #[cfg(target_os = "uefi")]
-#[unsafe(export_name = "efi_main")]
-#[unsafe(link_section = ".text.efi_main")]
-pub extern "efiapi" fn efi_main(
+#[unsafe(no_mangle)]
+#[unsafe(naked)]
+pub unsafe extern "C" fn efi_main_real(
     _image_handle: usize,
     system_table: *mut EfiSystemTable,
     memory_map: *mut c_void,
     memory_map_size: usize,
 ) -> ! {
+    core::arch::naked_asm!(
+        "mov dx, 0x3f8", "mov al, 0x42", "out dx, al", // 'B' for Logic
+        "jmp efi_main_real_logic",
+    );
+}
+
+#[cfg(target_os = "uefi")]
+#[unsafe(no_mangle)]
+fn efi_main_real_logic(
+    _image_handle: usize,
+    system_table: *mut EfiSystemTable,
+    memory_map: *mut c_void,
+    memory_map_size: usize,
+) -> ! {
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: efi_main_real reached!\n");
     let system_table = unsafe { &*system_table };
     let mut ctx = UefiInitContext {
         system_table,
@@ -578,7 +594,7 @@ pub extern "efiapi" fn efi_main(
     
     // We must setup allocator while still on the old stack or handle it in stage 2.
     // Since setup_allocator uses ctx, we can call it here or in stage 2.
-    // Let's do it here to ensure it's done before we potentially lose the old stack.
+    // Let's do it here to ensure we don't potentially lose the old stack.
     ctx.setup_allocator(virtual_heap_start);
     write_serial_bytes!(0x3F8, 0x3FD, b"Allocator setup completed\n");
 
@@ -598,5 +614,38 @@ pub extern "efiapi" fn efi_main(
         );
     }
 }
+
+#[cfg(target_os = "uefi")]
+#[unsafe(export_name = "efi_main")]
+#[unsafe(link_section = ".text.efi_main")]
+#[unsafe(naked)]
+pub unsafe extern "C" fn efi_main(
+    _image_handle: usize,
+    system_table: *mut EfiSystemTable,
+    memory_map: *mut c_void,
+    memory_map_size: usize,
+) {
+    core::arch::naked_asm!(
+        "cli", // Ensure interrupts are disabled
+        "mov dx, 0x3f8", "mov al, 0x41", "out dx, al", // 'A' for Arrival
+        "jmp efi_main_logic",
+    );
+}
+
+#[cfg(target_os = "uefi")]
+#[unsafe(no_mangle)]
+#[unsafe(naked)]
+pub unsafe extern "C" fn efi_main_logic(
+    _image_handle: usize,
+    system_table: *mut EfiSystemTable,
+    memory_map: *mut c_void,
+    memory_map_size: usize,
+) {
+    core::arch::naked_asm!(
+        "mov dx, 0x3f8", "mov al, 0x42", "out dx, al", // 'B' for Logic
+        "jmp efi_main_real",
+    );
+}
+
 
 // Moved graphics initialization functions to petroleum::uefi_helpers
