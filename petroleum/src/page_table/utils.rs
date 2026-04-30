@@ -305,6 +305,39 @@ pub fn create_example_mapping(
     map_to_result.expect("map_to failed").flush();
 }
 
+/// Generic helper for range mapping to reduce duplication across different page sizes
+unsafe fn map_range_generic<A, F>(
+    mapper: &mut OffsetPageTable,
+    allocator: &mut A,
+    phys: u64,
+    virt: u64,
+    pages: u64,
+    page_size: u64,
+    flags: PageTableFlags,
+    behavior: &str,
+    map_fn: F,
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> 
+where 
+    A: FrameAllocator<Size4KiB>,
+    F: Fn(&mut OffsetPageTable, &mut A, u64, u64, PageTableFlags) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>>,
+{
+    for i in 0..pages {
+        let p_addr = phys + i * page_size;
+        let v_addr = virt + i * page_size;
+        match map_fn(mapper, allocator, p_addr, v_addr, flags) {
+            Ok(_) => {},
+            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                // Ignore already mapped regions
+            },
+            Err(e) => {
+                if behavior == "panic" { panic!("Mapping error: {:?}", e); }
+                return Err(e);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub unsafe fn map_range_with_1gib_pages<A: FrameAllocator<Size4KiB>>(
     mapper: &mut OffsetPageTable,
     allocator: &mut A,
@@ -313,20 +346,9 @@ pub unsafe fn map_range_with_1gib_pages<A: FrameAllocator<Size4KiB>>(
     gib_pages: u64,
     flags: PageTableFlags,
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-    for i in 0..gib_pages {
-        let p_addr = phys + i * 1024 * 1024 * 1024;
-        let v_addr = virt + i * 1024 * 1024 * 1024;
-        unsafe {
-            match map_1gib_page(mapper, allocator, p_addr, v_addr, flags) {
-                Ok(_) => {},
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                    // Ignore already mapped regions to allow 4KiB mappings to take precedence
-                },
-                Err(e) => return Err(e),
-            }
-        }
-    }
-    Ok(())
+    map_range_generic(mapper, allocator, phys, virt, gib_pages, 1024*1024*1024, flags, "panic", |m, a, p, v, f| {
+        map_1gib_page(m, a, p, v, f)
+    })
 }
 
 pub unsafe fn map_range_with_huge_pages<A: FrameAllocator<Size4KiB>>(
@@ -337,7 +359,7 @@ pub unsafe fn map_range_with_huge_pages<A: FrameAllocator<Size4KiB>>(
     pages: u64,
     flags: PageTableFlags,
     behavior: &str,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> { unsafe {
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
     let mut current_page = 0;
     while current_page < pages {
         let p_addr = phys + current_page * 4096;
@@ -352,9 +374,7 @@ pub unsafe fn map_range_with_huge_pages<A: FrameAllocator<Size4KiB>>(
                 }
                 Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {}
                 Err(e) => {
-                    if behavior == "panic" {
-                        panic!("Huge page mapping error: {:?}", e);
-                    }
+                    if behavior == "panic" { panic!("Huge page mapping error: {:?}", e); }
                     return Err(e);
                 }
             }
@@ -364,23 +384,18 @@ pub unsafe fn map_range_with_huge_pages<A: FrameAllocator<Size4KiB>>(
         match mapper.map_to(page, frame, flags, allocator) {
             Ok(flush) => flush.flush(),
             Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_frame)) => {
-                // Update flags for already mapped page
-                unsafe {
-                    x86_64::instructions::tlb::flush(page.start_address());
-                }
+                x86_64::instructions::tlb::flush(page.start_address());
             }
             Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {},
             Err(e) => {
-                if behavior == "panic" {
-                    panic!("Mapping error: {:?}", e);
-                }
+                if behavior == "panic" { panic!("Mapping error: {:?}", e); }
                 return Err(e);
             }
         }
         current_page += 1;
     }
     Ok(())
-}}
+}
 
 pub unsafe fn map_range_4kiB<A: FrameAllocator<Size4KiB>>(
     mapper: &mut OffsetPageTable,
@@ -390,31 +405,13 @@ pub unsafe fn map_range_4kiB<A: FrameAllocator<Size4KiB>>(
     pages: u64,
     flags: PageTableFlags,
     behavior: &str,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> { unsafe {
-    for i in 0..pages {
-        let p_addr = phys + i * 4096;
-        let v_addr = virt + i * 4096;
-        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(v_addr));
-        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_addr));
-        match mapper.map_to(page, frame, flags, allocator) {
-            Ok(flush) => flush.flush(),
-            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_frame)) => {
-                // Update flags for already mapped page
-                unsafe {
-                    x86_64::instructions::tlb::flush(page.start_address());
-                }
-            }
-            Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {},
-            Err(e) => {
-                if behavior == "panic" {
-                    panic!("Mapping error: {:?}", e);
-                }
-                return Err(e);
-            }
-        }
-    }
-    Ok(())
-}}
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    map_range_generic(mapper, allocator, phys, virt, pages, 4096, flags, behavior, |m, a, p, v, f| {
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(v));
+        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p));
+        m.map_to(page, frame, f, a).map(|flush| { flush.flush(); })
+    })
+}
 
 unsafe fn map_1gib_page<A: FrameAllocator<Size4KiB>>(
     mapper: &mut OffsetPageTable,
@@ -422,22 +419,20 @@ unsafe fn map_1gib_page<A: FrameAllocator<Size4KiB>>(
     phys: u64,
     virt: u64,
     flags: PageTableFlags,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> { unsafe {
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
     let l4_ptr = mapper.level_4_table() as *const PageTable as *mut PageTable;
     let p4_idx = VirtAddr::new(virt).p4_index();
     let p3_idx = VirtAddr::new(virt).p3_index();
-    let l4_entry_ptr = unsafe { l4_ptr.cast::<x86_64::structures::paging::page_table::PageTableEntry>().add(p4_idx.into()) };
-    if unsafe { !core::ptr::read(l4_entry_ptr).flags().contains(PageTableFlags::PRESENT) } {
+    let l4_entry_ptr = l4_ptr.cast::<x86_64::structures::paging::page_table::PageTableEntry>().add(p4_idx.into());
+    if !core::ptr::read(l4_entry_ptr).flags().contains(PageTableFlags::PRESENT) {
         let l3_frame = allocator.allocate_frame().ok_or(x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed)?;
         let l3_virt = mapper.phys_offset() + l3_frame.start_address().as_u64();
         core::ptr::write_bytes(l3_virt.as_mut_ptr() as *mut u8, 0, 4096);
-        unsafe {
-            let mut entry = core::ptr::read(l4_entry_ptr);
-            entry.set_addr(l3_frame.start_address(), PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
-            core::ptr::write(l4_entry_ptr, entry);
-        }
+        let mut entry = core::ptr::read(l4_entry_ptr);
+        entry.set_addr(l3_frame.start_address(), PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+        core::ptr::write(l4_entry_ptr, entry);
     }
-    let l3_frame = unsafe { core::ptr::read(l4_entry_ptr).frame().expect("L3 frame should be present") };
+    let l3_frame = core::ptr::read(l4_entry_ptr).frame().expect("L3 frame should be present");
     let l3 = &mut *((mapper.phys_offset() + l3_frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable);
     if l3[p3_idx].flags().contains(PageTableFlags::PRESENT) {
         return Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(
@@ -447,7 +442,7 @@ unsafe fn map_1gib_page<A: FrameAllocator<Size4KiB>>(
     l3[p3_idx].set_addr(PhysAddr::new(phys), flags | PageTableFlags::HUGE_PAGE);
     x86_64::instructions::tlb::flush_all();
     Ok(())
-}}
+}
 
 unsafe fn map_huge_page<A: FrameAllocator<Size4KiB>>(
     mapper: &mut OffsetPageTable,
@@ -455,23 +450,21 @@ unsafe fn map_huge_page<A: FrameAllocator<Size4KiB>>(
     phys: u64,
     virt: u64,
     flags: PageTableFlags,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> { unsafe {
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
     let l4_ptr = mapper.level_4_table() as *const PageTable as *mut PageTable;
     let p4_idx = VirtAddr::new(virt).p4_index();
     let p3_idx = VirtAddr::new(virt).p3_index();
     let p2_idx = VirtAddr::new(virt).p2_index();
-    let l4_entry_ptr = unsafe { l4_ptr.cast::<x86_64::structures::paging::page_table::PageTableEntry>().add(p4_idx.into()) };
-    if unsafe { !core::ptr::read(l4_entry_ptr).flags().contains(PageTableFlags::PRESENT) } {
+    let l4_entry_ptr = l4_ptr.cast::<x86_64::structures::paging::page_table::PageTableEntry>().add(p4_idx.into());
+    if !core::ptr::read(l4_entry_ptr).flags().contains(PageTableFlags::PRESENT) {
         let l3_frame = allocator.allocate_frame().ok_or(x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed)?;
         let l3_virt = mapper.phys_offset() + l3_frame.start_address().as_u64();
         core::ptr::write_bytes(l3_virt.as_mut_ptr() as *mut u8, 0, 4096);
-        unsafe {
-            let mut entry = core::ptr::read(l4_entry_ptr);
-            entry.set_addr(l3_frame.start_address(), PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
-            core::ptr::write(l4_entry_ptr, entry);
-        }
+        let mut entry = core::ptr::read(l4_entry_ptr);
+        entry.set_addr(l3_frame.start_address(), PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+        core::ptr::write(l4_entry_ptr, entry);
     }
-    let l3_frame = unsafe { core::ptr::read(l4_entry_ptr).frame().expect("L3 frame should be present") };
+    let l3_frame = core::ptr::read(l4_entry_ptr).frame().expect("L3 frame should be present");
     let l3 = &mut *((mapper.phys_offset() + l3_frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable);
     if !l3[p3_idx].flags().contains(PageTableFlags::PRESENT) {
         let l2_frame = allocator.allocate_frame().ok_or(x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed)?;
@@ -497,7 +490,7 @@ unsafe fn map_huge_page<A: FrameAllocator<Size4KiB>>(
     l2[p2_idx].set_addr(PhysAddr::new(phys), flags | PageTableFlags::HUGE_PAGE);
     x86_64::instructions::tlb::flush_all();
     Ok(())
-}}
+}
 
 pub unsafe fn map_identity_range(
     mapper: &mut OffsetPageTable,
@@ -505,9 +498,9 @@ pub unsafe fn map_identity_range(
     phys_start: u64,
     num_pages: u64,
     flags: PageTableFlags,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> { unsafe {
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
     map_range_4kiB(mapper, frame_allocator, phys_start, phys_start, num_pages, flags, "panic")
-}}
+}
 
 pub fn debug_page_table_info(level_4_table_frame: PhysFrame, phys_offset: VirtAddr) {
     debug_log_no_alloc!(
@@ -518,62 +511,30 @@ pub fn debug_page_table_info(level_4_table_frame: PhysFrame, phys_offset: VirtAd
 }
 
 /// Forcefully update flags for a given virtual address in the current page table.
-pub unsafe fn force_update_page_flags(mapper: &mut OffsetPageTable, addr: VirtAddr, flags: PageTableFlags) { unsafe {
+pub unsafe fn force_update_page_flags(mapper: &mut OffsetPageTable, addr: VirtAddr, flags: PageTableFlags) {
     force_update_page_flags_no_flush(mapper, addr, flags);
     x86_64::instructions::tlb::flush(addr);
-}}
+}
 
-pub unsafe fn force_update_page_flags_no_flush(mapper: &mut OffsetPageTable, addr: VirtAddr, flags: PageTableFlags) { unsafe {
-    let p4_idx = addr.p4_index();
-    let p3_idx = addr.p3_index();
-    let p2_idx = addr.p2_index();
-    let p1_idx = addr.p1_index();
-
-    // 1. Update L4 entry
-    let l4_ptr = mapper.level_4_table() as *const PageTable as *mut PageTable;
-    let l4_entry_ptr = (l4_ptr as *mut x86_64::structures::paging::page_table::PageTableEntry).add(p4_idx.into());
-    let l4_entry = unsafe { &mut *l4_entry_ptr };
-    let mut l4_flags = l4_entry.flags();
-    l4_flags.remove(PageTableFlags::NO_EXECUTE);
-    l4_entry.set_flags(l4_flags);
-
-    let l3_frame = l4_entry.frame().expect("L3 not present");
-    let l3_ptr = (mapper.phys_offset() + l3_frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable;
+pub unsafe fn force_update_page_flags_no_flush(mapper: &mut OffsetPageTable, addr: VirtAddr, flags: PageTableFlags) {
+    let phys_offset = mapper.phys_offset();
+    let l4 = mapper.level_4_table();
+    let mut table_ptr = l4 as *const PageTable as *mut PageTable;
     
-    // 2. Update L3 entry
-    let l3_entry_ptr = (l3_ptr as *mut x86_64::structures::paging::page_table::PageTableEntry).add(p3_idx.into());
-    let l3_entry = unsafe { &mut *l3_entry_ptr };
-    let mut l3_flags = l3_entry.flags();
-    l3_flags.remove(PageTableFlags::NO_EXECUTE);
-    l3_entry.set_flags(l3_flags);
-
-    if l3_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-        // This case is rare for L3 but handled for completeness
-        l3_entry.set_flags(flags | PageTableFlags::HUGE_PAGE);
-    } else {
-        let l2_frame = l3_entry.frame().expect("L2 not present");
-        let l2_ptr = (mapper.phys_offset() + l2_frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable;
-        
-        let l2_entry_ptr = (l2_ptr as *mut x86_64::structures::paging::page_table::PageTableEntry).add(p2_idx.into());
-        let l2_entry = unsafe { &mut *l2_entry_ptr };
-        
-        if l2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-            // 3. Update L2 entry (Huge Page)
-            l2_entry.set_flags(flags | PageTableFlags::HUGE_PAGE);
-        } else {
-            // 3. Update L2 entry (Pointer to L1)
-            let mut l2_flags = l2_entry.flags();
-            l2_flags.remove(PageTableFlags::NO_EXECUTE);
-            l2_entry.set_flags(l2_flags);
-            
-            // 4. Update L1 entry
-            let l1_frame = l2_entry.frame().expect("L1 not present");
-            let l1_ptr = (mapper.phys_offset() + l1_frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable;
-            let l1_entry_ptr = (l1_ptr as *mut x86_64::structures::paging::page_table::PageTableEntry).add(p1_idx.into());
-            unsafe { (*l1_entry_ptr).set_flags(flags) };
+    let indices = [addr.p4_index(), addr.p3_index(), addr.p2_index()];
+    for &idx in indices.iter() {
+        let entry = &mut (*table_ptr)[idx.into() as usize];
+        if entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            entry.set_flags(flags | PageTableFlags::HUGE_PAGE);
+            return;
         }
+        let frame = entry.frame().expect("Page table level not present");
+        table_ptr = (phys_offset + frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable;
     }
-}}
+    
+    let l1 = &mut (*table_ptr)[addr.p1_index().into() as usize];
+    l1.set_flags(flags);
+}
 
 /// Calculates the difference between two physical memory offsets.
 pub fn calculate_phys_offset_diff(current: VirtAddr, new: VirtAddr) -> u64 {
@@ -653,4 +614,3 @@ pub fn adjust_return_address_and_stack(current_phys_offset: VirtAddr, new_phys_o
     }
     debug_log_no_alloc!("Stack pointer adjusted successfully");
 }
-
