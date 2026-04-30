@@ -2,34 +2,6 @@ use x86_64::{VirtAddr};
 use x86_64::structures::paging::{PhysFrame, Mapper, OffsetPageTable, PageTableFlags, PageTable};
 use crate::page_table::constants::BootInfoFrameAllocator;
 
-#[unsafe(no_mangle)]
-pub unsafe extern "sysv64" fn landing_zone(
-    _load_gdt: Option<fn()>,
-    _load_idt: Option<fn()>,
-    _phys_offset: VirtAddr,
-    _level_4_table_frame: PhysFrame,
-    _frame_allocator: *mut BootInfoFrameAllocator,
-    _logic_fn_high: usize,
-    _kernel_entry: usize,
-) {
-    // 1. Immediate生存確認
-    crate::write_serial_bytes!(0x3F8, 0x3FD, b"LMNXW");
-
-    // 2. Transition to logic
-    landing_zone_logic(
-        _load_gdt.map_or(core::ptr::null(), |f| f as *const ()),
-        _load_idt.map_or(core::ptr::null(), |f| f as *const ()),
-        _phys_offset.as_u64(),
-        _level_4_table_frame.start_address().as_u64(),
-        _frame_allocator,
-        _kernel_entry,
-        KERNEL_ARGS,
-    );
-
-    loop {
-        core::hint::spin_loop();
-    }
-}
 
 #[repr(C)]
 pub struct KernelArgs {
@@ -98,15 +70,41 @@ pub static mut TRANSITION_GDT: TransitionGdt = TransitionGdt {
 };
 
 #[unsafe(no_mangle)]
+#[unsafe(naked)]
+pub unsafe extern "sysv64" fn landing_zone(
+    _load_gdt: Option<fn()>,
+    _load_idt: Option<fn()>,
+    _phys_offset: VirtAddr,
+    _level_4_table_frame: PhysFrame,
+    _frame_allocator: *mut BootInfoFrameAllocator,
+    _logic_fn_high: usize,
+    _kernel_entry: usize,
+) {
+    core::arch::naked_asm!(
+        "mov rax, 0x4c4d4e58", // 'LMNX'
+        "mov dx, 0x3f8",
+        "out dx, al",
+
+        // Temporarily skip CS switch to verify if we can even reach here.
+        // If this works, we know the jmp and mapping are correct.
+        
+        // System V ABI: rdi, rsi, rdx, rcx, r8, r9, then stack
+        "mov r11, r9",      // Save _logic_fn_high in r11
+        "mov r9, [rsp]",    // Move _kernel_entry from stack to r9
+        "jmp r11",          // Jump to _logic_fn_high
+    );
+}
+
+#[unsafe(no_mangle)]
 #[inline(never)]
 pub unsafe extern "sysv64" fn landing_zone_logic(
-    load_gdt: *const (),
-    load_idt: *const (),
+    _load_gdt: *const (),
+    _load_idt: *const (),
     phys_offset_raw: u64,
     l4_frame_raw: u64,
     frame_allocator: *mut BootInfoFrameAllocator,
     _kernel_entry: usize,
-    kernel_args: *const KernelArgs,
+    _kernel_args: *const KernelArgs,
 ) {
     unsafe {
         let actual_kernel_args = KERNEL_ARGS;
@@ -167,10 +165,13 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
         
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Landing zone jumping to kernel entry!\n");
         
-        if actual_kernel_entry != 0 {
-            // DEBUG: Print values before calculation
-            // Since we can't easily print u64 with write_serial_bytes, we'll use a dummy loop or just a marker
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: kernel_entry check\n");
+        if actual_kernel_entry == 0 {
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"ERROR: actual_kernel_entry is 0! Hanging...\n");
+            loop { core::hint::spin_loop(); }
+        }
+
+        // DEBUG: Print values before calculation
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: kernel_entry check\n");
             
             let args = &*actual_kernel_args;
             let entry_page_virt = (actual_kernel_entry as u64) & !0xFFF;
@@ -207,7 +208,6 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
                 entry = in(reg) actual_kernel_entry,
                 options(noreturn)
             );
-        }
     }
 }
 
@@ -280,6 +280,11 @@ impl TransitionContext {
             .wrapping_sub(current_offset) & 0x0000_FFFF_FFFF_FFFF;
         let landing_zone_high = landing_zone_phys.wrapping_add(target_offset);
 
+        // DEBUG: Print calculated addresses to verify canonicality and correctness
+        // Since we are in prepare(), we can use debug_log_no_alloc
+        crate::debug_log_no_alloc!("Calculated landing_zone_high: 0x{:x}", landing_zone_high);
+        crate::debug_log_no_alloc!("Calculated logic_fn_high: 0x{:x}", logic_fn_high);
+
         // Verify canonicality to catch calculation errors early
         let _ = VirtAddr::new(logic_fn_high);
         let _ = VirtAddr::new(landing_zone_high);
@@ -316,28 +321,20 @@ pub fn perform_world_switch(ctx: TransitionContext) -> ! {
         core::arch::asm!("lgdt [{}]", in(reg) ctx.gdt_ptr);
 
         core::arch::asm!(
-            "add rsp, {offset_diff}",
-            "and rsp, -16",
             "mov rdi, {load_gdt}",
             "mov rsi, {load_idt}",
             "mov rdx, {phys_offset}",
             "mov rcx, {l4_frame}",
             "mov r8, {allocator}",
-            "mov r9, {logic_fn_high}",
-            "push {kernel_entry}",
-            "push {cs_selector}",
-            "push {landing_zone_high}",
-            "retfq",
+            "mov r9, {kernel_entry}",
+            "jmp {landing_zone_low}",
             load_gdt = in(reg) ctx.load_gdt,
             load_idt = in(reg) ctx.load_idt,
             phys_offset = in(reg) ctx.phys_offset,
             l4_frame = in(reg) ctx.l4_frame,
             allocator = in(reg) ctx.allocator,
-            logic_fn_high = in(reg) ctx.logic_fn_high,
             kernel_entry = in(reg) ctx.kernel_entry,
-            cs_selector = in(reg) ctx.cs_selector,
-            landing_zone_high = in(reg) ctx.landing_zone_high,
-            offset_diff = in(reg) ctx.offset_diff,
+            landing_zone_low = in(reg) (ctx.landing_zone_high.wrapping_sub(ctx.phys_offset as usize)),
             options(noreturn)
         );
         core::hint::unreachable_unchecked()
