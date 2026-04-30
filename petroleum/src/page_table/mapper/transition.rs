@@ -142,7 +142,6 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
 
         // Manual mapping helper to avoid OffsetPageTable overflow panics
         let mut map_page_raw = |v_addr_raw: u64, p_addr_raw: u64, flags: PageTableFlags| {
-            let v_addr = if (v_addr_raw & (1 << 47)) != 0 { v_addr_raw | 0xFFFF_0000_0000_0000 } else { v_addr_raw & 0x0000_FFFF_FFFF_FFFF };
             let p_addr = p_addr_raw & 0x000F_FFFF_FFFF_FFFF;
             
             // Use a temporary mapper with 0 offset to avoid overflow in internal calculations
@@ -151,7 +150,7 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
                 VirtAddr::new(0),
             );
             let _ = temp_mapper.map_to(
-                x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(v_addr)),
+                x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(v_addr_raw)),
                 x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(p_addr)),
                 flags,
                 &mut *local_frame_allocator,
@@ -164,6 +163,10 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Landing zone jumping to kernel entry!\n");
         
         if actual_kernel_entry != 0 {
+            // DEBUG: Print values before calculation
+            // Since we can't easily print u64 with write_serial_bytes, we'll use a dummy loop or just a marker
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: kernel_entry check\n");
+            
             let args = &*actual_kernel_args;
             let entry_page_virt = (actual_kernel_entry as u64) & !0xFFF;
             let entry_page_phys = entry_page_virt.wrapping_sub(local_phys_offset.as_u64());
@@ -236,10 +239,16 @@ impl TransitionContext {
         let target_offset = phys_offset.as_u64();
         let offset_diff = target_offset.wrapping_sub(current_offset);
 
+        let lz_addr = landing_zone as *const () as u64;
+        let lzl_addr = landing_zone_logic as *const () as u64;
+
+        crate::debug_log_no_alloc!("TransitionContext::prepare - current_offset: 0x{:x}, target_offset: 0x{:x}, offset_diff: 0x{:x}", current_offset, target_offset, offset_diff);
+        crate::debug_log_no_alloc!("TransitionContext::prepare - landing_zone: 0x{:x}, landing_zone_logic: 0x{:x}", lz_addr, lzl_addr);
+
         unsafe {
             let gdt_ptr_static = core::ptr::addr_of_mut!(TRANSITION_GDT);
             let entries_virt_addr = core::ptr::addr_of!((*gdt_ptr_static).entries) as *const _ as u64;
-            let gdt_phys_base = entries_virt_addr.wrapping_sub(current_offset);
+            let gdt_phys_base = entries_virt_addr.wrapping_sub(current_offset) & 0x0000_FFFF_FFFF_FFFF;
             let gdt_high_base = gdt_phys_base.wrapping_add(target_offset);
             (*gdt_ptr_static).descriptor.base = gdt_high_base;
         }
@@ -247,15 +256,28 @@ impl TransitionContext {
         let final_gdt_ptr_virt = gdt_ptr.unwrap_or(unsafe {
             core::ptr::addr_of!((*core::ptr::addr_of!(TRANSITION_GDT)).descriptor) as *const _ as *const u8
         });
-        let final_gdt_ptr_high = (final_gdt_ptr_virt as u64)
-            .wrapping_sub(current_offset)
+        let final_gdt_ptr_high = ((final_gdt_ptr_virt as u64)
+            .wrapping_sub(current_offset) & 0x0000_FFFF_FFFF_FFFF)
             .wrapping_add(target_offset) as *const u8;
 
         let l_idt = load_idt.map_or(core::ptr::null(), |f| f as *const ());
 
         let final_kernel_entry = kernel_entry.map_or(0, |entry| {
-            (entry as u64).wrapping_add(target_offset) as usize
+            let phys = (entry as u64).wrapping_sub(current_offset) & 0x0000_FFFF_FFFF_FFFF;
+            phys.wrapping_add(target_offset) as usize
         });
+
+        let logic_fn_phys = (landing_zone_logic as *const () as u64)
+            .wrapping_sub(current_offset) & 0x0000_FFFF_FFFF_FFFF;
+        let logic_fn_high = logic_fn_phys.wrapping_add(target_offset);
+
+        let landing_zone_phys = (landing_zone as *const () as u64)
+            .wrapping_sub(current_offset) & 0x0000_FFFF_FFFF_FFFF;
+        let landing_zone_high = landing_zone_phys.wrapping_add(target_offset);
+
+        // Verify canonicality to catch calculation errors early
+        let _ = VirtAddr::new(logic_fn_high);
+        let _ = VirtAddr::new(landing_zone_high);
 
         Self {
             cr3: level_4_table_frame.start_address().as_u64(),
@@ -264,15 +286,11 @@ impl TransitionContext {
             phys_offset: target_offset,
             l4_frame: level_4_table_frame.start_address().as_u64(),
             allocator: frame_allocator as *const _,
-            logic_fn_high: ((landing_zone_logic as *const () as usize) as u64)
-                .wrapping_sub(current_offset)
-                .wrapping_add(target_offset) as usize,
+            logic_fn_high: logic_fn_high as usize,
             kernel_entry: final_kernel_entry,
             kernel_args_virt: kernel_args_phys.map_or(0, |phys| phys + target_offset),
             cs_selector: 0x08,
-            landing_zone_high: ((landing_zone as *const () as usize) as u64)
-                .wrapping_sub(current_offset)
-                .wrapping_add(target_offset) as usize,
+            landing_zone_high: landing_zone_high as usize,
             offset_diff,
             gdt_ptr: final_gdt_ptr_high,
         }
