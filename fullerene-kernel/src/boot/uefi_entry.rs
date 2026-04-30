@@ -29,6 +29,16 @@ use x86_64::{
 #[cfg(target_os = "uefi")]
 const VIRTUAL_HEAP_START_OFFSET: u64 = crate::memory_management::VIRTUAL_HEAP_START_OFFSET;
 
+/// Arguments passed from the bootloader
+#[cfg(target_os = "uefi")]
+#[repr(C)]
+struct BootArgs {
+    image_handle: usize,
+    system_table: *mut EfiSystemTable,
+    memory_map: *mut c_void,
+    memory_map_size: usize,
+}
+
 /// Helper struct for UEFI initialization context
 #[cfg(target_os = "uefi")]
 struct UefiInitContext {
@@ -52,36 +62,46 @@ struct UefiInitContext {
 impl UefiInitContext {
     /// Early initialization: serial, VGA, memory maps
     fn early_initialization(&mut self) -> PhysAddr {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: early_initialization start\n");
         petroleum::serial::serial_init();
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: early_initialization start, serial_init done\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: serial_init done\n");
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main entered\n");
         
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Printing efi_main address\n");
         let mut buf = [0u8; 16];
-        let len = petroleum::format_hex_to_buffer(efi_main as u64, &mut buf, 16);
+        let len = petroleum::serial::format_hex_to_buffer(efi_main as u64, &mut buf, 16);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main located at 0x");
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: efi_main address printed\n");
 
         // UEFI uses framebuffer graphics, not legacy VGA hardware programming
         // Graphics initialization happens later with initialize_graphics_with_config()
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Writing to VGA buffer\n");
         unsafe {
             let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
             write_vga_string(vga_buffer, 0, b"Kernel boot (UEFI)", 0x1F00);
             write_vga_string(vga_buffer, 1, b"Early init start", 0x1F00);
         }
-        petroleum::serial::serial_init();
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: VGA buffer written\n");
+        
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Writing second VGA string\n");
         unsafe {
             let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
             write_vga_string(vga_buffer, 2, b"Serial init done", 0x1F00);
         }
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Second VGA string written\n");
         write_serial_bytes!(0x3F8, 0x3FD, b"Early setup completed\n");
 
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling setup_kernel_location\n");
         let kernel_virt_addr = efi_main as u64;
-        crate::memory::setup_kernel_location(
+        let res = crate::memory::setup_kernel_location(
             self.memory_map,
             self.memory_map_size,
             kernel_virt_addr,
-        )
+        );
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: setup_kernel_location returned\n");
+        res
     }
 
     fn load_gdt_and_idt() {
@@ -553,22 +573,18 @@ fn kernel_main_higher_half(ctx: &mut UefiInitContext, physical_memory_offset: Vi
 
 #[cfg(target_os = "uefi")]
 #[unsafe(no_mangle)]
-#[unsafe(naked)]
-pub unsafe extern "C" fn efi_main_real(
+pub unsafe extern "C" fn efi_main_logic(
     _image_handle: usize,
     system_table: *mut EfiSystemTable,
     memory_map: *mut c_void,
     memory_map_size: usize,
-) -> ! {
-    core::arch::naked_asm!(
-        "mov dx, 0x3f8", "mov al, 0x42", "out dx, al", // 'B' for Logic
-        "jmp efi_main_real_logic",
-    );
+) {
+    core::arch::asm!("jmp efi_main_real_logic");
 }
 
 #[cfg(target_os = "uefi")]
 #[unsafe(no_mangle)]
-fn efi_main_real_logic(
+pub unsafe extern "efiapi" fn efi_main_real_logic(
     _image_handle: usize,
     system_table: *mut EfiSystemTable,
     memory_map: *mut c_void,
@@ -577,7 +593,7 @@ fn efi_main_real_logic(
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: efi_main_real reached!\n");
     
     let mut buf = [0u8; 16];
-    let len = petroleum::format_hex_to_buffer(system_table as u64, &mut buf, 16);
+    let len = petroleum::serial::format_hex_to_buffer(system_table as u64, &mut buf, 16);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: system_table ptr: 0x");
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
@@ -596,14 +612,20 @@ fn efi_main_real_logic(
         heap_start_after_stack: VirtAddr::zero(),
     };
 
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling early_initialization\n");
     let kernel_phys_start = ctx.early_initialization();
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: early_initialization returned\n");
 
     // Load GDT early to ensure CS register is consistent before page table switch
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Loading GDT early\n");
     crate::gdt::init_early();
     crate::gdt::load();
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: GDT loaded\n");
 
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling memory_management_initialization\n");
     let (physical_memory_offset, heap_start, virtual_heap_start) =
         ctx.memory_management_initialization(kernel_phys_start);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: memory_management_initialization returned\n");
 
     let kernel_stack_top = ctx.prepare_kernel_stack(virtual_heap_start, physical_memory_offset);
     write_serial_bytes!(0x3F8, 0x3FD, b"GDT and stack prepared\n");
@@ -643,25 +665,10 @@ pub unsafe extern "C" fn efi_main(
 ) {
     core::arch::naked_asm!(
         "cli", // Ensure interrupts are disabled
-        "mov dx, 0x3f8", "mov al, 0x41", "out dx, al", // 'A' for Arrival
         "jmp efi_main_logic",
     );
 }
 
-#[cfg(target_os = "uefi")]
-#[unsafe(no_mangle)]
-#[unsafe(naked)]
-pub unsafe extern "C" fn efi_main_logic(
-    _image_handle: usize,
-    system_table: *mut EfiSystemTable,
-    memory_map: *mut c_void,
-    memory_map_size: usize,
-) {
-    core::arch::naked_asm!(
-        "mov dx, 0x3f8", "mov al, 0x42", "out dx, al", // 'B' for Logic
-        "jmp efi_main_real",
-    );
-}
 
 
 // Moved graphics initialization functions to petroleum::uefi_helpers
