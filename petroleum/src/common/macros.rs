@@ -189,6 +189,7 @@ macro_rules! map_pages {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// debug_log_no_alloc!("Starting initialization");
 /// debug_log_no_alloc!(42);  // Just print a value
 /// debug_log_no_alloc!("Log with values: ", 42, 0x1234);
@@ -249,6 +250,7 @@ macro_rules! lock_and_read {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// let mut component = SomeComponent::new();
 /// init_component!(component, "ComponentName");
 /// ```
@@ -272,6 +274,7 @@ macro_rules! init_component {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// ensure_with_msg!(ptr.is_some(), SystemError::InvalidArgument, "Pointer must not be null");
 /// ```
 #[macro_export]
@@ -288,6 +291,7 @@ macro_rules! ensure_with_msg {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// let value = option_to_result!(some_option, SystemError::NotFound);
 /// ```
 #[macro_export]
@@ -307,6 +311,7 @@ macro_rules! option_to_result {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// let result = try_or_log!(some_fallible_operation(), "Operation failed");
 /// ```
 #[macro_export]
@@ -326,6 +331,7 @@ macro_rules! try_or_log {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// const COMPONENT_NAME: &str = static_str!("MemoryManager");
 /// ```
 #[macro_export]
@@ -340,6 +346,7 @@ macro_rules! static_str {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// scheduler_log!("Starting process scheduling");
 /// scheduler_log!("Found process at index {}", index);
 /// ```
@@ -358,6 +365,7 @@ macro_rules! scheduler_log {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// init_boot_step!("Initializing heap", || init_heap(service));
 /// init_boot_step!("Loading kernel", || load_kernel());
 /// ```
@@ -393,6 +401,7 @@ macro_rules! read_unaligned {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// mem_debug!("Memory descriptor: ");
 /// mem_debug!(descriptor.physical_start);
 /// mem_debug!("type=", descriptor.type_, ", pages=", descriptor.number_of_pages);
@@ -420,6 +429,7 @@ macro_rules! mem_debug {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// debug_print!("Total map size: ");
 /// debug_print!(total_map_size);
 /// debug_print!(", config size: ");
@@ -441,6 +451,7 @@ macro_rules! debug_print {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// static LAST_CHECK: spin::Mutex<u64> = spin::Mutex::new(0);
 /// check_periodic!(LAST_CHECK, 1000, current_tick, {
 ///     perform_hourly_task();
@@ -462,6 +473,7 @@ macro_rules! check_periodic {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// periodic_task!(current_tick, 3000, {
 ///     log_system_stats();
 /// });
@@ -631,6 +643,7 @@ macro_rules! test_framebuffer_mode {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// define_commands!(CommandEntry,
 ///     ("help", "Show help", help_fn),
 ///     ("exit", "Exit", exit_fn)
@@ -1217,6 +1230,8 @@ macro_rules! create_framebuffer_config {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
+/// use petroleum::*;
 /// let vendor_id = pci_config_read!(bus, device, function, 0x00, 16);
 /// let class_code = pci_config_read!(bus, device, function, 0x0B, 8);
 /// ```
@@ -1238,6 +1253,8 @@ macro_rules! pci_config_read {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
+/// use petroleum::*;
 /// display_vga_stats_lines!(vga_writer,
 ///     23, "Processes: {}/{}", active, total;
 ///     24, "Memory: {} KB", mem_kb;
@@ -1261,6 +1278,8 @@ macro_rules! display_vga_stats_lines {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
+/// use petroleum::*;
 /// init_serial_port!(self,
 ///     0x80, 0x03, 0x00, 0x03, 0xC7, 0x0B  // Standard 38400bps, 8N1 config
 /// );
@@ -1286,6 +1305,8 @@ macro_rules! init_serial_port {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
+/// use petroleum::*;
 /// init_with_log!("Scheduler", || scheduler.init());
 /// init_with_log!("Memory Manager", || mem_manager.init());
 /// ```
@@ -1308,6 +1329,8 @@ macro_rules! init_with_log {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
+/// use petroleum::*;
 /// ensure!(ptr.is_some(), SystemError::InvalidArgument, "Pointer is null");
 /// ensure_with_log!(value > 0, "Value must be positive", SystemError::InvalidArgument);
 /// ```
@@ -1331,6 +1354,8 @@ macro_rules! ensure {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
+/// use petroleum::*;
 /// display_stats_on_available_display!(stats, current_tick, interval_ticks, vga_buffer);
 /// ```
 #[macro_export]
@@ -1380,6 +1405,8 @@ macro_rules! display_stats_on_available_display {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
+/// use petroleum::*;
 /// vga_write_lines!(writer,
 ///     "Hello QEMU by FullereneOS!\n";
 ///     "This is output directly to VGA.\n"
@@ -1399,6 +1426,8 @@ macro_rules! vga_write_lines {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
+/// use petroleum::*;
 /// bootloader_log!("Heap initialized successfully.");
 /// bootloader_log!("Graphics config: {}x{}", width, height);
 /// ```
@@ -1419,6 +1448,8 @@ macro_rules! bootloader_log {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
+/// use petroleum::*;
 /// shell_response!("Available commands:\n");
 /// shell_response!("  {:10} - {}\n", cmd.name, cmd.description);
 /// ```
@@ -1434,6 +1465,8 @@ macro_rules! shell_response {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
+/// use petroleum::*;
 /// find_process_by_id!(process_list, pid, |proc| {
 ///     proc.state = ProcessState::Ready;
 /// });
@@ -1452,6 +1485,7 @@ macro_rules! find_process_by_id {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// with_process_list!(PROCESS_LIST, |list| {
 ///     find_process_by_id!(list, pid, {
 ///         process.state = ProcessState::Ready;
@@ -1471,6 +1505,7 @@ macro_rules! with_process_list {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// init_system_component!("Graphics", init_graphics());
 /// init_system_component!("Scheduler", init_scheduler());
 /// ```
@@ -1493,6 +1528,7 @@ macro_rules! init_system_component {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// define_periodic_task!(health_check, 1000, |tick, iter| {
 ///     perform_health_check(tick);
 /// });
@@ -1594,6 +1630,7 @@ macro_rules! print {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// impl_text_buffer_operations!(VgaBuffer,
 ///     buffer, row_position, column_position, color_code,
 ///     BUFFER_HEIGHT, BUFFER_WIDTH
@@ -1714,6 +1751,7 @@ macro_rules! impl_text_buffer_operations {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// impl_getter_setter!(ColorCode, foreground, u4);
 /// impl_getter_setter!(ColorCode, background, u4);
 /// ```
@@ -1737,6 +1775,7 @@ macro_rules! impl_getter_setter {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// define_periodic_tasks!(PeriodicTask,
 ///     (1000, health_check_task, "health check"),
 ///     (5000, stats_task, "stats logging")
@@ -1772,6 +1811,7 @@ macro_rules! count {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// define_vbox_settings!(vm_name,
 ///     (&["--memory", "4096"], "Failed to set VM memory."),
 ///     (&["--vram", "128"], "Failed to set VM video memory.")
@@ -1799,6 +1839,7 @@ macro_rules! define_vbox_settings {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// build_package!("fullerene-kernel", "x86_64-unknown-uefi", ["--features", "debug"]);
 /// ```
 #[macro_export]
@@ -1826,6 +1867,7 @@ macro_rules! build_package {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// create_iso_files!(
 ///     (kernel_path, "EFI\\BOOT\\KERNEL.EFI"),
 ///     (bellows_path, "EFI\\BOOT\\BOOTX64.EFI")
@@ -1850,6 +1892,7 @@ macro_rules! create_iso_files {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// bootloader_expect!(load_kernel(), "Failed to load kernel");
 /// ```
 #[macro_export]
@@ -1870,6 +1913,7 @@ macro_rules! bootloader_expect {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// define_shell_commands!(CommandEntry,
 ///     ("help", "Show help", help_fn),
 ///     ("exit", "Exit", exit_fn)
@@ -1895,6 +1939,7 @@ macro_rules! define_shell_commands {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// impl_vga_buffer!(VgaBuffer, BUFFER_HEIGHT, BUFFER_WIDTH);
 /// ```
 #[macro_export]
@@ -1955,6 +2000,7 @@ macro_rules! impl_vga_buffer {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// impl_mock_vga_buffer!(MockVgaBuffer, BUFFER_HEIGHT, BUFFER_WIDTH);
 /// ```
 #[macro_export]
@@ -2066,6 +2112,7 @@ macro_rules! impl_mock_vga_buffer {
 ///
 /// # Examples
 /// ```
+/// use petroleum::*;
 /// create_vga_singleton!(VGA_BUFFER, VgaBuffer);
 /// ```
 #[macro_export]
