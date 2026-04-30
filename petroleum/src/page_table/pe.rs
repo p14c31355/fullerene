@@ -185,7 +185,7 @@ pub fn load_efi_image(
     file: &[u8],
     phys_offset: usize,
 ) -> Result<
-    (PhysAddr, extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !),
+    (PhysAddr, u64, extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !),
     BellowsError,
 > {
     let bs = unsafe { &*st.boot_services };
@@ -297,7 +297,7 @@ pub fn load_efi_image(
     
     let entry_point_virt = phys_offset + entry_point_phys;
     let entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> ! = unsafe { core::mem::transmute(entry_point_virt) };
-    Ok((PhysAddr::new(phys_addr as u64), entry))
+    Ok((PhysAddr::new(phys_addr as u64), entry_point_phys as u64, entry))
 }
 
 #[repr(C)]

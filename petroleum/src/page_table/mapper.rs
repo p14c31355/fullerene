@@ -268,38 +268,11 @@ pub unsafe extern "sysv64" fn landing_zone(
             "mov dx, 0x3f8", "mov al, 0x4e", "out dx, al", // 'N'
             "mov dx, 0x3f8", "mov al, 0x58", "out dx, al", // 'X'
 
-            // 2. IDT Load
-            // System V ABI: load_idt is in RSI
-            "mov dx, 0x3f8", "mov al, 0x59", "out dx, al", // 'Y'
-            "test rsi, rsi", 
-            "jz 1f",
-            "mov dx, 0x3f8", "mov al, 0x49", "out dx, al", // 'I'
-            "sub rsp, 8",
-            "call rsi",
-            "add rsp, 8",
-            "mov dx, 0x3f8", "mov al, 0x4a", "out dx, al", // 'J'
-            "1:",
-
-            // 3. GDT Load
-            // System V ABI: load_gdt is in RDI
-            "mov dx, 0x3f8", "mov al, 0x5a", "out dx, al", // 'Z'
-            "test rdi, rdi",
-            "jz 2f",
-            "mov dx, 0x3f8", "mov al, 0x4b", "out dx, al", // 'K'
-            "sub rsp, 8",
-            "call rdi",
-            "add rsp, 8",
-            "mov dx, 0x3f8", "mov al, 0x4f", "out dx, al", // 'O'
-            "2:",
-
-            // 4. Transition back to Rust logic
+            // 2. Transition back to Rust logic immediately to preserve registers
             "mov dx, 0x3f8", "mov al, 0x57", "out dx, al", // 'W'
-            // Save RSP before alignment to restore it before returning
             "mov r10, rsp",
-            // Ensure RSP is 16-byte aligned for the Rust function prologue
             "and rsp, -16",
             "call r12",
-            // Logic function is noreturn, but just in case it returns, we hlt instead of ret
             "hlt",
         );
     }
@@ -312,6 +285,7 @@ pub struct KernelArgs {
     pub map_ptr: usize,
     pub map_size: usize,
     pub kernel_phys_start: u64,
+    pub kernel_entry: usize,
 }
 
 /// Global pointer to kernel arguments, set during the high-half transition.
@@ -319,19 +293,39 @@ pub struct KernelArgs {
 pub static mut KERNEL_ARGS: *const KernelArgs = core::ptr::null();
 
 #[unsafe(no_mangle)]
+pub static mut TRANSITION_KERNEL_ENTRY: usize = 0;
+
+#[unsafe(no_mangle)]
 #[inline(never)]
 unsafe extern "sysv64" fn landing_zone_logic(
-    _load_gdt: *const (),
-    _load_idt: *const (),
+    load_gdt: *const (),
+    load_idt: *const (),
     phys_offset_raw: u64,
     l4_frame_raw: u64,
     frame_allocator: *mut BootInfoFrameAllocator,
-    kernel_entry: usize,
+    _kernel_entry: usize,
     kernel_args: *const KernelArgs,
 ) {
     unsafe {
-        KERNEL_ARGS = kernel_args;
+        // Use globals set in perform_world_switch to avoid ABI/stack issues
+        let actual_kernel_args = KERNEL_ARGS;
+        let actual_kernel_entry = TRANSITION_KERNEL_ENTRY;
+        
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: Start\n");
+
+        // Load IDT
+        if !load_idt.is_null() {
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Loading IDT in logic...\n");
+            let idt_fn: fn() = core::mem::transmute(load_idt);
+            idt_fn();
+        }
+
+        // Load GDT
+        if !load_gdt.is_null() {
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Loading GDT in logic...\n");
+            let gdt_fn: fn() = core::mem::transmute(load_gdt);
+            gdt_fn();
+        }
         let l4_phys = l4_frame_raw;
         let local_phys_offset = VirtAddr::new(phys_offset_raw);
         let local_frame_allocator = frame_allocator;
@@ -361,8 +355,27 @@ unsafe extern "sysv64" fn landing_zone_logic(
         
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Landing zone jumping to kernel entry!\n");
         
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: kernel_args ptr: ");
+        let ptr_val = actual_kernel_args as u64;
+        for i in (0..16).rev() {
+            let nibble = (ptr_val >> (i * 4)) & 0xf;
+            let char = if nibble < 10 { b'0' + nibble as u8 } else { b'a' + (nibble as u8 - 10) };
+            crate::write_serial_bytes!(0x3F8, 0x3FD, &[char]);
+        }
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
+        let kernel_entry = actual_kernel_entry;
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: kernel_entry value: ");
+        let mut val = kernel_entry as u64;
+        for i in (0..16).rev() {
+            let nibble = (val >> (i * 4)) & 0xf;
+            let char = if nibble < 10 { b'0' + nibble as u8 } else { b'a' + (nibble as u8 - 10) };
+            crate::write_serial_bytes!(0x3F8, 0x3FD, &[char]);
+        }
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        
         if kernel_entry != 0 {
-            let args = &*kernel_args;
+            let args = &*actual_kernel_args;
             core::arch::asm!(
                 "mov rcx, {handle}",
                 "mov rdx, {st}",
@@ -976,6 +989,20 @@ impl TransitionContext {
             crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: load_idt is NOT NULL\n");
         }
 
+        let final_kernel_entry = kernel_entry.map_or(0, |entry| {
+            (entry as u64).wrapping_add(target_offset) as usize
+        });
+
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: TransitionContext prepare - kernel_entry_phys: ");
+        // Simple hex print for debug
+        let mut val = final_kernel_entry as u64;
+        for i in (0..16).rev() {
+            let nibble = (val >> (i * 4)) & 0xf;
+            let char = if nibble < 10 { b'0' + nibble as u8 } else { b'a' + (nibble as u8 - 10) };
+            crate::write_serial_bytes!(0x3F8, 0x3FD, &[char]);
+        }
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
         Self {
             cr3: level_4_table_frame.start_address().as_u64(),
             load_gdt: load_gdt.map_or(core::ptr::null(), |f| f as *const ()),
@@ -986,7 +1013,7 @@ impl TransitionContext {
             logic_fn_high: ((landing_zone_logic as *const () as usize) as u64)
                 .wrapping_sub(current_offset)
                 .wrapping_add(target_offset) as usize,
-            kernel_entry: kernel_entry.unwrap_or(0),
+            kernel_entry: final_kernel_entry,
             kernel_args_virt: kernel_args_phys.map_or(0, |phys| phys + target_offset),
             cs_selector: 0x08,
             landing_zone_high: ((landing_zone as *const () as usize) as u64)
@@ -1001,6 +1028,10 @@ impl TransitionContext {
 #[inline(never)]
 pub fn perform_world_switch(ctx: TransitionContext) -> ! {
     unsafe {
+        // Set globals before switching to avoid ABI issues
+        TRANSITION_KERNEL_ENTRY = ctx.kernel_entry;
+        KERNEL_ARGS = ctx.kernel_args_virt as *const KernelArgs;
+
         core::arch::asm!(
             // 1. Switch CR3
             "mov cr3, {cr3}",
@@ -1012,8 +1043,7 @@ pub fn perform_world_switch(ctx: TransitionContext) -> ! {
             "add rsp, {offset_diff}",
 
             // 4. Set up arguments for landing_zone_logic (System V ABI)
-            // landing_zone_logic signature:
-            // (load_gdt, load_idt, phys_offset, l4_frame, allocator, kernel_entry, kernel_args)
+            // We still pass them for compatibility, but logic will use globals
             "mov rdi, {load_gdt}",
             "mov rsi, {load_idt}",
             "mov rdx, {phys_offset}",
@@ -1021,16 +1051,12 @@ pub fn perform_world_switch(ctx: TransitionContext) -> ! {
             "mov r8, {allocator}",
             "mov r9, {kernel_entry}",
 
-            // Push 7th argument: kernel_args_virt
-            "push {kernel_args_virt}",
-
-            // Align stack to 16 bytes
             "and rsp, -16",
+            "sub rsp, 8",
+            "mov [rsp], {kernel_args_virt}",
 
-            // Set up the high-half address of the logic function in r12
             "mov r12, {logic_fn_high}",
 
-            // Absolute jump to high-half landing zone
             "push {cs_selector}",
             "push {landing_zone_high}",
             "retfq",
