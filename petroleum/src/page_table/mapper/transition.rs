@@ -110,58 +110,29 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
     kernel_args: *const KernelArgs,
 ) {
     unsafe {
-        // Use globals set in perform_world_switch to avoid ABI/stack issues
         let actual_kernel_args = KERNEL_ARGS;
         let actual_kernel_entry = TRANSITION_KERNEL_ENTRY;
         
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: Start\n");
 
-        // Load IDT
         if !load_idt.is_null() {
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Loading IDT in logic...\n");
             let idt_fn: fn() = core::mem::transmute(load_idt);
             idt_fn();
         }
 
-        // Load GDT
         if !load_gdt.is_null() {
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Loading GDT in logic...\n");
             let gdt_fn: fn() = core::mem::transmute(load_gdt);
             gdt_fn();
         }
+
         let l4_phys = l4_frame_raw;
         let local_phys_offset = VirtAddr::new(phys_offset_raw);
         let local_frame_allocator = frame_allocator;
 
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"High-half transition: landing zone logic reached!\n");
-        
         crate::flush_tlb_and_verify!();
-        
-        crate::debug_log_no_alloc!("TLB flushed in landing zone");
 
         let l4_virt = local_phys_offset + l4_phys;
-
-        // DEBUG: Forced write to L4 table to verify access
-        unsafe {
-            let l4_ptr = l4_virt.as_mut_ptr() as *mut u64;
-            *l4_ptr = 0xDEADBEEF_00000003; // Present | Writable
-        }
-
-        // DEBUG: Print L4 table content to verify it's not empty/garbage
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: L4 Table Content: ");
-        let l4_ptr = l4_virt.as_ptr() as *const u64;
-        for i in 0..4 {
-            let entry = unsafe { *l4_ptr.add(i) };
-            let mut val = entry;
-            for j in (0..16).rev() {
-                let nibble = (val >> (j * 4)) & 0xf;
-                let char = if nibble < 10 { b'0' + nibble as u8 } else { b'a' + (nibble as u8 - 10) };
-                crate::write_serial_bytes!(0x3F8, 0x3FD, &[char]);
-            }
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b" ");
-        }
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-        
         let mut mapper = x86_64::structures::paging::OffsetPageTable::new(
             &mut *(l4_virt.as_mut_ptr() as *mut x86_64::structures::paging::PageTable),
             local_phys_offset,
@@ -174,92 +145,49 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
             &mut *local_frame_allocator,
         );
         
-        crate::debug_log_no_alloc!("L4 table mapped to high-half in landing zone");
-        crate::debug_log_no_alloc!("Landing zone completed. Jumping directly to kernel entry...");
-        
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Landing zone jumping to kernel entry!\n");
         
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: kernel_args ptr: ");
-        let ptr_val = actual_kernel_args as u64;
-        for i in (0..16).rev() {
-            let nibble = (ptr_val >> (i * 4)) & 0xf;
-            let char = if nibble < 10 { b'0' + nibble as u8 } else { b'a' + (nibble as u8 - 10) };
-            crate::write_serial_bytes!(0x3F8, 0x3FD, &[char]);
-        }
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-
-        let kernel_entry = actual_kernel_entry;
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: kernel_entry value: ");
-        let mut val = kernel_entry as u64;
-        for i in (0..16).rev() {
-            let nibble = (val >> (i * 4)) & 0xf;
-            let char = if nibble < 10 { b'0' + nibble as u8 } else { b'a' + (nibble as u8 - 10) };
-            crate::write_serial_bytes!(0x3F8, 0x3FD, &[char]);
-        }
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-        
-        if kernel_entry != 0 {
+        if actual_kernel_entry != 0 {
             let args = &*actual_kernel_args;
-            
-            // FORCED MAPPING: Ensure kernel entry is mapped to diagnose the fault
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: Force mapping entry...\n");
-            let entry_page_virt = (kernel_entry as u64) & !0xFFF;
+
+            // Ensure 4MB around entry is mapped as executable to allow relative jumps
+            let entry_page_virt = (actual_kernel_entry as u64) & !0xFFF;
             let entry_page_phys = entry_page_virt.wrapping_sub(local_phys_offset.as_u64());
-            
-            let _ = mapper.map_to(
-                x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(entry_page_virt)),
-                x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(entry_page_phys)),
-                x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
-                &mut *local_frame_allocator,
-            );
-
-            // Debug: Verify entry point is readable
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: Entry bytes: ");
-            for i in 0..32 {
-                let byte = unsafe { *(kernel_entry.wrapping_add(i) as *const u8) };
-                let nibble_low = byte & 0xf;
-                let nibble_high = (byte >> 4) & 0xf;
-                let c_low = if nibble_low < 10 { b'0' + nibble_low } else { b'a' + (nibble_low - 10) };
-                let c_high = if nibble_high < 10 { b'0' + nibble_high } else { b'a' + (nibble_high - 10) };
-                crate::write_serial_bytes!(0x3F8, 0x3FD, &[c_high, c_low, b' ']);
-            }
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-
-            // Remap to executable before jumping, and map a larger region (2MB)
-            // to ensure efi_main, efi_main_logic, and efi_main_real are all covered.
-            for page_offset in 0..512 {
+            for page_offset in 0..1024 {
                 let v_page = entry_page_virt + (page_offset * 4096);
                 let p_page = entry_page_phys + (page_offset * 4096);
                 let _ = mapper.map_to(
                     x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(v_page)),
                     x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(p_page)),
-                    x86_64::structures::paging::PageTableFlags::PRESENT, // Executable (NO_EXECUTE = 0)
+                    x86_64::structures::paging::PageTableFlags::PRESENT,
                     &mut *local_frame_allocator,
                 );
             }
 
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: Jumping now ('Z')\n");
             core::arch::asm!(
-                "cli", // Disable interrupts immediately
+                "cli",
                 "mov ax, 0x10",
                 "mov ds, ax",
                 "mov es, ax",
                 "mov fs, ax",
                 "mov gs, ax",
                 "mov ss, ax",
-                "add rsp, 8",
                 "and rsp, -16",
                 "mov rdi, {handle}",
                 "mov rsi, {st}",
                 "mov rdx, {map}",
                 "mov rcx, {size}",
-                "push 0x08", // CS selector
-                "push {entry}", // Absolute 64-bit address
+                "mov r11, cr3",
+                "mov cr3, r11",
+                "push 0x08",
+                "push {entry}",
                 "retfq", 
                 handle = in(reg) args.handle,
                 st = in(reg) args.system_table,
                 map = in(reg) args.map_ptr,
                 size = in(reg) args.map_size,
-                entry = in(reg) kernel_entry,
+                entry = in(reg) actual_kernel_entry,
                 options(noreturn)
             );
         }
@@ -315,25 +243,10 @@ impl TransitionContext {
             .wrapping_add(target_offset) as *const u8;
 
         let l_idt = load_idt.map_or(core::ptr::null(), |f| f as *const ());
-        if l_idt.is_null() {
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: load_idt is NULL\n");
-        } else {
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: load_idt is NOT NULL\n");
-        }
 
         let final_kernel_entry = kernel_entry.map_or(0, |entry| {
             (entry as u64).wrapping_add(target_offset) as usize
         });
-
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: TransitionContext prepare - kernel_entry_phys: ");
-        // Simple hex print for debug
-        let mut val = final_kernel_entry as u64;
-        for i in (0..16).rev() {
-            let nibble = (val >> (i * 4)) & 0xf;
-            let char = if nibble < 10 { b'0' + nibble as u8 } else { b'a' + (nibble as u8 - 10) };
-            crate::write_serial_bytes!(0x3F8, 0x3FD, &[char]);
-        }
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
         Self {
             cr3: level_4_table_frame.start_address().as_u64(),
@@ -364,49 +277,28 @@ pub fn perform_world_switch(ctx: TransitionContext) -> ! {
         TRANSITION_KERNEL_ENTRY = ctx.kernel_entry;
         KERNEL_ARGS = ctx.kernel_args_virt as *const KernelArgs;
 
+        // 1. Switch CR3 using x86_64 crate
+        x86_64::registers::control::Cr3::write(
+            x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(ctx.cr3)),
+            x86_64::registers::control::Cr3Flags::empty(),
+        );
+
+        // 2. Load GDT using assembly (as x86_64 crate function was not found)
+        core::arch::asm!("lgdt [{}]", in(reg) ctx.gdt_ptr);
+
+        // 3. Transition to landing zone
+        // We still need a small asm block for the far jump to ensure CS is correct
+        // and to handle the RSP shift.
         core::arch::asm!(
-            // 1. Switch CR3
-            "mov cr3, {cr3}",
-
-            // 2. Load GDT
-            "lgdt [{gdt_ptr}]",
-
-            // 3. Shift RSP
             "add rsp, {offset_diff}",
-
-            // 4. Set up arguments for landing_zone_logic (System V ABI)
-            // We still pass them for compatibility, but logic will use globals
-            "mov rdi, {load_gdt}",
-            "mov rsi, {load_idt}",
-            "mov rdx, {phys_offset}",
-            "mov rcx, {l4_frame}",
-            "mov r8, {allocator}",
-            "mov r9, {kernel_entry}",
-
             "and rsp, -16",
-            "sub rsp, 8",
-            "mov [rsp], {kernel_args_virt}",
-
-            "mov r12, {logic_fn_high}",
-
             "push {cs_selector}",
             "push {landing_zone_high}",
             "retfq",
-
-            cr3 = in(reg) ctx.cr3,
-            load_gdt = in(reg) ctx.load_gdt,
-            load_idt = in(reg) ctx.load_idt,
-            phys_offset = in(reg) ctx.phys_offset,
-            l4_frame = in(reg) ctx.l4_frame,
-            allocator = in(reg) ctx.allocator,
-            logic_fn_high = in(reg) ctx.logic_fn_high,
-            kernel_entry = in(reg) ctx.kernel_entry,
-            kernel_args_virt = in(reg) ctx.kernel_args_virt,
             cs_selector = in(reg) ctx.cs_selector,
             landing_zone_high = in(reg) ctx.landing_zone_high,
             offset_diff = in(reg) ctx.offset_diff,
-            gdt_ptr = in(reg) ctx.gdt_ptr,
-            options(noreturn),
+            options(noreturn)
         );
         core::hint::unreachable_unchecked()
     }

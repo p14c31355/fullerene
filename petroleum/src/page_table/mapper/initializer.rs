@@ -420,6 +420,7 @@ impl PageTableReinitializer {
         }
 
         self.perform_page_table_switch(
+            &mut mapper,
             level_4_table_frame,
             frame_allocator,
             current_physical_memory_offset,
@@ -498,6 +499,7 @@ impl PageTableReinitializer {
 
     fn perform_page_table_switch(
         &self,
+        mapper: &mut OffsetPageTable,
         level_4_table_frame: PhysFrame,
         frame_allocator: &mut BootInfoFrameAllocator,
         current_physical_memory_offset: VirtAddr,
@@ -531,19 +533,12 @@ impl PageTableReinitializer {
             let rip_region_start = (rip_phys.wrapping_sub(2 * 1024 * 1024)) & !0xFFF;
             let rip_region_pages = (4 * 1024 * 1024) / 4096;
             
-            let l4_phys_u64 = level_4_table_frame.start_address().as_u64();
-            let l4_virt = VirtAddr::new(current_physical_memory_offset.as_u64() + l4_phys_u64);
-            let mut new_mapper = x86_64::structures::paging::OffsetPageTable::new(
-                &mut *(l4_virt.as_mut_ptr() as *mut x86_64::structures::paging::PageTable),
-                VirtAddr::new(current_physical_memory_offset.as_u64()),
-            );
-
             for i in 0..rip_region_pages {
                 let p_phys = rip_region_start + (i * 4096);
                 let v_addr = VirtAddr::new(p_phys.wrapping_add(current_physical_memory_offset.as_u64()));
                 let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(v_addr);
-                let _ = new_mapper.unmap(page);
-                let _ = new_mapper.map_to(
+                let _ = mapper.unmap(page);
+                let _ = mapper.map_to(
                     page,
                     x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_phys)),
                     crate::page_flags_const!(READ_WRITE_EXEC),
@@ -552,7 +547,7 @@ impl PageTableReinitializer {
             }
             crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: RIP region mapped\n");
             crate::debug_log_no_alloc!("Current RIP region (4MB) explicitly mapped to current virtual address in new page table");
-
+            
             let kernel_base_virt = crate::page_table::mapper::transition::landing_zone as *const () as usize as u64;
             let kernel_base_phys = kernel_base_virt.wrapping_sub(current_physical_memory_offset.as_u64());
             let region_start_phys = (kernel_base_phys.wrapping_sub(1024 * 1024)) & !0xFFF;
@@ -562,8 +557,8 @@ impl PageTableReinitializer {
                 let p_phys = region_start_phys + (i * 4096);
                 let v_low = VirtAddr::new(p_phys.wrapping_add(current_physical_memory_offset.as_u64()));
                 let page_low = x86_64::structures::paging::Page::<Size4KiB>::containing_address(v_low);
-                let _ = new_mapper.unmap(page_low);
-                let _ = new_mapper.map_to(
+                let _ = mapper.unmap(page_low);
+                let _ = mapper.map_to(
                     page_low,
                     x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_phys)),
                     crate::page_flags_const!(READ_WRITE_EXEC),
@@ -571,51 +566,51 @@ impl PageTableReinitializer {
                 );
                 let v_high = VirtAddr::new(p_phys.wrapping_add(self.phys_offset.as_u64()));
                 let page_high = x86_64::structures::paging::Page::<Size4KiB>::containing_address(v_high);
-                let _ = new_mapper.unmap(page_high);
-                let _ = new_mapper.map_to(
+                let _ = mapper.unmap(page_high);
+                let _ = mapper.map_to(
                     page_high,
                     x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_phys)),
                     crate::page_flags_const!(READ_WRITE_EXEC),
                     frame_allocator,
                 );
             }
-             crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: Landing zone region mapped\n");
-             crate::mem_debug!("landing_zone region (2MB) mapped at low and high", "\n");
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: Landing zone region mapped\n");
+            crate::mem_debug!("landing_zone region (2MB) mapped at low and high", "\n");
 
-             if let Some(gdt_fn) = load_gdt {
-                 let gdt_addr = gdt_fn as *const () as u64;
-                 let gdt_phys = gdt_addr.wrapping_sub(current_physical_memory_offset.as_u64());
-                 let gdt_page_start = gdt_phys & !0xFFF;
-                 let _ = new_mapper.map_to(
-                     x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(gdt_page_start.wrapping_add(current_physical_memory_offset.as_u64()))),
-                     x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(gdt_page_start)),
-                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                     frame_allocator,
-                 );
-                 let _ = new_mapper.map_to(
-                     x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(gdt_page_start.wrapping_add(self.phys_offset.as_u64()))),
-                     x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(gdt_page_start)),
-                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                     frame_allocator,
-                 );
-             }
-             if let Some(idt_fn) = load_idt {
-                 let idt_addr = idt_fn as *const () as u64;
-                 let idt_phys = idt_addr.wrapping_sub(current_physical_memory_offset.as_u64());
-                 let idt_page_start = idt_phys & !0xFFF;
-                 let _ = new_mapper.map_to(
-                     x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(idt_page_start.wrapping_add(current_physical_memory_offset.as_u64()))),
-                     x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(idt_page_start)),
-                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                     frame_allocator,
-                 );
-                 let _ = new_mapper.map_to(
-                     x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(idt_page_start.wrapping_add(self.phys_offset.as_u64()))),
-                     x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(idt_page_start)),
-                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                     frame_allocator,
-                 );
-             }
+                if let Some(gdt_fn) = load_gdt {
+                    let gdt_addr = gdt_fn as *const () as u64;
+                    let gdt_phys = gdt_addr.wrapping_sub(current_physical_memory_offset.as_u64());
+                    let gdt_page_start = gdt_phys & !0xFFF;
+                    let _ = mapper.map_to(
+                        x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(gdt_page_start.wrapping_add(current_physical_memory_offset.as_u64()))),
+                        x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(gdt_page_start)),
+                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                        frame_allocator,
+                    );
+                    let _ = mapper.map_to(
+                        x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(gdt_page_start.wrapping_add(self.phys_offset.as_u64()))),
+                        x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(gdt_page_start)),
+                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                        frame_allocator,
+                    );
+                }
+                if let Some(idt_fn) = load_idt {
+                    let idt_addr = idt_fn as *const () as u64;
+                    let idt_phys = idt_addr.wrapping_sub(current_physical_memory_offset.as_u64());
+                    let idt_page_start = idt_phys & !0xFFF;
+                    let _ = mapper.map_to(
+                        x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(idt_page_start.wrapping_add(current_physical_memory_offset.as_u64()))),
+                        x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(idt_page_start)),
+                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                        frame_allocator,
+                    );
+                    let _ = mapper.map_to(
+                        x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(idt_page_start.wrapping_add(self.phys_offset.as_u64()))),
+                        x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(idt_page_start)),
+                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                        frame_allocator,
+                    );
+                }
          }
 
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"CR3 switch: about to enter asm! block\n");
