@@ -52,9 +52,15 @@ struct UefiInitContext {
 impl UefiInitContext {
     /// Early initialization: serial, VGA, memory maps
     fn early_initialization(&mut self) -> PhysAddr {
-        petroleum::serial::_print(format_args!("Kernel: efi_main entered\n"));
         petroleum::serial::serial_init();
-        petroleum::serial::_print(format_args!("Kernel: efi_main located at {:#x}\n", efi_main as usize));
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: early_initialization start, serial_init done\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main entered\n");
+        
+        let mut buf = [0u8; 16];
+        let len = petroleum::format_hex_to_buffer(efi_main as u64, &mut buf, 16);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main located at 0x");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
         // UEFI uses framebuffer graphics, not legacy VGA hardware programming
         // Graphics initialization happens later with initialize_graphics_with_config()
@@ -569,9 +575,19 @@ fn efi_main_real_logic(
     memory_map_size: usize,
 ) -> ! {
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: efi_main_real reached!\n");
-    let system_table = unsafe { &*system_table };
+    
+    let mut buf = [0u8; 16];
+    let len = petroleum::format_hex_to_buffer(system_table as u64, &mut buf, 16);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: system_table ptr: 0x");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to dereference system_table\n");
+    let system_table_ref = unsafe { &*system_table };
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: system_table dereferenced successfully\n");
+
     let mut ctx = UefiInitContext {
-        system_table,
+        system_table: system_table_ref,
         memory_map,
         memory_map_size,
         physical_memory_offset: VirtAddr::zero(),
