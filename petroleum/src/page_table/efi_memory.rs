@@ -343,4 +343,18 @@ pub fn calculate_frame_allocation_params<T: MemoryDescriptorValidator>(
     (max_addr, total_frames, bitmap_size)
 }
 
+pub fn for_each_memory_descriptor<T: MemoryDescriptorValidator, F>(
+    memory_map: &[T],
+    types: &[crate::common::EfiMemoryType],
+    mut f: F,
+) where
+    F: FnMut(&T),
+{
+    for desc in memory_map {
+        if types.iter().any(|&t| desc.get_type() == t as u32) && desc.get_page_count() > 0 {
+            f(desc);
+        }
+    }
+}
+
 // debug_log_no_alloc imported from macros

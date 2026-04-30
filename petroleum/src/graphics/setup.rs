@@ -1,5 +1,5 @@
-use crate::hardware::ports::{HardwarePorts, PortWriter, VgaPortOps};
 use crate::{write_port_sequence, write_vga_register};
+use crate::hardware::ports::{HardwarePorts, PortWriter, VgaPortOps};
 use super::registers::{
     ATTRIBUTE_CONFIG, ATTRIBUTE_TEXT_CONFIG, CRTC_CONFIG, CRTC_TEXT_CONFIG, GRAPHICS_CONFIG,
     GRAPHICS_TEXT_CONFIG, SEQUENCER_CONFIG, SEQUENCER_TEXT_CONFIG,

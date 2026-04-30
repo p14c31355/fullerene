@@ -2,7 +2,7 @@
 //!
 //! This module provides APIC initialization and management functions.
 
-use super::pic::disable_legacy_pic;
+use petroleum::hardware::pic::disable_legacy_pic;
 use petroleum::init_io_apic;
 use spin::Mutex;
 use x86_64::registers::model_specific::Msr;
