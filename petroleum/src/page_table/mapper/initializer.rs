@@ -584,13 +584,13 @@ impl PageTableReinitializer {
                     let _ = mapper.map_to(
                         x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(gdt_page_start.wrapping_add(current_physical_memory_offset.as_u64()))),
                         x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(gdt_page_start)),
-                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                        crate::page_flags_const!(READ_WRITE_EXEC),
                         frame_allocator,
                     );
                     let _ = mapper.map_to(
                         x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(gdt_page_start.wrapping_add(self.phys_offset.as_u64()))),
                         x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(gdt_page_start)),
-                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                        crate::page_flags_const!(READ_WRITE_EXEC),
                         frame_allocator,
                     );
                 }
@@ -601,13 +601,13 @@ impl PageTableReinitializer {
                     let _ = mapper.map_to(
                         x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(idt_page_start.wrapping_add(current_physical_memory_offset.as_u64()))),
                         x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(idt_page_start)),
-                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                        crate::page_flags_const!(READ_WRITE_EXEC),
                         frame_allocator,
                     );
                     let _ = mapper.map_to(
                         x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(idt_page_start.wrapping_add(self.phys_offset.as_u64()))),
                         x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(idt_page_start)),
-                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                        crate::page_flags_const!(READ_WRITE_EXEC),
                         frame_allocator,
                     );
                 }
