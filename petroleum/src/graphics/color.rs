@@ -5,6 +5,7 @@ use core::marker::{Send, Sync};
 use core::ptr::{read_volatile, write_volatile};
 
 use crate::common::{EfiGraphicsPixelFormat, VgaFramebufferConfig};
+use crate::FullereneFramebufferConfig;
 use spin::{Mutex, Once};
 
 // --- FramebufferInfo ---

@@ -368,12 +368,12 @@ unsafe extern "sysv64" fn landing_zone_logic(
                 "mov rdx, {st}",
                 "mov r8, {map}",
                 "mov r9, {size}",
-                "jmp {}", 
-                in(reg) kernel_entry,
+                "jmp {entry}", 
                 handle = in(reg) args.handle,
                 st = in(reg) args.system_table,
                 map = in(reg) args.map_ptr,
                 size = in(reg) args.map_size,
+                entry = in(reg) kernel_entry,
                 options(noreturn)
             );
         }
@@ -619,9 +619,9 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
             let code_phys_start = rip_phys.wrapping_sub(2 * 1024 * 1024) & !0xFFF;
             let code_pages = (4 * 1024 * 1024) / 4096;
 
-            self.map_identity_config_4kiB(code_phys_start, code_pages, crate::page_flags_const!(READ_WRITE));
-            self.map_at_offset_config_4kiB(self.current_phys_offset, code_phys_start, code_pages, crate::page_flags_const!(READ_WRITE));
-            self.map_at_offset_config_4kiB(self.phys_offset, code_phys_start, code_pages, crate::page_flags_const!(READ_WRITE));
+            self.map_identity_config_4kiB(code_phys_start, code_pages, crate::page_flags_const!(READ_WRITE_EXEC));
+            self.map_at_offset_config_4kiB(self.current_phys_offset, code_phys_start, code_pages, crate::page_flags_const!(READ_WRITE_EXEC));
+            self.map_at_offset_config_4kiB(self.phys_offset, code_phys_start, code_pages, crate::page_flags_const!(READ_WRITE_EXEC));
             crate::debug_log_no_alloc!("Current code region identity, current-offset, AND high-half mapped: 0x{:x}", code_phys_start);
         }
         
@@ -751,7 +751,7 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
                 self.phys_offset,
                 pe_base,
                 kernel_pages,
-                crate::page_flags_const!(READ_WRITE),
+                crate::page_flags_const!(READ_WRITE_EXEC),
             );
             
             self.map_identity_config_4kiB(crate::page_table::constants::BOOT_CODE_START, crate::page_table::constants::BOOT_CODE_PAGES, crate::page_flags_const!(READ_WRITE));
@@ -969,10 +969,17 @@ impl TransitionContext {
             .wrapping_sub(current_offset)
             .wrapping_add(target_offset) as *const u8;
 
+        let l_idt = load_idt.map_or(core::ptr::null(), |f| f as *const ());
+        if l_idt.is_null() {
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: load_idt is NULL\n");
+        } else {
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: load_idt is NOT NULL\n");
+        }
+
         Self {
             cr3: level_4_table_frame.start_address().as_u64(),
             load_gdt: load_gdt.map_or(core::ptr::null(), |f| f as *const ()),
-            load_idt: load_idt.map_or(core::ptr::null(), |f| f as *const ()),
+            load_idt: l_idt,
             phys_offset: target_offset,
             l4_frame: level_4_table_frame.start_address().as_u64(),
             allocator: frame_allocator as *const _,
@@ -991,25 +998,22 @@ impl TransitionContext {
     }
 }
 
+#[inline(never)]
 pub fn perform_world_switch(ctx: TransitionContext) -> ! {
     unsafe {
         core::arch::asm!(
-            // 1. Debug output
-            "mov dx, 0x3f8", "mov al, 0x31", "out dx, al",
-
-            // 2. Switch CR3
+            // 1. Switch CR3
             "mov cr3, {cr3}",
-            "mov dx, 0x3f8", "mov al, 0x32", "out dx, al",
 
-            // 3. Load GDT
+            // 2. Load GDT
             "lgdt [{gdt_ptr}]",
-            "mov dx, 0x3f8", "mov al, 0x33", "out dx, al",
 
-            // 4. Shift RSP
+            // 3. Shift RSP
             "add rsp, {offset_diff}",
-            "mov dx, 0x3f8", "mov al, 0x36", "out dx, al",
 
-            // 5. Set up arguments for landing_zone (System V ABI)
+            // 4. Set up arguments for landing_zone_logic (System V ABI)
+            // landing_zone_logic signature:
+            // (load_gdt, load_idt, phys_offset, l4_frame, allocator, kernel_entry, kernel_args)
             "mov rdi, {load_gdt}",
             "mov rsi, {load_idt}",
             "mov rdx, {phys_offset}",
@@ -1017,7 +1021,7 @@ pub fn perform_world_switch(ctx: TransitionContext) -> ! {
             "mov r8, {allocator}",
             "mov r9, {kernel_entry}",
 
-            // Push 7th argument (KernelArgs)
+            // Push 7th argument: kernel_args_virt
             "push {kernel_args_virt}",
 
             // Align stack to 16 bytes
@@ -1026,8 +1030,7 @@ pub fn perform_world_switch(ctx: TransitionContext) -> ! {
             // Set up the high-half address of the logic function in r12
             "mov r12, {logic_fn_high}",
 
-            // Final debug and absolute jump to high-half landing zone
-            "mov dx, 0x3f8", "mov al, 0x35", "out dx, al",
+            // Absolute jump to high-half landing zone
             "push {cs_selector}",
             "push {landing_zone_high}",
             "retfq",
@@ -1268,7 +1271,7 @@ impl PageTableReinitializer {
                 let _ = new_mapper.map_to(
                     page,
                     x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_phys)),
-                    x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
+                    crate::page_flags_const!(READ_WRITE_EXEC),
                     frame_allocator,
                 );
             }
@@ -1288,7 +1291,7 @@ impl PageTableReinitializer {
                 let _ = new_mapper.map_to(
                     page_low,
                     x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_phys)),
-                    x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
+                    crate::page_flags_const!(READ_WRITE_EXEC),
                     frame_allocator,
                 );
                 let v_high = VirtAddr::new(p_phys.wrapping_add(self.phys_offset.as_u64()));
@@ -1297,15 +1300,52 @@ impl PageTableReinitializer {
                 let _ = new_mapper.map_to(
                     page_high,
                     x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_phys)),
-                    x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
+                    crate::page_flags_const!(READ_WRITE_EXEC),
                     frame_allocator,
                 );
             }
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: Landing zone region mapped\n");
-            crate::mem_debug!("landing_zone region (2MB) mapped at low and high", "\n");
-        }
+             crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: Landing zone region mapped\n");
+             crate::mem_debug!("landing_zone region (2MB) mapped at low and high", "\n");
+
+             // Map load_gdt and load_idt if they are provided to prevent #PF during the transition
+             if let Some(gdt_fn) = load_gdt {
+                 let gdt_addr = gdt_fn as *const () as u64;
+                 let gdt_phys = gdt_addr.wrapping_sub(current_physical_memory_offset.as_u64());
+                 let gdt_page_start = gdt_phys & !0xFFF;
+                 let _ = new_mapper.map_to(
+                     x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(gdt_page_start.wrapping_add(current_physical_memory_offset.as_u64()))),
+                     x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(gdt_page_start)),
+                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                     frame_allocator,
+                 );
+                 let _ = new_mapper.map_to(
+                     x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(gdt_page_start.wrapping_add(self.phys_offset.as_u64()))),
+                     x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(gdt_page_start)),
+                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                     frame_allocator,
+                 );
+             }
+             if let Some(idt_fn) = load_idt {
+                 let idt_addr = idt_fn as *const () as u64;
+                 let idt_phys = idt_addr.wrapping_sub(current_physical_memory_offset.as_u64());
+                 let idt_page_start = idt_phys & !0xFFF;
+                 let _ = new_mapper.map_to(
+                     x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(idt_page_start.wrapping_add(current_physical_memory_offset.as_u64()))),
+                     x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(idt_page_start)),
+                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                     frame_allocator,
+                 );
+                 let _ = new_mapper.map_to(
+                     x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(idt_page_start.wrapping_add(self.phys_offset.as_u64()))),
+                     x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(idt_page_start)),
+                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                     frame_allocator,
+                 );
+             }
+         }
 
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"CR3 switch: about to enter asm! block\n");
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling perform_world_switch now\n");
         perform_world_switch(ctx);
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"CR3 switch: returned from asm! block\n");
     }
