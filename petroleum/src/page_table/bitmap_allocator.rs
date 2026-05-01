@@ -78,10 +78,15 @@ impl BitmapFrameAllocator {
                 desc.get_page_count() as usize,
                 "\n"
             );
+            if i % 10 == 0 {
+                debug_log_no_alloc!("Still processing descriptors... index ", i);
+            }
         }
 
+        debug_log_no_alloc!("Calling calculate_frame_allocation_params");
         let (max_addr, total_frames, bitmap_size) =
             super::efi_memory::calculate_frame_allocation_params(memory_map);
+        debug_log_no_alloc!("calculate_frame_allocation_params returned");
 
         debug_log_no_alloc!("Max address: ", max_addr as usize);
         debug_log_no_alloc!("Calculated total frames: ", total_frames);

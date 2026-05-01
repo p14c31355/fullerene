@@ -145,7 +145,7 @@ impl UefiInitContext {
         debug_log_no_alloc!("DEBUG: init_memory_map completed");
         
         let memory_map_ref = MEMORY_MAP.lock().as_ref().expect("Memory map not initialized").clone();
-        debug_log_no_alloc!("DEBUG: Memory map reference acquired");
+        debug_log_no_alloc!("DEBUG: Memory map reference acquired at 0x", memory_map_ref.as_ptr() as usize);
         
         heap::init_frame_allocator(memory_map_ref);
         debug_log_no_alloc!("Heap frame allocator initialized");

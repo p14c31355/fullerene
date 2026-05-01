@@ -28,6 +28,7 @@ pub static MEMORY_MAP: Mutex<Option<&'static [MemoryMapDescriptor]>> = Mutex::ne
 
 /// Buffer for memory map descriptors to avoid heap allocation during init
 pub const MAX_DESCRIPTORS: usize = 2048;
+#[unsafe(link_section = ".data")]
 pub(crate) static mut MEMORY_MAP_BUFFER: [MemoryMapDescriptor; MAX_DESCRIPTORS] = [const {
     MemoryMapDescriptor {
         ptr: core::ptr::null(),

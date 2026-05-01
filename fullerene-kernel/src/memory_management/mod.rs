@@ -112,20 +112,23 @@ impl UnifiedMemoryManager {
         &mut self,
         memory_map: &[impl petroleum::page_table::efi_memory::MemoryDescriptorValidator],
     ) -> SystemResult<()> {
-        // Initialize frame allocator with memory map
+        log::info!("DEBUG: UnifiedMemoryManager::init starting");
+        
+        log::info!("DEBUG: Initializing frame allocator...");
         unsafe { self.frame_allocator.init_with_memory_map(memory_map)? };
-        // Reserve the first 1MB of physical memory to avoid conflicts with BIOS/UEFI reserved regions
-        // and prevent page tables from being allocated at very low addresses.
+        log::info!("DEBUG: Frame allocator initialized");
+
+        log::info!("DEBUG: Reserving first 1MB...");
         self.frame_allocator.reserve_frames(0, 256)?;
+        log::info!("DEBUG: First 1MB reserved");
 
-        // Page table manager will now use the active CR3 page table directly,
-        // so no need to allocate a separate frame
-
-        // Initialize page table manager (it will initialize using current CR3)
+        log::info!("DEBUG: Initializing page table manager...");
         Initializable::init(&mut self.page_table_manager)?;
+        log::info!("DEBUG: Page table manager initialized");
 
-        // Create kernel address space (process 0)
+        log::info!("DEBUG: Creating kernel address space (PID 0)...");
         self.create_address_space(0)?;
+        log::info!("DEBUG: Kernel address space created");
 
         self.initialized = true;
         log::info!("Unified memory manager initialized");
@@ -839,11 +842,17 @@ pub fn deallocate_process_page_table(pml4_frame: x86_64::structures::paging::Phy
 pub fn init_memory_manager(
     memory_map: &[impl petroleum::page_table::efi_memory::MemoryDescriptorValidator],
 ) -> SystemResult<()> {
+    log::info!("DEBUG: init_memory_manager entered");
     let mut manager = MEMORY_MANAGER.lock();
+    log::info!("DEBUG: MEMORY_MANAGER lock acquired");
+    
     let mut memory_manager = UnifiedMemoryManager::new();
+    log::info!("DEBUG: UnifiedMemoryManager instance created");
+    
     memory_manager.init(memory_map)?;
+    log::info!("DEBUG: UnifiedMemoryManager::init returned successfully");
+    
     *manager = Some(memory_manager);
-
     log::info!("Global memory manager initialized");
     Ok(())
 }
