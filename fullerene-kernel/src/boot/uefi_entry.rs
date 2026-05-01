@@ -730,7 +730,7 @@ pub unsafe extern "efiapi" fn efi_main_real_logic(
 #[unsafe(export_name = "efi_main")]
 #[unsafe(link_section = ".text.efi_main")]
 #[unsafe(naked)]
-pub unsafe extern "C" fn efi_main(
+pub unsafe extern "efiapi" fn efi_main(
     _image_handle: usize,
     system_table: *mut EfiSystemTable,
     memory_map: *mut c_void,
