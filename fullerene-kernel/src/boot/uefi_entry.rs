@@ -647,7 +647,7 @@ fn kernel_main_higher_half(ctx: &mut UefiInitContext, physical_memory_offset: Vi
 
 #[cfg(target_os = "uefi")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn efi_main_logic(
+pub unsafe extern "efiapi" fn efi_main_logic(
     _image_handle: usize,
     system_table: *mut EfiSystemTable,
     memory_map: *mut c_void,
