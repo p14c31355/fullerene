@@ -91,10 +91,10 @@ pub fn load_program(
                 let page_vaddr = x86_64::VirtAddr::new(petroleum::common::utils::calculate_offset_address(vaddr, page_idx));
 
                 // Allocate a physical frame for this page
-                let frame = crate::heap::FRAME_ALLOCATOR
-                    .get()
+                    let frame = crate::heap::FRAME_ALLOCATOR
+                        .lock()
+                        .as_mut()
                     .ok_or(LoadError::OutOfMemory)?
-                    .lock()
                     .allocate_frame()
                     .ok_or(LoadError::OutOfMemory)?;
 

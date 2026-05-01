@@ -140,23 +140,41 @@ impl UefiInitContext {
         &mut self,
         kernel_phys_start: PhysAddr,
     ) -> (VirtAddr, PhysAddr, VirtAddr) {
+        debug_log_no_alloc!("DEBUG: Starting memory_management_initialization");
         self.init_memory_map();
-        let memory_map_ref = MEMORY_MAP.get().expect("Memory map not initialized");
-        heap::init_frame_allocator(*memory_map_ref);
+        debug_log_no_alloc!("DEBUG: init_memory_map completed");
+        
+        let memory_map_ref = MEMORY_MAP.lock().as_ref().expect("Memory map not initialized").clone();
+        debug_log_no_alloc!("DEBUG: Memory map reference acquired");
+        
+        heap::init_frame_allocator(memory_map_ref);
         debug_log_no_alloc!("Heap frame allocator initialized");
 
         // Pre-allocate TSS stacks physically and set up GDT (without mapping yet)
+        debug_log_no_alloc!("DEBUG: Allocating TSS stacks");
         let tss_stack_pages = (crate::gdt::GDT_TSS_STACK_COUNT * crate::gdt::GDT_TSS_STACK_SIZE) / 4096;
         
         // CRITICAL: Use the frame allocator to actually reserve physical memory for TSS stacks.
         // allocate_heap_from_map only calculates an address and doesn't reserve it, leading to memory corruption.
         let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
-            .get()
-            .expect("Frame allocator not initialized")
-            .lock();
+            .lock()
+            .as_mut()
+            .expect("Frame allocator not initialized");
+        let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
+            .lock()
+            .as_mut()
+            .expect("Frame allocator not initialized");
+        let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
+            .lock()
+            .as_mut()
+            .expect("Frame allocator not initialized");
+        debug_log_no_alloc!("DEBUG: Frame allocator lock acquired for TSS");
             
         let tss_phys_addr = match frame_allocator.allocate_contiguous_frames(tss_stack_pages) {
-            Ok(phys_addr) => PhysAddr::new(phys_addr as u64),
+            Ok(phys_addr) => {
+                debug_log_no_alloc!("DEBUG: TSS frames allocated at 0x", phys_addr);
+                PhysAddr::new(phys_addr as u64)
+            },
             Err(_) => {
                 panic!("Critical failure: Failed to allocate contiguous physical frames for TSS stacks. System cannot proceed safely.");
             }
@@ -167,6 +185,7 @@ impl UefiInitContext {
             timer: VirtAddr::new(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64 + tss_phys_addr.as_u64() + (crate::gdt::GDT_TSS_STACK_SIZE * 2) as u64),
         };
         crate::gdt::init_with_stacks(tss_stacks);
+        debug_log_no_alloc!("DEBUG: GDT initialized with TSS stacks");
         
         debug_log_no_alloc!("Entering memory_management_initialization");
         // Get framebuffer config from petroleum global
@@ -199,8 +218,10 @@ impl UefiInitContext {
             .get()
             .expect("Frame allocator not initialized")
             .lock();
+        debug_log_no_alloc!("DEBUG: Frame allocator lock acquired for page table setup");
 
         debug_log_no_alloc!("Skipping reinit_page_table_with_allocator (already handled by Bellows)");
+        debug_log_no_alloc!("DEBUG: About to set physical_memory_offset");
         // Bellows has already set up the page tables and switched CR3.
         // We just need to set the physical memory offset to match what Bellows used.
         self.physical_memory_offset = x86_64::VirtAddr::new(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64);
@@ -231,13 +252,16 @@ impl UefiInitContext {
         #[cfg(feature = "verbose_boot_log")]
         write_serial_bytes!(0x3F8, 0x3FD, b"page table reinit completed\n");
         debug_log_no_alloc!("Page table reinit completed");
+        debug_log_no_alloc!("DEBUG: About to run page table copy test");
+        debug_log_no_alloc!("DEBUG: Page table copy test starting");
+        debug_log_no_alloc!("DEBUG: Page table copy test call");
 
         // Run minimal page table copy test to verify CR3 switching works
         debug_log_no_alloc!("About to run page table copy test");
         if let Err(e) = petroleum::page_table::test_page_table_copy_switch(
             VirtAddr::zero(),
             &mut frame_allocator,
-            *memory_map_ref,
+            memory_map_ref,
         ) {
             debug_log_no_alloc!("Page table copy test failed: ", e as usize);
             // Continue anyway for now
@@ -270,7 +294,7 @@ impl UefiInitContext {
         #[cfg(feature = "verbose_boot_log")]
         write_serial_bytes!(0x3F8, 0x3FD, b"physical memory offset set\n");
 
-        let heap_phys_start = find_heap_start(*memory_map_ref);
+        let heap_phys_start = find_heap_start(memory_map_ref);
         let heap_phys_start_addr = if heap_phys_start.as_u64() < 0x1000
             || heap_phys_start.as_u64() >= 0x0000_8000_0000_0000
         {
@@ -519,12 +543,20 @@ impl UefiInitContext {
 
         let actual_num = num_descriptors.min(crate::heap::MAX_DESCRIPTORS);
         unsafe {
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Starting MEMORY_MAP_BUFFER fill\n");
             for i in 0..actual_num {
                 let desc_ptr = descriptors_base.add(i * descriptor_item_size);
                 crate::heap::MEMORY_MAP_BUFFER[i] =
                     MemoryMapDescriptor::new(desc_ptr, descriptor_item_size);
+                if i % 10 == 0 {
+                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b".");
+                }
             }
-            crate::heap::MEMORY_MAP.call_once(|| &crate::heap::MEMORY_MAP_BUFFER[0..actual_num]);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\nDEBUG: MEMORY_MAP_BUFFER fill done\n");
+            
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Setting MEMORY_MAP via lock\n");
+            *crate::heap::MEMORY_MAP.lock() = Some(&crate::heap::MEMORY_MAP_BUFFER[0..actual_num]);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: MEMORY_MAP set successfully\n");
         }
         unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: RAW - MEMORY_MAP initialized\n"); }
     }
@@ -539,7 +571,7 @@ fn efi_main_stage2(ctx: &mut UefiInitContext, physical_memory_offset: VirtAddr) 
     // Initialize the global memory manager with the EFI memory map
     log::info!("Initializing global memory manager...");
     write_serial_bytes!(0x3F8, 0x3FD, b"Calling MEMORY_MAP.get()\n");
-    if let Some(memory_map) = MEMORY_MAP.get() {
+    if let Some(memory_map) = *MEMORY_MAP.lock() {
         write_serial_bytes!(0x3F8, 0x3FD, b"MEMORY_MAP.get() succeeded\n");
         if let Err(e) = crate::memory_management::init_memory_manager(memory_map) {
             log::error!(
