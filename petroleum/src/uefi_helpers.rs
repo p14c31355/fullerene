@@ -276,23 +276,45 @@ pub fn setup_kernel_location(
     kernel_virt_addr: u64,
 ) -> PhysAddr {
     // Read descriptor_size from the beginning of the memory map
-    crate::debug_log_no_alloc!("setup_kernel_location called with size: ", memory_map_size);
-    let _descriptor_item_size = unsafe { *(memory_map as *const usize) };
-    crate::debug_log_no_alloc!("Descriptor size: ", _descriptor_item_size);
+    unsafe {
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: setup_kernel_location entered\n");
+    }
+    
+    unsafe {
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Attempting to read descriptor_item_size\n");
+        let _descriptor_item_size = *(memory_map as *const usize);
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Read descriptor_item_size successfully\n");
+    }
+    
+    crate::debug_log_no_alloc!("Succeeded in reading memory map start");
 
     let config_size = core::mem::size_of::<ConfigWithMetadata>();
-    // Check for framebuffer config appended to memory map
-    let config_with_metadata_ptr = unsafe {
-        (memory_map as *const u8).add(memory_map_size - config_size) as *const ConfigWithMetadata
-    };
-    let config_with_metadata = unsafe { &*config_with_metadata_ptr };
+    
+    unsafe {
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Calculating config_with_metadata_ptr\n");
+        if memory_map_size < config_size {
+            crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: memory_map_size too small for config\n");
+            crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Skipping config dereference\n");
+        } else {
+            let config_with_metadata_ptr = (memory_map as *const u8).add(memory_map_size - config_size) as *const ConfigWithMetadata;
+            crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Attempting to dereference config_with_metadata\n");
+            let config_with_metadata = &*config_with_metadata_ptr;
+        
+            let mut magic_buf = [0u8; 16];
+            let magic_len = crate::serial::format_hex_to_buffer(config_with_metadata.magic as u64, &mut magic_buf, 16);
+            crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: config_with_metadata.magic: 0x");
+            crate::write_serial_bytes(0x3F8, 0x3FD, &magic_buf[..magic_len]);
+            crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
 
-    if config_with_metadata.magic == FRAMEBUFFER_CONFIG_MAGIC {
-        crate::debug_log_no_alloc!("Framebuffer config found in memory map");
-        crate::FULLERENE_FRAMEBUFFER_CONFIG
-            .call_once(|| spin::Mutex::new(Some(config_with_metadata.config)));
-    } else {
-        crate::debug_log_no_alloc!("No framebuffer config found in memory map (magic mismatch)");
+            if config_with_metadata.magic == FRAMEBUFFER_CONFIG_MAGIC {
+                crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Framebuffer config found, calling call_once\n");
+                crate::FULLERENE_FRAMEBUFFER_CONFIG
+                    .call_once(|| spin::Mutex::new(Some(config_with_metadata.config)));
+                crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: call_once returned\n");
+            } else {
+                crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: No framebuffer config found (magic mismatch)\n");
+            }
+        }
     }
 
     // Find the kernel physical start (efi_main is virtual address,

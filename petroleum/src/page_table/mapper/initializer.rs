@@ -150,6 +150,12 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
                 uefi_map_pages,
                 crate::page_flags_const!(READ_WRITE_NO_EXEC),
             );
+            self.map_at_offset_config_4kiB(
+                self.phys_offset,
+                self.uefi_map_phys,
+                uefi_map_pages,
+                crate::page_flags_const!(READ_WRITE_NO_EXEC),
+            );
             
             let (pe_base, kernel_size) = if let Some(parser) = unsafe { crate::page_table::pe::PeParser::new(kernel_phys_start.as_u64() as *const u8) } {
                 let base = parser.pe_base as u64;
