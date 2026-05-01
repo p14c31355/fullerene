@@ -312,12 +312,9 @@ pub fn serial_init() {
     unsafe {
         crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Inside serial_init\n");
     }
-    // Temporary bypass of Mutex to check for deadlock
-    // SERIAL_PORT_WRITER.lock().init();
     
-    // Initialize hardware using a temporary instance
-    let mut temp_port = SerialPort::new(Com1Ports);
-    temp_port.init();
+    // Initialize the global serial port writer
+    SERIAL_PORT_WRITER.lock().init();
     
     unsafe {
         crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: serial_init hardware config done\n");

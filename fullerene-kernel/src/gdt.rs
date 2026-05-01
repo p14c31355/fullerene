@@ -27,11 +27,11 @@ pub const GDT_INIT_OVERHEAD: usize = GDT_TSS_STACK_COUNT * GDT_TSS_STACK_SIZE;
 
 static TSS: Once<TaskStateSegment> = Once::new();
 static GDT: Once<GlobalDescriptorTable> = Once::new();
-static CODE_SELECTOR: Mutex<Option<SegmentSelector>> = Mutex::new(None);
-static KERNEL_DATA_SELECTOR: Mutex<Option<SegmentSelector>> = Mutex::new(None);
-static TSS_SELECTOR: Mutex<Option<SegmentSelector>> = Mutex::new(None);
-static USER_DATA_SELECTOR: Mutex<Option<SegmentSelector>> = Mutex::new(None);
-static USER_CODE_SELECTOR: Mutex<Option<SegmentSelector>> = Mutex::new(None);
+static CODE_SELECTOR: Once<SegmentSelector> = Once::new();
+static KERNEL_DATA_SELECTOR: Once<SegmentSelector> = Once::new();
+static TSS_SELECTOR: Once<SegmentSelector> = Once::new();
+static USER_DATA_SELECTOR: Once<SegmentSelector> = Once::new();
+static USER_CODE_SELECTOR: Once<SegmentSelector> = Once::new();
 static GDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 #[repr(align(4096))]
@@ -44,18 +44,18 @@ pub fn init_early() {
 }
 
 pub fn kernel_code_selector() -> SegmentSelector {
-    CODE_SELECTOR.lock().expect("GDT not initialized")
+    *CODE_SELECTOR.get().expect("GDT not initialized")
 }
 
 pub fn load() {
     GDT.get().expect("GDT not initialized").load();
 
     unsafe {
-        CS::set_reg(CODE_SELECTOR.lock().expect("CODE_SELECTOR not initialized"));
-        load_tss(TSS_SELECTOR.lock().expect("TSS_SELECTOR not initialized"));
+        CS::set_reg(*CODE_SELECTOR.get().expect("CODE_SELECTOR not initialized"));
+        load_tss(*TSS_SELECTOR.get().expect("TSS_SELECTOR not initialized"));
 
         // Reload all data segment registers to ensure they point to the correct GDT entry
-        if let Some(data_sel) = *KERNEL_DATA_SELECTOR.lock() {
+        if let Some(&data_sel) = KERNEL_DATA_SELECTOR.get() {
             use x86_64::registers::segmentation::{DS, ES, FS, GS, SS};
             DS::set_reg(data_sel);
             SS::set_reg(data_sel);
@@ -91,11 +91,11 @@ pub fn init_with_stacks(stacks: TssStacks) {
         let user_code_selector = gdt.append(Descriptor::user_code_segment());
         let tss_selector = gdt.append(Descriptor::tss_segment(TSS.get().expect("TSS must be initialized")));
 
-        *CODE_SELECTOR.lock() = Some(code_selector);
-        *KERNEL_DATA_SELECTOR.lock() = Some(data_selector);
-        *TSS_SELECTOR.lock() = Some(tss_selector);
-        *USER_DATA_SELECTOR.lock() = Some(user_data_selector);
-        *USER_CODE_SELECTOR.lock() = Some(user_code_selector);
+        CODE_SELECTOR.call_once(|| code_selector);
+        KERNEL_DATA_SELECTOR.call_once(|| data_selector);
+        TSS_SELECTOR.call_once(|| tss_selector);
+        USER_DATA_SELECTOR.call_once(|| user_data_selector);
+        USER_CODE_SELECTOR.call_once(|| user_code_selector);
         gdt
     });
 
@@ -146,11 +146,11 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
         let user_code_selector = gdt.append(Descriptor::user_code_segment());
         let tss_selector = gdt.append(Descriptor::tss_segment(TSS.get().expect("TSS must be initialized")));
 
-        *CODE_SELECTOR.lock() = Some(code_selector);
-        *KERNEL_DATA_SELECTOR.lock() = Some(data_selector);
-        *TSS_SELECTOR.lock() = Some(tss_selector);
-        *USER_DATA_SELECTOR.lock() = Some(user_data_selector);
-        *USER_CODE_SELECTOR.lock() = Some(user_code_selector);
+        CODE_SELECTOR.call_once(|| code_selector);
+        KERNEL_DATA_SELECTOR.call_once(|| data_selector);
+        TSS_SELECTOR.call_once(|| tss_selector);
+        USER_DATA_SELECTOR.call_once(|| user_data_selector);
+        USER_CODE_SELECTOR.call_once(|| user_code_selector);
         gdt
     });
 
@@ -166,17 +166,17 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
         unsafe {
             // Reload CS register in BIOS mode as it's crucial after GDT reload
             mem_debug!("About to set CS register...\n");
-            CS::set_reg(CODE_SELECTOR.lock().expect("CODE_SELECTOR not initialized"));
+            CS::set_reg(*CODE_SELECTOR.get().expect("CODE_SELECTOR not initialized"));
             mem_debug!("GDT: CS set\n");
 
             mem_debug!("About to load TSS...\n");
-            load_tss(TSS_SELECTOR.lock().expect("TSS_SELECTOR not initialized"));
+            load_tss(*TSS_SELECTOR.get().expect("TSS_SELECTOR not initialized"));
             mem_debug!("GDT: TSS loaded\n");
             mem_debug!("GDT: Loaded and segments set\n");
 
             // Set data segment registers to kernel data segment for proper I/O operations
             mem_debug!("Setting data segment registers...\n");
-            if let Some(data_sel) = *KERNEL_DATA_SELECTOR.lock() {
+            if let Some(&data_sel) = KERNEL_DATA_SELECTOR.get() {
                 use x86_64::registers::segmentation::{DS, ES, FS, GS, SS};
                 DS::set_reg(data_sel);
                 SS::set_reg(data_sel);
@@ -199,9 +199,9 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
 }
 
 pub fn user_code_selector() -> SegmentSelector {
-    USER_CODE_SELECTOR.lock().expect("GDT not initialized")
+    *USER_CODE_SELECTOR.get().expect("GDT not initialized")
 }
 
 pub fn user_data_selector() -> SegmentSelector {
-    USER_DATA_SELECTOR.lock().expect("GDT not initialized")
+    *USER_DATA_SELECTOR.get().expect("GDT not initialized")
 }

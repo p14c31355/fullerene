@@ -85,12 +85,12 @@ pub unsafe extern "sysv64" fn landing_zone(
         "mov dx, 0x3f8",
         "out dx, al",
 
-        // Temporarily skip CS switch to verify if we can even reach here.
-        // If this works, we know the jmp and mapping are correct.
-        
         // System V ABI: rdi, rsi, rdx, rcx, r8, r9, then stack
+        // r9 = _logic_fn_high, [rsp] = _kernel_entry, [rsp+8] = _kernel_args
         "mov r11, r9",      // Save _logic_fn_high in r11
-        "mov r9, [rsp]",    // Move _kernel_entry from stack to r9
+        "mov r9, [rsp]",    // Move _kernel_entry from stack to r9 (6th arg for logic)
+        "mov rax, [rsp+8]", // Move _kernel_args from stack to rax (7th arg for logic)
+        "mov [rsp], rax",   // Replace _kernel_entry with _kernel_args on stack
         "jmp r11",          // Jump to _logic_fn_high
     );
 }
@@ -326,13 +326,19 @@ pub fn perform_world_switch(ctx: TransitionContext) -> ! {
             "mov rdx, {phys_offset}",
             "mov rcx, {l4_frame}",
             "mov r8, {allocator}",
-            "mov r9, {kernel_entry}",
+            "mov r9, {logic_fn_high}",
+            "add rsp, {offset_diff}",
+            "push {kernel_args}",
+            "push {kernel_entry}",
             "jmp {landing_zone_low}",
             load_gdt = in(reg) ctx.load_gdt,
             load_idt = in(reg) ctx.load_idt,
             phys_offset = in(reg) ctx.phys_offset,
             l4_frame = in(reg) ctx.l4_frame,
             allocator = in(reg) ctx.allocator,
+            logic_fn_high = in(reg) ctx.logic_fn_high,
+            offset_diff = in(reg) ctx.offset_diff,
+            kernel_args = in(reg) ctx.kernel_args_virt,
             kernel_entry = in(reg) ctx.kernel_entry,
             landing_zone_low = in(reg) (ctx.landing_zone_high.wrapping_sub(ctx.phys_offset as usize)),
             options(noreturn)

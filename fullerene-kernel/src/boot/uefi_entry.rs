@@ -344,8 +344,9 @@ impl UefiInitContext {
         physical_memory_offset: VirtAddr,
     ) -> u64 {
         log::info!("Setting up kernel stack");
-        let gdt_heap_start = virtual_heap_start;
-        self.heap_start_after_gdt = gdt_heap_start + crate::gdt::GDT_INIT_OVERHEAD as u64;
+        // GDT is already initialized with separate frames in memory_management_initialization,
+        // so we no longer need to reserve GDT_INIT_OVERHEAD from the heap.
+        self.heap_start_after_gdt = virtual_heap_start;
 
         // Allocate and map kernel stack before switching
         let stack_phys_start = self.heap_start_after_gdt.as_u64() - physical_memory_offset.as_u64();
@@ -647,13 +648,14 @@ fn kernel_main_higher_half(ctx: &mut UefiInitContext, physical_memory_offset: Vi
 
 #[cfg(target_os = "uefi")]
 #[unsafe(no_mangle)]
+#[unsafe(naked)]
 pub unsafe extern "efiapi" fn efi_main_logic(
     _image_handle: usize,
     system_table: *mut EfiSystemTable,
     memory_map: *mut c_void,
     memory_map_size: usize,
 ) {
-    core::arch::asm!("jmp efi_main_real_logic");
+    core::arch::naked_asm!("jmp efi_main_real_logic");
 }
 
 #[cfg(target_os = "uefi")]
