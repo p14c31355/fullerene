@@ -156,18 +156,8 @@ impl UefiInitContext {
         
         // CRITICAL: Use the frame allocator to actually reserve physical memory for TSS stacks.
         // allocate_heap_from_map only calculates an address and doesn't reserve it, leading to memory corruption.
-        let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
-            .lock()
-            .as_mut()
-            .expect("Frame allocator not initialized");
-        let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
-            .lock()
-            .as_mut()
-            .expect("Frame allocator not initialized");
-        let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
-            .lock()
-            .as_mut()
-            .expect("Frame allocator not initialized");
+        let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
+        let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
         debug_log_no_alloc!("DEBUG: Frame allocator lock acquired for TSS");
             
         let tss_phys_addr = match frame_allocator.allocate_contiguous_frames(tss_stack_pages) {
@@ -214,10 +204,8 @@ impl UefiInitContext {
             (None, None)
         };
 
-        let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
-            .get()
-            .expect("Frame allocator not initialized")
-            .lock();
+        let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
+        let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
         debug_log_no_alloc!("DEBUG: Frame allocator lock acquired for page table setup");
 
         debug_log_no_alloc!("Skipping reinit_page_table_with_allocator (already handled by Bellows)");
@@ -260,7 +248,7 @@ impl UefiInitContext {
         debug_log_no_alloc!("About to run page table copy test");
         if let Err(e) = petroleum::page_table::test_page_table_copy_switch(
             VirtAddr::zero(),
-            &mut frame_allocator,
+            &mut *frame_allocator,
             memory_map_ref,
         ) {
             debug_log_no_alloc!("Page table copy test failed: ", e as usize);
@@ -377,10 +365,8 @@ impl UefiInitContext {
         let stack_phys_start = self.heap_start_after_gdt.as_u64() - physical_memory_offset.as_u64();
         let stack_pages = (crate::heap::KERNEL_STACK_SIZE + 4095) / 4096;
 
-        let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
-            .get()
-            .expect("Frame allocator not initialized")
-            .lock();
+        let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
+        let mut frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
 
         let mut mapper = unsafe { petroleum::page_table::init(physical_memory_offset) };
         let mut mem_mapper = petroleum::page_table::mapper::MemoryMapper::new(
@@ -433,10 +419,8 @@ impl UefiInitContext {
     fn map_mmio(&mut self) {
         log::info!("Mapping MMIO regions for APIC and IOAPIC");
 
-        let mut frame_allocator = crate::heap::FRAME_ALLOCATOR
-            .get()
-            .expect("Frame allocator not initialized")
-            .lock();
+        let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
+        let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
 
         let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset) };
         let mut mem_mapper = petroleum::page_table::mapper::MemoryMapper::new(
