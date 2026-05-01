@@ -112,11 +112,17 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
         
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: Start\n");
 
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: Skipping IDT load for debug\n");
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: IDT Load skipped\n");
+        if !_load_idt.is_null() {
+            let load_idt: fn() = core::mem::transmute(_load_idt);
+            load_idt();
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: IDT Loaded\n");
+        }
 
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: Skipping GDT load for debug\n");
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: GDT Load skipped\n");
+        if !_load_gdt.is_null() {
+            let load_gdt: fn() = core::mem::transmute(_load_gdt);
+            load_gdt();
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: GDT Loaded\n");
+        }
 
         let l4_phys = l4_frame_raw;
         let sign_extended_offset = if (phys_offset_raw & (1 << 47)) != 0 {
@@ -268,8 +274,7 @@ impl TransitionContext {
         let l_idt = load_idt.map_or(core::ptr::null(), |f| f as *const ());
 
         let final_kernel_entry = kernel_entry.map_or(0, |entry| {
-            let phys = (entry as u64).wrapping_sub(current_offset) & 0x0000_FFFF_FFFF_FFFF;
-            phys.wrapping_add(target_offset) as usize
+            (entry as u64).wrapping_add(target_offset) as usize
         });
 
         let logic_fn_phys = (landing_zone_logic as *const () as u64)
@@ -330,7 +335,7 @@ pub fn perform_world_switch(ctx: TransitionContext) -> ! {
             "add rsp, {offset_diff}",
             "push {kernel_args}",
             "push {kernel_entry}",
-            "jmp {landing_zone_low}",
+            "jmp {landing_zone_high}",
             load_gdt = in(reg) ctx.load_gdt,
             load_idt = in(reg) ctx.load_idt,
             phys_offset = in(reg) ctx.phys_offset,
@@ -340,7 +345,7 @@ pub fn perform_world_switch(ctx: TransitionContext) -> ! {
             offset_diff = in(reg) ctx.offset_diff,
             kernel_args = in(reg) ctx.kernel_args_virt,
             kernel_entry = in(reg) ctx.kernel_entry,
-            landing_zone_low = in(reg) (ctx.landing_zone_high.wrapping_sub(ctx.phys_offset as usize)),
+            landing_zone_high = in(reg) ctx.landing_zone_high,
             options(noreturn)
         );
         core::hint::unreachable_unchecked()
