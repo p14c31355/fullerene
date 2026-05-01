@@ -114,6 +114,8 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
         let kernel_virt_addr = efi_main as u64;
+        // Convert higher-half kernel address to physical address
+        let kernel_phys_addr = kernel_virt_addr.wrapping_sub(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64);
         
         // The memory_map pointer provided by the bootloader is a physical address.
         // We must offset it to access it from the higher half.
@@ -122,7 +124,7 @@ impl UefiInitContext {
         let res = crate::memory::setup_kernel_location(
             memory_map_virt as *mut core::ffi::c_void,
             self.memory_map_size,
-            kernel_virt_addr,
+            kernel_phys_addr,
         );
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: setup_kernel_location returned\n");
         res
@@ -640,6 +642,7 @@ pub unsafe extern "efiapi" fn efi_main_real_logic(
     let kernel_phys_start = ctx.early_initialization();
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: early_initialization returned\n");
 
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to load GDT early\n");
     // Load GDT early to ensure CS register is consistent before page table switch
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Loading GDT early\n");
     crate::gdt::init_early();

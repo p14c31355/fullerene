@@ -288,33 +288,14 @@ pub fn setup_kernel_location(
     
     crate::debug_log_no_alloc!("Succeeded in reading memory map start");
 
-    let config_size = core::mem::size_of::<ConfigWithMetadata>();
-    
+    // Bellows already handles the framebuffer config table before jumping to the kernel.
+    // We skip the redundant check here to avoid potential Page Faults.
     unsafe {
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Calculating config_with_metadata_ptr\n");
-        if memory_map_size < config_size {
-            crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: memory_map_size too small for config\n");
-            crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Skipping config dereference\n");
-        } else {
-            let config_with_metadata_ptr = (memory_map as *const u8).add(memory_map_size - config_size) as *const ConfigWithMetadata;
-            crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Attempting to dereference config_with_metadata\n");
-            let config_with_metadata = &*config_with_metadata_ptr;
-        
-            let mut magic_buf = [0u8; 16];
-            let magic_len = crate::serial::format_hex_to_buffer(config_with_metadata.magic as u64, &mut magic_buf, 16);
-            crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: config_with_metadata.magic: 0x");
-            crate::write_serial_bytes(0x3F8, 0x3FD, &magic_buf[..magic_len]);
-            crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Skipping framebuffer config check\n");
+    }
 
-            if config_with_metadata.magic == FRAMEBUFFER_CONFIG_MAGIC {
-                crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Framebuffer config found, calling call_once\n");
-                crate::FULLERENE_FRAMEBUFFER_CONFIG
-                    .call_once(|| spin::Mutex::new(Some(config_with_metadata.config)));
-                crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: call_once returned\n");
-            } else {
-                crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: No framebuffer config found (magic mismatch)\n");
-            }
-        }
+    unsafe {
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: About to calculate kernel_phys_start\n");
     }
 
     // Find the kernel physical start (efi_main is virtual address,
@@ -327,11 +308,14 @@ pub fn setup_kernel_location(
         PhysAddr::new(0x100000)
     };
 
-    crate::mem_debug!(
-        "Kernel physical start set to: ",
-        kernel_phys_start.as_u64() as usize,
-        "\n"
-    );
+    unsafe {
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: kernel_phys_start calculated\n");
+        let mut buf = [0u8; 16];
+        let len = crate::serial::format_hex_to_buffer(kernel_phys_start.as_u64(), &mut buf, 16);
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Kernel physical start set to: 0x");
+        crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+    }
 
     kernel_phys_start
 }

@@ -112,27 +112,35 @@ pub fn init_with_stacks(stacks: TssStacks) {
 pub fn init(heap_start: VirtAddr) -> VirtAddr {
     // If already initialized, just return the heap start (don't modify)
     if GDT_INITIALIZED.is_completed() {
-        mem_debug!("GDT: Already initialized, skipping\n");
+        unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: Already initialized, skipping\n"); }
         return heap_start;
     }
 
-    mem_debug!("GDT: Initializing with heap at ", heap_start.as_u64(), "\n");
+    unsafe {
+        let mut buf = [0u8; 16];
+        let len = petroleum::serial::format_hex_to_buffer(heap_start.as_u64(), &mut buf, 16);
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: Initializing with heap at 0x");
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+    }
 
     let double_fault_ist = heap_start + GDT_TSS_STACK_SIZE as u64;
     let timer_ist = double_fault_ist + GDT_TSS_STACK_SIZE as u64;
     // Reserve space for all TSS stacks (double fault, timer, and one spare).
     let new_heap_start = timer_ist + GDT_TSS_STACK_SIZE as u64;
 
-    mem_debug!("GDT: Stack addresses calculated\n");
+    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: Stack addresses calculated\n"); }
 
-    mem_debug!("About to create TSS...\n");
+    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: About to create TSS...\n"); }
     let tss = TSS.call_once(|| {
+        unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: Inside TSS closure\n"); }
         let mut tss = TaskStateSegment::new();
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = double_fault_ist;
         tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = timer_ist;
+        unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: TSS closure finished\n"); }
         tss
     });
-    mem_debug!("TSS created successfully\n");
+    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: TSS created successfully\n"); }
 
     mem_debug!("GDT: TSS created\n");
 
@@ -156,7 +164,7 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
         gdt
     });
 
-    mem_debug!("GDT: GDT built\n");
+    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: GDT built\n"); }
 
     #[cfg(not(target_os = "uefi"))]
     {
@@ -197,7 +205,7 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
 
     // Mark as initialized
     GDT_INITIALIZED.call_once(|| {});
-    mem_debug!("GDT: About to return\n");
+    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: About to return\n"); }
     new_heap_start
 }
 
