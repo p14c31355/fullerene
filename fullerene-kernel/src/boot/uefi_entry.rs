@@ -63,8 +63,18 @@ impl UefiInitContext {
     /// Early initialization: serial, VGA, memory maps
     fn early_initialization(&mut self) -> PhysAddr {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: early_initialization start\n");
+        
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Entering serial_init\n");
+        
+        // Diagnostic: Direct port write to verify I/O permissions
+        unsafe {
+            x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b'!');
+        }
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Direct write done\n");
+
         petroleum::serial::serial_init();
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: serial_init done\n");
+        
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main entered\n");
         
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Printing efi_main address\n");
@@ -74,29 +84,43 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: efi_main address printed\n");
-
+        
         // UEFI uses framebuffer graphics, not legacy VGA hardware programming
         // Graphics initialization happens later with initialize_graphics_with_config()
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Writing to VGA buffer\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Attempting VGA buffer access 1\n");
         unsafe {
             let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
             write_vga_string(vga_buffer, 0, b"Kernel boot (UEFI)", 0x1F00);
             write_vga_string(vga_buffer, 1, b"Early init start", 0x1F00);
         }
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: VGA buffer written\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: VGA buffer access 1 successful\n");
         
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Writing second VGA string\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Attempting VGA buffer access 2\n");
         unsafe {
             let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
             write_vga_string(vga_buffer, 2, b"Serial init done", 0x1F00);
         }
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Second VGA string written\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: VGA buffer access 2 successful\n");
+        
         write_serial_bytes!(0x3F8, 0x3FD, b"Early setup completed\n");
-
+        
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling setup_kernel_location\n");
+        
+        // Debug: check memory_map pointer value
+        let mut map_buf = [0u8; 16];
+        let map_len = petroleum::serial::format_hex_to_buffer(self.memory_map as u64, &mut map_buf, 16);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: memory_map ptr: 0x");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, &map_buf[..map_len]);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
         let kernel_virt_addr = efi_main as u64;
+        
+        // The memory_map pointer provided by the bootloader is a physical address.
+        // We must offset it to access it from the higher half.
+        let memory_map_virt = (self.memory_map as u64) + crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64;
+        
         let res = crate::memory::setup_kernel_location(
-            self.memory_map,
+            memory_map_virt as *mut core::ffi::c_void,
             self.memory_map_size,
             kernel_virt_addr,
         );
