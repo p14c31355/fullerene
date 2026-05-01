@@ -41,6 +41,7 @@ struct BootArgs {
 
 /// Helper struct for UEFI initialization context
 #[cfg(target_os = "uefi")]
+#[repr(C)]
 struct UefiInitContext {
     /// Reference to EFI system table
     system_table: &'static EfiSystemTable,
@@ -530,6 +531,8 @@ impl UefiInitContext {
 }
 
 #[cfg(target_os = "uefi")]
+#[unsafe(no_mangle)]
+#[inline(never)]
 fn efi_main_stage2(ctx: &mut UefiInitContext, physical_memory_offset: VirtAddr) -> ! {
     write_serial_bytes!(0x3F8, 0x3FD, b"Entered efi_main_stage2 on new stack\n");
     
@@ -716,6 +719,7 @@ pub unsafe extern "efiapi" fn efi_main_real_logic(
     write_serial_bytes!(0x3F8, 0x3FD, b"Allocator setup completed\n");
 
     let ctx_ptr = &mut ctx as *mut _;
+    write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Jumping to efi_main_stage2\n");
     unsafe {
         // Switch to kernel stack and call stage 2, passing arguments in registers.
         core::arch::asm!(

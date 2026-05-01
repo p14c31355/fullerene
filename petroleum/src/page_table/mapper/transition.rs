@@ -180,15 +180,51 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: kernel_entry check\n");
             
             let args = &*actual_kernel_args;
-            let entry_page_virt = (actual_kernel_entry as u64) & !0xFFF;
-            let entry_page_phys = entry_page_virt.wrapping_sub(local_phys_offset.as_u64());
-            for page_offset in 0..1024 {
-                let v_page_raw = entry_page_virt.wrapping_add(page_offset * 4096);
-                let p_page = entry_page_phys.wrapping_add(page_offset * 4096);
-                map_page_raw(v_page_raw, p_page, PageTableFlags::PRESENT);
+            let kernel_phys_start = args.kernel_phys_start;
+            let kernel_virt_start = kernel_phys_start.wrapping_add(local_phys_offset.as_u64());
+            
+            // Map a larger kernel region (512MB to be safe) to ensure all sections and functions are covered
+            for page_offset in 0..131072 {
+                let v_page_raw = kernel_virt_start.wrapping_add(page_offset * 4096);
+                let p_page = kernel_phys_start.wrapping_add(page_offset * 4096);
+                map_page_raw(v_page_raw, p_page, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+            }
+
+            // Also explicitly map the page containing the actual kernel entry and its surroundings
+            let entry_page_start = (actual_kernel_entry as u64) & !0xFFF;
+            for page_offset in -16i32..16i32 {
+                let v_page = entry_page_start.wrapping_add((page_offset as i64 * 4096) as u64);
+                let p_page = v_page.wrapping_sub(local_phys_offset.as_u64());
+                map_page_raw(v_page, p_page, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+            }
+
+            // Also explicitly map the stack area around the actual RSP to avoid PF during push/retfq
+            let rsp_val: u64;
+            core::arch::asm!("mov {}, rsp", out(reg) rsp_val);
+            let stack_page_start = rsp_val & !0xFFF;
+            // Map 16MB around the current RSP (8MB below and 8MB above)
+            for page_offset in 0..4096 {
+                let v_page = stack_page_start.wrapping_sub(8 * 1024 * 1024).wrapping_add(page_offset * 4096);
+                let p_page = v_page.wrapping_sub(local_phys_offset.as_u64());
+                map_page_raw(v_page, p_page, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
             }
 
             crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: Jumping now ('Z')\n");
+            
+            // DEBUG: Print final state before jump
+            let mut buf = [0u8; 16];
+            let entry_val = actual_kernel_entry as u64;
+            let len = crate::serial::format_hex_to_buffer(entry_val, &mut buf, 16);
+            crate::write_serial_bytes(0x3F8, 0x3FD, b"  entry: 0x");
+            crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+            
+            let rsp_val: u64;
+            core::arch::asm!("mov {}, rsp", out(reg) rsp_val);
+            let len = crate::serial::format_hex_to_buffer(rsp_val, &mut buf, 16);
+            crate::write_serial_bytes(0x3F8, 0x3FD, b"  rsp: 0x");
+            crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+            crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+
             core::arch::asm!(
                 "cli",
                 "mov ax, 0x10",
@@ -198,14 +234,14 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
                 "mov gs, ax",
                 "mov ss, ax",
                 "and rsp, -16",
-                "mov rdi, {handle}",
-                "mov rsi, {st}",
-                "mov rdx, {map}",
-                "mov rcx, {size}",
-                "mov r11, cr3",
-                "mov cr3, r11",
-                "push 0x08",
-                "push {entry}",
+                "mov rcx, {handle}",
+                "mov rdx, {st}",
+                "mov r8, {map}",
+                "mov r9, {size}",
+                "mov rax, 0x08",
+                "push rax",
+                "mov rax, {entry}",
+                "push rax",
                 "retfq", 
                 handle = in(reg) args.handle,
                 st = in(reg) args.system_table,
