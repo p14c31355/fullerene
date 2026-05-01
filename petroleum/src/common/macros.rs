@@ -160,7 +160,7 @@ macro_rules! map_pages {
     ($mapper:expr, $allocator:expr, $phys_base:expr, $virt_calc:expr, $num_pages:expr, $flags:expr, $behavior:tt) => {{
         use x86_64::{
             PhysAddr, VirtAddr,
-            structures::paging::{Page, PhysFrame, Size4KiB, mapper::MapToError},
+            structures::paging::{Page, PhysFrame, Size4KiB, Mapper, mapper::MapToError},
         };
         for i in 0..$num_pages {
             let phys_addr = $phys_base + i * 4096;
