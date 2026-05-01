@@ -313,11 +313,19 @@ pub fn serial_init() {
         crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Inside serial_init\n");
     }
     
-    // Initialize the global serial port writer
-    SERIAL_PORT_WRITER.lock().init();
-    
+    // CRITICAL: We skip the Mutex lock entirely during early boot to avoid deadlocks.
+    // We use a raw pointer to the SerialPort and initialize it without locking.
     unsafe {
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: serial_init hardware config done\n");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Bypassing Mutex lock for early init\n");
+        
+        // Get a raw pointer to the SerialPort inside the Mutex
+        // We cast the address of the static Mutex directly to the inner type
+        let serial_ptr = &SERIAL_PORT_WRITER as *const spin::Mutex<SerialPort<Com1Ports>> as *mut SerialPort<Com1Ports>;
+        
+        // Initialize the serial port directly
+        (*serial_ptr).init();
+        
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: serial_init completed via raw pointer\n");
     }
 }
 

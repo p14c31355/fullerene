@@ -1291,12 +1291,20 @@ macro_rules! display_vga_stats_lines {
 macro_rules! init_serial_port {
     ($self:expr, $dlab:expr, $divisor_low:expr, $irq:expr, $line_ctrl:expr, $fifo:expr, $modem:expr) => {{
         unsafe {
+            $crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: init_serial_port start\n");
+            $crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: writing dlab\n");
             $self.ops.line_ctrl_port().write($dlab); // Enable DLAB
+            $crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: writing divisor\n");
             $self.ops.data_port().write($divisor_low); // Baud rate divisor low byte
+            $crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: writing irq\n");
             $self.ops.irq_enable_port().write($irq);
+            $crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: writing line_ctrl\n");
             $self.ops.line_ctrl_port().write($line_ctrl); // 8 bits, no parity, one stop bit
+            $crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: writing fifo\n");
             $self.ops.fifo_ctrl_port().write($fifo); // Enable FIFO, clear, 14-byte threshold
+            $crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: writing modem\n");
             $self.ops.modem_ctrl_port().write($modem); // IRQs enabled, OUT2
+            $crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: init_serial_port end\n");
         }
     }};
 }
