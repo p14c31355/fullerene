@@ -120,9 +120,10 @@ impl UefiInitContext {
         // The memory_map pointer provided by the bootloader is a physical address.
         // We must offset it to access it from the higher half.
         let memory_map_virt = (self.memory_map as u64) + crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64;
+        self.memory_map = memory_map_virt as *mut core::ffi::c_void;
         
         let res = crate::memory::setup_kernel_location(
-            memory_map_virt as *mut core::ffi::c_void,
+            self.memory_map,
             self.memory_map_size,
             kernel_phys_addr,
         );
@@ -343,10 +344,9 @@ impl UefiInitContext {
         virtual_heap_start: VirtAddr,
         physical_memory_offset: VirtAddr,
     ) -> u64 {
-        log::info!("Setting up GDT and kernel stack");
+        log::info!("Setting up kernel stack");
         let gdt_heap_start = virtual_heap_start;
-        self.heap_start_after_gdt = gdt::init(gdt_heap_start);
-        log::info!("GDT initialized");
+        self.heap_start_after_gdt = gdt_heap_start + crate::gdt::GDT_INIT_OVERHEAD as u64;
 
         // Allocate and map kernel stack before switching
         let stack_phys_start = self.heap_start_after_gdt.as_u64() - physical_memory_offset.as_u64();
@@ -642,17 +642,15 @@ pub unsafe extern "efiapi" fn efi_main_real_logic(
     let kernel_phys_start = ctx.early_initialization();
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: early_initialization returned\n");
 
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to load GDT early\n");
-    // Load GDT early to ensure CS register is consistent before page table switch
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Loading GDT early\n");
-    crate::gdt::init_early();
-    crate::gdt::load();
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: GDT loaded\n");
 
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling memory_management_initialization\n");
     let (physical_memory_offset, heap_start, virtual_heap_start) =
         ctx.memory_management_initialization(kernel_phys_start);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: memory_management_initialization returned\n");
+
+    // Load the GDT that was initialized in memory_management_initialization
+    crate::gdt::load();
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: GDT loaded after memory init\n");
 
     let kernel_stack_top = ctx.prepare_kernel_stack(virtual_heap_start, physical_memory_offset);
     write_serial_bytes!(0x3F8, 0x3FD, b"GDT and stack prepared\n");
