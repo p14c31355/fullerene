@@ -117,10 +117,9 @@ impl UefiInitContext {
         // Convert higher-half kernel address to physical address
         let kernel_phys_addr = kernel_virt_addr.wrapping_sub(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64);
         
-        // The memory_map pointer provided by the bootloader is a physical address.
-        // We must offset it to access it from the higher half.
-        let memory_map_virt = (self.memory_map as u64) + crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64;
-        self.memory_map = memory_map_virt as *mut core::ffi::c_void;
+        // The memory_map pointer provided by the bootloader is usually a physical address.
+        // We'll handle the offset dynamically in init_memory_map to ensure we use the correct address.
+        // For now, we leave it as provided by the bootloader.
         
         let res = crate::memory::setup_kernel_location(
             self.memory_map,
@@ -441,12 +440,57 @@ impl UefiInitContext {
     }
 
     fn init_memory_map(&self) {
-        let descriptor_item_size = unsafe { *(self.memory_map as *const usize) };
-        debug_log_no_alloc!("init_memory_map: descriptor_size: ", descriptor_item_size);
+        let raw_ptr = self.memory_map as u64;
+        let offset = crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64;
+        
+        // Try reading from identity mapping first, then from higher half
+        let mut best_ptr = raw_ptr as *const usize;
+        let mut best_size = unsafe { core::ptr::read_volatile(best_ptr) };
+        
+        unsafe {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: RAW - Trying identity mapping ptr: 0x");
+            let mut buf = [0u8; 16];
+            let len = petroleum::serial::format_hex_to_buffer(raw_ptr, &mut buf, 16);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b" size: 0x");
+            let len2 = petroleum::serial::format_hex_to_buffer(best_size as u64, &mut buf, 16);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len2]);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+        }
+
+        if best_size < 4 || best_size > 1024 {
+            let high_ptr = (raw_ptr + offset) as *const usize;
+            let high_size = unsafe { core::ptr::read_volatile(high_ptr) };
+            
+            unsafe {
+                petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: RAW - Trying higher half ptr: 0x");
+                let mut buf = [0u8; 16];
+                let len = petroleum::serial::format_hex_to_buffer(raw_ptr + offset, &mut buf, 16);
+                petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+                petroleum::write_serial_bytes(0x3F8, 0x3FD, b" size: 0x");
+                let len2 = petroleum::serial::format_hex_to_buffer(high_size as u64, &mut buf, 16);
+                petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len2]);
+                petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+            }
+            
+            if high_size >= 4 && high_size <= 1024 {
+                best_ptr = high_ptr;
+                best_size = high_size;
+            }
+        }
+
+        if best_size < 4 || best_size > 1024 {
+            unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: ERROR - No valid descriptor_item_size found!\n"); }
+            return;
+        }
+
+        let descriptor_item_size = best_size;
+        let base_ptr = best_ptr as *const u8;
+
         let config_size = core::mem::size_of::<ConfigWithMetadata>();
         let has_config = if self.memory_map_size >= config_size {
             unsafe {
-                let ptr = (self.memory_map as *const u8).add(self.memory_map_size - config_size)
+                let ptr = base_ptr.add(self.memory_map_size - config_size)
                     as *const ConfigWithMetadata;
                 !ptr.is_null() && (*ptr).magic == FRAMEBUFFER_CONFIG_MAGIC
             }
@@ -456,14 +500,18 @@ impl UefiInitContext {
         let actual_descriptors_size = self.memory_map_size
             .saturating_sub(core::mem::size_of::<usize>())
             .saturating_sub(if has_config { config_size } else { 0 });
-        let descriptors_base =
-            unsafe { (self.memory_map as *const u8).add(core::mem::size_of::<usize>()) };
+        let descriptors_base = unsafe { base_ptr.add(core::mem::size_of::<usize>()) };
         let num_descriptors = actual_descriptors_size / descriptor_item_size;
-        debug_log_no_alloc!("init_memory_map: num_descriptors: ", num_descriptors);
-        let actual_num = num_descriptors.min(crate::heap::MAX_DESCRIPTORS);
-        if num_descriptors > crate::heap::MAX_DESCRIPTORS {
-            debug_log_no_alloc!("init_memory_map: too many descriptors, truncating");
+        
+        unsafe {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: RAW - num_descriptors: 0x");
+            let mut buf = [0u8; 16];
+            let len = petroleum::serial::format_hex_to_buffer(num_descriptors as u64, &mut buf, 16);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
         }
+
+        let actual_num = num_descriptors.min(crate::heap::MAX_DESCRIPTORS);
         unsafe {
             for i in 0..actual_num {
                 let desc_ptr = descriptors_base.add(i * descriptor_item_size);
@@ -472,7 +520,7 @@ impl UefiInitContext {
             }
             crate::heap::MEMORY_MAP.call_once(|| &crate::heap::MEMORY_MAP_BUFFER[0..actual_num]);
         }
-        debug_log_no_alloc!("MEMORY_MAP initialized in init_memory_map\n");
+        unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: RAW - MEMORY_MAP initialized\n"); }
     }
 }
 
