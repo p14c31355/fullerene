@@ -260,8 +260,7 @@ impl TransitionContext {
             let gdt_ptr_static = core::ptr::addr_of_mut!(TRANSITION_GDT);
             let entries_virt_addr = core::ptr::addr_of!((*gdt_ptr_static).entries) as *const _ as u64;
             let gdt_phys_base = entries_virt_addr.wrapping_sub(current_offset) & 0x0000_FFFF_FFFF_FFFF;
-            let gdt_high_base = gdt_phys_base.wrapping_add(target_offset);
-            (*gdt_ptr_static).descriptor.base = gdt_high_base;
+            (*gdt_ptr_static).descriptor.base = gdt_phys_base;
         }
 
         let final_gdt_ptr_virt = gdt_ptr.unwrap_or(unsafe {

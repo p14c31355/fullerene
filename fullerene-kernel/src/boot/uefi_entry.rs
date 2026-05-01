@@ -444,36 +444,40 @@ impl UefiInitContext {
         let raw_ptr = self.memory_map as u64;
         let offset = crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64;
         
+        unsafe {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: RAW - Memory Map Info:\n");
+            let mut buf = [0u8; 16];
+            
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"  ptr: 0x");
+            let len = petroleum::serial::format_hex_to_buffer(raw_ptr, &mut buf, 16);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+            
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b" size: 0x");
+            let len = petroleum::serial::format_hex_to_buffer(self.memory_map_size as u64, &mut buf, 16);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: RAW - Memory Map Dump (first 64 bytes):\n");
+            for i in 0..8 {
+                let val = core::ptr::read_volatile((raw_ptr + i * 8) as *const u64);
+                petroleum::write_serial_bytes(0x3F8, 0x3FD, b"  [");
+                let len = petroleum::serial::format_hex_to_buffer(val, &mut buf, 16);
+                petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+                petroleum::write_serial_bytes(0x3F8, 0x3FD, b"] ");
+                if (i + 1) % 4 == 0 {
+                    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+                }
+            }
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+        }
+
         // Try reading from identity mapping first, then from higher half
         let mut best_ptr = raw_ptr as *const usize;
         let mut best_size = unsafe { core::ptr::read_volatile(best_ptr) };
         
-        unsafe {
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: RAW - Trying identity mapping ptr: 0x");
-            let mut buf = [0u8; 16];
-            let len = petroleum::serial::format_hex_to_buffer(raw_ptr, &mut buf, 16);
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b" size: 0x");
-            let len2 = petroleum::serial::format_hex_to_buffer(best_size as u64, &mut buf, 16);
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len2]);
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
-        }
-
         if best_size < 4 || best_size > 1024 {
             let high_ptr = (raw_ptr + offset) as *const usize;
             let high_size = unsafe { core::ptr::read_volatile(high_ptr) };
-            
-            unsafe {
-                petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: RAW - Trying higher half ptr: 0x");
-                let mut buf = [0u8; 16];
-                let len = petroleum::serial::format_hex_to_buffer(raw_ptr + offset, &mut buf, 16);
-                petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-                petroleum::write_serial_bytes(0x3F8, 0x3FD, b" size: 0x");
-                let len2 = petroleum::serial::format_hex_to_buffer(high_size as u64, &mut buf, 16);
-                petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len2]);
-                petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
-            }
-            
             if high_size >= 4 && high_size <= 1024 {
                 best_ptr = high_ptr;
                 best_size = high_size;
@@ -740,6 +744,7 @@ pub unsafe extern "efiapi" fn efi_main(
 ) {
     core::arch::naked_asm!(
         "cli", // Ensure interrupts are disabled
+        "mov dx, 0x3f8", "mov al, 0x21", "out dx, al", // Immediate signal of entry ('!')
         "jmp efi_main_logic",
     );
 }

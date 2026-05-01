@@ -338,16 +338,15 @@ pub fn exit_boot_services_and_jump(
             "mov fs, ax",
             "mov gs, ax",
             "mov ss, ax",
-
+            
+            "mov rsp, {stack_top}",
             "mov rcx, {handle}",
             "mov rdx, {st}",
             "mov r8, {map}",
             "mov r9, {size}",
             
-            "push 0x08",
-            "push {entry_addr}",
-            "retfq",
-
+            "jmp {entry_addr}",
+            stack_top = in(reg) (args_phys_addr + 4096),
             handle = in(reg) image_handle,
             st = in(reg) system_table,
             map = in(reg) map_phys_addr,
