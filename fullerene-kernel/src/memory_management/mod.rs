@@ -261,7 +261,7 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
         let process_manager = ProcessMemoryManagerImpl::new(process_id);
         self.process_managers.insert(process_id, process_manager);
 
-        log::info!("Created address space for process");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Created address space for process\n");
         Ok(())
     }
 
@@ -274,7 +274,7 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
             self.current_process = process_id;
             self.page_table_manager
                 .switch_page_table(process_manager.page_table_root())?;
-            log::info!("Switched to process address space");
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Switched to process address space\n");
             Ok(())
         } else {
             Err(SystemError::NoSuchProcess)
@@ -288,7 +288,7 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
 
         if let Some(mut process_manager) = self.process_managers.remove(&process_id) {
             process_manager.cleanup()?;
-            log::info!("Destroyed address space for process");
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Destroyed address space for process\n");
             Ok(())
         } else {
             Err(SystemError::NoSuchProcess)
@@ -825,18 +825,18 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
 }
 
 /// Deallocate a process page table and free its frames
-pub fn deallocate_process_page_table(pml4_frame: x86_64::structures::paging::PhysFrame) {
-    // Properly deallocate the page table and its frames
-    if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
-        // The pml4_frame contains the physical address of the page table
-        let frame_addr = pml4_frame.start_address().as_u64() as usize;
+    pub fn deallocate_process_page_table(pml4_frame: x86_64::structures::paging::PhysFrame) {
+        // Properly deallocate the page table and its frames
+        if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
+            // The pml4_frame contains the physical address of the page table
+            let frame_addr = pml4_frame.start_address().as_u64() as usize;
 
-        // Free the frame containing the page table
-        let _ = manager.free_frame(frame_addr);
+            // Free the frame containing the page table
+            let _ = manager.free_frame(frame_addr);
 
-        log::info!("Deallocated process page table");
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Deallocated process page table\n");
+        }
     }
-}
 
 /// Initialize the global memory manager
 pub fn init_memory_manager(

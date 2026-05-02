@@ -125,19 +125,36 @@ impl UefiInitContext {
         debug_log_no_alloc!("Heap frame allocator initialized");
 
         // Now that FRAME_ALLOCATOR is ready, map the memory_map buffer to higher half for consistency
-        // TEMPORARILY SKIPPED to isolate the cause of Triple Fault
         let map_phys = self.memory_map as u64;
         let map_virt = map_phys + self.physical_memory_offset.as_u64();
-        
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: map_phys=0x");
-        let mut buf = [0u8; 16];
-        let _ = petroleum::serial::format_hex_to_buffer(map_phys, &mut buf, 16);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b" map_virt=0x");
-        let _ = petroleum::serial::format_hex_to_buffer(map_virt, &mut buf, 16);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Memory map mapping skipped for now (to avoid crash)\n");
+        let map_pages = ((self.memory_map_size as u64) + 4095) / 4096;
+
+        let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset) };
+        {
+            let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
+            let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator should be ready now");
+
+            for i in 0..map_pages {
+                let v_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(
+                    VirtAddr::new(map_virt + i * 4096)
+                );
+                let p_frame = x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(
+                    PhysAddr::new(map_phys + i * 4096)
+                );
+
+                unsafe {
+                    if let Ok(flush) = mapper.map_to(
+                        v_page,
+                        p_frame,
+                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                        frame_allocator,
+                    ) {
+                        flush.flush();
+                    }
+                }
+            }
+        }
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Memory map buffer mapped successfully\n");
 
         debug_log_no_alloc!("DEBUG: Allocating TSS stacks");
         let tss_stack_pages = (crate::gdt::GDT_TSS_STACK_COUNT * crate::gdt::GDT_TSS_STACK_SIZE) / 4096;
