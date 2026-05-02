@@ -208,15 +208,17 @@ impl UefiInitContext {
         let kernel_virt_start = crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64;
         let kernel_phys_start_val = kernel_phys_start.as_u64();
 
-        // Use a smaller mapping area first to verify if it's a performance/timeout issue or a real crash
-        // Mapping 64MB instead of 1GB to see if we can at least reach the "completed" log
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Mapping kernel area (64MB)\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Mapping large higher-half kernel area (1GB)\n");
+
+        let kernel_virt_start = crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64;
+        let kernel_phys_start_val = kernel_phys_start.as_u64();
+
         let mut wide_mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset) };
         {
             let mut fa_guard = crate::heap::FRAME_ALLOCATOR.lock();
             let allocator = fa_guard.as_mut().expect("Frame allocator should be ready");
 
-            for i in 0..(64 * 1024) {
+            for i in 0..(256 * 1024) {
                 let vaddr = x86_64::VirtAddr::new(kernel_virt_start + i as u64 * 4096);
                 let paddr = x86_64::PhysAddr::new(kernel_phys_start_val + i as u64 * 4096);
 
@@ -234,8 +236,8 @@ impl UefiInitContext {
             }
             x86_64::instructions::tlb::flush_all();
         }
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Kernel mapping completed\n");
-        
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Large kernel mapping completed\n");
+
         debug_log_no_alloc!("Entering memory_management_initialization");
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Post-GDT init phase start\n");
 
