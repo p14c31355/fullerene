@@ -29,13 +29,22 @@ pub fn efi_main_stage2(ctx: &mut UefiInitContext, physical_memory_offset: VirtAd
     }
 
     // Common initialization for both UEFI and BIOS with correct physical memory offset
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] About to call init_common\n");
     log::info!("About to call init_common");
     unsafe {
         let rsp: u64;
         core::arch::asm!("mov {}, rsp", out(reg) rsp);
-        petroleum::bootloader_log!("RSP before init_common: 0x{:x}", rsp);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] RSP before init_common\n");
+        // Use raw serial print to avoid potential deadlock in bootloader_log/println
+        let mut buf = [0u8; 32];
+        let len = petroleum::serial::format_hex_to_buffer(rsp, &mut buf, 16);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"RSP: 0x");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
     }
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] Calling init_common now\n");
     crate::init::init_common(physical_memory_offset);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] init_common returned\n");
     unsafe {
         let rsp: u64;
         core::arch::asm!("mov {}, rsp", out(reg) rsp);

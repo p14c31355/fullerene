@@ -381,10 +381,10 @@ macro_rules! init_boot_step {
 /// Helper for init_step in sequences
 #[macro_export]
 macro_rules! init_step {
-    ($name:expr, $closure:expr) => {
+    ($name:expr, $func:expr) => {
         (
             $name,
-            Box::new($closure) as Box<dyn Fn() -> Result<(), &'static str>>,
+            $func as fn() -> Result<(), &'static str>,
         )
     };
 }
@@ -1041,7 +1041,7 @@ macro_rules! flush_tlb_and_verify {
 }
 
 pub struct InitSequence<'a> {
-    steps: &'a [(&'static str, Box<dyn Fn() -> Result<(), &'static str>>)],
+    steps: &'a [(&'static str, fn() -> Result<(), &'static str>)],
 }
 
 /// Calculate offset address in loops (phys_addr + i * 4096)
@@ -1190,18 +1190,20 @@ macro_rules! get_memory_stats {
 }
 
 impl<'a> InitSequence<'a> {
-    pub fn new(steps: &'a [(&'static str, Box<dyn Fn() -> Result<(), &'static str>>)]) -> Self {
+    pub fn new(steps: &'a [(&'static str, fn() -> Result<(), &'static str>)]) -> Self {
         Self { steps }
     }
 
     pub fn run(&self) {
         for (name, init_fn) in self.steps {
-            crate::serial::serial_log(format_args!("About to init {}\n", name));
+            // Use raw serial write to avoid potential deadlock in serial_log (Mutex)
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [InitSequence] About to init step\n");
+            
             if let Err(e) = init_fn() {
-                crate::serial::serial_log(format_args!("Init {} failed: {}\n", name, e));
+                crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [InitSequence] Step failed\n");
                 panic!("{}", e);
             }
-            crate::serial::serial_log(format_args!("{} init done\n", name));
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [InitSequence] Step done\n");
         }
     }
 }

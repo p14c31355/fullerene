@@ -91,3 +91,4 @@ pub use desktop::*;
 
 // Framebuffer
 pub use framebuffer::*;
+pub use framebuffer::UefiFramebufferWriter;

@@ -28,13 +28,13 @@ type VgaFramebufferWriter = FramebufferWriter<u8>;
 // FramebufferWriter now implements Write in petroleum
 
 #[cfg(target_os = "uefi")]
-pub static WRITER_UEFI: Once<Mutex<Box<dyn core::fmt::Write + Send + Sync>>> = Once::new();
+pub static WRITER_UEFI: Once<Mutex<petroleum::UefiFramebufferWriter>> = Once::new();
 
 #[cfg(target_os = "uefi")]
 pub static FRAMEBUFFER_UEFI: Once<Mutex<petroleum::UefiFramebuffer>> = Once::new();
 
 #[cfg(not(target_os = "uefi"))]
-pub static WRITER_BIOS: Once<Mutex<Box<dyn core::fmt::Write + Send + Sync>>> = Once::new();
+pub static WRITER_BIOS: Once<Mutex<petroleum::FramebufferWriter<u8>>> = Once::new();
 
 #[cfg(not(target_os = "uefi"))]
 pub static FRAMEBUFFER_BIOS: Once<Mutex<petroleum::FramebufferWriter<u8>>> = Once::new();
@@ -65,8 +65,6 @@ pub fn init(config: &FullereneFramebufferConfig) {
     // Check pixel format to determine whether to use 32-bit or 8-bit writer
     let (writer, fb_enum) = match config.pixel_format {
         petroleum::common::EfiGraphicsPixelFormat::PixelFormatMax => {
-            // Special marker for VGA mode
-            petroleum::info_log!("Graphics: Using VGA 8-bit mode for UEFI");
             let vga_config = petroleum::common::VgaFramebufferConfig {
                 address: config.address,
                 width: config.width,
@@ -75,16 +73,14 @@ pub fn init(config: &FullereneFramebufferConfig) {
             };
             let writer = FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(&vga_config));
             (
-                Box::new(writer.clone()) as Box<dyn core::fmt::Write + Send + Sync>,
+                petroleum::UefiFramebufferWriter::Vga8(writer.clone()),
                 petroleum::UefiFramebuffer::Vga8(writer),
             )
         }
         _ => {
-            // Standard UEFI graphics mode (32-bit)
-            petroleum::info_log!("Graphics: Using 32-bit UEFI graphics mode");
             let writer = FramebufferWriter::<u32>::new(FramebufferInfo::new(config));
             (
-                Box::new(writer.clone()) as Box<dyn core::fmt::Write + Send + Sync>,
+                petroleum::UefiFramebufferWriter::Uefi32(writer.clone()),
                 petroleum::UefiFramebuffer::Uefi32(writer),
             )
         }
@@ -109,13 +105,15 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
 
     #[cfg(target_os = "uefi")]
     {
-        WRITER_UEFI.call_once(|| Mutex::new(Box::new(writer.clone())));
+        let writer_enum = petroleum::UefiFramebufferWriter::Vga8(writer.clone());
+        WRITER_UEFI.call_once(|| Mutex::new(writer_enum));
         FRAMEBUFFER_UEFI.call_once(|| Mutex::new(petroleum::UefiFramebuffer::Vga8(writer)));
     }
 
     #[cfg(not(target_os = "uefi"))]
     {
-        WRITER_BIOS.call_once(|| Mutex::new(Box::new(writer.clone())));
+        let writer_clone = writer.clone();
+        WRITER_BIOS.call_once(|| Mutex::new(writer_clone));
         FRAMEBUFFER_BIOS.call_once(|| Mutex::new(writer));
     }
 }
@@ -124,13 +122,21 @@ pub fn init_vga(config: &VgaFramebufferConfig) {
 
 fn print_to_graphics(args: &fmt::Arguments) {
     #[cfg(target_os = "uefi")]
-    let writer_option = WRITER_UEFI.get();
+    {
+        if let Some(writer_mutex) = WRITER_UEFI.get() {
+            let mut writer_enum = writer_mutex.lock();
+            match &mut *writer_enum {
+                petroleum::UefiFramebufferWriter::Vga8(w) => w.write_fmt(*args).ok(),
+                petroleum::UefiFramebufferWriter::Uefi32(w) => w.write_fmt(*args).ok(),
+            }
+        }
+    }
     #[cfg(not(target_os = "uefi"))]
-    let writer_option = WRITER_BIOS.get();
-
-    if let Some(writer) = writer_option {
-        let mut writer = writer.lock();
-        writer.write_fmt(*args).ok();
+    {
+        if let Some(writer_mutex) = WRITER_BIOS.get() {
+            let mut writer = writer_mutex.lock();
+            writer.write_fmt(*args).ok();
+        }
     }
 }
 
@@ -150,8 +156,9 @@ pub fn _print(args: fmt::Arguments) {
 pub fn init_fallback_graphics() -> Result<(), &'static str> {
     #[cfg(target_os = "uefi")]
     {
-        // Initialize VGA graphics mode for UEFI fallback
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_fallback_graphics] detect_and_init_vga_graphics start\n");
         petroleum::graphics::detect_and_init_vga_graphics();
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_fallback_graphics] detect_and_init_vga_graphics done\n");
 
         // Create a basic VGA framebuffer config
         let vga_config_base = petroleum::common::VgaFramebufferConfig {
@@ -168,9 +175,9 @@ pub fn init_fallback_graphics() -> Result<(), &'static str> {
             bpp: vga_config_base.bpp,
             stride: vga_config_base.width * vga_config_base.bpp / 8,
         };
-        petroleum::info_log!("Graphics: Initializing VGA fallback framebuffer");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_fallback_graphics] calling init()\n");
         init(&fullerene_config);
-        petroleum::info_log!("Graphics: VGA fallback framebuffer initialized");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_fallback_graphics] init() done\n");
     }
     #[cfg(not(target_os = "uefi"))]
     {

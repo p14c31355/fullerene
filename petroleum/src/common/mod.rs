@@ -52,17 +52,19 @@ pub fn collect_system_stats(
     }
 }
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 // Memory initialization state tracking
-static MEMORY_INITIALIZED: spin::Mutex<bool> = spin::Mutex::new(false);
+static MEMORY_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 // Function to check if memory has been initialized
 pub fn check_memory_initialized() -> bool {
-    *MEMORY_INITIALIZED.lock()
+    MEMORY_INITIALIZED.load(Ordering::SeqCst)
 }
 
 // Function to mark memory as initialized
 pub fn set_memory_initialized(initialized: bool) {
-    *MEMORY_INITIALIZED.lock() = initialized;
+    MEMORY_INITIALIZED.store(initialized, Ordering::SeqCst);
 }
 
 // Re-exports to maintain compatibility

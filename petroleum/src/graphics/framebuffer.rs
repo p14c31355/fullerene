@@ -40,6 +40,21 @@ pub trait FramebufferLike:
 }
 
 #[derive(Clone)]
+pub enum UefiFramebufferWriter {
+    Uefi32(FramebufferWriter<u32>),
+    Vga8(FramebufferWriter<u8>),
+}
+
+impl core::fmt::Write for UefiFramebufferWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        match self {
+            UefiFramebufferWriter::Uefi32(w) => w.write_str(s),
+            UefiFramebufferWriter::Vga8(w) => w.write_str(s),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub enum UefiFramebuffer {
     Uefi32(FramebufferWriter<u32>),
     Vga8(FramebufferWriter<u8>),

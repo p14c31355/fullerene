@@ -33,6 +33,7 @@ pub use graphics::{
     Color, ColorCode, HardwarePorts, ScreenChar, TextBufferOperations, VgaPortOps,
     color::{self},
     init_vga_graphics,
+    UefiFramebufferWriter,
 };
 
 pub fn clear_buffer<B: TextBufferOperations>(

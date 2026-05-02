@@ -6,6 +6,7 @@ use petroleum::{common::InitSequence, init_log, write_serial_bytes};
 use spin::Once;
 
 pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] entered\n");
     init_log!("Initializing common components");
 
     // 1. Platform-specific early initialization
@@ -42,35 +43,26 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
 
     #[cfg(target_os = "uefi")]
     {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] starting uefi_early_steps\n");
         let uefi_early_steps = [
-            petroleum::init_step!("Graphics", || {
-                let _ = crate::graphics::text::init_fallback_graphics();
-                Ok(())
-            }),
+            petroleum::init_step!("Graphics", init_early_graphics),
         ];
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] calling InitSequence::run for uefi_early_steps\n");
         InitSequence::new(&uefi_early_steps).run();
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] uefi_early_steps completed\n");
     }
 
     // 2. Common initialization sequence
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] starting common_steps\n");
     let common_steps = [
-        petroleum::init_step!("process", || {
-            crate::process::init();
-            Ok(())
-        }),
-        petroleum::init_step!("syscall", || {
-            crate::syscall::init();
-            Ok(())
-        }),
-        petroleum::init_step!("fs", || {
-            crate::fs::init();
-            Ok(())
-        }),
-        petroleum::init_step!("loader", || {
-            crate::loader::init();
-            Ok(())
-        }),
+        petroleum::init_step!("process", init_process_step),
+        petroleum::init_step!("syscall", init_syscall_step),
+        petroleum::init_step!("fs", init_fs_step),
+        petroleum::init_step!("loader", init_loader_step),
     ];
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] calling InitSequence::run\n");
     InitSequence::new(&common_steps).run();
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] InitSequence::run returned\n");
 
     // 3. Post-initialization (UEFI only for now)
     #[cfg(target_os = "uefi")]
@@ -86,3 +78,39 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
         }
     }
 }
+
+fn init_early_graphics() -> Result<(), &'static str> {
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] init_fallback_graphics start\n");
+    let _ = crate::graphics::text::init_fallback_graphics();
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] init_fallback_graphics done\n");
+    Ok(())
+}
+
+fn init_process_step() -> Result<(), &'static str> {
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] init process start\n");
+    crate::process::init();
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] init process done\n");
+    Ok(())
+}
+
+fn init_syscall_step() -> Result<(), &'static str> {
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] init syscall start\n");
+    crate::syscall::init();
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] init syscall done\n");
+    Ok(())
+}
+
+fn init_fs_step() -> Result<(), &'static str> {
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] init fs start\n");
+    crate::fs::init();
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] init fs done\n");
+    Ok(())
+}
+
+fn init_loader_step() -> Result<(), &'static str> {
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] init loader start\n");
+    crate::loader::init();
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] init loader done\n");
+    Ok(())
+}
+
