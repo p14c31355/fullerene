@@ -178,11 +178,56 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
         }
 
         // DEBUG: Print values before calculation
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: kernel_entry check\n");
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: kernel_entry check [VERSION_20260502_03]\n");
             
-            let args = &*actual_kernel_args;
-            let kernel_phys_start = args.kernel_phys_start;
-            let kernel_virt_start = kernel_phys_start.wrapping_add(local_phys_offset.as_u64());
+             // Map KernelArgs first so we can read it
+             let args_phys = actual_kernel_args as u64;
+             let args_phys_raw = args_phys.wrapping_sub(local_phys_offset.as_u64());
+             map_page_raw(args_phys, args_phys_raw, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+
+             let args = &*actual_kernel_args;
+
+             let mut buf = [0u8; 16];
+             crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: KernelArgs content:\n");
+             
+             crate::write_serial_bytes!(0x3F8, 0x3FD, b"  handle: 0x");
+             let len = crate::serial::format_hex_to_buffer(args.handle as u64, &mut buf, 16);
+             crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+             crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
+             crate::write_serial_bytes!(0x3F8, 0x3FD, b"  st: 0x");
+             let len = crate::serial::format_hex_to_buffer(args.system_table as u64, &mut buf, 16);
+             crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+             crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
+             crate::write_serial_bytes!(0x3F8, 0x3FD, b"  map: 0x");
+             let len = crate::serial::format_hex_to_buffer(args.map_ptr as u64, &mut buf, 16);
+             crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+             crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
+             crate::write_serial_bytes!(0x3F8, 0x3FD, b"  size: 0x");
+             let len = crate::serial::format_hex_to_buffer(args.map_size as u64, &mut buf, 16);
+             crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+             crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
+             crate::write_serial_bytes!(0x3F8, 0x3FD, b"  desc_size: 0x");
+             let len = crate::serial::format_hex_to_buffer(args.descriptor_size as u64, &mut buf, 16);
+             crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+             crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+             let kernel_phys_start = args.kernel_phys_start;
+             let kernel_virt_start = kernel_phys_start.wrapping_add(local_phys_offset.as_u64());
+
+             // Also explicitly map the memory map buffer
+             let map_phys = args.map_ptr as u64;
+             let map_virt = map_phys.wrapping_add(local_phys_offset.as_u64());
+             let map_pages = (args.map_size as u64 + 4095) / 4096;
+             for i in 0..map_pages {
+                 map_page_raw(
+                     map_virt.wrapping_add(i * 4096),
+                     map_phys.wrapping_add(i * 4096),
+                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                 );
+             }
             
             // Map a larger kernel region (512MB to be safe) to ensure all sections and functions are covered
             for page_offset in 0..131072 {
@@ -226,6 +271,12 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
             crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
             crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
 
+            // Use a temporary storage for the virtual addresses to avoid in(reg) optimization issues
+            let h = args.handle.wrapping_add(local_phys_offset.as_u64().try_into().unwrap()) as usize;
+            let s = args.system_table.wrapping_add(local_phys_offset.as_u64().try_into().unwrap()) as usize;
+            let m = args.map_ptr.wrapping_add(local_phys_offset.as_u64().try_into().unwrap()) as usize;
+            let sz = args.map_size;
+
             core::arch::asm!(
                 "cli",
                 "mov ax, 0x10",
@@ -244,10 +295,10 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
                 "mov rax, {entry}",
                 "push rax",
                 "retfq", 
-                handle = in(reg) args.handle,
-                st = in(reg) args.system_table,
-                map = in(reg) args.map_ptr,
-                size = in(reg) args.map_size,
+                handle = in(reg) h,
+                st = in(reg) s,
+                map = in(reg) m,
+                size = in(reg) sz,
                 entry = in(reg) actual_kernel_entry,
                 options(noreturn)
             );

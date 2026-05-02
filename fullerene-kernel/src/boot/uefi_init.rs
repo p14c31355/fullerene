@@ -344,9 +344,7 @@ impl UefiInitContext {
     }
 
     fn init_memory_map(&self) {
-        let phys_ptr = self.memory_map as u64;
-        let offset = crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64;
-        let raw_ptr = phys_ptr + offset;
+        let raw_ptr = self.memory_map as u64;
         
         unsafe {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: RAW - Memory Map Info:\n");
@@ -375,28 +373,35 @@ impl UefiInitContext {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
         }
 
-        let kernel_args = unsafe { petroleum::page_table::mapper::transition::KERNEL_ARGS };
-        if kernel_args.is_null() {
-            unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: ERROR - KERNEL_ARGS is null!\n"); }
-            return;
-        }
-        let descriptor_item_size = unsafe { (*kernel_args).descriptor_size };
-        
-        // Adaptive offset: If the first 8 bytes are within a reasonable descriptor size range (40-64), skip them.
+        // Adaptive offset and descriptor size detection
         let mut base_ptr = raw_ptr as *const u8;
+        let mut descriptor_item_size = 0;
+
         unsafe {
             let first_val = core::ptr::read_volatile(raw_ptr as *const usize);
             if first_val >= 40 && first_val <= 64 {
                 petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Detected descriptor_size at head, skipping 8 bytes\n");
+                descriptor_item_size = first_val;
                 base_ptr = base_ptr.add(core::mem::size_of::<usize>());
             } else {
                 petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: No descriptor_size at head, starting from 0\n");
             }
         }
 
+        if descriptor_item_size == 0 {
+            let kernel_args = unsafe { petroleum::page_table::mapper::transition::KERNEL_ARGS };
+            if kernel_args.is_null() {
+                unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: ERROR - KERNEL_ARGS is null and no size detected!\n"); }
+                return;
+            }
+            unsafe {
+                descriptor_item_size = (*kernel_args).descriptor_size;
+            }
+        }
+
         unsafe {
             let mut buf = [0u8; 16];
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Using descriptor_size from KERNEL_ARGS: 0x");
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Final descriptor_size: 0x");
             let len = petroleum::serial::format_hex_to_buffer(descriptor_item_size as u64, &mut buf, 16);
             petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");

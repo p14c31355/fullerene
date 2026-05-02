@@ -45,6 +45,30 @@ pub unsafe extern "efiapi" fn efi_main_real_logic(
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: efi_main_real reached!\n");
     
     let mut buf = [0u8; 16];
+    
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Args check:\n");
+    
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"  handle: 0x");
+    let len = petroleum::serial::format_hex_to_buffer(_image_handle as u64, &mut buf, 16);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+    
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"  st: 0x");
+    let len = petroleum::serial::format_hex_to_buffer(system_table as u64, &mut buf, 16);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+    
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"  map: 0x");
+    let len = petroleum::serial::format_hex_to_buffer(memory_map as u64, &mut buf, 16);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+    
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"  size: 0x");
+    let len = petroleum::serial::format_hex_to_buffer(memory_map_size as u64, &mut buf, 16);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+    
+    let mut buf = [0u8; 16];
     let len = petroleum::serial::format_hex_to_buffer(system_table as u64, &mut buf, 16);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: system_table ptr: 0x");
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
