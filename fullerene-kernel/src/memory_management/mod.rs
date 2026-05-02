@@ -6,6 +6,7 @@
 // Define macros before using super for overlay
 use alloc::collections::BTreeMap;
 use spin::Mutex;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use static_assertions::assert_eq_size;
 
@@ -886,16 +887,16 @@ pub fn map_user_page(
 pub use petroleum::{is_user_address, validate_user_buffer};
 
 /// Physical memory offset for virtual to physical address translation
-static PHYSICAL_MEMORY_OFFSET: spin::Mutex<usize> = spin::Mutex::new(0);
+static PHYSICAL_MEMORY_OFFSET: AtomicUsize = AtomicUsize::new(0);
 
 /// Set the physical memory offset for virtual to physical address translation
 pub fn set_physical_memory_offset(offset: usize) {
-    *PHYSICAL_MEMORY_OFFSET.lock() = offset;
+    PHYSICAL_MEMORY_OFFSET.store(offset, Ordering::Relaxed);
 }
 
 /// Get the physical memory offset for virtual to physical address translation
 pub fn get_physical_memory_offset() -> usize {
-    *PHYSICAL_MEMORY_OFFSET.lock()
+    PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed)
 }
 
 /// Convert virtual address to physical address using the offset

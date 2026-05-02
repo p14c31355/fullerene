@@ -317,10 +317,13 @@ impl UefiInitContext {
         crate::interrupts::syscall::set_kernel_cr3(kernel_cr3.0.start_address().as_u64());
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Kernel CR3 set\n");
 
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to set physical memory offset\n");
         crate::memory_management::set_physical_memory_offset(
             crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE,
         );
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Physical memory offset set\n");
 
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to find heap start\n");
         let heap_phys_start = find_heap_start(memory_map_ref);
         let heap_phys_start_addr = if heap_phys_start.as_u64() < 0x1000
             || heap_phys_start.as_u64() >= 0x0000_8000_0000_0000
@@ -338,6 +341,7 @@ impl UefiInitContext {
         frame_allocator
             .allocate_frames_at(heap_phys_addr.as_u64() as usize, heap_pages)
             .expect("Failed to reserve heap frames");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Heap frames reserved\n");
 
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling petroleum::page_table::init (3)...\n");
         let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator) };
