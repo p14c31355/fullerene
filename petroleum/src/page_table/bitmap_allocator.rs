@@ -55,7 +55,7 @@ impl BitmapFrameAllocator {
         memory_map: &[impl super::efi_memory::MemoryDescriptorValidator],
     ) -> crate::common::logging::SystemResult<()> {
         // Debug: Log memory map information
-        debug_log_no_alloc!("Entering init_with_memory_map");
+        debug_log_no_alloc!("Entering init_with_memory_map [V2]");
         debug_log_no_alloc!("Memory map contains ", memory_map.len(), " descriptors");
 
         // Validate memory map is not empty
@@ -65,23 +65,7 @@ impl BitmapFrameAllocator {
         }
 
         // Debug: Log each descriptor
-        for (i, desc) in memory_map.iter().enumerate() {
-            debug_log_no_alloc!("Processing bitmap desc [", i, "]: phys=0x", desc.get_physical_start() as usize);
-            mem_debug!(
-                "Memory descriptor ",
-                i,
-                ", type=",
-                desc.get_type() as usize,
-                ", phys_start=",
-                desc.get_physical_start() as usize,
-                ", pages=",
-                desc.get_page_count() as usize,
-                "\n"
-            );
-            if i % 10 == 0 {
-                debug_log_no_alloc!("Still processing descriptors... index ", i);
-            }
-        }
+        // Removed detailed logging to avoid potential issues during early boot
 
         debug_log_no_alloc!("Calling calculate_frame_allocation_params");
         let (max_addr, total_frames, bitmap_size) =

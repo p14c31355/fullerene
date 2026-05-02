@@ -272,6 +272,11 @@ pub fn debug_print_hex<T: DebugToHexOrStr>(value: T) {
     value.debug_print();
 }
 
+/// Helper function to print a value that implements DebugNoLock without requiring the trait to be in scope at the call site.
+pub fn debug_print_no_lock<T: DebugNoLock>(value: T) {
+    value.debug_print_no_lock();
+}
+
 /// Formats a usize as hex to the given writer without allocation.
 pub fn format_hex(writer: &mut impl core::fmt::Write, value: usize) -> core::fmt::Result {
     write!(writer, "0x")?;
