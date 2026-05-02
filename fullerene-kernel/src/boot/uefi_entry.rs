@@ -66,13 +66,23 @@ pub unsafe extern "efiapi" fn efi_main_real_logic(
     let system_table_ref = unsafe { &*system_table };
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: system_table dereferenced successfully\n");
 
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Detecting descriptor_size from memory_map\n");
     let descriptor_size = unsafe {
-        if !petroleum::page_table::mapper::KERNEL_ARGS.is_null() {
-            (*petroleum::page_table::mapper::KERNEL_ARGS).descriptor_size
-        } else {
+        if memory_map.is_null() {
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: memory_map is null, using 0\n");
             0
+        } else {
+            let first_val = core::ptr::read_volatile(memory_map as *const usize);
+            if first_val >= 40 && first_val <= 64 {
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Detected descriptor_size from map head\n");
+                first_val
+            } else {
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Using default descriptor_size 48\n");
+                48
+            }
         }
     };
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: descriptor_size obtained\n");
 
     let mut ctx = UefiInitContext {
         system_table: system_table_ref,
