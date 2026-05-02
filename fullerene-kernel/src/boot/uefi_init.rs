@@ -180,18 +180,20 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Allocating TSS stacks...\n");
         let tss_stack_pages = (crate::gdt::GDT_TSS_STACK_COUNT * crate::gdt::GDT_TSS_STACK_SIZE) / 4096;
         
-        let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
-        let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
-        debug_log_no_alloc!("DEBUG: Frame allocator lock acquired for TSS");
-        
-        debug_log_no_alloc!("DEBUG: Attempting to allocate contiguous frames: ", tss_stack_pages);
-        let tss_phys_addr = match frame_allocator.allocate_contiguous_frames(tss_stack_pages) {
-            Ok(phys_addr) => {
-                debug_log_no_alloc!("DEBUG: TSS frames allocated at 0x", phys_addr);
-                PhysAddr::new(phys_addr as u64)
-            },
-            Err(_) => {
-                panic!("Critical failure: Failed to allocate contiguous physical frames for TSS stacks.");
+        let tss_phys_addr = {
+            let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
+            let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
+            debug_log_no_alloc!("DEBUG: Frame allocator lock acquired for TSS");
+            
+            debug_log_no_alloc!("DEBUG: Attempting to allocate contiguous frames: ", tss_stack_pages);
+            match frame_allocator.allocate_contiguous_frames(tss_stack_pages) {
+                Ok(phys_addr) => {
+                    debug_log_no_alloc!("DEBUG: TSS frames allocated at 0x", phys_addr);
+                    PhysAddr::new(phys_addr as u64)
+                },
+                Err(_) => {
+                    panic!("Critical failure: Failed to allocate contiguous physical frames for TSS stacks.");
+                }
             }
         };
 
@@ -207,7 +209,6 @@ impl UefiInitContext {
         let kernel_virt_start = crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64;
         let kernel_phys_start_val = kernel_phys_start.as_u64();
 
-        // 値の検証ログ
         let mut val_buf = [0u8; 16];
         let len = petroleum::serial::format_hex_to_buffer(kernel_phys_start_val, &mut val_buf, 16);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: phys_start=0x");
