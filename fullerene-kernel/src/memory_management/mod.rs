@@ -118,7 +118,7 @@ impl UnifiedMemoryManager {
         unsafe { self.frame_allocator.init_with_memory_map(memory_map)? };
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Frame allocator init done\n");
 
-        self.frame_allocator.reserve_frames(0, 256)?;
+        // First 1MB is already reserved inside BitmapFrameAllocator::init_with_memory_map
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"First 1MB reserved\n");
 
         Initializable::init(&mut self.page_table_manager)?;

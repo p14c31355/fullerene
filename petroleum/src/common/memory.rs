@@ -3,19 +3,19 @@
 /// Provides functions for validating user space memory access,
 /// used by syscall handlers and memory management.
 use crate::common::logging::{SystemError, SystemResult};
-use spin::Once;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use x86_64::VirtAddr;
 
 /// Heap start address
-pub static HEAP_START: Once<usize> = Once::new();
+pub static HEAP_START: AtomicUsize = AtomicUsize::new(0);
 
 /// Heap end address (start + size)
-pub static HEAP_END: Once<usize> = Once::new();
+pub static HEAP_END: AtomicUsize = AtomicUsize::new(0);
 
 /// Set heap range for allocator-related page fault detection
 pub fn set_heap_range(start: usize, size: usize) {
-    HEAP_START.call_once(|| start);
-    HEAP_END.call_once(|| start + size);
+    HEAP_START.store(start, Ordering::SeqCst);
+    HEAP_END.store(start + size, Ordering::SeqCst);
 }
 
 /// Check if an address is in user space
@@ -27,7 +27,9 @@ pub fn is_user_address(addr: VirtAddr) -> bool {
 
 /// Check if an address is within the allocator's heap range
 pub fn is_allocator_related_address(addr: usize) -> bool {
-    if let (Some(&start), Some(&end)) = (HEAP_START.get(), HEAP_END.get()) {
+    let start = HEAP_START.load(Ordering::SeqCst);
+    let end = HEAP_END.load(Ordering::SeqCst);
+    if start != 0 {
         addr >= start && addr < end
     } else {
         false
