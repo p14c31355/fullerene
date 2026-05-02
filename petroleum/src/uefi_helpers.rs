@@ -281,9 +281,7 @@ pub fn setup_kernel_location(
     }
     
     unsafe {
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Attempting to read descriptor_item_size\n");
-        let _descriptor_item_size = *(memory_map as *const usize);
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Read descriptor_item_size successfully\n");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Skipping descriptor_item_size read (now passed via KernelArgs)\n");
     }
     
     crate::debug_log_no_alloc!("Succeeded in reading memory map start");

@@ -344,8 +344,9 @@ impl UefiInitContext {
     }
 
     fn init_memory_map(&self) {
-        let raw_ptr = self.memory_map as u64;
+        let phys_ptr = self.memory_map as u64;
         let offset = crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64;
+        let raw_ptr = phys_ptr + offset;
         
         unsafe {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: RAW - Memory Map Info:\n");
@@ -380,7 +381,18 @@ impl UefiInitContext {
             return;
         }
         let descriptor_item_size = unsafe { (*kernel_args).descriptor_size };
-        let base_ptr = raw_ptr as *const u8;
+        
+        // Adaptive offset: If the first 8 bytes are within a reasonable descriptor size range (40-64), skip them.
+        let mut base_ptr = raw_ptr as *const u8;
+        unsafe {
+            let first_val = core::ptr::read_volatile(raw_ptr as *const usize);
+            if first_val >= 40 && first_val <= 64 {
+                petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Detected descriptor_size at head, skipping 8 bytes\n");
+                base_ptr = base_ptr.add(core::mem::size_of::<usize>());
+            } else {
+                petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: No descriptor_size at head, starting from 0\n");
+            }
+        }
 
         unsafe {
             let mut buf = [0u8; 16];

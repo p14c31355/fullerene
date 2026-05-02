@@ -3,26 +3,26 @@ pub fn calculate_offset_address(base: u64, i: u64) -> u64 {
     base + (i * 4096)
 }
 
-/// Calculates the number of pages needed for a buffer including metadata overhead.
+/// Calculates the number of pages needed for a buffer.
 pub fn calculate_pages_for_buffer(buffer_size: usize) -> usize {
-    (buffer_size + core::mem::size_of::<usize>())
+    buffer_size
         .div_ceil(4096)
         .max(1)
 }
 
-/// Calculates the data pointer offset from the physical address (skipping metadata).
+/// Calculates the data pointer offset from the physical address.
 pub fn calculate_map_data_ptr(phys_addr: usize) -> usize {
-    phys_addr + core::mem::size_of::<usize>()
+    phys_addr
 }
 
 /// Calculates the offset where the configuration should be appended to the memory map.
 pub fn calculate_config_offset(map_size: usize) -> usize {
-    core::mem::size_of::<usize>() + map_size
+    map_size
 }
 
 /// Checks if adding a configuration block exceeds the allocated buffer size.
 pub fn check_buffer_overflow(_phys_addr: usize, config_offset: usize, config_size: usize, buffer_size: usize) -> bool {
-    let total_capacity = buffer_size + core::mem::size_of::<usize>();
+    let total_capacity = buffer_size;
     (config_offset + config_size) <= total_capacity
 }
 
