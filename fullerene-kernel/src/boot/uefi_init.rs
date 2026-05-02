@@ -384,18 +384,33 @@ impl UefiInitContext {
                 descriptor_item_size = first_val;
                 base_ptr = base_ptr.add(core::mem::size_of::<usize>());
             } else {
-                petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: No descriptor_size at head, starting from 0\n");
+                petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: No descriptor_size at head, trying heuristics\n");
             }
         }
 
         if descriptor_item_size == 0 {
-            let kernel_args = unsafe { petroleum::page_table::mapper::transition::KERNEL_ARGS };
-            if kernel_args.is_null() {
-                unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: ERROR - KERNEL_ARGS is null and no size detected!\n"); }
-                return;
+            // Heuristic: Try common UEFI descriptor sizes that divide the map size
+            // Typical sizes: 40, 44, 48, 52, 56, 60, 64
+            for &size in &[48, 44, 40, 52, 56, 60, 64] {
+                if self.memory_map_size % size == 0 {
+                    descriptor_item_size = size;
+                    break;
+                }
             }
-            unsafe {
-                descriptor_item_size = (*kernel_args).descriptor_size;
+        }
+
+        if descriptor_item_size == 0 {
+            // Fallback to KERNEL_ARGS if still not found, but be very careful
+            let kernel_args = unsafe { petroleum::page_table::mapper::transition::KERNEL_ARGS };
+            if !kernel_args.is_null() {
+                unsafe {
+                    // We wrap this in a check or just accept it might crash if mapping is missing
+                    // But at this point we have no other choice
+                    descriptor_item_size = (*kernel_args).descriptor_size;
+                }
+            } else {
+                unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: ERROR - Could not determine descriptor size!\n"); }
+                return;
             }
         }
 
