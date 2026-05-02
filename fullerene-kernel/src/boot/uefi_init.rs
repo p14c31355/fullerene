@@ -124,6 +124,36 @@ impl UefiInitContext {
         heap::init_frame_allocator(memory_map_ref);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Heap frame allocator initialized\n");
 
+        // WIDE MAPPING: Map the kernel region to avoid #PF during early boot
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Mapping wide higher-half kernel region\n");
+        let kernel_virt_start = crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64;
+        let kernel_phys_start = kernel_phys_start.as_u64();
+        let mut wide_mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset) };
+        {
+            let mut fa_guard = crate::heap::FRAME_ALLOCATOR.lock();
+            let allocator = fa_guard.as_mut().expect("Frame allocator should be ready");
+            let map_size_pages = (512 * 1024 * 1024) / 4096; // 512MB
+            for i in 0..map_size_pages {
+                let v_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(
+                    VirtAddr::new(kernel_virt_start + i * 4096)
+                );
+                let p_frame = x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(
+                    PhysAddr::new(kernel_phys_start + i * 4096)
+                );
+                unsafe {
+                    if let Ok(flush) = wide_mapper.map_to(
+                        v_page,
+                        p_frame,
+                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                        allocator,
+                    ) {
+                        flush.flush();
+                    }
+                }
+            }
+        }
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Wide higher-half kernel region mapped\n");
+
         // Now that FRAME_ALLOCATOR is ready, map the memory_map buffer to higher half for consistency
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Mapping memory_map buffer to higher half...\n");
         
