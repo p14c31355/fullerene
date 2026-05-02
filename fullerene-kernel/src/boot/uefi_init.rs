@@ -15,7 +15,7 @@ use petroleum::{
 };
 use x86_64::{
     PhysAddr, VirtAddr,
-    structures::paging::{PageTableFlags, mapper::MapToError},
+    structures::paging::{PageTableFlags, Mapper, mapper::MapToError},
 };
 
 /// Helper struct for UEFI initialization context
@@ -112,6 +112,8 @@ impl UefiInitContext {
         self.physical_memory_offset = x86_64::VirtAddr::new(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64);
 
         debug_log_no_alloc!("DEBUG: Starting memory_management_initialization");
+        debug_log_no_alloc!("DEBUG: Offset value: ", self.physical_memory_offset.as_u64());
+
         self.init_memory_map();
         debug_log_no_alloc!("DEBUG: init_memory_map completed");
         
@@ -120,6 +122,40 @@ impl UefiInitContext {
         
         heap::init_frame_allocator(memory_map_ref);
         debug_log_no_alloc!("Heap frame allocator initialized");
+
+        // Now that FRAME_ALLOCATOR is ready, map the memory_map buffer to higher half for consistency
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Mapping UEFI memory_map buffer to higher half\n");
+        
+        let map_phys = self.memory_map as u64;
+        let map_virt = map_phys + self.physical_memory_offset.as_u64();
+        let map_pages = ((self.memory_map_size as u64) + 4095) / 4096;
+
+        let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset) };
+        {
+            let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
+            let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator should be ready now");
+
+            for i in 0..map_pages {
+                let v_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(
+                    VirtAddr::new(map_virt + i * 4096)
+                );
+                let p_frame = x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(
+                    PhysAddr::new(map_phys + i * 4096)
+                );
+
+                unsafe {
+                    if let Ok(flush) = mapper.map_to(
+                        v_page,
+                        p_frame,
+                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                        frame_allocator,
+                    ) {
+                        flush.flush();
+                    }
+                }
+            }
+        }
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Memory map buffer mapped successfully\n");
 
         debug_log_no_alloc!("DEBUG: Allocating TSS stacks");
         let tss_stack_pages = (crate::gdt::GDT_TSS_STACK_COUNT * crate::gdt::GDT_TSS_STACK_SIZE) / 4096;
@@ -349,55 +385,33 @@ impl UefiInitContext {
     }
 
     fn init_memory_map(&self) {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: init_memory_map START\n");
-        
-        let raw_ptr = self.memory_map as u64;
-        // Only add offset if the pointer is not already in the higher-half
-        let virt_ptr = if raw_ptr < 0x0000_8000_0000_0000 {
-            raw_ptr.wrapping_add(self.physical_memory_offset.as_u64())
-        } else {
-            raw_ptr
-        };
-        
+        let phys_ptr = self.memory_map as u64;
+        let offset = self.physical_memory_offset.as_u64();
+        // Use identity mapping (phys_ptr) for initial parsing to avoid chicken-and-egg with FRAME_ALLOCATOR
+        let parse_ptr = phys_ptr; 
+        let virt_ptr = phys_ptr.wrapping_add(offset);
+
         unsafe {
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: RAW - Memory Map Info:\n");
             let mut buf = [0u8; 16];
             
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"  phys_ptr: 0x");
-            let len = petroleum::serial::format_hex_to_buffer(raw_ptr, &mut buf, 16);
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-            
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b" virt_ptr: 0x");
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: MMAP offset: 0x");
+            let len = petroleum::serial::format_hex_to_buffer(offset, &mut buf, 16);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: MMAP phys->virt: 0x");
             let len = petroleum::serial::format_hex_to_buffer(virt_ptr, &mut buf, 16);
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-            
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b" size: 0x");
-            let len = petroleum::serial::format_hex_to_buffer(self.memory_map_size as u64, &mut buf, 16);
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
-            
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: RAW - Memory Map Dump (first 64 bytes):\n");
-            for i in 0..8 {
-                // Use volatile read to avoid optimization and detect faults immediately
-                let val = core::ptr::read_volatile((virt_ptr + i * 8) as *const u64);
-                petroleum::write_serial_bytes(0x3F8, 0x3FD, b"  [");
-                let len = petroleum::serial::format_hex_to_buffer(val, &mut buf, 16);
-                petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-                petroleum::write_serial_bytes(0x3F8, 0x3FD, b"] ");
-                if (i + 1) % 4 == 0 {
-                    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
-                }
-            }
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
         }
 
         // Use descriptor_size from context if available, otherwise try to detect it
-        let mut base_ptr = virt_ptr as *const u8;
+        let mut base_ptr = parse_ptr as *const u8;
         let mut descriptor_item_size = self.descriptor_size;
 
         if descriptor_item_size == 0 {
             unsafe {
-                let first_val = core::ptr::read_volatile(virt_ptr as *const usize);
+                let first_val = core::ptr::read_volatile(parse_ptr as *const usize);
                 if first_val >= 40 && first_val <= 64 {
                     petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Detected descriptor_size at head, skipping 8 bytes\n");
                     descriptor_item_size = first_val;
