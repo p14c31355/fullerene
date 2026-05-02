@@ -233,10 +233,20 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: GDT initialized with TSS stacks\n");
         
         debug_log_no_alloc!("Entering memory_management_initialization");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Post-GDT init phase start\n");
+
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Accessing FULLERENE_FRAMEBUFFER_CONFIG...\n");
         let framebuffer_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
             .get()
-            .and_then(|mutex| *mutex.lock());
+            .and_then(|mutex| {
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Locking framebuffer config mutex...\n");
+                let lock = mutex.lock();
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Framebuffer config mutex locked\n");
+                *lock
+            });
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Framebuffer config access completed\n");
 
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to lock FRAME_ALLOCATOR (line 222)\n");
         let config = framebuffer_config.as_ref();
         let (fb_addr, fb_size) = if let Some(config) = config {
             let fb_size_bytes =
@@ -250,6 +260,7 @@ impl UefiInitContext {
         };
 
         let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: FRAME_ALLOCATOR locked (line 223)\n");
         let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
         debug_log_no_alloc!("DEBUG: Frame allocator lock acquired for page table setup");
         debug_log_no_alloc!("DEBUG: About to map TSS stacks");
@@ -258,8 +269,10 @@ impl UefiInitContext {
             | x86_64::structures::paging::PageTableFlags::WRITABLE
             | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling petroleum::page_table::init (2)...\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to init tss_mapper\n");
         let mut tss_mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset) };
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: petroleum::page_table::init (2) done\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to map TSS stacks\n");
         unsafe {
             petroleum::map_range_with_log_macro!(
                 &mut tss_mapper,
@@ -273,11 +286,13 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: TSS stacks mapped to higher half\n");
 
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Starting page table copy test...\n");
-        if let Err(e) = petroleum::page_table::test_page_table_copy_switch(
+        let test_res = petroleum::page_table::test_page_table_copy_switch(
             VirtAddr::zero(),
             &mut *frame_allocator,
             memory_map_ref,
-        ) {
+        );
+        if let Err(e) = test_res {
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Page table copy test FAILED\n");
             debug_log_no_alloc!("Page table copy test failed: ", e as usize);
         } else {
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Page table copy test passed\n");
@@ -361,7 +376,8 @@ impl UefiInitContext {
         self.heap_start_after_gdt = virtual_heap_start;
 
         let stack_phys_start = self.heap_start_after_gdt.as_u64() - physical_memory_offset.as_u64();
-        let stack_pages = (crate::heap::KERNEL_STACK_SIZE + 4095) / 4096;
+        // WIDER STACK MAPPING: Map 2MB instead of just KERNEL_STACK_SIZE to prevent #PF on stack growth
+        let stack_pages = (2 * 1024 * 1024) / 4096;
 
         let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
         let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
@@ -380,7 +396,7 @@ impl UefiInitContext {
         mem_mapper.map_to_higher_half(stack_phys_start, stack_pages as u64, stack_flags)
             .expect("Failed to map kernel stack to higher half");
 
-        write_serial_bytes!(0x3F8, 0x3FD, b"Kernel stack allocated and mapped\n");
+        write_serial_bytes!(0x3F8, 0x3FD, b"Kernel stack allocated and mapped (wide)\n");
 
         let kernel_stack_top =
             (self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64 - 8).as_u64();
