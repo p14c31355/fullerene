@@ -42,8 +42,23 @@ pub fn exit_boot_services_and_jump(
     // Pre-allocate buffer before loop to include it in map key
     let map_buffer_size: usize = 128 * 1024; // 128 KiB
     let alloc_pages = petroleum::common::utils::calculate_pages_for_buffer(map_buffer_size);
+
+    // Allocate memory for KernelArgs before exiting boot services to avoid memory corruption
+    let mut args_phys_addr: usize = 0;
+    let args_alloc_status = (bs.allocate_pages)(
+        0usize,
+        EfiMemoryType::EfiLoaderData,
+        1,
+        &mut args_phys_addr,
+    );
+    if EfiStatus::from(args_alloc_status) != EfiStatus::Success {
+        return Err(BellowsError::AllocationFailed(
+            "Failed to allocate memory for KernelArgs.",
+        ));
+    }
+
     #[cfg(feature = "debug_loader")]
-    petroleum::info_log!("Buffer vars setup");
+    petroleum::info_log!("Buffer and KernelArgs vars setup");
 
     #[cfg(feature = "debug_loader")]
     {
@@ -233,19 +248,6 @@ pub fn exit_boot_services_and_jump(
     // Setup Page Tables before jumping to kernel
     petroleum::serial::_print(format_args!("Reinitializing page tables for kernel jump...\n"));
 
-    // Allocate and prepare KernelArgs
-    let mut args_phys_addr: usize = 0;
-    let args_status = (bs.allocate_pages)(
-        0usize,
-        EfiMemoryType::EfiLoaderData,
-        1,
-        &mut args_phys_addr,
-    );
-    if EfiStatus::from(args_status) != EfiStatus::Success {
-        return Err(BellowsError::AllocationFailed(
-            "Failed to allocate memory for KernelArgs.",
-        ));
-    }
     let args_ptr = args_phys_addr as *mut petroleum::page_table::mapper::KernelArgs;
     unsafe {
         core::ptr::write_volatile(

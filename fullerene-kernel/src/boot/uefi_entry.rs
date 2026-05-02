@@ -18,20 +18,8 @@ pub unsafe extern "efiapi" fn efi_main(
     core::arch::naked_asm!(
         "cli", // Ensure interrupts are disabled
         "mov dx, 0x3f8", "mov al, 0x21", "out dx, al", // Immediate signal of entry ('!')
-        "jmp efi_main_logic",
+        "jmp efi_main_real_logic",
     );
-}
-
-#[cfg(target_os = "uefi")]
-#[unsafe(no_mangle)]
-#[unsafe(naked)]
-pub unsafe extern "efiapi" fn efi_main_logic(
-    _image_handle: usize,
-    system_table: *mut EfiSystemTable,
-    memory_map: *mut c_void,
-    memory_map_size: usize,
-) {
-    core::arch::naked_asm!("jmp efi_main_real_logic");
 }
 
 #[cfg(target_os = "uefi")]
@@ -78,10 +66,19 @@ pub unsafe extern "efiapi" fn efi_main_real_logic(
     let system_table_ref = unsafe { &*system_table };
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: system_table dereferenced successfully\n");
 
+    let descriptor_size = unsafe {
+        if !petroleum::page_table::mapper::KERNEL_ARGS.is_null() {
+            (*petroleum::page_table::mapper::KERNEL_ARGS).descriptor_size
+        } else {
+            0
+        }
+    };
+
     let mut ctx = UefiInitContext {
         system_table: system_table_ref,
         memory_map,
         memory_map_size,
+        descriptor_size,
         physical_memory_offset: VirtAddr::zero(),
         virtual_heap_start: VirtAddr::zero(),
         heap_start_after_gdt: VirtAddr::zero(),

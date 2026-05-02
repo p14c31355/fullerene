@@ -27,6 +27,8 @@ pub struct UefiInitContext {
     pub memory_map: *mut c_void,
     /// Memory map size
     pub memory_map_size: usize,
+    /// Descriptor size for memory map entries
+    pub descriptor_size: usize,
     /// Physical memory offset after page table reconfiguration
     pub physical_memory_offset: VirtAddr,
     /// Virtual heap start address
@@ -373,45 +375,26 @@ impl UefiInitContext {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
         }
 
-        // Adaptive offset and descriptor size detection
+        // Use descriptor_size from context if available, otherwise try to detect it
         let mut base_ptr = raw_ptr as *const u8;
-        let mut descriptor_item_size = 0;
-
-        unsafe {
-            let first_val = core::ptr::read_volatile(raw_ptr as *const usize);
-            if first_val >= 40 && first_val <= 64 {
-                petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Detected descriptor_size at head, skipping 8 bytes\n");
-                descriptor_item_size = first_val;
-                base_ptr = base_ptr.add(core::mem::size_of::<usize>());
-            } else {
-                petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: No descriptor_size at head, trying heuristics\n");
-            }
-        }
+        let mut descriptor_item_size = self.descriptor_size;
 
         if descriptor_item_size == 0 {
-            // Heuristic: Try common UEFI descriptor sizes that divide the map size
-            // Typical sizes: 40, 44, 48, 52, 56, 60, 64
-            for &size in &[48, 44, 40, 52, 56, 60, 64] {
-                if self.memory_map_size % size == 0 {
-                    descriptor_item_size = size;
-                    break;
+            unsafe {
+                let first_val = core::ptr::read_volatile(raw_ptr as *const usize);
+                if first_val >= 40 && first_val <= 64 {
+                    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Detected descriptor_size at head, skipping 8 bytes\n");
+                    descriptor_item_size = first_val;
+                    base_ptr = base_ptr.add(core::mem::size_of::<usize>());
+                } else {
+                    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: No descriptor_size at head, trying heuristics\n");
+                    // Heuristic: Use 48 as default for x86_64 UEFI
+                    descriptor_item_size = 48;
+                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Heuristic failed, using default size 48\n");
                 }
             }
-        }
-
-        if descriptor_item_size == 0 {
-            // Fallback to KERNEL_ARGS if still not found, but be very careful
-            let kernel_args = unsafe { petroleum::page_table::mapper::transition::KERNEL_ARGS };
-            if !kernel_args.is_null() {
-                unsafe {
-                    // We wrap this in a check or just accept it might crash if mapping is missing
-                    // But at this point we have no other choice
-                    descriptor_item_size = (*kernel_args).descriptor_size;
-                }
-            } else {
-                unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: ERROR - Could not determine descriptor size!\n"); }
-                return;
-            }
+        } else {
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Using descriptor_size from KernelArgs\n");
         }
 
         unsafe {
