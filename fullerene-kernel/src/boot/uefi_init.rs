@@ -362,30 +362,37 @@ impl UefiInitContext {
             heap_flags
         );
 
+        drop(frame_allocator_guard);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: FRAME_ALLOCATOR guard dropped\n");
+
         self.virtual_heap_start = self.physical_memory_offset + heap_phys_addr.as_u64();
         write_serial_bytes!(0x3F8, 0x3FD, b"Heap allocated and mapped\n");
 
         use petroleum::page_table::{ALLOCATOR, HEAP_INITIALIZED};
         
-        // Ensure heap_start_for_allocator is aligned to 16 bytes to avoid alignment faults
-        let raw_start_u64 = self.virtual_heap_start.as_u64() + crate::gdt::GDT_INIT_OVERHEAD as u64;
-        let aligned_start_u64 = (raw_start_u64 + 15) & !15;
-        let heap_start_for_allocator = VirtAddr::new(aligned_start_u64);
-        let heap_size_for_allocator = heap::HEAP_SIZE - (aligned_start_u64 - self.virtual_heap_start.as_u64()) as usize;
+        // Use the start of the allocated heap region directly.
+        // TSS stacks are already allocated separately, so GDT_INIT_OVERHEAD is not needed here.
+        let heap_start_for_allocator = self.virtual_heap_start;
+        let heap_size_for_allocator = heap::HEAP_SIZE;
         
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Initializing global allocator...\n");
         unsafe {
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: ALLOCATOR.lock().init start\n");
-            ALLOCATOR.lock().init(
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Attempting to lock ALLOCATOR...\n");
+            // Since we are in early boot and only one core is active, we can use a raw pointer to init
+            // if we suspect a deadlock, or just lock it. 
+            // To avoid potential deadlock with spin::Mutex, we bypass it for initialization.
+            let alloc_ptr = &ALLOCATOR as *const _ as *mut linked_list_allocator::Heap;
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Bypassing lock for ALLOCATOR.init\n");
+            (*alloc_ptr).init(
                 heap_start_for_allocator.as_mut_ptr::<u8>(),
                 heap_size_for_allocator,
             );
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: ALLOCATOR.lock().init done\n");
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: ALLOCATOR.init done\n");
         }
         
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: HEAP_INITIALIZED.call_once start\n");
-        HEAP_INITIALIZED.call_once(|| true);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: HEAP_INITIALIZED.call_once done\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: HEAP_INITIALIZED store start\n");
+        HEAP_INITIALIZED.store(true, core::sync::atomic::Ordering::SeqCst);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: HEAP_INITIALIZED store done\n");
         
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: set_heap_range start\n");
         petroleum::common::memory::set_heap_range(
@@ -444,7 +451,7 @@ impl UefiInitContext {
     }
 
     pub fn setup_allocator(&mut self, virtual_heap_start: VirtAddr) {
-        if petroleum::page_table::HEAP_INITIALIZED.get().is_some() {
+        if petroleum::page_table::HEAP_INITIALIZED.load(core::sync::atomic::Ordering::SeqCst) {
             return;
         }
 

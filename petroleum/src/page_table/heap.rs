@@ -1,8 +1,8 @@
-use spin::Once;
+use core::sync::atomic::{AtomicBool, Ordering};
 use crate::common::memory::set_heap_range;
 use x86_64::PhysAddr;
 
-pub static HEAP_INITIALIZED: Once<bool> = Once::new();
+pub static HEAP_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(all(not(feature = "std"), not(test)))]
 #[global_allocator]
@@ -15,12 +15,12 @@ pub static ALLOCATOR: linked_list_allocator::LockedHeap =
 
 pub fn init_global_heap(ptr: *mut u8, size: usize) {
     #[cfg(all(not(feature = "std"), not(test)))]
-    if HEAP_INITIALIZED.get().is_none() {
+    if !HEAP_INITIALIZED.load(Ordering::SeqCst) {
         unsafe {
             ALLOCATOR.lock().init(ptr, size);
         }
         set_heap_range(ptr as usize, size);
-        HEAP_INITIALIZED.call_once(|| true);
+        HEAP_INITIALIZED.store(true, Ordering::SeqCst);
     }
 }
 
