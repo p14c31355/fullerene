@@ -112,26 +112,26 @@ impl UnifiedMemoryManager {
         &mut self,
         memory_map: &[impl petroleum::page_table::efi_memory::MemoryDescriptorValidator],
     ) -> SystemResult<()> {
-        log::info!("DEBUG: UnifiedMemoryManager::init starting");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: UnifiedMemoryManager::init starting\n");
         
-        log::info!("DEBUG: Initializing frame allocator...");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Initializing frame allocator...\n");
         unsafe { self.frame_allocator.init_with_memory_map(memory_map)? };
-        log::info!("DEBUG: Frame allocator initialized");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Frame allocator initialized\n");
 
-        log::info!("DEBUG: Reserving first 1MB...");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Reserving first 1MB...\n");
         self.frame_allocator.reserve_frames(0, 256)?;
-        log::info!("DEBUG: First 1MB reserved");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: First 1MB reserved\n");
 
-        log::info!("DEBUG: Initializing page table manager...");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Initializing page table manager...\n");
         Initializable::init(&mut self.page_table_manager)?;
-        log::info!("DEBUG: Page table manager initialized");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Page table manager initialized\n");
 
-        log::info!("DEBUG: Creating kernel address space (PID 0)...");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Creating kernel address space (PID 0)...\n");
         self.create_address_space(0)?;
-        log::info!("DEBUG: Kernel address space created");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Kernel address space created\n");
 
         self.initialized = true;
-        log::info!("Unified memory manager initialized");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Unified memory manager initialized\n");
         Ok(())
     }
 
@@ -842,18 +842,18 @@ pub fn deallocate_process_page_table(pml4_frame: x86_64::structures::paging::Phy
 pub fn init_memory_manager(
     memory_map: &[impl petroleum::page_table::efi_memory::MemoryDescriptorValidator],
 ) -> SystemResult<()> {
-    log::info!("DEBUG: init_memory_manager entered");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: init_memory_manager entered\n");
     let mut manager = MEMORY_MANAGER.lock();
-    log::info!("DEBUG: MEMORY_MANAGER lock acquired");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: MEMORY_MANAGER lock acquired\n");
     
     let mut memory_manager = UnifiedMemoryManager::new();
-    log::info!("DEBUG: UnifiedMemoryManager instance created");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: UnifiedMemoryManager instance created\n");
     
     memory_manager.init(memory_map)?;
-    log::info!("DEBUG: UnifiedMemoryManager::init returned successfully");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: UnifiedMemoryManager::init returned successfully\n");
     
     *manager = Some(memory_manager);
-    log::info!("Global memory manager initialized");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Global memory manager initialized\n");
     Ok(())
 }
 

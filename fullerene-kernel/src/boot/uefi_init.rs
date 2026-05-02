@@ -124,7 +124,8 @@ impl UefiInitContext {
         let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
         let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
         debug_log_no_alloc!("DEBUG: Frame allocator lock acquired for TSS");
-            
+        
+        debug_log_no_alloc!("DEBUG: Attempting to allocate contiguous frames: ", tss_stack_pages);
         let tss_phys_addr = match frame_allocator.allocate_contiguous_frames(tss_stack_pages) {
             Ok(phys_addr) => {
                 debug_log_no_alloc!("DEBUG: TSS frames allocated at 0x", phys_addr);
@@ -162,6 +163,7 @@ impl UefiInitContext {
         let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
         let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
         debug_log_no_alloc!("DEBUG: Frame allocator lock acquired for page table setup");
+        debug_log_no_alloc!("DEBUG: About to map TSS stacks");
 
         self.physical_memory_offset = x86_64::VirtAddr::new(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64);
 

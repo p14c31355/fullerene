@@ -12,21 +12,19 @@ pub fn efi_main_stage2(ctx: &mut UefiInitContext, physical_memory_offset: VirtAd
     write_serial_bytes!(0x3F8, 0x3FD, b"Entered efi_main_stage2 on new stack\n");
     
     // Initialize the global memory manager with the EFI memory map
-    log::info!("Initializing global memory manager...");
+    write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Initializing global memory manager...\n");
     write_serial_bytes!(0x3F8, 0x3FD, b"Calling MEMORY_MAP.get()\n");
     if let Some(memory_map) = *MEMORY_MAP.lock() {
-        write_serial_bytes!(0x3F8, 0x3FD, b"MEMORY_MAP.get() succeeded\n");
+        write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: MEMORY_MAP acquired, calling init_memory_manager\n");
+        
         if let Err(e) = crate::memory_management::init_memory_manager(memory_map) {
-            log::error!(
-                "Failed to initialize global memory manager: {:?}. Halting.",
-                e
-            );
+            write_serial_bytes!(0x3F8, 0x3FD, b"ERROR: init_memory_manager failed!\n");
             petroleum::halt_loop();
         }
         petroleum::set_memory_initialized(true);
-        log::info!("Memory management initialized and marked as ready");
+        write_serial_bytes!(0x3F8, 0x3FD, b"Memory management initialized successfully\n");
     } else {
-        log::error!("MEMORY_MAP not initialized. Cannot initialize memory manager. Halting.");
+        write_serial_bytes!(0x3F8, 0x3FD, b"ERROR: MEMORY_MAP not initialized. Halting.\n");
         petroleum::halt_loop();
     }
 
