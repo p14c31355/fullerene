@@ -273,11 +273,10 @@ impl UefiInitContext {
             (None, None)
         };
 
+        debug_log_no_alloc!("DEBUG: About to lock FRAME_ALLOCATOR for page table setup");
         let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: FRAME_ALLOCATOR locked (line 223)\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: FRAME_ALLOCATOR locked\n");
         let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
-        debug_log_no_alloc!("DEBUG: Frame allocator lock acquired for page table setup");
-        debug_log_no_alloc!("DEBUG: About to map TSS stacks");
 
         let tss_flags = x86_64::structures::paging::PageTableFlags::PRESENT 
             | x86_64::structures::paging::PageTableFlags::WRITABLE
@@ -332,22 +331,20 @@ impl UefiInitContext {
         } else {
             heap_phys_start
         };
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Allocating heap physical memory...\n");
-        let heap_phys_addr =
-            petroleum::allocate_heap_from_map(heap_phys_start_addr, heap::HEAP_SIZE);
         let heap_pages = (heap::HEAP_SIZE + 4095) / 4096;
-
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Reserving heap frames...\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Allocating contiguous frames for heap...\n");
+        
+        let heap_phys_addr_val = frame_allocator
+            .allocate_contiguous_frames(heap_pages)
+            .expect("Failed to allocate contiguous frames for heap");
+        
+        let heap_phys_addr = PhysAddr::new(heap_phys_addr_val as u64);
+        
         let mut addr_buf = [0u8; 16];
         let len = petroleum::serial::format_hex_to_buffer(heap_phys_addr.as_u64(), &mut addr_buf, 16);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Attempting to reserve frames at 0x");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Heap frames allocated at 0x");
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, &addr_buf[..len]);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-
-        frame_allocator
-            .allocate_frames_at(heap_phys_addr.as_u64() as usize, heap_pages)
-            .expect("Failed to reserve heap frames");
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Heap frames reserved\n");
 
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling petroleum::page_table::init (3)...\n");
         let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator) };
@@ -369,26 +366,41 @@ impl UefiInitContext {
         write_serial_bytes!(0x3F8, 0x3FD, b"Heap allocated and mapped\n");
 
         use petroleum::page_table::{ALLOCATOR, HEAP_INITIALIZED};
-        let heap_start_for_allocator =
-            self.virtual_heap_start + crate::gdt::GDT_INIT_OVERHEAD as u64;
-        let heap_size_for_allocator = heap::HEAP_SIZE - crate::gdt::GDT_INIT_OVERHEAD;
+        
+        // Ensure heap_start_for_allocator is aligned to 16 bytes to avoid alignment faults
+        let raw_start_u64 = self.virtual_heap_start.as_u64() + crate::gdt::GDT_INIT_OVERHEAD as u64;
+        let aligned_start_u64 = (raw_start_u64 + 15) & !15;
+        let heap_start_for_allocator = VirtAddr::new(aligned_start_u64);
+        let heap_size_for_allocator = heap::HEAP_SIZE - (aligned_start_u64 - self.virtual_heap_start.as_u64()) as usize;
+        
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Initializing global allocator...\n");
         unsafe {
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: ALLOCATOR.lock().init start\n");
             ALLOCATOR.lock().init(
                 heap_start_for_allocator.as_mut_ptr::<u8>(),
                 heap_size_for_allocator,
             );
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: ALLOCATOR.lock().init done\n");
         }
+        
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: HEAP_INITIALIZED.call_once start\n");
         HEAP_INITIALIZED.call_once(|| true);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: HEAP_INITIALIZED.call_once done\n");
+        
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: set_heap_range start\n");
         petroleum::common::memory::set_heap_range(
             heap_start_for_allocator.as_u64() as usize,
             heap_size_for_allocator,
         );
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: set_heap_range done\n");
 
-        (
-            self.physical_memory_offset,
-            heap_phys_addr,
-            self.virtual_heap_start,
-        )
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: memory_management_initialization about to return\n");
+        
+        let res_offset = self.physical_memory_offset;
+        let res_phys = heap_phys_addr;
+        let res_virt = self.virtual_heap_start;
+        
+        (res_offset, res_phys, res_virt)
     }
 
     pub fn prepare_kernel_stack(
