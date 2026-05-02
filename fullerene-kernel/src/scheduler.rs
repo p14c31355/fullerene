@@ -371,13 +371,18 @@ fn yield_and_process_system_calls() {
 /// Draw the OS desktop on the available framebuffer (UEFI or BIOS)
 fn draw_desktop_on_available_framebuffer() {
     #[cfg(target_os = "uefi")]
-    let fb_option = text::FRAMEBUFFER_UEFI.get();
+    {
+        let mut lock = text::FRAMEBUFFER_UEFI.lock();
+        if let Some(ref mut fb) = *lock {
+            graphics::draw_os_desktop(fb);
+        }
+    }
     #[cfg(not(target_os = "uefi"))]
-    let fb_option = text::FRAMEBUFFER_BIOS.get();
-
-    if let Some(framebuffer) = fb_option {
-        let mut fb = framebuffer.lock();
-        graphics::draw_os_desktop(&mut *fb);
+    {
+        let mut lock = text::FRAMEBUFFER_BIOS.lock();
+        if let Some(ref mut fb) = *lock {
+            graphics::draw_os_desktop(fb);
+        }
     }
 }
 
@@ -413,13 +418,15 @@ pub fn scheduler_loop() -> ! {
     log::info!("Scheduler loop started");
 
     // Print to VGA if available for GUI output
-    if let Some(vga_buffer) = crate::vga::VGA_BUFFER.get() {
-        let mut writer = vga_buffer.lock();
-        petroleum::vga_write_lines!(writer,
-            "Scheduler loop started - VGA output enabled\n";
-            "System is running...\n"
-        );
-        writer.update_cursor();
+    {
+        let mut lock = crate::vga::VGA_BUFFER.lock();
+        if let Some(ref mut writer) = *lock {
+            petroleum::vga_write_lines!(writer,
+                "Scheduler loop started - VGA output enabled\n";
+                "System is running...\n"
+            );
+            writer.update_cursor();
+        }
     }
     // Log that scheduler is running for confirmation
     log::info!("Scheduler loop active - framebuffer text system running");

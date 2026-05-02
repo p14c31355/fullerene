@@ -523,8 +523,8 @@ macro_rules! vga_stat_display {
 #[macro_export]
 macro_rules! vga_stat_display_impl {
     ($vga_buffer:expr, $start_row:expr, $($display_line:tt)*) => {{
-        if let Some(vga_buffer) = $vga_buffer.get() {
-            let mut vga_writer = vga_buffer.lock();
+        let lock = $vga_buffer.lock();
+        if let Some(ref mut vga_writer) = *lock {
             let blank_char = ScreenChar {
                 ascii_character: b' ',
                 color_code: ColorCode::new(Color::Black, Color::Black),
@@ -1370,8 +1370,8 @@ macro_rules! display_stats_on_available_display {
         static LAST_DISPLAY_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
 
         petroleum::check_periodic!(LAST_DISPLAY_TICK, $interval_ticks, $current_tick, {
-            if let Some(vga_buffer_ref) = $vga_buffer.get() {
-                let mut writer = vga_buffer_ref.lock();
+            let mut lock = $vga_buffer.lock();
+            if let Some(ref mut writer) = *lock {
 
                 // Clear bottom rows for system info display
                 let blank_char = petroleum::ScreenChar {
@@ -2124,6 +2124,6 @@ macro_rules! impl_mock_vga_buffer {
 #[macro_export]
 macro_rules! create_vga_singleton {
     ($name:ident, $buffer_ty:ty) => {
-        pub static $name: Once<Mutex<$buffer_ty>> = Once::new();
+        pub static $name: Mutex<Option<$buffer_ty>> = Mutex::new(None);
     };
 }

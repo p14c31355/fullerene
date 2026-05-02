@@ -45,6 +45,12 @@ pub enum UefiFramebufferWriter {
     Vga8(FramebufferWriter<u8>),
 }
 
+pub type UefiWriterMutex = spin::Mutex<UefiFramebufferWriter>;
+
+pub fn create_uefi_writer_mutex(writer: UefiFramebufferWriter) -> UefiWriterMutex {
+    spin::Mutex::new(writer)
+}
+
 impl core::fmt::Write for UefiFramebufferWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         match self {
