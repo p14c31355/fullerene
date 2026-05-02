@@ -409,13 +409,6 @@ macro_rules! read_unaligned {
 #[macro_export]
 macro_rules! mem_debug {
     () => {};
-    ($msg:literal, $($rest:tt)*) => {
-        $crate::serial::debug_print_str_no_lock($msg);
-        $crate::mem_debug!($($rest)*);
-    };
-    ($msg:literal) => {
-        $crate::serial::debug_print_str_no_lock($msg);
-    };
     ($value:expr, $($rest:tt)*) => {
         $crate::serial::debug_print_no_lock($value);
         $crate::mem_debug!($($rest)*);

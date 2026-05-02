@@ -374,19 +374,20 @@ impl UefiInitContext {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
         }
 
-        let mut best_ptr = raw_ptr as *const usize;
-        let mut best_size = unsafe { core::ptr::read_volatile(best_ptr) };
-        
-        if best_size < 4 || best_size > 1024 {
-            let high_ptr = (raw_ptr + offset) as *const usize;
-            let high_size = unsafe { core::ptr::read_volatile(high_ptr) };
-            if high_size >= 4 && high_size <= 1024 {
-                best_ptr = high_ptr;
-                best_size = high_size;
-            }
-        }
+        let high_ptr = (raw_ptr + offset) as *const usize;
+        let high_size = unsafe { core::ptr::read_volatile(high_ptr) };
+        let low_ptr = raw_ptr as *const usize;
+        let low_size = unsafe { core::ptr::read_volatile(low_ptr) };
 
-        if best_size < 4 || best_size > 1024 {
+        let (best_ptr, best_size) = if high_size >= 40 && high_size <= 64 {
+            (high_ptr, high_size)
+        } else if low_size >= 40 && low_size <= 64 {
+            (low_ptr, low_size)
+        } else {
+            (high_ptr, high_size)
+        };
+
+        if best_size < 40 || best_size > 64 {
             unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: ERROR - No valid descriptor_item_size found!\n"); }
             return;
         }
