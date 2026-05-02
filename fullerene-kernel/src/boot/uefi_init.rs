@@ -338,6 +338,12 @@ impl UefiInitContext {
         let heap_pages = (heap::HEAP_SIZE + 4095) / 4096;
 
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Reserving heap frames...\n");
+        let mut addr_buf = [0u8; 16];
+        let len = petroleum::serial::format_hex_to_buffer(heap_phys_addr.as_u64(), &mut addr_buf, 16);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Attempting to reserve frames at 0x");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, &addr_buf[..len]);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
         frame_allocator
             .allocate_frames_at(heap_phys_addr.as_u64() as usize, heap_pages)
             .expect("Failed to reserve heap frames");

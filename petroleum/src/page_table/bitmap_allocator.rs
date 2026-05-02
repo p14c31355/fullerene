@@ -156,7 +156,25 @@ impl BitmapFrameAllocator {
 
         let start_frame = start_addr / 4096;
         let end_frame = start_frame + count;
+        
+        // Use direct serial write to avoid macro issues and scope errors
+        unsafe {
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: allocate_frames_at entering\n");
+            let mut buf = [0u8; 16];
+            let len = crate::serial::format_hex_to_buffer(start_addr as u64, &mut buf, 16);
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: start_addr=0x");
+            crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+            
+            let mut frame_buf = [0u8; 16];
+            let f_len = crate::serial::format_hex_to_buffer(start_frame as u64, &mut frame_buf, 16);
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: start_frame=0x");
+            crate::write_serial_bytes!(0x3F8, 0x3FD, &frame_buf[..f_len]);
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        }
+
         if end_frame > self.frame_count {
+            debug_log_no_alloc!("DEBUG: end_frame exceeds frame_count: ", end_frame);
             return Err(crate::common::logging::SystemError::InvalidArgument);
         }
 

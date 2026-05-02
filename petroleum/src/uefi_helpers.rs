@@ -257,13 +257,16 @@ pub fn find_heap_start(descriptors: &[impl MemoryDescriptorValidator]) -> PhysAd
     // This ensures heap is within the identity-mapped range during page table reinitialization
     const HEAP_PAGES: u64 = 256; // approx 1MB for heap + structures
     for desc in descriptors {
+        let start = desc.get_physical_start();
         if desc.get_type() == crate::common::EfiMemoryType::EfiConventionalMemory as u32
             && desc.get_page_count() >= HEAP_PAGES
-            && desc.get_physical_start() < 0x4000000 // within first 64MB
-            && crate::common::utils::calculate_region_end(desc.get_physical_start(), desc.get_page_count()) <= 0x4000000
+            && start >= 0x100000 // Avoid first 1MB reserved region
+            && start < 0x4000000 // within first 64MB
+            && crate::common::utils::calculate_region_end(start, desc.get_page_count()) <= 0x4000000
         // ensure entire region fits
         {
-            return PhysAddr::new(desc.get_physical_start());
+            crate::debug_log_no_alloc!("find_heap_start: Found suitable region at 0x", start);
+            return PhysAddr::new(start);
         }
     }
     // Fallback if no suitable memory found within first 64MB
