@@ -1,5 +1,5 @@
 use petroleum::{mem_debug, debug_log_no_alloc};
-use spin::{Mutex, Once};
+use spin::Mutex;
 use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::VirtAddr;
 use x86_64::instructions::tables::load_tss;
@@ -48,11 +48,13 @@ pub fn kernel_code_selector() -> SegmentSelector {
 }
 
 pub fn load() {
-    {
-        let gdt_guard = GDT.lock();
-        let gdt = gdt_guard.as_ref().expect("GDT not initialized");
-        gdt.load();
-    }
+    let gdt = unsafe {
+        let guard = GDT.lock();
+        core::mem::transmute::<&GlobalDescriptorTable, &'static GlobalDescriptorTable>(
+            guard.as_ref().expect("GDT not initialized"),
+        )
+    };
+    gdt.load();
 
     unsafe {
         CS::set_reg((*CODE_SELECTOR.lock()).expect("CODE_SELECTOR not initialized"));
@@ -103,11 +105,13 @@ pub fn init_with_stacks(stacks: TssStacks) {
         
         let tss_selector = {
             unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: About to access TSS static for GDT descriptor\n"); }
-            let selector = {
-                let tss_guard = TSS.lock();
-                let tss = tss_guard.as_ref().expect("TSS must be initialized");
-                gdt.append(Descriptor::tss_segment(tss))
+            let tss = unsafe {
+                let guard = TSS.lock();
+                core::mem::transmute::<&TaskStateSegment, &'static TaskStateSegment>(
+                    guard.as_ref().expect("TSS must be initialized"),
+                )
             };
+            let selector = gdt.append(Descriptor::tss_segment(tss));
             unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Successfully accessed TSS static for GDT descriptor\n"); }
             selector
         };
@@ -169,11 +173,13 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
         
         let tss_selector = {
             unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: About to access TSS static for GDT descriptor\n"); }
-            let selector = {
-                let tss_guard = TSS.lock();
-                let tss = tss_guard.as_ref().expect("TSS must be initialized");
-                gdt.append(Descriptor::tss_segment(tss))
+            let tss = unsafe {
+                let guard = TSS.lock();
+                core::mem::transmute::<&TaskStateSegment, &'static TaskStateSegment>(
+                    guard.as_ref().expect("TSS must be initialized"),
+                )
             };
+            let selector = gdt.append(Descriptor::tss_segment(tss));
             unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: TSS static accessed successfully for GDT descriptor\n"); }
             selector
         };
@@ -192,7 +198,13 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
     {
         // Load GDT - required for proper segmentation in BIOS mode
         mem_debug!("About to load GDT...\n");
-        GDT.lock().as_ref().expect("GDT not initialized").load();
+        let gdt = unsafe {
+            let guard = GDT.lock();
+            core::mem::transmute::<&GlobalDescriptorTable, &'static GlobalDescriptorTable>(
+                guard.as_ref().expect("GDT not initialized"),
+            )
+        };
+        gdt.load();
         mem_debug!("GDT loaded\n");
 
         unsafe {
