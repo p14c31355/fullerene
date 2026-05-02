@@ -108,6 +108,9 @@ impl UefiInitContext {
         &mut self,
         kernel_phys_start: PhysAddr,
     ) -> (VirtAddr, PhysAddr, VirtAddr) {
+        // Set physical memory offset FIRST so it can be used by init_memory_map
+        self.physical_memory_offset = x86_64::VirtAddr::new(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64);
+
         debug_log_no_alloc!("DEBUG: Starting memory_management_initialization");
         self.init_memory_map();
         debug_log_no_alloc!("DEBUG: init_memory_map completed");
@@ -164,8 +167,6 @@ impl UefiInitContext {
         let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
         debug_log_no_alloc!("DEBUG: Frame allocator lock acquired for page table setup");
         debug_log_no_alloc!("DEBUG: About to map TSS stacks");
-
-        self.physical_memory_offset = x86_64::VirtAddr::new(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64);
 
         let tss_flags = x86_64::structures::paging::PageTableFlags::PRESENT 
             | x86_64::structures::paging::PageTableFlags::WRITABLE
@@ -348,24 +349,37 @@ impl UefiInitContext {
     }
 
     fn init_memory_map(&self) {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: init_memory_map START\n");
+        
         let raw_ptr = self.memory_map as u64;
+        // Only add offset if the pointer is not already in the higher-half
+        let virt_ptr = if raw_ptr < 0x0000_8000_0000_0000 {
+            raw_ptr.wrapping_add(self.physical_memory_offset.as_u64())
+        } else {
+            raw_ptr
+        };
         
         unsafe {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: RAW - Memory Map Info:\n");
             let mut buf = [0u8; 16];
             
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"  ptr: 0x");
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"  phys_ptr: 0x");
             let len = petroleum::serial::format_hex_to_buffer(raw_ptr, &mut buf, 16);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+            
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b" virt_ptr: 0x");
+            let len = petroleum::serial::format_hex_to_buffer(virt_ptr, &mut buf, 16);
             petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
             
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b" size: 0x");
             let len = petroleum::serial::format_hex_to_buffer(self.memory_map_size as u64, &mut buf, 16);
             petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
-
+            
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: RAW - Memory Map Dump (first 64 bytes):\n");
             for i in 0..8 {
-                let val = core::ptr::read_volatile((raw_ptr + i * 8) as *const u64);
+                // Use volatile read to avoid optimization and detect faults immediately
+                let val = core::ptr::read_volatile((virt_ptr + i * 8) as *const u64);
                 petroleum::write_serial_bytes(0x3F8, 0x3FD, b"  [");
                 let len = petroleum::serial::format_hex_to_buffer(val, &mut buf, 16);
                 petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
@@ -378,12 +392,12 @@ impl UefiInitContext {
         }
 
         // Use descriptor_size from context if available, otherwise try to detect it
-        let mut base_ptr = raw_ptr as *const u8;
+        let mut base_ptr = virt_ptr as *const u8;
         let mut descriptor_item_size = self.descriptor_size;
 
         if descriptor_item_size == 0 {
             unsafe {
-                let first_val = core::ptr::read_volatile(raw_ptr as *const usize);
+                let first_val = core::ptr::read_volatile(virt_ptr as *const usize);
                 if first_val >= 40 && first_val <= 64 {
                     petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Detected descriptor_size at head, skipping 8 bytes\n");
                     descriptor_item_size = first_val;
