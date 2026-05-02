@@ -100,7 +100,7 @@ impl PageTableManager {
 
         self.mapper = Some(unsafe {
             crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] calling utils::init\n");
-            let mut temp_mapper = unsafe { crate::page_table::utils::init(phys_offset) };
+            let mut temp_mapper = unsafe { crate::page_table::utils::init(phys_offset, frame_allocator) };
             
             let virt_addr = phys_offset + table_phys_addr;
             let page = Page::containing_address(virt_addr);
