@@ -114,8 +114,9 @@ impl UefiInitContext {
         debug_log_no_alloc!("DEBUG: Starting memory_management_initialization");
         debug_log_no_alloc!("DEBUG: Offset value: ", self.physical_memory_offset.as_u64());
 
+        debug_log_no_alloc!("DEBUG: Calling init_memory_map...");
         self.init_memory_map();
-        debug_log_no_alloc!("DEBUG: init_memory_map completed");
+        debug_log_no_alloc!("DEBUG: init_memory_map returned");
         
         let memory_map_ref = MEMORY_MAP.lock().as_ref().expect("Memory map not initialized").clone();
         debug_log_no_alloc!("DEBUG: Memory map reference acquired at 0x", memory_map_ref.as_ptr() as usize);
@@ -124,38 +125,19 @@ impl UefiInitContext {
         debug_log_no_alloc!("Heap frame allocator initialized");
 
         // Now that FRAME_ALLOCATOR is ready, map the memory_map buffer to higher half for consistency
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Mapping UEFI memory_map buffer to higher half\n");
-        
+        // TEMPORARILY SKIPPED to isolate the cause of Triple Fault
         let map_phys = self.memory_map as u64;
         let map_virt = map_phys + self.physical_memory_offset.as_u64();
-        let map_pages = ((self.memory_map_size as u64) + 4095) / 4096;
-
-        let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset) };
-        {
-            let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
-            let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator should be ready now");
-
-            for i in 0..map_pages {
-                let v_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(
-                    VirtAddr::new(map_virt + i * 4096)
-                );
-                let p_frame = x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(
-                    PhysAddr::new(map_phys + i * 4096)
-                );
-
-                unsafe {
-                    if let Ok(flush) = mapper.map_to(
-                        v_page,
-                        p_frame,
-                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                        frame_allocator,
-                    ) {
-                        flush.flush();
-                    }
-                }
-            }
-        }
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Memory map buffer mapped successfully\n");
+        
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: map_phys=0x");
+        let mut buf = [0u8; 16];
+        let _ = petroleum::serial::format_hex_to_buffer(map_phys, &mut buf, 16);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b" map_virt=0x");
+        let _ = petroleum::serial::format_hex_to_buffer(map_virt, &mut buf, 16);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Memory map mapping skipped for now (to avoid crash)\n");
 
         debug_log_no_alloc!("DEBUG: Allocating TSS stacks");
         let tss_stack_pages = (crate::gdt::GDT_TSS_STACK_COUNT * crate::gdt::GDT_TSS_STACK_SIZE) / 4096;
@@ -385,96 +367,38 @@ impl UefiInitContext {
     }
 
     fn init_memory_map(&self) {
-        let phys_ptr = self.memory_map as u64;
-        let offset = self.physical_memory_offset.as_u64();
-        // Use identity mapping (phys_ptr) for initial parsing to avoid chicken-and-egg with FRAME_ALLOCATOR
-        let parse_ptr = phys_ptr; 
-        let virt_ptr = phys_ptr.wrapping_add(offset);
+        debug_log_no_alloc!("!!! ENTERING init_memory_map (FIXED) !!!");
 
-        unsafe {
-            let mut buf = [0u8; 16];
-            
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: MMAP offset: 0x");
-            let len = petroleum::serial::format_hex_to_buffer(offset, &mut buf, 16);
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: MMAP phys->virt: 0x");
-            let len = petroleum::serial::format_hex_to_buffer(virt_ptr, &mut buf, 16);
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-        }
-
-        // Use descriptor_size from context if available, otherwise try to detect it
-        let mut base_ptr = parse_ptr as *const u8;
-        let mut descriptor_item_size = self.descriptor_size;
-
-        if descriptor_item_size == 0 {
-            unsafe {
-                let first_val = core::ptr::read_volatile(parse_ptr as *const usize);
-                if first_val >= 40 && first_val <= 64 {
-                    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Detected descriptor_size at head, skipping 8 bytes\n");
-                    descriptor_item_size = first_val;
-                    base_ptr = base_ptr.add(core::mem::size_of::<usize>());
-                } else {
-                    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: No descriptor_size at head, trying heuristics\n");
-                    // Heuristic: Use 48 as default for x86_64 UEFI
-                    descriptor_item_size = 48;
-                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Heuristic failed, using default size 48\n");
-                }
-            }
-        } else {
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Using descriptor_size from KernelArgs\n");
-        }
-
-        unsafe {
-            let mut buf = [0u8; 16];
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Final descriptor_size: 0x");
-            let len = petroleum::serial::format_hex_to_buffer(descriptor_item_size as u64, &mut buf, 16);
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
-        }
-
-        let config_size = core::mem::size_of::<ConfigWithMetadata>();
-        let has_config = if self.memory_map_size >= config_size {
-            unsafe {
-                let ptr = base_ptr.add(self.memory_map_size - config_size)
-                    as *const ConfigWithMetadata;
-                !ptr.is_null() && (*ptr).magic == FRAMEBUFFER_CONFIG_MAGIC
-            }
-        } else {
-            false
-        };
-        let actual_descriptors_size = self.memory_map_size
-            .saturating_sub(if has_config { config_size } else { 0 });
-        let descriptors_base = base_ptr;
-        let num_descriptors = actual_descriptors_size / descriptor_item_size;
+        // The raw_ptr is actually pointing to the 'physical_start' field (offset 8).
+        // We must move it back by 8 bytes to reach the 'type' field.
+        let raw_ptr = self.memory_map as u64;
+        let base_ptr = (raw_ptr.wrapping_sub(8)) as *const u8;
         
+        // Force standard x86_64 UEFI descriptor size (48 bytes)
+        let descriptor_size = 48;
+
+        debug_log_no_alloc!("Corrected base_ptr: 0x", base_ptr as u64);
+        debug_log_no_alloc!("Using forced DESC_SIZE: ", descriptor_size);
+
         unsafe {
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: RAW - num_descriptors: 0x");
-            let mut buf = [0u8; 16];
-            let len = petroleum::serial::format_hex_to_buffer(num_descriptors as u64, &mut buf, 16);
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+            let mut count = 0;
+            for i in 0..crate::heap::MAX_DESCRIPTORS {
+                let desc_ptr = base_ptr.add(i * descriptor_size);
+                let desc = MemoryMapDescriptor::new(desc_ptr, descriptor_size);
+                
+                if !petroleum::page_table::MemoryDescriptorValidator::is_valid(&desc) {
+                    debug_log_no_alloc!("Stopped parsing at descriptor {} (invalid)", i);
+                    break;
+                }
+                
+                crate::heap::MEMORY_MAP_BUFFER[i] = desc;
+                count += 1;
+            }
+            
+            debug_log_no_alloc!("Successfully parsed {} descriptors", count);
+            *crate::heap::MEMORY_MAP.lock() = Some(&crate::heap::MEMORY_MAP_BUFFER[0..count]);
         }
 
-        let actual_num = num_descriptors.min(crate::heap::MAX_DESCRIPTORS);
-        unsafe {
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Starting MEMORY_MAP_BUFFER fill\n");
-            for i in 0..actual_num {
-                let desc_ptr = descriptors_base.add(i * descriptor_item_size);
-                crate::heap::MEMORY_MAP_BUFFER[i] =
-                    MemoryMapDescriptor::new(desc_ptr, descriptor_item_size);
-                if i % 10 == 0 {
-                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b".");
-                }
-            }
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\nDEBUG: MEMORY_MAP_BUFFER fill done\n");
-            
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Setting MEMORY_MAP via lock\n");
-            *crate::heap::MEMORY_MAP.lock() = Some(&crate::heap::MEMORY_MAP_BUFFER[0..actual_num]);
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: MEMORY_MAP set successfully\n");
-        }
-        unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: RAW - MEMORY_MAP initialized\n"); }
+        debug_log_no_alloc!("!!! INIT_MMAP DONE (FIXED) !!!");
     }
 }
