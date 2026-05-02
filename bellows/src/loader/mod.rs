@@ -186,12 +186,6 @@ pub fn exit_boot_services_and_jump(
         }
     }
 
-    // Write descriptor_size at the very beginning of the allocated buffer (map_phys_addr)
-    unsafe {
-        let descriptor_size_ptr = map_phys_addr as *mut usize;
-        core::ptr::write_volatile(descriptor_size_ptr, descriptor_size);
-    }
-
     // Check if framebuffer config is available and append it to memory map for kernel
     let mut final_map_size = map_size + core::mem::size_of::<usize>();
     if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
@@ -261,6 +255,7 @@ pub fn exit_boot_services_and_jump(
                 system_table: system_table as usize,
                 map_ptr: map_phys_addr,
                 map_size: final_map_size,
+                descriptor_size,
                 kernel_phys_start: kernel_phys_start.as_u64(),
                 kernel_entry: kernel_entry_phys as usize,
             },
@@ -277,8 +272,7 @@ pub fn exit_boot_services_and_jump(
     };
 
     // Prepare memory map descriptors
-    // The descriptor size is stored at the very beginning of the buffer (map_phys_addr)
-    let descriptor_size_val = unsafe { *(map_phys_addr as *const usize) };
+    let descriptor_size_val = descriptor_size;
     // The actual descriptors start at map_ptr
     let descriptors_ptr = map_ptr as *const u8;
     

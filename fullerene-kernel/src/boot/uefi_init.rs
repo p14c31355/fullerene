@@ -374,26 +374,21 @@ impl UefiInitContext {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
         }
 
-        let high_ptr = (raw_ptr + offset) as *const usize;
-        let high_size = unsafe { core::ptr::read_volatile(high_ptr) };
-        let low_ptr = raw_ptr as *const usize;
-        let low_size = unsafe { core::ptr::read_volatile(low_ptr) };
-
-        let (best_ptr, best_size) = if high_size >= 40 && high_size <= 64 {
-            (high_ptr, high_size)
-        } else if low_size >= 40 && low_size <= 64 {
-            (low_ptr, low_size)
-        } else {
-            (high_ptr, high_size)
-        };
-
-        if best_size < 40 || best_size > 64 {
-            unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: ERROR - No valid descriptor_item_size found!\n"); }
+        let kernel_args = unsafe { petroleum::page_table::mapper::transition::KERNEL_ARGS };
+        if kernel_args.is_null() {
+            unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: ERROR - KERNEL_ARGS is null!\n"); }
             return;
         }
+        let descriptor_item_size = unsafe { (*kernel_args).descriptor_size };
+        let base_ptr = raw_ptr as *const u8;
 
-        let descriptor_item_size = best_size;
-        let base_ptr = best_ptr as *const u8;
+        unsafe {
+            let mut buf = [0u8; 16];
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Using descriptor_size from KERNEL_ARGS: 0x");
+            let len = petroleum::serial::format_hex_to_buffer(descriptor_item_size as u64, &mut buf, 16);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+        }
 
         let config_size = core::mem::size_of::<ConfigWithMetadata>();
         let has_config = if self.memory_map_size >= config_size {
@@ -406,9 +401,8 @@ impl UefiInitContext {
             false
         };
         let actual_descriptors_size = self.memory_map_size
-            .saturating_sub(core::mem::size_of::<usize>())
             .saturating_sub(if has_config { config_size } else { 0 });
-        let descriptors_base = unsafe { base_ptr.add(core::mem::size_of::<usize>()) };
+        let descriptors_base = base_ptr;
         let num_descriptors = actual_descriptors_size / descriptor_item_size;
         
         unsafe {

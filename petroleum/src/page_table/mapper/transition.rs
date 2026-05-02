@@ -9,6 +9,7 @@ pub struct KernelArgs {
     pub system_table: usize,
     pub map_ptr: usize,
     pub map_size: usize,
+    pub descriptor_size: usize,
     pub kernel_phys_start: u64,
     pub kernel_entry: usize,
 }
