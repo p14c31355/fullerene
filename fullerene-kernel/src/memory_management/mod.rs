@@ -112,26 +112,22 @@ impl UnifiedMemoryManager {
         &mut self,
         memory_map: &[impl petroleum::page_table::efi_memory::MemoryDescriptorValidator],
     ) -> SystemResult<()> {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: UnifiedMemoryManager::init starting\n");
-        
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Initializing frame allocator...\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"UMM::init start\n");
+
         unsafe { self.frame_allocator.init_with_memory_map(memory_map)? };
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Frame allocator initialized\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Frame allocator init done\n");
 
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Reserving first 1MB...\n");
         self.frame_allocator.reserve_frames(0, 256)?;
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: First 1MB reserved\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"First 1MB reserved\n");
 
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Initializing page table manager...\n");
         Initializable::init(&mut self.page_table_manager)?;
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Page table manager initialized\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Page table manager initialized\n");
 
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Creating kernel address space (PID 0)...\n");
         self.create_address_space(0)?;
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Kernel address space created\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Kernel address space created\n");
 
         self.initialized = true;
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Unified memory manager initialized\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"UnifiedMemoryManager fully initialized\n");
         Ok(())
     }
 
@@ -843,17 +839,20 @@ pub fn init_memory_manager(
     memory_map: &[impl petroleum::page_table::efi_memory::MemoryDescriptorValidator],
 ) -> SystemResult<()> {
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: init_memory_manager entered\n");
+    
     let mut manager = MEMORY_MANAGER.lock();
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: MEMORY_MANAGER lock acquired\n");
     
     let mut memory_manager = UnifiedMemoryManager::new();
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: UnifiedMemoryManager instance created\n");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: UnifiedMemoryManager created\n");
     
-    memory_manager.init(memory_map)?;
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: UnifiedMemoryManager::init returned successfully\n");
+    if let Err(e) = memory_manager.init(memory_map) {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"ERROR: UnifiedMemoryManager::init failed!\n");
+        return Err(e);
+    }
     
     *manager = Some(memory_manager);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Global memory manager initialized\n");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Global memory manager initialized successfully\n");
     Ok(())
 }
 

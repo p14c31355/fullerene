@@ -239,15 +239,26 @@ macro_rules! map_current_stack {
 }
 
 pub unsafe fn init(physical_memory_offset: VirtAddr) -> OffsetPageTable<'static> {
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] entered\n");
     let level_4_table = unsafe { active_level_4_table(physical_memory_offset) };
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] L4 table acquired\n");
     unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) }
 }
 
 pub unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static mut PageTable {
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [active_level_4_table] entered\n");
     let (level_4_table_frame, _) = Cr3::read();
     let phys = level_4_table_frame.start_address();
     let virt = physical_memory_offset + phys.as_u64();
+    
+    let mut buf = [0u8; 16];
+    let len = crate::serial::format_hex_to_buffer(virt.as_u64(), &mut buf, 16);
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [active_level_4_table] L4 virt addr: 0x");
+    crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
     let page_table_ptr: *mut PageTable = virt.as_mut_ptr();
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [active_level_4_table] dereferencing L4 ptr...\n");
     unsafe { &mut *page_table_ptr }
 }
 
