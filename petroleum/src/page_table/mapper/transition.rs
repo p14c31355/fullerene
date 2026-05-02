@@ -271,37 +271,51 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
             crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
             crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
 
-            // Use a temporary storage for the virtual addresses to avoid in(reg) optimization issues
-            let h = args.handle.wrapping_add(local_phys_offset.as_u64().try_into().unwrap()) as usize;
-            let s = args.system_table.wrapping_add(local_phys_offset.as_u64().try_into().unwrap()) as usize;
-            let m = args.map_ptr.wrapping_add(local_phys_offset.as_u64().try_into().unwrap()) as usize;
-            let sz = args.map_size;
+             // Calculate arguments and use black_box to prevent "base + offset" optimization
+             let h = core::hint::black_box(unsafe { (*actual_kernel_args).handle }.wrapping_add(local_phys_offset.as_u64() as usize));
+             let s = core::hint::black_box(unsafe { (*actual_kernel_args).system_table }.wrapping_add(local_phys_offset.as_u64() as usize));
+             let m = core::hint::black_box(unsafe { (*actual_kernel_args).map_ptr }.wrapping_add(local_phys_offset.as_u64() as usize));
+             let sz = core::hint::black_box(unsafe { (*actual_kernel_args).map_size });
 
-            core::arch::asm!(
-                "cli",
-                "mov ax, 0x10",
-                "mov ds, ax",
-                "mov es, ax",
-                "mov fs, ax",
-                "mov gs, ax",
-                "mov ss, ax",
-                "and rsp, -16",
-                "mov rcx, {handle}",
-                "mov rdx, {st}",
-                "mov r8, {map}",
-                "mov r9, {size}",
-                "mov rax, 0x08",
-                "push rax",
-                "mov rax, {entry}",
-                "push rax",
-                "retfq", 
-                handle = in(reg) h,
-                st = in(reg) s,
-                map = in(reg) m,
-                size = in(reg) sz,
-                entry = in(reg) actual_kernel_entry,
-                options(noreturn)
-            );
+             core::arch::asm!(
+                 "cli",
+                 "mov ax, 0x10",
+                 "mov ds, ax",
+                 "mov es, ax",
+                 "mov fs, ax",
+                 "mov gs, ax",
+                 "mov ss, ax",
+                 "and rsp, -16",
+                 
+                 // Save all inputs to stack to completely eliminate register collisions
+                 "push {h}",
+                 "push {s}",
+                 "push {m}",
+                 "push {sz}",
+                 "push {entry}",
+                 
+                 // Load from stack into ABI registers
+                 // Stack layout: [rsp]=entry, [rsp+8]=sz, [rsp+16]=m, [rsp+24]=s, [rsp+32]=h
+                 "mov rcx, [rsp + 32]", // h
+                 "mov rdx, [rsp + 24]", // s
+                 "mov r8, [rsp + 16]",  // m
+                 "mov r9, [rsp + 8]",   // sz
+                 
+                 // Pop entry into a scratch register and clean up the rest
+                 "pop r11",            // r11 = entry
+                 "add rsp, 32",        // clean h, s, m, sz
+                 
+                 // Now push CS and RIP for retfq
+                 "push 0x08",
+                 "push r11",           // entry
+                 "retfq", 
+                 h = in(reg) h,
+                 s = in(reg) s,
+                 m = in(reg) m,
+                 sz = in(reg) sz,
+                 entry = in(reg) actual_kernel_entry,
+                 options(noreturn)
+             );
     }
 }
 
