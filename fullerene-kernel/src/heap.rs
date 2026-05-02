@@ -39,9 +39,11 @@ pub(crate) static mut MEMORY_MAP_BUFFER: [MemoryMapDescriptor; MAX_DESCRIPTORS] 
 
 /// Initialize the boot frame allocator with memory map
 pub fn init_frame_allocator(memory_map: &[impl MemoryDescriptorValidator]) {
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: init_frame_allocator start\n");
     let allocator = unsafe { BootInfoFrameAllocator::init(memory_map) };
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: BootInfoFrameAllocator::init done\n");
     let mut lock = FRAME_ALLOCATOR.lock();
     *lock = Some(allocator);
-    // MEMORY_MAP is already initialized in setup_memory_maps
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: init_frame_allocator complete\n");
 }
 

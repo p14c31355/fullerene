@@ -6,7 +6,10 @@ pub unsafe fn write_serial_bytes(port_addr: u16, status_port_addr: u16, bytes: &
         let mut status_port = Port::<u8>::new(status_port_addr);
         for &byte in bytes {
             unsafe {
-                while (status_port.read() & 0x20) == 0 {}
+                let mut timeout = 1000000;
+                while (status_port.read() & 0x20) == 0 && timeout > 0 {
+                    timeout -= 1;
+                }
                 port.write(byte);
             }
         }
@@ -294,7 +297,6 @@ pub fn format_hex(writer: &mut impl core::fmt::Write, value: usize) -> core::fmt
     writer.write_str(core::str::from_utf8(&digits[0..i]).unwrap())
 }
 
-#[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     #[cfg(all(not(feature = "std"), not(test)))]
     {
@@ -319,7 +321,6 @@ pub fn serial_init() {
         crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Bypassing Mutex lock for early init\n");
         
         // Get a raw pointer to the SerialPort inside the Mutex
-        // We cast the address of the static Mutex directly to the inner type
         let serial_ptr = &SERIAL_PORT_WRITER as *const spin::Mutex<SerialPort<Com1Ports>> as *mut SerialPort<Com1Ports>;
         
         // Initialize the serial port directly
@@ -330,7 +331,6 @@ pub fn serial_init() {
 }
 
 /// Formats a u64 value as hex to a byte buffer with limited digits.
-/// Returns the number of bytes written.
 pub fn format_hex_to_buffer(value: u64, buf: &mut [u8], max_digits: usize) -> usize {
     let mut temp = value;
     let mut i = 0;
@@ -357,7 +357,6 @@ pub fn format_hex_to_buffer(value: u64, buf: &mut [u8], max_digits: usize) -> us
 }
 
 /// Formats a usize value as decimal to a byte buffer.
-/// Returns the number of bytes written.
 pub fn format_dec_to_buffer(value: usize, buf: &mut [u8]) -> usize {
     let mut temp = value;
     let mut i = 0;
@@ -368,8 +367,12 @@ pub fn format_dec_to_buffer(value: usize, buf: &mut [u8]) -> usize {
     }
     while temp > 0 && i < 16 {
         let digit = (temp % 10) as u8;
-        digit_buf[i] = b'0' + digit;
-        temp /= 10;
+        digit_buf[i] = if digit < 10 {
+            b'0' + digit
+        } else {
+            b'a' + (digit - 10)
+        };
+        temp /= 16;
         i += 1;
     }
     // Reverse
@@ -377,6 +380,89 @@ pub fn format_dec_to_buffer(value: usize, buf: &mut [u8]) -> usize {
         buf[j] = digit_buf[i - 1 - j];
     }
     i
+}
+
+/// Early-boot non-locking hex print
+pub fn debug_print_hex_no_lock(value: usize) {
+    let mut buf = [0u8; 16];
+    let len = format_hex_to_buffer(value as u64, &mut buf, 16);
+    unsafe { write_serial_bytes(0x3F8, 0x3FD, &buf[..len]) };
+}
+
+/// Early-boot non-locking string print
+pub fn debug_print_str_no_lock(s: &str) {
+    unsafe { write_serial_bytes(0x3F8, 0x3FD, &s.as_bytes()[..]) };
+}
+
+/// Trait for non-locking debug printing
+pub trait DebugNoLock {
+    fn debug_print_no_lock(self);
+}
+
+impl DebugNoLock for usize {
+    fn debug_print_no_lock(self) {
+        debug_print_hex_no_lock(self);
+    }
+}
+
+impl DebugNoLock for u64 {
+    fn debug_print_no_lock(self) {
+        debug_print_hex_no_lock(self as usize);
+    }
+}
+
+impl DebugNoLock for u32 {
+    fn debug_print_no_lock(self) {
+        debug_print_hex_no_lock(self as usize);
+    }
+}
+
+impl DebugNoLock for u16 {
+    fn debug_print_no_lock(self) {
+        debug_print_hex_no_lock(self as usize);
+    }
+}
+
+impl DebugNoLock for u8 {
+    fn debug_print_no_lock(self) {
+        debug_print_hex_no_lock(self as usize);
+    }
+}
+
+impl DebugNoLock for isize {
+    fn debug_print_no_lock(self) {
+        debug_print_hex_no_lock(self as usize);
+    }
+}
+
+impl DebugNoLock for i64 {
+    fn debug_print_no_lock(self) {
+        debug_print_hex_no_lock(self as usize);
+    }
+}
+
+impl DebugNoLock for i32 {
+    fn debug_print_no_lock(self) {
+        debug_print_hex_no_lock(self as usize);
+    }
+}
+
+impl DebugNoLock for i16 {
+    fn debug_print_no_lock(self) {
+        debug_print_hex_no_lock(self as usize);
+    }
+}
+
+impl DebugNoLock for i8 {
+    fn debug_print_no_lock(self) {
+        debug_print_hex_no_lock(self as usize);
+    }
+}
+
+impl DebugNoLock for &str {
+    fn debug_print_no_lock(self) {
+        debug_print_str_no_lock(self);
+    }
 }
 
 #[cfg(test)]

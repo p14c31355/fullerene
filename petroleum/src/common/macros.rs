@@ -201,19 +201,19 @@ macro_rules! debug_log_no_alloc {
         $crate::write_serial_bytes!(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes());
     }};
     ($value:expr) => {{
-        $crate::serial::debug_print_hex($value);
+        $crate::serial::DebugNoLock::debug_print_no_lock($value);
         $crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
     }};
     ($msg:literal, $($value:expr),* $(,)?) => {{
         $crate::write_serial_bytes!(0x3F8, 0x3FD, $msg.as_bytes());
         $(
-            $crate::serial::debug_print_hex($value);
+            $crate::serial::DebugNoLock::debug_print_no_lock($value);
         )*
         $crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
     }};
     ($prefix:literal, $string_var:expr) => {{
         $crate::write_serial_bytes!(0x3F8, 0x3FD, $prefix.as_bytes());
-        $crate::serial::debug_print_str_to_com1($string_var);
+        $crate::serial::DebugNoLock::debug_print_no_lock($string_var);
         $crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
     }};
 }
