@@ -250,6 +250,8 @@ pub fn exit_boot_services_and_jump(
 
     let args_ptr = args_phys_addr as *mut petroleum::page_table::mapper::KernelArgs;
     unsafe {
+        let fb_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|m| *m.lock());
+        
         core::ptr::write_volatile(
             args_ptr,
             petroleum::page_table::mapper::KernelArgs {
@@ -260,6 +262,10 @@ pub fn exit_boot_services_and_jump(
                 descriptor_size,
                 kernel_phys_start: kernel_phys_start.as_u64(),
                 kernel_entry: kernel_entry_phys as usize,
+                fb_address: fb_config.map(|c| c.address).unwrap_or(0),
+                fb_width: fb_config.map(|c| c.width).unwrap_or(0),
+                fb_height: fb_config.map(|c| c.height).unwrap_or(0),
+                fb_bpp: fb_config.map(|c| c.bpp).unwrap_or(0),
             },
         );
     }

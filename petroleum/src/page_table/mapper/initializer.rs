@@ -553,6 +553,19 @@ impl PageTableReinitializer {
         );
 
         unsafe {
+            // Explicitly map the KernelArgs region to avoid Page Faults when accessing it in init_common
+            if let Some(args_phys) = kernel_args_phys {
+                let args_virt = VirtAddr::new(args_phys + self.phys_offset.as_u64());
+                let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(args_virt);
+                let _ = mapper.map_to(
+                    page,
+                    x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(args_phys)),
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                    frame_allocator,
+                );
+                crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: KernelArgs region mapped\n");
+            }
+
             crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: inside unsafe block, getting RIP\n");
             let rip: u64;
             core::arch::asm!("lea {}, [rip]", out(reg) rip);

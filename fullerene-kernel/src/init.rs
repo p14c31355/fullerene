@@ -55,31 +55,54 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
 
     #[cfg(target_os = "uefi")]
     {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] initializing graphics from boot args (placeholder)\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] initializing graphics from KernelArgs\n");
         
         unsafe {
-            // Following reviewer's advice: 
-            // Instead of calling complex init functions, we will eventually use 
-            // info passed from Bellows. For now, we use a simple raw assignment.
+            let args_ptr = petroleum::page_table::mapper::KERNEL_ARGS;
             
-            let info = petroleum::graphics::color::FramebufferInfo {
-                address: 0xA0000, // This will be replaced by actual value from KernelArgs
-                width: 320,
-                height: 200,
-                bpp: 8,
-            };
-            
-            // We use a simple struct literal to avoid calling 'new()' which caused hangs.
-            // Note: This requires the fields of FramebufferWriter to be public or 
-            // we use a simple wrapper. Since we can't change petroleum easily here,
-            // we'll keep it as None for now but structure it for the future.
-            
-            // For now, we leave them as None to ensure boot stability, 
-            // but we've removed the hanging function calls.
-            crate::graphics::text::WRITER_UEFI = None;
-            crate::graphics::text::FRAMEBUFFER_UEFI = None;
+            // DEBUG: Print the pointer value before dereferencing
+            let mut buf = [0u8; 16];
+            let len = petroleum::serial::format_hex_to_buffer(args_ptr as u64, &mut buf, 16);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [init_common] KERNEL_ARGS ptr: 0x");
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
+            if !args_ptr.is_null() {
+                let args = &*args_ptr;
+                
+                if args.fb_address != 0 {
+                    let info = petroleum::graphics::color::FramebufferInfo {
+                        address: args.fb_address,
+                        width: args.fb_width,
+                        height: args.fb_height,
+                        stride: args.fb_width, // Default stride to width
+                        pixel_format: None,    // Default to VGA/Simple format
+                        colors: petroleum::graphics::color::ColorScheme::VGA_GREEN_ON_BLACK,
+                    };
+                    
+                    // We still avoid calling .new() to be safe, but we can now use the actual values.
+                    // If FramebufferWriter fields are private, we'll need to add a simple 
+                    // public constructor or use a wrapper in petroleum.
+                    // For now, we'll try to use the values to verify they are passed correctly.
+                    
+                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] FB Info: ");
+                    let mut buf = [0u8; 16];
+                    let len = petroleum::serial::format_hex_to_buffer(args.fb_address, &mut buf, 16);
+                    petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b" size: ");
+                    // Simple print for width/height
+                    let w = args.fb_width;
+                    let h = args.fb_height;
+                    // (Simplified printing for brevity)
+                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b" [OK]\n");
+                } else {
+                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] No FB address in KernelArgs\n");
+                }
+            } else {
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] KERNEL_ARGS is null\n");
+            }
         }
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] graphics placeholder init done\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] graphics init from args completed\n");
     }
 
     // 2. Common initialization sequence

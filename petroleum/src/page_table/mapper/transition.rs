@@ -12,6 +12,11 @@ pub struct KernelArgs {
     pub descriptor_size: usize,
     pub kernel_phys_start: u64,
     pub kernel_entry: usize,
+    // Graphics information passed from bootloader
+    pub fb_address: u64,
+    pub fb_width: u32,
+    pub fb_height: u32,
+    pub fb_bpp: u32,
 }
 
 #[unsafe(no_mangle)]
