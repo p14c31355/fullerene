@@ -503,18 +503,13 @@ impl UefiInitContext {
     }
 
     fn init_memory_map(&self) {
-        debug_log_no_alloc!("!!! ENTERING init_memory_map (FIXED) !!!");
+        debug_log_no_alloc!("!!! ENTERING init_memory_map !!!");
 
-        // The raw_ptr is actually pointing to the 'physical_start' field (offset 8).
-        // We must move it back by 8 bytes to reach the 'type' field.
-        let raw_ptr = self.memory_map as u64;
-        let base_ptr = (raw_ptr.wrapping_sub(8)) as *const u8;
-        
-        // Force standard x86_64 UEFI descriptor size (48 bytes)
-        let descriptor_size = 48;
+        let base_ptr = self.memory_map as *const u8;
+        let descriptor_size = self.descriptor_size;
 
-        debug_log_no_alloc!("Corrected base_ptr: 0x", base_ptr as u64);
-        debug_log_no_alloc!("Using forced DESC_SIZE: ", descriptor_size);
+        debug_log_no_alloc!("Base ptr: 0x", base_ptr as u64);
+        debug_log_no_alloc!("Using descriptor size: ", descriptor_size);
 
         unsafe {
             let mut count = 0;
@@ -524,6 +519,9 @@ impl UefiInitContext {
                 
                 if !petroleum::page_table::MemoryDescriptorValidator::is_valid(&desc) {
                     debug_log_no_alloc!("Stopped parsing at descriptor {} (invalid)", i);
+                    debug_log_no_alloc!("Desc type: ", desc.type_() as usize);
+                    debug_log_no_alloc!("Desc phys: 0x", desc.physical_start() as usize);
+                    debug_log_no_alloc!("Desc pages: ", desc.number_of_pages() as usize);
                     break;
                 }
                 
