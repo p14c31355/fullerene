@@ -117,10 +117,9 @@ pub unsafe extern "C" fn jump_to_kernel(entry: usize, args: *const KernelArgs) -
         "mov es, ax",
         "mov ss, ax",
         "and rsp, -16",
-        // We want the kernel to receive `args` in RDI.
-        // Currently: RDI = entry, RSI = args.
-        "mov r11, {entry}", 
-        "mov rdi, {args}", 
+        // Use a temporary register to ensure no clobbering
+        "mov r11, {entry}",
+        "mov rdi, {args}",
         "jmp r11",
         entry = in(reg) entry,
         args = in(reg) args,

@@ -24,55 +24,61 @@ pub unsafe extern "efiapi" fn efi_main(
 
 #[cfg(target_os = "uefi")]
 #[unsafe(no_mangle)]
-pub unsafe extern "efiapi" fn efi_main_real_logic(
-    _image_handle: usize,
-    system_table: *mut EfiSystemTable,
-    memory_map: *mut c_void,
-    memory_map_size: usize,
+pub unsafe extern "sysv64" fn efi_main_real_logic(
+    args_ptr: *const petroleum::assembly::KernelArgs,
 ) -> ! {
+    // Immediately capture args_ptr to avoid clobbering by subsequent function calls
+    let captured_args_ptr = args_ptr;
+    
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: efi_main_real reached!\n");
     
     let mut buf = [0u8; 16];
     
+    // Print the raw pointer value to verify if it's correct
+    let ptr_len = petroleum::serial::format_hex_to_buffer(captured_args_ptr as u64, &mut buf, 16);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: captured args_ptr: 0x");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..ptr_len]);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
+    let args = unsafe { &*captured_args_ptr };
+    
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Args check:\n");
     
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"  handle: 0x");
-    let len = petroleum::serial::format_hex_to_buffer(_image_handle as u64, &mut buf, 16);
+    let len = petroleum::serial::format_hex_to_buffer(args.handle as u64, &mut buf, 16);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
     
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"  st: 0x");
-    let len = petroleum::serial::format_hex_to_buffer(system_table as u64, &mut buf, 16);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"  st_phys: 0x");
+    let len = petroleum::serial::format_hex_to_buffer(args.system_table as u64, &mut buf, 16);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
     
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"  map: 0x");
-    let len = petroleum::serial::format_hex_to_buffer(memory_map as u64, &mut buf, 16);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"  map_phys: 0x");
+    let len = petroleum::serial::format_hex_to_buffer(args.map_ptr as u64, &mut buf, 16);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
     
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"  size: 0x");
-    let len = petroleum::serial::format_hex_to_buffer(memory_map_size as u64, &mut buf, 16);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-    
-    let mut buf = [0u8; 16];
-    let len = petroleum::serial::format_hex_to_buffer(system_table as u64, &mut buf, 16);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: system_table ptr: 0x");
+    let len = petroleum::serial::format_hex_to_buffer(args.map_size as u64, &mut buf, 16);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to dereference system_table\n");
-    let system_table_ref = unsafe { &*system_table };
+    let system_table_phys = args.system_table;
+    let system_table_virt = (system_table_phys as u64 + petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64()) as *mut EfiSystemTable;
+
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to dereference system_table (virt)\n");
+    let system_table_ref = unsafe { &*system_table_virt };
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: system_table dereferenced successfully\n");
 
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Detecting descriptor_size from memory_map\n");
     let descriptor_size = unsafe {
-        if memory_map.is_null() {
+        if args.map_ptr == 0 {
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: memory_map is null, using 0\n");
             0
         } else {
-            let first_val = core::ptr::read_volatile(memory_map as *const usize);
+            let map_virt_ptr = (args.map_ptr as u64 + petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64()) as *const usize;
+            let first_val = core::ptr::read_volatile(map_virt_ptr);
             if first_val >= 40 && first_val <= 64 {
                 petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Detected descriptor_size from map head\n");
                 first_val
@@ -86,8 +92,8 @@ pub unsafe extern "efiapi" fn efi_main_real_logic(
 
     let mut ctx = UefiInitContext {
         system_table: system_table_ref,
-        memory_map,
-        memory_map_size,
+        memory_map: args.map_ptr as *mut c_void,
+        memory_map_size: args.map_size,
         descriptor_size,
         physical_memory_offset: VirtAddr::zero(),
         virtual_heap_start: VirtAddr::zero(),
