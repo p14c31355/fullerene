@@ -21,6 +21,7 @@ pub mod hardware;
 pub mod initializer;
 pub mod page_table;
 pub mod serial;
+pub mod transition;
 pub mod uefi_helpers;
 pub use apic::{IoApic, IoApicRedirectionEntry, init_io_apic};
 // Macros with #[macro_export] are automatically available at root, no need to re-export

@@ -37,6 +37,10 @@ pub struct TransitionFrame {
     pub logic_fn: usize,
 }
 
+impl TransitionFrame {
+    pub const LOGIC_FN_OFFSET: usize = core::mem::offset_of!(TransitionFrame, logic_fn);
+}
+
 
 /// Initializes all segment registers to the data segment (0x10).
 #[inline(always)]
@@ -70,11 +74,13 @@ pub unsafe fn prepare_for_kernel_jump() {
 }
 
 /// Sets the stack pointer (RSP) to the specified address and jumps to the entry function.
-#[unsafe(naked)]
 pub unsafe extern "C" fn jump_with_new_stack(stack_ptr: u64, entry: usize) -> ! {
-    core::arch::naked_asm!(
-        "mov rsp, rdi",
-        "jmp rsi",
+    core::arch::asm!(
+        "mov rsp, {stack}",
+        "jmp {entry}",
+        stack = in(reg) stack_ptr,
+        entry = in(reg) entry,
+        options(noreturn)
     )
 }
 
@@ -89,13 +95,9 @@ pub unsafe extern "sysv64" fn landing_zone(_frame: *const TransitionFrame) {
         "mov rax, 0x4c4d4e58", // 'LMNX'
         "mov dx, 0x3f8",
         "out dx, al",
-
-        // RDI contains the TransitionFrame pointer.
-        // 1. Load logic_fn from the frame (TransitionFrame is args[56 bytes] + logic_fn[8 bytes])
-        "mov r11, [rdi + 56]",
-        // 2. Jump to the logic function. 
-        // RDI is preserved as the first argument to landing_zone_logic.
+        "mov r11, [rdi + {offset}]",
         "jmp r11",
+        offset = const TransitionFrame::LOGIC_FN_OFFSET,
     );
 }
 
