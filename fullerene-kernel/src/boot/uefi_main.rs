@@ -8,11 +8,42 @@ use petroleum::write_serial_bytes;
 use crate::boot::uefi_init::UefiInitContext;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn efi_main_stage2(args_ptr: *const petroleum::page_table::mapper::KernelArgs, physical_memory_offset: VirtAddr) -> ! {
+pub extern "C" fn efi_main_stage2(ctx: *mut UefiInitContext, physical_memory_offset: VirtAddr) -> ! {
     unsafe {
-        petroleum::page_table::mapper::KERNEL_ARGS = args_ptr;
+        // Signal '1': Entered efi_main_stage2
+        core::arch::asm!(
+            "mov dx, 0x3f8",
+            "mov al, 0x31",
+            "out dx, al",
+            options(nomem, preserves_flags)
+        );
     }
-    write_serial_bytes!(0x3F8, 0x3FD, b"Entered efi_main_stage2 on new stack\n");
+    write_serial_bytes!(0x3F8, 0x3FD, b"1. Entered efi_main_stage2\n");
+
+    unsafe {
+        // Signal '2': Before setting KERNEL_ARGS
+        core::arch::asm!(
+            "mov dx, 0x3f8",
+            "mov al, 0x32",
+            "out dx, al",
+            options(nomem, preserves_flags)
+        );
+
+        let args_ptr = (*ctx).args_ptr;
+        petroleum::page_table::mapper::KERNEL_ARGS = args_ptr;
+
+        // Signal '3': After setting KERNEL_ARGS
+        core::arch::asm!(
+            "mov dx, 0x3f8",
+            "mov al, 0x33",
+            "out dx, al",
+            options(nomem, preserves_flags)
+        );
+    }
+    write_serial_bytes!(0x3F8, 0x3FD, b"2. KERNEL_ARGS set\n");
+
+    // Re-capture args_ptr for further use in this function
+    let args_ptr = unsafe { (*ctx).args_ptr };
     
     // Initialize the global memory manager with the EFI memory map
     write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Initializing global memory manager...\n");

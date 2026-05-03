@@ -21,6 +21,8 @@ use x86_64::{
 /// Helper struct for UEFI initialization context
 #[repr(C)]
 pub struct UefiInitContext {
+    /// Kernel arguments pointer
+    pub args_ptr: *const petroleum::assembly::KernelArgs,
     /// Reference to EFI system table
     pub system_table: &'static EfiSystemTable,
     /// EFI memory map data
@@ -226,9 +228,15 @@ impl UefiInitContext {
         {
             let mut fa_guard = crate::heap::FRAME_ALLOCATOR.lock();
             let allocator = fa_guard.as_mut().expect("Frame allocator should be ready");
-            for i in 0..(256 * 1024) {
-                let vaddr = x86_64::VirtAddr::new(kernel_virt_start + i as u64 * 4096);
-                let paddr = x86_64::PhysAddr::new(kernel_phys_start_val + i as u64 * 4096);
+            
+            // IMPORTANT: Align physical start to page boundary to avoid misaligned mapping
+            let kernel_phys_start_aligned = kernel_phys_start_val & !0xFFF;
+            let kernel_virt_start_aligned = kernel_virt_start & !0xFFF;
+
+            // Map 4GB to ensure all kernel sections are covered
+            for i in 0..(1024 * 1024) {
+                let vaddr = x86_64::VirtAddr::new(kernel_virt_start_aligned + i as u64 * 4096);
+                let paddr = x86_64::PhysAddr::new(kernel_phys_start_aligned + i as u64 * 4096);
 
                 let page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(vaddr);
                 let frame = x86_64::structures::paging::PhysFrame::containing_address(paddr);
@@ -418,6 +426,9 @@ impl UefiInitContext {
         log::info!("Setting up kernel stack");
         self.heap_start_after_gdt = virtual_heap_start;
 
+        // Ensure stack is 16-byte aligned for x86_64 ABI
+        assert!(virtual_heap_start.as_u64() % 16 == 0, "Kernel stack must be 16-byte aligned");
+
         let stack_phys_start = self.heap_start_after_gdt.as_u64() - physical_memory_offset.as_u64();
         // WIDER STACK MAPPING: Map 2MB instead of just KERNEL_STACK_SIZE to prevent #PF on stack growth
         let stack_pages = (2 * 1024 * 1024) / 4096;
@@ -442,7 +453,7 @@ impl UefiInitContext {
         write_serial_bytes!(0x3F8, 0x3FD, b"Kernel stack allocated and mapped (wide)\n");
 
         let kernel_stack_top =
-            (self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64 - 8).as_u64();
+            (self.heap_start_after_gdt.as_u64() + crate::heap::KERNEL_STACK_SIZE as u64) & !15;
         
         self.heap_start_after_stack =
             self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64;

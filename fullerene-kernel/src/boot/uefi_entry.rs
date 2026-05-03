@@ -91,6 +91,7 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: descriptor_size obtained\n");
 
     let mut ctx = UefiInitContext {
+        args_ptr: captured_args_ptr,
         system_table: system_table_ref,
         memory_map: args.map_ptr as *mut c_void,
         memory_map_size: args.map_size,
@@ -120,13 +121,27 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     write_serial_bytes!(0x3F8, 0x3FD, b"Allocator setup completed\n");
 
     let ctx_ptr = &mut ctx as *mut _;
+    
+    // Log addresses for debugging
+    let mut buf = [0u8; 16];
+    let len = petroleum::serial::format_hex_to_buffer(kernel_stack_top, &mut buf, 16);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: stack_top: 0x");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+    
+    let len = petroleum::serial::format_hex_to_buffer(efi_main_stage2 as u64, &mut buf, 16);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: stage2_addr: 0x");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
     write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Jumping to efi_main_stage2\n");
     unsafe {
         core::arch::asm!(
             "mov rdi, {ctx_ptr}",
             "mov rsi, {phys_offset}",
             "mov rsp, {stack_top}",
-            "call {stage2}",
+            "mov dx, 0x3f8", "mov al, 0x41", "out dx, al", // Signal 'A' after RSP set
+            "jmp {stage2}", // Use jmp instead of call to avoid stack push during transition
             ctx_ptr = in(reg) ctx_ptr,
             phys_offset = in(reg) physical_memory_offset.as_u64(),
             stack_top = in(reg) kernel_stack_top,
