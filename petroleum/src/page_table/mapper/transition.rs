@@ -3,32 +3,7 @@ use x86_64::structures::paging::{PhysFrame, Mapper, OffsetPageTable, PageTableFl
 use crate::page_table::constants::BootInfoFrameAllocator;
 
 
-#[repr(C)]
-pub struct TransitionArgs {
-    pub load_gdt: *const (),
-    pub load_idt: *const (),
-    pub phys_offset: u64,
-    pub l4_frame: u64,
-    pub allocator: *mut BootInfoFrameAllocator,
-    pub kernel_entry: usize,
-    pub kernel_args: *const KernelArgs,
-}
-
-#[repr(C)]
-pub struct KernelArgs {
-    pub handle: usize,
-    pub system_table: usize,
-    pub map_ptr: usize,
-    pub map_size: usize,
-    pub descriptor_size: usize,
-    pub kernel_phys_start: u64,
-    pub kernel_entry: usize,
-    // Graphics information passed from bootloader
-    pub fb_address: u64,
-    pub fb_width: u32,
-    pub fb_height: u32,
-    pub fb_bpp: u32,
-}
+pub use crate::assembly::{TransitionArgs, KernelArgs};
 
 #[unsafe(no_mangle)]
 pub static mut KERNEL_ARGS: *const KernelArgs = core::ptr::null();
