@@ -4,6 +4,17 @@ use crate::page_table::constants::BootInfoFrameAllocator;
 
 
 #[repr(C)]
+pub struct TransitionArgs {
+    pub load_gdt: *const (),
+    pub load_idt: *const (),
+    pub phys_offset: u64,
+    pub l4_frame: u64,
+    pub allocator: *mut BootInfoFrameAllocator,
+    pub kernel_entry: usize,
+    pub kernel_args: *const KernelArgs,
+}
+
+#[repr(C)]
 pub struct KernelArgs {
     pub handle: usize,
     pub system_table: usize,
@@ -91,69 +102,75 @@ pub unsafe extern "sysv64" fn landing_zone(
         "mov dx, 0x3f8",
         "out dx, al",
 
-        // System V ABI: rdi, rsi, rdx, rcx, r8, r9, then stack
-        // r9 = _logic_fn_high, [rsp] = _kernel_entry, [rsp+8] = _kernel_args
-        "mov r11, r9",      // Save _logic_fn_high in r11
-        "mov r9, [rsp]",    // Move _kernel_entry from stack to r9 (6th arg for logic)
-        "mov rax, [rsp+8]", // Move _kernel_args from stack to rax (7th arg for logic)
-        "mov [rsp], rax",   // Replace _kernel_entry with _kernel_args on stack
-        "jmp r11",          // Jump to _logic_fn_high
+        // Create TransitionArgs on stack
+        // Current stack: [rsp] = _kernel_entry, [rsp+8] = _kernel_args
+        // We need to move the stack pointer to make room for TransitionArgs (7 * 8 = 56 bytes)
+        "sub rsp, 56",
+        
+        // Store arguments into the struct at [rsp]
+        "mov [rsp], rdi",             // load_gdt
+        "mov [rsp + 8], rsi",         // load_idt
+        "mov [rsp + 16], rdx",        // phys_offset
+        "mov [rsp + 24], rcx",        // l4_frame
+        "mov [rsp + 32], r8",         // allocator
+        "mov rax, [rsp + 56]",        // kernel_entry (from original [rsp])
+        "mov [rsp + 40], rax",
+        "mov rax, [rsp + 64]",        // kernel_args (from original [rsp+8])
+        "mov [rsp + 48], rax",
+        
+        "mov rdi, rsp",               // Pass pointer to TransitionArgs as first argument
+        "mov r11, r9",                // Save _logic_fn_high in r11
+        "jmp r11",                    // Jump to _logic_fn_high
     );
 }
 
 #[unsafe(no_mangle)]
 #[inline(never)]
 pub unsafe extern "sysv64" fn landing_zone_logic(
-    _load_gdt: *const (),
-    _load_idt: *const (),
-    phys_offset_raw: u64,
-    l4_frame_raw: u64,
-    frame_allocator: *mut BootInfoFrameAllocator,
-    _kernel_entry: usize,
-    _kernel_args: *const KernelArgs,
+    ctx: *const TransitionArgs,
 ) {
     unsafe {
-        // Fix: r9 might be corrupted by the compiler prologue.
-        // Use the static variables set in perform_world_switch as a robust fallback.
-        let actual_kernel_entry = if _kernel_entry == 0 {
+        let args = &*ctx;
+        
+        let actual_kernel_entry = if args.kernel_entry == 0 {
             crate::page_table::mapper::transition::TRANSITION_KERNEL_ENTRY
         } else {
-            _kernel_entry
+            args.kernel_entry
         };
         
-        let actual_kernel_args = if _kernel_args.is_null() {
+        let actual_kernel_args = if args.kernel_args.is_null() {
             crate::page_table::mapper::transition::KERNEL_ARGS
         } else {
-            _kernel_args
+            args.kernel_args
         };
         
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: Start\n");
 
-        if !_load_idt.is_null() {
-            let load_idt: fn() = core::mem::transmute(_load_idt);
+        if !args.load_idt.is_null() {
+            let load_idt: fn() = core::mem::transmute(args.load_idt);
             load_idt();
             crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: IDT Loaded\n");
         }
 
-        if !_load_gdt.is_null() {
-            let load_gdt: fn() = core::mem::transmute(_load_gdt);
+        if !args.load_gdt.is_null() {
+            let load_gdt: fn() = core::mem::transmute(args.load_gdt);
             load_gdt();
             crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: GDT Loaded\n");
         }
 
-        let l4_phys = l4_frame_raw;
-        let sign_extended_offset = if (phys_offset_raw & (1 << 47)) != 0 {
-            phys_offset_raw | 0xFFFF_0000_0000_0000
+        let l4_phys = args.l4_frame;
+        let sign_extended_offset = if (args.phys_offset & (1 << 47)) != 0 {
+            args.phys_offset | 0xFFFF_0000_0000_0000
         } else {
-            phys_offset_raw & 0x0000_FFFF_FFFF_FFFF
+            args.phys_offset & 0x0000_FFFF_FFFF_FFFF
         };
         let local_phys_offset = VirtAddr::new(sign_extended_offset);
-        let local_frame_allocator = frame_allocator;
+        let local_frame_allocator = args.allocator;
 
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"High-half transition: landing zone logic reached!\n");
         crate::flush_tlb_and_verify!();
 
-        let l4_virt_raw = phys_offset_raw.wrapping_add(l4_phys);
+        let l4_virt_raw = args.phys_offset.wrapping_add(l4_phys);
         let l4_virt_sign_extended = if (l4_virt_raw & (1 << 47)) != 0 {
             l4_virt_raw | 0xFFFF_0000_0000_0000
         } else {
@@ -201,42 +218,42 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
              let args_phys_raw = args_phys.wrapping_sub(local_phys_offset.as_u64());
              map_page_raw(args_phys, args_phys_raw, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
 
-             let args = &*actual_kernel_args;
+             let k_args = &*actual_kernel_args;
 
              let mut buf = [0u8; 16];
              crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: KernelArgs content:\n");
              
              crate::write_serial_bytes!(0x3F8, 0x3FD, b"  handle: 0x");
-             let len = crate::serial::format_hex_to_buffer(args.handle as u64, &mut buf, 16);
+             let len = crate::serial::format_hex_to_buffer(k_args.handle as u64, &mut buf, 16);
              crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
              crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
              crate::write_serial_bytes!(0x3F8, 0x3FD, b"  st: 0x");
-             let len = crate::serial::format_hex_to_buffer(args.system_table as u64, &mut buf, 16);
+             let len = crate::serial::format_hex_to_buffer(k_args.system_table as u64, &mut buf, 16);
              crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
              crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
              crate::write_serial_bytes!(0x3F8, 0x3FD, b"  map: 0x");
-             let len = crate::serial::format_hex_to_buffer(args.map_ptr as u64, &mut buf, 16);
+             let len = crate::serial::format_hex_to_buffer(k_args.map_ptr as u64, &mut buf, 16);
              crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
              crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
              crate::write_serial_bytes!(0x3F8, 0x3FD, b"  size: 0x");
-             let len = crate::serial::format_hex_to_buffer(args.map_size as u64, &mut buf, 16);
+             let len = crate::serial::format_hex_to_buffer(k_args.map_size as u64, &mut buf, 16);
              crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
              crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
              crate::write_serial_bytes!(0x3F8, 0x3FD, b"  desc_size: 0x");
-             let len = crate::serial::format_hex_to_buffer(args.descriptor_size as u64, &mut buf, 16);
+             let len = crate::serial::format_hex_to_buffer(k_args.descriptor_size as u64, &mut buf, 16);
              crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
              crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-             let kernel_phys_start = args.kernel_phys_start;
+             let kernel_phys_start = k_args.kernel_phys_start;
              let kernel_virt_start = kernel_phys_start.wrapping_add(local_phys_offset.as_u64());
 
              // Also explicitly map the memory map buffer
-             let map_phys = args.map_ptr as u64;
+             let map_phys = k_args.map_ptr as u64;
              let map_virt = map_phys.wrapping_add(local_phys_offset.as_u64());
-             let map_pages = (args.map_size as u64 + 4095) / 4096;
+             let map_pages = (k_args.map_size as u64 + 4095) / 4096;
              for i in 0..map_pages {
                  map_page_raw(
                      map_virt.wrapping_add(i * 4096),
@@ -447,24 +464,26 @@ pub fn perform_world_switch(ctx: TransitionContext) -> ! {
 
         core::arch::asm!(
             "add rsp, {offset_diff}",
-            "push {kernel_args}",
-            "push {kernel_entry}",
-            "mov rdi, {load_gdt}",
-            "mov rsi, {load_idt}",
-            "mov rdx, {phys_offset}",
-            "mov rcx, {l4_frame}",
-            "mov r8, {allocator}",
-            "mov r9, {kernel_entry}",
-            "and rsp, -16", // Ensure stack is 16-byte aligned before jump
-            "jmp {logic_fn_high}",
+            "and rsp, -16",
+            "mov [rsp], {load_gdt}",
+            "mov [rsp + 8], {load_idt}",
+            "mov [rsp + 16], {phys_offset}",
+            "mov [rsp + 24], {l4_frame}",
+            "mov [rsp + 32], {allocator}",
+            "mov [rsp + 40], {kernel_entry}",
+            "mov [rsp + 48], {kernel_args}",
+            "mov rdi, rsp",
+            "push 0x08",
+            "push {logic_fn_high}",
+            "retfq",
             load_gdt = in(reg) ctx.load_gdt,
             load_idt = in(reg) ctx.load_idt,
             phys_offset = in(reg) ctx.phys_offset,
             l4_frame = in(reg) ctx.l4_frame,
             allocator = in(reg) ctx.allocator,
             kernel_entry = in(reg) ctx.kernel_entry,
-            offset_diff = in(reg) ctx.offset_diff,
             kernel_args = in(reg) ctx.kernel_args_virt,
+            offset_diff = in(reg) ctx.offset_diff,
             logic_fn_high = in(reg) ctx.logic_fn_high,
             options(noreturn)
         );

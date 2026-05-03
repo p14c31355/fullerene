@@ -618,6 +618,33 @@ impl PageTableReinitializer {
             crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: Landing zone region mapped\n");
             crate::mem_debug!("landing_zone region (2MB) mapped at low and high", "\n");
 
+            // Explicitly map the landing_zone_logic page to ensure the jump succeeds
+            let logic_fn_addr_low = crate::page_table::mapper::transition::landing_zone_logic as *const () as u64;
+            // We are currently in the low half, so subtract current_physical_memory_offset to get physical address
+            let logic_fn_phys = logic_fn_addr_low.wrapping_sub(current_physical_memory_offset.as_u64());
+            let logic_fn_page = logic_fn_phys & !0xFFF;
+            
+            let logic_frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(logic_fn_page));
+            
+            // Map to identity address
+            let logic_page_identity = x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(logic_fn_page));
+            let _ = mapper.map_to(
+                logic_page_identity,
+                logic_frame,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE, 
+                frame_allocator,
+            );
+            
+            // Map to high-half address: logic_fn_phys + self.phys_offset
+            let logic_page_high = x86_64::structures::paging::Page::<Size4KiB>::containing_address(VirtAddr::new(logic_fn_page + self.phys_offset.as_u64()));
+            let _ = mapper.map_to(
+                logic_page_high,
+                logic_frame,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE, 
+                frame_allocator,
+            );
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: landing_zone_logic page explicitly mapped (fixed phys calculation)\n");
+
                 if let Some(gdt_fn) = load_gdt {
                     let gdt_addr = gdt_fn as *const () as u64;
                     let gdt_phys = gdt_addr.wrapping_sub(current_physical_memory_offset.as_u64());
