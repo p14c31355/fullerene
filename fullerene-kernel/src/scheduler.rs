@@ -372,9 +372,10 @@ fn yield_and_process_system_calls() {
 fn draw_desktop_on_available_framebuffer() {
     #[cfg(target_os = "uefi")]
     {
-        let mut lock = text::FRAMEBUFFER_UEFI.lock();
-        if let Some(ref mut fb) = *lock {
-            graphics::draw_os_desktop(fb);
+        unsafe {
+            if let Some(ref mut fb) = text::FRAMEBUFFER_UEFI {
+                graphics::draw_os_desktop(fb);
+            }
         }
     }
     #[cfg(not(target_os = "uefi"))]

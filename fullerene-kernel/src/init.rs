@@ -6,7 +6,19 @@ use petroleum::{common::InitSequence, init_log, write_serial_bytes};
 use spin::Once;
 
 pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
+    let rsp: u64;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp); }
+    
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] entered\n");
+    
+    let mut buf = [0u8; 16];
+    let len = petroleum::serial::format_hex_to_buffer(rsp, &mut buf, 16);
+    unsafe {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [init_common] RSP: 0x");
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+    }
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
     init_log!("Initializing common components");
 
     // 1. Platform-specific early initialization
@@ -43,13 +55,31 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
 
     #[cfg(target_os = "uefi")]
     {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] starting uefi_early_steps\n");
-        let uefi_early_steps = [
-            petroleum::init_step!("Graphics", init_early_graphics),
-        ];
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] calling InitSequence::run for uefi_early_steps\n");
-        InitSequence::new(&uefi_early_steps).run();
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] uefi_early_steps completed\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] initializing graphics from boot args (placeholder)\n");
+        
+        unsafe {
+            // Following reviewer's advice: 
+            // Instead of calling complex init functions, we will eventually use 
+            // info passed from Bellows. For now, we use a simple raw assignment.
+            
+            let info = petroleum::graphics::color::FramebufferInfo {
+                address: 0xA0000, // This will be replaced by actual value from KernelArgs
+                width: 320,
+                height: 200,
+                bpp: 8,
+            };
+            
+            // We use a simple struct literal to avoid calling 'new()' which caused hangs.
+            // Note: This requires the fields of FramebufferWriter to be public or 
+            // we use a simple wrapper. Since we can't change petroleum easily here,
+            // we'll keep it as None for now but structure it for the future.
+            
+            // For now, we leave them as None to ensure boot stability, 
+            // but we've removed the hanging function calls.
+            crate::graphics::text::WRITER_UEFI = None;
+            crate::graphics::text::FRAMEBUFFER_UEFI = None;
+        }
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] graphics placeholder init done\n");
     }
 
     // 2. Common initialization sequence
@@ -70,20 +100,13 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
         init_log!("About to create test process");
         let test_pid = crate::process::create_process(
             "test_process",
-            x86_64::VirtAddr::new(crate::process::test_process_main as usize as u64),
+            x86_64::VirtAddr::new(crate::process::test_process_main as *const () as usize as u64),
         );
         match test_pid {
             Ok(pid) => init_log!("Test process created: {}", pid),
             Err(e) => init_log!("Failed to create test process: {:?}", e),
         }
     }
-}
-
-fn init_early_graphics() -> Result<(), &'static str> {
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] init_fallback_graphics start\n");
-    let _ = crate::graphics::text::init_fallback_graphics();
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] init_fallback_graphics done\n");
-    Ok(())
 }
 
 fn init_process_step() -> Result<(), &'static str> {
@@ -113,4 +136,3 @@ fn init_loader_step() -> Result<(), &'static str> {
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] init loader done\n");
     Ok(())
 }
-

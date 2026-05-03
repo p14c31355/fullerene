@@ -78,8 +78,9 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         
         unsafe {
             let low_mem_start = 0u64;
-            let low_mem_size = 4 * 1024 * 1024 * 1024; // Increased to 4GiB
+            let low_mem_size = 4 * 1024 * 1024 * 1024; // 4GiB
             let region_pages = low_mem_size / 4096;
+            // Force WRITABLE and EXECUTABLE for the entire low memory region during transition
             let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
             
             self.map_identity_config_4kiB(
@@ -95,7 +96,7 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
                 flags,
             );
             
-            crate::debug_log_no_alloc!("Low physical memory (4GiB) identity AND high-half mapped for transition (4KiB pages)");
+            crate::debug_log_no_alloc!("Low physical memory (4GiB) identity AND high-half mapped as RW for transition");
         }
         
         unsafe {
@@ -261,6 +262,27 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
                 kernel_mapper.map_fallback_kernel_region(kernel_phys_start);
             }
         }
+
+        // FORCE: Map a large kernel region as WRITABLE to prevent Page Faults on static variables.
+        // This overrides any restrictive PE section flags for the first 128MB of the kernel.
+        unsafe {
+            let kernel_virt_start = self.phys_offset + kernel_phys_start.as_u64();
+            let kernel_phys_start_raw = kernel_phys_start.as_u64();
+            let region_pages = (128 * 1024 * 1024) / 4096;
+            
+            for i in 0..region_pages {
+                let v_page = kernel_virt_start + (i * 4096);
+                let p_page = kernel_phys_start_raw + (i * 4096);
+                let _ = self.mapper.map_to(
+                    x86_64::structures::paging::Page::<Size4KiB>::containing_address(v_page),
+                    x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(p_page)),
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE, // NO_EXECUTEを付けない = 実行可能
+                    self.frame_allocator,
+                );
+            }
+            crate::debug_log_no_alloc!("Forced 128MB kernel region to be WRITABLE and EXECUTABLE");
+        }
+
         crate::debug_log_no_alloc!("Kernel segments mapped to higher half");
         unsafe {
             crate::debug_log_no_alloc!("Mapping available memory to higher half...");

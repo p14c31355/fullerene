@@ -141,9 +141,13 @@ pub unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> { unsafe {
 pub fn derive_pe_flags(characteristics: u32) -> PageTableFlags {
     use x86_64::structures::paging::PageTableFlags as Flags;
     let mut flags = Flags::PRESENT;
-    if (characteristics & 0x8000_0000) != 0 {
+    
+    // Ensure data sections are writable. 
+    // In early boot, we prefer over-permissioning to avoid triple faults.
+    if (characteristics & 0x8000_0000) != 0 || (characteristics & 0x2000_0000) == 0 {
         flags |= Flags::WRITABLE;
     }
+    
     if (characteristics & 0x2000_0000) == 0 {
         flags |= Flags::NO_EXECUTE;
     }
