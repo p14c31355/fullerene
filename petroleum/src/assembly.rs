@@ -131,7 +131,8 @@ pub unsafe extern "C" fn jump_with_new_stack(stack_ptr: u64, entry: usize) -> ! 
 /// The landing zone for the world switch transition.
 /// 
 /// This function allocates a frame on the stack and calls `build_args_on_stack`
-/// to populate it. It passes the current registers and the frame pointer.
+/// to populate it. It uses a fixed offset to ensure the stack pointer is
+/// 16-byte aligned relative to the return address (RSP = 16n + 8) before the call.
 #[unsafe(no_mangle)]
 #[unsafe(naked)]
 pub unsafe extern "sysv64" fn landing_zone(
@@ -148,24 +149,23 @@ pub unsafe extern "sysv64" fn landing_zone(
         "mov dx, 0x3f8",
         "out dx, al",
 
-        // Allocate space for TransitionFrame
-        "sub rsp, 64",
+        // Allocate space for TransitionFrame (64 bytes) + 1 slot for 7th arg (8 bytes).
+        // Total = 72 bytes. 
+        // If starting RSP is 16n, then 16n - 72 = 16k + 8.
+        // This ensures that after 'call' pushes 8 bytes, the callee sees a 16-byte aligned stack.
+        "sub rsp, 72",
         
-        // Prepare arguments for build_args_on_stack:
-        // Args 1-6 (rdi, rsi, rdx, rcx, r8, r9) already contain the values.
-        // Arg 7: frame_ptr (current RSP)
+        // Prepare the 7th argument (frame_ptr) for build_args_on_stack.
+        // The frame pointer is the start of the allocated space (current RSP).
         "mov rax, rsp",
-        "push rax",
+        "mov [rsp], rax",
         
         "call {build_fn}",
         
-        // Clean up the 1 pushed argument
-        "add rsp, 8",
-        
-        // Jump to the logic function stored in the frame
-        // TransitionFrame layout: TransitionArgs (56) then logic_fn (8)
-        "mov r11, [rsp + 56]", // logic_fn
+        // After call, RSP is back to 16k + 8.
+        // The TransitionFrame starts at RSP.
         "mov rdi, rsp",        // Pass TransitionArgs pointer as 1st arg
+        "mov r11, [rsp + 56]", // Load logic_fn from the end of the frame
         "jmp r11",
         build_fn = sym build_args_on_stack,
     );
