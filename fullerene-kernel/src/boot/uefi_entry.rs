@@ -115,6 +115,7 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: GDT loaded after memory init\n");
 
     let kernel_stack_top = ctx.prepare_kernel_stack(virtual_heap_start, physical_memory_offset);
+    let kernel_stack_top_virt = VirtAddr::new(kernel_stack_top.as_u64());
     write_serial_bytes!(0x3F8, 0x3FD, b"GDT and stack prepared\n");
     
     ctx.setup_allocator(virtual_heap_start);
@@ -124,7 +125,7 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     
     // Log addresses for debugging
     let mut buf = [0u8; 16];
-    let len = petroleum::serial::format_hex_to_buffer(kernel_stack_top, &mut buf, 16);
+    let len = petroleum::serial::format_hex_to_buffer(kernel_stack_top.as_u64(), &mut buf, 16);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: stack_top: 0x");
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
@@ -139,10 +140,10 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     let transition_ctx = petroleum::page_table::mapper::transition::TransitionContext::prepare_for_efi_stage2(
         physical_memory_offset,
         VirtAddr::zero(),
-        kernel_stack_top,
+        kernel_stack_top_virt,
         efi_main_stage2,
         ctx_ptr as *mut (),
     );
 
-    petroleum::page_table::mapper::transition::perform_efi_stage2_switch(transition_ctx, kernel_stack_top);
+    petroleum::page_table::mapper::transition::perform_efi_stage2_switch(transition_ctx, kernel_stack_top_virt);
 }

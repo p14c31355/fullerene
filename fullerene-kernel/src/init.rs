@@ -58,7 +58,7 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] initializing graphics from KernelArgs\n");
         
         unsafe {
-            let args_ptr = petroleum::page_table::mapper::KERNEL_ARGS;
+            let args_ptr = petroleum::transition::KERNEL_ARGS;
             
             // DEBUG: Print the pointer value before dereferencing
             let mut buf = [0u8; 16];

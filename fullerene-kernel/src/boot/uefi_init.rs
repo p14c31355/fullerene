@@ -422,7 +422,7 @@ impl UefiInitContext {
         &mut self,
         virtual_heap_start: VirtAddr,
         physical_memory_offset: VirtAddr,
-    ) -> u64 {
+    ) -> VirtAddr {
         log::info!("Setting up kernel stack");
         self.heap_start_after_gdt = virtual_heap_start;
 
@@ -458,7 +458,7 @@ impl UefiInitContext {
         self.heap_start_after_stack =
             self.heap_start_after_gdt + crate::heap::KERNEL_STACK_SIZE as u64;
         
-        kernel_stack_top
+        VirtAddr::new(kernel_stack_top)
     }
 
     pub fn setup_allocator(&mut self, virtual_heap_start: VirtAddr) {
