@@ -100,7 +100,7 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         }
         
         unsafe {
-            let gdt_virt_addr = core::ptr::addr_of!(crate::page_table::mapper::transition::TRANSITION_GDT) as *const _ as u64;
+            let gdt_virt_addr = core::ptr::addr_of!(crate::transition::TRANSITION_GDT) as *const _ as u64;
             let gdt_phys_addr = (gdt_virt_addr.wrapping_sub(self.current_phys_offset.as_u64())) & !0xFFF;
             
             self.map_identity_config_4kiB(gdt_phys_addr, 1, crate::page_flags_const!(READ_WRITE));
@@ -285,10 +285,8 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
 
         crate::debug_log_no_alloc!("Kernel segments mapped to higher half");
         unsafe {
-            crate::debug_log_no_alloc!("Mapping available memory to higher half...");
+            crate::debug_log_no_alloc!("Mapping available memory and UEFI runtime to higher half...");
             self.map_available_memory_to_higher_half();
-            crate::debug_log_no_alloc!("Mapping UEFI runtime to higher half...");
-            self.map_uefi_runtime_to_higher_half();
             crate::debug_log_no_alloc!("Mapping stack to higher half...");
             self.map_stack_to_higher_half();
         }
@@ -302,15 +300,6 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         crate::debug_log_no_alloc!("Additional regions mapped");
         crate::debug_log_no_alloc!("Higher-half mappings completed");
     }
-
-    unsafe fn map_uefi_runtime_to_higher_half(&mut self) { unsafe {
-        map_available_memory_to_higher_half(
-            self.mapper,
-            self.frame_allocator,
-            self.phys_offset,
-            self.memory_map,
-        );
-    }}
 
     unsafe fn map_available_memory_to_higher_half(&mut self) { unsafe {
         map_available_memory_to_higher_half(
@@ -619,7 +608,7 @@ impl PageTableReinitializer {
             crate::mem_debug!("landing_zone region (2MB) mapped at low and high", "\n");
 
             // Explicitly map the landing_zone_logic page to ensure the jump succeeds
-            let logic_fn_addr_low = crate::page_table::mapper::transition::landing_zone_logic as *const () as u64;
+            let logic_fn_addr_low = crate::transition::landing_zone_logic as *const () as u64;
             // We are currently in the low half, so subtract current_physical_memory_offset to get physical address
             let logic_fn_phys = logic_fn_addr_low.wrapping_sub(current_physical_memory_offset.as_u64());
             let logic_fn_page = logic_fn_phys & !0xFFF;
@@ -684,7 +673,7 @@ impl PageTableReinitializer {
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"CR3 switch: about to enter asm! block\n");
         
         // DEBUG: Print the address of the KERNEL_ARGS variable itself
-        let ka_addr = unsafe { &raw const crate::page_table::mapper::transition::KERNEL_ARGS } as *const _ as u64;
+        let ka_addr = unsafe { &raw const crate::transition::KERNEL_ARGS } as *const _ as u64;
         let mut buf = [0u8; 16];
         let len = crate::serial::format_hex_to_buffer(ka_addr, &mut buf, 16);
         unsafe { crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: KERNEL_ARGS var addr: 0x") };

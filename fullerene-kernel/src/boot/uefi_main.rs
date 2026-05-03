@@ -8,10 +8,7 @@ use petroleum::write_serial_bytes;
 use crate::boot::uefi_init::UefiInitContext;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn efi_main_stage2(
-    ctx: *mut UefiInitContext,
-    physical_memory_offset: VirtAddr,
-) -> ! {
+pub extern "C" fn efi_main_stage2(ctx: *mut UefiInitContext, physical_memory_offset: VirtAddr) -> ! {
     unsafe {
         core::arch::asm!(
             "mov dx, 0x3f8",
@@ -19,18 +16,10 @@ pub extern "C" fn efi_main_stage2(
             "out dx, al", // Signal 'D'
             options(nomem, preserves_flags)
         );
-    }
-    efi_main_stage2_actual_logic(ctx, physical_memory_offset)
-}
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"S2: Entering efi_main_stage2\n");
 
-#[unsafe(no_mangle)]
-pub extern "C" fn efi_main_stage2_actual_logic(ctx: *mut UefiInitContext, physical_memory_offset: VirtAddr) -> ! {
-    unsafe {
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"S2: Entering efi_main_stage2_actual_logic\n");
-        // Signal '1' and '2' were already sent by the naked wrapper
-        
         let args_ptr = (*ctx).args_ptr;
-        petroleum::page_table::mapper::KERNEL_ARGS = args_ptr;
+        petroleum::transition::KERNEL_ARGS = args_ptr;
 
         // Signal '3': After setting KERNEL_ARGS
         core::arch::asm!(
@@ -39,13 +28,9 @@ pub extern "C" fn efi_main_stage2_actual_logic(ctx: *mut UefiInitContext, physic
             "out dx, al",
             options(nomem, preserves_flags)
         );
-    }
-    // Use raw serial write instead of write_serial_bytes! macro to avoid potential issues
-    unsafe {
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"S2: Signals 1-3 sent\n");
     }
 
-    // Re-capture args_ptr for further use in this function
     let args_ptr = unsafe { (*ctx).args_ptr };
     
     // Initialize the global memory manager with the EFI memory map

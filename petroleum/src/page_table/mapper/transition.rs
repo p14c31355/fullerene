@@ -7,14 +7,6 @@ pub use crate::assembly::{TransitionArgs, TransitionFrame, KernelArgs};
 
 // Moved to crate::transition
 
-#[unsafe(no_mangle)]
-#[inline(never)]
-pub unsafe extern "sysv64" fn landing_zone_logic(
-    ctx: *const TransitionArgs,
-) {
-    crate::transition::landing_zone_logic(ctx);
-}
-
 #[repr(C)]
 pub struct TransitionContext {
     pub cr3: u64,
@@ -82,7 +74,7 @@ impl TransitionContext {
         let offset_diff = target_offset.wrapping_sub(current_offset);
 
         let lz_addr = crate::assembly::landing_zone as *const () as u64;
-        let lzl_addr = landing_zone_logic as *const () as u64;
+        let lzl_addr = crate::transition::landing_zone_logic as *const () as u64;
 
         crate::debug_log_no_alloc!("TransitionContext::prepare - current_offset: 0x{:x}, target_offset: 0x{:x}, offset_diff: 0x{:x}", current_offset, target_offset, offset_diff);
         crate::debug_log_no_alloc!("TransitionContext::prepare - landing_zone: 0x{:x}, landing_zone_logic: 0x{:x}", lz_addr, lzl_addr);
@@ -112,7 +104,7 @@ impl TransitionContext {
             }
         });
 
-        let logic_fn_phys = (landing_zone_logic as *const () as u64)
+        let logic_fn_phys = (crate::transition::landing_zone_logic as *const () as u64)
             .wrapping_sub(current_offset) & 0x0000_FFFF_FFFF_FFFF;
         let logic_fn_high = logic_fn_phys.wrapping_add(target_offset);
 
