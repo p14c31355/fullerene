@@ -25,11 +25,15 @@ pub fn set_kernel_cr3(cr3: u64) {
 
 /// Initialize syscall kernel stack
 pub fn init_syscall_stack() {
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [syscall] init_syscall_stack start\n");
     use alloc::alloc::{Layout, alloc};
     let layout = Layout::from_size_align(SYSCALL_STACK_SIZE, 16).unwrap();
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [syscall] allocating stack\n");
     let ptr = unsafe { alloc(layout) };
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [syscall] stack allocated\n");
     let stack_top = unsafe { ptr.add(SYSCALL_STACK_SIZE) };
     SYSCALL_KERNEL_STACK.store(stack_top, Ordering::Relaxed);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [syscall] init_syscall_stack done\n");
 }
 
 /// System call entry point (naked function for manual assembly handling)
@@ -68,16 +72,21 @@ pub extern "C" fn syscall_entry() {
 
 /// Set up Fast System Call mechanism
 pub fn setup_syscall() {
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [syscall] setup_syscall start\n");
     // Enable SYSCALL/SYSRET with SCE bit in EFER
     unsafe {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [syscall] writing EFER\n");
         let current = Msr::new(0xC0000080).read();
         Msr::new(0xC0000080).write(current | (1 << 0)); // Set SCE bit
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [syscall] EFER written\n");
     }
 
     // Set LSTAR MSR to syscall entry point
     let entry_addr = syscall_entry as u64;
     unsafe {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [syscall] writing LSTAR\n");
         Msr::new(0xC0000082).write(entry_addr);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [syscall] LSTAR written\n");
     }
 
     // Set STAR MSR for CS/SS switching
@@ -85,23 +94,29 @@ pub fn setup_syscall() {
     let kernel_cs = crate::gdt::kernel_code_selector().0 as u64;
     let star_value = (user_cs << 48) | (kernel_cs << 32);
     unsafe {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [syscall] writing STAR\n");
         Msr::new(0xC0000081).write(star_value);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [syscall] STAR written\n");
     }
 
     // Mask RFLAGS during syscall
     unsafe {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [syscall] writing SFMASK\n");
         Msr::new(0xC0000084).write(RFlags::INTERRUPT_FLAG.bits() | RFlags::TRAP_FLAG.bits());
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [syscall] SFMASK written\n");
     }
 
     // Set KERNEL_GS_BASE to point to the static variable holding the syscall kernel stack top.
     use x86_64::registers::model_specific::KernelGsBase;
     unsafe {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [syscall] writing KernelGsBase\n");
         KernelGsBase::write(VirtAddr::new(&SYSCALL_KERNEL_STACK as *const _ as u64));
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [syscall] KernelGsBase written\n");
     }
 
     let stack_top_addr = SYSCALL_KERNEL_STACK.load(Ordering::Relaxed) as u64;
-    petroleum::serial::serial_log(format_args!(
-        "Fast syscall mechanism initialized with LSTAR at {:#x}, kernel stack at {:#x}\n",
-        entry_addr, stack_top_addr
-    ));
+    // Use non-locking debug print to avoid hang in spin::Mutex
+    petroleum::debug_log_no_alloc!("Fast syscall mechanism initialized. LSTAR: ", entry_addr);
+    petroleum::debug_log_no_alloc!("Kernel stack: ", stack_top_addr);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [syscall] setup_syscall done\n");
 }

@@ -176,26 +176,32 @@ pub static PROCESS_LIST: Mutex<Vec<Box<Process>>> = Mutex::new(Vec::new());
 /// Next process to schedule (for round-robin)
 static CURRENT_PROCESS_INDEX: Mutex<usize> = Mutex::new(0);
 
-/// Current running process
-pub static CURRENT_PROCESS: Mutex<Option<ProcessId>> = Mutex::new(None);
+/// Current running process (0 means None)
+pub static CURRENT_PROCESS: AtomicUsize = AtomicUsize::new(0);
 
 // Use KERNEL_STACK_SIZE from crate::heap
 
 /// Initialize process management system
 pub fn init() {
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] start\n");
     // Create idle process
     let idle_addr = VirtAddr::new(idle_loop as usize as u64);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] creating idle process\n");
     let mut idle_process = Process::new("idle", idle_addr);
     idle_process.state = ProcessState::Running;
 
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] locking PROCESS_LIST\n");
     petroleum::lock_and_modify!(PROCESS_LIST, process_list, {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] pushing to PROCESS_LIST\n");
         process_list.push(Box::new(idle_process));
     });
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] PROCESS_LIST modified\n");
 
     // Set current process
-    petroleum::lock_and_modify!(CURRENT_PROCESS, current_proc, {
-        *current_proc = Some(1);
-    });
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] setting CURRENT_PROCESS\n");
+    CURRENT_PROCESS.store(1, Ordering::SeqCst);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] CURRENT_PROCESS modified\n");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] done\n");
 }
 
 /// Create a new process and add it to the process list
@@ -292,8 +298,8 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
     }
 
     // If current process is terminating, schedule next
-    let current_pid = *CURRENT_PROCESS.lock();
-    if current_pid == Some(pid) {
+    let current_pid = CURRENT_PROCESS.load(Ordering::SeqCst);
+    if current_pid == pid as usize {
         schedule_next();
     }
 }
@@ -364,7 +370,7 @@ pub fn schedule_next() {
 
     // Update current process tracking
     *CURRENT_PROCESS_INDEX.lock() = next_index;
-    *CURRENT_PROCESS.lock() = Some(process_list[next_index].id);
+    CURRENT_PROCESS.store(process_list[next_index].id as usize, Ordering::SeqCst);
     petroleum::scheduler_log!(
         "Set current process index to {}, PID {}",
         next_index,
@@ -391,7 +397,12 @@ pub fn schedule_next() {
 
 /// Get current process ID
 pub fn current_pid() -> Option<ProcessId> {
-    petroleum::lock_and_read!(CURRENT_PROCESS, proc, *proc)
+    let pid = CURRENT_PROCESS.load(Ordering::SeqCst);
+    if pid == 0 {
+        None
+    } else {
+        Some(pid as ProcessId)
+    }
 }
 
 /// Yield current process

@@ -139,7 +139,7 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     
     let transition_ctx = petroleum::page_table::mapper::transition::TransitionContext::prepare_for_efi_stage2(
         physical_memory_offset,
-        VirtAddr::zero(),
+        physical_memory_offset,
         kernel_stack_top_virt,
         efi_main_stage2,
         ctx_ptr as *mut (),
