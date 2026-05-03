@@ -3,7 +3,7 @@ use x86_64::structures::paging::{PhysFrame, Mapper, OffsetPageTable, PageTableFl
 use crate::page_table::constants::BootInfoFrameAllocator;
 
 
-pub use crate::assembly::{TransitionArgs, KernelArgs};
+pub use crate::assembly::{TransitionArgs, TransitionFrame, KernelArgs};
 
 #[unsafe(no_mangle)]
 pub static mut KERNEL_ARGS: *const KernelArgs = core::ptr::null();
@@ -241,47 +241,9 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
             crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
             crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
-             // Calculate arguments and use black_box to prevent "base + offset" optimization
-             let h = core::hint::black_box(unsafe { (*actual_kernel_args).handle }.wrapping_add(local_phys_offset.as_u64() as usize));
-             let s = core::hint::black_box(unsafe { (*actual_kernel_args).system_table }.wrapping_add(local_phys_offset.as_u64() as usize));
-             let m = core::hint::black_box(unsafe { (*actual_kernel_args).map_ptr }.wrapping_add(local_phys_offset.as_u64() as usize));
-             let sz = core::hint::black_box(unsafe { (*actual_kernel_args).map_size });
-
-             unsafe { crate::assembly::prepare_for_kernel_jump(); }
-             core::arch::asm!(
-                 // Save all inputs to stack to completely eliminate register collisions
-                 "push {h}",
-                 "push {s}",
-                 "push {m}",
-                 "push {sz}",
-                 "push {entry}",
-                 
-                 // Load from stack into ABI registers
-                 // Stack layout: [rsp]=entry, [rsp+8]=sz, [rsp+16]=m, [rsp+24]=s, [rsp+32]=h
-                 "mov rcx, [rsp + 32]", // h
-                 "mov rdx, [rsp + 24]", // s
-                 "mov r8, [rsp + 16]",  // m
-                 "mov r9, [rsp + 8]",   // sz
-                 
-                 // Pass KernelArgs pointer as the first argument (RDI)
-                 "mov rdi, {args}",
-                 
-                 // Pop entry into a scratch register and clean up the rest
-                 "pop r11",            // r11 = entry
-                 "add rsp, 32",        // clean h, s, m, sz
-                 
-                 // Now push CS and RIP for retfq
-                 "push 0x08",
-                 "push r11",           // entry
-                 "retfq", 
-                 h = in(reg) h,
-                 s = in(reg) s,
-                 m = in(reg) m,
-                 sz = in(reg) sz,
-                 args = in(reg) actual_kernel_args,
-                 entry = in(reg) actual_kernel_entry,
-                 options(noreturn)
-             );
+             unsafe {
+                 crate::assembly::jump_to_kernel(actual_kernel_entry, actual_kernel_args);
+             }
     }
 }
 
@@ -381,9 +343,29 @@ impl TransitionContext {
 #[inline(never)]
 pub fn perform_world_switch(ctx: TransitionContext) -> ! {
     unsafe {
+        // Create the transition frame on the stack
+        let frame = TransitionFrame {
+            args: TransitionArgs {
+                load_gdt: ctx.load_gdt,
+                load_idt: ctx.load_idt,
+                phys_offset: ctx.phys_offset,
+                l4_frame: ctx.l4_frame,
+                allocator: ctx.allocator as *mut _,
+                kernel_entry: ctx.kernel_entry,
+                kernel_args: ctx.kernel_args_virt as *const _,
+            },
+            logic_fn: ctx.logic_fn_high,
+        };
+
+        // Translate the frame pointer to the target world's address space
+        let frame_ptr_old = &frame as *const TransitionFrame as u64;
+        let frame_ptr_new = frame_ptr_old.wrapping_add(ctx.offset_diff);
+
+        // Update global tracking for debugging if necessary
         TRANSITION_KERNEL_ENTRY = ctx.kernel_entry;
         KERNEL_ARGS = ctx.kernel_args_virt as *const KernelArgs;
 
+        // Minimum required switch: CR3 and GDT
         x86_64::registers::control::Cr3::write(
             x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(ctx.cr3)),
             x86_64::registers::control::Cr3Flags::empty(),
@@ -391,30 +373,16 @@ pub fn perform_world_switch(ctx: TransitionContext) -> ! {
 
         core::arch::asm!("lgdt [{}]", in(reg) ctx.gdt_ptr);
 
+        // Transition to the landing zone
         core::arch::asm!(
             "add rsp, {offset_diff}",
             "and rsp, -16",
-            "mov rdi, {load_gdt}",
-            "mov rsi, {load_idt}",
-            "mov rdx, {phys_offset}",
-            "mov rcx, {l4_frame}",
-            "mov r8, {allocator}",
-            "mov r9, {logic_fn_high}",
-            "push {kernel_args}",
-            "push {kernel_entry}",
             "push 0x08",
-            "push {landing_zone_high}",
+            "push {lz_high}",
             "retfq",
-            load_gdt = in(reg) ctx.load_gdt,
-            load_idt = in(reg) ctx.load_idt,
-            phys_offset = in(reg) ctx.phys_offset,
-            l4_frame = in(reg) ctx.l4_frame,
-            allocator = in(reg) ctx.allocator,
-            logic_fn_high = in(reg) ctx.logic_fn_high,
-            kernel_entry = in(reg) ctx.kernel_entry,
-            kernel_args = in(reg) ctx.kernel_args_virt,
-            landing_zone_high = in(reg) ctx.landing_zone_high,
             offset_diff = in(reg) ctx.offset_diff,
+            lz_high = in(reg) ctx.landing_zone_high,
+            in("rdi") frame_ptr_new,
             options(noreturn)
         );
         core::hint::unreachable_unchecked()
