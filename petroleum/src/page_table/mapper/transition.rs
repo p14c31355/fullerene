@@ -33,6 +33,39 @@ pub struct TransitionContext {
 }
 
 impl TransitionContext {
+    /// UEFI Stage2 への簡易ワールドスイッチ（CR3変更なしの場合に最適化）
+    pub fn prepare_for_efi_stage2(
+        phys_offset: VirtAddr,
+        current_physical_memory_offset: VirtAddr,
+        _kernel_stack_top: VirtAddr,
+        stage2_fn: unsafe extern "C" fn(*mut (), VirtAddr) -> !,
+        ctx: *mut (),
+    ) -> Self {
+        let current_offset = current_physical_memory_offset.as_u64();
+        let target_offset = phys_offset.as_u64();
+        let offset_diff = target_offset.wrapping_sub(current_offset);
+
+        let stage2_phys = (stage2_fn as *const () as u64)
+            .wrapping_sub(current_offset) & 0x0000_FFFF_FFFF_FFFF;
+        let stage2_high = stage2_phys.wrapping_add(target_offset);
+
+        Self {
+            cr3: 0, // CR3変更不要なら0
+            load_gdt: core::ptr::null(),
+            load_idt: core::ptr::null(),
+            phys_offset: target_offset,
+            l4_frame: 0,
+            allocator: core::ptr::null(),
+            logic_fn_high: stage2_high as usize,
+            kernel_entry: stage2_high as usize,
+            kernel_args_virt: ctx as u64,
+            cs_selector: 0x08,
+            landing_zone_high: 0,
+            offset_diff,
+            gdt_ptr: core::ptr::null(),
+        }
+    }
+
     pub fn prepare(
         phys_offset: VirtAddr,
         current_physical_memory_offset: VirtAddr,
@@ -114,6 +147,24 @@ impl TransitionContext {
 }
 
 #[inline(never)]
+#[inline(never)]
+pub fn perform_efi_stage2_switch(ctx: TransitionContext, stack_top: VirtAddr) -> ! {
+    unsafe {
+        // 新しいスタックへ切り替え + 直接ジャンプ（landing_zone不要）
+        core::arch::asm!(
+            "mov rsp, {stack}",
+            "mov rdi, {arg1}",      // ctx pointer
+            "mov rsi, {arg2}",      // physical_memory_offset
+            "jmp {target}",
+            stack = in(reg) stack_top.as_u64(),
+            arg1 = in(reg) ctx.kernel_args_virt,
+            arg2 = in(reg) ctx.phys_offset,
+            target = in(reg) ctx.logic_fn_high,
+            options(noreturn)
+        );
+    }
+}
+
 pub fn perform_world_switch(ctx: TransitionContext) -> ! {
     unsafe {
         // Create the transition frame on the stack

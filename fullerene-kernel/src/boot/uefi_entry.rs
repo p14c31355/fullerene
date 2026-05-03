@@ -134,21 +134,15 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
-    write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Jumping to efi_main_stage2\n");
-    unsafe {
-        core::arch::asm!(
-            "mov dx, 0x3f8", "mov al, 0x41", "out dx, al", // Signal 'A'
-            "mov dx, 0x3f8", "mov al, 0x42", "out dx, al", // Signal 'B'
-            "mov dx, 0x3f8", "mov al, 0x43", "out dx, al", // Signal 'C' (Just before jump)
-            "mov rdi, {ctx_ptr}",
-            "mov rsi, {phys_offset}",
-            "mov rsp, {stack_top}",
-            "jmp {stage2}", 
-            ctx_ptr = in(reg) ctx_ptr,
-            phys_offset = in(reg) physical_memory_offset.as_u64(),
-            stack_top = in(reg) kernel_stack_top,
-            stage2 = in(reg) efi_main_stage2 as usize,
-            options(noreturn)
-        );
-    }
+    write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling perform_efi_stage2_switch\n");
+    
+    let transition_ctx = petroleum::page_table::mapper::transition::TransitionContext::prepare_for_efi_stage2(
+        physical_memory_offset,
+        VirtAddr::zero(),
+        kernel_stack_top,
+        efi_main_stage2,
+        ctx_ptr as *mut (),
+    );
+
+    petroleum::page_table::mapper::transition::perform_efi_stage2_switch(transition_ctx, kernel_stack_top);
 }

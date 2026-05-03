@@ -8,7 +8,10 @@ use petroleum::write_serial_bytes;
 use crate::boot::uefi_init::UefiInitContext;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn efi_main_stage2(ctx: *mut UefiInitContext, physical_memory_offset: VirtAddr) -> ! {
+pub extern "C" fn efi_main_stage2(
+    ctx: *mut UefiInitContext,
+    physical_memory_offset: VirtAddr,
+) -> ! {
     unsafe {
         core::arch::asm!(
             "mov dx, 0x3f8",
