@@ -7,8 +7,8 @@ use petroleum::write_serial_bytes;
 
 use crate::boot::uefi_init::UefiInitContext;
 
-#[inline(never)]
-pub fn efi_main_stage2(args_ptr: *const petroleum::page_table::mapper::KernelArgs, physical_memory_offset: VirtAddr) -> ! {
+#[unsafe(no_mangle)]
+pub extern "C" fn efi_main_stage2(args_ptr: *const petroleum::page_table::mapper::KernelArgs, physical_memory_offset: VirtAddr) -> ! {
     unsafe {
         petroleum::page_table::mapper::KERNEL_ARGS = args_ptr;
     }

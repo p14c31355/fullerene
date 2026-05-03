@@ -115,30 +115,20 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
         };
         let l4_virt = VirtAddr::new(l4_virt_sign_extended);
 
-        // Manual mapping helper to avoid OffsetPageTable overflow panics
-        let mut map_page_raw = |v_addr_raw: u64, p_addr_raw: u64, flags: PageTableFlags| {
-            let v_addr_sign_extended = if (v_addr_raw & (1 << 47)) != 0 {
-                v_addr_raw | 0xFFFF_0000_0000_0000
-            } else {
-                v_addr_raw & 0x0000_FFFF_FFFF_FFFF
-            };
-            let p_addr = p_addr_raw & 0x000F_FFFF_FFFF_FFFF;
-            
-            // Use a temporary mapper with 0 offset to avoid overflow in internal calculations
-            let mut temp_mapper = OffsetPageTable::new(
-                &mut *(l4_virt.as_mut_ptr() as *mut PageTable),
-                VirtAddr::new(0),
-            );
-            let _ = temp_mapper.map_to(
-                x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(v_addr_sign_extended)),
-                x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(p_addr)),
-                flags,
-                &mut *local_frame_allocator,
-            );
-        };
+        // Use a temporary mapper with 0 offset to avoid overflow in internal calculations
+        let mut temp_mapper = OffsetPageTable::new(
+            &mut *(l4_virt.as_mut_ptr() as *mut PageTable),
+            VirtAddr::new(0),
+        );
 
         // Map L4 table to itself
-        map_page_raw(l4_virt_raw, l4_phys, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE);
+        let l4_v_sign = if (l4_virt_raw & (1 << 47)) != 0 { l4_virt_raw | 0xFFFF_0000_0000_0000 } else { l4_virt_raw & 0x0000_FFFF_FFFF_FFFF };
+        let _ = temp_mapper.map_to(
+            x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(l4_v_sign)),
+            x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(l4_phys & 0x000F_FFFF_FFFF_FFFF)),
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE,
+            &mut *local_frame_allocator,
+        );
         
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Landing zone jumping to kernel entry!\n");
         
@@ -149,11 +139,24 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
 
         // DEBUG: Print values before calculation
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: kernel_entry check [VERSION_20260502_03]\n");
+        
+        // DEBUG: Print the actual value of actual_kernel_entry
+        let mut entry_buf = [0u8; 16];
+        let entry_len = crate::serial::format_hex_to_buffer(actual_kernel_entry as u64, &mut entry_buf, 16);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"  actual_kernel_entry: 0x");
+        crate::write_serial_bytes(0x3F8, 0x3FD, &entry_buf[..entry_len]);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
             
              // Map KernelArgs first so we can read it
              let args_phys = actual_kernel_args as u64;
              let args_phys_raw = args_phys.wrapping_sub(local_phys_offset.as_u64());
-             map_page_raw(args_phys, args_phys_raw, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+             let args_v_sign = if (args_phys & (1 << 47)) != 0 { args_phys | 0xFFFF_0000_0000_0000 } else { args_phys & 0x0000_FFFF_FFFF_FFFF };
+             let _ = temp_mapper.map_to(
+                 x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(args_v_sign)),
+                 x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(args_phys_raw & 0x000F_FFFF_FFFF_FFFF)),
+                 PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                 &mut *local_frame_allocator,
+             );
 
              let k_args = &*actual_kernel_args;
 
@@ -192,41 +195,86 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
              let map_virt = map_phys.wrapping_add(local_phys_offset.as_u64());
              let map_pages = (k_args.map_size as u64 + 4095) / 4096;
              for i in 0..map_pages {
-                 map_page_raw(
-                     map_virt.wrapping_add(i * 4096),
-                     map_phys.wrapping_add(i * 4096),
+                 let v_addr = map_virt.wrapping_add(i * 4096);
+                 let p_addr = map_phys.wrapping_add(i * 4096);
+                 let v_sign = if (v_addr & (1 << 47)) != 0 { v_addr | 0xFFFF_0000_0000_0000 } else { v_addr & 0x0000_FFFF_FFFF_FFFF };
+                 let _ = temp_mapper.map_to(
+                     x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(v_sign)),
+                     x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(p_addr & 0x000F_FFFF_FFFF_FFFF)),
                      PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                     &mut *local_frame_allocator,
                  );
              }
             
-            // Map a larger kernel region (512MB to be safe) to ensure all sections and functions are covered
-            for page_offset in 0..131072 {
-                let v_page_raw = kernel_virt_start.wrapping_add(page_offset * 4096);
-                let p_page = kernel_phys_start.wrapping_add(page_offset * 4096);
-                map_page_raw(v_page_raw, p_page, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+            // Map a larger kernel region (4GB to be safe) using 2MB huge pages to reduce CPU load
+            // 4GB / 2MB = 2048 pages
+            for page_offset in 0..2048 {
+                let v_addr_raw = kernel_virt_start.wrapping_add(page_offset * 2 * 1024 * 1024);
+                let p_addr_raw = kernel_phys_start.wrapping_add(page_offset * 2 * 1024 * 1024);
+                
+                let v_addr_sign_extended = if (v_addr_raw & (1 << 47)) != 0 {
+                    v_addr_raw | 0xFFFF_0000_0000_0000
+                } else {
+                    v_addr_raw & 0x0000_FFFF_FFFF_FFFF
+                };
+
+                let _ = temp_mapper.map_to(
+                    x86_64::structures::paging::Page::<x86_64::structures::paging::Size2MiB>::containing_address(VirtAddr::new(v_addr_sign_extended)),
+                    x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size2MiB>::containing_address(x86_64::PhysAddr::new(p_addr_raw)),
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                    &mut *local_frame_allocator,
+                );
             }
 
-            // Also explicitly map the page containing the actual kernel entry and its surroundings
-            let entry_page_start = (actual_kernel_entry as u64) & !0xFFF;
-            for page_offset in -16i32..16i32 {
-                let v_page = entry_page_start.wrapping_add((page_offset as i64 * 4096) as u64);
-                let p_page = v_page.wrapping_sub(local_phys_offset.as_u64());
-                map_page_raw(v_page, p_page, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+             // Also explicitly map the page containing the actual kernel entry and its surroundings
+             let entry_phys_start = (actual_kernel_entry as u64).wrapping_sub(local_phys_offset.as_u64()) & !0xFFF;
+             for page_offset in -16i32..16i32 {
+                 let p_page = entry_phys_start.wrapping_add((page_offset as i64 * 4096) as u64);
+                 let v_page = p_page.wrapping_add(local_phys_offset.as_u64());
+                 let v_sign = if (v_page & (1 << 47)) != 0 { v_page | 0xFFFF_0000_0000_0000 } else { v_page & 0x0000_FFFF_FFFF_FFFF };
+                 let _ = temp_mapper.map_to(
+                     x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(v_sign)),
+                     x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(p_page & 0x000F_FFFF_FFFF_FFFF)),
+                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                     &mut *local_frame_allocator,
+                 );
+             }
+
+             // Also explicitly map the stack area around the actual RSP to avoid PF during push/retfq
+             let rsp_val: u64;
+             core::arch::asm!("mov {}, rsp", out(reg) rsp_val);
+             let stack_phys_start = (rsp_val & !0xFFF).wrapping_sub(local_phys_offset.as_u64());
+             // Map 16MB around the current RSP (8MB below and 8MB above)
+             for page_offset in 0..4096 {
+                 let p_page = stack_phys_start.wrapping_sub(8 * 1024 * 1024).wrapping_add(page_offset * 4096);
+                 let v_page = p_page.wrapping_add(local_phys_offset.as_u64());
+                 let v_sign = if (v_page & (1 << 47)) != 0 { v_page | 0xFFFF_0000_0000_0000 } else { v_page & 0x0000_FFFF_FFFF_FFFF };
+                 let _ = temp_mapper.map_to(
+                     x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(v_sign)),
+                     x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(p_page & 0x000F_FFFF_FFFF_FFFF)),
+                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                     &mut *local_frame_allocator,
+                 );
+             }
+
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: Jumping now\n");
+
+            // DEBUG: Verify if the entry point is actually readable and contains something
+            unsafe {
+                let entry_ptr = actual_kernel_entry as *const u8;
+                let first_byte = core::ptr::read_volatile(entry_ptr);
+                let mut buf_byte = [0u8; 2];
+                buf_byte[0] = b' ';
+                buf_byte[1] = first_byte;
+                crate::write_serial_bytes!(0x3F8, 0x3FD, b"  first byte: 0x");
+                let len = crate::serial::format_hex_to_buffer(first_byte as u64, &mut [0u8; 16], 2);
+                // We need a local buffer for the hex output
+                let mut hex_buf = [0u8; 16];
+                let h_len = crate::serial::format_hex_to_buffer(first_byte as u64, &mut hex_buf, 2);
+                crate::write_serial_bytes(0x3F8, 0x3FD, &hex_buf[..h_len]);
+                crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
             }
 
-            // Also explicitly map the stack area around the actual RSP to avoid PF during push/retfq
-            let rsp_val: u64;
-            core::arch::asm!("mov {}, rsp", out(reg) rsp_val);
-            let stack_page_start = rsp_val & !0xFFF;
-            // Map 16MB around the current RSP (8MB below and 8MB above)
-            for page_offset in 0..4096 {
-                let v_page = stack_page_start.wrapping_sub(8 * 1024 * 1024).wrapping_add(page_offset * 4096);
-                let p_page = v_page.wrapping_sub(local_phys_offset.as_u64());
-                map_page_raw(v_page, p_page, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
-            }
-
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: Jumping now ('Z')\n");
-            
             // DEBUG: Print final state before jump
             let mut buf = [0u8; 16];
             let entry_val = actual_kernel_entry as u64;
@@ -290,7 +338,8 @@ impl TransitionContext {
             let gdt_ptr_static = core::ptr::addr_of_mut!(TRANSITION_GDT);
             let entries_virt_addr = core::ptr::addr_of!((*gdt_ptr_static).entries) as *const _ as u64;
             let gdt_phys_base = entries_virt_addr.wrapping_sub(current_offset) & 0x0000_FFFF_FFFF_FFFF;
-            (*gdt_ptr_static).descriptor.base = gdt_phys_base;
+            // GDT base must be a linear address in the new address space
+            (*gdt_ptr_static).descriptor.base = gdt_phys_base.wrapping_add(target_offset);
         }
 
         let final_gdt_ptr_virt = gdt_ptr.unwrap_or(unsafe {
@@ -303,7 +352,11 @@ impl TransitionContext {
         let l_idt = load_idt.map_or(core::ptr::null(), |f| f as *const ());
 
         let final_kernel_entry = kernel_entry.map_or(0, |entry| {
-            (entry as u64).wrapping_add(target_offset) as usize
+            if (entry as u64) >= 0x8000_0000_0000_0000 {
+                entry // Already a high-half address
+            } else {
+                (entry as u64).wrapping_add(target_offset) as usize
+            }
         });
 
         let logic_fn_phys = (landing_zone_logic as *const () as u64)

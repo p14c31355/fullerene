@@ -109,9 +109,8 @@ pub unsafe extern "sysv64" fn landing_zone(_frame: *const TransitionFrame) {
 /// - `entry`: The virtual address of the kernel entry point (passed in RDI).
 /// - `args`: A pointer to the `KernelArgs` structure (passed in RSI).
 #[unsafe(no_mangle)]
-#[unsafe(naked)]
 pub unsafe extern "C" fn jump_to_kernel(entry: usize, args: *const KernelArgs) -> ! {
-    core::arch::naked_asm!(
+    core::arch::asm!(
         "cli",
         "mov ax, 0x10",
         "mov ds, ax",
@@ -120,10 +119,11 @@ pub unsafe extern "C" fn jump_to_kernel(entry: usize, args: *const KernelArgs) -
         "and rsp, -16",
         // We want the kernel to receive `args` in RDI.
         // Currently: RDI = entry, RSI = args.
-        "mov r11, rdi", // Save entry in r11
-        "mov rdi, rsi", // Move args to rdi
-        "push 0x08",    // Push CS selector
-        "push r11",     // Push entry address
-        "retfq",
+        "mov r11, {entry}", 
+        "mov rdi, {args}", 
+        "jmp r11",
+        entry = in(reg) entry,
+        args = in(reg) args,
+        options(noreturn)
     );
 }
