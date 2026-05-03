@@ -48,35 +48,44 @@ struct SavedRegs {
     logic_fn: usize,
 }
 
-/// Populates a TransitionFrame on the stack using saved registers and original stack arguments.
+/// Populates a TransitionFrame on the stack using provided arguments.
 /// 
-/// This function is called from `landing_zone`. It reads the registers saved by the assembly
-/// and the original arguments from the stack to construct a type-safe `TransitionFrame`.
+/// This function is called from `landing_zone`. It takes the register values as
+/// arguments and resolves the kernel entry/args from the original stack relative
+/// to the provided `frame_ptr`.
 #[unsafe(no_mangle)]
-pub unsafe extern "sysv64" fn build_args_on_stack(frame_ptr: *mut TransitionFrame) {
-    // The frame_ptr points to the start of the allocated space.
-    // The saved registers are stored immediately after the TransitionFrame (offset 64).
-    let regs = &*(frame_ptr.add(64) as *const SavedRegs);
+pub unsafe extern "sysv64" fn build_args_on_stack(
+    load_gdt: *const (),
+    load_idt: *const (),
+    phys_offset: u64,
+    l4_frame: u64,
+    allocator: *mut BootInfoFrameAllocator,
+    logic_fn: usize,
+    frame_ptr: *mut TransitionFrame,
+) {
+    // The frame_ptr is the current RSP when landing_zone allocated the frame.
+    // Original stack layout before 'sub rsp, 64' and 'push frame_ptr':
+    // [rsp_orig] = 0x08
+    // [rsp_orig + 8] = kernel_entry
+    // [rsp_orig + 16] = kernel_args
     
-    // The original stack arguments were shifted by the 'sub rsp, 128' in landing_zone.
-    // Original stack: [rsp_orig] = 0x08, [rsp_orig + 8] = kernel_entry, [rsp_orig + 16] = kernel_args
-    // Current rsp = rsp_orig - 128.
-    // So kernel_entry is at [frame_ptr + 128 + 8]
-    let stack_base = (frame_ptr as usize).wrapping_add(128);
-    let kernel_entry = *(stack_base.wrapping_add(8) as *const usize);
-    let kernel_args = *(stack_base.wrapping_add(16) as *const *const KernelArgs);
+    // Current stack is [frame_ptr] ... [frame_ptr + 64] = 0x08
+    // So kernel_entry is at frame_ptr + 64 + 8
+    let original_rsp = (frame_ptr as usize).wrapping_add(64);
+    let kernel_entry = *(original_rsp.wrapping_add(8) as *const usize);
+    let kernel_args = *(original_rsp.wrapping_add(16) as *const *const KernelArgs);
 
     let frame = &mut *frame_ptr;
     frame.args = TransitionArgs {
-        load_gdt: regs.load_gdt,
-        load_idt: regs.load_idt,
-        phys_offset: regs.phys_offset,
-        l4_frame: regs.l4_frame,
-        allocator: regs.allocator,
+        load_gdt,
+        load_idt,
+        phys_offset,
+        l4_frame,
+        allocator,
         kernel_entry,
         kernel_args,
     };
-    frame.logic_fn = regs.logic_fn;
+    frame.logic_fn = logic_fn;
 }
 
 /// Initializes all segment registers to the data segment (0x10).
@@ -121,8 +130,8 @@ pub unsafe extern "C" fn jump_with_new_stack(stack_ptr: u64, entry: usize) -> ! 
 
 /// The landing zone for the world switch transition.
 /// 
-/// This function allocates a frame on the stack, saves the incoming registers,
-/// and calls `build_args_on_stack` to populate the frame using Rust logic.
+/// This function allocates a frame on the stack and calls `build_args_on_stack`
+/// to populate it. It passes the current registers and the frame pointer.
 #[unsafe(no_mangle)]
 #[unsafe(naked)]
 pub unsafe extern "sysv64" fn landing_zone(
@@ -139,21 +148,19 @@ pub unsafe extern "sysv64" fn landing_zone(
         "mov dx, 0x3f8",
         "out dx, al",
 
-        // Allocate space for TransitionFrame (64 bytes) + SavedRegs (48 bytes) 
-        // and align to 16 bytes.
-        "sub rsp, 128",
+        // Allocate space for TransitionFrame
+        "sub rsp, 64",
         
-        // Save registers into the SavedRegs area (offset 64)
-        "mov [rsp + 64], rdi", // load_gdt
-        "mov [rsp + 72], rsi", // load_idt
-        "mov [rsp + 80], rdx", // phys_offset
-        "mov [rsp + 88], rcx", // l4_frame
-        "mov [rsp + 96], r8",  // allocator
-        "mov [rsp + 104], r9", // logic_fn_high
+        // Prepare arguments for build_args_on_stack:
+        // Args 1-6 (rdi, rsi, rdx, rcx, r8, r9) already contain the values.
+        // Arg 7: frame_ptr (current RSP)
+        "mov rax, rsp",
+        "push rax",
         
-        // Pass the start of the frame (RSP) as the first argument to build_args_on_stack
-        "mov rdi, rsp",
         "call {build_fn}",
+        
+        // Clean up the 1 pushed argument
+        "add rsp, 8",
         
         // Jump to the logic function stored in the frame
         // TransitionFrame layout: TransitionArgs (56) then logic_fn (8)
