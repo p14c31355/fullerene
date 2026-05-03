@@ -8,7 +8,10 @@ use petroleum::write_serial_bytes;
 use crate::boot::uefi_init::UefiInitContext;
 
 #[inline(never)]
-pub fn efi_main_stage2(ctx: &mut UefiInitContext, physical_memory_offset: VirtAddr) -> ! {
+pub fn efi_main_stage2(args_ptr: *const petroleum::page_table::mapper::KernelArgs, physical_memory_offset: VirtAddr) -> ! {
+    unsafe {
+        petroleum::page_table::mapper::KERNEL_ARGS = args_ptr;
+    }
     write_serial_bytes!(0x3F8, 0x3FD, b"Entered efi_main_stage2 on new stack\n");
     
     // Initialize the global memory manager with the EFI memory map
@@ -59,10 +62,10 @@ pub fn efi_main_stage2(ctx: &mut UefiInitContext, physical_memory_offset: VirtAd
     petroleum::serial::serial_log(format_args!("basic init complete logged successfully\n"));
 
     // Transition to the formal kernel main in the higher half
-    kernel_main_higher_half(ctx, physical_memory_offset);
+    kernel_main_higher_half(args_ptr, physical_memory_offset);
 }
 
-fn kernel_main_higher_half(ctx: &mut UefiInitContext, physical_memory_offset: VirtAddr) -> ! {
+fn kernel_main_higher_half(args_ptr: *const petroleum::page_table::mapper::KernelArgs, physical_memory_offset: VirtAddr) -> ! {
     write_serial_bytes!(0x3F8, 0x3FD, b"Entering kernel_main_higher_half...\n");
 
     // 1. Reload IDT to ensure it uses higher-half addresses
@@ -71,7 +74,7 @@ fn kernel_main_higher_half(ctx: &mut UefiInitContext, physical_memory_offset: Vi
     log::info!("Kernel: IDT re-initialized in higher half");
 
     // 2. Map MMIO regions
-    ctx.map_mmio();
+    crate::boot::uefi_init::UefiInitContext::map_mmio(physical_memory_offset);
     log::info!("MMIO mapping completed");
 
     // 3. Initialize VGA for UEFI

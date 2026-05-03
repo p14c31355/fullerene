@@ -113,8 +113,19 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
     _kernel_args: *const KernelArgs,
 ) {
     unsafe {
-        let actual_kernel_args = KERNEL_ARGS;
-        let actual_kernel_entry = TRANSITION_KERNEL_ENTRY;
+        // Fix: r9 might be corrupted by the compiler prologue.
+        // Use the static variables set in perform_world_switch as a robust fallback.
+        let actual_kernel_entry = if _kernel_entry == 0 {
+            crate::page_table::mapper::transition::TRANSITION_KERNEL_ENTRY
+        } else {
+            _kernel_entry
+        };
+        
+        let actual_kernel_args = if _kernel_args.is_null() {
+            crate::page_table::mapper::transition::KERNEL_ARGS
+        } else {
+            _kernel_args
+        };
         
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: Start\n");
 
@@ -274,7 +285,7 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
             let len = crate::serial::format_hex_to_buffer(rsp_val, &mut buf, 16);
             crate::write_serial_bytes(0x3F8, 0x3FD, b"  rsp: 0x");
             crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-            crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
              // Calculate arguments and use black_box to prevent "base + offset" optimization
              let h = core::hint::black_box(unsafe { (*actual_kernel_args).handle }.wrapping_add(local_phys_offset.as_u64() as usize));
@@ -306,6 +317,9 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
                  "mov r8, [rsp + 16]",  // m
                  "mov r9, [rsp + 8]",   // sz
                  
+                 // Pass KernelArgs pointer as the first argument (RDI)
+                 "mov rdi, {args}",
+                 
                  // Pop entry into a scratch register and clean up the rest
                  "pop r11",            // r11 = entry
                  "add rsp, 32",        // clean h, s, m, sz
@@ -318,6 +332,7 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
                  s = in(reg) s,
                  m = in(reg) m,
                  sz = in(reg) sz,
+                 args = in(reg) actual_kernel_args,
                  entry = in(reg) actual_kernel_entry,
                  options(noreturn)
              );
@@ -392,7 +407,6 @@ impl TransitionContext {
         let landing_zone_high = landing_zone_phys.wrapping_add(target_offset);
 
         // DEBUG: Print calculated addresses to verify canonicality and correctness
-        // Since we are in prepare(), we can use debug_log_no_alloc
         crate::debug_log_no_alloc!("Calculated landing_zone_high: 0x{:x}", landing_zone_high);
         crate::debug_log_no_alloc!("Calculated logic_fn_high: 0x{:x}", logic_fn_high);
 
@@ -432,26 +446,26 @@ pub fn perform_world_switch(ctx: TransitionContext) -> ! {
         core::arch::asm!("lgdt [{}]", in(reg) ctx.gdt_ptr);
 
         core::arch::asm!(
+            "add rsp, {offset_diff}",
+            "push {kernel_args}",
+            "push {kernel_entry}",
             "mov rdi, {load_gdt}",
             "mov rsi, {load_idt}",
             "mov rdx, {phys_offset}",
             "mov rcx, {l4_frame}",
             "mov r8, {allocator}",
-            "mov r9, {logic_fn_high}",
-            "add rsp, {offset_diff}",
-            "push {kernel_args}",
-            "push {kernel_entry}",
-            "jmp {landing_zone_high}",
+            "mov r9, {kernel_entry}",
+            "and rsp, -16", // Ensure stack is 16-byte aligned before jump
+            "jmp {logic_fn_high}",
             load_gdt = in(reg) ctx.load_gdt,
             load_idt = in(reg) ctx.load_idt,
             phys_offset = in(reg) ctx.phys_offset,
             l4_frame = in(reg) ctx.l4_frame,
             allocator = in(reg) ctx.allocator,
-            logic_fn_high = in(reg) ctx.logic_fn_high,
+            kernel_entry = in(reg) ctx.kernel_entry,
             offset_diff = in(reg) ctx.offset_diff,
             kernel_args = in(reg) ctx.kernel_args_virt,
-            kernel_entry = in(reg) ctx.kernel_entry,
-            landing_zone_high = in(reg) ctx.landing_zone_high,
+            logic_fn_high = in(reg) ctx.logic_fn_high,
             options(noreturn)
         );
         core::hint::unreachable_unchecked()

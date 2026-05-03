@@ -469,17 +469,17 @@ impl UefiInitContext {
         }
     }
 
-    pub fn map_mmio(&mut self) {
+    pub fn map_mmio(physical_memory_offset: VirtAddr) {
         log::info!("Mapping MMIO regions for APIC and IOAPIC");
-
+ 
         let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
         let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
-
-        let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator) };
+ 
+        let mut mapper = unsafe { petroleum::page_table::init(physical_memory_offset, frame_allocator) };
         let mut mem_mapper = petroleum::page_table::mapper::MemoryMapper::new(
             &mut mapper,
             &mut *frame_allocator,
-            self.physical_memory_offset,
+            physical_memory_offset,
         );
 
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
