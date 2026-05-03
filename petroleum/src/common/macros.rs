@@ -5,6 +5,20 @@ use alloc::boxed::Box;
 /// Unified macros to reduce repetitions across the file
 
 #[macro_export]
+macro_rules! save_sysv64_registers {
+    () => {
+        "push rdi
+         push rsi
+         push rdx
+         push rcx
+         push r8
+         push r9
+         push r10
+         push r11"
+    };
+}
+
+#[macro_export]
 macro_rules! bitmap_chunk_bit {
     ($frame:expr) => {{
         let chunk_index = $frame / 64;

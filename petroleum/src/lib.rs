@@ -7,6 +7,7 @@ extern crate alloc;
 // Fallback heap start address constant for when no suitable memory is found
 pub const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
 
+pub mod assembly;
 pub mod apic;
 pub mod bare_metal_graphics_detection;
 pub mod bare_metal_pci;

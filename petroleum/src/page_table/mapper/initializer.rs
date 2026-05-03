@@ -589,7 +589,7 @@ impl PageTableReinitializer {
             crate::write_serial_bytes!(0x3F8, 0x3FD, b"Debug: RIP region mapped\n");
             crate::debug_log_no_alloc!("Current RIP region (4MB) explicitly mapped to current virtual address in new page table");
             
-            let kernel_base_virt = crate::page_table::mapper::transition::landing_zone as *const () as usize as u64;
+            let kernel_base_virt = crate::assembly::landing_zone as *const () as usize as u64;
             let kernel_base_phys = kernel_base_virt.wrapping_sub(current_physical_memory_offset.as_u64());
             let region_start_phys = (kernel_base_phys.wrapping_sub(1024 * 1024)) & !0xFFF;
             let region_pages = (64 * 1024 * 1024) / 4096;

@@ -87,44 +87,6 @@ pub static mut TRANSITION_GDT: TransitionGdt = TransitionGdt {
 };
 
 #[unsafe(no_mangle)]
-#[unsafe(naked)]
-pub unsafe extern "sysv64" fn landing_zone(
-    _load_gdt: Option<fn()>,
-    _load_idt: Option<fn()>,
-    _phys_offset: VirtAddr,
-    _level_4_table_frame: PhysFrame,
-    _frame_allocator: *mut BootInfoFrameAllocator,
-    _logic_fn_high: usize,
-    _kernel_entry: usize,
-) {
-    core::arch::naked_asm!(
-        "mov rax, 0x4c4d4e58", // 'LMNX'
-        "mov dx, 0x3f8",
-        "out dx, al",
-
-        // Create TransitionArgs on stack
-        // Current stack: [rsp] = _kernel_entry, [rsp+8] = _kernel_args
-        // We need to move the stack pointer to make room for TransitionArgs (7 * 8 = 56 bytes)
-        "sub rsp, 56",
-        
-        // Store arguments into the struct at [rsp]
-        "mov [rsp], rdi",             // load_gdt
-        "mov [rsp + 8], rsi",         // load_idt
-        "mov [rsp + 16], rdx",        // phys_offset
-        "mov [rsp + 24], rcx",        // l4_frame
-        "mov [rsp + 32], r8",         // allocator
-        "mov rax, [rsp + 56]",        // kernel_entry (from original [rsp])
-        "mov [rsp + 40], rax",
-        "mov rax, [rsp + 64]",        // kernel_args (from original [rsp+8])
-        "mov [rsp + 48], rax",
-        
-        "mov rdi, rsp",               // Pass pointer to TransitionArgs as first argument
-        "mov r11, r9",                // Save _logic_fn_high in r11
-        "jmp r11",                    // Jump to _logic_fn_high
-    );
-}
-
-#[unsafe(no_mangle)]
 #[inline(never)]
 pub unsafe extern "sysv64" fn landing_zone_logic(
     ctx: *const TransitionArgs,
@@ -310,16 +272,8 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
              let m = core::hint::black_box(unsafe { (*actual_kernel_args).map_ptr }.wrapping_add(local_phys_offset.as_u64() as usize));
              let sz = core::hint::black_box(unsafe { (*actual_kernel_args).map_size });
 
+             unsafe { crate::assembly::prepare_for_kernel_jump(); }
              core::arch::asm!(
-                 "cli",
-                 "mov ax, 0x10",
-                 "mov ds, ax",
-                 "mov es, ax",
-                 "mov fs, ax",
-                 "mov gs, ax",
-                 "mov ss, ax",
-                 "and rsp, -16",
-                 
                  // Save all inputs to stack to completely eliminate register collisions
                  "push {h}",
                  "push {s}",
@@ -389,7 +343,7 @@ impl TransitionContext {
         let target_offset = phys_offset.as_u64();
         let offset_diff = target_offset.wrapping_sub(current_offset);
 
-        let lz_addr = landing_zone as *const () as u64;
+        let lz_addr = crate::assembly::landing_zone as *const () as u64;
         let lzl_addr = landing_zone_logic as *const () as u64;
 
         crate::debug_log_no_alloc!("TransitionContext::prepare - current_offset: 0x{:x}, target_offset: 0x{:x}, offset_diff: 0x{:x}", current_offset, target_offset, offset_diff);
@@ -419,7 +373,7 @@ impl TransitionContext {
             .wrapping_sub(current_offset) & 0x0000_FFFF_FFFF_FFFF;
         let logic_fn_high = logic_fn_phys.wrapping_add(target_offset);
 
-        let landing_zone_phys = (landing_zone as *const () as u64)
+        let landing_zone_phys = (crate::assembly::landing_zone as *const () as u64)
             .wrapping_sub(current_offset) & 0x0000_FFFF_FFFF_FFFF;
         let landing_zone_high = landing_zone_phys.wrapping_add(target_offset);
 
@@ -465,28 +419,27 @@ pub fn perform_world_switch(ctx: TransitionContext) -> ! {
         core::arch::asm!(
             "add rsp, {offset_diff}",
             "and rsp, -16",
-            "sub rsp, 64",
-            "mov [rsp + 8], {load_gdt}",
-            "mov [rsp + 16], {load_idt}",
-            "mov [rsp + 24], {phys_offset}",
-            "mov [rsp + 32], {l4_frame}",
-            "mov [rsp + 40], {allocator}",
-            "mov [rsp + 48], {kernel_entry}",
-            "mov [rsp + 56], {kernel_args}",
-            "mov rdi, rsp",
-            "add rdi, 8",
+            "mov rdi, {load_gdt}",
+            "mov rsi, {load_idt}",
+            "mov rdx, {phys_offset}",
+            "mov rcx, {l4_frame}",
+            "mov r8, {allocator}",
+            "mov r9, {logic_fn_high}",
+            "push {kernel_args}",
+            "push {kernel_entry}",
             "push 0x08",
-            "push {logic_fn_high}",
+            "push {landing_zone_high}",
             "retfq",
             load_gdt = in(reg) ctx.load_gdt,
             load_idt = in(reg) ctx.load_idt,
             phys_offset = in(reg) ctx.phys_offset,
             l4_frame = in(reg) ctx.l4_frame,
             allocator = in(reg) ctx.allocator,
+            logic_fn_high = in(reg) ctx.logic_fn_high,
             kernel_entry = in(reg) ctx.kernel_entry,
             kernel_args = in(reg) ctx.kernel_args_virt,
+            landing_zone_high = in(reg) ctx.landing_zone_high,
             offset_diff = in(reg) ctx.offset_diff,
-            logic_fn_high = in(reg) ctx.logic_fn_high,
             options(noreturn)
         );
         core::hint::unreachable_unchecked()
