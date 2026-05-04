@@ -223,6 +223,7 @@ pub fn create_process(
     let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
     debug_log!("Process: Kernel stack allocated");
 
+    debug_log!("Process: Creating page table...");
     // Create page table for the process
     let page_table = match crate::memory_management::create_process_page_table() {
         Ok(pt) => pt,
@@ -235,6 +236,7 @@ pub fn create_process(
             return Err(e);
         }
     };
+    debug_log!("Process: Page table created");
     process.page_table_phys_addr = PhysAddr::new(page_table.current_page_table() as u64);
     process.page_table = Some(page_table);
 
@@ -242,7 +244,9 @@ pub fn create_process(
     debug_log!("Process: Context initialized");
 
     let pid = process.id;
+    debug_log!("Process: Locking PROCESS_LIST...");
     let mut process_list = PROCESS_LIST.lock();
+    debug_log!("Process: PROCESS_LIST locked");
     process_list.push(Box::new(process));
     debug_log!("Process: Process added to list");
 

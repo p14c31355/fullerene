@@ -4,6 +4,7 @@
 //! the MemoryManager, ProcessMemoryManager, PageTableHelper, and FrameAllocator traits.
 
 // Define macros before using super for overlay
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use spin::Mutex;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -90,7 +91,7 @@ petroleum::error_chain!(FreeError, petroleum::common::logging::SystemError,
 /// Unified memory manager implementing all memory management traits
 pub struct UnifiedMemoryManager {
     frame_allocator: BitmapFrameAllocator,
-    page_table_manager: PageTableManager,
+    page_table_manager: PageTableManager<'static>,
     process_managers: BTreeMap<usize, ProcessMemoryManagerImpl>,
     current_process: usize,
     initialized: bool,
@@ -121,7 +122,9 @@ impl UnifiedMemoryManager {
         // First 1MB is already reserved inside BitmapFrameAllocator::init_with_memory_map
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"First 1MB reserved\n");
 
-        Initializable::init(&mut self.page_table_manager)?;
+        // Use the full initialization method to set up the mapper
+        let phys_offset = x86_64::VirtAddr::new(get_physical_memory_offset() as u64);
+        self.page_table_manager.initialize_with_frame_allocator(phys_offset, &mut self.frame_allocator)?;
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Page table manager initialized\n");
 
         self.create_address_space(0)?;
@@ -148,7 +151,7 @@ impl UnifiedMemoryManager {
     }
 
     /// Get page table manager mutable reference
-    pub fn page_table_manager_mut(&mut self) -> &mut PageTableManager {
+    pub fn page_table_manager_mut(&mut self) -> &mut PageTableManager<'static> {
         &mut self.page_table_manager
     }
 
@@ -710,7 +713,7 @@ impl UnifiedMemoryManager {
 }
 
 /// Process page table type alias for PageTableManager
-pub type ProcessPageTable = PageTableManager;
+pub type ProcessPageTable = PageTableManager<'static>;
 
 // Global memory manager instance
 static MEMORY_MANAGER: Mutex<Option<UnifiedMemoryManager>> = Mutex::new(None);
@@ -736,40 +739,60 @@ pub fn switch_to_page_table(page_table: &ProcessPageTable) -> SystemResult<()> {
 
 /// Create a new process page table
 pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] create_process_page_table start\n");
     // Check if memory manager is initialized; if not, use current page table for composite mode
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] checking memory manager lock\n");
     if get_memory_manager().lock().is_none() {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] memory manager not found, using fallback\n");
         // Fallback: use current CR3 page table when memory manager not available
         let mut ptm = PageTableManager::new();
         Initializable::init(&mut ptm)?;
         return Ok(ptm);
     }
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] memory manager found\n");
 
     // Allocate a new PML4 frame for the process page table
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] acquiring manager lock\n");
     let mut manager_guard = get_memory_manager().lock();
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] manager lock acquired\n");
     let manager = manager_guard.as_mut().ok_or(SystemError::InternalError)?;
 
     // Allocate frame for the new page table
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] allocating pml4 frame\n");
     let pml4_frame = manager
         .frame_allocator
         .allocate_frame()
         .map_err(|_| SystemError::FrameAllocationFailed)?;
 
     // Debug: log the allocation result
-    log::info!("Allocated page table frame: 0x{:x}", pml4_frame);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] pml4 frame allocated\n");
 
-    // Temporarily map the page table frame before accessing it
-    manager.page_table_manager.map_page(
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] mapping pml4 to TEMP_PHY_ACCESS\n");
+
+    // Test if we can even access the page_table_manager field
+    let is_init = manager.page_table_manager.initialized;
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] ptm.initialized access: ");
+    if is_init {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"true\n");
+    } else {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"false\n");
+    }
+
+    // Use the UnifiedMemoryManager's map_address method
+    manager.map_address(
         TEMP_PHY_ACCESS,
         pml4_frame,
-        PageFlags::PRESENT | PageFlags::WRITABLE,
-        &mut manager.frame_allocator,
+        1,
     )?;
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] pml4 mapped\n");
 
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] zeroing pml4 frame\n");
     // Zero the allocated page table frame to ensure it's a valid page table
     unsafe {
         let table_ptr = TEMP_PHY_ACCESS as *mut u64;
         core::slice::from_raw_parts_mut(table_ptr, 512).fill(0);
     }
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] pml4 zeroed\n");
 
     // Copy kernel mappings to the new page table
     // This involves copying the higher half kernel mappings from the current page table

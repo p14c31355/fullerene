@@ -47,16 +47,16 @@ pub trait PageTableHelper {
     fn current_page_table(&self) -> usize;
 }
 
-pub struct PageTableManager {
+pub struct PageTableManager<'a> {
     pub current_page_table: usize,
     pub initialized: bool,
     pub pml4_frame: Option<PhysFrame>,
-    pub mapper: Option<OffsetPageTable<'static>>,
+    pub mapper: Option<OffsetPageTable<'a>>,
     pub allocated_tables: BTreeMap<usize, PhysFrame>,
-    pub frame_allocator: Option<&'static mut BootInfoFrameAllocator>,
+    pub frame_allocator: Option<&'a mut BootInfoFrameAllocator>,
 }
 
-impl PageTableManager {
+impl<'a> PageTableManager<'a> {
     pub fn new() -> Self {
         Self {
             current_page_table: 0,
@@ -86,7 +86,7 @@ impl PageTableManager {
     pub fn initialize_with_frame_allocator(
         &mut self,
         phys_offset: VirtAddr,
-        frame_allocator: &'static mut BootInfoFrameAllocator,
+        frame_allocator: &mut BootInfoFrameAllocator,
     ) -> crate::common::logging::SystemResult<()> {
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] entered\n");
         if self.initialized {
@@ -136,14 +136,14 @@ impl PageTableManager {
         self.current_page_table = table_phys_addr as usize;
         self.allocated_tables
             .insert(table_phys_addr as usize, current_pml4);
-        self.frame_allocator = Some(frame_allocator);
+        self.frame_allocator = Some(unsafe { core::mem::transmute::<&mut BootInfoFrameAllocator, &'static mut BootInfoFrameAllocator>(frame_allocator) });
         self.initialized = true;
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] initialization complete\n");
         Ok(())
     }
 
     fn clone_page_table_recursive(
-        mapper: &mut OffsetPageTable<'static>,
+        mapper: &mut OffsetPageTable<'a>,
         frame_alloc: &mut BootInfoFrameAllocator,
         source_table_phys: PhysAddr,
         level: usize,
@@ -219,7 +219,7 @@ impl PageTableManager {
     }
 }
 
-impl PageTableHelper for PageTableManager {
+impl<'a> PageTableHelper for PageTableManager<'a> {
     fn map_page(
         &mut self,
         virtual_addr: usize,
@@ -229,6 +229,7 @@ impl PageTableHelper for PageTableManager {
     ) -> crate::common::logging::SystemResult<()> {
         if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
 
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::map_page] entered\n");
         let mapper = self.mapper.as_mut().unwrap();
         let virtual_addr = x86_64::VirtAddr::new(virtual_addr as u64);
         let physical_addr = x86_64::PhysAddr::new(physical_addr as u64);
@@ -236,12 +237,27 @@ impl PageTableHelper for PageTableManager {
         let frame =
             x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(physical_addr);
 
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::map_page] calling mapper.map_to\n");
         unsafe {
-            mapper
-                .map_to(page, frame, flags, frame_allocator)
-                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
-                .flush();
+            match mapper.map_to(page, frame, flags, frame_allocator) {
+                Ok(flush) => {
+                    flush.flush();
+                    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::map_page] map_to success and flushed\n");
+                }
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::map_page] PageAlreadyMapped, continuing\n");
+                }
+                Err(x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed) => {
+                    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::map_page] map_to failed: FrameAllocationFailed\n");
+                    return Err(crate::common::logging::SystemError::FrameAllocationFailed);
+                }
+                Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {
+                    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::map_page] map_to failed: ParentEntryHugePage\n");
+                    return Err(crate::common::logging::SystemError::MappingFailed);
+                }
+            }
         }
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::map_page] map_to success and flushed\n");
         Ok(())
     }
 
@@ -445,8 +461,8 @@ impl PageTableHelper for PageTableManager {
     }
 }
 
-fn destroy_page_table_recursive(
-    mapper: &mut OffsetPageTable<'static>,
+fn destroy_page_table_recursive<'a>(
+    mapper: &mut OffsetPageTable<'a>,
     frame_alloc: &mut BootInfoFrameAllocator,
     table_phys: PhysAddr,
     level: usize,
@@ -501,8 +517,9 @@ unsafe impl FrameAllocator<Size4KiB> for DummyFrameAllocator {
     }
 }
 
-impl crate::initializer::Initializable for PageTableManager {
+impl<'a> crate::initializer::Initializable for PageTableManager<'a> {
     fn init(&mut self) -> crate::common::logging::SystemResult<()> {
+        self.initialized = true;
         Ok(())
     }
     fn name(&self) -> &'static str {
@@ -513,4 +530,4 @@ impl crate::initializer::Initializable for PageTableManager {
     }
 }
 
-pub type ProcessPageTable = PageTableManager;
+pub type ProcessPageTable<'a> = PageTableManager<'a>;
