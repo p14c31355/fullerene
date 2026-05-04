@@ -55,7 +55,10 @@ impl<S: SerialPortOps> SerialPort<S> {
     pub fn write_byte(&mut self, byte: u8) {
         #[cfg(all(not(feature = "std"), not(test)))]
         unsafe {
-            while (self.ops.line_status_port().read() & 0x20) == 0 {}
+            let mut timeout = 1000000;
+            while (self.ops.line_status_port().read() & 0x20) == 0 && timeout > 0 {
+                timeout -= 1;
+            }
             self.ops.data_port().write(byte);
         }
         #[cfg(any(feature = "std", test))]

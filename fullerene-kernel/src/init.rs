@@ -120,16 +120,32 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     // 3. Post-initialization (UEFI only for now)
     #[cfg(target_os = "uefi")]
     {
-        init_log!("About to create test process");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init] About to create test process\n");
         let test_pid = crate::process::create_process(
             "test_process",
             x86_64::VirtAddr::new(crate::process::test_process_main as *const () as usize as u64),
         );
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init] create_process returned\n");
         match test_pid {
-            Ok(pid) => init_log!("Test process created: {}", pid),
-            Err(e) => init_log!("Failed to create test process: {:?}", e),
+            Ok(pid) => {
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init] Test process created successfully\n");
+                // Use write_serial_bytes instead of init_log to avoid potential deadlock with SERIAL_PORT_WRITER/UEFI_WRITER
+                let mut buf = [0u8; 32];
+                let len = petroleum::serial::format_dec_to_buffer(pid as usize, &mut buf);
+                unsafe {
+                    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"Test process created: ");
+                    petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+                }
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+            },
+            Err(e) => {
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init] Test process creation failed\n");
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Failed to create test process\n");
+            },
         }
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init] Post-init block completed\n");
     }
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] End of init_common function\n");
 }
 
 fn init_process_step() -> Result<(), &'static str> {
