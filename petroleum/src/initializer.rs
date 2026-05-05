@@ -255,6 +255,29 @@ pub trait FrameAllocator {
     fn frame_size(&self) -> usize;
 }
 
+pub struct InitSequence<'a> {
+    steps: &'a [(&'static str, fn() -> Result<(), &'static str>)],
+}
+
+impl<'a> InitSequence<'a> {
+    pub fn new(steps: &'a [(&'static str, fn() -> Result<(), &'static str>)]) -> Self {
+        Self { steps }
+    }
+
+    pub fn run(&self) {
+        for (name, init_fn) in self.steps {
+            // Use raw serial write to avoid potential deadlock in serial_log (Mutex)
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [InitSequence] About to init step\n");
+
+            if let Err(e) = init_fn() {
+                crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [InitSequence] Step failed\n");
+                panic!("{}", e);
+            }
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [InitSequence] Step done\n");
+        }
+    }
+}
+
 pub fn initialize_system() -> SystemResult<()> {
     SYSTEM_INITIALIZER
         .call_once(|| spin::Mutex::new(SystemInitializer::new()))

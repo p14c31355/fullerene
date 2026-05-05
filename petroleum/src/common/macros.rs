@@ -242,6 +242,13 @@ macro_rules! ensure_initialized {
     };
 }
 
+#[macro_export]
+macro_rules! calc_offset_addr {
+    ($base:expr, $i:expr) => {
+        $base + ($i * 4096)
+    };
+}
+
 /// Macro for modifying contents protected by a Mutex lock
 #[macro_export]
 macro_rules! lock_and_modify {
@@ -1054,17 +1061,6 @@ macro_rules! flush_tlb_and_verify {
     }};
 }
 
-pub struct InitSequence<'a> {
-    steps: &'a [(&'static str, fn() -> Result<(), &'static str>)],
-}
-
-/// Calculate offset address in loops (phys_addr + i * 4096)
-#[macro_export]
-macro_rules! calc_offset_addr {
-    ($base:expr, $i:expr) => {
-        $crate::common::utils::calculate_offset_address($base, $i)
-    };
-}
 
 /// Create page and frame from virtual and physical addresses
 #[macro_export]
@@ -1203,24 +1199,6 @@ macro_rules! get_memory_stats {
     }};
 }
 
-impl<'a> InitSequence<'a> {
-    pub fn new(steps: &'a [(&'static str, fn() -> Result<(), &'static str>)]) -> Self {
-        Self { steps }
-    }
-
-    pub fn run(&self) {
-        for (name, init_fn) in self.steps {
-            // Use raw serial write to avoid potential deadlock in serial_log (Mutex)
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [InitSequence] About to init step\n");
-            
-            if let Err(e) = init_fn() {
-                crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [InitSequence] Step failed\n");
-                panic!("{}", e);
-            }
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [InitSequence] Step done\n");
-        }
-    }
-}
 
 /// Macro for creating FullereneFramebufferConfig structs to reduce boilerplate
 #[macro_export]

@@ -70,6 +70,7 @@ pub fn set_memory_initialized(initialized: bool) {
 // Re-exports to maintain compatibility
 pub use error::*;
 pub use macros::*;
+pub use crate::initializer::InitSequence;
 pub use memory::*;
 pub use syscall::*;
 pub use uefi::*;
