@@ -71,15 +71,27 @@ pub unsafe extern "C" fn efi_main_stage2(ctx: *mut (), physical_memory_offset: V
     unsafe {
         let rsp: u64;
         core::arch::asm!("mov {}, rsp", out(reg) rsp);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] Got RSP, about to call init_log\n");
         petroleum::init_log!("RSP after init_common: 0x{:x}", rsp);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] init_log returned\n");
     }
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] About to call log::info\n");
     log::info!("init_common completed");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] log::info returned\n");
 
     write_serial_bytes!(0x3F8, 0x3FD, b"About to complete basic init\n");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] About to call serial_log\n");
     petroleum::serial::serial_log(format_args!("About to log basic init complete...\n"));
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] serial_log returned\n");
+    
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] About to call log::info (basic init complete)\n");
     log::info!("Kernel: basic init complete");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] log::info returned\n");
+
     write_serial_bytes!(0x3F8, 0x3FD, b"Basic init complete logged\n");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] About to call serial_log (success)\n");
     petroleum::serial::serial_log(format_args!("basic init complete logged successfully\n"));
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] serial_log returned\n");
 
     // Transition to the formal kernel main in the higher half
     kernel_main_higher_half(args_ptr, physical_memory_offset);
