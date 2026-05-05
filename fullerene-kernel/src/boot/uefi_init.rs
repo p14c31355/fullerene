@@ -385,13 +385,9 @@ impl UefiInitContext {
         
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Initializing global allocator...\n");
         unsafe {
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Attempting to lock ALLOCATOR...\n");
-            // Since we are in early boot and only one core is active, we can use a raw pointer to init
-            // if we suspect a deadlock, or just lock it. 
-            // To avoid potential deadlock with spin::Mutex, we bypass it for initialization.
-            let alloc_ptr = &ALLOCATOR as *const _ as *mut linked_list_allocator::Heap;
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Bypassing lock for ALLOCATOR.init\n");
-            (*alloc_ptr).init(
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Locking ALLOCATOR for init\n");
+            let mut allocator = ALLOCATOR.lock();
+            allocator.init(
                 heap_start_for_allocator.as_mut_ptr::<u8>(),
                 heap_size_for_allocator,
             );
