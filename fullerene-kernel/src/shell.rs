@@ -171,10 +171,11 @@ fn ps_command(_args: &[&str]) -> i32 {
     print!("Process list:\n");
     print!("PID    State      Name\n");
     print!("--------------------------\n");
-    let process_list = crate::process::PROCESS_LIST.lock();
-    for proc in process_list.iter() {
-        print!("{:<6} {:<10?} {}\n", proc.id, proc.state, proc.name);
-    }
+    crate::process::PROCESS_MANAGER.with_list(|list| {
+        for proc in list.iter() {
+            print!("{:<6} {:<10?} {}\n", proc.id, proc.state, proc.name);
+        }
+    });
     0
 }
 
@@ -220,18 +221,19 @@ fn top_command(_args: &[&str]) -> i32 {
     print!("PID    PPID   State      CPU%   Name\n");
     print!("-----------------------------------\n");
 
-    let process_list = crate::process::PROCESS_LIST.lock();
-    let mut procs: Vec<_> = process_list.iter().collect();
-    // Sort by process ID to show newest processes first
-    procs.sort_by(|a, b| b.id.cmp(&a.id));
+    crate::process::PROCESS_MANAGER.with_list(|list| {
+        let mut procs: Vec<_> = list.iter().collect();
+        // Sort by process ID to show newest processes first
+        procs.sort_by(|a, b| b.id.cmp(&a.id));
 
-    for proc in procs.iter().take(5) {
-        let ppid = proc.parent_id.unwrap_or(0);
-        print!(
-            "{:<6} {:<6} {:<10?} 0.0   {}\n",
-            proc.id, ppid, proc.state, proc.name
-        );
-    }
+        for proc in procs.iter().take(5) {
+            let ppid = proc.parent_id.unwrap_or(0);
+            print!(
+                "{:<6} {:<6} {:<10?} 0.0   {}\n",
+                proc.id, ppid, proc.state, proc.name
+            );
+        }
+    });
 
     0
 }

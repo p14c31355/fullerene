@@ -78,18 +78,14 @@ fn syscall_fork() -> SyscallResult {
 
     // First, find parent process and get info while holding lock briefly
     let (parent_page_table_phys_addr, parent_context, parent_user_stack, parent_entry_point) = {
-        let process_list = crate::process::PROCESS_LIST.lock();
-        let parent_process = process_list
-            .iter()
-            .find(|p| p.id == current_pid)
-            .ok_or(SyscallError::NoSuchProcess)?;
-
-        (
-            parent_process.page_table_phys_addr,
-            parent_process.context,
-            parent_process.user_stack,
-            parent_process.entry_point,
-        )
+        crate::process::PROCESS_MANAGER.with_process(current_pid, |p| {
+            (
+                p.page_table_phys_addr,
+                p.context,
+                p.user_stack,
+                p.entry_point,
+            )
+        }).ok_or(SyscallError::NoSuchProcess)?
     }; // Lock released here
 
     // Perform expensive page table cloning outside the lock
@@ -147,10 +143,7 @@ fn syscall_fork() -> SyscallResult {
     let child_box = Box::new(child_process);
 
     // Re-acquire lock briefly to add to process list
-    {
-        let mut process_list = crate::process::PROCESS_LIST.lock();
-        process_list.push(child_box);
-    } // Lock released here
+    crate::process::PROCESS_MANAGER.add(*child_box);
 
     // Note: Memory copying not implemented yet, only page table cloning
     // Full implementation would copy parent memory pages to child
@@ -272,18 +265,20 @@ fn syscall_wait(pid: u64) -> SyscallResult {
     } else {
         // Wait for specific process to finish
         // Check if the process exists and is a child (simplified check)
-        let process_list = crate::process::PROCESS_LIST.lock();
-        if let Some(process) = process_list.iter().find(|p| p.id == pid) {
+        let result = crate::process::PROCESS_MANAGER.with_process(pid, |process| {
             if process.state == crate::process::ProcessState::Terminated {
-                // Process has already finished, return exit code
-                let exit_code = process.exit_code.unwrap_or(0);
-                Ok(exit_code as u64)
+                Some(process.exit_code.unwrap_or(0))
             } else {
-                // Process is still running, block current process
-                drop(process_list); // Release lock
-                crate::process::block_current();
-                Ok(0)
+                None
             }
+        }).flatten();
+
+        if let Some(exit_code) = result {
+            Ok(exit_code as u64)
+        } else if crate::process::PROCESS_MANAGER.with_process(pid, |_| {}).is_some() {
+            // Process is still running, block current process
+            crate::process::block_current();
+            Ok(0)
         } else {
             Err(SyscallError::NoSuchProcess)
         }
@@ -304,8 +299,7 @@ fn syscall_get_process_name(buffer: *mut u8, size: usize) -> SyscallResult {
     petroleum::validate_user_buffer(buffer as usize, size, false)?;
     let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
-    let process_list = crate::process::PROCESS_LIST.lock();
-    if let Some(process) = process_list.iter().find(|p| p.id == current_pid) {
+    crate::process::PROCESS_MANAGER.with_process(current_pid, |process| {
         let name_bytes = process.name.as_bytes();
         let copy_len = name_bytes.len().min(size - 1); // Leave room for null terminator
 
@@ -316,10 +310,8 @@ fn syscall_get_process_name(buffer: *mut u8, size: usize) -> SyscallResult {
             *buffer.add(copy_len) = b'\0';
         }
 
-        Ok(copy_len as u64)
-    } else {
-        Err(SyscallError::NoSuchProcess)
-    }
+        copy_len as u64
+    }).ok_or(SyscallError::NoSuchProcess)
 }
 
 /// Yield system call

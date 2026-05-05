@@ -190,36 +190,25 @@ pub fn debug_print_str_to_com1(s: &str) {
     SERIAL_PORT_WRITER.lock().write_string(s);
 }
 
-/// Trait for types that can be converted to usize for hex printing
-pub trait AsUsize {
-    fn as_usize(self) -> usize;
+/// Prints a value as hex or string to COM1 (early debug, no alloc).
+pub trait DebugToHexOrStr {
+    fn debug_print(self);
 }
 
-macro_rules! impl_as_usize {
+macro_rules! impl_debug_to_hex {
     ($($t:ty),*) => {
         $(
-            impl AsUsize for $t {
-                fn as_usize(self) -> usize {
-                    self as usize
+            impl DebugToHexOrStr for $t {
+                fn debug_print(self) {
+                    let mut writer = SERIAL_PORT_WRITER.lock();
+                    let _ = format_hex(&mut *writer, self as usize);
                 }
             }
         )*
     };
 }
 
-impl_as_usize!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
-
-/// Prints a value as hex or string to COM1 (early debug, no alloc).
-pub trait DebugToHexOrStr {
-    fn debug_print(self);
-}
-
-impl<T: AsUsize> DebugToHexOrStr for T {
-    fn debug_print(self) {
-        let mut writer = SERIAL_PORT_WRITER.lock();
-        let _ = format_hex(&mut *writer, self.as_usize());
-    }
-}
+impl_debug_to_hex!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
 
 impl DebugToHexOrStr for &str {
     fn debug_print(self) {
@@ -363,11 +352,19 @@ pub trait DebugNoLock {
     fn debug_print_no_lock(self);
 }
 
-impl<T: AsUsize> DebugNoLock for T {
-    fn debug_print_no_lock(self) {
-        debug_print_hex_no_lock(self.as_usize());
-    }
+macro_rules! impl_debug_no_lock {
+    ($($t:ty),*) => {
+        $(
+            impl DebugNoLock for $t {
+                fn debug_print_no_lock(self) {
+                    debug_print_hex_no_lock(self as usize);
+                }
+            }
+        )*
+    };
 }
+
+impl_debug_no_lock!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
 
 impl DebugNoLock for &str {
     fn debug_print_no_lock(self) {

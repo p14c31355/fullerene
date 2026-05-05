@@ -32,15 +32,10 @@ pub fn load_program(
     let pid = process::create_process(name, entry_point_address)?;
 
     // Get the process's page table
-    let process_list_locked = process::PROCESS_LIST.lock();
-    let process = process_list_locked
-        .iter()
-        .find(|p| p.id == pid)
-        .ok_or(LoadError::InvalidFormat)?;
-    let process_page_table = process
-        .page_table
-        .as_ref()
-        .ok_or(LoadError::InvalidFormat)?;
+    let process_page_table = process::PROCESS_MANAGER.with_process(pid, |p| {
+        p.page_table.as_ref().map(|pt| pt.clone()) // This assumes ProcessPageTable is Clone or we can return a reference differently
+    }).ok_or(LoadError::InvalidFormat)?
+      .ok_or(LoadError::InvalidFormat)?;
 
     // Load program segments using goblin
     for ph in &elf.program_headers {
