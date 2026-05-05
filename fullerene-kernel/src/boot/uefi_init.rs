@@ -389,15 +389,27 @@ impl UefiInitContext {
             // Disable interrupts to prevent deadlock if an interrupt handler attempts to allocate memory
             x86_64::instructions::interrupts::disable();
             
-            let mut allocator = ALLOCATOR.lock();
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ALLOC_TEST] Lock acquired\n");
-            
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ALLOC_TEST] Calling init...\n");
-            allocator.init(
-                heap_start_for_allocator.as_mut_ptr::<u8>(),
-                heap_size_for_allocator,
-            );
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ALLOC_TEST] init done\n");
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ALLOC_TEST] Attempting try_lock...\n");
+            if let Some(mut allocator) = ALLOCATOR.try_lock() {
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ALLOC_TEST] try_lock succeeded\n");
+                
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ALLOC_TEST] Calling init...\n");
+                allocator.init(
+                    heap_start_for_allocator.as_mut_ptr::<u8>(),
+                    heap_size_for_allocator,
+                );
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ALLOC_TEST] init done\n");
+            } else {
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ALLOC_TEST] try_lock FAILED - ALLOCATOR already locked!\n");
+                // If try_lock failed, we have a deadlock. We can't do much here but log it.
+                // We'll try to lock anyway to see if it eventually succeeds (it won't)
+                let mut allocator = ALLOCATOR.lock();
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ALLOC_TEST] Lock finally acquired\n");
+                allocator.init(
+                    heap_start_for_allocator.as_mut_ptr::<u8>(),
+                    heap_size_for_allocator,
+                );
+            }
         }
         
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: HEAP_INITIALIZED store start\n");
