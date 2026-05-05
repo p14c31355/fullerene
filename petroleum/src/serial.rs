@@ -190,78 +190,34 @@ pub fn debug_print_str_to_com1(s: &str) {
     SERIAL_PORT_WRITER.lock().write_string(s);
 }
 
+/// Trait for types that can be converted to usize for hex printing
+pub trait AsUsize {
+    fn as_usize(self) -> usize;
+}
+
+macro_rules! impl_as_usize {
+    ($($t:ty),*) => {
+        $(
+            impl AsUsize for $t {
+                fn as_usize(self) -> usize {
+                    self as usize
+                }
+            }
+        )*
+    };
+}
+
+impl_as_usize!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
+
 /// Prints a value as hex or string to COM1 (early debug, no alloc).
 pub trait DebugToHexOrStr {
     fn debug_print(self);
 }
 
-impl DebugToHexOrStr for u8 {
+impl<T: AsUsize> DebugToHexOrStr for T {
     fn debug_print(self) {
         let mut writer = SERIAL_PORT_WRITER.lock();
-        let _ = format_hex(&mut *writer, self as usize);
-    }
-}
-
-impl DebugToHexOrStr for u16 {
-    fn debug_print(self) {
-        let mut writer = SERIAL_PORT_WRITER.lock();
-        let _ = format_hex(&mut *writer, self as usize);
-    }
-}
-
-impl DebugToHexOrStr for u32 {
-    fn debug_print(self) {
-        let mut writer = SERIAL_PORT_WRITER.lock();
-        let _ = format_hex(&mut *writer, self as usize);
-    }
-}
-
-impl DebugToHexOrStr for u64 {
-    fn debug_print(self) {
-        let mut writer = SERIAL_PORT_WRITER.lock();
-        let _ = format_hex(&mut *writer, self as usize);
-    }
-}
-
-impl DebugToHexOrStr for usize {
-    fn debug_print(self) {
-        let mut writer = SERIAL_PORT_WRITER.lock();
-        let _ = format_hex(&mut *writer, self as usize);
-    }
-}
-
-impl DebugToHexOrStr for i8 {
-    fn debug_print(self) {
-        let mut writer = SERIAL_PORT_WRITER.lock();
-        let _ = format_hex(&mut *writer, self as usize);
-    }
-}
-
-impl DebugToHexOrStr for i16 {
-    fn debug_print(self) {
-        let mut writer = SERIAL_PORT_WRITER.lock();
-        let _ = format_hex(&mut *writer, self as usize);
-    }
-}
-
-impl DebugToHexOrStr for i32 {
-    fn debug_print(self) {
-        let mut writer = SERIAL_PORT_WRITER.lock();
-        let _ = format_hex(&mut *writer, self as usize);
-    }
-}
-
-impl DebugToHexOrStr for i64 {
-    fn debug_print(self) {
-        let mut writer = SERIAL_PORT_WRITER.lock();
-        let _ = format_hex(&mut *writer, self as usize);
-    }
-}
-
-impl DebugToHexOrStr for isize {
-    fn debug_print(self) {
-        let mut writer = SERIAL_PORT_WRITER.lock();
-        let _ = format_hex(&mut *writer, self as usize);
+        let _ = format_hex(&mut *writer, self.as_usize());
     }
 }
 
@@ -407,63 +363,9 @@ pub trait DebugNoLock {
     fn debug_print_no_lock(self);
 }
 
-impl DebugNoLock for usize {
+impl<T: AsUsize> DebugNoLock for T {
     fn debug_print_no_lock(self) {
-        debug_print_hex_no_lock(self);
-    }
-}
-
-impl DebugNoLock for u64 {
-    fn debug_print_no_lock(self) {
-        debug_print_hex_no_lock(self as usize);
-    }
-}
-
-impl DebugNoLock for u32 {
-    fn debug_print_no_lock(self) {
-        debug_print_hex_no_lock(self as usize);
-    }
-}
-
-impl DebugNoLock for u16 {
-    fn debug_print_no_lock(self) {
-        debug_print_hex_no_lock(self as usize);
-    }
-}
-
-impl DebugNoLock for u8 {
-    fn debug_print_no_lock(self) {
-        debug_print_hex_no_lock(self as usize);
-    }
-}
-
-impl DebugNoLock for isize {
-    fn debug_print_no_lock(self) {
-        debug_print_hex_no_lock(self as usize);
-    }
-}
-
-impl DebugNoLock for i64 {
-    fn debug_print_no_lock(self) {
-        debug_print_hex_no_lock(self as usize);
-    }
-}
-
-impl DebugNoLock for i32 {
-    fn debug_print_no_lock(self) {
-        debug_print_hex_no_lock(self as usize);
-    }
-}
-
-impl DebugNoLock for i16 {
-    fn debug_print_no_lock(self) {
-        debug_print_hex_no_lock(self as usize);
-    }
-}
-
-impl DebugNoLock for i8 {
-    fn debug_print_no_lock(self) {
-        debug_print_hex_no_lock(self as usize);
+        debug_print_hex_no_lock(self.as_usize());
     }
 }
 
