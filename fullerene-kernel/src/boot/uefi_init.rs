@@ -386,12 +386,18 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Initializing global allocator...\n");
         unsafe {
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Locking ALLOCATOR for init\n");
+            // Disable interrupts to prevent deadlock if an interrupt handler attempts to allocate memory
+            x86_64::instructions::interrupts::disable();
+            
             let mut allocator = ALLOCATOR.lock();
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ALLOC_TEST] Lock acquired\n");
+            
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ALLOC_TEST] Calling init...\n");
             allocator.init(
                 heap_start_for_allocator.as_mut_ptr::<u8>(),
                 heap_size_for_allocator,
             );
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: ALLOCATOR.init done\n");
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ALLOC_TEST] init done\n");
         }
         
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: HEAP_INITIALIZED store start\n");
