@@ -95,7 +95,7 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
         let kernel_virt_addr = crate::boot::uefi_entry::efi_main as u64;
-        let kernel_phys_addr = kernel_virt_addr.wrapping_sub(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64);
+        let kernel_phys_addr = kernel_virt_addr.wrapping_sub(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64);
         
         let res = crate::memory::setup_kernel_location(
             self.memory_map,
@@ -111,7 +111,7 @@ impl UefiInitContext {
         kernel_phys_start: PhysAddr,
     ) -> (VirtAddr, PhysAddr, VirtAddr) {
         // Set physical memory offset FIRST so it can be used by init_memory_map
-        self.physical_memory_offset = x86_64::VirtAddr::new(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64);
+        self.physical_memory_offset = x86_64::VirtAddr::new(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64);
 
         // CRITICAL: Initialize ALLOCATOR as early as possible to avoid implicit allocation deadlocks
         // We do this BEFORE any other complex initialization that might trigger alloc
@@ -217,15 +217,15 @@ impl UefiInitContext {
         };
 
         let tss_stacks = crate::gdt::TssStacks {
-            double_fault: VirtAddr::new(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64 + tss_phys_addr.as_u64() + crate::gdt::GDT_TSS_STACK_SIZE as u64),
-            timer: VirtAddr::new(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64 + tss_phys_addr.as_u64() + (crate::gdt::GDT_TSS_STACK_SIZE * 2) as u64),
+            double_fault: VirtAddr::new(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64 + tss_phys_addr.as_u64() + crate::gdt::GDT_TSS_STACK_SIZE as u64),
+            timer: VirtAddr::new(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64 + tss_phys_addr.as_u64() + (crate::gdt::GDT_TSS_STACK_SIZE * 2) as u64),
         };
         crate::gdt::init_with_stacks(tss_stacks);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: GDT initialized with TSS stacks\n");
 
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_init] Start mapping 1GB kernel area\n");
-
-        let kernel_virt_start = crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64;
+        
+        let kernel_virt_start = petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64;
         let kernel_phys_start_val = kernel_phys_start.as_u64();
 
         let mut val_buf = [0u8; 16];
@@ -317,7 +317,7 @@ impl UefiInitContext {
                     &mut tss_mapper,
                     &mut *frame_allocator,
                     tss_phys_addr.as_u64(),
-                    (crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64) + tss_phys_addr.as_u64(),
+                    (petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64) + tss_phys_addr.as_u64(),
                     tss_stack_pages as u64,
                     tss_flags
                 );
@@ -348,8 +348,8 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Kernel CR3 set\n");
 
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to set physical memory offset\n");
-        crate::memory_management::set_physical_memory_offset(
-            crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE,
+        petroleum::set_physical_memory_offset(
+            petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE,
         );
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Physical memory offset set\n");
 

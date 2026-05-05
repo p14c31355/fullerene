@@ -1,6 +1,6 @@
 use alloc::collections::BTreeMap;
 use petroleum::common::logging::{SystemError, SystemResult};
-use petroleum::page_table::{BitmapFrameAllocator, PageTableManager};
+use petroleum::page_table::{BitmapFrameAllocator, PageTableManager, PageTableHelper};
 use crate::memory_management::process_memory::ProcessMemoryManagerImpl;
 use petroleum::initializer::{
     ErrorLogging, FrameAllocator, Initializable, MemoryManager, ProcessMemoryManager,
@@ -297,7 +297,7 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
 }
 
 // Implementation of PageTableHelper trait
-impl petroleum::initializer::PageTableHelper for UnifiedMemoryManager {
+impl PageTableHelper for UnifiedMemoryManager {
     fn map_page(
         &mut self,
         virtual_addr: usize,
@@ -472,7 +472,7 @@ impl FrameAllocator for UnifiedMemoryManager {
 // Implementation of Initializable trait
 impl Initializable for UnifiedMemoryManager {
     fn init(&mut self) -> SystemResult<()> {
-        let dummy_memory_map: &[EfiMemoryDescriptor] = &[];
+        let dummy_memory_map: &[petroleum::page_table::EfiMemoryDescriptor] = &[];
         self.init(dummy_memory_map)
     }
 
@@ -530,17 +530,17 @@ impl UnifiedMemoryManager {
 
             if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
                 self.page_table_manager.map_page(
-                    0xffff_8000_0000_1000,
+                    super::TEMP_PHY_ACCESS,
                     phys_addr,
                     PageFlags::PRESENT,
                     &mut self.frame_allocator,
                 )?;
                 unsafe {
-                    let ptr = (0xffff_8000_0000_1000 + (offset % 4096)) as *const u8;
+                    let ptr = (super::TEMP_PHY_ACCESS + (offset % 4096)) as *const u8;
                     let slice = core::slice::from_raw_parts(ptr, page_size);
                     data.extend_from_slice(slice);
                 }
-                let _ = self.page_table_manager.unmap_page(0xffff_8000_0000_1000)?;
+                let _ = self.page_table_manager.unmap_page(super::TEMP_PHY_ACCESS)?;
             } else {
                 return Err(SystemError::InvalidArgument);
             }
@@ -574,16 +574,16 @@ impl UnifiedMemoryManager {
 
             if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
                 self.page_table_manager.map_page(
-                    0xffff_8000_0000_1000,
+                    super::TEMP_PHY_ACCESS,
                     phys_addr,
                     PageFlags::PRESENT | PageFlags::WRITABLE,
                     &mut self.frame_allocator,
                 )?;
                 unsafe {
-                    let ptr = (0xffff_8000_0000_1000 + (offset % 4096)) as *mut u8;
+                    let ptr = (super::TEMP_PHY_ACCESS + (offset % 4096)) as *mut u8;
                     core::ptr::copy_nonoverlapping(chunk.as_ptr(), ptr, chunk.len());
                 }
-                let _ = self.page_table_manager.unmap_page(0xffff_8000_0000_1000)?;
+                let _ = self.page_table_manager.unmap_page(super::TEMP_PHY_ACCESS)?;
             } else {
                 return Err(SystemError::InvalidArgument);
             }

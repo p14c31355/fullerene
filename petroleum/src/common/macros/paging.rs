@@ -216,6 +216,7 @@ macro_rules! map_identity_range_checked {
 #[macro_export]
 macro_rules! map_page_range {
     ($mapper:expr, $allocator:expr, $base_virt:expr, $base_phys:expr, $num_pages:expr, $flags:expr) => {{
+        use $crate::page_table::PageTableHelper;
         for i in 0..$num_pages {
             let phys_addr = $base_phys + (i * 4096);
             let virt_addr = $base_virt + (i * 4096);
@@ -227,6 +228,7 @@ macro_rules! map_page_range {
 #[macro_export]
 macro_rules! unmap_page_range {
     ($mapper:expr, $base_virt:expr, $num_pages:expr) => {{
+        use $crate::page_table::PageTableHelper;
         for i in 0..$num_pages {
             let vaddr = $base_virt + (i * 4096);
             $mapper.unmap_page(vaddr)?;

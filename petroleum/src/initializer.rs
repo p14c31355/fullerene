@@ -171,27 +171,6 @@ pub trait SyscallHandler {
     fn handle_syscall(&mut self, syscall_number: usize, args: &[usize]) -> SystemResult<usize>;
 }
 
-// Placeholder trait for page table management that may be needed
-pub trait PageTableHelper {
-    fn map_page(
-        &mut self,
-        virtual_addr: usize,
-        physical_addr: usize,
-        flags: i32,
-        frame_allocator: &mut dyn FrameAllocator,
-    ) -> SystemResult<()>;
-    fn unmap_page(&mut self, virtual_addr: usize) -> SystemResult<()>;
-    fn translate_address(&self, virtual_addr: usize) -> SystemResult<usize>;
-    fn set_page_flags(&mut self, virtual_addr: usize, flags: i32) -> SystemResult<()>;
-    fn get_page_flags(&self, virtual_addr: usize) -> SystemResult<i32>;
-    fn flush_tlb(&mut self, virtual_addr: usize) -> SystemResult<()>;
-    fn flush_tlb_all(&mut self) -> SystemResult<()>;
-    fn create_page_table(&mut self) -> SystemResult<usize>;
-    fn destroy_page_table(&mut self, table_addr: usize) -> SystemResult<()>;
-    fn clone_page_table(&mut self, source_table: usize) -> SystemResult<usize>;
-    fn switch_page_table(&mut self, table_addr: usize) -> SystemResult<()>;
-    fn current_page_table(&self) -> usize;
-}
 
 // Placeholder for logging-related traits that may need to be defined
 pub trait Logger {
