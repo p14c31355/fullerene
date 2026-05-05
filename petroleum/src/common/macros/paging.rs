@@ -1,5 +1,7 @@
 //! Paging and memory mapping macros for Fullerene OS
 
+use crate::page_table::manager::PageTableHelper;
+
 #[macro_export]
 macro_rules! map_range_with_log_macro {
     ($mapper:expr, $allocator:expr, $phys:expr, $virt:expr, $pages:expr, $flags:expr) => {{
@@ -233,6 +235,14 @@ macro_rules! unmap_page_range {
 }
 
 #[macro_export]
+macro_rules! align_page {
+    ($size:expr) => {{
+        const PAGE_SIZE: usize = 4096;
+        ($size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
+    }};
+}
+
+#[macro_export]
 macro_rules! calculate_kernel_pages {
     ($size:expr) => {
         ($size.div_ceil(4096))
@@ -244,11 +254,15 @@ macro_rules! get_memory_stats {
     () => {{
         #[cfg(not(feature = "std"))]
         {
-            let allocator = $crate::page_table::ALLOCATOR.lock();
-            let used = allocator.used();
-            let total = allocator.size();
-            let free = total.saturating_sub(used);
-            (used, total, free)
+            if $crate::page_table::HEAP_INITIALIZED.load(core::sync::atomic::Ordering::SeqCst) {
+                let allocator = $crate::page_table::ALLOCATOR.lock();
+                let used = allocator.used();
+                let total = allocator.size();
+                let free = total.saturating_sub(used);
+                (used, total, free)
+            } else {
+                (0, 0, 0)
+            }
         }
         #[cfg(feature = "std")]
         {

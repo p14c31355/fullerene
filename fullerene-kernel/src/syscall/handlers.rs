@@ -92,7 +92,7 @@ fn syscall_fork() -> SyscallResult {
     let cloned_table_addr = {
         let mut manager_guard = crate::memory_management::get_memory_manager().lock();
         let manager = manager_guard.as_mut().ok_or(SyscallError::OutOfMemory)?;
-        manager.clone_page_table(parent_page_table_phys_addr.as_u64() as usize)?
+        petroleum::initializer::PageTableHelper::clone_page_table(manager, parent_page_table_phys_addr.as_u64() as usize)?
     };
 
     let cloned_pml4_frame = x86_64::structures::paging::PhysFrame::containing_address(

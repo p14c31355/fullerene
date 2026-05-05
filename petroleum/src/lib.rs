@@ -37,6 +37,7 @@ pub use graphics::{
     init_vga_graphics,
     UefiFramebufferWriter,
 };
+pub use graphics::uefi::*;
 
 pub fn clear_buffer<B: TextBufferOperations>(
     buffer: &mut B,
@@ -87,37 +88,6 @@ pub use page_table::{BitmapFrameAllocator, bitmap_allocator};
 // UEFI helper exports
 pub use uefi_helpers::{initialize_graphics_with_config, kernel_fallback_framebuffer_detection};
 
-/// Generic framebuffer buffer clear operation
-/// stride is in bytes per line
-pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
-    let fb_ptr = address as *mut T;
-    let bytes_per_pixel = core::mem::size_of::<T>() as u32;
-    let elements_per_line = (stride / bytes_per_pixel) as usize;
-    let count = elements_per_line * height as usize;
-    unsafe { core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color) };
-}
-
-/// Generic framebuffer buffer scroll up operation
-/// stride is in bytes per line
-pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
-    let bytes_per_pixel = core::mem::size_of::<T>() as u32;
-    let shift_bytes = 8u64 * stride as u64;
-    let fb_ptr = address as *mut u8;
-    let total_bytes = height as u64 * stride as u64;
-    unsafe {
-        core::ptr::copy(
-            fb_ptr.add(shift_bytes as usize),
-            fb_ptr,
-            (total_bytes - shift_bytes) as usize,
-        );
-    }
-    // Clear last 8 lines
-    let clear_offset = ((height - 8) as u32 * stride) as usize;
-    let clear_ptr = (address + clear_offset as u64) as *mut T;
-    let elements_per_line = (stride / bytes_per_pixel) as usize;
-    let clear_count = 8 * elements_per_line;
-    unsafe { core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color) };
-}
 
 use core::ffi::c_void;
 use core::ptr;

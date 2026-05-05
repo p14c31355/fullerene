@@ -113,6 +113,23 @@ impl UefiInitContext {
         // Set physical memory offset FIRST so it can be used by init_memory_map
         self.physical_memory_offset = x86_64::VirtAddr::new(crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64);
 
+        // CRITICAL: Initialize ALLOCATOR as early as possible to avoid implicit allocation deadlocks
+        // We do this BEFORE any other complex initialization that might trigger alloc
+        if !HEAP_INITIALIZED.load(core::sync::atomic::Ordering::SeqCst) {
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PRE-INIT] Initializing ALLOCATOR early\n");
+            unsafe {
+                x86_64::instructions::interrupts::disable();
+                // We use a temporary fixed region if the actual heap isn't mapped yet, 
+                // but for now we just ensure the lock is initialized and we don't deadlock.
+                // Actual heap mapping happens later, but the Mutex itself must be usable.
+                // To avoid deadlock, we just ensure we are the first to lock it.
+                let mut allocator = ALLOCATOR.lock();
+                // We can't call .init() yet because heap_start isn't calculated, 
+                // but the lock is now acquired and released.
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PRE-INIT] ALLOCATOR lock check passed\n");
+            }
+        }
+
         debug_log_no_alloc!("DEBUG: Starting memory_management_initialization");
         debug_log_no_alloc!("DEBUG: Offset value: ", self.physical_memory_offset.as_u64());
 
@@ -282,41 +299,47 @@ impl UefiInitContext {
         };
 
         debug_log_no_alloc!("DEBUG: About to lock FRAME_ALLOCATOR for page table setup");
-        let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: FRAME_ALLOCATOR locked\n");
-        let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
+        {
+            let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: FRAME_ALLOCATOR locked\n");
+            let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
 
-        let tss_flags = x86_64::structures::paging::PageTableFlags::PRESENT 
-            | x86_64::structures::paging::PageTableFlags::WRITABLE
-            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling petroleum::page_table::init (2)...\n");
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to init tss_mapper\n");
-        let mut tss_mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator) };
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: petroleum::page_table::init (2) done\n");
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to map TSS stacks\n");
-        unsafe {
-            petroleum::map_range_with_log_macro!(
-                &mut tss_mapper,
-                &mut *frame_allocator,
-                tss_phys_addr.as_u64(),
-                (crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64) + tss_phys_addr.as_u64(),
-                tss_stack_pages as u64,
-                tss_flags
-            );
+            let tss_flags = x86_64::structures::paging::PageTableFlags::PRESENT 
+                | x86_64::structures::paging::PageTableFlags::WRITABLE
+                | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling petroleum::page_table::init (2)...\n");
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to init tss_mapper\n");
+            let mut tss_mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator) };
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: petroleum::page_table::init (2) done\n");
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to map TSS stacks\n");
+            unsafe {
+                petroleum::map_range_with_log_macro!(
+                    &mut tss_mapper,
+                    &mut *frame_allocator,
+                    tss_phys_addr.as_u64(),
+                    (crate::memory_management::PHYSICAL_MEMORY_OFFSET_BASE as u64) + tss_phys_addr.as_u64(),
+                    tss_stack_pages as u64,
+                    tss_flags
+                );
+            }
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: TSS stacks mapped to higher half\n");
         }
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: TSS stacks mapped to higher half\n");
 
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Starting page table copy test...\n");
-        let test_res = petroleum::page_table::test_page_table_copy_switch(
-            VirtAddr::zero(),
-            &mut *frame_allocator,
-            memory_map_ref,
-        );
-        if let Err(e) = test_res {
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Page table copy test FAILED\n");
-            debug_log_no_alloc!("Page table copy test failed: ", e as usize);
-        } else {
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Page table copy test passed\n");
+        {
+            let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
+            let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
+            let test_res = petroleum::page_table::test_page_table_copy_switch(
+                VirtAddr::zero(),
+                frame_allocator,
+                memory_map_ref,
+            );
+            if let Err(e) = test_res {
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Page table copy test FAILED\n");
+                debug_log_no_alloc!("Page table copy test failed: ", e as usize);
+            } else {
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Page table copy test passed\n");
+            }
         }
 
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Setting kernel CR3...\n");
@@ -342,9 +365,13 @@ impl UefiInitContext {
         let heap_pages = (heap::HEAP_SIZE + 4095) / 4096;
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Allocating contiguous frames for heap...\n");
         
-        let heap_phys_addr_val = frame_allocator
-            .allocate_contiguous_frames(heap_pages)
-            .expect("Failed to allocate contiguous frames for heap");
+        let heap_phys_addr_val = {
+            let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
+            let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
+            frame_allocator
+                .allocate_contiguous_frames(heap_pages)
+                .expect("Failed to allocate contiguous frames for heap")
+        };
         
         let heap_phys_addr = PhysAddr::new(heap_phys_addr_val as u64);
         
@@ -355,23 +382,24 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling petroleum::page_table::init (3)...\n");
-        let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator) };
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: petroleum::page_table::init (3) done\n");
-
-        let heap_flags = x86_64::structures::paging::PageTableFlags::PRESENT
-            | x86_64::structures::paging::PageTableFlags::WRITABLE
-            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-        petroleum::map_pages_to_offset!(
-            mapper,
-            &mut *frame_allocator,
-            heap_phys_addr.as_u64(),
-            self.physical_memory_offset.as_u64(),
-            heap_pages as u64,
-            heap_flags
-        );
-
-        drop(frame_allocator_guard);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: FRAME_ALLOCATOR guard dropped\n");
+        {
+            let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
+            let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
+            let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator) };
+            
+            let heap_flags = x86_64::structures::paging::PageTableFlags::PRESENT
+                | x86_64::structures::paging::PageTableFlags::WRITABLE
+                | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+            petroleum::map_pages_to_offset!(
+                mapper,
+                &mut *frame_allocator,
+                heap_phys_addr.as_u64(),
+                self.physical_memory_offset.as_u64(),
+                heap_pages as u64,
+                heap_flags
+            );
+        }
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Heap allocated and mapped\n");
 
         self.virtual_heap_start = self.physical_memory_offset + heap_phys_addr.as_u64();
         write_serial_bytes!(0x3F8, 0x3FD, b"Heap allocated and mapped\n");
@@ -383,33 +411,15 @@ impl UefiInitContext {
         let heap_start_for_allocator = self.virtual_heap_start;
         let heap_size_for_allocator = heap::HEAP_SIZE;
         
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Initializing global allocator...\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Finalizing global allocator init...\n");
         unsafe {
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Locking ALLOCATOR for init\n");
-            // Disable interrupts to prevent deadlock if an interrupt handler attempts to allocate memory
             x86_64::instructions::interrupts::disable();
-            
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ALLOC_TEST] Attempting try_lock...\n");
-            if let Some(mut allocator) = ALLOCATOR.try_lock() {
-                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ALLOC_TEST] try_lock succeeded\n");
-                
-                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ALLOC_TEST] Calling init...\n");
-                allocator.init(
-                    heap_start_for_allocator.as_mut_ptr::<u8>(),
-                    heap_size_for_allocator,
-                );
-                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ALLOC_TEST] init done\n");
-            } else {
-                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ALLOC_TEST] try_lock FAILED - ALLOCATOR already locked!\n");
-                // If try_lock failed, we have a deadlock. We can't do much here but log it.
-                // We'll try to lock anyway to see if it eventually succeeds (it won't)
-                let mut allocator = ALLOCATOR.lock();
-                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ALLOC_TEST] Lock finally acquired\n");
-                allocator.init(
-                    heap_start_for_allocator.as_mut_ptr::<u8>(),
-                    heap_size_for_allocator,
-                );
-            }
+            let mut allocator = petroleum::page_table::ALLOCATOR.lock();
+            allocator.init(
+                heap_start_for_allocator.as_mut_ptr::<u8>(),
+                heap_size_for_allocator,
+            );
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: ALLOCATOR init completed\n");
         }
         
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: HEAP_INITIALIZED store start\n");

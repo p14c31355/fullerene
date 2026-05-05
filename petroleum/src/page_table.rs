@@ -4,7 +4,7 @@ pub mod efi_memory;
 pub mod pe;
 mod utils;
 pub mod mapper;
-mod manager;
+pub(crate) mod manager;
 mod heap;
 mod tests;
 

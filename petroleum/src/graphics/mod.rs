@@ -70,6 +70,7 @@ pub mod framebuffer;
 pub mod registers;
 pub mod setup;
 pub mod text;
+pub mod uefi;
 
 // VGA constants
 pub use constants::*;
