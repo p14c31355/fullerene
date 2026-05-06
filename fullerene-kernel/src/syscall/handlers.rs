@@ -126,6 +126,7 @@ fn syscall_fork() -> SyscallResult {
         kernel_stack: kernel_stack_top,
         user_stack: parent_user_stack, // Will be updated after copying
         entry_point: parent_entry_point,
+        is_user: parent_context.is_user, // Inherit privilege level from parent
         exit_code: None,
         parent_id: Some(current_pid),
     };

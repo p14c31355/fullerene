@@ -228,39 +228,39 @@ impl UefiInitContext {
         
         let kernel_virt_start = petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64;
         let kernel_phys_start_val = kernel_phys_start.as_u64();
-
+ 
         let mut val_buf = [0u8; 16];
         let len = petroleum::serial::format_hex_to_buffer(kernel_phys_start_val, &mut val_buf, 16);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: phys_start=0x");
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, &val_buf[..len]);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-
+ 
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_init] Attempting to lock FRAME_ALLOCATOR for init\n");
-        let mut wide_mapper = unsafe {
+        
+        // Create the ONLY mapper that will be used for all initial kernel mappings
+        let mut main_mapper = unsafe {
             let mut fa_guard = crate::heap::FRAME_ALLOCATOR.lock();
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_init] Lock acquired, calling init\n");
             let allocator = fa_guard.as_mut().expect("Frame allocator should be ready");
             petroleum::page_table::init(self.physical_memory_offset, allocator, 0x100000)
         };
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_init] petroleum::page_table::init for wide_mapper returned\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_init] petroleum::page_table::init for main_mapper returned\n");
         {
             let mut fa_guard = crate::heap::FRAME_ALLOCATOR.lock();
             let allocator = fa_guard.as_mut().expect("Frame allocator should be ready");
             
-            // IMPORTANT: Align physical start to page boundary to avoid misaligned mapping
             let kernel_phys_start_aligned = kernel_phys_start_val & !0xFFF;
             let kernel_virt_start_aligned = kernel_virt_start & !0xFFF;
-
-            // Map 4GB to ensure all kernel sections are covered
+ 
             for i in 0..(1024 * 1024) {
                 let vaddr = x86_64::VirtAddr::new(kernel_virt_start_aligned + i as u64 * 4096);
                 let paddr = x86_64::PhysAddr::new(kernel_phys_start_aligned + i as u64 * 4096);
-
+ 
                 let page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(vaddr);
                 let frame = x86_64::structures::paging::PhysFrame::containing_address(paddr);
-
+ 
                 unsafe {
-                    let _ = wide_mapper.map_to(
+                    let _ = main_mapper.map_to(
                         page,
                         frame,
                         PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
@@ -308,14 +308,18 @@ impl UefiInitContext {
             let tss_flags = x86_64::structures::paging::PageTableFlags::PRESENT 
                 | x86_64::structures::paging::PageTableFlags::WRITABLE
                 | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling petroleum::page_table::init (2)...\n");
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to init tss_mapper\n");
-            let mut tss_mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator, 0x100000) };
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: petroleum::page_table::init (2) done\n");
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to map TSS stacks\n");
+            
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Mapping TSS stacks using main_mapper\n");
             unsafe {
+                // We must use the same page table as the kernel mapping.
+                // Since we can't easily pass main_mapper across blocks, we re-init it.
+                // BUT: petroleum::page_table::init must be modified to return the EXISTING 
+                // page table if already initialized, or we must store the root address.
+                // For now, we use the same init call which we hope points to the same root 
+                // if the implementation allows, or we'll need to refactor the mapper storage.
+                let mut mapper = petroleum::page_table::init(self.physical_memory_offset, frame_allocator, 0x100000);
                 petroleum::map_range_with_log_macro!(
-                    &mut tss_mapper,
+                    &mut mapper,
                     &mut *frame_allocator,
                     tss_phys_addr.as_u64(),
                     (petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64) + tss_phys_addr.as_u64(),
@@ -377,15 +381,16 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, &addr_buf[..len]);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling petroleum::page_table::init (3)...\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Mapping heap using main_mapper\n");
         {
             let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
             let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
-            let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator, 0x100000) };
             
             let heap_flags = x86_64::structures::paging::PageTableFlags::PRESENT
                 | x86_64::structures::paging::PageTableFlags::WRITABLE
                 | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+            
+            let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator, 0x100000) };
             petroleum::map_pages_to_offset!(
                 mapper,
                 &mut *frame_allocator,

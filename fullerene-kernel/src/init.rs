@@ -124,6 +124,7 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
         let test_pid = crate::process::create_process(
             "test_process",
             x86_64::VirtAddr::new(crate::process::test_process_main as *const () as usize as u64),
+            false,
         );
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init] create_process returned\n");
         match test_pid {

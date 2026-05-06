@@ -135,14 +135,7 @@ fn kernel_main_higher_half(args_ptr: *const petroleum::page_table::mapper::Kerne
     log::info!("Starting full system scheduler loop...");
     write_serial_bytes!(0x3F8, 0x3FD, b"Entering scheduler_loop\n");
     
-    unsafe {
-        core::arch::asm!(
-            "mov dx, 0x3f8", "mov al, 0x53", "out dx, al", // 'S' for Scheduler
-            "cli", 
-            "mov rax, {}", 
-            "jmp rax", 
-            in(reg) crate::scheduler::scheduler_loop as usize,
-            options(noreturn)
-        );
-    }
+    // Use a standard function call instead of a raw jump to ensure 
+    // proper stack frame setup and ABI compliance.
+    crate::scheduler::scheduler_loop();
 }
