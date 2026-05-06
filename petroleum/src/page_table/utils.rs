@@ -267,10 +267,9 @@ pub unsafe fn init(
             PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
             frame_allocator,
         ) {
-            if let x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_) = e {
-                // Ignore already mapped pages, as this can happen if the bootloader set up some mappings
-                crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Boot code page already mapped, skipping\n");
-            } else {
+                if let x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_) = e {
+                    // Ignore already mapped pages, as this can happen if the bootloader set up some mappings
+                } else {
                 crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Boot code mapping failed\n");
                 break;
             }

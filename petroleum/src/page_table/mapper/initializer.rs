@@ -254,7 +254,7 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         fb_addr: Option<VirtAddr>,
         fb_size: Option<u64>,
     ) {
-        crate::debug_log_no_alloc!("Setting up higher-half mappings");
+        crate::debug_log_no_alloc!("DEBUG: [setup_higher_half] Starting higher-half mappings");
         let mut kernel_mapper =
             KernelMapper::new(self.mapper, self.frame_allocator, self.phys_offset);
         if !unsafe { kernel_mapper.map_pe_sections(kernel_phys_start) } {
@@ -298,7 +298,7 @@ impl<'a, T: crate::page_table::efi_memory::MemoryDescriptorValidator> PageTableI
         memory_mapper.map_vga();
         memory_mapper.map_boot_code();
         crate::debug_log_no_alloc!("Additional regions mapped");
-        crate::debug_log_no_alloc!("Higher-half mappings completed");
+        crate::debug_log_no_alloc!("DEBUG: [setup_higher_half] Higher-half mappings completed");
     }
 
     unsafe fn map_available_memory_to_higher_half(&mut self) { unsafe {
@@ -527,6 +527,7 @@ impl PageTableReinitializer {
         kernel_args_phys: Option<u64>,
     ) {
         x86_64::instructions::interrupts::disable();
+        crate::debug_log_no_alloc!("DEBUG: [perform_switch] Starting CR3 switch process");
         crate::debug_log_no_alloc!("About to switch CR3 to new table: 0x", level_4_table_frame.start_address().as_u64() as usize);
         
         let ctx = crate::page_table::mapper::transition::TransitionContext::prepare(
@@ -688,8 +689,9 @@ impl PageTableReinitializer {
         unsafe { crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]) };
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
+        crate::debug_log_no_alloc!("DEBUG: [perform_switch] Calling perform_world_switch now");
         crate::page_table::mapper::transition::perform_world_switch(ctx);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"CR3 switch: returned from asm! block\n");
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [perform_switch] CR3 switch: returned from asm! block\n");
     }
 }
 
