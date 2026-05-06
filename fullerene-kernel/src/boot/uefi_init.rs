@@ -127,6 +127,17 @@ impl UefiInitContext {
         petroleum::set_physical_memory_offset(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE);
         self.physical_memory_offset = x86_64::VirtAddr::new(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64);
 
+        // CRITICAL: Force reset ALLOCATOR lock and HEAP_INITIALIZED to avoid garbage memory issues
+        unsafe {
+            let alloc_ptr = core::ptr::addr_of!(petroleum::page_table::ALLOCATOR) as *mut u32;
+            core::ptr::write_volatile(alloc_ptr, 0);
+            
+            let heap_init_ptr = core::ptr::addr_of!(petroleum::page_table::HEAP_INITIALIZED) as *mut u8;
+            core::ptr::write_volatile(heap_init_ptr, 0);
+            
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Forced ALLOCATOR lock and HEAP_INITIALIZED reset\n");
+        }
+
         // CRITICAL: Initialize ALLOCATOR as early as possible to avoid implicit allocation deadlocks
         // We do this BEFORE any other complex initialization that might trigger alloc
         if !HEAP_INITIALIZED.load(core::sync::atomic::Ordering::SeqCst) {
@@ -137,7 +148,7 @@ impl UefiInitContext {
                 // but for now we just ensure the lock is initialized and we don't deadlock.
                 // Actual heap mapping happens later, but the Mutex itself must be usable.
                 // To avoid deadlock, we just ensure we are the first to lock it.
-                let _allocator = ALLOCATOR.lock();
+                let _allocator = petroleum::page_table::ALLOCATOR.lock();
                 // We can't call .init() yet because heap_start isn't calculated, 
                 // but the lock is now acquired and released.
                 petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PRE-INIT] ALLOCATOR lock check passed\n");
@@ -477,17 +488,16 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] Finalizing global allocator init...\n");
         unsafe {
             x86_64::instructions::interrupts::disable();
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] Attempting to try_lock ALLOCATOR\n");
-            if let Some(mut allocator) = petroleum::page_table::ALLOCATOR.try_lock() {
-                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] ALLOCATOR try_lock succeeded\n");
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] Locking ALLOCATOR for initialization\n");
+            {
+                let mut allocator = petroleum::page_table::ALLOCATOR.lock();
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] ALLOCATOR lock acquired\n");
                 petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] Calling allocator.init\n");
                 allocator.init(
                     heap_start_for_allocator.as_mut_ptr::<u8>(),
                     heap_size_for_allocator,
                 );
                 petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] ALLOCATOR init completed\n");
-            } else {
-                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] ALLOCATOR try_lock FAILED - lock already held!\n");
             }
         }
         

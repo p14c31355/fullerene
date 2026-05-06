@@ -285,9 +285,18 @@ pub fn init() {
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] int3 returned\n");
 
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] testing heap allocation (8 bytes)\n");
+    
+    if petroleum::page_table::ALLOCATOR.try_lock().is_none() {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] ALLOCATOR lock is HELD - deadlock detected!\n");
+    } else {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] ALLOCATOR lock is free\n");
+    }
+
     let layout8 = Layout::from_size_align(8, 8).unwrap();
     unsafe {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] Calling alloc::alloc::alloc...\n");
         let ptr8 = alloc::alloc::alloc(layout8);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] alloc::alloc::alloc returned\n");
         if ptr8.is_null() {
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] 8 bytes allocation FAILED\n");
         } else {
