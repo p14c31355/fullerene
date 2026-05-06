@@ -106,6 +106,8 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     }
 
     // 2. Common initialization sequence
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] loading IDT early for debugging\n");
+    crate::interrupts::init();
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] starting common_steps\n");
     let common_steps = [
         petroleum::init_step!("process", init_process_step),

@@ -16,34 +16,32 @@ macro_rules! setup_idt_handler {
 }
 
 // Global Interrupt Descriptor Table
-lazy_static! {
-    pub static ref IDT: InterruptDescriptorTable = {
-        let mut idt = InterruptDescriptorTable::new();
-
-        // Set up CPU exception handlers
-        setup_idt_handler!(idt, breakpoint, breakpoint_handler);
-        setup_idt_handler!(idt, page_fault, page_fault_handler);
-        unsafe {
-            idt.double_fault.set_handler_fn(double_fault_handler)
-                .set_stack_index(crate::gdt::DOUBLE_FAULT_IST_INDEX);
-        }
-        // Set up hardware interrupt handlers
-        unsafe {
-            idt[TIMER_INTERRUPT_INDEX as u8].set_handler_fn(timer_handler).set_stack_index(crate::gdt::TIMER_IST_INDEX);
-            idt[KEYBOARD_INTERRUPT_INDEX as u8].set_handler_fn(keyboard_handler);
-            idt[MOUSE_INTERRUPT_INDEX as u8].set_handler_fn(mouse_handler);
-        }
-
-        idt
-    };
-}
+pub static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
 
 /// Initialize IDT (load it into the CPU)
+#[allow(static_mut_refs)]
 pub fn init() {
-    petroleum::serial::serial_log(format_args!("About to load IDT...\n"));
-    IDT.load();
-    petroleum::serial::serial_log(format_args!(
-        "IDT.load() completed, about to log completion...\n"
-    ));
-    petroleum::serial::serial_log(format_args!("IDT loaded with exception handlers.\n"));
+    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [idt::init] start\n") };
+    
+    unsafe {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [idt::init] configuring IDT\n");
+        let idt = &mut IDT;
+
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [idt::init] setting up exceptions\n");
+        idt.breakpoint.set_handler_fn(breakpoint_handler);
+        idt.page_fault.set_handler_fn(page_fault_handler);
+        
+        // Avoid IST for now to minimize risk of Triple Fault
+        idt.double_fault.set_handler_fn(double_fault_handler);
+        
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [idt::init] setting up hardware interrupts\n");
+        idt[TIMER_INTERRUPT_INDEX as u8].set_handler_fn(timer_handler);
+        idt[KEYBOARD_INTERRUPT_INDEX as u8].set_handler_fn(keyboard_handler);
+        idt[MOUSE_INTERRUPT_INDEX as u8].set_handler_fn(mouse_handler);
+
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [idt::init] loading IDT\n");
+        idt.load();
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [idt::init] IDT loaded successfully\n");
+    }
+    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [idt::init] done\n") };
 }
