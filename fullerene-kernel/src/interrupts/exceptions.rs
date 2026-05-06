@@ -12,10 +12,10 @@ use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
 
 /// Breakpoint exception handler
 #[unsafe(no_mangle)]
-pub extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
-    petroleum::lock_and_modify!(petroleum::SERIAL1, writer, {
-        writeln!(writer, "\nEXCEPTION: BREAKPOINT\n{:#?}", stack_frame).ok();
-    });
+pub extern "x86-interrupt" fn breakpoint_handler(_stack_frame: InterruptStackFrame) {
+    unsafe {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\nDEBUG: [breakpoint_handler] entered\n");
+    }
 }
 
 /// Page fault exception handler

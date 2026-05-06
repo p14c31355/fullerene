@@ -1,7 +1,5 @@
 use crate::MEMORY_MAP;
-use crate::heap;
-use crate::{gdt, graphics, interrupts, memory};
-use petroleum::FramebufferLike;
+use crate::interrupts;
 use x86_64::VirtAddr;
 use petroleum::write_serial_bytes;
 
@@ -45,7 +43,7 @@ pub unsafe extern "C" fn efi_main_stage2(ctx: *mut (), physical_memory_offset: V
     if let Some(memory_map) = *MEMORY_MAP.lock() {
         write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: MEMORY_MAP acquired, calling init_memory_manager\n");
         
-        if let Err(e) = crate::memory_management::init_memory_manager(memory_map) {
+        if let Err(_e) = crate::memory_management::init_memory_manager(memory_map) {
             write_serial_bytes!(0x3F8, 0x3FD, b"ERROR: init_memory_manager failed!\n");
             petroleum::halt_loop();
         }
@@ -102,7 +100,7 @@ pub unsafe extern "C" fn efi_main_stage2(ctx: *mut (), physical_memory_offset: V
     kernel_main_higher_half(args_ptr, physical_memory_offset);
 }
 
-fn kernel_main_higher_half(args_ptr: *const petroleum::page_table::mapper::KernelArgs, physical_memory_offset: VirtAddr) -> ! {
+fn kernel_main_higher_half(_args_ptr: *const petroleum::page_table::mapper::KernelArgs, physical_memory_offset: VirtAddr) -> ! {
     write_serial_bytes!(0x3F8, 0x3FD, b"Entering kernel_main_higher_half...\n");
 
     // 1. Reload IDT to ensure it uses higher-half addresses

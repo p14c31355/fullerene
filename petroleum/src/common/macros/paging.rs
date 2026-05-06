@@ -1,6 +1,5 @@
 //! Paging and memory mapping macros for Fullerene OS
 
-use crate::page_table::manager::PageTableHelper;
 
 #[macro_export]
 macro_rules! map_range_with_log_macro {

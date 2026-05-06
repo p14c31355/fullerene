@@ -27,8 +27,12 @@ pub fn check_buffer_overflow(_phys_addr: usize, config_offset: usize, config_siz
 }
 
 /// Calculates the pointer to the i-th descriptor.
-pub fn calculate_descriptor_ptr(ptr: *const u8, index: usize, size: usize) -> *const u8 {
-    unsafe { ptr.add(index * size) }
+///
+/// # Safety
+///
+/// The caller must ensure that the resulting pointer is within the bounds of the allocated object.
+pub unsafe fn calculate_descriptor_ptr(ptr: *const u8, index: usize, size: usize) -> *const u8 {
+    ptr.add(index * size)
 }
 
 /// Calculates the end address of a memory region given start address and page count.
@@ -37,13 +41,17 @@ pub fn calculate_region_end(start: u64, pages: u64) -> u64 {
 }
 
 /// Calculates the pointer to metadata appended at the end of a buffer.
-pub fn calculate_metadata_ptr(base: *const u8, total_size: usize, metadata_size: usize) -> *const u8 {
-    unsafe { base.add(total_size - metadata_size) }
+///
+/// # Safety
+///
+/// The caller must ensure that the resulting pointer is within the bounds of the allocated object.
+pub unsafe fn calculate_metadata_ptr(base: *const u8, total_size: usize, metadata_size: usize) -> *const u8 {
+    base.add(total_size - metadata_size)
 }
 
 /// Calculates the number of pages needed to cover a given size, rounding up.
 pub fn calculate_pages(size: usize) -> u64 {
-    ((size + 4095) / 4096) as u64
+    size.div_ceil(4096) as u64
 }
 
 #[cfg(test)]
@@ -97,9 +105,11 @@ mod tests {
     fn test_calculate_descriptor_ptr() {
         let ptr = 0x1000 as *const u8;
         let size = 40;
-        assert_eq!(calculate_descriptor_ptr(ptr, 0, size), 0x1000 as *const u8);
-        assert_eq!(calculate_descriptor_ptr(ptr, 1, size), 0x1028 as *const u8);
-        assert_eq!(calculate_descriptor_ptr(ptr, 2, size), 0x1050 as *const u8);
+        unsafe {
+            assert_eq!(calculate_descriptor_ptr(ptr, 0, size), 0x1000 as *const u8);
+            assert_eq!(calculate_descriptor_ptr(ptr, 1, size), 0x1028 as *const u8);
+            assert_eq!(calculate_descriptor_ptr(ptr, 2, size), 0x1050 as *const u8);
+        }
     }
 
     #[test]
@@ -114,7 +124,9 @@ mod tests {
         let base = 0x1000 as *const u8;
         let size = 100;
         let meta_size = 20;
-        assert_eq!(calculate_metadata_ptr(base, size, meta_size), (0x1000 + 80) as *const u8);
+        unsafe {
+            assert_eq!(calculate_metadata_ptr(base, size, meta_size), (0x1000 + 80) as *const u8);
+        }
     }
 
     #[test]

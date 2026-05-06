@@ -1,17 +1,12 @@
 use crate::MEMORY_MAP;
 use crate::heap;
-use petroleum::FramebufferLike;
 use crate::memory::find_heap_start;
-use crate::{gdt, graphics, interrupts, memory};
 use core::ffi::c_void;
-use petroleum::common::uefi::{write_vga_string};
-use petroleum::common::{
-    ConfigWithMetadata, EfiSystemTable, FRAMEBUFFER_CONFIG_MAGIC,
-};
+use petroleum::common::{EfiSystemTable, write_vga_string};
 use petroleum::page_table::efi_memory::MemoryMapDescriptor;
 use petroleum::page_table::MemoryMappable;
 use petroleum::{
-    allocate_heap_from_map, debug_log, debug_log_no_alloc, mem_debug, write_serial_bytes,
+    debug_log_no_alloc, write_serial_bytes,
 };
 use x86_64::{
     PhysAddr, VirtAddr,
@@ -102,7 +97,7 @@ impl UefiInitContext {
         }
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: VGA buffer access 2 successful\n");
         
-        write_serial_bytes!(0x3F8, 0x3FD, b"Early setup completed\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Early setup completed\n");
         
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling setup_kernel_location\n");
         
@@ -136,17 +131,17 @@ impl UefiInitContext {
         // We do this BEFORE any other complex initialization that might trigger alloc
         if !HEAP_INITIALIZED.load(core::sync::atomic::Ordering::SeqCst) {
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PRE-INIT] Initializing ALLOCATOR early\n");
-            unsafe {
+            
                 x86_64::instructions::interrupts::disable();
                 // We use a temporary fixed region if the actual heap isn't mapped yet, 
                 // but for now we just ensure the lock is initialized and we don't deadlock.
                 // Actual heap mapping happens later, but the Mutex itself must be usable.
                 // To avoid deadlock, we just ensure we are the first to lock it.
-                let mut allocator = ALLOCATOR.lock();
+                let _allocator = ALLOCATOR.lock();
                 // We can't call .init() yet because heap_start isn't calculated, 
                 // but the lock is now acquired and released.
                 petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PRE-INIT] ALLOCATOR lock check passed\n");
-            }
+            
         }
 
         debug_log_no_alloc!("DEBUG: Starting memory_management_initialization");
@@ -201,9 +196,9 @@ impl UefiInitContext {
         if map_addr >= 0xFFFF_8000_0000_0000 {
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: memory_map is already in higher half, skipping re-mapping\n");
             // Use the already existing mapping
-            let map_virt = map_addr;
+            let _map_virt = map_addr;
             let map_size = self.memory_map_size;
-            let map_pages = ((map_size as u64) + 4095) / 4096;
+            let _map_pages = ((map_size as u64) + 4095) / 4096;
             
             // We don't need to call mapper.map_to because it's already mapped by the bootloader
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Memory map buffer already mapped\n");
@@ -330,7 +325,7 @@ impl UefiInitContext {
 
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to lock FRAME_ALLOCATOR (line 222)\n");
         let config = framebuffer_config.as_ref();
-        let (fb_addr, fb_size) = if let Some(config) = config {
+        let (_fb_addr, _fb_size) = if let Some(config) = config {
             let fb_size_bytes =
                 (config.width as usize * config.height as usize * config.bpp as usize) / 8;
             (
@@ -360,7 +355,7 @@ impl UefiInitContext {
                 // For now, we use the same init call which we hope points to the same root 
                 // if the implementation allows, or we'll need to refactor the mapper storage.
                 let mut mapper = petroleum::page_table::init(self.physical_memory_offset, frame_allocator, kernel_phys_start.as_u64());
-                petroleum::map_range_with_log_macro!(
+                let _ = petroleum::map_range_with_log_macro!(
                     &mut mapper,
                     &mut *frame_allocator,
                     tss_phys_addr.as_u64(),
@@ -409,7 +404,7 @@ impl UefiInitContext {
         let heap_phys_start = find_heap_start(memory_map_ref);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] find_heap_start returned\n");
         
-        let heap_phys_start_addr = if heap_phys_start.as_u64() < 0x1000
+        let _heap_phys_start_addr = if heap_phys_start.as_u64() < 0x1000
             || heap_phys_start.as_u64() >= 0x0000_8000_0000_0000
         {
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] Using fallback heap start\n");

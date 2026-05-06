@@ -280,6 +280,10 @@ pub fn init() {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] raw buffer write SUCCESS\n");
     }
 
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] testing IDT with int3\n");
+    x86_64::instructions::interrupts::int3();
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] int3 returned\n");
+
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] testing heap allocation (8 bytes)\n");
     let layout8 = Layout::from_size_align(8, 8).unwrap();
     unsafe {

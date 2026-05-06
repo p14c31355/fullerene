@@ -4,51 +4,23 @@
 //! the MemoryManager, ProcessMemoryManager, PageTableHelper, and FrameAllocator traits.
 
 // Define macros before using super for overlay
-use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
 use spin::Mutex;
-use core::sync::atomic::{AtomicUsize, Ordering};
-
-use static_assertions::assert_eq_size;
 
 use petroleum::common::logging::{SystemError, SystemResult};
 use petroleum::initializer::{
-    ErrorLogging, FrameAllocator, Initializable, MemoryManager, ProcessMemoryManager,
-    SyscallHandler,
+    FrameAllocator, Initializable, MemoryManager,
 };
-use x86_64::structures::paging::{Page, PageTableFlags as PageFlags, Size4KiB};
+use x86_64::structures::paging::PageTableFlags as PageFlags;
 
-use petroleum::page_table::{BitmapFrameAllocator, PageTableManager};
-use petroleum::page_table::{BootInfoFrameAllocator, EfiMemoryDescriptor};
-use process_memory::ProcessMemoryManagerImpl;
+use petroleum::page_table::PageTableManager;
 pub mod convenience;
 pub mod kernel_space;
 pub mod manager;
 pub mod process_memory;
 
-// Re-export for external use
-pub use convenience::*;
 pub use manager::UnifiedMemoryManager;
 pub use petroleum::page_table::*;
 pub use process_memory::*;
-
-
-// Helper macros for common operations
-macro_rules! check_initialized_mut {
-    ($self:expr) => {
-        if !$self.initialized {
-            return Err(SystemError::InternalError);
-        }
-    };
-}
-
-// Generic memory operation helper for mutable access
-macro_rules! memory_operation_mut {
-    ($self:expr, $operation:expr) => {{
-        check_initialized_mut!($self);
-        $operation
-    }};
-}
 
 // Memory management error types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,7 +66,7 @@ pub type ProcessPageTable = PageTableManager<'static>;
 static MEMORY_MANAGER: Mutex<Option<UnifiedMemoryManager>> = Mutex::new(None);
 
 /// Switch to a specific page table
-pub fn switch_to_page_table(page_table: &ProcessPageTable) -> SystemResult<()> {
+pub fn switch_to_page_table(_page_table: &ProcessPageTable) -> SystemResult<()> {
     // In a real implementation, this would switch the CR3 register
     // For now, just log the operation
     log::info!("Switching to page table");

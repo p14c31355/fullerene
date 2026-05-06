@@ -87,7 +87,7 @@ pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
     let actual_heap_size = heap_pages * 4096;
 
     debug_log_no_alloc!("Heap: Initializing global allocator using petroleum...");
-    petroleum::init_global_heap(heap_phys as *mut u8, actual_heap_size);
+    unsafe { petroleum::init_global_heap(heap_phys as *mut u8, actual_heap_size) };
     debug_log_no_alloc!("Heap: Petroleum global heap init done. Returning Ok(()).");
     Ok(())
 }

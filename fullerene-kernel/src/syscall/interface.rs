@@ -60,7 +60,12 @@ impl From<petroleum::common::logging::SystemError> for SyscallError {
 
 /// Helper function to safely copy a null-terminated string from user space
 /// Returns the string if successful, or an error if validation fails
-pub fn copy_user_string(ptr: *const u8, max_len: usize) -> Result<String, SyscallError> {
+///
+/// # Safety
+///
+/// The caller must ensure that the pointer `ptr` is valid and the memory range
+/// being read does not violate any memory safety constraints.
+pub unsafe fn copy_user_string(ptr: *const u8, max_len: usize) -> Result<String, SyscallError> {
     if ptr.is_null() {
         return Err(SyscallError::InvalidArgument);
     }

@@ -1,11 +1,10 @@
-use alloc::collections::BTreeMap;
 use petroleum::common::logging::{SystemError, SystemResult};
 use petroleum::page_table::{BitmapFrameAllocator, PageTableManager, PageTableHelper};
 use crate::memory_management::process_memory::ProcessMemoryManagerImpl;
 use petroleum::initializer::{
     ErrorLogging, FrameAllocator, Initializable, MemoryManager, ProcessMemoryManager,
 };
-use x86_64::structures::paging::{Page, PageTableFlags as PageFlags, Size4KiB};
+use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
 
 /// Unified memory manager implementing all memory management traits
 pub struct UnifiedMemoryManager {
@@ -51,7 +50,7 @@ impl UnifiedMemoryManager {
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Static buffer raw write success\n");
         }
         
-        petroleum::init_global_heap(heap_ptr, heap_size);
+        unsafe { petroleum::init_global_heap(heap_ptr, heap_size) };
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Global heap initialized (static buffer)\n");
 
 

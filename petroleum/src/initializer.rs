@@ -244,7 +244,7 @@ impl<'a> InitSequence<'a> {
     }
 
     pub fn run(&self) {
-        for (name, init_fn) in self.steps {
+        for (_name, init_fn) in self.steps {
             // Use raw serial write to avoid potential deadlock in serial_log (Mutex)
             crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [InitSequence] About to init step\n");
 

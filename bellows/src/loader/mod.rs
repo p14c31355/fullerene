@@ -1,6 +1,5 @@
 use core::ffi::c_void;
 
-use x86_64::structures::paging::FrameAllocator;
 use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus, EfiSystemTable};
 
 // Module declarations for separated functionality
@@ -107,15 +106,13 @@ pub fn exit_boot_services_and_jump(
         }
 
         // Call get_memory_map with pre-allocated buffer
-        let status = unsafe {
-            (bs.get_memory_map)(
-                &mut map_size,
-                map_ptr,
-                &mut map_key,
-                &mut descriptor_size,
-                &mut descriptor_version,
-            )
-        };
+        let status = (bs.get_memory_map)(
+            &mut map_size,
+            map_ptr,
+            &mut map_key,
+            &mut descriptor_size,
+            &mut descriptor_version,
+        );
 
         match EfiStatus::from(status) {
             EfiStatus::Success => {
@@ -285,11 +282,7 @@ pub fn exit_boot_services_and_jump(
     let descriptors_ptr = map_ptr as *const u8;
     
     // map_size is the size of the memory map returned by get_memory_map
-    let num_descriptors = if descriptor_size_val > 0 {
-        map_size / descriptor_size_val
-    } else {
-        0
-    };
+    let num_descriptors = descriptor_size_val.checked_div(map_size).unwrap_or(0);
 
     let memory_map_descriptors = if num_descriptors > 0 && !descriptors_ptr.is_null() {
         let mut descriptors = alloc::vec::Vec::with_capacity(num_descriptors);

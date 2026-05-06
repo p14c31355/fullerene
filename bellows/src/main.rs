@@ -6,20 +6,16 @@
 #![feature(never_type)]
 extern crate alloc;
 
-use core::{ffi::c_void, ptr};
-
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     use petroleum::println;
     // Simple panic handler for UEFI bootloader
-    unsafe {
-        petroleum::volatile_write!(0xB8000 as *mut u16, 0x1F20); // White ' ' on blue
-        petroleum::volatile_write!(0xB8002 as *mut u16, 0x1F50); // White 'P' on blue
-        let panic_msg = b"anic";
-        for (i, &char_code) in panic_msg.iter().enumerate() {
-            petroleum::volatile_write!((0xB8004 as *mut u16).add(i), 0x1F00 | char_code as u16);
-        }
+    petroleum::volatile_write!(0xB8000 as *mut u16, 0x1F20); // White ' ' on blue
+    petroleum::volatile_write!(0xB8002 as *mut u16, 0x1F50); // White 'P' on blue
+    let panic_msg = b"anic";
+    for (i, &char_code) in panic_msg.iter().enumerate() {
+        petroleum::volatile_write!((0xB8004 as *mut u16).add(i), 0x1F00 | char_code as u16);
     }
     println!("Kernel Panic: {}", info);
     loop {}
@@ -39,8 +35,12 @@ use petroleum::common::{EfiGraphicsPixelFormat, EfiSystemTable, FullereneFramebu
 /// Main entry point of the bootloader.
 ///
 /// This function is the `start` attribute as defined in the `Cargo.toml`.
+///
+/// # Safety
+///
+/// This function is called by the UEFI firmware and must adhere to the UEFI calling convention.
 #[unsafe(no_mangle)]
-pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
+pub unsafe extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
     // Before setting UEFI_SYSTEM_TABLE
     if image_handle == 0 {
         panic!("Invalid image_handle");
@@ -156,9 +156,7 @@ fn init_basic_vga_text_mode() {
 
 /// Installs a basic VGA framebuffer configuration for UEFI environments when GOP is not available.
 /// Provides a fallback framebuffer configuration that the kernel can use.
-///
-
-fn install_vga_framebuffer_config(st: &EfiSystemTable) {
+fn install_vga_framebuffer_config(_st: &EfiSystemTable) {
     petroleum::println!("Installing VGA framebuffer config for UEFI...");
 
     // Create an improved VGA-compatible framebuffer config

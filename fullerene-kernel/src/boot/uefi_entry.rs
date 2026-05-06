@@ -1,11 +1,10 @@
+#[cfg(target_os = "uefi")]
 use core::ffi::c_void;
-use petroleum::common::{EfiSystemTable};
+use petroleum::common::EfiSystemTable;
+use x86_64::VirtAddr;
 use crate::boot::uefi_init::UefiInitContext;
 use crate::boot::uefi_main::efi_main_stage2;
-use x86_64::VirtAddr;
-use petroleum::write_serial_bytes;
 
-#[cfg(target_os = "uefi")]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.efi_main")]
 #[unsafe(naked)]
@@ -116,10 +115,10 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
 
     let kernel_stack_top = ctx.prepare_kernel_stack(virtual_heap_start, physical_memory_offset);
     let kernel_stack_top_virt = VirtAddr::new(kernel_stack_top.as_u64());
-    write_serial_bytes!(0x3F8, 0x3FD, b"GDT and stack prepared\n");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"GDT and stack prepared\n");
     
     ctx.setup_allocator(virtual_heap_start);
-    write_serial_bytes!(0x3F8, 0x3FD, b"Allocator setup completed\n");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Allocator setup completed\n");
 
     let ctx_ptr = &mut ctx as *mut _;
     
@@ -135,7 +134,7 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
-    write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling perform_efi_stage2_switch\n");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling perform_efi_stage2_switch\n");
     
     let transition_ctx = petroleum::page_table::mapper::transition::TransitionContext::prepare_for_efi_stage2(
         physical_memory_offset,

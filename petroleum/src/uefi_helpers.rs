@@ -1,8 +1,7 @@
 use super::*;
-use x86_64::{PhysAddr, VirtAddr};
+use x86_64::PhysAddr;
 use crate::common::{
     EfiSystemTable, FullereneFramebufferConfig, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
-    ConfigWithMetadata, FRAMEBUFFER_CONFIG_MAGIC,
 };
 use crate::page_table::efi_memory::MemoryDescriptorValidator;
 

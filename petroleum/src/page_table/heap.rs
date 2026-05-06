@@ -24,7 +24,14 @@ pub static ALLOCATOR: linked_list_allocator::LockedHeap =
 pub static ALLOCATOR: linked_list_allocator::LockedHeap =
     linked_list_allocator::LockedHeap::empty();
 
-pub fn init_global_heap(ptr: *mut u8, size: usize) {
+/// Initializes the global heap allocator.
+///
+/// # Safety
+///
+/// The caller must ensure that the provided pointer `ptr` points to a valid
+/// memory region of at least `size` bytes, and that this region is not
+/// used elsewhere.
+pub unsafe fn init_global_heap(ptr: *mut u8, size: usize) {
     #[cfg(all(not(feature = "std"), not(test)))]
     if !HEAP_INITIALIZED.load(Ordering::SeqCst) {
         let mut buf = [0u8; 16];
@@ -47,9 +54,9 @@ pub fn init_global_heap(ptr: *mut u8, size: usize) {
 /// Allocate heap memory from EFI memory map
 pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> PhysAddr {
     const FRAME_SIZE: u64 = 4096;
-    let _heap_frames = (heap_size + FRAME_SIZE as usize - 1) / FRAME_SIZE as usize;
+    let _heap_frames = heap_size.div_ceil(FRAME_SIZE as usize);
 
-    let aligned_start = if start_addr.as_u64() % FRAME_SIZE == 0 {
+    let aligned_start = if start_addr.as_u64().is_multiple_of(FRAME_SIZE) {
         start_addr
     } else {
         PhysAddr::new((start_addr.as_u64() / FRAME_SIZE + 1) * FRAME_SIZE)

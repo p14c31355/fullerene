@@ -213,7 +213,7 @@ fn syscall_write(fd: core::ffi::c_int, buffer: *const u8, count: usize) -> Sysca
 /// Open system call
 fn syscall_open(filename: *const u8, flags: core::ffi::c_int, _mode: u32) -> SyscallResult {
     // Safely copy the filename from user space
-    let filename_str = copy_user_string(filename, 256)?;
+    let filename_str = unsafe { copy_user_string(filename, 256)? };
 
     // Interpret flags (basic POSIX-style flags)
     // O_RDONLY = 0, O_WRONLY = 1, O_RDWR = 2, O_CREAT = 0x40, O_TRUNC = 0x200, O_APPEND = 0x400
