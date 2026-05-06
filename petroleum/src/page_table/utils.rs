@@ -255,30 +255,31 @@ pub unsafe fn init(
     
     // CRITICAL: Map the first 1GB of physical memory to ensure that any page tables 
     // allocated by map_to are accessible. Using 2MB pages to avoid some huge page issues.
-    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Mapping first 1GB using 2MB pages\n");
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Mapping first 1GB using 1GB pages\n");
     unsafe {
         // We map the first 1GB identity and higher-half.
-        // Since we are in a very early state, we can just manually set up the L4 and L3 entries.
-        let l4_ptr = mapper.level_4_table() as *const PageTable as *mut PageTable;
+        // Using 1GiB huge pages to ensure that any page tables 
+        // allocated by map_to are accessible if they fall within this range.
         
-        // Identity map first 1GB (L4 index 0)
-        let l4_entry_ptr = l4_ptr.cast::<x86_64::structures::paging::page_table::PageTableEntry>().add(0);
-        let mut entry_id = x86_64::structures::paging::page_table::PageTableEntry::new();
-        entry_id.set_addr(
-            PhysAddr::new(0),
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::HUGE_PAGE,
+        // Identity map first 1GB
+        let _ = map_range_with_1gib_pages(
+            &mut mapper,
+            frame_allocator,
+            0,
+            0,
+            1,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
         );
-        core::ptr::write(l4_entry_ptr, entry_id);
 
         // Higher-half map first 1GB
-        let p4_idx_high = ((physical_memory_offset.as_u64() >> 39) & 0x1FF) as usize;
-        let l4_entry_ptr_high = l4_ptr.cast::<x86_64::structures::paging::page_table::PageTableEntry>().add(p4_idx_high);
-        let mut entry_high = x86_64::structures::paging::page_table::PageTableEntry::new();
-        entry_high.set_addr(
-            PhysAddr::new(0),
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::HUGE_PAGE,
+        let _ = map_range_with_1gib_pages(
+            &mut mapper,
+            frame_allocator,
+            0,
+            physical_memory_offset.as_u64(),
+            1,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
         );
-        core::ptr::write(l4_entry_ptr_high, entry_high);
 
         x86_64::instructions::tlb::flush_all();
     }
@@ -318,34 +319,7 @@ pub unsafe fn init(
 
     let boot_pages = crate::page_table::constants::BOOT_CODE_PAGES;
     
-    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Mapping boot code region\n");
-    for i in 0..boot_pages {
-        if i % 64 == 0 {
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Mapping page index: ");
-            let mut buf = [0u8; 16];
-            let len = crate::serial::format_hex_to_buffer(i as u64, &mut buf, 16);
-            crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-        }
-        let phys_addr = kernel_phys_start + i * 4096;
-        let virt_addr = physical_memory_offset + PhysAddr::new(phys_addr).as_u64();
-        let page = Page::<Size4KiB>::containing_address(virt_addr);
-        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(phys_addr));
-        
-        if let Err(e) = mapper.map_to(
-            page,
-            frame,
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-            frame_allocator,
-        ) {
-                if let x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_) = e {
-                    // Ignore already mapped pages, as this can happen if the bootloader set up some mappings
-                } else {
-                crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Boot code mapping failed\n");
-                break;
-            }
-        }
-    }
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Skipping redundant boot code mapping (covered by 1GB huge page)\n");
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Essential mappings completed\n");
     
     mapper
