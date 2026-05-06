@@ -110,7 +110,8 @@ impl UefiInitContext {
         &mut self,
         kernel_phys_start: PhysAddr,
     ) -> (VirtAddr, PhysAddr, VirtAddr) {
-        // Set physical memory offset FIRST so it can be used by init_memory_map
+        // CRITICAL: Set global physical memory offset BEFORE any page table initialization
+        petroleum::set_physical_memory_offset(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE);
         self.physical_memory_offset = x86_64::VirtAddr::new(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64);
 
         // CRITICAL: Initialize ALLOCATOR as early as possible to avoid implicit allocation deadlocks
@@ -347,11 +348,6 @@ impl UefiInitContext {
         crate::interrupts::syscall::set_kernel_cr3(kernel_cr3.0.start_address().as_u64());
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Kernel CR3 set\n");
 
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to set physical memory offset\n");
-        petroleum::set_physical_memory_offset(
-            petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE,
-        );
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Physical memory offset set\n");
 
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to find heap start\n");
         let heap_phys_start = find_heap_start(memory_map_ref);
@@ -414,12 +410,17 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Finalizing global allocator init...\n");
         unsafe {
             x86_64::instructions::interrupts::disable();
-            let mut allocator = petroleum::page_table::ALLOCATOR.lock();
-            allocator.init(
-                heap_start_for_allocator.as_mut_ptr::<u8>(),
-                heap_size_for_allocator,
-            );
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: ALLOCATOR init completed\n");
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Attempting to try_lock ALLOCATOR\n");
+            if let Some(mut allocator) = petroleum::page_table::ALLOCATOR.try_lock() {
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: ALLOCATOR try_lock succeeded\n");
+                allocator.init(
+                    heap_start_for_allocator.as_mut_ptr::<u8>(),
+                    heap_size_for_allocator,
+                );
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: ALLOCATOR init completed\n");
+            } else {
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: ALLOCATOR try_lock FAILED - lock already held!\n");
+            }
         }
         
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: HEAP_INITIALIZED store start\n");

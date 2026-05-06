@@ -125,18 +125,21 @@ impl<'a> PageTableManager<'a> {
                 },
             };
             
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] creating final OffsetPageTable\n");
-            OffsetPageTable::new(
-                &mut *(virt_addr.as_mut_ptr() as *mut PageTable),
-                phys_offset,
-            )
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] using temp_mapper as final mapper\n");
+            temp_mapper
         });
 
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] after mapper assignment\n");
         self.pml4_frame = Some(current_pml4);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] after pml4_frame assignment\n");
         self.current_page_table = table_phys_addr as usize;
-        self.allocated_tables
-            .insert(table_phys_addr as usize, current_pml4);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] after current_page_table assignment\n");
+        // Skip inserting the root PML4 into allocated_tables to avoid early boot heap allocation
+        // self.allocated_tables
+        //     .insert(table_phys_addr as usize, current_pml4);
+        // crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] after allocated_tables insert\n");
         self.frame_allocator = Some(unsafe { core::mem::transmute::<&mut BootInfoFrameAllocator, &'static mut BootInfoFrameAllocator>(frame_allocator) });
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] after frame_allocator transmute\n");
         self.initialized = true;
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] initialization complete\n");
         Ok(())

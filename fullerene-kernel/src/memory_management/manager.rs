@@ -38,6 +38,21 @@ impl UnifiedMemoryManager {
         unsafe { self.frame_allocator.init_with_memory_map(memory_map)? };
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Frame allocator init done\n");
 
+        // Initialize global heap before creating any BTreeMap or using alloc
+        // Use a statically allocated buffer to avoid page faults during early boot
+        let heap_size = crate::heap::HEAP_SIZE;
+        let heap_ptr = unsafe { core::ptr::addr_of_mut!(crate::heap::BOOT_HEAP_BUFFER) as *mut u8 };
+        
+        // TEST: Verify if the static buffer is actually writable before initializing the heap
+        unsafe {
+            core::ptr::write(heap_ptr, 0xAA);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Static buffer raw write success\n");
+        }
+        
+        petroleum::init_global_heap(heap_ptr, heap_size);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Global heap initialized (static buffer)\n");
+
+
         // First 1MB is already reserved inside BitmapFrameAllocator::init_with_memory_map
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"First 1MB reserved\n");
 

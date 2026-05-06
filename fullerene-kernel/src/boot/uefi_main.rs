@@ -34,6 +34,11 @@ pub unsafe extern "C" fn efi_main_stage2(ctx: *mut (), physical_memory_offset: V
 
     let args_ptr = unsafe { (*ctx).args_ptr };
     
+    // CRITICAL: Set physical memory offset BEFORE initializing the global memory manager
+    // to avoid page faults when creating the OffsetPageTable in PageTableManager::init.
+    petroleum::set_physical_memory_offset(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE);
+    write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Physical memory offset set before memory manager init\n");
+
     // Initialize the global memory manager with the EFI memory map
     write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Initializing global memory manager...\n");
     write_serial_bytes!(0x3F8, 0x3FD, b"Calling MEMORY_MAP.get()\n");
