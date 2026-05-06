@@ -256,32 +256,14 @@ impl TextBufferOperations for VgaBuffer {
     }
 }
 
-// VGA text mode device implementation with consolidation
-#[derive(Clone)]
-pub struct VgaDevice {
-    buffer: VgaBuffer,
-}
-
-impl VgaDevice {
-    pub fn new() -> Self {
-        Self {
-            buffer: VgaBuffer::new(),
-        }
-    }
-
-    pub fn set_color(&mut self, foreground: Color, background: Color) {
-        self.buffer.set_color(foreground, background);
-    }
-}
-
-impl crate::initializer::Initializable for VgaDevice {
+impl crate::initializer::Initializable for VgaBuffer {
     fn init(&mut self) -> crate::common::logging::SystemResult<()> {
         log::info!("VGA device initialized");
         Ok(())
     }
 
     fn name(&self) -> &'static str {
-        "VgaDevice"
+        "VgaBuffer"
     }
 
     fn priority(&self) -> i32 {
@@ -289,7 +271,7 @@ impl crate::initializer::Initializable for VgaDevice {
     }
 }
 
-impl crate::initializer::ErrorLogging for VgaDevice {
+impl crate::initializer::ErrorLogging for VgaBuffer {
     fn log_error(&self, error: &crate::common::logging::SystemError, context: &'static str) {
         log::error!("{}: {:?}", context, error);
     }
@@ -311,7 +293,7 @@ impl crate::initializer::ErrorLogging for VgaDevice {
     }
 }
 
-impl crate::initializer::HardwareDevice for VgaDevice {
+impl crate::initializer::HardwareDevice for VgaBuffer {
     fn device_name(&self) -> &'static str {
         "VGA Text Mode Display"
     }
@@ -321,25 +303,25 @@ impl crate::initializer::HardwareDevice for VgaDevice {
     }
 
     fn enable(&mut self) -> crate::common::logging::SystemResult<()> {
-        self.buffer.enable();
+        self.enabled = true;
         log::info!("VGA device enabled");
         Ok(())
     }
 
     fn disable(&mut self) -> crate::common::logging::SystemResult<()> {
-        self.buffer.disable();
+        self.enabled = false;
         log::info!("VGA device disabled");
         Ok(())
     }
 
     fn reset(&mut self) -> crate::common::logging::SystemResult<()> {
-        self.buffer.reset();
+        self.reset();
         log::info!("VGA device reset");
         Ok(())
     }
 
     fn is_enabled(&self) -> bool {
-        self.buffer.enabled
+        self.enabled
     }
 }
 

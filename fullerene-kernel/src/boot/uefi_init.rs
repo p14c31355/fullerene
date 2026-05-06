@@ -1,6 +1,6 @@
 use crate::MEMORY_MAP;
 use crate::heap;
-use crate::memory::find_heap_start;
+use petroleum::uefi_helpers::find_heap_start;
 use core::ffi::c_void;
 use petroleum::common::{EfiSystemTable, write_vga_string};
 use petroleum::page_table::efi_memory::MemoryMapDescriptor;
@@ -110,7 +110,7 @@ impl UefiInitContext {
         let kernel_virt_addr = crate::boot::uefi_entry::efi_main as u64;
         let kernel_phys_addr = kernel_virt_addr.wrapping_sub(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64);
         
-        let res = crate::memory::setup_kernel_location(
+        let res = petroleum::uefi_helpers::setup_kernel_location(
             self.memory_map,
             self.memory_map_size,
             kernel_phys_addr,
