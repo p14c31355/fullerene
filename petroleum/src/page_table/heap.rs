@@ -27,11 +27,20 @@ pub static ALLOCATOR: linked_list_allocator::LockedHeap =
 pub fn init_global_heap(ptr: *mut u8, size: usize) {
     #[cfg(all(not(feature = "std"), not(test)))]
     if !HEAP_INITIALIZED.load(Ordering::SeqCst) {
+        let mut buf = [0u8; 16];
+        let len = crate::serial::format_hex_to_buffer(ptr as u64, &mut buf, 16);
+        unsafe {
+            crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [init_global_heap] ptr: 0x");
+            crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+        }
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
         unsafe {
             ALLOCATOR.lock().init(ptr, size);
         }
         set_heap_range(ptr as usize, size);
         HEAP_INITIALIZED.store(true, Ordering::SeqCst);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_global_heap] completed\n");
     }
 }
 

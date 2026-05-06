@@ -30,8 +30,8 @@ pub static MEMORY_MAP: Mutex<Option<&'static [MemoryMapDescriptor]>> = Mutex::ne
 pub const MAX_DESCRIPTORS: usize = 2048;
 
 /// Static buffer for the global allocator to avoid early boot page faults
-#[repr(align(16))]
-pub struct HeapBuffer([u8; HEAP_SIZE]);
+#[repr(align(4096))]
+pub struct HeapBuffer(pub(crate) [u8; HEAP_SIZE]);
 
 #[unsafe(link_section = ".data")]
 pub static mut BOOT_HEAP_BUFFER: HeapBuffer = HeapBuffer([0; HEAP_SIZE]);
