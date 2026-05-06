@@ -15,8 +15,8 @@ pub unsafe fn map_pe_section(
     let section_size = section.virtual_size as u64;
     let pages = section_size.div_ceil(4096);
     for p in 0..pages {
-        let phys_addr = crate::calc_offset_addr!(section_start_phys, p);
-        let virt_addr = crate::calc_offset_addr!(section_start_virt, p);
+            let phys_addr = crate::common::utils::calculate_offset_address(section_start_phys, p);
+            let virt_addr = crate::common::utils::calculate_offset_address(section_start_virt, p);
         crate::map_with_offset!(mapper, frame_allocator, phys_addr, virt_addr, flags, "panic");
     }
 }

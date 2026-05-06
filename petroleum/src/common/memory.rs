@@ -3,6 +3,7 @@
 //! This module provides functions for validating user space memory access,
 //! used by syscall handlers and memory management.
 use crate::common::logging::{SystemError, SystemResult};
+use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use x86_64::VirtAddr;
 
@@ -57,6 +58,21 @@ pub fn is_allocator_related_address(addr: usize) -> bool {
     } else {
         false
     }
+}
+
+/// Safe wrapper for allocating memory with a given layout
+pub fn allocate_layout(layout: Layout) -> Result<*mut u8, SystemError> {
+    let ptr = unsafe { alloc::alloc::alloc(layout) };
+    if ptr.is_null() {
+        Err(SystemError::MemOutOfMemory)
+    } else {
+        Ok(ptr)
+    }
+}
+
+/// Safe wrapper for deallocating memory with a given layout
+pub fn deallocate_layout(ptr: *mut u8, layout: Layout) {
+    unsafe { alloc::alloc::dealloc(ptr, layout) };
 }
 
 /// Validate user buffer access

@@ -107,10 +107,8 @@ fn syscall_fork() -> SyscallResult {
 
     // Allocate kernel stack for child
     let stack_layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
-    let kernel_stack_ptr = unsafe { alloc::alloc::alloc(stack_layout) };
-    if kernel_stack_ptr.is_null() {
-        return Err(SyscallError::OutOfMemory);
-    }
+    let kernel_stack_ptr = petroleum::common::memory::allocate_layout(stack_layout)
+        .map_err(|_| SyscallError::OutOfMemory)?;
     let kernel_stack_top = VirtAddr::new(kernel_stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
 
     let child_pid = NEXT_PID.fetch_add(1, Ordering::Relaxed);

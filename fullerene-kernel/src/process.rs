@@ -293,27 +293,26 @@ pub fn init() {
     }
 
     let layout8 = Layout::from_size_align(8, 8).unwrap();
-    unsafe {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] Calling alloc::alloc::alloc...\n");
-        let ptr8 = alloc::alloc::alloc(layout8);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] alloc::alloc::alloc returned\n");
-        if ptr8.is_null() {
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] 8 bytes allocation FAILED\n");
-        } else {
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] Calling allocate_layout...\n");
+    match petroleum::common::memory::allocate_layout(layout8) {
+        Ok(ptr8) => {
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] 8 bytes allocation SUCCESS\n");
-            alloc::alloc::dealloc(ptr8, layout8);
+            petroleum::common::memory::deallocate_layout(ptr8, layout8);
+        }
+        Err(_) => {
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] 8 bytes allocation FAILED\n");
         }
     }
 
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] testing heap allocation (1024 bytes)\n");
     let layout1k = Layout::from_size_align(1024, 16).unwrap();
-    unsafe {
-        let ptr1k = alloc::alloc::alloc(layout1k);
-        if ptr1k.is_null() {
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] 1024 bytes allocation FAILED\n");
-        } else {
+    match petroleum::common::memory::allocate_layout(layout1k) {
+        Ok(ptr1k) => {
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] 1024 bytes allocation SUCCESS\n");
-            alloc::alloc::dealloc(ptr1k, layout1k);
+            petroleum::common::memory::deallocate_layout(ptr1k, layout1k);
+        }
+        Err(_) => {
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] 1024 bytes allocation FAILED\n");
         }
     }
 
@@ -347,21 +346,17 @@ pub fn create_process(
 
     // Allocate kernel stack for the process
     let stack_layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
-    let stack_ptr = unsafe { alloc::alloc::alloc(stack_layout) };
-    if stack_ptr.is_null() {
-        return Err(petroleum::common::logging::SystemError::MemOutOfMemory);
-    }
+    let stack_ptr = petroleum::common::memory::allocate_layout(stack_layout)?;
     let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
     debug_log!("Process: Kernel stack allocated");
 
     if is_user {
         // Allocate user stack for the process
         let user_stack_layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
-        let user_stack_ptr = unsafe { alloc::alloc::alloc(user_stack_layout) };
-        if user_stack_ptr.is_null() {
-            unsafe { alloc::alloc::dealloc(stack_ptr, stack_layout) };
-            return Err(petroleum::common::logging::SystemError::MemOutOfMemory);
-        }
+        let user_stack_ptr = petroleum::common::memory::allocate_layout(user_stack_layout).map_err(|e| {
+            petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+            e
+        })?;
         process.user_stack = VirtAddr::new(user_stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
         debug_log!("Process: User stack allocated");
     }
@@ -372,10 +367,8 @@ pub fn create_process(
         Ok(pt) => pt,
         Err(e) => {
             log::error!("Failed to create process page table: {:?}", e);
-            // Deallocate stack to prevent memory leak on error
-            unsafe {
-                alloc::alloc::dealloc(stack_ptr, stack_layout);
-            }
+        // Deallocate stack to prevent memory leak on error
+        petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
             return Err(e);
         }
     };
@@ -423,7 +416,7 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
         // Free resources
         let kernel_stack_base = process.kernel_stack.as_u64() - crate::heap::KERNEL_STACK_SIZE as u64;
         let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
-        unsafe { alloc::alloc::dealloc(kernel_stack_base as *mut u8, layout) };
+        petroleum::common::memory::deallocate_layout(kernel_stack_base as *mut u8, layout);
 
         // Properly free page table frames recursively
         if let Some(page_table) = process.page_table.take() {

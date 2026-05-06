@@ -194,7 +194,17 @@ pub fn halt_loop() -> ! {
 /// Helper function to pause CPU for brief moment (used for busy waits and yielding)
 #[inline(always)]
 pub fn cpu_pause() {
-    crate::pause!();
+    unsafe {
+        core::arch::asm!("pause", options(nomem, nostack, preserves_flags));
+    }
+}
+
+/// Helper function to halt CPU
+#[inline(always)]
+pub fn cpu_halt() {
+    unsafe {
+        core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+    }
 }
 
 /// Helper to initialize serial for bootloader
