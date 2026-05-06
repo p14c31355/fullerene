@@ -241,6 +241,7 @@ macro_rules! map_current_stack {
 pub unsafe fn init(
     physical_memory_offset: VirtAddr,
     frame_allocator: &mut impl FrameAllocator<Size4KiB>,
+    kernel_phys_start: u64,
 ) -> OffsetPageTable<'static> {
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] entered\n");
     let level_4_table = unsafe { active_level_4_table(physical_memory_offset) };
@@ -249,16 +250,13 @@ pub unsafe fn init(
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Creating OffsetPageTable\n");
     let mut mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] OffsetPageTable created\n");
-
-    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Starting essential mappings...\n");
-
-    // ブートコード領域を積極的にマッピングして、以降の処理の安定性を確保する
-    let boot_start = crate::page_table::constants::BOOT_CODE_START;
+    
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Starting essential mappings\n");
     let boot_pages = crate::page_table::constants::BOOT_CODE_PAGES;
     
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Mapping boot code region\n");
     for i in 0..boot_pages {
-        let phys_addr = boot_start + i * 4096;
+        let phys_addr = kernel_phys_start + i * 4096;
         let virt_addr = physical_memory_offset + PhysAddr::new(phys_addr).as_u64();
         let page = Page::<Size4KiB>::containing_address(virt_addr);
         let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(phys_addr));
@@ -270,7 +268,8 @@ pub unsafe fn init(
             frame_allocator,
         ) {
             if let x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_) = e {
-                // 既にマップされている場合は無視して続行
+                // Ignore already mapped pages, as this can happen if the bootloader set up some mappings
+                crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Boot code page already mapped, skipping\n");
             } else {
                 crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Boot code mapping failed\n");
                 break;
@@ -278,7 +277,7 @@ pub unsafe fn init(
         }
     }
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Essential mappings completed\n");
-
+    
     mapper
 }
 

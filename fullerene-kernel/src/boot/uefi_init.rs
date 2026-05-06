@@ -171,7 +171,7 @@ impl UefiInitContext {
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling petroleum::page_table::init (1)...\n");
             let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
             let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator should be ready now");
-            let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator) };
+            let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator, 0x100000) };
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: petroleum::page_table::init (1) done\n");
             {
                 for i in 0..map_pages {
@@ -240,7 +240,7 @@ impl UefiInitContext {
             let mut fa_guard = crate::heap::FRAME_ALLOCATOR.lock();
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_init] Lock acquired, calling init\n");
             let allocator = fa_guard.as_mut().expect("Frame allocator should be ready");
-            petroleum::page_table::init(self.physical_memory_offset, allocator)
+            petroleum::page_table::init(self.physical_memory_offset, allocator, 0x100000)
         };
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_init] petroleum::page_table::init for wide_mapper returned\n");
         {
@@ -310,7 +310,7 @@ impl UefiInitContext {
                 | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling petroleum::page_table::init (2)...\n");
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to init tss_mapper\n");
-            let mut tss_mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator) };
+            let mut tss_mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator, 0x100000) };
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: petroleum::page_table::init (2) done\n");
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to map TSS stacks\n");
             unsafe {
@@ -381,7 +381,7 @@ impl UefiInitContext {
         {
             let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
             let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
-            let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator) };
+            let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator, 0x100000) };
             
             let heap_flags = x86_64::structures::paging::PageTableFlags::PRESENT
                 | x86_64::structures::paging::PageTableFlags::WRITABLE
@@ -461,7 +461,7 @@ impl UefiInitContext {
         let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
         let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
 
-        let mut mapper = unsafe { petroleum::page_table::init(physical_memory_offset, frame_allocator) };
+        let mut mapper = unsafe { petroleum::page_table::init(physical_memory_offset, frame_allocator, 0x100000) };
         let mut mem_mapper = petroleum::page_table::mapper::MemoryMapper::new(
             &mut mapper,
             &mut *frame_allocator,
@@ -511,7 +511,7 @@ impl UefiInitContext {
         let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
         let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
  
-        let mut mapper = unsafe { petroleum::page_table::init(physical_memory_offset, frame_allocator) };
+        let mut mapper = unsafe { petroleum::page_table::init(physical_memory_offset, frame_allocator, 0x100000) };
         let mut mem_mapper = petroleum::page_table::mapper::MemoryMapper::new(
             &mut mapper,
             &mut *frame_allocator,

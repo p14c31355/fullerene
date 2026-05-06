@@ -11,7 +11,8 @@ use x86_64::structures::paging::{Page, PageTableFlags as PageFlags, Size4KiB};
 pub struct UnifiedMemoryManager {
     pub(crate) frame_allocator: BitmapFrameAllocator,
     pub(crate) page_table_manager: PageTableManager<'static>,
-    pub(crate) process_managers: BTreeMap<usize, ProcessMemoryManagerImpl>,
+    // Temporarily use a fixed array to avoid BTreeMap allocation during early boot
+    pub(crate) process_managers: [Option<ProcessMemoryManagerImpl>; 16],
     pub(crate) current_process: usize,
     pub(crate) initialized: bool,
 }
@@ -19,10 +20,11 @@ pub struct UnifiedMemoryManager {
 impl UnifiedMemoryManager {
     /// Create a new unified memory manager
     pub fn new() -> Self {
+        const NONE_MANAGER: Option<ProcessMemoryManagerImpl> = None;
         Self {
             frame_allocator: BitmapFrameAllocator::new(),
             page_table_manager: PageTableManager::new(),
-            process_managers: BTreeMap::new(),
+            process_managers: [NONE_MANAGER; 16],
             current_process: 0,
             initialized: false,
         }
@@ -58,8 +60,38 @@ impl UnifiedMemoryManager {
 
         // Use the full initialization method to set up the mapper
         let phys_offset = x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
-        self.page_table_manager.initialize_with_frame_allocator(phys_offset, &mut self.frame_allocator)?;
+        
+        // Get current RIP as a proxy for kernel physical start.
+        // At this stage, we are still executing in the identity-mapped region.
+        let kernel_phys_start: u64;
+        unsafe {
+            core::arch::asm!("lea {}, [rip]", out(reg) kernel_phys_start);
+        }
+        
+        // Align to page boundary
+        let kernel_phys_start = kernel_phys_start & !4095;
+
+        self.page_table_manager.initialize_with_frame_allocator(phys_offset, &mut self.frame_allocator, kernel_phys_start)?;
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Page table manager initialized\n");
+
+        // Ensure the entire heap buffer is mapped to avoid page faults during allocation
+        let heap_ptr_val = unsafe { core::ptr::addr_of_mut!(crate::heap::BOOT_HEAP_BUFFER) as *mut u8 } as usize;
+        if let Ok(phys_addr) = self.page_table_manager.translate_address(heap_ptr_val) {
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Mapping entire heap buffer range\n");
+            for i in 0..256 { // 1MB = 256 * 4KB
+                let virt = heap_ptr_val + (i * 4096);
+                let phys = phys_addr + (i * 4096);
+                let _ = self.page_table_manager.map_page(
+                    virt,
+                    phys,
+                    PageFlags::PRESENT | PageFlags::WRITABLE,
+                    &mut self.frame_allocator,
+                );
+            }
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Heap buffer range mapping complete\n");
+        } else {
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"ERROR: Failed to translate heap_ptr for mapping\n");
+        }
 
         self.create_address_space(0)?;
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Kernel address space created\n");
@@ -195,9 +227,30 @@ impl MemoryManager for UnifiedMemoryManager {
 // Implementation of ProcessMemoryManager trait
 impl ProcessMemoryManager for UnifiedMemoryManager {
     fn create_address_space(&mut self, process_id: usize) -> SystemResult<()> {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [create_address_space] entered\n");
+        
+        // DEBUG: Print self address to see where UMM is located
+        let self_addr = self as *const _ as usize;
+        let mut buf = [0u8; 16];
+        let len = petroleum::serial::format_hex_to_buffer(self_addr.try_into().unwrap(), &mut buf, 16);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: UMM self addr: 0x");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
+        if process_id >= 16 {
+            return Err(SystemError::InvalidArgument);
+        }
         // Allow creation during initialization phase
         let process_manager = ProcessMemoryManagerImpl::new(process_id);
-        self.process_managers.insert(process_id, process_manager);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [create_address_space] ProcessMemoryManagerImpl created\n");
+        
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [create_address_space] attempting array insert\n");
+        // Test write to other fields first
+        self.current_process = process_id;
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: current_process write success\n");
+        
+        self.process_managers[process_id] = Some(process_manager);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [create_address_space] array insert successful\n");
 
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Created address space for process\n");
         Ok(())
@@ -208,15 +261,16 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
             return Err(SystemError::InternalError);
         }
 
-        if let Some(process_manager) = self.process_managers.get(&process_id) {
-            self.current_process = process_id;
-            self.page_table_manager
-                .switch_page_table(process_manager.page_table_root())?;
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Switched to process address space\n");
-            Ok(())
-        } else {
-            Err(SystemError::NoSuchProcess)
+        if process_id < 16 {
+            if let Some(process_manager) = &self.process_managers[process_id] {
+                self.current_process = process_id;
+                self.page_table_manager
+                    .switch_page_table(process_manager.page_table_root())?;
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Switched to process address space\n");
+                return Ok(());
+            }
         }
+        Err(SystemError::NoSuchProcess)
     }
 
     fn destroy_address_space(&mut self, process_id: usize) -> SystemResult<()> {
@@ -224,13 +278,14 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
             return Err(SystemError::InternalError);
         }
 
-        if let Some(mut process_manager) = self.process_managers.remove(&process_id) {
-            process_manager.cleanup()?;
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Destroyed address space for process\n");
-            Ok(())
-        } else {
-            Err(SystemError::NoSuchProcess)
+        if process_id < 16 {
+            if let Some(mut process_manager) = self.process_managers[process_id].take() {
+                process_manager.cleanup()?;
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Destroyed address space for process\n");
+                return Ok(());
+            }
         }
+        Err(SystemError::NoSuchProcess)
     }
 
     fn allocate_heap(&mut self, size: usize) -> SystemResult<usize> {
@@ -238,11 +293,12 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
             return Err(SystemError::InternalError);
         }
 
-        if let Some(process_manager) = self.process_managers.get_mut(&self.current_process) {
-            process_manager.allocate_heap(size)
-        } else {
-            Err(SystemError::NoSuchProcess)
+        if self.current_process < 16 {
+            if let Some(process_manager) = &mut self.process_managers[self.current_process] {
+                return process_manager.allocate_heap(size);
+            }
         }
+        Err(SystemError::NoSuchProcess)
     }
 
     fn free_heap(&mut self, address: usize, size: usize) -> SystemResult<()> {
@@ -250,11 +306,12 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
             return Err(SystemError::InternalError);
         }
 
-        if let Some(process_manager) = self.process_managers.get_mut(&self.current_process) {
-            process_manager.free_heap(address, size)
-        } else {
-            Err(SystemError::NoSuchProcess)
+        if self.current_process < 16 {
+            if let Some(process_manager) = &mut self.process_managers[self.current_process] {
+                return process_manager.free_heap(address, size);
+            }
         }
+        Err(SystemError::NoSuchProcess)
     }
 
     fn allocate_stack(&mut self, size: usize) -> SystemResult<usize> {
@@ -262,11 +319,12 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
             return Err(SystemError::InternalError);
         }
 
-        if let Some(process_manager) = self.process_managers.get_mut(&self.current_process) {
-            process_manager.allocate_stack(size)
-        } else {
-            Err(SystemError::NoSuchProcess)
+        if self.current_process < 16 {
+            if let Some(process_manager) = &mut self.process_managers[self.current_process] {
+                return process_manager.allocate_stack(size);
+            }
         }
+        Err(SystemError::NoSuchProcess)
     }
 
     fn free_stack(&mut self, address: usize, size: usize) -> SystemResult<()> {
@@ -274,11 +332,12 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
             return Err(SystemError::InternalError);
         }
 
-        if let Some(process_manager) = self.process_managers.get_mut(&self.current_process) {
-            process_manager.free_stack(address, size)
-        } else {
-            Err(SystemError::NoSuchProcess)
+        if self.current_process < 16 {
+            if let Some(process_manager) = &mut self.process_managers[self.current_process] {
+                return process_manager.free_stack(address, size);
+            }
         }
+        Err(SystemError::NoSuchProcess)
     }
 
     fn copy_memory_between_processes(

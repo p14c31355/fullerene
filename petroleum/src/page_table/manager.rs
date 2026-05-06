@@ -87,6 +87,7 @@ impl<'a> PageTableManager<'a> {
         &mut self,
         phys_offset: VirtAddr,
         frame_allocator: &mut BootInfoFrameAllocator,
+        kernel_phys_start: u64,
     ) -> crate::common::logging::SystemResult<()> {
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] entered\n");
         if self.initialized {
@@ -100,7 +101,7 @@ impl<'a> PageTableManager<'a> {
 
         self.mapper = Some(unsafe {
             crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] calling utils::init\n");
-            let mut temp_mapper = unsafe { crate::page_table::utils::init(phys_offset, frame_allocator) };
+            let mut temp_mapper = unsafe { crate::page_table::utils::init(phys_offset, frame_allocator, kernel_phys_start) };
             
             let virt_addr = phys_offset + table_phys_addr;
             let page = Page::containing_address(virt_addr);

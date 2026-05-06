@@ -1,7 +1,7 @@
 use crate::page_table::bitmap_allocator::BitmapFrameAllocator;
 use x86_64::VirtAddr;
 
-pub const BOOT_CODE_PAGES: u64 = 1024;
+pub const BOOT_CODE_PAGES: u64 = 16384;
 pub const BOOT_CODE_START: u64 = 0x100000;
 
 pub const TEMP_LOW_VA: u64 = 0x1000;
