@@ -555,6 +555,14 @@ impl UefiInitContext {
     fn init_memory_map(&self) {
         debug_log_no_alloc!("!!! ENTERING init_memory_map !!!");
 
+        // CRITICAL: Force reset Mutex lock state to 0.
+        // The log showed lock_val = 0xafafafaf, indicating .bss might not be cleared.
+        unsafe {
+            let mutex_ptr = core::ptr::addr_of!(crate::heap::MEMORY_MAP) as *mut u32;
+            core::ptr::write_volatile(mutex_ptr, 0);
+            debug_log_no_alloc!("DEBUG: Forced MEMORY_MAP lock reset to 0");
+        }
+
         let base_ptr = self.memory_map as *const u8;
         let descriptor_size = self.descriptor_size;
 
@@ -572,11 +580,8 @@ impl UefiInitContext {
                 let desc = MemoryMapDescriptor::new(desc_ptr, descriptor_size);
                 
                 if !petroleum::page_table::MemoryDescriptorValidator::is_valid(&desc) {
-                    debug_log_no_alloc!("Stopped parsing at descriptor {} (invalid)", i);
-                    debug_log_no_alloc!("Desc type: ", desc.type_() as usize);
-                    debug_log_no_alloc!("Desc phys: 0x", desc.physical_start() as usize);
-                    debug_log_no_alloc!("Desc pages: ", desc.number_of_pages() as usize);
-                    break;
+                    debug_log_no_alloc!("Skipping invalid descriptor {}: type 0x{:x}", i, desc.type_() as usize);
+                    continue;
                 }
                 
                 crate::heap::MEMORY_MAP_BUFFER[i] = desc;
@@ -584,7 +589,14 @@ impl UefiInitContext {
             }
             
             debug_log_no_alloc!("Successfully parsed {} descriptors", count);
-            *crate::heap::MEMORY_MAP.lock() = Some(&crate::heap::MEMORY_MAP_BUFFER[0..count]);
+            debug_log_no_alloc!("DEBUG: Attempting to lock MEMORY_MAP for assignment");
+            
+            if let Some(mut lock) = crate::heap::MEMORY_MAP.try_lock() {
+                *lock = Some(&crate::heap::MEMORY_MAP_BUFFER[0..count]);
+                debug_log_no_alloc!("DEBUG: MEMORY_MAP lock acquired and assigned");
+            } else {
+                debug_log_no_alloc!("DEBUG: MEMORY_MAP is ALREADY LOCKED! Deadlock detected.");
+            }
         }
 
         debug_log_no_alloc!("!!! INIT_MMAP DONE (FIXED) !!!");
