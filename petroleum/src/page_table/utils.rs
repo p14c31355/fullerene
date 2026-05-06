@@ -252,10 +252,61 @@ pub unsafe fn init(
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] OffsetPageTable created\n");
     
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Starting essential mappings\n");
+    
+    // CRITICAL: Map the first 1GB of physical memory using a huge page to ensure 
+    // that any page tables allocated by map_to are accessible.
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Mapping first 1GB using huge page\n");
+    unsafe {
+        let p4_idx = 0usize; // Identity map start
+        let l4_ptr = mapper.level_4_table() as *const PageTable as *mut PageTable;
+        let l4_entry_ptr = l4_ptr.cast::<x86_64::structures::paging::page_table::PageTableEntry>().add(p4_idx);
+        
+        // Create a 1GB huge page mapping for the first 1GB of physical memory
+        let mut entry = x86_64::structures::paging::page_table::PageTableEntry::new();
+        entry.set_addr(
+            PhysAddr::new(0),
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::HUGE_PAGE,
+        );
+        core::ptr::write(l4_entry_ptr, entry);
+        x86_64::instructions::tlb::flush_all();
+    }
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] 1GB huge page mapped\n");
+
+    // CRITICAL: Explicitly map the MEMORY_MAP_BUFFER to avoid page faults during heap search
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Mapping MEMORY_MAP_BUFFER\n");
+    unsafe {
+        let buffer_addr = core::ptr::addr_of!(crate::page_table::heap::MEMORY_MAP_BUFFER) as *const _ as usize;
+        let buffer_size = core::mem::size_of::<[crate::page_table::efi_memory::MemoryMapDescriptor; crate::page_table::heap::MAX_DESCRIPTORS]>();
+        let pages = (buffer_size + 4095) / 4096;
+        
+        // Identity map
+        let _ = mapper.map_to(
+            Page::<Size4KiB>::containing_address(VirtAddr::new(buffer_addr as u64)),
+            PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(buffer_addr as u64)), // Assuming identity for now
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+            frame_allocator,
+        );
+        // High-half map
+        let _ = mapper.map_to(
+            Page::<Size4KiB>::containing_address(VirtAddr::new(buffer_addr as u64 + physical_memory_offset.as_u64())),
+            PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(buffer_addr as u64)),
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+            frame_allocator,
+        );
+    }
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] MEMORY_MAP_BUFFER mapped\n");
+
     let boot_pages = crate::page_table::constants::BOOT_CODE_PAGES;
     
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Mapping boot code region\n");
     for i in 0..boot_pages {
+        if i % 64 == 0 {
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Mapping page index: ");
+            let mut buf = [0u8; 16];
+            let len = crate::serial::format_hex_to_buffer(i as u64, &mut buf, 16);
+            crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        }
         let phys_addr = kernel_phys_start + i * 4096;
         let virt_addr = physical_memory_offset + PhysAddr::new(phys_addr).as_u64();
         let page = Page::<Size4KiB>::containing_address(virt_addr);

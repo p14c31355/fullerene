@@ -1,6 +1,17 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use crate::common::memory::set_heap_range;
 use x86_64::PhysAddr;
+use crate::page_table::efi_memory::MemoryMapDescriptor;
+
+pub const MAX_DESCRIPTORS: usize = 2048;
+
+/// Buffer for memory map descriptors to avoid heap allocation during init
+pub static mut MEMORY_MAP_BUFFER: [MemoryMapDescriptor; MAX_DESCRIPTORS] = [const {
+    MemoryMapDescriptor {
+        ptr: core::ptr::null(),
+        descriptor_size: 0,
+    }
+}; MAX_DESCRIPTORS];
 
 pub static HEAP_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
