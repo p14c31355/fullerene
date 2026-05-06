@@ -74,6 +74,8 @@ pub struct ProcessContext {
 
     /// Task State Segment
     pub(crate) tss: u64,
+    /// Whether the process runs in user mode (Ring 3)
+    pub(crate) is_user: bool,
 }
 
 impl Default for ProcessContext {
@@ -105,6 +107,7 @@ impl Default for ProcessContext {
             fs: 0,
             gs: 0,
             tss: 0,
+            is_user: false,
         }
     }
 }
@@ -129,6 +132,8 @@ pub struct Process {
     pub user_stack: VirtAddr,
     /// Program entry point
     pub entry_point: VirtAddr,
+    /// Whether the process runs in user mode (Ring 3)
+    pub is_user: bool,
     /// Exit code - used for signaling ChildProcessExited signal
     pub exit_code: Option<i32>,
     /// Parent process ID (for wait() and signal propagation)
@@ -137,7 +142,7 @@ pub struct Process {
 
 impl Process {
     /// Create a new process
-    pub fn new(name: &'static str, entry_point: VirtAddr) -> Self {
+    pub fn new(name: &'static str, entry_point: VirtAddr, is_user: bool) -> Self {
         let id = NEXT_PID.fetch_add(1, Ordering::Relaxed) as u64;
 
         Self {
@@ -150,6 +155,7 @@ impl Process {
             kernel_stack: VirtAddr::new(0), // Will be set when allocated
             user_stack: VirtAddr::new(0),   // Will be set when allocated
             entry_point,
+            is_user,
             exit_code: None,
             parent_id: None, // Will be set by fork
         }
@@ -157,16 +163,25 @@ impl Process {
 
     /// Initialize process context for first execution
     pub fn init_context(&mut self, kernel_stack_top: VirtAddr) {
-        self.context.rsp = kernel_stack_top.as_u64();
+        self.kernel_stack = kernel_stack_top;
+        self.context.is_user = self.is_user;
+
+        if self.is_user {
+            // For user processes, the context RSP should be the user stack
+            self.context.rsp = self.user_stack.as_u64();
+            self.context.cs = crate::gdt::user_code_selector().0 as u64;
+            self.context.ss = crate::gdt::user_data_selector().0 as u64;
+        } else {
+            // For kernel processes, the context RSP is the kernel stack
+            self.context.rsp = kernel_stack_top.as_u64();
+            self.context.cs = crate::gdt::kernel_code_selector().0 as u64;
+            self.context.ss = crate::gdt::kernel_code_selector().0 as u64;
+        }
+
         // Set RIP to entry point directly, assuming it's an extern "C" function
         self.context.rip = self.entry_point.as_u64();
         self.context.rax = 0; // For C functions, RAX is return value, init to 0
         self.context.rflags = 0x202; // Set Interrupt Enable flag
-
-        self.context.cs = crate::gdt::user_code_selector().0 as u64;
-        self.context.ss = crate::gdt::user_data_selector().0 as u64;
-
-        self.kernel_stack = kernel_stack_top;
     }
 }
 
@@ -242,7 +257,7 @@ pub fn init() {
     // Create idle process
     let idle_addr = VirtAddr::new(idle_loop as usize as u64);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] creating idle process\n");
-    let mut idle_process = Process::new("idle", idle_addr);
+    let mut idle_process = Process::new("idle", idle_addr, false);
     idle_process.state = ProcessState::Running;
 
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] adding idle process to manager\n");
@@ -260,10 +275,11 @@ pub fn init() {
 pub fn create_process(
     name: &'static str,
     entry_point_address: VirtAddr,
+    is_user: bool,
 ) -> Result<ProcessId, petroleum::common::logging::SystemError> {
     debug_log!("Process: create_process starting");
 
-    let mut process = Process::new(name, entry_point_address);
+    let mut process = Process::new(name, entry_point_address, is_user);
     debug_log!("Process: Process::new done");
 
     // Allocate kernel stack for the process
@@ -274,6 +290,18 @@ pub fn create_process(
     }
     let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
     debug_log!("Process: Kernel stack allocated");
+
+    if is_user {
+        // Allocate user stack for the process
+        let user_stack_layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
+        let user_stack_ptr = unsafe { alloc::alloc::alloc(user_stack_layout) };
+        if user_stack_ptr.is_null() {
+            unsafe { alloc::alloc::dealloc(stack_ptr, stack_layout) };
+            return Err(petroleum::common::logging::SystemError::MemOutOfMemory);
+        }
+        process.user_stack = VirtAddr::new(user_stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
+        debug_log!("Process: User stack allocated");
+    }
 
     debug_log!("Process: Creating page table...");
     // Create page table for the process
@@ -537,7 +565,7 @@ mod tests {
     #[test]
     fn test_process_creation() {
         let addr = VirtAddr::new(0);
-        let proc = Process::new("test", addr);
+        let proc = Process::new("test", addr, false);
         assert_eq!(proc.name, "test");
         assert_eq!(proc.state, ProcessState::Ready);
     }

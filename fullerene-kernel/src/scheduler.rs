@@ -399,6 +399,7 @@ fn initialize_shell_process() -> crate::process::ProcessId {
     let shell_pid = crate::process::create_process(
         "shell_process",
         VirtAddr::new(shell_process_main as usize as u64),
+        true, // shell now runs in user mode (Ring 3)
     )
     .expect("Failed to create shell process");
     log::info!("Created shell process with PID {}", shell_pid);

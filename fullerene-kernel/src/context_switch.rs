@@ -19,7 +19,7 @@ macro_rules! define_register_offsets {
 
 define_register_offsets!(
     rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8, r9, r10, r11, r12, r13, r14, r15, rflags, rip, cs,
-    ss, ds, es, fs, gs
+    ss, ds, es, fs, gs, is_user
 );
 
 /// Save current process context and switch to next
@@ -111,25 +111,29 @@ pub extern "C" fn switch_context(
         // rsi = new_context
         // mov rsi, rsi  (already set)
 
-        // Restore all registers from new context
-        "mov rax, [rsi + {rax}]",
-        "mov rbx, [rsi + {rbx}]",
-        "mov rcx, [rsi + {rcx}]",
-        "mov rdx, [rsi + {rdx}]",
-        "mov rdi, [rsi + {rdi}]",  // This overwrites our new_context pointer
-        "mov rbp, [rsi + {rbp}]",
-        "mov r8, [rsi + {r8}]",
-        "mov r9, [rsi + {r9}]",
-        "mov r10, [rsi + {r10}]",
-        "mov r11, [rsi + {r11}]",
-        "mov r12, [rsi + {r12}]",
-        "mov r13, [rsi + {r13}]",
-        "mov r14, [rsi + {r14}]",
-        "mov r15, [rsi + {r15}]",
-        "mov rsi, [rsi + {rsi}]",
+        // Save new_context pointer in r15 temporarily to use after RSP switch
+        "mov r15, rsi",
 
-        // Restore stack pointer and switch stacks
+        // Restore stack pointer first
         "mov rsp, [rsi + {rsp}]",
+
+        // Restore all registers from new context using r15
+        "mov rax, [r15 + {rax}]",
+        "mov rbx, [r15 + {rbx}]",
+        "mov rcx, [r15 + {rcx}]",
+        "mov rdx, [r15 + {rdx}]",
+        "mov rdi, [r15 + {rdi}]",
+        "mov rbp, [r15 + {rbp}]",
+        "mov r8, [r15 + {r8}]",
+        "mov r9, [r15 + {r9}]",
+        "mov r10, [r15 + {r10}]",
+        "mov r11, [r15 + {r11}]",
+        "mov r12, [r15 + {r12}]",
+        "mov r13, [r15 + {r13}]",
+        "mov r14, [r15 + {r14}]",
+        "mov rsi, [r15 + {rsi}]",
+        // r15 is restored last if it's not a user process, 
+        // but we need it to check is_user.
 
         // Restore segment registers
         "mov rax, [rsi + {ds}]",
@@ -141,13 +145,32 @@ pub extern "C" fn switch_context(
         "mov rax, [rsi + {gs}]",
         "mov gs, ax",
 
-        // Restore RFLAGS
-        "mov rax, [rsi + {rflags}]",
+        // Check if the process is in user mode (RPL of CS should be 3)
+        "mov ax, [r15 + {cs}]",
+        "and ax, 3",
+        "cmp ax, 3",
+        "jne 1f", // If not user mode, jump to kernel restore
+
+        // User mode transition: Setup iretq stack frame
+        // Stack must be: SS, RSP, RFLAGS, CS, RIP
+        "mov rax, [r15 + {ss}]",
+        "push rax",
+        "mov rax, [r15 + {rsp}]",
+        "push rax",
+        "mov rax, [r15 + {rflags}]",
+        "push rax",
+        "mov rax, [r15 + {cs}]",
+        "push rax",
+        "mov rax, [r15 + {rip}]",
+        "push rax",
+        "iretq",
+
+        "1:",
+        // Kernel mode restore: Restore RFLAGS and jump to RIP
+        "mov rax, [r15 + {rflags}]",
         "push rax",
         "popfq",
-
-        // Jump to RIP (never returns)
-        "mov rax, [rsi + {rip}]",
+        "mov rax, [r15 + {rip}]",
         "jmp rax",
 
         // Compile-time constants for offsets

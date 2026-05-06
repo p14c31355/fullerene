@@ -6,7 +6,7 @@
 use crate::keyboard;
 use crate::scheduler::get_system_tick;
 use crate::syscall::kernel_syscall;
-use alloc::{string::String, vec::Vec};
+use alloc::{string::String, vec::Vec, format};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use petroleum::{define_commands, print};
 
@@ -22,6 +22,27 @@ struct CommandEntry {
     name: &'static str,
     description: &'static str,
     function: CommandFn,
+}
+
+/// Direct syscall wrapper for user mode
+fn user_syscall(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
+    let res: u64;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") num,
+            in("rdi") a1,
+            in("rsi") a2,
+            in("rdx") a3,
+            lateout("rax") res,
+        );
+    }
+    res
+}
+
+/// Helper for writing to stdout via syscall
+fn user_print(s: &str) {
+    user_syscall(4, 1, s.as_ptr() as u64, s.len() as u64);
 }
 
 static COMMANDS: &[CommandEntry] = define_commands!(
@@ -48,7 +69,7 @@ pub fn shell_main() {
 
     loop {
         // Print prompt
-        print!("fullerene> ");
+        user_print("fullerene> ");
 
         // Read line from keyboard
         petroleum::debug_log!("About to read line from keyboard");
@@ -77,7 +98,7 @@ pub fn shell_main() {
         }
     }
 
-    print!("Shell exited.\n");
+    user_print("Shell exited.\n");
 }
 
 // Read a line with echo and editing
@@ -86,24 +107,26 @@ fn read_line(buffer: &mut [u8]) -> Result<usize, &'static str> {
     let max_len = buffer.len();
 
     while pos < max_len {
-        if let Some(ch) = keyboard::read_char() {
+        let mut byte = [0u8; 1];
+        let res = user_syscall(3, 0, byte.as_mut_ptr() as u64, 1);
+        if res > 0 {
+            let ch = byte[0];
             match ch {
                 b'\n' | b'\r' => {
                     // Enter - finish line
-                    print!("\n");
+                    user_print("\n");
                     break;
                 }
                 0x08 => {
                     // Backspace
                     if pos > 0 {
                         pos -= 1;
-                        // Echo backspace - keeping the syscall for kernel output
-                        print!("\x08 \x08");
+                        // Echo backspace
+                        user_print("\x08 \x08");
                     }
                 }
                 0x1B => {
                     // Escape sequences - skip for now
-                    // Would handle arrow keys, etc. in full implementation
                     continue;
                 }
                 ch if ch.is_ascii() && !ch.is_ascii_control() => {
@@ -112,7 +135,7 @@ fn read_line(buffer: &mut [u8]) -> Result<usize, &'static str> {
                     pos += 1;
 
                     // Echo character
-                    print!("{}", ch as char);
+                    user_print(&format!("{}", ch as char));
                 }
                 _ => {} // Ignore other characters
             }
@@ -168,14 +191,7 @@ fn help_command(_args: &[&str]) -> i32 {
 }
 
 fn ps_command(_args: &[&str]) -> i32 {
-    print!("Process list:\n");
-    print!("PID    State      Name\n");
-    print!("--------------------------\n");
-    crate::process::PROCESS_MANAGER.with_list(|list| {
-        for proc in list.iter() {
-            print!("{:<6} {:<10?} {}\n", proc.id, proc.state, proc.name);
-        }
-    });
+    user_print("ps: Not implemented for user mode\n");
     0
 }
 
@@ -197,58 +213,17 @@ petroleum::simple_command_fn!(clear_command, "\x1b[2J\x1b[H"); // ANSI clear scr
 petroleum::simple_command_fn!(uname_command, "Fullerene OS 0.1.0 x86_64\n");
 
 fn kill_command(args: &[&str]) -> i32 {
-    if args.len() < 2 {
-        print!("Usage: kill <pid>\n");
-        return 1;
-    }
-
-    match args[1].parse::<u64>() {
-        Ok(pid) => {
-            // Terminate process
-            crate::process::terminate_process(pid, 9); // SIGKILL equivalent
-            print!("Sent kill signal to process {}\n", pid);
-            0
-        }
-        Err(_) => {
-            print!("Invalid PID: {}\n", args[1]);
-            1
-        }
-    }
+    user_print("kill: Not implemented for user mode\n");
+    0
 }
 
 fn top_command(_args: &[&str]) -> i32 {
-    print!("Top processes (by priority):\n");
-    print!("PID    PPID   State      CPU%   Name\n");
-    print!("-----------------------------------\n");
-
-    crate::process::PROCESS_MANAGER.with_list(|list| {
-        let mut procs: Vec<_> = list.iter().collect();
-        // Sort by process ID to show newest processes first
-        procs.sort_by(|a, b| b.id.cmp(&a.id));
-
-        for proc in procs.iter().take(5) {
-            let ppid = proc.parent_id.unwrap_or(0);
-            print!(
-                "{:<6} {:<6} {:<10?} 0.0   {}\n",
-                proc.id, ppid, proc.state, proc.name
-            );
-        }
-    });
-
+    user_print("top: Not implemented for user mode\n");
     0
 }
 
 fn free_command(_args: &[&str]) -> i32 {
-    let allocator = petroleum::page_table::ALLOCATOR.lock();
-    let used = allocator.used();
-    let total = allocator.size();
-    let free = total.saturating_sub(used);
-    let used_pct = if total > 0 { (used * 100) / total } else { 0 };
-
-    print!("Memory usage:\n");
-    print!("Total: {} bytes\n", total);
-    print!("Used:  {} bytes ({}%)\n", used, used_pct);
-    print!("Free:  {} bytes ({}%)\n", free, 100 - used_pct);
+    user_print("free: Not implemented for user mode\n");
     0
 }
 

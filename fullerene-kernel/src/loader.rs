@@ -28,8 +28,8 @@ pub fn load_program(
     // Find entry point
     let entry_point_address = x86_64::VirtAddr::new(elf.header.e_entry);
 
-    // Create process with the loaded program
-    let pid = process::create_process(name, entry_point_address)?;
+    // Create process with the loaded program (user mode)
+    let pid = process::create_process(name, entry_point_address, true)?;
 
     // Load program segments using goblin
     process::PROCESS_MANAGER.with_process(pid, |p| {

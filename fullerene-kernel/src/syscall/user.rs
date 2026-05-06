@@ -25,6 +25,21 @@ pub mod user {
         loop {} // Should not reach here
     }
 
+    /// Read wrapper
+    pub fn read(fd: i32, buf: &mut [u8]) -> i64 {
+        unsafe {
+            syscall(
+                SyscallNumber::Read,
+                fd as u64,
+                buf.as_mut_ptr() as u64,
+                buf.len() as u64,
+                0,
+                0,
+                0,
+            ) as i64
+        }
+    }
+
     /// Write wrapper
     pub fn write(fd: i32, buf: &[u8]) -> i64 {
         unsafe {
