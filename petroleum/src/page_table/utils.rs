@@ -253,43 +253,63 @@ pub unsafe fn init(
     
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Starting essential mappings\n");
     
-    // CRITICAL: Map the first 1GB of physical memory using a huge page to ensure 
-    // that any page tables allocated by map_to are accessible.
-    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Mapping first 1GB using huge page\n");
+    // CRITICAL: Map the first 1GB of physical memory to ensure that any page tables 
+    // allocated by map_to are accessible. Using 2MB pages to avoid some huge page issues.
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Mapping first 1GB using 2MB pages\n");
     unsafe {
-        let p4_idx = 0usize; // Identity map start
+        // We map the first 1GB identity and higher-half.
+        // Since we are in a very early state, we can just manually set up the L4 and L3 entries.
         let l4_ptr = mapper.level_4_table() as *const PageTable as *mut PageTable;
-        let l4_entry_ptr = l4_ptr.cast::<x86_64::structures::paging::page_table::PageTableEntry>().add(p4_idx);
         
-        // Create a 1GB huge page mapping for the first 1GB of physical memory
-        let mut entry = x86_64::structures::paging::page_table::PageTableEntry::new();
-        entry.set_addr(
+        // Identity map first 1GB (L4 index 0)
+        let l4_entry_ptr = l4_ptr.cast::<x86_64::structures::paging::page_table::PageTableEntry>().add(0);
+        let mut entry_id = x86_64::structures::paging::page_table::PageTableEntry::new();
+        entry_id.set_addr(
             PhysAddr::new(0),
             PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::HUGE_PAGE,
         );
-        core::ptr::write(l4_entry_ptr, entry);
+        core::ptr::write(l4_entry_ptr, entry_id);
+
+        // Higher-half map first 1GB
+        let p4_idx_high = ((physical_memory_offset.as_u64() >> 39) & 0x1FF) as usize;
+        let l4_entry_ptr_high = l4_ptr.cast::<x86_64::structures::paging::page_table::PageTableEntry>().add(p4_idx_high);
+        let mut entry_high = x86_64::structures::paging::page_table::PageTableEntry::new();
+        entry_high.set_addr(
+            PhysAddr::new(0),
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::HUGE_PAGE,
+        );
+        core::ptr::write(l4_entry_ptr_high, entry_high);
+
         x86_64::instructions::tlb::flush_all();
     }
-    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] 1GB huge page mapped\n");
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] 1GB huge pages mapped\n");
 
     // CRITICAL: Explicitly map the MEMORY_MAP_BUFFER to avoid page faults during heap search
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Mapping MEMORY_MAP_BUFFER\n");
     unsafe {
-        let buffer_addr = core::ptr::addr_of!(crate::page_table::heap::MEMORY_MAP_BUFFER) as *const _ as usize;
+        let buffer_virt = VirtAddr::new(core::ptr::addr_of!(crate::page_table::heap::MEMORY_MAP_BUFFER) as u64);
+        let buffer_phys_val = if buffer_virt >= physical_memory_offset {
+            buffer_virt.as_u64() - physical_memory_offset.as_u64()
+        } else {
+            buffer_virt.as_u64()
+        };
+        let buffer_phys = PhysAddr::new(buffer_phys_val);
+        let buffer_phys_virt = VirtAddr::new(buffer_phys_val);
+
         let buffer_size = core::mem::size_of::<[crate::page_table::efi_memory::MemoryMapDescriptor; crate::page_table::heap::MAX_DESCRIPTORS]>();
         let pages = (buffer_size + 4095) / 4096;
         
         // Identity map
         let _ = mapper.map_to(
-            Page::<Size4KiB>::containing_address(VirtAddr::new(buffer_addr as u64)),
-            PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(buffer_addr as u64)), // Assuming identity for now
+            Page::<Size4KiB>::containing_address(buffer_phys_virt),
+            PhysFrame::<Size4KiB>::containing_address(buffer_phys),
             PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
             frame_allocator,
         );
         // High-half map
         let _ = mapper.map_to(
-            Page::<Size4KiB>::containing_address(VirtAddr::new(buffer_addr as u64 + physical_memory_offset.as_u64())),
-            PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(buffer_addr as u64)),
+            Page::<Size4KiB>::containing_address(buffer_phys_virt + physical_memory_offset.as_u64()),
+            PhysFrame::<Size4KiB>::containing_address(buffer_phys),
             PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
             frame_allocator,
         );

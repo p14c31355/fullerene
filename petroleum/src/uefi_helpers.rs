@@ -256,7 +256,8 @@ pub fn find_heap_start(descriptors: &[impl MemoryDescriptorValidator]) -> PhysAd
     // Find the lowest suitable memory region within first 64MB from EfiConventionalMemory with sufficient size for heap
     // This ensures heap is within the identity-mapped range during page table reinitialization
     const HEAP_PAGES: u64 = 256; // approx 1MB for heap + structures
-    for desc in descriptors {
+    for (i, desc) in descriptors.iter().enumerate() {
+        crate::debug_log_no_alloc!("find_heap_start: Checking descriptor ", i);
         let start = desc.get_physical_start();
         if desc.get_type() == crate::common::EfiMemoryType::EfiConventionalMemory as u32
             && desc.get_page_count() >= HEAP_PAGES

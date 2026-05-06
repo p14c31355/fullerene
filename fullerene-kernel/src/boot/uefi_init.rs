@@ -41,6 +41,24 @@ pub struct UefiInitContext {
     pub heap_start_after_stack: VirtAddr,
 }
 
+struct BootFrameAllocator {
+    next_frame: u64,
+}
+
+impl BootFrameAllocator {
+    fn new(start_frame: u64) -> Self {
+        Self { next_frame: start_frame }
+    }
+}
+
+unsafe impl x86_64::structures::paging::FrameAllocator<x86_64::structures::paging::Size4KiB> for BootFrameAllocator {
+    fn allocate_frame(&mut self) -> Option<x86_64::structures::paging::PhysFrame<x86_64::structures::paging::Size4KiB>> {
+        let frame = x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(self.next_frame * 4096));
+        self.next_frame += 1;
+        Some(frame)
+    }
+}
+
 impl UefiInitContext {
     /// Early initialization: serial, VGA, memory maps
     #[cfg(target_os = "uefi")]
@@ -134,6 +152,38 @@ impl UefiInitContext {
         debug_log_no_alloc!("DEBUG: Starting memory_management_initialization");
         debug_log_no_alloc!("DEBUG: Offset value: ", self.physical_memory_offset.as_u64());
 
+        // BREAK CIRCULAR DEPENDENCY:
+        // We need the memory map to initialize the frame allocator, but we need a mapper to access the memory map.
+        // We use a temporary BootFrameAllocator to create a temporary mapper.
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [CircularDep] Using BootFrameAllocator for temp mapper\n");
+        let mut boot_allocator = BootFrameAllocator::new(0x2000000 / 4096); // Start at 32MB
+        let mut temp_mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, &mut boot_allocator, kernel_phys_start.as_u64()) };
+
+        // Map the memory map buffer to higher half using the temporary mapper
+        let map_addr = self.memory_map as u64;
+        let offset_val = self.physical_memory_offset.as_u64();
+        
+        if map_addr < 0xFFFF_8000_0000_0000 {
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [CircularDep] Mapping memory_map to higher half via temp mapper\n");
+            let map_phys = map_addr;
+            let map_virt = map_phys + offset_val;
+            let map_pages = ((self.memory_map_size as u64) + 4095) / 4096;
+
+            for i in 0..map_pages {
+                let v_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(
+                    VirtAddr::new(map_virt + i * 4096)
+                );
+                let p_frame = x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(
+                    PhysAddr::new(map_phys + i * 4096)
+                );
+                unsafe {
+                    let _ = temp_mapper.map_to(v_page, p_frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, &mut boot_allocator);
+                }
+            }
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [CircularDep] Memory map mapped successfully\n");
+        }
+
+        // Now we can safely call init_memory_map because the memory map is mapped to higher half
         debug_log_no_alloc!("DEBUG: Calling init_memory_map...");
         self.init_memory_map();
         debug_log_no_alloc!("DEBUG: init_memory_map returned");
@@ -143,10 +193,6 @@ impl UefiInitContext {
         
         heap::init_frame_allocator(memory_map_ref);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Heap frame allocator initialized\n");
-
-
-        // Now that FRAME_ALLOCATOR is ready, map the memory_map buffer to higher half for consistency
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Mapping memory_map buffer to higher half...\n");
         
         let map_addr = self.memory_map as u64;
         let offset_val = self.physical_memory_offset.as_u64();
@@ -171,7 +217,7 @@ impl UefiInitContext {
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling petroleum::page_table::init (1)...\n");
             let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
             let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator should be ready now");
-            let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator, 0x100000) };
+            let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator, kernel_phys_start.as_u64()) };
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: petroleum::page_table::init (1) done\n");
             {
                 for i in 0..map_pages {
@@ -313,7 +359,7 @@ impl UefiInitContext {
                 // page table if already initialized, or we must store the root address.
                 // For now, we use the same init call which we hope points to the same root 
                 // if the implementation allows, or we'll need to refactor the mapper storage.
-                let mut mapper = petroleum::page_table::init(self.physical_memory_offset, frame_allocator, 0x100000);
+                let mut mapper = petroleum::page_table::init(self.physical_memory_offset, frame_allocator, kernel_phys_start.as_u64());
                 petroleum::map_range_with_log_macro!(
                     &mut mapper,
                     &mut *frame_allocator,
@@ -410,7 +456,7 @@ impl UefiInitContext {
                 | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
             
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] Calling petroleum::page_table::init for heap mapping\n");
-            let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator, 0x100000) };
+            let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator, kernel_phys_start.as_u64()) };
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] petroleum::page_table::init returned\n");
             petroleum::map_pages_to_offset!(
                 mapper,
@@ -576,7 +622,12 @@ impl UefiInitContext {
             debug_log_no_alloc!("DEBUG: Forced MEMORY_MAP lock reset to 0");
         }
 
-        let base_ptr = self.memory_map as *const u8;
+        let map_addr = self.memory_map as u64;
+        let base_ptr = if map_addr >= 0xFFFF_8000_0000_0000 {
+            map_addr as *const u8
+        } else {
+            (map_addr + self.physical_memory_offset.as_u64()) as *const u8
+        };
         let descriptor_size = self.descriptor_size;
 
         debug_log_no_alloc!("Base ptr: 0x", base_ptr as u64);
