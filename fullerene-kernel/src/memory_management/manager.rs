@@ -1,5 +1,5 @@
 use petroleum::common::logging::{SystemError, SystemResult};
-use petroleum::page_table::{BitmapFrameAllocator, PageTableManager, PageTableHelper};
+use petroleum::page_table::{BitmapFrameAllocator, BootInfoFrameAllocator, PageTableManager, PageTableHelper};
 use crate::memory_management::process_memory::ProcessMemoryManagerImpl;
 use petroleum::initializer::{
     ErrorLogging, FrameAllocator, Initializable, MemoryManager, ProcessMemoryManager,
@@ -9,7 +9,7 @@ use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
 /// Unified memory manager implementing all memory management traits
 pub struct UnifiedMemoryManager {
     pub(crate) frame_allocator: BitmapFrameAllocator,
-    pub(crate) page_table_manager: PageTableManager<'static>,
+    pub(crate) page_table_manager: PageTableManager,
     // Temporarily use a fixed array to avoid BTreeMap allocation during early boot
     pub(crate) process_managers: [Option<ProcessMemoryManagerImpl>; 16],
     pub(crate) current_process: usize,
@@ -116,7 +116,7 @@ impl UnifiedMemoryManager {
     }
 
     /// Get page table manager mutable reference
-    pub fn page_table_manager_mut(&mut self) -> &mut PageTableManager<'static> {
+    pub fn page_table_manager_mut(&mut self) -> &mut PageTableManager {
         &mut self.page_table_manager
     }
 
@@ -429,28 +429,39 @@ impl PageTableHelper for UnifiedMemoryManager {
         self.page_table_manager.flush_tlb_all()
     }
 
-    fn create_page_table(&mut self) -> SystemResult<usize> {
+    fn create_page_table(
+        &mut self,
+        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
+    ) -> SystemResult<usize> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-
-        self.page_table_manager.create_page_table()
+        
+        self.page_table_manager.create_page_table(frame_allocator)
     }
 
-    fn destroy_page_table(&mut self, table_addr: usize) -> SystemResult<()> {
+    fn destroy_page_table(
+        &mut self,
+        table_addr: usize,
+        frame_allocator: &mut BootInfoFrameAllocator,
+    ) -> SystemResult<()> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-
-        self.page_table_manager.destroy_page_table(table_addr)
+        
+        self.page_table_manager.destroy_page_table(table_addr, frame_allocator)
     }
 
-    fn clone_page_table(&mut self, source_table: usize) -> SystemResult<usize> {
+    fn clone_page_table(
+        &mut self,
+        source_table: usize,
+        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
+    ) -> SystemResult<usize> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-
-        self.page_table_manager.clone_page_table(source_table)
+        
+        self.page_table_manager.clone_page_table(source_table, frame_allocator)
     }
 
     fn switch_page_table(&mut self, table_addr: usize) -> SystemResult<()> {

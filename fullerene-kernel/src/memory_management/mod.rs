@@ -60,7 +60,7 @@ petroleum::error_chain!(FreeError, petroleum::common::logging::SystemError,
 
 
 /// Process page table type alias for PageTableManager
-pub type ProcessPageTable = PageTableManager<'static>;
+pub type ProcessPageTable = PageTableManager;
 
 // Global memory manager instance
 static MEMORY_MANAGER: Mutex<Option<UnifiedMemoryManager>> = Mutex::new(None);
