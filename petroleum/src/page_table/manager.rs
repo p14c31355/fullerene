@@ -152,71 +152,39 @@ impl<'a> PageTableManager<'a> {
         source_table_phys: PhysAddr,
         level: usize,
         allocated_frames: &mut alloc::vec::Vec<PhysFrame>,
+        cloned_tables: &mut BTreeMap<PhysAddr, PhysAddr>,
     ) -> crate::common::logging::SystemResult<PhysAddr> {
         if level == 0 || level > 4 {
             return Err(crate::common::logging::SystemError::InvalidArgument);
         }
-
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive] start\n");
         
-        let dest_frame: PhysFrame = match frame_alloc.allocate_frame() {
-            Some(frame) => frame,
-            None => {
-                crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive] alloc fail\n");
-                return Err(crate::common::logging::SystemError::FrameAllocationFailed);
-            },
-        };
-
-        let phys_offset = mapper.phys_offset();
-        
-        unsafe {
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive] zeroing\n");
-            let dest_ptr = (phys_offset + dest_frame.start_address().as_u64()).as_mut_ptr() as *mut u8;
-            core::ptr::write_bytes(dest_ptr, 0, 4096);
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive] zeroed\n");
+        if let Some(&cloned_phys) = cloned_tables.get(&source_table_phys) {
+            return Ok(cloned_phys);
         }
 
+        let dest_frame: PhysFrame = match frame_alloc.allocate_frame() {
+            Some(frame) => frame,
+            None => return Err(crate::common::logging::SystemError::FrameAllocationFailed),
+        };
+        let dest_phys = dest_frame.start_address();
+        cloned_tables.insert(source_table_phys, dest_phys);
+
+        let phys_offset = mapper.phys_offset();
         let source_va = phys_offset + source_table_phys.as_u64();
         let dest_va = phys_offset + dest_frame.start_address().as_u64();
 
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive] accessing tables via offset\n");
-        
-        let mut buf = [0u8; 16];
-        let len = crate::serial::format_hex_to_buffer(source_va.as_u64(), &mut buf, 16);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive] source_va: 0x");
-        crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        unsafe {
+            // 物理オフセット領域へのアクセス。
+            // OffsetPageTable は物理メモリの広範囲をマッピングしているため、通常は安全。
+            let dest_ptr = dest_va.as_mut_ptr() as *mut u8;
+            core::ptr::write_bytes(dest_ptr, 0, 4096);
 
-        let len = crate::serial::format_hex_to_buffer(dest_va.as_u64(), &mut buf, 16);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive] dest_va: 0x");
-        crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+            let source_table = &*(source_va.as_ptr() as *const PageTable);
+            let dest_table = &mut *(dest_va.as_mut_ptr() as *mut PageTable);
 
-        let source_table = unsafe { &*(source_va.as_ptr() as *const PageTable) };
-        let dest_table = unsafe { &mut *(dest_va.as_mut_ptr() as *mut PageTable) };
-
-        for (i, (source_entry, dest_entry)) in source_table.iter().zip(dest_table.iter_mut()).enumerate() {
-            if source_entry.flags().contains(PageTableFlags::PRESENT) {
-                crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive] processing entry\n");
-                if level == 4 {
-                    let mut buf = [0u8; 16];
-                    let len = crate::serial::format_hex_to_buffer(i as u64, &mut buf, 16);
-                    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive] P4 index 0x");
-                    crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-                    crate::write_serial_bytes!(0x3F8, 0x3FD, b" is PRESENT\n");
-                }
-                if level == 3 {
-                    let mut buf = [0u8; 16];
-                    let len = crate::serial::format_hex_to_buffer(i as u64, &mut buf, 16);
-                    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive] P3 index 0x");
-                    crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-                    if source_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-                        crate::write_serial_bytes!(0x3F8, 0x3FD, b" is HUGE\n");
-                    } else {
-                        crate::write_serial_bytes!(0x3F8, 0x3FD, b" is NOT HUGE\n");
-                    }
-                }
-                if level > 1 && !source_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            for (i, (source_entry, dest_entry)) in source_table.iter().zip(dest_table.iter_mut()).enumerate() {
+                if source_entry.flags().contains(PageTableFlags::PRESENT) {
+                    if level > 1 && !source_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
                         if let Some(child_frame) = extract_frame_if_present!(source_entry) {
                             let cloned_child_phys = Self::clone_page_table_recursive(
                                 mapper,
@@ -224,18 +192,18 @@ impl<'a> PageTableManager<'a> {
                                 child_frame.start_address(),
                                 level - 1,
                                 allocated_frames,
+                                cloned_tables,
                             )?;
                             dest_entry.set_addr(cloned_child_phys, source_entry.flags());
                         }
-                } else {
-                    dest_entry.set_addr(source_entry.addr(), source_entry.flags());
+                    } else {
+                        dest_entry.set_addr(source_entry.addr(), source_entry.flags());
+                    }
                 }
             }
         }
 
         allocated_frames.push(dest_frame);
-
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive] exit\n");
         Ok(dest_frame.start_address())
     }
 
@@ -467,12 +435,14 @@ impl<'a> PageTableHelper for PageTableManager<'a> {
         let frame_alloc = self.frame_allocator.as_mut().unwrap();
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_page_table] calling clone_page_table_recursive\n");
         let mut allocated_frames = alloc::vec::Vec::new();
+        let mut cloned_tables = BTreeMap::new();
         let cloned_phys = Self::clone_page_table_recursive(
             mapper,
             frame_alloc,
             source_frame.start_address(),
             4,
             &mut allocated_frames,
+            &mut cloned_tables,
         )?;
 
         for frame in allocated_frames {
