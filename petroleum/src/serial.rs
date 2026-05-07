@@ -254,7 +254,6 @@ pub fn _print(args: fmt::Arguments) {
     #[cfg(all(not(feature = "std"), not(test)))]
     {
         (&mut *SERIAL_PORT_WRITER.lock()).write_fmt(args).ok();
-        (&mut *UEFI_WRITER.lock()).write_fmt(args).ok();
     }
     #[cfg(any(feature = "std", test))]
     {
@@ -266,20 +265,19 @@ pub fn _print(args: fmt::Arguments) {
 pub fn serial_init() {
     unsafe {
         crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Inside serial_init\n");
+        
+        // Force reset Mutex lock state to 0 to handle cases where .bss is not cleared
+        let lock_ptr = core::ptr::addr_of!(SERIAL_PORT_WRITER) as *mut u32;
+        core::ptr::write_volatile(lock_ptr, 0);
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: SERIAL_PORT_WRITER lock reset to 0\n");
     }
     
-    // CRITICAL: We skip the Mutex lock entirely during early boot to avoid deadlocks.
-    // We use a raw pointer to the SerialPort and initialize it without locking.
+    // Use the lock to initialize the serial port. 
+    // During early boot, there is no contention, so this is safe and avoids corrupting the Mutex.
+    SERIAL_PORT_WRITER.lock().init();
+    
     unsafe {
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Bypassing Mutex lock for early init\n");
-        
-        // Get a raw pointer to the SerialPort inside the Mutex
-        let serial_ptr = &SERIAL_PORT_WRITER as *const spin::Mutex<SerialPort<Com1Ports>> as *mut SerialPort<Com1Ports>;
-        
-        // Initialize the serial port directly
-        (*serial_ptr).init();
-        
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: serial_init completed via raw pointer\n");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: serial_init completed successfully\n");
     }
 }
 

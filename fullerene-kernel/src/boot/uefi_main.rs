@@ -75,6 +75,7 @@ pub unsafe extern "C" fn efi_main_stage2(ctx: *mut (), physical_memory_offset: V
         let rsp: u64;
         core::arch::asm!("mov {}, rsp", out(reg) rsp);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] Got RSP, about to call init_log\n");
+
         petroleum::init_log!("RSP after init_common: 0x{:x}", rsp);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] init_log returned\n");
     }
