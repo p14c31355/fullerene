@@ -308,12 +308,14 @@ pub unsafe fn init(
             frame_allocator,
         );
         // High-half map
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Mapping MEMORY_MAP_BUFFER high-half start\n");
         let _ = mapper.map_to(
             Page::<Size4KiB>::containing_address(buffer_phys_virt + physical_memory_offset.as_u64()),
             PhysFrame::<Size4KiB>::containing_address(buffer_phys),
             PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
             frame_allocator,
         );
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Mapping MEMORY_MAP_BUFFER high-half done\n");
     }
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] MEMORY_MAP_BUFFER mapped\n");
 

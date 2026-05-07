@@ -97,6 +97,13 @@ pub fn send_eoi() {
 pub fn init_apic() {
     petroleum::serial::serial_log(format_args!("Initializing APIC...\n"));
 
+    // Force reset APIC lock state to 0 to handle cases where .bss is not cleared
+    unsafe {
+        let lock_ptr = core::ptr::addr_of!(APIC) as *mut u32;
+        core::ptr::write_volatile(lock_ptr, 0);
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [init_apic] APIC lock reset to 0\n");
+    }
+
     disable_legacy_pic();
     petroleum::serial::serial_log(format_args!("Legacy PIC disabled.\n"));
 

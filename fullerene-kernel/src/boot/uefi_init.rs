@@ -585,7 +585,14 @@ impl UefiInitContext {
 
     pub fn map_mmio(physical_memory_offset: VirtAddr) {
         log::info!("Mapping MMIO regions for APIC and IOAPIC");
- 
+
+        // Force reset LOCAL_APIC_ADDRESS lock state to 0 to handle cases where .bss is not cleared
+        unsafe {
+            let lock_ptr = core::ptr::addr_of!(petroleum::LOCAL_APIC_ADDRESS) as *mut u32;
+            core::ptr::write_volatile(lock_ptr, 0);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [map_mmio] LOCAL_APIC_ADDRESS lock reset to 0\n");
+        }
+        
         let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
         let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
  
