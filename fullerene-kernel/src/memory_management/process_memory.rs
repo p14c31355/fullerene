@@ -1,5 +1,6 @@
 use alloc::collections::BTreeMap;
 use petroleum::common::logging::{SystemError, SystemResult};
+use petroleum::page_table::PageTableHelper;
 
 /// Process-specific memory manager implementation
 pub struct ProcessMemoryManagerImpl {
@@ -26,6 +27,14 @@ impl ProcessMemoryManagerImpl {
             stack_end: 0x7FFF_0000,
             allocations: BTreeMap::new(),
         }
+    }
+
+    /// Initialize the process page table by cloning the kernel page table
+    pub fn init_page_table(&mut self, pt_manager: &mut petroleum::page_table::PageTableManager) -> SystemResult<()> {
+        let kernel_root = pt_manager.current_page_table();
+        let new_root = pt_manager.clone_page_table(kernel_root)?;
+        self.page_table_root = new_root;
+        Ok(())
     }
 
     /// Get the page table root address

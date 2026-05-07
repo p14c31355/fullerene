@@ -228,28 +228,20 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
     fn create_address_space(&mut self, process_id: usize) -> SystemResult<()> {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [create_address_space] entered\n");
         
-        // DEBUG: Print self address to see where UMM is located
-        let self_addr = self as *const _ as usize;
-        let mut buf = [0u8; 16];
-        let len = petroleum::serial::format_hex_to_buffer(self_addr.try_into().unwrap(), &mut buf, 16);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: UMM self addr: 0x");
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-
         if process_id >= 16 {
             return Err(SystemError::InvalidArgument);
         }
-        // Allow creation during initialization phase
-        let process_manager = ProcessMemoryManagerImpl::new(process_id);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [create_address_space] ProcessMemoryManagerImpl created\n");
+
+        let mut process_manager = ProcessMemoryManagerImpl::new(process_id);
         
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [create_address_space] attempting array insert\n");
-        // Test write to other fields first
-        self.current_process = process_id;
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: current_process write success\n");
+        // Initialize the process page table by cloning the kernel's current page table
+        // This ensures the process has access to kernel space (including VGA buffer)
+        process_manager.init_page_table(&mut self.page_table_manager)?;
+        
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [create_address_space] Process page table initialized via cloning\n");
         
         self.process_managers[process_id] = Some(process_manager);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [create_address_space] array insert successful\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [create_address_space] Process manager inserted\n");
 
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Created address space for process\n");
         Ok(())

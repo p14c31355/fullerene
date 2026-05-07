@@ -8,8 +8,8 @@ use x86_64::{
 };
 use crate::page_table::constants::BootInfoFrameAllocator;
 
-pub const TEMP_VA_FOR_CLONE: VirtAddr = VirtAddr::new(0xffff_ffff_8000_0000);
-pub const TEMP_VA_FOR_DESTROY: VirtAddr = VirtAddr::new(0xffff_ffff_9000_0000);
+pub const TEMP_VA_FOR_CLONE: VirtAddr = VirtAddr::new(0xffff_ffff_ffff_0000);
+pub const TEMP_VA_FOR_DESTROY: VirtAddr = VirtAddr::new(0xffff_ffff_ffff_8000);
 
 /// Macro to safely map to higher half with logging
 #[macro_export]
@@ -87,21 +87,37 @@ macro_rules! flush_tlb_safely {
 macro_rules! with_temp_mapping {
     ($mapper:expr, $frame_allocator:expr, $temp_va:expr, $frame:expr, $body:block) => {{
         let page = Page::<Size4KiB>::containing_address($temp_va);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [with_temp_mapping] attempting map_to\n");
         unsafe {
-            $mapper
+            let map_res = $mapper
                 .map_to(
                     page,
                     $frame,
                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
                     $frame_allocator,
-                )
-                .map_err(|_| $crate::common::logging::SystemError::MappingFailed)?
-                .flush();
+                );
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [with_temp_mapping] map_to returned\n");
+            match map_res {
+                Ok(flush) => {
+                    flush.flush();
+                }
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [with_temp_mapping] PageAlreadyMapped, continuing\n");
+                    x86_64::instructions::tlb::flush(page.start_address());
+                }
+                Err(e) => {
+                    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [with_temp_mapping] map_to failed\n");
+                    return Err($crate::common::logging::SystemError::MappingFailed);
+                }
+            }
         }
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [with_temp_mapping] map_to success and flushed\n");
         let result = $body;
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [with_temp_mapping] body executed, unmapping\n");
         if let Ok((_frame, flush)) = $mapper.unmap(page) {
             flush.flush();
         }
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [with_temp_mapping] unmap success\n");
         result
     }};
 }
@@ -261,23 +277,23 @@ pub unsafe fn init(
         // Using 1GiB huge pages to ensure that any page tables 
         // allocated by map_to are accessible if they fall within this range.
         
-        // Identity map first 1GB
+        // Identity map first 64GB to ensure all allocated page tables are accessible
         let _ = map_range_with_1gib_pages(
             &mut mapper,
             frame_allocator,
             0,
             0,
-            1,
+            64,
             PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
         );
 
-        // Higher-half map first 1GB
+        // Higher-half map first 64GB
         let _ = map_range_with_1gib_pages(
             &mut mapper,
             frame_allocator,
             0,
             physical_memory_offset.as_u64(),
-            1,
+            64,
             PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
         );
 
