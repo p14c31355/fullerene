@@ -109,12 +109,12 @@ fn kernel_main_higher_half(_args_ptr: *const petroleum::page_table::mapper::Kern
     interrupts::init();
     log::info!("Kernel: IDT re-initialized in higher half");
 
-    // 2. Map MMIO regions
-    crate::boot::uefi_init::UefiInitContext::map_mmio(physical_memory_offset);
-    log::info!("MMIO mapping completed");
+    // 2. Map MMIO regions and get VGA virtual address
+    let vga_virt_addr = crate::boot::uefi_init::UefiInitContext::map_mmio(physical_memory_offset);
+    log::info!("MMIO mapping completed. VGA virt addr: {:#x}", vga_virt_addr);
 
-    // 3. Initialize VGA for UEFI
-    crate::vga::init_vga(physical_memory_offset);
+    // 3. Initialize VGA for UEFI using the higher-half address
+    crate::vga::init_vga(physical_memory_offset, vga_virt_addr);
     log::info!("VGA initialized for UEFI");
 
     // 4. Initialize APIC before enabling interrupts for safety

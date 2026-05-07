@@ -7,8 +7,8 @@ use spin::{Mutex, Once};
 // Global singleton using petroleum's VgaBuffer
 pub static VGA_BUFFER: Mutex<Option<VgaBuffer>> = Mutex::new(None);
 
-// Initialize the VGA screen with the given physical memory offset
-pub fn init_vga(_physical_memory_offset: x86_64::VirtAddr) {
+// Initialize the VGA screen with the given physical memory offset and virtual address
+pub fn init_vga(_physical_memory_offset: x86_64::VirtAddr, vga_virt_addr: usize) {
     petroleum::debug_log!("Initializing VGA using petroleum implementation");
 
     // 1. Set VGA hardware to text mode 3 (80x25 color text) FIRST
@@ -19,7 +19,7 @@ pub fn init_vga(_physical_memory_offset: x86_64::VirtAddr) {
     {
         let mut lock = VGA_BUFFER.lock();
         if lock.is_none() {
-            let mut vga = VgaBuffer::new();
+            let mut vga = VgaBuffer::with_address(vga_virt_addr);
             vga.enable();
             vga.set_color(Color::Green, Color::Black);
             vga.clear_screen();

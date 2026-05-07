@@ -50,7 +50,7 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             }),
         ];
         InitSequence::new(&bios_init_steps).run();
-        crate::vga::init_vga(physical_memory_offset);
+        crate::vga::init_vga(physical_memory_offset, 0xb8000);
     }
 
     #[cfg(target_os = "uefi")]

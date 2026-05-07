@@ -583,7 +583,7 @@ impl UefiInitContext {
         }
     }
 
-    pub fn map_mmio(physical_memory_offset: VirtAddr) {
+    pub fn map_mmio(physical_memory_offset: VirtAddr) -> usize {
         log::info!("Mapping MMIO regions for APIC and IOAPIC");
 
         // Force reset LOCAL_APIC_ADDRESS lock state to 0 to handle cases where .bss is not cleared
@@ -595,7 +595,7 @@ impl UefiInitContext {
         
         let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
         let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
- 
+  
         let mut mapper = unsafe { petroleum::page_table::init(physical_memory_offset, frame_allocator, 0x100000) };
         let mut mem_mapper = petroleum::page_table::mapper::MemoryMapper::new(
             &mut mapper,
@@ -611,16 +611,33 @@ impl UefiInitContext {
             (0xb8000, (0xc0000 - 0xb8000) / 4096, "VGA text buffer"),
         ];
 
+        let mut vga_virt_addr = 0;
+
         for (phys, pages, name) in regions {
+            // Map identity
             if let Err(e) = mem_mapper.map_to_identity(phys, pages, flags) {
                 if !matches!(e, MapToError::PageAlreadyMapped(_)) {
                     panic!("Failed to map {}: {:?}", name, e);
                 }
             }
-            log::info!("{} mapped at identity address {:#x}", name, phys);
+            
+            // Map to higher half
+            if let Err(e) = mem_mapper.map_to_higher_half(phys, pages, flags) {
+                if !matches!(e, MapToError::PageAlreadyMapped(_)) {
+                    panic!("Failed to map {} to higher half: {:?}", name, e);
+                }
+            }
+
+            if name == "VGA text buffer" {
+                vga_virt_addr = phys + physical_memory_offset.as_u64();
+            }
+            
+            log::info!("{} mapped at identity {:#x} and higher-half {:#x}", name, phys, phys + physical_memory_offset.as_u64());
         }
         *petroleum::LOCAL_APIC_ADDRESS.lock() =
             petroleum::LocalApicAddress(0xfee00000 as *mut u32);
+        
+        vga_virt_addr as usize
     }
 
     fn init_memory_map(&self) {
