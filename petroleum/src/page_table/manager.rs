@@ -93,55 +93,30 @@ impl PageTableManager {
         frame_allocator: &mut BootInfoFrameAllocator,
         kernel_phys_start: u64,
     ) -> crate::common::logging::SystemResult<()> {
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] entered\n");
         if self.initialized {
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] already initialized\n");
-            return Err(crate::common::logging::SystemError::InternalError);
+            return Ok(());
         }
 
-        let (current_pml4, _) = Cr3::read();
-        let table_phys_addr = current_pml4.start_address().as_u64();
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] CR3 read successful\n");
+        let mut mapper = unsafe { crate::page_table::utils::init(phys_offset, frame_allocator, kernel_phys_start) };
 
-        self.mapper = Some(unsafe {
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] calling utils::init\n");
-            let mut temp_mapper = unsafe { crate::page_table::utils::init(phys_offset, frame_allocator, kernel_phys_start) };
-            
-            let virt_addr = phys_offset + table_phys_addr;
-            let page = Page::containing_address(virt_addr);
-            
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] mapping PML4 to higher half\n");
-            match temp_mapper.map_to(
+        let (current_pml4, _) = Cr3::read();
+        let virt = phys_offset + current_pml4.start_address().as_u64();
+        let page = Page::containing_address(virt);
+
+        let _ = unsafe {
+            mapper.map_to(
                 page,
                 current_pml4,
                 PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE,
                 frame_allocator,
-            ) {
-                Ok(flush) => {
-                    flush.flush();
-                    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] PML4 mapped and flushed\n");
-                },
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] PML4 already mapped\n");
-                }
-                Err(_) => {
-                    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] PML4 mapping failed\n");
-                    return Err(crate::common::logging::SystemError::MappingFailed);
-                },
-            };
-            
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] using temp_mapper as final mapper\n");
-            temp_mapper
-        });
+            )
+        };
 
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] after mapper assignment\n");
+        self.mapper = Some(mapper);
         self.pml4_frame = Some(current_pml4);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] after pml4_frame assignment\n");
-        self.current_page_table = table_phys_addr as usize;
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] after current_page_table assignment\n");
-        
+        self.current_page_table = current_pml4.start_address().as_u64() as usize;
         self.initialized = true;
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PageTableManager::init] initialization complete\n");
+
         Ok(())
     }
 

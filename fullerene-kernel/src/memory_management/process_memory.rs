@@ -30,9 +30,13 @@ impl ProcessMemoryManagerImpl {
     }
 
     /// Initialize the process page table by cloning the kernel page table
-    pub fn init_page_table(&mut self, pt_manager: &mut petroleum::page_table::PageTableManager) -> SystemResult<()> {
+    pub fn init_page_table(
+        &mut self,
+        pt_manager: &mut petroleum::page_table::PageTableManager,
+        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<x86_64::structures::paging::Size4KiB>,
+    ) -> SystemResult<()> {
         let kernel_root = pt_manager.current_page_table();
-        let new_root = pt_manager.clone_page_table(kernel_root)?;
+        let new_root = pt_manager.clone_page_table(kernel_root, frame_allocator)?;
         self.page_table_root = new_root;
         Ok(())
     }

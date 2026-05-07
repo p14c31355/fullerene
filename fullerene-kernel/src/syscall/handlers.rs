@@ -92,7 +92,21 @@ fn syscall_fork() -> SyscallResult {
     let cloned_table_addr = {
         let mut manager_guard = crate::memory_management::get_memory_manager().lock();
         let manager = manager_guard.as_mut().ok_or(SyscallError::OutOfMemory)?;
-        PageTableHelper::clone_page_table(manager, parent_page_table_phys_addr.as_u64() as usize)?
+        
+        // Use the manager's own frame_allocator by passing it as a separate argument.
+        // Since clone_page_table is a trait method on PageTableHelper, and UnifiedMemoryManager 
+        // implements it, we can call it. To avoid the double borrow, we can use the 
+        // frame_allocator_mut() method if available, or just pass the field.
+        // The issue is that `manager` is borrowed mutably for the first arg, 
+        // and `manager.frame_allocator` is borrowed mutably for the third.
+        
+        // We can solve this by using the fact that UnifiedMemoryManager's 
+        // implementation of clone_page_table just delegates to its internal page_table_manager.
+        // We can call the method on the internal page_table_manager directly.
+        
+        let ptm = &mut manager.page_table_manager;
+        let alloc = &mut manager.frame_allocator;
+        petroleum::page_table::PageTableHelper::clone_page_table(ptm, parent_page_table_phys_addr.as_u64() as usize, alloc)?
     };
 
     let cloned_pml4_frame = x86_64::structures::paging::PhysFrame::containing_address(

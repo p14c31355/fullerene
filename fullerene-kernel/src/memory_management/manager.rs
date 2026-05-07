@@ -236,7 +236,7 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
         
         // Initialize the process page table by cloning the kernel's current page table
         // This ensures the process has access to kernel space (including VGA buffer)
-        process_manager.init_page_table(&mut self.page_table_manager)?;
+        process_manager.init_page_table(&mut self.page_table_manager, &mut self.frame_allocator)?;
         
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [create_address_space] Process page table initialized via cloning\n");
         
