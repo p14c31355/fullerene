@@ -162,11 +162,17 @@ impl<'a> PageTableManager<'a> {
             return Ok(cloned_phys);
         }
 
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_page_table_recursive] allocating frame\n");
         let dest_frame: PhysFrame = match frame_alloc.allocate_frame() {
             Some(frame) => frame,
-            None => return Err(crate::common::logging::SystemError::FrameAllocationFailed),
+            None => {
+                crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_page_table_recursive] frame allocation failed\n");
+                return Err(crate::common::logging::SystemError::FrameAllocationFailed)
+            },
         };
         let dest_phys = dest_frame.start_address();
+        
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_page_table_recursive] inserting into cloned_tables\n");
         cloned_tables.insert(source_table_phys, dest_phys);
 
         let phys_offset = mapper.phys_offset();
@@ -174,13 +180,28 @@ impl<'a> PageTableManager<'a> {
         let dest_va = phys_offset + dest_frame.start_address().as_u64();
 
         unsafe {
-            // 物理オフセット領域へのアクセス。
-            // OffsetPageTable は物理メモリの広範囲をマッピングしているため、通常は安全。
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_page_table_recursive] zeroing dest_table\n");
             let dest_ptr = dest_va.as_mut_ptr() as *mut u8;
             core::ptr::write_bytes(dest_ptr, 0, 4096);
 
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_page_table_recursive] accessing tables\n");
+            
+            // Log addresses to verify they are within the mapped range
+            let mut buf = [0u8; 16];
+            let len = crate::serial::format_hex_to_buffer(source_va.as_u64(), &mut buf, 16);
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: source_va=0x");
+            crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
+            let len = crate::serial::format_hex_to_buffer(dest_va.as_u64(), &mut buf, 16);
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: dest_va=0x");
+            crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
             let source_table = &*(source_va.as_ptr() as *const PageTable);
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_page_table_recursive] source_table deref success\n");
             let dest_table = &mut *(dest_va.as_mut_ptr() as *mut PageTable);
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_page_table_recursive] dest_table deref success\n");
 
             for (i, (source_entry, dest_entry)) in source_table.iter().zip(dest_table.iter_mut()).enumerate() {
                 if source_entry.flags().contains(PageTableFlags::PRESENT) {
