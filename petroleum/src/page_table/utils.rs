@@ -542,11 +542,16 @@ unsafe fn map_1gib_page<A: FrameAllocator<Size4KiB>>(
     let l4_entry_ptr = l4_ptr.cast::<x86_64::structures::paging::page_table::PageTableEntry>().add(p4_idx.into());
     if !core::ptr::read(l4_entry_ptr).flags().contains(PageTableFlags::PRESENT) {
         let l3_frame = allocator.allocate_frame().ok_or(x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed)?;
-        let l3_virt = mapper.phys_offset() + l3_frame.start_address().as_u64();
-        core::ptr::write_bytes(l3_virt.as_mut_ptr() as *mut u8, 0, 4096);
+        
         let mut entry = core::ptr::read(l4_entry_ptr);
         entry.set_addr(l3_frame.start_address(), PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
         core::ptr::write(l4_entry_ptr, entry);
+        
+        // Now that the L4 entry is set, the L3 table is mapped via phys_offset
+        let l3_virt = mapper.phys_offset() + l3_frame.start_address().as_u64();
+        unsafe {
+            core::ptr::write_bytes(l3_virt.as_mut_ptr() as *mut u8, 0, 4096);
+        }
     }
     let l3_frame = core::ptr::read(l4_entry_ptr).frame().expect("L3 frame should be present");
     let l3 = &mut *((mapper.phys_offset() + l3_frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable);
