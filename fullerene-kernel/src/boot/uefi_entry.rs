@@ -11,7 +11,7 @@ use crate::boot::uefi_main::efi_main_stage2;
 pub unsafe extern "efiapi" fn efi_main(
     _image_handle: usize,
     system_table: *mut EfiSystemTable,
-    memory_map: *mut c_void,
+    memory_map: *mut core::ffi::c_void,
     memory_map_size: usize,
 ) {
     core::arch::naked_asm!(
