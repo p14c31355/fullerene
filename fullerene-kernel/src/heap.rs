@@ -5,7 +5,7 @@
 
 // Note: MAPPER and FRAME_ALLOCATOR are pub(crate), not re-exportable
 
-pub use petroleum::page_table::{BootInfoFrameAllocator, reinit_page_table_with_allocator};
+pub use petroleum::page_table::BootInfoFrameAllocator;
 
 // Heap size constant moved to petroleum - for now define locally
 pub const HEAP_SIZE: usize = 1024 * 1024; // 1MB heap
@@ -15,9 +15,10 @@ pub const KERNEL_STACK_SIZE: usize = 4096 * 64; // 256KB
 
 
 use petroleum::common::EfiMemoryType;
-use petroleum::page_table::efi_memory::{
-    EfiMemoryDescriptor, MemoryDescriptorValidator, MemoryMapDescriptor,
+use petroleum::page_table::memory_map::{
+    EfiMemoryDescriptor, MemoryMapDescriptor,
 };
+use petroleum::page_table::MemoryDescriptorValidator;
 use spin::{Mutex, Once};
 
 /// Global frame allocator
@@ -48,7 +49,18 @@ pub(crate) static mut MEMORY_MAP_BUFFER: [MemoryMapDescriptor; MAX_DESCRIPTORS] 
 /// Initialize the boot frame allocator with memory map
 pub fn init_frame_allocator(memory_map: &[impl MemoryDescriptorValidator]) {
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: init_frame_allocator start\n");
-    let allocator = unsafe { BootInfoFrameAllocator::init(memory_map) };
+    
+    // Convert &[impl MemoryDescriptorValidator] to &[MemoryMapDescriptor]
+    // Since MemoryMapDescriptor is the concrete type that implements the trait,
+    // and we know that's what is being passed from uefi_init.
+    let concrete_map = unsafe {
+        core::slice::from_raw_parts(
+            memory_map.as_ptr() as *const petroleum::page_table::memory_map::MemoryMapDescriptor,
+            memory_map.len(),
+        )
+    };
+
+    let allocator = petroleum::page_table::BitmapFrameAllocator::init_with_memory_map(concrete_map);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: BootInfoFrameAllocator::init done\n");
     let mut lock = FRAME_ALLOCATOR.lock();
     *lock = Some(allocator);

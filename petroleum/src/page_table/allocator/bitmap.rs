@@ -22,6 +22,96 @@ impl BitmapFrameAllocator {
             self.set_frame_used(i, true);
         }
     }
+
+    pub fn init_with_memory_map(memory_map: &[crate::page_table::memory_map::MemoryMapDescriptor]) -> Self {
+        let mut max_phys = 0u64;
+        for desc in memory_map {
+            let end = desc.physical_start() + desc.number_of_pages() * 4096;
+            if end > max_phys {
+                max_phys = end;
+            }
+        }
+        let total_frames = ((max_phys + 4095) / 4096) as usize;
+        let mut allocator = Self::new(total_frames);
+        allocator.bitmap.resize(allocator.bitmap.capacity(), u64::MAX);
+        
+        for desc in memory_map {
+            if desc.type_() == crate::common::EfiMemoryType::EfiConventionalMemory as u32 {
+                let start_frame = (desc.physical_start() / 4096) as usize;
+                let end_frame = ((desc.physical_start() + desc.number_of_pages() * 4096) / 4096) as usize;
+                allocator.set_frame_range(start_frame, end_frame, false);
+            }
+        }
+        allocator
+    }
+
+    pub fn allocate_contiguous_frames(&mut self, pages: usize) -> crate::common::logging::SystemResult<u64> {
+        let mut count = 0;
+        let mut start = 0;
+        for i in 0..self.total_frames {
+            if !self.is_frame_available(i) {
+                count = 0;
+                start = i + 1;
+            } else if count + 1 == pages {
+                for j in start..=i {
+                    self.set_frame_used(j, true);
+                }
+                return Ok(start as u64 * 4096);
+            } else {
+                count += 1;
+            }
+        }
+        Err(crate::common::logging::SystemError::FrameAllocationFailed)
+    }
+
+    pub fn available_frames(&self) -> usize {
+        let mut count = 0;
+        for i in 0..self.total_frames {
+            if self.is_frame_available(i) {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    pub fn frame_size(&self) -> usize {
+        4096
+    }
+
+    pub fn is_frame_available(&self, frame: usize) -> bool {
+        if frame >= self.total_frames {
+            return false;
+        }
+        let idx = frame / 64;
+        let bit = frame % 64;
+        (self.bitmap[idx] & (1 << bit)) == 0
+    }
+
+    pub fn free_frame(&mut self, frame: x86_64::structures::paging::PhysFrame) {
+        self.deallocate_frame(frame);
+    }
+
+    pub fn free_contiguous_frames(&mut self, start_phys: u64, pages: usize) {
+        let start_frame = (start_phys / 4096) as usize;
+        for i in 0..pages {
+            self.set_frame_used(start_frame + i, false);
+        }
+    }
+
+    pub fn reserve_frames(&mut self, start_phys: u64, pages: usize) -> crate::common::logging::SystemResult<()> {
+        let start_frame = (start_phys / 4096) as usize;
+        for i in 0..pages {
+            self.set_frame_used(start_frame + i, true);
+        }
+        Ok(())
+    }
+
+    pub fn release_frames(&mut self, start_phys: u64, pages: usize) {
+        let start_frame = (start_phys / 4096) as usize;
+        for i in 0..pages {
+            self.set_frame_used(start_frame + i, false);
+        }
+    }
 }
 
 unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {

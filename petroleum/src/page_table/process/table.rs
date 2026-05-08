@@ -21,6 +21,21 @@ pub struct ProcessPageTable {
     pub allocated_tables: BTreeMap<usize, PhysFrame>,
 }
 
+impl crate::initializer::Initializable for ProcessPageTable {
+    fn init(&mut self) -> crate::common::logging::SystemResult<()> {
+        self.initialized = true;
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ProcessPageTable"
+    }
+
+    fn priority(&self) -> i32 {
+        900
+    }
+}
+
 impl ProcessPageTable {
     pub fn new() -> Self {
         Self {
@@ -44,6 +59,43 @@ impl ProcessPageTable {
 
     pub fn pml4_frame(&self) -> Option<x86_64::structures::paging::PhysFrame> {
         self.pml4_frame
+    }
+
+    pub fn initialize_with_frame_allocator(
+        &mut self,
+        phys_offset: VirtAddr,
+        frame_allocator: &mut BootInfoFrameAllocator,
+        kernel_phys_start: u64,
+    ) -> crate::common::logging::SystemResult<()> {
+        if self.initialized {
+            return Ok(());
+        }
+
+        let mut mapper = unsafe { crate::page_table::kernel::init(phys_offset, frame_allocator, kernel_phys_start) };
+
+        let (current_pml4, _) = Cr3::read();
+        let virt = phys_offset + current_pml4.start_address().as_u64();
+        let page = Page::containing_address(virt);
+
+        let _ = unsafe {
+            mapper.map_to(
+                page,
+                current_pml4,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE,
+                frame_allocator,
+            )
+        };
+
+        self.mapper = Some(mapper);
+        self.pml4_frame = Some(current_pml4);
+        self.current_page_table = current_pml4.start_address().as_u64() as usize;
+        self.initialized = true;
+
+        Ok(())
+    }
+
+    pub fn init_paging(&mut self) -> crate::common::logging::SystemResult<()> {
+        Ok(())
     }
 }
 

@@ -217,9 +217,9 @@ macro_rules! map_page_range {
     ($mapper:expr, $allocator:expr, $base_virt:expr, $base_phys:expr, $num_pages:expr, $flags:expr) => {{
         use $crate::page_table::PageTableHelper;
         for i in 0..$num_pages {
-            let phys_addr = $base_phys + (i * 4096);
-            let virt_addr = $base_virt + (i * 4096);
-            $mapper.map_page(virt_addr, phys_addr, $flags, $allocator)?;
+            let phys_addr = ($base_phys as u64) + (i as u64 * 4096);
+            let virt_addr = ($base_virt as u64) + (i as u64 * 4096);
+            $mapper.map_page(virt_addr as usize, phys_addr as usize, $flags, $allocator)?;
         }
     }};
 }
@@ -229,8 +229,8 @@ macro_rules! unmap_page_range {
     ($mapper:expr, $base_virt:expr, $num_pages:expr) => {{
         use $crate::page_table::PageTableHelper;
         for i in 0..$num_pages {
-            let vaddr = $base_virt + (i * 4096);
-            $mapper.unmap_page(vaddr)?;
+            let vaddr = ($base_virt as u64) + (i as u64 * 4096);
+            $mapper.unmap_page(vaddr as usize)?;
         }
     }};
 }
