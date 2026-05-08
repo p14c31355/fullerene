@@ -3,7 +3,7 @@ use x86_64::PhysAddr;
 use crate::common::{
     EfiSystemTable, FullereneFramebufferConfig, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
 };
-use crate::page_table::efi_memory::MemoryDescriptorValidator;
+use crate::page_table::types::MemoryDescriptorValidator;
 
 /// Helper function to convert u32 to string without heap allocation
 pub fn u32_to_str_heapless(n: u32, buffer: &mut [u8]) -> &str {

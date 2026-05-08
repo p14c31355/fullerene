@@ -156,7 +156,7 @@ unsafe fn map_huge_page<A: FrameAllocator<Size4KiB>>(
     let l3 = &mut *((mapper.phys_offset() + l3_frame.start_address().as_u64()).as_mut_ptr() as *mut PageTable);
     if !l3[p3_idx].flags().contains(PageTableFlags::PRESENT) {
         let l2_frame = allocator.allocate_frame().ok_or(x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed)?;
-        let l2_virt = mapper.phys_offset + l2_frame.start_address().as_u64();
+        let l2_virt = mapper.phys_offset() + l2_frame.start_address().as_u64();
         core::ptr::write_bytes(l2_virt.as_mut_ptr() as *mut u8, 0, 4096);
         l3[p3_idx].set_addr(l2_frame.start_address(), PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
     }

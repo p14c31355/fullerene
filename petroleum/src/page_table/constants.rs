@@ -1,4 +1,4 @@
-use crate::page_table::bitmap_allocator::BitmapFrameAllocator;
+use crate::page_table::allocator::BitmapFrameAllocator;
 use x86_64::VirtAddr;
 
 pub const BOOT_CODE_PAGES: u64 = 16384;

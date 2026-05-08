@@ -24,7 +24,7 @@ impl BitmapFrameAllocator {
     }
 }
 
-impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
+unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
     fn allocate_frame(&mut self) -> Option<PhysFrame> {
         for i in 0..self.bitmap.len() {
             if self.bitmap[i] != u64::MAX {

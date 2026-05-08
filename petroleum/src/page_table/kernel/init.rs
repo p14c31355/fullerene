@@ -1,8 +1,9 @@
 use x86_64::{
     PhysAddr, VirtAddr,
+    registers::control::Cr3,
     structures::paging::{
         FrameAllocator, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
-        Size4KiB,
+        Size4KiB, Mapper,
     },
 };
 use crate::page_table::constants::BootInfoFrameAllocator;

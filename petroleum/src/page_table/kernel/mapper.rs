@@ -238,7 +238,7 @@ impl PageTableHelper for KernelMapper {
         let mapper = self.mapper.as_mut().unwrap();
         let temp_page = unsafe {
             Page::<Size4KiB>::containing_address(VirtAddr::new(
-                crate::page_table::utils::TEMP_VA_FOR_CLONE.as_u64() + 0x3000u64,
+                crate::page_table::raw::TEMP_VA_FOR_CLONE.as_u64() + 0x3000u64,
             ))
         };
         unsafe {
@@ -253,7 +253,7 @@ impl PageTableHelper for KernelMapper {
                 .flush();
         }
         unsafe {
-            let table_va = (crate::page_table::utils::TEMP_VA_FOR_CLONE.as_u64() + 0x3000) as *mut u8;
+            let table_va = (crate::page_table::raw::TEMP_VA_FOR_CLONE.as_u64() + 0x3000) as *mut u8;
             core::ptr::write_bytes(table_va, 0, 4096);
         }
         if let Ok((_frame, flush)) = mapper.unmap(temp_page) {
@@ -273,7 +273,7 @@ impl PageTableHelper for KernelMapper {
         let table_phys = PhysAddr::new(table_addr as u64);
         if let Some(frame) = self.allocated_tables.remove(&table_addr) {
             let mapper = self.mapper.as_mut().unwrap();
-            destroy_page_table_recursive(mapper, frame_allocator, table_phys, 4, crate::page_table::utils::TEMP_VA_FOR_DESTROY)?;
+            destroy_page_table_recursive(mapper, frame_allocator, table_phys, 4, crate::page_table::raw::TEMP_VA_FOR_DESTROY)?;
             frame_allocator.deallocate_frame(frame);
             Ok(())
         } else {
@@ -298,14 +298,16 @@ impl PageTableHelper for KernelMapper {
         let mapper = self.mapper.as_mut().unwrap();
         let mut allocated_frames = alloc::vec::Vec::new();
         let mut cloned_tables = BTreeMap::new();
-        let cloned_phys = Self::clone_page_table_recursive(
-            mapper,
-            frame_allocator,
-            source_frame.start_address(),
-            4,
-            &mut allocated_frames,
-            &mut cloned_tables,
-        )?;
+        let cloned_phys = unsafe {
+            crate::page_table::process::clone_page_table_recursive(
+                mapper,
+                frame_allocator,
+                source_frame.start_address(),
+                4,
+                &mut allocated_frames,
+                &mut cloned_tables,
+            )
+        }?;
 
         for frame in allocated_frames {
             self.allocated_tables.insert(frame.start_address().as_u64() as usize, frame);
@@ -360,13 +362,13 @@ fn destroy_page_table_recursive<'a>(
                 }
             }
             for child_frame in child_frames_to_free {
-                destroy_page_table_recursive(
-                    mapper,
-                    frame_alloc,
-                    child_frame.start_address(),
-                    level - 1,
-                    crate::page_table::utils::TEMP_VA_FOR_DESTROY,
-                )?;
+                    destroy_page_table_recursive(
+                        mapper,
+                        frame_alloc,
+                        child_frame.start_address(),
+                        level - 1,
+                        crate::page_table::raw::TEMP_VA_FOR_DESTROY,
+                    )?;
                 frame_alloc.deallocate_frame(child_frame);
             }
             Ok(())

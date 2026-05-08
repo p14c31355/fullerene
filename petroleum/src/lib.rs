@@ -69,7 +69,7 @@ pub fn scroll_char_buffer_up<B: TextBufferOperations>(
 }
 
 /// Debug memory descriptor function
-pub fn debug_mem_descriptor(desc: &crate::page_table::efi_memory::MemoryMapDescriptor) {
+pub fn debug_mem_descriptor(desc: &crate::page_table::memory_map::MemoryMapDescriptor) {
     crate::serial::_print(format_args!(
         "Memory descriptor: type={} phys=0x{:x} pages={}\n",
         desc.type_(), desc.physical_start(), desc.number_of_pages()
@@ -80,10 +80,10 @@ pub use serial::SERIAL_PORT_WRITER as SERIAL1;
 pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 // Heap allocation exports
 #[cfg(not(feature = "std"))]
-pub use page_table::ALLOCATOR;
-pub use page_table::allocate_heap_from_map;
-pub use page_table::init_global_heap;
-pub use page_table::{BitmapFrameAllocator, bitmap_allocator};
+pub use page_table::heap::ALLOCATOR;
+pub use page_table::heap::allocate_heap_from_map;
+pub use page_table::heap::init_global_heap;
+pub use page_table::allocator::{BitmapFrameAllocator, bitmap};
 // Removed reinit_page_table export - implemented in higher-level crates
 // UEFI helper exports
 pub use uefi_helpers::{initialize_graphics_with_config, kernel_fallback_framebuffer_detection};

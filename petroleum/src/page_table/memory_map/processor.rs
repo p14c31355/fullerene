@@ -1,6 +1,6 @@
 use crate::page_table::constants::MAX_DESCRIPTOR_PAGES;
 use crate::page_table::types::MemoryDescriptorValidator;
-use crate::page_table::bitmap_allocator::BitmapFrameAllocator;
+use crate::page_table::allocator::{BitmapFrameAllocator, FrameAllocatorExt};
 
 pub fn process_memory_descriptors<T, F>(descriptors: &[T], mut processor: F)
 where
@@ -43,7 +43,7 @@ pub fn mark_available_frames<T: MemoryDescriptorValidator>(
         let actual_end = end_frame.min(frame_allocator.total_frames());
         frame_allocator.set_frame_range(start_frame, actual_end, false);
     });
-    frame_allocator.set_frame_used(0);
+    frame_allocator.set_frame_used(0, true);
 }
 
 pub fn calculate_frame_allocation_params<T: MemoryDescriptorValidator>(
