@@ -38,7 +38,13 @@ impl ProcessMemoryManagerImpl {
     ) -> SystemResult<()> {
         let kernel_root = pt_manager.current_page_table();
         let new_root = pt_manager.clone_page_table(kernel_root, frame_allocator)?;
-        self.page_table.switch_page_table(new_root)?;
+        // Don't switch CR3 - just store the new root for later context switch.
+        // The CR3 switch would require the new root's frame to be in our own
+        // allocated_tables map, which it's not (it's in pt_manager's map).
+        if let Some(&frame) = pt_manager.allocated_tables().get(&new_root) {
+            self.page_table.allocated_tables_mut().insert(new_root, frame);
+            self.page_table.set_current(new_root);
+        }
         Ok(())
     }
 

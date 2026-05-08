@@ -61,6 +61,21 @@ impl ProcessPageTable {
         self.pml4_frame
     }
 
+    /// Accessor for allocated_tables (read-only)
+    pub fn allocated_tables(&self) -> &BTreeMap<usize, PhysFrame> {
+        &self.allocated_tables
+    }
+
+    /// Accessor for allocated_tables (mutable)
+    pub fn allocated_tables_mut(&mut self) -> &mut BTreeMap<usize, PhysFrame> {
+        &mut self.allocated_tables
+    }
+
+    /// Set current_page_table without CR3 switch
+    pub fn set_current(&mut self, addr: usize) {
+        self.current_page_table = addr;
+    }
+
     pub fn initialize_with_frame_allocator(
         &mut self,
         phys_offset: VirtAddr,
@@ -408,11 +423,15 @@ impl ProcessPageTable {
             return Ok(cloned_phys);
         }
 
-        let dest_frame: PhysFrame = match frame_alloc.allocate_frame() {
-            Some(frame) => frame,
-            None => {
-                return Err(crate::common::logging::SystemError::FrameAllocationFailed)
-            },
+        let mut dest_frame: PhysFrame = if level > 1 {
+            match frame_alloc.allocate_frame() {
+                Some(frame) => frame,
+                None => {
+                    return Err(crate::common::logging::SystemError::FrameAllocationFailed)
+                },
+            }
+        } else {
+            PhysFrame::containing_address(PhysAddr::zero())
         };
         let dest_phys = dest_frame.start_address();
         
@@ -459,7 +478,6 @@ impl ProcessPageTable {
                         }
                         
                         dest_entry.set_addr(dest_phys, source_entry.flags());
-                        allocated_frames.push(dest_frame);
                     } else {
                         // Higher level tables or huge pages - just copy the address
                         // (Huge pages are typically kernel-only in this architecture)
@@ -470,7 +488,9 @@ impl ProcessPageTable {
             }
         }
 
-        allocated_frames.push(dest_frame);
+        if level > 1 {
+            allocated_frames.push(dest_frame);
+        }
         Ok(dest_frame.start_address())
     }
 }
