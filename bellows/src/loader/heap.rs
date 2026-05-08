@@ -6,7 +6,7 @@ use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus}
 use petroleum::debug_log_no_alloc;
 
 /// Size of the heap we will allocate for `alloc` usage (bytes).
-const HEAP_SIZE: usize = 128 * 1024; // 128 KiB
+const HEAP_SIZE: usize = 2 * 1024 * 1024; // 2 MiB
 
 /// Tries to allocate pages with multiple strategies and memory types.
 fn try_allocate_pages(

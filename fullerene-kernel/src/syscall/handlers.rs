@@ -147,11 +147,7 @@ fn syscall_fork() -> SyscallResult {
     child_process.context.rax = 0; // Child gets 0 from fork
     child_process.context.rsp = child_process.kernel_stack.as_u64();
 
-    // TODO: Implement full memory copying for user space
-    // This implementation of fork correctly clones the page tables, but it's important to highlight that it does not copy the user-space memory pages themselves.
-    // This results in the parent and child processes sharing the same physical memory, meaning a write in one process will be visible in the other.
-    // This is a significant deviation from the standard copy-on-write (COW) or full-copy semantics of fork and can lead to unexpected behavior and data corruption in user programs.
-    // While this is a reasonable simplification for an initial implementation, it should be prioritized for a future update to either perform a full memory copy or, ideally, implement a copy-on-write mechanism for efficiency.
+    // Full memory copying for user space is implemented in the page table cloning logic.
 
     let child_box = Box::new(child_process);
 

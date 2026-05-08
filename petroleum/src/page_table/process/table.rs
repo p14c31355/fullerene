@@ -443,9 +443,29 @@ impl ProcessPageTable {
                             )?;
                             dest_entry.set_addr(cloned_child_phys, source_entry.flags());
                         }
+                } else {
+                    if level == 1 {
+                        // Full copy of the physical page to ensure process isolation
+                        let source_phys = source_entry.addr();
+                        let dest_frame = frame_alloc.allocate_frame().ok_or(crate::common::logging::SystemError::FrameAllocationFailed)?;
+                        let dest_phys = dest_frame.start_address();
+
+                        let phys_offset = mapper.phys_offset();
+                        let source_va: *const u8 = (phys_offset + source_phys.as_u64()).as_ptr();
+                        let dest_va: *mut u8 = (phys_offset + dest_phys.as_u64()).as_mut_ptr();
+
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(source_va, dest_va, 4096);
+                        }
+                        
+                        dest_entry.set_addr(dest_phys, source_entry.flags());
+                        allocated_frames.push(dest_frame);
                     } else {
+                        // Higher level tables or huge pages - just copy the address
+                        // (Huge pages are typically kernel-only in this architecture)
                         dest_entry.set_addr(source_entry.addr(), source_entry.flags());
                     }
+                }
                 }
             }
         }

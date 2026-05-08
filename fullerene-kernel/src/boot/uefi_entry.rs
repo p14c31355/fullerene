@@ -137,6 +137,14 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
 
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Performing world switch to kernel\n");
 
+    let cr3 = x86_64::registers::control::Cr3::read();
+    let l4_frame = cr3.0;
+
+    let allocator_ptr = {
+        let mut lock = crate::heap::FRAME_ALLOCATOR.lock();
+        lock.as_mut().expect("Frame allocator should be initialized") as *mut _
+    };
+
     let world = petroleum::transition::WorldSwitchBuilder::default()
         .with_phys_offset(physical_memory_offset)
         .with_stack(kernel_stack_top_virt)
@@ -144,8 +152,8 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
         .with_args(captured_args_ptr)
         .with_gdt(core::ptr::addr_of!(petroleum::transition::TRANSITION_GDT) as *const ())
         .with_idt(core::ptr::null()) // IDT is not yet available during transition
-        .with_page_table(x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(0))) // TODO: Provide actual L4 frame
-        .with_allocator(core::ptr::null_mut()) // TODO: Provide actual allocator
+        .with_page_table(l4_frame)
+        .with_allocator(allocator_ptr)
         .build()
         .expect("Failed to build WorldSwitch");
 

@@ -307,23 +307,45 @@ pub fn exit_boot_services_and_jump(
     petroleum::page_table::memory_map::processor::mark_available_frames(&mut frame_allocator, &memory_map_descriptors);
 
     let mapper = unsafe {
-        petroleum::page_table::kernel::init(
+        let mut m = petroleum::page_table::kernel::init(
             x86_64::VirtAddr::zero(),
             &mut frame_allocator,
             kernel_phys_start.as_u64(),
-        )
+        );
+
+        // Map the kernel itself to the higher half
+        let kernel_pages = (16 * 1024 * 1024) / 4096; // Map 16MB for safety
+        petroleum::page_table::raw::map_range_with_huge_pages(
+            &mut m,
+            &mut frame_allocator,
+            kernel_phys_start.as_u64(),
+            petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64() + kernel_phys_start.as_u64(),
+            kernel_pages,
+            x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
+            "kernel",
+        ).expect("Failed to map kernel to higher half");
+
+        m
     };
     let new_phys_offset = mapper.phys_offset();
-        // Note: The original reinit_page_table_with_allocator had many more arguments.
-        // Based on the current petroleum/src/page_table/kernel/init.rs, init() only takes 3.
-        // I will need to check if the missing logic is needed elsewhere or if I should implement 
-        // the full reinit in petroleum.
+    
+    // Get the physical address of the new PML4 table
+    let pml4_phys = x86_64::registers::control::Cr3::read().0.start_address();
     
     petroleum::serial::_print(format_args!("New physical memory offset: {:#x}\n", new_phys_offset.as_u64()));
+    petroleum::serial::_print(format_args!("New PML4 physical address: {:#x}\n", pml4_phys.as_u64()));
     petroleum::serial::_print(format_args!("Jumping to kernel entry point: {:#p}\n", entry));
 
     // Now jump to the kernel.
     unsafe {
+        // CRITICAL: We must update CR3 with the new page table before jumping.
+        // The mapper created by petroleum::page_table::init already has identity mapping
+        // for the lower memory, so this is safe as long as we are running in that range.
+        x86_64::registers::control::Cr3::write(
+            x86_64::structures::paging::PhysFrame::containing_address(pml4_phys),
+            x86_64::registers::control::Cr3Flags::empty(),
+        );
+
         core::arch::asm!(
             "xor ax, ax",
             "mov ds, ax",
