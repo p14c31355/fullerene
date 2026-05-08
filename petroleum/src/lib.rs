@@ -9,7 +9,7 @@ extern crate alloc;
 #[macro_export]
 macro_rules! define_panic_handler {
     () => {
-        #[cfg(all(target_os = "none", not(test)))]
+        #[cfg(all(any(target_os = "none", target_os = "uefi"), not(test)))]
         #[panic_handler]
         fn panic(info: &core::panic::PanicInfo) -> ! {
             use core::fmt::Write;
@@ -35,7 +35,7 @@ macro_rules! define_panic_handler {
 #[macro_export]
 macro_rules! define_alloc_error_handler {
     () => {
-        #[cfg(all(target_os = "none", not(test)))]
+        #[cfg(all(any(target_os = "none", target_os = "uefi"), not(test)))]
         #[alloc_error_handler]
         fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
             $crate::serial::_print(format_args!("ALLOC ERROR: {:?}\n", layout));
