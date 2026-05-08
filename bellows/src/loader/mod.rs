@@ -308,7 +308,7 @@ pub fn exit_boot_services_and_jump(
 
     let mapper = unsafe {
         let mut m = petroleum::page_table::kernel::init(
-            x86_64::VirtAddr::zero(),
+            petroleum::page_table::constants::HIGHER_HALF_OFFSET,
             &mut frame_allocator,
             kernel_phys_start.as_u64(),
         );

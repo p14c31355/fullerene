@@ -14,26 +14,31 @@ pub unsafe fn init(
     kernel_phys_start: u64,
 ) -> OffsetPageTable<'static> {
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] entered\n");
-    let level_4_table = unsafe { active_level_4_table(physical_memory_offset) };
-    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] L4 table acquired\n");
-    
-    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Creating OffsetPageTable\n");
-    let mut mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
-    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] OffsetPageTable created\n");
-    
-    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Starting essential mappings\n");
-    
-    // CRITICAL: Map the first 1GB of physical memory to ensure that any page tables 
-    // allocated by map_to are accessible. Using 2MB pages to avoid some huge page issues.
-    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Mapping first 1GB using 1GB pages\n");
+
+    // Disable Write Protect (WP) bit in CR0 to allow writing to read-only pages
+    use x86_64::registers::control::{Cr0, Cr0Flags};
+    let mut cr0 = Cr0::read();
+    cr0.remove(Cr0Flags::WRITE_PROTECT);
+    Cr0::write(cr0);
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] CR0.WP disabled\n");
+
+    // PHASE 1: Establish identity + higher-half 1GB page mappings.
+    // We must access page tables via identity (offset=0) because higher-half
+    // mappings don't exist yet (or are from UEFI/bootloader and may not cover
+    // the full range we need).
+    let identity_offset = VirtAddr::zero();
+    let level_4_table = unsafe { active_level_4_table(identity_offset) };
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] L4 table acquired via identity\n");
+
+    // Create a temporary mapper with offset=0 for establishing the basic mappings
+    let mut setup_mapper = unsafe { OffsetPageTable::new(level_4_table, identity_offset) };
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Setup mapper created (offset=0)\n");
+
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Creating identity + higher-half 1GB mappings\n");
     unsafe {
-        // We map the first 1GB identity and higher-half.
-        // Using 1GiB huge pages to ensure that any page tables 
-        // allocated by map_to are accessible if they fall within this range.
-        
-        // Identity map first 64GB to ensure all allocated page tables are accessible
+        // Identity map first 64GB using 1GB pages
         let _ = crate::page_table::raw::map_range_with_1gib_pages(
-            &mut mapper,
+            &mut setup_mapper,
             frame_allocator,
             0,
             0,
@@ -41,9 +46,9 @@ pub unsafe fn init(
             PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
         );
 
-        // Higher-half map first 64GB
+        // Higher-half map first 64GB at physical_memory_offset
         let _ = crate::page_table::raw::map_range_with_1gib_pages(
-            &mut mapper,
+            &mut setup_mapper,
             frame_allocator,
             0,
             physical_memory_offset.as_u64(),
@@ -54,6 +59,16 @@ pub unsafe fn init(
         x86_64::instructions::tlb::flush_all();
     }
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] 1GB huge pages mapped\n");
+
+    // PHASE 2: Create the real OffsetPageTable with the desired physical_memory_offset.
+    // Now that higher-half 1GB pages are mapped, accessing the L4 table via
+    // physical_memory_offset is guaranteed to work.
+    let l4_phys = Cr3::read().0.start_address();
+    let l4_virt_addr = l4_phys.as_u64() + physical_memory_offset.as_u64();
+    let l4_ptr = l4_virt_addr as *mut PageTable;
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Creating OffsetPageTable with phys_offset\n");
+    let mut mapper = unsafe { OffsetPageTable::new(&mut *l4_ptr, physical_memory_offset) };
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] OffsetPageTable created\n");
 
     // CRITICAL: Explicitly map the MEMORY_MAP_BUFFER to avoid page faults during heap search
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Mapping MEMORY_MAP_BUFFER\n");
