@@ -458,12 +458,35 @@ impl ProcessPageTable {
         
         if *cloned_count < 64 {
             cloned_tables[*cloned_count] = (source_table_phys, dest_phys);
-            *cloned_count += 1;
+            *cloned_count +=1;
         }
 
         let phys_offset = mapper.phys_offset();
+        
+        // Debug output for addresses
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] source_table_phys: 0x");
+        let mut buf = [0u8; 16];
+        let len = crate::serial::format_hex_to_buffer(source_table_phys.as_u64(), &mut buf, 16);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] phys_offset: 0x");
+        let len = crate::serial::format_hex_to_buffer(phys_offset.as_u64(), &mut buf, 16);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        
         let source_va = phys_offset + source_table_phys.as_u64();
         let dest_va = phys_offset + dest_frame.start_address().as_u64();
+        
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] source_va: 0x");
+        let len = crate::serial::format_hex_to_buffer(source_va.as_u64(), &mut buf, 16);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] dest_va: 0x");
+        let len = crate::serial::format_hex_to_buffer(dest_va.as_u64(), &mut buf, 16);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
         unsafe {
             crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] writing dest table\n");

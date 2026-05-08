@@ -1,4 +1,4 @@
-// bellows/src/main.rs
+// bellows/src/main.rs.
 
 #![no_std]
 #![no_main]
@@ -6,20 +6,9 @@
 #![feature(never_type)]
 extern crate alloc;
 
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    use petroleum::println;
-    // Simple panic handler for UEFI bootloader
-    petroleum::volatile_write!(0xB8000 as *mut u16, 0x1F20); // White ' ' on blue
-    petroleum::volatile_write!(0xB8002 as *mut u16, 0x1F50); // White 'P' on blue
-    let panic_msg = b"anic";
-    for (i, &char_code) in panic_msg.iter().enumerate() {
-        petroleum::volatile_write!((0xB8004 as *mut u16).add(i), 0x1F00 | char_code as u16);
-    }
-    println!("Kernel Panic: {}", info);
-    loop {}
-}
+// Define panic and alloc error handlers using petroleum's macros
+petroleum::define_panic_handler!();
+petroleum::define_alloc_error_handler!();
 
 
 // Embedded kernel binary

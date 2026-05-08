@@ -1,11 +1,11 @@
 //! Consolidated logging system for the Fullerene project
 //!
-//! This module provides unified logging macros and functions using the
-//! log crate for all sub-crates, reducing duplication and improving maintainability.
+//! This module provides unified logging macros and functions for all sub-crates,
+//! reducing duplication and improving maintainability.
+//! Uses serial output directly instead of log crate to avoid std dependencies.
 
-// Note: log crate is configured with default-features = false in Cargo.toml
-// Re-export log crate macros for easy access
-pub use log::{debug, error, info, trace, warn};
+// Note: log crate dependency removed to avoid std pull-in
+// Re-export serial functions for logging
 
 /// Global logger instance using log crate
 pub struct FullereneLogger {

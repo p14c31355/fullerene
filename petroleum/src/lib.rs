@@ -1,8 +1,48 @@
 #![no_std]
 #![feature(never_type)]
-#![cfg_attr(not(feature = "std"), feature(alloc_error_handler))]
+#![feature(alloc_error_handler)]
 
 extern crate alloc;
+
+/// Macro to define panic handler using petroleum's serial output.
+/// Use this in binary crates (kernel, bootloader).
+#[macro_export]
+macro_rules! define_panic_handler {
+    () => {
+        #[cfg(all(target_os = "none", not(test)))]
+        #[panic_handler]
+        fn panic(info: &core::panic::PanicInfo) -> ! {
+            use core::fmt::Write;
+            // VGA text mode panic output (optional)
+            #[cfg(feature = "vga_panic")]
+            {
+                let vga_buffer = 0xb8000 as *mut u16;
+                let panic_msg = "KERNEL PANIC";
+                for (i, &byte) in panic_msg.bytes().enumerate() {
+                    unsafe {
+                        vga_buffer.add(i).write_volatile(byte as u16 | 0x4F00u16);
+                    }
+                }
+            }
+            // Serial output
+            $crate::serial::_print(format_args!("PANIC: {}\n", info));
+            loop {}
+        }
+    };
+}
+
+/// Macro to define alloc error handler.
+#[macro_export]
+macro_rules! define_alloc_error_handler {
+    () => {
+        #[cfg(all(target_os = "none", not(test)))]
+        #[alloc_error_handler]
+        fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
+            $crate::serial::_print(format_args!("ALLOC ERROR: {:?}\n", layout));
+            loop {}
+        }
+    };
+}
 
 // Fallback heap start address constant for when no suitable memory is found
 pub const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
