@@ -115,7 +115,7 @@ fn syscall_fork() -> SyscallResult {
 
     // Create new page table manager with cloned frame
     let mut child_page_table =
-        petroleum::page_table::PageTableHelper::new_with_frame(cloned_pml4_frame);
+        petroleum::page_table::ProcessPageTable::new_with_frame(cloned_pml4_frame);
     petroleum::initializer::Initializable::init(&mut child_page_table)
         .map_err(|_| SyscallError::InvalidArgument)?;
 

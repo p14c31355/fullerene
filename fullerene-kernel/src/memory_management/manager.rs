@@ -1,10 +1,10 @@
 use petroleum::common::logging::{SystemError, SystemResult};
-use petroleum::page_table::{BitmapFrameAllocator, BootInfoFrameAllocator, ProcessPageTable, PageTableHelper};
+use petroleum::page_table::{BitmapFrameAllocator, BootInfoFrameAllocator, ProcessPageTable, PageTableHelper, FrameAllocatorExt, MemoryMapDescriptor};
 use crate::memory_management::process_memory::ProcessMemoryManagerImpl;
 use petroleum::initializer::{
     ErrorLogging, FrameAllocator, Initializable, MemoryManager, ProcessMemoryManager,
 };
-use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
+use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB, FrameAllocator as X86FrameAllocator};
 
 /// Unified memory manager implementing all memory management traits
 pub struct UnifiedMemoryManager {
@@ -21,7 +21,7 @@ impl UnifiedMemoryManager {
     pub fn new() -> Self {
         const NONE_MANAGER: Option<ProcessMemoryManagerImpl> = None;
         Self {
-            frame_allocator: BitmapFrameAllocator::new(),
+            frame_allocator: BitmapFrameAllocator::new(0),
             page_table_manager: ProcessPageTable::new(),
             process_managers: [NONE_MANAGER; 16],
             current_process: 0,
@@ -36,7 +36,7 @@ impl UnifiedMemoryManager {
     ) -> SystemResult<()> {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"UMM::init start\n");
 
-        unsafe { self.frame_allocator.init_with_memory_map(memory_map)? };
+        self.frame_allocator = BitmapFrameAllocator::init_with_memory_map(memory_map);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Frame allocator init done\n");
 
         // Initialize global heap before creating any BTreeMap or using alloc
@@ -160,7 +160,7 @@ impl MemoryManager for UnifiedMemoryManager {
             let frame = self.page_table_manager.unmap_page(virt_addr)?;
 
             let phys_addr = frame.start_address().as_u64() as usize;
-            self.frame_allocator.free_frame(phys_addr)?;
+            self.free_frame(phys_addr)?;
         }
 
         Ok(())
@@ -484,7 +484,10 @@ impl FrameAllocator for UnifiedMemoryManager {
             return Err(SystemError::InternalError);
         }
 
-        self.frame_allocator.allocate_frame()
+        self.frame_allocator
+            .allocate_frame()
+            .map(|f| f.start_address().as_u64() as usize)
+            .ok_or(SystemError::FrameAllocationFailed)
     }
 
     fn free_frame(&mut self, frame_addr: usize) -> SystemResult<()> {
@@ -492,7 +495,8 @@ impl FrameAllocator for UnifiedMemoryManager {
             return Err(SystemError::InternalError);
         }
 
-        self.frame_allocator.free_frame(frame_addr)
+        self.frame_allocator.free_frame(x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(frame_addr as u64)));
+        Ok(())
     }
 
     fn allocate_contiguous_frames(&mut self, count: usize) -> SystemResult<usize> {
@@ -500,7 +504,7 @@ impl FrameAllocator for UnifiedMemoryManager {
             return Err(SystemError::InternalError);
         }
 
-        self.frame_allocator.allocate_contiguous_frames(count)
+        self.frame_allocator.allocate_contiguous_frames(count).map(|addr| addr as usize)
     }
 
     fn free_contiguous_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()> {
@@ -509,7 +513,8 @@ impl FrameAllocator for UnifiedMemoryManager {
         }
 
         self.frame_allocator
-            .free_contiguous_frames(start_addr, count)
+            .free_contiguous_frames(start_addr as u64, count);
+        Ok(())
     }
 
     fn total_frames(&self) -> usize {
@@ -525,7 +530,7 @@ impl FrameAllocator for UnifiedMemoryManager {
             return Err(SystemError::InternalError);
         }
 
-        self.frame_allocator.reserve_frames(start_addr, count)
+        self.frame_allocator.reserve_frames(start_addr as u64, count)
     }
 
     fn release_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()> {
@@ -533,7 +538,8 @@ impl FrameAllocator for UnifiedMemoryManager {
             return Err(SystemError::InternalError);
         }
 
-        self.frame_allocator.release_frames(start_addr, count)
+        self.frame_allocator.release_frames(start_addr as u64, count);
+        Ok(())
     }
 
     fn is_frame_available(&self, frame_addr: usize) -> bool {
@@ -639,10 +645,12 @@ impl UnifiedMemoryManager {
                 .translate_address(virt_addr)
                 .is_err()
             {
-                let frame = self.frame_allocator.allocate_frame()?;
+                let frame = self.frame_allocator
+                    .allocate_frame()
+                    .ok_or(SystemError::FrameAllocationFailed)?;
                 self.page_table_manager.map_page(
                     virt_addr,
-                    frame,
+                    frame.start_address().as_u64() as usize,
                     PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER_ACCESSIBLE,
                     &mut self.frame_allocator,
                 )?;

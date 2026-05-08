@@ -10,7 +10,7 @@ use petroleum::common::logging::{SystemError, SystemResult};
 use petroleum::initializer::{
     FrameAllocator, Initializable, MemoryManager,
 };
-use x86_64::structures::paging::PageTableFlags as PageFlags;
+use x86_64::structures::paging::{PageTableFlags as PageFlags, FrameAllocator as X86FrameAllocator};
 
 use petroleum::page_table::process::ProcessPageTable;
 pub mod convenience;
@@ -92,7 +92,7 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
     let pml4_frame = manager
         .frame_allocator
         .allocate_frame()
-        .map_err(|_| SystemError::FrameAllocationFailed)?;
+        .ok_or(SystemError::FrameAllocationFailed)?;
 
     // Debug: log the allocation result
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] pml4 frame allocated\n");
@@ -111,7 +111,7 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
     // Use the UnifiedMemoryManager's map_address method
     manager.map_address(
         TEMP_PHY_ACCESS,
-        pml4_frame,
+        pml4_frame.start_address().as_u64() as usize,
         1,
     )?;
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] pml4 mapped\n");
@@ -166,7 +166,7 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
     // Initialize the new page table manager with the allocated frame
     let mut page_table_manager = ProcessPageTable::new_with_frame(
         x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(
-            pml4_frame as u64,
+            pml4_frame.start_address().as_u64(),
         )),
     );
     Initializable::init(&mut page_table_manager)?;

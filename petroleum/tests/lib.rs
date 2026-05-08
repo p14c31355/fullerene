@@ -71,7 +71,7 @@ mod macro_tests {
 #[cfg(test)]
 mod address_integration_tests {
     use petroleum::common::utils::*;
-    use petroleum::page_table::efi_memory::{EfiMemoryDescriptor, calculate_frame_allocation_params};
+    use petroleum::page_table::memory_map::{EfiMemoryDescriptor, calculate_frame_allocation_params};
     use petroleum::common::uefi::EfiMemoryType;
 
     #[test]

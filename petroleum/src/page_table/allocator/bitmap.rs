@@ -23,10 +23,10 @@ impl BitmapFrameAllocator {
         }
     }
 
-    pub fn init_with_memory_map(memory_map: &[crate::page_table::memory_map::MemoryMapDescriptor]) -> Self {
+    pub fn init_with_memory_map<T: crate::page_table::types::MemoryDescriptorValidator>(memory_map: &[T]) -> Self {
         let mut max_phys = 0u64;
         for desc in memory_map {
-            let end = desc.physical_start() + desc.number_of_pages() * 4096;
+            let end = desc.get_physical_start() + desc.get_page_count() * 4096;
             if end > max_phys {
                 max_phys = end;
             }
@@ -36,9 +36,9 @@ impl BitmapFrameAllocator {
         allocator.bitmap.resize(allocator.bitmap.capacity(), u64::MAX);
         
         for desc in memory_map {
-            if desc.type_() == crate::common::EfiMemoryType::EfiConventionalMemory as u32 {
-                let start_frame = (desc.physical_start() / 4096) as usize;
-                let end_frame = ((desc.physical_start() + desc.number_of_pages() * 4096) / 4096) as usize;
+            if desc.get_type() == crate::common::EfiMemoryType::EfiConventionalMemory as u32 {
+                let start_frame = (desc.get_physical_start() / 4096) as usize;
+                let end_frame = ((desc.get_physical_start() + desc.get_page_count() * 4096) / 4096) as usize;
                 allocator.set_frame_range(start_frame, end_frame, false);
             }
         }
