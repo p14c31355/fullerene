@@ -193,6 +193,12 @@ impl UefiInitContext {
         self.init_memory_map();
         debug_log_no_alloc!("DEBUG: init_memory_map returned");
         
+        // CRITICAL: Initialize global heap allocator with static BOOT_HEAP_BUFFER BEFORE
+        // calling init_frame_allocator which uses Vec (needs the global allocator).
+        let boot_heap_ptr = unsafe { core::ptr::addr_of_mut!(crate::heap::BOOT_HEAP_BUFFER) as *mut u8 };
+        unsafe { petroleum::init_global_heap(boot_heap_ptr, crate::heap::HEAP_SIZE) };
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Global heap initialized (static buffer) before frame allocator\n");
+        
         let memory_map_ref = MEMORY_MAP.lock().as_ref().expect("Memory map not initialized").clone();
         debug_log_no_alloc!("DEBUG: Memory map reference acquired at 0x", memory_map_ref.as_ptr() as usize);
         
@@ -445,14 +451,9 @@ impl UefiInitContext {
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] Calling petroleum::page_table::init for heap mapping\n");
             let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator, kernel_phys_start.as_u64()) };
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] petroleum::page_table::init returned\n");
-            petroleum::map_pages_to_offset!(
-                mapper,
-                &mut *frame_allocator,
-                heap_phys_addr.as_u64(),
-                self.physical_memory_offset.as_u64(),
-                heap_pages as u64,
-                heap_flags
-            );
+            // Heap is already covered by the 1GB huge pages mapped in init(), so skip redundant mapping
+            // to avoid PageAlreadyMapped panics.
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] Heap already covered by 1GB mapping, skipping\n");
         }
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] Heap allocated and mapped\n");
 

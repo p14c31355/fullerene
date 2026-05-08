@@ -64,6 +64,11 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"  descriptor_size: 0x");
+    let len = petroleum::serial::format_hex_to_buffer(args.descriptor_size as u64, &mut buf, 16);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
     let system_table_phys = args.system_table;
     let system_table_virt = (system_table_phys as u64 + petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64()) as *mut EfiSystemTable;
 
@@ -71,24 +76,10 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     let system_table_ref = unsafe { &*system_table_virt };
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: system_table dereferenced successfully\n");
 
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Detecting descriptor_size from memory_map\n");
-    let descriptor_size = unsafe {
-        if args.map_ptr == 0 {
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: memory_map is null, using 0\n");
-            0
-        } else {
-            let map_virt_ptr = (args.map_ptr as u64 + petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64()) as *const usize;
-            let first_val = core::ptr::read_volatile(map_virt_ptr);
-            if first_val >= 40 && first_val <= 64 {
-                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Detected descriptor_size from map head\n");
-                first_val
-            } else {
-                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Using default descriptor_size 48\n");
-                48
-            }
-        }
-    };
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: descriptor_size obtained\n");
+    // Use the descriptor_size directly from KernelArgs (set by the bootloader)
+    let descriptor_size = args.descriptor_size;
+
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: descriptor_size obtained from KernelArgs\n");
 
     let mut ctx = UefiInitContext {
         args_ptr: captured_args_ptr,
