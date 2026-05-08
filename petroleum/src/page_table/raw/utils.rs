@@ -7,8 +7,12 @@ use x86_64::{
     },
 };
 
-pub const TEMP_VA_FOR_CLONE: VirtAddr = VirtAddr::new(0xffff_ffff_ffff_0000);
-pub const TEMP_VA_FOR_DESTROY: VirtAddr = VirtAddr::new(0xffff_ffff_ffff_8000);
+// Updated temporary virtual addresses for cloning and destroying page tables.
+// These values now match the definitions in `constants.rs` and reside within the
+// higher-half kernel address space, ensuring they are properly mapped during
+// early boot and page table manipulation.
+pub const TEMP_VA_FOR_CLONE: VirtAddr = VirtAddr::new(0xFFFF_9000_0000_0000);
+pub const TEMP_VA_FOR_DESTROY: VirtAddr = VirtAddr::new(0xFFFF_A000_0000_0000);
 
 /// Macro to safely map to higher half with logging
 #[macro_export]

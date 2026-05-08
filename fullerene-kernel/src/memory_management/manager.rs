@@ -71,6 +71,12 @@ impl UnifiedMemoryManager {
         let kernel_phys_start = kernel_phys_start & !4095;
 
         self.page_table_manager.initialize_with_frame_allocator(phys_offset, &mut self.frame_allocator, kernel_phys_start)?;
+        
+        // Reserve kernel memory to prevent the frame allocator from handing out frames used by the kernel itself.
+        // We reserve a generous 16MB starting from kernel_phys_start.
+        let kernel_reserve_pages = (16 * 1024 * 1024) / 4096;
+        let _ = self.frame_allocator.reserve_frames(kernel_phys_start, kernel_reserve_pages);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Kernel memory reserved in frame allocator\n");
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Page table manager initialized\n");
 
         // Ensure the entire heap buffer is mapped to avoid page faults during allocation
@@ -232,11 +238,15 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
             return Err(SystemError::InvalidArgument);
         }
 
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [create_address_space] creating process_manager\n");
         let mut process_manager = ProcessMemoryManagerImpl::new(process_id);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [create_address_space] process_manager created\n");
         
         // Initialize the process page table by cloning the kernel's current page table
         // This ensures the process has access to kernel space (including VGA buffer)
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [create_address_space] calling init_page_table\n");
         process_manager.init_page_table(&mut self.page_table_manager, &mut self.frame_allocator)?;
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [create_address_space] init_page_table returned\n");
         
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [create_address_space] Process page table initialized via cloning\n");
         

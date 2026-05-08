@@ -318,6 +318,7 @@ impl PageTableHelper for ProcessPageTable {
         frame_allocator: &mut impl FrameAllocator<Size4KiB>,
     ) -> crate::common::logging::SystemResult<usize> {
         if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_page_table] entered\n");
         
         let source_frame = if let Some(frame) = self.allocated_tables.get(&source_table) {
             frame
@@ -326,20 +327,39 @@ impl PageTableHelper for ProcessPageTable {
         } else {
             return Err(crate::common::logging::SystemError::InvalidArgument);
         };
-        let mapper = self.mapper.as_mut().unwrap();
-        let mut allocated_frames = alloc::vec::Vec::new();
-        let mut cloned_tables = BTreeMap::new();
-        let cloned_phys = Self::clone_page_table_recursive(
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_page_table] source_frame acquired\n");
+        let mapper = match self.mapper.as_mut() {
+            Some(m) => m,
+            None => {
+                crate::write_serial_bytes!(0x3F8, 0x3FD, b"ERROR: [clone_page_table] mapper is None!\n");
+                return Err(crate::common::logging::SystemError::InternalError);
+            }
+        };
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_page_table] mapper acquired\n");
+        
+        // Use a fixed-size array for allocated frames to avoid heap allocation during cloning
+        let mut allocated_frames = [None; 512]; 
+        let mut allocated_count = 0;
+        
+        // For cloned_tables, we'll use a simple linear search array since the number of tables is small
+        let mut cloned_tables: [(PhysAddr, PhysAddr); 64] = [(PhysAddr::new(0), PhysAddr::new(0)); 64];
+        let mut cloned_count = 0;
+
+        let cloned_phys = Self::clone_page_table_recursive_fixed(
             mapper,
             frame_allocator,
             source_frame.start_address(),
             4,
             &mut allocated_frames,
+            &mut allocated_count,
             &mut cloned_tables,
+            &mut cloned_count,
         )?;
 
-        for frame in allocated_frames {
-            self.allocated_tables.insert(frame.start_address().as_u64() as usize, frame);
+        for i in 0..allocated_count {
+            if let Some(frame) = allocated_frames[i] {
+                self.allocated_tables.insert(frame.start_address().as_u64() as usize, frame);
+            }
         }
         
         Ok(cloned_phys.as_u64() as usize)
@@ -407,63 +427,74 @@ fn destroy_page_table_recursive<'a>(
 }
 
 impl ProcessPageTable {
-    fn clone_page_table_recursive<'a>(
+    fn clone_page_table_recursive_fixed<'a>(
         mapper: &mut OffsetPageTable<'a>,
         frame_alloc: &mut impl FrameAllocator<Size4KiB>,
         source_table_phys: PhysAddr,
         level: usize,
-        allocated_frames: &mut alloc::vec::Vec<PhysFrame>,
-        cloned_tables: &mut BTreeMap<PhysAddr, PhysAddr>,
+        allocated_frames: &mut [Option<PhysFrame>; 512],
+        allocated_count: &mut usize,
+        cloned_tables: &mut [(PhysAddr, PhysAddr); 64],
+        cloned_count: &mut usize,
     ) -> crate::common::logging::SystemResult<PhysAddr> {
         if level == 0 || level > 4 {
             return Err(crate::common::logging::SystemError::InvalidArgument);
         }
         
-        if let Some(&cloned_phys) = cloned_tables.get(&source_table_phys) {
-            return Ok(cloned_phys);
+        // Linear search for already cloned tables
+        for i in 0..*cloned_count {
+            if cloned_tables[i].0 == source_table_phys {
+                return Ok(cloned_tables[i].1);
+            }
         }
 
-        let mut dest_frame: PhysFrame = if level > 1 {
-            match frame_alloc.allocate_frame() {
-                Some(frame) => frame,
-                None => {
-                    return Err(crate::common::logging::SystemError::FrameAllocationFailed)
-                },
-            }
-        } else {
-            PhysFrame::containing_address(PhysAddr::zero())
+        let dest_frame = match frame_alloc.allocate_frame() {
+            Some(frame) => frame,
+            None => {
+                return Err(crate::common::logging::SystemError::FrameAllocationFailed)
+            },
         };
         let dest_phys = dest_frame.start_address();
         
-        cloned_tables.insert(source_table_phys, dest_phys);
+        if *cloned_count < 64 {
+            cloned_tables[*cloned_count] = (source_table_phys, dest_phys);
+            *cloned_count += 1;
+        }
 
         let phys_offset = mapper.phys_offset();
         let source_va = phys_offset + source_table_phys.as_u64();
         let dest_va = phys_offset + dest_frame.start_address().as_u64();
 
         unsafe {
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] writing dest table\n");
             let dest_ptr = dest_va.as_mut_ptr() as *mut u8;
             core::ptr::write_bytes(dest_ptr, 0, 4096);
 
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] reading source table\n");
             let source_table = &*(source_va.as_ptr() as *const PageTable);
             let dest_table = &mut *(dest_va.as_mut_ptr() as *mut PageTable);
 
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] starting loop\n");
             for (i, (source_entry, dest_entry)) in source_table.iter().zip(dest_table.iter_mut()).enumerate() {
                 if source_entry.flags().contains(PageTableFlags::PRESENT) {
+                    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] processing present entry\n");
                     if level > 1 && !source_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] recursing\n");
                         if let Some(child_frame) = extract_frame_if_present!(source_entry) {
-                            let cloned_child_phys = Self::clone_page_table_recursive(
-                                mapper,
-                                frame_alloc,
-                                child_frame.start_address(),
-                                level - 1,
-                                allocated_frames,
-                                cloned_tables,
-                            )?;
-                            dest_entry.set_addr(cloned_child_phys, source_entry.flags());
-                        }
-                } else {
-                    if level == 1 {
+                            let cloned_child_phys = Self::clone_page_table_recursive_fixed(
+                                 mapper,
+                                 frame_alloc,
+                                 child_frame.start_address(),
+                                 level - 1,
+                                 allocated_frames,
+                                 allocated_count,
+                                 cloned_tables,
+                                 cloned_count,
+                             )?;
+                             crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] recurse returned\n");
+                             dest_entry.set_addr(cloned_child_phys, source_entry.flags());
+                         }
+                    } else if level == 1 {
                         // Full copy of the physical page to ensure process isolation
                         let source_phys = source_entry.addr();
                         let dest_frame = frame_alloc.allocate_frame().ok_or(crate::common::logging::SystemError::FrameAllocationFailed)?;
@@ -484,12 +515,14 @@ impl ProcessPageTable {
                         dest_entry.set_addr(source_entry.addr(), source_entry.flags());
                     }
                 }
-                }
             }
         }
 
         if level > 1 {
-            allocated_frames.push(dest_frame);
+            if *allocated_count < 512 {
+                allocated_frames[*allocated_count] = Some(dest_frame);
+                *allocated_count += 1;
+            }
         }
         Ok(dest_frame.start_address())
     }
