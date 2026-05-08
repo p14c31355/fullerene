@@ -1,6 +1,7 @@
 #[cfg(target_os = "uefi")]
 use core::ffi::c_void;
 use petroleum::common::EfiSystemTable;
+use petroleum::transition::KernelTransition;
 use x86_64::VirtAddr;
 use crate::boot::uefi_init::UefiInitContext;
 use crate::boot::uefi_main::efi_main_stage2;
@@ -134,15 +135,26 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling perform_efi_stage2_switch\n");
-    
-    let transition_ctx = petroleum::page_table::mapper::transition::TransitionContext::prepare_for_efi_stage2(
-        physical_memory_offset,
-        physical_memory_offset,
-        kernel_stack_top_virt,
-        efi_main_stage2,
-        ctx_ptr as *mut (),
-    );
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Performing world switch to kernel\n");
 
-    petroleum::page_table::mapper::transition::perform_efi_stage2_switch(transition_ctx, kernel_stack_top_virt);
+    let world = petroleum::transition::WorldSwitchBuilder::default()
+        .with_phys_offset(physical_memory_offset)
+        .with_stack(kernel_stack_top_virt)
+        .with_entry(VirtAddr::new(efi_main_stage2 as u64))
+        .with_args(captured_args_ptr)
+        .with_gdt(core::ptr::addr_of!(petroleum::transition::TRANSITION_GDT) as *const ())
+        .with_idt(core::ptr::null()) // IDT is not yet available during transition
+        .with_page_table(x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(0))) // TODO: Provide actual L4 frame
+        .with_allocator(core::ptr::null_mut()) // TODO: Provide actual allocator
+        .build()
+        .expect("Failed to build WorldSwitch");
+
+    let transition = petroleum::transition::UefiToHigherHalf {
+        world,
+        landing_zone: VirtAddr::new(petroleum::assembly::landing_zone as u64),
+    };
+
+    unsafe {
+        transition.perform();
+    }
 }
