@@ -5,7 +5,7 @@
 macro_rules! map_range_with_log_macro {
     ($mapper:expr, $allocator:expr, $phys:expr, $virt:expr, $pages:expr, $flags:expr) => {{
         unsafe {
-            $crate::page_table::map_range_with_huge_pages(
+            $crate::page_table::raw::map_range_with_huge_pages(
                 $mapper,
                 $allocator,
                 $phys,
@@ -63,7 +63,7 @@ macro_rules! map_pages {
 #[macro_export]
 macro_rules! map_identity_range_macro {
     ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{ 
-        unsafe { $crate::page_table::utils::map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags) } 
+        unsafe { $crate::page_table::raw::map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags) } 
     }};
 }
 
@@ -122,7 +122,7 @@ macro_rules! map_to_higher_half_with_log_macro {
 macro_rules! map_with_log_macro {
     ($mapper:expr, $allocator:expr, $phys:expr, $virt:expr, $pages:expr, $flags:expr, $behavior:tt) => {{
         unsafe {
-            $crate::page_table::map_range_with_huge_pages(
+            $crate::page_table::raw::map_range_with_huge_pages(
                 $mapper,
                 $allocator,
                 $phys,
@@ -199,7 +199,7 @@ macro_rules! map_with_offset {
 macro_rules! map_identity_range_checked {
     ($mapper:expr, $allocator:expr, $phys_start:expr, $num_pages:expr, $flags:expr) => {{
         unsafe {
-            $crate::page_table::map_range_with_huge_pages(
+            $crate::page_table::raw::map_range_with_huge_pages(
                 $mapper,
                 $allocator,
                 $phys_start,
