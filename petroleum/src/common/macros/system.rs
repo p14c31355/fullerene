@@ -189,10 +189,7 @@ macro_rules! init_boot_step {
 #[macro_export]
 macro_rules! init_step {
     ($name:expr, $func:expr) => {
-        (
-            $name,
-            $func as fn() -> Result<(), &'static str>,
-        )
+        ($name, $func as fn() -> Result<(), &'static str>)
     };
 }
 

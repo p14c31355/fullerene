@@ -171,7 +171,6 @@ pub trait SyscallHandler {
     fn handle_syscall(&mut self, syscall_number: usize, args: &[usize]) -> SystemResult<usize>;
 }
 
-
 // Placeholder for logging-related traits that may need to be defined
 pub trait Logger {
     fn log(&self, level: crate::common::logging::LogLevel, message: &str);

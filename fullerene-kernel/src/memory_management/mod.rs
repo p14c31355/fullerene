@@ -7,10 +7,10 @@
 use spin::Mutex;
 
 use petroleum::common::logging::{SystemError, SystemResult};
-use petroleum::initializer::{
-    FrameAllocator, Initializable, MemoryManager,
+use petroleum::initializer::{FrameAllocator, Initializable, MemoryManager};
+use x86_64::structures::paging::{
+    FrameAllocator as X86FrameAllocator, PageTableFlags as PageFlags,
 };
-use x86_64::structures::paging::{PageTableFlags as PageFlags, FrameAllocator as X86FrameAllocator};
 
 use petroleum::page_table::process::ProcessPageTable;
 pub mod convenience;
@@ -69,11 +69,19 @@ pub fn switch_to_page_table(_page_table: &ProcessPageTable) -> SystemResult<()> 
 
 /// Create a new process page table
 pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] create_process_page_table start\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [mem] create_process_page_table start\n"
+    );
     // Check if memory manager is initialized; if not, use current page table for composite mode
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] checking memory manager lock\n");
     if get_memory_manager().lock().is_none() {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] memory manager not found, using fallback\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [mem] memory manager not found, using fallback\n"
+        );
         // Fallback: use current CR3 page table when memory manager not available
         let mut ptm = ProcessPageTable::new();
         Initializable::init(&mut ptm)?;
@@ -97,7 +105,11 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
     // Debug: log the allocation result
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] pml4 frame allocated\n");
 
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] mapping pml4 to TEMP_PHY_ACCESS\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [mem] mapping pml4 to TEMP_PHY_ACCESS\n"
+    );
 
     // Test if we can even access the page_table_manager field
     let is_init = manager.page_table_manager.initialized;
@@ -175,38 +187,46 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
 }
 
 /// Deallocate a process page table and free its frames
-    pub fn deallocate_process_page_table(pml4_frame: x86_64::structures::paging::PhysFrame) {
-        // Properly deallocate the page table and its frames
-        if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
-            // The pml4_frame contains the physical address of the page table
-            let frame_addr = pml4_frame.start_address().as_u64() as usize;
+pub fn deallocate_process_page_table(pml4_frame: x86_64::structures::paging::PhysFrame) {
+    // Properly deallocate the page table and its frames
+    if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
+        // The pml4_frame contains the physical address of the page table
+        let frame_addr = pml4_frame.start_address().as_u64() as usize;
 
-            // Free the frame containing the page table
-            let _ = manager.free_frame(frame_addr);
+        // Free the frame containing the page table
+        let _ = manager.free_frame(frame_addr);
 
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Deallocated process page table\n");
-        }
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Deallocated process page table\n");
     }
+}
 
 /// Initialize the global memory manager
 pub fn init_memory_manager(
     memory_map: &[impl petroleum::page_table::types::MemoryDescriptorValidator],
 ) -> SystemResult<()> {
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: init_memory_manager entered\n");
-    
+
     let mut manager = MEMORY_MANAGER.lock();
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: MEMORY_MANAGER lock acquired\n");
-    
+
     let mut memory_manager = UnifiedMemoryManager::new();
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: UnifiedMemoryManager created\n");
-    
+
     if let Err(e) = memory_manager.init(memory_map) {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"ERROR: UnifiedMemoryManager::init failed!\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"ERROR: UnifiedMemoryManager::init failed!\n"
+        );
         return Err(e);
     }
-    
+
     *manager = Some(memory_manager);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Global memory manager initialized successfully\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: Global memory manager initialized successfully\n"
+    );
     Ok(())
 }
 
@@ -225,12 +245,12 @@ pub fn map_user_page(
     flags: PageFlags,
 ) -> SystemResult<()> {
     if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
-    manager.page_table_manager.map_page(
-        virtual_addr,
-        physical_addr,
-        flags,
-        &mut manager.frame_allocator,
-    )
+        manager.page_table_manager.map_page(
+            virtual_addr,
+            physical_addr,
+            flags,
+            &mut manager.frame_allocator,
+        )
     } else {
         Err(SystemError::InternalError)
     }

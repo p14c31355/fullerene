@@ -34,17 +34,25 @@ impl ProcessMemoryManagerImpl {
     pub fn init_page_table(
         &mut self,
         pt_manager: &mut petroleum::page_table::process::ProcessPageTable,
-        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<x86_64::structures::paging::Size4KiB>,
+        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<
+            x86_64::structures::paging::Size4KiB,
+        >,
     ) -> SystemResult<()> {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_page_table] entered\n");
         let kernel_root = pt_manager.current_page_table();
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_page_table] calling clone_page_table\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [init_page_table] calling clone_page_table\n"
+        );
         let new_root = pt_manager.clone_page_table(kernel_root, frame_allocator)?;
         // Don't switch CR3 - just store the new root for later context switch.
         // The CR3 switch would require the new root's frame to be in our own
         // allocated_tables map, which it's not (it's in pt_manager's map).
         if let Some(&frame) = pt_manager.allocated_tables().get(&new_root) {
-            self.page_table.allocated_tables_mut().insert(new_root, frame);
+            self.page_table
+                .allocated_tables_mut()
+                .insert(new_root, frame);
             self.page_table.set_current(new_root);
         }
         Ok(())

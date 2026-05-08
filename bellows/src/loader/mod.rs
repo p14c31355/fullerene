@@ -44,12 +44,8 @@ pub fn exit_boot_services_and_jump(
 
     // Allocate memory for KernelArgs before exiting boot services to avoid memory corruption
     let mut args_phys_addr: usize = 0;
-    let args_alloc_status = (bs.allocate_pages)(
-        0usize,
-        EfiMemoryType::EfiLoaderData,
-        1,
-        &mut args_phys_addr,
-    );
+    let args_alloc_status =
+        (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, 1, &mut args_phys_addr);
     if EfiStatus::from(args_alloc_status) != EfiStatus::Success {
         return Err(BellowsError::AllocationFailed(
             "Failed to allocate memory for KernelArgs.",
@@ -78,7 +74,8 @@ pub fn exit_boot_services_and_jump(
         ));
     }
 
-    let map_ptr: *mut c_void = petroleum::common::utils::calculate_map_data_ptr(map_phys_addr) as *mut c_void;
+    let map_ptr: *mut c_void =
+        petroleum::common::utils::calculate_map_data_ptr(map_phys_addr) as *mut c_void;
 
     // Setup variables for memory map
     let mut map_size: usize = map_buffer_size; // Start with full buffer size
@@ -134,7 +131,10 @@ pub fn exit_boot_services_and_jump(
                     EfiStatus::Success => {
                         #[cfg(feature = "debug_loader")]
                         {
-                            petroleum::info_log!("Exit boot services succeeded on attempt {}", attempts);
+                            petroleum::info_log!(
+                                "Exit boot services succeeded on attempt {}",
+                                attempts
+                            );
                             petroleum::info_log!("About to jump to kernel.");
                         }
                         break; // Success, exit the loop and proceed to kernel jump
@@ -175,7 +175,10 @@ pub fn exit_boot_services_and_jump(
             EfiStatus::BufferTooSmall => {
                 #[cfg(feature = "debug_loader")]
                 {
-                    petroleum::info_log!("Buffer too small, required size is now {} bytes", map_size);
+                    petroleum::info_log!(
+                        "Buffer too small, required size is now {} bytes",
+                        map_size
+                    );
                 }
                 // If our fixed buffer is too small, this is a fatal error.
                 let _ = (bs.free_pages)(map_phys_addr, alloc_pages); // Cleanup
@@ -187,14 +190,14 @@ pub fn exit_boot_services_and_jump(
                     "Memory map too large for buffer.",
                 ));
             }
-                _ => {
-                    let _ = (bs.free_pages)(map_phys_addr, alloc_pages); // Cleanup
-                    #[cfg(feature = "debug_loader")]
-                    {
-                        petroleum::error_log!("Error: Failed to get memory map: status={:#x}", status);
-                    }
-                    return Err(BellowsError::InvalidState("Failed to get memory map."));
+            _ => {
+                let _ = (bs.free_pages)(map_phys_addr, alloc_pages); // Cleanup
+                #[cfg(feature = "debug_loader")]
+                {
+                    petroleum::error_log!("Error: Failed to get memory map: status={:#x}", status);
                 }
+                return Err(BellowsError::InvalidState("Failed to get memory map."));
+            }
         }
     }
 
@@ -212,11 +215,15 @@ pub fn exit_boot_services_and_jump(
         let config_size = core::mem::size_of::<petroleum::common::uefi::ConfigWithMetadata>();
 
         // The memory map data starts at map_ptr.
-    // The total size of the map data is map_size.
-    // We append the config immediately after the map data.
-    let config_offset = petroleum::common::utils::calculate_config_offset(map_size);
-    if petroleum::common::utils::check_buffer_overflow(map_phys_addr, config_offset, config_size, map_buffer_size)
-    {
+        // The total size of the map data is map_size.
+        // We append the config immediately after the map data.
+        let config_offset = petroleum::common::utils::calculate_config_offset(map_size);
+        if petroleum::common::utils::check_buffer_overflow(
+            map_phys_addr,
+            config_offset,
+            config_size,
+            map_buffer_size,
+        ) {
             unsafe {
                 let dest_ptr = (map_phys_addr as *mut u8).add(config_offset);
                 core::ptr::copy_nonoverlapping(
@@ -239,16 +246,20 @@ pub fn exit_boot_services_and_jump(
     // passing the memory map and other data. The validity of the `entry`
     // function pointer is assumed based on the successful PE file loading.
     //
-    // Note: The `entry` function pointer is obtained via `load_efi_image`, which now 
+    // Note: The `entry` function pointer is obtained via `load_efi_image`, which now
     // handles high-half relocation and returns the virtual address.
 
     // Setup Page Tables before jumping to kernel
-    petroleum::serial::_print(format_args!("Reinitializing page tables for kernel jump...\n"));
+    petroleum::serial::_print(format_args!(
+        "Reinitializing page tables for kernel jump...\n"
+    ));
 
     let args_ptr = args_phys_addr as *mut petroleum::assembly::KernelArgs;
     unsafe {
-        let fb_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|m| *m.lock());
-        
+        let fb_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+            .get()
+            .and_then(|m| *m.lock());
+
         core::ptr::write_volatile(
             args_ptr,
             petroleum::assembly::KernelArgs {
@@ -267,7 +278,9 @@ pub fn exit_boot_services_and_jump(
         );
     }
 
-    let fb_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|m| *m.lock());
+    let fb_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+        .get()
+        .and_then(|m| *m.lock());
     let (fb_addr, fb_size) = match fb_config {
         Some(c) => (
             Some(x86_64::VirtAddr::new(c.address)),
@@ -280,7 +293,7 @@ pub fn exit_boot_services_and_jump(
     let descriptor_size_val = descriptor_size;
     // The actual descriptors start at map_ptr
     let descriptors_ptr = map_ptr as *const u8;
-    
+
     // map_size is the size of the memory map returned by get_memory_map
     let num_descriptors = map_size.checked_div(descriptor_size_val).unwrap_or(0);
 
@@ -288,7 +301,11 @@ pub fn exit_boot_services_and_jump(
         let mut descriptors = alloc::vec::Vec::with_capacity(num_descriptors);
         for i in 0..num_descriptors {
             unsafe {
-                let desc_ptr = petroleum::common::utils::calculate_descriptor_ptr(descriptors_ptr, i, descriptor_size_val);
+                let desc_ptr = petroleum::common::utils::calculate_descriptor_ptr(
+                    descriptors_ptr,
+                    i,
+                    descriptor_size_val,
+                );
                 descriptors.push(petroleum::page_table::memory_map::MemoryMapDescriptor::new(
                     desc_ptr,
                     descriptor_size_val,
@@ -301,10 +318,16 @@ pub fn exit_boot_services_and_jump(
     };
 
     let mut frame_allocator = petroleum::page_table::BitmapFrameAllocator::new(
-        petroleum::page_table::memory_map::processor::calculate_frame_allocation_params(&memory_map_descriptors).1
+        petroleum::page_table::memory_map::processor::calculate_frame_allocation_params(
+            &memory_map_descriptors,
+        )
+        .1,
     );
     frame_allocator.init(0); // Initialize with 0 used frames initially
-    petroleum::page_table::memory_map::processor::mark_available_frames(&mut frame_allocator, &memory_map_descriptors);
+    petroleum::page_table::memory_map::processor::mark_available_frames(
+        &mut frame_allocator,
+        &memory_map_descriptors,
+    );
 
     let mapper = unsafe {
         let mut m = petroleum::page_table::kernel::init(
@@ -319,22 +342,34 @@ pub fn exit_boot_services_and_jump(
             &mut m,
             &mut frame_allocator,
             kernel_phys_start.as_u64(),
-            petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64() + kernel_phys_start.as_u64(),
+            petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64()
+                + kernel_phys_start.as_u64(),
             kernel_pages,
-            x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
+            x86_64::structures::paging::PageTableFlags::PRESENT
+                | x86_64::structures::paging::PageTableFlags::WRITABLE,
             "kernel",
-        ).expect("Failed to map kernel to higher half");
+        )
+        .expect("Failed to map kernel to higher half");
 
         m
     };
     let new_phys_offset = mapper.phys_offset();
-    
+
     // Get the physical address of the new PML4 table
     let pml4_phys = x86_64::registers::control::Cr3::read().0.start_address();
-    
-    petroleum::serial::_print(format_args!("New physical memory offset: {:#x}\n", new_phys_offset.as_u64()));
-    petroleum::serial::_print(format_args!("New PML4 physical address: {:#x}\n", pml4_phys.as_u64()));
-    petroleum::serial::_print(format_args!("Jumping to kernel entry point: {:#p}\n", entry));
+
+    petroleum::serial::_print(format_args!(
+        "New physical memory offset: {:#x}\n",
+        new_phys_offset.as_u64()
+    ));
+    petroleum::serial::_print(format_args!(
+        "New PML4 physical address: {:#x}\n",
+        pml4_phys.as_u64()
+    ));
+    petroleum::serial::_print(format_args!(
+        "Jumping to kernel entry point: {:#p}\n",
+        entry
+    ));
 
     // Now jump to the kernel.
     unsafe {
@@ -353,14 +388,14 @@ pub fn exit_boot_services_and_jump(
             "mov fs, ax",
             "mov gs, ax",
             "mov ss, ax",
-            
+
             "mov rsp, {stack_top}",
             "mov rdi, {args_ptr}",
             "mov rcx, {handle}",
             "mov rdx, {st}",
             "mov r8, {map}",
             "mov r9, {size}",
-            
+
             "jmp {entry_addr}",
             stack_top = in(reg) (args_phys_addr + 4096),
             args_ptr = in(reg) args_ptr,
@@ -379,8 +414,10 @@ pub fn load_efi_image(
     st: &petroleum::common::EfiSystemTable,
     file: &[u8],
     phys_offset: usize,
-) -> petroleum::common::Result<
-    (x86_64::addr::PhysAddr, u64, extern "efiapi" fn(usize, *mut petroleum::common::EfiSystemTable, *mut c_void, usize) -> !),
-> {
+) -> petroleum::common::Result<(
+    x86_64::addr::PhysAddr,
+    u64,
+    extern "efiapi" fn(usize, *mut petroleum::common::EfiSystemTable, *mut c_void, usize) -> !,
+)> {
     petroleum::page_table::pe::load_efi_image(st, file, phys_offset)
 }

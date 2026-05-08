@@ -1,5 +1,5 @@
 pub mod pci;
-pub mod ports;
 pub mod pic;
+pub mod ports;
 
 pub use pci::{PciConfigSpace, PciDevice, PciScanner};

@@ -1,6 +1,6 @@
 use crate::page_table::constants::{MAX_DESCRIPTOR_PAGES, MAX_SYSTEM_MEMORY};
-use crate::page_table::types::MemoryDescriptorValidator;
 use crate::page_table::memory_map::descriptor::{EfiMemoryDescriptor, MemoryMapDescriptor};
+use crate::page_table::types::MemoryDescriptorValidator;
 
 impl MemoryDescriptorValidator for MemoryMapDescriptor {
     fn get_type(&self) -> u32 {

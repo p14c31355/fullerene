@@ -1,4 +1,8 @@
-use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::{PageTable, PhysFrame}};
+use x86_64::{
+    PhysAddr, VirtAddr,
+    registers::control::Cr3,
+    structures::paging::{PageTable, PhysFrame},
+};
 
 pub unsafe fn translate_addr(addr: VirtAddr, physical_memory_offset: VirtAddr) -> Option<PhysAddr> {
     translate_addr_inner(addr, physical_memory_offset)
@@ -32,7 +36,9 @@ fn translate_addr_inner(addr: VirtAddr, physical_memory_offset: VirtAddr) -> Opt
         let entry = &table[index];
         match entry.frame() {
             Ok(f) => frame = f,
-            Err(x86_64::structures::paging::page_table::FrameError::FrameNotPresent) => return None,
+            Err(x86_64::structures::paging::page_table::FrameError::FrameNotPresent) => {
+                return None;
+            }
             Err(x86_64::structures::paging::page_table::FrameError::HugeFrame) => {
                 let phys_addr = entry.addr().as_u64();
                 let offset = calculate_huge_page_offset(i, addr.as_u64());

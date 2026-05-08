@@ -1,6 +1,6 @@
-use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
-use crate::page_table::allocator::traits::FrameAllocatorExt;
 use crate::common::logging::SystemResult;
+use crate::page_table::allocator::traits::FrameAllocatorExt;
+use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
 
 pub struct BitmapFrameAllocator {
     bitmap: alloc::vec::Vec<u64>,
@@ -23,7 +23,9 @@ impl BitmapFrameAllocator {
         }
     }
 
-    pub fn init_with_memory_map<T: crate::page_table::types::MemoryDescriptorValidator>(memory_map: &[T]) -> Self {
+    pub fn init_with_memory_map<T: crate::page_table::types::MemoryDescriptorValidator>(
+        memory_map: &[T],
+    ) -> Self {
         let mut max_phys = 0u64;
         for desc in memory_map {
             let end = desc.get_physical_start() + desc.get_page_count() * 4096;
@@ -33,19 +35,25 @@ impl BitmapFrameAllocator {
         }
         let total_frames = ((max_phys + 4095) / 4096) as usize;
         let mut allocator = Self::new(total_frames);
-        allocator.bitmap.resize(allocator.bitmap.capacity(), u64::MAX);
-        
+        allocator
+            .bitmap
+            .resize(allocator.bitmap.capacity(), u64::MAX);
+
         for desc in memory_map {
             if desc.get_type() == crate::common::EfiMemoryType::EfiConventionalMemory as u32 {
                 let start_frame = (desc.get_physical_start() / 4096) as usize;
-                let end_frame = ((desc.get_physical_start() + desc.get_page_count() * 4096) / 4096) as usize;
+                let end_frame =
+                    ((desc.get_physical_start() + desc.get_page_count() * 4096) / 4096) as usize;
                 allocator.set_frame_range(start_frame, end_frame, false);
             }
         }
         allocator
     }
 
-    pub fn allocate_contiguous_frames(&mut self, pages: usize) -> crate::common::logging::SystemResult<u64> {
+    pub fn allocate_contiguous_frames(
+        &mut self,
+        pages: usize,
+    ) -> crate::common::logging::SystemResult<u64> {
         let mut count = 0;
         let mut start = 0;
         for i in 0..self.total_frames {
@@ -98,7 +106,11 @@ impl BitmapFrameAllocator {
         }
     }
 
-    pub fn reserve_frames(&mut self, start_phys: u64, pages: usize) -> crate::common::logging::SystemResult<()> {
+    pub fn reserve_frames(
+        &mut self,
+        start_phys: u64,
+        pages: usize,
+    ) -> crate::common::logging::SystemResult<()> {
         let start_frame = (start_phys / 4096) as usize;
         for i in 0..pages {
             self.set_frame_used(start_frame + i, true);
@@ -125,7 +137,9 @@ unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
                             return None;
                         }
                         self.set_frame_used(frame_idx, true);
-                        return Some(PhysFrame::containing_address(x86_64::PhysAddr::new(frame_idx as u64 * 4096)));
+                        return Some(PhysFrame::containing_address(x86_64::PhysAddr::new(
+                            frame_idx as u64 * 4096,
+                        )));
                     }
                 }
             }
@@ -163,4 +177,3 @@ impl FrameAllocatorExt for BitmapFrameAllocator {
         self.set_frame_used(frame_idx, false);
     }
 }
-

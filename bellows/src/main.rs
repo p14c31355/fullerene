@@ -10,7 +10,6 @@ extern crate alloc;
 petroleum::define_panic_handler!();
 petroleum::define_alloc_error_handler!();
 
-
 // Embedded kernel binary
 static KERNEL_BINARY: &[u8] = include_bytes!("kernel_final.bin");
 // Import Port for direct I/O
@@ -29,7 +28,10 @@ use petroleum::common::{EfiGraphicsPixelFormat, EfiSystemTable, FullereneFramebu
 ///
 /// This function is called by the UEFI firmware and must adhere to the UEFI calling convention.
 #[unsafe(no_mangle)]
-pub unsafe extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
+pub unsafe extern "efiapi" fn efi_main(
+    image_handle: usize,
+    system_table: *mut EfiSystemTable,
+) -> ! {
     // Before setting UEFI_SYSTEM_TABLE
     if image_handle == 0 {
         panic!("Invalid image_handle");
@@ -47,7 +49,11 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut E
     petroleum::bootloader_log!("UEFI_WRITER initialized.");
 
     petroleum::bootloader_log!("Bellows UEFI Bootloader starting...");
-    petroleum::bootloader_log!("Image Handle: {:#x}, System Table: {:#p}", image_handle, system_table);
+    petroleum::bootloader_log!(
+        "Image Handle: {:#x}, System Table: {:#p}",
+        image_handle,
+        system_table
+    );
     // Initialize heap
     petroleum::bootloader_log!("Attempting to initialize heap...");
     init_heap(bs).expect("Heap initialization failed");
@@ -69,7 +75,9 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut E
             init_basic_vga_text_mode();
             // For UEFI fallback, try to install a basic VGA framebuffer config for kernel use
             install_vga_framebuffer_config(st);
-            petroleum::bootloader_log!("VGA framebuffer config installed, continuing with kernel load.");
+            petroleum::bootloader_log!(
+                "VGA framebuffer config installed, continuing with kernel load."
+            );
         }
     }
     petroleum::bootloader_log!("Graphics initialization complete.");
@@ -80,8 +88,13 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut E
     petroleum::bootloader_log!("Bellows: Kernel file size check: {} bytes", efi_image_size);
     if efi_image_size > 0 {
         let first_bytes = &KERNEL_BINARY[..core::cmp::min(efi_image_size, 4)];
-        petroleum::bootloader_log!("Bellows: First 4 bytes: {:02x?}, {:02x?}, {:02x?}, {:02x?}", 
-            first_bytes[0], first_bytes[1], first_bytes[2], first_bytes[3]);
+        petroleum::bootloader_log!(
+            "Bellows: First 4 bytes: {:02x?}, {:02x?}, {:02x?}, {:02x?}",
+            first_bytes[0],
+            first_bytes[1],
+            first_bytes[2],
+            first_bytes[3]
+        );
     }
     if efi_image_size == 0 {
         petroleum::bootloader_log!("Bellows: Kernel file is empty!");
@@ -97,7 +110,11 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut E
     petroleum::serial::_print(format_args!("Attempting to load EFI image...\n"));
 
     // Load the kernel and get its entry point.
-    let (kernel_phys_start, kernel_entry_phys, entry) = match load_efi_image(st, efi_image_file, petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64() as usize) {
+    let (kernel_phys_start, kernel_entry_phys, entry) = match load_efi_image(
+        st,
+        efi_image_file,
+        petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64() as usize,
+    ) {
         Ok((phys, phys_entry, e)) => {
             petroleum::serial::_print(format_args!(
                 "EFI image loaded successfully. Entry point: {:#p}, Phys entry: {:#x}, Phys base: {:#x}\n",
@@ -121,7 +138,13 @@ pub unsafe extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut E
     ));
     // Exit boot services and jump to the kernel.
     petroleum::println!("Bellows: About to exit boot services and jump to kernel."); // Debug print just before the call
-    match exit_boot_services_and_jump(image_handle, system_table, kernel_phys_start, kernel_entry_phys, entry) {
+    match exit_boot_services_and_jump(
+        image_handle,
+        system_table,
+        kernel_phys_start,
+        kernel_entry_phys,
+        entry,
+    ) {
         Ok(_) => {
             unreachable!(); // This branch should never be reached if the function returns '!'
         }

@@ -52,7 +52,10 @@ macro_rules! safe_identity_map {
 macro_rules! safe_cr3_write {
     ($frame:expr) => {{
         unsafe {
-            x86_64::registers::control::Cr3::write($frame, x86_64::registers::control::Cr3Flags::empty());
+            x86_64::registers::control::Cr3::write(
+                $frame,
+                x86_64::registers::control::Cr3Flags::empty(),
+            );
         }
     }};
 }
@@ -60,9 +63,7 @@ macro_rules! safe_cr3_write {
 /// Macro to safely read CR3
 #[macro_export]
 macro_rules! safe_cr3_read {
-    () => {{
-        x86_64::registers::control::Cr3::read()
-    }};
+    () => {{ x86_64::registers::control::Cr3::read() }};
 }
 
 /// Macro to consolidate CR3 read and validation operations
@@ -90,33 +91,56 @@ macro_rules! flush_tlb_safely {
 macro_rules! with_temp_mapping {
     ($mapper:expr, $frame_allocator:expr, $temp_va:expr, $frame:expr, $body:block) => {{
         let page = Page::<Size4KiB>::containing_address($temp_va);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [with_temp_mapping] attempting map_to\n");
+        crate::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [with_temp_mapping] attempting map_to\n"
+        );
         unsafe {
-            let map_res = $mapper
-                .map_to(
-                    page,
-                    $frame,
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                    $frame_allocator,
-                );
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [with_temp_mapping] map_to returned\n");
+            let map_res = $mapper.map_to(
+                page,
+                $frame,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                $frame_allocator,
+            );
+            crate::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: [with_temp_mapping] map_to returned\n"
+            );
             match map_res {
                 Ok(flush) => {
                     flush.flush();
                 }
                 Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [with_temp_mapping] PageAlreadyMapped, continuing\n");
+                    crate::write_serial_bytes!(
+                        0x3F8,
+                        0x3FD,
+                        b"DEBUG: [with_temp_mapping] PageAlreadyMapped, continuing\n"
+                    );
                     x86_64::instructions::tlb::flush(page.start_address());
                 }
                 Err(e) => {
-                    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [with_temp_mapping] map_to failed\n");
+                    crate::write_serial_bytes!(
+                        0x3F8,
+                        0x3FD,
+                        b"DEBUG: [with_temp_mapping] map_to failed\n"
+                    );
                     return Err($crate::common::logging::SystemError::MappingFailed);
                 }
             }
         }
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [with_temp_mapping] map_to success and flushed\n");
+        crate::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [with_temp_mapping] map_to success and flushed\n"
+        );
         let result = $body;
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [with_temp_mapping] body executed, unmapping\n");
+        crate::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [with_temp_mapping] body executed, unmapping\n"
+        );
         if let Ok((_frame, flush)) = $mapper.unmap(page) {
             flush.flush();
         }
@@ -150,7 +174,8 @@ macro_rules! map_region_with_validation {
                 $num_pages,
                 $flags
             )
-        }.unwrap_or_else(|_| panic!("Failed to map {} region", $desc))
+        }
+        .unwrap_or_else(|_| panic!("Failed to map {} region", $desc))
     };
 }
 
@@ -236,7 +261,10 @@ macro_rules! map_current_stack {
             if desc.is_valid() {
                 let start = desc.get_physical_start();
                 let end = start + desc.get_page_count() * 4096;
-                if rsp_phys >= start && rsp_phys < end && desc.get_page_count() <= $crate::page_table::constants::MAX_DESCRIPTOR_PAGES {
+                if rsp_phys >= start
+                    && rsp_phys < end
+                    && desc.get_page_count() <= $crate::page_table::constants::MAX_DESCRIPTOR_PAGES
+                {
                     let virt_offset = rsp_virt - rsp_phys;
                     unsafe {
                         $crate::page_table::raw::map_range_4kiB(
@@ -264,7 +292,15 @@ pub unsafe fn map_identity_range(
     num_pages: u64,
     flags: PageTableFlags,
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-    crate::page_table::raw::map_range_4kiB(mapper, frame_allocator, phys_start, phys_start, num_pages, flags, "panic")
+    crate::page_table::raw::map_range_4kiB(
+        mapper,
+        frame_allocator,
+        phys_start,
+        phys_start,
+        num_pages,
+        flags,
+        "panic",
+    )
 }
 
 pub unsafe fn map_range_4kiB<A: FrameAllocator<Size4KiB>>(
@@ -286,9 +322,11 @@ pub unsafe fn map_range_4kiB<A: FrameAllocator<Size4KiB>>(
             Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_frame)) => {
                 x86_64::instructions::tlb::flush(page.start_address());
             }
-            Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {},
+            Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {}
             Err(e) => {
-                if behavior == "panic" { panic!("Mapping error: {:?}", e); }
+                if behavior == "panic" {
+                    panic!("Mapping error: {:?}", e);
+                }
                 return Err(e);
             }
         }
@@ -306,7 +344,7 @@ pub fn adjust_return_address_and_stack(current_phys_offset: VirtAddr, new_phys_o
     unsafe {
         let mut rbp: u64;
         core::arch::asm!("mov {}, rbp", out(reg) rbp);
-        
+
         let mut rsp: u64;
         core::arch::asm!("mov {}, rsp", out(reg) rsp);
         rsp = rsp.wrapping_add(offset_diff);

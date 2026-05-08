@@ -1,6 +1,6 @@
 use alloc::collections::BTreeMap;
-use spin::Mutex;
 use petroleum::common::logging::SystemResult;
+use spin::Mutex;
 
 /// Kernel virtual address space allocated regions tracker
 pub static KERNEL_VIRTUAL_ALLOCATED_REGIONS: Mutex<BTreeMap<usize, usize>> =

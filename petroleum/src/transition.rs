@@ -4,9 +4,12 @@
 //! defined in `assembly.rs`, allowing the system to express "world switches"
 //! as structured data and strategies.
 
-use x86_64::{VirtAddr, PhysAddr, structures::paging::{PhysFrame, PageTableFlags, OffsetPageTable, PageTable, Mapper}};
 use crate::assembly::{KernelArgs, TransitionArgs, TransitionFrame};
 use crate::page_table::constants::BootInfoFrameAllocator;
+use x86_64::{
+    PhysAddr, VirtAddr,
+    structures::paging::{Mapper, OffsetPageTable, PageTable, PageTableFlags, PhysFrame},
+};
 
 #[derive(Clone, Copy)]
 #[repr(C, packed)]
@@ -38,7 +41,14 @@ pub static mut TRANSITION_GDT: TransitionGdt = TransitionGdt {
         base: 0,
     },
     entries: [
-        GdtEntry { limit_low: 0, base_low: 0, base_mid: 0, access: 0, flags: 0, base_high: 0 },
+        GdtEntry {
+            limit_low: 0,
+            base_low: 0,
+            base_mid: 0,
+            access: 0,
+            flags: 0,
+            base_high: 0,
+        },
         GdtEntry {
             limit_low: 0xFFFF,
             base_low: 0,
@@ -110,40 +120,38 @@ impl KernelTransition for UefiToHigherHalf {
         // To implement this, we need the current physical memory offset to calculate offset_diff.
         // In a real scenario, this would be passed in or tracked.
         // For now, we implement the world switch logic here.
-        
+
         // This is a simplification. In actual use, we'd need the current offset.
         // For the sake of this refactor, we are moving the logic from TransitionContext::perform.
-        
+
         // We will assume a helper or context provides the current offset.
         // Since this is a high-level abstraction, we might need to add it to UefiToHigherHalf.
-        
+
         crate::assembly::jump_to_kernel(
             self.world.entry_point.as_u64() as usize,
-            self.world.kernel_args
+            self.world.kernel_args,
         )
     }
 }
 
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub unsafe extern "sysv64" fn landing_zone_logic(
-    ctx: *const TransitionArgs,
-) {
+pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
     unsafe {
         let args = &*ctx;
-        
+
         let actual_kernel_entry = if args.kernel_entry == 0 {
             unsafe { TRANSITION_KERNEL_ENTRY }
         } else {
             args.kernel_entry
         };
-        
+
         let actual_kernel_args = if args.kernel_args.is_null() {
             unsafe { KERNEL_ARGS }
         } else {
             args.kernel_args
         };
-        
+
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: Start\n");
 
         if !args.load_idt.is_null() {
@@ -167,7 +175,11 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
         let local_phys_offset = VirtAddr::new(sign_extended_offset);
         let local_frame_allocator = args.allocator;
 
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"High-half transition: landing zone logic reached!\n");
+        crate::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"High-half transition: landing zone logic reached!\n"
+        );
         crate::flush_tlb_and_verify!();
 
         let l4_virt_raw = args.phys_offset.wrapping_add(l4_phys);
@@ -183,24 +195,53 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
             VirtAddr::new(0),
         );
 
-        let l4_v_sign = if (l4_virt_raw & (1 << 47)) != 0 { l4_virt_raw | 0xFFFF_0000_0000_0000 } else { l4_virt_raw & 0x0000_FFFF_FFFF_FFFF };
+        let l4_v_sign = if (l4_virt_raw & (1 << 47)) != 0 {
+            l4_virt_raw | 0xFFFF_0000_0000_0000
+        } else {
+            l4_virt_raw & 0x0000_FFFF_FFFF_FFFF
+        };
         let _ = temp_mapper.map_to(
             x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(l4_v_sign)),
             x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(l4_phys & 0x000F_FFFF_FFFF_FFFF)),
             PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE,
             &mut *local_frame_allocator,
         );
-        
+
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"Landing zone jumping to kernel entry!\n");
-        
+
         if actual_kernel_entry == 0 {
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"ERROR: actual_kernel_entry is 0! Hanging...\n");
-            loop { core::hint::spin_loop(); }
+            crate::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"ERROR: actual_kernel_entry is 0! Hanging...\n"
+            );
+            loop {
+                core::hint::spin_loop();
+            }
         }
 
         let args_phys = actual_kernel_args as u64;
         let args_phys_raw = args_phys.wrapping_sub(local_phys_offset.as_u64());
-        let args_v_sign = if (args_phys & (1 << 47)) != 0 { args_phys | 0xFFFF_0000_0000_0000 } else { args_phys & 0x0000_FFFF_FFFF_FFFF };
+        let args_v_sign = if (args_phys & (1 << 47)) != 0 {
+            args_phys | 0xFFFF_0000_0000_0000
+        } else {
+            args_phys & 0x0000_FFFF_FFFF_FFFF
+        };
+        let _ = temp_mapper.map_to(
+            x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(args_v_sign)),
+            x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(args_phys_raw & 0x000F_FFFF_FFFF_FFFF)),
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+            &mut *local_frame_allocator,
+        );
+
+        // Map the page containing KernelArgs before dereferencing
+        let args_phys = actual_kernel_args as u64;
+        let args_phys_raw = args_phys.wrapping_sub(local_phys_offset.as_u64());
+        let args_v_sign = if (args_phys & (1 << 47)) != 0 {
+            args_phys | 0xFFFF_0000_0000_0000
+        } else {
+            args_phys & 0x0000_FFFF_FFFF_FFFF
+        };
         let _ = temp_mapper.map_to(
             x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(args_v_sign)),
             x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(args_phys_raw & 0x000F_FFFF_FFFF_FFFF)),
@@ -218,7 +259,11 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
         for i in 0..map_pages {
             let v_addr = map_virt.wrapping_add(i * 4096);
             let p_addr = map_phys.wrapping_add(i * 4096);
-            let v_sign = if (v_addr & (1 << 47)) != 0 { v_addr | 0xFFFF_0000_0000_0000 } else { v_addr & 0x0000_FFFF_FFFF_FFFF };
+            let v_sign = if (v_addr & (1 << 47)) != 0 {
+                v_addr | 0xFFFF_0000_0000_0000
+            } else {
+                v_addr & 0x0000_FFFF_FFFF_FFFF
+            };
             let _ = temp_mapper.map_to(
                 x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(v_sign)),
                 x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(p_addr & 0x000F_FFFF_FFFF_FFFF)),
@@ -226,11 +271,15 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
                 &mut *local_frame_allocator,
             );
         }
-        
+
         for page_offset in 0..2048 {
             let v_addr_raw = kernel_virt_start.wrapping_add(page_offset * 2 * 1024 * 1024);
             let p_addr_raw = kernel_phys_start.wrapping_add(page_offset * 2 * 1024 * 1024);
-            let v_addr_sign_extended = if (v_addr_raw & (1 << 47)) != 0 { v_addr_raw | 0xFFFF_0000_0000_0000 } else { v_addr_raw & 0x0000_FFFF_FFFF_FFFF };
+            let v_addr_sign_extended = if (v_addr_raw & (1 << 47)) != 0 {
+                v_addr_raw | 0xFFFF_0000_0000_0000
+            } else {
+                v_addr_raw & 0x0000_FFFF_FFFF_FFFF
+            };
             let _ = temp_mapper.map_to(
                 x86_64::structures::paging::Page::<x86_64::structures::paging::Size2MiB>::containing_address(VirtAddr::new(v_addr_sign_extended)),
                 x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size2MiB>::containing_address(x86_64::PhysAddr::new(p_addr_raw)),
@@ -239,11 +288,16 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
             );
         }
 
-        let entry_phys_start = (actual_kernel_entry as u64).wrapping_sub(local_phys_offset.as_u64()) & !0xFFF;
+        let entry_phys_start =
+            (actual_kernel_entry as u64).wrapping_sub(local_phys_offset.as_u64()) & !0xFFF;
         for page_offset in -16i32..16i32 {
             let p_page = entry_phys_start.wrapping_add((page_offset as i64 * 4096) as u64);
             let v_page = p_page.wrapping_add(local_phys_offset.as_u64());
-            let v_sign = if (v_page & (1 << 47)) != 0 { v_page | 0xFFFF_0000_0000_0000 } else { v_page & 0x0000_FFFF_FFFF_FFFF };
+            let v_sign = if (v_page & (1 << 47)) != 0 {
+                v_page | 0xFFFF_0000_0000_0000
+            } else {
+                v_page & 0x0000_FFFF_FFFF_FFFF
+            };
             let _ = temp_mapper.map_to(
                 x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(v_sign)),
                 x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(p_page & 0x000F_FFFF_FFFF_FFFF)),
@@ -256,9 +310,15 @@ pub unsafe extern "sysv64" fn landing_zone_logic(
         core::arch::asm!("mov {}, rsp", out(reg) rsp_val);
         let stack_phys_start = (rsp_val & !0xFFF).wrapping_sub(local_phys_offset.as_u64());
         for page_offset in 0..4096 {
-            let p_page = stack_phys_start.wrapping_sub(8 * 1024 * 1024).wrapping_add(page_offset * 4096);
+            let p_page = stack_phys_start
+                .wrapping_sub(8 * 1024 * 1024)
+                .wrapping_add(page_offset * 4096);
             let v_page = p_page.wrapping_add(local_phys_offset.as_u64());
-            let v_sign = if (v_page & (1 << 47)) != 0 { v_page | 0xFFFF_0000_0000_0000 } else { v_page & 0x0000_FFFF_FFFF_FFFF };
+            let v_sign = if (v_page & (1 << 47)) != 0 {
+                v_page | 0xFFFF_0000_0000_0000
+            } else {
+                v_page & 0x0000_FFFF_FFFF_FFFF
+            };
             let _ = temp_mapper.map_to(
                 x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(v_sign)),
                 x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(p_page & 0x000F_FFFF_FFFF_FFFF)),

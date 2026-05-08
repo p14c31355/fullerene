@@ -1,7 +1,5 @@
 use super::framebuffer::FramebufferLike;
-use crate::{
-    COLOR_BLACK, COLOR_LIGHT_BLUE, COLOR_LIGHT_GRAY, COLOR_TASKBAR, calc_text_width,
-};
+use crate::{COLOR_BLACK, COLOR_LIGHT_BLUE, COLOR_LIGHT_GRAY, COLOR_TASKBAR, calc_text_width};
 use alloc::string::{String, ToString};
 use embedded_graphics::{
     mono_font::{MonoTextStyle, ascii::FONT_6X10},

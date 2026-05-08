@@ -5,9 +5,7 @@ pub fn calculate_offset_address(base: u64, i: u64) -> u64 {
 
 /// Calculates the number of pages needed for a buffer.
 pub fn calculate_pages_for_buffer(buffer_size: usize) -> usize {
-    buffer_size
-        .div_ceil(4096)
-        .max(1)
+    buffer_size.div_ceil(4096).max(1)
 }
 
 /// Calculates the data pointer offset from the physical address.
@@ -21,7 +19,12 @@ pub fn calculate_config_offset(map_size: usize) -> usize {
 }
 
 /// Checks if adding a configuration block exceeds the allocated buffer size.
-pub fn check_buffer_overflow(_phys_addr: usize, config_offset: usize, config_size: usize, buffer_size: usize) -> bool {
+pub fn check_buffer_overflow(
+    _phys_addr: usize,
+    config_offset: usize,
+    config_size: usize,
+    buffer_size: usize,
+) -> bool {
     let total_capacity = buffer_size;
     (config_offset + config_size) <= total_capacity
 }
@@ -45,7 +48,11 @@ pub fn calculate_region_end(start: u64, pages: u64) -> u64 {
 /// # Safety
 ///
 /// The caller must ensure that the resulting pointer is within the bounds of the allocated object.
-pub unsafe fn calculate_metadata_ptr(base: *const u8, total_size: usize, metadata_size: usize) -> *const u8 {
+pub unsafe fn calculate_metadata_ptr(
+    base: *const u8,
+    total_size: usize,
+    metadata_size: usize,
+) -> *const u8 {
     base.add(total_size - metadata_size)
 }
 
@@ -76,12 +83,18 @@ mod tests {
 
     #[test]
     fn test_calculate_map_data_ptr() {
-        assert_eq!(calculate_map_data_ptr(0x1000), 0x1000 + core::mem::size_of::<usize>());
+        assert_eq!(
+            calculate_map_data_ptr(0x1000),
+            0x1000 + core::mem::size_of::<usize>()
+        );
     }
 
     #[test]
     fn test_calculate_config_offset() {
-        assert_eq!(calculate_config_offset(1024), core::mem::size_of::<usize>() + 1024);
+        assert_eq!(
+            calculate_config_offset(1024),
+            core::mem::size_of::<usize>() + 1024
+        );
     }
 
     #[test]
@@ -89,7 +102,7 @@ mod tests {
         let phys = 0x1000;
         let buffer_size = 128 * 1024;
         let metadata = core::mem::size_of::<usize>();
-        
+
         // Case 1: Fits
         let offset = 100;
         let size = 100;
@@ -125,7 +138,10 @@ mod tests {
         let size = 100;
         let meta_size = 20;
         unsafe {
-            assert_eq!(calculate_metadata_ptr(base, size, meta_size), (0x1000 + 80) as *const u8);
+            assert_eq!(
+                calculate_metadata_ptr(base, size, meta_size),
+                (0x1000 + 80) as *const u8
+            );
         }
     }
 

@@ -1,6 +1,6 @@
 //! Low-level assembly helpers for the petroleum crate.
-//! 
-//! This module isolates raw assembly instructions to provide type-safe 
+//!
+//! This module isolates raw assembly instructions to provide type-safe
 //! wrappers and reduce register clobbering in high-level logic.
 
 use crate::page_table::constants::BootInfoFrameAllocator;
@@ -40,7 +40,6 @@ pub struct TransitionFrame {
 impl TransitionFrame {
     pub const LOGIC_FN_OFFSET: usize = core::mem::offset_of!(TransitionFrame, logic_fn);
 }
-
 
 /// Initializes all segment registers to the data segment (0x10).
 #[inline(always)]
@@ -85,7 +84,7 @@ pub unsafe extern "C" fn jump_with_new_stack(stack_ptr: u64, entry: usize) -> ! 
 }
 
 /// The landing zone for the world switch transition.
-/// 
+///
 /// RDI contains a pointer to a `TransitionFrame` constructed on the stack
 /// by `perform_world_switch`.
 #[unsafe(no_mangle)]
@@ -102,11 +101,11 @@ pub unsafe extern "sysv64" fn landing_zone(_frame: *const TransitionFrame) {
 }
 
 /// Jumps to the kernel entry point with the provided arguments.
-/// 
+///
 /// This function is the final step of the world switch. It ensures segment
 /// registers are set and the stack is aligned before performing a `retfq`
 /// to the kernel entry.
-/// 
+///
 /// Arguments:
 /// - `entry`: The virtual address of the kernel entry point (passed in RDI).
 /// - `args`: A pointer to the `KernelArgs` structure (passed in RSI).

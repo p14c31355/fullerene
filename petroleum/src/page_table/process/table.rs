@@ -1,17 +1,16 @@
+use crate::page_table::allocator::traits::FrameAllocatorExt;
+use crate::page_table::constants::BootInfoFrameAllocator;
+use crate::page_table::types::PageTableHelper;
+use crate::{extract_frame_if_present, safe_cr3_write, with_temp_mapping};
+use alloc::collections::BTreeMap;
 use x86_64::{
     PhysAddr, VirtAddr,
     registers::control::Cr3,
     structures::paging::{
-        FrameAllocator, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
-        Size4KiB, Translate, Mapper,
-        mapper::TranslateResult,
+        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
+        Size4KiB, Translate, mapper::TranslateResult,
     },
 };
-use crate::page_table::allocator::traits::FrameAllocatorExt;
-use alloc::collections::BTreeMap;
-use crate::page_table::constants::BootInfoFrameAllocator;
-use crate::page_table::types::PageTableHelper;
-use crate::{with_temp_mapping, extract_frame_if_present, safe_cr3_write};
 
 pub struct ProcessPageTable {
     pub current_page_table: usize,
@@ -86,7 +85,9 @@ impl ProcessPageTable {
             return Ok(());
         }
 
-        let mut mapper = unsafe { crate::page_table::kernel::init(phys_offset, frame_allocator, kernel_phys_start) };
+        let mut mapper = unsafe {
+            crate::page_table::kernel::init(phys_offset, frame_allocator, kernel_phys_start)
+        };
 
         let (current_pml4, _) = Cr3::read();
         let virt = phys_offset + current_pml4.start_address().as_u64();
@@ -122,7 +123,9 @@ impl PageTableHelper for ProcessPageTable {
         flags: PageTableFlags,
         frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
     ) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
 
         let mapper = self.mapper.as_mut().unwrap();
         let virtual_addr = x86_64::VirtAddr::new(virtual_addr as u64);
@@ -136,8 +139,7 @@ impl PageTableHelper for ProcessPageTable {
                 Ok(flush) => {
                     flush.flush();
                 }
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                }
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {}
                 Err(x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed) => {
                     return Err(crate::common::logging::SystemError::FrameAllocationFailed);
                 }
@@ -153,7 +155,9 @@ impl PageTableHelper for ProcessPageTable {
         &mut self,
         virtual_addr: usize,
     ) -> crate::common::logging::SystemResult<PhysFrame> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
 
         let mapper = self.mapper.as_mut().unwrap();
         let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(
@@ -167,9 +171,13 @@ impl PageTableHelper for ProcessPageTable {
         Ok(frame)
     }
 
-    fn translate_address(&self, virtual_addr: usize)
-    -> crate::common::logging::SystemResult<usize> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+    fn translate_address(
+        &self,
+        virtual_addr: usize,
+    ) -> crate::common::logging::SystemResult<usize> {
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
 
         let mapper = self.mapper.as_ref().unwrap();
         let virt_addr = VirtAddr::new(virtual_addr as u64);
@@ -188,7 +196,9 @@ impl PageTableHelper for ProcessPageTable {
         virtual_addr: usize,
         flags: PageTableFlags,
     ) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
 
         let mapper = self.mapper.as_mut().unwrap();
         let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(
@@ -208,7 +218,9 @@ impl PageTableHelper for ProcessPageTable {
         &self,
         virtual_addr: usize,
     ) -> crate::common::logging::SystemResult<PageTableFlags> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
 
         let phys_mem_offset = self.mapper.as_ref().unwrap().phys_offset();
         let addr = x86_64::VirtAddr::new(virtual_addr as u64);
@@ -245,13 +257,17 @@ impl PageTableHelper for ProcessPageTable {
     }
 
     fn flush_tlb(&mut self, virtual_addr: usize) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
         x86_64::instructions::tlb::flush(VirtAddr::new(virtual_addr as u64));
         Ok(())
     }
 
     fn flush_tlb_all(&mut self) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
         crate::flush_tlb_safely!();
         Ok(())
     }
@@ -260,7 +276,9 @@ impl PageTableHelper for ProcessPageTable {
         &mut self,
         frame_allocator: &mut impl FrameAllocator<Size4KiB>,
     ) -> crate::common::logging::SystemResult<usize> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
         let new_frame = match frame_allocator.allocate_frame() {
             Some(frame) => frame,
             None => return Err(crate::common::logging::SystemError::FrameAllocationFailed),
@@ -300,11 +318,19 @@ impl PageTableHelper for ProcessPageTable {
         table_addr: usize,
         frame_allocator: &mut BootInfoFrameAllocator,
     ) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
         let table_phys = PhysAddr::new(table_addr as u64);
         if let Some(frame) = self.allocated_tables.remove(&table_addr) {
             let mapper = self.mapper.as_mut().unwrap();
-            destroy_page_table_recursive(mapper, frame_allocator, table_phys, 4, crate::page_table::raw::TEMP_VA_FOR_DESTROY)?;
+            destroy_page_table_recursive(
+                mapper,
+                frame_allocator,
+                table_phys,
+                4,
+                crate::page_table::raw::TEMP_VA_FOR_DESTROY,
+            )?;
             frame_allocator.deallocate_frame(frame);
             Ok(())
         } else {
@@ -317,56 +343,62 @@ impl PageTableHelper for ProcessPageTable {
         source_table: usize,
         frame_allocator: &mut impl FrameAllocator<Size4KiB>,
     ) -> crate::common::logging::SystemResult<usize> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_page_table] entered\n");
-        
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
+
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: clone_page_table minimal\n");
+
         let source_frame = if let Some(frame) = self.allocated_tables.get(&source_table) {
-            frame
-        } else if Some(source_table) == self.pml4_frame.as_ref().map(|f| f.start_address().as_u64() as usize) {
-            self.pml4_frame.as_ref().unwrap()
+            *frame
+        } else if Some(source_table)
+            == self
+                .pml4_frame
+                .as_ref()
+                .map(|f| f.start_address().as_u64() as usize)
+        {
+            self.pml4_frame.unwrap()
         } else {
             return Err(crate::common::logging::SystemError::InvalidArgument);
         };
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_page_table] source_frame acquired\n");
-        let mapper = match self.mapper.as_mut() {
-            Some(m) => m,
-            None => {
-                crate::write_serial_bytes!(0x3F8, 0x3FD, b"ERROR: [clone_page_table] mapper is None!\n");
-                return Err(crate::common::logging::SystemError::InternalError);
-            }
-        };
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_page_table] mapper acquired\n");
-        
-        // Use a fixed-size array for allocated frames to avoid heap allocation during cloning
-        let mut allocated_frames = [None; 512]; 
-        let mut allocated_count = 0;
-        
-        // For cloned_tables, we'll use a simple linear search array since the number of tables is small
-        let mut cloned_tables: [(PhysAddr, PhysAddr); 64] = [(PhysAddr::new(0), PhysAddr::new(0)); 64];
-        let mut cloned_count = 0;
 
-        let cloned_phys = Self::clone_page_table_recursive_fixed(
-            mapper,
-            frame_allocator,
-            source_frame.start_address(),
-            4,
-            &mut allocated_frames,
-            &mut allocated_count,
-            &mut cloned_tables,
-            &mut cloned_count,
-        )?;
+        let new_frame = frame_allocator
+            .allocate_frame()
+            .ok_or(crate::common::logging::SystemError::FrameAllocationFailed)?;
 
-        for i in 0..allocated_count {
-            if let Some(frame) = allocated_frames[i] {
-                self.allocated_tables.insert(frame.start_address().as_u64() as usize, frame);
+        let mapper = self.mapper.as_mut().unwrap();
+        let phys_offset = mapper.phys_offset();
+
+        let src_va = phys_offset + source_frame.start_address().as_u64();
+        let dst_va = phys_offset + new_frame.start_address().as_u64();
+
+        unsafe {
+            core::ptr::write_bytes(dst_va.as_mut_ptr::<u8>(), 0, 4096);
+
+            let src = src_va.as_ptr() as *const x86_64::structures::paging::page_table::PageTableEntry;
+            let dst = dst_va.as_mut_ptr() as *mut x86_64::structures::paging::page_table::PageTableEntry;
+
+            for i in 0..512 {
+                let entry = core::ptr::read(src.add(i));
+                if entry.flags().contains(PageTableFlags::PRESENT) {
+                    if i >= 256 {
+                        core::ptr::write(dst.add(i), entry);
+                    }
+                }
             }
         }
-        
-        Ok(cloned_phys.as_u64() as usize)
+
+        self.allocated_tables
+            .insert(new_frame.start_address().as_u64() as usize, new_frame);
+
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: clone_page_table done\n");
+        Ok(new_frame.start_address().as_u64() as usize)
     }
 
     fn switch_page_table(&mut self, table_addr: usize) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
         let new_frame = match self.allocated_tables.get(&table_addr) {
             Some(frame) => frame,
             None => return Err(crate::common::logging::SystemError::InvalidArgument),
@@ -393,12 +425,8 @@ fn destroy_page_table_recursive<'a>(
         return Ok(());
     }
     let frame = PhysFrame::<Size4KiB>::containing_address(table_phys);
-    let result: crate::common::logging::SystemResult<()> = with_temp_mapping!(
-        mapper,
-        frame_alloc,
-        temp_va,
-        frame,
-        {
+    let result: crate::common::logging::SystemResult<()> =
+        with_temp_mapping!(mapper, frame_alloc, temp_va, frame, {
             let table = unsafe { &*(temp_va.as_ptr() as *const PageTable) };
             let mut child_frames_to_free = alloc::vec::Vec::new();
             if level > 1 {
@@ -411,18 +439,17 @@ fn destroy_page_table_recursive<'a>(
                 }
             }
             for child_frame in child_frames_to_free {
-                    destroy_page_table_recursive(
-                        mapper,
-                        frame_alloc,
-                        child_frame.start_address(),
-                        level - 1,
-                        crate::page_table::raw::TEMP_VA_FOR_DESTROY,
-                    )?;
+                destroy_page_table_recursive(
+                    mapper,
+                    frame_alloc,
+                    child_frame.start_address(),
+                    level - 1,
+                    crate::page_table::raw::TEMP_VA_FOR_DESTROY,
+                )?;
                 frame_alloc.deallocate_frame(child_frame);
             }
             Ok(())
-        }
-    );
+        });
     result
 }
 
@@ -440,7 +467,7 @@ impl ProcessPageTable {
         if level == 0 || level > 4 {
             return Err(crate::common::logging::SystemError::InvalidArgument);
         }
-        
+
         // Linear search for already cloned tables
         for i in 0..*cloned_count {
             if cloned_tables[i].0 == source_table_phys {
@@ -450,77 +477,115 @@ impl ProcessPageTable {
 
         let dest_frame = match frame_alloc.allocate_frame() {
             Some(frame) => frame,
-            None => {
-                return Err(crate::common::logging::SystemError::FrameAllocationFailed)
-            },
+            None => return Err(crate::common::logging::SystemError::FrameAllocationFailed),
         };
         let dest_phys = dest_frame.start_address();
-        
+
         if *cloned_count < 64 {
             cloned_tables[*cloned_count] = (source_table_phys, dest_phys);
-            *cloned_count +=1;
+            *cloned_count += 1;
         }
 
         let phys_offset = mapper.phys_offset();
-        
+
         // Debug output for addresses
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] source_table_phys: 0x");
+        crate::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [clone_recursive_fixed] source_table_phys: 0x"
+        );
         let mut buf = [0u8; 16];
         let len = crate::serial::format_hex_to_buffer(source_table_phys.as_u64(), &mut buf, 16);
         crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-        
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] phys_offset: 0x");
+
+        crate::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [clone_recursive_fixed] phys_offset: 0x"
+        );
         let len = crate::serial::format_hex_to_buffer(phys_offset.as_u64(), &mut buf, 16);
         crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-        
+
         let source_va = phys_offset + source_table_phys.as_u64();
         let dest_va = phys_offset + dest_frame.start_address().as_u64();
-        
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] source_va: 0x");
+
+        crate::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [clone_recursive_fixed] source_va: 0x"
+        );
         let len = crate::serial::format_hex_to_buffer(source_va.as_u64(), &mut buf, 16);
         crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-        
+
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] dest_va: 0x");
         let len = crate::serial::format_hex_to_buffer(dest_va.as_u64(), &mut buf, 16);
         crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
         unsafe {
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] writing dest table\n");
+            crate::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: [clone_recursive_fixed] writing dest table\n"
+            );
             let dest_ptr = dest_va.as_mut_ptr() as *mut u8;
             core::ptr::write_bytes(dest_ptr, 0, 4096);
 
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] reading source table\n");
+            crate::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: [clone_recursive_fixed] reading source table\n"
+            );
             let source_table = &*(source_va.as_ptr() as *const PageTable);
             let dest_table = &mut *(dest_va.as_mut_ptr() as *mut PageTable);
 
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] starting loop\n");
-            for (i, (source_entry, dest_entry)) in source_table.iter().zip(dest_table.iter_mut()).enumerate() {
+            crate::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: [clone_recursive_fixed] starting loop\n"
+            );
+            for (i, (source_entry, dest_entry)) in
+                source_table.iter().zip(dest_table.iter_mut()).enumerate()
+            {
                 if source_entry.flags().contains(PageTableFlags::PRESENT) {
-                    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] processing present entry\n");
+                    crate::write_serial_bytes!(
+                        0x3F8,
+                        0x3FD,
+                        b"DEBUG: [clone_recursive_fixed] processing present entry\n"
+                    );
                     if level > 1 && !source_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-                        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] recursing\n");
+                        crate::write_serial_bytes!(
+                            0x3F8,
+                            0x3FD,
+                            b"DEBUG: [clone_recursive_fixed] recursing\n"
+                        );
                         if let Some(child_frame) = extract_frame_if_present!(source_entry) {
                             let cloned_child_phys = Self::clone_page_table_recursive_fixed(
-                                 mapper,
-                                 frame_alloc,
-                                 child_frame.start_address(),
-                                 level - 1,
-                                 allocated_frames,
-                                 allocated_count,
-                                 cloned_tables,
-                                 cloned_count,
-                             )?;
-                             crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] recurse returned\n");
-                             dest_entry.set_addr(cloned_child_phys, source_entry.flags());
-                         }
+                                mapper,
+                                frame_alloc,
+                                child_frame.start_address(),
+                                level - 1,
+                                allocated_frames,
+                                allocated_count,
+                                cloned_tables,
+                                cloned_count,
+                            )?;
+                            crate::write_serial_bytes!(
+                                0x3F8,
+                                0x3FD,
+                                b"DEBUG: [clone_recursive_fixed] recurse returned\n"
+                            );
+                            dest_entry.set_addr(cloned_child_phys, source_entry.flags());
+                        }
                     } else if level == 1 {
                         // Full copy of the physical page to ensure process isolation
                         let source_phys = source_entry.addr();
-                        let dest_frame = frame_alloc.allocate_frame().ok_or(crate::common::logging::SystemError::FrameAllocationFailed)?;
+                        let dest_frame = frame_alloc
+                            .allocate_frame()
+                            .ok_or(crate::common::logging::SystemError::FrameAllocationFailed)?;
                         let dest_phys = dest_frame.start_address();
 
                         let phys_offset = mapper.phys_offset();
@@ -530,7 +595,7 @@ impl ProcessPageTable {
                         unsafe {
                             core::ptr::copy_nonoverlapping(source_va, dest_va, 4096);
                         }
-                        
+
                         dest_entry.set_addr(dest_phys, source_entry.flags());
                     } else {
                         // Higher level tables or huge pages - just copy the address

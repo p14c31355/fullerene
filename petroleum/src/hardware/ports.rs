@@ -75,7 +75,8 @@ macro_rules! port_write {
 #[macro_export]
 macro_rules! port_read_u8 {
     ($port_addr:expr) => {{
-        let mut reader: $crate::hardware::ports::PortWriter<u8> = $crate::hardware::ports::PortWriter::new($port_addr);
+        let mut reader: $crate::hardware::ports::PortWriter<u8> =
+            $crate::hardware::ports::PortWriter::new($port_addr);
         reader.read_safe()
     }};
 }
@@ -262,9 +263,7 @@ pub mod pci {
     use super::*;
 
     pub fn read_config_byte(offset: u16) -> Result<u8, ()> {
-        Ok(port_read_u8!(
-            HardwarePorts::PCI_CONFIG_DATA + offset
-        ))
+        Ok(port_read_u8!(HardwarePorts::PCI_CONFIG_DATA + offset))
     }
 
     pub fn write_config_byte(offset: u16, value: u8) -> Result<(), ()> {

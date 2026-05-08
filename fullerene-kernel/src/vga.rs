@@ -1,7 +1,4 @@
-use petroleum::{
-    Color, ColorCode, ScreenChar, TextBufferOperations,
-    graphics::text::VgaBuffer,
-};
+use petroleum::{Color, ColorCode, ScreenChar, TextBufferOperations, graphics::text::VgaBuffer};
 use spin::{Mutex, Once};
 
 // Global singleton using petroleum's VgaBuffer
@@ -35,10 +32,9 @@ pub fn init_vga(_physical_memory_offset: x86_64::VirtAddr, vga_virt_addr: usize)
         "Hello QEMU by FullereneOS!\n";
         "This is output directly to VGA.\n"
     );
-    
+
     // Update cursor to ensure visibility
     petroleum::update_vga_cursor!(0);
-    
+
     petroleum::debug_log!("VGA initialized and welcome message written");
 }
-

@@ -387,9 +387,14 @@ macro_rules! impl_vga_buffer {
         unsafe impl Sync for $struct_name {}
 
         impl TextBufferOperations for $struct_name {
-            impl_text_buffer_operations!($struct_name,
-                buffer, row_position, column_position, color_code,
-                $height, $width
+            impl_text_buffer_operations!(
+                $struct_name,
+                buffer,
+                row_position,
+                column_position,
+                color_code,
+                $height,
+                $width
             );
         }
     };

@@ -11,11 +11,7 @@ use petroleum::common::logging::SystemError;
 use petroleum::debug_log;
 use petroleum::page_table::PageTableHelper;
 use spin::Mutex;
-use x86_64::{
-    registers::control::Cr3,
-    structures::paging::PhysFrame,
-    PhysAddr, VirtAddr,
-};
+use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::PhysFrame};
 
 /// Next available process ID
 pub(crate) static NEXT_PID: AtomicUsize = AtomicUsize::new(1);
@@ -200,16 +196,32 @@ impl ProcessManager {
 
     /// Adds a new process to the list
     pub fn add(&self, process: Process) {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ProcessManager::add] attempting lock\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [ProcessManager::add] attempting lock\n"
+        );
         let mut list = self.list.lock();
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ProcessManager::add] lock acquired\n");
-        
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [ProcessManager::add] lock acquired\n"
+        );
+
         let pid = process.id;
         let index = (pid as usize % 16);
-        
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ProcessManager::add] attempting insert\n");
+
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [ProcessManager::add] attempting insert\n"
+        );
         list[index] = Some(process);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [ProcessManager::add] insert complete\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [ProcessManager::add] insert complete\n"
+        );
     }
 
     /// Performs an operation on a process found by PID
@@ -273,63 +285,127 @@ pub static CURRENT_PROCESS: AtomicUsize = AtomicUsize::new(0);
 /// Initialize process management system
 pub fn init() {
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] start\n");
-    
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] testing raw buffer write\n");
+
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [process::init] testing raw buffer write\n"
+    );
     unsafe {
         crate::heap::BOOT_HEAP_BUFFER.0[0] = 0xAA;
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] raw buffer write SUCCESS\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [process::init] raw buffer write SUCCESS\n"
+        );
     }
 
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] testing IDT with int3\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [process::init] testing IDT with int3\n"
+    );
     x86_64::instructions::interrupts::int3();
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] int3 returned\n");
 
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] testing heap allocation (8 bytes)\n");
-    
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [process::init] testing heap allocation (8 bytes)\n"
+    );
+
     if petroleum::page_table::ALLOCATOR.try_lock().is_none() {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] ALLOCATOR lock is HELD - deadlock detected!\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [process::init] ALLOCATOR lock is HELD - deadlock detected!\n"
+        );
     } else {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] ALLOCATOR lock is free\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [process::init] ALLOCATOR lock is free\n"
+        );
     }
 
     let layout8 = Layout::from_size_align(8, 8).unwrap();
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] Calling allocate_layout...\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [process::init] Calling allocate_layout...\n"
+    );
     match petroleum::common::memory::allocate_layout(layout8) {
         Ok(ptr8) => {
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] 8 bytes allocation SUCCESS\n");
+            petroleum::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: [process::init] 8 bytes allocation SUCCESS\n"
+            );
             petroleum::common::memory::deallocate_layout(ptr8, layout8);
         }
         Err(_) => {
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] 8 bytes allocation FAILED\n");
+            petroleum::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: [process::init] 8 bytes allocation FAILED\n"
+            );
         }
     }
 
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] testing heap allocation (1024 bytes)\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [process::init] testing heap allocation (1024 bytes)\n"
+    );
     let layout1k = Layout::from_size_align(1024, 16).unwrap();
     match petroleum::common::memory::allocate_layout(layout1k) {
         Ok(ptr1k) => {
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] 1024 bytes allocation SUCCESS\n");
+            petroleum::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: [process::init] 1024 bytes allocation SUCCESS\n"
+            );
             petroleum::common::memory::deallocate_layout(ptr1k, layout1k);
         }
         Err(_) => {
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] 1024 bytes allocation FAILED\n");
+            petroleum::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: [process::init] 1024 bytes allocation FAILED\n"
+            );
         }
     }
 
     // Create idle process
     let idle_addr = VirtAddr::new(idle_loop as usize as u64);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] creating idle process\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [process::init] creating idle process\n"
+    );
     let mut idle_process = Process::new("idle", idle_addr, false);
     idle_process.state = ProcessState::Running;
 
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] adding idle process to manager\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [process::init] adding idle process to manager\n"
+    );
     PROCESS_MANAGER.add(idle_process);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] idle process added\n");
 
     // Set current process
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] setting CURRENT_PROCESS\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [process::init] setting CURRENT_PROCESS\n"
+    );
     CURRENT_PROCESS.store(1, Ordering::SeqCst);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] CURRENT_PROCESS modified\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [process::init] CURRENT_PROCESS modified\n"
+    );
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] done\n");
 }
 
@@ -352,12 +428,15 @@ pub fn create_process(
 
     if is_user {
         // Allocate user stack for the process
-        let user_stack_layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
-        let user_stack_ptr = petroleum::common::memory::allocate_layout(user_stack_layout).map_err(|e| {
-            petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
-            e
-        })?;
-        process.user_stack = VirtAddr::new(user_stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
+        let user_stack_layout =
+            Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
+        let user_stack_ptr = petroleum::common::memory::allocate_layout(user_stack_layout)
+            .map_err(|e| {
+                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+                e
+            })?;
+        process.user_stack =
+            VirtAddr::new(user_stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
         debug_log!("Process: User stack allocated");
     }
 
@@ -367,8 +446,8 @@ pub fn create_process(
         Ok(pt) => pt,
         Err(e) => {
             log::error!("Failed to create process page table: {:?}", e);
-        // Deallocate stack to prevent memory leak on error
-        petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+            // Deallocate stack to prevent memory leak on error
+            petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
             return Err(e);
         }
     };
@@ -414,7 +493,8 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
         process.exit_code = Some(exit_code);
 
         // Free resources
-        let kernel_stack_base = process.kernel_stack.as_u64() - crate::heap::KERNEL_STACK_SIZE as u64;
+        let kernel_stack_base =
+            process.kernel_stack.as_u64() - crate::heap::KERNEL_STACK_SIZE as u64;
         let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
         petroleum::common::memory::deallocate_layout(kernel_stack_base as *mut u8, layout);
 
@@ -481,14 +561,22 @@ pub fn schedule_next() {
                 proc.map(|p| p.state).unwrap_or(ProcessState::Terminated)
             );
 
-            if proc.map(|p| p.state == ProcessState::Ready).unwrap_or(false) {
+            if proc
+                .map(|p| p.state == ProcessState::Ready)
+                .unwrap_or(false)
+            {
                 petroleum::scheduler_log!("Found ready process at index {}", next_index);
                 break;
             }
 
             if next_index == start_index {
-                petroleum::scheduler_log!("Wrapped around, all processes blocked or completed check");
-                if let Some(idle_idx) = process_list.iter().position(|p| p.as_ref().map(|p| p.name == "idle").unwrap_or(false)) {
+                petroleum::scheduler_log!(
+                    "Wrapped around, all processes blocked or completed check"
+                );
+                if let Some(idle_idx) = process_list
+                    .iter()
+                    .position(|p| p.as_ref().map(|p| p.name == "idle").unwrap_or(false))
+                {
                     next_index = idle_idx;
                     petroleum::scheduler_log!("Switching to idle process at index {}", idle_idx);
                 } else {
@@ -500,7 +588,10 @@ pub fn schedule_next() {
         }
 
         *CURRENT_PROCESS_INDEX.lock() = next_index;
-        let next_pid = process_list[next_index].as_ref().map(|p| p.id as usize).unwrap_or(0);
+        let next_pid = process_list[next_index]
+            .as_ref()
+            .map(|p| p.id as usize)
+            .unwrap_or(0);
         CURRENT_PROCESS.store(next_pid, Ordering::SeqCst);
         petroleum::scheduler_log!(
             "Set current process index to {}, PID {}",
@@ -563,7 +654,10 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
             .map(|p| p as *mut Process);
 
         let index = (new_pid as usize % 16);
-        let new_ptr = list[index].as_ref().filter(|p| p.id == new_pid).map(|p| p as *const Process);
+        let new_ptr = list[index]
+            .as_ref()
+            .filter(|p| p.id == new_pid)
+            .map(|p| p as *const Process);
 
         if let Some(new_ptr) = new_ptr {
             let old_ctx = old_ptr.map(|p| p as *mut ProcessContext);
@@ -575,17 +669,16 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
         }
     });
 
-    if let (Some(old_ctx), Some(new_ctx), Some(pt)) = (old_context_ptr, new_context_ptr, new_page_table) {
+    if let (Some(old_ctx), Some(new_ctx), Some(pt)) =
+        (old_context_ptr, new_context_ptr, new_page_table)
+    {
         unsafe {
             let new_frame = PhysFrame::containing_address(pt);
             let (current_frame, _) = Cr3::read();
             if new_frame != current_frame {
                 Cr3::write(new_frame, x86_64::registers::control::Cr3Flags::empty());
             }
-            switch_context(
-                old_ctx.map(|p| unsafe { &mut *p }),
-                unsafe { &(*new_ctx) },
-            );
+            switch_context(old_ctx.map(|p| unsafe { &mut *p }), unsafe { &(*new_ctx) });
         }
     }
 }
@@ -593,7 +686,7 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
 /// Block current process
 pub fn block_current() {
     let pid = current_pid().expect("block_current called with no current process");
-    
+
     let found = PROCESS_MANAGER.with_process(pid, |process| {
         process.state = ProcessState::Blocked;
     });

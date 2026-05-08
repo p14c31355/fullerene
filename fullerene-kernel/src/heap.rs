@@ -13,12 +13,9 @@ pub const HEAP_SIZE: usize = 1024 * 1024; // 1MB heap
 // Kernel stack size for UEFI boot initialization
 pub const KERNEL_STACK_SIZE: usize = 4096 * 64; // 256KB
 
-
 use petroleum::common::EfiMemoryType;
-use petroleum::page_table::memory_map::{
-    EfiMemoryDescriptor, MemoryMapDescriptor,
-};
 use petroleum::page_table::MemoryDescriptorValidator;
+use petroleum::page_table::memory_map::{EfiMemoryDescriptor, MemoryMapDescriptor};
 use spin::{Mutex, Once};
 
 /// Global frame allocator
@@ -49,7 +46,7 @@ pub(crate) static mut MEMORY_MAP_BUFFER: [MemoryMapDescriptor; MAX_DESCRIPTORS] 
 /// Initialize the boot frame allocator with memory map
 pub fn init_frame_allocator(memory_map: &[impl MemoryDescriptorValidator]) {
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: init_frame_allocator start\n");
-    
+
     // Convert &[impl MemoryDescriptorValidator] to &[MemoryMapDescriptor]
     // Since MemoryMapDescriptor is the concrete type that implements the trait,
     // and we know that's what is being passed from uefi_init.
@@ -66,4 +63,3 @@ pub fn init_frame_allocator(memory_map: &[impl MemoryDescriptorValidator]) {
     *lock = Some(allocator);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: init_frame_allocator complete\n");
 }
-

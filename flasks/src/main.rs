@@ -44,16 +44,25 @@ fn setup_ovmf(workspace_root: &PathBuf) -> io::Result<()> {
     if !src_code.exists() || !src_vars.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "OVMF binaries not found in /usr/share/OVMF/. Please install the 'ovmf' package manually (e.g., 'sudo apt-get install -y ovmf' on Debian/Ubuntu)."
+            "OVMF binaries not found in /usr/share/OVMF/. Please install the 'ovmf' package manually (e.g., 'sudo apt-get install -y ovmf' on Debian/Ubuntu).",
         ));
     }
     log::info!("OVMF binaries found.");
 
     // 3. Copy .fd files to flasks/ovmf/
-    let dst_code = workspace_root.join("flasks").join("ovmf").join("RELEASEX64_OVMF_CODE.fd");
-    let dst_vars = workspace_root.join("flasks").join("ovmf").join("RELEASEX64_OVMF_VARS.fd");
+    let dst_code = workspace_root
+        .join("flasks")
+        .join("ovmf")
+        .join("RELEASEX64_OVMF_CODE.fd");
+    let dst_vars = workspace_root
+        .join("flasks")
+        .join("ovmf")
+        .join("RELEASEX64_OVMF_VARS.fd");
 
-    log::info!("Copying OVMF binaries to {}...", workspace_root.join("flasks").join("ovmf").display());
+    log::info!(
+        "Copying OVMF binaries to {}...",
+        workspace_root.join("flasks").join("ovmf").display()
+    );
     std::fs::copy(&src_code, &dst_code)?;
     std::fs::copy(&src_vars, &dst_vars)?;
 
@@ -90,9 +99,16 @@ fn create_iso_and_setup(
         .join("debug");
     let kernel_path = target_dir.join("fullerene-kernel.efi");
     // Copy kernel to bellows/src for embedding
-    let kernel_bin_dest = workspace_root.join("bellows").join("src").join("kernel_final.bin");
+    let kernel_bin_dest = workspace_root
+        .join("bellows")
+        .join("src")
+        .join("kernel_final.bin");
     std::fs::copy(&kernel_path, &kernel_bin_dest)?;
-    log::info!("Copied kernel to {} (size: {})", kernel_bin_dest.display(), kernel_path.metadata()?.len());
+    log::info!(
+        "Copied kernel to {} (size: {})",
+        kernel_bin_dest.display(),
+        kernel_path.metadata()?.len()
+    );
 
     // --- 2. Build bellows (no_std) ---
     // Force rebuild of bellows to ensure the latest kernel_final.bin is embedded

@@ -1,18 +1,11 @@
 //! Paging and memory mapping macros for Fullerene OS
 
-
 #[macro_export]
 macro_rules! map_range_with_log_macro {
     ($mapper:expr, $allocator:expr, $phys:expr, $virt:expr, $pages:expr, $flags:expr) => {{
         unsafe {
             $crate::page_table::raw::map_range_with_huge_pages(
-                $mapper,
-                $allocator,
-                $phys,
-                $virt,
-                $pages,
-                $flags,
-                "panic",
+                $mapper, $allocator, $phys, $virt, $pages, $flags, "panic",
             )
         }
     }};
@@ -38,7 +31,7 @@ macro_rules! map_pages {
     ($mapper:expr, $allocator:expr, $phys_base:expr, $virt_calc:expr, $num_pages:expr, $flags:expr, $behavior:tt) => {{
         use x86_64::{
             PhysAddr, VirtAddr,
-            structures::paging::{Page, PhysFrame, Size4KiB, Mapper, mapper::MapToError},
+            structures::paging::{Mapper, Page, PhysFrame, Size4KiB, mapper::MapToError},
         };
         for i in 0..$num_pages {
             let phys_addr = $phys_base + i * 4096;
@@ -62,8 +55,16 @@ macro_rules! map_pages {
 
 #[macro_export]
 macro_rules! map_identity_range_macro {
-    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{ 
-        unsafe { $crate::page_table::raw::map_identity_range($mapper, $frame_allocator, $start_addr, $pages, $flags) } 
+    ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $pages:expr, $flags:expr) => {{
+        unsafe {
+            $crate::page_table::raw::map_identity_range(
+                $mapper,
+                $frame_allocator,
+                $start_addr,
+                $pages,
+                $flags,
+            )
+        }
     }};
 }
 
@@ -76,8 +77,13 @@ macro_rules! identity_map_range_with_log_macro {
             $start_addr,
             $num_pages
         );
-        let result =
-            $crate::map_identity_range_macro!($mapper, $frame_allocator, $start_addr, $num_pages, $flags);
+        let result = $crate::map_identity_range_macro!(
+            $mapper,
+            $frame_allocator,
+            $start_addr,
+            $num_pages,
+            $flags
+        );
         if result.is_ok() {
             $crate::log_page_table_op!(
                 "Identity mapping complete",
@@ -123,13 +129,7 @@ macro_rules! map_with_log_macro {
     ($mapper:expr, $allocator:expr, $phys:expr, $virt:expr, $pages:expr, $flags:expr, $behavior:tt) => {{
         unsafe {
             $crate::page_table::raw::map_range_with_huge_pages(
-                $mapper,
-                $allocator,
-                $phys,
-                $virt,
-                $pages,
-                $flags,
-                $behavior,
+                $mapper, $allocator, $phys, $virt, $pages, $flags, $behavior,
             )
         }
     }};
@@ -189,7 +189,7 @@ macro_rules! map_with_offset {
                     "continue" => {}
                     "panic" => panic!("Mapping error: {:?}", e),
                     _ => {}
-                }
+                },
             }
         }
     }};

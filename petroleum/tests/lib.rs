@@ -70,9 +70,11 @@ mod macro_tests {
 
 #[cfg(test)]
 mod address_integration_tests {
-    use petroleum::common::utils::*;
-    use petroleum::page_table::memory_map::{EfiMemoryDescriptor, calculate_frame_allocation_params};
     use petroleum::common::uefi::EfiMemoryType;
+    use petroleum::common::utils::*;
+    use petroleum::page_table::memory_map::{
+        EfiMemoryDescriptor, calculate_frame_allocation_params,
+    };
 
     #[test]
     fn test_memory_map_to_allocation_params_flow() {
@@ -97,7 +99,7 @@ mod address_integration_tests {
         ];
 
         let (max_addr, total_frames, bitmap_size) = calculate_frame_allocation_params(&descriptors);
-        
+
         // Max addr = 0x10000 + 100 * 4096 = 0x10000 + 0x64000 = 0x74000
         assert_eq!(max_addr, 0x74000);
         // Total frames = 0x74000 / 4096 = 116
@@ -129,12 +131,22 @@ mod address_integration_tests {
         // 4. Verify overflow check
         // total capacity = 128KB + 8 = 131080
         // config_offset + config_size = (8 + 8192) + 64 = 8324
-        assert!(check_buffer_overflow(0x1000, config_offset, config_size, buffer_size));
-        
+        assert!(check_buffer_overflow(
+            0x1000,
+            config_offset,
+            config_size,
+            buffer_size
+        ));
+
         // Test overflow case: map_size is huge
         let huge_map_size = 130 * 1024;
         let huge_config_offset = calculate_config_offset(huge_map_size);
-        assert!(!check_buffer_overflow(0x1000, huge_config_offset, config_size, buffer_size));
+        assert!(!check_buffer_overflow(
+            0x1000,
+            huge_config_offset,
+            config_size,
+            buffer_size
+        ));
     }
 
     #[test]
@@ -142,7 +154,7 @@ mod address_integration_tests {
         // Scenario: Loading a program segment of 10KB
         let mem_size = 10 * 1024;
         let vaddr = 0x400000;
-        
+
         let num_pages = calculate_pages(mem_size);
         assert_eq!(num_pages, 3); // 10KB fits in 3 pages (12KB)
 

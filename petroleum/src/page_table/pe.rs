@@ -1,7 +1,7 @@
-use x86_64::{PhysAddr, structures::paging::PageTableFlags};
-use goblin::pe::PE;
 use crate::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
 use core::ffi::c_void;
+use goblin::pe::PE;
+use x86_64::{PhysAddr, structures::paging::PageTableFlags};
 
 pub const KERNEL_MEMORY_PADDING: u64 = 1024 * 1024;
 pub const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024;
@@ -111,77 +111,97 @@ impl PeParser {
     }
 }
 
-pub unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> { unsafe {
-    log_page_table_op!("PE base", "starting search", start_ptr as usize);
+pub unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
+    unsafe {
+        log_page_table_op!("PE base", "starting search", start_ptr as usize);
 
-    for i in 0..PeParser::MAX_PE_SEARCH_DISTANCE {
-        let candidate_addr = match (start_ptr as usize).checked_sub(i) {
-            Some(addr) => addr as *const u8,
-            None => break,
-        };
+        for i in 0..PeParser::MAX_PE_SEARCH_DISTANCE {
+            let candidate_addr = match (start_ptr as usize).checked_sub(i) {
+                Some(addr) => addr as *const u8,
+                None => break,
+            };
 
-        if candidate_addr.read() == b'M' && candidate_addr.add(1).read() == b'Z' {
-            log_page_table_op!("PE base", "found MZ candidate", candidate_addr as usize);
-            let pe_offset = crate::read_unaligned!(candidate_addr, 0x3c, u32) as usize;
+            if candidate_addr.read() == b'M' && candidate_addr.add(1).read() == b'Z' {
+                log_page_table_op!("PE base", "found MZ candidate", candidate_addr as usize);
+                let pe_offset = crate::read_unaligned!(candidate_addr, 0x3c, u32) as usize;
 
-            if pe_offset > 0 && pe_offset < 16 * 1024 * 1024 {
-                let pe_sig = crate::read_unaligned!(candidate_addr, pe_offset, u32);
-                if pe_sig == 0x00004550 {
-                    log_page_table_op!("PE base", "found valid PE", candidate_addr as usize);
-                    return Some(candidate_addr);
+                if pe_offset > 0 && pe_offset < 16 * 1024 * 1024 {
+                    let pe_sig = crate::read_unaligned!(candidate_addr, pe_offset, u32);
+                    if pe_sig == 0x00004550 {
+                        log_page_table_op!("PE base", "found valid PE", candidate_addr as usize);
+                        return Some(candidate_addr);
+                    }
                 }
             }
         }
-    }
 
-    log_page_table_op!("PE base", "search complete - no PE found");
-    None
-}}
+        log_page_table_op!("PE base", "search complete - no PE found");
+        None
+    }
+}
 
 pub fn derive_pe_flags(characteristics: u32) -> PageTableFlags {
     use x86_64::structures::paging::PageTableFlags as Flags;
     let mut flags = Flags::PRESENT;
-    
-    // Ensure data sections are writable. 
+
+    // Ensure data sections are writable.
     // In early boot, we prefer over-permissioning to avoid triple faults.
     if (characteristics & 0x8000_0000) != 0 || (characteristics & 0x2000_0000) == 0 {
         flags |= Flags::WRITABLE;
     }
-    
+
     if (characteristics & 0x2000_0000) == 0 {
         flags |= Flags::NO_EXECUTE;
     }
     flags
 }
 
-pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 { unsafe {
-    log_page_table_op!("PE size calculation", "starting", kernel_phys_start.as_u64() as usize);
+pub unsafe fn calculate_kernel_memory_size(kernel_phys_start: PhysAddr) -> u64 {
+    unsafe {
+        log_page_table_op!(
+            "PE size calculation",
+            "starting",
+            kernel_phys_start.as_u64() as usize
+        );
 
-    if kernel_phys_start.as_u64() == 0 {
-        crate::debug_log_no_alloc!("Kernel phys start is 0, using fallback size");
-        return FALLBACK_KERNEL_SIZE;
-    }
-
-    let parser = match PeParser::new(kernel_phys_start.as_u64() as *const u8) {
-        Some(p) => p,
-        None => {
-            log_page_table_op!("PE size calculation", "parser creation failed, using fallback", 0);
+        if kernel_phys_start.as_u64() == 0 {
+            crate::debug_log_no_alloc!("Kernel phys start is 0, using fallback size");
             return FALLBACK_KERNEL_SIZE;
         }
-    };
 
-    match parser.size_of_image() {
-        Some(size) => {
-            let padded_size = (size + KERNEL_MEMORY_PADDING).div_ceil(4096) * 4096;
-            log_page_table_op!("PE size calculation", "parsing successful", padded_size as usize);
-            padded_size
-        }
-        None => {
-            log_page_table_op!("PE size calculation", "size_of_image failed, using fallback", 0);
-            FALLBACK_KERNEL_SIZE
+        let parser = match PeParser::new(kernel_phys_start.as_u64() as *const u8) {
+            Some(p) => p,
+            None => {
+                log_page_table_op!(
+                    "PE size calculation",
+                    "parser creation failed, using fallback",
+                    0
+                );
+                return FALLBACK_KERNEL_SIZE;
+            }
+        };
+
+        match parser.size_of_image() {
+            Some(size) => {
+                let padded_size = (size + KERNEL_MEMORY_PADDING).div_ceil(4096) * 4096;
+                log_page_table_op!(
+                    "PE size calculation",
+                    "parsing successful",
+                    padded_size as usize
+                );
+                padded_size
+            }
+            None => {
+                log_page_table_op!(
+                    "PE size calculation",
+                    "size_of_image failed, using fallback",
+                    0
+                );
+                FALLBACK_KERNEL_SIZE
+            }
         }
     }
-}}
+}
 
 /// Load and parse EFI PE image from file data
 pub fn load_efi_image(
@@ -189,20 +209,29 @@ pub fn load_efi_image(
     file: &[u8],
     phys_offset: usize,
 ) -> Result<
-    (PhysAddr, u64, extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !),
+    (
+        PhysAddr,
+        u64,
+        extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
+    ),
     BellowsError,
 > {
     let bs = unsafe { &*st.boot_services };
-    
+
     let pe = PE::parse(file).map_err(|_| BellowsError::PeParse("Failed to parse PE image"))?;
-    
-    let optional_header = pe.header.optional_header.as_ref().ok_or(BellowsError::PeParse("Missing optional header"))?;
+
+    let optional_header = pe
+        .header
+        .optional_header
+        .as_ref()
+        .ok_or(BellowsError::PeParse("Missing optional header"))?;
     let address_of_entry_point = optional_header.standard_fields.address_of_entry_point as usize;
     let image_size = optional_header.windows_fields.size_of_image as u64;
-    
-    let pages_needed = (image_size.max(address_of_entry_point as u64 + 4096)).div_ceil(4096) as usize;
+
+    let pages_needed =
+        (image_size.max(address_of_entry_point as u64 + 4096)).div_ceil(4096) as usize;
     let preferred_base = optional_header.windows_fields.image_base as usize;
-    
+
     let mut phys_addr: usize = 0;
     let status = if preferred_base >= 0x1000_0000 {
         let mut addr = 0;
@@ -217,12 +246,19 @@ pub fn load_efi_image(
             s
         }
     } else {
-        let s = (bs.allocate_pages)(0, EfiMemoryType::EfiLoaderCode, pages_needed, &mut phys_addr);
+        let s = (bs.allocate_pages)(
+            0,
+            EfiMemoryType::EfiLoaderCode,
+            pages_needed,
+            &mut phys_addr,
+        );
         s
     };
 
     if EfiStatus::from(status) != EfiStatus::Success {
-        return Err(BellowsError::AllocationFailed("Failed to allocate memory for PE image."));
+        return Err(BellowsError::AllocationFailed(
+            "Failed to allocate memory for PE image.",
+        ));
     }
 
     // Copy headers
@@ -235,14 +271,16 @@ pub fn load_efi_image(
     for section in &pe.sections {
         let src_addr = unsafe { file.as_ptr().add(section.pointer_to_raw_data as usize) };
         let dst_addr = unsafe { (phys_addr as *mut u8).add(section.virtual_address as usize) };
-        
-        if (src_addr as usize).saturating_add(section.size_of_raw_data as usize) > (file.as_ptr() as usize).saturating_add(file.len())
-            || (dst_addr as usize).saturating_add(section.size_of_raw_data as usize) > (phys_addr as usize).saturating_add(pages_needed * 4096)
+
+        if (src_addr as usize).saturating_add(section.size_of_raw_data as usize)
+            > (file.as_ptr() as usize).saturating_add(file.len())
+            || (dst_addr as usize).saturating_add(section.size_of_raw_data as usize)
+                > (phys_addr as usize).saturating_add(pages_needed * 4096)
         {
             (bs.free_pages)(phys_addr, pages_needed);
             return Err(BellowsError::PeParse("Section data out of bounds."));
         }
-        
+
         unsafe {
             core::ptr::copy_nonoverlapping(src_addr, dst_addr, section.size_of_raw_data as usize);
         }
@@ -258,17 +296,19 @@ pub fn load_efi_image(
         if let Some(reloc_dir) = optional_header.data_directories.get_base_relocation_table() {
             let reloc_rva = reloc_dir.virtual_address as usize;
             let reloc_size = reloc_dir.size as usize;
-            
+
             let reloc_data_ptr = unsafe { (phys_addr as *mut u8).add(reloc_rva) };
             let mut current_reloc_ptr = reloc_data_ptr;
             let end_reloc_ptr = unsafe { reloc_data_ptr.add(reloc_size) };
 
             while current_reloc_ptr < end_reloc_ptr {
                 let block = unsafe { &*(current_reloc_ptr as *const BaseRelocationBlock) };
-                if block.block_size == 0 { break; }
-                
+                if block.block_size == 0 {
+                    break;
+                }
+
                 let num_entries = (block.block_size as usize).saturating_sub(8) / 2;
-                
+
                 for i in 0..num_entries {
                     let entry_offset = 8 + i * 2;
                     let entry_ptr = unsafe { current_reloc_ptr.add(entry_offset) };
@@ -278,12 +318,15 @@ pub fn load_efi_image(
                     if (entry >> 12) == 10 {
                         let offset = (entry & 0x0FFF) as usize;
                         let target_addr = phys_addr + block.page_rva as usize + offset;
-                        
+
                         unsafe {
                             let ptr = target_addr as *mut u64;
                             if !ptr.is_null() {
                                 let val = core::ptr::read_unaligned(ptr);
-                                core::ptr::write_unaligned(ptr, (val as i64).wrapping_add(image_base_delta) as u64);
+                                core::ptr::write_unaligned(
+                                    ptr,
+                                    (val as i64).wrapping_add(image_base_delta) as u64,
+                                );
                             }
                         }
                     }
@@ -296,12 +339,19 @@ pub fn load_efi_image(
     let entry_point_phys = phys_addr.saturating_add(address_of_entry_point);
     if entry_point_phys >= phys_addr + pages_needed * 4096 || entry_point_phys < phys_addr {
         (bs.free_pages)(phys_addr, pages_needed);
-        return Err(BellowsError::PeParse("Entry point address is outside allocated memory."));
+        return Err(BellowsError::PeParse(
+            "Entry point address is outside allocated memory.",
+        ));
     }
-    
+
     let entry_point_virt = phys_offset + entry_point_phys;
-    let entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> ! = unsafe { core::mem::transmute(entry_point_virt) };
-    Ok((PhysAddr::new(phys_addr as u64), entry_point_phys as u64, entry))
+    let entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> ! =
+        unsafe { core::mem::transmute(entry_point_virt) };
+    Ok((
+        PhysAddr::new(phys_addr as u64),
+        entry_point_phys as u64,
+        entry,
+    ))
 }
 
 #[repr(C)]

@@ -1,9 +1,9 @@
 use super::*;
-use x86_64::PhysAddr;
 use crate::common::{
-    EfiSystemTable, FullereneFramebufferConfig, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
+    EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
 };
 use crate::page_table::types::MemoryDescriptorValidator;
+use x86_64::PhysAddr;
 
 /// Helper function to convert u32 to string without heap allocation
 pub fn u32_to_str_heapless(n: u32, buffer: &mut [u8]) -> &str {
@@ -282,11 +282,15 @@ pub fn setup_kernel_location(
     unsafe {
         crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: setup_kernel_location entered\n");
     }
-    
+
     unsafe {
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Skipping descriptor_item_size read (now passed via KernelArgs)\n");
+        crate::write_serial_bytes(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: Skipping descriptor_item_size read (now passed via KernelArgs)\n",
+        );
     }
-    
+
     crate::debug_log_no_alloc!("Succeeded in reading memory map start");
 
     // Bellows already handles the framebuffer config table before jumping to the kernel.
@@ -296,7 +300,11 @@ pub fn setup_kernel_location(
     }
 
     unsafe {
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: About to calculate kernel_phys_start\n");
+        crate::write_serial_bytes(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: About to calculate kernel_phys_start\n",
+        );
     }
 
     // Find the kernel physical start (efi_main is virtual address,

@@ -1,6 +1,6 @@
+use crate::page_table::allocator::{BitmapFrameAllocator, FrameAllocatorExt};
 use crate::page_table::constants::MAX_DESCRIPTOR_PAGES;
 use crate::page_table::types::MemoryDescriptorValidator;
-use crate::page_table::allocator::{BitmapFrameAllocator, FrameAllocatorExt};
 
 pub fn process_memory_descriptors<T, F>(descriptors: &[T], mut processor: F)
 where
@@ -22,7 +22,10 @@ where
     for descriptor in descriptors.iter() {
         // Skip descriptors with excessively large page counts to avoid overflow or invalid entries
         if descriptor.get_page_count() > MAX_DESCRIPTOR_PAGES {
-            crate::debug_log_no_alloc!("Skipping descriptor with excessive page count: ", descriptor.get_page_count() as usize);
+            crate::debug_log_no_alloc!(
+                "Skipping descriptor with excessive page count: ",
+                descriptor.get_page_count() as usize
+            );
             continue;
         }
         if descriptor.is_valid() {

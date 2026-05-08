@@ -1,17 +1,16 @@
+use crate::page_table::allocator::traits::FrameAllocatorExt;
+use crate::page_table::constants::BootInfoFrameAllocator;
+use crate::page_table::types::PageTableHelper;
+use crate::{extract_frame_if_present, safe_cr3_write, with_temp_mapping};
+use alloc::collections::BTreeMap;
 use x86_64::{
     PhysAddr, VirtAddr,
     registers::control::Cr3,
     structures::paging::{
-        FrameAllocator, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
-        Size4KiB, Translate, Mapper,
-        mapper::TranslateResult,
+        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
+        Size4KiB, Translate, mapper::TranslateResult,
     },
 };
-use alloc::collections::BTreeMap;
-use crate::page_table::constants::BootInfoFrameAllocator;
-use crate::page_table::types::PageTableHelper;
-use crate::{with_temp_mapping, extract_frame_if_present, safe_cr3_write};
-use crate::page_table::allocator::traits::FrameAllocatorExt;
 
 pub struct KernelMapper {
     pub current_page_table: usize,
@@ -56,7 +55,9 @@ impl KernelMapper {
             return Ok(());
         }
 
-        let mut mapper = unsafe { crate::page_table::kernel::init(phys_offset, frame_allocator, kernel_phys_start) };
+        let mut mapper = unsafe {
+            crate::page_table::kernel::init(phys_offset, frame_allocator, kernel_phys_start)
+        };
 
         let (current_pml4, _) = Cr3::read();
         let virt = phys_offset + current_pml4.start_address().as_u64();
@@ -92,7 +93,9 @@ impl PageTableHelper for KernelMapper {
         flags: PageTableFlags,
         frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
     ) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
 
         let mapper = self.mapper.as_mut().unwrap();
         let virtual_addr = x86_64::VirtAddr::new(virtual_addr as u64);
@@ -106,8 +109,7 @@ impl PageTableHelper for KernelMapper {
                 Ok(flush) => {
                     flush.flush();
                 }
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                }
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {}
                 Err(x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed) => {
                     return Err(crate::common::logging::SystemError::FrameAllocationFailed);
                 }
@@ -123,7 +125,9 @@ impl PageTableHelper for KernelMapper {
         &mut self,
         virtual_addr: usize,
     ) -> crate::common::logging::SystemResult<PhysFrame> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
 
         let mapper = self.mapper.as_mut().unwrap();
         let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(
@@ -137,9 +141,13 @@ impl PageTableHelper for KernelMapper {
         Ok(frame)
     }
 
-    fn translate_address(&self, virtual_addr: usize)
-    -> crate::common::logging::SystemResult<usize> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+    fn translate_address(
+        &self,
+        virtual_addr: usize,
+    ) -> crate::common::logging::SystemResult<usize> {
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
 
         let mapper = self.mapper.as_ref().unwrap();
         let virt_addr = VirtAddr::new(virtual_addr as u64);
@@ -158,7 +166,9 @@ impl PageTableHelper for KernelMapper {
         virtual_addr: usize,
         flags: PageTableFlags,
     ) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
 
         let mapper = self.mapper.as_mut().unwrap();
         let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(
@@ -178,7 +188,9 @@ impl PageTableHelper for KernelMapper {
         &self,
         virtual_addr: usize,
     ) -> crate::common::logging::SystemResult<PageTableFlags> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
 
         let phys_mem_offset = self.mapper.as_ref().unwrap().phys_offset();
         let addr = x86_64::VirtAddr::new(virtual_addr as u64);
@@ -215,13 +227,17 @@ impl PageTableHelper for KernelMapper {
     }
 
     fn flush_tlb(&mut self, virtual_addr: usize) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
         x86_64::instructions::tlb::flush(VirtAddr::new(virtual_addr as u64));
         Ok(())
     }
 
     fn flush_tlb_all(&mut self) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
         crate::flush_tlb_safely!();
         Ok(())
     }
@@ -230,7 +246,9 @@ impl PageTableHelper for KernelMapper {
         &mut self,
         frame_allocator: &mut impl FrameAllocator<Size4KiB>,
     ) -> crate::common::logging::SystemResult<usize> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
         let new_frame = match frame_allocator.allocate_frame() {
             Some(frame) => frame,
             None => return Err(crate::common::logging::SystemError::FrameAllocationFailed),
@@ -270,11 +288,19 @@ impl PageTableHelper for KernelMapper {
         table_addr: usize,
         frame_allocator: &mut BootInfoFrameAllocator,
     ) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
         let table_phys = PhysAddr::new(table_addr as u64);
         if let Some(frame) = self.allocated_tables.remove(&table_addr) {
             let mapper = self.mapper.as_mut().unwrap();
-            destroy_page_table_recursive(mapper, frame_allocator, table_phys, 4, crate::page_table::raw::TEMP_VA_FOR_DESTROY)?;
+            destroy_page_table_recursive(
+                mapper,
+                frame_allocator,
+                table_phys,
+                4,
+                crate::page_table::raw::TEMP_VA_FOR_DESTROY,
+            )?;
             frame_allocator.deallocate_frame(frame);
             Ok(())
         } else {
@@ -287,11 +313,18 @@ impl PageTableHelper for KernelMapper {
         source_table: usize,
         frame_allocator: &mut impl FrameAllocator<Size4KiB>,
     ) -> crate::common::logging::SystemResult<usize> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
-        
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
+
         let source_frame = if let Some(frame) = self.allocated_tables.get(&source_table) {
             frame
-        } else if Some(source_table) == self.pml4_frame.as_ref().map(|f| f.start_address().as_u64() as usize) {
+        } else if Some(source_table)
+            == self
+                .pml4_frame
+                .as_ref()
+                .map(|f| f.start_address().as_u64() as usize)
+        {
             self.pml4_frame.as_ref().unwrap()
         } else {
             return Err(crate::common::logging::SystemError::InvalidArgument);
@@ -311,14 +344,17 @@ impl PageTableHelper for KernelMapper {
         }?;
 
         for frame in allocated_frames {
-            self.allocated_tables.insert(frame.start_address().as_u64() as usize, frame);
+            self.allocated_tables
+                .insert(frame.start_address().as_u64() as usize, frame);
         }
-        
+
         Ok(cloned_phys.as_u64() as usize)
     }
 
     fn switch_page_table(&mut self, table_addr: usize) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized { return Err(crate::common::logging::SystemError::InternalError); }
+        if !self.initialized {
+            return Err(crate::common::logging::SystemError::InternalError);
+        }
         let new_frame = match self.allocated_tables.get(&table_addr) {
             Some(frame) => frame,
             None => return Err(crate::common::logging::SystemError::InvalidArgument),
@@ -345,12 +381,8 @@ fn destroy_page_table_recursive<'a>(
         return Ok(());
     }
     let frame = PhysFrame::<Size4KiB>::containing_address(table_phys);
-    let result: crate::common::logging::SystemResult<()> = with_temp_mapping!(
-        mapper,
-        frame_alloc,
-        temp_va,
-        frame,
-        {
+    let result: crate::common::logging::SystemResult<()> =
+        with_temp_mapping!(mapper, frame_alloc, temp_va, frame, {
             let table = unsafe { &*(temp_va.as_ptr() as *const PageTable) };
             let mut child_frames_to_free = alloc::vec::Vec::new();
             if level > 1 {
@@ -363,18 +395,17 @@ fn destroy_page_table_recursive<'a>(
                 }
             }
             for child_frame in child_frames_to_free {
-                    destroy_page_table_recursive(
-                        mapper,
-                        frame_alloc,
-                        child_frame.start_address(),
-                        level - 1,
-                        crate::page_table::raw::TEMP_VA_FOR_DESTROY,
-                    )?;
+                destroy_page_table_recursive(
+                    mapper,
+                    frame_alloc,
+                    child_frame.start_address(),
+                    level - 1,
+                    crate::page_table::raw::TEMP_VA_FOR_DESTROY,
+                )?;
                 frame_alloc.deallocate_frame(child_frame);
             }
             Ok(())
-        }
-    );
+        });
     result
 }
 
@@ -388,5 +419,32 @@ impl crate::initializer::Initializable for KernelMapper {
     }
     fn priority(&self) -> i32 {
         900
+    }
+}
+
+// Global accessor for KernelMapper (deadlock-free, single-threaded kernel context)
+use core::cell::UnsafeCell;
+
+struct SyncUnsafeCell<T> {
+    inner: UnsafeCell<T>,
+}
+
+unsafe impl<T> Sync for SyncUnsafeCell<T> {}
+
+static KERNEL_MAPPER: SyncUnsafeCell<Option<KernelMapper>> = SyncUnsafeCell {
+    inner: UnsafeCell::new(None),
+};
+
+pub fn init_kernel_mapper(mapper: KernelMapper) {
+    unsafe {
+        *KERNEL_MAPPER.inner.get() = Some(mapper);
+    }
+}
+
+pub fn get_mapper() -> &'static mut KernelMapper {
+    unsafe {
+        (*KERNEL_MAPPER.inner.get())
+            .as_mut()
+            .expect("Kernel mapper not initialized")
     }
 }

@@ -125,7 +125,7 @@ pub fn init_fallback_graphics() -> Result<(), &'static str> {
             bpp: 8,
         };
         let writer = FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(&vga_config));
-        
+
         unsafe {
             WRITER_UEFI = Some(petroleum::UefiFramebufferWriter::Vga8(writer.clone()));
             FRAMEBUFFER_UEFI = Some(petroleum::UefiFramebuffer::Vga8(writer));

@@ -78,35 +78,41 @@ fn syscall_fork() -> SyscallResult {
 
     // First, find parent process and get info while holding lock briefly
     let (parent_page_table_phys_addr, parent_context, parent_user_stack, parent_entry_point) = {
-        crate::process::PROCESS_MANAGER.with_process(current_pid, |p| {
-            (
-                p.page_table_phys_addr,
-                p.context,
-                p.user_stack,
-                p.entry_point,
-            )
-        }).ok_or(SyscallError::NoSuchProcess)?
+        crate::process::PROCESS_MANAGER
+            .with_process(current_pid, |p| {
+                (
+                    p.page_table_phys_addr,
+                    p.context,
+                    p.user_stack,
+                    p.entry_point,
+                )
+            })
+            .ok_or(SyscallError::NoSuchProcess)?
     }; // Lock released here
 
     // Perform expensive page table cloning outside the lock
     let cloned_table_addr = {
         let mut manager_guard = crate::memory_management::get_memory_manager().lock();
         let manager = manager_guard.as_mut().ok_or(SyscallError::OutOfMemory)?;
-        
+
         // Use the manager's own frame_allocator by passing it as a separate argument.
-        // Since clone_page_table is a trait method on PageTableHelper, and UnifiedMemoryManager 
-        // implements it, we can call it. To avoid the double borrow, we can use the 
+        // Since clone_page_table is a trait method on PageTableHelper, and UnifiedMemoryManager
+        // implements it, we can call it. To avoid the double borrow, we can use the
         // frame_allocator_mut() method if available, or just pass the field.
-        // The issue is that `manager` is borrowed mutably for the first arg, 
+        // The issue is that `manager` is borrowed mutably for the first arg,
         // and `manager.frame_allocator` is borrowed mutably for the third.
-        
-        // We can solve this by using the fact that UnifiedMemoryManager's 
+
+        // We can solve this by using the fact that UnifiedMemoryManager's
         // implementation of clone_page_table just delegates to its internal page_table_manager.
         // We can call the method on the internal page_table_manager directly.
-        
+
         let ptm = &mut manager.page_table_manager;
         let alloc = &mut manager.frame_allocator;
-        petroleum::page_table::PageTableHelper::clone_page_table(ptm, parent_page_table_phys_addr.as_u64() as usize, alloc)?
+        petroleum::page_table::PageTableHelper::clone_page_table(
+            ptm,
+            parent_page_table_phys_addr.as_u64() as usize,
+            alloc,
+        )?
     };
 
     let cloned_pml4_frame = x86_64::structures::paging::PhysFrame::containing_address(
@@ -274,17 +280,22 @@ fn syscall_wait(pid: u64) -> SyscallResult {
     } else {
         // Wait for specific process to finish
         // Check if the process exists and is a child (simplified check)
-        let result = crate::process::PROCESS_MANAGER.with_process(pid, |process| {
-            if process.state == crate::process::ProcessState::Terminated {
-                Some(process.exit_code.unwrap_or(0))
-            } else {
-                None
-            }
-        }).flatten();
+        let result = crate::process::PROCESS_MANAGER
+            .with_process(pid, |process| {
+                if process.state == crate::process::ProcessState::Terminated {
+                    Some(process.exit_code.unwrap_or(0))
+                } else {
+                    None
+                }
+            })
+            .flatten();
 
         if let Some(exit_code) = result {
             Ok(exit_code as u64)
-        } else if crate::process::PROCESS_MANAGER.with_process(pid, |_| {}).is_some() {
+        } else if crate::process::PROCESS_MANAGER
+            .with_process(pid, |_| {})
+            .is_some()
+        {
             // Process is still running, block current process
             crate::process::block_current();
             Ok(0)
@@ -308,19 +319,21 @@ fn syscall_get_process_name(buffer: *mut u8, size: usize) -> SyscallResult {
     petroleum::validate_user_buffer(buffer as usize, size, false)?;
     let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
-    crate::process::PROCESS_MANAGER.with_process(current_pid, |process| {
-        let name_bytes = process.name.as_bytes();
-        let copy_len = name_bytes.len().min(size - 1); // Leave room for null terminator
+    crate::process::PROCESS_MANAGER
+        .with_process(current_pid, |process| {
+            let name_bytes = process.name.as_bytes();
+            let copy_len = name_bytes.len().min(size - 1); // Leave room for null terminator
 
-        // Copy the process name to user buffer
-        unsafe {
-            core::ptr::copy_nonoverlapping(name_bytes.as_ptr(), buffer, copy_len);
-            // Add null terminator
-            *buffer.add(copy_len) = b'\0';
-        }
+            // Copy the process name to user buffer
+            unsafe {
+                core::ptr::copy_nonoverlapping(name_bytes.as_ptr(), buffer, copy_len);
+                // Add null terminator
+                *buffer.add(copy_len) = b'\0';
+            }
 
-        copy_len as u64
-    }).ok_or(SyscallError::NoSuchProcess)
+            copy_len as u64
+        })
+        .ok_or(SyscallError::NoSuchProcess)
 }
 
 /// Yield system call

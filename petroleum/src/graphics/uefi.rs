@@ -1,11 +1,11 @@
+use crate::common::memory::create_framebuffer_config;
+use crate::common::{
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID,
+    EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable, FullereneFramebufferConfig,
+};
 use core::ffi::c_void;
 use core::ptr;
 use spin::Mutex;
-use crate::common::{
-    EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable, FullereneFramebufferConfig,
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID,
-};
-use crate::common::memory::create_framebuffer_config;
 
 /// Protocol locator for UEFI protocols
 struct ProtocolLocator<'a> {
@@ -71,7 +71,10 @@ pub fn detect_standard_modes(
         let expected_fb_size = (*height * *width * bpp / 8) as u64;
         crate::serial::_print(format_args!(
             "[BM-GFX] Testing {}x{} mode at {:#x} (size: {}KB)\n",
-            width, height, addr, expected_fb_size / 1024
+            width,
+            height,
+            addr,
+            expected_fb_size / 1024
         ));
 
         if *addr >= 0x100000 {
@@ -118,7 +121,9 @@ pub fn test_qemu_framebuffer_access(address: u64) -> bool {
 }
 
 /// Generic helper to test QEMU framebuffer configurations
-pub fn find_working_qemu_config(configs: &[crate::QemuConfig]) -> Option<FullereneFramebufferConfig> {
+pub fn find_working_qemu_config(
+    configs: &[crate::QemuConfig],
+) -> Option<FullereneFramebufferConfig> {
     const MAX_FRAMEBUFFER_SIZE: u64 = 0x10000000; // 256MB limit
 
     for config in configs.iter() {
@@ -379,7 +384,10 @@ pub fn init_graphics_protocols(
         &EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID,
         "EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL",
     );
-    tester.test_availability(&crate::common::EFI_LOADED_IMAGE_PROTOCOL_GUID, "EFI_LOADED_IMAGE_PROTOCOL");
+    tester.test_availability(
+        &crate::common::EFI_LOADED_IMAGE_PROTOCOL_GUID,
+        "EFI_LOADED_IMAGE_PROTOCOL",
+    );
     tester.test_availability(
         &crate::common::EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,
         "EFI_SIMPLE_FILE_SYSTEM_PROTOCOL",

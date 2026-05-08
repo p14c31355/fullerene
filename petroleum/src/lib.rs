@@ -47,8 +47,8 @@ macro_rules! define_alloc_error_handler {
 // Fallback heap start address constant for when no suitable memory is found
 pub const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
 
-pub mod assembly;
 pub mod apic;
+pub mod assembly;
 pub mod bare_metal_graphics_detection;
 pub mod bare_metal_pci;
 #[macro_use]
@@ -69,15 +69,15 @@ pub use common::logging::{SystemError, SystemResult};
 pub use common::memory::*;
 pub use common::syscall::*;
 pub use common::{check_memory_initialized, set_memory_initialized};
-pub use hardware::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
+pub use graphics::uefi::*;
 pub use graphics::*;
 pub use graphics::{
-    Color, ColorCode, HardwarePorts, ScreenChar, TextBufferOperations, VgaPortOps,
+    Color, ColorCode, HardwarePorts, ScreenChar, TextBufferOperations, UefiFramebufferWriter,
+    VgaPortOps,
     color::{self},
     init_vga_graphics,
-    UefiFramebufferWriter,
 };
-pub use graphics::uefi::*;
+pub use hardware::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 
 pub fn clear_buffer<B: TextBufferOperations>(
     buffer: &mut B,
@@ -96,7 +96,15 @@ pub fn clear_line_range<B: TextBufferOperations + ?Sized>(
     col_end: usize,
     blank_char: ScreenChar,
 ) {
-    buffer_ops!(clear_line_range, buffer, start_row, end_row, col_start, col_end, blank_char);
+    buffer_ops!(
+        clear_line_range,
+        buffer,
+        start_row,
+        end_row,
+        col_start,
+        col_end,
+        blank_char
+    );
 }
 
 pub fn scroll_char_buffer_up<B: TextBufferOperations>(
@@ -112,22 +120,23 @@ pub fn scroll_char_buffer_up<B: TextBufferOperations>(
 pub fn debug_mem_descriptor(desc: &crate::page_table::memory_map::MemoryMapDescriptor) {
     crate::serial::_print(format_args!(
         "Memory descriptor: type={} phys=0x{:x} pages={}\n",
-        desc.type_(), desc.physical_start(), desc.number_of_pages()
+        desc.type_(),
+        desc.physical_start(),
+        desc.number_of_pages()
     ));
 }
 
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
 pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 // Heap allocation exports
+pub use page_table::allocator::{BitmapFrameAllocator, bitmap};
 #[cfg(not(feature = "std"))]
 pub use page_table::heap::ALLOCATOR;
 pub use page_table::heap::allocate_heap_from_map;
 pub use page_table::heap::init_global_heap;
-pub use page_table::allocator::{BitmapFrameAllocator, bitmap};
 // Removed reinit_page_table export - implemented in higher-level crates
 // UEFI helper exports
 pub use uefi_helpers::{initialize_graphics_with_config, kernel_fallback_framebuffer_detection};
-
 
 use core::ffi::c_void;
 use core::ptr;

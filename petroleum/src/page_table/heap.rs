@@ -1,7 +1,7 @@
-use core::sync::atomic::{AtomicBool, Ordering};
 use crate::common::memory::set_heap_range;
-use x86_64::PhysAddr;
 use crate::page_table::memory_map::MemoryMapDescriptor;
+use core::sync::atomic::{AtomicBool, Ordering};
+use x86_64::PhysAddr;
 
 pub const MAX_DESCRIPTORS: usize = 2048;
 

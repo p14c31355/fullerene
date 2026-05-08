@@ -1,7 +1,7 @@
 use crate::MEMORY_MAP;
 use crate::interrupts;
-use x86_64::VirtAddr;
 use petroleum::write_serial_bytes;
+use x86_64::VirtAddr;
 
 use crate::boot::uefi_init::UefiInitContext;
 
@@ -31,36 +31,64 @@ pub unsafe extern "C" fn efi_main_stage2(ctx: *mut (), physical_memory_offset: V
     }
 
     let args_ptr = unsafe { (*ctx).args_ptr };
-    
+
     // CRITICAL: Set physical memory offset BEFORE initializing the global memory manager
     // to avoid page faults when creating the OffsetPageTable in PageTableManager::init.
     petroleum::set_physical_memory_offset(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE);
-    write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Physical memory offset set before memory manager init\n");
+    write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: Physical memory offset set before memory manager init\n"
+    );
 
     // Initialize the global memory manager with the EFI memory map
-    write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Initializing global memory manager...\n");
+    write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: Initializing global memory manager...\n"
+    );
     write_serial_bytes!(0x3F8, 0x3FD, b"Calling MEMORY_MAP.get()\n");
     if let Some(memory_map) = *MEMORY_MAP.lock() {
-        write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: MEMORY_MAP acquired, calling init_memory_manager\n");
-        
+        write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: MEMORY_MAP acquired, calling init_memory_manager\n"
+        );
+
         if let Err(_e) = crate::memory_management::init_memory_manager(memory_map) {
             write_serial_bytes!(0x3F8, 0x3FD, b"ERROR: init_memory_manager failed!\n");
             petroleum::halt_loop();
         }
         petroleum::set_memory_initialized(true);
-        write_serial_bytes!(0x3F8, 0x3FD, b"Memory management initialized successfully\n");
+        write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"Memory management initialized successfully\n"
+        );
     } else {
-        write_serial_bytes!(0x3F8, 0x3FD, b"ERROR: MEMORY_MAP not initialized. Halting.\n");
+        write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"ERROR: MEMORY_MAP not initialized. Halting.\n"
+        );
         petroleum::halt_loop();
     }
 
     // Common initialization for both UEFI and BIOS with correct physical memory offset
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] About to call init_common\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [uefi_main] About to call init_common\n"
+    );
     log::info!("About to call init_common");
     unsafe {
         let rsp: u64;
         core::arch::asm!("mov {}, rsp", out(reg) rsp);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] RSP before init_common\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [uefi_main] RSP before init_common\n"
+        );
         // Use raw serial print to avoid potential deadlock in bootloader_log/println
         let mut buf = [0u8; 32];
         let len = petroleum::serial::format_hex_to_buffer(rsp, &mut buf, 16);
@@ -68,32 +96,56 @@ pub unsafe extern "C" fn efi_main_stage2(ctx: *mut (), physical_memory_offset: V
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
     }
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] Calling init_common now\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [uefi_main] Calling init_common now\n"
+    );
     crate::init::init_common(physical_memory_offset);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] init_common returned\n");
     unsafe {
         let rsp: u64;
         core::arch::asm!("mov {}, rsp", out(reg) rsp);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] Got RSP, about to call init_log\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [uefi_main] Got RSP, about to call init_log\n"
+        );
 
         petroleum::init_log!("RSP after init_common: 0x{:x}", rsp);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] init_log returned\n");
     }
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] About to call log::info\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [uefi_main] About to call log::info\n"
+    );
     log::info!("init_common completed");
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] log::info returned\n");
 
     write_serial_bytes!(0x3F8, 0x3FD, b"About to complete basic init\n");
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] About to call serial_log\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [uefi_main] About to call serial_log\n"
+    );
     petroleum::serial::serial_log(format_args!("About to log basic init complete...\n"));
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] serial_log returned\n");
-    
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] About to call log::info (basic init complete)\n");
+
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [uefi_main] About to call log::info (basic init complete)\n"
+    );
     log::info!("Kernel: basic init complete");
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] log::info returned\n");
 
     write_serial_bytes!(0x3F8, 0x3FD, b"Basic init complete logged\n");
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] About to call serial_log (success)\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [uefi_main] About to call serial_log (success)\n"
+    );
     petroleum::serial::serial_log(format_args!("basic init complete logged successfully\n"));
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_main] serial_log returned\n");
 
@@ -101,7 +153,10 @@ pub unsafe extern "C" fn efi_main_stage2(ctx: *mut (), physical_memory_offset: V
     kernel_main_higher_half(args_ptr, physical_memory_offset);
 }
 
-fn kernel_main_higher_half(_args_ptr: *const petroleum::assembly::KernelArgs, physical_memory_offset: VirtAddr) -> ! {
+fn kernel_main_higher_half(
+    _args_ptr: *const petroleum::assembly::KernelArgs,
+    physical_memory_offset: VirtAddr,
+) -> ! {
     write_serial_bytes!(0x3F8, 0x3FD, b"Entering kernel_main_higher_half...\n");
 
     // 1. Reload IDT to ensure it uses higher-half addresses
@@ -111,7 +166,10 @@ fn kernel_main_higher_half(_args_ptr: *const petroleum::assembly::KernelArgs, ph
 
     // 2. Map MMIO regions and get VGA virtual address
     let vga_virt_addr = crate::boot::uefi_init::UefiInitContext::map_mmio(physical_memory_offset);
-    log::info!("MMIO mapping completed. VGA virt addr: {:#x}", vga_virt_addr);
+    log::info!(
+        "MMIO mapping completed. VGA virt addr: {:#x}",
+        vga_virt_addr
+    );
 
     // 3. Initialize VGA for UEFI using the higher-half address
     crate::vga::init_vga(physical_memory_offset, vga_virt_addr);
@@ -133,8 +191,8 @@ fn kernel_main_higher_half(_args_ptr: *const petroleum::assembly::KernelArgs, ph
     // 7. Start the main kernel scheduler
     log::info!("Starting full system scheduler loop...");
     write_serial_bytes!(0x3F8, 0x3FD, b"Entering scheduler_loop\n");
-    
-    // Use a standard function call instead of a raw jump to ensure 
+
+    // Use a standard function call instead of a raw jump to ensure
     // proper stack frame setup and ABI compliance.
     crate::scheduler::scheduler_loop();
 }

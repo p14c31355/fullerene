@@ -1,6 +1,6 @@
 #![allow(static_mut_refs)]
-use petroleum::{mem_debug, debug_log_no_alloc};
 use core::sync::atomic::{AtomicBool, Ordering};
+use petroleum::{debug_log_no_alloc, mem_debug};
 use x86_64::VirtAddr;
 use x86_64::instructions::tables::load_tss;
 use x86_64::registers::segmentation::{CS, Segment};
@@ -95,12 +95,20 @@ pub fn init_with_stacks(stacks: TssStacks) {
         let data_selector = gdt.append(Descriptor::kernel_data_segment());
         let user_data_selector = gdt.append(Descriptor::user_data_segment());
         let user_code_selector = gdt.append(Descriptor::user_code_segment());
-        
+
         let tss_selector = {
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: About to access TSS static for GDT descriptor\n");
+            petroleum::write_serial_bytes(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: About to access TSS static for GDT descriptor\n",
+            );
             let tss_ref = TSS.as_ref().expect("TSS not set");
             let selector = gdt.append(Descriptor::tss_segment(tss_ref));
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Successfully accessed TSS static for GDT descriptor\n");
+            petroleum::write_serial_bytes(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: Successfully accessed TSS static for GDT descriptor\n",
+            );
             selector
         };
 
@@ -123,7 +131,13 @@ pub fn init_with_stacks(stacks: TssStacks) {
 pub fn init(heap_start: VirtAddr) -> VirtAddr {
     // If already initialized, just return the heap start (don't modify)
     if GDT_INITIALIZED.load(Ordering::SeqCst) {
-        unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: Already initialized, skipping\n"); }
+        unsafe {
+            petroleum::write_serial_bytes(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: GDT: Already initialized, skipping\n",
+            );
+        }
         return heap_start;
     }
 
@@ -140,7 +154,9 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
     // Reserve space for all TSS stacks (double fault, timer, and one spare).
     let new_heap_start = timer_ist + GDT_TSS_STACK_SIZE as u64;
 
-    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: Stack addresses calculated\n"); }
+    unsafe {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: Stack addresses calculated\n");
+    }
 
     unsafe {
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: About to access TSS static\n");
@@ -148,7 +164,11 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = double_fault_ist;
         tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = timer_ist;
         TSS = Some(tss);
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: TSS static accessed successfully\n");
+        petroleum::write_serial_bytes(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: GDT: TSS static accessed successfully\n",
+        );
     }
 
     mem_debug!("GDT: TSS created\n");
@@ -159,12 +179,20 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
         let data_selector = gdt.append(Descriptor::kernel_data_segment());
         let user_data_selector = gdt.append(Descriptor::user_data_segment());
         let user_code_selector = gdt.append(Descriptor::user_code_segment());
-        
+
         let tss_selector = {
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: About to access TSS static for GDT descriptor\n");
+            petroleum::write_serial_bytes(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: GDT: About to access TSS static for GDT descriptor\n",
+            );
             let tss_ref = TSS.as_ref().expect("TSS must be initialized");
             let selector = gdt.append(Descriptor::tss_segment(tss_ref));
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: TSS static accessed successfully for GDT descriptor\n");
+            petroleum::write_serial_bytes(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: GDT: TSS static accessed successfully for GDT descriptor\n",
+            );
             selector
         };
 
@@ -176,7 +204,9 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
         GDT = Some(gdt);
     }
 
-    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: GDT built\n"); }
+    unsafe {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: GDT built\n");
+    }
 
     #[cfg(not(target_os = "uefi"))]
     {
@@ -221,7 +251,9 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
     }
 
     GDT_INITIALIZED.store(true, Ordering::SeqCst);
-    unsafe { petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: About to return\n"); }
+    unsafe {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: About to return\n");
+    }
     new_heap_start
 }
 

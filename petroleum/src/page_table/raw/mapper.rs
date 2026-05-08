@@ -1,7 +1,10 @@
-use x86_64::{PhysAddr, VirtAddr, structures::paging::{Mapper, OffsetPageTable, PageTableFlags, Size4KiB}};
 use crate::page_table::constants::BootInfoFrameAllocator;
 use crate::page_table::pe::{PeSection, derive_pe_flags};
 use crate::page_table::types::MemoryDescriptorValidator;
+use x86_64::{
+    PhysAddr, VirtAddr,
+    structures::paging::{Mapper, OffsetPageTable, PageTableFlags, Size4KiB},
+};
 
 pub unsafe fn map_pe_section(
     mapper: &mut OffsetPageTable,
@@ -16,9 +19,16 @@ pub unsafe fn map_pe_section(
     let section_size = section.virtual_size as u64;
     let pages = section_size.div_ceil(4096);
     for p in 0..pages {
-            let phys_addr = crate::common::utils::calculate_offset_address(section_start_phys, p);
-            let virt_addr = crate::common::utils::calculate_offset_address(section_start_virt, p);
-        crate::map_with_offset!(mapper, frame_allocator, phys_addr, virt_addr, flags, "panic");
+        let phys_addr = crate::common::utils::calculate_offset_address(section_start_phys, p);
+        let virt_addr = crate::common::utils::calculate_offset_address(section_start_virt, p);
+        crate::map_with_offset!(
+            mapper,
+            frame_allocator,
+            phys_addr,
+            virt_addr,
+            flags,
+            "panic"
+        );
     }
 }
 
@@ -113,11 +123,7 @@ pub unsafe fn map_memory_descriptors_with_config<T: MemoryDescriptorValidator, F
     }
 }
 
-pub unsafe fn unmap_identity_range(
-    mapper: &mut OffsetPageTable,
-    start_addr: u64,
-    num_pages: u64,
-) {
+pub unsafe fn unmap_identity_range(mapper: &mut OffsetPageTable, start_addr: u64, num_pages: u64) {
     use x86_64::structures::paging::{Page, Size4KiB};
     for i in 0..num_pages {
         let addr = start_addr + (i * 4096);

@@ -36,26 +36,50 @@ static OPEN_FILES: Mutex<BTreeMap<FileDescriptor, Arc<Mutex<File>>>> = Mutex::ne
 pub fn init() {
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [fs] init: try_locking FILESYSTEM\n");
     if let Some(mut fs) = FILESYSTEM.try_lock() {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [fs] init: FILESYSTEM locked successfully\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [fs] init: FILESYSTEM locked successfully\n"
+        );
         fs.clear();
     } else {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [fs] init: FILESYSTEM already locked!\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [fs] init: FILESYSTEM already locked!\n"
+        );
     }
-    
+
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [fs] init: try_locking NEXT_FD\n");
     if let Some(mut next_fd) = NEXT_FD.try_lock() {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [fs] init: NEXT_FD locked successfully\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [fs] init: NEXT_FD locked successfully\n"
+        );
         *next_fd = 3;
     } else {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [fs] init: NEXT_FD already locked!\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [fs] init: NEXT_FD already locked!\n"
+        );
     }
 
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [fs] init: try_locking OPEN_FILES\n");
     if let Some(mut open_files) = OPEN_FILES.try_lock() {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [fs] init: OPEN_FILES locked successfully\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [fs] init: OPEN_FILES locked successfully\n"
+        );
         open_files.clear();
     } else {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [fs] init: OPEN_FILES already locked!\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [fs] init: OPEN_FILES already locked!\n"
+        );
     }
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [fs] init: completed\n");
 }

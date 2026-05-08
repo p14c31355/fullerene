@@ -132,7 +132,7 @@ pub extern "C" fn switch_context(
         "mov r13, [r15 + {r13}]",
         "mov r14, [r15 + {r14}]",
         "mov rsi, [r15 + {rsi}]",
-        // r15 is restored last if it's not a user process, 
+        // r15 is restored last if it's not a user process,
         // but we need it to check is_user.
 
         // Restore segment registers

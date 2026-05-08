@@ -2,15 +2,20 @@
 use crate::interrupts;
 use alloc::boxed::Box;
 
+use petroleum::assembly::KernelArgs;
 use petroleum::{common::InitSequence, init_log, write_serial_bytes};
 use spin::Once;
+use x86_64::structures::paging::{Mapper, Page, PageTableFlags, PhysFrame, Size4KiB};
+use x86_64::{PhysAddr, VirtAddr};
 
 pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     let rsp: u64;
-    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp); }
-    
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) rsp);
+    }
+
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] entered\n");
-    
+
     let mut buf = [0u8; 16];
     let len = petroleum::serial::format_hex_to_buffer(rsp, &mut buf, 16);
     unsafe {
@@ -34,8 +39,13 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
                     let heap_start_ptr: *mut u8 = core::ptr::addr_of_mut!(HEAP) as *mut u8;
                     heap_start_addr = x86_64::VirtAddr::from_ptr(heap_start_ptr);
                     use petroleum::page_table::ALLOCATOR;
-                    ALLOCATOR.lock().init(heap_start_ptr, crate::heap::HEAP_SIZE);
-                    petroleum::common::memory::set_heap_range(heap_start_ptr as usize, crate::heap::HEAP_SIZE);
+                    ALLOCATOR
+                        .lock()
+                        .init(heap_start_ptr, crate::heap::HEAP_SIZE);
+                    petroleum::common::memory::set_heap_range(
+                        heap_start_ptr as usize,
+                        crate::heap::HEAP_SIZE,
+                    );
                 }
                 crate::gdt::init(heap_start_addr);
                 Ok(())
@@ -55,21 +65,50 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
 
     #[cfg(target_os = "uefi")]
     {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] initializing graphics from KernelArgs\n");
-        
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [init_common] initializing graphics from KernelArgs\n"
+        );
+
         unsafe {
             let args_ptr = petroleum::transition::KERNEL_ARGS;
-            
+
             // DEBUG: Print the pointer value before dereferencing
             let mut buf = [0u8; 16];
             let len = petroleum::serial::format_hex_to_buffer(args_ptr as u64, &mut buf, 16);
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [init_common] KERNEL_ARGS ptr: 0x");
+            petroleum::write_serial_bytes(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: [init_common] KERNEL_ARGS ptr: 0x",
+            );
             petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
             if !args_ptr.is_null() {
-                let args = &*args_ptr;
-                
+                // KERNEL_ARGS contains a physical address, convert to virtual address
+                let phys_addr = args_ptr as u64;
+                let virt_addr = phys_addr.wrapping_add(physical_memory_offset.as_u64());
+
+                // Map the page containing KernelArgs if not already mapped
+                let page_virt = VirtAddr::new(virt_addr);
+                let page_phys = PhysAddr::new(phys_addr);
+
+                // Use the kernel's mapper to ensure the page is accessible
+                let kernel_mapper = petroleum::page_table::kernel::get_mapper();
+                let offset_mapper = kernel_mapper
+                    .mapper
+                    .as_mut()
+                    .expect("Kernel mapper not initialized");
+                let _ = offset_mapper.map_to(
+                    Page::<Size4KiB>::containing_address(page_virt),
+                    PhysFrame::<Size4KiB>::containing_address(page_phys),
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                    &mut *petroleum::page_table::constants::get_frame_allocator(),
+                );
+
+                let args = &*(virt_addr as *const KernelArgs);
+
                 if args.fb_address != 0 {
                     let info = petroleum::graphics::color::FramebufferInfo {
                         address: args.fb_address,
@@ -79,15 +118,16 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
                         pixel_format: None,    // Default to VGA/Simple format
                         colors: petroleum::graphics::color::ColorScheme::VGA_GREEN_ON_BLACK,
                     };
-                    
+
                     // We still avoid calling .new() to be safe, but we can now use the actual values.
-                    // If FramebufferWriter fields are private, we'll need to add a simple 
+                    // If FramebufferWriter fields are private, we'll need to add a simple
                     // public constructor or use a wrapper in petroleum.
                     // For now, we'll try to use the values to verify they are passed correctly.
-                    
+
                     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] FB Info: ");
                     let mut buf = [0u8; 16];
-                    let len = petroleum::serial::format_hex_to_buffer(args.fb_address, &mut buf, 16);
+                    let len =
+                        petroleum::serial::format_hex_to_buffer(args.fb_address, &mut buf, 16);
                     petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
                     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b" size: ");
                     // Simple print for width/height
@@ -96,33 +136,65 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
                     // (Simplified printing for brevity)
                     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b" [OK]\n");
                 } else {
-                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] No FB address in KernelArgs\n");
+                    petroleum::write_serial_bytes!(
+                        0x3F8,
+                        0x3FD,
+                        b"DEBUG: [init_common] No FB address in KernelArgs\n"
+                    );
                 }
             } else {
-                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] KERNEL_ARGS is null\n");
+                petroleum::write_serial_bytes!(
+                    0x3F8,
+                    0x3FD,
+                    b"DEBUG: [init_common] KERNEL_ARGS is null\n"
+                );
             }
         }
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] graphics init from args completed\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [init_common] graphics init from args completed\n"
+        );
     }
 
     // 2. Common initialization sequence
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] loading IDT early for debugging\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [init_common] loading IDT early for debugging\n"
+    );
     crate::interrupts::init();
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] starting common_steps\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [init_common] starting common_steps\n"
+    );
     let common_steps = [
         petroleum::init_step!("process", init_process_step),
         petroleum::init_step!("syscall", init_syscall_step),
         petroleum::init_step!("fs", init_fs_step),
         petroleum::init_step!("loader", init_loader_step),
     ];
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] calling InitSequence::run\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [init_common] calling InitSequence::run\n"
+    );
     InitSequence::new(&common_steps).run();
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] InitSequence::run returned\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [init_common] InitSequence::run returned\n"
+    );
 
     // 3. Post-initialization (UEFI only for now)
     #[cfg(target_os = "uefi")]
     {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init] About to create test process\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [init] About to create test process\n"
+        );
         let test_pid = crate::process::create_process(
             "test_process",
             x86_64::VirtAddr::new(crate::process::test_process_main as *const () as usize as u64),
@@ -131,7 +203,11 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init] create_process returned\n");
         match test_pid {
             Ok(pid) => {
-                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init] Test process created successfully\n");
+                petroleum::write_serial_bytes!(
+                    0x3F8,
+                    0x3FD,
+                    b"DEBUG: [init] Test process created successfully\n"
+                );
                 // Use write_serial_bytes instead of init_log to avoid potential deadlock with SERIAL_PORT_WRITER/UEFI_WRITER
                 let mut buf = [0u8; 32];
                 let len = petroleum::serial::format_dec_to_buffer(pid as usize, &mut buf);
@@ -140,15 +216,23 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
                     petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
                 }
                 petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-            },
+            }
             Err(e) => {
-                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init] Test process creation failed\n");
+                petroleum::write_serial_bytes!(
+                    0x3F8,
+                    0x3FD,
+                    b"DEBUG: [init] Test process creation failed\n"
+                );
                 petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Failed to create test process\n");
-            },
+            }
         }
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init] Post-init block completed\n");
     }
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_common] End of init_common function\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [init_common] End of init_common function\n"
+    );
 }
 
 fn init_process_step() -> Result<(), &'static str> {
