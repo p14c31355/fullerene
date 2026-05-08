@@ -125,7 +125,7 @@ pub struct Process {
     /// Process page table (physical address of level 4 page table)
     pub page_table_phys_addr: PhysAddr,
     /// Process page table mapper
-    pub page_table: Option<crate::memory_management::ProcessPageTable>,
+    pub page_table: Option<petroleum::page_table::process::ProcessPageTable>,
     /// Stack pointer for kernel stack
     pub kernel_stack: VirtAddr,
     /// User-space stack pointer

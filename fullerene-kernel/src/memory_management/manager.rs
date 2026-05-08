@@ -1,5 +1,5 @@
 use petroleum::common::logging::{SystemError, SystemResult};
-use petroleum::page_table::{BitmapFrameAllocator, BootInfoFrameAllocator, PageTableManager, PageTableHelper};
+use petroleum::page_table::{BitmapFrameAllocator, BootInfoFrameAllocator, ProcessPageTable, PageTableHelper};
 use crate::memory_management::process_memory::ProcessMemoryManagerImpl;
 use petroleum::initializer::{
     ErrorLogging, FrameAllocator, Initializable, MemoryManager, ProcessMemoryManager,
@@ -9,7 +9,7 @@ use x86_64::structures::paging::{PageTableFlags as PageFlags, Size4KiB};
 /// Unified memory manager implementing all memory management traits
 pub struct UnifiedMemoryManager {
     pub(crate) frame_allocator: BitmapFrameAllocator,
-    pub(crate) page_table_manager: PageTableManager,
+    pub(crate) page_table_manager: ProcessPageTable,
     // Temporarily use a fixed array to avoid BTreeMap allocation during early boot
     pub(crate) process_managers: [Option<ProcessMemoryManagerImpl>; 16],
     pub(crate) current_process: usize,
@@ -22,7 +22,7 @@ impl UnifiedMemoryManager {
         const NONE_MANAGER: Option<ProcessMemoryManagerImpl> = None;
         Self {
             frame_allocator: BitmapFrameAllocator::new(),
-            page_table_manager: PageTableManager::new(),
+            page_table_manager: ProcessPageTable::new(),
             process_managers: [NONE_MANAGER; 16],
             current_process: 0,
             initialized: false,
@@ -32,7 +32,7 @@ impl UnifiedMemoryManager {
     /// Initialize the memory management system
     pub fn init(
         &mut self,
-        memory_map: &[impl petroleum::page_table::efi_memory::MemoryDescriptorValidator],
+        memory_map: &[impl petroleum::page_table::types::MemoryDescriptorValidator],
     ) -> SystemResult<()> {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"UMM::init start\n");
 
@@ -111,12 +111,12 @@ impl UnifiedMemoryManager {
     }
 
     /// Get page table manager reference
-    pub fn page_table_manager(&self) -> &PageTableManager {
+    pub fn page_table_manager(&self) -> &ProcessPageTable {
         &self.page_table_manager
     }
 
     /// Get page table manager mutable reference
-    pub fn page_table_manager_mut(&mut self) -> &mut PageTableManager {
+    pub fn page_table_manager_mut(&mut self) -> &mut ProcessPageTable {
         &mut self.page_table_manager
     }
 

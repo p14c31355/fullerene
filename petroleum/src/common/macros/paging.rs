@@ -70,16 +70,16 @@ macro_rules! map_identity_range_macro {
 #[macro_export]
 macro_rules! identity_map_range_with_log_macro {
     ($mapper:expr, $frame_allocator:expr, $start_addr:expr, $num_pages:expr, $flags:expr) => {{
-        log_page_table_op!(
+        $crate::log_page_table_op!(
             "Identity mapping start",
             $start_addr,
             $start_addr,
             $num_pages
         );
         let result =
-            map_identity_range_macro!($mapper, $frame_allocator, $start_addr, $num_pages, $flags);
+            $crate::map_identity_range_macro!($mapper, $frame_allocator, $start_addr, $num_pages, $flags);
         if result.is_ok() {
-            log_page_table_op!(
+            $crate::log_page_table_op!(
                 "Identity mapping complete",
                 $start_addr,
                 $start_addr,
@@ -94,13 +94,13 @@ macro_rules! identity_map_range_with_log_macro {
 macro_rules! map_to_higher_half_with_log_macro {
     ($mapper:expr, $frame_allocator:expr, $phys_offset:expr, $phys_start:expr, $num_pages:expr, $flags:expr) => {{
         let virt_start = $phys_offset.as_u64() + $phys_start;
-        log_page_table_op!(
+        $crate::log_page_table_op!(
             "Higher half mapping start",
             $phys_start,
             virt_start,
             $num_pages
         );
-        map_range_with_log_macro!(
+        $crate::map_range_with_log_macro!(
             $mapper,
             $frame_allocator,
             $phys_start,
@@ -108,7 +108,7 @@ macro_rules! map_to_higher_half_with_log_macro {
             $num_pages,
             $flags
         );
-        log_page_table_op!(
+        $crate::log_page_table_op!(
             "Higher half mapping complete",
             $phys_start,
             virt_start,

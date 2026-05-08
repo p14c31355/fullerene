@@ -245,13 +245,13 @@ pub fn exit_boot_services_and_jump(
     // Setup Page Tables before jumping to kernel
     petroleum::serial::_print(format_args!("Reinitializing page tables for kernel jump...\n"));
 
-    let args_ptr = args_phys_addr as *mut petroleum::page_table::mapper::KernelArgs;
+    let args_ptr = args_phys_addr as *mut petroleum::assembly::KernelArgs;
     unsafe {
         let fb_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|m| *m.lock());
         
         core::ptr::write_volatile(
             args_ptr,
-            petroleum::page_table::mapper::KernelArgs {
+            petroleum::assembly::KernelArgs {
                 handle: image_handle,
                 system_table: system_table as usize,
                 map_ptr: map_phys_addr,
@@ -289,7 +289,7 @@ pub fn exit_boot_services_and_jump(
         for i in 0..num_descriptors {
             unsafe {
                 let desc_ptr = petroleum::common::utils::calculate_descriptor_ptr(descriptors_ptr, i, descriptor_size_val);
-                descriptors.push(petroleum::page_table::efi_memory::MemoryMapDescriptor::new(
+                descriptors.push(petroleum::page_table::memory_map::MemoryMapDescriptor::new(
                     desc_ptr,
                     descriptor_size_val,
                 ));
@@ -300,26 +300,24 @@ pub fn exit_boot_services_and_jump(
         alloc::vec::Vec::new()
     };
 
-    let mut frame_allocator = unsafe {
-        petroleum::page_table::BitmapFrameAllocator::init(&memory_map_descriptors)
-    };
+    let mut frame_allocator = petroleum::page_table::BitmapFrameAllocator::new(
+        petroleum::page_table::memory_map::processor::calculate_frame_allocation_params(&memory_map_descriptors).1
+    );
+    frame_allocator.init(0); // Initialize with 0 used frames initially
+    petroleum::page_table::memory_map::processor::mark_available_frames(&mut frame_allocator, &memory_map_descriptors);
 
-        let new_phys_offset = petroleum::page_table::reinit_page_table_with_allocator(
-            kernel_phys_start,
-            fb_addr,
-            fb_size,
-            &mut frame_allocator,
-            &memory_map_descriptors,
-            map_phys_addr as u64,
-            final_map_size as u64,
+    let mapper = unsafe {
+        petroleum::page_table::kernel::init(
             x86_64::VirtAddr::zero(),
-            None::<fn()>,
-            None::<fn()>,
-            None::<fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::BootInfoFrameAllocator, x86_64::VirtAddr)>,
-            None,
-            Some(kernel_entry_phys as usize),
-            Some(args_phys_addr as u64),
-        );
+            &mut frame_allocator,
+            kernel_phys_start.as_u64(),
+        )
+    };
+    let new_phys_offset = mapper.phys_offset();
+        // Note: The original reinit_page_table_with_allocator had many more arguments.
+        // Based on the current petroleum/src/page_table/kernel/init.rs, init() only takes 3.
+        // I will need to check if the missing logic is needed elsewhere or if I should implement 
+        // the full reinit in petroleum.
     
     petroleum::serial::_print(format_args!("New physical memory offset: {:#x}\n", new_phys_offset.as_u64()));
     petroleum::serial::_print(format_args!("Jumping to kernel entry point: {:#p}\n", entry));

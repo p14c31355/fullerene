@@ -75,18 +75,18 @@ macro_rules! debug_print {
 #[macro_export]
 macro_rules! log_page_table_op {
     ($operation:literal) => {
-        mem_debug!($operation, "\n");
+        $crate::mem_debug!($operation, "\n");
     };
     ($operation:literal, $msg:literal, $addr:expr) => {
-        mem_debug!($operation, $msg, " addr=", $addr, "\n");
+        $crate::mem_debug!($operation, $msg, " addr=", $addr, "\n");
     };
     ($operation:literal, $phys:expr, $virt:expr, $pages:expr) => {
-        mem_debug!(
+        $crate::mem_debug!(
             $operation, " phys=", $phys, " virt=", $virt, " pages=", $pages, "\n"
         );
     };
     ($stage:literal, $phys:expr, $virt:expr, $pages:expr) => {
-        mem_debug!(
+        $crate::mem_debug!(
             "Memory mapping stage=",
             $stage,
             " phys=",
@@ -99,14 +99,14 @@ macro_rules! log_page_table_op {
         );
     };
     ($operation:literal, $msg:literal) => {
-        mem_debug!($operation, $msg, "\n");
+        $crate::mem_debug!($operation, $msg, "\n");
     };
 }
 
 #[macro_export]
 macro_rules! debug_log_validate_macro {
     ($field:expr, $value:expr) => {
-        mem_debug!($field, " validated: ", $value, "\n");
+        $crate::mem_debug!($field, " validated: ", $value, "\n");
     };
 }
 
@@ -165,19 +165,19 @@ macro_rules! bootloader_debug {
 #[macro_export]
 macro_rules! log_memory_descriptor {
     ($desc:expr, $i:expr) => {
-        crate::mem_debug!("Memory descriptor ", $i);
-        crate::mem_debug!(
+        $crate::mem_debug!("Memory descriptor ", $i);
+        $crate::mem_debug!(
             ": type=",
             $desc.type_ as usize,
             ", phys_start=0x",
             $desc.physical_start as usize
         );
-        crate::mem_debug!(
+        $crate::mem_debug!(
             ", virt_start=",
             $desc.virtual_start as usize,
             ", pages=",
             $desc.number_of_pages as usize
         );
-        crate::mem_debug!("\n");
+        $crate::mem_debug!("\n");
     };
 }

@@ -12,7 +12,7 @@ use petroleum::initializer::{
 };
 use x86_64::structures::paging::PageTableFlags as PageFlags;
 
-use petroleum::page_table::PageTableManager;
+use petroleum::page_table::process::ProcessPageTable;
 pub mod convenience;
 pub mod kernel_space;
 pub mod manager;
@@ -56,12 +56,6 @@ petroleum::error_chain!(FreeError, petroleum::common::logging::SystemError,
     FreeError::UnmappingFailed => petroleum::common::logging::SystemError::UnmappingFailed,
 );
 
-
-
-
-/// Process page table type alias for PageTableManager
-pub type ProcessPageTable = PageTableManager;
-
 // Global memory manager instance
 static MEMORY_MANAGER: Mutex<Option<UnifiedMemoryManager>> = Mutex::new(None);
 
@@ -81,7 +75,7 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
     if get_memory_manager().lock().is_none() {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] memory manager not found, using fallback\n");
         // Fallback: use current CR3 page table when memory manager not available
-        let mut ptm = PageTableManager::new();
+        let mut ptm = ProcessPageTable::new();
         Initializable::init(&mut ptm)?;
         return Ok(ptm);
     }
@@ -170,7 +164,7 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
     }
 
     // Initialize the new page table manager with the allocated frame
-    let mut page_table_manager = PageTableManager::new_with_frame(
+    let mut page_table_manager = ProcessPageTable::new_with_frame(
         x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(
             pml4_frame as u64,
         )),
@@ -196,7 +190,7 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
 
 /// Initialize the global memory manager
 pub fn init_memory_manager(
-    memory_map: &[impl petroleum::page_table::efi_memory::MemoryDescriptorValidator],
+    memory_map: &[impl petroleum::page_table::types::MemoryDescriptorValidator],
 ) -> SystemResult<()> {
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: init_memory_manager entered\n");
     
@@ -231,12 +225,12 @@ pub fn map_user_page(
     flags: PageFlags,
 ) -> SystemResult<()> {
     if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
-        manager.page_table_manager.map_page(
-            virtual_addr,
-            physical_addr,
-            flags,
-            &mut manager.frame_allocator,
-        )
+    manager.page_table_manager.map_page(
+        virtual_addr,
+        physical_addr,
+        flags,
+        &mut manager.frame_allocator,
+    )
     } else {
         Err(SystemError::InternalError)
     }

@@ -7,6 +7,7 @@ use x86_64::{
         mapper::TranslateResult,
     },
 };
+use crate::page_table::allocator::traits::FrameAllocatorExt;
 use alloc::collections::BTreeMap;
 use crate::page_table::constants::BootInfoFrameAllocator;
 use crate::page_table::types::PageTableHelper;

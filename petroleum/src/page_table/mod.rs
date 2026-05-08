@@ -10,3 +10,9 @@ pub mod heap;
 
 pub use constants::*;
 pub use types::*;
+pub use heap::*;
+pub use allocator::*;
+pub use kernel::*;
+// Remove pub use raw::*; to resolve ambiguity with kernel::mapper
+pub use process::*;
+pub use memory_map::*;

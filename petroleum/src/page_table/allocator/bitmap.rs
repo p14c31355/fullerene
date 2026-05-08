@@ -42,11 +42,6 @@ unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
         }
         None
     }
-
-    fn deallocate_frame(&mut self, frame: PhysFrame) {
-        let frame_idx = (frame.start_address().as_u64() / 4096) as usize;
-        self.set_frame_used(frame_idx, false);
-    }
 }
 
 impl FrameAllocatorExt for BitmapFrameAllocator {
@@ -72,4 +67,10 @@ impl FrameAllocatorExt for BitmapFrameAllocator {
             self.bitmap[idx] &= !(1 << bit);
         }
     }
+
+    fn deallocate_frame(&mut self, frame: x86_64::structures::paging::PhysFrame) {
+        let frame_idx = (frame.start_address().as_u64() / 4096) as usize;
+        self.set_frame_used(frame_idx, false);
+    }
 }
+

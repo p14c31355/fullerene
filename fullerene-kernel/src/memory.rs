@@ -6,9 +6,10 @@ use petroleum::common::{
     EfiMemoryType, EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID,
     FullereneFramebufferConfig,
 };
-use petroleum::page_table::efi_memory::{
-    EfiMemoryDescriptor, MemoryDescriptorValidator, MemoryMapDescriptor,
+use petroleum::page_table::memory_map::{
+    EfiMemoryDescriptor, MemoryMapDescriptor,
 };
+use petroleum::page_table::MemoryDescriptorValidator;
 
 use crate::MEMORY_MAP;
 

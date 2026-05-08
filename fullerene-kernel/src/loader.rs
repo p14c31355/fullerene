@@ -3,7 +3,7 @@
 //! This module is responsible for loading executable programs into memory
 //! and creating processes to run them.
 
-use crate::memory_management::ProcessPageTable;
+use petroleum::page_table::process::ProcessPageTable;
 use crate::process;
 use core::ptr;
 use goblin::elf::program_header::{PF_W, PF_X, PT_LOAD};

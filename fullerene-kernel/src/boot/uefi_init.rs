@@ -3,8 +3,7 @@ use crate::heap;
 use petroleum::uefi_helpers::find_heap_start;
 use core::ffi::c_void;
 use petroleum::common::{EfiSystemTable, write_vga_string};
-use petroleum::page_table::efi_memory::MemoryMapDescriptor;
-use petroleum::page_table::MemoryMappable;
+use petroleum::page_table::memory_map::MemoryMapDescriptor;
 use petroleum::{
     debug_log_no_alloc, write_serial_bytes,
 };
@@ -221,31 +220,13 @@ impl UefiInitContext {
             let map_pages = ((map_size as u64) + 4095) / 4096;
 
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling petroleum::page_table::init (1)...\n");
-            let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
-            let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator should be ready now");
-            let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator, kernel_phys_start.as_u64()) };
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: petroleum::page_table::init (1) done\n");
-            {
-                for i in 0..map_pages {
-                    let v_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(
-                        VirtAddr::new(map_virt + i * 4096)
-                    );
-                    let p_frame = x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(
-                        PhysAddr::new(map_phys + i * 4096)
-                    );
-
-                    unsafe {
-                        if let Ok(flush) = mapper.map_to(
-                            v_page,
-                            p_frame,
-                            PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                            frame_allocator,
-                        ) {
-                            flush.flush();
-                        }
-                    }
-                }
-            }
+        let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
+        let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator should be ready now");
+        let mut mapper = unsafe { petroleum::page_table::init(self.physical_memory_offset, frame_allocator, kernel_phys_start.as_u64()) };
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: petroleum::page_table::init (1) done\n");
+        {
+            petroleum::map_identity_range_checked!(&mut mapper, frame_allocator, map_phys, map_pages, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+        }
             petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Memory map buffer mapped successfully\n");
         }
 
@@ -306,7 +287,7 @@ impl UefiInitContext {
  
             // Map 1GB kernel area using huge pages where possible to reduce boot time and memory overhead
             unsafe {
-                petroleum::page_table::utils::map_range_with_huge_pages(
+                petroleum::page_table::raw::map_range_with_huge_pages(
                     &mut main_mapper,
                     allocator,
                     kernel_phys_start_aligned,
@@ -540,18 +521,19 @@ impl UefiInitContext {
         let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
 
         let mut mapper = unsafe { petroleum::page_table::init(physical_memory_offset, frame_allocator, 0x100000) };
-        let mut mem_mapper = petroleum::page_table::mapper::MemoryMapper::new(
-            &mut mapper,
-            &mut *frame_allocator,
-            physical_memory_offset,
-        );
 
         let stack_flags = x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE
             | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
         
-        mem_mapper.map_to_higher_half(stack_phys_start, stack_pages as u64, stack_flags)
-            .expect("Failed to map kernel stack to higher half");
+        petroleum::map_to_higher_half_with_log_macro!(
+            &mut mapper,
+            frame_allocator,
+            physical_memory_offset,
+            stack_phys_start,
+            stack_pages as u64,
+            stack_flags
+        ).expect("Failed to map kernel stack to higher half");
 
         write_serial_bytes!(0x3F8, 0x3FD, b"Kernel stack allocated and mapped (wide)\n");
 
@@ -597,11 +579,6 @@ impl UefiInitContext {
         let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
   
         let mut mapper = unsafe { petroleum::page_table::init(physical_memory_offset, frame_allocator, 0x100000) };
-        let mut mem_mapper = petroleum::page_table::mapper::MemoryMapper::new(
-            &mut mapper,
-            &mut *frame_allocator,
-            physical_memory_offset,
-        );
 
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
 
@@ -615,14 +592,21 @@ impl UefiInitContext {
 
         for (phys, pages, name) in regions {
             // Map identity
-            if let Err(e) = mem_mapper.map_to_identity(phys, pages, flags) {
+            if let Err(e) = petroleum::map_identity_range_checked!(&mut mapper, frame_allocator, phys, pages, flags) {
                 if !matches!(e, MapToError::PageAlreadyMapped(_)) {
                     panic!("Failed to map {}: {:?}", name, e);
                 }
             }
             
             // Map to higher half
-            if let Err(e) = mem_mapper.map_to_higher_half(phys, pages, flags) {
+            if let Err(e) = petroleum::map_to_higher_half_with_log_macro!(
+                &mut mapper,
+                frame_allocator,
+                physical_memory_offset,
+                phys,
+                pages,
+                flags
+            ) {
                 if !matches!(e, MapToError::PageAlreadyMapped(_)) {
                     panic!("Failed to map {} to higher half: {:?}", name, e);
                 }

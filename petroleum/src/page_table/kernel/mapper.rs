@@ -11,6 +11,7 @@ use alloc::collections::BTreeMap;
 use crate::page_table::constants::BootInfoFrameAllocator;
 use crate::page_table::types::PageTableHelper;
 use crate::{with_temp_mapping, extract_frame_if_present, safe_cr3_write};
+use crate::page_table::allocator::traits::FrameAllocatorExt;
 
 pub struct KernelMapper {
     pub current_page_table: usize,
