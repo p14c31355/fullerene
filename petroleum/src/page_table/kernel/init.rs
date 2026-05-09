@@ -1,5 +1,6 @@
 use crate::page_table::constants::BootInfoFrameAllocator;
 use core::sync::atomic::{AtomicBool, Ordering};
+use once_cell::sync::OnceCell;
 use x86_64::{
     PhysAddr, VirtAddr,
     registers::control::Cr3,
@@ -10,18 +11,18 @@ use x86_64::{
 };
 
 static PAGE_TABLE_INITIALIZED: AtomicBool = AtomicBool::new(false);
+static GLOBAL_OFFSET_PAGE_TABLE: OnceCell<OffsetPageTable<'static>> = OnceCell::new();
 
 pub unsafe fn init(
     physical_memory_offset: VirtAddr,
     frame_allocator: &mut impl FrameAllocator<Size4KiB>,
     kernel_phys_start: u64,
 ) -> OffsetPageTable<'static> {
-    if PAGE_TABLE_INITIALIZED.load(Ordering::SeqCst) {
-        let l4_phys = Cr3::read().0.start_address();
-        let l4_virt_addr = l4_phys.as_u64() + physical_memory_offset.as_u64();
-        let l4_ptr = l4_virt_addr as *mut PageTable;
-        return unsafe { OffsetPageTable::new(&mut *l4_ptr, physical_memory_offset) };
-    }
+if PAGE_TABLE_INITIALIZED.load(Ordering::SeqCst) {
+    // Return the previously created OffsetPageTable instance.
+    // SAFETY: The OffsetPageTable stored in GLOBAL_OFFSET_PAGE_TABLE is valid for 'static.
+    return *GLOBAL_OFFSET_PAGE_TABLE.get().expect("OffsetPageTable should be set").clone();
+}
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] entered\n");
 
     // Disable Write Protect (WP) bit in CR0 to allow writing to read-only pages
@@ -110,7 +111,7 @@ pub unsafe fn init(
         b"DEBUG: [utils::init] MEMORY_MAP_BUFFER already mapped via higher-half\n"
     );
 
-    let _boot_pages = crate::page_table::constants::BOOT_CODE极PAGES;
+    let _boot_pages = crate::page_table::constants::BOOT_CODE_PAGES;
 
     crate::write_serial_bytes!(
         0x3F8,
@@ -124,6 +125,7 @@ pub unsafe fn init(
     );
 
     PAGE_TABLE_INITIALIZED.store(true, Ordering::SeqCst);
+    let _ = GLOBAL_OFFSET_PAGE_TABLE.set(OffsetPageTable::<'static>::clone());
 
     mapper
 }

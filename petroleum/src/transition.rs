@@ -142,13 +142,13 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
         let args = &*ctx;
 
         let actual_kernel_entry = if args.kernel_entry == 0 {
-            unsafe { TRANSITION_KERNEL_ENTRY }
+            TRANSITION_KERNEL_ENTRY
         } else {
             args.kernel_entry
         };
 
         let actual_kernel_args = if args.kernel_args.is_null() {
-            unsafe { KERNEL_ARGS }
+            KERNEL_ARGS
         } else {
             args.kernel_args
         };
@@ -328,13 +328,11 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
             );
         }
 
-        unsafe {
-            crate::assembly::jump_to_kernel(
-                actual_kernel_entry,
-                actual_kernel_args,
-                local_phys_offset.as_u64(),
-            );
-        }
+        crate::assembly::jump_to_kernel(
+            actual_kernel_entry,
+            actual_kernel_args,
+            local_phys_offset.as_u64(),
+        );
     }
 }
 

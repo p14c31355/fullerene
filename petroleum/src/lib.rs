@@ -19,7 +19,7 @@ macro_rules! define_panic_handler {
                 let vga_buffer = 0xb8000 as *mut u16;
                 let panic_msg = "KERNEL PANIC";
                 for (i, &byte) in panic_msg.bytes().enumerate() {
-                    unsafe {
+                    {
                         vga_buffer.add(i).write_volatile(byte as u16 | 0x4F00u16);
                     }
                 }
