@@ -347,7 +347,23 @@ impl PageTableHelper for ProcessPageTable {
             return Err(crate::common::logging::SystemError::InternalError);
         }
 
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: clone_page_table minimal\n");
+        // Ensure the mapper points to the current CR3 page table.
+        let (current_pml4, _) = x86_64::registers::control::Cr3::read();
+        if self.pml4_frame.map(|f| f.start_address()) != Some(current_pml4.start_address()) {
+            let phys_offset = self.mapper.as_ref()
+                .map(|m| m.phys_offset())
+                .unwrap_or(crate::page_table::constants::HIGHER_HALF_OFFSET);
+            let pml4_virt = phys_offset + current_pml4.start_address().as_u64();
+            self.mapper = Some(unsafe {
+                OffsetPageTable::new(
+                    &mut *(pml4_virt.as_mut_ptr::<PageTable>()),
+                    phys_offset,
+                )
+            });
+            self.pml4_frame = Some(current_pml4);
+        }
+
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: clone_page_table minimal v2\n");
 
         let source_frame = if let Some(frame) = self.allocated_tables.get(&source_table) {
             *frame
@@ -359,12 +375,28 @@ impl PageTableHelper for ProcessPageTable {
         {
             self.pml4_frame.unwrap()
         } else {
+            crate::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: clone_page_table invalid source_table\n"
+            );
             return Err(crate::common::logging::SystemError::InvalidArgument);
         };
+        crate::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: clone_page_table source_frame obtained\n"
+        );
 
         let new_frame = frame_allocator
             .allocate_frame()
             .ok_or(crate::common::logging::SystemError::FrameAllocationFailed)?;
+
+        crate::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: clone_page_table new_frame allocated\n"
+        );
 
         let mapper = self.mapper.as_mut().unwrap();
         let phys_offset = mapper.phys_offset();
@@ -372,18 +404,33 @@ impl PageTableHelper for ProcessPageTable {
         let src_va = phys_offset + source_frame.start_address().as_u64();
         let dst_va = phys_offset + new_frame.start_address().as_u64();
 
-        unsafe {
-            core::ptr::write_bytes(dst_va.as_mut_ptr::<u8>(), 0, 4096);
+        // Debugging addresses
+        let mut buf = [0u8; 16];
+        let len = crate::serial::format_hex_to_buffer(phys_offset.as_u64(), &mut buf, 16);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: phys_offset: 0x");
+        crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
-            let src = src_va.as_ptr() as *const x86_64::structures::paging::page_table::PageTableEntry;
-            let dst = dst_va.as_mut_ptr() as *mut x86_64::structures::paging::page_table::PageTableEntry;
+        let len = crate::serial::format_hex_to_buffer(src_va.as_u64(), &mut buf, 16);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: src_va: 0x");
+        crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
+        let len = crate::serial::format_hex_to_buffer(dst_va.as_u64(), &mut buf, 16);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: dst_va: 0x");
+        crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
+        unsafe {
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: writing to dst_va\n");
+            core::ptr::write_bytes(dst_va.as_mut_ptr::<u8>(), 0, 4096);
+            let src_table = &*(src_va.as_ptr::<PageTable>());
+            let dst_table = &mut *(dst_va.as_mut_ptr::<PageTable>());
 
             for i in 0..512 {
-                let entry = core::ptr::read(src.add(i));
-                if entry.flags().contains(PageTableFlags::PRESENT) {
-                    if i >= 256 {
-                        core::ptr::write(dst.add(i), entry);
-                    }
+                let entry = src_table[i].clone();
+                if entry.flags().contains(PageTableFlags::PRESENT) && i >= 256 {
+                    dst_table[i] = entry;
                 }
             }
         }
@@ -488,29 +535,11 @@ impl ProcessPageTable {
 
         let phys_offset = mapper.phys_offset();
 
-        // Debug output for addresses
-        crate::write_serial_bytes!(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: [clone_recursive_fixed] source_table_phys: 0x"
-        );
-        let mut buf = [0u8; 16];
-        let len = crate::serial::format_hex_to_buffer(source_table_phys.as_u64(), &mut buf, 16);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-
-        crate::write_serial_bytes!(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: [clone_recursive_fixed] phys_offset: 0x"
-        );
-        let len = crate::serial::format_hex_to_buffer(phys_offset.as_u64(), &mut buf, 16);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-
         let source_va = phys_offset + source_table_phys.as_u64();
         let dest_va = phys_offset + dest_frame.start_address().as_u64();
 
+        // Debug output for addresses
+        let mut buf = [0u8; 16];
         crate::write_serial_bytes!(
             0x3F8,
             0x3FD,
@@ -531,7 +560,7 @@ impl ProcessPageTable {
                 0x3FD,
                 b"DEBUG: [clone_recursive_fixed] writing dest table\n"
             );
-            let dest_ptr = dest_va.as_mut_ptr() as *mut u8;
+            let dest_ptr = dest_va.as_mut_ptr::<u8>() as *mut u8;
             core::ptr::write_bytes(dest_ptr, 0, 4096);
 
             crate::write_serial_bytes!(
@@ -539,8 +568,8 @@ impl ProcessPageTable {
                 0x3FD,
                 b"DEBUG: [clone_recursive_fixed] reading source table\n"
             );
-            let source_table = &*(source_va.as_ptr() as *const PageTable);
-            let dest_table = &mut *(dest_va.as_mut_ptr() as *mut PageTable);
+            let source_table = &*(source_va.as_ptr::<PageTable>());
+            let dest_table = &mut *(dest_va.as_mut_ptr::<PageTable>());
 
             crate::write_serial_bytes!(
                 0x3F8,
@@ -589,8 +618,10 @@ impl ProcessPageTable {
                         let dest_phys = dest_frame.start_address();
 
                         let phys_offset = mapper.phys_offset();
-                        let source_va: *const u8 = (phys_offset + source_phys.as_u64()).as_ptr();
-                        let dest_va: *mut u8 = (phys_offset + dest_phys.as_u64()).as_mut_ptr();
+                        let source_va: *const u8 =
+                            (phys_offset + source_phys.as_u64()).as_ptr::<u8>();
+                        let dest_va: *mut u8 =
+                            (phys_offset + dest_phys.as_u64()).as_mut_ptr::<u8>();
 
                         unsafe {
                             core::ptr::copy_nonoverlapping(source_va, dest_va, 4096);
