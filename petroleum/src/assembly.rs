@@ -109,8 +109,13 @@ pub unsafe extern "sysv64" fn landing_zone(_frame: *const TransitionFrame) {
 /// Arguments:
 /// - `entry`: The virtual address of the kernel entry point (passed in RDI).
 /// - `args`: A pointer to the `KernelArgs` structure (passed in RSI).
+/// - `phys_offset`: The physical memory offset (passed in RDX).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn jump_to_kernel(entry: usize, args: *const KernelArgs) -> ! {
+pub unsafe extern "C" fn jump_to_kernel(
+    entry: usize,
+    args: *const KernelArgs,
+    phys_offset: u64,
+) -> ! {
     core::arch::asm!(
         "cli",
         "mov ax, 0x10",
@@ -118,12 +123,15 @@ pub unsafe extern "C" fn jump_to_kernel(entry: usize, args: *const KernelArgs) -
         "mov es, ax",
         "mov ss, ax",
         "and rsp, -16",
-        // Use a temporary register to ensure no clobbering
+        // Pass arguments according to SysV ABI: RDI, RSI, RDX...
+        // efi_main_stage2(args: *const KernelArgs, physical_memory_offset: VirtAddr)
         "mov r11, {entry}",
         "mov rdi, {args}",
+        "mov rsi, {phys_offset}",
         "jmp r11",
         entry = in(reg) entry,
         args = in(reg) args,
+        phys_offset = in(reg) phys_offset,
         options(noreturn)
     );
 }

@@ -130,6 +130,7 @@ impl KernelTransition for UefiToHigherHalf {
         crate::assembly::jump_to_kernel(
             self.world.entry_point.as_u64() as usize,
             self.world.kernel_args,
+            self.world.phys_offset.as_u64(),
         )
     }
 }
@@ -328,7 +329,11 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
         }
 
         unsafe {
-            crate::assembly::jump_to_kernel(actual_kernel_entry, actual_kernel_args);
+            crate::assembly::jump_to_kernel(
+                actual_kernel_entry,
+                actual_kernel_args,
+                local_phys_offset.as_u64(),
+            );
         }
     }
 }

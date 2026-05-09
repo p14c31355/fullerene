@@ -6,8 +6,10 @@ use x86_64::VirtAddr;
 use crate::boot::uefi_init::UefiInitContext;
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn efi_main_stage2(ctx: *mut (), physical_memory_offset: VirtAddr) -> ! {
-    let ctx = ctx as *mut UefiInitContext;
+pub unsafe extern "C" fn efi_main_stage2(
+    args_ptr: *const petroleum::assembly::KernelArgs,
+    physical_memory_offset: VirtAddr,
+) -> ! {
     unsafe {
         core::arch::asm!(
             "mov dx, 0x3f8",
@@ -17,7 +19,6 @@ pub unsafe extern "C" fn efi_main_stage2(ctx: *mut (), physical_memory_offset: V
         );
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"S2: Entering efi_main_stage2\n");
 
-        let args_ptr = (*ctx).args_ptr;
         petroleum::transition::KERNEL_ARGS = args_ptr;
 
         // Signal '3': After setting KERNEL_ARGS
@@ -29,8 +30,6 @@ pub unsafe extern "C" fn efi_main_stage2(ctx: *mut (), physical_memory_offset: V
         );
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"S2: Signals 1-3 sent\n");
     }
-
-    let args_ptr = unsafe { (*ctx).args_ptr };
 
     // CRITICAL: Set physical memory offset BEFORE initializing the global memory manager
     // to avoid page faults when creating the OffsetPageTable in PageTableManager::init.

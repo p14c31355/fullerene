@@ -87,32 +87,39 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
 
             if !args_ptr.is_null() {
                 // KERNEL_ARGS contains a physical address, convert to virtual address
+                // Determine if args_ptr is a physical address (below 52-bit limit) or already a virtual address.
                 let phys_addr = args_ptr as u64;
-                let virt_addr_raw = phys_addr.wrapping_add(physical_memory_offset.as_u64());
-                
-                // Ensure the virtual address is canonical (sign-extended to 48 bits)
-                let virt_addr = if (virt_addr_raw & (1 << 47)) != 0 {
-                    virt_addr_raw | 0xFFFF_0000_0000_0000
+                let (virt_addr, is_phys) = if phys_addr <= 0x000F_FFFF_FFFF_FFFF {
+                    // Physical address: convert to virtual using the offset.
+                    let virt_addr_raw = phys_addr.wrapping_add(physical_memory_offset.as_u64());
+                    // Ensure the virtual address is canonical (sign-extended to 48 bits)
+                    let v = if (virt_addr_raw & (1 << 47)) != 0 {
+                        virt_addr_raw | 0xFFFF_0000_0000_0000
+                    } else {
+                        virt_addr_raw & 0x0000_FFFF_FFFF_FFFF
+                    };
+                    (v, true)
                 } else {
-                    virt_addr_raw & 0x0000_FFFF_FFFF_FFFF
+                    // Already a virtual address.
+                    (phys_addr, false)
                 };
 
-                // Map the page containing KernelArgs if not already mapped
-                let page_virt = VirtAddr::new(virt_addr);
-                let page_phys = PhysAddr::new(phys_addr);
-
-                // Use the kernel's mapper to ensure the page is accessible
-                let kernel_mapper = petroleum::page_table::kernel::get_mapper();
-                let offset_mapper = kernel_mapper
-                    .mapper
-                    .as_mut()
-                    .expect("Kernel mapper not initialized");
-                let _ = offset_mapper.map_to(
-                    Page::<Size4KiB>::containing_address(page_virt),
-                    PhysFrame::<Size4KiB>::containing_address(page_phys),
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                    &mut *petroleum::page_table::constants::get_frame_allocator(),
-                );
+                if is_phys {
+                    // Map the page containing KernelArgs if it's a physical address.
+                    let page_virt = VirtAddr::new(virt_addr);
+                    let page_phys = PhysAddr::new(phys_addr);
+                    let kernel_mapper = petroleum::page_table::kernel::get_mapper();
+                    let offset_mapper = kernel_mapper
+                        .mapper
+                        .as_mut()
+                        .expect("Kernel mapper not initialized");
+                    let _ = offset_mapper.map_to(
+                        Page::<Size4KiB>::containing_address(page_virt),
+                        PhysFrame::<Size4KiB>::containing_address(page_phys),
+                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                        &mut *petroleum::page_table::constants::get_frame_allocator(),
+                    );
+                }
 
                 // Ensure the virtual address is canonical (sign-extended) before dereferencing
                 let args = &*(virt_addr as *const KernelArgs);

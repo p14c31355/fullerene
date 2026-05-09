@@ -381,6 +381,10 @@ pub fn exit_boot_services_and_jump(
             x86_64::registers::control::Cr3Flags::empty(),
         );
 
+        // Pass arguments according to SysV ABI:
+        // rdi: args_ptr
+        // rsi: physical_memory_offset
+        // (image_handle, system_table, map_phys_addr, final_map_size will be in KernelArgs)
         core::arch::asm!(
             "xor ax, ax",
             "mov ds, ax",
@@ -391,18 +395,12 @@ pub fn exit_boot_services_and_jump(
 
             "mov rsp, {stack_top}",
             "mov rdi, {args_ptr}",
-            "mov rcx, {handle}",
-            "mov rdx, {st}",
-            "mov r8, {map}",
-            "mov r9, {size}",
+            "mov rsi, {phys_offset}", // physical_memory_offset passed as 2nd arg
 
             "jmp {entry_addr}",
             stack_top = in(reg) (args_phys_addr + 4096),
             args_ptr = in(reg) args_ptr,
-            handle = in(reg) image_handle,
-            st = in(reg) system_table,
-            map = in(reg) map_phys_addr,
-            size = in(reg) final_map_size,
+            phys_offset = in(reg) new_phys_offset.as_u64(),
             entry_addr = in(reg) entry as usize,
             options(noreturn),
         );

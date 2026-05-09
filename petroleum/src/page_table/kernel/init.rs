@@ -1,4 +1,5 @@
 use crate::page_table::constants::BootInfoFrameAllocator;
+use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::{
     PhysAddr, VirtAddr,
     registers::control::Cr3,
@@ -8,11 +9,19 @@ use x86_64::{
     },
 };
 
+static PAGE_TABLE_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
 pub unsafe fn init(
     physical_memory_offset: VirtAddr,
     frame_allocator: &mut impl FrameAllocator<Size4KiB>,
     kernel_phys_start: u64,
 ) -> OffsetPageTable<'static> {
+    if PAGE_TABLE_INITIALIZED.load(Ordering::SeqCst) {
+        let l4_phys = Cr3::read().0.start_address();
+        let l4_virt_addr = l4_phys.as_u64() + physical_memory_offset.as_u64();
+        let l4_ptr = l4_virt_addr as *mut PageTable;
+        return unsafe { OffsetPageTable::new(&mut *l4_ptr, physical_memory_offset) };
+    }
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] entered\n");
 
     // Disable Write Protect (WP) bit in CR0 to allow writing to read-only pages
@@ -34,7 +43,7 @@ pub unsafe fn init(
         b"DEBUG: [utils::init] L4 table acquired via identity\n"
     );
 
-    // Create a temporary mapper with offset=0 for establishing the basic mappings
+    // Create a temporary mapper with offset极0 for establishing the basic mappings
     let mut setup_mapper = unsafe { OffsetPageTable::new(level_4_table, identity_offset) };
     crate::write_serial_bytes!(
         0x3F8,
@@ -94,63 +103,14 @@ pub unsafe fn init(
         b"DEBUG: [utils::init] OffsetPageTable created\n"
     );
 
-    // CRITICAL: Explicitly map the MEMORY_MAP_BUFFER to avoid page faults during heap search
+    // MEMORY_MAP_BUFFER is already accessible through higher-half mapping, no need to remap
     crate::write_serial_bytes!(
         0x3F8,
         0x3FD,
-        b"DEBUG: [utils::init] Mapping MEMORY_MAP_BUFFER\n"
-    );
-    unsafe {
-        let buffer_virt =
-            VirtAddr::new(core::ptr::addr_of!(crate::page_table::heap::MEMORY_MAP_BUFFER) as u64);
-        let buffer_phys_val = if buffer_virt >= physical_memory_offset {
-            buffer_virt.as_u64() - physical_memory_offset.as_u64()
-        } else {
-            buffer_virt.as_u64()
-        };
-        let buffer_phys = PhysAddr::new(buffer_phys_val);
-        let buffer_phys_virt = VirtAddr::new(buffer_phys_val);
-
-        let buffer_size = core::mem::size_of::<
-            [crate::page_table::memory_map::descriptor::EfiMemoryDescriptor;
-                crate::page_table::heap::MAX_DESCRIPTORS],
-        >();
-        let pages = (buffer_size + 4095) / 4096;
-
-        // Identity map
-        let _ = mapper.map_to(
-            Page::<Size4KiB>::containing_address(buffer_phys_virt),
-            PhysFrame::<Size4KiB>::containing_address(buffer_phys),
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-            frame_allocator,
-        );
-        // High-half map
-        crate::write_serial_bytes!(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: [utils::init] Mapping MEMORY_MAP_BUFFER high-half start\n"
-        );
-        let _ = mapper.map_to(
-            Page::<Size4KiB>::containing_address(
-                buffer_phys_virt + physical_memory_offset.as_u64(),
-            ),
-            PhysFrame::<Size4KiB>::containing_address(buffer_phys),
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-            frame_allocator,
-        );
-        crate::write_serial_bytes!(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: [utils::init] Mapping MEMORY_MAP_BUFFER high-half done\n"
-        );
-    }
-    crate::write_serial_bytes!(
-        0x3F8,
-        0x3FD,
-        b"DEBUG: [utils::init] MEMORY_MAP_BUFFER mapped\n"
+        b"DEBUG: [utils::init] MEMORY_MAP_BUFFER already mapped via higher-half\n"
     );
 
-    let _boot_pages = crate::page_table::constants::BOOT_CODE_PAGES;
+    let _boot_pages = crate::page_table::constants::BOOT_CODE极PAGES;
 
     crate::write_serial_bytes!(
         0x3F8,
@@ -162,6 +122,8 @@ pub unsafe fn init(
         0x3FD,
         b"DEBUG: [utils::init] Essential mappings completed\n"
     );
+
+    PAGE_TABLE_INITIALIZED.store(true, Ordering::SeqCst);
 
     mapper
 }
