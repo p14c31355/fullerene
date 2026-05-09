@@ -88,7 +88,14 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             if !args_ptr.is_null() {
                 // KERNEL_ARGS contains a physical address, convert to virtual address
                 let phys_addr = args_ptr as u64;
-                let virt_addr = phys_addr.wrapping_add(physical_memory_offset.as_u64());
+                let virt_addr_raw = phys_addr.wrapping_add(physical_memory_offset.as_u64());
+                
+                // Ensure the virtual address is canonical (sign-extended to 48 bits)
+                let virt_addr = if (virt_addr_raw & (1 << 47)) != 0 {
+                    virt_addr_raw | 0xFFFF_0000_0000_0000
+                } else {
+                    virt_addr_raw & 0x0000_FFFF_FFFF_FFFF
+                };
 
                 // Map the page containing KernelArgs if not already mapped
                 let page_virt = VirtAddr::new(virt_addr);
@@ -107,6 +114,7 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
                     &mut *petroleum::page_table::constants::get_frame_allocator(),
                 );
 
+                // Ensure the virtual address is canonical (sign-extended) before dereferencing
                 let args = &*(virt_addr as *const KernelArgs);
 
                 if args.fb_address != 0 {

@@ -401,6 +401,7 @@ impl PageTableHelper for ProcessPageTable {
         let mapper = self.mapper.as_mut().unwrap();
         let phys_offset = mapper.phys_offset();
 
+        // Convert physical addresses to virtual addresses using the current physical offset
         let src_va = phys_offset + source_frame.start_address().as_u64();
         let dst_va = phys_offset + new_frame.start_address().as_u64();
 
@@ -421,24 +422,24 @@ impl PageTableHelper for ProcessPageTable {
         crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
+        // Shallow copy: copy all entries from source to destination
+        // This shares page tables between processes (kernel pages are shared, user pages will be copied on write later)
         unsafe {
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: writing to dst_va\n");
-            core::ptr::write_bytes(dst_va.as_mut_ptr::<u8>(), 0, 4096);
             let src_table = &*(src_va.as_ptr::<PageTable>());
             let dst_table = &mut *(dst_va.as_mut_ptr::<PageTable>());
 
             for i in 0..512 {
                 let entry = src_table[i].clone();
-                if entry.flags().contains(PageTableFlags::PRESENT) && i >= 256 {
+                if entry.flags().contains(PageTableFlags::PRESENT) {
                     dst_table[i] = entry;
                 }
             }
         }
 
-        self.allocated_tables
-            .insert(new_frame.start_address().as_u64() as usize, new_frame);
+        // Note: For shallow copy we do not track the new frame in allocated_tables to avoid extra allocation.
+        // self.allocated_tables.insert(new_frame.start_address().as_u64() as usize, new_frame);
 
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: clone_page_table done\n");
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: clone_page_table shallow done\n");
         Ok(new_frame.start_address().as_u64() as usize)
     }
 
