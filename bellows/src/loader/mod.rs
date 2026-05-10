@@ -334,6 +334,7 @@ pub fn exit_boot_services_and_jump(
             petroleum::page_table::constants::HIGHER_HALF_OFFSET,
             &mut frame_allocator,
             kernel_phys_start.as_u64(),
+            None::<fn(&mut x86_64::structures::paging::OffsetPageTable, &mut _)>,
         );
 
         // Map the kernel itself to the higher half
