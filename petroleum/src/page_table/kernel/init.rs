@@ -1,6 +1,4 @@
-use crate::page_table::constants::BootInfoFrameAllocator;
 use core::sync::atomic::{AtomicBool, Ordering};
-use once_cell::sync::OnceCell;
 use x86_64::{
     PhysAddr, VirtAddr,
     registers::control::Cr3,
@@ -11,18 +9,23 @@ use x86_64::{
 };
 
 static PAGE_TABLE_INITIALIZED: AtomicBool = AtomicBool::new(false);
-static GLOBAL_OFFSET_PAGE_TABLE: OnceCell<OffsetPageTable<'static>> = OnceCell::new();
+static mut STORED_OFFSET: Option<VirtAddr> = None;
+static mut STORED_L4_PTR: Option<*mut PageTable> = None;
 
 pub unsafe fn init(
     physical_memory_offset: VirtAddr,
     frame_allocator: &mut impl FrameAllocator<Size4KiB>,
     kernel_phys_start: u64,
 ) -> OffsetPageTable<'static> {
-if PAGE_TABLE_INITIALIZED.load(Ordering::SeqCst) {
-    // Return the previously created OffsetPageTable instance.
-    // SAFETY: The OffsetPageTable stored in GLOBAL_OFFSET_PAGE_TABLE is valid for 'static.
-    return *GLOBAL_OFFSET_PAGE_TABLE.get().expect("OffsetPageTable should be set").clone();
-}
+    if PAGE_TABLE_INITIALIZED.load(Ordering::SeqCst) {
+        // Reconstruct the OffsetPageTable from the stored L4 table pointer and offset.
+        let offset = STORED_OFFSET.expect("STORED_OFFSET should be set");
+        let l4_ptr = STORED_L4_PTR.expect("STORED_L4_PTR should be set");
+        // SAFETY: The L4 page table is valid and mapped at the stored offset for 'static.
+        let l4_table = &mut *l4_ptr;
+        // SAFETY: The OffsetPageTable is reconstructed from the same valid page table.
+        return OffsetPageTable::new(l4_table, offset);
+    }
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] entered\n");
 
     // Disable Write Protect (WP) bit in CR0 to allow writing to read-only pages
@@ -125,7 +128,8 @@ if PAGE_TABLE_INITIALIZED.load(Ordering::SeqCst) {
     );
 
     PAGE_TABLE_INITIALIZED.store(true, Ordering::SeqCst);
-    let _ = GLOBAL_OFFSET_PAGE_TABLE.set(OffsetPageTable::<'static>::clone());
+    STORED_OFFSET = Some(physical_memory_offset);
+    STORED_L4_PTR = Some(l4_ptr);
 
     mapper
 }

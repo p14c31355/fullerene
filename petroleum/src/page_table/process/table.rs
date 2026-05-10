@@ -86,7 +86,7 @@ impl ProcessPageTable {
         }
 
         let mut mapper = unsafe {
-            crate::page_table::kernel::init(phys_offset, frame_allocator, kernel_phys_start)
+            crate::page_table::kernel::init::init(phys_offset, frame_allocator, kernel_phys_start)
         };
 
         let (current_pml4, _) = Cr3::read();
