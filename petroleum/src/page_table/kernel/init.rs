@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::{
     PhysAddr, VirtAddr,
-    registers::control::Cr3,
+    registers::control::{Cr3, Cr3Flags},
     structures::paging::{
         FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
         Size4KiB,
@@ -12,11 +12,15 @@ static PAGE_TABLE_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static mut STORED_OFFSET: Option<VirtAddr> = None;
 static mut STORED_L4_PTR: Option<*mut PageTable> = None;
 
-pub unsafe fn init(
+pub unsafe fn init<A: FrameAllocator<Size4KiB>, F>(
     physical_memory_offset: VirtAddr,
-    frame_allocator: &mut impl FrameAllocator<Size4KiB>,
+    frame_allocator: &mut A,
     kernel_phys_start: u64,
-) -> OffsetPageTable<'static> {
+    early_mappings: Option<F>,
+) -> OffsetPageTable<'static>
+where
+    F: FnOnce(&mut OffsetPageTable, &mut A),
+{
     if PAGE_TABLE_INITIALIZED.load(Ordering::SeqCst) {
         // Reconstruct the OffsetPageTable from the stored L4 table pointer and offset.
         let offset = STORED_OFFSET.expect("STORED_OFFSET should be set");
@@ -36,50 +40,51 @@ pub unsafe fn init(
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] CR0.WP disabled\n");
 
     // PHASE 1: Establish identity + higher-half 1GB page mappings.
-    // We must access page tables via identity (offset=0) because higher-half
-    // mappings don't exist yet (or are from UEFI/bootloader and may not cover
-    // the full range we need).
+    // Instead of allocating a new L4 table and switching CR3 (which seems to be failing or inconsistent),
+    // we will zero the EXISTING L4 table that the CPU is already using.
+    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [utils::init] Zeroing existing L4 table\n");
+    
     let identity_offset = VirtAddr::zero();
     let level_4_table = unsafe { active_level_4_table(identity_offset) };
+    let l4_ptr = level_4_table as *mut PageTable;
+    
+    unsafe {
+        core::ptr::write_bytes(l4_ptr, 0, 1);
+    }
+    
     crate::write_serial_bytes!(
         0x3F8,
         0x3FD,
-        b"DEBUG: [utils::init] L4 table acquired via identity\n"
+        b"DEBUG: [utils::init] Existing L4 table zeroed\n"
     );
 
-    // Create a temporary mapper with offset极0 for establishing the basic mappings
+    // Create a temporary mapper with offset 0 for establishing the basic mappings
     let mut setup_mapper = unsafe { OffsetPageTable::new(level_4_table, identity_offset) };
-    crate::write_serial_bytes!(
-        0x3F8,
-        0x3FD,
-        b"DEBUG: [utils::init] Setup mapper created (offset=0)\n"
-    );
-
+    
     crate::write_serial_bytes!(
         0x3F8,
         0x3FD,
         b"DEBUG: [utils::init] Creating identity + higher-half 1GB mappings\n"
     );
     unsafe {
-        // Identity map first 64GB using 1GB pages
-        let _ = crate::page_table::raw::map_range_with_1gib_pages(
-            &mut setup_mapper,
-            frame_allocator,
-            0,
-            0,
-            64,
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-        );
+        // Temporarily disable 1GB huge pages to diagnose #GP fault
+        // let _ = crate::page_table::raw::map_range_with_1gib_pages(
+        //     &mut setup_mapper,
+        //     frame_allocator,
+        //     0,
+        //     0,
+        //     64,
+        //     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+        // );
 
-        // Higher-half map first 64GB at physical_memory_offset
-        let _ = crate::page_table::raw::map_range_with_1gib_pages(
-            &mut setup_mapper,
-            frame_allocator,
-            0,
-            physical_memory_offset.as_u64(),
-            64,
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-        );
+        // let _ = crate::page_table::raw::map_range_with_1gib_pages(
+        //     &mut setup_mapper,
+        //     frame_allocator,
+        //     0,
+        //     physical_memory_offset.as_u64(),
+        //     64,
+        //     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+        // );
 
         x86_64::instructions::tlb::flush_all();
     }
@@ -92,8 +97,8 @@ pub unsafe fn init(
     // PHASE 2: Create the real OffsetPageTable with the desired physical_memory_offset.
     // Now that higher-half 1GB pages are mapped, accessing the L4 table via
     // physical_memory_offset is guaranteed to work.
-    let l4_phys = Cr3::read().0.start_address();
-    let l4_virt_addr = l4_phys.as_u64() + physical_memory_offset.as_u64();
+    let l4_phys_addr = Cr3::read().0.start_address().as_u64();
+    let l4_virt_addr = l4_phys_addr + physical_memory_offset.as_u64();
     let l4_ptr = l4_virt_addr as *mut PageTable;
     crate::write_serial_bytes!(
         0x3F8,
