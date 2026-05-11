@@ -14,24 +14,6 @@ static PAGE_TABLE_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static mut STORED_OFFSET: Option<VirtAddr> = None;
 static mut STORED_L4_PTR: Option<*mut PageTable> = None;
 
-/// Write a string to VGA buffer for debugging (no serial port needed)
-unsafe fn vga_write(s: &[u8]) {
-    let vga = 0xb8000 as *mut u16;
-    static mut ROW: usize = 0;
-    static mut COL: usize = 0;
-    for &byte in s {
-        if byte == b'\n' {
-            ROW += 1;
-            COL = 0;
-            continue;
-        }
-        if ROW < 25 && COL < 80 {
-            vga.add(ROW * 80 + COL).write_volatile(byte as u16 | 0x0F00);
-            COL += 1;
-        }
-    }
-}
-
 /// Map a single 4KB page in the existing UEFI page table by directly modifying entries.
 unsafe fn map_page_4k_existing(
     l4: &mut PageTable,
@@ -53,6 +35,8 @@ unsafe fn map_page_4k_existing(
     } else {
         l4[l4_idx].addr()
     };
+    // L3テーブルを操作するために、現在のページテーブルでアイデンティティマッピングする
+    // (L4は既にマッピングされている前提)
     let l3 = &mut *(l3_phys.as_u64() as *mut PageTable);
 
     let l2_phys = if l3[l3_idx].is_unused() {
@@ -112,64 +96,83 @@ pub struct InitAndJumpArgs {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn init_and_jump(args: *const InitAndJumpArgs) -> ! {
-    let args = &*args;
-    let physical_memory_offset = args.physical_memory_offset;
+pub unsafe extern "C" fn init_and_jump(args_ptr: *const InitAndJumpArgs, stack_top_reg: u64, l4_phys_reg: u64, entry_virt_reg: usize, phys_offset_reg: u64) -> ! {
+    let args = &*args_ptr;
+    let physical_memory_offset = VirtAddr::new(phys_offset_reg);
     let frame_allocator = &mut *args.frame_allocator;
     let kernel_phys_start = args.kernel_phys_start;
-    let entry_virt = args.entry_virt;
-    let stack_top = args.stack_top;
+    let entry_virt = entry_virt_reg;
+    let stack_top = stack_top_reg;
     let arg1 = args.arg1;
     let arg2 = args.arg2;
     let map_phys_addr = args.map_phys_addr;
     let map_size = args.map_size;
-    let l4_phys_addr = args.l4_phys_addr;
+    let l4_phys_addr = l4_phys_reg;
 
-    vga_write(b"IAJ: entered\n");
+    crate::serial::_print(format_args!("IAJ: entered\n"));
 
-    vga_write(b"IAJ: Initializing L4 table...\n");
+    // Based on the success pattern, reset the segment registers to clean the execution environment.
+    unsafe {
+        core::arch::asm!(
+            "xor ax, ax",
+            "mov ds, ax",
+            "mov es, ax",
+            "mov fs, ax",
+            "mov gs, ax",
+            "mov ss, ax",
+            "and rsp, -16",
+            options(preserves_flags)
+        );
+    }
+    
+    let current_rsp: usize;
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
+    }
+    crate::serial::_print(format_args!("IAJ: args_ptr={:#x}, l4_phys={:#x}, stack_top={:#x}, current_rsp={:#x}\n", args_ptr as usize, l4_phys_addr, stack_top, current_rsp));
+
+    crate::serial::_print(format_args!("IAJ: Initializing L4 table...\n"));
     
     let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
 
     // 1. Use the pre-allocated L4 table provided by the bootloader
     let l4_phys = l4_phys_addr;
     if l4_phys == 0 {
-        vga_write(b"IAJ: ERROR: l4_phys is NULL!\n");
+        crate::serial::_print(format_args!("IAJ: ERROR: l4_phys is NULL!\n"));
         loop { core::arch::asm!("hlt"); }
     }
     
     let l4_ptr = l4_phys as *mut PageTable;
     
-    // Use a safer way to zero the page table to avoid strict alignment checks of write_bytes
-    // if the pointer is slightly off or the compiler is being strict.
+    crate::serial::_print(format_args!("IAJ: Zeroing L4 table at {:#x}...\n", l4_ptr as usize));
     unsafe {
-        let slice = core::slice::from_raw_parts_mut(l4_ptr as *mut u8, 4096);
-        for byte in slice {
-            *byte = 0;
-        }
+        core::ptr::write_bytes(l4_ptr as *mut u8, 0, 4096);
     }
     let l4 = &mut *l4_ptr;
 
-    vga_write(b"IAJ: Using pre-allocated L4\n");
+    crate::serial::_print(format_args!("IAJ: Using pre-allocated L4\n"));
 
+    crate::serial::_print(format_args!("IAJ: Mapping bootloader identity...\n"));
     // === CRITICAL: Identity map bootloader code area (0-64MB) to prevent #PF after CR3 switch ===
     if let Err(e) = map_range_4k_existing(
         l4,
         VirtAddr::new(0),
         PhysAddr::new(0),
-        16384, // 64MB
+        16384, // 64MB,
         flags,
         frame_allocator,
     ) {
-        vga_write(b"IAJ: ERROR mapping bootloader identity\n");
+        crate::serial::_print(format_args!("IAJ: ERROR mapping bootloader identity\n"));
         loop { core::arch::asm!("hlt"); }
     }
+    crate::serial::_print(format_args!("IAJ: Bootloader identity mapped\n"));
 
     // Also identity map the L4 table itself so we can access it if needed
     map_page_4k_existing(l4, VirtAddr::new(l4_phys), PhysAddr::new(l4_phys), flags, frame_allocator)
         .expect("L4 identity map failed");
 
     // === Kernel mapping (higher-half + identity) ===
+    crate::serial::_print(format_args!("IAJ: Mapping kernel...\n"));
     let kernel_size = 8 * 1024 * 1024u64; // Increase to 8MB
     let kernel_pages = kernel_size / 4096;
 
@@ -181,8 +184,10 @@ pub unsafe extern "C" fn init_and_jump(args: *const InitAndJumpArgs) -> ! {
     // identity
     map_range_4k_existing(l4, VirtAddr::new(kernel_phys_start), PhysAddr::new(kernel_phys_start), kernel_pages, flags, frame_allocator)
         .expect("kernel identity");
+    crate::serial::_print(format_args!("IAJ: Kernel mapped\n"));
 
     // === Stack mapping (identity + higher-half) ===
+    crate::serial::_print(format_args!("IAJ: Mapping stack...\n"));
     let stack_pages = 8u64; // 32KB
     let stack_phys_base = stack_top - stack_pages * 4096 + 4096;
     
@@ -197,6 +202,7 @@ pub unsafe extern "C" fn init_and_jump(args: *const InitAndJumpArgs) -> ! {
         flags,
         frame_allocator,
     ).expect("stack higher");
+    crate::serial::_print(format_args!("IAJ: Stack mapped\n"));
 
     // Args, Memory Map, Low memory higher-half
     let args_pages = 1u64;
@@ -216,7 +222,7 @@ pub unsafe extern "C" fn init_and_jump(args: *const InitAndJumpArgs) -> ! {
         l4,
         physical_memory_offset,
         PhysAddr::new(0),
-        4096, // 16MB / 4KB
+        4096, // 16MB / 4KB,
         flags,
         frame_allocator,
     ).expect("low memory higher map");
@@ -225,7 +231,7 @@ pub unsafe extern "C" fn init_and_jump(args: *const InitAndJumpArgs) -> ! {
     let l4_virt_higher = VirtAddr::new(physical_memory_offset.as_u64() + l4_phys);
     map_page_4k_existing(l4, l4_virt_higher, PhysAddr::new(l4_phys), flags, frame_allocator).ok();
 
-    vga_write(b"IAJ: mappings done, switching CR3...\n");
+    crate::serial::_print(format_args!("IAJ: mappings done, switching CR3...\n"));
 
     unsafe { x86_64::registers::control::Cr3::write(
         x86_64::structures::paging::PhysFrame::containing_address(PhysAddr::new(l4_phys)),
@@ -233,7 +239,7 @@ pub unsafe extern "C" fn init_and_jump(args: *const InitAndJumpArgs) -> ! {
     ) };
     x86_64::instructions::tlb::flush_all();
 
-    vga_write(b"IAJ: CR3 switched, jumping!\n");
+    crate::serial::_print(format_args!("IAJ: CR3 switched, jumping!\n"));
 
     // Store state
     PAGE_TABLE_INITIALIZED.store(true, Ordering::SeqCst);

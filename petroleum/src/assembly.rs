@@ -56,14 +56,22 @@ pub unsafe fn setup_segments() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn jump_to_kernel_with_stack(stack_top: u64, args_ptr: *const ()) -> ! {
+#[inline(never)]
+pub unsafe extern "C" fn jump_to_kernel_with_stack(stack_top: u64, args_ptr: *const (), entry: usize, l4_phys: u64, phys_offset: u64) -> ! {
+    // To completely avoid memory layout issues, critical values ​​are passed directly using registers.
+    // RDI: args_ptr, RSI: stack_top, RDX: l4_phys, RCX: entry, R8: phys_offset
     core::arch::asm!(
-        "mov rsp, {stack}",
-        "mov rdi, {args}",
-        "call {func}",
-        stack = in(reg) stack_top,
-        args = in(reg) args_ptr,
-        func = sym crate::page_table::kernel::init_and_jump,
+        "mov rdi, {0}",
+        "mov rsi, {1}",
+        "mov rdx, {2}",
+        "mov rcx, {3}",
+        "mov r8, {4}",
+        "jmp {3}",
+        in(reg) args_ptr,
+        in(reg) stack_top,
+        in(reg) l4_phys,
+        in(reg) entry,
+        in(reg) phys_offset,
         options(noreturn)
     );
 }
