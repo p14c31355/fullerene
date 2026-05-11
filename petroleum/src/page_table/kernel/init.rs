@@ -94,7 +94,7 @@ unsafe fn map_range_4k_existing(
     Ok(())
 }
 
-/// Initialize page tables by modifying the existing UEFI page table.
+/// Initialize page tables by creating a new L4 table and jumping to the kernel.
 pub unsafe fn init_and_jump(
     physical_memory_offset: VirtAddr,
     frame_allocator: &mut crate::page_table::allocator::bitmap::BitmapFrameAllocator,
@@ -108,24 +108,24 @@ pub unsafe fn init_and_jump(
 ) -> ! {
     vga_write(b"IAJ: entered\n");
 
-    use x86_64::registers::control::{Cr0, Cr0Flags};
-
-    // Disable WP (Write Protect) so we can modify page tables
-    let mut cr0 = Cr0::read();
-    cr0.remove(Cr0Flags::WRITE_PROTECT);
-    Cr0::write(cr0);
-
-    vga_write(b"IAJ: WP disabled\n");
-
-    // Get the current L4 table
-    let l4_virt_ptr = active_level_4_table(physical_memory_offset) as *mut PageTable;
-    let l4 = &mut *l4_virt_ptr;
-
-    vga_write(b"IAJ: L4 acquired\n");
-
     let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
 
-    // Map kernel at higher half
+    // 1. Allocate a new L4 table in low memory to ensure it's identity-mapped by UEFI
+    let l4_frame = frame_allocator.allocate_frame_low().expect("Failed to allocate L4 table in low memory");
+    let l4_phys = l4_frame.start_address();
+    
+    // We need a way to access the L4 table to initialize it.
+    // Since we are still in the bootloader's address space, we can use the bootloader's
+    // identity mapping if it exists, or we can use a temporary mapping.
+    // For simplicity, we'll assume the bootloader has identity mapped the first few MBs.
+    // If not, we'd need to map the L4 frame into the current address space.
+    let l4_ptr = l4_phys.as_u64() as *mut PageTable;
+    core::ptr::write_bytes(l4_ptr, 0, 1);
+    let l4 = &mut *l4_ptr;
+
+    vga_write(b"IAJ: New L4 table allocated\n");
+
+    // 2. Map kernel at higher half
     let kernel_virt = physical_memory_offset.as_u64() + kernel_phys_start;
     let kernel_size = 4 * 1024 * 1024u64; // 4MB
     let kernel_pages = kernel_size / 4096;
@@ -145,9 +145,7 @@ pub unsafe fn init_and_jump(
         loop { core::arch::asm!("hlt"); }
     }
 
-    vga_write(b"IAJ: kernel higher half mapped\n");
-
-    // Map kernel identity (phys == virt)
+    // 3. Map kernel identity (phys == virt)
     vga_write(b"IAJ: mapping kernel identity...\n");
     if let Err(e) = map_range_4k_existing(
         l4,
@@ -163,10 +161,9 @@ pub unsafe fn init_and_jump(
         loop { core::arch::asm!("hlt"); }
     }
 
-    vga_write(b"IAJ: kernel identity mapped\n");
-
-    // Map stack area identity
+    // 4. Map stack area identity and higher half
     let stack_pages = 4u64;
+    // Identity map
     if let Err(e) = map_range_4k_existing(
         l4,
         VirtAddr::new(stack_top),
@@ -175,13 +172,27 @@ pub unsafe fn init_and_jump(
         flags,
         frame_allocator,
     ) {
-        vga_write(b"IAJ: ERROR mapping stack: ");
+        vga_write(b"IAJ: ERROR mapping stack identity: ");
+        vga_write(e.as_bytes());
+        vga_write(b"\n");
+        loop { core::arch::asm!("hlt"); }
+    }
+    // Higher half map
+    if let Err(e) = map_range_4k_existing(
+        l4,
+        VirtAddr::new(physical_memory_offset.as_u64() + stack_top),
+        PhysAddr::new(stack_top),
+        stack_pages,
+        flags,
+        frame_allocator,
+    ) {
+        vga_write(b"IAJ: ERROR mapping stack higher half: ");
         vga_write(e.as_bytes());
         vga_write(b"\n");
         loop { core::arch::asm!("hlt"); }
     }
 
-    // Map KernelArgs area identity
+    // 5. Map KernelArgs area identity
     let args_pages = 1u64;
     if let Err(e) = map_range_4k_existing(
         l4,
@@ -197,7 +208,7 @@ pub unsafe fn init_and_jump(
         loop { core::arch::asm!("hlt"); }
     }
 
-    // Map memory map area identity
+    // 6. Map memory map area identity
     let map_pages = (map_size + 4095) / 4096;
     vga_write(b"IAJ: mapping memory map identity...\n");
     if let Err(e) = map_range_4k_existing(
@@ -214,7 +225,7 @@ pub unsafe fn init_and_jump(
         loop { core::arch::asm!("hlt"); }
     }
 
-    // Map memory map at higher half
+    // 7. Map memory map at higher half
     let map_virt_higher = physical_memory_offset.as_u64() + map_phys_addr;
     vga_write(b"IAJ: mapping memory map higher half...\n");
     if let Err(e) = map_range_4k_existing(
@@ -231,12 +242,50 @@ pub unsafe fn init_and_jump(
         loop { core::arch::asm!("hlt"); }
     }
 
-    vga_write(b"IAJ: all mapped, jumping to kernel\n");
+    // 8. Map first 16MB of physical memory to higher half
+    vga_write(b"IAJ: mapping low memory to higher half...\n");
+    if let Err(e) = map_range_4k_existing(
+        l4,
+        physical_memory_offset,
+        PhysAddr::new(0),
+        4096, // 16MB / 4KB
+        flags,
+        frame_allocator,
+    ) {
+        vga_write(b"IAJ: ERROR mapping low memory: ");
+        vga_write(e.as_bytes());
+        vga_write(b"\n");
+        loop { core::arch::asm!("hlt"); }
+    }
+
+    // 9. Map the new L4 table itself to the higher half
+    vga_write(b"IAJ: mapping L4 table to higher half...\n");
+    let l4_virt_higher = VirtAddr::new(physical_memory_offset.as_u64() + l4_phys.as_u64());
+    if let Err(e) = map_page_4k_existing(
+        l4,
+        l4_virt_higher,
+        l4_phys,
+        flags,
+        frame_allocator,
+    ) {
+        vga_write(b"IAJ: ERROR mapping L4 table: ");
+        vga_write(e.as_bytes());
+        vga_write(b"\n");
+        loop { core::arch::asm!("hlt"); }
+    }
+
+    // 10. Switch to the new page table
+    x86_64::registers::control::Cr3::write(
+        x86_64::structures::paging::PhysFrame::containing_address(l4_phys),
+        x86_64::registers::control::Cr3Flags::empty(),
+    );
+    x86_64::instructions::tlb::flush_all();
+    vga_write(b"IAJ: Switched to new L4, TLB flushed, jumping to kernel\n");
 
     // Store state
     PAGE_TABLE_INITIALIZED.store(true, Ordering::SeqCst);
     STORED_OFFSET = Some(physical_memory_offset);
-    STORED_L4_PTR = Some(l4_virt_ptr);
+    STORED_L4_PTR = Some(l4_ptr);
 
     // Jump to kernel entry point
     core::arch::asm!(
