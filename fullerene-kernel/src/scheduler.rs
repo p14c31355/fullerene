@@ -12,52 +12,22 @@ use petroleum::{
     display_stats_on_available_display, periodic_task, scheduler_log, write_serial_bytes,
 };
 
-// Define periodic tasks in a struct for clarity
 struct PeriodicTask {
     interval: u64,
-    last_tick: alloc::sync::Arc<spin::Mutex<u64>>,
-    task: fn(u64, u64), // current_tick, iteration_count
-    description: &'static str,
+    last_tick: spin::Mutex<u64>,
+    task: fn(u64, u64),
 }
 
 lazy_static::lazy_static! {
-    static ref PERIODIC_TASKS: [PeriodicTask; 6] = [
-        PeriodicTask {
-            interval: 1000,
-            last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
-            task: perform_system_health_checks,
-            description: "health check",
-        },
-        PeriodicTask {
-            interval: 5000,
-            last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
-            task: perform_stats_logging,
-            description: "stats logging",
-        },
-        PeriodicTask {
-            interval: 2000,
-            last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
-            task: perform_system_maintenance,
-            description: "system maintenance",
-        },
-        PeriodicTask {
-            interval: 10000,
-            last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
-            task: perform_memory_capacity_check,
-            description: "memory capacity check",
-        },
-        PeriodicTask {
-            interval: 100,
-            last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
-            task: perform_process_cleanup_check,
-            description: "process cleanup",
-        },
-        PeriodicTask {
-            interval: 30000,
-            last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
-            task: perform_automated_backup,
-            description: "automated backup",
-        },
+    static ref PERIODIC_TASKS: [PeriodicTask; 8] = [
+        PeriodicTask { interval: 1000, last_tick: spin::Mutex::new(0), task: perform_system_health_checks },
+        PeriodicTask { interval: 5000, last_tick: spin::Mutex::new(0), task: perform_stats_logging },
+        PeriodicTask { interval: 2000, last_tick: spin::Mutex::new(0), task: perform_system_maintenance },
+        PeriodicTask { interval: 10000, last_tick: spin::Mutex::new(0), task: perform_memory_capacity_check },
+        PeriodicTask { interval: 100, last_tick: spin::Mutex::new(0), task: perform_process_cleanup_check },
+        PeriodicTask { interval: 30000, last_tick: spin::Mutex::new(0), task: perform_automated_backup },
+        PeriodicTask { interval: 5000, last_tick: spin::Mutex::new(0), task: |t, _| draw_desktop_on_available_framebuffer() },
+        PeriodicTask { interval: 10000, last_tick: spin::Mutex::new(0), task: |_, _| emergency_condition_handler() },
     ];
 }
 use x86_64::VirtAddr;
@@ -114,21 +84,11 @@ fn collect_system_stats() -> SystemStats {
     )
 }
 
-/// Process I/O events (placeholder for future expansion)
 fn process_io_events() {
     let mut events = IO_EVENTS.lock();
-
-    // Process all pending I/O events
     while let Some(event) = events.pop_front() {
-        match event.event_type {
-            // Placeholder for different event types
-            0x01 => log::debug!("Processed keyboard event"),
-            0x02 => log::debug!("Processed filesystem event"),
-            _ => log::debug!("Processed unknown I/O event type {}", event.event_type),
-        }
+        log::debug!("Processed I/O event type {}", event.event_type);
     }
-
-    // Re-process any remaining events during next iteration
 }
 
 /// Perform system health checks (memory, processes, etc.)
@@ -207,44 +167,22 @@ fn perform_system_maintenance(_tick: u64, _iter: u64) {
     manage_background_services();
 }
 
-/// Monitor system environment and adapt accordingly
 fn monitor_environment() {
-    // Check CPU load distribution
-    let system_stats = collect_system_stats();
-
-    // If memory usage is high, perform garbage collection
-    let (_, total_memory, _) = petroleum::get_memory_stats!();
-    if total_memory > 0 && system_stats.memory_used > total_memory * 3 / 4 {
-        // >75%
+    let stats = collect_system_stats();
+    let (_, total, _) = petroleum::get_memory_stats!();
+    if total > 0 && stats.memory_used > total * 3 / 4 {
         log::debug!("High memory usage detected, running memory optimization");
-        // petroleum::page_table::ALLOCATOR.lock().optimize(); // Method not available
     }
-
-    // Monitor process health
-    if system_stats.active_processes > system_stats.total_processes / 2 {
-        log::warn!(
-            "High active process ratio: {}/{}",
-            system_stats.active_processes,
-            system_stats.total_processes
-        );
+    if stats.active_processes > stats.total_processes / 2 {
+        log::warn!("High active process ratio: {}/{}", stats.active_processes, stats.total_processes);
     }
 }
 
-/// Perform resource optimization tasks
 fn optimize_system_resources() {
-    // Run memory defragmentation or optimization
     log::debug!("Running periodic resource optimization");
-
-    // Optimize heap allocation patterns
-    // petroleum::page_table::ALLOCATOR.lock().defragment(); // Method not available
 }
 
-/// Manage background system services
 fn manage_background_services() {
-    // Placeholder for future background services
-    // Ideas: disk I/O scheduler, network protocol handlers, device monitoring
-
-    // For now, just ensure system remains responsive
     log::debug!("Background service check completed");
 }
 
@@ -263,15 +201,12 @@ fn perform_automated_backup(_tick: u64, _iter: u64) {
     }
 }
 
-/// Process a single scheduler iteration
 fn process_scheduler_iteration() {
     let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
     let iteration_count = SCHEDULER_ITERATIONS.load(Ordering::Relaxed);
 
-    // Process I/O events
     process_io_events();
 
-    // Run periodic tasks from PERIODIC_TASKS array
     for task in PERIODIC_TASKS.iter() {
         let mut last_tick = task.last_tick.lock();
         if current_tick - *last_tick >= task.interval {
@@ -280,15 +215,6 @@ fn process_scheduler_iteration() {
         }
     }
 
-    // Additional tasks that don't fit the pattern
-    if current_tick % DESKTOP_UPDATE_INTERVAL_TICKS == 0 {
-        draw_desktop_on_available_framebuffer();
-    }
-    if current_tick % 10000 == 0 {
-        emergency_condition_handler();
-    }
-
-    // Yield and handle system calls
     yield_and_process_system_calls();
 }
 

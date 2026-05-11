@@ -48,16 +48,16 @@ fn user_print(s: &str) {
 static COMMANDS: &[CommandEntry] = define_commands!(
     CommandEntry,
     ("help", "Show available commands", help_command),
-    ("ps", "Show process list", ps_command),
-    ("top", "Show top processes", top_command),
-    ("free", "Show memory usage", free_command),
+    ("ps", "Show process list", not_implemented_command),
+    ("top", "Show top processes", not_implemented_command),
+    ("free", "Show memory usage", not_implemented_command),
     ("uptime", "Show system uptime", uptime_command),
     ("date", "Show current date/time", date_command),
     ("history", "Show command history", history_command),
     ("echo", "Print text", echo_command),
     ("clear", "Clear screen", clear_command),
     ("uname", "Show system information", uname_command),
-    ("kill", "Kill a process (usage: kill <pid>)", kill_command),
+    ("kill", "Kill a process (usage: kill <pid>)", not_implemented_command),
     ("exit", "Exit shell", exit_command)
 );
 
@@ -181,7 +181,11 @@ fn process_command(line: &str) -> bool {
     true
 }
 
-// Command implementations
+fn not_implemented_command(args: &[&str]) -> i32 {
+    user_print(&format!("{}: Not implemented for user mode\n", args[0]));
+    0
+}
+
 fn help_command(_args: &[&str]) -> i32 {
     print!("Available commands:\n");
     for cmd in COMMANDS {
@@ -190,77 +194,39 @@ fn help_command(_args: &[&str]) -> i32 {
     0
 }
 
-fn ps_command(_args: &[&str]) -> i32 {
-    user_print("ps: Not implemented for user mode\n");
-    0
-}
-
 fn echo_command(args: &[&str]) -> i32 {
     if args.len() < 2 {
         print!("\n");
-        return 0;
+    } else {
+        for arg in &args[1..] { print!("{} ", arg); }
+        print!("\n");
     }
-
-    for arg in &args[1..] {
-        print!("{} ", arg);
-    }
-    print!("\n");
     0
 }
 
-petroleum::simple_command_fn!(clear_command, "\x1b[2J\x1b[H"); // ANSI clear screen and home
-
+petroleum::simple_command_fn!(clear_command, "\x1b[2J\x1b[H");
 petroleum::simple_command_fn!(uname_command, "Fullerene OS 0.1.0 x86_64\n");
 
-fn kill_command(args: &[&str]) -> i32 {
-    user_print("kill: Not implemented for user mode\n");
-    0
-}
-
-fn top_command(_args: &[&str]) -> i32 {
-    user_print("top: Not implemented for user mode\n");
-    0
-}
-
-fn free_command(_args: &[&str]) -> i32 {
-    user_print("free: Not implemented for user mode\n");
-    0
-}
-
 fn uptime_command(_args: &[&str]) -> i32 {
-    // Use tick count tracked by the scheduler
-    const TICKS_PER_SECOND: u64 = 1000; // Assuming 1000 ticks per second
     let ticks = get_system_tick();
-    let uptime_seconds = ticks / TICKS_PER_SECOND;
-    let hours = uptime_seconds / 3600;
-    let minutes = (uptime_seconds % 3600) / 60;
-    let seconds = uptime_seconds % 60;
-
-    print!(
-        "Uptime: {:02}:{:02}:{:02} ({} ticks)\n",
-        hours, minutes, seconds, ticks
-    );
+    let s = ticks / 1000;
+    print!("Uptime: {:02}:{:02}:{:02} ({} ticks)\n", s/3600, (s%3600)/60, s%60, ticks);
     0
 }
 
 fn date_command(_args: &[&str]) -> i32 {
-    // Simple date/time - would be enhanced with RTC in real implementation
-    print!("Current date/time: ");
-    print!("System tick: {}\n", get_system_tick());
-    print!("(RTC integration pending)\n");
+    print!("Current date/time: System tick: {}\n(RTC integration pending)\n", get_system_tick());
     0
 }
 
 fn history_command(_args: &[&str]) -> i32 {
-    print!("Command history:\n");
-    print!("(History feature not yet implemented)\n");
-    print!("Use 'help' to see available commands.\n");
+    print!("Command history: (Not implemented)\nUse 'help' for available commands.\n");
     0
 }
 
 fn exit_command(_args: &[&str]) -> i32 {
     print!("Exiting shell...\n");
-    1 // Non-zero exit to signal shell termination
+    1
 }
 
 // Helper to print to stdout (since we can't use println! in kernel)
