@@ -124,6 +124,32 @@ impl BitmapFrameAllocator {
             self.set_frame_used(start_frame + i, false);
         }
     }
+
+    /// Allocate a frame from the low memory region (below 1MB) that is
+    /// guaranteed to be identity-mapped by UEFI page tables.
+    /// Skips the L4 table page (CR3) to avoid corrupting it.
+    pub fn allocate_frame_low(&mut self) -> Option<PhysFrame> {
+        const LOW_MEMORY_LIMIT: usize = 1024 * 1024 / 4096; // 1MB in frames
+        // Get the L4 table physical address from CR3 to avoid allocating it
+        let cr3_addr: u64;
+        unsafe { core::arch::asm!("mov rax, cr3", out("rax") cr3_addr, options(nomem, nostack)) };
+        let l4_frame_idx = (cr3_addr / 4096) as usize;
+        for frame_idx in 1..LOW_MEMORY_LIMIT.min(self.total_frames) {
+            // Skip the L4 table page itself
+            if frame_idx == l4_frame_idx {
+                continue;
+            }
+            let idx = frame_idx / 64;
+            let bit = frame_idx % 64;
+            if (self.bitmap[idx] & (1 << bit)) == 0 {
+                self.set_frame_used(frame_idx, true);
+                return Some(PhysFrame::containing_address(x86_64::PhysAddr::new(
+                    frame_idx as u64 * 4096,
+                )));
+            }
+        }
+        None
+    }
 }
 
 unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
@@ -131,11 +157,14 @@ unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
         for i in 0..self.bitmap.len() {
             if self.bitmap[i] != u64::MAX {
                 for j in 0..64 {
+                    let frame_idx = i * 64 + j;
+                    if frame_idx == 0 {
+                        continue;
+                    }
+                    if frame_idx >= self.total_frames {
+                        return None;
+                    }
                     if (self.bitmap[i] & (1 << j)) == 0 {
-                        let frame_idx = i * 64 + j;
-                        if frame_idx >= self.total_frames {
-                            return None;
-                        }
                         self.set_frame_used(frame_idx, true);
                         return Some(PhysFrame::containing_address(x86_64::PhysAddr::new(
                             frame_idx as u64 * 4096,

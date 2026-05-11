@@ -111,6 +111,7 @@ pub unsafe extern "sysv64" fn landing_zone(_frame: *const TransitionFrame) {
 /// - `args`: A pointer to the `KernelArgs` structure (passed in RSI).
 /// - `phys_offset`: The physical memory offset (passed in RDX).
 #[unsafe(no_mangle)]
+#[inline(never)]
 pub unsafe extern "C" fn jump_to_kernel(
     entry: usize,
     args: *const KernelArgs,

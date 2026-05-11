@@ -1,8 +1,4 @@
 //! High-level world switch and kernel transition abstractions.
-//!
-//! This module provides type-safe wrappers around the raw assembly transitions
-//! defined in `assembly.rs`, allowing the system to express "world switches"
-//! as structured data and strategies.
 
 use crate::assembly::{KernelArgs, TransitionArgs, TransitionFrame};
 use crate::page_table::constants::BootInfoFrameAllocator;
@@ -74,8 +70,6 @@ pub static mut KERNEL_ARGS: *const KernelArgs = core::ptr::null();
 #[unsafe(no_mangle)]
 pub static mut TRANSITION_KERNEL_ENTRY: usize = 0;
 
-/// Represents the complete state required to switch the CPU world
-/// (e.g., from UEFI context to Kernel context).
 #[repr(C)]
 pub struct WorldSwitch {
     pub load_gdt: *const (),
@@ -89,7 +83,6 @@ pub struct WorldSwitch {
 }
 
 impl WorldSwitch {
-    /// Converts the `WorldSwitch` state into `TransitionArgs` used by the low-level assembly.
     pub fn to_transition_args(&self) -> TransitionArgs {
         TransitionArgs {
             load_gdt: self.load_gdt,
@@ -103,13 +96,10 @@ impl WorldSwitch {
     }
 }
 
-/// Trait for executing a transition to a new CPU state.
 pub trait KernelTransition {
-    /// Performs the transition. This function never returns.
     unsafe fn perform(self) -> !;
 }
 
-/// A specific strategy for transitioning from UEFI to the Higher Half kernel.
 pub struct UefiToHigherHalf {
     pub world: WorldSwitch,
     pub landing_zone: VirtAddr,
@@ -117,22 +107,22 @@ pub struct UefiToHigherHalf {
 
 impl KernelTransition for UefiToHigherHalf {
     unsafe fn perform(self) -> ! {
-        // To implement this, we need the current physical memory offset to calculate offset_diff.
-        // In a real scenario, this would be passed in or tracked.
-        // For now, we implement the world switch logic here.
-
-        // This is a simplification. In actual use, we'd need the current offset.
-        // For the sake of this refactor, we are moving the logic from TransitionContext::perform.
-
-        // We will assume a helper or context provides the current offset.
-        // Since this is a high-level abstraction, we might need to add it to UefiToHigherHalf.
-
-        crate::assembly::jump_to_kernel(
-            self.world.entry_point.as_u64() as usize,
-            self.world.kernel_args,
-            self.world.phys_offset.as_u64(),
-        )
+        let world = self.world;
+        let transition_args = world.to_transition_args();
+        let frame = TransitionFrame {
+            args: transition_args,
+            logic_fn: landing_zone_logic as usize,
+        };
+        let lz: unsafe extern "sysv64" fn(*const TransitionFrame) -> ! =
+            core::mem::transmute(self.landing_zone);
+        lz(&frame)
     }
+}
+
+unsafe fn write_serial_hex(val: u64) {
+    let mut buf = [0u8; 16];
+    let len = crate::serial::format_hex_to_buffer(val, &mut buf, 16);
+    crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
 }
 
 #[unsafe(no_mangle)]
@@ -176,11 +166,19 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
         let local_phys_offset = VirtAddr::new(sign_extended_offset);
         let local_frame_allocator = args.allocator;
 
-        crate::write_serial_bytes!(
-            0x3F8,
-            0x3FD,
-            b"High-half transition: landing zone logic reached!\n"
-        );
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"LZ: reached\n");
+
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DBG: entry=0x");
+        write_serial_hex(actual_kernel_entry as u64);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b" offset=0x");
+        write_serial_hex(local_phys_offset.as_u64());
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
+        let kernel_entry_virt = (actual_kernel_entry as u64).wrapping_add(local_phys_offset.as_u64());
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DBG: entry_virt=0x");
+        write_serial_hex(kernel_entry_virt);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
         crate::flush_tlb_and_verify!();
 
         let l4_virt_raw = args.phys_offset.wrapping_add(l4_phys);
@@ -208,34 +206,12 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
             &mut *local_frame_allocator,
         );
 
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Landing zone jumping to kernel entry!\n");
-
         if actual_kernel_entry == 0 {
-            crate::write_serial_bytes!(
-                0x3F8,
-                0x3FD,
-                b"ERROR: actual_kernel_entry is 0! Hanging...\n"
-            );
-            loop {
-                core::hint::spin_loop();
-            }
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"ERROR: entry is 0!\n");
+            loop { core::hint::spin_loop(); }
         }
 
-        let args_phys = actual_kernel_args as u64;
-        let args_phys_raw = args_phys.wrapping_sub(local_phys_offset.as_u64());
-        let args_v_sign = if (args_phys & (1 << 47)) != 0 {
-            args_phys | 0xFFFF_0000_0000_0000
-        } else {
-            args_phys & 0x0000_FFFF_FFFF_FFFF
-        };
-        let _ = temp_mapper.map_to(
-            x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(args_v_sign)),
-            x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(args_phys_raw & 0x000F_FFFF_FFFF_FFFF)),
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-            &mut *local_frame_allocator,
-        );
-
-        // Map the page containing KernelArgs before dereferencing
+        // Map KernelArgs at higher half
         let args_phys = actual_kernel_args as u64;
         let args_phys_raw = args_phys.wrapping_sub(local_phys_offset.as_u64());
         let args_v_sign = if (args_phys & (1 << 47)) != 0 {
@@ -254,6 +230,7 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
         let kernel_phys_start = k_args.kernel_phys_start;
         let kernel_virt_start = kernel_phys_start.wrapping_add(local_phys_offset.as_u64());
 
+        // Map memory map buffer
         let map_phys = k_args.map_ptr as u64;
         let map_virt = map_phys.wrapping_add(local_phys_offset.as_u64());
         let map_pages = (k_args.map_size as u64 + 4095) / 4096;
@@ -273,6 +250,7 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
             );
         }
 
+        // Map kernel at higher half using 2MB pages
         for page_offset in 0..2048 {
             let v_addr_raw = kernel_virt_start.wrapping_add(page_offset * 2 * 1024 * 1024);
             let p_addr_raw = kernel_phys_start.wrapping_add(page_offset * 2 * 1024 * 1024);
@@ -289,8 +267,8 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
             );
         }
 
-        let entry_phys_start =
-            (actual_kernel_entry as u64).wrapping_sub(local_phys_offset.as_u64()) & !0xFFF;
+        // Map entry point pages at higher half
+        let entry_phys_start = (actual_kernel_entry as u64) & !0xFFF;
         for page_offset in -16i32..16i32 {
             let p_page = entry_phys_start.wrapping_add((page_offset as i64 * 4096) as u64);
             let v_page = p_page.wrapping_add(local_phys_offset.as_u64());
@@ -307,6 +285,7 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
             );
         }
 
+        // Map stack pages at higher half
         let rsp_val: u64;
         core::arch::asm!("mov {}, rsp", out(reg) rsp_val);
         let stack_phys_start = (rsp_val & !0xFFF).wrapping_sub(local_phys_offset.as_u64());
@@ -328,15 +307,18 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
             );
         }
 
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DBG: jumping to 0x");
+        write_serial_hex(kernel_entry_virt);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
         crate::assembly::jump_to_kernel(
-            actual_kernel_entry,
+            kernel_entry_virt as usize,
             actual_kernel_args,
             local_phys_offset.as_u64(),
         );
     }
 }
 
-/// Builder for constructing a `WorldSwitch` state safely.
 pub struct WorldSwitchBuilder {
     load_gdt: Option<*const ()>,
     load_idt: Option<*const ()>,
@@ -364,45 +346,14 @@ impl Default for WorldSwitchBuilder {
 }
 
 impl WorldSwitchBuilder {
-    pub fn with_gdt(mut self, gdt: *const ()) -> Self {
-        self.load_gdt = Some(gdt);
-        self
-    }
-
-    pub fn with_idt(mut self, idt: *const ()) -> Self {
-        self.load_idt = Some(idt);
-        self
-    }
-
-    pub fn with_page_table(mut self, frame: PhysFrame) -> Self {
-        self.page_table = Some(frame);
-        self
-    }
-
-    pub fn with_phys_offset(mut self, offset: VirtAddr) -> Self {
-        self.phys_offset = Some(offset);
-        self
-    }
-
-    pub fn with_stack(mut self, stack: VirtAddr) -> Self {
-        self.stack_top = Some(stack);
-        self
-    }
-
-    pub fn with_entry(mut self, entry: VirtAddr) -> Self {
-        self.entry_point = Some(entry);
-        self
-    }
-
-    pub fn with_args(mut self, args: *const KernelArgs) -> Self {
-        self.kernel_args = Some(args);
-        self
-    }
-
-    pub fn with_allocator(mut self, allocator: *mut BootInfoFrameAllocator) -> Self {
-        self.allocator = Some(allocator);
-        self
-    }
+    pub fn with_gdt(mut self, gdt: *const ()) -> Self { self.load_gdt = Some(gdt); self }
+    pub fn with_idt(mut self, idt: *const ()) -> Self { self.load_idt = Some(idt); self }
+    pub fn with_page_table(mut self, frame: PhysFrame) -> Self { self.page_table = Some(frame); self }
+    pub fn with_phys_offset(mut self, offset: VirtAddr) -> Self { self.phys_offset = Some(offset); self }
+    pub fn with_stack(mut self, stack: VirtAddr) -> Self { self.stack_top = Some(stack); self }
+    pub fn with_entry(mut self, entry: VirtAddr) -> Self { self.entry_point = Some(entry); self }
+    pub fn with_args(mut self, args: *const KernelArgs) -> Self { self.kernel_args = Some(args); self }
+    pub fn with_allocator(mut self, allocator: *mut BootInfoFrameAllocator) -> Self { self.allocator = Some(allocator); self }
 
     pub fn build(self) -> Result<WorldSwitch, &'static str> {
         Ok(WorldSwitch {

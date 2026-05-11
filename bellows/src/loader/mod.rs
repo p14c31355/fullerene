@@ -278,23 +278,9 @@ pub fn exit_boot_services_and_jump(
         );
     }
 
-    let fb_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
-        .get()
-        .and_then(|m| *m.lock());
-    let (fb_addr, fb_size) = match fb_config {
-        Some(c) => (
-            Some(x86_64::VirtAddr::new(c.address)),
-            Some((c.width as u64 * c.height as u64 * c.bpp as u64) / 8),
-        ),
-        None => (None, None),
-    };
-
     // Prepare memory map descriptors
     let descriptor_size_val = descriptor_size;
-    // The actual descriptors start at map_ptr
     let descriptors_ptr = map_ptr as *const u8;
-
-    // map_size is the size of the memory map returned by get_memory_map
     let num_descriptors = map_size.checked_div(descriptor_size_val).unwrap_or(0);
 
     let memory_map_descriptors = if num_descriptors > 0 && !descriptors_ptr.is_null() {
@@ -323,87 +309,37 @@ pub fn exit_boot_services_and_jump(
         )
         .1,
     );
-    frame_allocator.init(0); // Initialize with 0 used frames initially
+    frame_allocator.init(0);
     petroleum::page_table::memory_map::processor::mark_available_frames(
         &mut frame_allocator,
         &memory_map_descriptors,
     );
 
-    let mapper = unsafe {
-        let mut m = petroleum::page_table::kernel::init(
+    // Calculate kernel entry virtual address (higher half)
+    let kernel_entry_virt = petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64()
+        + kernel_entry_phys;
+
+    petroleum::serial::_print(format_args!(
+        "Jumping to kernel entry point (virt): {:#x}\n",
+        kernel_entry_virt
+    ));
+
+    // init_and_jump will:
+    // 1. Create new page tables with identity mapping for low memory and higher half kernel
+    // 2. Switch CR3 to the new page table
+    // 3. Jump directly to kernel entry point
+    // This function does NOT return.
+    unsafe {
+        petroleum::page_table::kernel::init_and_jump(
             petroleum::page_table::constants::HIGHER_HALF_OFFSET,
             &mut frame_allocator,
             kernel_phys_start.as_u64(),
-            None::<fn(&mut x86_64::structures::paging::OffsetPageTable, &mut _)>,
-        );
-
-        // Map the kernel itself to the higher half
-        let kernel_pages = (16 * 1024 * 1024) / 4096; // Map 16MB for safety
-        petroleum::page_table::raw::map_range_with_huge_pages(
-            &mut m,
-            &mut frame_allocator,
-            kernel_phys_start.as_u64(),
-            petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64()
-                + kernel_phys_start.as_u64(),
-            kernel_pages,
-            x86_64::structures::paging::PageTableFlags::PRESENT
-                | x86_64::structures::paging::PageTableFlags::WRITABLE,
-            "kernel",
-        )
-        .expect("Failed to map kernel to higher half");
-
-        m
-    };
-    let new_phys_offset = mapper.phys_offset();
-
-    // Get the physical address of the new PML4 table
-    let pml4_phys = x86_64::registers::control::Cr3::read().0.start_address();
-
-    petroleum::serial::_print(format_args!(
-        "New physical memory offset: {:#x}\n",
-        new_phys_offset.as_u64()
-    ));
-    petroleum::serial::_print(format_args!(
-        "New PML4 physical address: {:#x}\n",
-        pml4_phys.as_u64()
-    ));
-    petroleum::serial::_print(format_args!(
-        "Jumping to kernel entry point: {:#p}\n",
-        entry
-    ));
-
-    // Now jump to the kernel.
-    unsafe {
-        // CRITICAL: We must update CR3 with the new page table before jumping.
-        // The mapper created by petroleum::page_table::init already has identity mapping
-        // for the lower memory, so this is safe as long as we are running in that range.
-        x86_64::registers::control::Cr3::write(
-            x86_64::structures::paging::PhysFrame::containing_address(pml4_phys),
-            x86_64::registers::control::Cr3Flags::empty(),
-        );
-
-        // Pass arguments according to SysV ABI:
-        // rdi: args_ptr
-        // rsi: physical_memory_offset
-        // (image_handle, system_table, map_phys_addr, final_map_size will be in KernelArgs)
-        core::arch::asm!(
-            "xor ax, ax",
-            "mov ds, ax",
-            "mov es, ax",
-            "mov fs, ax",
-            "mov gs, ax",
-            "mov ss, ax",
-
-            "mov rsp, {stack_top}",
-            "mov rdi, {args_ptr}",
-            "mov rsi, {phys_offset}", // physical_memory_offset passed as 2nd arg
-
-            "jmp {entry_addr}",
-            stack_top = in(reg) (args_phys_addr + 4096),
-            args_ptr = in(reg) args_ptr,
-            phys_offset = in(reg) new_phys_offset.as_u64(),
-            entry_addr = in(reg) entry as usize,
-            options(noreturn),
+            kernel_entry_virt,
+            args_phys_addr as u64 + 4096, // stack top
+            args_ptr as u64,              // arg1: KernelArgs pointer
+            petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64(), // arg2: physical_memory_offset
+            map_phys_addr as u64,         // memory map physical address
+            final_map_size as u64,        // memory map size
         );
     }
 }

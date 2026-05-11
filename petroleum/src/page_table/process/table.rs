@@ -79,31 +79,21 @@ impl ProcessPageTable {
         &mut self,
         phys_offset: VirtAddr,
         frame_allocator: &mut BootInfoFrameAllocator,
-        kernel_phys_start: u64,
+        _kernel_phys_start: u64,
     ) -> crate::common::logging::SystemResult<()> {
         if self.initialized {
             return Ok(());
         }
 
-        let mut mapper = unsafe {
-            crate::page_table::kernel::init::init::<BootInfoFrameAllocator, fn(&mut OffsetPageTable, &mut BootInfoFrameAllocator)>(
-                phys_offset,
-                frame_allocator,
-                kernel_phys_start,
-                None,
-            )
-        };
-
+        // init_and_jump already set up the page tables, so we just need to
+        // create an OffsetPageTable from the current CR3.
         let (current_pml4, _) = Cr3::read();
-        let virt = phys_offset + current_pml4.start_address().as_u64();
-        let page = Page::containing_address(virt);
+        let l4_virt = phys_offset + current_pml4.start_address().as_u64();
 
-        let _ = unsafe {
-            mapper.map_to(
-                page,
-                current_pml4,
-                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE,
-                frame_allocator,
+        let mapper = unsafe {
+            OffsetPageTable::new(
+                &mut *(l4_virt.as_mut_ptr::<PageTable>()),
+                phys_offset,
             )
         };
 
