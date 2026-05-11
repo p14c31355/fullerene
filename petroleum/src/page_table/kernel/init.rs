@@ -1,3 +1,5 @@
+//! Page table initialization and kernel jump logic.
+
 use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::{
     PhysAddr, VirtAddr,
@@ -95,192 +97,128 @@ unsafe fn map_range_4k_existing(
 }
 
 /// Initialize page tables by creating a new L4 table and jumping to the kernel.
-pub unsafe fn init_and_jump(
-    physical_memory_offset: VirtAddr,
-    frame_allocator: &mut crate::page_table::allocator::bitmap::BitmapFrameAllocator,
-    kernel_phys_start: u64,
-    entry_virt: u64,
-    stack_top: u64,
-    arg1: u64,
-    arg2: u64,
-    map_phys_addr: u64,
-    map_size: u64,
-) -> ! {
+#[repr(C)]
+pub struct InitAndJumpArgs {
+    pub physical_memory_offset: VirtAddr,
+    pub frame_allocator: *mut crate::page_table::allocator::bitmap::BitmapFrameAllocator,
+    pub kernel_phys_start: u64,
+    pub entry_virt: u64,
+    pub stack_top: u64,
+    pub arg1: u64,
+    pub arg2: u64,
+    pub map_phys_addr: u64,
+    pub map_size: u64,
+    pub l4_phys_addr: u64,
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn init_and_jump(args: *const InitAndJumpArgs) -> ! {
+    let args = &*args;
+    let physical_memory_offset = args.physical_memory_offset;
+    let frame_allocator = &mut *args.frame_allocator;
+    let kernel_phys_start = args.kernel_phys_start;
+    let entry_virt = args.entry_virt;
+    let stack_top = args.stack_top;
+    let arg1 = args.arg1;
+    let arg2 = args.arg2;
+    let map_phys_addr = args.map_phys_addr;
+    let map_size = args.map_size;
+    let l4_phys_addr = args.l4_phys_addr;
+
     vga_write(b"IAJ: entered\n");
 
     let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
 
-    // 1. Allocate a new L4 table in low memory to ensure it's identity-mapped by UEFI
-    let l4_frame = frame_allocator.allocate_frame_low().expect("Failed to allocate L4 table in low memory");
-    let l4_phys = l4_frame.start_address();
-    
-    // We need a way to access the L4 table to initialize it.
-    // Since we are still in the bootloader's address space, we can use the bootloader's
-    // identity mapping if it exists, or we can use a temporary mapping.
-    // For simplicity, we'll assume the bootloader has identity mapped the first few MBs.
-    // If not, we'd need to map the L4 frame into the current address space.
-    let l4_ptr = l4_phys.as_u64() as *mut PageTable;
+    // 1. Use the pre-allocated L4 table provided by the bootloader
+    let l4_phys = l4_phys_addr;
+    let l4_ptr = l4_phys as *mut PageTable;
     core::ptr::write_bytes(l4_ptr, 0, 1);
     let l4 = &mut *l4_ptr;
 
-    vga_write(b"IAJ: New L4 table allocated\n");
+    vga_write(b"IAJ: Using pre-allocated L4\n");
 
-    // 2. Map kernel at higher half
-    let kernel_virt = physical_memory_offset.as_u64() + kernel_phys_start;
-    let kernel_size = 4 * 1024 * 1024u64; // 4MB
+    // === CRITICAL: Identity map bootloader code area (0-64MB) to prevent #PF after CR3 switch ===
+    if let Err(e) = map_range_4k_existing(
+        l4,
+        VirtAddr::new(0),
+        PhysAddr::new(0),
+        16384, // 64MB
+        flags,
+        frame_allocator,
+    ) {
+        vga_write(b"IAJ: ERROR mapping bootloader identity\n");
+        loop { core::arch::asm!("hlt"); }
+    }
+
+    // Also identity map the L4 table itself so we can access it if needed
+    map_page_4k_existing(l4, VirtAddr::new(l4_phys), PhysAddr::new(l4_phys), flags, frame_allocator)
+        .expect("L4 identity map failed");
+
+    // === Kernel mapping (higher-half + identity) ===
+    let kernel_size = 8 * 1024 * 1024u64; // Increase to 8MB
     let kernel_pages = kernel_size / 4096;
 
-    vga_write(b"IAJ: mapping kernel higher half...\n");
-    if let Err(e) = map_range_4k_existing(
-        l4,
-        VirtAddr::new(kernel_virt),
-        PhysAddr::new(kernel_phys_start),
-        kernel_pages,
-        flags,
-        frame_allocator,
-    ) {
-        vga_write(b"IAJ: ERROR mapping kernel higher half: ");
-        vga_write(e.as_bytes());
-        vga_write(b"\n");
-        loop { core::arch::asm!("hlt"); }
-    }
+    // higher-half
+    let kernel_virt = VirtAddr::new(physical_memory_offset.as_u64() + kernel_phys_start);
+    map_range_4k_existing(l4, kernel_virt, PhysAddr::new(kernel_phys_start), kernel_pages, flags, frame_allocator)
+        .expect("kernel higher map");
 
-    // 3. Map kernel identity (phys == virt)
-    vga_write(b"IAJ: mapping kernel identity...\n");
-    if let Err(e) = map_range_4k_existing(
-        l4,
-        VirtAddr::new(kernel_phys_start),
-        PhysAddr::new(kernel_phys_start),
-        kernel_pages,
-        flags,
-        frame_allocator,
-    ) {
-        vga_write(b"IAJ: ERROR mapping kernel identity: ");
-        vga_write(e.as_bytes());
-        vga_write(b"\n");
-        loop { core::arch::asm!("hlt"); }
-    }
+    // identity
+    map_range_4k_existing(l4, VirtAddr::new(kernel_phys_start), PhysAddr::new(kernel_phys_start), kernel_pages, flags, frame_allocator)
+        .expect("kernel identity");
 
-    // 4. Map stack area identity and higher half
-    let stack_pages = 4u64;
-    // Identity map
-    if let Err(e) = map_range_4k_existing(
+    // === Stack mapping (identity + higher-half) ===
+    let stack_pages = 8u64; // 32KB
+    let stack_phys_base = stack_top - stack_pages * 4096 + 4096;
+    
+    map_range_4k_existing(l4, VirtAddr::new(stack_phys_base), PhysAddr::new(stack_phys_base), stack_pages, flags, frame_allocator)
+        .expect("stack identity");
+
+    map_range_4k_existing(
         l4,
-        VirtAddr::new(stack_top),
-        PhysAddr::new(stack_top),
+        VirtAddr::new(physical_memory_offset.as_u64() + stack_phys_base),
+        PhysAddr::new(stack_phys_base),
         stack_pages,
         flags,
         frame_allocator,
-    ) {
-        vga_write(b"IAJ: ERROR mapping stack identity: ");
-        vga_write(e.as_bytes());
-        vga_write(b"\n");
-        loop { core::arch::asm!("hlt"); }
-    }
-    // Higher half map
-    if let Err(e) = map_range_4k_existing(
-        l4,
-        VirtAddr::new(physical_memory_offset.as_u64() + stack_top),
-        PhysAddr::new(stack_top),
-        stack_pages,
-        flags,
-        frame_allocator,
-    ) {
-        vga_write(b"IAJ: ERROR mapping stack higher half: ");
-        vga_write(e.as_bytes());
-        vga_write(b"\n");
-        loop { core::arch::asm!("hlt"); }
-    }
+    ).expect("stack higher");
 
-    // 5. Map KernelArgs area identity
+    // Args, Memory Map, Low memory higher-half
     let args_pages = 1u64;
-    if let Err(e) = map_range_4k_existing(
-        l4,
-        VirtAddr::new(arg1),
-        PhysAddr::new(arg1),
-        args_pages,
-        flags,
-        frame_allocator,
-    ) {
-        vga_write(b"IAJ: ERROR mapping args: ");
-        vga_write(e.as_bytes());
-        vga_write(b"\n");
-        loop { core::arch::asm!("hlt"); }
-    }
+    map_range_4k_existing(l4, VirtAddr::new(arg1), PhysAddr::new(arg1), args_pages, flags, frame_allocator)
+        .expect("args map");
 
-    // 6. Map memory map area identity
     let map_pages = (map_size + 4095) / 4096;
-    vga_write(b"IAJ: mapping memory map identity...\n");
-    if let Err(e) = map_range_4k_existing(
-        l4,
-        VirtAddr::new(map_phys_addr),
-        PhysAddr::new(map_phys_addr),
-        map_pages,
-        flags,
-        frame_allocator,
-    ) {
-        vga_write(b"IAJ: ERROR mapping memory map identity: ");
-        vga_write(e.as_bytes());
-        vga_write(b"\n");
-        loop { core::arch::asm!("hlt"); }
-    }
+    map_range_4k_existing(l4, VirtAddr::new(map_phys_addr), PhysAddr::new(map_phys_addr), map_pages, flags, frame_allocator)
+        .expect("map identity");
 
-    // 7. Map memory map at higher half
-    let map_virt_higher = physical_memory_offset.as_u64() + map_phys_addr;
-    vga_write(b"IAJ: mapping memory map higher half...\n");
-    if let Err(e) = map_range_4k_existing(
-        l4,
-        VirtAddr::new(map_virt_higher),
-        PhysAddr::new(map_phys_addr),
-        map_pages,
-        flags,
-        frame_allocator,
-    ) {
-        vga_write(b"IAJ: ERROR mapping memory map higher half: ");
-        vga_write(e.as_bytes());
-        vga_write(b"\n");
-        loop { core::arch::asm!("hlt"); }
-    }
+    let map_virt_higher = VirtAddr::new(physical_memory_offset.as_u64() + map_phys_addr);
+    map_range_4k_existing(l4, map_virt_higher, PhysAddr::new(map_phys_addr), map_pages, flags, frame_allocator)
+        .expect("map higher");
 
-    // 8. Map first 16MB of physical memory to higher half
-    vga_write(b"IAJ: mapping low memory to higher half...\n");
-    if let Err(e) = map_range_4k_existing(
+    // Map first 16MB of physical memory to higher half
+    map_range_4k_existing(
         l4,
         physical_memory_offset,
         PhysAddr::new(0),
         4096, // 16MB / 4KB
         flags,
         frame_allocator,
-    ) {
-        vga_write(b"IAJ: ERROR mapping low memory: ");
-        vga_write(e.as_bytes());
-        vga_write(b"\n");
-        loop { core::arch::asm!("hlt"); }
-    }
+    ).expect("low memory higher map");
 
-    // 9. Map the new L4 table itself to the higher half
-    vga_write(b"IAJ: mapping L4 table to higher half...\n");
-    let l4_virt_higher = VirtAddr::new(physical_memory_offset.as_u64() + l4_phys.as_u64());
-    if let Err(e) = map_page_4k_existing(
-        l4,
-        l4_virt_higher,
-        l4_phys,
-        flags,
-        frame_allocator,
-    ) {
-        vga_write(b"IAJ: ERROR mapping L4 table: ");
-        vga_write(e.as_bytes());
-        vga_write(b"\n");
-        loop { core::arch::asm!("hlt"); }
-    }
+    // Map the new L4 table itself to the higher half
+    let l4_virt_higher = VirtAddr::new(physical_memory_offset.as_u64() + l4_phys);
+    map_page_4k_existing(l4, l4_virt_higher, PhysAddr::new(l4_phys), flags, frame_allocator).ok();
 
-    // 10. Switch to the new page table
-    x86_64::registers::control::Cr3::write(
-        x86_64::structures::paging::PhysFrame::containing_address(l4_phys),
+    vga_write(b"IAJ: mappings done, switching CR3...\n");
+
+    unsafe { x86_64::registers::control::Cr3::write(
+        x86_64::structures::paging::PhysFrame::containing_address(PhysAddr::new(l4_phys)),
         x86_64::registers::control::Cr3Flags::empty(),
-    );
+    ) };
     x86_64::instructions::tlb::flush_all();
-    vga_write(b"IAJ: Switched to new L4, TLB flushed, jumping to kernel\n");
+
+    vga_write(b"IAJ: CR3 switched, jumping!\n");
 
     // Store state
     PAGE_TABLE_INITIALIZED.store(true, Ordering::SeqCst);

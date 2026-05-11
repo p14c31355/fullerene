@@ -42,10 +42,11 @@ pub fn exit_boot_services_and_jump(
     let map_buffer_size: usize = 128 * 1024; // 128 KiB
     let alloc_pages = petroleum::common::utils::calculate_pages_for_buffer(map_buffer_size);
 
-    // Allocate memory for KernelArgs before exiting boot services to avoid memory corruption
+    // Allocate memory for KernelArgs and L4 table before exiting boot services to avoid memory corruption
+    // We allocate 2 pages: 1 for KernelArgs and 1 for the L4 page table.
     let mut args_phys_addr: usize = 0;
     let args_alloc_status =
-        (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, 1, &mut args_phys_addr);
+        (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, 2, &mut args_phys_addr);
     if EfiStatus::from(args_alloc_status) != EfiStatus::Success {
         return Err(BellowsError::AllocationFailed(
             "Failed to allocate memory for KernelArgs.",
@@ -324,22 +325,40 @@ pub fn exit_boot_services_and_jump(
         kernel_entry_virt
     ));
 
+    petroleum::serial::_print(format_args!("Bellows: Calling init_and_jump now...\n"));
+
+    // To prevent stack overflow during the transition, we switch the stack pointer
+    // to a safe, pre-allocated area before calling init_and_jump.
+    let temp_stack_top = args_phys_addr as u64 + 8192;
+
+    // Prepare the arguments structure for the jump
+    let jump_args = petroleum::page_table::kernel::InitAndJumpArgs {
+        physical_memory_offset: petroleum::page_table::constants::HIGHER_HALF_OFFSET,
+        frame_allocator: &mut frame_allocator as *mut _,
+        kernel_phys_start: kernel_phys_start.as_u64(),
+        entry_virt: kernel_entry_virt,
+        stack_top: args_phys_addr as u64 + 4096,
+        arg1: args_ptr as u64,
+        arg2: petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64(),
+        map_phys_addr: map_phys_addr as u64,
+        map_size: final_map_size as u64,
+        l4_phys_addr: args_phys_addr as u64 + 4096,
+    };
+
     // init_and_jump will:
     // 1. Create new page tables with identity mapping for low memory and higher half kernel
     // 2. Switch CR3 to the new page table
     // 3. Jump directly to kernel entry point
     // This function does NOT return.
     unsafe {
-        petroleum::page_table::kernel::init_and_jump(
-            petroleum::page_table::constants::HIGHER_HALF_OFFSET,
-            &mut frame_allocator,
-            kernel_phys_start.as_u64(),
-            kernel_entry_virt,
-            args_phys_addr as u64 + 4096, // stack top
-            args_ptr as u64,              // arg1: KernelArgs pointer
-            petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64(), // arg2: physical_memory_offset
-            map_phys_addr as u64,         // memory map physical address
-            final_map_size as u64,        // memory map size
+        core::arch::asm!(
+            "mov rsp, {stack}",
+            "mov rdi, {args}",
+            "call {func}",
+            stack = in(reg) temp_stack_top,
+            args = in(reg) &jump_args,
+            func = in(reg) petroleum::page_table::kernel::init_and_jump as usize,
+            options(noreturn)
         );
     }
 }
