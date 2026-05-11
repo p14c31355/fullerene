@@ -331,19 +331,27 @@ pub fn exit_boot_services_and_jump(
     // to a safe, pre-allocated area before calling init_and_jump.
     let temp_stack_top = args_phys_addr as u64 + 8192;
 
-    // Prepare the arguments structure for the jump
-    let jump_args = petroleum::page_table::kernel::InitAndJumpArgs {
-        physical_memory_offset: petroleum::page_table::constants::HIGHER_HALF_OFFSET,
-        frame_allocator: &mut frame_allocator as *mut _,
-        kernel_phys_start: kernel_phys_start.as_u64(),
-        entry_virt: kernel_entry_virt,
-        stack_top: args_phys_addr as u64 + 4096,
-        arg1: args_ptr as u64,
-        arg2: petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64(),
-        map_phys_addr: map_phys_addr as u64,
-        map_size: final_map_size as u64,
-        l4_phys_addr: args_phys_addr as u64 + 4096,
-    };
+    // Prepare the arguments structure for the jump.
+    // We place the arguments in the pre-allocated physical memory (args_phys_addr)
+    // so they remain accessible after the page table switch.
+    let jump_args_ptr = args_ptr as *mut petroleum::page_table::kernel::InitAndJumpArgs;
+    unsafe {
+        core::ptr::write_volatile(
+            jump_args_ptr,
+            petroleum::page_table::kernel::InitAndJumpArgs {
+                physical_memory_offset: petroleum::page_table::constants::HIGHER_HALF_OFFSET,
+                frame_allocator: &mut frame_allocator as *mut _,
+                kernel_phys_start: kernel_phys_start.as_u64(),
+                entry_virt: kernel_entry_virt,
+                stack_top: args_phys_addr as u64 + 4096,
+                arg1: args_ptr as u64,
+                arg2: petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64(),
+                map_phys_addr: map_phys_addr as u64,
+                map_size: final_map_size as u64,
+                l4_phys_addr: args_phys_addr as u64 + 4096,
+            },
+        );
+    }
 
     // init_and_jump will:
     // 1. Create new page tables with identity mapping for low memory and higher half kernel
@@ -351,15 +359,7 @@ pub fn exit_boot_services_and_jump(
     // 3. Jump directly to kernel entry point
     // This function does NOT return.
     unsafe {
-        core::arch::asm!(
-            "mov rsp, {stack}",
-            "mov rdi, {args}",
-            "call {func}",
-            stack = in(reg) temp_stack_top,
-            args = in(reg) &jump_args,
-            func = in(reg) petroleum::page_table::kernel::init_and_jump as usize,
-            options(noreturn)
-        );
+        petroleum::assembly::jump_to_kernel_with_stack(temp_stack_top, args_ptr as *const ());
     }
 }
 

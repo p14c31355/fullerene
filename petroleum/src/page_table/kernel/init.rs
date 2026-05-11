@@ -127,12 +127,27 @@ pub unsafe extern "C" fn init_and_jump(args: *const InitAndJumpArgs) -> ! {
 
     vga_write(b"IAJ: entered\n");
 
+    vga_write(b"IAJ: Initializing L4 table...\n");
+    
     let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
 
     // 1. Use the pre-allocated L4 table provided by the bootloader
     let l4_phys = l4_phys_addr;
+    if l4_phys == 0 {
+        vga_write(b"IAJ: ERROR: l4_phys is NULL!\n");
+        loop { core::arch::asm!("hlt"); }
+    }
+    
     let l4_ptr = l4_phys as *mut PageTable;
-    core::ptr::write_bytes(l4_ptr, 0, 1);
+    
+    // Use a safer way to zero the page table to avoid strict alignment checks of write_bytes
+    // if the pointer is slightly off or the compiler is being strict.
+    unsafe {
+        let slice = core::slice::from_raw_parts_mut(l4_ptr as *mut u8, 4096);
+        for byte in slice {
+            *byte = 0;
+        }
+    }
     let l4 = &mut *l4_ptr;
 
     vga_write(b"IAJ: Using pre-allocated L4\n");

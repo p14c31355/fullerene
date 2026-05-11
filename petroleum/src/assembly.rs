@@ -55,6 +55,19 @@ pub unsafe fn setup_segments() {
     );
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn jump_to_kernel_with_stack(stack_top: u64, args_ptr: *const ()) -> ! {
+    core::arch::asm!(
+        "mov rsp, {stack}",
+        "mov rdi, {args}",
+        "call {func}",
+        stack = in(reg) stack_top,
+        args = in(reg) args_ptr,
+        func = sym crate::page_table::kernel::init_and_jump,
+        options(noreturn)
+    );
+}
+
 /// Prepares the CPU for a jump to the kernel by disabling interrupts,
 /// setting up segment registers, and aligning the stack.
 #[inline(always)]
