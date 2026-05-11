@@ -33,41 +33,17 @@ pub enum ProcessState {
 }
 
 /// Process context for context switching
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Debug, Clone, Copy)]
 pub struct ProcessContext {
-    /// General purpose registers
-    pub(crate) rax: u64,
-    pub(crate) rbx: u64,
-    pub(crate) rcx: u64,
-    pub(crate) rdx: u64,
-    pub(crate) rsi: u64,
-    pub(crate) rdi: u64,
-    pub(crate) rbp: u64,
-    pub(crate) rsp: u64,
-    pub(crate) r8: u64,
-    pub(crate) r9: u64,
-    pub(crate) r10: u64,
-    pub(crate) r11: u64,
-    pub(crate) r12: u64,
-    pub(crate) r13: u64,
-    pub(crate) r14: u64,
-    pub(crate) r15: u64,
-
+    /// General purpose registers: rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8-r15
+    pub(crate) regs: [u64; 16],
     /// CPU flags
     pub(crate) rflags: u64,
-
     /// Instruction pointer
     pub(crate) rip: u64,
-
-    /// Segment registers
-    pub(crate) cs: u64,
-    pub(crate) ss: u64,
-    pub(crate) ds: u64,
-    pub(crate) es: u64,
-    pub(crate) fs: u64,
-    pub(crate) gs: u64,
-
+    /// Segment registers: cs, ss, ds, es, fs, gs
+    pub(crate) segments: [u64; 6],
     /// Task State Segment
     pub(crate) tss: u64,
     /// Whether the process runs in user mode (Ring 3)
@@ -77,31 +53,14 @@ pub struct ProcessContext {
 impl Default for ProcessContext {
     fn default() -> Self {
         Self {
-            rax: 0,
-            rbx: 0,
-            rcx: 0,
-            rdx: 0,
-            rsi: 0,
-            rdi: 0,
-            rbp: 0,
-            rsp: 0,
-            r8: 0,
-            r9: 0,
-            r10: 0,
-            r11: 0,
-            r12: 0,
-            r13: 0,
-            r14: 0,
-            r15: 0,
+            regs: [0; 16],
             rflags: 0x0202, // IF flag set
             rip: 0,
-            cs: crate::gdt::kernel_code_selector().0 as u64,
-            ss: crate::gdt::kernel_code_selector().0 as u64, // Kernel data same as code for ring 0
-            // But since init_context overrides, and Default may be used sparingly, keep existing.
-            ds: 0,
-            es: 0,
-            fs: 0,
-            gs: 0,
+            segments: [
+                crate::gdt::kernel_code_selector().0 as u64, // cs
+                crate::gdt::kernel_code_selector().0 as u64, // ss
+                0, 0, 0, 0, // ds, es, fs, gs
+            ],
             tss: 0,
             is_user: false,
         }
@@ -164,19 +123,19 @@ impl Process {
 
         if self.is_user {
             // For user processes, the context RSP should be the user stack
-            self.context.rsp = self.user_stack.as_u64();
-            self.context.cs = crate::gdt::user_code_selector().0 as u64;
-            self.context.ss = crate::gdt::user_data_selector().0 as u64;
+            self.context.regs[7] = self.user_stack.as_u64(); // rsp
+            self.context.segments[0] = crate::gdt::user_code_selector().0 as u64; // cs
+            self.context.segments[1] = crate::gdt::user_data_selector().0 as u64; // ss
         } else {
             // For kernel processes, the context RSP is the kernel stack
-            self.context.rsp = kernel_stack_top.as_u64();
-            self.context.cs = crate::gdt::kernel_code_selector().0 as u64;
-            self.context.ss = crate::gdt::kernel_code_selector().0 as u64;
+            self.context.regs[7] = kernel_stack_top.as_u64(); // rsp
+            self.context.segments[0] = crate::gdt::kernel_code_selector().0 as u64; // cs
+            self.context.segments[1] = crate::gdt::kernel_code_selector().0 as u64; // ss
         }
 
         // Set RIP to entry point directly, assuming it's an extern "C" function
         self.context.rip = self.entry_point.as_u64();
-        self.context.rax = 0; // For C functions, RAX is return value, init to 0
+        self.context.regs[0] = 0; // rax: For C functions, RAX is return value, init to 0
         self.context.rflags = 0x202; // Set Interrupt Enable flag
     }
 }

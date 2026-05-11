@@ -175,6 +175,11 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
         let kernel_entry_virt = (actual_kernel_entry as u64).wrapping_add(local_phys_offset.as_u64());
+        
+        // Robustness check: Ensure entry point and args are aligned
+        assert!(kernel_entry_virt % 16 == 0, "Kernel entry point must be 16-byte aligned");
+        assert!((actual_kernel_args as usize) % 16 == 0, "KernelArgs must be 16-byte aligned");
+
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"DBG: entry_virt=0x");
         write_serial_hex(kernel_entry_virt);
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");

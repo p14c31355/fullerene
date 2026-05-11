@@ -150,8 +150,8 @@ fn syscall_fork() -> SyscallResult {
     };
 
     // Set child context to return 0 from fork
-    child_process.context.rax = 0; // Child gets 0 from fork
-    child_process.context.rsp = child_process.kernel_stack.as_u64();
+    child_process.context.regs[0] = 0; // rax: Child gets 0 from fork
+    child_process.context.regs[7] = child_process.kernel_stack.as_u64(); // rsp
 
     // Full memory copying for user space is implemented in the page table cloning logic.
 

@@ -16,7 +16,7 @@ pub struct TransitionArgs {
     pub kernel_args: *const KernelArgs,
 }
 
-#[repr(C)]
+#[repr(C, align(16))]
 pub struct KernelArgs {
     pub handle: usize,
     pub system_table: usize,
@@ -102,14 +102,12 @@ pub unsafe extern "sysv64" fn landing_zone(_frame: *const TransitionFrame) {
 
 /// Jumps to the kernel entry point with the provided arguments.
 ///
-/// This function is the final step of the world switch. It ensures segment
-/// registers are set and the stack is aligned before performing a `retfq`
-/// to the kernel entry.
+/// This function is the final step of the world switch.
 ///
 /// Arguments:
-/// - `entry`: The virtual address of the kernel entry point (passed in RDI).
-/// - `args`: A pointer to the `KernelArgs` structure (passed in RSI).
-/// - `phys_offset`: The physical memory offset (passed in RDX).
+/// - `entry`: The virtual address of the kernel entry point.
+/// - `args`: A pointer to the `KernelArgs` structure.
+/// - `phys_offset`: The physical memory offset.
 #[unsafe(no_mangle)]
 #[inline(never)]
 pub unsafe extern "C" fn jump_to_kernel(
@@ -117,22 +115,14 @@ pub unsafe extern "C" fn jump_to_kernel(
     args: *const KernelArgs,
     phys_offset: u64,
 ) -> ! {
+    // Ensure stack is aligned and interrupts are disabled before jump
+    prepare_for_kernel_jump();
+
     core::arch::asm!(
-        "cli",
-        "mov ax, 0x10",
-        "mov ds, ax",
-        "mov es, ax",
-        "mov ss, ax",
-        "and rsp, -16",
-        // Pass arguments according to SysV ABI: RDI, RSI, RDX...
-        // efi_main_stage2(args: *const KernelArgs, physical_memory_offset: VirtAddr)
-        "mov r11, {entry}",
-        "mov rdi, {args}",
-        "mov rsi, {phys_offset}",
-        "jmp r11",
+        "jmp {entry}",
         entry = in(reg) entry,
-        args = in(reg) args,
-        phys_offset = in(reg) phys_offset,
+        in("rdi") args,
+        in("rsi") phys_offset,
         options(noreturn)
     );
 }

@@ -3,201 +3,121 @@
 use crate::process::ProcessContext;
 use memoffset::offset_of;
 
-// Generate register offset constants using macro to reduce duplicative code
-macro_rules! define_register_offsets {
-    ($($reg:ident),*) => {
-        #[derive(Clone, Copy)]
-        pub struct ContextOffsets;
-
-        impl ContextOffsets {
-            $(
-                const $reg: usize = offset_of!(ProcessContext, $reg);
-            )*
-        }
-    };
-}
-
-define_register_offsets!(
-    rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8, r9, r10, r11, r12, r13, r14, r15, rflags, rip, cs,
-    ss, ds, es, fs, gs, is_user
-);
-
 /// Save current process context and switch to next
-///
-/// This function saves the current CPU state to old_context and loads
-/// the CPU state from new_context, effectively switching execution
-/// from one process to another.
-///
-/// # Safety
-/// This function is unsafe because it modifies CPU state directly
-/// and can only be called from interrupt context or kernel code.
-///
-/// # Arguments
-/// * `old_context` - Where to save current context (can be null if not saving)
-/// * `new_context` - Where to load new context from (must not be null)
-///
-/// This naked function manually saves all registers on the stack, performs the
-/// context switch, and then restores the new context's registers. This gives full
-/// control over stack and register manipulation without relying on compiler-generated
-/// prologues/epilogues or assumptions about stack frames.
 #[unsafe(naked)]
 pub extern "C" fn switch_context(
     _old_context: Option<&mut crate::process::ProcessContext>,
     _new_context: &crate::process::ProcessContext,
 ) {
     core::arch::naked_asm!(
-        // Entry point: rdi = old_context, rsi = new_context
-        // Check if old_context is null
+        // Entry: rdi = old_context, rsi = new_context
         "test rdi, rdi",
-        "jnz 2f",  // Jump forward to save context if not null
-        "jmp 3f",  // Jump to restore if null
+        "jz 2f",
 
-        // Save current context (label 2)
-        // Save current context (label 2)
-        "2:",
-        // Save GPRs to old_context. Note that rdi holds old_context pointer.
-        "mov [rdi + {rax}], rax",
-        "mov [rdi + {rbx}], rbx",
-        "mov [rdi + {rcx}], rcx",
-        "mov [rdi + {rdx}], rdx",
-        "mov [rdi + {rsi}], rsi",
-        "mov [rdi + {rbp}], rbp",
-        "mov [rdi + {r8}], r8",
-        "mov [rdi + {r9}], r9",
-        "mov [rdi + {r10}], r10",
-        "mov [rdi + {r11}], r11",
-        "mov [rdi + {r12}], r12",
-        "mov [rdi + {r13}], r13",
-        "mov [rdi + {r14}], r14",
-        "mov [rdi + {r15}], r15",
+        // Save GPRs (regs[0..15])
+        "mov [rdi + 0], rax",
+        "mov [rdi + 8], rbx",
+        "mov [rdi + 16], rcx",
+        "mov [rdi + 24], rdx",
+        "mov [rdi + 32], rsi",
+        "mov [rdi + 40], rdi",
+        "mov [rdi + 48], rbp",
+        "mov [rdi + 56], rsp",
+        "mov [rdi + 64], r8",
+        "mov [rdi + 72], r9",
+        "mov [rdi + 80], r10",
+        "mov [rdi + 88], r11",
+        "mov [rdi + 96], r12",
+        "mov [rdi + 104], r13",
+        "mov [rdi + 112], r14",
+        "mov [rdi + 120], r15",
 
-        // The current rdi (old_context pointer) is saved as the process's rdi
-        "mov [rdi + {rdi}], rdi",
-
-        // Save RIP and RSP.
-        "mov rax, [rsp]", // Get return address from stack.
-        "mov [rdi + {rip}], rax",
-        "mov [rdi + {rsp}], rsp", // Save current stack pointer.
-
-        // Save RFLAGS
+        // Save RIP, RFLAGS
+        "mov rax, [rsp]",
+        "mov [rdi + 128], rax", // rip
         "pushfq",
         "pop rax",
-        "mov [rdi + {rflags}], rax",
+        "mov [rdi + 136], rax", // rflags
 
-        // Save segment registers
+        // Save Segments (segments[0..5])
         "mov ax, cs",
         "movzx rax, ax",
-        "mov [rdi + {cs}], rax",
+        "mov [rdi + 144], rax",
         "mov ax, ss",
         "movzx rax, ax",
-        "mov [rdi + {ss}], rax",
+        "mov [rdi + 152], rax",
         "mov ax, ds",
         "movzx rax, ax",
-        "mov [rdi + {ds}], rax",
+        "mov [rdi + 160], rax",
         "mov ax, es",
         "movzx rax, ax",
-        "mov [rdi + {es}], rax",
+        "mov [rdi + 168], rax",
         "mov ax, fs",
         "movzx rax, ax",
-        "mov [rdi + {fs}], rax",
+        "mov [rdi + 176], rax",
         "mov ax, gs",
         "movzx rax, ax",
-        "mov [rdi + {gs}], rax",
+        "mov [rdi + 184], rax",
 
-        "jmp 3f",
-
-        // Restore context (label 3)
-        "3:",
-        // rsi = new_context
-        // mov rsi, rsi  (already set)
-
-        // Save new_context pointer in r15 temporarily to use after RSP switch
+        "2:",
+        // Restore: rsi = new_context
         "mov r15, rsi",
+        "mov rsp, [rsi + 56]", // regs[7] = rsp
 
-        // Restore stack pointer first
-        "mov rsp, [rsi + {rsp}]",
+        // Restore GPRs
+        "mov rax, [r15 + 0]",
+        "mov rbx, [r15 + 8]",
+        "mov rcx, [r15 + 16]",
+        "mov rdx, [r15 + 24]",
+        "mov rsi, [r15 + 32]",
+        "mov rdi, [r15 + 40]",
+        "mov rbp, [r15 + 48]",
+        "mov r8, [r15 + 64]",
+        "mov r9, [r15 + 72]",
+        "mov r10, [r15 + 80]",
+        "mov r11, [r15 + 88]",
+        "mov r12, [r15 + 96]",
+        "mov r13, [r15 + 104]",
+        "mov r14, [r15 + 112]",
+        "mov r15, [r15 + 120]",
 
-        // Restore all registers from new context using r15
-        "mov rax, [r15 + {rax}]",
-        "mov rbx, [r15 + {rbx}]",
-        "mov rcx, [r15 + {rcx}]",
-        "mov rdx, [r15 + {rdx}]",
-        "mov rdi, [r15 + {rdi}]",
-        "mov rbp, [r15 + {rbp}]",
-        "mov r8, [r15 + {r8}]",
-        "mov r9, [r15 + {r9}]",
-        "mov r10, [r15 + {r10}]",
-        "mov r11, [r15 + {r11}]",
-        "mov r12, [r15 + {r12}]",
-        "mov r13, [r15 + {r13}]",
-        "mov r14, [r15 + {r14}]",
-        "mov rsi, [r15 + {rsi}]",
-        // r15 is restored last if it's not a user process,
-        // but we need it to check is_user.
-
-        // Restore segment registers
-        "mov rax, [rsi + {ds}]",
+        // Restore Segments (ds, es, fs, gs)
+        "mov rax, [rsi + 160]",
         "mov ds, ax",
-        "mov rax, [rsi + {es}]",
+        "mov rax, [rsi + 168]",
         "mov es, ax",
-        "mov rax, [rsi + {fs}]",
+        "mov rax, [rsi + 176]",
         "mov fs, ax",
-        "mov rax, [rsi + {gs}]",
+        "mov rax, [rsi + 184]",
         "mov gs, ax",
 
-        // Check if the process is in user mode (RPL of CS should be 3)
-        "mov ax, [r15 + {cs}]",
-        "and ax, 3",
-        "cmp ax, 3",
-        "jne 1f", // If not user mode, jump to kernel restore
+        // Check is_user (offset 192 + 8 + 8 + 48 = 256? No, let's calculate)
+        // ProcessContext: regs(128) + rflags(8) + rip(8) + segments(48) + tss(8) = 200
+        // is_user is at offset 200.
+        "movzx rax, byte ptr [rsi + 200]",
+        "test rax, rax",
+        "jz 1f",
 
-        // User mode transition: Setup iretq stack frame
-        // Stack must be: SS, RSP, RFLAGS, CS, RIP
-        "mov rax, [r15 + {ss}]",
+        // User mode: iretq frame (SS, RSP, RFLAGS, CS, RIP)
+        "mov rax, [rsi + 152]", // ss
         "push rax",
-        "mov rax, [r15 + {rsp}]",
+        "mov rax, [rsi + 56]",  // rsp
         "push rax",
-        "mov rax, [r15 + {rflags}]",
+        "mov rax, [rsi + 136]", // rflags
         "push rax",
-        "mov rax, [r15 + {cs}]",
+        "mov rax, [rsi + 144]", // cs
         "push rax",
-        "mov rax, [r15 + {rip}]",
+        "mov rax, [rsi + 128]", // rip
         "push rax",
         "iretq",
 
         "1:",
-        // Kernel mode restore: Restore RFLAGS and jump to RIP
-        "mov rax, [r15 + {rflags}]",
+        // Kernel mode
+        "mov rax, [rsi + 136]", // rflags
         "push rax",
         "popfq",
-        "mov rax, [r15 + {rip}]",
+        "mov rax, [rsi + 128]", // rip
         "jmp rax",
-
-        // Compile-time constants for offsets
-        rip = const ContextOffsets::rip,
-        rsp = const ContextOffsets::rsp,
-        rbp = const ContextOffsets::rbp,
-        rflags = const ContextOffsets::rflags,
-        cs = const ContextOffsets::cs,
-        ss = const ContextOffsets::ss,
-        ds = const ContextOffsets::ds,
-        es = const ContextOffsets::es,
-        fs = const ContextOffsets::fs,
-        gs = const ContextOffsets::gs,
-        rax = const ContextOffsets::rax,
-        rbx = const ContextOffsets::rbx,
-        rcx = const ContextOffsets::rcx,
-        rdx = const ContextOffsets::rdx,
-        rsi = const ContextOffsets::rsi,
-        rdi = const ContextOffsets::rdi,
-        r8 = const ContextOffsets::r8,
-        r9 = const ContextOffsets::r9,
-        r10 = const ContextOffsets::r10,
-        r11 = const ContextOffsets::r11,
-        r12 = const ContextOffsets::r12,
-        r13 = const ContextOffsets::r13,
-        r14 = const ContextOffsets::r14,
-        r15 = const ContextOffsets::r15,
     );
 }
 
@@ -225,12 +145,12 @@ mod tests {
     #[test]
     fn test_context_default_values() {
         let ctx = ProcessContext::default();
-        assert_eq!(ctx.rax, 0);
-        assert_eq!(ctx.rbx, 0);
+        assert_eq!(ctx.regs[0], 0); // rax
+        assert_eq!(ctx.regs[1], 0); // rbx
         assert_eq!(ctx.rflags, 0x0202); // IF flag
         // Default values are dynamic now due to GDT selectors
         // Just check that they're set to reasonable values
-        assert!(ctx.cs > 0); // Kernel code segment selector
-        assert!(ctx.ss > 0); // Kernel data segment selector or user
+        assert!(ctx.segments[0] > 0); // cs: Kernel code segment selector
+        assert!(ctx.segments[1] > 0); // ss: Kernel data segment selector or user
     }
 }
