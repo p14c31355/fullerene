@@ -307,12 +307,63 @@ pub fn exit_boot_services_and_jump(
 
     petroleum::serial::_print(format_args!("Bellows: Calling init_and_jump now...\n"));
 
-    // We still need to provide a stack_top for the kernel to use eventually,
-    // but we don't switch to it immediately.
-    let kernel_stack_top = args_phys_addr as u64 + (256 * 4096);
+    // Stack top must be the higher-half virtual address, not the identity-mapped physical address,
+    // because after CR3 switch the new page table only identity-maps 0-256MB.
+    // The kernel's stack area is at args_phys_addr + 1MB (256 pages * 4KB).
+    let kernel_stack_top = petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64()
+        + args_phys_addr as u64
+        + (256 * 4096);
 
-    // Prepare the arguments structure for the jump.
+    // Prepare the KernelArgs structure the kernel expects
+    // Place it right after InitAndJumpArgs in the allocated block
+    let kernel_args_phys = args_phys_addr as u64 + core::mem::size_of::<petroleum::page_table::kernel::InitAndJumpArgs>() as u64;
+    // Align to 16 bytes
+    let kernel_args_phys_aligned = (kernel_args_phys + 15) & !15;
+    
+    let fb_addr;
+    let fb_width;
+    let fb_height;
+    let fb_bpp;
+    if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+        .get()
+        .and_then(|mutex| *mutex.lock())
+    {
+        fb_addr = config.address as u64;
+        fb_width = config.width;
+        fb_height = config.height;
+        fb_bpp = config.bpp;
+    } else {
+        fb_addr = 0;
+        fb_width = 0;
+        fb_height = 0;
+        fb_bpp = 0;
+    }
+    
     unsafe {
+        let kernel_args_ptr = kernel_args_phys_aligned as *mut petroleum::assembly::KernelArgs;
+        core::ptr::write_volatile(
+            kernel_args_ptr,
+            petroleum::assembly::KernelArgs {
+                handle: image_handle,
+                system_table: system_table as usize,
+                map_ptr: map_phys_addr,
+                map_size: final_map_size,
+                descriptor_size,
+                kernel_phys_start: kernel_phys_start.as_u64(),
+                kernel_entry: kernel_entry_virt as usize,
+                fb_address: fb_addr,
+                fb_width,
+                fb_height,
+                fb_bpp,
+            },
+        );
+        
+        // Map KernelArgs address down to page boundary for identity mapping.
+        // The actual KernelArgs pointer will be reconstructed by the kernel using arg1 + offset.
+        let kernel_args_page = (kernel_args_phys_aligned & !0xFFF) as u64;
+        let kernel_args_offset = (kernel_args_phys_aligned & 0xFFF) as u64;
+        
+        // Prepare the arguments structure for the jump.
         core::ptr::write_volatile(
             jump_args_ptr,
             petroleum::page_table::kernel::InitAndJumpArgs {
@@ -321,8 +372,8 @@ pub fn exit_boot_services_and_jump(
                 kernel_phys_start: kernel_phys_start.as_u64(),
                 entry_virt: kernel_entry_virt,
                 stack_top: kernel_stack_top,
-                arg1: args_phys_addr as u64,
-                arg2: petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64(),
+                arg1: kernel_args_page,           // Page-aligned base (for identity mapping)
+                arg2: kernel_args_offset,         // Offset within page (for kernel to reconstruct ptr)
                 map_phys_addr: map_phys_addr as u64,
                 map_size: final_map_size as u64,
                 l4_phys_addr: args_phys_addr as u64 + 4096,
@@ -354,7 +405,7 @@ pub fn exit_boot_services_and_jump(
             jump_args_ptr,
             kernel_stack_top,
             args_phys_addr as u64 + 4096,
-            petroleum::page_table::kernel::init_and_jump as usize,
+            kernel_entry_virt as usize, // Pass the KERNEL entry, NOT init_and_jump!
             petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64(),
         );
     }
