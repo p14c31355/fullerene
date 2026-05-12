@@ -873,7 +873,8 @@ impl UefiInitContext {
                 phys + physical_memory_offset.as_u64()
             );
         }
-        *petroleum::LOCAL_APIC_ADDRESS.lock() = petroleum::LocalApicAddress(0xfee00000 as *mut u32);
+        let lapic_virt_addr = 0xfee00000 + physical_memory_offset.as_u64();
+        *petroleum::LOCAL_APIC_ADDRESS.lock() = petroleum::LocalApicAddress(lapic_virt_addr as *mut u32);
 
         vga_virt_addr as usize
     }

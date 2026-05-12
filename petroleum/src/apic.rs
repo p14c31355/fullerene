@@ -163,9 +163,8 @@ pub unsafe fn get_local_apic_id(lapic_base: u64) -> u8 {
 }
 
 /// Initialize I/O APIC for legacy interrupts
-pub fn init_io_apic(lapic_base: u64) {
+pub fn init_io_apic(lapic_base: u64, io_apic_base: u64) {
     let local_apic_id = unsafe { get_local_apic_id(lapic_base) };
-    let io_apic_base = find_io_apic_base();
     let mut io_apic = IoApic::new(io_apic_base);
 
     configure_io_apic_for_legacy_irqs(&mut io_apic, local_apic_id);

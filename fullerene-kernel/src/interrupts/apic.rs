@@ -107,7 +107,15 @@ pub fn init_apic() {
     disable_legacy_pic();
     petroleum::serial::serial_log(format_args!("Legacy PIC disabled.\n"));
 
-    let base_addr = get_apic_base().unwrap_or(0xFEE00000);
+    let base_addr = {
+        let lapic_addr_lock = petroleum::LOCAL_APIC_ADDRESS.lock();
+        let ptr = lapic_addr_lock.0;
+        if !ptr.is_null() {
+            ptr as u64
+        } else {
+            get_apic_base().unwrap_or(0xFEE00000) + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64
+        }
+    };
     let mut apic = ApicRaw { base_addr };
     enable_apic(&mut apic);
 
@@ -121,7 +129,8 @@ pub fn init_apic() {
     }
 
     *APIC.lock() = Some(apic);
-    init_io_apic(base_addr);
+    let io_apic_virt_base = 0xFEC00000 + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64;
+    init_io_apic(base_addr, io_apic_virt_base);
 
     use super::syscall::setup_syscall;
     setup_syscall();
