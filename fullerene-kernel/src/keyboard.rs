@@ -82,7 +82,7 @@ const SPECIAL_KEYS: &[(u8, u8)] = &[
 ];
 
 /// Helper function to apply case and ctrl modifications to alphabetic characters
-fn process_alphabetic(scancode: u8, base: u8, modifiers: &KeyboardModifiers) -> u8 {
+fn process_alphabetic(_scancode: u8, base: u8, modifiers: &KeyboardModifiers) -> u8 {
     let shift_pressed = modifiers.lshift || modifiers.rshift;
     let caps_lock = modifiers.caps_lock;
     let ctrl_pressed = modifiers.lctrl || modifiers.rctrl;
@@ -100,7 +100,7 @@ fn process_alphabetic(scancode: u8, base: u8, modifiers: &KeyboardModifiers) -> 
 /// Scancode set 1 to ASCII conversion using lookup tables
 fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> {
     let shift_pressed = modifiers.lshift || modifiers.rshift;
-    let ctrl_pressed = modifiers.lctrl || modifiers.rctrl;
+    let _ctrl_pressed = modifiers.lctrl || modifiers.rctrl;
 
     match scancode {
         0x02..=0x0B => {

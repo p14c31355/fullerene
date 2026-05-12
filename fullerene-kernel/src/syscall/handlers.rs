@@ -107,7 +107,7 @@ fn syscall_fork() -> SyscallResult {
         // We can call the method on the internal page_table_manager directly.
 
         let ptm = &mut manager.page_table_manager;
-        let alloc = &mut manager.frame_allocator;
+        let alloc = petroleum::page_table::constants::get_frame_allocator_mut();
         petroleum::page_table::PageTableHelper::clone_page_table(
             ptm,
             parent_page_table_phys_addr.as_u64() as usize,

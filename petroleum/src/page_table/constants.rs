@@ -43,3 +43,7 @@ pub fn get_frame_allocator() -> &'static mut BootInfoFrameAllocator {
             .expect("Frame allocator not initialized")
     }
 }
+
+pub fn get_frame_allocator_mut() -> &'static mut BootInfoFrameAllocator {
+    get_frame_allocator()
+}

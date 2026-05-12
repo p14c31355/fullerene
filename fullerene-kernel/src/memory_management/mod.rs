@@ -97,10 +97,10 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
 
     // Allocate frame for the new page table
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] allocating pml4 frame\n");
-    let pml4_frame = manager
-        .frame_allocator
+    let pml4_phys = manager
         .allocate_frame()
-        .ok_or(SystemError::FrameAllocationFailed)?;
+        .map_err(|_| SystemError::FrameAllocationFailed)?;
+    let pml4_frame = x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(pml4_phys as u64));
 
     // Debug: log the allocation result
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] pml4 frame allocated\n");
@@ -138,7 +138,7 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
 
     // Copy kernel mappings to the new page table
     // This involves copying the higher half kernel mappings from the current page table
-    let current_cr3 = unsafe { x86_64::registers::control::Cr3::read() };
+    let current_cr3 = x86_64::registers::control::Cr3::read();
     let kernel_table_phys = current_cr3.0.start_address().as_u64() as usize;
 
     // Temporarily map kernel table for reading
@@ -146,7 +146,7 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
         TEMP_PHY_ACCESS + 4096,
         kernel_table_phys,
         PageFlags::PRESENT,
-        &mut manager.frame_allocator,
+        petroleum::page_table::constants::get_frame_allocator_mut(),
     )?;
 
     // Copy the kernel page table entries (PML4[256..512])
@@ -177,7 +177,7 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
 
     // Initialize the new page table manager with the allocated frame
     let mut page_table_manager = ProcessPageTable::new_with_frame(
-        x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(
+        x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(
             pml4_frame.start_address().as_u64(),
         )),
     );
@@ -249,7 +249,7 @@ pub fn map_user_page(
             virtual_addr,
             physical_addr,
             flags,
-            &mut manager.frame_allocator,
+            petroleum::page_table::constants::get_frame_allocator_mut(),
         )
     } else {
         Err(SystemError::InternalError)

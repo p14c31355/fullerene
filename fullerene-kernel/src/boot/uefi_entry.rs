@@ -166,7 +166,7 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
         .with_stack(kernel_stack_top_virt)
         .with_entry(VirtAddr::new(efi_main_stage2 as u64))
         .with_args(captured_args_ptr)
-        .with_gdt(core::ptr::addr_of!(petroleum::transition::TRANSITION_GDT) as *const ())
+        .with_gdt(core::ptr::null()) // GDT already loaded by gdt::load(), no need to reload during transition
         .with_idt(core::ptr::null()) // IDT is not yet available during transition
         .with_page_table(l4_frame)
         .with_allocator(allocator_ptr)

@@ -201,8 +201,8 @@ impl UefiInitContext {
         );
         let mut boot_allocator = BootFrameAllocator::new(0x2000000 / 4096); // Start at 32MB
         let map_addr = self.memory_map as u64;
-        let map_size = self.memory_map_size as u64;
-        let offset_val = self.physical_memory_offset.as_u64();
+        let _map_size = self.memory_map_size as u64;
+        let _offset_val = self.physical_memory_offset.as_u64();
 
         petroleum::write_serial_bytes!(
             0x3F8,
@@ -210,7 +210,7 @@ impl UefiInitContext {
             b"DEBUG: [CircularDep] Mapping memory_map via early_mappings callback\n"
         );
 
-        let mut temp_mapper = unsafe {
+        let _temp_mapper = unsafe {
             petroleum::page_table::init::<BootFrameAllocator, fn(&mut x86_64::structures::paging::OffsetPageTable, &mut BootFrameAllocator)>(
                 self.physical_memory_offset,
                 &mut boot_allocator,
@@ -281,7 +281,7 @@ impl UefiInitContext {
                 b"DEBUG: memory_map is physical, mapping to higher half\n"
             );
             let map_phys = map_addr;
-            let map_virt = map_phys + offset_val;
+            let _map_virt = map_phys + offset_val;
             let map_size = self.memory_map_size;
             let map_pages = ((map_size as u64) + 4095) / 4096;
 
@@ -294,14 +294,6 @@ impl UefiInitContext {
             let frame_allocator = frame_allocator_guard
                 .as_mut()
                 .expect("Frame allocator should be ready now");
-            let mut mapper = unsafe {
-                petroleum::page_table::init::<_, fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator)>(
-                    self.physical_memory_offset,
-                    frame_allocator,
-                    kernel_phys_start.as_u64(),
-                    None,
-                )
-            };
             let mut mapper = unsafe {
                 petroleum::page_table::init::<_, fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator)>(
                     self.physical_memory_offset,
@@ -648,7 +640,7 @@ impl UefiInitContext {
                 .as_mut()
                 .expect("Frame allocator not initialized");
 
-            let heap_flags = x86_64::structures::paging::PageTableFlags::PRESENT
+            let _heap_flags = x86_64::structures::paging::PageTableFlags::PRESENT
                 | x86_64::structures::paging::PageTableFlags::WRITABLE
                 | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
 
@@ -657,7 +649,7 @@ impl UefiInitContext {
                 0x3FD,
                 b"DEBUG: [PHASE] Calling petroleum::page_table::init for heap mapping\n"
             );
-            let mut mapper = unsafe {
+            let _mapper = unsafe {
                 petroleum::page_table::init::<_, fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator)>(
                     self.physical_memory_offset,
                     frame_allocator,

@@ -37,8 +37,8 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
         unsafe {
             let args_ptr = petroleum::transition::KERNEL_ARGS;
             if !args_ptr.is_null() {
-                let phys_addr = args_ptr as u64;
-                let virt_addr_raw = phys_addr.wrapping_add(physical_memory_offset.as_u64());
+                let phys_addr = (args_ptr as u64).wrapping_sub(physical_memory_offset.as_u64());
+                let virt_addr_raw = args_ptr as u64;
                 let virt_addr = if (virt_addr_raw & (1 << 47)) != 0 {
                     virt_addr_raw | 0xFFFF_0000_0000_0000
                 } else {
@@ -76,7 +76,7 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
 
     #[cfg(target_os = "uefi")]
     {
-        if let Ok(pid) = crate::process::create_process(
+        if let Ok(_pid) = crate::process::create_process(
             "test_process",
             VirtAddr::new(crate::process::test_process_main as *const () as usize as u64),
             false,

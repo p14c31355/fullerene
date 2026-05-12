@@ -24,8 +24,8 @@ const HIGHER_HALF_KERNEL_VIRT_BASE: u64 = 0xFFFF_8000_0000_0000; // Common highe
 
 pub fn init_memory_management(
     memory_map: &'static [EfiMemoryDescriptor],
-    physical_memory_offset: VirtAddr,
-    kernel_phys_start: PhysAddr,
+    _physical_memory_offset: VirtAddr,
+    _kernel_phys_start: PhysAddr,
 ) {
     log::info!("Starting heap frame allocator init...");
 

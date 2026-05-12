@@ -174,8 +174,15 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
         write_serial_hex(local_phys_offset.as_u64());
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
-        let kernel_entry_virt = (actual_kernel_entry as u64).wrapping_add(local_phys_offset.as_u64());
-        
+        // actual_kernel_entry may already be a higher-half virtual address (e.g. efi_main_stage2).
+        // If it's already in the higher half (>= 0xFFFF8000_00000000), use it directly.
+        // Otherwise, add the physical memory offset.
+        let kernel_entry_virt = if (actual_kernel_entry as u64) >= 0xFFFF_8000_0000_0000 {
+            actual_kernel_entry as u64
+        } else {
+            (actual_kernel_entry as u64).wrapping_add(local_phys_offset.as_u64())
+        };
+
         // Robustness check: Ensure entry point and args are aligned
         assert!(kernel_entry_virt % 16 == 0, "Kernel entry point must be 16-byte aligned");
         assert!((actual_kernel_args as usize) % 16 == 0, "KernelArgs must be 16-byte aligned");
@@ -231,7 +238,13 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
             &mut *local_frame_allocator,
         );
 
-        let k_args = &*actual_kernel_args;
+        // actual_kernel_args is a physical address; convert to higher-half virtual
+        let actual_kernel_args_virt = if (actual_kernel_args as u64) < local_phys_offset.as_u64() {
+            (actual_kernel_args as u64).wrapping_add(local_phys_offset.as_u64())
+        } else {
+            actual_kernel_args as u64
+        };
+        let k_args = &*(actual_kernel_args_virt as *const KernelArgs);
         let kernel_phys_start = k_args.kernel_phys_start;
         let kernel_virt_start = kernel_phys_start.wrapping_add(local_phys_offset.as_u64());
 
@@ -273,9 +286,14 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
         }
 
         // Map entry point pages at higher half
-        let entry_phys_start = (actual_kernel_entry as u64) & !0xFFF;
+        // If entry is already a higher-half virtual address, convert back to physical for mapping
+        let entry_phys_base = if (actual_kernel_entry as u64) >= 0xFFFF_8000_0000_0000 {
+            (actual_kernel_entry as u64).wrapping_sub(local_phys_offset.as_u64()) & !0xFFF
+        } else {
+            (actual_kernel_entry as u64) & !0xFFF
+        };
         for page_offset in -16i32..16i32 {
-            let p_page = entry_phys_start.wrapping_add((page_offset as i64 * 4096) as u64);
+            let p_page = entry_phys_base.wrapping_add((page_offset as i64 * 4096) as u64);
             let v_page = p_page.wrapping_add(local_phys_offset.as_u64());
             let v_sign = if (v_page & (1 << 47)) != 0 {
                 v_page | 0xFFFF_0000_0000_0000
@@ -318,7 +336,7 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
 
         crate::assembly::jump_to_kernel(
             kernel_entry_virt as usize,
-            actual_kernel_args,
+            actual_kernel_args_virt as *const KernelArgs,
             local_phys_offset.as_u64(),
         );
     }
