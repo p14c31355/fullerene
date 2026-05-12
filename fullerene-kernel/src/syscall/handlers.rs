@@ -158,7 +158,7 @@ fn syscall_fork() -> SyscallResult {
     let child_box = Box::new(child_process);
 
     // Re-acquire lock briefly to add to process list
-    crate::process::PROCESS_MANAGER.add(*child_box);
+    crate::process::PROCESS_MANAGER.add(child_box);
 
     // Note: Memory copying not implemented yet, only page table cloning
     // Full implementation would copy parent memory pages to child

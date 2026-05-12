@@ -140,7 +140,6 @@ impl PageTableHelper for ProcessPageTable {
                     return Err(crate::common::logging::SystemError::FrameAllocationFailed);
                 }
                 Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {
-                    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [map_page] ParentEntryHugePage\n");
                     return Err(crate::common::logging::SystemError::MappingFailed);
                 }
             }

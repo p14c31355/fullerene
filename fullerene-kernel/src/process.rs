@@ -142,19 +142,19 @@ impl Process {
 
 /// Manages the global list of processes with encapsulated locking
 pub struct ProcessManager {
-    list: Mutex<[Option<Process>; 16]>,
+    list: Mutex<[Option<Box<Process>>; 16]>,
 }
 
 impl ProcessManager {
     pub const fn new() -> Self {
-        const NONE: Option<Process> = None;
+        const NONE: Option<Box<Process>> = None;
         Self {
             list: Mutex::new([NONE; 16]),
         }
     }
 
     /// Adds a new process to the list
-    pub fn add(&self, process: Process) {
+    pub fn add(&self, process: Box<Process>) {
         petroleum::write_serial_bytes!(
             0x3F8,
             0x3FD,
@@ -190,13 +190,13 @@ impl ProcessManager {
     {
         let mut list = self.list.lock();
         let index = (pid as usize % 16);
-        list[index].as_mut().filter(|p| p.id == pid).map(f)
+        list[index].as_mut().filter(|p| p.id == pid).map(|p| f(p))
     }
 
     /// Performs an operation on the entire process list
     pub fn with_list<F, R>(&self, f: F) -> R
     where
-        F: FnOnce(&mut [Option<Process>; 16]) -> R,
+        F: FnOnce(&mut [Option<Box<Process>>; 16]) -> R,
     {
         let mut list = self.list.lock();
         f(&mut *list)
@@ -350,7 +350,7 @@ pub fn init() {
         0x3FD,
         b"DEBUG: [process::init] adding idle process to manager\n"
     );
-    PROCESS_MANAGER.add(idle_process);
+    PROCESS_MANAGER.add(Box::new(idle_process));
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] idle process added\n");
 
     // Set current process
@@ -419,7 +419,7 @@ pub fn create_process(
 
     let pid = process.id;
     debug_log!("Process: Adding process to manager...");
-    PROCESS_MANAGER.add(process);
+    PROCESS_MANAGER.add(Box::new(process));
     debug_log!("Process: Process added to list");
 
     Ok(pid)
@@ -610,13 +610,13 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
                 let index = (pid as usize % 16);
                 list[index].as_mut().filter(|p| p.id == pid)
             })
-            .map(|p| p as *mut Process);
+            .map(|p| p.as_mut() as *mut Process);
 
         let index = (new_pid as usize % 16);
         let new_ptr = list[index]
             .as_ref()
             .filter(|p| p.id == new_pid)
-            .map(|p| p as *const Process);
+            .map(|p| p.as_ref() as *const Process);
 
         if let Some(new_ptr) = new_ptr {
             let old_ctx = old_ptr.map(|p| p as *mut ProcessContext);

@@ -7,9 +7,9 @@ use petroleum::page_table::{
     BitmapFrameAllocator, BootInfoFrameAllocator, FrameAllocatorExt, MemoryMapDescriptor,
     PageTableHelper, ProcessPageTable,
 };
-use x86_64::structures::paging::{
+use x86_64::{PhysAddr, structures::paging::{
     FrameAllocator as X86FrameAllocator, PageTableFlags as PageFlags, Size4KiB,
-};
+}};
 
 /// Unified memory manager implementing all memory management traits
 pub struct UnifiedMemoryManager {
@@ -168,37 +168,48 @@ impl UnifiedMemoryManager {
         );
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Page table manager initialized\n");
 
-        // Ensure the entire heap buffer is mapped to avoid page faults during allocation
-        let heap_ptr_val = core::ptr::addr_of_mut!(crate::heap::BOOT_HEAP_BUFFER) as *mut u8 as usize;
-        if let Ok(phys_addr) = self.page_table_manager.translate_address(heap_ptr_val) {
-            petroleum::write_serial_bytes!(
-                0x3F8,
-                0x3FD,
-                b"DEBUG: Mapping entire heap buffer range\n"
+        // Map all available physical memory to the direct map region to avoid page faults
+        // during dynamic allocation (BTreeMap, etc.)
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: Mapping all available physical memory to direct map\n"
+        );
+        for descriptor in memory_map {
+            let phys_addr = descriptor.get_physical_start();
+            let pages = descriptor.get_page_count();
+            
+            // Use the physical memory offset to calculate the virtual address
+            let phys_offset = x86_64::VirtAddr::new(
+                petroleum::common::memory::get_physical_memory_offset() as u64
             );
-            for i in 0..256 {
-                // 1MB = 256 * 4KB
-                let virt = heap_ptr_val + (i * 4096);
-                let phys = phys_addr + (i * 4096);
-                let _ = self.page_table_manager.map_page(
+            let base_virt_addr = (phys_offset + PhysAddr::new(phys_addr).as_u64()).as_u64() as usize;
+
+            for i in 0..pages {
+                let virt = base_virt_addr + (i as usize * 4096);
+                let phys = (phys_addr + (i as u64 * 4096)) as usize;
+                
+                let res = self.page_table_manager.map_page(
                     virt,
                     phys,
                     PageFlags::PRESENT | PageFlags::WRITABLE,
                     petroleum::page_table::constants::get_frame_allocator_mut(),
                 );
+
+                if let Err(e) = res {
+                    if e == SystemError::MappingFailed {
+                        continue;
+                    } else {
+                        return Err(e);
+                    }
+                }
             }
-            petroleum::write_serial_bytes!(
-                0x3F8,
-                0x3FD,
-                b"DEBUG: Heap buffer range mapping complete\n"
-            );
-        } else {
-            petroleum::write_serial_bytes!(
-                0x3F8,
-                0x3FD,
-                b"ERROR: Failed to translate heap_ptr for mapping\n"
-            );
         }
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: Physical memory direct mapping complete\n"
+        );
 
         self.create_address_space(0)?;
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Kernel address space created\n");
