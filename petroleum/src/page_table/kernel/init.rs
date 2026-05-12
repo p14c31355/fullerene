@@ -231,35 +231,52 @@ pub unsafe extern "C" fn init_and_jump(args_ptr: *const InitAndJumpArgs, stack_t
     ).expect("full 16GB huge page identity map failed");
     crate::serial::_print(format_args!("IAJ: Huge page identity mapped\n"));
 
+    // STEP 1b: Map the entire 0-16GB physical range to the higher half using 2MB huge pages.
+    // This MUST be done BEFORE any 4KB splits so that the 4KB functions can properly
+    // split the higher-half huge pages.
+    // This is CRITICAL: OffsetPageTable (used by map_to etc.) accesses page table
+    // structures through phys_offset + table_phys_addr, and page tables can be
+    // allocated at any physical address within 0-16GB by the frame allocator.
+    crate::serial::_print(format_args!("IAJ: Mapping full 16GB to higher half (huge pages)...\n"));
+    map_range_2mb_huge(
+        l4,
+        physical_memory_offset,
+        PhysAddr::new(0),
+        8192, // 16GB / 2MB
+        flags,
+        frame_allocator,
+    ).expect("full 16GB huge page higher-half map failed");
+    crate::serial::_print(format_args!("IAJ: Full higher-half mapping done\n"));
+
     // STEP 2: Split specific 2MB regions into 4KB pages for fine-grained mappings.
     // These replace the existing HUGE_PAGE entries with proper L1 tables.
+    // The map_page_4k_l1 function handles HUGE_PAGE splitting automatically.
     
     // === Kernel mapping (higher-half + identity) ===
     crate::serial::_print(format_args!("IAJ: Mapping kernel...\n"));
     let kernel_size = 8 * 1024 * 1024u64; // Increase to 8MB
     let kernel_pages = kernel_size / 4096;
 
-    // higher-half kernel mapping
+    // higher-half kernel mapping (splits higher-half huge pages)
     let kernel_virt = VirtAddr::new(physical_memory_offset.as_u64() + kernel_phys_start);
     map_range_4k(l4, kernel_virt, PhysAddr::new(kernel_phys_start), kernel_pages, flags, frame_allocator)
         .expect("kernel higher map");
 
-    // identity kernel mapping (already partially covered by huge pages, but ensure 4KB)
+    // identity kernel mapping (splits identity huge pages)
     map_range_4k(l4, VirtAddr::new(kernel_phys_start), PhysAddr::new(kernel_phys_start), kernel_pages, flags, frame_allocator)
         .expect("kernel identity");
     crate::serial::_print(format_args!("IAJ: Kernel mapped\n"));
 
     // === Stack mapping (identity + higher-half) ===
-    // stack_top is a higher-half virtual address (e.g. 0xFFFF80007DEE9000).
-    // Extract the physical page base by taking the low 32 bits (since physical < 4GB for now).
     let stack_phys_page = (stack_top & 0x00000000_FFFFF000) as u64;
     crate::serial::_print(format_args!("IAJ: Mapping stack... stack_top={:#x}, stack_phys_page={:#x}\n", stack_top, stack_phys_page));
     let stack_pages = 8u64; // 32KB
     let stack_phys_base = stack_phys_page - stack_pages * 4096 + 4096;
     
+    // identity
     map_range_4k(l4, VirtAddr::new(stack_phys_base), PhysAddr::new(stack_phys_base), stack_pages, flags, frame_allocator)
         .expect("stack identity");
-
+    // higher-half
     map_range_4k(
         l4,
         VirtAddr::new(physical_memory_offset.as_u64() + stack_phys_base),
@@ -270,35 +287,18 @@ pub unsafe extern "C" fn init_and_jump(args_ptr: *const InitAndJumpArgs, stack_t
     ).expect("stack higher");
     crate::serial::_print(format_args!("IAJ: Stack mapped\n"));
 
-    // Args, Memory Map, Low memory higher-half
+    // Args (identity only - higher-half covered by huge page splits)
     let args_pages = 1u64;
     map_range_4k(l4, VirtAddr::new(arg1), PhysAddr::new(arg1), args_pages, flags, frame_allocator)
         .expect("args map");
 
+    // Memory map (identity + higher-half)
     let map_pages = (map_size + 4095) / 4096;
     map_range_4k(l4, VirtAddr::new(map_phys_addr), PhysAddr::new(map_phys_addr), map_pages, flags, frame_allocator)
         .expect("map identity");
-
     let map_virt_higher = VirtAddr::new(physical_memory_offset.as_u64() + map_phys_addr);
     map_range_4k(l4, map_virt_higher, PhysAddr::new(map_phys_addr), map_pages, flags, frame_allocator)
         .expect("map higher");
-
-    // Map first 16MB of physical memory to higher half
-    map_range_4k(
-        l4,
-        physical_memory_offset,
-        PhysAddr::new(0),
-        4096, // 16MB / 4KB,
-        flags,
-        frame_allocator,
-    ).expect("low memory higher map");
-
-    // Map the new L4 table itself to the higher half
-    let l4_virt_higher = VirtAddr::new(physical_memory_offset.as_u64() + l4_phys);
-    map_range_4k(l4, l4_virt_higher, PhysAddr::new(l4_phys), 1, flags, frame_allocator).ok();
-
-    // Identity-map the current stack region (which may be beyond the 256MB identity map)
-    // This is already covered by the 16GB huge page mapping above, so no additional mapping needed.
 
     // Store state BEFORE switching CR3, since after the switch we can't safely reference
     // Rust statics (they may be in unmapped higher-half addresses)
@@ -340,7 +340,10 @@ pub unsafe extern "C" fn init_and_jump(args_ptr: *const InitAndJumpArgs, stack_t
     );
 }
 
-/// Legacy init function - kept for compatibility
+/// Legacy init function - kept for compatibility.
+///
+/// This always reuses the currently active page table (CR3) set up by init_and_jump
+/// from the bootloader, creating an OffsetPageTable mapper for it.
 pub unsafe fn init<A: FrameAllocator<Size4KiB>, F>(
     physical_memory_offset: VirtAddr,
     frame_allocator: &mut A,
@@ -350,95 +353,23 @@ pub unsafe fn init<A: FrameAllocator<Size4KiB>, F>(
 where
     F: FnOnce(&mut OffsetPageTable, &mut A),
 {
-    if PAGE_TABLE_INITIALIZED.load(Ordering::SeqCst) {
-        let offset = STORED_OFFSET.expect("STORED_OFFSET should be set");
-        let l4_ptr = STORED_L4_PTR.expect("STORED_L4_PTR should be set");
-        let l4_table = &mut *l4_ptr;
-        return OffsetPageTable::new(l4_table, offset);
-    }
-
     crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init] entered\n");
 
-    use x86_64::registers::control::{Cr0, Cr0Flags};
-    let mut cr0 = Cr0::read();
-    cr0.remove(Cr0Flags::WRITE_PROTECT);
-    Cr0::write(cr0);
-
-    let l4_frame = frame_allocator
-        .allocate_frame()
-        .expect("Failed to allocate L4 table");
-    let l4_phys_addr = l4_frame.start_address();
-    let l4_virt_ptr = l4_phys_addr.as_u64() as *mut PageTable;
-    core::ptr::write_bytes(l4_virt_ptr, 0, 1);
-
-    let l4 = &mut *l4_virt_ptr;
-    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-
-    for addr in (0..0x80000000).step_by(2 * 1024 * 1024) {
-        let l4_idx = ((addr >> 39) & 0x1FF) as usize;
-        let l3_idx = ((addr >> 30) & 0x1FF) as usize;
-
-        let l3_frame = frame_allocator.allocate_frame().expect("Failed to alloc L3");
-        let l3_ptr = l3_frame.start_address().as_u64() as *mut PageTable;
-        core::ptr::write_bytes(l3_ptr, 0, 1);
-        l4[l4_idx].set_addr(l3_frame.start_address(), flags | PageTableFlags::PRESENT);
-
-        let l2_frame = frame_allocator.allocate_frame().expect("Failed to alloc L2");
-        let l2_ptr = l2_frame.start_address().as_u64() as *mut PageTable;
-        core::ptr::write_bytes(l2_ptr, 0, 1);
-        let l3 = &mut *l3_ptr;
-        l3[l3_idx].set_addr(l2_frame.start_address(), flags | PageTableFlags::PRESENT);
-
-        let l2 = &mut *l2_ptr;
-        for i in 0..512 {
-            let page_addr = addr + (i as u64) * (2 * 1024 * 1024);
-            if page_addr >= 0x80000000 {
-                break;
-            }
-            l2[i].set_addr(PhysAddr::new(page_addr), flags | PageTableFlags::HUGE_PAGE | PageTableFlags::PRESENT);
-        }
-    }
-
-    let kernel_virt = physical_memory_offset.as_u64() + kernel_phys_start;
-    let l4_idx = ((kernel_virt >> 39) & 0x1FF) as usize;
-    let l3_idx = ((kernel_virt >> 30) & 0x1FF) as usize;
-    let l2_idx = ((kernel_virt >> 21) & 0x1FF) as usize;
-    let l1_idx = ((kernel_virt >> 12) & 0x1FF) as usize;
-
-    let l3_frame = frame_allocator.allocate_frame().expect("Failed to alloc L3 for kernel");
-    let l3_ptr = l3_frame.start_address().as_u64() as *mut PageTable;
-    core::ptr::write_bytes(l3_ptr, 0, 1);
-    l4[l4_idx].set_addr(l3_frame.start_address(), flags | PageTableFlags::PRESENT);
-
-    let l2_frame = frame_allocator.allocate_frame().expect("Failed to alloc L2 for kernel");
-    let l2_ptr = l2_frame.start_address().as_u64() as *mut PageTable;
-    core::ptr::write_bytes(l2_ptr, 0, 1);
-    let l3 = &mut *l3_ptr;
-    l3[l3_idx].set_addr(l2_frame.start_address(), flags | PageTableFlags::PRESENT);
-
-    let l1_frame = frame_allocator.allocate_frame().expect("Failed to alloc L1 for kernel");
-    let l1_ptr = l1_frame.start_address().as_u64() as *mut PageTable;
-    core::ptr::write_bytes(l1_ptr, 0, 1);
-    let l2 = &mut *l2_ptr;
-    l2[l2_idx].set_addr(l1_frame.start_address(), flags | PageTableFlags::PRESENT);
-
-    let l1 = &mut *l1_ptr;
-    l1[l1_idx].set_addr(PhysAddr::new(kernel_phys_start), flags);
-
-    Cr3::write(
-        PhysFrame::containing_address(l4_phys_addr),
-        Cr3Flags::empty(),
-    );
-
-    x86_64::instructions::tlb::flush_all();
-
-    let l4_higher_ptr = (l4_phys_addr.as_u64() + physical_memory_offset.as_u64()) as *mut PageTable;
-    let mapper = OffsetPageTable::new(&mut *l4_higher_ptr, physical_memory_offset);
-
+    // Store the statics for later reuse
     PAGE_TABLE_INITIALIZED.store(true, Ordering::SeqCst);
     STORED_OFFSET = Some(physical_memory_offset);
+
+    // Get the current page table via CR3.
+    // When called after init_and_jump, CR3 points to the L4 table set up by the bootloader,
+    // which has both identity and higher-half mappings for 0-16GB.
+    let (l4_frame, _) = Cr3::read();
+    let l4_phys = l4_frame.start_address();
+    let l4_higher_ptr = (l4_phys.as_u64() + physical_memory_offset.as_u64()) as *mut PageTable;
+
     STORED_L4_PTR = Some(l4_higher_ptr);
 
+    let mapper = OffsetPageTable::new(&mut *l4_higher_ptr, physical_memory_offset);
+    
     mapper
 }
 

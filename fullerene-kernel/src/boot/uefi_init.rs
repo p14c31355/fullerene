@@ -54,13 +54,11 @@ unsafe impl x86_64::structures::paging::FrameAllocator<x86_64::structures::pagin
         let frame = x86_64::structures::paging::PhysFrame::containing_address(
             x86_64::PhysAddr::new(self.next_frame * 4096),
         );
-        
-        // Zero the frame to prevent #GP faults from reserved bits in uninitialized page tables
-        let phys_addr = frame.start_address().as_u64();
-        let virt_addr = phys_addr + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64;
-        unsafe {
-            core::ptr::write_bytes(virt_addr as *mut u8, 0, 4096);
-        }
+
+        // The frame is zeroed by the caller (petroleum::page_table::init writes to
+        // the physical address directly, which works via UEFI's identity mapping).
+        // We do NOT zero here via PHYSICAL_MEMORY_OFFSET_BASE because that mapping
+        // may not exist in the UEFI page table during early init.
 
         self.next_frame += 1;
         Some(frame)
@@ -929,25 +927,36 @@ impl UefiInitContext {
         };
         let descriptor_size = self.descriptor_size;
 
-        debug_log_no_alloc!("Base ptr: 0x", base_ptr as u64);
-        debug_log_no_alloc!("Using descriptor size: ", descriptor_size);
+        debug_log_no_alloc!("Base ptr: 0x");
+        debug_log_no_alloc!(base_ptr as u64);
+        debug_log_no_alloc!("Using descriptor size: ");
+        debug_log_no_alloc!(descriptor_size);
+
+        // Calculate actual descriptor count from the raw EFI memory map size.
+        // The bootloader appends a framebuffer config after the descriptors,
+        // so self.memory_map_size includes this extra data.
+        // We calculate the actual number of descriptors by rounding DOWN to the
+        // nearest multiple of descriptor_size.
+        let raw_map_size = self.memory_map_size;
+        let actual_descriptor_bytes = (raw_map_size / descriptor_size) * descriptor_size;
+        let max_descriptors = actual_descriptor_bytes / descriptor_size;
 
         unsafe {
             let mut count = 0;
-            for i in 0..crate::heap::MAX_DESCRIPTORS {
+            let limit = crate::heap::MAX_DESCRIPTORS.min(max_descriptors);
+            for i in 0..limit {
                 let offset = i * descriptor_size;
-                if offset >= self.memory_map_size {
+                if offset >= actual_descriptor_bytes {
                     break;
                 }
                 let desc_ptr = base_ptr.add(offset);
                 let desc = MemoryMapDescriptor::new(desc_ptr, descriptor_size);
 
                 if !petroleum::page_table::MemoryDescriptorValidator::is_valid(&desc) {
-                    debug_log_no_alloc!(
-                        "Skipping invalid descriptor {}: type 0x{:x}",
-                        i,
-                        desc.type_() as usize
-                    );
+                    debug_log_no_alloc!("Skipping invalid descriptor ");
+                    debug_log_no_alloc!(i);
+                    debug_log_no_alloc!(": type 0x");
+                    debug_log_no_alloc!(desc.type_() as usize);
                     continue;
                 }
 
@@ -955,7 +964,9 @@ impl UefiInitContext {
                 count += 1;
             }
 
-            debug_log_no_alloc!("Successfully parsed {} descriptors", count);
+            debug_log_no_alloc!("Successfully parsed ");
+            debug_log_no_alloc!(count);
+            debug_log_no_alloc!(" descriptors");
             debug_log_no_alloc!("DEBUG: Attempting to lock MEMORY_MAP for assignment");
 
             if let Some(mut lock) = crate::heap::MEMORY_MAP.try_lock() {
