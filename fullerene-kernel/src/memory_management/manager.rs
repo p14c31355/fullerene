@@ -21,6 +21,69 @@ pub struct UnifiedMemoryManager {
 }
 
 impl UnifiedMemoryManager {
+    /// Safely maps a page, ensuring any existing mapping is removed first.
+    pub fn safe_map_page(
+        &mut self,
+        virtual_addr: usize,
+        physical_addr: usize,
+        flags: PageFlags,
+    ) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        // Remove existing mapping if present
+        let _ = self.page_table_manager.unmap_page(virtual_addr);
+
+        self.page_table_manager.map_page(
+            virtual_addr,
+            physical_addr,
+            flags,
+            petroleum::page_table::constants::get_frame_allocator_mut(),
+        )
+    }
+
+    /// Safely unmaps a page, ignoring errors if the page was not mapped.
+    pub fn safe_unmap_page(&mut self, virtual_addr: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        if let Ok(frame) = self.page_table_manager.unmap_page(virtual_addr) {
+            self.free_frame(frame.start_address().as_u64() as usize)?;
+        }
+        Ok(())
+    }
+
+    /// Safely maps a physical region to a virtual address, specifically for MMIO/Framebuffer.
+    /// Ensures the region is marked as NO_EXECUTE and PRESENT | WRITABLE.
+    pub fn map_mmio_region(
+        &mut self,
+        physical_addr: usize,
+        virtual_addr: usize,
+        size: usize,
+    ) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+
+        let pages = (size + 4095) / 4096;
+        
+        // MMIO regions are typically mapped as non-executable
+        let flags = PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::NO_EXECUTE;
+
+        petroleum::map_page_range!(
+            self.page_table_manager,
+            petroleum::page_table::constants::get_frame_allocator_mut(),
+            virtual_addr,
+            physical_addr,
+            pages,
+            flags
+        );
+
+        Ok(())
+    }
+
     /// Create a new unified memory manager
     pub fn new() -> Self {
         const NONE_MANAGER: Option<ProcessMemoryManagerImpl> = None;
@@ -180,38 +243,50 @@ impl MemoryManager for UnifiedMemoryManager {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-        // Allocate physical frames
+        
+        // Guard pages: allocate 1 extra page before and after the requested region
+        // Total pages to reserve in virtual space: count + 2
+        let total_virt_pages = count + 2;
+        let virtual_addr_base =
+            crate::memory_management::kernel_space::find_free_virtual_address(total_virt_pages * 4096)?;
+
+        // Allocate physical frames for the actual data
         let frame_addr = petroleum::page_table::constants::get_frame_allocator_mut()
             .allocate_contiguous_frames(count)?;
 
-        // Map to kernel virtual address space
-        let virtual_addr =
-            crate::memory_management::kernel_space::find_free_virtual_address(count * 4096)?;
-
+        // 1. Map the actual data region (offset by 1 page from base)
+        let data_virt_addr = virtual_addr_base + 4096;
         petroleum::map_page_range!(
             self.page_table_manager,
             petroleum::page_table::constants::get_frame_allocator_mut(),
-            virtual_addr,
+            data_virt_addr,
             frame_addr,
             count,
             PageFlags::PRESENT | PageFlags::WRITABLE
         );
 
-        Ok(virtual_addr)
+        // 2. Guard pages are left unmapped (not PRESENT), so any access will trigger #PF.
+        // The virtual address returned to the caller is the start of the usable data region.
+        Ok(data_virt_addr)
     }
 
     fn free_pages(&mut self, address: usize, count: usize) -> SystemResult<()> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-        // Get physical addresses and free frames
+        
+        // Free the actual data pages
         for i in 0..count {
             let virt_addr = address + (i * 4096);
-            let frame = self.page_table_manager.unmap_page(virt_addr)?;
-
-            let phys_addr = frame.start_address().as_u64() as usize;
-            self.free_frame(phys_addr)?;
+            if let Ok(frame) = self.page_table_manager.unmap_page(virt_addr) {
+                let phys_addr = frame.start_address().as_u64() as usize;
+                self.free_frame(phys_addr)?;
+            }
         }
+
+        // Also unmap the guard pages (they have no physical frames to free)
+        let _ = self.page_table_manager.unmap_page(address - 4096);
+        let _ = self.page_table_manager.unmap_page(address + (count * 4096));
 
         Ok(())
     }
