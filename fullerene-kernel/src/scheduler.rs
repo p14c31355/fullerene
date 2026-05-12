@@ -303,6 +303,13 @@ pub fn scheduler_loop() -> ! {
     // Print to primary console if available
     crate::graphics::print_to_console("Scheduler loop started - Console output enabled\n");
     crate::graphics::print_to_console("System is running...\n");
+
+    // DEBUG: Draw a small blue square in the top-left corner.
+    // We only map the first 4KB page, so clearing the whole screen would cause a page fault.
+    if let Some(ref mut renderer) = *crate::graphics::PRIMARY_RENDERER.lock() {
+        renderer.draw_rect(0, 0, 64, 64, 0x0000FF); // Blue square
+        renderer.present();
+    }
     // Log that scheduler is running for confirmation
     log::info!("Scheduler loop active - framebuffer text system running");
 

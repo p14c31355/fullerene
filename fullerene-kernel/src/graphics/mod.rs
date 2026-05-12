@@ -20,8 +20,11 @@ pub fn set_primary_renderer(renderer: Box<dyn Renderer + Send>) {
 
 /// Helper to write to the primary console.
 pub fn print_to_console(s: &str) {
-    if let Some(ref mut console) = *PRIMARY_CONSOLE.lock() {
+    let mut lock = PRIMARY_CONSOLE.lock();
+    if let Some(ref mut console) = *lock {
         let _ = console.write_str(s);
+    } else {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: PRIMARY_CONSOLE is None!\n");
     }
 }
 

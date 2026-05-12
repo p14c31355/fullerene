@@ -5,50 +5,71 @@ use alloc::boxed::Box;
 use petroleum::assembly::KernelArgs;
 use petroleum::{common::InitSequence, init_log, write_serial_bytes};
 use spin::Once;
-use x86_64::structures::paging::{Mapper, Page, PageTableFlags, PhysFrame, Size4KiB};
+use x86_64::structures::paging::{Mapper, Page, PageTableFlags, PhysFrame, Size2MiB, Size4KiB};
 use x86_64::{PhysAddr, VirtAddr};
 
 pub fn init_graphics(physical_memory_offset: x86_64::VirtAddr) {
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: init_graphics start\n");
     #[cfg(not(target_os = "uefi"))]
     {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Using BIOS VGA path\n");
         crate::vga::init_vga(physical_memory_offset, 0xb8000);
     }
 
     #[cfg(target_os = "uefi")]
     {
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Using UEFI GOP path\n");
         unsafe {
             let args_ptr = petroleum::transition::KERNEL_ARGS;
             if !args_ptr.is_null() {
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: KERNEL_ARGS not null\n");
                 let virt_addr_raw = args_ptr as u64;
                 let virt_addr = if (virt_addr_raw & (1 << 47)) != 0 {
                     virt_addr_raw | 0xFFFF_0000_0000_0000
                 } else {
                     virt_addr_raw & 0x0000_FFFF_FFFF_FFFF
                 };
+                
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Attempting to dereference KernelArgs\n");
                 let args = &*(virt_addr as *const petroleum::assembly::KernelArgs);
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: KernelArgs dereferenced successfully\n");
                 
                 if args.fb_address != 0 && args.fb_width > 0 && args.fb_bpp > 0 {
+                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: FB info looks valid\n");
                     let stride = (args.fb_width as u64 * (args.fb_bpp as u64 / 8)) as u32;
+                    
+                    let cleansed_phys_addr = args.fb_address & 0x000F_FFFF_FFFF_FFFF;
+                    let fb_phys_addr = PhysAddr::new(cleansed_phys_addr);
+                    
+                    // Rely on the existing Direct Mapping (physical_memory_offset)
+                    // to avoid potential triple faults during page table manipulation.
+                    let fb_virt_addr = physical_memory_offset + fb_phys_addr.as_u64();
+                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Using Direct Mapping for FB\n");
+
                     let fb_info = petroleum::graphics::color::FramebufferInfo {
-                        address: args.fb_address,
+                        address: fb_virt_addr.as_u64(),
                         width: args.fb_width,
                         height: args.fb_height,
                         stride,
-                        pixel_format: None, // Simplified for now
+                        pixel_format: None,
                         colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
                     };
                     let writer = petroleum::graphics::UefiFramebufferWriter::Uefi32(
                         petroleum::graphics::FramebufferWriter::new(fb_info)
                     );
                     
-                    // Register as both console and renderer
                     crate::graphics::set_primary_console(Box::new(writer.clone()));
                     crate::graphics::set_primary_renderer(Box::new(writer));
-                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"UEFI Framebuffer registered\n");
+                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: UEFI Framebuffer registered\n");
+                } else {
+                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: UEFI FB info invalid or missing\n");
                 }
+            } else {
+                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: KERNEL_ARGS is null\n");
             }
         }
     }
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: init_graphics end\n");
 }
 
 pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
@@ -101,4 +122,3 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
         }
     }
 }
-
