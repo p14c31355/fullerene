@@ -134,6 +134,7 @@ impl UnifiedMemoryManager {
             petroleum::page_table::constants::get_frame_allocator_mut(),
             kernel_phys_start,
         )?;
+        self.kernel_pml4_phys = self.page_table_manager.current_page_table();
 
         // Initialize the global kernel mapper
         let mut kernel_mapper = petroleum::page_table::KernelMapper::new();
