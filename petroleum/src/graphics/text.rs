@@ -144,6 +144,33 @@ impl core::fmt::Write for VgaBuffer {
     }
 }
 
+impl crate::graphics::console::Console for VgaBuffer {
+    fn write_char(&mut self, c: char, color: u32) {
+        // u32 color to VGA Color conversion
+        // Simple cast for now, assuming color is in 0..15 range
+        let fg = unsafe { core::mem::transmute::<u8, Color>(color as u8) };
+        self.set_color(fg, Color::Black);
+        self.write_byte(c as u8);
+    }
+
+    fn set_color(&mut self, color: u32) {
+        let fg = unsafe { core::mem::transmute::<u8, Color>(color as u8) };
+        self.set_color(fg, Color::Black);
+    }
+
+    fn clear(&mut self) {
+        self.clear_screen();
+    }
+
+    fn set_cursor(&mut self, x: usize, y: usize) {
+        self.set_position(y, x);
+    }
+
+    fn scroll(&mut self) {
+        self.scroll_up();
+    }
+}
+
 impl VgaBuffer {
     pub fn new() -> Self {
         Self::with_address(DEFAULT_VGA_BUFFER_ADDR)

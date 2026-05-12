@@ -4,7 +4,6 @@
 //! including process scheduling, shell execution, and system-wide orchestration.
 
 use crate::graphics;
-use crate::graphics::text;
 use alloc::{collections::VecDeque, format};
 use core::sync::atomic::Ordering;
 use petroleum::{
@@ -140,14 +139,20 @@ fn log_system_stats(stats: &SystemStats) {
     );
 }
 
-/// Display system statistics on VGA or framebuffer
+/// Display system statistics on the primary console
 fn display_system_stats_on_display(stats: &SystemStats) {
-    petroleum::display_stats_on_available_display!(
-        stats,
-        SYSTEM_TICK.load(Ordering::Relaxed),
-        0, // No internal interval since called by scheduler
-        &crate::vga::VGA_BUFFER
-    );
+    use crate::graphics::PRIMARY_CONSOLE;
+    if let Some(ref mut console) = *PRIMARY_CONSOLE.lock() {
+        console.set_cursor(22, 0);
+        console.set_color(0x03); // Cyan (VGA index)
+        let _ = core::fmt::write(console.as_mut(), format_args!(
+            "Processes: {}/{} | Memory: {} KB | Tick: {}\n",
+            stats.active_processes,
+            stats.total_processes,
+            stats.memory_used / 1024,
+            stats.uptime_ticks
+        ));
+    }
 }
 
 /// Get the current system tick count
@@ -258,20 +263,8 @@ fn yield_and_process_system_calls() {
 
 /// Draw the OS desktop on the available framebuffer (UEFI or BIOS)
 fn draw_desktop_on_available_framebuffer() {
-    #[cfg(target_os = "uefi")]
-    {
-        unsafe {
-            if let Some(ref mut fb) = text::FRAMEBUFFER_UEFI {
-                graphics::draw_os_desktop(fb);
-            }
-        }
-    }
-    #[cfg(not(target_os = "uefi"))]
-    {
-        let mut lock = text::FRAMEBUFFER_BIOS.lock();
-        if let Some(ref mut fb) = *lock {
-            graphics::draw_os_desktop(fb);
-        }
+    if let Some(ref mut renderer) = *crate::graphics::PRIMARY_RENDERER.lock() {
+        crate::graphics::draw_os_desktop(renderer.as_mut());
     }
 }
 
@@ -307,17 +300,9 @@ pub fn scheduler_loop() -> ! {
     // Main scheduler loop - continuously execute processes with integrated OS functionality
     log::info!("Scheduler loop started");
 
-    // Print to VGA if available for GUI output
-    {
-        let mut lock = crate::vga::VGA_BUFFER.lock();
-        if let Some(ref mut writer) = *lock {
-            petroleum::vga_write_lines!(writer,
-                "Scheduler loop started - VGA output enabled\n";
-                "System is running...\n"
-            );
-            writer.update_cursor();
-        }
-    }
+    // Print to primary console if available
+    crate::graphics::print_to_console("Scheduler loop started - Console output enabled\n");
+    crate::graphics::print_to_console("System is running...\n");
     // Log that scheduler is running for confirmation
     log::info!("Scheduler loop active - framebuffer text system running");
 

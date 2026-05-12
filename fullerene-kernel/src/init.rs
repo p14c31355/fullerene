@@ -8,6 +8,49 @@ use spin::Once;
 use x86_64::structures::paging::{Mapper, Page, PageTableFlags, PhysFrame, Size4KiB};
 use x86_64::{PhysAddr, VirtAddr};
 
+pub fn init_graphics(physical_memory_offset: x86_64::VirtAddr) {
+    #[cfg(not(target_os = "uefi"))]
+    {
+        crate::vga::init_vga(physical_memory_offset, 0xb8000);
+    }
+
+    #[cfg(target_os = "uefi")]
+    {
+        unsafe {
+            let args_ptr = petroleum::transition::KERNEL_ARGS;
+            if !args_ptr.is_null() {
+                let virt_addr_raw = args_ptr as u64;
+                let virt_addr = if (virt_addr_raw & (1 << 47)) != 0 {
+                    virt_addr_raw | 0xFFFF_0000_0000_0000
+                } else {
+                    virt_addr_raw & 0x0000_FFFF_FFFF_FFFF
+                };
+                let args = &*(virt_addr as *const petroleum::assembly::KernelArgs);
+                
+                if args.fb_address != 0 && args.fb_width > 0 && args.fb_bpp > 0 {
+                    let stride = (args.fb_width as u64 * (args.fb_bpp as u64 / 8)) as u32;
+                    let fb_info = petroleum::graphics::color::FramebufferInfo {
+                        address: args.fb_address,
+                        width: args.fb_width,
+                        height: args.fb_height,
+                        stride,
+                        pixel_format: None, // Simplified for now
+                        colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
+                    };
+                    let writer = petroleum::graphics::UefiFramebufferWriter::Uefi32(
+                        petroleum::graphics::FramebufferWriter::new(fb_info)
+                    );
+                    
+                    // Register as both console and renderer
+                    crate::graphics::set_primary_console(Box::new(writer.clone()));
+                    crate::graphics::set_primary_renderer(Box::new(writer));
+                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"UEFI Framebuffer registered\n");
+                }
+            }
+        }
+    }
+}
+
 pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Init common start\n");
 
@@ -29,41 +72,14 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             petroleum::init_step!("Serial", || { petroleum::serial::serial_init(); Ok(()) }),
         ];
         InitSequence::new(&bios_init_steps).run();
-        crate::vga::init_vga(physical_memory_offset, 0xb8000);
     }
 
     #[cfg(target_os = "uefi")]
     {
-        unsafe {
-            let args_ptr = petroleum::transition::KERNEL_ARGS;
-            if !args_ptr.is_null() {
-                let phys_addr = (args_ptr as u64).wrapping_sub(physical_memory_offset.as_u64());
-                let virt_addr_raw = args_ptr as u64;
-                let virt_addr = if (virt_addr_raw & (1 << 47)) != 0 {
-                    virt_addr_raw | 0xFFFF_0000_0000_0000
-                } else {
-                    virt_addr_raw & 0x0000_FFFF_FFFF_FFFF
-                };
-
-                let kernel_mapper = petroleum::page_table::kernel::get_mapper();
-                let mapper = kernel_mapper.mapper.as_mut().unwrap();
-                // Map 2 pages to be safe (KernelArgs + Memory Map)
-                for i in 0..2 {
-                    let _ = mapper.map_to(
-                        Page::<Size4KiB>::containing_address(VirtAddr::new(virt_addr + i * 4096)),
-                        PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(phys_addr + i * 4096)),
-                        PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                        &mut *petroleum::page_table::constants::get_frame_allocator(),
-                    );
-                }
-                
-                let args = &*(virt_addr as *const KernelArgs);
-                if args.fb_address != 0 {
-                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"FB detected\n");
-                }
-            }
-        }
+        // UEFI specific memory mapping for KernelArgs is handled in bootloader/transition
     }
+
+    init_graphics(physical_memory_offset);
 
     crate::interrupts::init();
     let common_steps = [

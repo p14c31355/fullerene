@@ -65,9 +65,11 @@ macro_rules! draw_window_base {
 
 pub mod color;
 pub mod constants;
+pub mod console;
 pub mod desktop;
 pub mod framebuffer;
 pub mod registers;
+pub mod renderer;
 pub mod setup;
 pub mod text;
 pub mod uefi;
@@ -78,6 +80,8 @@ pub use constants::*;
 // Re-exports for public API
 pub use crate::hardware::ports::{HardwarePorts, PortWriter, VgaPortOps};
 pub use color::*;
+pub use console::Console;
+pub use renderer::Renderer;
 // VGA graphics modes
 pub use setup::{
     detect_and_init_vga_graphics, detect_cirrus_vga, init_vga_graphics, init_vga_text_mode,

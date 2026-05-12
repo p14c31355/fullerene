@@ -59,6 +59,108 @@ impl core::fmt::Write for UefiFramebufferWriter {
     }
 }
 
+impl crate::graphics::console::Console for UefiFramebufferWriter {
+    fn write_char(&mut self, c: char, color: u32) {
+        use embedded_graphics::{
+            mono_font::{MonoTextStyle, ascii::FONT_6X10},
+            prelude::*,
+            text::Text,
+        };
+
+        let style = MonoTextStyle::new(&FONT_6X10, crate::graphics::color::u32_to_rgb888(color));
+        
+        let mut buf = [0u8; 4];
+        let s = c.encode_utf8(&mut buf);
+        let s_str = unsafe { core::str::from_utf8_unchecked(&s.as_bytes()) };
+
+        match self {
+            UefiFramebufferWriter::Uefi32(w) => {
+                let pos = Point::new(w.get_position().0 as i32, w.get_position().1 as i32);
+                let _ = Text::new(s_str, pos, style).draw(w);
+                w.set_position(w.get_position().0 + 6, w.get_position().1);
+            }
+            UefiFramebufferWriter::Vga8(w) => {
+                let pos = Point::new(w.get_position().0 as i32, w.get_position().1 as i32);
+                let _ = Text::new(s_str, pos, style).draw(w);
+                w.set_position(w.get_position().0 + 6, w.get_position().1);
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        match self {
+            UefiFramebufferWriter::Uefi32(w) => w.clear_screen(),
+            UefiFramebufferWriter::Vga8(w) => w.clear_screen(),
+        }
+    }
+
+    fn set_cursor(&mut self, x: usize, y: usize) {
+        match self {
+            UefiFramebufferWriter::Uefi32(w) => w.set_position(x as u32, y as u32),
+            UefiFramebufferWriter::Vga8(w) => w.set_position(x as u32, y as u32),
+        }
+    }
+
+    fn scroll(&mut self) {
+        match self {
+            UefiFramebufferWriter::Uefi32(w) => w.scroll_up(),
+            UefiFramebufferWriter::Vga8(w) => w.scroll_up(),
+        }
+    }
+
+    fn set_color(&mut self, color: u32) {
+        match self {
+            UefiFramebufferWriter::Uefi32(w) => w.current_color = color,
+            UefiFramebufferWriter::Vga8(w) => w.current_color = color,
+        }
+    }
+}
+
+impl crate::graphics::renderer::Renderer for UefiFramebufferWriter {
+    fn draw_pixel(&mut self, x: i32, y: i32, color: u32) {
+        match self {
+            UefiFramebufferWriter::Uefi32(w) => w.put_pixel(x as u32, y as u32, color),
+            UefiFramebufferWriter::Vga8(w) => w.put_pixel(x as u32, y as u32, color),
+        }
+    }
+
+    fn draw_rect(&mut self, x: i32, y: i32, width: u32, height: u32, color: u32) {
+        for dy in 0..height {
+            for dx in 0..width {
+                self.draw_pixel(x + dx as i32, y + dy as i32, color);
+            }
+        }
+    }
+
+    fn draw_text(&mut self, x: i32, y: i32, text: &str, color: u32) {
+        use embedded_graphics::{
+            mono_font::{MonoTextStyle, ascii::FONT_6X10},
+            prelude::*,
+            text::Text,
+        };
+        let style = MonoTextStyle::new(&FONT_6X10, crate::graphics::color::u32_to_rgb888(color));
+        let pos = Point::new(x, y);
+        match self {
+            UefiFramebufferWriter::Uefi32(w) => { let _ = Text::new(text, pos, style).draw(w); },
+            UefiFramebufferWriter::Vga8(w) => { let _ = Text::new(text, pos, style).draw(w); },
+        }
+    }
+
+    fn clear(&mut self, color: u32) {
+        // FramebufferWriter::clear_screen uses internal bg color.
+        // To clear with a specific color, we draw a large rectangle.
+        let (w, h) = self.get_resolution();
+        self.draw_rect(0, 0, w, h, color);
+    }
+
+    fn get_resolution(&self) -> (u32, u32) {
+        match self {
+            UefiFramebufferWriter::Uefi32(w) => (w.get_width(), w.get_height()),
+            UefiFramebufferWriter::Vga8(w) => (w.get_width(), w.get_height()),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum UefiFramebuffer {
     Uefi32(FramebufferWriter<u32>),
@@ -140,6 +242,7 @@ pub struct FramebufferWriter<T: PixelType> {
     pub info: FramebufferInfo,
     x_pos: u32,
     y_pos: u32,
+    pub current_color: u32,
     _phantom: core::marker::PhantomData<T>,
 }
 
@@ -175,6 +278,7 @@ impl<T: PixelType> OriginDimensions for FramebufferWriter<T> {
 impl<T: PixelType> FramebufferWriter<T> {
     pub fn new(info: FramebufferInfo) -> Self {
         Self {
+            current_color: info.colors.fg,
             info,
             x_pos: 0,
             y_pos: 0,
@@ -295,7 +399,7 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
         self.info.height
     }
     fn get_fg_color(&self) -> u32 {
-        self.info.colors.fg
+        self.current_color
     }
     fn get_bg_color(&self) -> u32 {
         self.info.colors.bg
