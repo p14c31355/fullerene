@@ -1,19 +1,40 @@
-- Use the isobemak crate for ISO creation tasks.
-- The sub-crate "petroleum" handles UEFI-related tasks. Please make full use of it to reduce the amount of code.
-- Also, if there are any bugs in "petroleum" itself, feel free to edit and fix them.
+# Fullerene Project Rules for Cline
 
-- Also, please minimize the use of asm macros. This also applies to unsafe code. However, do not include existing bootloader or UEFI crates in your dependencies. Implement your code using Rust core functions whenever possible.
+## 1. Overall Policy (Highest Priority)
+- **This project aims for a "safe, readable, and maintainable no_std OS kernel."**
+- Minimize code size and thoroughly eliminate duplication.
+- Minimize unsafe/asm. Maximize the use of Rust's core/alloc.
+- Always write code that is "easy for later readers to understand."
 
-- Furthermore, all subcrates are treated as default binary crates. This means that each subcrate must be configured in `Cargo.toml` so that it can be built and run as a standalone binary (e.g., by setting `crate-type = ["bin"]` or by making it directly executable).
-- As an exception, the petroleum crate is the only crate that is treated as a library crate.
-- Do not run the same command more than three times in a row. A "command" is any executable operation, such as a shell command, function call, or macro call. Avoid long, repetitive sequences of similar operations. For example, long, identical `port.write()` calls, such as those found in `graphics.rs`, should be refactored for clarity and conciseness, for example by using constants or helper functions.
+## 2. Code Structure and Dependencies
+- Actively utilize **petroleum** (common utilities, UEFI-related, serial output, etc.). Bugs can be fixed immediately.
+- Treat other sub-crates (bellows, fullerene-kernel, etc.) as **binary crates** (appropriately configured in Cargo.toml).
+- Actively utilize external crates other than `uefi` / `bootloader` crates to reduce code.
+- Use isobemak for ISO creation.
 
-- Use the `cargo clean && cargo run -q -p flasks` command to review your changes.
+## 3. Coding Style
+- **Strictly adhere to the DRY principle**: Move duplicate code immediately to `petroleum`.
+- Actively utilize helper functions, macros, generics, and structs to reduce the number of lines.
+- Refactor long, repetitive operations (e.g., consecutive `port.write()` calls) into constants or helper functions.
+- **Do not repeat the same command/operation more than 3 times consecutively** (refactoring is mandatory).
+- Split files appropriately. However, merge redundant `.rs` files.
 
-- Use helper functions, helper macros, structs, and type generics wherever possible to reduce lines of code.
+## 4. Unsafe / Low-Level Code
+- Use **minimum** asm! macros and unsafe blocks.
+- Implement with safe Rust + core libraries whenever possible.
+- When using unsafe, clearly explain "why it's necessary" and "the basis for safety" with comments.
 
-- Consolidate redundant `.rs` files in appropriate places with minimal code.
+## 5. Testing and Verification Flow
+- Always verify functionality with `cargo clean && cargo run -q -p flasks` after changes.
 
-- Consolidate all code duplicated between sub-crates into the `petroleum` sub-crate.
+- Prioritize testing with QEMU.
 
-- Maximize the functionality of external crates other than `uefi` and `bootloader` to reduce lines of code.
+## 6. Documentation and Comments
+- Always include doc comments for important functions and structures.
+- Update docs/ when the architecture changes.
+- Be specific with TODOs.
+
+## 7. Prohibited Actions
+- Do not add new dependencies to existing bootloader/UEFI crates.
+- Avoid unnecessary code duplication.
+- Avoid long magic numbers/hardcode (prioritize constants).
