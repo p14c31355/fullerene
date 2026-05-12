@@ -260,7 +260,8 @@ pub fn map_user_page(
 pub use petroleum::{is_user_address, validate_user_buffer};
 
 /// Temporary virtual address for physical memory access
-const TEMP_PHY_ACCESS: usize = 0xffff_8000_0000_1000;
+/// Set to a very high address to avoid conflict with bootloader's huge page mappings
+const TEMP_PHY_ACCESS: usize = 0xffff_ffff_0000_0000;
 
 #[cfg(test)]
 mod tests {

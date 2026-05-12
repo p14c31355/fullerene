@@ -857,39 +857,17 @@ impl UefiInitContext {
         let mut vga_virt_addr = 0;
 
         for (phys, pages, name) in regions {
-            // Map identity
-            if let Err(e) = petroleum::map_identity_range_checked!(
-                &mut mapper,
-                frame_allocator,
-                phys,
-                pages,
-                flags
-            ) {
-                if !matches!(e, MapToError::PageAlreadyMapped(_)) {
-                    panic!("Failed to map {}: {:?}", name, e);
-                }
-            }
-
-            // Map to higher half
-            if let Err(e) = petroleum::map_to_higher_half_with_log_macro!(
-                &mut mapper,
-                frame_allocator,
-                physical_memory_offset,
-                phys,
-                pages,
-                flags
-            ) {
-                if !matches!(e, MapToError::PageAlreadyMapped(_)) {
-                    panic!("Failed to map {} to higher half: {:?}", name, e);
-                }
-            }
-
+            // These regions are already mapped by the bootloader's 16GB huge page mapping.
+            // Attempting to map them again with 4KB pages via x86_64::map_to can cause
+            // a panic in MappedPageTable if the huge page is not handled correctly.
+            // We skip the actual mapping and just log it.
+            
             if name == "VGA text buffer" {
                 vga_virt_addr = phys + physical_memory_offset.as_u64();
             }
-
+ 
             log::info!(
-                "{} mapped at identity {:#x} and higher-half {:#x}",
+                "{} already mapped by bootloader (identity {:#x}, higher-half {:#x})",
                 name,
                 phys,
                 phys + physical_memory_offset.as_u64()

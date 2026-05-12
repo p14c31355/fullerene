@@ -47,13 +47,18 @@ pub unsafe fn map_range_with_huge_pages<A: FrameAllocator<Size4KiB>>(
                 " virt=0x",
                 v_addr as usize
             );
+            crate::debug_log_no_alloc!("Calling map_huge_page...");
             match map_huge_page(mapper, allocator, p_addr, v_addr, flags) {
                 Ok(_) => {
                     crate::debug_log_no_alloc!("Huge page mapped successfully");
                     current_page += 512;
                     continue;
                 }
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {}
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                    crate::debug_log_no_alloc!("Huge page already mapped, skipping");
+                    current_page += 512;
+                    continue;
+                }
                 Err(e) => {
                     if behavior == "panic" {
                         panic!("Huge page mapping error: {:?}", e);
@@ -64,6 +69,7 @@ pub unsafe fn map_range_with_huge_pages<A: FrameAllocator<Size4KiB>>(
         }
         let page = Page::<Size4KiB>::containing_address(VirtAddr::new(v_addr));
         let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_addr));
+        
         match mapper.map_to(page, frame, flags, allocator) {
             Ok(flush) => flush.flush(),
             Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_frame)) => {
