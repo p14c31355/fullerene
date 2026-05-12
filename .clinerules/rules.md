@@ -25,7 +25,7 @@
 - When using unsafe, clearly explain "why it's necessary" and "the basis for safety" with comments.
 
 ## 5. Testing and Verification Flow
-- Always verify functionality with `cargo clean && cargo run -q -p flasks` after changes.
+- Always verify functionality with `cargo run -q -p flasks` after changes.
 
 - Prioritize testing with QEMU.
 
