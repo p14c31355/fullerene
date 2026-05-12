@@ -781,18 +781,13 @@ impl UnifiedMemoryManager {
             let virt_addr = user_addr + offset;
 
             if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
-                self.page_table_manager.map_page(
-                    super::TEMP_PHY_ACCESS,
-                    phys_addr,
-                    PageFlags::PRESENT | PageFlags::WRITABLE,
-                    petroleum::page_table::constants::get_frame_allocator_mut(),
-                )?;
+                // Use Direct Mapping to access the physical page
+                let phys_virt = petroleum::common::memory::physical_to_virtual(phys_addr);
                 unsafe {
-                    let ptr = (super::TEMP_PHY_ACCESS + (offset % 4096)) as *const u8;
+                    let ptr = (phys_virt + (virt_addr % 4096)) as *const u8;
                     let slice = core::slice::from_raw_parts(ptr, page_size);
                     data.extend_from_slice(slice);
                 }
-                let _ = self.page_table_manager.unmap_page(super::TEMP_PHY_ACCESS)?;
             } else {
                 return Err(SystemError::InvalidArgument);
             }
@@ -827,17 +822,12 @@ impl UnifiedMemoryManager {
             }
 
             if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
-                self.page_table_manager.map_page(
-                    super::TEMP_PHY_ACCESS,
-                    phys_addr,
-                    PageFlags::PRESENT | PageFlags::WRITABLE,
-                    petroleum::page_table::constants::get_frame_allocator_mut(),
-                )?;
+                // Use Direct Mapping to access the physical page
+                let phys_virt = petroleum::common::memory::physical_to_virtual(phys_addr);
                 unsafe {
-                    let ptr = (super::TEMP_PHY_ACCESS + (offset % 4096)) as *mut u8;
+                    let ptr = (phys_virt + (virt_addr % 4096)) as *mut u8;
                     core::ptr::copy_nonoverlapping(chunk.as_ptr(), ptr, chunk.len());
                 }
-                let _ = self.page_table_manager.unmap_page(super::TEMP_PHY_ACCESS)?;
             } else {
                 return Err(SystemError::InvalidArgument);
             }
