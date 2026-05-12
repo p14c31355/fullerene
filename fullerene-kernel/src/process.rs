@@ -11,11 +11,7 @@ use petroleum::common::logging::SystemError;
 use petroleum::debug_log;
 use petroleum::page_table::PageTableHelper;
 use spin::Mutex;
-use x86_64::{
-    registers::control::Cr3,
-    structures::paging::PhysFrame,
-    PhysAddr, VirtAddr,
-};
+use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::PhysFrame};
 
 /// Next available process ID
 pub(crate) static NEXT_PID: AtomicUsize = AtomicUsize::new(1);
@@ -37,74 +33,36 @@ pub enum ProcessState {
 }
 
 /// Process context for context switching
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Debug, Clone, Copy)]
 pub struct ProcessContext {
-    /// General purpose registers
-    pub(crate) rax: u64,
-    pub(crate) rbx: u64,
-    pub(crate) rcx: u64,
-    pub(crate) rdx: u64,
-    pub(crate) rsi: u64,
-    pub(crate) rdi: u64,
-    pub(crate) rbp: u64,
-    pub(crate) rsp: u64,
-    pub(crate) r8: u64,
-    pub(crate) r9: u64,
-    pub(crate) r10: u64,
-    pub(crate) r11: u64,
-    pub(crate) r12: u64,
-    pub(crate) r13: u64,
-    pub(crate) r14: u64,
-    pub(crate) r15: u64,
-
+    /// General purpose registers: rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8-r15
+    pub(crate) regs: [u64; 16],
     /// CPU flags
     pub(crate) rflags: u64,
-
     /// Instruction pointer
     pub(crate) rip: u64,
-
-    /// Segment registers
-    pub(crate) cs: u64,
-    pub(crate) ss: u64,
-    pub(crate) ds: u64,
-    pub(crate) es: u64,
-    pub(crate) fs: u64,
-    pub(crate) gs: u64,
-
+    /// Segment registers: cs, ss, ds, es, fs, gs
+    pub(crate) segments: [u64; 6],
     /// Task State Segment
     pub(crate) tss: u64,
+    /// Whether the process runs in user mode (Ring 3)
+    pub(crate) is_user: bool,
 }
 
 impl Default for ProcessContext {
     fn default() -> Self {
         Self {
-            rax: 0,
-            rbx: 0,
-            rcx: 0,
-            rdx: 0,
-            rsi: 0,
-            rdi: 0,
-            rbp: 0,
-            rsp: 0,
-            r8: 0,
-            r9: 0,
-            r10: 0,
-            r11: 0,
-            r12: 0,
-            r13: 0,
-            r14: 0,
-            r15: 0,
+            regs: [0; 16],
             rflags: 0x0202, // IF flag set
             rip: 0,
-            cs: crate::gdt::kernel_code_selector().0 as u64,
-            ss: crate::gdt::kernel_code_selector().0 as u64, // Kernel data same as code for ring 0
-            // But since init_context overrides, and Default may be used sparingly, keep existing.
-            ds: 0,
-            es: 0,
-            fs: 0,
-            gs: 0,
+            segments: [
+                crate::gdt::kernel_code_selector().0 as u64, // cs
+                crate::gdt::kernel_code_selector().0 as u64, // ss
+                0, 0, 0, 0, // ds, es, fs, gs
+            ],
             tss: 0,
+            is_user: false,
         }
     }
 }
@@ -122,13 +80,15 @@ pub struct Process {
     /// Process page table (physical address of level 4 page table)
     pub page_table_phys_addr: PhysAddr,
     /// Process page table mapper
-    pub page_table: Option<crate::memory_management::ProcessPageTable>,
+    pub page_table: Option<petroleum::page_table::process::ProcessPageTable>,
     /// Stack pointer for kernel stack
     pub kernel_stack: VirtAddr,
     /// User-space stack pointer
     pub user_stack: VirtAddr,
     /// Program entry point
     pub entry_point: VirtAddr,
+    /// Whether the process runs in user mode (Ring 3)
+    pub is_user: bool,
     /// Exit code - used for signaling ChildProcessExited signal
     pub exit_code: Option<i32>,
     /// Parent process ID (for wait() and signal propagation)
@@ -137,7 +97,7 @@ pub struct Process {
 
 impl Process {
     /// Create a new process
-    pub fn new(name: &'static str, entry_point: VirtAddr) -> Self {
+    pub fn new(name: &'static str, entry_point: VirtAddr, is_user: bool) -> Self {
         let id = NEXT_PID.fetch_add(1, Ordering::Relaxed) as u64;
 
         Self {
@@ -150,6 +110,7 @@ impl Process {
             kernel_stack: VirtAddr::new(0), // Will be set when allocated
             user_stack: VirtAddr::new(0),   // Will be set when allocated
             entry_point,
+            is_user,
             exit_code: None,
             parent_id: None, // Will be set by fork
         }
@@ -157,78 +118,299 @@ impl Process {
 
     /// Initialize process context for first execution
     pub fn init_context(&mut self, kernel_stack_top: VirtAddr) {
-        self.context.rsp = kernel_stack_top.as_u64();
+        self.kernel_stack = kernel_stack_top;
+        self.context.is_user = self.is_user;
+
+        if self.is_user {
+            // For user processes, the context RSP should be the user stack
+            self.context.regs[7] = self.user_stack.as_u64(); // rsp
+            self.context.segments[0] = crate::gdt::user_code_selector().0 as u64; // cs
+            self.context.segments[1] = crate::gdt::user_data_selector().0 as u64; // ss
+        } else {
+            // For kernel processes, the context RSP is the kernel stack
+            self.context.regs[7] = kernel_stack_top.as_u64(); // rsp
+            self.context.segments[0] = crate::gdt::kernel_code_selector().0 as u64; // cs
+            self.context.segments[1] = crate::gdt::kernel_code_selector().0 as u64; // ss
+        }
+
         // Set RIP to entry point directly, assuming it's an extern "C" function
         self.context.rip = self.entry_point.as_u64();
-        self.context.rax = 0; // For C functions, RAX is return value, init to 0
+        self.context.regs[0] = 0; // rax: For C functions, RAX is return value, init to 0
         self.context.rflags = 0x202; // Set Interrupt Enable flag
-
-        self.context.cs = crate::gdt::user_code_selector().0 as u64;
-        self.context.ss = crate::gdt::user_data_selector().0 as u64;
-
-        self.kernel_stack = kernel_stack_top;
     }
 }
 
-/// Global process list
-pub static PROCESS_LIST: Mutex<Vec<Box<Process>>> = Mutex::new(Vec::new());
+/// Manages the global list of processes with encapsulated locking
+pub struct ProcessManager {
+    list: Mutex<[Option<Process>; 16]>,
+}
+
+impl ProcessManager {
+    pub const fn new() -> Self {
+        const NONE: Option<Process> = None;
+        Self {
+            list: Mutex::new([NONE; 16]),
+        }
+    }
+
+    /// Adds a new process to the list
+    pub fn add(&self, process: Process) {
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [ProcessManager::add] attempting lock\n"
+        );
+        let mut list = self.list.lock();
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [ProcessManager::add] lock acquired\n"
+        );
+
+        let pid = process.id;
+        let index = (pid as usize % 16);
+
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [ProcessManager::add] attempting insert\n"
+        );
+        list[index] = Some(process);
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [ProcessManager::add] insert complete\n"
+        );
+    }
+
+    /// Performs an operation on a process found by PID
+    pub fn with_process<F, R>(&self, pid: ProcessId, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut Process) -> R,
+    {
+        let mut list = self.list.lock();
+        let index = (pid as usize % 16);
+        list[index].as_mut().filter(|p| p.id == pid).map(f)
+    }
+
+    /// Performs an operation on the entire process list
+    pub fn with_list<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut [Option<Process>; 16]) -> R,
+    {
+        let mut list = self.list.lock();
+        f(&mut *list)
+    }
+
+    /// Returns the total number of processes
+    pub fn count(&self) -> usize {
+        self.list.lock().iter().filter(|p| p.is_some()).count()
+    }
+
+    /// Returns the number of active processes (Ready or Running)
+    pub fn active_count(&self) -> usize {
+        self.list
+            .lock()
+            .iter()
+            .flatten()
+            .filter(|p| p.state == ProcessState::Ready || p.state == ProcessState::Running)
+            .count()
+    }
+
+    /// Removes terminated processes from the list
+    pub fn cleanup(&self) {
+        let mut list = self.list.lock();
+        for proc_opt in list.iter_mut() {
+            if let Some(proc) = proc_opt {
+                if proc.state == ProcessState::Terminated {
+                    *proc_opt = None;
+                }
+            }
+        }
+    }
+}
+
+/// Global process manager
+pub static PROCESS_MANAGER: ProcessManager = ProcessManager::new();
 
 /// Next process to schedule (for round-robin)
 static CURRENT_PROCESS_INDEX: Mutex<usize> = Mutex::new(0);
 
-/// Current running process
-pub static CURRENT_PROCESS: Mutex<Option<ProcessId>> = Mutex::new(None);
+/// Current running process (0 means None)
+pub static CURRENT_PROCESS: AtomicUsize = AtomicUsize::new(0);
 
 // Use KERNEL_STACK_SIZE from crate::heap
 
 /// Initialize process management system
 pub fn init() {
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] start\n");
+
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [process::init] testing raw buffer write\n"
+    );
+    unsafe {
+        crate::heap::BOOT_HEAP_BUFFER.0[0] = 0xAA;
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [process::init] raw buffer write SUCCESS\n"
+        );
+    }
+
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [process::init] testing IDT with int3\n"
+    );
+    x86_64::instructions::interrupts::int3();
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] int3 returned\n");
+
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [process::init] testing heap allocation (8 bytes)\n"
+    );
+
+    if petroleum::page_table::ALLOCATOR.try_lock().is_none() {
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [process::init] ALLOCATOR lock is HELD - deadlock detected!\n"
+        );
+    } else {
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [process::init] ALLOCATOR lock is free\n"
+        );
+    }
+
+    let layout8 = Layout::from_size_align(8, 8).unwrap();
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [process::init] Calling allocate_layout...\n"
+    );
+    match petroleum::common::memory::allocate_layout(layout8) {
+        Ok(ptr8) => {
+            petroleum::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: [process::init] 8 bytes allocation SUCCESS\n"
+            );
+            petroleum::common::memory::deallocate_layout(ptr8, layout8);
+        }
+        Err(_) => {
+            petroleum::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: [process::init] 8 bytes allocation FAILED\n"
+            );
+        }
+    }
+
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [process::init] testing heap allocation (1024 bytes)\n"
+    );
+    let layout1k = Layout::from_size_align(1024, 16).unwrap();
+    match petroleum::common::memory::allocate_layout(layout1k) {
+        Ok(ptr1k) => {
+            petroleum::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: [process::init] 1024 bytes allocation SUCCESS\n"
+            );
+            petroleum::common::memory::deallocate_layout(ptr1k, layout1k);
+        }
+        Err(_) => {
+            petroleum::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: [process::init] 1024 bytes allocation FAILED\n"
+            );
+        }
+    }
+
     // Create idle process
     let idle_addr = VirtAddr::new(idle_loop as usize as u64);
-    let mut idle_process = Process::new("idle", idle_addr);
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [process::init] creating idle process\n"
+    );
+    let mut idle_process = Process::new("idle", idle_addr, false);
     idle_process.state = ProcessState::Running;
 
-    petroleum::lock_and_modify!(PROCESS_LIST, process_list, {
-        process_list.push(Box::new(idle_process));
-    });
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [process::init] adding idle process to manager\n"
+    );
+    PROCESS_MANAGER.add(idle_process);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] idle process added\n");
 
     // Set current process
-    petroleum::lock_and_modify!(CURRENT_PROCESS, current_proc, {
-        *current_proc = Some(1);
-    });
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [process::init] setting CURRENT_PROCESS\n"
+    );
+    CURRENT_PROCESS.store(1, Ordering::SeqCst);
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [process::init] CURRENT_PROCESS modified\n"
+    );
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] done\n");
 }
 
 /// Create a new process and add it to the process list
 pub fn create_process(
     name: &'static str,
     entry_point_address: VirtAddr,
+    is_user: bool,
 ) -> Result<ProcessId, petroleum::common::logging::SystemError> {
     debug_log!("Process: create_process starting");
 
-    let mut process = Process::new(name, entry_point_address);
+    let mut process = Process::new(name, entry_point_address, is_user);
     debug_log!("Process: Process::new done");
 
     // Allocate kernel stack for the process
     let stack_layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
-    let stack_ptr = unsafe { alloc::alloc::alloc(stack_layout) };
-    if stack_ptr.is_null() {
-        return Err(petroleum::common::logging::SystemError::MemOutOfMemory);
-    }
+    let stack_ptr = petroleum::common::memory::allocate_layout(stack_layout)?;
     let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
     debug_log!("Process: Kernel stack allocated");
 
+    if is_user {
+        // Allocate user stack for the process
+        let user_stack_layout =
+            Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
+        let user_stack_ptr = petroleum::common::memory::allocate_layout(user_stack_layout)
+            .map_err(|e| {
+                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+                e
+            })?;
+        process.user_stack =
+            VirtAddr::new(user_stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
+        debug_log!("Process: User stack allocated");
+    }
+
+    debug_log!("Process: Creating page table...");
     // Create page table for the process
     let page_table = match crate::memory_management::create_process_page_table() {
         Ok(pt) => pt,
         Err(e) => {
             log::error!("Failed to create process page table: {:?}", e);
             // Deallocate stack to prevent memory leak on error
-            unsafe {
-                alloc::alloc::dealloc(stack_ptr, stack_layout);
-            }
+            petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
             return Err(e);
         }
     };
+    debug_log!("Process: Page table created");
     process.page_table_phys_addr = PhysAddr::new(page_table.current_page_table() as u64);
     process.page_table = Some(page_table);
 
@@ -236,8 +418,8 @@ pub fn create_process(
     debug_log!("Process: Context initialized");
 
     let pid = process.id;
-    let mut process_list = PROCESS_LIST.lock();
-    process_list.push(Box::new(process));
+    debug_log!("Process: Adding process to manager...");
+    PROCESS_MANAGER.add(process);
     debug_log!("Process: Process added to list");
 
     Ok(pid)
@@ -245,55 +427,53 @@ pub fn create_process(
 
 /// Unblock parent processes that are waiting for this child process
 fn unblock_waiting_parents(child_pid: ProcessId) {
-    let process_list = PROCESS_LIST.lock();
+    let parent_to_unblock = PROCESS_MANAGER.with_list(|list| {
+        list.iter()
+            .flatten()
+            .find(|p| p.id == child_pid)
+            .and_then(|terminated_proc| terminated_proc.parent_id)
+            .filter(|&parent_id| {
+                list.iter()
+                    .flatten()
+                    .find(|p| p.id == parent_id)
+                    .map_or(false, |parent| parent.state == ProcessState::Blocked)
+            })
+    });
 
-    // Find the parent of the terminated process
-    if let Some(terminated_proc) = process_list.iter().find(|p| p.id == child_pid) {
-        if let Some(parent_id) = terminated_proc.parent_id {
-            // Find the parent process and unblock it if it's blocked waiting
-            if let Some(parent) = process_list.iter().find(|p| p.id == parent_id) {
-                if parent.state == ProcessState::Blocked {
-                    // Note: In a full implementation, we'd signal that the child has terminated
-                    // For now, just unblock the parent so it can continue executing
-                    drop(process_list);
-                    unblock_process(parent_id);
-                }
-            }
-        }
+    if let Some(parent_id) = parent_to_unblock {
+        unblock_process(parent_id);
     }
 }
 
 /// Terminate a process
 pub fn terminate_process(pid: ProcessId, exit_code: i32) {
-    let mut process_list = PROCESS_LIST.lock();
-    if let Some(process) = process_list.iter_mut().find(|p| p.id == pid) {
+    PROCESS_MANAGER.with_process(pid, |process| {
         process.state = ProcessState::Terminated;
         process.exit_code = Some(exit_code);
 
         // Free resources
-        let kernel_stack_base = process.kernel_stack.as_u64() - crate::heap::KERNEL_STACK_SIZE as u64;
+        let kernel_stack_base =
+            process.kernel_stack.as_u64() - crate::heap::KERNEL_STACK_SIZE as u64;
         let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
-        unsafe { alloc::alloc::dealloc(kernel_stack_base as *mut u8, layout) };
+        petroleum::common::memory::deallocate_layout(kernel_stack_base as *mut u8, layout);
 
         // Properly free page table frames recursively
         if let Some(page_table) = process.page_table.take() {
-            // For now, skip deallocation if no allocated pml4_frame
-            // This handles the case where page table was created with current CR3 (fallback)
             if let Some(pml4_frame) = page_table.pml4_frame() {
-                drop(page_table); // Explicit drop to release the mapper
+                drop(page_table);
                 crate::memory_management::deallocate_process_page_table(pml4_frame);
             }
         }
 
-        process.page_table = None; // Already taken above, this is redundant but safe
+        process.page_table = None;
+    });
 
-        // Unblock parent processes waiting for this child
-        unblock_waiting_parents(pid);
-    }
+    // Unblock parent processes waiting for this child
+    unblock_waiting_parents(pid);
 
     // If current process is terminating, schedule next
-    let current_pid = *CURRENT_PROCESS.lock();
-    if current_pid == Some(pid) {
+    let current_pid = CURRENT_PROCESS.load(Ordering::SeqCst);
+    if current_pid == pid as usize {
         schedule_next();
     }
 }
@@ -313,85 +493,101 @@ fn idle_loop() {
 pub fn schedule_next() {
     petroleum::scheduler_log!("Starting process scheduling");
 
-    let mut process_list = PROCESS_LIST.lock();
-    petroleum::scheduler_log!(
-        "Acquired process list lock, {} processes",
-        process_list.len()
-    );
-
-    // Handle empty process list
-    if process_list.is_empty() {
-        petroleum::scheduler_log!("No processes in list, cannot schedule");
-        return;
-    }
-
-    let current_index = *CURRENT_PROCESS_INDEX.lock();
-    petroleum::scheduler_log!("Current index: {}", current_index);
-
-    // Find next ready process
-    let mut next_index = current_index;
-    let start_index = current_index;
-    let mut _found_ready = false;
-
-    loop {
-        next_index = (next_index + 1) % process_list.len();
+    PROCESS_MANAGER.with_list(|process_list| {
         petroleum::scheduler_log!(
-            "Checking process at index {}, name: {}, state: {:?}",
-            next_index,
-            process_list[next_index].name,
-            process_list[next_index].state
+            "Acquired process list lock, {} processes",
+            process_list.len()
         );
 
-        if process_list[next_index].state == ProcessState::Ready {
-            petroleum::scheduler_log!("Found ready process at index {}", next_index);
-            _found_ready = true;
-            break;
+        if process_list.is_empty() {
+            petroleum::scheduler_log!("No processes in list, cannot schedule");
+            return;
         }
 
-        if next_index == start_index {
-            petroleum::scheduler_log!("Wrapped around, all processes blocked or completed check");
-            // All processes blocked, run idle
-            if let Some(idle_idx) = process_list.iter().position(|p| p.name == "idle") {
-                next_index = idle_idx;
-                petroleum::scheduler_log!("Switching to idle process at index {}", idle_idx);
-            } else {
-                petroleum::scheduler_log!("No idle process found, using first process");
-                next_index = 0;
+        let current_index = *CURRENT_PROCESS_INDEX.lock();
+        petroleum::scheduler_log!("Current index: {}", current_index);
+
+        let mut next_index = current_index;
+        let start_index = current_index;
+
+        loop {
+            next_index = (next_index + 1) % process_list.len();
+            let proc = process_list[next_index].as_ref();
+            petroleum::scheduler_log!(
+                "Checking process at index {}, name: {}, state: {:?}",
+                next_index,
+                proc.map(|p| p.name).unwrap_or("None"),
+                proc.map(|p| p.state).unwrap_or(ProcessState::Terminated)
+            );
+
+            if proc
+                .map(|p| p.state == ProcessState::Ready)
+                .unwrap_or(false)
+            {
+                petroleum::scheduler_log!("Found ready process at index {}", next_index);
+                break;
             }
-            break;
-        }
-    }
 
-    // Update current process tracking
-    *CURRENT_PROCESS_INDEX.lock() = next_index;
-    *CURRENT_PROCESS.lock() = Some(process_list[next_index].id);
-    petroleum::scheduler_log!(
-        "Set current process index to {}, PID {}",
-        next_index,
-        process_list[next_index].id
-    );
-
-    // Mark current as ready, next as running
-    if current_index != next_index {
-        if let Some(current) = process_list.get_mut(current_index) {
-            if current.state == ProcessState::Running {
-                current.state = ProcessState::Ready;
-                petroleum::scheduler_log!("Marked current process as ready");
+            if next_index == start_index {
+                petroleum::scheduler_log!(
+                    "Wrapped around, all processes blocked or completed check"
+                );
+                if let Some(idle_idx) = process_list
+                    .iter()
+                    .position(|p| p.as_ref().map(|p| p.name == "idle").unwrap_or(false))
+                {
+                    next_index = idle_idx;
+                    petroleum::scheduler_log!("Switching to idle process at index {}", idle_idx);
+                } else {
+                    petroleum::scheduler_log!("No idle process found, using first process");
+                    next_index = 0;
+                }
+                break;
             }
         }
 
-        if let Some(next) = process_list.get_mut(next_index) {
-            next.state = ProcessState::Running;
-            petroleum::scheduler_log!("Marked next process as running");
+        *CURRENT_PROCESS_INDEX.lock() = next_index;
+        let next_pid = process_list[next_index]
+            .as_ref()
+            .map(|p| p.id as usize)
+            .unwrap_or(0);
+        CURRENT_PROCESS.store(next_pid, Ordering::SeqCst);
+        petroleum::scheduler_log!(
+            "Set current process index to {}, PID {}",
+            next_index,
+            next_pid
+        );
+
+        if current_index != next_index {
+            if let Some(current_opt) = process_list.get_mut(current_index) {
+                if let Some(current) = current_opt.as_mut() {
+                    if current.state == ProcessState::Running {
+                        current.state = ProcessState::Ready;
+                        petroleum::scheduler_log!("Marked current process as ready");
+                    }
+                }
+            }
+
+            if let Some(next_opt) = process_list.get_mut(next_index) {
+                if let Some(next) = next_opt.as_mut() {
+                    next.state = ProcessState::Running;
+                    petroleum::scheduler_log!("Marked next process as running");
+                }
+            }
         }
-    }
+    });
 
     petroleum::scheduler_log!("Process scheduling completed");
 }
 
 /// Get current process ID
 pub fn current_pid() -> Option<ProcessId> {
-    petroleum::lock_and_read!(CURRENT_PROCESS, proc, *proc)
+    let pid = CURRENT_PROCESS.load(Ordering::SeqCst);
+    if pid == 0 {
+        None
+    } else {
+        Some(pid as ProcessId)
+    }
 }
 
 /// Yield current process
@@ -408,49 +604,53 @@ pub fn yield_current() {
 pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
     use crate::context_switch::switch_context;
 
-    let mut process_list = PROCESS_LIST.lock();
+    let (old_context_ptr, new_context_ptr, new_page_table) = PROCESS_MANAGER.with_list(|list| {
+        let old_ptr = old_pid
+            .and_then(|pid| {
+                let index = (pid as usize % 16);
+                list[index].as_mut().filter(|p| p.id == pid)
+            })
+            .map(|p| p as *mut Process);
 
-    let old_proc_ptr = old_pid
-        .and_then(|pid| process_list.iter_mut().find(|p| p.id == pid))
-        .map(|p| p.as_mut() as *mut Process);
+        let index = (new_pid as usize % 16);
+        let new_ptr = list[index]
+            .as_ref()
+            .filter(|p| p.id == new_pid)
+            .map(|p| p as *const Process);
 
-    let new_proc_ptr = process_list
-        .iter()
-        .find(|p| p.id == new_pid)
-        .map(|p| p.as_ref() as *const Process);
-
-        if let Some(new_ptr) = new_proc_ptr {
-            let old_context = old_proc_ptr.map(|p| unsafe { &mut (*p).context });
-            let new_context = unsafe { &(*new_ptr).context };
-
-            // Switch page table to the new process's page table before switching registers.
-            // This ensures that the subsequent register restoration (including RSP) happens
-            // within the correct address space.
-            unsafe {
-                let new_frame = PhysFrame::containing_address((*new_ptr).page_table_phys_addr);
-                let (current_frame, _) = Cr3::read();
-                if new_frame != current_frame {
-                    Cr3::write(new_frame, x86_64::registers::control::Cr3Flags::empty());
-                }
-            }
-
-            // Drop the lock before the context switch to prevent deadlocks.
-            drop(process_list);
-
-            switch_context(old_context, new_context);
+        if let Some(new_ptr) = new_ptr {
+            let old_ctx = old_ptr.map(|p| p as *mut ProcessContext);
+            let new_ctx = new_ptr as *const ProcessContext;
+            let pt = unsafe { (*new_ptr).page_table_phys_addr };
+            (Some(old_ctx), Some(new_ctx), Some(pt))
+        } else {
+            (None, None, None)
         }
+    });
+
+    if let (Some(old_ctx), Some(new_ctx), Some(pt)) =
+        (old_context_ptr, new_context_ptr, new_page_table)
+    {
+        unsafe {
+            let new_frame = PhysFrame::containing_address(pt);
+            let (current_frame, _) = Cr3::read();
+            if new_frame != current_frame {
+                Cr3::write(new_frame, x86_64::registers::control::Cr3Flags::empty());
+            }
+            switch_context(old_ctx.map(|p| unsafe { &mut *p }), unsafe { &(*new_ctx) });
+        }
+    }
 }
 
 /// Block current process
 pub fn block_current() {
     let pid = current_pid().expect("block_current called with no current process");
-    let mut process_list = PROCESS_LIST.lock();
 
-    if let Some(process) = process_list.iter_mut().find(|p| p.id == pid) {
+    let found = PROCESS_MANAGER.with_process(pid, |process| {
         process.state = ProcessState::Blocked;
+    });
 
-        drop(process_list);
-
+    if found.is_some() {
         let old_pid = Some(pid);
         schedule_next();
         let new_pid =
@@ -468,12 +668,11 @@ pub fn block_current() {
 
 /// Unblock a process
 pub fn unblock_process(pid: ProcessId) {
-    let mut process_list = PROCESS_LIST.lock();
-    if let Some(process) = process_list.iter_mut().find(|p| p.id == pid) {
+    PROCESS_MANAGER.with_process(pid, |process| {
         if process.state == ProcessState::Blocked {
             process.state = ProcessState::Ready;
         }
-    }
+    });
 }
 
 #[cfg(test)]
@@ -483,7 +682,7 @@ mod tests {
     #[test]
     fn test_process_creation() {
         let addr = VirtAddr::new(0);
-        let proc = Process::new("test", addr);
+        let proc = Process::new("test", addr, false);
         assert_eq!(proc.name, "test");
         assert_eq!(proc.state, ProcessState::Ready);
     }
@@ -498,26 +697,17 @@ mod tests {
 
 /// Get total number of processes in the system
 pub fn get_process_count() -> usize {
-    PROCESS_LIST.lock().len()
+    PROCESS_MANAGER.count()
 }
 
 /// Get number of active processes (ready or running)
 pub fn get_active_process_count() -> usize {
-    PROCESS_LIST
-        .lock()
-        .iter()
-        .filter(|p| p.state == ProcessState::Ready || p.state == ProcessState::Running)
-        .count()
+    PROCESS_MANAGER.active_count()
 }
 
 /// Clean up terminated processes to free resources
 pub fn cleanup_terminated_processes() {
-    let mut process_list = PROCESS_LIST.lock();
-
-    // Remove terminated processes from the list. This will drop the `Box<Process>`,
-    // freeing the memory for the struct itself. `terminate_process` should have
-    // already been called to free other associated resources.
-    process_list.retain(|p| p.state != ProcessState::Terminated);
+    PROCESS_MANAGER.cleanup();
 }
 // Test process module containing the test user process functions
 

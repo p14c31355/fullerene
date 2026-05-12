@@ -125,11 +125,12 @@ pub trait TextBufferOperations {
 // Constants to reduce magic numbers and consolidate VGA implementation
 const VGA_WIDTH: usize = 80;
 const VGA_HEIGHT: usize = 25;
-const VGA_BUFFER_ADDR: usize = 0xb8000;
+const DEFAULT_VGA_BUFFER_ADDR: usize = 0xb8000;
 
 #[derive(Clone)]
 /// VGA text mode buffer wrapper that implements TextBufferOperations
 pub struct VgaBuffer {
+    buffer_addr: usize,
     enabled: bool,
     color_code: ColorCode,
     cursor_row: usize,
@@ -145,7 +146,12 @@ impl core::fmt::Write for VgaBuffer {
 
 impl VgaBuffer {
     pub fn new() -> Self {
+        Self::with_address(DEFAULT_VGA_BUFFER_ADDR)
+    }
+
+    pub fn with_address(addr: usize) -> Self {
         Self {
+            buffer_addr: addr,
             enabled: false,
             color_code: ColorCode::new(Color::Green, Color::Black),
             cursor_row: 0,
@@ -164,7 +170,7 @@ impl VgaBuffer {
 
     pub fn get_buffer(&mut self) -> Option<&mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]> {
         if self.enabled {
-            Some(unsafe { &mut *(VGA_BUFFER_ADDR as *mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) })
+            Some(unsafe { &mut *(self.buffer_addr as *mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) })
         } else {
             None
         }
@@ -226,7 +232,7 @@ impl TextBufferOperations for VgaBuffer {
         if self.enabled && row < VGA_HEIGHT && col < VGA_WIDTH {
             // Get buffer directly for immutable access
             let buffer =
-                unsafe { &*(VGA_BUFFER_ADDR as *const [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) };
+                unsafe { &*(self.buffer_addr as *const [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]) };
             buffer[row][col]
         } else {
             ScreenChar {
@@ -256,32 +262,14 @@ impl TextBufferOperations for VgaBuffer {
     }
 }
 
-// VGA text mode device implementation with consolidation
-#[derive(Clone)]
-pub struct VgaDevice {
-    buffer: VgaBuffer,
-}
-
-impl VgaDevice {
-    pub fn new() -> Self {
-        Self {
-            buffer: VgaBuffer::new(),
-        }
-    }
-
-    pub fn set_color(&mut self, foreground: Color, background: Color) {
-        self.buffer.set_color(foreground, background);
-    }
-}
-
-impl crate::initializer::Initializable for VgaDevice {
+impl crate::initializer::Initializable for VgaBuffer {
     fn init(&mut self) -> crate::common::logging::SystemResult<()> {
         log::info!("VGA device initialized");
         Ok(())
     }
 
     fn name(&self) -> &'static str {
-        "VgaDevice"
+        "VgaBuffer"
     }
 
     fn priority(&self) -> i32 {
@@ -289,7 +277,7 @@ impl crate::initializer::Initializable for VgaDevice {
     }
 }
 
-impl crate::initializer::ErrorLogging for VgaDevice {
+impl crate::initializer::ErrorLogging for VgaBuffer {
     fn log_error(&self, error: &crate::common::logging::SystemError, context: &'static str) {
         log::error!("{}: {:?}", context, error);
     }
@@ -311,7 +299,7 @@ impl crate::initializer::ErrorLogging for VgaDevice {
     }
 }
 
-impl crate::initializer::HardwareDevice for VgaDevice {
+impl crate::initializer::HardwareDevice for VgaBuffer {
     fn device_name(&self) -> &'static str {
         "VGA Text Mode Display"
     }
@@ -321,25 +309,25 @@ impl crate::initializer::HardwareDevice for VgaDevice {
     }
 
     fn enable(&mut self) -> crate::common::logging::SystemResult<()> {
-        self.buffer.enable();
+        self.enabled = true;
         log::info!("VGA device enabled");
         Ok(())
     }
 
     fn disable(&mut self) -> crate::common::logging::SystemResult<()> {
-        self.buffer.disable();
+        self.enabled = false;
         log::info!("VGA device disabled");
         Ok(())
     }
 
     fn reset(&mut self) -> crate::common::logging::SystemResult<()> {
-        self.buffer.reset();
+        self.reset();
         log::info!("VGA device reset");
         Ok(())
     }
 
     fn is_enabled(&self) -> bool {
-        self.buffer.enabled
+        self.enabled
     }
 }
 
@@ -353,15 +341,15 @@ mod tests {
 
     #[test]
     fn test_vga_device_creation() {
-        let device = VgaDevice::new();
-        assert_eq!(device.name(), "VgaDevice");
+        let device = VgaBuffer::new();
+        assert_eq!(device.name(), "VgaBuffer");
         assert!(!device.is_enabled());
     }
 
     #[test]
     fn test_vga_device_initializable_trait() {
-        let mut device = VgaDevice::new();
-        assert_eq!(device.name(), "VgaDevice");
+        let mut device = VgaBuffer::new();
+        assert_eq!(device.name(), "VgaBuffer");
         assert_eq!(device.priority(), 10);
         // Test init - should return Ok
         let result = device.init();
@@ -370,28 +358,25 @@ mod tests {
 
     #[test]
     fn test_vga_device_hardware_device_trait() {
-        let mut device = VgaDevice::new();
+        let mut device = VgaBuffer::new();
         assert_eq!(device.device_name(), "VGA Text Mode Display");
         assert_eq!(device.device_type(), "Display");
 
         // Test enable/disable cycle
         assert!(!device.is_enabled());
-        let enable_result = device.enable();
-        assert!(enable_result.is_ok());
+        device.enable();
         assert!(device.is_enabled());
 
-        let disable_result = device.disable();
-        assert!(disable_result.is_ok());
+        device.disable();
         assert!(!device.is_enabled());
 
         // Test reset
-        let reset_result = device.reset();
-        assert!(reset_result.is_ok());
+        device.reset();
     }
 
     #[test]
     fn test_vga_device_error_logging_trait() {
-        let device = VgaDevice::new();
+        let device = VgaBuffer::new();
         // Error logging methods don't return values, so just ensure they don't panic
         let error = crate::common::logging::SystemError::InternalError;
         device.log_error(&error, "test context");
@@ -403,7 +388,7 @@ mod tests {
 
     #[test]
     fn test_vga_device_color_setting() {
-        let mut device = VgaDevice::new();
+        let mut device = VgaBuffer::new();
         device.set_color(Color::Red, Color::Blue);
 
         // Can't directly test internal state, but method should not panic

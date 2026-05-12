@@ -171,28 +171,6 @@ pub trait SyscallHandler {
     fn handle_syscall(&mut self, syscall_number: usize, args: &[usize]) -> SystemResult<usize>;
 }
 
-// Placeholder trait for page table management that may be needed
-pub trait PageTableHelper {
-    fn map_page(
-        &mut self,
-        virtual_addr: usize,
-        physical_addr: usize,
-        flags: i32,
-        frame_allocator: &mut dyn FrameAllocator,
-    ) -> SystemResult<()>;
-    fn unmap_page(&mut self, virtual_addr: usize) -> SystemResult<()>;
-    fn translate_address(&self, virtual_addr: usize) -> SystemResult<usize>;
-    fn set_page_flags(&mut self, virtual_addr: usize, flags: i32) -> SystemResult<()>;
-    fn get_page_flags(&self, virtual_addr: usize) -> SystemResult<i32>;
-    fn flush_tlb(&mut self, virtual_addr: usize) -> SystemResult<()>;
-    fn flush_tlb_all(&mut self) -> SystemResult<()>;
-    fn create_page_table(&mut self) -> SystemResult<usize>;
-    fn destroy_page_table(&mut self, table_addr: usize) -> SystemResult<()>;
-    fn clone_page_table(&mut self, source_table: usize) -> SystemResult<usize>;
-    fn switch_page_table(&mut self, table_addr: usize) -> SystemResult<()>;
-    fn current_page_table(&self) -> usize;
-}
-
 // Placeholder for logging-related traits that may need to be defined
 pub trait Logger {
     fn log(&self, level: crate::common::logging::LogLevel, message: &str);
@@ -253,6 +231,29 @@ pub trait FrameAllocator {
     fn release_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()>;
     fn is_frame_available(&self, frame_addr: usize) -> bool;
     fn frame_size(&self) -> usize;
+}
+
+pub struct InitSequence<'a> {
+    steps: &'a [(&'static str, fn() -> Result<(), &'static str>)],
+}
+
+impl<'a> InitSequence<'a> {
+    pub fn new(steps: &'a [(&'static str, fn() -> Result<(), &'static str>)]) -> Self {
+        Self { steps }
+    }
+
+    pub fn run(&self) {
+        for (_name, init_fn) in self.steps {
+            // Use raw serial write to avoid potential deadlock in serial_log (Mutex)
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [InitSequence] About to init step\n");
+
+            if let Err(e) = init_fn() {
+                crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [InitSequence] Step failed\n");
+                panic!("{}", e);
+            }
+            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [InitSequence] Step done\n");
+        }
+    }
 }
 
 pub fn initialize_system() -> SystemResult<()> {

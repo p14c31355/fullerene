@@ -1,5 +1,6 @@
-use petroleum::mem_debug;
-use spin::Once;
+#![allow(static_mut_refs)]
+use core::sync::atomic::{AtomicBool, Ordering};
+use petroleum::{debug_log_no_alloc, mem_debug};
 use x86_64::VirtAddr;
 use x86_64::instructions::tables::load_tss;
 use x86_64::registers::segmentation::{CS, Segment};
@@ -24,14 +25,14 @@ pub const GDT_TSS_STACK_COUNT: usize = 3;
 /// This includes space for all TSS stacks and should be accounted for before heap allocation.
 pub const GDT_INIT_OVERHEAD: usize = GDT_TSS_STACK_COUNT * GDT_TSS_STACK_SIZE;
 
-static TSS: Once<TaskStateSegment> = Once::new();
-static GDT: Once<GlobalDescriptorTable> = Once::new();
-static CODE_SELECTOR: Once<SegmentSelector> = Once::new();
-static KERNEL_DATA_SELECTOR: Once<SegmentSelector> = Once::new();
-static TSS_SELECTOR: Once<SegmentSelector> = Once::new();
-static USER_DATA_SELECTOR: Once<SegmentSelector> = Once::new();
-static USER_CODE_SELECTOR: Once<SegmentSelector> = Once::new();
-static GDT_INITIALIZED: Once<()> = Once::new();
+static mut TSS: Option<TaskStateSegment> = None;
+static mut GDT: Option<GlobalDescriptorTable> = None;
+static mut CODE_SELECTOR: Option<SegmentSelector> = None;
+static mut KERNEL_DATA_SELECTOR: Option<SegmentSelector> = None;
+static mut TSS_SELECTOR: Option<SegmentSelector> = None;
+static mut USER_DATA_SELECTOR: Option<SegmentSelector> = None;
+static mut USER_CODE_SELECTOR: Option<SegmentSelector> = None;
+static GDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 #[repr(align(4096))]
 struct EarlyGdtBuffer([u8; 0x20000]);
@@ -43,24 +44,29 @@ pub fn init_early() {
 }
 
 pub fn kernel_code_selector() -> SegmentSelector {
-    *CODE_SELECTOR.get().expect("GDT not initialized")
+    unsafe { CODE_SELECTOR.expect("CODE_SELECTOR not initialized") }
 }
 
 pub fn load() {
-    let gdt = GDT.get().expect("GDT not initialized");
+    let gdt = unsafe {
+        core::mem::transmute::<&GlobalDescriptorTable, &'static GlobalDescriptorTable>(
+            GDT.as_ref().expect("GDT not initialized"),
+        )
+    };
     gdt.load();
+
     unsafe {
-        CS::set_reg(*CODE_SELECTOR.get().unwrap());
-        load_tss(*TSS_SELECTOR.get().unwrap());
+        CS::set_reg(CODE_SELECTOR.expect("CODE_SELECTOR not initialized"));
+        load_tss(TSS_SELECTOR.expect("TSS_SELECTOR not initialized"));
 
         // Reload all data segment registers to ensure they point to the correct GDT entry
-        if let Some(data_sel) = KERNEL_DATA_SELECTOR.get() {
+        if let Some(data_sel) = KERNEL_DATA_SELECTOR {
             use x86_64::registers::segmentation::{DS, ES, FS, GS, SS};
-            DS::set_reg(*data_sel);
-            SS::set_reg(*data_sel);
-            ES::set_reg(*data_sel);
-            FS::set_reg(*data_sel);
-            GS::set_reg(*data_sel);
+            DS::set_reg(data_sel);
+            SS::set_reg(data_sel);
+            ES::set_reg(data_sel);
+            FS::set_reg(data_sel);
+            GS::set_reg(data_sel);
         }
     }
 }
@@ -73,118 +79,167 @@ pub struct TssStacks {
 pub fn init_with_stacks(stacks: TssStacks) {
     mem_debug!("GDT: Updating TSS stacks\n");
 
-    mem_debug!("About to create TSS...\n");
-    let tss = TSS.call_once(|| {
+    unsafe {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: init_with_stacks (unsafe mode)\n");
+
         let mut tss = TaskStateSegment::new();
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stacks.double_fault;
         tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = stacks.timer;
-        tss
-    });
-    mem_debug!("TSS created successfully\n");
+        TSS = Some(tss);
 
-    let _gdt = GDT.call_once(|| {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: TSS created (unsafe)\n");
+
+        mem_debug!("DEBUG: Creating GDT...\n");
         let mut gdt = GlobalDescriptorTable::new();
         let code_selector = gdt.append(Descriptor::kernel_code_segment());
-        // Add kernel data segment (ring 0)
         let data_selector = gdt.append(Descriptor::kernel_data_segment());
-        // Add user data segment (ring 3)
         let user_data_selector = gdt.append(Descriptor::user_data_segment());
-        // Add user code segment (ring 3)
         let user_code_selector = gdt.append(Descriptor::user_code_segment());
-        let tss_selector = gdt.append(Descriptor::tss_segment(tss));
 
-        CODE_SELECTOR.call_once(|| code_selector);
-        KERNEL_DATA_SELECTOR.call_once(|| data_selector);
-        TSS_SELECTOR.call_once(|| tss_selector);
+        let tss_selector = {
+            petroleum::write_serial_bytes(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: About to access TSS static for GDT descriptor\n",
+            );
+            let tss_ref = TSS.as_ref().expect("TSS not set");
+            let selector = gdt.append(Descriptor::tss_segment(tss_ref));
+            petroleum::write_serial_bytes(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: Successfully accessed TSS static for GDT descriptor\n",
+            );
+            selector
+        };
 
-        USER_DATA_SELECTOR.call_once(|| user_data_selector);
-        USER_CODE_SELECTOR.call_once(|| user_code_selector);
-        gdt
-    });
+        CODE_SELECTOR = Some(code_selector);
+        KERNEL_DATA_SELECTOR = Some(data_selector);
+        TSS_SELECTOR = Some(tss_selector);
+        USER_DATA_SELECTOR = Some(user_data_selector);
+        USER_CODE_SELECTOR = Some(user_code_selector);
+        GDT = Some(gdt);
+
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT built successfully\n");
+    }
 
     mem_debug!("GDT: GDT built\n");
 
-    // Mark as initialized
-    GDT_INITIALIZED.call_once(|| {});
+    GDT_INITIALIZED.store(true, Ordering::SeqCst);
     mem_debug!("GDT: About to return\n");
 }
 
 pub fn init(heap_start: VirtAddr) -> VirtAddr {
     // If already initialized, just return the heap start (don't modify)
-    if GDT_INITIALIZED.is_completed() {
-        mem_debug!("GDT: Already initialized, skipping\n");
+    if GDT_INITIALIZED.load(Ordering::SeqCst) {
+        unsafe {
+            petroleum::write_serial_bytes(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: GDT: Already initialized, skipping\n",
+            );
+        }
         return heap_start;
     }
 
-    mem_debug!("GDT: Initializing with heap at ", heap_start.as_u64(), "\n");
+    unsafe {
+        let mut buf = [0u8; 16];
+        let len = petroleum::serial::format_hex_to_buffer(heap_start.as_u64(), &mut buf, 16);
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: Initializing with heap at 0x");
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+    }
 
     let double_fault_ist = heap_start + GDT_TSS_STACK_SIZE as u64;
     let timer_ist = double_fault_ist + GDT_TSS_STACK_SIZE as u64;
     // Reserve space for all TSS stacks (double fault, timer, and one spare).
     let new_heap_start = timer_ist + GDT_TSS_STACK_SIZE as u64;
 
-    mem_debug!("GDT: Stack addresses calculated\n");
+    unsafe {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: Stack addresses calculated\n");
+    }
 
-    mem_debug!("About to create TSS...\n");
-    let tss = TSS.call_once(|| {
+    unsafe {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: About to access TSS static\n");
         let mut tss = TaskStateSegment::new();
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = double_fault_ist;
         tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = timer_ist;
-        tss
-    });
-    mem_debug!("TSS created successfully\n");
+        TSS = Some(tss);
+        petroleum::write_serial_bytes(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: GDT: TSS static accessed successfully\n",
+        );
+    }
 
     mem_debug!("GDT: TSS created\n");
 
-    let _gdt = GDT.call_once(|| {
+    unsafe {
         let mut gdt = GlobalDescriptorTable::new();
         let code_selector = gdt.append(Descriptor::kernel_code_segment());
-        // Add kernel data segment (ring 0)
         let data_selector = gdt.append(Descriptor::kernel_data_segment());
-        // Add user data segment (ring 3)
         let user_data_selector = gdt.append(Descriptor::user_data_segment());
-        // Add user code segment (ring 3)
         let user_code_selector = gdt.append(Descriptor::user_code_segment());
-        let tss_selector = gdt.append(Descriptor::tss_segment(tss));
 
-        CODE_SELECTOR.call_once(|| code_selector);
-        KERNEL_DATA_SELECTOR.call_once(|| data_selector);
-        TSS_SELECTOR.call_once(|| tss_selector);
+        let tss_selector = {
+            petroleum::write_serial_bytes(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: GDT: About to access TSS static for GDT descriptor\n",
+            );
+            let tss_ref = TSS.as_ref().expect("TSS must be initialized");
+            let selector = gdt.append(Descriptor::tss_segment(tss_ref));
+            petroleum::write_serial_bytes(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: GDT: TSS static accessed successfully for GDT descriptor\n",
+            );
+            selector
+        };
 
-        USER_DATA_SELECTOR.call_once(|| user_data_selector);
-        USER_CODE_SELECTOR.call_once(|| user_code_selector);
-        gdt
-    });
+        CODE_SELECTOR = Some(code_selector);
+        KERNEL_DATA_SELECTOR = Some(data_selector);
+        TSS_SELECTOR = Some(tss_selector);
+        USER_DATA_SELECTOR = Some(user_data_selector);
+        USER_CODE_SELECTOR = Some(user_code_selector);
+        GDT = Some(gdt);
+    }
 
-    mem_debug!("GDT: GDT built\n");
+    unsafe {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: GDT built\n");
+    }
 
     #[cfg(not(target_os = "uefi"))]
     {
         // Load GDT - required for proper segmentation in BIOS mode
         mem_debug!("About to load GDT...\n");
-        _gdt.load();
-        mem_debug!("GDT: GDT loaded\n");
+        let gdt = unsafe {
+            core::mem::transmute::<&GlobalDescriptorTable, &'static GlobalDescriptorTable>(
+                GDT.as_ref().expect("GDT not initialized"),
+            )
+        };
+        gdt.load();
+        mem_debug!("GDT loaded\n");
 
         unsafe {
-            // Reload CS register in BIOS mode as it's crucial after GDT reload
+            // Reload CS register in BIOS mode as it's crucial for GDT reload
             mem_debug!("About to set CS register...\n");
-            CS::set_reg(*CODE_SELECTOR.get().unwrap());
+            CS::set_reg(CODE_SELECTOR.expect("CODE_SELECTOR not initialized"));
             mem_debug!("GDT: CS set\n");
 
             mem_debug!("About to load TSS...\n");
-            load_tss(*TSS_SELECTOR.get().unwrap());
+            load_tss(TSS_SELECTOR.expect("TSS_SELECTOR not initialized"));
             mem_debug!("GDT: TSS loaded\n");
             mem_debug!("GDT: Loaded and segments set\n");
 
             // Set data segment registers to kernel data segment for proper I/O operations
             mem_debug!("Setting data segment registers...\n");
-            if let Some(data_sel) = KERNEL_DATA_SELECTOR.get() {
+            if let Some(data_sel) = KERNEL_DATA_SELECTOR {
                 use x86_64::registers::segmentation::{DS, ES, FS, GS, SS};
-                DS::set_reg(*data_sel);
-                SS::set_reg(*data_sel);
-                ES::set_reg(*data_sel);
-                FS::set_reg(*data_sel);
-                GS::set_reg(*data_sel);
+                DS::set_reg(data_sel);
+                SS::set_reg(data_sel);
+                ES::set_reg(data_sel);
+                FS::set_reg(data_sel);
+                GS::set_reg(data_sel);
             }
             mem_debug!("Data segment registers set\n");
         }
@@ -195,16 +250,17 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
         mem_debug!("Skipping GDT reload and TSS loading in UEFI mode\n");
     }
 
-    // Mark as initialized
-    GDT_INITIALIZED.call_once(|| {});
-    mem_debug!("GDT: About to return\n");
+    GDT_INITIALIZED.store(true, Ordering::SeqCst);
+    unsafe {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: GDT: About to return\n");
+    }
     new_heap_start
 }
 
 pub fn user_code_selector() -> SegmentSelector {
-    *USER_CODE_SELECTOR.get().expect("GDT not initialized")
+    unsafe { USER_CODE_SELECTOR.expect("USER_CODE_SELECTOR not initialized") }
 }
 
 pub fn user_data_selector() -> SegmentSelector {
-    *USER_DATA_SELECTOR.get().expect("GDT not initialized")
+    unsafe { USER_DATA_SELECTOR.expect("USER_DATA_SELECTOR not initialized") }
 }

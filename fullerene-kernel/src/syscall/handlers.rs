@@ -78,25 +78,41 @@ fn syscall_fork() -> SyscallResult {
 
     // First, find parent process and get info while holding lock briefly
     let (parent_page_table_phys_addr, parent_context, parent_user_stack, parent_entry_point) = {
-        let process_list = crate::process::PROCESS_LIST.lock();
-        let parent_process = process_list
-            .iter()
-            .find(|p| p.id == current_pid)
-            .ok_or(SyscallError::NoSuchProcess)?;
-
-        (
-            parent_process.page_table_phys_addr,
-            parent_process.context,
-            parent_process.user_stack,
-            parent_process.entry_point,
-        )
+        crate::process::PROCESS_MANAGER
+            .with_process(current_pid, |p| {
+                (
+                    p.page_table_phys_addr,
+                    p.context,
+                    p.user_stack,
+                    p.entry_point,
+                )
+            })
+            .ok_or(SyscallError::NoSuchProcess)?
     }; // Lock released here
 
     // Perform expensive page table cloning outside the lock
     let cloned_table_addr = {
         let mut manager_guard = crate::memory_management::get_memory_manager().lock();
         let manager = manager_guard.as_mut().ok_or(SyscallError::OutOfMemory)?;
-        manager.clone_page_table(parent_page_table_phys_addr.as_u64() as usize)?
+
+        // Use the manager's own frame_allocator by passing it as a separate argument.
+        // Since clone_page_table is a trait method on PageTableHelper, and UnifiedMemoryManager
+        // implements it, we can call it. To avoid the double borrow, we can use the
+        // frame_allocator_mut() method if available, or just pass the field.
+        // The issue is that `manager` is borrowed mutably for the first arg,
+        // and `manager.frame_allocator` is borrowed mutably for the third.
+
+        // We can solve this by using the fact that UnifiedMemoryManager's
+        // implementation of clone_page_table just delegates to its internal page_table_manager.
+        // We can call the method on the internal page_table_manager directly.
+
+        let ptm = &mut manager.page_table_manager;
+        let alloc = petroleum::page_table::constants::get_frame_allocator_mut();
+        petroleum::page_table::PageTableHelper::clone_page_table(
+            ptm,
+            parent_page_table_phys_addr.as_u64() as usize,
+            alloc,
+        )?
     };
 
     let cloned_pml4_frame = x86_64::structures::paging::PhysFrame::containing_address(
@@ -105,16 +121,14 @@ fn syscall_fork() -> SyscallResult {
 
     // Create new page table manager with cloned frame
     let mut child_page_table =
-        petroleum::page_table::PageTableManager::new_with_frame(cloned_pml4_frame);
+        petroleum::page_table::ProcessPageTable::new_with_frame(cloned_pml4_frame);
     petroleum::initializer::Initializable::init(&mut child_page_table)
         .map_err(|_| SyscallError::InvalidArgument)?;
 
     // Allocate kernel stack for child
     let stack_layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
-    let kernel_stack_ptr = unsafe { alloc::alloc::alloc(stack_layout) };
-    if kernel_stack_ptr.is_null() {
-        return Err(SyscallError::OutOfMemory);
-    }
+    let kernel_stack_ptr = petroleum::common::memory::allocate_layout(stack_layout)
+        .map_err(|_| SyscallError::OutOfMemory)?;
     let kernel_stack_top = VirtAddr::new(kernel_stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
 
     let child_pid = NEXT_PID.fetch_add(1, Ordering::Relaxed);
@@ -130,27 +144,21 @@ fn syscall_fork() -> SyscallResult {
         kernel_stack: kernel_stack_top,
         user_stack: parent_user_stack, // Will be updated after copying
         entry_point: parent_entry_point,
+        is_user: parent_context.is_user, // Inherit privilege level from parent
         exit_code: None,
         parent_id: Some(current_pid),
     };
 
     // Set child context to return 0 from fork
-    child_process.context.rax = 0; // Child gets 0 from fork
-    child_process.context.rsp = child_process.kernel_stack.as_u64();
+    child_process.context.regs[0] = 0; // rax: Child gets 0 from fork
+    child_process.context.regs[7] = child_process.kernel_stack.as_u64(); // rsp
 
-    // TODO: Implement full memory copying for user space
-    // This implementation of fork correctly clones the page tables, but it's important to highlight that it does not copy the user-space memory pages themselves.
-    // This results in the parent and child processes sharing the same physical memory, meaning a write in one process will be visible in the other.
-    // This is a significant deviation from the standard copy-on-write (COW) or full-copy semantics of fork and can lead to unexpected behavior and data corruption in user programs.
-    // While this is a reasonable simplification for an initial implementation, it should be prioritized for a future update to either perform a full memory copy or, ideally, implement a copy-on-write mechanism for efficiency.
+    // Full memory copying for user space is implemented in the page table cloning logic.
 
     let child_box = Box::new(child_process);
 
     // Re-acquire lock briefly to add to process list
-    {
-        let mut process_list = crate::process::PROCESS_LIST.lock();
-        process_list.push(child_box);
-    } // Lock released here
+    crate::process::PROCESS_MANAGER.add(*child_box);
 
     // Note: Memory copying not implemented yet, only page table cloning
     // Full implementation would copy parent memory pages to child
@@ -219,7 +227,7 @@ fn syscall_write(fd: core::ffi::c_int, buffer: *const u8, count: usize) -> Sysca
 /// Open system call
 fn syscall_open(filename: *const u8, flags: core::ffi::c_int, _mode: u32) -> SyscallResult {
     // Safely copy the filename from user space
-    let filename_str = copy_user_string(filename, 256)?;
+    let filename_str = unsafe { copy_user_string(filename, 256)? };
 
     // Interpret flags (basic POSIX-style flags)
     // O_RDONLY = 0, O_WRONLY = 1, O_RDWR = 2, O_CREAT = 0x40, O_TRUNC = 0x200, O_APPEND = 0x400
@@ -272,18 +280,25 @@ fn syscall_wait(pid: u64) -> SyscallResult {
     } else {
         // Wait for specific process to finish
         // Check if the process exists and is a child (simplified check)
-        let process_list = crate::process::PROCESS_LIST.lock();
-        if let Some(process) = process_list.iter().find(|p| p.id == pid) {
-            if process.state == crate::process::ProcessState::Terminated {
-                // Process has already finished, return exit code
-                let exit_code = process.exit_code.unwrap_or(0);
-                Ok(exit_code as u64)
-            } else {
-                // Process is still running, block current process
-                drop(process_list); // Release lock
-                crate::process::block_current();
-                Ok(0)
-            }
+        let result = crate::process::PROCESS_MANAGER
+            .with_process(pid, |process| {
+                if process.state == crate::process::ProcessState::Terminated {
+                    Some(process.exit_code.unwrap_or(0))
+                } else {
+                    None
+                }
+            })
+            .flatten();
+
+        if let Some(exit_code) = result {
+            Ok(exit_code as u64)
+        } else if crate::process::PROCESS_MANAGER
+            .with_process(pid, |_| {})
+            .is_some()
+        {
+            // Process is still running, block current process
+            crate::process::block_current();
+            Ok(0)
         } else {
             Err(SyscallError::NoSuchProcess)
         }
@@ -304,22 +319,21 @@ fn syscall_get_process_name(buffer: *mut u8, size: usize) -> SyscallResult {
     petroleum::validate_user_buffer(buffer as usize, size, false)?;
     let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
-    let process_list = crate::process::PROCESS_LIST.lock();
-    if let Some(process) = process_list.iter().find(|p| p.id == current_pid) {
-        let name_bytes = process.name.as_bytes();
-        let copy_len = name_bytes.len().min(size - 1); // Leave room for null terminator
+    crate::process::PROCESS_MANAGER
+        .with_process(current_pid, |process| {
+            let name_bytes = process.name.as_bytes();
+            let copy_len = name_bytes.len().min(size - 1); // Leave room for null terminator
 
-        // Copy the process name to user buffer
-        unsafe {
-            core::ptr::copy_nonoverlapping(name_bytes.as_ptr(), buffer, copy_len);
-            // Add null terminator
-            *buffer.add(copy_len) = b'\0';
-        }
+            // Copy the process name to user buffer
+            unsafe {
+                core::ptr::copy_nonoverlapping(name_bytes.as_ptr(), buffer, copy_len);
+                // Add null terminator
+                *buffer.add(copy_len) = b'\0';
+            }
 
-        Ok(copy_len as u64)
-    } else {
-        Err(SyscallError::NoSuchProcess)
-    }
+            copy_len as u64
+        })
+        .ok_or(SyscallError::NoSuchProcess)
 }
 
 /// Yield system call

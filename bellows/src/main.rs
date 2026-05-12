@@ -1,31 +1,14 @@
-// bellows/src/main.rs
+// bellows/src/main.rs.
 
 #![no_std]
 #![no_main]
-// #![feature(alloc_error_handler)]
+#![feature(alloc_error_handler)]
 #![feature(never_type)]
 extern crate alloc;
 
-use core::{ffi::c_void, ptr};
-
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    use petroleum::println;
-    // Simple panic handler for UEFI bootloader
-    unsafe {
-        petroleum::volatile_write!(0xB8000 as *mut u16, 0x1F20); // White ' ' on blue
-        petroleum::volatile_write!(0xB8002 as *mut u16, 0x1F50); // White 'P' on blue
-        let panic_msg = b"anic";
-        for (i, &char_code) in panic_msg.iter().enumerate() {
-            petroleum::volatile_write!((0xB8004 as *mut u16).add(i), 0x1F00 | char_code as u16);
-        }
-    }
-    println!("Kernel Panic: {}", info);
-    loop {}
-}
-
-use log;
+// Define panic and alloc error handlers using petroleum's macros
+petroleum::define_panic_handler!();
+petroleum::define_alloc_error_handler!();
 
 // Embedded kernel binary
 static KERNEL_BINARY: &[u8] = include_bytes!("kernel_final.bin");
@@ -40,8 +23,15 @@ use petroleum::common::{EfiGraphicsPixelFormat, EfiSystemTable, FullereneFramebu
 /// Main entry point of the bootloader.
 ///
 /// This function is the `start` attribute as defined in the `Cargo.toml`.
+///
+/// # Safety
+///
+/// This function is called by the UEFI firmware and must adhere to the UEFI calling convention.
 #[unsafe(no_mangle)]
-pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSystemTable) -> ! {
+pub unsafe extern "efiapi" fn efi_main(
+    image_handle: usize,
+    system_table: *mut EfiSystemTable,
+) -> ! {
     // Before setting UEFI_SYSTEM_TABLE
     if image_handle == 0 {
         panic!("Invalid image_handle");
@@ -59,7 +49,11 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     petroleum::bootloader_log!("UEFI_WRITER initialized.");
 
     petroleum::bootloader_log!("Bellows UEFI Bootloader starting...");
-    petroleum::bootloader_log!("Image Handle: {:#x}, System Table: {:#p}", image_handle, system_table);
+    petroleum::bootloader_log!(
+        "Image Handle: {:#x}, System Table: {:#p}",
+        image_handle,
+        system_table
+    );
     // Initialize heap
     petroleum::bootloader_log!("Attempting to initialize heap...");
     init_heap(bs).expect("Heap initialization failed");
@@ -81,7 +75,9 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
             init_basic_vga_text_mode();
             // For UEFI fallback, try to install a basic VGA framebuffer config for kernel use
             install_vga_framebuffer_config(st);
-            petroleum::bootloader_log!("VGA framebuffer config installed, continuing with kernel load.");
+            petroleum::bootloader_log!(
+                "VGA framebuffer config installed, continuing with kernel load."
+            );
         }
     }
     petroleum::bootloader_log!("Graphics initialization complete.");
@@ -92,8 +88,13 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     petroleum::bootloader_log!("Bellows: Kernel file size check: {} bytes", efi_image_size);
     if efi_image_size > 0 {
         let first_bytes = &KERNEL_BINARY[..core::cmp::min(efi_image_size, 4)];
-        petroleum::bootloader_log!("Bellows: First 4 bytes: {:02x?}, {:02x?}, {:02x?}, {:02x?}", 
-            first_bytes[0], first_bytes[1], first_bytes[2], first_bytes[3]);
+        petroleum::bootloader_log!(
+            "Bellows: First 4 bytes: {:02x?}, {:02x?}, {:02x?}, {:02x?}",
+            first_bytes[0],
+            first_bytes[1],
+            first_bytes[2],
+            first_bytes[3]
+        );
     }
     if efi_image_size == 0 {
         petroleum::bootloader_log!("Bellows: Kernel file is empty!");
@@ -109,14 +110,19 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     petroleum::serial::_print(format_args!("Attempting to load EFI image...\n"));
 
     // Load the kernel and get its entry point.
-    let (kernel_phys_start, entry) = match load_efi_image(st, efi_image_file, petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64() as usize) {
-        Ok((phys, e)) => {
+    let (kernel_phys_start, kernel_entry_phys, entry) = match load_efi_image(
+        st,
+        efi_image_file,
+        petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64() as usize,
+    ) {
+        Ok((phys, phys_entry, e)) => {
             petroleum::serial::_print(format_args!(
-                "EFI image loaded successfully. Entry point: {:#p}, Phys base: {:#x}\n",
+                "EFI image loaded successfully. Entry point: {:#p}, Phys entry: {:#x}, Phys base: {:#x}\n",
                 e as *const (),
+                phys_entry,
                 phys.as_u64()
             ));
-            (phys, e)
+            (phys, phys_entry, e)
         }
         Err(err) => {
             petroleum::println!("Failed to load EFI image: {:?}", err);
@@ -132,7 +138,13 @@ pub extern "efiapi" fn efi_main(image_handle: usize, system_table: *mut EfiSyste
     ));
     // Exit boot services and jump to the kernel.
     petroleum::println!("Bellows: About to exit boot services and jump to kernel."); // Debug print just before the call
-    match exit_boot_services_and_jump(image_handle, system_table, kernel_phys_start, entry) {
+    match exit_boot_services_and_jump(
+        image_handle,
+        system_table,
+        kernel_phys_start,
+        kernel_entry_phys,
+        entry,
+    ) {
         Ok(_) => {
             unreachable!(); // This branch should never be reached if the function returns '!'
         }
@@ -156,9 +168,7 @@ fn init_basic_vga_text_mode() {
 
 /// Installs a basic VGA framebuffer configuration for UEFI environments when GOP is not available.
 /// Provides a fallback framebuffer configuration that the kernel can use.
-///
-
-fn install_vga_framebuffer_config(st: &EfiSystemTable) {
+fn install_vga_framebuffer_config(_st: &EfiSystemTable) {
     petroleum::println!("Installing VGA framebuffer config for UEFI...");
 
     // Create an improved VGA-compatible framebuffer config

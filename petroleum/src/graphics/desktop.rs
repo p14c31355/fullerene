@@ -1,9 +1,5 @@
-use super::framebuffer::{FramebufferLike, FramebufferWriter};
-use crate::{
-    COLOR_BLACK, COLOR_DARK_GRAY, COLOR_LIGHT_BLUE, COLOR_LIGHT_GRAY, COLOR_TASKBAR, COLOR_WHITE,
-    COLOR_WINDOW_BG, calc_text_width, draw_border_rect, draw_filled_rect,
-    serial::debug_print_str_to_com1 as debug_print_str,
-};
+use super::framebuffer::FramebufferLike;
+use crate::{COLOR_BLACK, COLOR_LIGHT_BLUE, COLOR_LIGHT_GRAY, COLOR_TASKBAR, calc_text_width};
 use alloc::string::{String, ToString};
 use embedded_graphics::{
     mono_font::{MonoTextStyle, ascii::FONT_6X10},
@@ -91,7 +87,7 @@ pub fn draw_os_desktop<W: FramebufferLike>(writer: &mut W) {
     draw_desktop_internal(writer, mode);
 }
 
-fn draw_desktop_internal<W: FramebufferLike>(writer: &mut W, mode: &str) {
+fn draw_desktop_internal<W: FramebufferLike>(writer: &mut W, _mode: &str) {
     let bg_color = 32u32; // Dark gray
     fill_background(writer, bg_color);
 

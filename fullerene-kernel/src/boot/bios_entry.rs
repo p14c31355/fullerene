@@ -1,7 +1,3 @@
-use crate::graphics;
-
-use petroleum::common::VgaFramebufferConfig;
-
 use x86_64;
 
 #[cfg(not(target_os = "uefi"))]

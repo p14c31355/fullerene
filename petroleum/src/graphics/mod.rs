@@ -70,13 +70,14 @@ pub mod framebuffer;
 pub mod registers;
 pub mod setup;
 pub mod text;
+pub mod uefi;
 
 // VGA constants
 pub use constants::*;
 
 // Re-exports for public API
-pub use color::*;
 pub use crate::hardware::ports::{HardwarePorts, PortWriter, VgaPortOps};
+pub use color::*;
 // VGA graphics modes
 pub use setup::{
     detect_and_init_vga_graphics, detect_cirrus_vga, init_vga_graphics, init_vga_text_mode,
@@ -90,4 +91,5 @@ pub use text::{Color, ColorCode, ScreenChar, TextBufferOperations};
 pub use desktop::*;
 
 // Framebuffer
+pub use framebuffer::UefiFramebufferWriter;
 pub use framebuffer::*;

@@ -8,7 +8,6 @@ pub mod apic;
 pub mod exceptions;
 pub mod idt;
 pub mod input;
-pub mod pic;
 pub mod syscall;
 
 use lazy_static::lazy_static;
@@ -25,7 +24,7 @@ pub use apic::{APIC, init_apic};
 pub use exceptions::{handle_page_fault, page_fault_handler};
 pub use idt::init;
 pub use input::{KEYBOARD_QUEUE, MOUSE_STATE, keyboard_handler, mouse_handler, timer_handler};
-pub use pic::disable_legacy_pic;
+pub use petroleum::hardware::pic::disable_legacy_pic;
 pub use syscall::setup_syscall;
 
 /// Send End-Of-Interrupt to APIC

@@ -1,6 +1,5 @@
 use crate::common::EfiGraphicsPixelFormat;
 use crate::graphics::color::{FramebufferInfo, PixelType, rgb_pixel, vga_color_index};
-use crate::{clear_buffer_pixels, scroll_buffer_pixels};
 use embedded_graphics::{
     geometry::{Point, Size},
     mono_font::{MonoTextStyle, ascii::FONT_6X10},
@@ -37,6 +36,27 @@ pub trait FramebufferLike:
     fn scroll_up(&self);
     fn get_stride(&self) -> u32;
     fn is_vga(&self) -> bool;
+}
+
+#[derive(Clone)]
+pub enum UefiFramebufferWriter {
+    Uefi32(FramebufferWriter<u32>),
+    Vga8(FramebufferWriter<u8>),
+}
+
+pub type UefiWriterMutex = spin::Mutex<UefiFramebufferWriter>;
+
+pub fn create_uefi_writer_mutex(writer: UefiFramebufferWriter) -> UefiWriterMutex {
+    spin::Mutex::new(writer)
+}
+
+impl core::fmt::Write for UefiFramebufferWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        match self {
+            UefiFramebufferWriter::Uefi32(w) => w.write_str(s),
+            UefiFramebufferWriter::Vga8(w) => w.write_str(s),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -308,4 +328,34 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
     fn is_vga(&self) -> bool {
         self.info.pixel_format.is_none()
     }
+}
+
+/// Generic framebuffer buffer clear operation
+pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
+    let fb_ptr = address as *mut T;
+    let bytes_per_pixel = core::mem::size_of::<T>() as u32;
+    let elements_per_line = (stride / bytes_per_pixel) as usize;
+    let count = elements_per_line * height as usize;
+    unsafe { core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color) };
+}
+
+/// Generic framebuffer buffer scroll up operation
+pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
+    let bytes_per_pixel = core::mem::size_of::<T>() as u32;
+    let shift_bytes = 8u64 * stride as u64;
+    let fb_ptr = address as *mut u8;
+    let total_bytes = height as u64 * stride as u64;
+    unsafe {
+        core::ptr::copy(
+            fb_ptr.add(shift_bytes as usize),
+            fb_ptr,
+            (total_bytes - shift_bytes) as usize,
+        );
+    }
+    // Clear last 8 lines
+    let clear_offset = ((height - 8) as u32 * stride) as usize;
+    let clear_ptr = (address + clear_offset as u64) as *mut T;
+    let elements_per_line = (stride / bytes_per_pixel) as usize;
+    let clear_count = 8 * elements_per_line;
+    unsafe { core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color) };
 }

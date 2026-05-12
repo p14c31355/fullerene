@@ -1,4 +1,9 @@
 use super::*;
+use crate::common::{
+    EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
+};
+use crate::page_table::types::MemoryDescriptorValidator;
+use x86_64::PhysAddr;
 
 /// Helper function to convert u32 to string without heap allocation
 pub fn u32_to_str_heapless(n: u32, buffer: &mut [u8]) -> &str {
@@ -130,8 +135,6 @@ pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
 }
 
 /// Alloc error handler required when using `alloc` in no_std.
-#[cfg(all(panic = "unwind", not(feature = "std"), not(test)))]
-#[alloc_error_handler]
 fn alloc_error(_layout: core::alloc::Layout) -> ! {
     // Avoid recursive panics by directly looping
     loop {
@@ -204,4 +207,124 @@ macro_rules! serial_log {
     ($($arg:tt)*) => {{
         crate::serial::serial_log(format_args!($($arg)*));
     }};
+}
+
+/// Helper function to find framebuffer config (using generic)
+pub fn find_framebuffer_config(
+    system_table: &EfiSystemTable,
+) -> Option<&FullereneFramebufferConfig> {
+    log::info!(
+        "find_framebuffer_config: called with system_table=0x{:x}",
+        system_table as *const _ as usize
+    );
+    log::info!(
+        "find_framebuffer_config: System table has {} configuration table entries",
+        system_table.number_of_table_entries
+    );
+
+    // Check for null pointer after UEFI boot services exit
+    if system_table.configuration_table.is_null() {
+        log::info!(
+            "find_framebuffer_config: Configuration table is null (UEFI boot services exited)"
+        );
+        return None;
+    }
+
+    let config_table_entries = unsafe {
+        core::slice::from_raw_parts(
+            system_table.configuration_table,
+            system_table.number_of_table_entries,
+        )
+    };
+
+    for (i, entry) in config_table_entries.iter().enumerate() {
+        log::info!(
+            "Config table {}: table={:#x}, checking for GOP GUID",
+            i,
+            entry.vendor_table as usize
+        );
+
+        if entry.vendor_guid == FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID {
+            return unsafe { Some(&*(entry.vendor_table as *const FullereneFramebufferConfig)) };
+        }
+    }
+    None
+}
+
+pub fn find_heap_start(descriptors: &[impl MemoryDescriptorValidator]) -> PhysAddr {
+    // Find the lowest suitable memory region within first 64MB from EfiConventionalMemory with sufficient size for heap
+    // This ensures heap is within the identity-mapped range during page table reinitialization
+    const HEAP_PAGES: u64 = 256; // approx 1MB for heap + structures
+    for (i, desc) in descriptors.iter().enumerate() {
+        crate::debug_log_no_alloc!("find_heap_start: Checking descriptor ", i);
+        let start = desc.get_physical_start();
+        if desc.get_type() == crate::common::EfiMemoryType::EfiConventionalMemory as u32
+            && desc.get_page_count() >= HEAP_PAGES
+            && start >= 0x100000 // Avoid first 1MB reserved region
+            && start < 0x4000000 // within first 64MB
+            && crate::common::utils::calculate_region_end(start, desc.get_page_count()) <= 0x4000000
+        // ensure entire region fits
+        {
+            crate::debug_log_no_alloc!("find_heap_start: Found suitable region at 0x", start);
+            return PhysAddr::new(start);
+        }
+    }
+    // Fallback if no suitable memory found within first 64MB
+    PhysAddr::new(crate::FALLBACK_HEAP_START_ADDR)
+}
+
+pub fn setup_kernel_location(
+    memory_map: *mut core::ffi::c_void,
+    memory_map_size: usize,
+    kernel_virt_addr: u64,
+) -> PhysAddr {
+    // Read descriptor_size from the beginning of the memory map
+    unsafe {
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: setup_kernel_location entered\n");
+    }
+
+    unsafe {
+        crate::write_serial_bytes(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: Skipping descriptor_item_size read (now passed via KernelArgs)\n",
+        );
+    }
+
+    crate::debug_log_no_alloc!("Succeeded in reading memory map start");
+
+    // Bellows already handles the framebuffer config table before jumping to the kernel.
+    // We skip the redundant check here to avoid potential Page Faults.
+    unsafe {
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Skipping framebuffer config check\n");
+    }
+
+    unsafe {
+        crate::write_serial_bytes(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: About to calculate kernel_phys_start\n",
+        );
+    }
+
+    // Find the kernel physical start (efi_main is virtual address,
+    // but UEFI uses identity mapping initially, so check physical range containing kernel_virt_addr)
+    // Since UEFI identity-maps initially, kernel_virt_addr should equal its physical address
+    let kernel_phys_start = if kernel_virt_addr >= 0x1000 {
+        PhysAddr::new(kernel_virt_addr)
+    } else {
+        crate::debug_log_no_alloc!("Warning: Invalid kernel address, falling back");
+        PhysAddr::new(0x100000)
+    };
+
+    unsafe {
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: kernel_phys_start calculated\n");
+        let mut buf = [0u8; 16];
+        let len = crate::serial::format_hex_to_buffer(kernel_phys_start.as_u64(), &mut buf, 16);
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Kernel physical start set to: 0x");
+        crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+    }
+
+    kernel_phys_start
 }

@@ -235,9 +235,9 @@ pub fn register_device(device: alloc::boxed::Box<dyn HardwareDevice + Send>) -> 
 
 /// Convenience function to register VGA device
 pub fn register_vga_device() -> SystemResult<()> {
-    use petroleum::graphics::text::VgaDevice;
+    use petroleum::graphics::text::VgaBuffer;
 
-    let vga_device = alloc::boxed::Box::new(VgaDevice::new());
+    let vga_device = alloc::boxed::Box::new(VgaBuffer::new());
     register_device(vga_device)
 }
 

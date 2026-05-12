@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
+#![feature(alloc_error_handler)]
 
 use petroleum::{
     debug_log, draw_border_rect, draw_filled_rect, info_log, mem_debug, periodic_task,
@@ -8,6 +9,10 @@ use petroleum::{
 };
 
 extern crate alloc;
+
+// Define panic and alloc error handlers using petroleum's macros
+petroleum::define_panic_handler!();
+petroleum::define_alloc_error_handler!();
 
 // Constants
 pub const VGA_BUFFER_ADDRESS: usize = 0xb8000;
@@ -34,12 +39,3 @@ pub mod scheduler;
 pub mod shell;
 pub mod syscall;
 pub mod vga;
-
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    use core::fmt::Write;
-    use petroleum::println;
-    println!("Kernel Panic: {}", info);
-    loop {}
-}

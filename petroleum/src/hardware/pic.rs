@@ -3,7 +3,7 @@
 //! This module provides functions to disable the legacy PIC,
 //! which is necessary when using APIC.
 
-use petroleum::port_write;
+use crate::port_write;
 use x86_64::instructions::port::Port;
 
 // PIC ports
@@ -57,5 +57,3 @@ pub fn disable_legacy_pic() {
     port_write!(PIC_MASTER.data, 0xFFu8);
     port_write!(PIC_SLAVE.data, 0xFFu8);
 }
-
-// Timer interrupt handling is now in input.rs

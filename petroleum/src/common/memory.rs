@@ -1,21 +1,45 @@
-/// User memory validation functions
-///
-/// Provides functions for validating user space memory access,
-/// used by syscall handlers and memory management.
+//! User memory validation functions
+//!
+//! This module provides functions for validating user space memory access,
+//! used by syscall handlers and memory management.
 use crate::common::logging::{SystemError, SystemResult};
-use spin::Once;
+use core::alloc::Layout;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use x86_64::VirtAddr;
 
 /// Heap start address
-pub static HEAP_START: Once<usize> = Once::new();
+pub static HEAP_START: AtomicUsize = AtomicUsize::new(0);
 
 /// Heap end address (start + size)
-pub static HEAP_END: Once<usize> = Once::new();
+pub static HEAP_END: AtomicUsize = AtomicUsize::new(0);
+
+/// Physical memory offset for virtual to physical address translation
+pub static PHYSICAL_MEMORY_OFFSET: AtomicUsize = AtomicUsize::new(0);
 
 /// Set heap range for allocator-related page fault detection
 pub fn set_heap_range(start: usize, size: usize) {
-    HEAP_START.call_once(|| start);
-    HEAP_END.call_once(|| start + size);
+    HEAP_START.store(start, Ordering::SeqCst);
+    HEAP_END.store(start + size, Ordering::SeqCst);
+}
+
+/// Set the physical memory offset for virtual to physical address translation
+pub fn set_physical_memory_offset(offset: usize) {
+    PHYSICAL_MEMORY_OFFSET.store(offset, Ordering::Relaxed);
+}
+
+/// Get the physical memory offset for virtual to physical address translation
+pub fn get_physical_memory_offset() -> usize {
+    PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed)
+}
+
+/// Convert virtual address to physical address using the offset
+pub fn virtual_to_physical(virtual_addr: usize) -> usize {
+    virtual_addr - get_physical_memory_offset()
+}
+
+/// Convert physical address to virtual address using the offset
+pub fn physical_to_virtual(physical_addr: usize) -> usize {
+    physical_addr + get_physical_memory_offset()
 }
 
 /// Check if an address is in user space
@@ -27,11 +51,28 @@ pub fn is_user_address(addr: VirtAddr) -> bool {
 
 /// Check if an address is within the allocator's heap range
 pub fn is_allocator_related_address(addr: usize) -> bool {
-    if let (Some(&start), Some(&end)) = (HEAP_START.get(), HEAP_END.get()) {
+    let start = HEAP_START.load(Ordering::SeqCst);
+    let end = HEAP_END.load(Ordering::SeqCst);
+    if start != 0 {
         addr >= start && addr < end
     } else {
         false
     }
+}
+
+/// Safe wrapper for allocating memory with a given layout
+pub fn allocate_layout(layout: Layout) -> Result<*mut u8, SystemError> {
+    let ptr = unsafe { alloc::alloc::alloc(layout) };
+    if ptr.is_null() {
+        Err(SystemError::MemOutOfMemory)
+    } else {
+        Ok(ptr)
+    }
+}
+
+/// Safe wrapper for deallocating memory with a given layout
+pub fn deallocate_layout(ptr: *mut u8, layout: Layout) {
+    unsafe { alloc::alloc::dealloc(ptr, layout) };
 }
 
 /// Validate user buffer access

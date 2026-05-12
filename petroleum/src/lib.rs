@@ -4,10 +4,51 @@
 
 extern crate alloc;
 
+/// Macro to define panic handler using petroleum's serial output.
+/// Use this in binary crates (kernel, bootloader).
+#[macro_export]
+macro_rules! define_panic_handler {
+    () => {
+        #[cfg(all(any(target_os = "none", target_os = "uefi"), not(test)))]
+        #[panic_handler]
+        fn panic(info: &core::panic::PanicInfo) -> ! {
+            use core::fmt::Write;
+            // VGA text mode panic output (optional)
+            #[cfg(feature = "vga_panic")]
+            {
+                let vga_buffer = 0xb8000 as *mut u16;
+                let panic_msg = "KERNEL PANIC";
+                for (i, &byte) in panic_msg.bytes().enumerate() {
+                    {
+                        vga_buffer.add(i).write_volatile(byte as u16 | 0x4F00u16);
+                    }
+                }
+            }
+            // Serial output
+            $crate::serial::_print(format_args!("PANIC: {}\n", info));
+            loop {}
+        }
+    };
+}
+
+/// Macro to define alloc error handler.
+#[macro_export]
+macro_rules! define_alloc_error_handler {
+    () => {
+        #[cfg(all(any(target_os = "none", target_os = "uefi"), not(test)))]
+        #[alloc_error_handler]
+        fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
+            $crate::serial::_print(format_args!("ALLOC ERROR: {:?}\n", layout));
+            loop {}
+        }
+    };
+}
+
 // Fallback heap start address constant for when no suitable memory is found
 pub const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
 
 pub mod apic;
+pub mod assembly;
 pub mod bare_metal_graphics_detection;
 pub mod bare_metal_pci;
 #[macro_use]
@@ -20,6 +61,7 @@ pub mod hardware;
 pub mod initializer;
 pub mod page_table;
 pub mod serial;
+pub mod transition;
 pub mod uefi_helpers;
 pub use apic::{IoApic, IoApicRedirectionEntry, init_io_apic};
 // Macros with #[macro_export] are automatically available at root, no need to re-export
@@ -27,13 +69,15 @@ pub use common::logging::{SystemError, SystemResult};
 pub use common::memory::*;
 pub use common::syscall::*;
 pub use common::{check_memory_initialized, set_memory_initialized};
-pub use hardware::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
+pub use graphics::uefi::*;
 pub use graphics::*;
 pub use graphics::{
-    Color, ColorCode, HardwarePorts, ScreenChar, TextBufferOperations, VgaPortOps,
+    Color, ColorCode, HardwarePorts, ScreenChar, TextBufferOperations, UefiFramebufferWriter,
+    VgaPortOps,
     color::{self},
     init_vga_graphics,
 };
+pub use hardware::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 
 pub fn clear_buffer<B: TextBufferOperations>(
     buffer: &mut B,
@@ -52,7 +96,15 @@ pub fn clear_line_range<B: TextBufferOperations + ?Sized>(
     col_end: usize,
     blank_char: ScreenChar,
 ) {
-    buffer_ops!(clear_line_range, buffer, start_row, end_row, col_start, col_end, blank_char);
+    buffer_ops!(
+        clear_line_range,
+        buffer,
+        start_row,
+        end_row,
+        col_start,
+        col_end,
+        blank_char
+    );
 }
 
 pub fn scroll_char_buffer_up<B: TextBufferOperations>(
@@ -65,55 +117,26 @@ pub fn scroll_char_buffer_up<B: TextBufferOperations>(
 }
 
 /// Debug memory descriptor function
-pub fn debug_mem_descriptor(desc: &crate::page_table::efi_memory::MemoryMapDescriptor) {
+pub fn debug_mem_descriptor(desc: &crate::page_table::memory_map::MemoryMapDescriptor) {
     crate::serial::_print(format_args!(
         "Memory descriptor: type={} phys=0x{:x} pages={}\n",
-        desc.type_(), desc.physical_start(), desc.number_of_pages()
+        desc.type_(),
+        desc.physical_start(),
+        desc.number_of_pages()
     ));
 }
 
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
 pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 // Heap allocation exports
-pub use page_table::ALLOCATOR;
-pub use page_table::allocate_heap_from_map;
-pub use page_table::init_global_heap;
-pub use page_table::{BitmapFrameAllocator, bitmap_allocator};
+pub use page_table::allocator::{BitmapFrameAllocator, bitmap};
+#[cfg(not(feature = "std"))]
+pub use page_table::heap::ALLOCATOR;
+pub use page_table::heap::allocate_heap_from_map;
+pub use page_table::heap::init_global_heap;
 // Removed reinit_page_table export - implemented in higher-level crates
 // UEFI helper exports
 pub use uefi_helpers::{initialize_graphics_with_config, kernel_fallback_framebuffer_detection};
-
-/// Generic framebuffer buffer clear operation
-/// stride is in bytes per line
-pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
-    let fb_ptr = address as *mut T;
-    let bytes_per_pixel = core::mem::size_of::<T>() as u32;
-    let elements_per_line = (stride / bytes_per_pixel) as usize;
-    let count = elements_per_line * height as usize;
-    unsafe { core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color) };
-}
-
-/// Generic framebuffer buffer scroll up operation
-/// stride is in bytes per line
-pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
-    let bytes_per_pixel = core::mem::size_of::<T>() as u32;
-    let shift_bytes = 8u64 * stride as u64;
-    let fb_ptr = address as *mut u8;
-    let total_bytes = height as u64 * stride as u64;
-    unsafe {
-        core::ptr::copy(
-            fb_ptr.add(shift_bytes as usize),
-            fb_ptr,
-            (total_bytes - shift_bytes) as usize,
-        );
-    }
-    // Clear last 8 lines
-    let clear_offset = ((height - 8) as u32 * stride) as usize;
-    let clear_ptr = (address + clear_offset as u64) as *mut T;
-    let elements_per_line = (stride / bytes_per_pixel) as usize;
-    let clear_count = 8 * elements_per_line;
-    unsafe { core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color) };
-}
 
 use core::ffi::c_void;
 use core::ptr;
@@ -220,13 +243,30 @@ pub fn halt_loop() -> ! {
 /// Helper function to pause CPU for brief moment (used for busy waits and yielding)
 #[inline(always)]
 pub fn cpu_pause() {
-    crate::pause!();
+    unsafe {
+        core::arch::asm!("pause", options(nomem, nostack, preserves_flags));
+    }
+}
+
+/// Helper function to halt CPU
+#[inline(always)]
+pub fn cpu_halt() {
+    unsafe {
+        core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+    }
 }
 
 /// Helper to initialize serial for bootloader
 pub unsafe fn write_serial_bytes(port: u16, status_port: u16, bytes: &[u8]) {
+    #[cfg(not(feature = "std"))]
     unsafe {
         serial::write_serial_bytes(port, status_port, bytes);
+    }
+    #[cfg(feature = "std")]
+    {
+        // In std environment, we avoid direct port I/O to prevent SIGSEGV
+        // and optionally print to stdout for debugging.
+        // println!("Serial write: {:?}", core::str::from_utf8(bytes).unwrap_or("invalid utf8"));
     }
 }
 
