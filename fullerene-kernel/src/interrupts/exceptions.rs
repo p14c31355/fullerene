@@ -7,7 +7,8 @@ use crate::memory_management;
 use core::fmt::Write;
 use petroleum::common::memory::is_allocator_related_address;
 use petroleum::debug::print_backtrace;
-use x86_64::registers::control::Cr2;
+use petroleum::page_table::constants::HIGHER_HALF_OFFSET;
+use x86_64::registers::control::{Cr2, Cr3};
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
 
 /// Breakpoint exception handler
@@ -47,8 +48,9 @@ pub fn handle_page_fault(
     let is_write = error_code.intersects(PageFaultErrorCode::CAUSED_BY_WRITE);
     let is_user = error_code.intersects(PageFaultErrorCode::USER_MODE);
 
-    petroleum::lock_and_modify!(petroleum::SERIAL1, writer, {
-        write!(writer, "Page fault at {:x}: ", fault_addr.as_u64()).ok();
+    petroleum::lock_and_modify!(petroleum::SERIAL1, guard, {
+        let writer = &mut *guard;
+        write!(writer, "Page fault at {:#x}: ", fault_addr.as_u64()).ok();
         if is_allocator_related_address(fault_addr.as_u64() as usize) {
             write!(writer, "Allocator-related ").ok();
         }
@@ -65,6 +67,10 @@ pub fn handle_page_fault(
         }
         writeln!(writer).ok();
         writeln!(writer, "Error code: {:?}", error_code).ok();
+        
+        let cr3 = Cr3::read();
+        writeln!(writer, "CR3: {:#x}", cr3.0.start_address().as_u64()).ok();
+
         if let Some(pid) = crate::process::current_pid() {
             writeln!(writer, "Current process ID: {}", pid).ok();
         }
@@ -81,8 +87,19 @@ pub fn handle_page_fault(
         )
         .ok();
         writeln!(writer).ok();
+        
+        writeln!(writer, "Page Table Walk:").ok();
+        unsafe {
+            petroleum::page_table::raw::translate::dump_page_table_walk(
+                fault_addr, 
+                HIGHER_HALF_OFFSET, 
+                writer
+            );
+        }
+        
+        writeln!(writer).ok();
         writeln!(writer, "Backtrace:").ok();
-        print_backtrace(&mut *writer);
+        print_backtrace(writer);
     });
 
     if !is_user {

@@ -166,8 +166,11 @@ unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
                     }
                     if (self.bitmap[i] & (1 << j)) == 0 {
                         self.set_frame_used(frame_idx, true);
+                        let phys_addr = frame_idx as u64 * 4096;
+                        // Use a lightweight log to avoid flooding the serial port
+                        // petroleum::serial::serial_log(format_args!("ALLOC: frame {:#x}", phys_addr));
                         return Some(PhysFrame::containing_address(x86_64::PhysAddr::new(
-                            frame_idx as u64 * 4096,
+                            phys_addr,
                         )));
                     }
                 }
@@ -202,7 +205,15 @@ impl FrameAllocatorExt for BitmapFrameAllocator {
     }
 
     fn deallocate_frame(&mut self, frame: x86_64::structures::paging::PhysFrame) {
-        let frame_idx = (frame.start_address().as_u64() / 4096) as usize;
+        let phys_addr = frame.start_address().as_u64();
+        let frame_idx = (phys_addr / 4096) as usize;
+        
+        if frame_idx >= self.total_frames {
+            crate::serial::serial_log(format_args!("WARN: Attempted to deallocate out-of-bounds frame {:#x}", phys_addr));
+            return;
+        }
+        
         self.set_frame_used(frame_idx, false);
+        // petroleum::serial::serial_log(format_args!("FREE: frame {:#x}", phys_addr));
     }
 }
