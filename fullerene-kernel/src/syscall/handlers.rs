@@ -82,7 +82,7 @@ fn syscall_fork() -> SyscallResult {
             .with_process(current_pid, |p| {
                 (
                     p.page_table_phys_addr,
-                    p.context,
+                    p.context.clone(),
                     p.user_stack,
                     p.entry_point,
                 )
@@ -138,9 +138,9 @@ fn syscall_fork() -> SyscallResult {
         id: child_pid as u64,
         name: "child",
         state: ProcessState::Ready,
-        context: parent_context, // Copy parent context
+        context: parent_context.clone(), // Copy parent context
         page_table_phys_addr: PhysAddr::new(cloned_table_addr as u64),
-        page_table: Some(child_page_table),
+        page_table: Some(Box::new(child_page_table)),
         kernel_stack: kernel_stack_top,
         user_stack: parent_user_stack, // Will be updated after copying
         entry_point: parent_entry_point,

@@ -76,11 +76,11 @@ pub struct Process {
     /// Current state
     pub state: ProcessState,
     /// CPU context for context switching
-    pub context: ProcessContext,
+    pub context: Box<ProcessContext>,
     /// Process page table (physical address of level 4 page table)
     pub page_table_phys_addr: PhysAddr,
     /// Process page table mapper
-    pub page_table: Option<petroleum::page_table::process::ProcessPageTable>,
+    pub page_table: Option<Box<petroleum::page_table::process::ProcessPageTable>>,
     /// Stack pointer for kernel stack
     pub kernel_stack: VirtAddr,
     /// User-space stack pointer
@@ -104,7 +104,7 @@ impl Process {
             id,
             name,
             state: ProcessState::Ready,
-            context: ProcessContext::default(),
+            context: Box::new(ProcessContext::default()),
             page_table_phys_addr: PhysAddr::new(0), // Will be set when allocated
             page_table: None,
             kernel_stack: VirtAddr::new(0), // Will be set when allocated
@@ -412,7 +412,7 @@ pub fn create_process(
     };
     debug_log!("Process: Page table created");
     process.page_table_phys_addr = PhysAddr::new(page_table.current_page_table() as u64);
-    process.page_table = Some(page_table);
+    process.page_table = Some(Box::new(page_table));
 
     process.init_context(kernel_stack_top);
     debug_log!("Process: Context initialized");

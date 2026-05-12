@@ -14,6 +14,7 @@ use x86_64::{PhysAddr, structures::paging::{
 /// Unified memory manager implementing all memory management traits
 pub struct UnifiedMemoryManager {
     pub(crate) page_table_manager: ProcessPageTable,
+    pub(crate) kernel_pml4_phys: usize,
     // Temporarily use a fixed array to avoid BTreeMap allocation during early boot
     pub(crate) process_managers: [Option<ProcessMemoryManagerImpl>; 16],
     pub(crate) current_process: usize,
@@ -89,6 +90,7 @@ impl UnifiedMemoryManager {
         const NONE_MANAGER: Option<ProcessMemoryManagerImpl> = None;
         Self {
             page_table_manager: ProcessPageTable::new(),
+            kernel_pml4_phys: 0,
             process_managers: [NONE_MANAGER; 16],
             current_process: 0,
             initialized: false,
@@ -102,30 +104,16 @@ impl UnifiedMemoryManager {
     ) -> SystemResult<()> {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"UMM::init start\n");
 
-        let allocator = BitmapFrameAllocator::init_with_memory_map(memory_map);
-        petroleum::page_table::constants::init_frame_allocator(allocator);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Frame allocator init done\n");
-
-        // Initialize global heap before creating any BTreeMap or using alloc
-        // Use a statically allocated buffer to avoid page faults during early boot
-        let heap_size = crate::heap::HEAP_SIZE;
-        let heap_ptr = core::ptr::addr_of_mut!(crate::heap::BOOT_HEAP_BUFFER) as *mut u8;
-
-        // TEST: Verify if the static buffer is actually writable before initializing the heap
-        unsafe {
-            core::ptr::write(heap_ptr, 0xAA);
-            petroleum::write_serial_bytes!(
-                0x3F8,
-                0x3FD,
-                b"DEBUG: Static buffer raw write success\n"
-            );
+        // Transfer the frame allocator from heap (initialized during uefi_init) to constants.
+        // Creating a new BitmapFrameAllocator here would lose track of frames already allocated
+        // for TSS stacks, heap pages, etc., causing double-allocation and memory corruption.
+        {
+            let mut fa_guard = crate::heap::FRAME_ALLOCATOR.lock();
+            let heap_allocator = fa_guard.take()
+                .expect("Frame allocator must be initialized by uefi_init");
+            petroleum::page_table::constants::init_frame_allocator(heap_allocator);
         }
-
-        unsafe { petroleum::init_global_heap(heap_ptr, heap_size) };
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Global heap initialized (static buffer)\n");
-
-        // First 1MB is already reserved inside BitmapFrameAllocator::init_with_memory_map
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"First 1MB reserved\n");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Frame allocator: transferred from heap\n");
 
         // Use the full initialization method to set up the mapper
         let phys_offset =

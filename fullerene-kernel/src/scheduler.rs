@@ -283,7 +283,7 @@ fn initialize_shell_process() -> crate::process::ProcessId {
         true, // shell now runs in user mode (Ring 3)
     )
     .expect("Failed to create shell process");
-    log::info!("Created shell process with PID {}", shell_pid);
+    // Remove log::info to isolate if heap allocation in logging is the cause
     crate::process::unblock_process(shell_pid);
     shell_pid
 }
@@ -291,6 +291,27 @@ fn initialize_shell_process() -> crate::process::ProcessId {
 /// Main kernel scheduler loop - orchestrates all system functionality
 // Main kernel scheduler loop - orchestrates all system functionality
 pub fn scheduler_loop() -> ! {
+    let cr3 = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
+    let mut buf = [0u8; 16];
+    let len = petroleum::serial::format_hex_to_buffer(cr3, &mut buf, 16);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Current CR3 at loop start: 0x");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
+    let phys_offset = petroleum::common::memory::get_physical_memory_offset();
+    let len_offset = petroleum::serial::format_hex_to_buffer(phys_offset as u64, &mut buf, 16);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Physical Memory Offset: 0x");
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len_offset]);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
+    if let Some(umm) = crate::memory_management::get_memory_manager().lock().as_ref() {
+        let pml4 = umm.kernel_pml4_phys;
+        let len_pml4 = petroleum::serial::format_hex_to_buffer(pml4 as u64, &mut buf, 16);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: UMM kernel_pml4_phys: 0x");
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len_pml4]);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+    }
+
     write_serial_bytes!(0x3F8, 0x3FD, b"S: Loop Start\n");
     scheduler_log!("About to initialize shell process");
 

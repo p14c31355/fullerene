@@ -832,10 +832,9 @@ impl UefiInitContext {
             );
         }
 
-        let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
-        let frame_allocator = frame_allocator_guard
-            .as_mut()
-            .expect("Frame allocator not initialized");
+        // After UMM::init, the frame allocator has been transferred from heap::FRAME_ALLOCATOR
+        // to constants::FRAME_ALLOCATOR. Use the constants version here.
+        let frame_allocator = petroleum::page_table::constants::get_frame_allocator_mut();
 
         let mut mapper = unsafe {
             petroleum::page_table::init::<_, fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::constants::BootInfoFrameAllocator)>(

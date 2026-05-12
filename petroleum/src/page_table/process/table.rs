@@ -432,8 +432,10 @@ impl PageTableHelper for ProcessPageTable {
             }
         }
 
-        // Note: For shallow copy we do not track the new frame in allocated_tables to avoid extra allocation.
-        // self.allocated_tables.insert(new_frame.start_address().as_u64() as usize, new_frame);
+        // CRITICAL: Must track the new frame in allocated_tables so that:
+        // 1. init_page_table() can find it via pt_manager.allocated_tables().get()
+        // 2. The process's page_table_phys_addr is correctly set
+        self.allocated_tables.insert(new_frame.start_address().as_u64() as usize, new_frame);
 
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: clone_page_table shallow done\n");
         Ok(new_frame.start_address().as_u64() as usize)
