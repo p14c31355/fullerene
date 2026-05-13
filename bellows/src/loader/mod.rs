@@ -257,7 +257,7 @@ pub fn exit_boot_services_and_jump(
 
     // We only need InitAndJumpArgs for the transition. 
     // KernelArgs will be reconstructed or passed via InitAndJumpArgs.
-    let jump_args_ptr = args_phys_addr as *mut petroleum::page_table::kernel::InitAndJumpArgs;
+    let jump_args_ptr = args_phys_addr as *mut petroleum::page_table::InitAndJumpArgs;
 
     // Prepare memory map descriptors
     let descriptor_size_val = descriptor_size;
@@ -316,7 +316,7 @@ pub fn exit_boot_services_and_jump(
 
     // Prepare the KernelArgs structure the kernel expects
     // Place it right after InitAndJumpArgs in the allocated block
-    let kernel_args_phys = args_phys_addr as u64 + core::mem::size_of::<petroleum::page_table::kernel::InitAndJumpArgs>() as u64;
+    let kernel_args_phys = args_phys_addr as u64 + core::mem::size_of::<petroleum::page_table::InitAndJumpArgs>() as u64;
     // Align to 16 bytes
     let kernel_args_phys_aligned = (kernel_args_phys + 15) & !15;
     
@@ -366,7 +366,7 @@ pub fn exit_boot_services_and_jump(
         // Prepare the arguments structure for the jump.
         core::ptr::write_volatile(
             jump_args_ptr,
-            petroleum::page_table::kernel::InitAndJumpArgs {
+            petroleum::page_table::InitAndJumpArgs {
                 physical_memory_offset: petroleum::page_table::constants::HIGHER_HALF_OFFSET,
                 frame_allocator: &mut frame_allocator as *mut _,
                 kernel_phys_start: kernel_phys_start.as_u64(),
@@ -386,26 +386,15 @@ pub fn exit_boot_services_and_jump(
     unsafe {
         // CRITICAL: Explicitly identity map the arguments and L4 table area in the current UEFI page table.
         // This ensures that init_and_jump can safely access these physical addresses.
-        let l4_temp = petroleum::page_table::kernel::init::active_level_4_table(
+        let _l4_temp = petroleum::page_table::active_level_4_table(
             petroleum::page_table::constants::HIGHER_HALF_OFFSET
         );
-        let flags = x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE;
         
-        // Identity map the 1MB block allocated for args, L4, and stack.
-        // We use the same logic as map_range_4k_existing but call it from the bootloader.
-        // Since we don't have a full Mapper here, we'll use a simple loop to map the pages.
-        // For simplicity, we'll just call a helper or implement the mapping here.
-        // Actually, the most robust way is to use the existing map_range_4k_existing logic.
-        
-        // We'll just call init_and_jump and hope the identity map is sufficient, 
-        // but we've already seen it's not. Let's try to use the physical_memory_offset 
-        // consistently in init_and_jump.
-        
-        petroleum::page_table::kernel::init_and_jump(
+        petroleum::page_table::init_and_jump(
             jump_args_ptr,
             kernel_stack_top,
             args_phys_addr as u64 + 4096,
-            kernel_entry_virt as usize, // Pass the KERNEL entry, NOT init_and_jump!
+            kernel_entry_virt as usize,
             petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64(),
         );
     }

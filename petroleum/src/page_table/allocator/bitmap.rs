@@ -1,6 +1,8 @@
 use crate::common::logging::SystemResult;
-use crate::page_table::allocator::traits::FrameAllocatorExt;
-use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
+use crate::page_table::allocator::traits::{FrameAllocator, FrameAllocatorExt};
+use crate::page_table::memory_map::MemoryDescriptorValidator;
+use crate::page_table::types::PhysFrame;
+use x86_64::structures::paging::{FrameAllocator as X86FrameAllocator, PhysFrame as X86PhysFrame, Size4KiB};
 
 pub struct BitmapFrameAllocator {
     bitmap: alloc::vec::Vec<u64>,
@@ -23,7 +25,7 @@ impl BitmapFrameAllocator {
         }
     }
 
-    pub fn init_with_memory_map<T: crate::page_table::types::MemoryDescriptorValidator>(
+    pub fn init_with_memory_map<T: MemoryDescriptorValidator>(
         memory_map: &[T],
     ) -> Self {
         let mut max_phys = 0u64;
@@ -95,8 +97,12 @@ impl BitmapFrameAllocator {
         (self.bitmap[idx] & (1 << bit)) == 0
     }
 
-    pub fn free_frame(&mut self, frame: x86_64::structures::paging::PhysFrame) {
-        self.deallocate_frame(frame);
+    pub fn free_frame(&mut self, frame: X86PhysFrame) {
+        let phys_addr = frame.start_address().as_u64();
+        let frame_idx = (phys_addr / 4096) as usize;
+        if frame_idx < self.total_frames {
+            self.set_frame_used(frame_idx, false);
+        }
     }
 
     pub fn free_contiguous_frames(&mut self, start_phys: u64, pages: usize) {
@@ -125,17 +131,13 @@ impl BitmapFrameAllocator {
         }
     }
 
-    /// Allocate a frame from the low memory region (below 1MB) that is
-    /// guaranteed to be identity-mapped by UEFI page tables.
-    /// Skips the L4 table page (CR3) to avoid corrupting it.
-    pub fn allocate_frame_low(&mut self) -> Option<PhysFrame> {
-        const LOW_MEMORY_LIMIT: usize = 1024 * 1024 / 4096; // 1MB in frames
-        // Get the L4 table physical address from CR3 to avoid allocating it
+    /// Allocate a frame from the low memory region (below 1MB).
+    pub fn allocate_frame_low(&mut self) -> Option<X86PhysFrame> {
+        const LOW_MEMORY_LIMIT: usize = 1024 * 1024 / 4096;
         let cr3_addr: u64;
         unsafe { core::arch::asm!("mov rax, cr3", out("rax") cr3_addr, options(nomem, nostack)) };
         let l4_frame_idx = (cr3_addr / 4096) as usize;
         for frame_idx in 1..LOW_MEMORY_LIMIT.min(self.total_frames) {
-            // Skip the L4 table page itself
             if frame_idx == l4_frame_idx {
                 continue;
             }
@@ -143,7 +145,7 @@ impl BitmapFrameAllocator {
             let bit = frame_idx % 64;
             if (self.bitmap[idx] & (1 << bit)) == 0 {
                 self.set_frame_used(frame_idx, true);
-                return Some(PhysFrame::containing_address(x86_64::PhysAddr::new(
+                return Some(X86PhysFrame::containing_address(x86_64::PhysAddr::new(
                     frame_idx as u64 * 4096,
                 )));
             }
@@ -152,8 +154,10 @@ impl BitmapFrameAllocator {
     }
 }
 
-unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
-    fn allocate_frame(&mut self) -> Option<PhysFrame> {
+// ── Implement our custom FrameAllocator trait ──────────────────────────
+
+impl FrameAllocator for BitmapFrameAllocator {
+    fn allocate(&mut self) -> Result<PhysFrame, crate::page_table::allocator::traits::AllocError> {
         for i in 0..self.bitmap.len() {
             if self.bitmap[i] != u64::MAX {
                 for j in 0..64 {
@@ -162,23 +166,32 @@ unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
                         continue;
                     }
                     if frame_idx >= self.total_frames {
-                        return None;
+                        return Err(crate::page_table::allocator::traits::AllocError::OutOfMemory);
                     }
                     if (self.bitmap[i] & (1 << j)) == 0 {
                         self.set_frame_used(frame_idx, true);
                         let phys_addr = frame_idx as u64 * 4096;
-                        // Use a lightweight log to avoid flooding the serial port
-                        // petroleum::serial::serial_log(format_args!("ALLOC: frame {:#x}", phys_addr));
-                        return Some(PhysFrame::containing_address(x86_64::PhysAddr::new(
-                            phys_addr,
-                        )));
+                        return Ok(PhysFrame { start_address: phys_addr });
                     }
                 }
             }
         }
-        None
+        Err(crate::page_table::allocator::traits::AllocError::OutOfMemory)
+    }
+
+    fn deallocate(&mut self, frame: PhysFrame) {
+        let frame_idx = (frame.start_address() / 4096) as usize;
+        if frame_idx < self.total_frames {
+            self.set_frame_used(frame_idx, false);
+        }
+    }
+
+    fn is_initialized(&self) -> bool {
+        !self.bitmap.is_empty()
     }
 }
+
+// ── Implement FrameAllocatorExt ────────────────────────────────────────
 
 impl FrameAllocatorExt for BitmapFrameAllocator {
     fn total_frames(&self) -> usize {
@@ -204,16 +217,35 @@ impl FrameAllocatorExt for BitmapFrameAllocator {
         }
     }
 
-    fn deallocate_frame(&mut self, frame: x86_64::structures::paging::PhysFrame) {
-        let phys_addr = frame.start_address().as_u64();
-        let frame_idx = (phys_addr / 4096) as usize;
-        
-        if frame_idx >= self.total_frames {
-            crate::serial::serial_log(format_args!("WARN: Attempted to deallocate out-of-bounds frame {:#x}", phys_addr));
-            return;
+    fn deallocate_frame(&mut self, frame: PhysFrame) {
+        self.deallocate(frame);
+    }
+}
+
+// ── Implement x86_64 FrameAllocator for backward compatibility ────────
+
+unsafe impl X86FrameAllocator<Size4KiB> for BitmapFrameAllocator {
+    fn allocate_frame(&mut self) -> Option<X86PhysFrame> {
+        for i in 0..self.bitmap.len() {
+            if self.bitmap[i] != u64::MAX {
+                for j in 0..64 {
+                    let frame_idx = i * 64 + j;
+                    if frame_idx == 0 {
+                        continue;
+                    }
+                    if frame_idx >= self.total_frames {
+                        return None;
+                    }
+                    if (self.bitmap[i] & (1 << j)) == 0 {
+                        self.set_frame_used(frame_idx, true);
+                        let phys_addr = frame_idx as u64 * 4096;
+                        return Some(X86PhysFrame::containing_address(x86_64::PhysAddr::new(
+                            phys_addr,
+                        )));
+                    }
+                }
+            }
         }
-        
-        self.set_frame_used(frame_idx, false);
-        // petroleum::serial::serial_log(format_args!("FREE: frame {:#x}", phys_addr));
+        None
     }
 }

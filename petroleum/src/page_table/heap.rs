@@ -1,5 +1,5 @@
 use crate::common::memory::set_heap_range;
-use crate::page_table::memory_map::MemoryMapDescriptor;
+use crate::page_table::memory_map::descriptor::MemoryMapDescriptor;
 use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::PhysAddr;
 

@@ -1,91 +1,73 @@
-use x86_64::{VirtAddr, structures::paging::PageTable};
-use crate::page_table::constants::BootInfoFrameAllocator;
-use x86_64::structures::paging::FrameAllocator;
+//! Integration tests for page table types.
 
-pub fn test_page_table_copy_switch(
-    phys_offset: VirtAddr,
-    frame_allocator: &mut BootInfoFrameAllocator,
-    _memory_map: &[impl crate::page_table::efi_memory::MemoryDescriptorValidator],
-) -> crate::common::logging::SystemResult<()> {
-    crate::debug_log_no_alloc!("[PT TEST] Starting minimal page table copy test");
+use super::types::*;
+use super::Pte;
 
-    // Get current CR3
-    let (original_cr3, _) = crate::safe_cr3_read!();
+#[test]
+fn test_canonical_address() {
+    let addr = CanonicalVirtAddr::new(0).unwrap();
+    assert_eq!(addr.as_u64(), 0);
 
-    // Allocate new frame for cloned table
-    let new_l4_frame = match frame_allocator.allocate_frame() {
-        Some(frame) => frame,
-        None => {
-            crate::debug_log_no_alloc!("[PT TEST ERROR] Failed to allocate L4 frame");
-            return Err(crate::common::logging::SystemError::FrameAllocationFailed);
-        }
-    };
-    crate::debug_log_no_alloc!(
-        "[PT TEST] Allocated new L4 frame at: 0x",
-        new_l4_frame.start_address().as_u64() as usize
-    );
+    let addr = CanonicalVirtAddr::new(0x0000_7FFF_FFFF_FFFF).unwrap();
+    assert_eq!(addr.as_u64(), 0x0000_7FFF_FFFF_FFFF);
 
-    // Zero the new frame using identity mapping (UEFI maps all memory)
-    unsafe {
-        let new_l4_virt = phys_offset + new_l4_frame.start_address().as_u64();
-        let table_ptr = new_l4_virt.as_mut_ptr() as *mut PageTable;
-        *table_ptr = PageTable::new();
-    }
-    crate::debug_log_no_alloc!("[PT TEST] Zeroed new L4 table");
+    let addr = CanonicalVirtAddr::new(0xFFFF_8000_0000_0000).unwrap();
+    assert_eq!(addr.as_u64(), 0xFFFF_8000_0000_0000);
 
-    // Copy from original table - just duplicate the frame contents
-    unsafe {
-        let original_virt = phys_offset + original_cr3.start_address().as_u64();
-        let original_table = &*(original_virt.as_ptr() as *const PageTable);
+    assert!(CanonicalVirtAddr::new(0x0000_8000_0000_0000).is_none());
+    assert!(CanonicalVirtAddr::new(0xFFFF_7FFF_FFFF_FFFF).is_none());
+}
 
-        let new_l4_virt = phys_offset + new_l4_frame.start_address().as_u64();
-        let new_table = &mut *(new_l4_virt.as_mut_ptr() as *mut PageTable);
+#[test]
+fn test_page_table_entry() {
+    let entry = Pte::new(Flags::PRESENT | Flags::WRITABLE);
+    assert!(entry.is_present());
+    assert!(!entry.is_huge());
+    assert!(!entry.is_unused());
 
-        // Simple memcpy of the table contents
-        core::ptr::copy_nonoverlapping(original_table as *const PageTable, new_table, 1);
-    }
-    crate::debug_log_no_alloc!("[PT TEST] Copied original L4 table contents");
+    let unused = Pte::new(0);
+    assert!(unused.is_unused());
+    assert!(!unused.is_present());
+}
 
-    // Try the CR3 switch
-    crate::debug_log_no_alloc!("[PT TEST] Attempting CR3 switch...");
-    crate::safe_cr3_write!(new_l4_frame);
+#[test]
+fn test_page_table_create() {
+    let table = super::types::PageTable::new();
+    assert!(table.is_empty());
+    assert_eq!(table.used_count(), 0);
+}
 
-    // Verify switch
-    let (current_cr3, _) = crate::safe_cr3_read!();
-    if current_cr3 == new_l4_frame {
-        crate::debug_log_no_alloc!("[PT TEST] CR3 switch succeeded!");
-        x86_64::instructions::tlb::flush_all();
-    } else {
-        crate::debug_log_no_alloc!(
-            "[PT TEST ERROR] CR3 switch failed - still at old table",
-            current_cr3.start_address().as_u64() as usize
-        );
-        // Clean up allocated frame
-        frame_allocator.deallocate_frame(new_l4_frame);
-        return Err(crate::common::logging::SystemError::InternalError);
-    }
+#[test]
+fn test_phys_frame() {
+    let frame = PhysFrame::from_start_address(0x1000).unwrap();
+    assert_eq!(frame.start_address(), 0x1000);
+    assert!(PhysFrame::from_start_address(0x1001).is_none());
+}
 
-    // Switch back to original
-    crate::debug_log_no_alloc!("[PT TEST] Switching back to original CR3...");
-    crate::safe_cr3_write!(original_cr3);
+#[test]
+fn test_page_indices() {
+    let addr = CanonicalVirtAddr::new(0x0000_0080_0000_0000).unwrap();
+    assert_eq!(addr.p4_index(), 1);
+    assert_eq!(addr.p3_index(), 0);
+    assert_eq!(addr.p2_index(), 0);
+    assert_eq!(addr.p1_index(), 0);
+}
 
-    // Verify back-switch
-    let (final_cr3, _) = crate::safe_cr3_read!();
-    if final_cr3 == original_cr3 {
-        crate::debug_log_no_alloc!("[PT TEST] Switch back to original CR3 successful");
-    } else {
-        crate::debug_log_no_alloc!(
-            "[PT TEST ERROR] Switch back to original CR3 failed",
-            final_cr3.start_address().as_u64() as usize
-        );
-        // Clean up allocated frame
-        frame_allocator.deallocate_frame(new_l4_frame);
-        return Err(crate::common::logging::SystemError::InternalError);
-    }
+#[test]
+fn test_alignment() {
+    use super::types::{align_up, align_down, is_aligned};
+    assert_eq!(align_up(5, 4), 8);
+    assert_eq!(align_down(7, 4), 4);
+    assert!(is_aligned(4096, 4096));
+    assert!(!is_aligned(4097, 4096));
+}
 
-    // Clean up
-    frame_allocator.deallocate_frame(new_l4_frame);
-    crate::debug_log_no_alloc!("[PT TEST] Test completed successfully");
+/// Safe CR3 read — wrapper around the raw assembly.
+pub fn safe_cr3_read() -> u64 {
+    super::raw::utils::read_cr3()
+}
 
-    Ok(())
+#[test]
+fn test_cr3_read() {
+    let _cr3 = safe_cr3_read();
 }

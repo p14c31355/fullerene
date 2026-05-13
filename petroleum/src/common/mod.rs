@@ -42,7 +42,7 @@ pub fn collect_system_stats(
 ) -> SystemStats {
     let total_processes = get_total_processes();
     let active_processes = get_active_processes();
-    let (memory_used, _, _) = get_memory_stats!();
+    let (memory_used, _, _) = (0, 0, 0); // TODO: implement get_memory_stats
     let uptime_ticks = get_uptime_ticks();
     SystemStats {
         total_processes,

@@ -1,6 +1,6 @@
 use crate::page_table::allocator::{BitmapFrameAllocator, FrameAllocatorExt};
 use crate::page_table::constants::MAX_DESCRIPTOR_PAGES;
-use crate::page_table::types::MemoryDescriptorValidator;
+use crate::page_table::memory_map::MemoryDescriptorValidator;
 
 pub fn process_memory_descriptors<T, F>(descriptors: &[T], mut processor: F)
 where

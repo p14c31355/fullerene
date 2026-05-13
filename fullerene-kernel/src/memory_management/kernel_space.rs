@@ -1,40 +1,78 @@
-use alloc::collections::BTreeMap;
-use petroleum::common::logging::SystemResult;
-use spin::Mutex;
+//! Kernel space memory initialization.
+//!
+//! Uses the declarative mapper for concise, safe initial mappings.
 
-/// Kernel virtual address space allocated regions tracker
-pub static KERNEL_VIRTUAL_ALLOCATED_REGIONS: Mutex<BTreeMap<usize, usize>> =
-    Mutex::new(BTreeMap::new());
+use crate::memory_management::KERNEL_OFFSET;
+use petroleum::page_table::types::*;
+use petroleum::page_table::kernel::mapper::{Mapper, MapError};
+use petroleum::page_table::allocator::bitmap::BitmapFrameAllocator;
 
-/// Helper for aligning sizes to page boundaries
-pub fn align_page(size: usize) -> usize {
-    const PAGE_SIZE: usize = 4096;
-    (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
-}
+/// Set up the kernel's initial page tables.
+///
+/// Maps:
+/// - Higher-half kernel (identity-mapped at KERNEL_OFFSET)
+/// - MMIO regions
+/// - Framebuffer (if present)
+///
+/// Uses huge pages where alignment permits.
+pub fn setup_kernel_space(
+    root: &mut PageTable,
+    allocator: &mut BitmapFrameAllocator,
+) -> Result<(), MapError> {
+    let mut mapper = Mapper::new(root, allocator);
 
-/// Find a free virtual address range in the kernel space
-pub fn find_free_virtual_address(size: usize) -> SystemResult<usize> {
-    let size_aligned = align_page(size);
-    let mut regions = KERNEL_VIRTUAL_ALLOCATED_REGIONS.lock();
-
-    // Kernel space starts at 0xFFFF_8000_0000_0000
-    let mut current_addr = 0xFFFF_8000_0000_0000;
-
-    // Find a free gap large enough for the allocation
-    for (&start, &size) in regions.iter() {
-        let end = start + size;
-        if current_addr + size_aligned <= start {
-            // Found a gap
-            break;
-        }
-        current_addr = end;
+    // Higher-half direct map
+    let max_phys = allocator.total_memory();
+    if max_phys > 0 {
+        mapper
+            .map_region(
+                CanonicalVirtAddr::new(KERNEL_OFFSET)
+                    .expect("KERNEL_OFFSET is not canonical"),
+                0,
+                max_phys,
+            )
+            .with_flags(Flags::KERNEL_DATA)
+            .huge_if_possible()
+            .apply()?;
     }
 
-    // Align to page boundary
-    current_addr = align_page(current_addr);
+    Ok(())
+}
 
-    // Record the allocation
-    regions.insert(current_addr, size_aligned);
+/// Map a specific MMIO region.
+pub fn map_mmio(
+    root: &mut PageTable,
+    allocator: &mut BitmapFrameAllocator,
+    phys: u64,
+    size: u64,
+) -> Result<(), MapError> {
+    let mut mapper = Mapper::new(root, allocator);
 
-    Ok(current_addr)
+    let virt = CanonicalVirtAddr::new(KERNEL_OFFSET + phys)
+        .expect("MMIO virtual address is not canonical");
+
+    mapper
+        .map_region(virt, phys, size)
+        .with_flags(Flags::DEVICE_MMIO)
+        .huge_if_possible()
+        .apply()
+}
+
+/// Map the framebuffer.
+pub fn map_framebuffer(
+    root: &mut PageTable,
+    allocator: &mut BitmapFrameAllocator,
+    phys: u64,
+    size: u64,
+) -> Result<(), MapError> {
+    let mut mapper = Mapper::new(root, allocator);
+
+    let virt = CanonicalVirtAddr::new(KERNEL_OFFSET + phys)
+        .expect("framebuffer virtual address is not canonical");
+
+    mapper
+        .map_region(virt, phys, size)
+        .with_flags(Flags::KERNEL_DATA | Flags::WRITE_THROUGH)
+        .huge_if_possible()
+        .apply()
 }

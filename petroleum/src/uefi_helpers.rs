@@ -2,7 +2,7 @@ use super::*;
 use crate::common::{
     EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
 };
-use crate::page_table::types::MemoryDescriptorValidator;
+use crate::page_table::memory_map::MemoryDescriptorValidator;
 use x86_64::PhysAddr;
 
 /// Helper function to convert u32 to string without heap allocation

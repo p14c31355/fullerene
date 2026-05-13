@@ -1,455 +1,303 @@
-use crate::page_table::allocator::traits::FrameAllocatorExt;
-use crate::page_table::constants::BootInfoFrameAllocator;
-use crate::page_table::types::PageTableHelper;
-use crate::{extract_frame_if_present, safe_cr3_write, with_temp_mapping};
-use alloc::collections::BTreeMap;
-use x86_64::{
-    PhysAddr, VirtAddr,
-    registers::control::Cr3,
-    structures::paging::{
-        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
-        Size4KiB, Translate, mapper::TranslateResult,
-    },
-};
+//! High-level declarative page mapper with Builder pattern.
+//!
+//! This module provides a concise, safe API for mapping regions of memory:
+//!
+//! ```ignore
+//! mapper
+//!     .map_region(virt, phys, Size::MiB(128))
+//!     .with_flags(Flags::KERNEL_DATA)
+//!     .huge_if_possible()
+//!     .apply()?;
+//! ```
 
-pub struct KernelMapper {
-    pub current_page_table: usize,
-    pub initialized: bool,
-    pub pml4_frame: Option<PhysFrame>,
-    pub mapper: Option<OffsetPageTable<'static>>,
-    pub allocated_tables: BTreeMap<usize, PhysFrame>,
+use crate::page_table::types::*;
+use crate::page_table::raw::walker::{walk_or_create, FrameAlloc, WalkError};
+use crate::page_table::PageTableEntry;
+use crate::page_table::allocator::traits::FrameAllocator;
+
+/// Mapping errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapError {
+    /// The virtual address is not canonical.
+    InvalidAddress,
+    /// The physical address is not properly aligned.
+    InvalidAlignment,
+    /// Frame allocation failed.
+    OutOfMemory,
+    /// A huge page conflict was encountered.
+    HugePageConflict { level: u8 },
+    /// The size is zero.
+    ZeroSize,
 }
 
-impl KernelMapper {
-    pub fn new() -> Self {
-        Self {
-            current_page_table: 0,
-            initialized: false,
-            pml4_frame: None,
-            mapper: None,
-            allocated_tables: BTreeMap::new(),
+impl core::fmt::Display for MapError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            MapError::InvalidAddress => write!(f, "invalid virtual address"),
+            MapError::InvalidAlignment => write!(f, "invalid alignment"),
+            MapError::OutOfMemory => write!(f, "out of memory"),
+            MapError::HugePageConflict { level } => {
+                write!(f, "huge page conflict at level {}", level)
+            }
+            MapError::ZeroSize => write!(f, "zero size"),
         }
-    }
-
-    pub fn new_with_frame(pml4_frame: x86_64::structures::paging::PhysFrame) -> Self {
-        Self {
-            current_page_table: pml4_frame.start_address().as_u64() as usize,
-            initialized: false,
-            pml4_frame: Some(pml4_frame),
-            mapper: None,
-            allocated_tables: BTreeMap::new(),
-        }
-    }
-
-    pub fn init_paging(&mut self) -> crate::common::logging::SystemResult<()> {
-        Ok(())
-    }
-
-    pub fn initialize_with_frame_allocator(
-        &mut self,
-        phys_offset: VirtAddr,
-        frame_allocator: &mut BootInfoFrameAllocator,
-        kernel_phys_start: u64,
-    ) -> crate::common::logging::SystemResult<()> {
-        if self.initialized {
-            return Ok(());
-        }
-
-        let mut mapper = unsafe {
-            crate::page_table::kernel::init::init::<BootInfoFrameAllocator, fn(&mut OffsetPageTable, &mut BootInfoFrameAllocator)>(
-                phys_offset,
-                frame_allocator,
-                kernel_phys_start,
-                None,
-            )
-        };
-
-        let (current_pml4, _) = Cr3::read();
-        let virt = phys_offset + current_pml4.start_address().as_u64();
-        let page = Page::containing_address(virt);
-
-        let _ = unsafe {
-            mapper.map_to(
-                page,
-                current_pml4,
-                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE,
-                frame_allocator,
-            )
-        };
-
-        self.mapper = Some(mapper);
-        self.pml4_frame = Some(current_pml4);
-        self.current_page_table = current_pml4.start_address().as_u64() as usize;
-        self.initialized = true;
-
-        Ok(())
-    }
-
-    pub fn pml4_frame(&self) -> Option<x86_64::structures::paging::PhysFrame> {
-        self.pml4_frame
     }
 }
 
-impl PageTableHelper for KernelMapper {
-    fn map_page(
-        &mut self,
-        virtual_addr: usize,
-        physical_addr: usize,
-        flags: PageTableFlags,
-        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
-    ) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
+impl From<WalkError> for MapError {
+    fn from(e: WalkError) -> Self {
+        match e {
+            WalkError::OutOfMemory => MapError::OutOfMemory,
+            WalkError::HugePageConflict { level } => MapError::HugePageConflict { level },
+            WalkError::InvalidEntry { .. } => MapError::InvalidAddress,
         }
-
-        let mapper = self.mapper.as_mut().unwrap();
-        let virtual_addr = x86_64::VirtAddr::new(virtual_addr as u64);
-        let physical_addr = x86_64::PhysAddr::new(physical_addr as u64);
-        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virtual_addr);
-        let frame =
-            x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(physical_addr);
-
-        unsafe {
-            match mapper.map_to(page, frame, flags, frame_allocator) {
-                Ok(flush) => {
-                    flush.flush();
-                }
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {}
-                Err(x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed) => {
-                    return Err(crate::common::logging::SystemError::FrameAllocationFailed);
-                }
-                Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {
-                    return Err(crate::common::logging::SystemError::MappingFailed);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn unmap_page(
-        &mut self,
-        virtual_addr: usize,
-    ) -> crate::common::logging::SystemResult<PhysFrame> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
-
-        let mapper = self.mapper.as_mut().unwrap();
-        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(
-            x86_64::VirtAddr::new(virtual_addr as u64),
-        );
-
-        let (frame, flush) = mapper
-            .unmap(page)
-            .map_err(|_| crate::common::logging::SystemError::UnmappingFailed)?;
-        flush.flush();
-        Ok(frame)
-    }
-
-    fn translate_address(
-        &self,
-        virtual_addr: usize,
-    ) -> crate::common::logging::SystemResult<usize> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
-
-        let mapper = self.mapper.as_ref().unwrap();
-        let virt_addr = VirtAddr::new(virtual_addr as u64);
-
-        match mapper.translate(virt_addr) {
-            TranslateResult::Mapped { frame, offset, .. } => {
-                let phys_addr = frame.start_address() + offset;
-                Ok(phys_addr.as_u64() as usize)
-            }
-            _ => Err(crate::common::logging::SystemError::InvalidArgument),
-        }
-    }
-
-    fn set_page_flags(
-        &mut self,
-        virtual_addr: usize,
-        flags: PageTableFlags,
-    ) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
-
-        let mapper = self.mapper.as_mut().unwrap();
-        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(
-            x86_64::VirtAddr::new(virtual_addr as u64),
-        );
-
-        unsafe {
-            mapper
-                .update_flags(page, flags)
-                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
-                .flush();
-        }
-        Ok(())
-    }
-
-    fn get_page_flags(
-        &self,
-        virtual_addr: usize,
-    ) -> crate::common::logging::SystemResult<PageTableFlags> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
-
-        let phys_mem_offset = self.mapper.as_ref().unwrap().phys_offset();
-        let addr = x86_64::VirtAddr::new(virtual_addr as u64);
-        let (level_4_table_frame, _) = x86_64::registers::control::Cr3::read();
-
-        let table_indexes = [
-            addr.p4_index(),
-            addr.p3_index(),
-            addr.p2_index(),
-            addr.p1_index(),
-        ];
-        let mut frame = level_4_table_frame;
-        let mut flags = None;
-
-        for (level, &index) in table_indexes.iter().enumerate() {
-            let virt = phys_mem_offset + frame.start_address().as_u64();
-            let table_ptr: *const PageTable = virt.as_ptr();
-            let table = unsafe { &*table_ptr };
-            let entry = &table[index];
-            if level == 3 {
-                if entry.flags().contains(PageTableFlags::PRESENT) {
-                    flags = Some(entry.flags());
-                } else {
-                    return Ok(PageTableFlags::empty());
-                }
-            } else {
-                frame = match entry.frame() {
-                    Ok(frame) => frame,
-                    Err(_) => return Ok(PageTableFlags::empty()),
-                };
-            }
-        }
-        Ok(flags.unwrap_or(PageTableFlags::empty()))
-    }
-
-    fn flush_tlb(&mut self, virtual_addr: usize) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
-        x86_64::instructions::tlb::flush(VirtAddr::new(virtual_addr as u64));
-        Ok(())
-    }
-
-    fn flush_tlb_all(&mut self) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
-        crate::flush_tlb_safely!();
-        Ok(())
-    }
-
-    fn create_page_table(
-        &mut self,
-        frame_allocator: &mut impl FrameAllocator<Size4KiB>,
-    ) -> crate::common::logging::SystemResult<usize> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
-        let new_frame = match frame_allocator.allocate_frame() {
-            Some(frame) => frame,
-            None => return Err(crate::common::logging::SystemError::FrameAllocationFailed),
-        };
-
-        let mapper = self.mapper.as_mut().unwrap();
-        let temp_page = unsafe {
-            Page::<Size4KiB>::containing_address(VirtAddr::new(
-                crate::page_table::raw::TEMP_VA_FOR_CLONE.as_u64() + 0x3000u64,
-            ))
-        };
-        unsafe {
-            mapper
-                .map_to(
-                    temp_page,
-                    new_frame,
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                    frame_allocator,
-                )
-                .map_err(|_| crate::common::logging::SystemError::MappingFailed)?
-                .flush();
-        }
-        unsafe {
-            let table_va = (crate::page_table::raw::TEMP_VA_FOR_CLONE.as_u64() + 0x3000) as *mut u8;
-            core::ptr::write_bytes(table_va, 0, 4096);
-        }
-        if let Ok((_frame, flush)) = mapper.unmap(temp_page) {
-            flush.flush();
-        }
-        let table_addr = new_frame.start_address().as_u64() as usize;
-        self.allocated_tables.insert(table_addr, new_frame);
-        Ok(table_addr)
-    }
-
-    fn destroy_page_table(
-        &mut self,
-        table_addr: usize,
-        frame_allocator: &mut BootInfoFrameAllocator,
-    ) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
-        let table_phys = PhysAddr::new(table_addr as u64);
-        if let Some(frame) = self.allocated_tables.remove(&table_addr) {
-            let mapper = self.mapper.as_mut().unwrap();
-            destroy_page_table_recursive(
-                mapper,
-                frame_allocator,
-                table_phys,
-                4,
-                crate::page_table::raw::TEMP_VA_FOR_DESTROY,
-            )?;
-            frame_allocator.deallocate_frame(frame);
-            Ok(())
-        } else {
-            Err(crate::common::logging::SystemError::InvalidArgument)
-        }
-    }
-
-    fn clone_page_table(
-        &mut self,
-        source_table: usize,
-        frame_allocator: &mut impl FrameAllocator<Size4KiB>,
-    ) -> crate::common::logging::SystemResult<usize> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
-
-        let source_frame = if let Some(frame) = self.allocated_tables.get(&source_table) {
-            frame
-        } else if Some(source_table)
-            == self
-                .pml4_frame
-                .as_ref()
-                .map(|f| f.start_address().as_u64() as usize)
-        {
-            self.pml4_frame.as_ref().unwrap()
-        } else {
-            return Err(crate::common::logging::SystemError::InvalidArgument);
-        };
-        let mapper = self.mapper.as_mut().unwrap();
-        let mut allocated_frames = alloc::vec::Vec::new();
-        let mut cloned_tables = BTreeMap::new();
-        let cloned_phys = unsafe {
-            crate::page_table::process::clone_page_table_recursive(
-                mapper,
-                frame_allocator,
-                source_frame.start_address(),
-                4,
-                &mut allocated_frames,
-                &mut cloned_tables,
-            )
-        }?;
-
-        for frame in allocated_frames {
-            self.allocated_tables
-                .insert(frame.start_address().as_u64() as usize, frame);
-        }
-
-        Ok(cloned_phys.as_u64() as usize)
-    }
-
-    fn switch_page_table(&mut self, table_addr: usize) -> crate::common::logging::SystemResult<()> {
-        if !self.initialized {
-            return Err(crate::common::logging::SystemError::InternalError);
-        }
-        let new_frame = match self.allocated_tables.get(&table_addr) {
-            Some(frame) => frame,
-            None => return Err(crate::common::logging::SystemError::InvalidArgument),
-        };
-        safe_cr3_write!(*new_frame);
-        self.pml4_frame = Some(*new_frame);
-        self.current_page_table = table_addr;
-        Ok(())
-    }
-
-    fn current_page_table(&self) -> usize {
-        self.current_page_table
     }
 }
 
-fn destroy_page_table_recursive<'a>(
-    mapper: &mut OffsetPageTable<'a>,
-    frame_alloc: &mut BootInfoFrameAllocator,
-    table_phys: PhysAddr,
-    level: usize,
-    temp_va: VirtAddr,
-) -> crate::common::logging::SystemResult<()> {
-    if level == 0 || level > 4 {
-        return Ok(());
+/// The declarative mapper.
+///
+/// Wraps a page table root and frame allocator, providing a builder API
+/// for mapping memory regions.
+pub struct Mapper<'a, A: FrameAllocator> {
+    root: &'a mut PageTable,
+    allocator: &'a mut A,
+}
+
+impl<'a, A: FrameAllocator> Mapper<'a, A> {
+    /// Create a new mapper.
+    pub fn new(root: &'a mut PageTable, allocator: &'a mut A) -> Self {
+        Self { root, allocator }
     }
-    let frame = PhysFrame::<Size4KiB>::containing_address(table_phys);
-    let result: crate::common::logging::SystemResult<()> =
-        with_temp_mapping!(mapper, frame_alloc, temp_va, frame, {
-            let table = unsafe { &*(temp_va.as_ptr() as *const PageTable) };
-            let mut child_frames_to_free = alloc::vec::Vec::new();
-            if level > 1 {
-                for entry in table.iter() {
-                    if let Some(child_frame) = extract_frame_if_present!(entry) {
-                        if !entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-                            child_frames_to_free.push(child_frame);
-                        }
+
+    /// Start building a region mapping.
+    ///
+    /// Returns a `RegionBuilder` for fluent configuration.
+    pub fn map_region(
+        &mut self,
+        virt: CanonicalVirtAddr,
+        phys: u64,
+        size: u64,
+    ) -> RegionBuilder<'_, 'a, A> {
+        RegionBuilder {
+            mapper: self,
+            virt,
+            phys,
+            size,
+            flags: Flags::PRESENT | Flags::WRITABLE,
+            prefer_huge: false,
+        }
+    }
+
+    /// Map a single 4 KiB page.
+    pub fn map_4k(
+        &mut self,
+        virt: CanonicalVirtAddr,
+        frame: PhysFrame,
+        flags: u64,
+    ) -> Result<(), MapError> {
+        let adapter = &mut WalkerAdapter(self.allocator);
+        let entry = walk_or_create(self.root, virt, adapter, 1)?;
+        *entry = PageTableEntry::new_with_frame(frame, flags);
+        Ok(())
+    }
+
+    /// Map a single 2 MiB huge page.
+    ///
+    /// # Panics
+    /// Panics in debug mode if `virt` or `phys` are not 2 MiB-aligned.
+    pub fn map_2m(
+        &mut self,
+        virt: CanonicalVirtAddr,
+        phys: u64,
+        flags: u64,
+    ) -> Result<(), MapError> {
+        debug_assert!(virt.is_aligned(SIZE_2M), "virt not 2M-aligned");
+        debug_assert!(phys % SIZE_2M == 0, "phys not 2M-aligned");
+
+        let adapter = &mut WalkerAdapter(self.allocator);
+        let entry = walk_or_create(self.root, virt, adapter, 2)?;
+        *entry = PageTableEntry::new(phys | flags | Flags::HUGE_PAGE);
+        Ok(())
+    }
+
+    /// Map a single 1 GiB huge page.
+    ///
+    /// # Panics
+    /// Panics in debug mode if `virt` or `phys` are not 1 GiB-aligned.
+    pub fn map_1g(
+        &mut self,
+        virt: CanonicalVirtAddr,
+        phys: u64,
+        flags: u64,
+    ) -> Result<(), MapError> {
+        debug_assert!(virt.is_aligned(SIZE_1G), "virt not 1G-aligned");
+        debug_assert!(phys % SIZE_1G == 0, "phys not 1G-aligned");
+
+        let adapter = &mut WalkerAdapter(self.allocator);
+        let entry = walk_or_create(self.root, virt, adapter, 3)?;
+        *entry = PageTableEntry::new(phys | flags | Flags::HUGE_PAGE);
+        Ok(())
+    }
+}
+
+/// Adapter to convert FrameAllocator into the walker's FrameAlloc.
+struct WalkerAdapter<'a, A: FrameAllocator>(&'a mut A);
+
+impl<'a, A: FrameAllocator> FrameAlloc for WalkerAdapter<'a, A> {
+    fn alloc_zeroed(&mut self) -> Option<u64> {
+        self.0.allocate().ok().map(|f| f.start_address())
+    }
+}
+
+/// Builder for mapping a region of memory.
+///
+/// Created by `Mapper::map_region()`. Configure with builder methods,
+/// then call `apply()` to execute the mapping.
+pub struct RegionBuilder<'m, 'a, A: FrameAllocator> {
+    mapper: &'m mut Mapper<'a, A>,
+    virt: CanonicalVirtAddr,
+    phys: u64,
+    size: u64,
+    flags: u64,
+    prefer_huge: bool,
+}
+
+impl<'m, 'a, A: FrameAllocator> RegionBuilder<'m, 'a, A> {
+    /// Set the page table entry flags.
+    pub fn with_flags(mut self, flags: u64) -> Self {
+        self.flags = flags;
+        self
+    }
+
+    /// Prefer huge pages when alignment permits.
+    ///
+    /// The mapper will automatically use 1 GiB or 2 MiB pages where
+    /// both virtual and physical addresses are sufficiently aligned.
+    pub fn huge_if_possible(mut self) -> Self {
+        self.prefer_huge = true;
+        self
+    }
+
+    /// Execute the mapping.
+    pub fn apply(self) -> Result<(), MapError> {
+        if self.size == 0 {
+            return Err(MapError::ZeroSize);
+        }
+
+        let mut virt = self.virt.as_u64();
+        let mut phys = self.phys;
+        let mut remaining = self.size;
+
+        if self.prefer_huge {
+            // Use largest possible page sizes
+            while remaining > 0 {
+                let page_size = best_page_size(virt, phys, remaining);
+
+                match page_size {
+                    SIZE_1G => {
+                        self.mapper
+                            .map_1g(CanonicalVirtAddr::new(virt).unwrap(), phys, self.flags)?;
+                        virt += SIZE_1G;
+                        phys += SIZE_1G;
+                        remaining -= SIZE_1G;
+                    }
+                    SIZE_2M => {
+                        self.mapper
+                            .map_2m(CanonicalVirtAddr::new(virt).unwrap(), phys, self.flags)?;
+                        virt += SIZE_2M;
+                        phys += SIZE_2M;
+                        remaining -= SIZE_2M;
+                    }
+                    _ => {
+                        let frame = PhysFrame::from_start_address(phys)
+                            .ok_or(MapError::InvalidAlignment)?;
+                        self.mapper.map_4k(CanonicalVirtAddr::new(virt).unwrap(), frame, self.flags)?;
+                        virt += SIZE_4K;
+                        phys += SIZE_4K;
+                        remaining -= SIZE_4K;
                     }
                 }
             }
-            for child_frame in child_frames_to_free {
-                destroy_page_table_recursive(
-                    mapper,
-                    frame_alloc,
-                    child_frame.start_address(),
-                    level - 1,
-                    crate::page_table::raw::TEMP_VA_FOR_DESTROY,
-                )?;
-                frame_alloc.deallocate_frame(child_frame);
+        } else {
+            // Always use 4 KiB pages
+            while remaining > 0 {
+                let frame = PhysFrame::from_start_address(phys)
+                    .ok_or(MapError::InvalidAlignment)?;
+                self.mapper.map_4k(CanonicalVirtAddr::new(virt).unwrap(), frame, self.flags)?;
+                virt += SIZE_4K;
+                phys += SIZE_4K;
+                remaining = remaining.saturating_sub(SIZE_4K);
             }
-            Ok(())
-        });
-    result
-}
+        }
 
-impl crate::initializer::Initializable for KernelMapper {
-    fn init(&mut self) -> crate::common::logging::SystemResult<()> {
-        self.initialized = true;
         Ok(())
     }
-    fn name(&self) -> &'static str {
-        "KernelMapper"
-    }
-    fn priority(&self) -> i32 {
-        900
-    }
 }
 
-// Global accessor for KernelMapper (deadlock-free, single-threaded kernel context)
-use core::cell::UnsafeCell;
+/// Unmap a single page at the given virtual address.
+///
+/// Returns the physical frame that was mapped, if any.
+pub fn unmap_page<A: FrameAllocator>(
+    root: &mut PageTable,
+    virt: CanonicalVirtAddr,
+    allocator: &mut A,
+) -> Result<Option<PhysFrame>, WalkError> {
+    use crate::page_table::raw::walker::walk;
 
-struct SyncUnsafeCell<T> {
-    inner: UnsafeCell<T>,
-}
+    let entry = walk(root, virt, 1)?;
 
-unsafe impl<T> Sync for SyncUnsafeCell<T> {}
-
-static KERNEL_MAPPER: SyncUnsafeCell<Option<KernelMapper>> = SyncUnsafeCell {
-    inner: UnsafeCell::new(None),
-};
-
-pub fn init_kernel_mapper(mapper: KernelMapper) {
-    unsafe {
-        *KERNEL_MAPPER.inner.get() = Some(mapper);
+    if !entry.is_present() {
+        return Ok(None);
     }
+
+    let frame = PhysFrame::from_start_address(entry.addr()).unwrap();
+    entry.clear();
+    allocator.deallocate(frame);
+
+    Ok(Some(frame))
 }
 
-pub fn get_mapper() -> &'static mut KernelMapper {
-    unsafe {
-        (*KERNEL_MAPPER.inner.get())
-            .as_mut()
-            .expect("Kernel mapper not initialized")
+/// Unmap a range of pages.
+pub fn unmap_range<A: FrameAllocator>(
+    root: &mut PageTable,
+    virt: CanonicalVirtAddr,
+    size: u64,
+    allocator: &mut A,
+) -> Result<u64, WalkError> {
+    let mut unmapped: u64 = 0;
+    let mut addr = virt.as_u64();
+
+    for _ in 0..(size / SIZE_4K) {
+        if let Some(_frame) = unmap_page(root, unsafe { CanonicalVirtAddr::new_unchecked(addr) }, allocator)? {
+            unmapped += 1;
+        }
+        addr += SIZE_4K;
+    }
+
+    Ok(unmapped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::page_table::allocator::bitmap::BitmapFrameAllocator;
+
+    #[test]
+    fn map_single_4k() {
+        let mut root = PageTable::new();
+        let storage = &mut [0u8; 65536];
+        let base = storage.as_ptr() as u64;
+        let mut alloc = BitmapFrameAllocator::new();
+
+        let mut mapper = Mapper::new(&mut root, &mut alloc);
+        let frame = alloc.allocate().unwrap();
+        let virt = CanonicalVirtAddr::new(0x1000).unwrap();
+
+        mapper.map_4k(virt, frame, Flags::PRESENT | Flags::WRITABLE)
+            .unwrap();
+
+        // Verify the entry
+        let p4_idx = virt.p4_index();
+        assert!(root[p4_idx].is_present());
     }
 }

@@ -327,7 +327,9 @@ impl PageTableHelper for ProcessPageTable {
                 4,
                 crate::page_table::raw::TEMP_VA_FOR_DESTROY,
             )?;
-            frame_allocator.deallocate_frame(frame);
+            frame_allocator.deallocate_frame(
+                crate::page_table::types::PhysFrame { start_address: frame.start_address().as_u64() }
+            );
             Ok(())
         } else {
             Err(crate::common::logging::SystemError::InvalidArgument)
@@ -492,7 +494,9 @@ fn destroy_page_table_recursive<'a>(
                     level - 1,
                     crate::page_table::raw::TEMP_VA_FOR_DESTROY,
                 )?;
-                frame_alloc.deallocate_frame(child_frame);
+                frame_alloc.deallocate_frame(
+                    crate::page_table::types::PhysFrame { start_address: child_frame.start_address().as_u64() }
+                );
             }
             Ok(())
         });

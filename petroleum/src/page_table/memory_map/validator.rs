@@ -1,6 +1,21 @@
 use crate::page_table::constants::{MAX_DESCRIPTOR_PAGES, MAX_SYSTEM_MEMORY};
 use crate::page_table::memory_map::descriptor::{EfiMemoryDescriptor, MemoryMapDescriptor};
-use crate::page_table::types::MemoryDescriptorValidator;
+
+// MemoryDescriptorValidator trait is defined in this file (below); no import needed.
+
+/// Trait for validating UEFI memory descriptors.
+pub trait MemoryDescriptorValidator {
+    /// Check if the descriptor is valid.
+    fn is_valid(&self) -> bool;
+    /// Get the memory type.
+    fn get_type(&self) -> u32;
+    /// Get the physical start address.
+    fn get_physical_start(&self) -> u64;
+    /// Get the number of pages.
+    fn get_page_count(&self) -> u64;
+    /// Check if the memory is available for use.
+    fn is_memory_available(&self) -> bool;
+}
 
 impl MemoryDescriptorValidator for MemoryMapDescriptor {
     fn get_type(&self) -> u32 {

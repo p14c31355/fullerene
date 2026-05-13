@@ -1,108 +1,66 @@
-use x86_64::{
-    PhysAddr, VirtAddr,
-    registers::control::Cr3,
-    structures::paging::{PageTable, PhysFrame, PageTableFlags},
-};
-use core::fmt::Write;
+//! Page table translation: virtual → physical address lookup.
+//!
+//! Uses the unified walker for safe traversal.
 
-pub unsafe fn translate_addr(addr: VirtAddr, physical_memory_offset: VirtAddr) -> Option<PhysAddr> {
-    translate_addr_inner(addr, physical_memory_offset)
-}
+use crate::page_table::types::*;
+use crate::page_table::raw::walker::{walk, WalkError};
 
-/// Calculates the offset within a huge page based on the page table level.
+/// Translate a virtual address to a physical address.
 ///
-/// L3 (level 1 in the loop) corresponds to 1GiB pages.
-/// L2 (level 2 in the loop) corresponds to 2MiB pages.
-pub fn calculate_huge_page_offset(level: usize, addr: u64) -> u64 {
-    match level {
-        1 => addr & 0x3FFFFFFF, // L3: 1GiB
-        2 => addr & 0x1FFFFF,   // L2: 2MiB
-        _ => panic!("Huge page at unexpected level: {}", level),
+/// Returns `Err` if the page table walk encounters a huge page conflict
+/// or an unused entry.
+pub fn translate(
+    root: &PageTable,
+    virt: CanonicalVirtAddr,
+) -> Result<u64, WalkError> {
+    // We need a mutable reference for the walker, but we only read.
+    // This is safe because walk() never modifies entries.
+    let root_mut = unsafe { root.as_mut_for_walking() };
+    let entry = walk(root_mut, virt, 1)?;
+
+    if !entry.is_present() {
+        return Err(WalkError::OutOfMemory); // Entry not present
     }
+
+    let page_offset = virt.page_offset_4k() as u64;
+    Ok(entry.addr() + page_offset)
 }
 
-/// Dumps the page table walk for a given virtual address to the provided writer.
-pub unsafe fn dump_page_table_walk(addr: VirtAddr, physical_memory_offset: VirtAddr, writer: &mut impl Write) {
-    let (level_4_table_frame, _) = Cr3::read();
-    let table_indexes = [
-        addr.p4_index(),
-        addr.p3_index(),
-        addr.p2_index(),
-        addr.p1_index(),
-    ];
-    let levels = ["L4", "L3", "L2", "L1"];
-    
-    let mut frame = level_4_table_frame;
-    
-    writeln!(writer, "Page Table Walk for {:#x}:", addr.as_u64()).ok();
-    
-    for (i, &index) in table_indexes.iter().enumerate() {
-        let virt = physical_memory_offset + frame.start_address().as_u64();
-        let table_ptr = virt.as_ptr() as *const PageTable;
-        let table = &*table_ptr;
-        let entry = &table[index];
-        let flags = entry.flags();
-        
-        let entry_val = unsafe { *(entry as *const _ as *const u64) };
-        writeln!(
-            writer, 
-            "  {} [index {:?}]: entry={:#x}, flags={:#x} (present={}, write={}, user={}, huge={})", 
-            levels[i], 
-            index, 
-            entry_val, 
-            flags.bits(), 
-            flags.contains(PageTableFlags::PRESENT), 
-            flags.contains(PageTableFlags::WRITABLE), 
-            flags.contains(PageTableFlags::USER_ACCESSIBLE), 
-            flags.contains(PageTableFlags::HUGE_PAGE)
-        ).ok();
+/// Translate a virtual address, returning the physical frame and offset.
+pub fn translate_frame(
+    root: &PageTable,
+    virt: CanonicalVirtAddr,
+) -> Result<(PhysFrame, u16), WalkError> {
+    let root_mut = unsafe { root.as_mut_for_walking() };
+    let entry = walk(root_mut, virt, 1)?;
 
-        if !flags.contains(PageTableFlags::PRESENT) {
-            writeln!(writer, "  -> STOP: Entry not present").ok();
-            return;
-        }
-
-        if flags.contains(PageTableFlags::HUGE_PAGE) {
-            writeln!(writer, "  -> STOP: Huge page encountered").ok();
-            return;
-        }
-
-        match entry.frame() {
-            Ok(f) => frame = f,
-            Err(_) => {
-                writeln!(writer, "  -> STOP: Unexpected frame error").ok();
-                return;
-            }
-        }
+    if !entry.is_present() {
+        return Err(WalkError::OutOfMemory);
     }
-    writeln!(writer, "  -> Walk completed successfully").ok();
+
+    let frame = PhysFrame::from_start_address(entry.addr())
+        .expect("page table entry has unaligned address");
+    Ok((frame, virt.page_offset_4k()))
 }
 
-fn translate_addr_inner(addr: VirtAddr, physical_memory_offset: VirtAddr) -> Option<PhysAddr> {
-    let (level_4_table_frame, _) = Cr3::read();
-    let table_indexes = [
-        addr.p4_index(),
-        addr.p3_index(),
-        addr.p2_index(),
-        addr.p1_index(),
-    ];
-    let mut frame = level_4_table_frame;
-    for (i, &index) in table_indexes.iter().enumerate() {
-        let virt = physical_memory_offset + frame.start_address().as_u64();
-        let table_ptr: *const PageTable = virt.as_ptr();
-        let table = unsafe { &*table_ptr };
-        let entry = &table[index];
-        match entry.frame() {
-            Ok(f) => frame = f,
-            Err(x86_64::structures::paging::page_table::FrameError::FrameNotPresent) => {
-                return None;
-            }
-            Err(x86_64::structures::paging::page_table::FrameError::HugeFrame) => {
-                let phys_addr = entry.addr().as_u64();
-                let offset = calculate_huge_page_offset(i, addr.as_u64());
-                return Some(PhysAddr::new(phys_addr + offset));
-            }
-        }
+/// Translate a range of virtual addresses.
+///
+/// Returns a slice of physical addresses corresponding to each 4 KiB page
+/// in the range.
+pub fn translate_range(
+    root: &PageTable,
+    virt: CanonicalVirtAddr,
+    size: u64,
+) -> Result<heapless::Vec<u64, 64>, WalkError> {
+    let mut result = heapless::Vec::new();
+    let mut addr = virt.as_u64();
+    let pages = core::cmp::min(size / SIZE_4K, 64);
+
+    for _ in 0..pages {
+        let phys = translate(root, unsafe { CanonicalVirtAddr::new_unchecked(addr) })?;
+        result.push(phys).ok(); // Ignore if vec is full
+        addr += SIZE_4K;
     }
-    Some(frame.start_address() + u64::from(addr.page_offset()))
+
+    Ok(result)
 }

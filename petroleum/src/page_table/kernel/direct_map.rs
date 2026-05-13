@@ -5,7 +5,7 @@ use x86_64::{
     },
 };
 use crate::page_table::constants::HIGHER_HALF_OFFSET;
-use crate::page_table::memory_map::MemoryMapDescriptor;
+use crate::page_table::memory_map::descriptor::MemoryMapDescriptor;
 
 /// Initializes a direct physical mapping of all usable physical memory to the higher half.
 /// 
