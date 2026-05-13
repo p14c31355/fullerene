@@ -83,6 +83,22 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
 
     // Zero the allocated page table frame using Direct Mapping
     let pml4_virt = petroleum::common::memory::physical_to_virtual(pml4_phys);
+    
+    // DEBUG: Log pml4_virt and current RSP to check for overlap
+    let rsp: u64;
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) rsp);
+    }
+    
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] pml4_virt: ");
+    let mut buf = [0u8; 16];
+    let len = petroleum::serial::format_hex_to_buffer(pml4_virt as u64, &mut buf, 16);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b" | RSP: ");
+    let len_rsp = petroleum::serial::format_hex_to_buffer(rsp, &mut buf, 16);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len_rsp]);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+
     unsafe {
         let table_ptr = pml4_virt as *mut u64;
         core::slice::from_raw_parts_mut(table_ptr, 512).fill(0);

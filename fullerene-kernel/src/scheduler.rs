@@ -313,10 +313,21 @@ pub fn scheduler_loop() -> ! {
     }
 
     write_serial_bytes!(0x3F8, 0x3FD, b"S: Loop Start\n");
-    scheduler_log!("About to initialize shell process");
-
-    let _ = initialize_shell_process();
-    scheduler_log!("Shell process initialized successfully");
+    
+    // Wrap in a separate function to ensure a clean stack frame
+    fn init_shell() {
+        scheduler_log!("Inside init_shell wrapper");
+        let _ = crate::process::create_process(
+            "shell_process",
+            VirtAddr::new(shell_process_main as usize as u64),
+            true,
+        );
+        scheduler_log!("create_process call completed inside wrapper");
+    }
+    
+    scheduler_log!("Calling init_shell wrapper");
+    init_shell();
+    scheduler_log!("init_shell wrapper returned");
 
     // Main scheduler loop - continuously execute processes with integrated OS functionality
     log::info!("Scheduler loop started");
