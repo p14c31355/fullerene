@@ -4,8 +4,16 @@ use crate::process::{NEXT_PID, Process, ProcessState};
 use alloc::boxed::Box;
 use core::alloc::Layout;
 use core::sync::atomic::Ordering;
-use petroleum::{page_table::PageTableHelper, write_serial_bytes};
+use petroleum::{page_table::PageTableHelper, write_serial_bytes, common::memory::{user_slice, user_slice_mut}};
 use x86_64::{PhysAddr, VirtAddr};
+
+// POSIX-style open flags
+const O_RDONLY: i32 = 0;
+const O_WRONLY: i32 = 1;
+const O_RDWR: i32 = 2;
+const O_CREAT: i32 = 0x40;
+const O_TRUNC: i32 = 0x200;
+const O_APPEND: i32 = 0x400;
 
 // Helper function to reduce duplication in syscall buffer validation
 fn validate_syscall_buffer(
@@ -171,12 +179,15 @@ fn syscall_read(fd: core::ffi::c_int, buffer: *mut u8, count: usize) -> SyscallR
     if count == 0 {
         return Ok(0);
     }
-    validate_syscall_buffer(fd, buffer as usize, count, false)?;
+    
+    let data = unsafe { user_slice_mut(buffer, count, false) }
+        .map_err(|_| SyscallError::InvalidArgument)?;
+
+    petroleum::validate_syscall_fd(fd)?;
 
     // For now, only support reading from stdin (fd 0)
     if fd == 0 {
         // Read from keyboard input buffer
-        let data = unsafe { core::slice::from_raw_parts_mut(buffer, count) };
         let bytes_read = crate::keyboard::drain_line_buffer(data);
 
         // Convert line ending if present
@@ -190,7 +201,6 @@ fn syscall_read(fd: core::ffi::c_int, buffer: *mut u8, count: usize) -> SyscallR
         Ok(bytes_read as u64)
     } else {
         // Attempt to read from the file descriptor using fs module
-        let data = unsafe { core::slice::from_raw_parts_mut(buffer, count) };
         match crate::fs::read_file(fd, data) {
             Ok(bytes_read) => Ok(bytes_read as u64),
             Err(crate::fs::FsError::InvalidFileDescriptor) => Err(SyscallError::BadFileDescriptor),
@@ -207,11 +217,9 @@ fn syscall_write(fd: core::ffi::c_int, buffer: *const u8, count: usize) -> Sysca
     if count == 0 {
         return Ok(0);
     }
-    // Validate that the entire buffer range is valid.
-    petroleum::validate_user_buffer(buffer as usize, count, allow_kernel)?;
 
-    // Create a slice from the buffer pointer
-    let data = unsafe { core::slice::from_raw_parts(buffer, count) };
+    let data = unsafe { user_slice(buffer, count, allow_kernel) }
+        .map_err(|_| SyscallError::InvalidArgument)?;
 
     // For stdout (fd 1) and stderr (fd 2), write to serial console
     if fd == 1 || fd == 2 {
@@ -230,13 +238,12 @@ fn syscall_open(filename: *const u8, flags: core::ffi::c_int, _mode: u32) -> Sys
     let filename_str = unsafe { copy_user_string(filename, 256)? };
 
     // Interpret flags (basic POSIX-style flags)
-    // O_RDONLY = 0, O_WRONLY = 1, O_RDWR = 2, O_CREAT = 0x40, O_TRUNC = 0x200, O_APPEND = 0x400
-    let read_only = flags & 0x3 == 0; // O_RDONLY
-    let write_only = flags & 0x3 == 1; // O_WRONLY
-    let read_write = flags & 0x3 == 2; // O_RDWR
-    let create = flags & 0x40 != 0; // O_CREAT
-    let truncate = flags & 0x200 != 0; // O_TRUNC
-    let append = flags & 0x400 != 0; // O_APPEND
+    let read_only = (flags & 0x3) == O_RDONLY;
+    let write_only = (flags & 0x3) == O_WRONLY;
+    let read_write = (flags & 0x3) == O_RDWR;
+    let create = (flags & O_CREAT) != 0;
+    let truncate = (flags & O_TRUNC) != 0;
+    let append = (flags & O_APPEND) != 0;
 
     // For now, we only support reading existing files
     // Extended implementation would need fs module support for different modes
@@ -326,14 +333,18 @@ fn syscall_get_process_name(buffer: *mut u8, size: usize) -> SyscallResult {
 
             // Copy the process name to user buffer
             unsafe {
-                core::ptr::copy_nonoverlapping(name_bytes.as_ptr(), buffer, copy_len);
+                let user_buf = user_slice_mut(buffer, size, false)
+                    .map_err(|_| SyscallError::InvalidArgument)?;
+                user_buf[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
                 // Add null terminator
-                *buffer.add(copy_len) = b'\0';
+                if copy_len < size {
+                    user_buf[copy_len] = b'\0';
+                }
+                Ok(copy_len as u64)
             }
-
-            copy_len as u64
         })
-        .ok_or(SyscallError::NoSuchProcess)
+        .ok_or(SyscallError::NoSuchProcess)?
+        .map_err(|e| e) // Ensure the error type is correct
 }
 
 /// Yield system call

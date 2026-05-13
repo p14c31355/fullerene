@@ -116,6 +116,18 @@ pub fn validate_syscall_buffer(ptr: usize, allow_kernel: bool) -> SystemResult<(
     validate_user_buffer(ptr, 1, allow_kernel)
 }
 
+/// Safely create a slice from a user-provided pointer and length
+pub unsafe fn user_slice(ptr: *const u8, count: usize, allow_kernel: bool) -> Result<&'static [u8], SystemError> {
+    validate_user_buffer(ptr as usize, count, allow_kernel)?;
+    Ok(core::slice::from_raw_parts(ptr, count))
+}
+
+/// Safely create a mutable slice from a user-provided pointer and length
+pub unsafe fn user_slice_mut(ptr: *mut u8, count: usize, allow_kernel: bool) -> Result<&'static mut [u8], SystemError> {
+    validate_user_buffer(ptr as usize, count, allow_kernel)?;
+    Ok(core::slice::from_raw_parts_mut(ptr, count))
+}
+
 /// Helper function to create framebuffer configuration
 pub fn create_framebuffer_config(
     address: u64,
