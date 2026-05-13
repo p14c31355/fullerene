@@ -861,21 +861,39 @@ impl UefiInitContext {
         let mut vga_virt_addr = 0;
 
         for (phys, pages, name) in regions {
-            // These regions are already mapped by the bootloader's 16GB huge page mapping.
-            // Attempting to map them again with 4KB pages via x86_64::map_to can cause
-            // a panic in MappedPageTable if the huge page is not handled correctly.
-            // We skip the actual mapping and just log it.
-            
             if name == "VGA text buffer" {
                 vga_virt_addr = phys + physical_memory_offset.as_u64();
             }
- 
+  
             log::info!(
                 "{} already mapped by bootloader (identity {:#x}, higher-half {:#x})",
                 name,
                 phys,
                 phys + physical_memory_offset.as_u64()
             );
+        }
+
+        // Map the GOP Framebuffer if available
+        if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|m| m.lock().clone()) {
+            let fb_phys = config.address;
+            let fb_virt = fb_phys + physical_memory_offset.as_u64();
+            let fb_size = (config.width as u64 * config.height as u64 * config.bpp as u64) / 8;
+            let fb_pages = (fb_size + 4095) / 4096;
+
+            log::info!("Mapping GOP Framebuffer: phys={:#x}, virt={:#x}, size={} bytes ({} pages)", fb_phys, fb_virt, fb_size, fb_pages);
+
+            unsafe {
+                let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+                let _ = petroleum::page_table::raw::map_range_with_huge_pages(
+                    &mut mapper,
+                    frame_allocator,
+                    fb_phys,
+                    fb_virt,
+                    fb_pages,
+                    flags,
+                    "gop_framebuffer",
+                );
+            }
         }
         let lapic_virt_addr = 0xfee00000 + physical_memory_offset.as_u64();
         *petroleum::LOCAL_APIC_ADDRESS.lock() = petroleum::LocalApicAddress(lapic_virt_addr as *mut u32);

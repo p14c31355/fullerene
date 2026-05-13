@@ -170,9 +170,9 @@ fn kernel_main_higher_half(
         vga_virt_addr
     );
 
-    // 3. Initialize VGA for UEFI using the higher-half address
-    crate::vga::init_vga(physical_memory_offset, vga_virt_addr);
-    log::info!("VGA initialized for UEFI");
+    // 3. Initialize graphics (GOP Framebuffer with legacy VGA fallback)
+    crate::graphics::init_graphics();
+    log::info!("Graphics initialized");
 
     // 4. Initialize APIC before enabling interrupts for safety
     crate::interrupts::init_apic();

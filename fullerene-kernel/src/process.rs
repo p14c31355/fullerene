@@ -6,12 +6,15 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use petroleum::common::logging::SystemError;
 use petroleum::debug_log;
 use petroleum::page_table::PageTableHelper;
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::PhysFrame};
+
+/// Global lock for PROCESS_MANAGER (workaround for QEMU .bss not being zeroed)
+static PM_LOCK: AtomicBool = AtomicBool::new(false);
 
 /// Next available process ID
 pub(crate) static NEXT_PID: AtomicUsize = AtomicUsize::new(1);
@@ -155,6 +158,11 @@ impl ProcessManager {
 
     /// Adds a new process to the list
     pub fn add(&self, process: Box<Process>) {
+        // Force reset Mutex lock state (QEMU may not zero .bss properly)
+        // The spin::Mutex uses an AtomicBool at the start of the struct
+        let lock_ptr = core::ptr::addr_of!(self.list) as *mut u32;
+        unsafe { core::ptr::write_volatile(lock_ptr, 0); }
+
         petroleum::write_serial_bytes!(
             0x3F8,
             0x3FD,
@@ -236,6 +244,28 @@ pub static PROCESS_MANAGER: ProcessManager = ProcessManager::new();
 /// Next process to schedule (for round-robin)
 static CURRENT_PROCESS_INDEX: Mutex<usize> = Mutex::new(0);
 
+/// Initialize the process manager's internal list to ensure all entries are None.
+/// This is needed because QEMU may not zero the .bss section, causing
+/// Option<Box<Process>> to contain garbage that looks like Some(invalid_ptr).
+///
+/// SAFETY: Must be called before any other access to PROCESS_MANAGER, with
+/// interrupts disabled (single-threaded init context).
+unsafe fn init_process_manager() {
+    // Directly access the internal list, bypassing the Mutex since we're
+    // in single-threaded init context with interrupts disabled.
+    let list_ptr = core::ptr::addr_of!(PROCESS_MANAGER.list) as *mut Mutex<[Option<Box<Process>>; 16]>;
+    // Force the lock to unlocked state by writing 0 to the AtomicBool at the start
+    let lock_ptr = list_ptr as *mut u32;
+    core::ptr::write_volatile(lock_ptr, 0);
+
+    // Now lock and initialize
+    let mut guard = (*list_ptr).lock();
+    for i in 0..16 {
+        // Use ptr::write to avoid dropping the old (potentially garbage) value
+        core::ptr::write(&mut guard[i], None);
+    }
+}
+
 /// Current running process (0 means None)
 pub static CURRENT_PROCESS: AtomicUsize = AtomicUsize::new(0);
 
@@ -244,6 +274,10 @@ pub static CURRENT_PROCESS: AtomicUsize = AtomicUsize::new(0);
 /// Initialize process management system
 pub fn init() {
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] start\n");
+
+    // Initialize process manager internal list (workaround for QEMU .bss not being zeroed)
+    unsafe { init_process_manager(); }
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] PM initialized\n");
 
     petroleum::write_serial_bytes!(
         0x3F8,
