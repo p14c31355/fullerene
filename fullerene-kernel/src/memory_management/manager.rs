@@ -68,20 +68,17 @@ impl UnifiedMemoryManager {
             return Err(SystemError::InternalError);
         }
 
-        let pages = (size + 4095) / 4096;
+        let page_size = self.page_size();
+        let pages = (size + page_size - 1) / page_size;
         
         // MMIO regions are typically mapped as non-executable
         let flags = PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::NO_EXECUTE;
 
         for i in 0..pages {
-            let v = virtual_addr + i * 4096;
-            let p = physical_addr + i * 4096;
-            let _ = self.page_table_manager.unmap_page(v);
-            self.page_table_manager.map_page(
-                v,
-                p,
+            self.safe_map_page(
+                virtual_addr + i * page_size,
+                physical_addr + i * page_size,
                 flags,
-                petroleum::page_table::constants::get_frame_allocator_mut(),
             )?;
         }
 
@@ -105,7 +102,7 @@ impl UnifiedMemoryManager {
         &mut self,
         memory_map: &[impl petroleum::page_table::types::MemoryDescriptorValidator],
     ) -> SystemResult<()> {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"UMM::init start\n");
+        petroleum::serial::serial_log(format_args!("UMM::init start\n"));
 
         // Transfer the frame allocator from heap (initialized during uefi_init) to constants.
         {
@@ -114,7 +111,7 @@ impl UnifiedMemoryManager {
                 .expect("Frame allocator must be initialized by uefi_init");
             petroleum::page_table::constants::init_frame_allocator(heap_allocator);
         }
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Frame allocator: transferred from heap\n");
+        petroleum::serial::serial_log(format_args!("Frame allocator: transferred from heap\n"));
 
         let phys_offset =
             x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
@@ -139,16 +136,10 @@ impl UnifiedMemoryManager {
         let kernel_reserve_pages = (16 * 1024 * 1024) / 4096;
         let _ = petroleum::page_table::constants::get_frame_allocator_mut()
             .reserve_frames(kernel_phys_start, kernel_reserve_pages);
-        petroleum::write_serial_bytes!(
-            0x3F8, 0x3FD,
-            b"Kernel memory reserved in frame allocator\n"
-        );
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Page table manager initialized\n");
+        petroleum::serial::serial_log(format_args!("Kernel memory reserved in frame allocator\n"));
+        petroleum::serial::serial_log(format_args!("Page table manager initialized\n"));
 
-        petroleum::write_serial_bytes!(
-            0x3F8, 0x3FD,
-            b"DEBUG: Mapping all available physical memory to direct map\n"
-        );
+        petroleum::serial::serial_log(format_args!("DEBUG: Mapping all available physical memory to direct map\n"));
         for descriptor in memory_map {
             let phys_addr = descriptor.get_physical_start();
             let pages = descriptor.get_page_count();
@@ -158,36 +149,34 @@ impl UnifiedMemoryManager {
             );
             let base_virt_addr = (phys_offset + PhysAddr::new(phys_addr).as_u64()).as_u64() as usize;
 
-            for i in 0..pages {
-                let virt = base_virt_addr + (i as usize * 4096);
-                let phys = (phys_addr + (i as u64 * 4096)) as usize;
-                
-                let res = self.page_table_manager.map_page(
-                    virt,
-                    phys,
-                    PageFlags::PRESENT | PageFlags::WRITABLE,
-                    petroleum::page_table::constants::get_frame_allocator_mut(),
-                );
+        for i in 0..pages {
+            let page_size = self.page_size();
+            let virt = base_virt_addr + (i as usize * page_size);
+            let phys = (phys_addr + (i as u64 * page_size as u64)) as usize;
+            
+            let res = self.page_table_manager.map_page(
+                virt,
+                phys,
+                PageFlags::PRESENT | PageFlags::WRITABLE,
+                petroleum::page_table::constants::get_frame_allocator_mut(),
+            );
 
-                if let Err(e) = res {
-                    if e == SystemError::MappingFailed {
-                        continue;
-                    } else {
-                        return Err(e);
-                    }
+            if let Err(e) = res {
+                if e == SystemError::MappingFailed {
+                    continue;
+                } else {
+                    return Err(e);
                 }
             }
         }
-        petroleum::write_serial_bytes!(
-            0x3F8, 0x3FD,
-            b"DEBUG: Physical memory direct mapping complete\n"
-        );
+        }
+        petroleum::serial::serial_log(format_args!("DEBUG: Physical memory direct mapping complete\n"));
 
         self.create_address_space(0)?;
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Kernel address space created\n");
+        petroleum::serial::serial_log(format_args!("Kernel address space created\n"));
 
         self.initialized = true;
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"UnifiedMemoryManager fully initialized\n");
+        petroleum::serial::serial_log(format_args!("UnifiedMemoryManager fully initialized\n"));
         Ok(())
     }
 
@@ -222,24 +211,21 @@ impl MemoryManager for UnifiedMemoryManager {
             return Err(SystemError::InternalError);
         }
         
+        let page_size = self.page_size();
         let total_virt_pages = count + 2;
         let virtual_addr_base =
-            crate::memory_management::kernel_space::find_free_virtual_address(total_virt_pages as u64 * 4096)
+            crate::memory_management::kernel_space::find_free_virtual_address(total_virt_pages as u64 * page_size as u64)
                 .ok_or(SystemError::MemOutOfMemory)?;
 
         let frame_addr = petroleum::page_table::constants::get_frame_allocator_mut()
             .allocate_contiguous_frames(count)? as usize;
 
-        let data_virt_addr = virtual_addr_base + 4096;
+        let data_virt_addr = virtual_addr_base + page_size;
         for i in 0..count {
-            let v = data_virt_addr + i * 4096;
-            let p = frame_addr + i * 4096;
-            let _ = self.page_table_manager.unmap_page(v);
-            self.page_table_manager.map_page(
-                v,
-                p,
+            self.safe_map_page(
+                data_virt_addr + i * page_size,
+                frame_addr + i * page_size,
                 PageFlags::PRESENT | PageFlags::WRITABLE,
-                petroleum::page_table::constants::get_frame_allocator_mut(),
             )?;
         }
 
@@ -251,16 +237,17 @@ impl MemoryManager for UnifiedMemoryManager {
             return Err(SystemError::InternalError);
         }
         
+        let page_size = self.page_size();
         for i in 0..count {
-            let virt_addr = address + (i * 4096);
+            let virt_addr = address + (i * page_size);
             if let Ok(frame) = self.page_table_manager.unmap_page(virt_addr) {
                 let phys_addr = frame.start_address().as_u64() as usize;
                 self.free_frame(phys_addr)?;
             }
         }
 
-        let _ = self.page_table_manager.unmap_page(address - 4096);
-        let _ = self.page_table_manager.unmap_page(address + (count * 4096));
+        let _ = self.page_table_manager.unmap_page(address.saturating_sub(page_size));
+        let _ = self.page_table_manager.unmap_page(address + (count * page_size));
 
         Ok(())
     }
@@ -282,14 +269,12 @@ impl MemoryManager for UnifiedMemoryManager {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
+        let page_size = self.page_size();
         for i in 0..count {
-            let v = virtual_addr + i * 4096;
-            let p = physical_addr + i * 4096;
-            let _ = self.page_table_manager.unmap_page(v);
-            self.page_table_manager.map_page(
-                v, p,
+            self.safe_map_page(
+                virtual_addr + i * page_size,
+                physical_addr + i * page_size,
                 PageFlags::PRESENT | PageFlags::WRITABLE,
-                petroleum::page_table::constants::get_frame_allocator_mut(),
             )?;
         }
         Ok(())
@@ -328,7 +313,7 @@ impl MemoryManager for UnifiedMemoryManager {
 // Implementation of ProcessMemoryManager trait
 impl ProcessMemoryManager for UnifiedMemoryManager {
     fn create_address_space(&mut self, process_id: usize) -> SystemResult<()> {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [create_address_space] entered\n");
+        petroleum::serial::serial_log(format_args!("DEBUG: [create_address_space] entered\n"));
 
         if process_id >= 16 {
             return Err(SystemError::InvalidArgument);
@@ -338,7 +323,7 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
         process_manager.init_page_table(&mut self.page_table_manager, petroleum::page_table::constants::get_frame_allocator_mut())?;
 
         self.process_managers[process_id] = Some(process_manager);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Created address space for process\n");
+        petroleum::serial::serial_log(format_args!("DEBUG: Created address space for process\n"));
         Ok(())
     }
 
@@ -610,15 +595,15 @@ impl UnifiedMemoryManager {
 
         let mut data = alloc::vec::Vec::with_capacity(size);
 
-        for offset in (0..size).step_by(4096) {
-            let page_size = core::cmp::min(4096, size - offset);
+        let page_size = self.page_size();
+        for offset in (0..size).step_by(page_size) {
+            let current_chunk_size = core::cmp::min(page_size, size - offset);
             let virt_addr = user_addr + offset;
 
             if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
-                let phys_virt = petroleum::common::memory::physical_to_virtual(phys_addr);
+                let phys_base = phys_addr + (virt_addr % page_size);
                 unsafe {
-                    let ptr = (phys_virt + (virt_addr % 4096)) as *const u8;
-                    let slice = core::slice::from_raw_parts(ptr, page_size);
+                    let slice = petroleum::common::memory::phys_to_slice(phys_base, current_chunk_size);
                     data.extend_from_slice(slice);
                 }
             } else {
@@ -632,8 +617,9 @@ impl UnifiedMemoryManager {
     fn copy_to_user_space(&mut self, user_addr: usize, data: &[u8]) -> SystemResult<()> {
         if !self.initialized { return Err(SystemError::InternalError); }
 
-        for (i, chunk) in data.chunks(4096).enumerate() {
-            let offset = i * 4096;
+        let page_size = self.page_size();
+        for (i, chunk) in data.chunks(page_size).enumerate() {
+            let offset = i * page_size;
             let virt_addr = user_addr + offset;
 
             if self.page_table_manager.translate_address(virt_addr).is_err() {
@@ -649,10 +635,10 @@ impl UnifiedMemoryManager {
             }
 
             if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
-                let phys_virt = petroleum::common::memory::physical_to_virtual(phys_addr);
+                let phys_base = phys_addr + (virt_addr % page_size);
                 unsafe {
-                    let ptr = (phys_virt + (virt_addr % 4096)) as *mut u8;
-                    core::ptr::copy_nonoverlapping(chunk.as_ptr(), ptr, chunk.len());
+                    let slice = petroleum::common::memory::phys_to_slice_mut(phys_base, chunk.len());
+                    slice.copy_from_slice(chunk);
                 }
             } else {
                 return Err(SystemError::InvalidArgument);

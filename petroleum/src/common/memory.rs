@@ -42,6 +42,24 @@ pub fn physical_to_virtual(physical_addr: usize) -> usize {
     physical_addr + get_physical_memory_offset()
 }
 
+/// Safely create a slice from a physical address and length.
+///
+/// # Safety
+/// The caller must ensure that the physical memory range is mapped and accessible.
+pub unsafe fn phys_to_slice(phys_addr: usize, len: usize) -> &'static [u8] {
+    let virt_addr = physical_to_virtual(phys_addr);
+    core::slice::from_raw_parts(virt_addr as *const u8, len)
+}
+
+/// Safely create a mutable slice from a physical address and length.
+///
+/// # Safety
+/// The caller must ensure that the physical memory range is mapped and accessible.
+pub unsafe fn phys_to_slice_mut(phys_addr: usize, len: usize) -> &'static mut [u8] {
+    let virt_addr = physical_to_virtual(phys_addr);
+    core::slice::from_raw_parts_mut(virt_addr as *mut u8, len)
+}
+
 /// Check if an address is in user space
 pub fn is_user_address(addr: VirtAddr) -> bool {
     // User space is typically 0x0000000000000000 to 0x00007FFFFFFFFFFF

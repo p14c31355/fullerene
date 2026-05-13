@@ -8,14 +8,8 @@ use spin::Once;
 use x86_64::structures::paging::{Mapper, Page, PageTableFlags, PhysFrame, Size2MiB, Size4KiB};
 use x86_64::{PhysAddr, VirtAddr};
 
-pub fn init_graphics(_physical_memory_offset: x86_64::VirtAddr) {
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: init_graphics start\n");
-    crate::graphics::init_graphics();
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: init_graphics end\n");
-}
-
 pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Init common start\n");
+    petroleum::serial::serial_log(format_args!("Init common start\n"));
 
     #[cfg(not(target_os = "uefi"))]
     {
@@ -42,10 +36,15 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
         // UEFI specific memory mapping for KernelArgs is handled in bootloader/transition
     }
 
-    init_graphics(physical_memory_offset);
-
-    crate::interrupts::init();
     let common_steps = [
+        petroleum::init_step!("Graphics", || {
+            crate::graphics::init_graphics();
+            Ok(())
+        }),
+        petroleum::init_step!("Interrupts", || {
+            crate::interrupts::init();
+            Ok(())
+        }),
         petroleum::init_step!("process", || { crate::process::init(); Ok(()) }),
         petroleum::init_step!("syscall", || { crate::syscall::init(); Ok(()) }),
         petroleum::init_step!("fs", || { crate::fs::init(); Ok(()) }),
@@ -60,7 +59,7 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             VirtAddr::new(crate::process::test_process_main as *const () as usize as u64),
             false,
         ) {
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Test process created\n");
+            petroleum::serial::serial_log(format_args!("Test process created\n"));
         }
     }
 }

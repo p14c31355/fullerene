@@ -20,7 +20,14 @@ static PM_LOCK: AtomicBool = AtomicBool::new(false);
 pub(crate) static NEXT_PID: AtomicUsize = AtomicUsize::new(1);
 
 /// Process ID type
-pub type ProcessId = u64;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProcessId(pub u64);
+
+impl core::fmt::Display for ProcessId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 /// Process states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,7 +108,7 @@ pub struct Process {
 impl Process {
     /// Create a new process
     pub fn new(name: &'static str, entry_point: VirtAddr, is_user: bool) -> Self {
-        let id = NEXT_PID.fetch_add(1, Ordering::Relaxed) as u64;
+        let id = ProcessId(NEXT_PID.fetch_add(1, Ordering::Relaxed) as u64);
 
         Self {
             id,
@@ -159,36 +166,18 @@ impl ProcessManager {
     /// Adds a new process to the list
     pub fn add(&self, process: Box<Process>) {
         // Force reset Mutex lock state (QEMU may not zero .bss properly)
-        // The spin::Mutex uses an AtomicBool at the start of the struct
-        let lock_ptr = core::ptr::addr_of!(self.list) as *mut u32;
-        unsafe { core::ptr::write_volatile(lock_ptr, 0); }
+        unsafe { petroleum::common::utils::reset_mutex_lock(&self.list); }
 
-        petroleum::write_serial_bytes!(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: [ProcessManager::add] attempting lock\n"
-        );
+        petroleum::serial::serial_log(format_args!("DEBUG: [ProcessManager::add] attempting lock\n"));
         let mut list = self.list.lock();
-        petroleum::write_serial_bytes!(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: [ProcessManager::add] lock acquired\n"
-        );
+        petroleum::serial::serial_log(format_args!("DEBUG: [ProcessManager::add] lock acquired\n"));
 
         let pid = process.id;
-        let index = (pid as usize % 16);
+        let index = (pid.0 as usize % 16);
 
-        petroleum::write_serial_bytes!(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: [ProcessManager::add] attempting insert\n"
-        );
+        petroleum::serial::serial_log(format_args!("DEBUG: [ProcessManager::add] attempting insert\n"));
         list[index] = Some(process);
-        petroleum::write_serial_bytes!(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: [ProcessManager::add] insert complete\n"
-        );
+        petroleum::serial::serial_log(format_args!("DEBUG: [ProcessManager::add] insert complete\n"));
     }
 
     /// Performs an operation on a process found by PID
@@ -197,7 +186,7 @@ impl ProcessManager {
         F: FnOnce(&mut Process) -> R,
     {
         let mut list = self.list.lock();
-        let index = (pid as usize % 16);
+        let index = (pid.0 as usize % 16);
         list[index].as_mut().filter(|p| p.id == pid).map(|p| f(p))
     }
 
@@ -250,21 +239,17 @@ static CURRENT_PROCESS_INDEX: Mutex<usize> = Mutex::new(0);
 ///
 /// SAFETY: Must be called before any other access to PROCESS_MANAGER, with
 /// interrupts disabled (single-threaded init context).
-unsafe fn init_process_manager() {
-    // Directly access the internal list, bypassing the Mutex since we're
-    // in single-threaded init context with interrupts disabled.
-    let list_ptr = core::ptr::addr_of!(PROCESS_MANAGER.list) as *mut Mutex<[Option<Box<Process>>; 16]>;
-    // Force the lock to unlocked state by writing 0 to the AtomicBool at the start
-    let lock_ptr = list_ptr as *mut u32;
-    core::ptr::write_volatile(lock_ptr, 0);
+    unsafe fn init_process_manager() {
+        // Force the lock to unlocked state (QEMU may not zero .bss properly)
+        unsafe { petroleum::common::utils::reset_mutex_lock(&PROCESS_MANAGER.list); }
 
-    // Now lock and initialize
-    let mut guard = (*list_ptr).lock();
-    for i in 0..16 {
-        // Use ptr::write to avoid dropping the old (potentially garbage) value
-        core::ptr::write(&mut guard[i], None);
+        // Now lock and initialize
+        let mut guard = PROCESS_MANAGER.list.lock();
+        for i in 0..16 {
+            // Use ptr::write to avoid dropping the old (potentially garbage) value
+            unsafe { core::ptr::write(&mut guard[i], None); }
+        }
     }
-}
 
 /// Current running process (0 means None)
 pub static CURRENT_PROCESS: AtomicUsize = AtomicUsize::new(0);
@@ -273,133 +258,69 @@ pub static CURRENT_PROCESS: AtomicUsize = AtomicUsize::new(0);
 
 /// Initialize process management system
 pub fn init() {
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] start\n");
+    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] start\n"));
 
     // Initialize process manager internal list (workaround for QEMU .bss not being zeroed)
     unsafe { init_process_manager(); }
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] PM initialized\n");
+    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] PM initialized\n"));
 
-    petroleum::write_serial_bytes!(
-        0x3F8,
-        0x3FD,
-        b"DEBUG: [process::init] testing raw buffer write\n"
-    );
+    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] testing raw buffer write\n"));
     unsafe {
         crate::heap::BOOT_HEAP_BUFFER.0[0] = 0xAA;
-        petroleum::write_serial_bytes!(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: [process::init] raw buffer write SUCCESS\n"
-        );
+        petroleum::serial::serial_log(format_args!("DEBUG: [process::init] raw buffer write SUCCESS\n"));
     }
 
-    petroleum::write_serial_bytes!(
-        0x3F8,
-        0x3FD,
-        b"DEBUG: [process::init] testing IDT with int3\n"
-    );
+    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] testing IDT with int3\n"));
     x86_64::instructions::interrupts::int3();
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] int3 returned\n");
+    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] int3 returned\n"));
 
-    petroleum::write_serial_bytes!(
-        0x3F8,
-        0x3FD,
-        b"DEBUG: [process::init] testing heap allocation (8 bytes)\n"
-    );
+    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] testing heap allocation (8 bytes)\n"));
 
     if petroleum::page_table::ALLOCATOR.try_lock().is_none() {
-        petroleum::write_serial_bytes!(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: [process::init] ALLOCATOR lock is HELD - deadlock detected!\n"
-        );
+        petroleum::serial::serial_log(format_args!("DEBUG: [process::init] ALLOCATOR lock is HELD - deadlock detected!\n"));
     } else {
-        petroleum::write_serial_bytes!(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: [process::init] ALLOCATOR lock is free\n"
-        );
+        petroleum::serial::serial_log(format_args!("DEBUG: [process::init] ALLOCATOR lock is free\n"));
     }
 
     let layout8 = Layout::from_size_align(8, 8).unwrap();
-    petroleum::write_serial_bytes!(
-        0x3F8,
-        0x3FD,
-        b"DEBUG: [process::init] Calling allocate_layout...\n"
-    );
+    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] Calling allocate_layout...\n"));
     match petroleum::common::memory::allocate_layout(layout8) {
         Ok(ptr8) => {
-            petroleum::write_serial_bytes!(
-                0x3F8,
-                0x3FD,
-                b"DEBUG: [process::init] 8 bytes allocation SUCCESS\n"
-            );
+            petroleum::serial::serial_log(format_args!("DEBUG: [process::init] 8 bytes allocation SUCCESS\n"));
             petroleum::common::memory::deallocate_layout(ptr8, layout8);
         }
         Err(_) => {
-            petroleum::write_serial_bytes!(
-                0x3F8,
-                0x3FD,
-                b"DEBUG: [process::init] 8 bytes allocation FAILED\n"
-            );
+            petroleum::serial::serial_log(format_args!("DEBUG: [process::init] 8 bytes allocation FAILED\n"));
         }
     }
 
-    petroleum::write_serial_bytes!(
-        0x3F8,
-        0x3FD,
-        b"DEBUG: [process::init] testing heap allocation (1024 bytes)\n"
-    );
+    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] testing heap allocation (1024 bytes)\n"));
     let layout1k = Layout::from_size_align(1024, 16).unwrap();
     match petroleum::common::memory::allocate_layout(layout1k) {
         Ok(ptr1k) => {
-            petroleum::write_serial_bytes!(
-                0x3F8,
-                0x3FD,
-                b"DEBUG: [process::init] 1024 bytes allocation SUCCESS\n"
-            );
+            petroleum::serial::serial_log(format_args!("DEBUG: [process::init] 1024 bytes allocation SUCCESS\n"));
             petroleum::common::memory::deallocate_layout(ptr1k, layout1k);
         }
         Err(_) => {
-            petroleum::write_serial_bytes!(
-                0x3F8,
-                0x3FD,
-                b"DEBUG: [process::init] 1024 bytes allocation FAILED\n"
-            );
+            petroleum::serial::serial_log(format_args!("DEBUG: [process::init] 1024 bytes allocation FAILED\n"));
         }
     }
 
     // Create idle process
     let idle_addr = VirtAddr::new(idle_loop as usize as u64);
-    petroleum::write_serial_bytes!(
-        0x3F8,
-        0x3FD,
-        b"DEBUG: [process::init] creating idle process\n"
-    );
+    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] creating idle process\n"));
     let mut idle_process = Process::new("idle", idle_addr, false);
     idle_process.state = ProcessState::Running;
 
-    petroleum::write_serial_bytes!(
-        0x3F8,
-        0x3FD,
-        b"DEBUG: [process::init] adding idle process to manager\n"
-    );
+    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] adding idle process to manager\n"));
     PROCESS_MANAGER.add(Box::new(idle_process));
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] idle process added\n");
+    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] idle process added\n"));
 
     // Set current process
-    petroleum::write_serial_bytes!(
-        0x3F8,
-        0x3FD,
-        b"DEBUG: [process::init] setting CURRENT_PROCESS\n"
-    );
+    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] setting CURRENT_PROCESS\n"));
     CURRENT_PROCESS.store(1, Ordering::SeqCst);
-    petroleum::write_serial_bytes!(
-        0x3F8,
-        0x3FD,
-        b"DEBUG: [process::init] CURRENT_PROCESS modified\n"
-    );
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [process::init] done\n");
+    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] CURRENT_PROCESS modified\n"));
+    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] done\n"));
 }
 
 /// Create a new process and add it to the process list
@@ -507,7 +428,7 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
 
     // If current process is terminating, schedule next
     let current_pid = CURRENT_PROCESS.load(Ordering::SeqCst);
-    if current_pid == pid as usize {
+    if current_pid == pid.0 as usize {
         schedule_next();
     }
 }
@@ -583,7 +504,7 @@ pub fn schedule_next() {
         *CURRENT_PROCESS_INDEX.lock() = next_index;
         let next_pid = process_list[next_index]
             .as_ref()
-            .map(|p| p.id as usize)
+            .map(|p| p.id.0 as usize)
             .unwrap_or(0);
         CURRENT_PROCESS.store(next_pid, Ordering::SeqCst);
         petroleum::scheduler_log!(
@@ -620,7 +541,7 @@ pub fn current_pid() -> Option<ProcessId> {
     if pid == 0 {
         None
     } else {
-        Some(pid as ProcessId)
+        Some(ProcessId(pid as u64))
     }
 }
 
@@ -641,12 +562,12 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
     let (old_context_ptr, new_context_ptr, new_page_table) = PROCESS_MANAGER.with_list(|list| {
         let old_ptr = old_pid
             .and_then(|pid| {
-                let index = (pid as usize % 16);
+                let index = (pid.0 as usize % 16);
                 list[index].as_mut().filter(|p| p.id == pid)
             })
             .map(|p| p.as_mut() as *mut Process);
 
-        let index = (new_pid as usize % 16);
+        let index = (new_pid.0 as usize % 16);
         let new_ptr = list[index]
             .as_ref()
             .filter(|p| p.id == new_pid)

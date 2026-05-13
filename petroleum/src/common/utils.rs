@@ -1,3 +1,5 @@
+use spin::Mutex;
+
 /// Calculate offset address in loops (base + i * 4096)
 pub fn calculate_offset_address(base: u64, i: u64) -> u64 {
     base + (i * 4096)
@@ -59,6 +61,16 @@ pub unsafe fn calculate_metadata_ptr(
 /// Calculates the number of pages needed to cover a given size, rounding up.
 pub fn calculate_pages(size: usize) -> u64 {
     size.div_ceil(4096) as u64
+}
+
+/// Force reset a Mutex lock state to 0.
+///
+/// # Safety
+/// This is a highly unsafe operation that should only be used during early boot
+/// to handle cases where .bss is not cleared.
+pub unsafe fn reset_mutex_lock<T>(mutex: &Mutex<T>) {
+    let lock_ptr = core::ptr::addr_of!(mutex) as *mut u32;
+    core::ptr::write_volatile(lock_ptr, 0);
 }
 
 #[cfg(test)]

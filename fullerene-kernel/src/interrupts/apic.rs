@@ -2,37 +2,11 @@
 //!
 //! This module provides APIC initialization and management functions.
 
-use petroleum::hardware::pic::disable_legacy_pic;
+use petroleum::hardware::{pic::disable_legacy_pic, ApicFlags, ApicOffsets, IO_APIC_BASE};
 use petroleum::init_io_apic;
+use petroleum::common::utils::reset_mutex_lock;
 use spin::Mutex;
 use x86_64::registers::model_specific::Msr;
-
-/// APIC register offsets
-pub struct ApicOffsets;
-impl ApicOffsets {
-    const BASE_MSR: u32 = 0x1B;
-    const BASE_ADDR_MASK: u64 = !0xFFF;
-    const SPURIOUS_VECTOR: u32 = 0x0F0;
-    const LVT_TIMER: u32 = 0x320;
-    const LVT_LINT0: u32 = 0x350;
-    const LVT_LINT1: u32 = 0x360;
-    const LVT_ERROR: u32 = 0x370;
-    const TMRDIV: u32 = 0x3E0;
-    const TMRINITCNT: u32 = 0x380;
-    const TMRCURRCNT: u32 = 0x390;
-    const EOI: u32 = 0x0B0;
-    const ID: u32 = 0x20;
-    const VERSION: u32 = 0x30;
-}
-
-/// APIC control bits
-struct ApicFlags;
-impl ApicFlags {
-    const SW_ENABLE: u32 = 1 << 8;
-    const DISABLE: u32 = 0x10000;
-    const TIMER_PERIODIC: u32 = 1 << 17;
-    const TIMER_MASKED: u32 = 1 << 16;
-}
 
 /// Hardware interrupt vectors
 pub const TIMER_INTERRUPT_INDEX: u32 = 32;
@@ -48,13 +22,21 @@ pub struct ApicRaw {
 
 impl ApicRaw {
     /// Read from APIC register
-    unsafe fn read(&self, offset: u32) -> u32 {
+    ///
+    /// # Safety
+    /// This is safe because the base_addr is validated during initialization
+    /// and the offset is a known APIC register offset.
+    fn read(&self, offset: u32) -> u32 {
         let addr = (self.base_addr + offset as u64) as *const u32;
         unsafe { addr.read_volatile() }
     }
 
     /// Write to APIC register
-    unsafe fn write(&self, offset: u32, value: u32) {
+    ///
+    /// # Safety
+    /// This is safe because the base_addr is validated during initialization
+    /// and the offset is a known APIC register offset.
+    fn write(&self, offset: u32, value: u32) {
         let addr = (self.base_addr + offset as u64) as *mut u32;
         unsafe { addr.write_volatile(value) }
     }
@@ -75,21 +57,17 @@ fn get_apic_base() -> Option<u64> {
 
 /// Enable APIC
 fn enable_apic(apic: &mut ApicRaw) {
-    let spurious = unsafe { apic.read(ApicOffsets::SPURIOUS_VECTOR) };
-    unsafe {
-        apic.write(
-            ApicOffsets::SPURIOUS_VECTOR,
-            spurious | ApicFlags::SW_ENABLE | 0xFF,
-        );
-    }
+    let spurious = apic.read(ApicOffsets::SPURIOUS_VECTOR);
+    apic.write(
+        ApicOffsets::SPURIOUS_VECTOR,
+        spurious | ApicFlags::SW_ENABLE | 0xFF,
+    );
 }
 
 /// Send End-Of-Interrupt to APIC
 pub fn send_eoi() {
     if let Some(apic) = APIC.lock().as_ref() {
-        unsafe {
-            apic.write(ApicOffsets::EOI, 0);
-        }
+        apic.write(ApicOffsets::EOI, 0);
     }
 }
 
@@ -99,9 +77,8 @@ pub fn init_apic() {
 
     // Force reset APIC lock state to 0 to handle cases where .bss is not cleared
     unsafe {
-        let lock_ptr = core::ptr::addr_of!(APIC) as *mut u32;
-        core::ptr::write_volatile(lock_ptr, 0);
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [init_apic] APIC lock reset to 0\n");
+        reset_mutex_lock(&APIC);
+        petroleum::serial::serial_log(format_args!("DEBUG: [init_apic] APIC lock reset to 0\n"));
     }
 
     disable_legacy_pic();
@@ -119,17 +96,15 @@ pub fn init_apic() {
     let mut apic = ApicRaw { base_addr };
     enable_apic(&mut apic);
 
-    unsafe {
-        apic.write(
-            ApicOffsets::LVT_TIMER,
-            TIMER_INTERRUPT_INDEX | ApicFlags::TIMER_PERIODIC,
-        );
-        apic.write(ApicOffsets::TMRDIV, 0x3); // Divide by 16
-        apic.write(ApicOffsets::TMRINITCNT, 1000000);
-    }
+    apic.write(
+        ApicOffsets::LVT_TIMER,
+        TIMER_INTERRUPT_INDEX | ApicFlags::TIMER_PERIODIC,
+    );
+    apic.write(ApicOffsets::TMRDIV, 0x3); // Divide by 16
+    apic.write(ApicOffsets::TMRINITCNT, 1000000);
 
     *APIC.lock() = Some(apic);
-    let io_apic_virt_base = 0xFEC00000 + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64;
+    let io_apic_virt_base = IO_APIC_BASE + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64;
     init_io_apic(base_addr, io_apic_virt_base);
 
     use super::syscall::setup_syscall;

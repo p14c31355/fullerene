@@ -1,3 +1,6 @@
+pub const COM1_DATA_PORT: u16 = 0x3F8;
+pub const COM1_STATUS_PORT: u16 = 0x3FD;
+
 pub unsafe fn write_serial_bytes(port_addr: u16, status_port_addr: u16, bytes: &[u8]) {
     #[cfg(all(not(feature = "std"), not(test)))]
     {
@@ -156,7 +159,7 @@ impl UefiWriter {
         let efi_status = EfiStatus::from(status);
         if efi_status != EfiStatus::Success {
             // Fallback to COM1 using direct write to avoid deadlock with SERIAL_PORT_WRITER lock
-            unsafe { write_serial_bytes(0x3F8, 0x3FD, s.as_bytes()) };
+            unsafe { write_serial_bytes(COM1_DATA_PORT, COM1_STATUS_PORT, s.as_bytes()) };
             return Err(efi_status);
         }
         Ok(())
@@ -264,12 +267,12 @@ pub fn _print(args: fmt::Arguments) {
 /// Initializes the global serial port writer.
 pub fn serial_init() {
     unsafe {
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Inside serial_init\n");
+        crate::write_serial_bytes(COM1_DATA_PORT, COM1_STATUS_PORT, b"DEBUG: Inside serial_init\n");
 
         // Force reset Mutex lock state to 0 to handle cases where .bss is not cleared
         let lock_ptr = core::ptr::addr_of!(SERIAL_PORT_WRITER) as *mut u32;
         core::ptr::write_volatile(lock_ptr, 0);
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: SERIAL_PORT_WRITER lock reset to 0\n");
+        crate::write_serial_bytes(COM1_DATA_PORT, COM1_STATUS_PORT, b"DEBUG: SERIAL_PORT_WRITER lock reset to 0\n");
     }
 
     // Use the lock to initialize the serial port.
@@ -277,7 +280,7 @@ pub fn serial_init() {
     SERIAL_PORT_WRITER.lock().init();
 
     unsafe {
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: serial_init completed successfully\n");
+        crate::write_serial_bytes(COM1_DATA_PORT, COM1_STATUS_PORT, b"DEBUG: serial_init completed successfully\n");
     }
 }
 
@@ -337,12 +340,12 @@ pub fn format_dec_to_buffer(value: usize, buf: &mut [u8]) -> usize {
 pub fn debug_print_hex_no_lock(value: usize) {
     let mut buf = [0u8; 16];
     let len = format_hex_to_buffer(value as u64, &mut buf, 16);
-    unsafe { write_serial_bytes(0x3F8, 0x3FD, &buf[..len]) };
+    unsafe { write_serial_bytes(COM1_DATA_PORT, COM1_STATUS_PORT, &buf[..len]) };
 }
 
 /// Early-boot non-locking string print
 pub fn debug_print_str_no_lock(s: &str) {
-    unsafe { write_serial_bytes(0x3F8, 0x3FD, &s.as_bytes()[..]) };
+    unsafe { write_serial_bytes(COM1_DATA_PORT, COM1_STATUS_PORT, &s.as_bytes()[..]) };
 }
 
 /// Trait for non-locking debug printing

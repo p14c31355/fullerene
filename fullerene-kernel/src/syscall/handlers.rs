@@ -143,7 +143,7 @@ fn syscall_fork() -> SyscallResult {
 
     // Create child process
     let mut child_process = Process {
-        id: child_pid as u64,
+        id: process::ProcessId(child_pid as u64),
         name: "child",
         state: ProcessState::Ready,
         context: parent_context.clone(), // Copy parent context
@@ -285,10 +285,11 @@ fn syscall_wait(pid: u64) -> SyscallResult {
         process::yield_current();
         Ok(0)
     } else {
+        let pid_type = process::ProcessId(pid);
         // Wait for specific process to finish
         // Check if the process exists and is a child (simplified check)
         let result = crate::process::PROCESS_MANAGER
-            .with_process(pid, |process| {
+            .with_process(pid_type, |process| {
                 if process.state == crate::process::ProcessState::Terminated {
                     Some(process.exit_code.unwrap_or(0))
                 } else {
@@ -300,7 +301,7 @@ fn syscall_wait(pid: u64) -> SyscallResult {
         if let Some(exit_code) = result {
             Ok(exit_code as u64)
         } else if crate::process::PROCESS_MANAGER
-            .with_process(pid, |_| {})
+            .with_process(pid_type, |_| {})
             .is_some()
         {
             // Process is still running, block current process
@@ -314,7 +315,7 @@ fn syscall_wait(pid: u64) -> SyscallResult {
 
 /// Get process ID
 fn syscall_getpid() -> SyscallResult {
-    Ok(process::current_pid().unwrap_or(0))
+    Ok(process::current_pid().map(|pid| pid.0).unwrap_or(0))
 }
 
 /// Get process name
