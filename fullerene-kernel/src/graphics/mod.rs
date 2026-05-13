@@ -1,37 +1,46 @@
-use petroleum::graphics::{Console, Renderer};
-use spin::Mutex;
+use core::fmt::Write;
+use petroleum::graphics::{Console, Renderer, UefiFramebufferWriter};
+use petroleum::write_serial_bytes;
 use alloc::boxed::Box;
 
-/// Global primary console for system-wide text output.
-pub static PRIMARY_CONSOLE: Mutex<Option<Box<dyn Console + Send>>> = Mutex::new(None);
-
-/// Global primary renderer for system-wide graphics operations.
-pub static PRIMARY_RENDERER: Mutex<Option<Box<dyn Renderer + Send>>> = Mutex::new(None);
+/// Global primary console — stored as a concrete type (no Box, no allocator).
+pub static mut PRIMARY_CONSOLE: Option<UefiFramebufferWriter> = None;
+/// Global primary renderer — stored as a concrete type (no Box, no allocator).
+pub static mut PRIMARY_RENDERER: Option<UefiFramebufferWriter> = None;
 
 /// Sets the primary console for the system.
 pub fn set_primary_console(console: Box<dyn Console + Send>) {
-    *PRIMARY_CONSOLE.lock() = Some(console);
+    let raw = Box::into_raw(console);
+    unsafe {
+        PRIMARY_CONSOLE = Some(*Box::from_raw(raw as *mut UefiFramebufferWriter));
+    }
 }
 
 /// Sets the primary renderer for the system.
 pub fn set_primary_renderer(renderer: Box<dyn Renderer + Send>) {
-    *PRIMARY_RENDERER.lock() = Some(renderer);
+    let raw = Box::into_raw(renderer);
+    unsafe {
+        PRIMARY_RENDERER = Some(*Box::from_raw(raw as *mut UefiFramebufferWriter));
+    }
 }
 
 /// Helper to write to the primary console.
 pub fn print_to_console(s: &str) {
-    let mut lock = PRIMARY_CONSOLE.lock();
-    if let Some(ref mut console) = *lock {
-        let _ = console.write_str(s);
-    } else {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: PRIMARY_CONSOLE is None!\n");
+    unsafe {
+        if let Some(ref mut console) = PRIMARY_CONSOLE {
+            let _ = console.write_str(s);
+        } else {
+            write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: PRIMARY_CONSOLE is None!\n");
+        }
     }
 }
 
 /// Helper to write formatted text to the primary console.
 pub fn print_fmt(args: core::fmt::Arguments) {
-    if let Some(ref mut console) = *PRIMARY_CONSOLE.lock() {
-        let _ = core::fmt::write(console.as_mut(), args);
+    unsafe {
+        if let Some(ref mut console) = PRIMARY_CONSOLE {
+            let _ = core::fmt::write(console, args);
+        }
     }
 }
 

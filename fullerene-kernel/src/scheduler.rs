@@ -141,17 +141,19 @@ fn log_system_stats(stats: &SystemStats) {
 
 /// Display system statistics on the primary console
 fn display_system_stats_on_display(stats: &SystemStats) {
-    use crate::graphics::PRIMARY_CONSOLE;
-    if let Some(ref mut console) = *PRIMARY_CONSOLE.lock() {
-        console.set_cursor(22, 0);
-        console.set_color(0x03); // Cyan (VGA index)
-        let _ = core::fmt::write(console.as_mut(), format_args!(
-            "Processes: {}/{} | Memory: {} KB | Tick: {}\n",
-            stats.active_processes,
-            stats.total_processes,
-            stats.memory_used / 1024,
-            stats.uptime_ticks
-        ));
+    use petroleum::graphics::Console as _;
+    unsafe {
+        if let Some(ref mut console) = crate::graphics::PRIMARY_CONSOLE {
+            console.set_cursor(22, 0);
+            console.set_color(0x03); // Cyan (VGA index)
+            let _ = core::fmt::write(console, format_args!(
+                "Processes: {}/{} | Memory: {} KB | Tick: {}\n",
+                stats.active_processes,
+                stats.total_processes,
+                stats.memory_used / 1024,
+                stats.uptime_ticks
+            ));
+        }
     }
 }
 
@@ -263,8 +265,11 @@ fn yield_and_process_system_calls() {
 
 /// Draw the OS desktop on the available framebuffer (UEFI or BIOS)
 fn draw_desktop_on_available_framebuffer() {
-    if let Some(ref mut renderer) = *crate::graphics::PRIMARY_RENDERER.lock() {
-        crate::graphics::draw_os_desktop(renderer.as_mut());
+    use petroleum::graphics::Renderer as _;
+    unsafe {
+        if let Some(ref mut renderer) = crate::graphics::PRIMARY_RENDERER {
+            crate::graphics::draw_os_desktop(renderer);
+        }
     }
 }
 
@@ -338,9 +343,12 @@ pub fn scheduler_loop() -> ! {
 
     // DEBUG: Draw a small blue square in the top-left corner.
     // We only map the first 4KB page, so clearing the whole screen would cause a page fault.
-    if let Some(ref mut renderer) = *crate::graphics::PRIMARY_RENDERER.lock() {
-        renderer.draw_rect(0, 0, 64, 64, 0x0000FF); // Blue square
-        renderer.present();
+    use petroleum::graphics::Renderer as _;
+    unsafe {
+        if let Some(ref mut renderer) = crate::graphics::PRIMARY_RENDERER {
+            renderer.draw_rect(0, 0, 64, 64, 0x0000FF); // Blue square
+            renderer.present();
+        }
     }
     // Log that scheduler is running for confirmation
     log::info!("Scheduler loop active - framebuffer text system running");

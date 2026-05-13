@@ -58,8 +58,16 @@ pub fn init_graphics(physical_memory_offset: x86_64::VirtAddr) {
                         petroleum::graphics::FramebufferWriter::new(fb_info)
                     );
                     
-                    crate::graphics::set_primary_console(Box::new(writer.clone()));
-                    crate::graphics::set_primary_renderer(Box::new(writer));
+                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to clone writer\n");
+                    let writer2 = writer.clone();
+                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to Box::new console\n");
+                    let console = Box::new(writer2);
+                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to set_primary_console\n");
+                    crate::graphics::set_primary_console(console);
+                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to Box::new renderer\n");
+                    let renderer = Box::new(writer);
+                    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: About to set_primary_renderer\n");
+                    crate::graphics::set_primary_renderer(renderer);
                     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: UEFI Framebuffer registered\n");
                 } else {
                     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: UEFI FB info invalid or missing\n");
