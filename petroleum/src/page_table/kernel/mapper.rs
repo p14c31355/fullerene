@@ -285,14 +285,14 @@ mod tests {
     #[test]
     fn map_single_4k() {
         let mut root = PageTable::new();
-        let storage = &mut [0u8; 65536];
-        let base = storage.as_ptr() as u64;
-        let mut alloc = BitmapFrameAllocator::new();
+        let _storage = &mut [0u8; 65536];
+        let mut alloc = BitmapFrameAllocator::new(1024);
 
-        let mut mapper = Mapper::new(&mut root, &mut alloc);
+        // Allocate frame before creating mapper (which borrows alloc)
         let frame = alloc.allocate().unwrap();
         let virt = CanonicalVirtAddr::new(0x1000).unwrap();
 
+        let mut mapper = Mapper::new(&mut root, &mut alloc);
         mapper.map_4k(virt, frame, Flags::PRESENT | Flags::WRITABLE)
             .unwrap();
 

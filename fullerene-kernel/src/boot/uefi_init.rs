@@ -307,7 +307,7 @@ impl UefiInitContext {
                 0x3FD,
                 b"DEBUG: petroleum::page_table::init (1) done\n"
             );
-            {
+            unsafe {
                 petroleum::map_identity_range_checked!(
                     &mut mapper,
                     frame_allocator,
@@ -504,14 +504,16 @@ impl UefiInitContext {
                     kernel_phys_start.as_u64(),
                     None,
                 );
-                let _ = petroleum::map_range_with_log_macro!(
+                // Map TSS stacks to higher half
+                let tss_virt = petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64 + tss_phys_addr.as_u64();
+                let _ = petroleum::page_table::raw::map_range_with_huge_pages(
                     &mut mapper,
-                    &mut *frame_allocator,
+                    frame_allocator,
                     tss_phys_addr.as_u64(),
-                    (petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64)
-                        + tss_phys_addr.as_u64(),
+                    tss_virt,
                     tss_stack_pages as u64,
-                    tss_flags
+                    tss_flags,
+                    "tss_stacks",
                 );
             }
             petroleum::write_serial_bytes!(
@@ -778,15 +780,18 @@ impl UefiInitContext {
             | x86_64::structures::paging::PageTableFlags::WRITABLE
             | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
 
-        petroleum::map_to_higher_half_with_log_macro!(
-            &mut mapper,
-            frame_allocator,
-            physical_memory_offset,
-            stack_phys_start,
-            stack_pages as u64,
-            stack_flags
-        )
-        .expect("Failed to map kernel stack to higher half");
+        unsafe {
+            petroleum::page_table::raw::map_range_with_huge_pages(
+                &mut mapper,
+                frame_allocator,
+                stack_phys_start,
+                self.heap_start_after_gdt.as_u64(),
+                stack_pages as u64,
+                stack_flags,
+                "kernel_stack",
+            )
+            .expect("Failed to map kernel stack to higher half");
+        }
 
         write_serial_bytes!(0x3F8, 0x3FD, b"Kernel stack allocated and mapped (wide)\n");
 

@@ -64,3 +64,54 @@ pub fn translate_range(
 
     Ok(result)
 }
+
+/// Dump a page table walk for debugging (backward-compat).
+///
+/// `root_virt`: virtual address of the root page table (e.g. CR3 value + higher half offset)
+/// `fault_virt`: the faulting virtual address to walk
+///
+/// Writes a human-readable description of the page table walk to `writer`.
+pub fn dump_page_table_walk<W: core::fmt::Write>(
+    root_virt: x86_64::VirtAddr,
+    fault_virt: x86_64::VirtAddr,
+    writer: &mut W,
+) {
+    let _ = writeln!(writer, "Page Table Walk for 0x{:016x}:", fault_virt.as_u64());
+
+    let root = unsafe { &*(root_virt.as_u64() as *const PageTable) };
+    let root_mut = unsafe { &mut *(root_virt.as_u64() as *mut PageTable) };
+
+    let virt = match CanonicalVirtAddr::new(fault_virt.as_u64()) {
+        Some(v) => v,
+        None => {
+            let _ = writeln!(writer, "  (non-canonical address)");
+            return;
+        }
+    };
+    let levels = [
+        (4u8, virt.p4_index()),
+        (3u8, virt.p3_index()),
+        (2u8, virt.p2_index()),
+        (1u8, virt.p1_index()),
+    ];
+
+    let mut table = root_mut;
+    for (level, idx) in levels {
+        let entry = &table[idx];
+        let flags = entry.flags();
+        let _ = writeln!(
+            writer,
+            "  L{} [{}]: addr=0x{:010x} present={} writable={} huge={}",
+            level,
+            idx,
+            entry.addr(),
+            entry.is_present(),
+            flags & crate::page_table::types::Flags::WRITABLE != 0,
+            entry.is_huge(),
+        );
+        if !entry.is_present() || entry.is_huge() {
+            break;
+        }
+        table = unsafe { &mut *(entry.addr() as *mut PageTable) };
+    }
+}
