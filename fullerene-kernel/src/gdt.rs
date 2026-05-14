@@ -9,13 +9,18 @@ use x86_64::structures::tss::TaskStateSegment;
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 pub const TIMER_IST_INDEX: u16 = 1;
+pub const STACK_FAULT_IST_INDEX: u16 = 2;
+pub const GP_FAULT_IST_INDEX: u16 = 3;
+pub const PAGE_FAULT_IST_INDEX: u16 = 4;
+pub const NMI_IST_INDEX: u16 = 5;
+pub const MACHINE_CHECK_IST_INDEX: u16 = 6;
 
-/// Size of the GDT TSS stack (bytes).
-/// Each stack is 5 pages to accommodate interrupt handling for double fault and timer interrupts.
+/// Size of each IST stack (bytes).
+/// Each stack is 5 pages (20 KiB) to accommodate interrupt handling.
 pub const GDT_TSS_STACK_SIZE: usize = 4096 * 5;
 
-/// Number of GDT TSS stacks reserved.
-pub const GDT_TSS_STACK_COUNT: usize = 3;
+/// Number of IST stacks reserved.
+pub const GDT_TSS_STACK_COUNT: usize = 7;
 
 /// Total overhead for GDT initialization in bytes.
 pub const GDT_INIT_OVERHEAD: usize = GDT_TSS_STACK_COUNT * GDT_TSS_STACK_SIZE;
@@ -40,6 +45,10 @@ pub fn init_early() {
 
 pub fn kernel_code_selector() -> SegmentSelector {
     unsafe { CODE_SELECTOR.expect("CODE_SELECTOR not initialized") }
+}
+
+pub fn kernel_data_selector() -> SegmentSelector {
+    unsafe { KERNEL_DATA_SELECTOR.expect("KERNEL_DATA_SELECTOR not initialized") }
 }
 
 pub fn load() {
@@ -68,6 +77,11 @@ pub fn load() {
 pub struct TssStacks {
     pub double_fault: VirtAddr,
     pub timer: VirtAddr,
+    pub stack_fault: VirtAddr,
+    pub gp_fault: VirtAddr,
+    pub page_fault: VirtAddr,
+    pub nmi: VirtAddr,
+    pub machine_check: VirtAddr,
 }
 
 /// Build GDT with the given TSS and return (code, data, tss, user_data, user_code) selectors.
@@ -100,6 +114,11 @@ pub fn init_with_stacks(stacks: TssStacks) {
         let mut tss = TaskStateSegment::new();
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stacks.double_fault;
         tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = stacks.timer;
+        tss.interrupt_stack_table[STACK_FAULT_IST_INDEX as usize] = stacks.stack_fault;
+        tss.interrupt_stack_table[GP_FAULT_IST_INDEX as usize] = stacks.gp_fault;
+        tss.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] = stacks.page_fault;
+        tss.interrupt_stack_table[NMI_IST_INDEX as usize] = stacks.nmi;
+        tss.interrupt_stack_table[MACHINE_CHECK_IST_INDEX as usize] = stacks.machine_check;
         TSS = Some(tss);
 
         let tss_ref: &'static TaskStateSegment = TSS.as_ref().expect("TSS not set");
@@ -120,9 +139,15 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
 
     debug_log_no_alloc!("GDT: Initializing with heap at ", heap_start.as_u64());
 
+    // Allocate IST stacks contiguously
     let double_fault_ist = heap_start + GDT_TSS_STACK_SIZE as u64;
     let timer_ist = double_fault_ist + GDT_TSS_STACK_SIZE as u64;
-    let new_heap_start = timer_ist + GDT_TSS_STACK_SIZE as u64;
+    let stack_fault_ist = timer_ist + GDT_TSS_STACK_SIZE as u64;
+    let gp_fault_ist = stack_fault_ist + GDT_TSS_STACK_SIZE as u64;
+    let page_fault_ist = gp_fault_ist + GDT_TSS_STACK_SIZE as u64;
+    let nmi_ist = page_fault_ist + GDT_TSS_STACK_SIZE as u64;
+    let machine_check_ist = nmi_ist + GDT_TSS_STACK_SIZE as u64;
+    let new_heap_start = machine_check_ist + GDT_TSS_STACK_SIZE as u64;
 
     mem_debug!("GDT: Stack addresses calculated\n");
 
@@ -130,6 +155,11 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
         let mut tss = TaskStateSegment::new();
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = double_fault_ist;
         tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = timer_ist;
+        tss.interrupt_stack_table[STACK_FAULT_IST_INDEX as usize] = stack_fault_ist;
+        tss.interrupt_stack_table[GP_FAULT_IST_INDEX as usize] = gp_fault_ist;
+        tss.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] = page_fault_ist;
+        tss.interrupt_stack_table[NMI_IST_INDEX as usize] = nmi_ist;
+        tss.interrupt_stack_table[MACHINE_CHECK_IST_INDEX as usize] = machine_check_ist;
         TSS = Some(tss);
 
         let tss_ref: &'static TaskStateSegment = TSS.as_ref().expect("TSS must be initialized");

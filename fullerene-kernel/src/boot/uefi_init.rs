@@ -358,17 +358,17 @@ impl UefiInitContext {
             }
         };
 
+        let base = petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64
+            + tss_phys_addr.as_u64();
+        let sz = crate::gdt::GDT_TSS_STACK_SIZE as u64;
         let tss_stacks = crate::gdt::TssStacks {
-            double_fault: VirtAddr::new(
-                petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64
-                    + tss_phys_addr.as_u64()
-                    + crate::gdt::GDT_TSS_STACK_SIZE as u64,
-            ),
-            timer: VirtAddr::new(
-                petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64
-                    + tss_phys_addr.as_u64()
-                    + (crate::gdt::GDT_TSS_STACK_SIZE * 2) as u64,
-            ),
+            double_fault: VirtAddr::new(base + sz),
+            timer: VirtAddr::new(base + sz * 2),
+            stack_fault: VirtAddr::new(base + sz * 3),
+            gp_fault: VirtAddr::new(base + sz * 4),
+            page_fault: VirtAddr::new(base + sz * 5),
+            nmi: VirtAddr::new(base + sz * 6),
+            machine_check: VirtAddr::new(base + sz * 7),
         };
         crate::gdt::init_with_stacks(tss_stacks);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: GDT initialized with TSS stacks\n");
