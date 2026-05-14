@@ -3,6 +3,7 @@ use petroleum::common::logging::{SystemError, SystemResult};
 use petroleum::initializer::{
     ErrorLogging, FrameAllocator, Initializable, MemoryManager, ProcessMemoryManager,
 };
+use petroleum::mem_debug;
 use petroleum::page_table::{
     BitmapFrameAllocator, BootInfoFrameAllocator, FrameAllocatorExt, MemoryMapDescriptor,
     PageTableHelper, ProcessPageTable,
@@ -102,7 +103,7 @@ impl UnifiedMemoryManager {
         &mut self,
         memory_map: &[impl petroleum::page_table::types::MemoryDescriptorValidator],
     ) -> SystemResult<()> {
-        petroleum::serial::serial_log(format_args!("UMM::init start\n"));
+        mem_debug!("UMM: init start\n");
 
         // Transfer the frame allocator from heap (initialized during uefi_init) to constants.
         {
@@ -111,7 +112,7 @@ impl UnifiedMemoryManager {
                 .expect("Frame allocator must be initialized by uefi_init");
             petroleum::page_table::constants::init_frame_allocator(heap_allocator);
         }
-        petroleum::serial::serial_log(format_args!("Frame allocator: transferred from heap\n"));
+        mem_debug!("UMM: Frame allocator transferred\n");
 
         let phys_offset =
             x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
@@ -130,53 +131,51 @@ impl UnifiedMemoryManager {
         )?;
         self.kernel_pml4_phys = self.page_table_manager.current_page_table();
 
-        // Initialize the global kernel mapper (backward-compat: no-op with new API)
         let _ = phys_offset;
 
         let kernel_reserve_pages = (16 * 1024 * 1024) / 4096;
         let _ = petroleum::page_table::constants::get_frame_allocator_mut()
             .reserve_frames(kernel_phys_start, kernel_reserve_pages);
-        petroleum::serial::serial_log(format_args!("Kernel memory reserved in frame allocator\n"));
-        petroleum::serial::serial_log(format_args!("Page table manager initialized\n"));
+        mem_debug!("UMM: Kernel memory reserved\n");
 
-        petroleum::serial::serial_log(format_args!("DEBUG: Mapping all available physical memory to direct map\n"));
+        mem_debug!("UMM: Mapping physical memory direct map\n");
         for descriptor in memory_map {
             let phys_addr = descriptor.get_physical_start();
             let pages = descriptor.get_page_count();
-            
+
             let phys_offset = x86_64::VirtAddr::new(
                 petroleum::common::memory::get_physical_memory_offset() as u64
             );
             let base_virt_addr = (phys_offset + PhysAddr::new(phys_addr).as_u64()).as_u64() as usize;
 
-        for i in 0..pages {
-            let page_size = self.page_size();
-            let virt = base_virt_addr + (i as usize * page_size);
-            let phys = (phys_addr + (i as u64 * page_size as u64)) as usize;
-            
-            let res = self.page_table_manager.map_page(
-                virt,
-                phys,
-                PageFlags::PRESENT | PageFlags::WRITABLE,
-                petroleum::page_table::constants::get_frame_allocator_mut(),
-            );
+            for i in 0..pages {
+                let page_size = self.page_size();
+                let virt = base_virt_addr + (i as usize * page_size);
+                let phys = (phys_addr + (i as u64 * page_size as u64)) as usize;
 
-            if let Err(e) = res {
-                if e == SystemError::MappingFailed {
-                    continue;
-                } else {
-                    return Err(e);
+                let res = self.page_table_manager.map_page(
+                    virt,
+                    phys,
+                    PageFlags::PRESENT | PageFlags::WRITABLE,
+                    petroleum::page_table::constants::get_frame_allocator_mut(),
+                );
+
+                if let Err(e) = res {
+                    if e == SystemError::MappingFailed {
+                        continue;
+                    } else {
+                        return Err(e);
+                    }
                 }
             }
         }
-        }
-        petroleum::serial::serial_log(format_args!("DEBUG: Physical memory direct mapping complete\n"));
+        mem_debug!("UMM: Physical memory direct mapping complete\n");
 
         self.create_address_space(0)?;
-        petroleum::serial::serial_log(format_args!("Kernel address space created\n"));
+        mem_debug!("UMM: Kernel address space created\n");
 
         self.initialized = true;
-        petroleum::serial::serial_log(format_args!("UnifiedMemoryManager fully initialized\n"));
+        mem_debug!("UMM: Fully initialized\n");
         Ok(())
     }
 
@@ -313,7 +312,7 @@ impl MemoryManager for UnifiedMemoryManager {
 // Implementation of ProcessMemoryManager trait
 impl ProcessMemoryManager for UnifiedMemoryManager {
     fn create_address_space(&mut self, process_id: usize) -> SystemResult<()> {
-        petroleum::serial::serial_log(format_args!("DEBUG: [create_address_space] entered\n"));
+        mem_debug!("UMM: create_address_space entered\n");
 
         if process_id >= 16 {
             return Err(SystemError::InvalidArgument);
@@ -323,7 +322,7 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
         process_manager.init_page_table(&mut self.page_table_manager, petroleum::page_table::constants::get_frame_allocator_mut())?;
 
         self.process_managers[process_id] = Some(process_manager);
-        petroleum::serial::serial_log(format_args!("DEBUG: Created address space for process\n"));
+        mem_debug!("UMM: Created address space for process\n");
         Ok(())
     }
 

@@ -1,3 +1,6 @@
+//! UEFI main stage 2 (only compiled for uefi target)
+#![cfg(target_os = "uefi")]
+
 use crate::MEMORY_MAP;
 use crate::interrupts;
 use petroleum::write_serial_bytes;

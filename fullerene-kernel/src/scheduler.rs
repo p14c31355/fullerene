@@ -8,7 +8,7 @@ use alloc::{collections::VecDeque, format};
 use core::sync::atomic::Ordering;
 use petroleum::{
     Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats,
-    display_stats_on_available_display, periodic_task, scheduler_log, write_serial_bytes,
+    display_stats_on_available_display, periodic_task, scheduler_log,
 };
 
 struct PeriodicTask {
@@ -271,97 +271,25 @@ fn draw_desktop_on_available_framebuffer() {
     }
 }
 
-/// Perform periodic emergency condition checks
-fn perform_emergency_checks(current_tick: u64) {
-    if current_tick % 10000 == 0 {
-        emergency_condition_handler();
-    }
-}
+/// Main kernel scheduler loop - orchestrates all system functionality
+pub fn scheduler_loop() -> ! {
+    scheduler_log!("Scheduler loop starting");
 
-/// Initialize shell process and return PID
-fn initialize_shell_process() -> crate::process::ProcessId {
-    let shell_pid = crate::process::create_process(
+    // Create shell process
+    let _ = crate::process::create_process(
         "shell_process",
         VirtAddr::new(shell_process_main as usize as u64),
-        true, // shell now runs in user mode (Ring 3)
-    )
-    .expect("Failed to create shell process");
-    // Remove log::info to isolate if heap allocation in logging is the cause
-    crate::process::unblock_process(shell_pid);
-    shell_pid
-}
+        true,
+    );
 
-/// Main kernel scheduler loop - orchestrates all system functionality
-// Main kernel scheduler loop - orchestrates all system functionality
-pub fn scheduler_loop() -> ! {
-    let cr3 = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
-    let mut buf = [0u8; 16];
-    let len = petroleum::serial::format_hex_to_buffer(cr3, &mut buf, 16);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Current CR3 at loop start: 0x");
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-
-    let phys_offset = petroleum::common::memory::get_physical_memory_offset();
-    let len_offset = petroleum::serial::format_hex_to_buffer(phys_offset as u64, &mut buf, 16);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Physical Memory Offset: 0x");
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len_offset]);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-
-    if let Some(umm) = crate::memory_management::get_memory_manager().lock().as_ref() {
-        let pml4 = umm.kernel_pml4_phys;
-        let len_pml4 = petroleum::serial::format_hex_to_buffer(pml4 as u64, &mut buf, 16);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: UMM kernel_pml4_phys: 0x");
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len_pml4]);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-    }
-
-    write_serial_bytes!(0x3F8, 0x3FD, b"S: Loop Start\n");
-    
-    // Wrap in a separate function to ensure a clean stack frame
-    fn init_shell() {
-        scheduler_log!("Inside init_shell wrapper");
-        let _ = crate::process::create_process(
-            "shell_process",
-            VirtAddr::new(shell_process_main as usize as u64),
-            true,
-        );
-        scheduler_log!("create_process call completed inside wrapper");
-    }
-    
-    scheduler_log!("Calling init_shell wrapper");
-    init_shell();
-    scheduler_log!("init_shell wrapper returned");
-
-    // Main scheduler loop - continuously execute processes with integrated OS functionality
     log::info!("Scheduler loop started");
-
-    // Print to primary console if available
-    crate::graphics::print_to_console("Scheduler loop started - Console output enabled\n");
-    crate::graphics::print_to_console("System is running...\n");
-
-    // DEBUG: Draw a small blue square in the top-left corner.
-    // We only map the first 4KB page, so clearing the whole screen would cause a page fault.
-    use petroleum::graphics::Renderer as _;
-    let mut renderer = crate::graphics::PRIMARY_RENDERER.lock();
-    if let Some(ref mut renderer) = *renderer {
-        renderer.draw_rect(0, 0, 64, 64, 0x0000FF); // Blue square
-        renderer.present();
-    }
-    
-    // Log that scheduler is running for confirmation
-    log::info!("Scheduler loop active - framebuffer text system running");
+    crate::graphics::print_to_console("Scheduler loop started\n");
 
     loop {
-        // Increment system counters for this iteration
-        {
-            SYSTEM_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            SCHEDULER_ITERATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        }
+        SYSTEM_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        SCHEDULER_ITERATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-        // Process one complete scheduler iteration
         process_scheduler_iteration();
-
-        // Yield to user processes if any are ready
         crate::process::yield_current();
     }
 }

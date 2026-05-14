@@ -1,6 +1,8 @@
+//! UEFI entry point (only compiled for uefi target)
+#![cfg(target_os = "uefi")]
+
 use crate::boot::uefi_init::UefiInitContext;
 use crate::boot::uefi_main::efi_main_stage2;
-#[cfg(target_os = "uefi")]
 use core::ffi::c_void;
 use petroleum::common::EfiSystemTable;
 use petroleum::transition::KernelTransition;

@@ -3,11 +3,11 @@
 //! This module provides a comprehensive memory management system that implements
 //! the MemoryManager, ProcessMemoryManager, PageTableHelper, and FrameAllocator traits.
 
-// Define macros before using super for overlay
 use spin::Mutex;
 
 use petroleum::common::logging::{SystemError, SystemResult};
 use petroleum::initializer::{FrameAllocator, Initializable, MemoryManager};
+use petroleum::mem_debug;
 use x86_64::structures::paging::{
     FrameAllocator as X86FrameAllocator, PageTableFlags as PageFlags,
 };
@@ -68,7 +68,7 @@ pub fn switch_to_page_table(page_table: &ProcessPageTable) -> SystemResult<()> {
 
 /// Create a new process page table
 pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
-    log::debug!("[mem] create_process_page_table start");
+    mem_debug!("Mem: create_process_page_table start\n");
 
     // Allocate a new PML4 frame for the process page table
     let pml4_phys = {
@@ -83,21 +83,6 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
 
     // Zero the allocated page table frame using Direct Mapping
     let pml4_virt = petroleum::common::memory::physical_to_virtual(pml4_phys);
-    
-    // DEBUG: Log pml4_virt and current RSP to check for overlap
-    let rsp: u64;
-    unsafe {
-        core::arch::asm!("mov {}, rsp", out(reg) rsp);
-    }
-    
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [mem] pml4_virt: ");
-    let mut buf = [0u8; 16];
-    let len = petroleum::serial::format_hex_to_buffer(pml4_virt as u64, &mut buf, 16);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b" | RSP: ");
-    let len_rsp = petroleum::serial::format_hex_to_buffer(rsp, &mut buf, 16);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len_rsp]);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
     unsafe {
         let table_ptr = pml4_virt as *mut u64;
@@ -105,7 +90,6 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
     }
 
     // Copy kernel mappings to the new page table (PML4[256..512])
-    // We use Direct Mapping to access both the current kernel PML4 and the new PML4
     let current_cr3 = x86_64::registers::control::Cr3::read();
     let kernel_table_phys = current_cr3.0.start_address().as_u64() as usize;
     let kernel_table_virt = petroleum::common::memory::physical_to_virtual(kernel_table_phys);
@@ -120,20 +104,16 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
     let mut page_table_manager = ProcessPageTable::new_with_frame(pml4_frame);
     Initializable::init(&mut page_table_manager)?;
 
+    mem_debug!("Mem: create_process_page_table done\n");
     Ok(page_table_manager)
 }
 
 /// Deallocate a process page table and free its frames
 pub fn deallocate_process_page_table(pml4_frame: x86_64::structures::paging::PhysFrame) {
-    // Properly deallocate the page table and its frames
     if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
-        // The pml4_frame contains the physical address of the page table
         let frame_addr = pml4_frame.start_address().as_u64() as usize;
-
-        // Free the frame containing the page table
         let _ = manager.free_frame(frame_addr);
-
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Deallocated process page table\n");
+        mem_debug!("Mem: Deallocated process page table\n");
     }
 }
 
@@ -141,29 +121,18 @@ pub fn deallocate_process_page_table(pml4_frame: x86_64::structures::paging::Phy
 pub fn init_memory_manager(
     memory_map: &[impl petroleum::page_table::types::MemoryDescriptorValidator],
 ) -> SystemResult<()> {
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: init_memory_manager entered\n");
+    mem_debug!("Mem: init_memory_manager entered\n");
 
     let mut manager = MEMORY_MANAGER.lock();
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: MEMORY_MANAGER lock acquired\n");
-
     let mut memory_manager = UnifiedMemoryManager::new();
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: UnifiedMemoryManager created\n");
 
     if let Err(e) = memory_manager.init(memory_map) {
-        petroleum::write_serial_bytes!(
-            0x3F8,
-            0x3FD,
-            b"ERROR: UnifiedMemoryManager::init failed!\n"
-        );
+        mem_debug!("Mem: UnifiedMemoryManager::init failed!\n");
         return Err(e);
     }
 
     *manager = Some(memory_manager);
-    petroleum::write_serial_bytes!(
-        0x3F8,
-        0x3FD,
-        b"DEBUG: Global memory manager initialized successfully\n"
-    );
+    mem_debug!("Mem: Global memory manager initialized\n");
     Ok(())
 }
 
@@ -171,9 +140,6 @@ pub fn init_memory_manager(
 pub fn get_memory_manager() -> &'static Mutex<Option<UnifiedMemoryManager>> {
     &MEMORY_MANAGER
 }
-
-// User space memory validation functions
-// Integrated from user_space.rs to reduce file count
 
 /// Map a user page for kernel access
 pub fn map_user_page(

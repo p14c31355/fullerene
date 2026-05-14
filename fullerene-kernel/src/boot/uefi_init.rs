@@ -5,12 +5,14 @@ use petroleum::common::{EfiSystemTable, write_vga_string};
 use petroleum::page_table::memory_map::MemoryMapDescriptor;
 use petroleum::uefi_helpers::find_heap_start;
 use petroleum::{debug_log_no_alloc, write_serial_bytes};
+
 use x86_64::{
     PhysAddr, VirtAddr,
     structures::paging::{Mapper, PageTableFlags, mapper::MapToError},
 };
 
 /// Helper struct for UEFI initialization context
+#[cfg(target_os = "uefi")]
 #[repr(C)]
 pub struct UefiInitContext {
     /// Kernel arguments pointer
@@ -33,10 +35,12 @@ pub struct UefiInitContext {
     pub heap_start_after_stack: VirtAddr,
 }
 
+#[cfg(target_os = "uefi")]
 struct BootFrameAllocator {
     next_frame: u64,
 }
 
+#[cfg(target_os = "uefi")]
 impl BootFrameAllocator {
     fn new(start_frame: u64) -> Self {
         Self {
@@ -45,6 +49,7 @@ impl BootFrameAllocator {
     }
 }
 
+#[cfg(target_os = "uefi")]
 unsafe impl x86_64::structures::paging::FrameAllocator<x86_64::structures::paging::Size4KiB>
     for BootFrameAllocator
 {
@@ -65,9 +70,9 @@ unsafe impl x86_64::structures::paging::FrameAllocator<x86_64::structures::pagin
     }
 }
 
+#[cfg(target_os = "uefi")]
 impl UefiInitContext {
     /// Early initialization: serial, VGA, memory maps
-    #[cfg(target_os = "uefi")]
     pub fn early_initialization(&mut self) -> PhysAddr {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: early_initialization start\n");
 
@@ -136,6 +141,7 @@ impl UefiInitContext {
         res
     }
 
+    #[cfg(target_os = "uefi")]
     pub fn memory_management_initialization(
         &mut self,
         kernel_phys_start: PhysAddr,
@@ -744,6 +750,7 @@ impl UefiInitContext {
         (res_offset, res_phys, res_virt)
     }
 
+    #[cfg(target_os = "uefi")]
     pub fn prepare_kernel_stack(
         &mut self,
         virtual_heap_start: VirtAddr,
@@ -804,6 +811,7 @@ impl UefiInitContext {
         VirtAddr::new(kernel_stack_top)
     }
 
+    #[cfg(target_os = "uefi")]
     pub fn setup_allocator(&mut self, virtual_heap_start: VirtAddr) {
         if petroleum::page_table::HEAP_INITIALIZED.load(core::sync::atomic::Ordering::SeqCst) {
             return;
@@ -823,6 +831,7 @@ impl UefiInitContext {
         }
     }
 
+    #[cfg(target_os = "uefi")]
     pub fn map_mmio(physical_memory_offset: VirtAddr) -> usize {
         log::info!("Mapping MMIO regions for APIC and IOAPIC");
 
@@ -901,6 +910,7 @@ impl UefiInitContext {
         vga_virt_addr as usize
     }
 
+    #[cfg(target_os = "uefi")]
     fn init_memory_map(&self) {
         debug_log_no_alloc!("!!! ENTERING init_memory_map !!!");
 

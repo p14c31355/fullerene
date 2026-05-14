@@ -14,9 +14,7 @@ use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
 /// Breakpoint exception handler
 #[unsafe(no_mangle)]
 pub extern "x86-interrupt" fn breakpoint_handler(_stack_frame: InterruptStackFrame) {
-    unsafe {
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\nDEBUG: [breakpoint_handler] entered\n");
-    }
+    petroleum::debug_log_no_alloc!("\nDEBUG: [breakpoint_handler] entered\n");
 }
 
 /// Page fault exception handler

@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use petroleum::common::logging::SystemError;
-use petroleum::debug_log;
+use petroleum::mem_debug;
 use petroleum::page_table::PageTableHelper;
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::PhysFrame};
@@ -168,16 +168,10 @@ impl ProcessManager {
         // Force reset Mutex lock state (QEMU may not zero .bss properly)
         unsafe { petroleum::common::utils::reset_mutex_lock(&self.list); }
 
-        petroleum::serial::serial_log(format_args!("DEBUG: [ProcessManager::add] attempting lock\n"));
         let mut list = self.list.lock();
-        petroleum::serial::serial_log(format_args!("DEBUG: [ProcessManager::add] lock acquired\n"));
-
         let pid = process.id;
         let index = (pid.0 as usize % 16);
-
-        petroleum::serial::serial_log(format_args!("DEBUG: [ProcessManager::add] attempting insert\n"));
         list[index] = Some(process);
-        petroleum::serial::serial_log(format_args!("DEBUG: [ProcessManager::add] insert complete\n"));
     }
 
     /// Performs an operation on a process found by PID
@@ -258,69 +252,20 @@ pub static CURRENT_PROCESS: AtomicUsize = AtomicUsize::new(0);
 
 /// Initialize process management system
 pub fn init() {
-    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] start\n"));
+    mem_debug!("Process: init start\n");
 
     // Initialize process manager internal list (workaround for QEMU .bss not being zeroed)
     unsafe { init_process_manager(); }
-    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] PM initialized\n"));
-
-    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] testing raw buffer write\n"));
-    unsafe {
-        crate::heap::BOOT_HEAP_BUFFER.0[0] = 0xAA;
-        petroleum::serial::serial_log(format_args!("DEBUG: [process::init] raw buffer write SUCCESS\n"));
-    }
-
-    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] testing IDT with int3\n"));
-    x86_64::instructions::interrupts::int3();
-    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] int3 returned\n"));
-
-    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] testing heap allocation (8 bytes)\n"));
-
-    if petroleum::page_table::ALLOCATOR.try_lock().is_none() {
-        petroleum::serial::serial_log(format_args!("DEBUG: [process::init] ALLOCATOR lock is HELD - deadlock detected!\n"));
-    } else {
-        petroleum::serial::serial_log(format_args!("DEBUG: [process::init] ALLOCATOR lock is free\n"));
-    }
-
-    let layout8 = Layout::from_size_align(8, 8).unwrap();
-    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] Calling allocate_layout...\n"));
-    match petroleum::common::memory::allocate_layout(layout8) {
-        Ok(ptr8) => {
-            petroleum::serial::serial_log(format_args!("DEBUG: [process::init] 8 bytes allocation SUCCESS\n"));
-            petroleum::common::memory::deallocate_layout(ptr8, layout8);
-        }
-        Err(_) => {
-            petroleum::serial::serial_log(format_args!("DEBUG: [process::init] 8 bytes allocation FAILED\n"));
-        }
-    }
-
-    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] testing heap allocation (1024 bytes)\n"));
-    let layout1k = Layout::from_size_align(1024, 16).unwrap();
-    match petroleum::common::memory::allocate_layout(layout1k) {
-        Ok(ptr1k) => {
-            petroleum::serial::serial_log(format_args!("DEBUG: [process::init] 1024 bytes allocation SUCCESS\n"));
-            petroleum::common::memory::deallocate_layout(ptr1k, layout1k);
-        }
-        Err(_) => {
-            petroleum::serial::serial_log(format_args!("DEBUG: [process::init] 1024 bytes allocation FAILED\n"));
-        }
-    }
 
     // Create idle process
     let idle_addr = VirtAddr::new(idle_loop as usize as u64);
-    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] creating idle process\n"));
     let mut idle_process = Process::new("idle", idle_addr, false);
     idle_process.state = ProcessState::Running;
 
-    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] adding idle process to manager\n"));
     PROCESS_MANAGER.add(Box::new(idle_process));
-    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] idle process added\n"));
-
-    // Set current process
-    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] setting CURRENT_PROCESS\n"));
     CURRENT_PROCESS.store(1, Ordering::SeqCst);
-    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] CURRENT_PROCESS modified\n"));
-    petroleum::serial::serial_log(format_args!("DEBUG: [process::init] done\n"));
+
+    mem_debug!("Process: init done\n");
 }
 
 /// Create a new process and add it to the process list
@@ -329,16 +274,14 @@ pub fn create_process(
     entry_point_address: VirtAddr,
     is_user: bool,
 ) -> Result<ProcessId, petroleum::common::logging::SystemError> {
-    debug_log!("Process: create_process starting");
+    mem_debug!("Process: create_process starting\n");
 
     let mut process = Process::new(name, entry_point_address, is_user);
-    debug_log!("Process: Process::new done");
 
     // Allocate kernel stack for the process
     let stack_layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
     let stack_ptr = petroleum::common::memory::allocate_layout(stack_layout)?;
     let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
-    debug_log!("Process: Kernel stack allocated");
 
     if is_user {
         // Allocate user stack for the process
@@ -351,32 +294,26 @@ pub fn create_process(
             })?;
         process.user_stack =
             VirtAddr::new(user_stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
-        debug_log!("Process: User stack allocated");
     }
 
-    debug_log!("Process: Creating page table...");
     // Create page table for the process
     let page_table = match crate::memory_management::create_process_page_table() {
         Ok(pt) => pt,
         Err(e) => {
             log::error!("Failed to create process page table: {:?}", e);
-            // Deallocate stack to prevent memory leak on error
             petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
             return Err(e);
         }
     };
-    debug_log!("Process: Page table created");
     process.page_table_phys_addr = PhysAddr::new(page_table.current_page_table() as u64);
     process.page_table = Some(Box::new(page_table));
 
     process.init_context(kernel_stack_top);
-    debug_log!("Process: Context initialized");
 
     let pid = process.id;
-    debug_log!("Process: Adding process to manager...");
     PROCESS_MANAGER.add(Box::new(process));
-    debug_log!("Process: Process added to list");
 
+    mem_debug!("Process: create_process done\n");
     Ok(pid)
 }
 

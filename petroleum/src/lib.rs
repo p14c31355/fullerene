@@ -79,15 +79,11 @@ pub use graphics::{
 };
 pub use hardware::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 
-pub fn clear_buffer<B: TextBufferOperations>(
-    buffer: &mut B,
-    height: usize,
-    width: usize,
-    value: ScreenChar,
-) {
-    buffer_ops!(clear_buffer, buffer, height, width, value);
-}
+pub use serial::SERIAL_PORT_WRITER as SERIAL1;
+pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
+pub use serial::{COM1_DATA_PORT, COM1_STATUS_PORT};
 
+// Buffer operation wrappers (used by petroleum internally)
 pub fn clear_line_range<B: TextBufferOperations + ?Sized>(
     buffer: &mut B,
     start_row: usize,
@@ -107,27 +103,6 @@ pub fn clear_line_range<B: TextBufferOperations + ?Sized>(
     );
 }
 
-pub fn scroll_char_buffer_up<B: TextBufferOperations>(
-    buffer: &mut B,
-    height: usize,
-    width: usize,
-    blank: ScreenChar,
-) {
-    buffer_ops!(scroll_char_buffer_up, buffer, height, width, blank);
-}
-
-/// Debug memory descriptor function
-pub fn debug_mem_descriptor(desc: &crate::page_table::memory_map::MemoryMapDescriptor) {
-    crate::serial::_print(format_args!(
-        "Memory descriptor: type={} phys=0x{:x} pages={}\n",
-        desc.type_(),
-        desc.physical_start(),
-        desc.number_of_pages()
-    ));
-}
-
-pub use serial::SERIAL_PORT_WRITER as SERIAL1;
-pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 // Heap allocation exports
 pub use page_table::allocator::{BitmapFrameAllocator, bitmap};
 #[cfg(not(feature = "std"))]
