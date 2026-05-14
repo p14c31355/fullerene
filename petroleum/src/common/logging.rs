@@ -119,6 +119,9 @@ pub enum SystemError {
 
     // Additional errors from fullerene-kernel
     FsInvalidFileDescriptor = 8,
+
+    // Process management errors
+    TooManyProcesses = 600,
 }
 
 /// Logging trait for system errors with context

@@ -97,9 +97,33 @@ pub fn init_graphics() {
 
     if let Some(fb_config) = config {
         petroleum::debug_log!("Initializing graphics: GOP Framebuffer mode");
-        
+
+        // Map framebuffer region into page table before any access
+        let fb_phys = fb_config.address;
+        let fb_size = (fb_config.width as u64 * fb_config.height as u64 * fb_config.bpp as u64) / 8;
+        let fb_pages = ((fb_size + 4095) / 4096) as usize;
+        let fb_virt = fb_phys + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64;
+        let frame_allocator = petroleum::page_table::constants::get_frame_allocator_mut();
+        let l4 = unsafe { petroleum::page_table::active_level_4_table(x86_64::VirtAddr::new(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64)) };
+        let flags = x86_64::structures::paging::PageTableFlags::PRESENT
+            | x86_64::structures::paging::PageTableFlags::WRITABLE
+            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+        unsafe {
+            for i in 0..fb_pages {
+                let v = x86_64::VirtAddr::new(fb_virt + i as u64 * 4096);
+                let p = x86_64::PhysAddr::new(fb_phys + i as u64 * 4096);
+                petroleum::page_table::kernel::init::map_page_4k_l1(
+                    l4, v, p, flags, frame_allocator,
+                    x86_64::VirtAddr::new(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64),
+                ).expect("Failed to map framebuffer page");
+            }
+        }
+        // Flush TLB
+        let cr3_val = x86_64::registers::control::Cr3::read();
+        unsafe { x86_64::registers::control::Cr3::write(cr3_val.0, cr3_val.1); }
+
         let info = petroleum::graphics::color::FramebufferInfo {
-            address: fb_config.address + (petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64),
+            address: fb_virt,
             width: fb_config.width,
             height: fb_config.height,
             stride: fb_config.stride,
@@ -116,7 +140,7 @@ pub fn init_graphics() {
 
         *PRIMARY_CONSOLE.lock() = Some(writer.clone());
         *PRIMARY_RENDERER.lock() = Some(writer);
-        
+
         petroleum::debug_log!("Graphics initialized with GOP Framebuffer");
         return;
     }

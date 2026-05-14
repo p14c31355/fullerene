@@ -1,4 +1,5 @@
 use crate::memory_management::process_memory::ProcessMemoryManagerImpl;
+use heapless::Vec;
 use petroleum::common::logging::{SystemError, SystemResult};
 use petroleum::initializer::{
     ErrorLogging, FrameAllocator, Initializable, MemoryManager, ProcessMemoryManager,
@@ -12,12 +13,14 @@ use x86_64::{PhysAddr, structures::paging::{
     FrameAllocator as X86FrameAllocator, PageTableFlags as PageFlags, Size4KiB,
 }};
 
+/// Maximum number of process memory managers
+const MAX_PROCESS_MANAGERS: usize = 16;
+
 /// Unified memory manager implementing all memory management traits
 pub struct UnifiedMemoryManager {
     pub(crate) page_table_manager: ProcessPageTable,
     pub(crate) kernel_pml4_phys: usize,
-    // Temporarily use a fixed array to avoid BTreeMap allocation during early boot
-    pub(crate) process_managers: [Option<ProcessMemoryManagerImpl>; 16],
+    pub(crate) process_managers: Vec<Option<ProcessMemoryManagerImpl>, MAX_PROCESS_MANAGERS>,
     pub(crate) current_process: usize,
     pub(crate) initialized: bool,
 }
@@ -88,14 +91,20 @@ impl UnifiedMemoryManager {
 
     /// Create a new unified memory manager
     pub fn new() -> Self {
-        const NONE_MANAGER: Option<ProcessMemoryManagerImpl> = None;
         Self {
             page_table_manager: ProcessPageTable::new(),
             kernel_pml4_phys: 0,
-            process_managers: [NONE_MANAGER; 16],
+            process_managers: Vec::new(),
             current_process: 0,
             initialized: false,
         }
+    }
+
+    /// Find process manager index by process ID
+    fn find_process_index(&self, process_id: usize) -> Option<usize> {
+        self.process_managers
+            .iter()
+            .position(|pm| pm.as_ref().map_or(false, |m| m.process_id() == process_id))
     }
 
     /// Initialize the memory management system
@@ -314,14 +323,16 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
     fn create_address_space(&mut self, process_id: usize) -> SystemResult<()> {
         mem_debug!("UMM: create_address_space entered\n");
 
-        if process_id >= 16 {
-            return Err(SystemError::InvalidArgument);
+        // Check if already exists
+        if self.find_process_index(process_id).is_some() {
+            return Ok(());
         }
 
         let mut process_manager = ProcessMemoryManagerImpl::new(process_id);
         process_manager.init_page_table(&mut self.page_table_manager, petroleum::page_table::constants::get_frame_allocator_mut())?;
 
-        self.process_managers[process_id] = Some(process_manager);
+        self.process_managers.push(Some(process_manager))
+            .map_err(|_| SystemError::TooManyProcesses)?;
         mem_debug!("UMM: Created address space for process\n");
         Ok(())
     }
@@ -331,15 +342,15 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
             return Err(SystemError::InternalError);
         }
 
-        if process_id < 16 {
-            if let Some(process_manager) = &self.process_managers[process_id] {
-                self.current_process = process_id;
-                self.page_table_manager
-                    .switch_page_table(process_manager.page_table_root())?;
-                return Ok(());
-            }
+        if let Some(idx) = self.find_process_index(process_id) {
+            let process_manager = self.process_managers[idx].as_ref().unwrap();
+            self.current_process = process_id;
+            self.page_table_manager
+                .switch_page_table(process_manager.page_table_root())?;
+            Ok(())
+        } else {
+            Err(SystemError::NoSuchProcess)
         }
-        Err(SystemError::NoSuchProcess)
     }
 
     fn destroy_address_space(&mut self, process_id: usize) -> SystemResult<()> {
@@ -347,21 +358,22 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
             return Err(SystemError::InternalError);
         }
 
-        if process_id < 16 {
-            if let Some(mut process_manager) = self.process_managers[process_id].take() {
+        if let Some(idx) = self.find_process_index(process_id) {
+            if let Some(mut process_manager) = self.process_managers[idx].take() {
                 process_manager.cleanup()?;
-                return Ok(());
             }
+            Ok(())
+        } else {
+            Err(SystemError::NoSuchProcess)
         }
-        Err(SystemError::NoSuchProcess)
     }
 
     fn allocate_heap(&mut self, size: usize) -> SystemResult<usize> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-        if self.current_process < 16 {
-            if let Some(pm) = &mut self.process_managers[self.current_process] {
+        if let Some(idx) = self.find_process_index(self.current_process) {
+            if let Some(pm) = self.process_managers[idx].as_mut() {
                 return pm.allocate_heap(size);
             }
         }
@@ -372,8 +384,8 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-        if self.current_process < 16 {
-            if let Some(pm) = &mut self.process_managers[self.current_process] {
+        if let Some(idx) = self.find_process_index(self.current_process) {
+            if let Some(pm) = self.process_managers[idx].as_mut() {
                 return pm.free_heap(address, size);
             }
         }
@@ -384,8 +396,8 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-        if self.current_process < 16 {
-            if let Some(pm) = &mut self.process_managers[self.current_process] {
+        if let Some(idx) = self.find_process_index(self.current_process) {
+            if let Some(pm) = self.process_managers[idx].as_mut() {
                 return pm.allocate_stack(size);
             }
         }
@@ -396,8 +408,8 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-        if self.current_process < 16 {
-            if let Some(pm) = &mut self.process_managers[self.current_process] {
+        if let Some(idx) = self.find_process_index(self.current_process) {
+            if let Some(pm) = self.process_managers[idx].as_mut() {
                 return pm.free_stack(address, size);
             }
         }

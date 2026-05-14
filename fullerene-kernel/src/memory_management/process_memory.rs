@@ -63,6 +63,11 @@ impl ProcessMemoryManagerImpl {
         self.page_table.current_page_table()
     }
 
+    /// Get the process ID
+    pub fn process_id(&self) -> usize {
+        self.process_id
+    }
+
     /// Allocate memory from heap
     pub fn allocate_heap(&mut self, size: usize) -> SystemResult<usize> {
         let aligned_size = (size + 4095) & !(4095); // Page align
