@@ -25,7 +25,8 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
                 }
                 Ok(())
             }),
-            petroleum::init_step!("Interrupts", || { interrupts::init(); Ok(()) }),
+            // NOTE: interrupts::init() is called in the common steps below (idempotent via AtomicBool guard).
+            // BIOS serial init
             petroleum::init_step!("Serial", || { petroleum::serial::serial_init(); Ok(()) }),
         ];
         InitSequence::new(&bios_init_steps).run();

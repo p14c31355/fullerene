@@ -7,6 +7,8 @@ use core::ffi::c_void;
 use core::ptr;
 use spin::Mutex;
 
+type EfiUniversalGraphicsAdapterProtocolPtr = isize; // Placeholder for UGA protocol type
+
 /// Protocol locator for UEFI protocols
 struct ProtocolLocator<'a> {
     guid: &'a [u8; 16],
@@ -31,6 +33,33 @@ impl<'a> ProtocolLocator<'a> {
         } else {
             *protocol_out = protocol as *mut T;
             Ok(())
+        }
+    }
+}
+
+/// Helper to try Universal Graphics Adapter (UGA) protocol
+pub fn init_uga_framebuffer(
+    system_table: &EfiSystemTable,
+) -> Option<FullereneFramebufferConfig> {
+    let locator = ProtocolLocator::new(
+        &EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID,
+        system_table,
+    );
+    let mut uga: *mut EfiUniversalGraphicsAdapterProtocolPtr = ptr::null_mut();
+
+    match locator.locate(&mut uga) {
+        Ok(_) => {
+            crate::serial::_print(format_args!(
+                "UGA protocol found, but UGA implementation incomplete.\n"
+            ));
+            None
+        }
+        Err(status) => {
+            crate::serial::_print(format_args!(
+                "UGA protocol not available (status: {:#x})\n",
+                status as u32
+            ));
+            None
         }
     }
 }
@@ -396,7 +425,7 @@ pub fn init_graphics_protocols(
     }
 
     crate::serial::_print(format_args!("GOP not available, trying UGA protocol...\n"));
-    if let Some(config) = crate::init_uga_framebuffer(system_table) {
+    if let Some(config) = init_uga_framebuffer(system_table) {
         return Some(config);
     }
 

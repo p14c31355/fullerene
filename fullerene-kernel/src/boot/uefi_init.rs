@@ -314,13 +314,14 @@ impl UefiInitContext {
                 b"DEBUG: petroleum::page_table::init (1) done\n"
             );
             unsafe {
-                petroleum::map_identity_range_checked!(
+                petroleum::page_table::raw::utils::map_identity_range(
                     &mut mapper,
                     frame_allocator,
                     map_phys,
                     map_pages,
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE
-                );
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                )
+                .expect("failed to identity-map memory map buffer");
             }
             petroleum::write_serial_bytes!(
                 0x3F8,

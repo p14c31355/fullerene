@@ -5,15 +5,26 @@
 use super::apic::{KEYBOARD_INTERRUPT_INDEX, MOUSE_INTERRUPT_INDEX, TIMER_INTERRUPT_INDEX};
 use super::exceptions::{breakpoint_handler, double_fault_handler, page_fault_handler};
 use super::input::{keyboard_handler, mouse_handler, timer_handler};
+use core::sync::atomic::{AtomicBool, Ordering};
 use petroleum::mem_debug;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
 // Global Interrupt Descriptor Table
 pub static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
 
+/// Guard flag to prevent double initialization of the IDT.
+static IDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
 /// Initialize IDT (load it into the CPU)
+///
+/// This function is idempotent: calling it more than once has no effect.
 #[allow(static_mut_refs)]
 pub fn init() {
+    if IDT_INITIALIZED.swap(true, Ordering::SeqCst) {
+        mem_debug!("IDT: Already initialized, skipping\n");
+        return;
+    }
+
     mem_debug!("IDT: Initializing\n");
 
     unsafe {
