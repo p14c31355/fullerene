@@ -109,9 +109,13 @@ pub fn init_graphics() {
         let frame_allocator = petroleum::page_table::constants::get_frame_allocator_mut();
         let phys_offset = x86_64::VirtAddr::new(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64);
         let l4 = unsafe { petroleum::page_table::active_level_4_table(phys_offset) };
+        // Use NO_CACHE (Uncacheable) for the framebuffer to match MTRR settings
+        // set by UEFI firmware for PCI MMIO regions. MTRR/PAT type mismatch would
+        // cause #GP on access.
         let flags = x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE
-            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE
+            | x86_64::structures::paging::PageTableFlags::NO_CACHE;
         unsafe {
             for i in 0..fb_pages {
                 let v = x86_64::VirtAddr::new(fb_virt + i as u64 * 4096);

@@ -917,11 +917,13 @@ impl UefiInitContext {
         }
 
         // Map the GOP Framebuffer if available
-        // Use WRITE_COMBINING-like attributes (NO_CACHE) for the framebuffer to
-        // improve performance on PCIe MMIO while maintaining correctness.
+        // Use NO_CACHE (Uncacheable) for the framebuffer to match MTRR settings
+        // set by UEFI firmware for PCI MMIO regions. A cache type mismatch between
+        // MTRR (UC) and page table (WB) would cause #GP on access.
         let fb_flags = PageTableFlags::PRESENT
             | PageTableFlags::WRITABLE
-            | PageTableFlags::NO_EXECUTE;
+            | PageTableFlags::NO_EXECUTE
+            | PageTableFlags::NO_CACHE;
         if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|m| m.lock().clone()) {
             let fb_phys = config.address;
             let fb_virt = fb_phys + physical_memory_offset.as_u64();
