@@ -38,3 +38,4 @@
 - Do not add new dependencies to existing bootloader/UEFI crates.
 - Avoid unnecessary code duplication.
 - Avoid long magic numbers/hardcode (prioritize constants).
+- The grep command is prohibited from use due to the risk of task termination.
