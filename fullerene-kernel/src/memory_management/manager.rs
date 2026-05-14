@@ -122,20 +122,20 @@ impl UnifiedMemoryManager {
             core::arch::asm!("lea {}, [rip]", out(reg) kernel_virt);
         }
 
-        let kernel_phys_start = kernel_virt & !4095;
+        // Convert virtual RIP to physical address for frame reservation.
+        // kernel_virt is in the direct map (higher half), so subtract the offset.
+        let kernel_phys = (kernel_virt - phys_offset.as_u64()) & !4095;
 
         self.page_table_manager.initialize_with_frame_allocator(
             phys_offset,
             petroleum::page_table::constants::get_frame_allocator_mut(),
-            kernel_phys_start,
+            kernel_phys,
         )?;
         self.kernel_pml4_phys = self.page_table_manager.current_page_table();
 
-        let _ = phys_offset;
-
         let kernel_reserve_pages = (16 * 1024 * 1024) / 4096;
         let _ = petroleum::page_table::constants::get_frame_allocator_mut()
-            .reserve_frames(kernel_phys_start, kernel_reserve_pages);
+            .reserve_frames(kernel_phys, kernel_reserve_pages);
         mem_debug!("UMM: Kernel memory reserved\n");
 
         mem_debug!("UMM: Mapping physical memory direct map\n");

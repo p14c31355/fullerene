@@ -233,12 +233,10 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     match locator.locate(&mut gop) {
         Err(status) => {
             crate::serial::_print(format_args!(
-                "GOP: Failed to locate GOP protocol (status: {:#x}).\n",
+                "GOP: Failed to locate GOP protocol (status: {:#x}). Skipping QEMU fallback, will try PCI enumeration.\n",
                 status as u32
             ));
-
-            crate::serial::_print(format_args!("GOP: Trying alternative GOP detection...\n"));
-            return init_gop_framebuffer_alternative(system_table);
+            return None;
         }
         Ok(_) => {
             crate::serial::_print(format_args!(

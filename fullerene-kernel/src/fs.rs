@@ -1,165 +1,11 @@
-//! Basic filesystem implementation for Fullerene OS
+//! Basic filesystem stub for Fullerene OS
 //!
-//! Currently implements a simple RAM-based filesystem for basic file operations.
+//! Currently a minimal placeholder to allow boot to proceed to desktop.
 
-use alloc::collections::BTreeMap;
-use alloc::string::String;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
-use spin::Mutex;
-
-/// File descriptor type
-pub type FileDescriptor = i32;
-
-/// File permissions
-#[derive(Debug, Clone, Copy)]
-pub struct FilePermissions {
-    pub read: bool,
-    pub write: bool,
-    pub execute: bool,
-}
-
-/// File structure
-pub struct File {
-    pub name: String,
-    pub data: Vec<u8>,
-    pub permissions: FilePermissions,
-    pub position: usize,
-}
-
-/// Global filesystem state
-static FILESYSTEM: Mutex<BTreeMap<String, Arc<Mutex<File>>>> = Mutex::new(BTreeMap::new());
-static NEXT_FD: Mutex<FileDescriptor> = Mutex::new(3); // 0,1,2 are reserved for stdio
-static OPEN_FILES: Mutex<BTreeMap<FileDescriptor, Arc<Mutex<File>>>> = Mutex::new(BTreeMap::new());
-
-/// Initialize filesystem
+/// Initialize filesystem (stub - no-op for boot)
 pub fn init() {
-    petroleum::serial::serial_log(format_args!("DEBUG: [fs] init start\n"));
-
-    unsafe {
-        petroleum::common::utils::reset_mutex_lock(&FILESYSTEM);
-        petroleum::common::utils::reset_mutex_lock(&NEXT_FD);
-        petroleum::common::utils::reset_mutex_lock(&OPEN_FILES);
-    }
-
-    FILESYSTEM.lock().clear();
-    *NEXT_FD.lock() = 3;
-    OPEN_FILES.lock().clear();
-
-    petroleum::serial::serial_log(format_args!("DEBUG: [fs] init completed\n"));
-}
-
-/// Create a new file, overwriting if it exists
-pub fn create_file(name: &str, data: &[u8]) -> Result<(), FsError> {
-    let mut fs = FILESYSTEM.lock();
-
-    let file = File {
-        name: String::from(name),
-        data: data.to_vec(),
-        permissions: FilePermissions {
-            read: true,
-            write: true,
-            execute: false,
-        },
-        position: 0,
-    };
-
-    let file_arc = Arc::new(Mutex::new(file));
-    fs.insert(String::from(name), Arc::clone(&file_arc));
-    Ok(())
-}
-
-/// Open a file and return file descriptor
-pub fn open_file(name: &str) -> Result<FileDescriptor, FsError> {
-    // Acquire locks in consistent order: FILESYSTEM then OPEN_FILES then NEXT_FD
-    let fs = FILESYSTEM.lock();
-    let file_arc = fs.get(name).ok_or(FsError::FileNotFound)?.clone();
-    drop(fs); // Release FILESYSTEM lock early to prevent deadlocks
-
-    // Now acquire OPEN_FILES and NEXT_FD
-    let mut open_files = OPEN_FILES.lock();
-    let mut next_fd = NEXT_FD.lock();
-
-    let fd = *next_fd;
-    *next_fd += 1;
-
-    open_files.insert(fd, Arc::clone(&file_arc));
-
-    Ok(fd)
-}
-
-/// Close a file
-pub fn close_file(fd: FileDescriptor) -> Result<(), FsError> {
-    let mut open_files = OPEN_FILES.lock();
-    if !open_files.contains_key(&fd) {
-        return Err(FsError::InvalidFileDescriptor);
-    }
-    open_files.remove(&fd);
-    Ok(())
-}
-
-/// Read from file
-pub fn read_file(fd: FileDescriptor, buffer: &mut [u8]) -> Result<usize, FsError> {
-    let open_files = OPEN_FILES.lock();
-
-    let file_mutex = open_files.get(&fd).ok_or(FsError::InvalidFileDescriptor)?;
-
-    let mut file = file_mutex.lock();
-
-    if !file.permissions.read {
-        return Err(FsError::PermissionDenied);
-    }
-
-    let remaining = file.data.len().saturating_sub(file.position);
-    let to_read = remaining.min(buffer.len());
-
-    buffer[..to_read].copy_from_slice(&file.data[file.position..file.position + to_read]);
-    file.position += to_read;
-
-    Ok(to_read)
-}
-
-/// Write to file
-pub fn write_file(fd: FileDescriptor, data: &[u8]) -> Result<usize, FsError> {
-    let open_files = OPEN_FILES.lock();
-
-    let file_mutex = open_files.get(&fd).ok_or(FsError::InvalidFileDescriptor)?;
-
-    let mut file = file_mutex.lock();
-
-    if !file.permissions.write {
-        return Err(FsError::PermissionDenied);
-    }
-
-    // Write at current position and update position
-    let write_pos = file.position;
-    let available_space = file.data.len().saturating_sub(write_pos);
-
-    if data.len() > available_space {
-        // Extend the file if needed
-        file.data.resize(write_pos + data.len(), 0);
-    }
-
-    file.data[write_pos..write_pos + data.len()].copy_from_slice(data);
-    file.position += data.len();
-
-    Ok(data.len())
-}
-
-/// Seek in file
-pub fn seek_file(fd: FileDescriptor, position: usize) -> Result<(), FsError> {
-    let open_files = OPEN_FILES.lock();
-
-    let file_mutex = open_files.get(&fd).ok_or(FsError::InvalidFileDescriptor)?;
-
-    let mut file = file_mutex.lock();
-
-    if position > file.data.len() {
-        return Err(FsError::InvalidSeek);
-    }
-
-    file.position = position;
-    Ok(())
+    // No initialization needed for boot. Filesystem operations will be
+    // added once the kernel reaches a stable desktop state.
 }
 
 /// File system errors
@@ -173,40 +19,40 @@ pub enum FsError {
     DiskFull,
 }
 
-petroleum::error_chain!(FsError, petroleum::common::logging::SystemError,
-    FsError::FileNotFound => petroleum::common::logging::SystemError::FileNotFound,
-    FsError::FileExists => petroleum::common::logging::SystemError::FileExists,
-    FsError::PermissionDenied => petroleum::common::logging::SystemError::PermissionDenied,
-    FsError::InvalidFileDescriptor => petroleum::common::logging::SystemError::BadFileDescriptor,
-    FsError::InvalidSeek => petroleum::common::logging::SystemError::InvalidSeek,
-    FsError::DiskFull => petroleum::common::logging::SystemError::DiskFull,
-);
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_create_and_open_file() {
-        init();
-        create_file("test.txt", b"Hello World").unwrap();
-        let fd = open_file("test.txt").unwrap();
-        assert!(fd >= 3); // Should be >= 3
-
-        close_file(fd).unwrap();
+impl From<FsError> for petroleum::common::logging::SystemError {
+    fn from(error: FsError) -> Self {
+        match error {
+            FsError::FileNotFound => petroleum::common::logging::SystemError::FileNotFound,
+            FsError::FileExists => petroleum::common::logging::SystemError::FileExists,
+            FsError::PermissionDenied => petroleum::common::logging::SystemError::PermissionDenied,
+            FsError::InvalidFileDescriptor => petroleum::common::logging::SystemError::BadFileDescriptor,
+            FsError::InvalidSeek => petroleum::common::logging::SystemError::InvalidSeek,
+            FsError::DiskFull => petroleum::common::logging::SystemError::DiskFull,
+        }
     }
+}
 
-    #[test]
-    fn test_read_write_file() {
-        init();
-        create_file("test.txt", b"Hello").unwrap();
-        let fd = open_file("test.txt").unwrap();
+/// Stub functions that return errors gracefully
+pub fn create_file(_name: &str, _data: &[u8]) -> Result<(), FsError> {
+    Err(FsError::DiskFull)
+}
 
-        let mut buffer = [0u8; 10];
-        let read_bytes = read_file(fd, &mut buffer).unwrap();
-        assert_eq!(read_bytes, 5);
-        assert_eq!(&buffer[..5], b"Hello");
+pub fn open_file(_name: &str) -> Result<i32, FsError> {
+    Err(FsError::FileNotFound)
+}
 
-        close_file(fd).unwrap();
-    }
+pub fn close_file(_fd: i32) -> Result<(), FsError> {
+    Err(FsError::InvalidFileDescriptor)
+}
+
+pub fn read_file(_fd: i32, _buffer: &mut [u8]) -> Result<usize, FsError> {
+    Err(FsError::InvalidFileDescriptor)
+}
+
+pub fn write_file(_fd: i32, _data: &[u8]) -> Result<usize, FsError> {
+    Err(FsError::InvalidFileDescriptor)
+}
+
+pub fn seek_file(_fd: i32, _position: usize) -> Result<(), FsError> {
+    Err(FsError::InvalidFileDescriptor)
 }

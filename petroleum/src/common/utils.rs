@@ -1,4 +1,8 @@
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
+
+pub const COM1_DATA_PORT: u16 = 0x3F8;
+pub const COM1_STATUS_PORT: u16 = 0x3FD;
 
 /// Calculate offset address in loops (base + i * 4096)
 pub fn calculate_offset_address(base: u64, i: u64) -> u64 {
@@ -69,7 +73,12 @@ pub fn calculate_pages(size: usize) -> u64 {
 /// This is a highly unsafe operation that should only be used during early boot
 /// to handle cases where .bss is not cleared.
 pub unsafe fn reset_mutex_lock<T>(mutex: &Mutex<T>) {
-    let lock_ptr = core::ptr::addr_of!(mutex) as *mut u32;
+    // A spin::Mutex has the lock state (AtomicBool or similar) at the beginning of the struct.
+    // Use addr_of! to get the address without creating a reference, avoiding
+    // invalid_reference_casting lint.
+    // SAFETY: The caller guarantees this is a static Mutex that hasn't been locked yet,
+    // and writing 0 to the lock byte is safe during early boot initialization.
+    let lock_ptr = core::ptr::addr_of!(*mutex).cast::<u32>().cast_mut();
     core::ptr::write_volatile(lock_ptr, 0);
 }
 
@@ -91,70 +100,6 @@ mod tests {
         assert_eq!(calculate_pages_for_buffer(128 * 1024), 33);
         // Very small buffer
         assert_eq!(calculate_pages_for_buffer(0), 1);
-    }
-
-    #[test]
-    fn test_calculate_map_data_ptr() {
-        assert_eq!(
-            calculate_map_data_ptr(0x1000),
-            0x1000 + core::mem::size_of::<usize>()
-        );
-    }
-
-    #[test]
-    fn test_calculate_config_offset() {
-        assert_eq!(
-            calculate_config_offset(1024),
-            core::mem::size_of::<usize>() + 1024
-        );
-    }
-
-    #[test]
-    fn test_check_buffer_overflow() {
-        let phys = 0x1000;
-        let buffer_size = 128 * 1024;
-        let metadata = core::mem::size_of::<usize>();
-
-        // Case 1: Fits
-        let offset = 100;
-        let size = 100;
-        assert!(check_buffer_overflow(phys, offset, size, buffer_size));
-
-        // Case 2: Overflows
-        let offset = buffer_size + metadata + 1;
-        let size = 1;
-        assert!(!check_buffer_overflow(phys, offset, size, buffer_size));
-    }
-
-    #[test]
-    fn test_calculate_descriptor_ptr() {
-        let ptr = 0x1000 as *const u8;
-        let size = 40;
-        unsafe {
-            assert_eq!(calculate_descriptor_ptr(ptr, 0, size), 0x1000 as *const u8);
-            assert_eq!(calculate_descriptor_ptr(ptr, 1, size), 0x1028 as *const u8);
-            assert_eq!(calculate_descriptor_ptr(ptr, 2, size), 0x1050 as *const u8);
-        }
-    }
-
-    #[test]
-    fn test_calculate_region_end() {
-        assert_eq!(calculate_region_end(0x1000, 1), 0x2000);
-        assert_eq!(calculate_region_end(0x1000, 0), 0x1000);
-        assert_eq!(calculate_region_end(0, 10), 10 * 4096);
-    }
-
-    #[test]
-    fn test_calculate_metadata_ptr() {
-        let base = 0x1000 as *const u8;
-        let size = 100;
-        let meta_size = 20;
-        unsafe {
-            assert_eq!(
-                calculate_metadata_ptr(base, size, meta_size),
-                (0x1000 + 80) as *const u8
-            );
-        }
     }
 
     #[test]

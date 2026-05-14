@@ -8,7 +8,7 @@ pub mod graphics_alternatives {
     use alloc::vec::Vec;
 
     const EFI_PCI_IO_PROTOCOL_GUID: [u8; 16] = [
-        0x4c, 0xf2, 0x39, 0x77, 0xd7, 0x93, 0xd4, 0x11, 0x9a, 0x3a, 0x00, 0x90, 0x27, 0x3f, 0xc1,
+        0x7b, 0x27, 0xcf, 0x04, 0xd7, 0x39, 0xd2, 0x4b, 0x9a, 0x3a, 0x00, 0x90, 0x27, 0x3f, 0xc1,
         0x4d,
     ];
 
@@ -326,13 +326,9 @@ pub mod graphics_alternatives {
         }
 
         // Check for other devices that might support linear framebuffers
-        // Could add support for qxl, vmware svga, etc.
         match (device.vendor_id, device.device_id) {
             (0x1b36, 0x0100) => {
                 // QEMU QXL device
-                _print(format_args!(
-                    "[GOP-ALT] Detected QXL device, attempting bare-metal framebuffer detection\n"
-                ));
                 probe_qxl_framebuffer(device, bs)
             }
             (0x15ad, 0x0405) => {
@@ -342,9 +338,17 @@ pub mod graphics_alternatives {
                 ));
                 None
             }
+            (0x1234, 0x1111) | (0x1234, 0x1112) => {
+                // QEMU std VGA / Bochs VBE  
+                _print(format_args!(
+                    "[GOP-ALT] Detected QEMU std VGA device\n"
+                ));
+                probe_std_vga_framebuffer(device, bs)
+            }
             _ => {
                 _print(format_args!(
-                    "[GOP-ALT] Unknown graphics device, skipping linear framebuffer probe\n"
+                    "[GOP-ALT] Unknown graphics device ({:04x}:{:04x}), skipping\n",
+                    device.vendor_id, device.device_id
                 ));
                 None
             }
@@ -768,12 +772,79 @@ pub mod graphics_alternatives {
         }
     }
 
+    /// Probe std VGA (Bochs VBE) device for linear framebuffer capability
+    fn probe_std_vga_framebuffer(
+        device: &PciDevice,
+        bs: &EfiBootServices,
+    ) -> Option<crate::common::FullereneFramebufferConfig> {
+        _print(format_args!(
+            "[GOP-ALT] Probing std VGA framebuffer at {:02x}:{:02x}:{:02x}\n",
+            device.bus, device.device, device.function
+        ));
+
+        let guard = match PciIoGuard::new(bs, device.handle) {
+            Ok(g) => g,
+            Err(status) => {
+                _print(format_args!(
+                    "[GOP-ALT] Failed to open PCI_IO: {:#x}\n",
+                    status as usize
+                ));
+                return None;
+            }
+        };
+
+        let pci_io_ref = unsafe { &*guard.protocol };
+
+        // Read BAR0 (offset 0x10) to get framebuffer physical address
+        let mut bar0_raw: u32 = 0;
+        let read_result = (pci_io_ref.pci_read)(
+            guard.protocol,
+            2,    // Dword
+            0x10, // BAR0 offset
+            1,    // 1 dword
+            &mut bar0_raw as *mut u32 as *mut core::ffi::c_void,
+        );
+
+        if EfiStatus::from(read_result) != EfiStatus::Success || (bar0_raw & 0xFFFFFFF0) == 0 {
+            _print(format_args!(
+                "[GOP-ALT] std VGA BAR0 invalid: {:#x}\n",
+                bar0_raw
+            ));
+            return None;
+        }
+
+        let fb_addr = (bar0_raw & 0xFFFFFFF0) as u64;
+        _print(format_args!(
+            "[GOP-ALT] std VGA framebuffer at {:#x}\n",
+            fb_addr
+        ));
+
+        // Try standard resolutions starting from most common
+        let modes = [(1024, 768, 32), (800, 600, 32), (1280, 1024, 32)];
+        for &(width, height, bpp) in &modes {
+            let stride = width;
+            let fb_size = (height as u64 * stride as u64 * bpp as u64 / 8) as u64;
+            if probe_framebuffer_access(fb_addr, fb_size) {
+                _print(format_args!(
+                    "[GOP-ALT] std VGA framebuffer: {}x{} @ {:#x}\n",
+                    width, height, fb_addr
+                ));
+                return Some(crate::common::FullereneFramebufferConfig {
+                    address: fb_addr,
+                    width,
+                    height,
+                    pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                    bpp,
+                    stride,
+                });
+            }
+        }
+        None
+    }
+
     /// Read from PCI configuration space (simplified - needs proper implementation)
     unsafe fn _port_read(_port: u16) -> u32 {
-        // This function is deprecated in UEFI context
-        // Use pci_config_read_u32() instead for proper UEFI PCI access
-        // For bare-metal compatibility, return invalid
-        0xFFFF_FFFF // Invalid read
+        0xFFFF_FFFF
     }
 }
 

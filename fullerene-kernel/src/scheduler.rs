@@ -267,7 +267,11 @@ fn draw_desktop_on_available_framebuffer() {
     use petroleum::graphics::Renderer as _;
     let mut renderer = crate::graphics::PRIMARY_RENDERER.lock();
     if let Some(ref mut renderer) = *renderer {
+        let (w, h) = renderer.get_resolution();
+        petroleum::serial::serial_log(format_args!("Drawing desktop: {}x{}\n", w, h));
         crate::graphics::draw_os_desktop(renderer);
+    } else {
+        petroleum::serial::serial_log(format_args!("PRIMARY_RENDERER is None!\n"));
     }
 }
 
@@ -275,22 +279,24 @@ fn draw_desktop_on_available_framebuffer() {
 pub fn scheduler_loop() -> ! {
     scheduler_log!("Scheduler loop starting");
 
-    // Create shell process
-    let _ = crate::process::create_process(
-        "shell_process",
-        VirtAddr::new(shell_process_main as usize as u64),
-        true,
-    );
-
     log::info!("Scheduler loop started");
     crate::graphics::print_to_console("Scheduler loop started\n");
+
+    // Draw the desktop immediately
+    draw_desktop_on_available_framebuffer();
 
     loop {
         SYSTEM_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         SCHEDULER_ITERATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
         process_scheduler_iteration();
-        crate::process::yield_current();
+        // Cooperative yield to idle process (if available)
+        if crate::process::get_active_process_count() > 0 {
+            crate::process::yield_current();
+        } else {
+            // No processes to yield to, just pause briefly
+            for _ in 0..1000 { petroleum::cpu_pause(); }
+        }
     }
 }
 

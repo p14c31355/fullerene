@@ -178,21 +178,20 @@ pub static LOCAL_APIC_ADDRESS: Mutex<LocalApicAddress> =
 pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferConfig>>> =
     Once::new();
 
-pub const QEMU_CONFIGS: [QemuConfig; 8] = [
-    // Cirrus VGA specific addresses (common with -vga cirrus) - start with successfully tested ones
+pub const QEMU_CONFIGS: [QemuConfig; 9] = [
+    // Standard QEMU std-vga framebuffer (Bochs VBE) - common in QEMU q35
     QemuConfig {
-        address: 0x40000000,
+        address: 0xFC000000,
         width: 1024,
         height: 768,
         bpp: 32,
-    }, // Verified working config from debug output
+    }, // QEMU std-vga at high memory
     QemuConfig {
-        address: 0x40000000,
-        width: 800,
-        height: 600,
+        address: 0xFD000000,
+        width: 1024,
+        height: 768,
         bpp: 32,
-    }, // Cirrus 800x600 alternative
-    // Standard QEMU std-vga framebuffer
+    }, // Alternative high memory framebuffer
     QemuConfig {
         address: 0xE0000000,
         width: 1024,
@@ -200,17 +199,17 @@ pub const QEMU_CONFIGS: [QemuConfig; 8] = [
         bpp: 32,
     }, // Common QEMU std-vga mode
     QemuConfig {
+        address: 0xC0000000,
+        width: 1024,
+        height: 768,
+        bpp: 32,
+    }, // i440fx vga
+    QemuConfig {
         address: 0xF0000000,
         width: 1024,
         height: 768,
         bpp: 32,
     }, // Alternative QEMU framebuffer
-    QemuConfig {
-        address: 0xFD000000,
-        width: 1024,
-        height: 768,
-        bpp: 32,
-    }, // High memory framebuffer
     QemuConfig {
         address: 0xE0000000,
         width: 800,
@@ -224,11 +223,17 @@ pub const QEMU_CONFIGS: [QemuConfig; 8] = [
         bpp: 32,
     }, // Alternative 800x600
     QemuConfig {
-        address: 0x80000000,
-        width: 1024,
-        height: 768,
+        address: 0xFD000000,
+        width: 800,
+        height: 600,
         bpp: 32,
-    }, // Alternative Cirrus address
+    }, // High memory 800x600
+    QemuConfig {
+        address: 0xC0000000,
+        width: 800,
+        height: 600,
+        bpp: 32,
+    }, // i440fx vga 800x600
 ];
 
 #[derive(Clone, Copy)]
@@ -641,13 +646,10 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     match locator.locate(&mut gop) {
         Err(status) => {
             serial::_print(format_args!(
-                "GOP: Failed to locate GOP protocol (status: {:#x}).\n",
+                "GOP: Failed to locate GOP protocol (status: {:#x}). Going to PCI enumeration.\n",
                 status as u32
             ));
-
-            // Try alternative GOP detection for QEMU environments
-            serial::_print(format_args!("GOP: Trying alternative GOP detection...\n"));
-            return init_gop_framebuffer_alternative(system_table);
+            return None;
         }
         Ok(_) => {
             serial::_print(format_args!(

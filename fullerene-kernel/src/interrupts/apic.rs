@@ -109,6 +109,6 @@ pub fn init_apic() {
 
     use super::syscall::setup_syscall;
     setup_syscall();
-
-    x86_64::instructions::interrupts::enable();
+    // Interrupts are enabled in kernel_main_higher_half after all setup is complete,
+    // not here, to avoid premature timer interrupts during process creation.
 }

@@ -161,40 +161,21 @@ fn kernel_main_higher_half(
 ) -> ! {
     write_serial_bytes!(0x3F8, 0x3FD, b"Entering kernel_main_higher_half...\n");
 
-    // 1. Reload IDT to ensure it uses higher-half addresses
-    write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: Reloading IDT for higher half\n");
-    interrupts::init();
-    log::info!("Kernel: IDT re-initialized in higher half");
-
-    // 2. Map MMIO regions and get VGA virtual address
+    // 1. Map MMIO regions (APIC, IOAPIC, VGA) and framebuffer
     let vga_virt_addr = crate::boot::uefi_init::UefiInitContext::map_mmio(physical_memory_offset);
-    log::info!(
-        "MMIO mapping completed. VGA virt addr: {:#x}",
-        vga_virt_addr
-    );
+    log::info!("MMIO mapping completed. VGA virt addr: {:#x}", vga_virt_addr);
 
-    // 3. Initialize graphics (GOP Framebuffer with legacy VGA fallback)
-    crate::graphics::init_graphics();
-    log::info!("Graphics initialized");
-
-    // 4. Initialize APIC before enabling interrupts for safety
+    // 2. Initialize APIC (IDT, exceptions, syscalls already set up in init_common)
     crate::interrupts::init_apic();
     log::info!("APIC initialized");
 
-    // 5. Enable interrupts
-    log::info!("Enabling interrupts...");
-    x86_64::instructions::interrupts::enable();
-    log::info!("Interrupts enabled");
-
-    // 6. Initialize keyboard input driver
+    // 3. Initialize keyboard input driver
     crate::keyboard::init();
     log::info!("Keyboard initialized");
 
-    // 7. Start the main kernel scheduler
-    log::info!("Starting full system scheduler loop...");
+    // 4. Enable interrupts and enter scheduler loop
+    log::info!("Enabling interrupts and starting scheduler...");
     write_serial_bytes!(0x3F8, 0x3FD, b"Entering scheduler_loop\n");
-
-    // Use a standard function call instead of a raw jump to ensure
-    // proper stack frame setup and ABI compliance.
+    x86_64::instructions::interrupts::enable();
     crate::scheduler::scheduler_loop();
 }
