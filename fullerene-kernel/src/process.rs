@@ -258,7 +258,7 @@ pub fn init() {
     unsafe { init_process_manager(); }
 
     // Create idle process
-    let idle_addr = VirtAddr::new(idle_loop as usize as u64);
+    let idle_addr = VirtAddr::new(idle_loop as *const () as usize as u64);
     let mut idle_process = Process::new("idle", idle_addr, false);
     idle_process.state = ProcessState::Running;
 

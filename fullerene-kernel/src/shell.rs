@@ -6,8 +6,7 @@
 use crate::keyboard;
 use crate::scheduler::get_system_tick;
 use crate::syscall::kernel_syscall;
-use alloc::{format, string::String, vec::Vec};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use alloc::{format, vec::Vec};
 use petroleum::{define_commands, print};
 
 /// Shell prompt
@@ -24,25 +23,9 @@ struct CommandEntry {
     function: CommandFn,
 }
 
-/// Direct syscall wrapper for user mode
-fn user_syscall(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
-    let res: u64;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") num,
-            in("rdi") a1,
-            in("rsi") a2,
-            in("rdx") a3,
-            lateout("rax") res,
-        );
-    }
-    res
-}
-
-/// Helper for writing to stdout via syscall
+/// Write to stdout via kernel syscall (shell runs in kernel mode)
 fn user_print(s: &str) {
-    user_syscall(4, 1, s.as_ptr() as u64, s.len() as u64);
+    kernel_syscall(4, 1, s.as_ptr() as u64, s.len() as u64);
 }
 
 static COMMANDS: &[CommandEntry] = define_commands!(
@@ -108,7 +91,7 @@ fn read_line(buffer: &mut [u8]) -> Result<usize, &'static str> {
 
     while pos < max_len {
         let mut byte = [0u8; 1];
-        let res = user_syscall(3, 0, byte.as_mut_ptr() as u64, 1);
+        let res = kernel_syscall(3, 0, byte.as_mut_ptr() as u64, 1);
         if res > 0 {
             let ch = byte[0];
             match ch {
@@ -182,7 +165,7 @@ fn process_command(line: &str) -> bool {
 }
 
 fn not_implemented_command(args: &[&str]) -> i32 {
-    user_print(&format!("{}: Not implemented for user mode\n", args[0]));
+    user_print(&format!("{}: Not implemented\n", args[0]));
     0
 }
 

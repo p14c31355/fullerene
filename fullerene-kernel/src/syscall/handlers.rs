@@ -187,18 +187,19 @@ fn syscall_read(fd: core::ffi::c_int, buffer: *mut u8, count: usize) -> SyscallR
 
     // For now, only support reading from stdin (fd 0)
     if fd == 0 {
-        // Read from keyboard input buffer
-        let bytes_read = crate::keyboard::drain_line_buffer(data);
-
-        // Convert line ending if present
-        if bytes_read > 0 && bytes_read <= count {
-            let last_idx = bytes_read - 1;
-            if data[last_idx] == b'\n' && last_idx + 1 < count {
-                data[last_idx + 1] = b'\0'; // Add null terminator for C strings
+        // Single-byte reads: get one char from raw input buffer
+        if count == 1 {
+            if let Some(ch) = crate::keyboard::read_char() {
+                data[0] = ch;
+                Ok(1)
+            } else {
+                Ok(0)
             }
+        } else {
+            // Multi-byte reads: drain line buffer
+            let bytes_read = crate::keyboard::drain_line_buffer(data);
+            Ok(bytes_read as u64)
         }
-
-        Ok(bytes_read as u64)
     } else {
         // Attempt to read from the file descriptor using fs module
         match crate::fs::read_file(fd, data) {

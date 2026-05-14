@@ -54,12 +54,13 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
 
     #[cfg(target_os = "uefi")]
     {
-        if let Ok(_pid) = crate::process::create_process(
-            "test_process",
-            VirtAddr::new(crate::process::test_process_main as *const () as usize as u64),
+        // Spawn shell as a kernel-mode process for interactive use
+        if let Ok(_shell_pid) = crate::process::create_process(
+            "shell",
+            VirtAddr::new(crate::scheduler::shell_process_main as *const () as usize as u64),
             false,
         ) {
-            petroleum::serial::serial_log(format_args!("Test process created\n"));
+            petroleum::serial::serial_log(format_args!("Shell process created\n"));
         }
     }
 }
