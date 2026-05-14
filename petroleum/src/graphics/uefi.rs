@@ -97,7 +97,7 @@ pub fn detect_standard_modes(
     modes: &[(u32, u32, u32, u64)],
 ) -> Option<FullereneFramebufferConfig> {
     for (width, height, bpp, addr) in modes.iter() {
-        let expected_fb_size = (*height * *width * bpp / 8) as u64;
+        let expected_fb_size = (*height as u64) * (*width as u64) * (*bpp as u64 / 8);
         crate::serial::_print(format_args!(
             "[BM-GFX] Testing {}x{} mode at {:#x} (size: {}KB)\n",
             width,
@@ -117,7 +117,7 @@ pub fn detect_standard_modes(
                 *height,
                 crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                 *bpp,
-                *width * (*bpp / 8),
+                (*width as u64).checked_mul(*bpp as u64 / 8).and_then(|s| u32::try_from(s).ok()).unwrap_or(0),
             ));
         }
     }
@@ -185,7 +185,7 @@ pub fn find_working_qemu_config(
                 height,
                 crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                 bpp,
-                width * (bpp / 8),
+                (width as u64).checked_mul(bpp as u64 / 8).and_then(|s| u32::try_from(s).ok()).unwrap_or(0),
             );
 
             crate::serial::_print(format_args!(

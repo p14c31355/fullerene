@@ -26,9 +26,67 @@ static VGA_CONSOLE: Mutex<Option<VgaBuffer>> = Mutex::new(None);
 /// 2. Fallback GOP detection (QEMU/etc)
 /// 3. Legacy VGA Text Mode (fallback)
 pub fn init_graphics() {
+    // Force reset GRAPHICS_INITIALIZED to handle un-zeroed .bss after world switch.
+    // This mirrors the force-reset pattern used for ALLOCATOR, HEAP_INITIALIZED,
+    // and LOCAL_APIC_ADDRESS in uefi_init.rs.
+    GRAPHICS_INITIALIZED.store(false, Ordering::SeqCst);
     if GRAPHICS_INITIALIZED.swap(true, Ordering::SeqCst) {
         petroleum::debug_log!("Graphics: Already initialized, skipping\n");
         return;
+    }
+
+    // 0: Initialize framebuffer config from KernelArgs if not already set.
+    // The bootloader (bellows) correctly detects the framebuffer and passes it
+    // through KernelArgs. However, since the bootloader and kernel are separate
+    // binaries, their copies of FULLERENE_FRAMEBUFFER_CONFIG are different memory
+    // locations. We must read from KernelArgs to bridge this gap.
+    if petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().is_none() {
+        // SAFETY: KERNEL_ARGS is set by efi_main_stage2 before init_common
+        // is called, and points to valid memory allocated by the bootloader.
+        // It is only read once during early init, before any concurrent access.
+        unsafe {
+            let args_ptr = petroleum::transition::KERNEL_ARGS;
+            if !args_ptr.is_null() {
+                let args = &*args_ptr;
+                // Validate KernelArgs framebuffer values to detect garbage/uninitialized data.
+                // The bootloader should set valid values, but if something went wrong during
+                // the bootloader→kernel transition, the fields may contain garbage.
+                const MAX_REASONABLE_WIDTH: u32 = 16384;
+                const MAX_REASONABLE_HEIGHT: u32 = 16384;
+                let fb_valid = args.fb_address >= 0x100000
+                    && args.fb_width > 0 && args.fb_width <= MAX_REASONABLE_WIDTH
+                    && args.fb_height > 0 && args.fb_height <= MAX_REASONABLE_HEIGHT
+                    && (args.fb_bpp == 8 || args.fb_bpp == 16 || args.fb_bpp == 24 || args.fb_bpp == 32);
+                if fb_valid {
+                    petroleum::debug_log!(
+                        "Graphics: Initializing framebuffer from KernelArgs: {}x{} @ {:#x}",
+                        args.fb_width, args.fb_height, args.fb_address
+                    );
+                    // Use checked arithmetic to avoid overflow from garbage values
+                    let stride = (args.fb_width as u64)
+                        .checked_mul(args.fb_bpp as u64 / 8)
+                        .and_then(|s| u32::try_from(s).ok())
+                        .unwrap_or(0);
+                    let config = petroleum::create_framebuffer_config(
+                        args.fb_address,
+                        args.fb_width,
+                        args.fb_height,
+                        petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                        args.fb_bpp,
+                        stride,
+                    );
+                    if stride > 0 {
+                        petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+                            .call_once(|| spin::Mutex::new(Some(config)));
+                        petroleum::debug_log!("Graphics: Framebuffer config initialized from KernelArgs");
+                    } else {
+                        petroleum::debug_log!("Graphics: KernelArgs framebuffer stride is zero, skipping");
+                    }
+                } else {
+                    petroleum::debug_log!("Graphics: KernelArgs framebuffer values invalid, skipping");
+                }
+            }
+        }
     }
 
     // 1 & 2: Try GOP / Framebuffer
