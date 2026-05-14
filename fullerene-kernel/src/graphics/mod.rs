@@ -98,13 +98,17 @@ pub fn init_graphics() {
     if let Some(fb_config) = config {
         petroleum::debug_log!("Initializing graphics: GOP Framebuffer mode");
 
-        // Map framebuffer region into page table before any access
+        // Map framebuffer region into page table before any access.
+        // Note: efi_main_stage2 calls UefiInitContext::map_mmio before init_common,
+        // which should already have mapped the framebuffer. This call is a safety
+        // net in case the early MMIO mapping was skipped or failed.
         let fb_phys = fb_config.address;
         let fb_size = (fb_config.width as u64 * fb_config.height as u64 * fb_config.bpp as u64) / 8;
         let fb_pages = ((fb_size + 4095) / 4096) as usize;
         let fb_virt = fb_phys + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64;
         let frame_allocator = petroleum::page_table::constants::get_frame_allocator_mut();
-        let l4 = unsafe { petroleum::page_table::active_level_4_table(x86_64::VirtAddr::new(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64)) };
+        let phys_offset = x86_64::VirtAddr::new(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64);
+        let l4 = unsafe { petroleum::page_table::active_level_4_table(phys_offset) };
         let flags = x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE
             | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
@@ -112,9 +116,11 @@ pub fn init_graphics() {
             for i in 0..fb_pages {
                 let v = x86_64::VirtAddr::new(fb_virt + i as u64 * 4096);
                 let p = x86_64::PhysAddr::new(fb_phys + i as u64 * 4096);
+                // map_page_4k_l1 handles HUGE_PAGE splitting and overwriting
+                // existing 4KB entries, so it's safe to call even if map_mmio
+                // already mapped these pages.
                 petroleum::page_table::kernel::init::map_page_4k_l1(
-                    l4, v, p, flags, frame_allocator,
-                    x86_64::VirtAddr::new(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64),
+                    l4, v, p, flags, frame_allocator, phys_offset,
                 ).expect("Failed to map framebuffer page");
             }
         }

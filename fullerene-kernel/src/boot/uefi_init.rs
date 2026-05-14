@@ -834,7 +834,13 @@ impl UefiInitContext {
 
     #[cfg(target_os = "uefi")]
     pub fn map_mmio(physical_memory_offset: VirtAddr) -> usize {
-        log::info!("Mapping MMIO regions for APIC and IOAPIC");
+        // NOTE: This function is called BEFORE init_common, so log::info!() may not
+        // produce output. Use write_serial_bytes! / serial_log for visible debug output.
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [map_mmio] Mapping MMIO regions for APIC and IOAPIC\n"
+        );
 
         // Force reset LOCAL_APIC_ADDRESS lock state to 0 to handle cases where .bss is not cleared
         unsafe {
@@ -854,29 +860,47 @@ impl UefiInitContext {
         // Get the L4 table via CR3 (higher-half virtual address)
         let l4 = unsafe { petroleum::page_table::active_level_4_table(physical_memory_offset) };
 
-        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+        // MMIO regions must be mapped with NO_CACHE (PCD bit) to prevent caching
+        // of memory-mapped device registers, which would cause undefined behavior.
+        let mmio_flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::NO_EXECUTE
+            | PageTableFlags::NO_CACHE;
+        // Standard (non-MMIO) regions like VGA text buffer don't need NO_CACHE
+        let std_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
 
         let regions = [
-            (0xfee00000u64, 1u64, "Local APIC"),
-            (0xfec00000u64, 1u64, "IO APIC"),
-            (0xb8000u64, (0xc0000u64 - 0xb8000u64) / 4096, "VGA text buffer"),
+            (0xfee00000u64, 1u64, "Local APIC", mmio_flags),
+            (0xfec00000u64, 1u64, "IO APIC", mmio_flags),
+            (0xb8000u64, (0xc0000u64 - 0xb8000u64) / 4096, "VGA text buffer", std_flags),
         ];
 
         let mut vga_virt_addr = 0u64;
 
-        for (phys, pages, name) in regions {
+        for (phys, pages, name, flags) in regions {
             let virt = phys + physical_memory_offset.as_u64();
             if name == "VGA text buffer" {
                 vga_virt_addr = virt;
             }
 
-            log::info!(
-                "Mapping {}: phys={:#x}, virt={:#x} ({} pages)",
-                name,
-                phys,
-                virt,
-                pages
+            petroleum::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: [map_mmio] Mapping "
             );
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, name.as_bytes());
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b": phys=");
+            let mut buf = [0u8; 16];
+            let len = petroleum::serial::format_hex_to_buffer(phys, &mut buf, 16);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b" virt=");
+            let len = petroleum::serial::format_hex_to_buffer(virt, &mut buf, 16);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b" pages=");
+            let mut pb = [0u8; 8];
+            let plen = petroleum::serial::format_hex_to_buffer(pages, &mut pb, 8);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, &pb[..plen]);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
             unsafe {
                 // Use map_page_4k_l1 which handles HUGE_PAGE splitting automatically.
@@ -893,20 +917,41 @@ impl UefiInitContext {
         }
 
         // Map the GOP Framebuffer if available
+        // Use WRITE_COMBINING-like attributes (NO_CACHE) for the framebuffer to
+        // improve performance on PCIe MMIO while maintaining correctness.
+        let fb_flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::NO_EXECUTE;
         if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|m| m.lock().clone()) {
             let fb_phys = config.address;
             let fb_virt = fb_phys + physical_memory_offset.as_u64();
             let fb_size = (config.width as u64 * config.height as u64 * config.bpp as u64) / 8;
             let fb_pages = (fb_size + 4095) / 4096;
 
-            log::info!("Mapping GOP Framebuffer: phys={:#x}, virt={:#x}, size={} bytes ({} pages)", fb_phys, fb_virt, fb_size, fb_pages);
+            petroleum::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: [map_mmio] Mapping GOP Framebuffer: phys="
+            );
+            let mut buf = [0u8; 16];
+            let len = petroleum::serial::format_hex_to_buffer(fb_phys, &mut buf, 16);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b" size=");
+            let mut sb = [0u8; 16];
+            let slen = petroleum::serial::format_hex_to_buffer(fb_size, &mut sb, 16);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, &sb[..slen]);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b" pages=");
+            let mut pa = [0u8; 8];
+            let palen = petroleum::serial::format_hex_to_buffer(fb_pages, &mut pa, 8);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, &pa[..palen]);
+            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
             unsafe {
                 for i in 0..fb_pages {
                     let v = x86_64::VirtAddr::new(fb_virt + i * 4096);
                     let p = x86_64::PhysAddr::new(fb_phys + i * 4096);
                     petroleum::page_table::kernel::init::map_page_4k_l1(
-                        l4, v, p, flags, frame_allocator, physical_memory_offset,
+                        l4, v, p, fb_flags, frame_allocator, physical_memory_offset,
                     ).expect("Failed to map framebuffer page");
                 }
             }

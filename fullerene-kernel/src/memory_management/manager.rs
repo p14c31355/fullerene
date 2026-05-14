@@ -10,7 +10,7 @@ use petroleum::page_table::{
     PageTableHelper, ProcessPageTable,
 };
 use x86_64::{PhysAddr, structures::paging::{
-    FrameAllocator as X86FrameAllocator, PageTableFlags as PageFlags, Size4KiB,
+    FrameAllocator as X86FrameAllocator, Mapper, PageTableFlags as PageFlags, Size4KiB,
 }};
 
 /// Maximum number of process memory managers
@@ -148,32 +148,52 @@ impl UnifiedMemoryManager {
         mem_debug!("UMM: Kernel memory reserved\n");
 
         mem_debug!("UMM: Mapping physical memory direct map\n");
+        // For pages covered by 2MB huge pages (from init_and_jump), the x86_64
+        // crate's OffsetPageTable::map_to returns ParentEntryHugePage.
+        // In that case, fall back to map_page_4k_l1 which handles huge page splitting.
+        let phys_offset_virt = x86_64::VirtAddr::new(
+            petroleum::common::memory::get_physical_memory_offset() as u64
+        );
+
+        // Pre-acquire frame allocator reference to avoid borrow conflicts with self
+        let frame_alloc = petroleum::page_table::constants::get_frame_allocator_mut();
+
         for descriptor in memory_map {
             let phys_addr = descriptor.get_physical_start();
             let pages = descriptor.get_page_count();
 
-            let phys_offset = x86_64::VirtAddr::new(
-                petroleum::common::memory::get_physical_memory_offset() as u64
-            );
-            let base_virt_addr = (phys_offset + PhysAddr::new(phys_addr).as_u64()).as_u64() as usize;
+            let base_virt_addr = (phys_offset_virt + PhysAddr::new(phys_addr).as_u64()).as_u64() as usize;
 
             for i in 0..pages {
                 let page_size = self.page_size();
                 let virt = base_virt_addr + (i as usize * page_size);
                 let phys = (phys_addr + (i as u64 * page_size as u64)) as usize;
+                let virt_addr = x86_64::VirtAddr::new(virt as u64);
+                let phys_addr_val = x86_64::PhysAddr::new(phys as u64);
 
-                let res = self.page_table_manager.map_page(
-                    virt,
-                    phys,
-                    PageFlags::PRESENT | PageFlags::WRITABLE,
-                    petroleum::page_table::constants::get_frame_allocator_mut(),
-                );
+                // Try standard 4KB mapping. If covered by a 2MB huge page (from
+                // init_and_jump), the huge page already provides access with reasonable
+                // attributes. Skip mapping to avoid 4M+ page-by-page iterations.
+                // MMIO region fine-tuning is handled separately by map_mmio() in
+                // efi_main_stage2 (called before init_common).
+                let page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(virt_addr);
+                let frame = x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(phys_addr_val);
+                let flags = PageFlags::PRESENT | PageFlags::WRITABLE;
 
-                if let Err(e) = res {
-                    if e == SystemError::MappingFailed {
-                        continue;
-                    } else {
-                        return Err(e);
+                let mapper = self.page_table_manager.mapper.as_mut()
+                    .ok_or(SystemError::InternalError)?;
+                let map_result = unsafe { mapper.map_to(page, frame, flags, frame_alloc) };
+                match map_result {
+                    Ok(flush) => { flush.flush(); }
+                    Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {
+                        // Already covered by 2MB huge page - skip. The huge page
+                        // provides a valid mapping for regular memory access.
+                    }
+                    Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                        // Already mapped at 4KB - skip
+                    }
+                    Err(_) => {
+                        return Err(SystemError::MappingFailed);
                     }
                 }
             }

@@ -76,13 +76,30 @@ pub unsafe extern "C" fn efi_main_stage2(
         petroleum::halt_loop();
     }
 
+    // ============ MMIO mapping BEFORE any graphics/device access ============
+    // Map APIC, IOAPIC, VGA text buffer, and GOP framebuffer NOW so that
+    // init_common → init_graphics can safely access the framebuffer.
+    // This must happen AFTER memory manager init (which sets up the frame allocator)
+    // but BEFORE any code that touches MMIO regions.
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [uefi_main] Mapping MMIO regions before init_common\n"
+    );
+    let _vga_virt_addr = crate::boot::uefi_init::UefiInitContext::map_mmio(physical_memory_offset);
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [uefi_main] MMIO mapping completed before init_common\n"
+    );
+
     // Common initialization for both UEFI and BIOS with correct physical memory offset
     petroleum::write_serial_bytes!(
         0x3F8,
         0x3FD,
         b"DEBUG: [uefi_main] About to call init_common\n"
     );
-    log::info!("About to call init_common");
+    petroleum::serial::serial_log(format_args!("About to call init_common\n"));
     unsafe {
         let rsp: u64;
         core::arch::asm!("mov {}, rsp", out(reg) rsp);
@@ -157,15 +174,15 @@ pub unsafe extern "C" fn efi_main_stage2(
 
 fn kernel_main_higher_half(
     _args_ptr: *const petroleum::assembly::KernelArgs,
-    physical_memory_offset: VirtAddr,
+    _physical_memory_offset: VirtAddr,
 ) -> ! {
     write_serial_bytes!(0x3F8, 0x3FD, b"Entering kernel_main_higher_half...\n");
 
-    // 1. Map MMIO regions (APIC, IOAPIC, VGA) and framebuffer
-    let vga_virt_addr = crate::boot::uefi_init::UefiInitContext::map_mmio(physical_memory_offset);
-    log::info!("MMIO mapping completed. VGA virt addr: {:#x}", vga_virt_addr);
+    // NOTE: MMIO mapping (APIC, IOAPIC, VGA, framebuffer) was already done
+    // in efi_main_stage2 BEFORE init_common, so init_graphics can safely
+    // access the framebuffer. No need to call map_mmio again here.
 
-    // 2. Initialize APIC (IDT, exceptions, syscalls already set up in init_common)
+    // 1. Initialize APIC (IDT, exceptions, syscalls already set up in init_common)
     crate::interrupts::init_apic();
     log::info!("APIC initialized");
 
