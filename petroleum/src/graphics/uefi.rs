@@ -349,13 +349,18 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
         return None;
     }
 
+    let bpp = crate::common::get_bpp_from_pixel_format(info.pixel_format);
+    let stride_bytes = (info.pixels_per_scan_line as u64)
+        .checked_mul((bpp / 8) as u64)
+        .and_then(|s| u32::try_from(s).ok())
+        .unwrap_or(0);
     let config = create_framebuffer_config(
         fb_addr as u64,
         info.horizontal_resolution,
         info.vertical_resolution,
         info.pixel_format,
-        crate::common::get_bpp_from_pixel_format(info.pixel_format),
-        info.pixels_per_scan_line,
+        bpp,
+        stride_bytes,
     );
 
     crate::serial::_print(format_args!(

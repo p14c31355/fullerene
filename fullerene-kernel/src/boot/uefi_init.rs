@@ -851,36 +851,45 @@ impl UefiInitContext {
         // to constants::FRAME_ALLOCATOR. Use the constants version here.
         let frame_allocator = petroleum::page_table::constants::get_frame_allocator_mut();
 
-        let mut mapper = unsafe {
-            petroleum::page_table::init::<_, fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::constants::BootInfoFrameAllocator)>(
-                physical_memory_offset,
-                frame_allocator,
-                0x100000,
-                None,
-            )
-        };
+        // Get the L4 table via CR3 (higher-half virtual address)
+        let l4 = unsafe { petroleum::page_table::active_level_4_table(physical_memory_offset) };
 
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
 
         let regions = [
-            (0xfee00000, 1, "Local APIC"),
-            (0xfec00000, 1, "IO APIC"),
-            (0xb8000, (0xc0000 - 0xb8000) / 4096, "VGA text buffer"),
+            (0xfee00000u64, 1u64, "Local APIC"),
+            (0xfec00000u64, 1u64, "IO APIC"),
+            (0xb8000u64, (0xc0000u64 - 0xb8000u64) / 4096, "VGA text buffer"),
         ];
 
-        let mut vga_virt_addr = 0;
+        let mut vga_virt_addr = 0u64;
 
         for (phys, pages, name) in regions {
+            let virt = phys + physical_memory_offset.as_u64();
             if name == "VGA text buffer" {
-                vga_virt_addr = phys + physical_memory_offset.as_u64();
+                vga_virt_addr = virt;
             }
-  
+
             log::info!(
-                "{} already mapped by bootloader (identity {:#x}, higher-half {:#x})",
+                "Mapping {}: phys={:#x}, virt={:#x} ({} pages)",
                 name,
                 phys,
-                phys + physical_memory_offset.as_u64()
+                virt,
+                pages
             );
+
+            unsafe {
+                // Use map_page_4k_l1 which handles HUGE_PAGE splitting automatically.
+                // This avoids the panic from x86_64 crate's MappedPageTable when trying
+                // to map into a region already covered by a 2MB huge page.
+                for i in 0..pages {
+                    let v = x86_64::VirtAddr::new(virt + i * 4096);
+                    let p = x86_64::PhysAddr::new(phys + i * 4096);
+                    petroleum::page_table::kernel::init::map_page_4k_l1(
+                        l4, v, p, flags, frame_allocator, physical_memory_offset,
+                    ).expect("Failed to map MMIO page");
+                }
+            }
         }
 
         // Map the GOP Framebuffer if available
@@ -893,18 +902,22 @@ impl UefiInitContext {
             log::info!("Mapping GOP Framebuffer: phys={:#x}, virt={:#x}, size={} bytes ({} pages)", fb_phys, fb_virt, fb_size, fb_pages);
 
             unsafe {
-                let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
-                let _ = petroleum::page_table::raw::map_range_with_huge_pages(
-                    &mut mapper,
-                    frame_allocator,
-                    fb_phys,
-                    fb_virt,
-                    fb_pages,
-                    flags,
-                    "gop_framebuffer",
-                );
+                for i in 0..fb_pages {
+                    let v = x86_64::VirtAddr::new(fb_virt + i * 4096);
+                    let p = x86_64::PhysAddr::new(fb_phys + i * 4096);
+                    petroleum::page_table::kernel::init::map_page_4k_l1(
+                        l4, v, p, flags, frame_allocator, physical_memory_offset,
+                    ).expect("Failed to map framebuffer page");
+                }
             }
         }
+
+        // Flush TLB by reloading CR3 (more reliable than invlpg in QEMU)
+        let cr3_val = x86_64::registers::control::Cr3::read();
+        unsafe {
+            x86_64::registers::control::Cr3::write(cr3_val.0, cr3_val.1);
+        }
+
         let lapic_virt_addr = 0xfee00000 + physical_memory_offset.as_u64();
         *petroleum::LOCAL_APIC_ADDRESS.lock() = petroleum::LocalApicAddress(lapic_virt_addr as *mut u32);
 

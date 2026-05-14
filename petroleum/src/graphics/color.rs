@@ -20,29 +20,23 @@ pub struct FramebufferInfo {
 }
 
 impl FramebufferInfo {
+    /// Returns the stride in bytes per scan line.
+    /// For UEFI framebuffers, this is `pixels_per_scan_line * bytes_per_pixel`.
+    /// For VGA mode, stride equals width (since bytes_per_pixel == 1).
     pub fn width_or_stride(&self) -> u32 {
-        #[cfg(target_os = "uefi")]
-        {
-            let stride_bytes = self.stride as u64 * self.bytes_per_pixel() as u64;
-            stride_bytes
-                .try_into()
-                .expect("Stride in bytes exceeds u32::MAX")
-        }
-        #[cfg(not(target_os = "uefi"))]
-        {
-            self.width
-        }
+        self.stride
     }
 
+    /// Calculate the byte offset into the framebuffer for pixel at (x, y).
+    ///
+    /// `stride` is always stored in bytes internally:
+    /// - UEFI: initialized as `pixels_per_scan_line * bytes_per_pixel` (see `find_gop_framebuffer`)
+    /// - VGA:  initialized as `width` (since bytes_per_pixel == 1, stride == width in bytes)
+    ///
+    /// Formula: `y * stride_in_bytes + x * bytes_per_pixel`
+    /// This works correctly for both UEFI (32bpp) and VGA (8-bit indexed) modes.
     pub fn calculate_offset(&self, x: u32, y: u32) -> usize {
-        #[cfg(target_os = "uefi")]
-        {
-            ((y as u64 * self.stride as u64 + x as u64) * self.bytes_per_pixel() as u64) as usize
-        }
-        #[cfg(not(target_os = "uefi"))]
-        {
-            ((y * self.width + x) * 1) as usize
-        } // 1 byte per pixel for VGA
+        (y as usize * self.stride as usize) + (x as usize * self.bytes_per_pixel() as usize)
     }
 
     pub fn bytes_per_pixel(&self) -> u32 {
