@@ -130,10 +130,23 @@ fn kernel_fault_halt(frame: &InterruptStackFrame, name: &str, extra: &str) -> ! 
 
 static mut SCHEDULE_TRAMPOLINE: Option<x86_64::VirtAddr> = None;
 
+/// Set the schedule trampoline address.
+///
+/// SAFETY: This function is marked unsafe because it writes to a static mut variable.
+/// It is only called during system initialization (in init) or in exception handlers
+/// after interrupts have been disabled, so there are no concurrency issues.
 pub(crate) unsafe fn set_schedule_trampoline(addr: x86_64::VirtAddr) {
-    SCHEDULE_TRAMPOLINE = Some(addr);
+    unsafe {
+        SCHEDULE_TRAMPOLINE = Some(addr);
+    }
 }
 
+/// Recovery trampoline called after a user-mode exception to switch to the next process.
+///
+/// SAFETY: This function is called from exception handlers in kernel mode. The call to
+/// `context_switch` is unsafe because it involves manipulating CPU state and stack pointers.
+/// However, it is safe here because we are switching to a valid process that has been
+/// properly scheduled and has a valid context.
 #[unsafe(no_mangle)]
 pub extern "C" fn exception_recovery_trampoline() -> ! {
     raw_log!("Recovery trampoline: cleaning up and scheduling next\n");
@@ -223,6 +236,7 @@ macro_rules! define_err_handler {
 // ──────────────────────────────────────────────
 //  Handlers: no error code
 // ──────────────────────────────────────────────
+
 define_no_err_handler!(divide_error_handler, 0);
 define_no_err_handler!(debug_handler, 1);
 define_no_err_handler!(nmi_handler, 2);
@@ -232,7 +246,6 @@ define_no_err_handler!(invalid_opcode_handler, 6);
 define_no_err_handler!(device_not_available_handler, 7);
 define_no_err_handler!(coprocessor_segment_overrun_handler, 9);
 define_no_err_handler!(x87_fp_error_handler, 16);
-// machine_check_handler is defined separately (must return !)
 define_no_err_handler!(simd_fp_exception_handler, 19);
 define_no_err_handler!(virtualization_handler, 20);
 define_no_err_handler!(hv_injection_exception_handler, 28);
@@ -240,6 +253,7 @@ define_no_err_handler!(hv_injection_exception_handler, 28);
 // ──────────────────────────────────────────────
 //  Handlers: with error code
 // ──────────────────────────────────────────────
+
 define_err_handler!(invalid_tss_handler, 10);
 define_err_handler!(segment_not_present_handler, 11);
 define_err_handler!(stack_segment_fault_handler, 12);
@@ -252,6 +266,7 @@ define_err_handler!(security_exception_handler, 30);
 // ──────────────────────────────────────────────
 //  Machine check (diverging handler)
 // ──────────────────────────────────────────────
+
 #[unsafe(no_mangle)]
 pub extern "x86-interrupt" fn machine_check_handler(frame: InterruptStackFrame) -> ! {
     kernel_fault_halt(&frame, "Machine Check", "");
@@ -260,6 +275,7 @@ pub extern "x86-interrupt" fn machine_check_handler(frame: InterruptStackFrame) 
 // ──────────────────────────────────────────────
 //  Breakpoint
 // ──────────────────────────────────────────────
+
 #[unsafe(no_mangle)]
 pub extern "x86-interrupt" fn breakpoint_handler(_frame: InterruptStackFrame) {
     raw_log!("\nBREAKPOINT\n");
@@ -268,9 +284,10 @@ pub extern "x86-interrupt" fn breakpoint_handler(_frame: InterruptStackFrame) {
 // ──────────────────────────────────────────────
 //  Double fault
 // ──────────────────────────────────────────────
+
 #[unsafe(no_mangle)]
 pub extern "x86-interrupt" fn double_fault_handler(
-    frame: InterruptStackFrame,
+    mut frame: InterruptStackFrame,
     _error_code: u64,
 ) -> ! {
     raw_log!(
@@ -297,6 +314,7 @@ pub extern "x86-interrupt" fn double_fault_handler(
 // ──────────────────────────────────────────────
 //  Page fault
 // ──────────────────────────────────────────────
+
 #[unsafe(no_mangle)]
 pub extern "x86-interrupt" fn page_fault_handler(
     mut frame: InterruptStackFrame,

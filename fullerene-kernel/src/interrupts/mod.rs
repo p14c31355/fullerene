@@ -20,8 +20,15 @@ lazy_static! {
 }
 
 // Re-export public functions and structures
-pub use apic::{APIC, init_apic};
-pub use exceptions::page_fault_handler;
+pub use exceptions::{
+    page_fault_handler,
+    divide_error_handler, debug_handler, nmi_handler, breakpoint_handler, overflow_handler,
+    bound_range_exceeded_handler, invalid_opcode_handler, device_not_available_handler,
+    double_fault_handler, coprocessor_segment_overrun_handler, invalid_tss_handler,
+    segment_not_present_handler, stack_segment_fault_handler, general_protection_fault_handler,
+    alignment_check_handler, machine_check_handler, security_exception_handler,
+    virtualization_handler, hv_injection_exception_handler, vmm_communication_exception_handler,
+};
 pub use idt::init;
 pub use input::{KEYBOARD_QUEUE, MOUSE_STATE, keyboard_handler, mouse_handler, timer_handler};
 pub use petroleum::hardware::pic::disable_legacy_pic;

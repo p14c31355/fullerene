@@ -39,6 +39,8 @@ pub(crate) static mut MEMORY_MAP_BUFFER: [MemoryMapDescriptor; MAX_DESCRIPTORS] 
 
 /// Initialize the boot frame allocator with memory map
 pub fn init_frame_allocator(memory_map: &[impl MemoryDescriptorValidator]) {
+    // SAFETY: We are converting a slice of trait objects to a concrete slice of MemoryMapDescriptor.
+    // The memory_map is guaranteed to contain valid MemoryMapDescriptor instances, so this is safe.
     let concrete_map = unsafe {
         core::slice::from_raw_parts(
             memory_map.as_ptr() as *const petroleum::page_table::memory_map::MemoryMapDescriptor,

@@ -38,4 +38,3 @@ pub mod process;
 pub mod scheduler;
 pub mod shell;
 pub mod syscall;
-pub mod vga;

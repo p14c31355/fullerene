@@ -92,7 +92,7 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Printing efi_main address\n");
         let mut buf = [0u8; 16];
         let len = petroleum::serial::format_hex_to_buffer(
-            crate::boot::uefi_entry::efi_main as u64,
+            crate::boot.uefi_entry.efi_main as u64,
             &mut buf,
             16,
         );
@@ -127,7 +127,7 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, &map_buf[..map_len]);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
-        let kernel_virt_addr = crate::boot::uefi_entry::efi_main as u64;
+        let kernel_virt_addr = crate::boot.uefi_entry.efi_main as u64;
         let kernel_phys_addr = kernel_virt_addr
             .wrapping_sub(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64);
 
@@ -392,7 +392,12 @@ impl UefiInitContext {
                 b"DEBUG: [uefi_init] Lock acquired, calling init\n"
             );
             let allocator = fa_guard.as_mut().expect("Frame allocator should be ready");
-            petroleum::page_table::init::<_, fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator)>(self.physical_memory_offset, allocator, 0x100000, None)
+            petroleum::page_table::init::<_, fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator)>(
+                self.physical_memory_offset,
+                allocator,
+                0x100000,
+                None,
+            )
         };
         petroleum::write_serial_bytes!(
             0x3F8,
@@ -717,7 +722,7 @@ impl UefiInitContext {
         );
 
         let stack_phys_start = self.heap_start_after_gdt.as_u64() - physical_memory_offset.as_u64();
-        let stack_pages = (2 * 1024 * 1024) / 4096;
+        let stack_pages = (2 * 1024 * 1002) / 4096;
 
         let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
         let frame_allocator = frame_allocator_guard
@@ -779,60 +784,6 @@ impl UefiInitContext {
                 heap_size_remaining,
             );
         }
-    }
-
-    /// Map MMIO regions (APIC, IOAPIC, VGA text buffer, GOP framebuffer).
-    ///
-    /// CRITICAL: Reads physical_memory_offset from the global static
-    /// (petroleum::common::memory::get_physical_memory_offset) rather than accepting
-    /// a function parameter. During UMM::init, the frame allocator is transferred
-    /// from heap::FRAME_ALLOCATOR to constants::FRAME_ALLOCATOR, which involves
-    /// OffsetPageTable::new calls that may corrupt stack values. The global
-    /// PHYSICAL_MEMORY_OFFSET is set before any of these calls and remains correct.
-    #[cfg(target_os = "uefi")]
-    pub fn map_mmio() -> usize {
-        // Map standard MMIO regions
-        let vga_virt_addr = map_standard_mmio_regions();
-
-        // Map GOP Framebuffer if available
-        if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|m| m.lock().clone()) {
-            let fb_phys = config.address;
-            let fb_virt = fb_phys + petroleum::common::memory::get_physical_memory_offset() as u64;
-            let fb_size = (config.width as u64 * config.height as u64 * config.bpp as u64) / 8;
-            let fb_pages = (fb_size + 4095) / 4096;
-
-            // Use NO_CACHE (Uncacheable) for the framebuffer to match MTRR settings
-            // set by UEFI firmware for PCI MMIO regions. MTRR/PAT type mismatch would
-            // cause #GP on access.
-            let fb_flags = PageTableFlags::PRESENT
-                | PageTableFlags::WRITABLE
-                | PageTableFlags::NO_EXECUTE
-                | PageTableFlags::NO_CACHE;
-
-            let frame_allocator = petroleum::page_table::constants::get_frame_allocator_mut();
-            let phys_offset = x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
-            let l4 = unsafe { petroleum::page_table::active_level_4_table(phys_offset) };
-
-            unsafe {
-                for i in 0..fb_pages {
-                    let v = x86_64::VirtAddr::new(fb_virt + i as u64 * 4096);
-                    let p = x86_64::PhysAddr::new(fb_phys + i as u64 * 4096);
-                    if let Err(e) = petroleum::page_table::kernel::init::map_page_4k_l1(
-                        l4, v, p, fb_flags, frame_allocator, phys_offset,
-                    ) {
-                        petroleum::debug_log!("Framebuffer page {} map failed: {:?}, skipping\n", i);
-                    }
-                }
-            }
-        }
-
-        // Flush TLB by reloading CR3
-        let cr3_val = x86_64::registers::control::Cr3::read();
-        unsafe {
-            x86_64::registers::control::Cr3::write(cr3_val.0, cr3_val.1);
-        }
-
-        vga_virt_addr
     }
 
     /// Map standard MMIO regions (APIC, IOAPIC, VGA text buffer).
@@ -899,6 +850,60 @@ impl UefiInitContext {
         }
 
         vga_virt_addr as usize
+    }
+
+    /// Map MMIO regions (APIC, IOAPIC, VGA text buffer, GOP framebuffer).
+    ///
+    /// CRITICAL: Reads physical_memory_offset from the global static
+    /// (petroleum::common::memory::get_physical_memory_offset) rather than accepting
+    /// a function parameter. During UMM::init, the frame allocator is transferred
+    /// from heap::FRAME_ALLOCATOR to constants::FRAME_ALLOCATOR, which involves
+    /// OffsetPageTable::new calls that may corrupt stack values. The global
+    /// PHYSICAL_MEMORY_OFFSET is set before any of these calls and remains correct.
+    #[cfg(target_os = "uefi")]
+    pub fn map_mmio() -> usize {
+        // Map standard MMIO regions
+        let vga_virt_addr = map_standard_mmio_regions();
+
+        // Map GOP Framebuffer if available
+        if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|m| m.lock().clone()) {
+            let fb_phys = config.address;
+            let fb_virt = fb_phys + petroleum::common::memory::get_physical_memory_offset() as u64;
+            let fb_size = (config.width as u64 * config.height as u64 * config.bpp as u64) / 8;
+            let fb_pages = (fb_size + 4095) / 4096;
+
+            // Use NO_CACHE (Uncacheable) for the framebuffer to match MTRR settings
+            // set by UEFI firmware for PCI MMIO regions. MTRR/PAT type mismatch would
+            // cause #GP on access.
+            let fb_flags = PageTableFlags::PRESENT
+                | PageTableFlags::WRITABLE
+                | PageTableFlags::NO_EXECUTE
+                | PageTableFlags::NO_CACHE;
+
+            let frame_allocator = petroleum::page_table::constants::get_frame_allocator_mut();
+            let phys_offset = x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
+            let l4 = unsafe { petroleum::page_table::active_level_4_table(phys_offset) };
+
+            unsafe {
+                for i in 0..fb_pages {
+                    let v = x86_64::VirtAddr::new(fb_virt + i as u64 * 4096);
+                    let p = x86_64::PhysAddr::new(fb_phys + i as u64 * 4096);
+                    if let Err(e) = petroleum::page_table::kernel::init::map_page_4k_l1(
+                        l4, v, p, fb_flags, frame_allocator, phys_offset,
+                    ) {
+                        petroleum::debug_log!("Framebuffer page {} map failed: {:?}, skipping\n", i);
+                    }
+                }
+            }
+        }
+
+        // Flush TLB by reloading CR3
+        let cr3_val = x86_64::registers::control::Cr3::read();
+        unsafe {
+            x86_64::registers::control::Cr3::write(cr3_val.0, cr3_val.1);
+        }
+
+        vga_virt_addr
     }
 
     #[cfg(target_os = "uefi")]

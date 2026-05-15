@@ -63,6 +63,7 @@ pub mod page_table;
 pub mod serial;
 pub mod transition;
 pub mod uefi_helpers;
+pub mod boot;
 pub use apic::{IoApic, IoApicRedirectionEntry, init_io_apic};
 // Macros with #[macro_export] are automatically available at root, no need to re-export
 pub use common::logging::{SystemError, SystemResult};
@@ -73,12 +74,6 @@ pub use common::{check_memory_initialized, set_memory_initialized};
 // These are the canonical implementations — do NOT re-define them here.
 pub use graphics::uefi::*;
 pub use graphics::*;
-pub use graphics::{
-    Color, ColorCode, HardwarePorts, ScreenChar, TextBufferOperations, UefiFramebufferWriter,
-    VgaPortOps,
-    color::{self},
-    init_vga_graphics,
-};
 pub use hardware::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;

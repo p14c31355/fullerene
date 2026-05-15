@@ -115,18 +115,24 @@ pub fn load_program(
                         )?;
                     }
 
-                    // Now copy the file data to the allocated virtual memory.
-                    // We use a guard to safely switch to the process's page table and back.
-                    struct Cr3SwitchGuard {
+                    /// Guard for switching CR3 (page table base register)
+                    ///
+                    /// SAFETY: This guard performs an unsafe operation to switch the page table.
+                    /// It is safe because we always restore the original CR3 in the Drop implementation.
+                    pub struct CrxSwitchGuard {
                         original_cr3: x86_64::structures::paging::PhysFrame,
                         original_cr3_flags: x86_64::registers::control::Cr3Flags,
                     }
 
-                    impl Cr3SwitchGuard {
+                    impl CrxSwitchGuard {
+                        /// Create a new CR3 switch guard.
+                        ///
+                        /// SAFETY: This function performs an unsafe operation to switch the page table.
+                        /// It is safe because we always restore the original CR3 in the Drop implementation.
                         unsafe fn new(page_table: &ProcessPageTable) -> Self {
                             let (original_cr3, original_cr3_flags) =
                                 x86_64::registers::control::Cr3::read();
-                            crate::memory_management::switch_to_page_table(page_table);
+                            let _ = crate::memory_management::switch_to_page_table(page_table);
                             Self {
                                 original_cr3,
                                 original_cr3_flags,
@@ -134,7 +140,7 @@ pub fn load_program(
                         }
                     }
 
-                    impl Drop for Cr3SwitchGuard {
+                    impl Drop for CrxSwitchGuard {
                         fn drop(&mut self) {
                             unsafe {
                                 x86_64::registers::control::Cr3::write(
@@ -145,7 +151,7 @@ pub fn load_program(
                         }
                     }
 
-                    let _cr3_guard = unsafe { Cr3SwitchGuard::new(process_page_table) };
+                    let _cr3_guard = unsafe { CrxSwitchGuard::new(process_page_table) };
 
                     // Copy file data
                     let src = &image_data[file_offset..file_offset + file_size];

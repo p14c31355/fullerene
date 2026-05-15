@@ -99,12 +99,14 @@ unsafe fn build_gdt(tss: &'static TaskStateSegment) -> (GlobalDescriptorTable, S
 
 /// Store built GDT and selectors into global state.
 unsafe fn store_gdt(gdt: GlobalDescriptorTable, code: SegmentSelector, data: SegmentSelector, tss: SegmentSelector, udata: SegmentSelector, ucode: SegmentSelector) {
-    CODE_SELECTOR = Some(code);
-    KERNEL_DATA_SELECTOR = Some(data);
-    TSS_SELECTOR = Some(tss);
-    USER_DATA_SELECTOR = Some(udata);
-    USER_CODE_SELECTOR = Some(ucode);
-    GDT = Some(gdt);
+    unsafe {
+        CODE_SELECTOR = Some(code);
+        KERNEL_DATA_SELECTOR = Some(data);
+        TSS_SELECTOR = Some(tss);
+        USER_DATA_SELECTOR = Some(udata);
+        USER_CODE_SELECTOR = Some(ucode);
+        GDT = Some(gdt);
+    }
 }
 
 pub fn init_with_stacks(stacks: TssStacks) {
@@ -120,10 +122,6 @@ pub fn init_with_stacks(stacks: TssStacks) {
         tss.interrupt_stack_table[NMI_IST_INDEX as usize] = stacks.nmi;
         tss.interrupt_stack_table[MACHINE_CHECK_IST_INDEX as usize] = stacks.machine_check;
         TSS = Some(tss);
-
-        let tss_ref: &'static TaskStateSegment = TSS.as_ref().expect("TSS not set");
-        let (gdt, code, data, tss_sel, udata, ucode) = build_gdt(tss_ref);
-        store_gdt(gdt, code, data, tss_sel, udata, ucode);
     }
 
     mem_debug!("GDT: GDT built\n");
@@ -149,7 +147,7 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
     let machine_check_ist = nmi_ist + GDT_TSS_STACK_SIZE as u64;
     let new_heap_start = machine_check_ist + GDT_TSS_STACK_SIZE as u64;
 
-    mem_debug!("GDT: Stack addresses calculated\n");
+    debug_log_no_alloc!("GDT: Stack addresses calculated\n");
 
     unsafe {
         let mut tss = TaskStateSegment::new();
@@ -161,31 +159,23 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
         tss.interrupt_stack_table[NMI_IST_INDEX as usize] = nmi_ist;
         tss.interrupt_stack_table[MACHINE_CHECK_IST_INDEX as usize] = machine_check_ist;
         TSS = Some(tss);
-
-        let tss_ref: &'static TaskStateSegment = TSS.as_ref().expect("TSS must be initialized");
-        let (gdt, code, data, tss_sel, udata, ucode) = build_gdt(tss_ref);
-        store_gdt(gdt, code, data, tss_sel, udata, ucode);
     }
 
-    mem_debug!("GDT: GDT built\n");
+    debug_log_no_alloc!("GDT: GDT built\n");
 
     #[cfg(not(target_os = "uefi"))]
     {
-        mem_debug!("GDT: Loading GDT...\n");
+        debug_log_no_alloc!("GDT: Loading GDT...\n");
         let gdt = unsafe {
             core::mem::transmute::<&GlobalDescriptorTable, &'static GlobalDescriptorTable>(
                 GDT.as_ref().expect("GDT not initialized"),
             )
         };
         gdt.load();
-        mem_debug!("GDT loaded\n");
 
         unsafe {
             CS::set_reg(CODE_SELECTOR.expect("CODE_SELECTOR not initialized"));
-            mem_debug!("GDT: CS set\n");
-
             load_tss(TSS_SELECTOR.expect("TSS_SELECTOR not initialized"));
-            mem_debug!("GDT: TSS loaded\n");
 
             if let Some(data_sel) = KERNEL_DATA_SELECTOR {
                 use x86_64::registers::segmentation::{DS, ES, FS, GS, SS};
@@ -195,16 +185,16 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
                 FS::set_reg(data_sel);
                 GS::set_reg(data_sel);
             }
-            mem_debug!("GDT: Data segment registers set\n");
+            debug_log_no_alloc!("GDT: Data segment registers set\n");
         }
     }
     #[cfg(target_os = "uefi")]
     {
-        mem_debug!("GDT: Skipping GDT reload in UEFI mode\n");
+        debug_log_no_alloc!("GDT: Skipping GDT reload in UEFI mode\n");
     }
 
     GDT_INITIALIZED.store(true, Ordering::SeqCst);
-    mem_debug!("GDT: Init complete\n");
+    debug_log_no_alloc!("GDT: Init complete\n");
     new_heap_start
 }
 

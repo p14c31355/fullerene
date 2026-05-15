@@ -28,7 +28,7 @@ macro_rules! draw_window_base {
     ($writer:expr, $x:expr, $y:expr, $width:expr, $height:expr, $title:expr) => {{
         use embedded_graphics::mono_font::{MonoTextStyle, ascii::FONT_6X10};
         use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
-        use embedded_graphics::{prelude::*, text::Text};
+        use embedded_graphics::{prelude::!, text::Text};
 
         let rect = Rectangle::new(Point::new($x as i32, $y as i32), Size::new($width, $height));
         let style = PrimitiveStyleBuilder::new()
@@ -87,13 +87,8 @@ pub use setup::{
     detect_and_init_vga_graphics, detect_cirrus_vga, init_vga_graphics, init_vga_text_mode,
     setup_cirrus_vga_mode,
 };
-
 // VGA text operations
 pub use text::{Color, ColorCode, ScreenChar, TextBufferOperations};
-
-// Desktop drawing
 pub use desktop::*;
-
-// Framebuffer
 pub use framebuffer::UefiFramebufferWriter;
 pub use framebuffer::*;
