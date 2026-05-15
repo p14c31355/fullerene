@@ -116,6 +116,15 @@ impl crate::graphics::console::Console for UefiFramebufferWriter {
     }
 }
 
+impl UefiFramebufferWriter {
+    pub fn get_info(&self) -> &FramebufferInfo {
+        match self {
+            UefiFramebufferWriter::Uefi32(w) => &w.info,
+            UefiFramebufferWriter::Vga8(w) => &w.info,
+        }
+    }
+}
+
 impl crate::graphics::renderer::Renderer for UefiFramebufferWriter {
     fn draw_pixel(&mut self, x: i32, y: i32, color: u32) {
         match self {
@@ -377,7 +386,7 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
         unsafe {
             let fb_ptr = self.info.address as *mut u8;
             let pixel_ptr = fb_ptr.add(offset) as *mut T;
-            *pixel_ptr = T::from_u32(color);
+            core::ptr::write_volatile(pixel_ptr, T::from_u32(color));
         }
     }
 
@@ -440,7 +449,9 @@ pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u3
     let bytes_per_pixel = core::mem::size_of::<T>() as u32;
     let elements_per_line = (stride / bytes_per_pixel) as usize;
     let count = elements_per_line * height as usize;
-    unsafe { core::slice::from_raw_parts_mut(fb_ptr, count).fill(bg_color) };
+    for i in 0..count {
+        core::ptr::write_volatile(fb_ptr.add(i), bg_color);
+    }
 }
 
 /// Generic framebuffer buffer scroll up operation
@@ -449,17 +460,20 @@ pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u
     let shift_bytes = 8u64 * stride as u64;
     let fb_ptr = address as *mut u8;
     let total_bytes = height as u64 * stride as u64;
-    unsafe {
-        core::ptr::copy(
-            fb_ptr.add(shift_bytes as usize),
-            fb_ptr,
-            (total_bytes - shift_bytes) as usize,
-        );
+    
+    // Use volatile copy for MMIO
+    for i in 0..(total_bytes - shift_bytes) {
+        let src = fb_ptr.add(shift_bytes as usize + i as usize);
+        let dst = fb_ptr.add(i as usize);
+        core::ptr::write_volatile(dst, core::ptr::read_volatile(src));
     }
+
     // Clear last 8 lines
     let clear_offset = ((height - 8) as u32 * stride) as usize;
     let clear_ptr = (address + clear_offset as u64) as *mut T;
     let elements_per_line = (stride / bytes_per_pixel) as usize;
     let clear_count = 8 * elements_per_line;
-    unsafe { core::slice::from_raw_parts_mut(clear_ptr, clear_count).fill(bg_color) };
+    for i in 0..clear_count {
+        core::ptr::write_volatile(clear_ptr.add(i), bg_color);
+    }
 }

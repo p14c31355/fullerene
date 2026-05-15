@@ -92,3 +92,40 @@ pub use text::{Color, ColorCode, ScreenChar, TextBufferOperations};
 pub use desktop::*;
 pub use framebuffer::UefiFramebufferWriter;
 pub use framebuffer::*;
+
+/// Result of the graphics drawing test
+#[derive(Debug, PartialEq)]
+pub enum DrawingTestResult {
+    Pass,
+    Fail(&'static str),
+}
+
+/// Verifies if the framebuffer contains the expected colors at specific locations.
+/// This is used to diagnose rendering issues via serial output.
+pub fn verify_drawing_test(config: &crate::graphics::color::FramebufferInfo) -> DrawingTestResult {
+    // The address in config is already the virtual address
+    let fb_virt = config.address;
+    let stride = config.stride as usize;
+
+    // Use a unique test color to verify direct memory access
+    let test_color: u32 = 0xDEADBEEF;
+    let test_x = 0;
+    let test_y = 0;
+
+    unsafe {
+        let fb_ptr = fb_virt as *mut u32;
+        
+        // 1. Write a unique color to the very first pixel
+        core::ptr::write_volatile(fb_ptr, test_color);
+        
+        // 2. Immediately read it back
+        let pixel = core::ptr::read_volatile(fb_ptr);
+        
+        if pixel != test_color {
+            crate::debug_log!("DRAW_TEST FAIL: Wrote {:#x}, Read {:#x} at (0,0)\n", test_color, pixel);
+            return DrawingTestResult::Fail("Memory write/read mismatch (mapping issue)");
+        }
+    }
+
+    DrawingTestResult::Pass
+}

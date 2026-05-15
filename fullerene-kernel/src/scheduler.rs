@@ -285,6 +285,39 @@ pub fn scheduler_loop() -> ! {
     // Draw the desktop immediately
     draw_desktop_on_available_framebuffer();
 
+    // Debug: Print renderer address to verify mapping
+    {
+        let renderer_lock = crate::graphics::PRIMARY_RENDERER.lock();
+        if let Some(ref renderer) = *renderer_lock {
+            let info = renderer.get_info();
+            petroleum::serial::serial_log(format_args!(
+                "DEBUG: Renderer FB Virt Addr: {:#x}, Phys Addr: {:#x}, Stride: {}\n", 
+                info.address, 
+                info.address - petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64,
+                info.stride
+            ));
+        }
+    }
+
+    // Verify the drawing test to diagnose rendering issues
+    let test_result = {
+        let renderer_lock = crate::graphics::PRIMARY_RENDERER.lock();
+        if let Some(ref renderer) = *renderer_lock {
+            petroleum::graphics::verify_drawing_test(renderer.get_info())
+        } else {
+            petroleum::graphics::DrawingTestResult::Fail("PRIMARY_RENDERER is None")
+        }
+    };
+
+    match test_result {
+        petroleum::graphics::DrawingTestResult::Pass => {
+            petroleum::serial::serial_log(format_args!("=== GRAPHICS_TEST PASS ===\n"));
+        }
+        petroleum::graphics::DrawingTestResult::Fail(msg) => {
+            petroleum::serial::serial_log(format_args!("=== GRAPHICS_TEST FAIL: {} ===\n", msg));
+        }
+    }
+
     loop {
         SYSTEM_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         SCHEDULER_ITERATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
