@@ -125,28 +125,24 @@ pub fn detect_standard_modes(
 }
 
 /// Test a QEMU framebuffer configuration for accessibility
+///
+/// SAFETY WARNING: This function MUST NOT directly access physical addresses via identity mapping,
+/// because after UEFI exit_boot_services, identity-mapped addresses may point to DRAM (not MMIO).
+/// Writing to DRAM corrupts kernel code/data and causes triple faults.
+/// Instead of probing, we trust the known QEMU framebuffer addresses.
 pub fn test_qemu_framebuffer_access(address: u64) -> bool {
     if address == 0 {
         return false;
     }
-
-    let test_ptr = address as *mut u32;
-    if test_ptr.is_null() {
-        return false;
-    }
-
-    unsafe {
-        let original_value = test_ptr.read_volatile();
-        test_ptr.write_volatile(0x12345678);
-        let readback_value = test_ptr.read_volatile();
-
-        if readback_value == 0x12345678 {
-            test_ptr.write_volatile(original_value);
-            true
-        } else {
-            false
-        }
-    }
+    // Skip unsafe direct memory access. Just trust the address is valid.
+    // QEMU std-vga (q35) typically places framebuffer at 0xFC000000 or 0xFD000000.
+    // If the mapping is wrong, map_page_4k_l1 in map_mmio/init_graphics will fail,
+    // or put_pixel will cause a page fault with clear diagnostics.
+    crate::serial::_print(format_args!(
+        "QEMU framebuffer address {:#x} accepted (direct probe skipped)\n",
+        address
+    ));
+    true
 }
 
 /// Generic helper to test QEMU framebuffer configurations

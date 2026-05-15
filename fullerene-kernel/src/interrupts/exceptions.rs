@@ -13,8 +13,6 @@
 //! 4. **Kernel-mode safe panic** - If kernel code causes an exception, we log
 //!    the fault and halt, avoiding triple faults.
 
-use alloc::boxed::Box;
-use alloc::string::ToString;
 use core::arch::asm;
 use core::fmt::Write;
 use x86_64::registers::control::Cr2;
@@ -215,8 +213,8 @@ macro_rules! define_err_handler {
                     exc_name, error_code, frame.instruction_pointer.as_u64());
                 terminate_and_recover(&mut frame, exc_name);
             } else {
-                let extra = alloc::format!("error_code={:#x}", error_code);
-                kernel_fault_halt(&frame, exc_name, Box::leak(extra.into_boxed_str()));
+                raw_log!("  Error code: {:#x}\n", error_code);
+                kernel_fault_halt(&frame, exc_name, "kernel exc");
             }
         }
     };
@@ -330,8 +328,8 @@ pub extern "x86-interrupt" fn page_fault_handler(
     );
 
     if !is_user {
-        let extra = alloc::format!("addr={:#x}", fault_addr.as_u64());
-        kernel_fault_halt(&frame, "Page Fault", Box::leak(extra.into_boxed_str()));
+        raw_log!("  Fault addr: {:#x}\n", fault_addr.as_u64());
+        kernel_fault_halt(&frame, "Page Fault", "kernel PF");
     } else {
         // User mode page fault - terminate the process
         if petroleum::common::memory::is_user_address(fault_addr) || is_present {

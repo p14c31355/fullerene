@@ -86,7 +86,7 @@ pub unsafe extern "C" fn efi_main_stage2(
         0x3FD,
         b"DEBUG: [uefi_main] Mapping MMIO regions before init_common\n"
     );
-    let _vga_virt_addr = crate::boot::uefi_init::UefiInitContext::map_mmio(physical_memory_offset);
+    let _vga_virt_addr = crate::boot::uefi_init::UefiInitContext::map_mmio();
     petroleum::write_serial_bytes!(
         0x3F8,
         0x3FD,

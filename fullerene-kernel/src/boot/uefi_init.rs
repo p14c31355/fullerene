@@ -91,7 +91,6 @@ impl UefiInitContext {
 
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Printing efi_main address\n");
         let mut buf = [0u8; 16];
-        // Note: efi_main is in uefi_entry.rs
         let len = petroleum::serial::format_hex_to_buffer(
             crate::boot::uefi_entry::efi_main as u64,
             &mut buf,
@@ -168,7 +167,6 @@ impl UefiInitContext {
         }
 
         // CRITICAL: Initialize ALLOCATOR as early as possible to avoid implicit allocation deadlocks
-        // We do this BEFORE any other complex initialization that might trigger alloc
         if !HEAP_INITIALIZED.load(core::sync::atomic::Ordering::SeqCst) {
             petroleum::write_serial_bytes!(
                 0x3F8,
@@ -177,13 +175,7 @@ impl UefiInitContext {
             );
 
             x86_64::instructions::interrupts::disable();
-            // We use a temporary fixed region if the actual heap isn't mapped yet,
-            // but for now we just ensure the lock is initialized and we don't deadlock.
-            // Actual heap mapping happens later, but the Mutex itself must be usable.
-            // To avoid deadlock, we just ensure we are the first to lock it.
             let _allocator = petroleum::page_table::ALLOCATOR.lock();
-            // We can't call .init() yet because heap_start isn't calculated,
-            // but the lock is now acquired and released.
             petroleum::write_serial_bytes!(
                 0x3F8,
                 0x3FD,
@@ -205,7 +197,7 @@ impl UefiInitContext {
             0x3FD,
             b"DEBUG: [CircularDep] Using BootFrameAllocator for temp mapper\n"
         );
-        let mut boot_allocator = BootFrameAllocator::new(0x2000000 / 4096); // Start at 32MB
+        let mut boot_allocator = BootFrameAllocator::new(0x2000000 / 4096);
         let map_addr = self.memory_map as u64;
         let _map_size = self.memory_map_size as u64;
         let _offset_val = self.physical_memory_offset.as_u64();
@@ -230,7 +222,6 @@ impl UefiInitContext {
             b"DEBUG: [CircularDep] Memory map mapped successfully via early_mappings\n"
         );
 
-        // Now we can safely call init_memory_map because the memory map is mapped to higher half
         debug_log_no_alloc!("DEBUG: Calling init_memory_map...");
         self.init_memory_map();
         debug_log_no_alloc!("DEBUG: init_memory_map returned");
@@ -269,12 +260,10 @@ impl UefiInitContext {
                 0x3FD,
                 b"DEBUG: memory_map is already in higher half, skipping re-mapping\n"
             );
-            // Use the already existing mapping
             let _map_virt = map_addr;
             let map_size = self.memory_map_size;
             let _map_pages = ((map_size as u64) + 4095) / 4096;
 
-            // We don't need to call mapper.map_to because it's already mapped by the bootloader
             petroleum::write_serial_bytes!(
                 0x3F8,
                 0x3FD,
@@ -417,14 +406,13 @@ impl UefiInitContext {
             let kernel_phys_start_aligned = kernel_phys_start_val & !0xFFF;
             let kernel_virt_start_aligned = kernel_virt_start & !0xFFF;
 
-            // Map 1GB kernel area using huge pages where possible to reduce boot time and memory overhead
             unsafe {
                 petroleum::page_table::raw::map_range_with_huge_pages(
                     &mut main_mapper,
                     allocator,
                     kernel_phys_start_aligned,
                     kernel_virt_start_aligned,
-                    256 * 1024, // 1GB / 4KB = 262144 pages
+                    256 * 1024,
                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
                     "kernel_area",
                 )
@@ -499,19 +487,12 @@ impl UefiInitContext {
                 b"DEBUG: Mapping TSS stacks using main_mapper\n"
             );
             unsafe {
-                // We must use the same page table as the kernel mapping.
-                // Since we can't easily pass main_mapper across blocks, we re-init it.
-                // BUT: petroleum::page_table::init must be modified to return the EXISTING
-                // page table if already initialized, or we must store the root address.
-                // For now, we use the same init call which we hope points to the same root
-                // if the implementation allows, or we'll need to refactor the mapper storage.
                 let mut mapper = petroleum::page_table::init::<_, fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator)>(
                     self.physical_memory_offset,
                     frame_allocator,
                     kernel_phys_start.as_u64(),
                     None,
                 );
-                // Map TSS stacks to higher half
                 let tss_virt = petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64 + tss_phys_addr.as_u64();
                 let _ = petroleum::page_table::raw::map_range_with_huge_pages(
                     &mut mapper,
@@ -529,27 +510,6 @@ impl UefiInitContext {
                 b"DEBUG: TSS stacks mapped to higher half\n"
             );
         }
-
-        // Temporarily skip page table copy test to bypass potential page faults during early boot
-        /*
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] Starting page table copy test...\n");
-        {
-            let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
-            let frame_allocator = frame_allocator_guard.as_mut().expect("Frame allocator not initialized");
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] Calling test_page_table_copy_switch\n");
-            let test_res = petroleum::page_table::test_page_table_copy_switch(
-                VirtAddr::zero(),
-                frame_allocator,
-                memory_map_ref,
-            );
-            if let Err(e) = test_res {
-                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] Page table copy test FAILED\n");
-                debug_log_no_alloc!("Page table copy test failed: ", e as usize);
-            } else {
-                petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] Page table copy test passed\n");
-            }
-        }
-        */
 
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] Setting kernel CR3...\n");
         let kernel_cr3 = x86_64::registers::control::Cr3::read();
@@ -671,8 +631,6 @@ impl UefiInitContext {
                 0x3FD,
                 b"DEBUG: [PHASE] petroleum::page_table::init returned\n"
             );
-            // Heap is already covered by the 1GB huge pages mapped in init(), so skip redundant mapping
-            // to avoid PageAlreadyMapped panics.
             petroleum::write_serial_bytes!(
                 0x3F8,
                 0x3FD,
@@ -686,8 +644,6 @@ impl UefiInitContext {
 
         use petroleum::page_table::{ALLOCATOR, HEAP_INITIALIZED};
 
-        // Use the start of the allocated heap region directly.
-        // TSS stacks are already allocated separately, so GDT_INIT_OVERHEAD is not needed here.
         let heap_start_for_allocator = self.virtual_heap_start;
         let heap_size_for_allocator = heap::HEAP_SIZE;
 
@@ -709,11 +665,6 @@ impl UefiInitContext {
                     0x3F8,
                     0x3FD,
                     b"DEBUG: [PHASE] ALLOCATOR lock acquired\n"
-                );
-                petroleum::write_serial_bytes!(
-                    0x3F8,
-                    0x3FD,
-                    b"DEBUG: [PHASE] Calling allocator.init\n"
                 );
                 allocator.init(
                     heap_start_for_allocator.as_mut_ptr::<u8>(),
@@ -760,14 +711,12 @@ impl UefiInitContext {
         log::info!("Setting up kernel stack");
         self.heap_start_after_gdt = virtual_heap_start;
 
-        // Ensure stack is 16-byte aligned for x86_64 ABI
         assert!(
             virtual_heap_start.as_u64() % 16 == 0,
             "Kernel stack must be 16-byte aligned"
         );
 
         let stack_phys_start = self.heap_start_after_gdt.as_u64() - physical_memory_offset.as_u64();
-        // WIDER STACK MAPPING: Map 2MB instead of just KERNEL_STACK_SIZE to prevent #PF on stack growth
         let stack_pages = (2 * 1024 * 1024) / 4096;
 
         let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
@@ -832,17 +781,77 @@ impl UefiInitContext {
         }
     }
 
+    /// Map MMIO regions (APIC, IOAPIC, VGA text buffer, GOP framebuffer).
+    ///
+    /// CRITICAL: Reads physical_memory_offset from the global static
+    /// (petroleum::common::memory::get_physical_memory_offset) rather than accepting
+    /// a function parameter. During UMM::init, the frame allocator is transferred
+    /// from heap::FRAME_ALLOCATOR to constants::FRAME_ALLOCATOR, which involves
+    /// OffsetPageTable::new calls that may corrupt stack values. The global
+    /// PHYSICAL_MEMORY_OFFSET is set before any of these calls and remains correct.
     #[cfg(target_os = "uefi")]
-    pub fn map_mmio(physical_memory_offset: VirtAddr) -> usize {
-        // NOTE: This function is called BEFORE init_common, so log::info!() may not
-        // produce output. Use write_serial_bytes! / serial_log for visible debug output.
+    pub fn map_mmio() -> usize {
+        // Map standard MMIO regions
+        let vga_virt_addr = map_standard_mmio_regions();
+
+        // Map GOP Framebuffer if available
+        if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|m| m.lock().clone()) {
+            let fb_phys = config.address;
+            let fb_virt = fb_phys + petroleum::common::memory::get_physical_memory_offset() as u64;
+            let fb_size = (config.width as u64 * config.height as u64 * config.bpp as u64) / 8;
+            let fb_pages = (fb_size + 4095) / 4096;
+
+            // Use NO_CACHE (Uncacheable) for the framebuffer to match MTRR settings
+            // set by UEFI firmware for PCI MMIO regions. MTRR/PAT type mismatch would
+            // cause #GP on access.
+            let fb_flags = PageTableFlags::PRESENT
+                | PageTableFlags::WRITABLE
+                | PageTableFlags::NO_EXECUTE
+                | PageTableFlags::NO_CACHE;
+
+            let frame_allocator = petroleum::page_table::constants::get_frame_allocator_mut();
+            let phys_offset = x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
+            let l4 = unsafe { petroleum::page_table::active_level_4_table(phys_offset) };
+
+            unsafe {
+                for i in 0..fb_pages {
+                    let v = x86_64::VirtAddr::new(fb_virt + i as u64 * 4096);
+                    let p = x86_64::PhysAddr::new(fb_phys + i as u64 * 4096);
+                    if let Err(e) = petroleum::page_table::kernel::init::map_page_4k_l1(
+                        l4, v, p, fb_flags, frame_allocator, phys_offset,
+                    ) {
+                        petroleum::debug_log!("Framebuffer page {} map failed: {:?}, skipping\n", i);
+                    }
+                }
+            }
+        }
+
+        // Flush TLB by reloading CR3
+        let cr3_val = x86_64::registers::control::Cr3::read();
+        unsafe {
+            x86_64::registers::control::Cr3::write(cr3_val.0, cr3_val.1);
+        }
+
+        vga_virt_addr
+    }
+
+    /// Map standard MMIO regions (APIC, IOAPIC, VGA text buffer).
+    #[cfg(target_os = "uefi")]
+    fn map_standard_mmio_regions() -> usize {
         petroleum::write_serial_bytes!(
             0x3F8,
             0x3FD,
             b"DEBUG: [map_mmio] Mapping MMIO regions for APIC and IOAPIC\n"
         );
 
-        // Force reset LOCAL_APIC_ADDRESS lock state to 0 to handle cases where .bss is not cleared
+        // CRITICAL: Read physical memory offset from the global static, NOT from a
+        // function parameter. The parameter may be corrupted by stack operations
+        // during UMM::init (which transfers the frame allocator and calls
+        // OffsetPageTable::new). The global static is always correct.
+        let phys_offset_val = petroleum::common::memory::get_physical_memory_offset() as u64;
+        let physical_memory_offset = x86_64::VirtAddr::new(phys_offset_val);
+
+        // Force reset LOCAL_APIC_ADDRESS lock state to 0
         unsafe {
             let lock_ptr = core::ptr::addr_of!(petroleum::LOCAL_APIC_ADDRESS) as *mut u32;
             core::ptr::write_volatile(lock_ptr, 0);
@@ -853,20 +862,13 @@ impl UefiInitContext {
             );
         }
 
-        // After UMM::init, the frame allocator has been transferred from heap::FRAME_ALLOCATOR
-        // to constants::FRAME_ALLOCATOR. Use the constants version here.
         let frame_allocator = petroleum::page_table::constants::get_frame_allocator_mut();
-
-        // Get the L4 table via CR3 (higher-half virtual address)
         let l4 = unsafe { petroleum::page_table::active_level_4_table(physical_memory_offset) };
 
-        // MMIO regions must be mapped with NO_CACHE (PCD bit) to prevent caching
-        // of memory-mapped device registers, which would cause undefined behavior.
         let mmio_flags = PageTableFlags::PRESENT
             | PageTableFlags::WRITABLE
             | PageTableFlags::NO_EXECUTE
             | PageTableFlags::NO_CACHE;
-        // Standard (non-MMIO) regions like VGA text buffer don't need NO_CACHE
         let std_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
 
         let regions = [
@@ -883,90 +885,18 @@ impl UefiInitContext {
                 vga_virt_addr = virt;
             }
 
-            petroleum::write_serial_bytes!(
-                0x3F8,
-                0x3FD,
-                b"DEBUG: [map_mmio] Mapping "
-            );
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, name.as_bytes());
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b": phys=");
-            let mut buf = [0u8; 16];
-            let len = petroleum::serial::format_hex_to_buffer(phys, &mut buf, 16);
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b" virt=");
-            let len = petroleum::serial::format_hex_to_buffer(virt, &mut buf, 16);
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b" pages=");
-            let mut pb = [0u8; 8];
-            let plen = petroleum::serial::format_hex_to_buffer(pages, &mut pb, 8);
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, &pb[..plen]);
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-
             unsafe {
-                // Use map_page_4k_l1 which handles HUGE_PAGE splitting automatically.
-                // This avoids the panic from x86_64 crate's MappedPageTable when trying
-                // to map into a region already covered by a 2MB huge page.
                 for i in 0..pages {
                     let v = x86_64::VirtAddr::new(virt + i * 4096);
                     let p = x86_64::PhysAddr::new(phys + i * 4096);
-                    petroleum::page_table::kernel::init::map_page_4k_l1(
+                    if let Err(e) = petroleum::page_table::kernel::init::map_page_4k_l1(
                         l4, v, p, flags, frame_allocator, physical_memory_offset,
-                    ).expect("Failed to map MMIO page");
+                    ) {
+                        petroleum::debug_log!("MMIO page {} map failed: {:?}, skipping\n", i);
+                    }
                 }
             }
         }
-
-        // Map the GOP Framebuffer if available
-        // Use NO_CACHE (Uncacheable) for the framebuffer to match MTRR settings
-        // set by UEFI firmware for PCI MMIO regions. A cache type mismatch between
-        // MTRR (UC) and page table (WB) would cause #GP on access.
-        let fb_flags = PageTableFlags::PRESENT
-            | PageTableFlags::WRITABLE
-            | PageTableFlags::NO_EXECUTE
-            | PageTableFlags::NO_CACHE;
-        if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|m| m.lock().clone()) {
-            let fb_phys = config.address;
-            let fb_virt = fb_phys + physical_memory_offset.as_u64();
-            let fb_size = (config.width as u64 * config.height as u64 * config.bpp as u64) / 8;
-            let fb_pages = (fb_size + 4095) / 4096;
-
-            petroleum::write_serial_bytes!(
-                0x3F8,
-                0x3FD,
-                b"DEBUG: [map_mmio] Mapping GOP Framebuffer: phys="
-            );
-            let mut buf = [0u8; 16];
-            let len = petroleum::serial::format_hex_to_buffer(fb_phys, &mut buf, 16);
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b" size=");
-            let mut sb = [0u8; 16];
-            let slen = petroleum::serial::format_hex_to_buffer(fb_size, &mut sb, 16);
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, &sb[..slen]);
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b" pages=");
-            let mut pa = [0u8; 8];
-            let palen = petroleum::serial::format_hex_to_buffer(fb_pages, &mut pa, 8);
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, &pa[..palen]);
-            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-
-            unsafe {
-                for i in 0..fb_pages {
-                    let v = x86_64::VirtAddr::new(fb_virt + i * 4096);
-                    let p = x86_64::PhysAddr::new(fb_phys + i * 4096);
-                    petroleum::page_table::kernel::init::map_page_4k_l1(
-                        l4, v, p, fb_flags, frame_allocator, physical_memory_offset,
-                    ).expect("Failed to map framebuffer page");
-                }
-            }
-        }
-
-        // Flush TLB by reloading CR3 (more reliable than invlpg in QEMU)
-        let cr3_val = x86_64::registers::control::Cr3::read();
-        unsafe {
-            x86_64::registers::control::Cr3::write(cr3_val.0, cr3_val.1);
-        }
-
-        let lapic_virt_addr = 0xfee00000 + physical_memory_offset.as_u64();
-        *petroleum::LOCAL_APIC_ADDRESS.lock() = petroleum::LocalApicAddress(lapic_virt_addr as *mut u32);
 
         vga_virt_addr as usize
     }
@@ -975,8 +905,6 @@ impl UefiInitContext {
     fn init_memory_map(&self) {
         debug_log_no_alloc!("!!! ENTERING init_memory_map !!!");
 
-        // CRITICAL: Force reset Mutex lock state to 0.
-        // The log showed lock_val = 0xafafafaf, indicating .bss might not be cleared.
         unsafe {
             let mutex_ptr = core::ptr::addr_of!(crate::heap::MEMORY_MAP) as *mut u32;
             core::ptr::write_volatile(mutex_ptr, 0);
@@ -996,11 +924,6 @@ impl UefiInitContext {
         debug_log_no_alloc!("Using descriptor size: ");
         debug_log_no_alloc!(descriptor_size);
 
-        // Calculate actual descriptor count from the raw EFI memory map size.
-        // The bootloader appends a framebuffer config after the descriptors,
-        // so self.memory_map_size includes this extra data.
-        // We calculate the actual number of descriptors by rounding DOWN to the
-        // nearest multiple of descriptor_size.
         let raw_map_size = self.memory_map_size;
         let actual_descriptor_bytes = (raw_map_size / descriptor_size) * descriptor_size;
         let max_descriptors = actual_descriptor_bytes / descriptor_size;
