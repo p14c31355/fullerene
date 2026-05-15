@@ -1,3 +1,4 @@
+#![allow(static_mut_refs)]
 use crate::MEMORY_MAP;
 use crate::heap;
 use core::ffi::c_void;
@@ -92,7 +93,7 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Printing efi_main address\n");
         let mut buf = [0u8; 16];
         let len = petroleum::serial::format_hex_to_buffer(
-            crate::boot.uefi_entry.efi_main as u64,
+            crate::boot::uefi_entry::efi_main as u64,
             &mut buf,
             16,
         );
@@ -127,7 +128,7 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, &map_buf[..map_len]);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
-        let kernel_virt_addr = crate::boot.uefi_entry.efi_main as u64;
+        let kernel_virt_addr = crate::boot::uefi_entry::efi_main as u64;
         let kernel_phys_addr = kernel_virt_addr
             .wrapping_sub(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64);
 
@@ -360,6 +361,14 @@ impl UefiInitContext {
             machine_check: VirtAddr::new(base + sz * 7),
         };
         crate::gdt::init_with_stacks(tss_stacks);
+        // Build and store the GDT
+        let tss = unsafe { crate::gdt::TSS.as_mut().expect("TSS should be initialized") };
+        let (gdt, code_selector, data_selector, tss_selector, user_data_selector, user_code_selector) = unsafe {
+            crate::gdt::build_gdt(tss)
+        };
+        unsafe {
+            crate::gdt::store_gdt(gdt, code_selector, data_selector, tss_selector, user_data_selector, user_code_selector);
+        };
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: GDT initialized with TSS stacks\n");
 
         petroleum::write_serial_bytes!(
@@ -802,16 +811,12 @@ impl UefiInitContext {
         let phys_offset_val = petroleum::common::memory::get_physical_memory_offset() as u64;
         let physical_memory_offset = x86_64::VirtAddr::new(phys_offset_val);
 
-        // Force reset LOCAL_APIC_ADDRESS lock state to 0
+        // Explicitly initialize LOCAL_APIC_ADDRESS with the virtual address of the Local APIC.
         unsafe {
-            let lock_ptr = core::ptr::addr_of!(petroleum::LOCAL_APIC_ADDRESS) as *mut u32;
-            core::ptr::write_volatile(lock_ptr, 0);
-            petroleum::write_serial_bytes(
-                0x3F8,
-                0x3FD,
-                b"DEBUG: [map_mmio] LOCAL_APIC_ADDRESS lock reset to 0\n",
-            );
+            petroleum::common::utils::reset_mutex_lock(&petroleum::LOCAL_APIC_ADDRESS);
         }
+        let lapic_virt = 0xfee00000u64 + physical_memory_offset.as_u64();
+        *petroleum::LOCAL_APIC_ADDRESS.lock() = petroleum::LocalApicAddress(lapic_virt as *mut u32);
 
         let frame_allocator = petroleum::page_table::constants::get_frame_allocator_mut();
         let l4 = unsafe { petroleum::page_table::active_level_4_table(physical_memory_offset) };
@@ -843,7 +848,7 @@ impl UefiInitContext {
                     if let Err(e) = petroleum::page_table::kernel::init::map_page_4k_l1(
                         l4, v, p, flags, frame_allocator, physical_memory_offset,
                     ) {
-                        petroleum::debug_log!("MMIO page {} map failed: {:?}, skipping\n", i);
+                        petroleum::debug_log!("MMIO page {} map failed: {:?}, skipping\n", i, e);
                     }
                 }
             }
@@ -863,7 +868,7 @@ impl UefiInitContext {
     #[cfg(target_os = "uefi")]
     pub fn map_mmio() -> usize {
         // Map standard MMIO regions
-        let vga_virt_addr = map_standard_mmio_regions();
+        let vga_virt_addr = Self::map_standard_mmio_regions();
 
         // Map GOP Framebuffer if available
         if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|m| m.lock().clone()) {
@@ -891,7 +896,7 @@ impl UefiInitContext {
                     if let Err(e) = petroleum::page_table::kernel::init::map_page_4k_l1(
                         l4, v, p, fb_flags, frame_allocator, phys_offset,
                     ) {
-                        petroleum::debug_log!("Framebuffer page {} map failed: {:?}, skipping\n", i);
+                        petroleum::debug_log!("Framebuffer page {} map failed: {:?}, skipping\n", i, e);
                     }
                 }
             }

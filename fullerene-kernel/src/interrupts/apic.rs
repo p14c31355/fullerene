@@ -27,8 +27,14 @@ impl ApicRaw {
     /// This is safe because the base_addr is validated during initialization
     /// and the offset is a known APIC register offset.
     fn read(&self, offset: u32) -> u32 {
-        let addr = (self.base_addr + offset as u64) as *const u32;
-        unsafe { addr.read_volatile() }
+        let addr = (self.base_addr + offset as u64) as *const u8;
+        unsafe {
+            let mut buf = [0u8; 4];
+            for i in 0..4 {
+                buf[i] = core::ptr::read_volatile(addr.add(i));
+            }
+            u32::from_le_bytes(buf)
+        }
     }
 
     /// Write to APIC register
@@ -37,8 +43,13 @@ impl ApicRaw {
     /// This is safe because the base_addr is validated during initialization
     /// and the offset is a known APIC register offset.
     fn write(&self, offset: u32, value: u32) {
-        let addr = (self.base_addr + offset as u64) as *mut u32;
-        unsafe { addr.write_volatile(value) }
+        let addr = (self.base_addr + offset as u64) as *mut u8;
+        let bytes = value.to_le_bytes();
+        unsafe {
+            for i in 0..4 {
+                core::ptr::write_volatile(addr.add(i), bytes[i]);
+            }
+        }
     }
 }
 
@@ -78,7 +89,8 @@ pub fn init_apic() {
     // Force reset APIC lock state to 0 to handle cases where .bss is not cleared
     unsafe {
         reset_mutex_lock(&APIC);
-        petroleum::serial::serial_log(format_args!("DEBUG: [init_apic] APIC lock reset to 0\n"));
+        reset_mutex_lock(&petroleum::LOCAL_APIC_ADDRESS);
+        petroleum::serial::serial_log(format_args!("DEBUG: [init_apic] APIC and LOCAL_APIC_ADDRESS locks reset to 0\n"));
     }
 
     disable_legacy_pic();

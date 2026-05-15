@@ -114,8 +114,8 @@ impl KernelTransition for UefiToHigherHalf {
             logic_fn: landing_zone_logic as usize,
         };
         let lz: unsafe extern "sysv64" fn(*const TransitionFrame) -> ! =
-            core::mem::transmute(self.landing_zone);
-        lz(&frame)
+            unsafe { core::mem::transmute(self.landing_zone) };
+        unsafe { lz(&frame) }
     }
 }
 

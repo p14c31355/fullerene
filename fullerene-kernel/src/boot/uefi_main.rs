@@ -183,7 +183,7 @@ fn kernel_main_higher_half(
     // access the framebuffer. No need to call map_mmio again here.
 
     // 1. Initialize APIC (IDT, exceptions, syscalls already set up in init_common)
-    crate::interrupts::init_apic();
+    crate::interrupts::apic::init_apic();
     log::info!("APIC initialized");
 
     // 3. Initialize keyboard input driver

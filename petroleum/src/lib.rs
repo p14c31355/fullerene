@@ -289,9 +289,7 @@ pub unsafe fn write_serial_bytes(port: u16, status_port: u16, bytes: &[u8]) {
 #[macro_export]
 macro_rules! write_serial_bytes {
     ($port:expr, $status:expr, $bytes:expr) => {
-        unsafe {
-            $crate::write_serial_bytes($port, $status, $bytes);
-        }
+        unsafe { $crate::write_serial_bytes($port, $status, $bytes); }
     };
 }
 

@@ -103,17 +103,19 @@ pub unsafe fn map_range_4kiB<A: x86_64::structures::paging::FrameAllocator<x86_6
         let v_addr = virt + i * 4096;
         let page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::VirtAddr::new(v_addr));
         let frame = x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(p_addr));
-        match mapper.map_to(page, frame, flags, allocator) {
-            Ok(flush) => flush.flush(),
-            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_frame)) => {
-                x86_64::instructions::tlb::flush(page.start_address());
-            }
-            Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {}
-            Err(e) => {
-                if behavior == "panic" {
-                    panic!("Mapping error: {:?}", e);
+        unsafe {
+            match mapper.map_to(page, frame, flags, allocator) {
+                Ok(flush) => flush.flush(),
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_frame)) => {
+                    x86_64::instructions::tlb::flush(page.start_address());
                 }
-                return Err(e);
+                Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {}
+                Err(e) => {
+                    if behavior == "panic" {
+                        panic!("Mapping error: {:?}", e);
+                    }
+                    return Err(e);
+                }
             }
         }
     }
@@ -133,7 +135,9 @@ pub unsafe fn map_to_higher_half_with_log(
     flags: x86_64::structures::paging::PageTableFlags,
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<x86_64::structures::paging::Size4KiB>> {
     let virt_start = phys_offset.as_u64() + phys_start;
-    map_range_4kiB(mapper, frame_allocator, phys_start, virt_start, num_pages, flags, "panic")?;
+    unsafe {
+        map_range_4kiB(mapper, frame_allocator, phys_start, virt_start, num_pages, flags, "panic")?;
+    }
     Ok(())
 }
 
@@ -148,7 +152,9 @@ pub unsafe fn map_identity_range(
     num_pages: u64,
     flags: x86_64::structures::paging::PageTableFlags,
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<x86_64::structures::paging::Size4KiB>> {
-    map_range_4kiB(mapper, frame_allocator, phys_start, phys_start, num_pages, flags, "panic")
+    unsafe {
+        map_range_4kiB(mapper, frame_allocator, phys_start, phys_start, num_pages, flags, "panic")
+    }
 }
 
 // ── Backward-compat function aliases ─────────────────────────────────
@@ -160,7 +166,7 @@ pub unsafe fn map_identity_range_checked(
     phys_start: u64, num_pages: u64,
     flags: x86_64::structures::paging::PageTableFlags,
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<x86_64::structures::paging::Size4KiB>> {
-    map_identity_range(mapper, frame_allocator, phys_start, num_pages, flags)
+    unsafe { map_identity_range(mapper, frame_allocator, phys_start, num_pages, flags) }
 }
 
 #[deprecated(note = "use map_range_4kiB")]
@@ -171,7 +177,7 @@ pub unsafe fn map_range_with_log_macro(
     flags: x86_64::structures::paging::PageTableFlags,
     behavior: &str,
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<x86_64::structures::paging::Size4KiB>> {
-    map_range_4kiB(mapper, allocator, phys, virt, pages, flags, behavior)
+    unsafe { map_range_4kiB(mapper, allocator, phys, virt, pages, flags, behavior) }
 }
 
 #[deprecated(note = "use map_to_higher_half_with_log")]
@@ -182,7 +188,7 @@ pub unsafe fn map_to_higher_half_with_log_macro(
     phys_start: u64, num_pages: u64,
     flags: x86_64::structures::paging::PageTableFlags,
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<x86_64::structures::paging::Size4KiB>> {
-    map_to_higher_half_with_log(mapper, frame_allocator, phys_offset, phys_start, num_pages, flags)
+    unsafe { map_to_higher_half_with_log(mapper, frame_allocator, phys_offset, phys_start, num_pages, flags) }
 }
 
 #[deprecated(note = "use map_range_4kiB")]
@@ -192,7 +198,7 @@ pub unsafe fn map_page_range(
     phys: u64, virt: u64, pages: u64,
     flags: x86_64::structures::paging::PageTableFlags,
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<x86_64::structures::paging::Size4KiB>> {
-    map_range_4kiB(mapper, allocator, phys, virt, pages, flags, "continue")
+    unsafe { map_range_4kiB(mapper, allocator, phys, virt, pages, flags, "continue") }
 }
 
 #[deprecated(note = "use kernel::mapper::unmap_page")]
@@ -216,7 +222,9 @@ pub unsafe fn map_range_with_huge_pages(
     flags: x86_64::structures::paging::PageTableFlags,
     behavior: &str,
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<x86_64::structures::paging::Size4KiB>> {
-    crate::page_table::raw::huge::map_range_with_huge_pages(mapper, allocator, phys, virt, pages, flags, behavior)
+    unsafe {
+        crate::page_table::raw::huge::map_range_with_huge_pages(mapper, allocator, phys, virt, pages, flags, behavior)
+    }
 }
 
 // ── Macros that were previously in this file ──────────────────────────

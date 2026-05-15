@@ -6,7 +6,7 @@
 use crate::process;
 use core::ptr;
 use goblin::elf::program_header::{PF_W, PF_X, PT_LOAD};
-use petroleum::page_table::PageTableHelper;
+use petroleum::page_table::types::PageTableHelper;
 use petroleum::page_table::process::ProcessPageTable;
 use x86_64::structures::paging::FrameAllocator;
 
@@ -72,8 +72,8 @@ pub fn load_program(
                         let page_vaddr = x86_64::VirtAddr::new(
                             petroleum::common::utils::calculate_offset_address(vaddr, page_idx),
                         );
-                        if process_page_table
-                            .translate_address(page_vaddr.as_u64() as usize)
+                        let ppt: &ProcessPageTable = &**process_page_table;
+                        if PageTableHelper::translate_address(ppt, page_vaddr.as_u64() as usize)
                             .is_ok()
                         {
                             return Err(LoadError::AddressAlreadyMapped);

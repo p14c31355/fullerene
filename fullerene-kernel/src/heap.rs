@@ -8,10 +8,9 @@ pub use petroleum::page_table::BootInfoFrameAllocator;
 pub const HEAP_SIZE: usize = 1024 * 1024; // 1MB heap
 pub const KERNEL_STACK_SIZE: usize = 4096 * 64; // 256KB
 
-use petroleum::common::EfiMemoryType;
 use petroleum::page_table::MemoryDescriptorValidator;
 use petroleum::page_table::memory_map::{EfiMemoryDescriptor, MemoryMapDescriptor};
-use spin::{Mutex, Once};
+use spin::Mutex;
 
 /// Global frame allocator
 pub(crate) static FRAME_ALLOCATOR: Mutex<Option<BootInfoFrameAllocator>> = Mutex::new(None);

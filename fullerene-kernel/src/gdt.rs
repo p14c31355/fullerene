@@ -25,7 +25,7 @@ pub const GDT_TSS_STACK_COUNT: usize = 7;
 /// Total overhead for GDT initialization in bytes.
 pub const GDT_INIT_OVERHEAD: usize = GDT_TSS_STACK_COUNT * GDT_TSS_STACK_SIZE;
 
-static mut TSS: Option<TaskStateSegment> = None;
+pub static mut TSS: Option<TaskStateSegment> = None;
 static mut GDT: Option<GlobalDescriptorTable> = None;
 static mut CODE_SELECTOR: Option<SegmentSelector> = None;
 static mut KERNEL_DATA_SELECTOR: Option<SegmentSelector> = None;
@@ -87,18 +87,22 @@ pub struct TssStacks {
 /// Build GDT with the given TSS and return (code, data, tss, user_data, user_code) selectors.
 ///
 /// The TSS must be `'static` because the GDT holds a reference to it.
-unsafe fn build_gdt(tss: &'static TaskStateSegment) -> (GlobalDescriptorTable, SegmentSelector, SegmentSelector, SegmentSelector, SegmentSelector, SegmentSelector) {
+/// We use `transmute` to convert the mutable reference to a static reference,
+/// since the TSS is stored in a static mutable variable and will live for the
+/// entire kernel lifetime.
+pub unsafe fn build_gdt(tss: &mut TaskStateSegment) -> (GlobalDescriptorTable, SegmentSelector, SegmentSelector, SegmentSelector, SegmentSelector, SegmentSelector) {
     let mut gdt = GlobalDescriptorTable::new();
     let code_selector = gdt.append(Descriptor::kernel_code_segment());
     let data_selector = gdt.append(Descriptor::kernel_data_segment());
     let user_data_selector = gdt.append(Descriptor::user_data_segment());
     let user_code_selector = gdt.append(Descriptor::user_code_segment());
-    let tss_selector = gdt.append(Descriptor::tss_segment(tss));
+    let tss_static: &'static TaskStateSegment = core::mem::transmute(tss);
+    let tss_selector = gdt.append(Descriptor::tss_segment(tss_static));
     (gdt, code_selector, data_selector, tss_selector, user_data_selector, user_code_selector)
 }
 
 /// Store built GDT and selectors into global state.
-unsafe fn store_gdt(gdt: GlobalDescriptorTable, code: SegmentSelector, data: SegmentSelector, tss: SegmentSelector, udata: SegmentSelector, ucode: SegmentSelector) {
+pub unsafe fn store_gdt(gdt: GlobalDescriptorTable, code: SegmentSelector, data: SegmentSelector, tss: SegmentSelector, udata: SegmentSelector, ucode: SegmentSelector) {
     unsafe {
         CODE_SELECTOR = Some(code);
         KERNEL_DATA_SELECTOR = Some(data);
