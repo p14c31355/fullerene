@@ -7,4 +7,3 @@ pub trait Console: fmt::Write {
     fn set_cursor(&mut self, x: usize, y: usize);
     fn scroll(&mut self);
 }
-

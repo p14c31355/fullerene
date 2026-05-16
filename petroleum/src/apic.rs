@@ -1,7 +1,7 @@
 //!
- //!
- //! Provides functions for configuring LAPIC and I/O APIC during UEFI boot. 
- 
+//!
+//! Provides functions for configuring LAPIC and I/O APIC during UEFI boot.
+
 use crate::bit_ops;
 use crate::volatile_ops;
 use core::sync::atomic::{AtomicBool, Ordering};

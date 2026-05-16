@@ -16,7 +16,7 @@ pub const GP_FAULT_IST_INDEX: u16 = 3;
 pub const PAGE_FAULT_IST_INDEX: u16 = 4;
 pub const NMI_IST_INDEX: u16 = 5;
 pub const MACHINE_CHECK_IST_INDEX: u16 = 6;
-pub const GDT_TSS_STACK_SIZE: usize = 4096 * 5;
+pub const GDT_TSS_STACK_SIZE: usize = 4096;
 pub const GDT_TSS_STACK_COUNT: usize = 7;
 pub const GDT_INIT_OVERHEAD: usize = GDT_TSS_STACK_COUNT * GDT_TSS_STACK_SIZE;
 
@@ -113,7 +113,9 @@ pub fn build_gdt(stacks: TssStacks) -> Gdt {
     // and the Gdt is immediately returned (moved into the caller). The TSS descriptor
     // pointer is only used during GDT construction and the Gdt is not moved after init.
     let tss_ptr = core::ptr::addr_of!(gdt_struct.tss);
-    gdt_struct.tss_selector = gdt_struct.gdt.append(Descriptor::tss_segment(unsafe { &*tss_ptr }));
+    gdt_struct.tss_selector = gdt_struct
+        .gdt
+        .append(Descriptor::tss_segment(unsafe { &*tss_ptr }));
 
     gdt_struct
 }

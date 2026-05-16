@@ -339,10 +339,8 @@ pub mod graphics_alternatives {
                 None
             }
             (0x1234, 0x1111) | (0x1234, 0x1112) => {
-                // QEMU std VGA / Bochs VBE  
-                _print(format_args!(
-                    "[GOP-ALT] Detected QEMU std VGA device\n"
-                ));
+                // QEMU std VGA / Bochs VBE
+                _print(format_args!("[GOP-ALT] Detected QEMU std VGA device\n"));
                 probe_std_vga_framebuffer(device, bs)
             }
             _ => {
@@ -833,7 +831,8 @@ pub mod graphics_alternatives {
                     address: fb_addr,
                     width,
                     height,
-                    pixel_format: crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                    pixel_format:
+                        crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                     bpp,
                     stride,
                 });

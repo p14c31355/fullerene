@@ -113,8 +113,8 @@ impl Process {
             state: ProcessState::Ready,
             context: ProcessContext::default(),
             page_table_phys_addr: PhysAddr::new(0), // Will be set when allocated
-            kernel_stack: VirtAddr::new(0), // Will be set when allocated
-            user_stack: VirtAddr::new(0),   // Will be set when allocated
+            kernel_stack: VirtAddr::new(0),         // Will be set when allocated
+            user_stack: VirtAddr::new(0),           // Will be set when allocated
             entry_point,
             is_user,
             exit_code: None,
@@ -169,7 +169,9 @@ impl ProcessManager {
         if let Some(pos) = processes.iter().position(|(id, _)| *id == pid) {
             let _ = processes.swap_remove(pos);
         }
-        processes.push((pid, process)).map_err(|_| SystemError::TooManyProcesses)
+        processes
+            .push((pid, process))
+            .map_err(|_| SystemError::TooManyProcesses)
     }
 
     /// Performs an operation on a process found by PID
@@ -178,7 +180,10 @@ impl ProcessManager {
         F: FnOnce(&mut Process) -> R,
     {
         let mut processes = self.processes.lock();
-        processes.iter_mut().find(|(id, _)| *id == pid).map(|(_, p)| f(p))
+        processes
+            .iter_mut()
+            .find(|(id, _)| *id == pid)
+            .map(|(_, p)| f(p))
     }
 
     /// Performs an operation on the entire process list
@@ -231,7 +236,9 @@ pub fn init() {
     let mut idle_process = Process::new("idle", idle_addr, false);
     idle_process.state = ProcessState::Running;
 
-    PROCESS_MANAGER.add(idle_process).expect("Failed to add idle process");
+    PROCESS_MANAGER
+        .add(idle_process)
+        .expect("Failed to add idle process");
     CURRENT_PROCESS.store(1, Ordering::SeqCst);
 
     mem_debug!("Process: init done\n");
@@ -341,10 +348,7 @@ pub fn schedule_next() {
                 petroleum::scheduler_log!(
                     "Wrapped around, all processes blocked or completed check"
                 );
-                if let Some(idle_idx) = process_list
-                    .iter()
-                    .position(|(_, p)| p.name == "idle")
-                {
+                if let Some(idle_idx) = process_list.iter().position(|(_, p)| p.name == "idle") {
                     next_index = idle_idx;
                     petroleum::scheduler_log!("Switching to idle process at index {}", idle_idx);
                 } else {
@@ -408,12 +412,11 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
 
     let (old_context_ptr, new_context_ptr, new_page_table) = PROCESS_MANAGER.with_list(|list| {
         let old_ptr = old_pid
-            .and_then(|pid| {
-                list.iter_mut().find(|(id, _)| *id == pid)
-            })
+            .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
             .map(|(_, p)| p as *mut Process);
 
-        let new_ptr = list.iter()
+        let new_ptr = list
+            .iter()
             .find(|(id, _)| *id == new_pid)
             .map(|(_, p)| p as *const Process);
 

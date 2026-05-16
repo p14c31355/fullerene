@@ -102,7 +102,10 @@ macro_rules! enable_vga_video {
     () => {{
         // Use defined constants for readability and maintainability
         $crate::port_read_u8!($crate::hardware::ports::HardwarePorts::STATUS);
-        $crate::port_write!($crate::hardware::ports::HardwarePorts::ATTRIBUTE_INDEX, 0x20u8);
+        $crate::port_write!(
+            $crate::hardware::ports::HardwarePorts::ATTRIBUTE_INDEX,
+            0x20u8
+        );
     }};
 }
 

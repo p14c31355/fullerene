@@ -40,7 +40,11 @@ static COMMANDS: &[CommandEntry] = define_commands!(
     ("echo", "Print text", echo_command),
     ("clear", "Clear screen", clear_command),
     ("uname", "Show system information", uname_command),
-    ("kill", "Kill a process (usage: kill <pid>)", not_implemented_command),
+    (
+        "kill",
+        "Kill a process (usage: kill <pid>)",
+        not_implemented_command
+    ),
     ("exit", "Exit shell", exit_command)
 );
 
@@ -181,7 +185,9 @@ fn echo_command(args: &[&str]) -> i32 {
     if args.len() < 2 {
         print!("\n");
     } else {
-        for arg in &args[1..] { print!("{} ", arg); }
+        for arg in &args[1..] {
+            print!("{} ", arg);
+        }
         print!("\n");
     }
     0
@@ -193,12 +199,21 @@ petroleum::simple_command_fn!(uname_command, "Fullerene OS 0.1.0 x86_64\n");
 fn uptime_command(_args: &[&str]) -> i32 {
     let ticks = get_system_tick();
     let s = ticks / 1000;
-    print!("Uptime: {:02}:{:02}:{:02} ({} ticks)\n", s/3600, (s%3600)/60, s%60, ticks);
+    print!(
+        "Uptime: {:02}:{:02}:{:02} ({} ticks)\n",
+        s / 3600,
+        (s % 3600) / 60,
+        s % 60,
+        ticks
+    );
     0
 }
 
 fn date_command(_args: &[&str]) -> i32 {
-    print!("Current date/time: System tick: {}\n(RTC integration pending)\n", get_system_tick());
+    print!(
+        "Current date/time: System tick: {}\n(RTC integration pending)\n",
+        get_system_tick()
+    );
     0
 }
 

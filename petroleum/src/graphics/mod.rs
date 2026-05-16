@@ -64,8 +64,8 @@ macro_rules! draw_window_base {
 }
 
 pub mod color;
-pub mod constants;
 pub mod console;
+pub mod constants;
 pub mod desktop;
 pub mod framebuffer;
 pub mod registers;
@@ -88,10 +88,10 @@ pub use setup::{
     setup_cirrus_vga_mode,
 };
 // VGA text operations
-pub use text::{Color, ColorCode, ScreenChar, TextBufferOperations};
 pub use desktop::*;
 pub use framebuffer::UefiFramebufferWriter;
 pub use framebuffer::*;
+pub use text::{Color, ColorCode, ScreenChar, TextBufferOperations};
 
 /// Result of the graphics drawing test
 #[derive(Debug, PartialEq)]
@@ -123,7 +123,8 @@ macro_rules! check_pixel_eq {
                 "[{}:{}] DRAW_TEST FAIL at pixel ({}, {}): {} expected={:#010x}, actual={:#010x}\n",
                 core::file!(),
                 core::line!(),
-                $x, $y,
+                $x,
+                $y,
                 $label,
                 $expected,
                 $actual,
@@ -200,14 +201,20 @@ pub fn verify_drawing_test(config: &crate::graphics::color::FramebufferInfo) -> 
         }
 
         // ── Step 3: probe write to top-right corner ────────────────────
-        drawtest_trace!("Step 3: probe write to top-right ({}, 0)", w.saturating_sub(1));
+        drawtest_trace!(
+            "Step 3: probe write to top-right ({}, 0)",
+            w.saturating_sub(1)
+        );
         let tr_off = config.calculate_offset(w.saturating_sub(1), 0);
         let tr_ptr = unsafe { ((fb_virt as *mut u8).add(tr_off)) as *mut u32 };
         probe_write!(tr_ptr, 0xCAFEBABEu32);
         drawtest_trace!("Step 3: write to top-right completed");
 
         // ── Step 4: probe write to bottom-left corner ──────────────────
-        drawtest_trace!("Step 4: probe write to bottom-left (0, {})", h.saturating_sub(1));
+        drawtest_trace!(
+            "Step 4: probe write to bottom-left (0, {})",
+            h.saturating_sub(1)
+        );
         let bl_off = config.calculate_offset(0, h.saturating_sub(1));
         let bl_ptr = unsafe { ((fb_virt as *mut u8).add(bl_off)) as *mut u32 };
         probe_write!(bl_ptr, 0xF00DBABEu32);
@@ -218,7 +225,9 @@ pub fn verify_drawing_test(config: &crate::graphics::color::FramebufferInfo) -> 
         drawtest_trace!("Step 5: write + sfence + readback (retry)");
         {
             probe_write!(fb_ptr, test_color);
-            unsafe { core::arch::asm!("sfence", options(nostack, preserves_flags)); }
+            unsafe {
+                core::arch::asm!("sfence", options(nostack, preserves_flags));
+            }
             let v = probe_read!(fb_ptr);
             drawtest_trace!("Step 5: retry readback = {:#010x}", v);
             if v == test_color {
@@ -231,7 +240,9 @@ pub fn verify_drawing_test(config: &crate::graphics::color::FramebufferInfo) -> 
         drawtest_trace!("Step 6: write + wbinvd + readback");
         {
             probe_write!(fb_ptr, test_color);
-            unsafe { core::arch::asm!("wbinvd", options(nostack, preserves_flags)); }
+            unsafe {
+                core::arch::asm!("wbinvd", options(nostack, preserves_flags));
+            }
             let v = probe_read!(fb_ptr);
             drawtest_trace!("Step 6: wbinvd readback = {:#010x}", v);
             if v == test_color {
@@ -257,16 +268,21 @@ pub fn verify_drawing_test(config: &crate::graphics::color::FramebufferInfo) -> 
              but readback always returns 0.  The mapping is PRESENT+WRITABLE \
              but the region is write-only (QEMU std-vga PCI MMIO).  Untouched \
              pixels are also 0.",
-            fb_virt, config.pixel_format
+            fb_virt,
+            config.pixel_format
         );
-        drawtest_trace!(
-            "SUGGESTION: try PAT=WB (vs NO_CACHE/UC) or confirm physical address."
-        );
+        drawtest_trace!("SUGGESTION: try PAT=WB (vs NO_CACHE/UC) or confirm physical address.");
         Err("write OK but readback always 0")
     })();
 
     match r {
-        Ok(()) => { drawtest_trace!("all checks passed"); DrawingTestResult::Pass }
-        Err(m) => { drawtest_trace!("DIAGNOSTIC: {}", m); DrawingTestResult::Fail(m) }
+        Ok(()) => {
+            drawtest_trace!("all checks passed");
+            DrawingTestResult::Pass
+        }
+        Err(m) => {
+            drawtest_trace!("DIAGNOSTIC: {}", m);
+            DrawingTestResult::Fail(m)
+        }
     }
 }

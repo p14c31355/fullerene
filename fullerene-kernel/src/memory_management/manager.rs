@@ -9,9 +9,12 @@ use petroleum::page_table::{
     BitmapFrameAllocator, BootInfoFrameAllocator, FrameAllocatorExt, MemoryMapDescriptor,
     PageTableHelper, ProcessPageTable,
 };
-use x86_64::{PhysAddr, structures::paging::{
-    FrameAllocator as X86FrameAllocator, Mapper, PageTableFlags as PageFlags, Size4KiB,
-}};
+use x86_64::{
+    PhysAddr,
+    structures::paging::{
+        FrameAllocator as X86FrameAllocator, Mapper, PageTableFlags as PageFlags, Size4KiB,
+    },
+};
 
 /// Maximum number of process memory managers
 const MAX_PROCESS_MANAGERS: usize = 16;
@@ -20,7 +23,8 @@ const MAX_PROCESS_MANAGERS: usize = 16;
 pub struct UnifiedMemoryManager {
     pub(crate) page_table_manager: ProcessPageTable,
     pub(crate) kernel_pml4_phys: usize,
-    pub(crate) process_managers: heapless::Vec<Option<ProcessMemoryManagerImpl>, MAX_PROCESS_MANAGERS>,
+    pub(crate) process_managers:
+        heapless::Vec<Option<ProcessMemoryManagerImpl>, MAX_PROCESS_MANAGERS>,
     pub(crate) current_process: usize,
     pub(crate) initialized: bool,
 }
@@ -74,7 +78,7 @@ impl UnifiedMemoryManager {
 
         let page_size = self.page_size();
         let pages = (size + page_size - 1) / page_size;
-        
+
         // MMIO regions are typically mapped as non-executable
         let flags = PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::NO_EXECUTE;
 
@@ -117,7 +121,8 @@ impl UnifiedMemoryManager {
         // Transfer the frame allocator from heap (initialized during uefi_init) to constants.
         {
             let mut fa_guard = crate::heap::FRAME_ALLOCATOR.lock();
-            let heap_allocator = fa_guard.take()
+            let heap_allocator = fa_guard
+                .take()
                 .expect("Frame allocator must be initialized by uefi_init");
             petroleum::page_table::constants::init_frame_allocator(heap_allocator);
         }
@@ -151,9 +156,8 @@ impl UnifiedMemoryManager {
         // For pages covered by 2MB huge pages (from init_and_jump), the x86_64
         // crate's OffsetPageTable::map_to returns ParentEntryHugePage.
         // In that case, fall back to map_page_4k_l1 which handles huge page splitting.
-        let phys_offset_virt = x86_64::VirtAddr::new(
-            petroleum::common::memory::get_physical_memory_offset() as u64
-        );
+        let phys_offset_virt =
+            x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
 
         // Pre-acquire frame allocator reference to avoid borrow conflicts with self
         let frame_alloc = petroleum::page_table::constants::get_frame_allocator_mut();
@@ -162,7 +166,8 @@ impl UnifiedMemoryManager {
             let phys_addr = descriptor.get_physical_start();
             let pages = descriptor.get_page_count();
 
-            let base_virt_addr = (phys_offset_virt + PhysAddr::new(phys_addr).as_u64()).as_u64() as usize;
+            let base_virt_addr =
+                (phys_offset_virt + PhysAddr::new(phys_addr).as_u64()).as_u64() as usize;
 
             for i in 0..pages {
                 let page_size = self.page_size();
@@ -177,14 +182,21 @@ impl UnifiedMemoryManager {
                 // MMIO region fine-tuning is handled separately by map_mmio() in
                 // efi_main_stage2 (called before init_common).
                 let page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(virt_addr);
-                let frame = x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(phys_addr_val);
+                let frame = x86_64::structures::paging::PhysFrame::<
+                    x86_64::structures::paging::Size4KiB,
+                >::containing_address(phys_addr_val);
                 let flags = PageFlags::PRESENT | PageFlags::WRITABLE;
 
-                let mapper = self.page_table_manager.mapper.as_mut()
+                let mapper = self
+                    .page_table_manager
+                    .mapper
+                    .as_mut()
                     .ok_or(SystemError::InternalError)?;
                 let map_result = unsafe { mapper.map_to(page, frame, flags, frame_alloc) };
                 match map_result {
-                    Ok(flush) => { flush.flush(); }
+                    Ok(flush) => {
+                        flush.flush();
+                    }
                     Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {
                         // Already covered by 2MB huge page - skip. The huge page
                         // provides a valid mapping for regular memory access.
@@ -210,7 +222,8 @@ impl UnifiedMemoryManager {
 
     pub fn frame_allocator(&self) -> &BitmapFrameAllocator {
         unsafe {
-            let ptr = petroleum::page_table::constants::get_frame_allocator() as *const _ as *const BitmapFrameAllocator;
+            let ptr = petroleum::page_table::constants::get_frame_allocator() as *const _
+                as *const BitmapFrameAllocator;
             &*ptr
         }
     }
@@ -238,12 +251,13 @@ impl MemoryManager for UnifiedMemoryManager {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-        
+
         let page_size = self.page_size();
         let total_virt_pages = count + 2;
-        let virtual_addr_base =
-            crate::memory_management::kernel_space::find_free_virtual_address(total_virt_pages as u64 * page_size as u64)
-                .ok_or(SystemError::MemOutOfMemory)?;
+        let virtual_addr_base = crate::memory_management::kernel_space::find_free_virtual_address(
+            total_virt_pages as u64 * page_size as u64,
+        )
+        .ok_or(SystemError::MemOutOfMemory)?;
 
         let frame_addr = petroleum::page_table::constants::get_frame_allocator_mut()
             .allocate_contiguous_frames(count)? as usize;
@@ -264,7 +278,7 @@ impl MemoryManager for UnifiedMemoryManager {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-        
+
         let page_size = self.page_size();
         for i in 0..count {
             let virt_addr = address + (i * page_size);
@@ -274,8 +288,12 @@ impl MemoryManager for UnifiedMemoryManager {
             }
         }
 
-        let _ = self.page_table_manager.unmap_page(address.saturating_sub(page_size));
-        let _ = self.page_table_manager.unmap_page(address + (count * page_size));
+        let _ = self
+            .page_table_manager
+            .unmap_page(address.saturating_sub(page_size));
+        let _ = self
+            .page_table_manager
+            .unmap_page(address + (count * page_size));
 
         Ok(())
     }
@@ -349,9 +367,13 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
         }
 
         let mut process_manager = ProcessMemoryManagerImpl::new(process_id);
-        process_manager.init_page_table(&mut self.page_table_manager, petroleum::page_table::constants::get_frame_allocator_mut())?;
+        process_manager.init_page_table(
+            &mut self.page_table_manager,
+            petroleum::page_table::constants::get_frame_allocator_mut(),
+        )?;
 
-        self.process_managers.push(Some(process_manager))
+        self.process_managers
+            .push(Some(process_manager))
             .map_err(|_| SystemError::TooManyProcesses)?;
         mem_debug!("UMM: Created address space for process\n");
         Ok(())
@@ -472,57 +494,96 @@ impl PageTableHelper for UnifiedMemoryManager {
         flags: PageFlags,
         frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
     ) -> SystemResult<()> {
-        if !self.initialized { return Err(SystemError::InternalError); }
-        self.page_table_manager.map_page(virtual_addr, physical_addr, flags, frame_allocator)
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+        self.page_table_manager
+            .map_page(virtual_addr, physical_addr, flags, frame_allocator)
     }
 
-    fn unmap_page(&mut self, virtual_addr: usize) -> SystemResult<x86_64::structures::paging::PhysFrame<Size4KiB>> {
-        if !self.initialized { return Err(SystemError::InternalError); }
+    fn unmap_page(
+        &mut self,
+        virtual_addr: usize,
+    ) -> SystemResult<x86_64::structures::paging::PhysFrame<Size4KiB>> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
         self.page_table_manager.unmap_page(virtual_addr)
     }
 
     fn translate_address(&self, virtual_addr: usize) -> SystemResult<usize> {
-        if !self.initialized { return Err(SystemError::InternalError); }
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
         self.page_table_manager.translate_address(virtual_addr)
     }
 
     fn set_page_flags(&mut self, virtual_addr: usize, flags: PageFlags) -> SystemResult<()> {
-        if !self.initialized { return Err(SystemError::InternalError); }
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
         self.page_table_manager.set_page_flags(virtual_addr, flags)
     }
 
     fn get_page_flags(&self, virtual_addr: usize) -> SystemResult<PageFlags> {
-        if !self.initialized { return Err(SystemError::InternalError); }
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
         self.page_table_manager.get_page_flags(virtual_addr)
     }
 
     fn flush_tlb(&mut self, virtual_addr: usize) -> SystemResult<()> {
-        if !self.initialized { return Err(SystemError::InternalError); }
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
         self.page_table_manager.flush_tlb(virtual_addr)
     }
 
     fn flush_tlb_all(&mut self) -> SystemResult<()> {
-        if !self.initialized { return Err(SystemError::InternalError); }
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
         self.page_table_manager.flush_tlb_all()
     }
 
-    fn create_page_table(&mut self, frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>) -> SystemResult<usize> {
-        if !self.initialized { return Err(SystemError::InternalError); }
+    fn create_page_table(
+        &mut self,
+        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
+    ) -> SystemResult<usize> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
         self.page_table_manager.create_page_table(frame_allocator)
     }
 
-    fn destroy_page_table(&mut self, table_addr: usize, frame_allocator: &mut BootInfoFrameAllocator) -> SystemResult<()> {
-        if !self.initialized { return Err(SystemError::InternalError); }
-        self.page_table_manager.destroy_page_table(table_addr, frame_allocator)
+    fn destroy_page_table(
+        &mut self,
+        table_addr: usize,
+        frame_allocator: &mut BootInfoFrameAllocator,
+    ) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+        self.page_table_manager
+            .destroy_page_table(table_addr, frame_allocator)
     }
 
-    fn clone_page_table(&mut self, source_table: usize, frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>) -> SystemResult<usize> {
-        if !self.initialized { return Err(SystemError::InternalError); }
-        self.page_table_manager.clone_page_table(source_table, frame_allocator)
+    fn clone_page_table(
+        &mut self,
+        source_table: usize,
+        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<Size4KiB>,
+    ) -> SystemResult<usize> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+        self.page_table_manager
+            .clone_page_table(source_table, frame_allocator)
     }
 
     fn switch_page_table(&mut self, table_addr: usize) -> SystemResult<()> {
-        if !self.initialized { return Err(SystemError::InternalError); }
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
         self.page_table_manager.switch_page_table(table_addr)
     }
 
@@ -534,7 +595,9 @@ impl PageTableHelper for UnifiedMemoryManager {
 // Implementation of FrameAllocator trait
 impl FrameAllocator for UnifiedMemoryManager {
     fn allocate_frame(&mut self) -> SystemResult<usize> {
-        if !self.initialized { return Err(SystemError::InternalError); }
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
         petroleum::page_table::constants::get_frame_allocator_mut()
             .allocate_frame()
             .map(|f| f.start_address().as_u64() as usize)
@@ -542,39 +605,54 @@ impl FrameAllocator for UnifiedMemoryManager {
     }
 
     fn free_frame(&mut self, frame_addr: usize) -> SystemResult<()> {
-        if !self.initialized { return Err(SystemError::InternalError); }
-        petroleum::page_table::constants::get_frame_allocator_mut()
-            .free_frame(x86_64::structures::paging::PhysFrame::containing_address(
-                x86_64::PhysAddr::new(frame_addr as u64),
-            ));
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+        petroleum::page_table::constants::get_frame_allocator_mut().free_frame(
+            x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(
+                frame_addr as u64,
+            )),
+        );
         Ok(())
     }
 
     fn allocate_contiguous_frames(&mut self, count: usize) -> SystemResult<usize> {
-        if !self.initialized { return Err(SystemError::InternalError); }
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
         petroleum::page_table::constants::get_frame_allocator_mut()
             .allocate_contiguous_frames(count)
             .map(|addr| addr as usize)
     }
 
     fn free_contiguous_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()> {
-        if !self.initialized { return Err(SystemError::InternalError); }
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
         petroleum::page_table::constants::get_frame_allocator_mut()
             .free_contiguous_frames(start_addr as u64, count);
         Ok(())
     }
 
-    fn total_frames(&self) -> usize { self.frame_allocator().total_frames() }
-    fn available_frames(&self) -> usize { self.frame_allocator().available_frames() }
+    fn total_frames(&self) -> usize {
+        self.frame_allocator().total_frames()
+    }
+    fn available_frames(&self) -> usize {
+        self.frame_allocator().available_frames()
+    }
 
     fn reserve_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()> {
-        if !self.initialized { return Err(SystemError::InternalError); }
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
         petroleum::page_table::constants::get_frame_allocator_mut()
             .reserve_frames(start_addr as u64, count)
     }
 
     fn release_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()> {
-        if !self.initialized { return Err(SystemError::InternalError); }
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
         petroleum::page_table::constants::get_frame_allocator_mut()
             .release_frames(start_addr as u64, count);
         Ok(())
@@ -596,8 +674,12 @@ impl Initializable for UnifiedMemoryManager {
         self.init(dummy_memory_map)
     }
 
-    fn name(&self) -> &'static str { "UnifiedMemoryManager" }
-    fn priority(&self) -> i32 { 1000 }
+    fn name(&self) -> &'static str {
+        "UnifiedMemoryManager"
+    }
+    fn priority(&self) -> i32 {
+        1000
+    }
 }
 
 // Implementation of ErrorLogging trait
@@ -605,10 +687,18 @@ impl ErrorLogging for UnifiedMemoryManager {
     fn log_error(&self, error: &SystemError, context: &'static str) {
         log::error!("SystemError({}): {}", *error as u32, context);
     }
-    fn log_warning(&self, message: &'static str) { log::warn!("{}", message); }
-    fn log_info(&self, message: &'static str) { log::info!("{}", message); }
-    fn log_debug(&self, message: &'static str) { log::debug!("{}", message); }
-    fn log_trace(&self, message: &'static str) { log::trace!("{}", message); }
+    fn log_warning(&self, message: &'static str) {
+        log::warn!("{}", message);
+    }
+    fn log_info(&self, message: &'static str) {
+        log::info!("{}", message);
+    }
+    fn log_debug(&self, message: &'static str) {
+        log::debug!("{}", message);
+    }
+    fn log_trace(&self, message: &'static str) {
+        log::trace!("{}", message);
+    }
 }
 
 impl UnifiedMemoryManager {
@@ -622,7 +712,9 @@ impl UnifiedMemoryManager {
         user_addr: usize,
         size: usize,
     ) -> SystemResult<alloc::vec::Vec<u8>> {
-        if !self.initialized { return Err(SystemError::InternalError); }
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
 
         let mut data = alloc::vec::Vec::with_capacity(size);
 
@@ -634,7 +726,8 @@ impl UnifiedMemoryManager {
             if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
                 let phys_base = phys_addr + (virt_addr % page_size);
                 unsafe {
-                    let slice = petroleum::common::memory::phys_to_slice(phys_base, current_chunk_size);
+                    let slice =
+                        petroleum::common::memory::phys_to_slice(phys_base, current_chunk_size);
                     data.extend_from_slice(slice);
                 }
             } else {
@@ -646,14 +739,20 @@ impl UnifiedMemoryManager {
     }
 
     fn copy_to_user_space(&mut self, user_addr: usize, data: &[u8]) -> SystemResult<()> {
-        if !self.initialized { return Err(SystemError::InternalError); }
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
 
         let page_size = self.page_size();
         for (i, chunk) in data.chunks(page_size).enumerate() {
             let offset = i * page_size;
             let virt_addr = user_addr + offset;
 
-            if self.page_table_manager.translate_address(virt_addr).is_err() {
+            if self
+                .page_table_manager
+                .translate_address(virt_addr)
+                .is_err()
+            {
                 let frame = petroleum::page_table::constants::get_frame_allocator_mut()
                     .allocate_frame()
                     .ok_or(SystemError::FrameAllocationFailed)?;
@@ -668,7 +767,8 @@ impl UnifiedMemoryManager {
             if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {
                 let phys_base = phys_addr + (virt_addr % page_size);
                 unsafe {
-                    let slice = petroleum::common::memory::phys_to_slice_mut(phys_base, chunk.len());
+                    let slice =
+                        petroleum::common::memory::phys_to_slice_mut(phys_base, chunk.len());
                     slice.copy_from_slice(chunk);
                 }
             } else {

@@ -1,7 +1,7 @@
 //! Integration tests for page table types.
 
-use super::types::*;
 use super::Pte;
+use super::types::*;
 
 #[test]
 fn test_canonical_address() {
@@ -55,7 +55,7 @@ fn test_page_indices() {
 
 #[test]
 fn test_alignment() {
-    use super::types::{align_up, align_down, is_aligned};
+    use super::types::{align_down, align_up, is_aligned};
     assert_eq!(align_up(5, 4), 8);
     assert_eq!(align_down(7, 4), 4);
     assert!(is_aligned(4096, 4096));

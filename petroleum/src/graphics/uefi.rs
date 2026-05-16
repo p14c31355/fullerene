@@ -38,13 +38,8 @@ impl<'a> ProtocolLocator<'a> {
 }
 
 /// Helper to try Universal Graphics Adapter (UGA) protocol
-pub fn init_uga_framebuffer(
-    system_table: &EfiSystemTable,
-) -> Option<FullereneFramebufferConfig> {
-    let locator = ProtocolLocator::new(
-        &EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID,
-        system_table,
-    );
+pub fn init_uga_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
+    let locator = ProtocolLocator::new(&EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID, system_table);
     let mut uga: *mut EfiUniversalGraphicsAdapterProtocolPtr = ptr::null_mut();
 
     match locator.locate(&mut uga) {
@@ -117,7 +112,10 @@ pub fn detect_standard_modes(
                 *height,
                 crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                 *bpp,
-                (*width as u64).checked_mul(*bpp as u64 / 8).and_then(|s| u32::try_from(s).ok()).unwrap_or(0),
+                (*width as u64)
+                    .checked_mul(*bpp as u64 / 8)
+                    .and_then(|s| u32::try_from(s).ok())
+                    .unwrap_or(0),
             ));
         }
     }
@@ -181,7 +179,10 @@ pub fn find_working_qemu_config(
                 height,
                 crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                 bpp,
-                (width as u64).checked_mul(bpp as u64 / 8).and_then(|s| u32::try_from(s).ok()).unwrap_or(0),
+                (width as u64)
+                    .checked_mul(bpp as u64 / 8)
+                    .and_then(|s| u32::try_from(s).ok())
+                    .unwrap_or(0),
             );
 
             crate::serial::_print(format_args!(

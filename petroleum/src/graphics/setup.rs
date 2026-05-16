@@ -101,6 +101,14 @@ pub fn detect_and_init_vga_graphics() {
         log_step!("VGA Detection: Standard VGA device detected, using standard mode\n");
         setup_vga_mode_13h();
     }
+    log_step!("VGA Detection: VGA initialization completed\n");
+    crate::serial::_print(format_args!("RET: detect_and_init_vga_graphics\n"));
+    crate::serial::_print(format_args!("AFTER_RET_PRINT\n"));
+    let stack_var = 0u64;
+    crate::serial::_print(format_args!(
+        "Stack var address: {:#x}\n",
+        &stack_var as *const u64 as u64
+    ));
 }
 
 // Detect Cirrus VGA device via PCI

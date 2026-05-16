@@ -1,7 +1,7 @@
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
-use petroleum::graphics::{Console, Renderer, UefiFramebufferWriter};
 use petroleum::graphics::text::VgaBuffer;
+use petroleum::graphics::{Console, Renderer, UefiFramebufferWriter};
 use spin::Mutex;
 
 /// Global primary framebuffer renderer (also used as text console).
@@ -16,12 +16,13 @@ static VGA_CONSOLE: Mutex<Option<VgaBuffer>> = Mutex::new(None);
 /// Initializes the system graphics and primary console.
 ///
 /// This function is idempotent: calling it more than once has no effect.
-/// 
+///
 /// Priority:
 /// 1. GOP Framebuffer (from bootloader config)
 /// 2. Fallback GOP detection (QEMU/etc)
 /// 3. Legacy VGA Text Mode (fallback)
 pub fn init_graphics() {
+    petroleum::serial::_print(format_args!("init_graphics called.\n"));
     // Force reset GRAPHICS_INITIALIZED to handle un-zeroed .bss after world switch.
     // This mirrors the force-reset pattern used for ALLOCATOR, HEAP_INITIALIZED,
     // and LOCAL_APIC_ADDRESS in uefi_init.rs.
@@ -37,12 +38,28 @@ pub fn init_graphics() {
         petroleum::debug_log!("Graphics initialized with GOP Framebuffer");
         return;
     }
+    petroleum::serial::_print(format_args!(
+        "init_graphics: No GOP framebuffer, falling back to VGA\n"
+    ));
 
     // Fallback to VGA
-    let mut vga = petroleum::boot::initialize_vga_fallback();
-    vga.enable();
-    petroleum::graphics::Console::clear(&mut vga);
-    *VGA_CONSOLE.lock() = Some(vga);
+    match petroleum::boot::initialize_vga_fallback() {
+        Ok(mut vga) => {
+            vga.enable();
+            crate::graphics::Console::clear(&mut vga);
+            *VGA_CONSOLE.lock() = Some(vga);
+        }
+        Err(e) => {
+            petroleum::debug_log!(
+                "VGA fallback initialization failed: {}, using serial console\n",
+                e
+            );
+            // VGA_CONSOLE remains None; serial console will be used
+        }
+    }
+    petroleum::serial::_print(format_args!(
+        "init_graphics: VGA fallback initialization completed\n"
+    ));
 }
 
 /// Set the primary framebuffer renderer (also used as text console).

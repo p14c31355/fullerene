@@ -1,7 +1,9 @@
 use crate::page_table::allocator::traits::{FrameAllocator, FrameAllocatorExt};
 use crate::page_table::memory_map::MemoryDescriptorValidator;
 use crate::page_table::types::PhysFrame;
-use x86_64::structures::paging::{FrameAllocator as X86FrameAllocator, PhysFrame as X86PhysFrame, Size4KiB};
+use x86_64::structures::paging::{
+    FrameAllocator as X86FrameAllocator, PhysFrame as X86PhysFrame, Size4KiB,
+};
 
 pub struct BitmapFrameAllocator {
     bitmap: heapless::Vec<u64, { crate::page_table::constants::MAX_BITMAP_CAPACITY }>,
@@ -24,9 +26,7 @@ impl BitmapFrameAllocator {
         }
     }
 
-    pub fn init_with_memory_map<T: MemoryDescriptorValidator>(
-        memory_map: &[T],
-    ) -> Self {
+    pub fn init_with_memory_map<T: MemoryDescriptorValidator>(memory_map: &[T]) -> Self {
         let mut max_phys = 0u64;
         for desc in memory_map {
             let end = desc.get_physical_start() + desc.get_page_count() * 4096;
@@ -169,7 +169,9 @@ impl FrameAllocator for BitmapFrameAllocator {
                     if (self.bitmap[i] & (1 << j)) == 0 {
                         self.set_frame_used(frame_idx, true);
                         let phys_addr = frame_idx as u64 * 4096;
-                        return Ok(PhysFrame { start_address: phys_addr });
+                        return Ok(PhysFrame {
+                            start_address: phys_addr,
+                        });
                     }
                 }
             }

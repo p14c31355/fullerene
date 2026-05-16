@@ -236,8 +236,11 @@ pub fn register_device(device: alloc::boxed::Box<dyn HardwareDevice + Send>) -> 
 /// Convenience function to register VGA device
 pub fn register_vga_device() -> SystemResult<()> {
     use petroleum::graphics::text::VgaBuffer;
+    use petroleum::page_table::constants::{HIGHER_HALF_OFFSET, VGA_MEMORY_START};
 
-    let vga_device = alloc::boxed::Box::new(VgaBuffer::new());
+    // Use higher-half virtual address for VGA buffer in a higher-half kernel
+    let vga_virt_addr = (VGA_MEMORY_START + HIGHER_HALF_OFFSET.as_u64()) as usize;
+    let vga_device = alloc::boxed::Box::new(VgaBuffer::with_address(vga_virt_addr));
     register_device(vga_device)
 }
 

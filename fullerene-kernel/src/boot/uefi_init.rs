@@ -210,7 +210,10 @@ impl UefiInitContext {
         );
 
         let _temp_mapper = unsafe {
-            petroleum::page_table::init::<BootFrameAllocator, fn(&mut x86_64::structures::paging::OffsetPageTable, &mut BootFrameAllocator)>(
+            petroleum::page_table::init::<
+                BootFrameAllocator,
+                fn(&mut x86_64::structures::paging::OffsetPageTable, &mut BootFrameAllocator),
+            >(
                 self.physical_memory_offset,
                 &mut boot_allocator,
                 kernel_phys_start.as_u64(),
@@ -291,7 +294,13 @@ impl UefiInitContext {
                 .as_mut()
                 .expect("Frame allocator should be ready now");
             let mut mapper = unsafe {
-                petroleum::page_table::init::<_, fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator)>(
+                petroleum::page_table::init::<
+                    _,
+                    fn(
+                        &mut x86_64::structures::paging::OffsetPageTable,
+                        &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator,
+                    ),
+                >(
                     self.physical_memory_offset,
                     frame_allocator,
                     kernel_phys_start.as_u64(),
@@ -348,8 +357,8 @@ impl UefiInitContext {
             }
         };
 
-        let base = petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64
-            + tss_phys_addr.as_u64();
+        let base =
+            petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64 + tss_phys_addr.as_u64();
         let sz = crate::gdt::GDT_TSS_STACK_SIZE as u64;
         let tss_stacks = crate::gdt::TssStacks {
             double_fault: VirtAddr::new(base + sz),
@@ -361,14 +370,6 @@ impl UefiInitContext {
             machine_check: VirtAddr::new(base + sz * 7),
         };
         crate::gdt::init_with_stacks(tss_stacks);
-        // Build and store the GDT
-        let tss = unsafe { crate::gdt::TSS.as_mut().expect("TSS should be initialized") };
-        let (gdt, code_selector, data_selector, tss_selector, user_data_selector, user_code_selector) = unsafe {
-            crate::gdt::build_gdt(tss)
-        };
-        unsafe {
-            crate::gdt::store_gdt(gdt, code_selector, data_selector, tss_selector, user_data_selector, user_code_selector);
-        };
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: GDT initialized with TSS stacks\n");
 
         petroleum::write_serial_bytes!(
@@ -401,12 +402,13 @@ impl UefiInitContext {
                 b"DEBUG: [uefi_init] Lock acquired, calling init\n"
             );
             let allocator = fa_guard.as_mut().expect("Frame allocator should be ready");
-            petroleum::page_table::init::<_, fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator)>(
-                self.physical_memory_offset,
-                allocator,
-                0x100000,
-                None,
-            )
+            petroleum::page_table::init::<
+                _,
+                fn(
+                    &mut x86_64::structures::paging::OffsetPageTable,
+                    &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator,
+                ),
+            >(self.physical_memory_offset, allocator, 0x100000, None)
         };
         petroleum::write_serial_bytes!(
             0x3F8,
@@ -501,13 +503,20 @@ impl UefiInitContext {
                 b"DEBUG: Mapping TSS stacks using main_mapper\n"
             );
             unsafe {
-                let mut mapper = petroleum::page_table::init::<_, fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator)>(
+                let mut mapper = petroleum::page_table::init::<
+                    _,
+                    fn(
+                        &mut x86_64::structures::paging::OffsetPageTable,
+                        &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator,
+                    ),
+                >(
                     self.physical_memory_offset,
                     frame_allocator,
                     kernel_phys_start.as_u64(),
                     None,
                 );
-                let tss_virt = petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64 + tss_phys_addr.as_u64();
+                let tss_virt = petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64
+                    + tss_phys_addr.as_u64();
                 let _ = petroleum::page_table::raw::map_range_with_huge_pages(
                     &mut mapper,
                     frame_allocator,
@@ -633,7 +642,13 @@ impl UefiInitContext {
                 b"DEBUG: [PHASE] Calling petroleum::page_table::init for heap mapping\n"
             );
             let _mapper = unsafe {
-                petroleum::page_table::init::<_, fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator)>(
+                petroleum::page_table::init::<
+                    _,
+                    fn(
+                        &mut x86_64::structures::paging::OffsetPageTable,
+                        &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator,
+                    ),
+                >(
                     self.physical_memory_offset,
                     frame_allocator,
                     kernel_phys_start.as_u64(),
@@ -717,12 +732,13 @@ impl UefiInitContext {
             .expect("Frame allocator not initialized");
 
         let mut mapper = unsafe {
-            petroleum::page_table::init::<_, fn(&mut x86_64::structures::paging::OffsetPageTable, &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator)>(
-                physical_memory_offset,
-                frame_allocator,
-                0x100000,
-                None,
-            )
+            petroleum::page_table::init::<
+                _,
+                fn(
+                    &mut x86_64::structures::paging::OffsetPageTable,
+                    &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator,
+                ),
+            >(physical_memory_offset, frame_allocator, 0x100000, None)
         };
 
         let stack_flags = x86_64::structures::paging::PageTableFlags::PRESENT
@@ -803,12 +819,18 @@ impl UefiInitContext {
             | PageTableFlags::WRITABLE
             | PageTableFlags::NO_EXECUTE
             | PageTableFlags::NO_CACHE;
-        let std_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+        let std_flags =
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
 
         let regions = [
             (0xfee00000u64, 1u64, "Local APIC", mmio_flags),
             (0xfec00000u64, 1u64, "IO APIC", mmio_flags),
-            (0xb8000u64, (0xc0000u64 - 0xb8000u64) / 4096, "VGA text buffer", std_flags),
+            (
+                0xb8000u64,
+                (0xc0000u64 - 0xb8000u64) / 4096,
+                "VGA text buffer",
+                std_flags,
+            ),
         ];
 
         let mut vga_virt_addr = 0u64;
@@ -824,7 +846,12 @@ impl UefiInitContext {
                     let v = x86_64::VirtAddr::new(virt + i * 4096);
                     let p = x86_64::PhysAddr::new(phys + i * 4096);
                     if let Err(e) = petroleum::page_table::kernel::init::map_page_4k_l1(
-                        l4, v, p, flags, frame_allocator, physical_memory_offset,
+                        l4,
+                        v,
+                        p,
+                        flags,
+                        frame_allocator,
+                        physical_memory_offset,
                     ) {
                         petroleum::debug_log!("MMIO page {} map failed: {:?}, skipping\n", i, e);
                     }
@@ -849,7 +876,10 @@ impl UefiInitContext {
         let vga_virt_addr = Self::map_standard_mmio_regions();
 
         // Map GOP Framebuffer if available
-        if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|m| m.lock().clone()) {
+        if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+            .get()
+            .and_then(|m| m.lock().clone())
+        {
             let fb_phys = config.address;
             let fb_virt = fb_phys + petroleum::common::memory::get_physical_memory_offset() as u64;
             let fb_size = (config.width as u64 * config.height as u64 * config.bpp as u64) / 8;
@@ -864,7 +894,9 @@ impl UefiInitContext {
                 | PageTableFlags::NO_CACHE;
 
             let frame_allocator = petroleum::page_table::constants::get_frame_allocator_mut();
-            let phys_offset = x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
+            let phys_offset = x86_64::VirtAddr::new(
+                petroleum::common::memory::get_physical_memory_offset() as u64,
+            );
             let l4 = unsafe { petroleum::page_table::active_level_4_table(phys_offset) };
 
             // Map the framebuffer using 4KiB pages. This avoids reliance on a non‑existent
@@ -874,9 +906,18 @@ impl UefiInitContext {
                     let v = x86_64::VirtAddr::new(fb_virt + i as u64 * 4096);
                     let p = x86_64::PhysAddr::new(fb_phys + i as u64 * 4096);
                     if let Err(e) = petroleum::page_table::kernel::init::map_page_4k_l1(
-                        l4, v, p, fb_flags, frame_allocator, phys_offset,
+                        l4,
+                        v,
+                        p,
+                        fb_flags,
+                        frame_allocator,
+                        phys_offset,
                     ) {
-                        petroleum::debug_log!("Framebuffer page {} map failed: {:?}, skipping\n", i, e);
+                        petroleum::debug_log!(
+                            "Framebuffer page {} map failed: {:?}, skipping\n",
+                            i,
+                            e
+                        );
                     }
                 }
             }

@@ -74,7 +74,9 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
     let pml4_phys = {
         let mut manager_guard = get_memory_manager().lock();
         let manager = manager_guard.as_mut().ok_or(SystemError::InternalError)?;
-        manager.allocate_frame().map_err(|_| SystemError::FrameAllocationFailed)?
+        manager
+            .allocate_frame()
+            .map_err(|_| SystemError::FrameAllocationFailed)?
     };
 
     let pml4_frame = x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(
@@ -161,7 +163,6 @@ pub fn map_user_page(
 
 // Re-export functions for easier access
 pub use petroleum::{is_user_address, validate_user_buffer};
-
 
 #[cfg(test)]
 mod tests {

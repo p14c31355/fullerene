@@ -7,4 +7,4 @@ pub mod init;
 pub mod mapper;
 
 // Re-export the main types
-pub use mapper::{Mapper, MapError, RegionBuilder};
+pub use mapper::{MapError, Mapper, RegionBuilder};

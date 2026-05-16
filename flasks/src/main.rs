@@ -264,7 +264,10 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
     qemu_args.push("-drive".to_string());
     qemu_args.push(ovmf_vars_fd_drive);
     qemu_args.push("-drive".to_string());
-    qemu_args.push(format!("file={},media=cdrom,if=ide,format=raw", iso_path_str));
+    qemu_args.push(format!(
+        "file={},media=cdrom,if=ide,format=raw",
+        iso_path_str
+    ));
 
     qemu_args.extend([
         "-no-reboot".to_string(),
@@ -309,7 +312,10 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
                 }
                 None => {
                     if timeout_handle.is_finished() {
-                        log::warn!("QEMU timed out after {} seconds. Killing process...", timeout_secs);
+                        log::warn!(
+                            "QEMU timed out after {} seconds. Killing process...",
+                            timeout_secs
+                        );
                         child.kill()?;
                         return Err(io::Error::other("QEMU execution timed out"));
                     }

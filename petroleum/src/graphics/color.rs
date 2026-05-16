@@ -4,7 +4,7 @@ use embedded_graphics::prelude::*;
 use core::marker::{Send, Sync};
 use core::ptr::{read_volatile, write_volatile};
 
-use crate::common::{EfiGraphicsPixelFormat, VgaFramebufferConfig};
+use crate::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig, VgaFramebufferConfig};
 use spin::{Mutex, Once};
 
 // --- FramebufferInfo ---
@@ -366,10 +366,21 @@ impl Button {
 
     /// Draw the button using the generic Renderer trait.
     pub fn draw(&self, renderer: &mut dyn crate::graphics::renderer::Renderer) {
-        renderer.draw_rect(self.x as i32, self.y as i32, self.width, self.height, self.bg_color);
+        renderer.draw_rect(
+            self.x as i32,
+            self.y as i32,
+            self.width,
+            self.height,
+            self.bg_color,
+        );
         let text_width = crate::calc_text_width(&self.text);
         let text_x = self.x as i32 + (self.width as i32 / 2) - (text_width / 2);
-        renderer.draw_text(text_x, self.y as i32 + (self.height as i32 / 2) - 5, &self.text, self.text_color);
+        renderer.draw_text(
+            text_x,
+            self.y as i32 + (self.height as i32 / 2) - 5,
+            &self.text,
+            self.text_color,
+        );
     }
 
     pub fn contains_point(&self, x: u32, y: u32) -> bool {

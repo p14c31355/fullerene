@@ -34,7 +34,8 @@ pub(crate) static mut MEMORY_MAP_BUFFER: [MemoryMapDescriptor; MAX_DESCRIPTORS] 
         ptr: core::ptr::null(),
         descriptor_size: 0,
     }
-}; MAX_DESCRIPTORS];
+};
+    MAX_DESCRIPTORS];
 
 /// Initialize the boot frame allocator with memory map
 pub fn init_frame_allocator(memory_map: &[impl MemoryDescriptorValidator]) {

@@ -2,17 +2,14 @@
 //!
 //! Uses the unified walker for safe traversal.
 
+use crate::page_table::raw::walker::{WalkError, walk};
 use crate::page_table::types::*;
-use crate::page_table::raw::walker::{walk, WalkError};
 
 /// Translate a virtual address to a physical address.
 ///
 /// Returns `Err` if the page table walk encounters a huge page conflict
 /// or an unused entry.
-pub fn translate(
-    root: &PageTable,
-    virt: CanonicalVirtAddr,
-) -> Result<u64, WalkError> {
+pub fn translate(root: &PageTable, virt: CanonicalVirtAddr) -> Result<u64, WalkError> {
     // We need a mutable reference for the walker, but we only read.
     // This is safe because walk() never modifies entries.
     let root_mut = unsafe { root.as_mut_for_walking() };
@@ -76,7 +73,11 @@ pub fn dump_page_table_walk<W: core::fmt::Write>(
     fault_virt: x86_64::VirtAddr,
     writer: &mut W,
 ) {
-    let _ = writeln!(writer, "Page Table Walk for 0x{:016x}:", fault_virt.as_u64());
+    let _ = writeln!(
+        writer,
+        "Page Table Walk for 0x{:016x}:",
+        fault_virt.as_u64()
+    );
 
     let root = unsafe { &*(root_virt.as_u64() as *const PageTable) };
     let root_mut = unsafe { &mut *(root_virt.as_u64() as *mut PageTable) };

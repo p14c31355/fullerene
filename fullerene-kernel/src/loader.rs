@@ -6,8 +6,8 @@
 use crate::process;
 use core::ptr;
 use goblin::elf::program_header::{PF_W, PF_X, PT_LOAD};
-use petroleum::page_table::types::PageTableHelper;
 use petroleum::page_table::process::ProcessPageTable;
+use petroleum::page_table::types::PageTableHelper;
 use x86_64::structures::paging::FrameAllocator;
 
 pub const PROGRAM_LOAD_BASE: u64 = 0x400000; // 4MB base address for user programs
@@ -155,9 +155,8 @@ pub fn load_program(
                         }
                     }
 
-                    let ppt = unsafe {
-                        &*(process_page_table_phys.as_u64() as *const ProcessPageTable)
-                    };
+                    let ppt =
+                        unsafe { &*(process_page_table_phys.as_u64() as *const ProcessPageTable) };
                     let _cr3_guard = unsafe { CrxSwitchGuard::new(ppt) };
 
                     // Copy file data

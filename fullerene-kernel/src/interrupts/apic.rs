@@ -2,10 +2,10 @@
 //!
 //! This module provides APIC initialization and management functions.
 
-use petroleum::hardware::{pic::disable_legacy_pic, ApicFlags, ApicOffsets, IO_APIC_BASE};
-use petroleum::init_io_apic;
 use petroleum::common::utils::reset_mutex_lock;
 use petroleum::hardware::ports::MsrHelper;
+use petroleum::hardware::{ApicFlags, ApicOffsets, IO_APIC_BASE, pic::disable_legacy_pic};
+use petroleum::init_io_apic;
 use spin::Mutex;
 
 /// APIC raw access structure
@@ -75,7 +75,9 @@ pub fn init_apic() {
     unsafe {
         reset_mutex_lock(&APIC);
         reset_mutex_lock(&petroleum::LOCAL_APIC_ADDRESS);
-        petroleum::serial::serial_log(format_args!("DEBUG: [init_apic] APIC and LOCAL_APIC_ADDRESS locks reset to 0\n"));
+        petroleum::serial::serial_log(format_args!(
+            "DEBUG: [init_apic] APIC and LOCAL_APIC_ADDRESS locks reset to 0\n"
+        ));
     }
 
     disable_legacy_pic();
@@ -87,7 +89,8 @@ pub fn init_apic() {
         if !ptr.is_null() {
             ptr as u64
         } else {
-            get_apic_base().unwrap_or(0xFEE00000) + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64
+            get_apic_base().unwrap_or(0xFEE00000)
+                + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64
         }
     };
     let mut apic = ApicRaw { base_addr };
@@ -101,7 +104,8 @@ pub fn init_apic() {
     apic.write(ApicOffsets::TMRINITCNT, 1000000);
 
     *APIC.lock() = Some(apic);
-    let io_apic_virt_base = IO_APIC_BASE + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64;
+    let io_apic_virt_base =
+        IO_APIC_BASE + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64;
     init_io_apic(base_addr, io_apic_virt_base);
 
     use super::syscall::setup_syscall;

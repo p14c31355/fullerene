@@ -2,10 +2,10 @@
 //!
 //! These functions use the unified walker internally.
 
-use crate::page_table::types::*;
 use crate::page_table::PageTableEntry;
-use crate::page_table::raw::walker::{walk, walk_or_create, FrameAlloc, WalkError};
 use crate::page_table::allocator::traits::FrameAllocator;
+use crate::page_table::raw::walker::{FrameAlloc, WalkError, walk, walk_or_create};
+use crate::page_table::types::*;
 
 /// Adapter: FrameAllocator → walker::FrameAlloc
 struct WalkerAdapter<'a, A: FrameAllocator>(&'a mut A);
@@ -94,7 +94,11 @@ pub fn unmap_range<A: FrameAllocator>(
     let pages = size / SIZE_4K;
 
     for _ in 0..pages {
-        if let Some(_frame) = unmap_page(root, unsafe { CanonicalVirtAddr::new_unchecked(addr) }, allocator)? {
+        if let Some(_frame) = unmap_page(
+            root,
+            unsafe { CanonicalVirtAddr::new_unchecked(addr) },
+            allocator,
+        )? {
             unmapped += 1;
         }
         addr += SIZE_4K;

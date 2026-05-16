@@ -146,13 +146,16 @@ fn display_system_stats_on_display(stats: &SystemStats) {
     if let Some(ref mut console) = *renderer {
         console.set_cursor(22, 0);
         console.set_color(0x03); // Cyan (VGA index)
-        let _ = core::fmt::write(console, format_args!(
-            "Processes: {}/{} | Memory: {} KB | Tick: {}\n",
-            stats.active_processes,
-            stats.total_processes,
-            stats.memory_used / 1024,
-            stats.uptime_ticks
-        ));
+        let _ = core::fmt::write(
+            console,
+            format_args!(
+                "Processes: {}/{} | Memory: {} KB | Tick: {}\n",
+                stats.active_processes,
+                stats.total_processes,
+                stats.memory_used / 1024,
+                stats.uptime_ticks
+            ),
+        );
     }
 }
 
@@ -180,7 +183,11 @@ fn monitor_environment() {
         log::debug!("High memory usage detected, running memory optimization");
     }
     if stats.active_processes > stats.total_processes / 2 {
-        log::warn!("High active process ratio: {}/{}", stats.active_processes, stats.total_processes);
+        log::warn!(
+            "High active process ratio: {}/{}",
+            stats.active_processes,
+            stats.total_processes
+        );
     }
 }
 
@@ -291,8 +298,8 @@ pub fn scheduler_loop() -> ! {
         if let Some(ref renderer) = *renderer_lock {
             let info = renderer.get_info();
             petroleum::serial::serial_log(format_args!(
-                "DEBUG: Renderer FB Virt Addr: {:#x}, Phys Addr: {:#x}, Stride: {}\n", 
-                info.address, 
+                "DEBUG: Renderer FB Virt Addr: {:#x}, Phys Addr: {:#x}, Stride: {}\n",
+                info.address,
                 info.address - petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64,
                 info.stride
             ));
@@ -328,7 +335,9 @@ pub fn scheduler_loop() -> ! {
             crate::process::yield_current();
         } else {
             // No processes to yield to, just pause briefly
-            for _ in 0..1000 { petroleum::cpu_pause(); }
+            for _ in 0..1000 {
+                petroleum::cpu_pause();
+            }
         }
     }
 }

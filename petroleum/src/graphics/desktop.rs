@@ -1,5 +1,7 @@
 use super::renderer::Renderer;
-use crate::{COLOR_BLACK, COLOR_DARK_GRAY, COLOR_LIGHT_BLUE, COLOR_TASKBAR, calc_text_width, Button};
+use crate::{
+    Button, COLOR_BLACK, COLOR_DARK_GRAY, COLOR_LIGHT_BLUE, COLOR_TASKBAR, calc_text_width,
+};
 
 pub fn draw_os_desktop(renderer: &mut dyn Renderer) {
     let mode = if cfg!(target_os = "uefi") {
@@ -42,10 +44,10 @@ fn draw_main_window(renderer: &mut dyn Renderer) {
     // draw_border_rect is a macro that uses embedded-graphics.
     // For now, we implement a simple border using rectangles.
     renderer.draw_rect(50, 80, 200, 100, 255); // Fill
-    renderer.draw_rect(50, 80, 200, 1, 64);    // Top
-    renderer.draw_rect(50, 179, 200, 1, 64);   // Bottom
-    renderer.draw_rect(50, 80, 1, 100, 64);    // Left
-    renderer.draw_rect(249, 80, 1, 100, 64);   // Right
+    renderer.draw_rect(50, 80, 200, 1, 64); // Top
+    renderer.draw_rect(50, 179, 200, 1, 64); // Bottom
+    renderer.draw_rect(50, 80, 1, 100, 64); // Left
+    renderer.draw_rect(249, 80, 1, 100, 64); // Right
 }
 
 fn draw_icons(renderer: &mut dyn Renderer) {
@@ -61,7 +63,7 @@ fn draw_taskbar_with_buttons(renderer: &mut dyn Renderer) {
         (height as i32 - bar_height as i32),
         renderer.get_resolution().0,
         bar_height,
-        COLOR_TASKBAR
+        COLOR_TASKBAR,
     );
 
     let start_y = height as i32 - bar_height as i32 + 5;
@@ -94,7 +96,12 @@ fn draw_shell_window(renderer: &mut dyn Renderer, x: u32, y: u32, width: u32, he
     renderer.draw_rect(x as i32, y as i32, width, height, 255); // BG
     renderer.draw_rect(x as i32, y as i32, width, 25, COLOR_DARK_GRAY); // Title bar
     renderer.draw_text(x as i32 + 10, y as i32 + 8, "Shell", COLOR_BLACK);
-    
+
     renderer.draw_text(x as i32 + 15, y as i32 + 40, "fullerene> ", COLOR_BLACK);
-    renderer.draw_text(x as i32 + 15, y as i32 + 55, "Welcome to Fullerene OS Shell", COLOR_BLACK);
+    renderer.draw_text(
+        x as i32 + 15,
+        y as i32 + 55,
+        "Welcome to Fullerene OS Shell",
+        COLOR_BLACK,
+    );
 }

@@ -43,12 +43,7 @@ macro_rules! safe_map {
 macro_rules! safe_map_4k {
     ($mapper:expr, $virt:expr => $phys:expr, $size:expr, $flags:expr) => {{
         #[cfg(feature = "debug_pf")]
-        $crate::serial_println!(
-            "map_4k: {:x} -> {:x} ({} KiB)",
-            $virt,
-            $phys,
-            $size / 1024
-        );
+        $crate::serial_println!("map_4k: {:x} -> {:x} ({} KiB)", $virt, $phys, $size / 1024);
         $mapper
             .map_region(
                 $crate::page_table::types::CanonicalVirtAddr::new($virt)

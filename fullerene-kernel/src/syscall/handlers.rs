@@ -3,7 +3,11 @@ use crate::process;
 use crate::process::{NEXT_PID, Process, ProcessState};
 use core::alloc::Layout;
 use core::sync::atomic::Ordering;
-use petroleum::{page_table::PageTableHelper, write_serial_bytes, common::memory::{user_slice, user_slice_mut}};
+use petroleum::{
+    common::memory::{user_slice, user_slice_mut},
+    page_table::PageTableHelper,
+    write_serial_bytes,
+};
 use x86_64::{PhysAddr, VirtAddr};
 
 // POSIX-style open flags
@@ -175,7 +179,7 @@ fn syscall_read(fd: core::ffi::c_int, buffer: *mut u8, count: usize) -> SyscallR
     if count == 0 {
         return Ok(0);
     }
-    
+
     let data = unsafe { user_slice_mut(buffer, count, false) }
         .map_err(|_| SyscallError::InvalidArgument)?;
 

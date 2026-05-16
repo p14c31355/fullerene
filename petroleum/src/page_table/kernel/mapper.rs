@@ -10,10 +10,10 @@
 //!     .apply()?;
 //! ```
 
-use crate::page_table::types::*;
-use crate::page_table::raw::walker::{walk_or_create, FrameAlloc, WalkError};
 use crate::page_table::PageTableEntry;
 use crate::page_table::allocator::traits::FrameAllocator;
+use crate::page_table::raw::walker::{FrameAlloc, WalkError, walk_or_create};
+use crate::page_table::types::*;
 
 /// Mapping errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,15 +195,21 @@ impl<'m, 'a, A: FrameAllocator> RegionBuilder<'m, 'a, A> {
 
                 match page_size {
                     SIZE_1G => {
-                        self.mapper
-                            .map_1g(CanonicalVirtAddr::new(virt).unwrap(), phys, self.flags)?;
+                        self.mapper.map_1g(
+                            CanonicalVirtAddr::new(virt).unwrap(),
+                            phys,
+                            self.flags,
+                        )?;
                         virt += SIZE_1G;
                         phys += SIZE_1G;
                         remaining -= SIZE_1G;
                     }
                     SIZE_2M => {
-                        self.mapper
-                            .map_2m(CanonicalVirtAddr::new(virt).unwrap(), phys, self.flags)?;
+                        self.mapper.map_2m(
+                            CanonicalVirtAddr::new(virt).unwrap(),
+                            phys,
+                            self.flags,
+                        )?;
                         virt += SIZE_2M;
                         phys += SIZE_2M;
                         remaining -= SIZE_2M;
@@ -211,7 +217,11 @@ impl<'m, 'a, A: FrameAllocator> RegionBuilder<'m, 'a, A> {
                     _ => {
                         let frame = PhysFrame::from_start_address(phys)
                             .ok_or(MapError::InvalidAlignment)?;
-                        self.mapper.map_4k(CanonicalVirtAddr::new(virt).unwrap(), frame, self.flags)?;
+                        self.mapper.map_4k(
+                            CanonicalVirtAddr::new(virt).unwrap(),
+                            frame,
+                            self.flags,
+                        )?;
                         virt += SIZE_4K;
                         phys += SIZE_4K;
                         remaining -= SIZE_4K;
@@ -221,9 +231,10 @@ impl<'m, 'a, A: FrameAllocator> RegionBuilder<'m, 'a, A> {
         } else {
             // Always use 4 KiB pages
             while remaining > 0 {
-                let frame = PhysFrame::from_start_address(phys)
-                    .ok_or(MapError::InvalidAlignment)?;
-                self.mapper.map_4k(CanonicalVirtAddr::new(virt).unwrap(), frame, self.flags)?;
+                let frame =
+                    PhysFrame::from_start_address(phys).ok_or(MapError::InvalidAlignment)?;
+                self.mapper
+                    .map_4k(CanonicalVirtAddr::new(virt).unwrap(), frame, self.flags)?;
                 virt += SIZE_4K;
                 phys += SIZE_4K;
                 remaining = remaining.saturating_sub(SIZE_4K);
@@ -268,7 +279,11 @@ pub fn unmap_range<A: FrameAllocator>(
     let mut addr = virt.as_u64();
 
     for _ in 0..(size / SIZE_4K) {
-        if let Some(_frame) = unmap_page(root, unsafe { CanonicalVirtAddr::new_unchecked(addr) }, allocator)? {
+        if let Some(_frame) = unmap_page(
+            root,
+            unsafe { CanonicalVirtAddr::new_unchecked(addr) },
+            allocator,
+        )? {
             unmapped += 1;
         }
         addr += SIZE_4K;
@@ -293,7 +308,8 @@ mod tests {
         let virt = CanonicalVirtAddr::new(0x1000).unwrap();
 
         let mut mapper = Mapper::new(&mut root, &mut alloc);
-        mapper.map_4k(virt, frame, Flags::PRESENT | Flags::WRITABLE)
+        mapper
+            .map_4k(virt, frame, Flags::PRESENT | Flags::WRITABLE)
             .unwrap();
 
         // Verify the entry

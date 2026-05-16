@@ -17,7 +17,10 @@ macro_rules! define_panic_handler {
             // Print location info (file:line:col) to serial
             if let Some(loc) = info.location() {
                 $crate::serial::_print(format_args!(
-                    "PANIC at {}:{}:{}\n", loc.file(), loc.line(), loc.column()
+                    "PANIC at {}:{}:{}\n",
+                    loc.file(),
+                    loc.line(),
+                    loc.column()
                 ));
             }
             // Print the panic message — PanicInfo implements Display
@@ -60,6 +63,7 @@ pub mod bare_metal_graphics_detection;
 pub mod bare_metal_pci;
 #[macro_use]
 pub mod common;
+pub mod boot;
 pub mod debug;
 pub mod filesystem;
 pub mod graphics;
@@ -70,7 +74,6 @@ pub mod page_table;
 pub mod serial;
 pub mod transition;
 pub mod uefi_helpers;
-pub mod boot;
 pub use apic::{IoApic, IoApicRedirectionEntry, init_io_apic};
 // Macros with #[macro_export] are automatically available at root, no need to re-export
 pub use common::logging::{SystemError, SystemResult};
@@ -84,8 +87,8 @@ pub use graphics::*;
 pub use hardware::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 
 pub use serial::SERIAL_PORT_WRITER as SERIAL1;
-pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 pub use serial::{COM1_DATA_PORT, COM1_STATUS_PORT};
+pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
 
 // Buffer operation wrappers (used by petroleum internally)
 pub fn clear_line_range<B: TextBufferOperations + ?Sized>(
@@ -152,7 +155,9 @@ macro_rules! unmap_page_range {
 /// Deprecated: Returns (0, 0, 0).
 #[macro_export]
 macro_rules! get_memory_stats {
-    () => { $crate::page_table::get_memory_stats() };
+    () => {
+        $crate::page_table::get_memory_stats()
+    };
 }
 
 use spin::{Mutex, Once};
@@ -289,7 +294,9 @@ pub unsafe fn write_serial_bytes(port: u16, status_port: u16, bytes: &[u8]) {
 #[macro_export]
 macro_rules! write_serial_bytes {
     ($port:expr, $status:expr, $bytes:expr) => {
-        unsafe { $crate::write_serial_bytes($port, $status, $bytes); }
+        unsafe {
+            $crate::write_serial_bytes($port, $status, $bytes);
+        }
     };
 }
 
