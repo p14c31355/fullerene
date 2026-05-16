@@ -51,6 +51,26 @@ pub fn kernel_data_selector() -> SegmentSelector {
     unsafe { KERNEL_DATA_SELECTOR.expect("KERNEL_DATA_SELECTOR not initialized") }
 }
 
+/// Public accessor for CODE_SELECTOR (for fallback in ProcessContext)
+pub fn code_selector() -> Option<SegmentSelector> {
+    unsafe { CODE_SELECTOR.as_ref().copied() }
+}
+
+/// Public accessor for KERNEL_DATA_SELECTOR (for fallback in ProcessContext)
+pub fn kernel_data_selector_fallback() -> Option<SegmentSelector> {
+    unsafe { KERNEL_DATA_SELECTOR.as_ref().copied() }
+}
+
+/// Public accessor for USER_CODE_SELECTOR (for fallback in ProcessContext)
+pub fn user_code_selector_fallback() -> Option<SegmentSelector> {
+    unsafe { USER_CODE_SELECTOR.as_ref().copied() }
+}
+
+/// Public accessor for USER_DATA_SELECTOR (for fallback in ProcessContext)
+pub fn user_data_selector_fallback() -> Option<SegmentSelector> {
+    unsafe { USER_DATA_SELECTOR.as_ref().copied() }
+}
+
 pub fn load() {
     let gdt = unsafe {
         core::mem::transmute::<&GlobalDescriptorTable, &'static GlobalDescriptorTable>(

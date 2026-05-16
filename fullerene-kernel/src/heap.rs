@@ -5,7 +5,7 @@
 
 pub use petroleum::page_table::BootInfoFrameAllocator;
 
-pub const HEAP_SIZE: usize = 1024 * 1024; // 1MB heap
+pub const HEAP_SIZE: usize = 4 * 1024 * 1024; // 4MB heap
 pub const KERNEL_STACK_SIZE: usize = 4096 * 64; // 256KB
 
 use petroleum::page_table::MemoryDescriptorValidator;

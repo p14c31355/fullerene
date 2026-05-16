@@ -70,8 +70,9 @@ impl Default for ProcessContext {
             rflags: 0x0202, // IF flag set
             rip: 0,
             segments: [
-                crate::gdt::kernel_code_selector().0 as u64, // cs
-                crate::gdt::kernel_code_selector().0 as u64, // ss
+                // Use fallback segment selectors if GDT not ready
+                unsafe { crate::gdt::code_selector().as_ref().map(|s| s.0 as u64).unwrap_or(1) }, // cs
+                unsafe { crate::gdt::kernel_data_selector_fallback().as_ref().map(|s| s.0 as u64).unwrap_or(2) }, // ss
                 0,
                 0,
                 0,
@@ -140,13 +141,13 @@ impl Process {
         if self.is_user {
             // For user processes, the context RSP should be the user stack
             self.context.regs[7] = self.user_stack.as_u64(); // rsp
-            self.context.segments[0] = crate::gdt::user_code_selector().0 as u64; // cs
-            self.context.segments[1] = crate::gdt::user_data_selector().0 as u64; // ss
+            self.context.segments[0] = unsafe { crate::gdt::user_code_selector_fallback().as_ref().map(|s| s.0 as u64).unwrap_or(1) }; // cs
+            self.context.segments[1] = unsafe { crate::gdt::user_data_selector_fallback().as_ref().map(|s| s.0 as u64).unwrap_or(2) }; // ss
         } else {
             // For kernel processes, the context RSP is the kernel stack
             self.context.regs[7] = kernel_stack_top.as_u64(); // rsp
-            self.context.segments[0] = crate::gdt::kernel_code_selector().0 as u64; // cs
-            self.context.segments[1] = crate::gdt::kernel_code_selector().0 as u64; // ss
+            self.context.segments[0] = unsafe { crate::gdt::code_selector().as_ref().map(|s| s.0 as u64).unwrap_or(1) }; // cs
+            self.context.segments[1] = unsafe { crate::gdt::kernel_data_selector_fallback().as_ref().map(|s| s.0 as u64).unwrap_or(2) }; // ss
         }
 
         // Set RIP to entry point directly, assuming it's an extern "C" function
@@ -240,6 +241,18 @@ pub static CURRENT_PROCESS: AtomicUsize = AtomicUsize::new(0);
 /// Initialize process management system
 pub fn init() {
     mem_debug!("Process: init start\n");
+
+    let heap_start = petroleum::common::memory::HEAP_START.load(core::sync::atomic::Ordering::SeqCst);
+    let heap_end = petroleum::common::memory::HEAP_END.load(core::sync::atomic::Ordering::SeqCst);
+    
+    let mut buf = [0u8; 16];
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [Process::init] Heap range: 0x");
+    let len = petroleum::serial::format_hex_to_buffer(heap_start as u64, &mut buf, 16);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b" - 0x");
+    let len = petroleum::serial::format_hex_to_buffer(heap_end as u64, &mut buf, 16);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
     // Create idle process
     let idle_addr = VirtAddr::new(idle_loop as *const () as usize as u64);
@@ -455,11 +468,11 @@ pub fn current_pid() -> Option<ProcessId> {
 
 /// Yield current process
 pub fn yield_current() {
-    let old_pid = current_pid();
+    let old_pid = current_pid().expect("yield_current called with no current process");
     schedule_next();
     let new_pid = current_pid().expect("schedule_next failed to select a process");
     unsafe {
-        context_switch(old_pid, new_pid);
+        context_switch(Some(old_pid), new_pid);
     }
 }
 
