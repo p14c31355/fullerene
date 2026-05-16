@@ -189,7 +189,7 @@ fn install_vga_framebuffer_config(_st: &EfiSystemTable) {
     ));
 
     // Save to global instead of installing config table to avoid hang
-    petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config)));
+    petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(move || spin::Mutex::new(Some(config)));
 
     petroleum::println!("VGA framebuffer config saved globally successfully.");
 }

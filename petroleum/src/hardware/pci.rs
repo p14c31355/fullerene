@@ -252,14 +252,14 @@ impl PrivatePciDevice {
 
 /// PCI Bus scanner for device discovery
 pub struct PciScanner {
-    devices: alloc::vec::Vec<PciDevice>,
+    devices: heapless::Vec<PciDevice, { crate::page_table::constants::MAX_PCI_DEVICES }>,
 }
 
 impl PciScanner {
     /// Create a new PCI scanner
     pub fn new() -> Self {
         Self {
-            devices: alloc::vec::Vec::new(),
+            devices: heapless::Vec::new(),
         }
     }
 
@@ -271,7 +271,7 @@ impl PciScanner {
             for device in 0..=31u8 {
                 for function in 0..=7u8 {
                     if let Some(pci_device) = PciDevice::new(bus, device, function) {
-                        self.devices.push(pci_device);
+                        let _ = self.devices.push(pci_device);
                     }
                 }
             }

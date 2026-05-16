@@ -4,11 +4,7 @@ use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus,
 
 // Module declarations for separated functionality
 pub mod heap;
-
-/// Initialize heap using separated heap module
-pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
-    heap::init_heap(bs)
-}
+pub use heap::init_heap;
 
 /// Exits boot services and jumps to the kernel's entry point.
 /// This function is the final step of the bootloader.
@@ -20,11 +16,6 @@ pub fn exit_boot_services_and_jump(
     _entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
 ) -> petroleum::common::Result<!> {
     // Immediate debug prints on entry to pinpoint exact hang location
-    #[cfg(feature = "debug_loader")]
-    {
-        petroleum::info_log!("ENTER");
-        petroleum::info_log!("system_table={:#x}", system_table as usize);
-    }
 
     #[cfg(feature = "debug_loader")]
     petroleum::info_log!("About to get boot_services ptr");

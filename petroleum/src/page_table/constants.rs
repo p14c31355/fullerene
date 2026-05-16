@@ -17,6 +17,10 @@ pub const HIGHER_HALF_OFFSET: VirtAddr = VirtAddr::new(0xFFFF_8000_0000_0000);
 pub const TEMP_VA_FOR_DESTROY: VirtAddr = VirtAddr::new(0xFFFF_A000_0000_0000);
 pub const TEMP_VA_FOR_CLONE: VirtAddr = VirtAddr::new(0xFFFF_9000_0000_0000);
 
+pub const MAX_BITMAP_CAPACITY: usize = 4096;
+pub const MAX_PCI_DEVICES: usize = 16;
+pub const MAX_SERIAL_BUF: usize = 256;
+pub const MAX_USER_SPACE_SIZE: usize = 4096;
 pub type BootInfoFrameAllocator = BitmapFrameAllocator;
 
 // Global accessor for BootInfoFrameAllocator (deadlock-free, single-threaded kernel context)

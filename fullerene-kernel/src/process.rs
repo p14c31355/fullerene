@@ -148,7 +148,7 @@ impl Process {
 
 /// Manages the global list of processes with encapsulated locking
 pub struct ProcessManager {
-    processes: Mutex<Vec<(ProcessId, Process), MAX_PROCESSES>>,
+    processes: Mutex<heapless::Vec<(ProcessId, Process), MAX_PROCESSES>>,
 }
 
 impl ProcessManager {
@@ -245,7 +245,7 @@ pub fn create_process(
 ) -> Result<ProcessId, petroleum::common::logging::SystemError> {
     mem_debug!("Process: create_process starting\n");
 
-    let mut process = Process::new(name, entry_point_address, is_user);
+    let process = Process::new(name, entry_point_address, is_user);
 
     // For now, skip actual stack allocation and page table creation
     // These require heap allocator which may not be ready during early init

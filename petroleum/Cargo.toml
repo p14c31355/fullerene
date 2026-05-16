@@ -9,7 +9,7 @@ std = []
 vga_panic = []
 
 [dependencies]
-spin = { version = "0.10.0", default-features = false, features = [
+spin = { version = "0.11.0", default-features = false, features = [
   "once",
   "mutex",
   "spin_mutex",
