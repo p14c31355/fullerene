@@ -88,10 +88,16 @@ macro_rules! port_read {
     };
 }
 
+/// Writes a VGA attribute register safely.
+///
+/// Replaces magic numbers with constants from `HardwarePorts` and adds
+/// documentation explaining the sequence.
 pub fn write_vga_attribute_register(index: u8, value: u8) {
-    port_read_u8!(0x3DA);
-    port_write!(0x3C0, index);
-    port_write!(0x3C0, value);
+    // Reset flip‑flop by reading the status register.
+    port_read_u8!(HardwarePorts::STATUS);
+    // Write the attribute index and then the value.
+    port_write!(HardwarePorts::ATTRIBUTE_INDEX, index);
+    port_write!(HardwarePorts::ATTRIBUTE_INDEX, value);
 }
 
 /// Generic port sequence writer trait

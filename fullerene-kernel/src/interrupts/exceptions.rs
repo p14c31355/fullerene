@@ -109,18 +109,9 @@ fn kernel_fault_halt(frame: &InterruptStackFrame, name: &str, extra: &str) -> ! 
         frame.code_segment.0,
         extra,
     );
-    let mut rbp: *const usize;
-    unsafe { asm!("mov {}, rbp", out(reg) rbp) };
-    raw_log!("Backtrace:\n");
-    for i in 0..16 {
-        if rbp.is_null() || (rbp as usize) < 0x1000 { break; }
-        unsafe {
-            let ret_addr = *rbp.offset(1);
-            if ret_addr == 0 { break; }
-            raw_log!("  [{}] {:#x}\n", i, ret_addr);
-            rbp = *rbp as *const usize;
-        }
-    }
+    
+    petroleum::debug::print_backtrace(&mut RawSerialWriter);
+    
     safe_halt()
 }
 

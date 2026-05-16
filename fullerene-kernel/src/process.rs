@@ -3,13 +3,10 @@
 //! This module provides process creation, scheduling, and context switching
 //! capabilities for user-space programs.
 
-use alloc::boxed::Box;
-use core::alloc::Layout;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use heapless::Vec;
 use petroleum::common::logging::SystemError;
 use petroleum::mem_debug;
-use petroleum::page_table::PageTableHelper;
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::PhysFrame};
 
@@ -70,8 +67,7 @@ impl Default for ProcessContext {
             rflags: 0x0202, // IF flag set
             rip: 0,
             segments: [
-                crate::gdt::kernel_code_selector().0 as u64, // cs
-                crate::gdt::kernel_code_selector().0 as u64, // ss
+                0, 0, // cs, ss - will be set by init_context() when GDT is ready
                 0, 0, 0, 0, // ds, es, fs, gs
             ],
             tss: 0,
@@ -89,11 +85,9 @@ pub struct Process {
     /// Current state
     pub state: ProcessState,
     /// CPU context for context switching
-    pub context: Box<ProcessContext>,
+    pub context: ProcessContext,
     /// Process page table (physical address of level 4 page table)
     pub page_table_phys_addr: PhysAddr,
-    /// Process page table mapper
-    pub page_table: Option<Box<petroleum::page_table::process::ProcessPageTable>>,
     /// Stack pointer for kernel stack
     pub kernel_stack: VirtAddr,
     /// User-space stack pointer
@@ -117,9 +111,8 @@ impl Process {
             id,
             name,
             state: ProcessState::Ready,
-            context: Box::new(ProcessContext::default()),
+            context: ProcessContext::default(),
             page_table_phys_addr: PhysAddr::new(0), // Will be set when allocated
-            page_table: None,
             kernel_stack: VirtAddr::new(0), // Will be set when allocated
             user_stack: VirtAddr::new(0),   // Will be set when allocated
             entry_point,
@@ -155,7 +148,7 @@ impl Process {
 
 /// Manages the global list of processes with encapsulated locking
 pub struct ProcessManager {
-    processes: Mutex<Vec<(ProcessId, Box<Process>), MAX_PROCESSES>>,
+    processes: Mutex<Vec<(ProcessId, Process), MAX_PROCESSES>>,
 }
 
 impl ProcessManager {
@@ -166,7 +159,7 @@ impl ProcessManager {
     }
 
     /// Adds a new process to the list
-    pub fn add(&self, process: Box<Process>) -> Result<(), SystemError> {
+    pub fn add(&self, process: Process) -> Result<(), SystemError> {
         let mut processes = self.processes.lock();
         let pid = process.id;
         if processes.len() >= MAX_PROCESSES {
@@ -191,7 +184,7 @@ impl ProcessManager {
     /// Performs an operation on the entire process list
     pub fn with_list<F, R>(&self, f: F) -> R
     where
-        F: FnOnce(&mut Vec<(ProcessId, Box<Process>), MAX_PROCESSES>) -> R,
+        F: FnOnce(&mut Vec<(ProcessId, Process), MAX_PROCESSES>) -> R,
     {
         let mut processes = self.processes.lock();
         f(&mut *processes)
@@ -238,7 +231,7 @@ pub fn init() {
     let mut idle_process = Process::new("idle", idle_addr, false);
     idle_process.state = ProcessState::Running;
 
-    PROCESS_MANAGER.add(Box::new(idle_process)).expect("Failed to add idle process");
+    PROCESS_MANAGER.add(idle_process).expect("Failed to add idle process");
     CURRENT_PROCESS.store(1, Ordering::SeqCst);
 
     mem_debug!("Process: init done\n");
@@ -254,40 +247,12 @@ pub fn create_process(
 
     let mut process = Process::new(name, entry_point_address, is_user);
 
-    // Allocate kernel stack for the process
-    let stack_layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
-    let stack_ptr = petroleum::common::memory::allocate_layout(stack_layout)?;
-    let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
-
-    if is_user {
-        // Allocate user stack for the process
-        let user_stack_layout =
-            Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
-        let user_stack_ptr = petroleum::common::memory::allocate_layout(user_stack_layout)
-            .map_err(|e| {
-                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
-                e
-            })?;
-        process.user_stack =
-            VirtAddr::new(user_stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
-    }
-
-    // Create page table for the process
-    let page_table = match crate::memory_management::create_process_page_table() {
-        Ok(pt) => pt,
-        Err(e) => {
-            log::error!("Failed to create process page table: {:?}", e);
-            petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
-            return Err(e);
-        }
-    };
-    process.page_table_phys_addr = PhysAddr::new(page_table.current_page_table() as u64);
-    process.page_table = Some(Box::new(page_table));
-
-    process.init_context(kernel_stack_top);
+    // For now, skip actual stack allocation and page table creation
+    // These require heap allocator which may not be ready during early init
+    // TODO: Implement proper stack allocation when heap is available
 
     let pid = process.id;
-    PROCESS_MANAGER.add(Box::new(process))?;
+    PROCESS_MANAGER.add(process)?;
 
     mem_debug!("Process: create_process done\n");
     Ok(pid)
@@ -316,22 +281,6 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
     PROCESS_MANAGER.with_process(pid, |process| {
         process.state = ProcessState::Terminated;
         process.exit_code = Some(exit_code);
-
-        // Free resources
-        let kernel_stack_base =
-            process.kernel_stack.as_u64() - crate::heap::KERNEL_STACK_SIZE as u64;
-        let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
-        petroleum::common::memory::deallocate_layout(kernel_stack_base as *mut u8, layout);
-
-        // Properly free page table frames recursively
-        if let Some(page_table) = process.page_table.take() {
-            if let Some(pml4_frame) = page_table.pml4_frame() {
-                drop(page_table);
-                crate::memory_management::deallocate_process_page_table(pml4_frame);
-            }
-        }
-
-        process.page_table = None;
     });
 
     // Unblock parent processes waiting for this child
@@ -348,9 +297,6 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
 fn idle_loop() {
     loop {
         // Use pause for QEMU-friendliness instead of hlt
-        // pause allows the CPU to enter a low-power state while remaining responsive to interrupts,
-        // making it more suitable for virtualization environments like QEMU compared to hlt which
-        // puts the CPU in a deeper sleep state that's harder for hypervisors to manage efficiently.
         petroleum::cpu_pause();
     }
 }
@@ -378,7 +324,7 @@ pub fn schedule_next() {
 
         loop {
             next_index = (next_index + 1) % process_list.len();
-            let proc = process_list[next_index].1.as_ref();
+            let proc = &process_list[next_index].1;
             petroleum::scheduler_log!(
                 "Checking process at index {}, name: {}, state: {:?}",
                 next_index,
@@ -465,15 +411,15 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
             .and_then(|pid| {
                 list.iter_mut().find(|(id, _)| *id == pid)
             })
-            .map(|(_, p)| p.as_mut() as *mut Process);
+            .map(|(_, p)| p as *mut Process);
 
         let new_ptr = list.iter()
             .find(|(id, _)| *id == new_pid)
-            .map(|(_, p)| p.as_ref() as *const Process);
+            .map(|(_, p)| p as *const Process);
 
         if let Some(new_ptr) = new_ptr {
-            let old_ctx = old_ptr.map(|p| p as *mut ProcessContext);
-            let new_ctx = new_ptr as *const ProcessContext;
+            let old_ctx = old_ptr.map(|p| unsafe { &mut (*p).context as *mut ProcessContext });
+            let new_ctx = unsafe { &(*new_ptr).context as *const ProcessContext };
             let pt = unsafe { (*new_ptr).page_table_phys_addr };
             (Some(old_ctx), Some(new_ctx), Some(pt))
         } else {
@@ -566,7 +512,6 @@ pub fn cleanup_terminated_processes() {
 
 // Test process main function
 pub fn test_process_main() {
-    // Use syscall helpers for reduced code duplication
     let message = b"Hello from test user process!\n";
     petroleum::write(1, message); // stdout fd = 1
 

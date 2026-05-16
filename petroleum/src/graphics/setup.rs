@@ -74,16 +74,17 @@ pub fn setup_cirrus_vga_mode() {
 
     // Cirrus-specific register setup for better graphics mode support
     // Cirrus Logic 5446/5480 specific registers
-    let mut index_writer = PortWriter::<u8>::new(0x3C4); // Sequencer index
-    let mut data_writer = PortWriter::<u8>::new(0x3C5); // Sequencer data
+    // Use defined constants for sequencer ports
+    let mut index_writer = PortWriter::<u8>::new(HardwarePorts::SEQUENCER_INDEX);
+    let mut data_writer = PortWriter::<u8>::new(HardwarePorts::SEQUENCER_DATA);
 
     // Enable extended memory and better graphics support
-    index_writer.write_safe(0x06u8); // Unlock Cirrus registers
-    data_writer.write_safe(0x12u8);
-
-    // Set up Cirrus-specific graphics registers for better desktop display
-    index_writer.write_safe(0x1Eu8); // Extended mode register
-    data_writer.write_safe(0x01u8); // Enable extended memory
+    // Unlock Cirrus registers and set extended mode using the generic helper
+    write_vga_registers(
+        HardwarePorts::SEQUENCER_INDEX,
+        HardwarePorts::SEQUENCER_DATA,
+        &[(0x06u8, 0x12u8), (0x1Eu8, 0x01u8)],
+    );
 
     log_step!("Cirrus VGA: Cirrus-specific initialization complete\n");
 }

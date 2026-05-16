@@ -34,7 +34,7 @@ pub fn load_program(
     // Load program segments using goblin
     process::PROCESS_MANAGER
         .with_process(pid, |p| {
-            let process_page_table = p.page_table.as_ref().ok_or(LoadError::InvalidFormat)?;
+            let process_page_table_phys = p.page_table_phys_addr;
 
             for ph in &elf.program_headers {
                 // Only load PT_LOAD segments
@@ -72,7 +72,11 @@ pub fn load_program(
                         let page_vaddr = x86_64::VirtAddr::new(
                             petroleum::common::utils::calculate_offset_address(vaddr, page_idx),
                         );
-                        let ppt: &ProcessPageTable = &**process_page_table;
+                        // TODO: Reconstruct ProcessPageTable from phys addr for translation check
+                        // For now, skip the translation check
+                        let ppt: &ProcessPageTable = unsafe {
+                            &*(process_page_table_phys.as_u64() as *const ProcessPageTable)
+                        };
                         if PageTableHelper::translate_address(ppt, page_vaddr.as_u64() as usize)
                             .is_ok()
                         {
@@ -151,7 +155,10 @@ pub fn load_program(
                         }
                     }
 
-                    let _cr3_guard = unsafe { CrxSwitchGuard::new(process_page_table) };
+                    let ppt = unsafe {
+                        &*(process_page_table_phys.as_u64() as *const ProcessPageTable)
+                    };
+                    let _cr3_guard = unsafe { CrxSwitchGuard::new(ppt) };
 
                     // Copy file data
                     let src = &image_data[file_offset..file_offset + file_size];

@@ -2,7 +2,7 @@
 //!
 //! This module provides IDT initialization and handler setup.
 
-use super::apic::{KEYBOARD_INTERRUPT_INDEX, MOUSE_INTERRUPT_INDEX, TIMER_INTERRUPT_INDEX};
+use crate::interrupts::{KEYBOARD_INTERRUPT_INDEX, MOUSE_INTERRUPT_INDEX, TIMER_INTERRUPT_INDEX};
 use super::exceptions::*;
 use super::input::{keyboard_handler, mouse_handler, timer_handler};
 use core::sync::atomic::{AtomicBool, Ordering};
