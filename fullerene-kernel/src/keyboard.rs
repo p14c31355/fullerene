@@ -95,7 +95,11 @@ fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> 
     match scancode {
         0x02..=0x0B => {
             let index = (scancode - 0x02) as usize;
-            Some(if shift_pressed { NUMBERS_SHIFT[index] } else { NUMBERS_BASE[index] })
+            Some(if shift_pressed {
+                NUMBERS_SHIFT[index]
+            } else {
+                NUMBERS_BASE[index]
+            })
         }
         0x10..=0x19 => {
             let index = (scancode - 0x10) as usize;
@@ -109,12 +113,12 @@ fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> 
             let index = (scancode - 0x2C) as usize;
             Some(process_alphabetic(ZXCV_BASE[index], modifiers))
         }
-        0x0C | 0x0D | 0x1A | 0x1B | 0x27 | 0x28 | 0x29 | 0x2B | 0x33 | 0x34 | 0x35 => {
-            PUNCTUATION.iter()
-                .find(|&&(code, _, _)| code == scancode)
-                .map(|&(_, base, shifted)| if shift_pressed { shifted } else { base })
-        }
-        _ => SPECIAL_KEYS.iter()
+        0x0C | 0x0D | 0x1A | 0x1B | 0x27 | 0x28 | 0x29 | 0x2B | 0x33 | 0x34 | 0x35 => PUNCTUATION
+            .iter()
+            .find(|&&(code, _, _)| code == scancode)
+            .map(|&(_, base, shifted)| if shift_pressed { shifted } else { base }),
+        _ => SPECIAL_KEYS
+            .iter()
             .find(|&&(code, _)| code == scancode)
             .map(|&(_, ascii)| ascii),
     }

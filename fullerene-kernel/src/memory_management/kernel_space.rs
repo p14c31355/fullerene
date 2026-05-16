@@ -3,10 +3,10 @@
 //! Uses the declarative mapper for concise, safe initial mappings.
 
 use crate::memory_management::KERNEL_OFFSET;
-use petroleum::page_table::types::*;
-use petroleum::page_table::kernel::mapper::{Mapper, MapError};
 use petroleum::page_table::allocator::bitmap::BitmapFrameAllocator;
 use petroleum::page_table::allocator::traits::FrameAllocatorExt;
+use petroleum::page_table::kernel::mapper::{MapError, Mapper};
+use petroleum::page_table::types::*;
 
 /// Set up the kernel's initial page tables.
 ///

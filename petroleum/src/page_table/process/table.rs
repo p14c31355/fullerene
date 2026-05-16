@@ -90,12 +90,8 @@ impl ProcessPageTable {
         let (current_pml4, _) = Cr3::read();
         let l4_virt = phys_offset + current_pml4.start_address().as_u64();
 
-        let mapper = unsafe {
-            OffsetPageTable::new(
-                &mut *(l4_virt.as_mut_ptr::<PageTable>()),
-                phys_offset,
-            )
-        };
+        let mapper =
+            unsafe { OffsetPageTable::new(&mut *(l4_virt.as_mut_ptr::<PageTable>()), phys_offset) };
 
         self.mapper = Some(mapper);
         self.pml4_frame = Some(current_pml4);
@@ -136,7 +132,11 @@ impl PageTableHelper for ProcessPageTable {
                 }
                 Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {}
                 Err(x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed) => {
-                    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [map_page] FrameAllocationFailed\n");
+                    crate::write_serial_bytes!(
+                        0x3F8,
+                        0x3FD,
+                        b"DEBUG: [map_page] FrameAllocationFailed\n"
+                    );
                     return Err(crate::common::logging::SystemError::FrameAllocationFailed);
                 }
                 Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {
@@ -327,9 +327,9 @@ impl PageTableHelper for ProcessPageTable {
                 4,
                 crate::page_table::raw::TEMP_VA_FOR_DESTROY,
             )?;
-            frame_allocator.deallocate_frame(
-                crate::page_table::types::PhysFrame { start_address: frame.start_address().as_u64() }
-            );
+            frame_allocator.deallocate_frame(crate::page_table::types::PhysFrame {
+                start_address: frame.start_address().as_u64(),
+            });
             Ok(())
         } else {
             Err(crate::common::logging::SystemError::InvalidArgument)
@@ -348,15 +348,14 @@ impl PageTableHelper for ProcessPageTable {
         // Ensure the mapper points to the current CR3 page table.
         let (current_pml4, _) = x86_64::registers::control::Cr3::read();
         if self.pml4_frame.map(|f| f.start_address()) != Some(current_pml4.start_address()) {
-            let phys_offset = self.mapper.as_ref()
+            let phys_offset = self
+                .mapper
+                .as_ref()
                 .map(|m| m.phys_offset())
                 .unwrap_or(crate::page_table::constants::HIGHER_HALF_OFFSET);
             let pml4_virt = phys_offset + current_pml4.start_address().as_u64();
             self.mapper = Some(unsafe {
-                OffsetPageTable::new(
-                    &mut *(pml4_virt.as_mut_ptr::<PageTable>()),
-                    phys_offset,
-                )
+                OffsetPageTable::new(&mut *(pml4_virt.as_mut_ptr::<PageTable>()), phys_offset)
             });
             self.pml4_frame = Some(current_pml4);
         }
@@ -437,7 +436,8 @@ impl PageTableHelper for ProcessPageTable {
         // CRITICAL: Must track the new frame in allocated_tables so that:
         // 1. init_page_table() can find it via pt_manager.allocated_tables().get()
         // 2. The process's page_table_phys_addr is correctly set
-        self.allocated_tables.insert(new_frame.start_address().as_u64() as usize, new_frame);
+        self.allocated_tables
+            .insert(new_frame.start_address().as_u64() as usize, new_frame);
 
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: clone_page_table shallow done\n");
         Ok(new_frame.start_address().as_u64() as usize)
@@ -494,9 +494,9 @@ fn destroy_page_table_recursive<'a>(
                     level - 1,
                     crate::page_table::raw::TEMP_VA_FOR_DESTROY,
                 )?;
-                frame_alloc.deallocate_frame(
-                    crate::page_table::types::PhysFrame { start_address: child_frame.start_address().as_u64() }
-                );
+                frame_alloc.deallocate_frame(crate::page_table::types::PhysFrame {
+                    start_address: child_frame.start_address().as_u64(),
+                });
             }
             Ok(())
         });

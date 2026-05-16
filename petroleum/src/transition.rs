@@ -184,8 +184,14 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
         };
 
         // Robustness check: Ensure entry point and args are aligned
-        assert!(kernel_entry_virt % 16 == 0, "Kernel entry point must be 16-byte aligned");
-        assert!((actual_kernel_args as usize) % 16 == 0, "KernelArgs must be 16-byte aligned");
+        assert!(
+            kernel_entry_virt % 16 == 0,
+            "Kernel entry point must be 16-byte aligned"
+        );
+        assert!(
+            (actual_kernel_args as usize) % 16 == 0,
+            "KernelArgs must be 16-byte aligned"
+        );
 
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"DBG: entry_virt=0x");
         write_serial_hex(kernel_entry_virt);
@@ -220,7 +226,9 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
 
         if actual_kernel_entry == 0 {
             crate::write_serial_bytes!(0x3F8, 0x3FD, b"ERROR: entry is 0!\n");
-            loop { core::hint::spin_loop(); }
+            loop {
+                core::hint::spin_loop();
+            }
         }
 
         // Map KernelArgs at higher half
@@ -369,14 +377,38 @@ impl Default for WorldSwitchBuilder {
 }
 
 impl WorldSwitchBuilder {
-    pub fn with_gdt(mut self, gdt: *const ()) -> Self { self.load_gdt = Some(gdt); self }
-    pub fn with_idt(mut self, idt: *const ()) -> Self { self.load_idt = Some(idt); self }
-    pub fn with_page_table(mut self, frame: PhysFrame) -> Self { self.page_table = Some(frame); self }
-    pub fn with_phys_offset(mut self, offset: VirtAddr) -> Self { self.phys_offset = Some(offset); self }
-    pub fn with_stack(mut self, stack: VirtAddr) -> Self { self.stack_top = Some(stack); self }
-    pub fn with_entry(mut self, entry: VirtAddr) -> Self { self.entry_point = Some(entry); self }
-    pub fn with_args(mut self, args: *const KernelArgs) -> Self { self.kernel_args = Some(args); self }
-    pub fn with_allocator(mut self, allocator: *mut BootInfoFrameAllocator) -> Self { self.allocator = Some(allocator); self }
+    pub fn with_gdt(mut self, gdt: *const ()) -> Self {
+        self.load_gdt = Some(gdt);
+        self
+    }
+    pub fn with_idt(mut self, idt: *const ()) -> Self {
+        self.load_idt = Some(idt);
+        self
+    }
+    pub fn with_page_table(mut self, frame: PhysFrame) -> Self {
+        self.page_table = Some(frame);
+        self
+    }
+    pub fn with_phys_offset(mut self, offset: VirtAddr) -> Self {
+        self.phys_offset = Some(offset);
+        self
+    }
+    pub fn with_stack(mut self, stack: VirtAddr) -> Self {
+        self.stack_top = Some(stack);
+        self
+    }
+    pub fn with_entry(mut self, entry: VirtAddr) -> Self {
+        self.entry_point = Some(entry);
+        self
+    }
+    pub fn with_args(mut self, args: *const KernelArgs) -> Self {
+        self.kernel_args = Some(args);
+        self
+    }
+    pub fn with_allocator(mut self, allocator: *mut BootInfoFrameAllocator) -> Self {
+        self.allocator = Some(allocator);
+        self
+    }
 
     pub fn build(self) -> Result<WorldSwitch, &'static str> {
         Ok(WorldSwitch {

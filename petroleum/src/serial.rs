@@ -267,12 +267,20 @@ pub fn _print(args: fmt::Arguments) {
 /// Initializes the global serial port writer.
 pub fn serial_init() {
     unsafe {
-        crate::write_serial_bytes(COM1_DATA_PORT, COM1_STATUS_PORT, b"DEBUG: Inside serial_init\n");
+        crate::write_serial_bytes(
+            COM1_DATA_PORT,
+            COM1_STATUS_PORT,
+            b"DEBUG: Inside serial_init\n",
+        );
 
         // Force reset Mutex lock state to 0 to handle cases where .bss is not cleared
         let lock_ptr = core::ptr::addr_of!(SERIAL_PORT_WRITER) as *mut u32;
         core::ptr::write_volatile(lock_ptr, 0);
-        crate::write_serial_bytes(COM1_DATA_PORT, COM1_STATUS_PORT, b"DEBUG: SERIAL_PORT_WRITER lock reset to 0\n");
+        crate::write_serial_bytes(
+            COM1_DATA_PORT,
+            COM1_STATUS_PORT,
+            b"DEBUG: SERIAL_PORT_WRITER lock reset to 0\n",
+        );
     }
 
     // Use the lock to initialize the serial port.
@@ -280,7 +288,11 @@ pub fn serial_init() {
     SERIAL_PORT_WRITER.lock().init();
 
     unsafe {
-        crate::write_serial_bytes(COM1_DATA_PORT, COM1_STATUS_PORT, b"DEBUG: serial_init completed successfully\n");
+        crate::write_serial_bytes(
+            COM1_DATA_PORT,
+            COM1_STATUS_PORT,
+            b"DEBUG: serial_init completed successfully\n",
+        );
     }
 }
 

@@ -1,10 +1,13 @@
 use super::interface::{SyscallError, SyscallResult, copy_user_string};
 use crate::process;
 use crate::process::{NEXT_PID, Process, ProcessState};
-use alloc::boxed::Box;
 use core::alloc::Layout;
 use core::sync::atomic::Ordering;
-use petroleum::{page_table::PageTableHelper, write_serial_bytes, common::memory::{user_slice, user_slice_mut}};
+use petroleum::{
+    common::memory::{user_slice, user_slice_mut},
+    page_table::PageTableHelper,
+    write_serial_bytes,
+};
 use x86_64::{PhysAddr, VirtAddr};
 
 // POSIX-style open flags
@@ -148,7 +151,6 @@ fn syscall_fork() -> SyscallResult {
         state: ProcessState::Ready,
         context: parent_context.clone(), // Copy parent context
         page_table_phys_addr: PhysAddr::new(cloned_table_addr as u64),
-        page_table: Some(Box::new(child_page_table)),
         kernel_stack: kernel_stack_top,
         user_stack: parent_user_stack, // Will be updated after copying
         entry_point: parent_entry_point,
@@ -163,10 +165,8 @@ fn syscall_fork() -> SyscallResult {
 
     // Full memory copying for user space is implemented in the page table cloning logic.
 
-    let child_box = Box::new(child_process);
-
     // Re-acquire lock briefly to add to process list
-    crate::process::PROCESS_MANAGER.add(child_box);
+    crate::process::PROCESS_MANAGER.add(child_process);
 
     // Note: Memory copying not implemented yet, only page table cloning
     // Full implementation would copy parent memory pages to child
@@ -179,7 +179,7 @@ fn syscall_read(fd: core::ffi::c_int, buffer: *mut u8, count: usize) -> SyscallR
     if count == 0 {
         return Ok(0);
     }
-    
+
     let data = unsafe { user_slice_mut(buffer, count, false) }
         .map_err(|_| SyscallError::InvalidArgument)?;
 

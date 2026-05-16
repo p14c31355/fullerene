@@ -2,16 +2,11 @@
 //!
 //! This module provides APIC initialization and management functions.
 
-use petroleum::hardware::{pic::disable_legacy_pic, ApicFlags, ApicOffsets, IO_APIC_BASE};
-use petroleum::init_io_apic;
 use petroleum::common::utils::reset_mutex_lock;
+use petroleum::hardware::ports::MsrHelper;
+use petroleum::hardware::{ApicFlags, ApicOffsets, IO_APIC_BASE, pic::disable_legacy_pic};
+use petroleum::init_io_apic;
 use spin::Mutex;
-use x86_64::registers::model_specific::Msr;
-
-/// Hardware interrupt vectors
-pub const TIMER_INTERRUPT_INDEX: u32 = 32;
-pub const KEYBOARD_INTERRUPT_INDEX: u32 = 33;
-pub const MOUSE_INTERRUPT_INDEX: u32 = 44;
 
 /// APIC raw access structure
 #[repr(C)]
@@ -27,14 +22,8 @@ impl ApicRaw {
     /// This is safe because the base_addr is validated during initialization
     /// and the offset is a known APIC register offset.
     fn read(&self, offset: u32) -> u32 {
-        let addr = (self.base_addr + offset as u64) as *const u8;
-        unsafe {
-            let mut buf = [0u8; 4];
-            for i in 0..4 {
-                buf[i] = core::ptr::read_volatile(addr.add(i));
-            }
-            u32::from_le_bytes(buf)
-        }
+        let addr = (self.base_addr + offset as u64) as *const u32;
+        unsafe { core::ptr::read_volatile(addr) }
     }
 
     /// Write to APIC register
@@ -43,13 +32,8 @@ impl ApicRaw {
     /// This is safe because the base_addr is validated during initialization
     /// and the offset is a known APIC register offset.
     fn write(&self, offset: u32, value: u32) {
-        let addr = (self.base_addr + offset as u64) as *mut u8;
-        let bytes = value.to_le_bytes();
-        unsafe {
-            for i in 0..4 {
-                core::ptr::write_volatile(addr.add(i), bytes[i]);
-            }
-        }
+        let addr = (self.base_addr + offset as u64) as *mut u32;
+        unsafe { core::ptr::write_volatile(addr, value) }
     }
 }
 
@@ -58,7 +42,8 @@ pub static APIC: Mutex<Option<ApicRaw>> = Mutex::new(None);
 
 /// Get APIC base address
 fn get_apic_base() -> Option<u64> {
-    let value = unsafe { Msr::new(ApicOffsets::BASE_MSR).read() };
+    let msr = MsrHelper::new(ApicOffsets::BASE_MSR);
+    let value = msr.read();
     if value & (1 << 11) != 0 {
         Some(value & ApicOffsets::BASE_ADDR_MASK)
     } else {
@@ -90,7 +75,9 @@ pub fn init_apic() {
     unsafe {
         reset_mutex_lock(&APIC);
         reset_mutex_lock(&petroleum::LOCAL_APIC_ADDRESS);
-        petroleum::serial::serial_log(format_args!("DEBUG: [init_apic] APIC and LOCAL_APIC_ADDRESS locks reset to 0\n"));
+        petroleum::serial::serial_log(format_args!(
+            "DEBUG: [init_apic] APIC and LOCAL_APIC_ADDRESS locks reset to 0\n"
+        ));
     }
 
     disable_legacy_pic();
@@ -102,7 +89,8 @@ pub fn init_apic() {
         if !ptr.is_null() {
             ptr as u64
         } else {
-            get_apic_base().unwrap_or(0xFEE00000) + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64
+            get_apic_base().unwrap_or(0xFEE00000)
+                + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64
         }
     };
     let mut apic = ApicRaw { base_addr };
@@ -110,13 +98,14 @@ pub fn init_apic() {
 
     apic.write(
         ApicOffsets::LVT_TIMER,
-        TIMER_INTERRUPT_INDEX | ApicFlags::TIMER_PERIODIC,
+        crate::interrupts::TIMER_INTERRUPT_INDEX | ApicFlags::TIMER_PERIODIC,
     );
     apic.write(ApicOffsets::TMRDIV, 0x3); // Divide by 16
     apic.write(ApicOffsets::TMRINITCNT, 1000000);
 
     *APIC.lock() = Some(apic);
-    let io_apic_virt_base = IO_APIC_BASE + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64;
+    let io_apic_virt_base =
+        IO_APIC_BASE + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64;
     init_io_apic(base_addr, io_apic_virt_base);
 
     use super::syscall::setup_syscall;

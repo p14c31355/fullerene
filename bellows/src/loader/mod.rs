@@ -4,11 +4,7 @@ use petroleum::common::{BellowsError, EfiBootServices, EfiMemoryType, EfiStatus,
 
 // Module declarations for separated functionality
 pub mod heap;
-
-/// Initialize heap using separated heap module
-pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
-    heap::init_heap(bs)
-}
+pub use heap::init_heap;
 
 /// Exits boot services and jumps to the kernel's entry point.
 /// This function is the final step of the bootloader.
@@ -20,11 +16,6 @@ pub fn exit_boot_services_and_jump(
     _entry: extern "efiapi" fn(usize, *mut EfiSystemTable, *mut c_void, usize) -> !,
 ) -> petroleum::common::Result<!> {
     // Immediate debug prints on entry to pinpoint exact hang location
-    #[cfg(feature = "debug_loader")]
-    {
-        petroleum::info_log!("ENTER");
-        petroleum::info_log!("system_table={:#x}", system_table as usize);
-    }
 
     #[cfg(feature = "debug_loader")]
     petroleum::info_log!("About to get boot_services ptr");
@@ -45,8 +36,12 @@ pub fn exit_boot_services_and_jump(
     // Allocate memory for KernelArgs, L4 table, and initial kernel stack before exiting boot services
     // We allocate a larger block (e.g., 256 pages = 1MB) to ensure the stack and arguments are far apart.
     let mut args_phys_addr: usize = 0;
-    let args_alloc_status =
-        (bs.allocate_pages)(0usize, EfiMemoryType::EfiLoaderData, 256, &mut args_phys_addr);
+    let args_alloc_status = (bs.allocate_pages)(
+        0usize,
+        EfiMemoryType::EfiLoaderData,
+        256,
+        &mut args_phys_addr,
+    );
     if EfiStatus::from(args_alloc_status) != EfiStatus::Success {
         return Err(BellowsError::AllocationFailed(
             "Failed to allocate memory for KernelArgs.",
@@ -255,7 +250,7 @@ pub fn exit_boot_services_and_jump(
         "Reinitializing page tables for kernel jump...\n"
     ));
 
-    // We only need InitAndJumpArgs for the transition. 
+    // We only need InitAndJumpArgs for the transition.
     // KernelArgs will be reconstructed or passed via InitAndJumpArgs.
     let jump_args_ptr = args_phys_addr as *mut petroleum::page_table::InitAndJumpArgs;
 
@@ -297,8 +292,8 @@ pub fn exit_boot_services_and_jump(
     );
 
     // Calculate kernel entry virtual address (higher half)
-    let kernel_entry_virt = petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64()
-        + kernel_entry_phys;
+    let kernel_entry_virt =
+        petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64() + kernel_entry_phys;
 
     petroleum::serial::_print(format_args!(
         "Jumping to kernel entry point (virt): {:#x}\n",
@@ -316,10 +311,11 @@ pub fn exit_boot_services_and_jump(
 
     // Prepare the KernelArgs structure the kernel expects
     // Place it right after InitAndJumpArgs in the allocated block
-    let kernel_args_phys = args_phys_addr as u64 + core::mem::size_of::<petroleum::page_table::InitAndJumpArgs>() as u64;
+    let kernel_args_phys = args_phys_addr as u64
+        + core::mem::size_of::<petroleum::page_table::InitAndJumpArgs>() as u64;
     // Align to 16 bytes
     let kernel_args_phys_aligned = (kernel_args_phys + 15) & !15;
-    
+
     let fb_addr;
     let fb_width;
     let fb_height;
@@ -338,7 +334,7 @@ pub fn exit_boot_services_and_jump(
         fb_height = 0;
         fb_bpp = 0;
     }
-    
+
     unsafe {
         let kernel_args_ptr = kernel_args_phys_aligned as *mut petroleum::assembly::KernelArgs;
         core::ptr::write_volatile(
@@ -357,12 +353,12 @@ pub fn exit_boot_services_and_jump(
                 fb_bpp,
             },
         );
-        
+
         // Map KernelArgs address down to page boundary for identity mapping.
         // The actual KernelArgs pointer will be reconstructed by the kernel using arg1 + offset.
         let kernel_args_page = (kernel_args_phys_aligned & !0xFFF) as u64;
         let kernel_args_offset = (kernel_args_phys_aligned & 0xFFF) as u64;
-        
+
         // Prepare the arguments structure for the jump.
         core::ptr::write_volatile(
             jump_args_ptr,
@@ -372,8 +368,8 @@ pub fn exit_boot_services_and_jump(
                 kernel_phys_start: kernel_phys_start.as_u64(),
                 entry_virt: kernel_entry_virt,
                 stack_top: kernel_stack_top,
-                arg1: kernel_args_page,           // Page-aligned base (for identity mapping)
-                arg2: kernel_args_offset,         // Offset within page (for kernel to reconstruct ptr)
+                arg1: kernel_args_page, // Page-aligned base (for identity mapping)
+                arg2: kernel_args_offset, // Offset within page (for kernel to reconstruct ptr)
                 map_phys_addr: map_phys_addr as u64,
                 map_size: final_map_size as u64,
                 l4_phys_addr: args_phys_addr as u64 + 4096,
@@ -387,9 +383,9 @@ pub fn exit_boot_services_and_jump(
         // CRITICAL: Explicitly identity map the arguments and L4 table area in the current UEFI page table.
         // This ensures that init_and_jump can safely access these physical addresses.
         let _l4_temp = petroleum::page_table::active_level_4_table(
-            petroleum::page_table::constants::HIGHER_HALF_OFFSET
+            petroleum::page_table::constants::HIGHER_HALF_OFFSET,
         );
-        
+
         petroleum::page_table::init_and_jump(
             jump_args_ptr,
             kernel_stack_top,

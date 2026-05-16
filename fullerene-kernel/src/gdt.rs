@@ -1,9 +1,11 @@
 #![allow(static_mut_refs)]
+
 use core::sync::atomic::{AtomicBool, Ordering};
 use petroleum::{debug_log_no_alloc, mem_debug};
+use spin::once::Once;
 use x86_64::VirtAddr;
 use x86_64::instructions::tables::load_tss;
-use x86_64::registers::segmentation::{CS, Segment};
+use x86_64::registers::segmentation::{CS, DS, ES, FS, GS, SS, Segment};
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
 
@@ -14,65 +16,9 @@ pub const GP_FAULT_IST_INDEX: u16 = 3;
 pub const PAGE_FAULT_IST_INDEX: u16 = 4;
 pub const NMI_IST_INDEX: u16 = 5;
 pub const MACHINE_CHECK_IST_INDEX: u16 = 6;
-
-/// Size of each IST stack (bytes).
-/// Each stack is 5 pages (20 KiB) to accommodate interrupt handling.
-pub const GDT_TSS_STACK_SIZE: usize = 4096 * 5;
-
-/// Number of IST stacks reserved.
+pub const GDT_TSS_STACK_SIZE: usize = 4096;
 pub const GDT_TSS_STACK_COUNT: usize = 7;
-
-/// Total overhead for GDT initialization in bytes.
 pub const GDT_INIT_OVERHEAD: usize = GDT_TSS_STACK_COUNT * GDT_TSS_STACK_SIZE;
-
-pub static mut TSS: Option<TaskStateSegment> = None;
-static mut GDT: Option<GlobalDescriptorTable> = None;
-static mut CODE_SELECTOR: Option<SegmentSelector> = None;
-static mut KERNEL_DATA_SELECTOR: Option<SegmentSelector> = None;
-static mut TSS_SELECTOR: Option<SegmentSelector> = None;
-static mut USER_DATA_SELECTOR: Option<SegmentSelector> = None;
-static mut USER_CODE_SELECTOR: Option<SegmentSelector> = None;
-static GDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
-
-#[repr(align(4096))]
-struct EarlyGdtBuffer([u8; 0x20000]);
-static EARLY_GDT_BUFFER: EarlyGdtBuffer = EarlyGdtBuffer([0; 0x20000]);
-
-pub fn init_early() {
-    let addr = VirtAddr::from_ptr(&EARLY_GDT_BUFFER.0 as *const _ as *const u8);
-    init(addr);
-}
-
-pub fn kernel_code_selector() -> SegmentSelector {
-    unsafe { CODE_SELECTOR.expect("CODE_SELECTOR not initialized") }
-}
-
-pub fn kernel_data_selector() -> SegmentSelector {
-    unsafe { KERNEL_DATA_SELECTOR.expect("KERNEL_DATA_SELECTOR not initialized") }
-}
-
-pub fn load() {
-    let gdt = unsafe {
-        core::mem::transmute::<&GlobalDescriptorTable, &'static GlobalDescriptorTable>(
-            GDT.as_ref().expect("GDT not initialized"),
-        )
-    };
-    gdt.load();
-
-    unsafe {
-        CS::set_reg(CODE_SELECTOR.expect("CODE_SELECTOR not initialized"));
-        load_tss(TSS_SELECTOR.expect("TSS_SELECTOR not initialized"));
-
-        if let Some(data_sel) = KERNEL_DATA_SELECTOR {
-            use x86_64::registers::segmentation::{DS, ES, FS, GS, SS};
-            DS::set_reg(data_sel);
-            SS::set_reg(data_sel);
-            ES::set_reg(data_sel);
-            FS::set_reg(data_sel);
-            GS::set_reg(data_sel);
-        }
-    }
-}
 
 pub struct TssStacks {
     pub double_fault: VirtAddr,
@@ -82,6 +28,44 @@ pub struct TssStacks {
     pub page_fault: VirtAddr,
     pub nmi: VirtAddr,
     pub machine_check: VirtAddr,
+}
+
+pub struct Gdt {
+    pub gdt: GlobalDescriptorTable,
+    pub code_selector: SegmentSelector,
+    pub data_selector: SegmentSelector,
+    pub tss_selector: SegmentSelector,
+    pub user_data_selector: SegmentSelector,
+    pub user_code_selector: SegmentSelector,
+    pub tss: TaskStateSegment,
+}
+
+pub static GDT: Once<Gdt> = Once::new();
+pub static GDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// Returns the kernel code segment selector.
+pub fn kernel_code_selector() -> SegmentSelector {
+    GDT.get().unwrap().code_selector
+}
+
+/// Returns the kernel data segment selector.
+pub fn kernel_data_selector() -> SegmentSelector {
+    GDT.get().unwrap().data_selector
+}
+
+/// Returns the TSS selector.
+pub fn tss_selector() -> SegmentSelector {
+    GDT.get().unwrap().tss_selector
+}
+
+/// Returns the user data selector.
+pub fn user_data_selector() -> SegmentSelector {
+    GDT.get().unwrap().user_data_selector
+}
+
+/// Returns the user code selector.
+pub fn user_code_selector() -> SegmentSelector {
+    GDT.get().unwrap().user_code_selector
 }
 
 /// Build GDT with the given TSS and return (code, data, tss, user_data, user_code) selectors.
@@ -101,36 +85,98 @@ pub unsafe fn build_gdt(tss: &mut TaskStateSegment) -> (GlobalDescriptorTable, S
     (gdt, code_selector, data_selector, tss_selector, user_data_selector, user_code_selector)
 }
 
-/// Store built GDT and selectors into global state.
-pub unsafe fn store_gdt(gdt: GlobalDescriptorTable, code: SegmentSelector, data: SegmentSelector, tss: SegmentSelector, udata: SegmentSelector, ucode: SegmentSelector) {
-    unsafe {
-        CODE_SELECTOR = Some(code);
-        KERNEL_DATA_SELECTOR = Some(data);
-        TSS_SELECTOR = Some(tss);
-        USER_DATA_SELECTOR = Some(udata);
-        USER_CODE_SELECTOR = Some(ucode);
-        GDT = Some(gdt);
-    }
+/// Builds a GDT with the given stack configuration.
+///
+/// # Parameters
+///
+/// * `stacks` - The stack addresses for various exceptions.
+///
+/// Returns a fully constructed `Gdt` instance.
+pub fn build_gdt(stacks: TssStacks) -> Gdt {
+    // Set up IST entries in the TSS.
+    let mut tss = TaskStateSegment::new();
+    tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stacks.double_fault;
+    tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = stacks.timer;
+    tss.interrupt_stack_table[STACK_FAULT_IST_INDEX as usize] = stacks.stack_fault;
+    tss.interrupt_stack_table[GP_FAULT_IST_INDEX as usize] = stacks.gp_fault;
+    tss.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] = stacks.page_fault;
+    tss.interrupt_stack_table[NMI_IST_INDEX as usize] = stacks.nmi;
+    tss.interrupt_stack_table[MACHINE_CHECK_IST_INDEX as usize] = stacks.machine_check;
+
+    // Build the GDT.
+    // We need to create the Gdt struct first so that tss has a stable address,
+    // then append the TSS descriptor referencing that stable tss.
+    let mut gdt_struct = Gdt {
+        gdt: GlobalDescriptorTable::new(),
+        code_selector: SegmentSelector::NULL,
+        data_selector: SegmentSelector::NULL,
+        tss_selector: SegmentSelector::NULL,
+        user_data_selector: SegmentSelector::NULL,
+        user_code_selector: SegmentSelector::NULL,
+        tss,
+    };
+
+    gdt_struct.code_selector = gdt_struct.gdt.append(Descriptor::kernel_code_segment());
+    gdt_struct.data_selector = gdt_struct.gdt.append(Descriptor::kernel_data_segment());
+    gdt_struct.user_data_selector = gdt_struct.gdt.append(Descriptor::user_data_segment());
+    gdt_struct.user_code_selector = gdt_struct.gdt.append(Descriptor::user_code_segment());
+
+    // SAFETY: `gdt_struct.tss` is a field of the pinned `gdt_struct` value on the stack,
+    // and the Gdt is immediately returned (moved into the caller). The TSS descriptor
+    // pointer is only used during GDT construction and the Gdt is not moved after init.
+    let tss_ptr = core::ptr::addr_of!(gdt_struct.tss);
+    gdt_struct.tss_selector = gdt_struct
+        .gdt
+        .append(Descriptor::tss_segment(unsafe { &*tss_ptr }));
+
+    gdt_struct
 }
 
+/// Initializes the GDT with the given stack configuration and loads it.
+///
+/// This function should be called early in boot, before the heap is fully set up.
 pub fn init_with_stacks(stacks: TssStacks) {
-    mem_debug!("GDT: Updating TSS stacks\n");
+    GDT.call_once(|| build_gdt(stacks));
 
-    unsafe {
-        let mut tss = TaskStateSegment::new();
-        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stacks.double_fault;
-        tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = stacks.timer;
-        tss.interrupt_stack_table[STACK_FAULT_IST_INDEX as usize] = stacks.stack_fault;
-        tss.interrupt_stack_table[GP_FAULT_IST_INDEX as usize] = stacks.gp_fault;
-        tss.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] = stacks.page_fault;
-        tss.interrupt_stack_table[NMI_IST_INDEX as usize] = stacks.nmi;
-        tss.interrupt_stack_table[MACHINE_CHECK_IST_INDEX as usize] = stacks.machine_check;
-        TSS = Some(tss);
+    // Load GDT and set segment registers in non-UEFI builds.
+    #[cfg(not(target_os = "uefi"))]
+    {
+        debug_log_no_alloc!("GDT: Loading GDT...\n");
+        let gdt_ref = GDT.get().unwrap();
+        gdt_ref.gdt.load();
+
+        unsafe {
+            CS::set_reg(gdt_ref.code_selector);
+            load_tss(gdt_ref.tss_selector);
+
+            DS::set_reg(gdt_ref.data_selector);
+            ES::set_reg(gdt_ref.data_selector);
+            FS::set_reg(gdt_ref.data_selector);
+            GS::set_reg(gdt_ref.data_selector);
+            SS::set_reg(gdt_ref.data_selector);
+        }
+        debug_log_no_alloc!("GDT: Data segment registers set\n");
     }
 
-    mem_debug!("GDT: GDT built\n");
-    GDT_INITIALIZED.store(true, Ordering::SeqCst);
-    mem_debug!("GDT: About to return\n");
+    debug_log_no_alloc!("GDT: Initialized and loaded\n");
+}
+
+/// Loads the existing GDT and configures segment registers.
+///
+/// This is used after the GDT has been initialized.
+pub fn load() {
+    let gdt_ref = GDT.get().expect("GDT not initialized");
+    unsafe {
+        gdt_ref.gdt.load();
+        CS::set_reg(gdt_ref.code_selector);
+        load_tss(gdt_ref.tss_selector);
+
+        DS::set_reg(gdt_ref.data_selector);
+        ES::set_reg(gdt_ref.data_selector);
+        FS::set_reg(gdt_ref.data_selector);
+        GS::set_reg(gdt_ref.data_selector);
+        SS::set_reg(gdt_ref.data_selector);
+    }
 }
 
 /// Allocate IST stacks contiguously and return (new_heap_start, tss)
@@ -205,15 +251,9 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
         debug_log_no_alloc!("GDT: Skipping GDT reload in UEFI mode\n");
     }
 
+    // Initialize GDT with stacks.
+    init_with_stacks(stacks);
     GDT_INITIALIZED.store(true, Ordering::SeqCst);
     debug_log_no_alloc!("GDT: Init complete\n");
     new_heap_start
-}
-
-pub fn user_code_selector() -> SegmentSelector {
-    unsafe { USER_CODE_SELECTOR.expect("USER_CODE_SELECTOR not initialized") }
-}
-
-pub fn user_data_selector() -> SegmentSelector {
-    unsafe { USER_DATA_SELECTOR.expect("USER_DATA_SELECTOR not initialized") }
 }

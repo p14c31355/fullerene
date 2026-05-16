@@ -30,7 +30,7 @@ pub use allocator::bitmap::BitmapFrameAllocator;
 pub use allocator::traits::FrameAllocatorExt;
 
 /// Re-export of kernel init types and functions.
-pub use kernel::init::{init_and_jump, active_level_4_table, InitAndJumpArgs};
+pub use kernel::init::{InitAndJumpArgs, active_level_4_table, init_and_jump};
 
 /// Re-export of `KernelMapper` (now `Mapper`).
 pub use kernel::mapper::Mapper as KernelMapper;
@@ -49,13 +49,8 @@ pub use heap::{ALLOCATOR, HEAP_INITIALIZED};
 
 /// Re-export of backward-compat function aliases.
 pub use raw::utils::{
-    map_identity_range_checked,
-    map_range_with_log_macro,
-    map_to_higher_half_with_log_macro,
-    map_page_range,
-    unmap_page_range,
-    get_memory_stats,
-    map_range_with_huge_pages,
+    get_memory_stats, map_identity_range_checked, map_page_range, map_range_with_huge_pages,
+    map_range_with_log_macro, map_to_higher_half_with_log_macro, unmap_page_range,
 };
 
 /// Re-export of `init` function.

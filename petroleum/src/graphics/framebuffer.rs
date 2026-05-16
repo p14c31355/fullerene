@@ -68,7 +68,7 @@ impl crate::graphics::console::Console for UefiFramebufferWriter {
         };
 
         let style = MonoTextStyle::new(&FONT_6X10, crate::graphics::color::u32_to_rgb888(color));
-        
+
         let mut buf = [0u8; 4];
         let s = c.encode_utf8(&mut buf);
         let s_str = unsafe { core::str::from_utf8_unchecked(&s.as_bytes()) };
@@ -150,8 +150,12 @@ impl crate::graphics::renderer::Renderer for UefiFramebufferWriter {
         let style = MonoTextStyle::new(&FONT_6X10, crate::graphics::color::u32_to_rgb888(color));
         let pos = Point::new(x, y);
         match self {
-            UefiFramebufferWriter::Uefi32(w) => { let _ = Text::new(text, pos, style).draw(w); },
-            UefiFramebufferWriter::Vga8(w) => { let _ = Text::new(text, pos, style).draw(w); },
+            UefiFramebufferWriter::Uefi32(w) => {
+                let _ = Text::new(text, pos, style).draw(w);
+            }
+            UefiFramebufferWriter::Vga8(w) => {
+                let _ = Text::new(text, pos, style).draw(w);
+            }
         }
     }
 
@@ -460,7 +464,7 @@ pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u
     let shift_bytes = 8u64 * stride as u64;
     let fb_ptr = address as *mut u8;
     let total_bytes = height as u64 * stride as u64;
-    
+
     // Use volatile copy for MMIO
     for i in 0..(total_bytes - shift_bytes) {
         let src = fb_ptr.add(shift_bytes as usize + i as usize);

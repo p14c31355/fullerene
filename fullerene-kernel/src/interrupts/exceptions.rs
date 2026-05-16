@@ -109,18 +109,9 @@ fn kernel_fault_halt(frame: &InterruptStackFrame, name: &str, extra: &str) -> ! 
         frame.code_segment.0,
         extra,
     );
-    let mut rbp: *const usize;
-    unsafe { asm!("mov {}, rbp", out(reg) rbp) };
-    raw_log!("Backtrace:\n");
-    for i in 0..16 {
-        if rbp.is_null() || (rbp as usize) < 0x1000 { break; }
-        unsafe {
-            let ret_addr = *rbp.offset(1);
-            if ret_addr == 0 { break; }
-            raw_log!("  [{}] {:#x}\n", i, ret_addr);
-            rbp = *rbp as *const usize;
-        }
-    }
+
+    petroleum::debug::print_backtrace(&mut RawSerialWriter);
+
     safe_halt()
 }
 
@@ -152,10 +143,11 @@ pub extern "C" fn exception_recovery_trampoline() -> ! {
     raw_log!("Recovery trampoline: cleaning up and scheduling next\n");
     crate::process::cleanup_terminated_processes();
     crate::process::schedule_next();
-    let new_pid = crate::process::current_pid()
-        .expect("schedule_next failed after exception");
+    let new_pid = crate::process::current_pid().expect("schedule_next failed after exception");
     raw_log!("Switching to process {}\n", new_pid);
-    unsafe { crate::process::context_switch(None, new_pid); }
+    unsafe {
+        crate::process::context_switch(None, new_pid);
+    }
     safe_halt()
 }
 
@@ -164,8 +156,7 @@ pub extern "C" fn exception_recovery_trampoline() -> ! {
 fn terminate_and_recover(frame: &mut InterruptStackFrame, reason: &str) {
     raw_log!("EXCEPTION: {} - terminating process\n", reason);
 
-    let current_pid = crate::process::CURRENT_PROCESS
-        .load(core::sync::atomic::Ordering::Relaxed);
+    let current_pid = crate::process::CURRENT_PROCESS.load(core::sync::atomic::Ordering::Relaxed);
     if current_pid == 0 {
         safe_halt();
     }
@@ -204,7 +195,11 @@ macro_rules! define_no_err_handler {
         pub extern "x86-interrupt" fn $name(mut frame: InterruptStackFrame) {
             let exc_name = exception_name($vector);
             if is_user_mode(&frame) {
-                raw_log!("EXC {} at user RIP={:#x}\n", exc_name, frame.instruction_pointer.as_u64());
+                raw_log!(
+                    "EXC {} at user RIP={:#x}\n",
+                    exc_name,
+                    frame.instruction_pointer.as_u64()
+                );
                 terminate_and_recover(&mut frame, exc_name);
             } else {
                 kernel_fault_halt(&frame, exc_name, "");
@@ -216,14 +211,15 @@ macro_rules! define_no_err_handler {
 macro_rules! define_err_handler {
     ($name:ident, $vector:expr) => {
         #[unsafe(no_mangle)]
-        pub extern "x86-interrupt" fn $name(
-            mut frame: InterruptStackFrame,
-            error_code: u64,
-        ) {
+        pub extern "x86-interrupt" fn $name(mut frame: InterruptStackFrame, error_code: u64) {
             let exc_name = exception_name($vector);
             if is_user_mode(&frame) {
-                raw_log!("EXC {} err={:#x} at user RIP={:#x}\n",
-                    exc_name, error_code, frame.instruction_pointer.as_u64());
+                raw_log!(
+                    "EXC {} err={:#x} at user RIP={:#x}\n",
+                    exc_name,
+                    error_code,
+                    frame.instruction_pointer.as_u64()
+                );
                 terminate_and_recover(&mut frame, exc_name);
             } else {
                 raw_log!("  Error code: {:#x}\n", error_code);
@@ -298,12 +294,14 @@ pub extern "x86-interrupt" fn double_fault_handler(
     );
     if is_user_mode(&frame) {
         raw_log!("  (user mode) - terminating process\n");
-        let pid = crate::process::CURRENT_PROCESS
-            .load(core::sync::atomic::Ordering::Relaxed);
+        let pid = crate::process::CURRENT_PROCESS.load(core::sync::atomic::Ordering::Relaxed);
         if pid != 0 {
             crate::process::PROCESS_MANAGER.with_process(
                 crate::process::ProcessId(pid as u64),
-                |p| { p.state = crate::process::ProcessState::Terminated; p.exit_code = Some(1); },
+                |p| {
+                    p.state = crate::process::ProcessState::Terminated;
+                    p.exit_code = Some(1);
+                },
             );
             crate::process::cleanup_terminated_processes();
         }

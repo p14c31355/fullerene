@@ -13,7 +13,6 @@ pub extern "C" fn switch_context(
         // Entry: rdi = old_context, rsi = new_context
         "test rdi, rdi",
         "jz 2f",
-
         // Save GPRs (regs[0..15])
         "mov [rdi + 0], rax",
         "mov [rdi + 8], rbx",
@@ -31,14 +30,12 @@ pub extern "C" fn switch_context(
         "mov [rdi + 104], r13",
         "mov [rdi + 112], r14",
         "mov [rdi + 120], r15",
-
         // Save RIP, RFLAGS
         "mov rax, [rsp]",
         "mov [rdi + 128], rax", // rip
         "pushfq",
         "pop rax",
         "mov [rdi + 136], rax", // rflags
-
         // Save Segments (segments[0..5])
         "mov ax, cs",
         "movzx rax, ax",
@@ -58,12 +55,10 @@ pub extern "C" fn switch_context(
         "mov ax, gs",
         "movzx rax, ax",
         "mov [rdi + 184], rax",
-
         "2:",
         // Restore: rsi = new_context
         "mov r15, rsi",
         "mov rsp, [rsi + 56]", // regs[7] = rsp
-
         // Restore GPRs
         "mov rax, [r15 + 0]",
         "mov rbx, [r15 + 8]",
@@ -80,7 +75,6 @@ pub extern "C" fn switch_context(
         "mov r13, [r15 + 104]",
         "mov r14, [r15 + 112]",
         "mov r15, [r15 + 120]",
-
         // Restore Segments (ds, es, fs, gs)
         "mov rax, [rsi + 160]",
         "mov ds, ax",
@@ -90,18 +84,16 @@ pub extern "C" fn switch_context(
         "mov fs, ax",
         "mov rax, [rsi + 184]",
         "mov gs, ax",
-
         // Check is_user (offset 192 + 8 + 8 + 48 = 256? No, let's calculate)
         // ProcessContext: regs(128) + rflags(8) + rip(8) + segments(48) + tss(8) = 200
         // is_user is at offset 200.
         "movzx rax, byte ptr [rsi + 200]",
         "test rax, rax",
         "jz 1f",
-
         // User mode: iretq frame (SS, RSP, RFLAGS, CS, RIP)
         "mov rax, [rsi + 152]", // ss
         "push rax",
-        "mov rax, [rsi + 56]",  // rsp
+        "mov rax, [rsi + 56]", // rsp
         "push rax",
         "mov rax, [rsi + 136]", // rflags
         "push rax",
@@ -110,7 +102,6 @@ pub extern "C" fn switch_context(
         "mov rax, [rsi + 128]", // rip
         "push rax",
         "iretq",
-
         "1:",
         // Kernel mode
         "mov rax, [rsi + 136]", // rflags

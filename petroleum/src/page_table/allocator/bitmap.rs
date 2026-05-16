@@ -1,33 +1,32 @@
-use crate::common::logging::SystemResult;
 use crate::page_table::allocator::traits::{FrameAllocator, FrameAllocatorExt};
 use crate::page_table::memory_map::MemoryDescriptorValidator;
 use crate::page_table::types::PhysFrame;
-use x86_64::structures::paging::{FrameAllocator as X86FrameAllocator, PhysFrame as X86PhysFrame, Size4KiB};
+use x86_64::structures::paging::{
+    FrameAllocator as X86FrameAllocator, PhysFrame as X86PhysFrame, Size4KiB,
+};
 
 pub struct BitmapFrameAllocator {
-    bitmap: alloc::vec::Vec<u64>,
+    bitmap: heapless::Vec<u64, { crate::page_table::constants::MAX_BITMAP_CAPACITY }>,
     total_frames: usize,
 }
 
 impl BitmapFrameAllocator {
     pub fn new(total_frames: usize) -> Self {
-        let bitmap_size = (total_frames + 63) / 64;
         Self {
-            bitmap: alloc::vec::Vec::with_capacity(bitmap_size),
+            bitmap: heapless::Vec::new(),
             total_frames,
         }
     }
 
     pub fn init(&mut self, initial_used_frames: usize) {
-        self.bitmap.resize(self.bitmap.capacity(), 0);
+        let bitmap_size = (self.total_frames + 63) / 64;
+        let _ = self.bitmap.resize(bitmap_size, 0);
         for i in 0..initial_used_frames {
             self.set_frame_used(i, true);
         }
     }
 
-    pub fn init_with_memory_map<T: MemoryDescriptorValidator>(
-        memory_map: &[T],
-    ) -> Self {
+    pub fn init_with_memory_map<T: MemoryDescriptorValidator>(memory_map: &[T]) -> Self {
         let mut max_phys = 0u64;
         for desc in memory_map {
             let end = desc.get_physical_start() + desc.get_page_count() * 4096;
@@ -37,9 +36,8 @@ impl BitmapFrameAllocator {
         }
         let total_frames = ((max_phys + 4095) / 4096) as usize;
         let mut allocator = Self::new(total_frames);
-        allocator
-            .bitmap
-            .resize(allocator.bitmap.capacity(), u64::MAX);
+        let bitmap_size = (total_frames + 63) / 64;
+        let _ = allocator.bitmap.resize(bitmap_size, u64::MAX);
 
         for desc in memory_map {
             if desc.get_type() == crate::common::EfiMemoryType::EfiConventionalMemory as u32 {
@@ -171,7 +169,9 @@ impl FrameAllocator for BitmapFrameAllocator {
                     if (self.bitmap[i] & (1 << j)) == 0 {
                         self.set_frame_used(frame_idx, true);
                         let phys_addr = frame_idx as u64 * 4096;
-                        return Ok(PhysFrame { start_address: phys_addr });
+                        return Ok(PhysFrame {
+                            start_address: phys_addr,
+                        });
                     }
                 }
             }

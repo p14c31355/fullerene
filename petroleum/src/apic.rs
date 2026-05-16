@@ -1,9 +1,12 @@
-//! Advanced Programmable Interrupt Controller (APIC) support
+//!
 //!
 //! Provides functions for configuring LAPIC and I/O APIC during UEFI boot.
 
 use crate::bit_ops;
 use crate::volatile_ops;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// I/O APIC register offsets
 const IOAPIC_VER: u8 = 0x01;
@@ -76,7 +79,6 @@ impl IoApicRedirectionEntry {
     }
 }
 
-/// I/O APIC structure
 #[derive(Clone, Copy)]
 pub struct IoApic {
     base_addr: u64,
@@ -164,6 +166,11 @@ pub unsafe fn get_local_apic_id(lapic_base: u64) -> u8 {
 
 /// Initialize I/O APIC for legacy interrupts
 pub fn init_io_apic(lapic_base: u64, io_apic_base: u64) {
+    // Prevent re-initialization that could cause deadlock
+    if INITIALIZED.load(Ordering::Relaxed) {
+        return;
+    }
+    INITIALIZED.store(true, Ordering::Relaxed);
     let local_apic_id = unsafe { get_local_apic_id(lapic_base) };
     let mut io_apic = IoApic::new(io_apic_base);
 

@@ -25,7 +25,9 @@ impl From<FsError> for petroleum::common::logging::SystemError {
             FsError::FileNotFound => petroleum::common::logging::SystemError::FileNotFound,
             FsError::FileExists => petroleum::common::logging::SystemError::FileExists,
             FsError::PermissionDenied => petroleum::common::logging::SystemError::PermissionDenied,
-            FsError::InvalidFileDescriptor => petroleum::common::logging::SystemError::BadFileDescriptor,
+            FsError::InvalidFileDescriptor => {
+                petroleum::common::logging::SystemError::BadFileDescriptor
+            }
             FsError::InvalidSeek => petroleum::common::logging::SystemError::InvalidSeek,
             FsError::DiskFull => petroleum::common::logging::SystemError::DiskFull,
         }

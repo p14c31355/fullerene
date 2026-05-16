@@ -4,8 +4,8 @@
 //! all 4 levels of page table traversal, eliminating duplicated walk logic
 //! across map/unmap/translate operations.
 
-use crate::page_table::types::*;
 use crate::page_table::PageTableEntry;
+use crate::page_table::types::*;
 
 /// Errors that can occur during page table walking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,9 +18,7 @@ pub enum WalkError {
     /// The frame allocator ran out of memory.
     OutOfMemory,
     /// The entry is present but points to an invalid physical address.
-    InvalidEntry {
-        level: u8,
-    },
+    InvalidEntry { level: u8 },
 }
 
 impl fmt::Display for WalkError {
@@ -88,7 +86,9 @@ pub fn walk_or_create<'a, A: FrameAlloc>(
             // Need to allocate a new table
             let frame_addr = allocator.alloc_zeroed().ok_or(WalkError::OutOfMemory)?;
             *entry = PageTableEntry::new_with_frame(
-                PhysFrame { start_address: frame_addr },
+                PhysFrame {
+                    start_address: frame_addr,
+                },
                 Flags::PRESENT | Flags::WRITABLE | Flags::USER_ACCESSIBLE,
             );
         } else if entry.is_huge() {

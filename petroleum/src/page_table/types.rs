@@ -29,14 +29,16 @@ pub trait PageTableHelper {
         virtual_addr: usize,
         physical_addr: usize,
         flags: x86_64::structures::paging::PageTableFlags,
-        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<x86_64::structures::paging::Size4KiB>,
+        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<
+            x86_64::structures::paging::Size4KiB,
+        >,
     ) -> crate::common::logging::SystemResult<()>;
     fn unmap_page(
         &mut self,
         virtual_addr: usize,
     ) -> crate::common::logging::SystemResult<x86_64::structures::paging::PhysFrame>;
     fn translate_address(&self, virtual_addr: usize)
-        -> crate::common::logging::SystemResult<usize>;
+    -> crate::common::logging::SystemResult<usize>;
     fn set_page_flags(
         &mut self,
         virtual_addr: usize,
@@ -50,7 +52,9 @@ pub trait PageTableHelper {
     fn flush_tlb_all(&mut self) -> crate::common::logging::SystemResult<()>;
     fn create_page_table(
         &mut self,
-        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<x86_64::structures::paging::Size4KiB>,
+        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<
+            x86_64::structures::paging::Size4KiB,
+        >,
     ) -> crate::common::logging::SystemResult<usize>;
     fn destroy_page_table(
         &mut self,
@@ -60,7 +64,9 @@ pub trait PageTableHelper {
     fn clone_page_table(
         &mut self,
         source_table: usize,
-        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<x86_64::structures::paging::Size4KiB>,
+        frame_allocator: &mut impl x86_64::structures::paging::FrameAllocator<
+            x86_64::structures::paging::Size4KiB,
+        >,
     ) -> crate::common::logging::SystemResult<usize>;
     fn switch_page_table(&mut self, table_addr: usize) -> crate::common::logging::SystemResult<()>;
     fn current_page_table(&self) -> usize;
@@ -352,14 +358,18 @@ impl PhysFrame {
     #[inline]
     pub unsafe fn from_start_address_unchecked(addr: u64) -> Self {
         debug_assert!(addr % SIZE_4K == 0, "PhysFrame address must be 4K-aligned");
-        Self { start_address: addr }
+        Self {
+            start_address: addr,
+        }
     }
 
     /// Create a `PhysFrame` for a 4 KiB frame, checking alignment.
     #[inline]
     pub fn from_start_address(addr: u64) -> Option<Self> {
         if addr % SIZE_4K == 0 {
-            Some(Self { start_address: addr })
+            Some(Self {
+                start_address: addr,
+            })
         } else {
             None
         }

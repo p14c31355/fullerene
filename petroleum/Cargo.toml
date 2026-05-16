@@ -7,9 +7,10 @@ edition = "2024"
 default = []
 std = []
 vga_panic = []
+debug_pf = []
 
 [dependencies]
-spin = { version = "0.10.0", default-features = false, features = [
+spin = { version = "0.11.0", default-features = false, features = [
   "once",
   "mutex",
   "spin_mutex",

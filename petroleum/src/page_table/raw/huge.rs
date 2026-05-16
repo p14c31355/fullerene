@@ -3,11 +3,11 @@
 //! These functions handle the special cases for huge page mappings,
 //! including alignment checks and conflict detection.
 
-use crate::page_table::types::*;
 use crate::page_table::PageTableEntry;
+use crate::page_table::allocator::traits::FrameAllocator;
 use crate::page_table::raw::mapper::{map_huge_1g, map_huge_2m};
 use crate::page_table::raw::walker::WalkError;
-use crate::page_table::allocator::traits::FrameAllocator;
+use crate::page_table::types::*;
 
 /// Errors specific to huge page operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,8 +122,10 @@ pub fn map_auto<A: FrameAllocator>(
         }
         _ => {
             use crate::page_table::raw::mapper::map_page;
-            let frame = PhysFrame::from_start_address(phys)
-                .ok_or(HugeError::PhysNotAligned { addr: phys, required: SIZE_4K })?;
+            let frame = PhysFrame::from_start_address(phys).ok_or(HugeError::PhysNotAligned {
+                addr: phys,
+                required: SIZE_4K,
+            })?;
             map_page(root, virt, frame, flags, allocator)?;
             Ok(SIZE_4K)
         }
@@ -153,7 +155,9 @@ pub fn check_huge_conflict(
 ///
 /// # Safety
 /// Caller must ensure mapper and allocator are valid.
-pub unsafe fn map_range_with_huge_pages<A: x86_64::structures::paging::FrameAllocator<x86_64::structures::paging::Size4KiB>>(
+pub unsafe fn map_range_with_huge_pages<
+    A: x86_64::structures::paging::FrameAllocator<x86_64::structures::paging::Size4KiB>,
+>(
     mapper: &mut x86_64::structures::paging::OffsetPageTable,
     allocator: &mut A,
     phys: u64,
@@ -161,8 +165,9 @@ pub unsafe fn map_range_with_huge_pages<A: x86_64::structures::paging::FrameAllo
     pages: u64,
     flags: x86_64::structures::paging::PageTableFlags,
     behavior: &str,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<x86_64::structures::paging::Size4KiB>> {
-    use x86_64::structures::paging::{Page, PhysFrame, Size2MiB, Size4KiB, Mapper};
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<x86_64::structures::paging::Size4KiB>>
+{
+    use x86_64::structures::paging::{Mapper, Page, PhysFrame, Size2MiB, Size4KiB};
 
     let mut current_page = 0;
     while current_page < pages {
@@ -175,8 +180,15 @@ pub unsafe fn map_range_with_huge_pages<A: x86_64::structures::paging::FrameAllo
             let page = Page::<Size2MiB>::containing_address(x86_64::VirtAddr::new(v_addr));
             let frame = PhysFrame::<Size2MiB>::containing_address(x86_64::PhysAddr::new(p_addr));
             match mapper.map_to(page, frame, flags, allocator) {
-                Ok(flush) => { flush.flush(); current_page += 512; continue; }
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => { current_page += 512; continue; }
+                Ok(flush) => {
+                    flush.flush();
+                    current_page += 512;
+                    continue;
+                }
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                    current_page += 512;
+                    continue;
+                }
                 Err(_) => {} // Fall through to 4K mapping
             }
         }
@@ -191,7 +203,9 @@ pub unsafe fn map_range_with_huge_pages<A: x86_64::structures::paging::FrameAllo
             }
             Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {}
             Err(e) => {
-                if behavior == "panic" { panic!("Mapping error: {:?}", e); }
+                if behavior == "panic" {
+                    panic!("Mapping error: {:?}", e);
+                }
                 return Err(e);
             }
         }
