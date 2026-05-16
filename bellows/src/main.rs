@@ -72,10 +72,7 @@ pub unsafe extern "efiapi" fn efi_main(
         }
         None => {
             petroleum::bootloader_log!("No graphics protocols found, initializing VGA text mode.");
-            petroleum::bootloader_log!("About to call init_basic_vga_text_mode...");
             init_basic_vga_text_mode();
-            petroleum::serial::_print(format_args!("AFTER_VGA_INIT_CALL\n"));
-            petroleum::bootloader_log!("init_basic_vga_text_mode returned.");
             // For UEFI fallback, try to install a basic VGA framebuffer config for kernel use
             install_vga_framebuffer_config(st);
             petroleum::bootloader_log!(
@@ -162,12 +159,7 @@ fn init_basic_vga_text_mode() {
     petroleum::serial::_print(format_args!("Basic VGA text mode initialization...\n"));
 
     // Detect and initialize VGA graphics for Cirrus devices
-    petroleum::serial::_print(format_args!(
-        "About to call detect_and_init_vga_graphics...\n"
-    ));
     petroleum::graphics::detect_and_init_vga_graphics();
-    petroleum::serial::_print(format_args!("detect_and_init_vga_graphics returned.\n"));
-    petroleum::serial::_print(format_args!("detect_and_init_vga_graphics completed.\n"));
 
     petroleum::serial::_print(format_args!(
         "Basic VGA text mode initialized as fallback.\n"

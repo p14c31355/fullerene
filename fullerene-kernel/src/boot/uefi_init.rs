@@ -370,6 +370,26 @@ impl UefiInitContext {
             machine_check: VirtAddr::new(base + sz * 7),
         };
         crate::gdt::init_with_stacks(tss_stacks);
+        // Build and store the GDT
+        let tss = unsafe { crate::gdt::TSS.as_mut().expect("TSS should be initialized") };
+        let (
+            gdt,
+            code_selector,
+            data_selector,
+            tss_selector,
+            user_data_selector,
+            user_code_selector,
+        ) = unsafe { crate::gdt::build_gdt(tss) };
+        unsafe {
+            crate::gdt::store_gdt(
+                gdt,
+                code_selector,
+                data_selector,
+                tss_selector,
+                user_data_selector,
+                user_code_selector,
+            );
+        };
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: GDT initialized with TSS stacks\n");
 
         petroleum::write_serial_bytes!(
@@ -679,10 +699,32 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(
             0x3F8,
             0x3FD,
-            b"DEBUG: [PHASE] Global allocator already initialized via init_global_heap\n"
+            b"DEBUG: [PHASE] Finalizing global allocator init...\n"
         );
         unsafe {
             x86_64::instructions::interrupts::disable();
+            petroleum::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: [PHASE] Locking ALLOCATOR for initialization\n"
+            );
+            {
+                let mut allocator = petroleum::page_table::ALLOCATOR.lock();
+                petroleum::write_serial_bytes!(
+                    0x3F8,
+                    0x3FD,
+                    b"DEBUG: [PHASE] ALLOCATOR lock acquired\n"
+                );
+                allocator.init(
+                    heap_start_for_allocator.as_mut_ptr::<u8>(),
+                    heap_size_for_allocator,
+                );
+                petroleum::write_serial_bytes!(
+                    0x3F8,
+                    0x3FD,
+                    b"DEBUG: [PHASE] ALLOCATOR init completed\n"
+                );
+            }
         }
 
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: HEAP_INITIALIZED store start\n");
@@ -899,8 +941,6 @@ impl UefiInitContext {
             );
             let l4 = unsafe { petroleum::page_table::active_level_4_table(phys_offset) };
 
-            // Map the framebuffer using 4KiB pages. This avoids reliance on a non‑existent
-            // 2MiB mapping helper and works reliably for any framebuffer size.
             unsafe {
                 for i in 0..fb_pages {
                     let v = x86_64::VirtAddr::new(fb_virt + i as u64 * 4096);

@@ -10,11 +10,6 @@ pub mod idt;
 pub mod input;
 pub mod syscall;
 
-// Interrupt vector indices
-pub const TIMER_INTERRUPT_INDEX: u32 = 32;
-pub const KEYBOARD_INTERRUPT_INDEX: u32 = 33;
-pub const MOUSE_INTERRUPT_INDEX: u32 = 44;
-
 use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::instructions::interrupts;

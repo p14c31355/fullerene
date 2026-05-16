@@ -3,10 +3,15 @@
 //! This module provides APIC initialization and management functions.
 
 use petroleum::common::utils::reset_mutex_lock;
-use petroleum::hardware::ports::MsrHelper;
 use petroleum::hardware::{ApicFlags, ApicOffsets, IO_APIC_BASE, pic::disable_legacy_pic};
 use petroleum::init_io_apic;
 use spin::Mutex;
+use x86_64::registers::model_specific::Msr;
+
+/// Hardware interrupt vectors
+pub const TIMER_INTERRUPT_INDEX: u32 = 32;
+pub const KEYBOARD_INTERRUPT_INDEX: u32 = 33;
+pub const MOUSE_INTERRUPT_INDEX: u32 = 44;
 
 /// APIC raw access structure
 #[repr(C)]
@@ -22,8 +27,14 @@ impl ApicRaw {
     /// This is safe because the base_addr is validated during initialization
     /// and the offset is a known APIC register offset.
     fn read(&self, offset: u32) -> u32 {
-        let addr = (self.base_addr + offset as u64) as *const u32;
-        unsafe { core::ptr::read_volatile(addr) }
+        let addr = (self.base_addr + offset as u64) as *const u8;
+        unsafe {
+            let mut buf = [0u8; 4];
+            for i in 0..4 {
+                buf[i] = core::ptr::read_volatile(addr.add(i));
+            }
+            u32::from_le_bytes(buf)
+        }
     }
 
     /// Write to APIC register
@@ -32,8 +43,13 @@ impl ApicRaw {
     /// This is safe because the base_addr is validated during initialization
     /// and the offset is a known APIC register offset.
     fn write(&self, offset: u32, value: u32) {
-        let addr = (self.base_addr + offset as u64) as *mut u32;
-        unsafe { core::ptr::write_volatile(addr, value) }
+        let addr = (self.base_addr + offset as u64) as *mut u8;
+        let bytes = value.to_le_bytes();
+        unsafe {
+            for i in 0..4 {
+                core::ptr::write_volatile(addr.add(i), bytes[i]);
+            }
+        }
     }
 }
 
@@ -42,8 +58,7 @@ pub static APIC: Mutex<Option<ApicRaw>> = Mutex::new(None);
 
 /// Get APIC base address
 fn get_apic_base() -> Option<u64> {
-    let msr = MsrHelper::new(ApicOffsets::BASE_MSR);
-    let value = msr.read();
+    let value = unsafe { Msr::new(ApicOffsets::BASE_MSR).read() };
     if value & (1 << 11) != 0 {
         Some(value & ApicOffsets::BASE_ADDR_MASK)
     } else {
@@ -98,7 +113,7 @@ pub fn init_apic() {
 
     apic.write(
         ApicOffsets::LVT_TIMER,
-        crate::interrupts::TIMER_INTERRUPT_INDEX | ApicFlags::TIMER_PERIODIC,
+        TIMER_INTERRUPT_INDEX | ApicFlags::TIMER_PERIODIC,
     );
     apic.write(ApicOffsets::TMRDIV, 0x3); // Divide by 16
     apic.write(ApicOffsets::TMRINITCNT, 1000000);

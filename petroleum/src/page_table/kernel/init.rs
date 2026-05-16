@@ -39,7 +39,7 @@ pub unsafe fn map_page_4k_l1(
         let ptr = (addr.as_u64() + phys_offset.as_u64()) as *mut u8;
         core::ptr::write_bytes(ptr, 0, 4096);
         l4[l4_idx].set_addr(addr, flags | PageTableFlags::PRESENT);
-        &mut *((l4[l4_idx].addr().as_u64() + phys_offset.as_u64()) as *mut PageTable)
+        &mut *(l4[l4_idx].addr().as_u64() as *mut PageTable)
     } else {
         &mut *((l4[l4_idx].addr().as_u64() + phys_offset.as_u64()) as *mut PageTable)
     };
@@ -52,7 +52,7 @@ pub unsafe fn map_page_4k_l1(
         let ptr = (addr.as_u64() + phys_offset.as_u64()) as *mut u8;
         core::ptr::write_bytes(ptr, 0, 4096);
         l3[l3_idx].set_addr(addr, flags | PageTableFlags::PRESENT);
-        &mut *((l3[l3_idx].addr().as_u64() + phys_offset.as_u64()) as *mut PageTable)
+        &mut *(l3[l3_idx].addr().as_u64() as *mut PageTable)
     } else {
         &mut *((l3[l3_idx].addr().as_u64() + phys_offset.as_u64()) as *mut PageTable)
     };

@@ -232,10 +232,8 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
         "1".to_string(),
         "-M".to_string(),
         "q35".to_string(),
-        "-device".to_string(),
-        "virtio-gpu-pci".to_string(),
         "-vga".to_string(),
-        "none".to_string(),
+        "std".to_string(),
     ];
 
     if args.headless {

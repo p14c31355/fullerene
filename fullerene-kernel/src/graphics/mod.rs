@@ -22,7 +22,6 @@ static VGA_CONSOLE: Mutex<Option<VgaBuffer>> = Mutex::new(None);
 /// 2. Fallback GOP detection (QEMU/etc)
 /// 3. Legacy VGA Text Mode (fallback)
 pub fn init_graphics() {
-    petroleum::serial::_print(format_args!("init_graphics called.\n"));
     // Force reset GRAPHICS_INITIALIZED to handle un-zeroed .bss after world switch.
     // This mirrors the force-reset pattern used for ALLOCATOR, HEAP_INITIALIZED,
     // and LOCAL_APIC_ADDRESS in uefi_init.rs.
@@ -38,28 +37,12 @@ pub fn init_graphics() {
         petroleum::debug_log!("Graphics initialized with GOP Framebuffer");
         return;
     }
-    petroleum::serial::_print(format_args!(
-        "init_graphics: No GOP framebuffer, falling back to VGA\n"
-    ));
 
     // Fallback to VGA
-    match petroleum::boot::initialize_vga_fallback() {
-        Ok(mut vga) => {
-            vga.enable();
-            crate::graphics::Console::clear(&mut vga);
-            *VGA_CONSOLE.lock() = Some(vga);
-        }
-        Err(e) => {
-            petroleum::debug_log!(
-                "VGA fallback initialization failed: {}, using serial console\n",
-                e
-            );
-            // VGA_CONSOLE remains None; serial console will be used
-        }
-    }
-    petroleum::serial::_print(format_args!(
-        "init_graphics: VGA fallback initialization completed\n"
-    ));
+    let mut vga = petroleum::boot::initialize_vga_fallback();
+    vga.enable();
+    petroleum::graphics::Console::clear(&mut vga);
+    *VGA_CONSOLE.lock() = Some(vga);
 }
 
 /// Set the primary framebuffer renderer (also used as text console).

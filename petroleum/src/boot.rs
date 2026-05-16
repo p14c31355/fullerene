@@ -250,40 +250,12 @@ pub fn create_primary_console() -> Option<crate::graphics::framebuffer::UefiFram
 }
 
 /// Initializes VGA text mode fallback and returns a VgaBuffer.
-pub fn initialize_vga_fallback() -> Result<crate::graphics::text::VgaBuffer, &'static str> {
-    crate::serial::_print(format_args!("initialize_vga_fallback called.\n"));
-    use crate::page_table::constants::{HIGHER_HALF_OFFSET, VGA_MEMORY_START};
-    use x86_64::PhysAddr;
-
-    // 1. Map the VGA memory page (0xb8000) into the kernel's virtual address space.
-    let vga_phys_addr = VGA_MEMORY_START;
-    let vga_virt_addr = (vga_phys_addr + HIGHER_HALF_OFFSET.as_u64()) as usize;
-
-    let phys_offset = HIGHER_HALF_OFFSET;
-    let frame_allocator = get_frame_allocator_mut();
-    let l4 = unsafe { crate::page_table::active_level_4_table(phys_offset) };
-
-    let flags = PageTableFlags::PRESENT
-        | PageTableFlags::WRITABLE
-        | PageTableFlags::NO_EXECUTE
-        | PageTableFlags::NO_CACHE;
-
-    unsafe {
-        let v = x86_64::VirtAddr::new(vga_virt_addr as u64);
-        let p = PhysAddr::new(vga_phys_addr);
-        crate::page_table::kernel::init::map_page_4k_l1(
-            l4,
-            v,
-            p,
-            flags,
-            frame_allocator,
-            phys_offset,
-        )?;
-    }
-
-    // 2. Initialize VGA text buffer
-    let mut vga = crate::graphics::text::VgaBuffer::with_address(vga_virt_addr);
+pub fn initialize_vga_fallback() -> crate::graphics::text::VgaBuffer {
+    // Initialize VGA text buffer
+    let mut vga = crate::graphics::text::VgaBuffer::with_address(
+        crate::page_table::constants::VGA_MEMORY_START as usize,
+    );
     vga.enable();
     crate::Console::clear(&mut vga);
-    Ok(vga)
+    vga
 }

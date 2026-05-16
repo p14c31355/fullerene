@@ -74,17 +74,16 @@ pub fn setup_cirrus_vga_mode() {
 
     // Cirrus-specific register setup for better graphics mode support
     // Cirrus Logic 5446/5480 specific registers
-    // Use defined constants for sequencer ports
-    let mut index_writer = PortWriter::<u8>::new(HardwarePorts::SEQUENCER_INDEX);
-    let mut data_writer = PortWriter::<u8>::new(HardwarePorts::SEQUENCER_DATA);
+    let mut index_writer = PortWriter::<u8>::new(0x3C4); // Sequencer index
+    let mut data_writer = PortWriter::<u8>::new(0x3C5); // Sequencer data
 
     // Enable extended memory and better graphics support
-    // Unlock Cirrus registers and set extended mode using the generic helper
-    write_vga_registers(
-        HardwarePorts::SEQUENCER_INDEX,
-        HardwarePorts::SEQUENCER_DATA,
-        &[(0x06u8, 0x12u8), (0x1Eu8, 0x01u8)],
-    );
+    index_writer.write_safe(0x06u8); // Unlock Cirrus registers
+    data_writer.write_safe(0x12u8);
+
+    // Set up Cirrus-specific graphics registers for better desktop display
+    index_writer.write_safe(0x1Eu8); // Extended mode register
+    data_writer.write_safe(0x01u8); // Enable extended memory
 
     log_step!("Cirrus VGA: Cirrus-specific initialization complete\n");
 }
@@ -101,14 +100,6 @@ pub fn detect_and_init_vga_graphics() {
         log_step!("VGA Detection: Standard VGA device detected, using standard mode\n");
         setup_vga_mode_13h();
     }
-    log_step!("VGA Detection: VGA initialization completed\n");
-    crate::serial::_print(format_args!("RET: detect_and_init_vga_graphics\n"));
-    crate::serial::_print(format_args!("AFTER_RET_PRINT\n"));
-    let stack_var = 0u64;
-    crate::serial::_print(format_args!(
-        "Stack var address: {:#x}\n",
-        &stack_var as *const u64 as u64
-    ));
 }
 
 // Detect Cirrus VGA device via PCI

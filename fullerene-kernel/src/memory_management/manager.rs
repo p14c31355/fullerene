@@ -23,8 +23,7 @@ const MAX_PROCESS_MANAGERS: usize = 16;
 pub struct UnifiedMemoryManager {
     pub(crate) page_table_manager: ProcessPageTable,
     pub(crate) kernel_pml4_phys: usize,
-    pub(crate) process_managers:
-        heapless::Vec<Option<ProcessMemoryManagerImpl>, MAX_PROCESS_MANAGERS>,
+    pub(crate) process_managers: Vec<Option<ProcessMemoryManagerImpl>, MAX_PROCESS_MANAGERS>,
     pub(crate) current_process: usize,
     pub(crate) initialized: bool,
 }

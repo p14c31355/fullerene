@@ -100,12 +100,8 @@ macro_rules! set_vga_attribute_registers {
 #[macro_export]
 macro_rules! enable_vga_video {
     () => {{
-        // Use defined constants for readability and maintainability
-        $crate::port_read_u8!($crate::hardware::ports::HardwarePorts::STATUS);
-        $crate::port_write!(
-            $crate::hardware::ports::HardwarePorts::ATTRIBUTE_INDEX,
-            0x20u8
-        );
+        $crate::port_read_u8!(0x3DA);
+        $crate::port_write!(0x3C0u16, 0x20u8);
     }};
 }
 
