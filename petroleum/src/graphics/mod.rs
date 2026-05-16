@@ -133,65 +133,28 @@ macro_rules! check_pixel_eq {
     }};
 }
 
-/// In-kernel probe marker. Exception handlers (PF, #GP) check this before halting.
-/// Stores (file_name_ptr, line) so the handler can report the exact fault location.
-#[derive(Clone, Copy)]
-pub struct ProbeMarker {
-    pub file: &'static str,
-    pub line: u32,
-}
-use spin::Mutex;
-pub static PROBE_MARKER: Mutex<Option<ProbeMarker>> = Mutex::new(None);
-
-/// Set the probe marker before a risky memory access.
-/// The exception handler will check this on fault.
-macro_rules! set_probe {
-    () => {
-        *$crate::graphics::PROBE_MARKER.lock() = Some($crate::graphics::ProbeMarker {
-            file: core::file!(),
-            line: core::line!(),
-        });
-    };
-}
-
-/// Clear the probe marker after a successful access.
-macro_rules! clear_probe {
-    () => {
-        *$crate::graphics::PROBE_MARKER.lock() = None;
-    };
-}
-
-/// Probe whether writing to `addr` causes a fault.  Returns `true` if the write
-/// completed without fault (does NOT verify readback — just write-accessibility).
-macro_rules! probe_write_ok {
+/// Helper: perform a volatile write. `drawtest_trace!` has already printed the
+/// file:line location *before* this is invoked, so if the write causes a fault,
+/// the exception handler's output will appear immediately after the last
+/// `drawtest_trace!` line — the user can correlate them by looking at the
+/// serial log.  No lock/atomic shared state is needed.
+macro_rules! probe_write {
     ($addr:expr, $val:expr) => {{
-        set_probe!();
-        let __probe_val = $val;
-        let __probe_ok = false;
-        // We rely on the fact that the page-fault / #GP handler will NOT
-        // terminate the process for kernel-mode probes — it calls
-        // kernel_fault_halt which logs the probe marker before halting.
-        // If we return from the `unsafe` block, the write succeeded.
         unsafe {
-            core::ptr::write_volatile($addr, __probe_val);
+            core::ptr::write_volatile($addr, $val);
             core::arch::asm!("mfence", options(nostack, preserves_flags));
         }
-        clear_probe!();
-        true
     }};
 }
 
-/// Probe whether reading from `addr` causes a fault.  Returns `Ok(value)` on
-/// success, `Err(())` on fault.
-macro_rules! probe_read_ok {
+/// Helper: perform a volatile read with `drawtest_trace!` prefix.
+macro_rules! probe_read {
     ($addr:expr) => {{
-        set_probe!();
-        let __probe_result;
+        let __v;
         unsafe {
-            __probe_result = core::ptr::read_volatile($addr);
+            __v = core::ptr::read_volatile($addr);
         }
-        clear_probe!();
-        __probe_result
+        __v
     }};
 }
 
@@ -215,9 +178,8 @@ pub fn verify_drawing_test(config: &crate::graphics::color::FramebufferInfo) -> 
         {
             let mut scratch: u32 = 0;
             let sp = &mut scratch as *mut u32;
-            let wk = probe_write_ok!(sp, test_color);
-            drawtest_trace!("Step 0: stack write = {}", wk);
-            let val = probe_read_ok!(sp);
+            probe_write!(sp, test_color);
+            let val = probe_read!(sp);
             check_pixel_eq!("stack-volatile", val, test_color, 0, 0);
         }
         drawtest_trace!("Step 0 passed");
@@ -225,16 +187,12 @@ pub fn verify_drawing_test(config: &crate::graphics::color::FramebufferInfo) -> 
         // ── Step 1: probe write to framebuffer origin ──────────────────
         drawtest_trace!("Step 1: probe writing {:#010x} to FB@(0,0)", test_color);
         let fb_ptr = fb_virt as *mut u32;
-        let write_ok = probe_write_ok!(fb_ptr, test_color);
-        if !write_ok {
-            drawtest_trace!("Step 1: WRITE caused a page-fault / #GP at (0,0)!");
-            return Err("write to FB(0,0) caused a fault");
-        }
+        probe_write!(fb_ptr, test_color);
         drawtest_trace!("Step 1: write OK (no fault)");
 
         // ── Step 2: probe readback from framebuffer origin ─────────────
         drawtest_trace!("Step 2: probe readback from FB@(0,0)");
-        let read_val = probe_read_ok!(fb_ptr);
+        let read_val = probe_read!(fb_ptr);
         drawtest_trace!("Step 2: readback = {:#010x}", read_val);
         if read_val == test_color {
             drawtest_trace!("Step 2: readback matches!  Framebuffer fully accessible.");
@@ -245,23 +203,23 @@ pub fn verify_drawing_test(config: &crate::graphics::color::FramebufferInfo) -> 
         drawtest_trace!("Step 3: probe write to top-right ({}, 0)", w.saturating_sub(1));
         let tr_off = config.calculate_offset(w.saturating_sub(1), 0);
         let tr_ptr = unsafe { ((fb_virt as *mut u8).add(tr_off)) as *mut u32 };
-        let tr_ok = probe_write_ok!(tr_ptr, 0xCAFEBABEu32);
-        drawtest_trace!("Step 3: write to top-right = {}", tr_ok);
+        probe_write!(tr_ptr, 0xCAFEBABEu32);
+        drawtest_trace!("Step 3: write to top-right completed");
 
         // ── Step 4: probe write to bottom-left corner ──────────────────
         drawtest_trace!("Step 4: probe write to bottom-left (0, {})", h.saturating_sub(1));
         let bl_off = config.calculate_offset(0, h.saturating_sub(1));
         let bl_ptr = unsafe { ((fb_virt as *mut u8).add(bl_off)) as *mut u32 };
-        let bl_ok = probe_write_ok!(bl_ptr, 0xF00DBABEu32);
-        drawtest_trace!("Step 4: write to bottom-left = {}", bl_ok);
+        probe_write!(bl_ptr, 0xF00DBABEu32);
+        drawtest_trace!("Step 4: write to bottom-left completed");
 
         // ── Step 5: try sfence + readback one more time ────────────────
         // (in case the first write primed the WC buffer)
         drawtest_trace!("Step 5: write + sfence + readback (retry)");
         {
-            let _ = probe_write_ok!(fb_ptr, test_color);
+            probe_write!(fb_ptr, test_color);
             unsafe { core::arch::asm!("sfence", options(nostack, preserves_flags)); }
-            let v = probe_read_ok!(fb_ptr);
+            let v = probe_read!(fb_ptr);
             drawtest_trace!("Step 5: retry readback = {:#010x}", v);
             if v == test_color {
                 drawtest_trace!("Step 5: passed after retry");
@@ -272,9 +230,9 @@ pub fn verify_drawing_test(config: &crate::graphics::color::FramebufferInfo) -> 
         // ── Step 6: wbinvd attempt ─────────────────────────────────────
         drawtest_trace!("Step 6: write + wbinvd + readback");
         {
-            let _ = probe_write_ok!(fb_ptr, test_color);
+            probe_write!(fb_ptr, test_color);
             unsafe { core::arch::asm!("wbinvd", options(nostack, preserves_flags)); }
-            let v = probe_read_ok!(fb_ptr);
+            let v = probe_read!(fb_ptr);
             drawtest_trace!("Step 6: wbinvd readback = {:#010x}", v);
             if v == test_color {
                 drawtest_trace!("Step 6: passed after wbinvd");
@@ -286,7 +244,7 @@ pub fn verify_drawing_test(config: &crate::graphics::color::FramebufferInfo) -> 
         drawtest_trace!("Step 7: scan first 16 FB pixels for non-zero");
         {
             for i in 0..16u32 {
-                let v = probe_read_ok!(fb_ptr.add(i as usize));
+                let v = probe_read!(fb_ptr.add(i as usize));
                 if v != 0 {
                     drawtest_trace!("Step 7: pixel[{}] = {:#010x}", i, v);
                 }
