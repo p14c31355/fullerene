@@ -96,7 +96,7 @@ pub unsafe fn build_gdt(tss: &mut TaskStateSegment) -> (GlobalDescriptorTable, S
     let data_selector = gdt.append(Descriptor::kernel_data_segment());
     let user_data_selector = gdt.append(Descriptor::user_data_segment());
     let user_code_selector = gdt.append(Descriptor::user_code_segment());
-    let tss_static: &'static TaskStateSegment = core::mem::transmute(tss);
+    let tss_static: &'static TaskStateSegment = unsafe { core::mem::transmute(tss) };
     let tss_selector = gdt.append(Descriptor::tss_segment(tss_static));
     (gdt, code_selector, data_selector, tss_selector, user_data_selector, user_code_selector)
 }
@@ -133,14 +133,8 @@ pub fn init_with_stacks(stacks: TssStacks) {
     mem_debug!("GDT: About to return\n");
 }
 
-pub fn init(heap_start: VirtAddr) -> VirtAddr {
-    if GDT_INITIALIZED.load(Ordering::SeqCst) {
-        mem_debug!("GDT: Already initialized, skipping\n");
-        return heap_start;
-    }
-
-    debug_log_no_alloc!("GDT: Initializing with heap at ", heap_start.as_u64());
-
+/// Allocate IST stacks contiguously and return (new_heap_start, tss)
+unsafe fn allocate_ist_stacks(mut heap_start: VirtAddr) -> (VirtAddr, TaskStateSegment) {
     // Allocate IST stacks contiguously
     let double_fault_ist = heap_start + GDT_TSS_STACK_SIZE as u64;
     let timer_ist = double_fault_ist + GDT_TSS_STACK_SIZE as u64;
@@ -151,17 +145,31 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
     let machine_check_ist = nmi_ist + GDT_TSS_STACK_SIZE as u64;
     let new_heap_start = machine_check_ist + GDT_TSS_STACK_SIZE as u64;
 
+    let mut tss = TaskStateSegment::new();
+    tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = double_fault_ist;
+    tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = timer_ist;
+    tss.interrupt_stack_table[STACK_FAULT_IST_INDEX as usize] = stack_fault_ist;
+    tss.interrupt_stack_table[GP_FAULT_IST_INDEX as usize] = gp_fault_ist;
+    tss.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] = page_fault_ist;
+    tss.interrupt_stack_table[NMI_IST_INDEX as usize] = nmi_ist;
+    tss.interrupt_stack_table[MACHINE_CHECK_IST_INDEX as usize] = machine_check_ist;
+
+    (new_heap_start, tss)
+}
+
+pub fn init(heap_start: VirtAddr) -> VirtAddr {
+    if GDT_INITIALIZED.load(Ordering::SeqCst) {
+        mem_debug!("GDT: Already initialized, skipping\n");
+        return heap_start;
+    }
+
+    debug_log_no_alloc!("GDT: Initializing with heap at ", heap_start.as_u64());
+
+    let (new_heap_start, tss) = unsafe { allocate_ist_stacks(heap_start) };
+
     debug_log_no_alloc!("GDT: Stack addresses calculated\n");
 
     unsafe {
-        let mut tss = TaskStateSegment::new();
-        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = double_fault_ist;
-        tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = timer_ist;
-        tss.interrupt_stack_table[STACK_FAULT_IST_INDEX as usize] = stack_fault_ist;
-        tss.interrupt_stack_table[GP_FAULT_IST_INDEX as usize] = gp_fault_ist;
-        tss.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] = page_fault_ist;
-        tss.interrupt_stack_table[NMI_IST_INDEX as usize] = nmi_ist;
-        tss.interrupt_stack_table[MACHINE_CHECK_IST_INDEX as usize] = machine_check_ist;
         TSS = Some(tss);
     }
 
