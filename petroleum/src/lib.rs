@@ -6,6 +6,7 @@ extern crate alloc;
 
 /// Macro to define panic handler using petroleum's serial output.
 /// Use this in binary crates (kernel, bootloader).
+/// Prints panic location (file, line, column) and optional message to serial.
 #[macro_export]
 macro_rules! define_panic_handler {
     () => {
@@ -13,6 +14,14 @@ macro_rules! define_panic_handler {
         #[panic_handler]
         fn panic(info: &core::panic::PanicInfo) -> ! {
             use core::fmt::Write;
+            // Print location info (file:line:col) to serial
+            if let Some(loc) = info.location() {
+                $crate::serial::_print(format_args!(
+                    "PANIC at {}:{}:{}\n", loc.file(), loc.line(), loc.column()
+                ));
+            }
+            // Print the panic message — PanicInfo implements Display
+            $crate::serial::_print(format_args!("PANIC: {}\n", info));
             // VGA text mode panic output (optional)
             #[cfg(feature = "vga_panic")]
             {
@@ -24,8 +33,6 @@ macro_rules! define_panic_handler {
                     }
                 }
             }
-            // Serial output
-            $crate::serial::_print(format_args!("PANIC: {}\n", info));
             loop {}
         }
     };
@@ -148,17 +155,10 @@ macro_rules! get_memory_stats {
     () => { $crate::page_table::get_memory_stats() };
 }
 
-use core::ffi::c_void;
-use core::ptr;
 use spin::{Mutex, Once};
 
-use crate::common::{
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EFI_LOADED_IMAGE_PROTOCOL_GUID,
-    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID,
-};
-use crate::common::{
-    EfiGraphicsOutputProtocol, EfiStatus, EfiSystemTable, FullereneFramebufferConfig,
-};
+use crate::common::EfiSystemTable;
+use crate::common::uefi::FullereneFramebufferConfig;
 
 /// Wrapper for Local APIC address pointer to make it Send/Sync
 #[derive(Clone, Copy)]

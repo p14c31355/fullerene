@@ -208,7 +208,7 @@ pub unsafe extern "C" fn init_and_jump(args_ptr: *const InitAndJumpArgs, stack_t
 
     crate::serial::_print(format_args!("IAJ: Initializing L4 table...\n"));
     
-    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_CACHE;
 
     // 1. Use the pre-allocated L4 table provided by the bootloader
     let l4_phys = l4_phys_addr;

@@ -142,8 +142,8 @@ fn log_system_stats(stats: &SystemStats) {
 /// Display system statistics on the primary console
 fn display_system_stats_on_display(stats: &SystemStats) {
     use petroleum::graphics::Console as _;
-    let mut console = crate::graphics::PRIMARY_CONSOLE.lock();
-    if let Some(ref mut console) = *console {
+    let mut renderer = crate::graphics::PRIMARY_RENDERER.lock();
+    if let Some(ref mut console) = *renderer {
         console.set_cursor(22, 0);
         console.set_color(0x03); // Cyan (VGA index)
         let _ = core::fmt::write(console, format_args!(

@@ -101,6 +101,18 @@ fn safe_halt() -> ! {
 }
 
 fn kernel_fault_halt(frame: &InterruptStackFrame, name: &str, extra: &str) -> ! {
+    // Check probe marker — if set, this fault happened during verify_drawing_test.
+    if let Some(probe) = petroleum::graphics::PROBE_MARKER.lock().take() {
+        raw_log!(
+            "\n=== PROBE FAULT at {}:{} ===\n  {}\n  RIP={:#x} RSP={:#x}\n",
+            probe.file, probe.line, name,
+            frame.instruction_pointer.as_u64(),
+            frame.stack_pointer.as_u64(),
+        );
+        // Return to caller via longjmp-like stack unwind is not possible in
+        // kernel mode, so we still halt — but now the user knows the *exact*
+        // file:line that triggered the fault.
+    }
     raw_log!(
         "\n=== KERNEL EXCEPTION: {} ===\n  RIP={:#x} RSP={:#x} CS={:#x}\n  Extra: {}\n",
         name,

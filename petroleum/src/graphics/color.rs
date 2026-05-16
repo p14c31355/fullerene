@@ -365,6 +365,14 @@ impl Button {
         self
     }
 
+    /// Draw the button using the generic Renderer trait.
+    pub fn draw(&self, renderer: &mut dyn crate::graphics::renderer::Renderer) {
+        renderer.draw_rect(self.x as i32, self.y as i32, self.width, self.height, self.bg_color);
+        let text_width = crate::calc_text_width(&self.text);
+        let text_x = self.x as i32 + (self.width as i32 / 2) - (text_width / 2);
+        renderer.draw_text(text_x, self.y as i32 + (self.height as i32 / 2) - 5, &self.text, self.text_color);
+    }
+
     pub fn contains_point(&self, x: u32, y: u32) -> bool {
         x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
     }

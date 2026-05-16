@@ -1,4 +1,3 @@
-use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 pub const COM1_DATA_PORT: u16 = 0x3F8;

@@ -2,13 +2,9 @@ use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
 use petroleum::graphics::{Console, Renderer, UefiFramebufferWriter};
 use petroleum::graphics::text::VgaBuffer;
-use petroleum::write_serial_bytes;
-use alloc::boxed::Box;
 use spin::Mutex;
 
-/// Global primary console — stored as a concrete type (no Box, no allocator).
-pub static PRIMARY_CONSOLE: Mutex<Option<UefiFramebufferWriter>> = Mutex::new(None);
-/// Global primary renderer — stored as a concrete type (no Box, no allocator).
+/// Global primary framebuffer renderer (also used as text console).
 pub static PRIMARY_RENDERER: Mutex<Option<UefiFramebufferWriter>> = Mutex::new(None);
 
 /// Guard flag to prevent double initialization of the graphics subsystem.
@@ -36,9 +32,8 @@ pub fn init_graphics() {
     }
 
     // Try to create primary console from petroleum
-    if let Some(primary_console) = petroleum::boot::create_primary_console() {
-        *PRIMARY_CONSOLE.lock() = Some(primary_console.clone());
-        *PRIMARY_RENDERER.lock() = Some(primary_console);
+    if let Some(primary_renderer) = petroleum::boot::create_primary_console() {
+        *PRIMARY_RENDERER.lock() = Some(primary_renderer);
         petroleum::debug_log!("Graphics initialized with GOP Framebuffer");
         return;
     }
@@ -50,22 +45,19 @@ pub fn init_graphics() {
     *VGA_CONSOLE.lock() = Some(vga);
 }
 
-pub fn set_primary_console(console: UefiFramebufferWriter) {
-    *PRIMARY_CONSOLE.lock() = Some(console);
-}
-
+/// Set the primary framebuffer renderer (also used as text console).
 pub fn set_primary_renderer(renderer: UefiFramebufferWriter) {
     *PRIMARY_RENDERER.lock() = Some(renderer);
 }
 
-/// Helper to write to the primary console (with VGA fallback).
+/// Helper to write to the primary renderer (with VGA fallback).
 pub fn print_to_console(s: &str) {
-    let mut console = PRIMARY_CONSOLE.lock();
-    if let Some(ref mut console) = *console {
-        let _ = console.write_str(s);
+    let mut renderer = PRIMARY_RENDERER.lock();
+    if let Some(ref mut r) = *renderer {
+        let _ = r.write_str(s);
         return;
     }
-    drop(console);
+    drop(renderer);
     // Fallback to VGA text console
     let mut vga = VGA_CONSOLE.lock();
     if let Some(ref mut vga) = *vga {
@@ -73,14 +65,14 @@ pub fn print_to_console(s: &str) {
     }
 }
 
-/// Helper to write formatted text to the primary console (with VGA fallback).
+/// Helper to write formatted text to the primary renderer (with VGA fallback).
 pub fn print_fmt(args: core::fmt::Arguments) {
-    let mut console = PRIMARY_CONSOLE.lock();
-    if let Some(ref mut console) = *console {
-        let _ = core::fmt::write(console, args);
+    let mut renderer = PRIMARY_RENDERER.lock();
+    if let Some(ref mut r) = *renderer {
+        let _ = core::fmt::write(r, args);
         return;
     }
-    drop(console);
+    drop(renderer);
     // Fallback to VGA text console
     let mut vga = VGA_CONSOLE.lock();
     if let Some(ref mut vga) = *vga {
