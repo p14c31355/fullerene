@@ -261,6 +261,11 @@ pub fn load_efi_image(
         ));
     }
 
+    // Zero the whole allocated range to ensure .bss and other uninitialized areas are zeroed
+    unsafe {
+        core::ptr::write_bytes(phys_addr as *mut u8, 0, pages_needed * 4096);
+    }
+
     // Copy headers
     let size_of_headers = optional_header.windows_fields.size_of_headers as usize;
     unsafe {

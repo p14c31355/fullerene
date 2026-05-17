@@ -1,4 +1,3 @@
-use crate::common::logging::SystemResult;
 use crate::page_table::allocator::traits::{FrameAllocator, FrameAllocatorExt};
 use crate::page_table::memory_map::MemoryDescriptorValidator;
 use crate::page_table::types::PhysFrame;

@@ -7,7 +7,7 @@ use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use x86_64::VirtAddr;
 
-/// Heap start address
+/// Heap start address - volatile for bare-metal reliability
 pub static HEAP_START: AtomicUsize = AtomicUsize::new(0);
 
 /// Heap end address (start + size)
@@ -20,6 +20,13 @@ pub static PHYSICAL_MEMORY_OFFSET: AtomicUsize = AtomicUsize::new(0);
 pub fn set_heap_range(start: usize, size: usize) {
     HEAP_START.store(start, Ordering::SeqCst);
     HEAP_END.store(start + size, Ordering::SeqCst);
+}
+
+/// Get the current heap range (start, end)
+pub fn get_heap_range() -> (usize, usize) {
+    let start = HEAP_START.load(Ordering::SeqCst);
+    let end = HEAP_END.load(Ordering::SeqCst);
+    (start, end)
 }
 
 /// Set the physical memory offset for virtual to physical address translation
@@ -62,8 +69,6 @@ pub unsafe fn phys_to_slice_mut(phys_addr: usize, len: usize) -> &'static mut [u
 
 /// Check if an address is in user space
 pub fn is_user_address(addr: VirtAddr) -> bool {
-    // User space is typically 0x0000000000000000 to 0x00007FFFFFFFFFFF
-    // Kernel space is 0xFFFF800000000000 and above
     addr.as_u64() < 0x0000800000000000
 }
 
@@ -95,80 +100,42 @@ pub fn deallocate_layout(ptr: *mut u8, layout: Layout) {
 
 /// Validate user buffer access
 pub fn validate_user_buffer(ptr: usize, count: usize, allow_kernel: bool) -> SystemResult<()> {
-    if count == 0 {
-        return Ok(());
-    }
-
-    if ptr == 0 {
-        return Err(SystemError::InvalidArgument);
-    }
-
+    if count == 0 { return Ok(()); }
+    if ptr == 0 { return Err(SystemError::InvalidArgument); }
     let start = VirtAddr::new(ptr as u64);
-    if !allow_kernel && !is_user_address(start) {
-        return Err(SystemError::InvalidArgument);
-    }
-
+    if !allow_kernel && !is_user_address(start) { return Err(SystemError::InvalidArgument); }
     if let Some(end_ptr) = ptr.checked_add(count - 1) {
         let end = VirtAddr::new(end_ptr as u64);
-        if !allow_kernel && !is_user_address(end) {
-            return Err(SystemError::InvalidArgument);
-        }
-    } else {
-        // Overflow in end_ptr calculation
-        return Err(SystemError::InvalidArgument);
-    }
-
+        if !allow_kernel && !is_user_address(end) { return Err(SystemError::InvalidArgument); }
+    } else { return Err(SystemError::InvalidArgument); }
     Ok(())
 }
 
-/// Common syscall argument validation helper
 pub fn validate_syscall_fd(fd: i32) -> SystemResult<()> {
-    if fd < 0 {
-        Err(SystemError::InvalidArgument)
-    } else {
-        Ok(())
-    }
+    if fd < 0 { Err(SystemError::InvalidArgument) } else { Ok(()) }
 }
 
 pub fn validate_syscall_buffer(ptr: usize, allow_kernel: bool) -> SystemResult<()> {
     validate_user_buffer(ptr, 1, allow_kernel)
 }
 
-/// Safely create a slice from a user-provided pointer and length
 pub unsafe fn user_slice(
-    ptr: *const u8,
-    count: usize,
-    allow_kernel: bool,
+    ptr: *const u8, count: usize, allow_kernel: bool,
 ) -> Result<&'static [u8], SystemError> {
     validate_user_buffer(ptr as usize, count, allow_kernel)?;
     Ok(core::slice::from_raw_parts(ptr, count))
 }
 
-/// Safely create a mutable slice from a user-provided pointer and length
 pub unsafe fn user_slice_mut(
-    ptr: *mut u8,
-    count: usize,
-    allow_kernel: bool,
+    ptr: *mut u8, count: usize, allow_kernel: bool,
 ) -> Result<&'static mut [u8], SystemError> {
     validate_user_buffer(ptr as usize, count, allow_kernel)?;
     Ok(core::slice::from_raw_parts_mut(ptr, count))
 }
 
-/// Helper function to create framebuffer configuration
 pub fn create_framebuffer_config(
-    address: u64,
-    width: u32,
-    height: u32,
-    pixel_format: super::uefi::EfiGraphicsPixelFormat,
-    bpp: u32,
-    stride: u32,
+    address: u64, width: u32, height: u32,
+    pixel_format: super::uefi::EfiGraphicsPixelFormat, bpp: u32, stride: u32,
 ) -> super::uefi::FullereneFramebufferConfig {
-    super::uefi::FullereneFramebufferConfig {
-        address,
-        width,
-        height,
-        pixel_format,
-        bpp,
-        stride,
-    }
+    super::uefi::FullereneFramebufferConfig { address, width, height, pixel_format, bpp, stride }
 }

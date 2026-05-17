@@ -1,13 +1,22 @@
 //! Initialization module containing common initialization logic for both UEFI and BIOS boot
-use crate::interrupts;
-use alloc::boxed::Box;
+//!
+//! This module provides the `init_common` function which is called after the
+//! bootloader has set up the basic environment. It initializes:
+//! - Graphics (GOP framebuffer)
+//! - Interrupts (IDT, exceptions)
+//! - Process management
+//! - Syscalls
+//! - Filesystem
+//! - Loader
 
-use petroleum::assembly::KernelArgs;
-use petroleum::{common::InitSequence, init_log, write_serial_bytes};
-use spin::Once;
-use x86_64::structures::paging::{Mapper, Page, PageTableFlags, PhysFrame, Size2MiB, Size4KiB};
-use x86_64::{PhysAddr, VirtAddr};
+use petroleum::common::InitSequence;
+use x86_64::VirtAddr;
 
+/// Common initialization function for both UEFI and BIOS boot paths
+///
+/// # Arguments
+///
+/// * `physical_memory_offset` - The offset for higher-half kernel mapping
 pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     petroleum::serial::serial_log(format_args!("Init common start\n"));
 
@@ -40,7 +49,13 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
 
     #[cfg(target_os = "uefi")]
     {
-        // UEFI specific memory mapping for KernelArgs is handled in bootloader/transition
+        // UEFI: ALLOCATOR was already initialized in memory_management_initialization()
+        // using init_global_heap(BOOT_HEAP_BUFFER). Just re-establish set_heap_range
+        // which may have stale values after the world switch.
+        unsafe {
+            let heap_ptr = core::ptr::addr_of_mut!(crate::heap::BOOT_HEAP_BUFFER) as *mut u8;
+            petroleum::common::memory::set_heap_range(heap_ptr as usize, crate::heap::HEAP_SIZE);
+        }
     }
 
     let common_steps = [
@@ -53,7 +68,11 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             Ok(())
         }),
         petroleum::init_step!("process", || {
-            crate::process::init();
+            let heap_start = unsafe {
+                core::ptr::addr_of_mut!(crate::heap::BOOT_HEAP_BUFFER) as usize
+            };
+            let heap_end = heap_start + crate::heap::HEAP_SIZE;
+            crate::process::init(heap_start, heap_end);
             Ok(())
         }),
         petroleum::init_step!("syscall", || {

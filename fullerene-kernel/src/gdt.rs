@@ -249,6 +249,15 @@ pub fn user_code_selector() -> SegmentSelector {
     unsafe { USER_CODE_SELECTOR.expect("USER_CODE_SELECTOR not initialized") }
 }
 
+/// Safe version that returns a fallback selector if not yet initialized
+pub fn user_code_selector_checked() -> SegmentSelector {
+    unsafe { USER_CODE_SELECTOR.unwrap_or(SegmentSelector::new(4, x86_64::PrivilegeLevel::Ring3)) }
+}
+
+pub fn kernel_code_selector_checked() -> SegmentSelector {
+    unsafe { CODE_SELECTOR.unwrap_or(SegmentSelector::new(1, x86_64::PrivilegeLevel::Ring0)) }
+}
+
 pub fn user_data_selector() -> SegmentSelector {
     unsafe { USER_DATA_SELECTOR.expect("USER_DATA_SELECTOR not initialized") }
 }

@@ -1,6 +1,6 @@
 use super::renderer::Renderer;
 use crate::{
-    Button, COLOR_BLACK, COLOR_DARK_GRAY, COLOR_LIGHT_BLUE, COLOR_TASKBAR, calc_text_width,
+    Button, COLOR_BLACK, COLOR_DARK_GRAY, COLOR_LIGHT_BLUE, COLOR_TASKBAR,
 };
 
 pub fn draw_os_desktop(renderer: &mut dyn Renderer) {
@@ -60,7 +60,7 @@ fn draw_taskbar_with_buttons(renderer: &mut dyn Renderer) {
     let bar_height = 40;
     renderer.draw_rect(
         0,
-        (height as i32 - bar_height as i32),
+        height as i32 - bar_height as i32,
         renderer.get_resolution().0,
         bar_height,
         COLOR_TASKBAR,

@@ -238,13 +238,19 @@ pub static CURRENT_PROCESS: AtomicUsize = AtomicUsize::new(0);
 
 // Use KERNEL_STACK_SIZE from crate::heap
 
+/// Static idle context storage (avoid heap allocation during early init)
+#[allow(static_mut_refs)]
+static mut IDLE_CONTEXT: core::mem::MaybeUninit<ProcessContext> =
+    core::mem::MaybeUninit::uninit();
+/// Static idle process storage
+#[allow(static_mut_refs)]
+static mut IDLE_PROCESS: core::mem::MaybeUninit<Process> =
+    core::mem::MaybeUninit::uninit();
+
 /// Initialize process management system
-pub fn init() {
+pub fn init(heap_start: usize, heap_end: usize) {
     mem_debug!("Process: init start\n");
 
-    let heap_start = petroleum::common::memory::HEAP_START.load(core::sync::atomic::Ordering::SeqCst);
-    let heap_end = petroleum::common::memory::HEAP_END.load(core::sync::atomic::Ordering::SeqCst);
-    
     let mut buf = [0u8; 16];
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [Process::init] Heap range: 0x");
     let len = petroleum::serial::format_hex_to_buffer(heap_start as u64, &mut buf, 16);
@@ -254,14 +260,52 @@ pub fn init() {
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
-    // Create idle process
+    // Build idle process completely from static storage (no heap allocation at all).
+    // Process::new calls Box::new(ProcessContext) which would fail, so we
+    // construct everything manually using static storage.
     let idle_addr = VirtAddr::new(idle_loop as *const () as usize as u64);
-    let mut idle_process = Process::new("idle", idle_addr, false);
-    idle_process.state = ProcessState::Running;
+    let pid = ProcessId(NEXT_PID.fetch_add(1, Ordering::Relaxed) as u64);
 
-    PROCESS_MANAGER
-        .add(Box::new(idle_process))
-        .expect("Failed to add idle process");
+    // Use addr_of_mut! to avoid static_mut_refs lint with MaybeUninit
+    unsafe {
+        // Initialize static context
+        let ctx_ptr = core::ptr::addr_of_mut!(IDLE_CONTEXT).cast::<ProcessContext>();
+        ctx_ptr.write(ProcessContext {
+            regs: [0; 16],
+            rflags: 0x0202,
+            rip: idle_addr.as_u64(),
+            segments: [
+                crate::gdt::code_selector().as_ref().map(|s| s.0 as u64).unwrap_or(1),
+                crate::gdt::kernel_data_selector_fallback().as_ref().map(|s| s.0 as u64).unwrap_or(2),
+                0, 0, 0, 0,
+            ],
+            tss: 0,
+            is_user: false,
+        });
+
+        // Initialize static process using Box::from_raw on the static context
+        let ctx_box = Box::from_raw(ctx_ptr);
+        let proc_ptr = core::ptr::addr_of_mut!(IDLE_PROCESS).cast::<Process>();
+        proc_ptr.write(Process {
+            id: pid,
+            name: "idle",
+            state: ProcessState::Running,
+            context: ctx_box,
+            page_table_phys_addr: PhysAddr::new(0),
+            page_table: None,
+            kernel_stack: VirtAddr::new(0),
+            user_stack: VirtAddr::new(0),
+            entry_point: idle_addr,
+            is_user: false,
+            exit_code: None,
+            parent_id: None,
+        });
+
+        let boxed = Box::from_raw(proc_ptr);
+        PROCESS_MANAGER
+            .add(boxed)
+            .expect("Failed to add idle process");
+    }
     CURRENT_PROCESS.store(1, Ordering::SeqCst);
 
     mem_debug!("Process: init done\n");
@@ -561,7 +605,8 @@ mod tests {
 
     #[test]
     fn test_process_counting() {
-        init(); // Initialize the process list
+        // Initialize the process management system with dummy heap range
+        init(0, 0);
         assert!(get_process_count() > 0);
         assert!(get_active_process_count() > 0);
     }
