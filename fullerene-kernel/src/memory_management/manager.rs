@@ -43,12 +43,17 @@ impl UnifiedMemoryManager {
         // Remove existing mapping if present
         let _ = self.page_table_manager.unmap_page(virtual_addr);
 
-        self.page_table_manager.map_page(
+        let res = self.page_table_manager.map_page(
             virtual_addr,
             physical_addr,
             flags,
             petroleum::page_table::constants::get_frame_allocator_mut(),
-        )
+        );
+
+        if let Err(e) = &res {
+            petroleum::serial::serial_log(format_args!("[safe_map_page] Failed for virt={:#x}, phys={:#x}: {:?}\n", virtual_addr, physical_addr, e));
+        }
+        res
     }
 
     /// Safely unmaps a page, ignoring errors if the page was not mapped.
@@ -82,15 +87,18 @@ impl UnifiedMemoryManager {
         let flags = PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::NO_EXECUTE;
 
         for i in 0..pages {
-            self.safe_map_page(
-                virtual_addr + i * page_size,
-                physical_addr + i * page_size,
-                flags,
-            )?;
-        }
+            let virt = virtual_addr + i * page_size;
+            let phys = physical_addr + i * page_size;
+            petroleum::serial::serial_log(format_args!("[map_mmio_region] Mapping virt={:#x} to phys={:#x}\n", virt, phys));
 
+            if let Err(e) = self.safe_map_page(virt, phys, flags) {
+                petroleum::serial::serial_log(format_args!("[map_mmio_region] Error mapping page at virt={:#x}: {:?}\n", virt, e));
+                return Err(SystemError::MappingFailed);
+            }
+        }
         Ok(())
     }
+
 
     /// Create a new unified memory manager
     pub fn new() -> Self {

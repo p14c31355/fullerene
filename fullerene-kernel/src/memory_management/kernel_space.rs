@@ -51,12 +51,20 @@ pub fn map_mmio(
 
     let virt = CanonicalVirtAddr::new(KERNEL_OFFSET.as_u64() + phys)
         .expect("MMIO virtual address is not canonical");
+    
+    petroleum::serial::serial_log(format_args!("[map_mmio] virt={:#x}, phys={:#x}, size={:#x}\n", virt.as_u64(), phys, size));
 
-    mapper
+    let res = mapper
         .map_region(virt, phys, size)
         .with_flags(Flags::DEVICE_MMIO)
         .huge_if_possible()
-        .apply()
+        .apply();
+        
+    if let Err(e) = &res {
+        petroleum::serial::serial_log(format_args!("[map_mmio] Failed: {:?}\n", e));
+    }
+    
+    res
 }
 
 /// Map the framebuffer.

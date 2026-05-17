@@ -23,12 +23,43 @@ static VGA_CONSOLE: Mutex<Option<VgaBuffer>> = Mutex::new(None);
 /// 3. Legacy VGA Text Mode (fallback)
 pub fn init_graphics() {
     // Force reset GRAPHICS_INITIALIZED to handle un-zeroed .bss after world switch.
-    // This mirrors the force-reset pattern used for ALLOCATOR, HEAP_INITIALIZED,
-    // and LOCAL_APIC_ADDRESS in uefi_init.rs.
     GRAPHICS_INITIALIZED.store(false, Ordering::SeqCst);
     if GRAPHICS_INITIALIZED.swap(true, Ordering::SeqCst) {
         petroleum::debug_log!("Graphics: Already initialized, skipping\n");
         return;
+    }
+
+    if let Some(gpu_device) = {
+        let mut scanner = petroleum::hardware::pci::PciScanner::new();
+        let _ = scanner.scan_all_buses();
+        scanner.get_devices().iter().find(|d| d.vendor_id == 0x1af4 && d.device_id == 0x1050).cloned()
+    } {
+        petroleum::debug_log!("VirtIO-GPU: Initializing display\n");
+        let common_cap = petroleum::virtio::pci::find_virtio_capability(&gpu_device, petroleum::virtio::gpu::VIRTIO_PCI_CAP_COMMON_CFG).unwrap();
+        let notify_cap = petroleum::virtio::pci::find_virtio_capability(&gpu_device, petroleum::virtio::gpu::VIRTIO_PCI_CAP_NOTIFY_CFG).unwrap();
+
+        let bar_phys = gpu_device.read_bar(common_cap.bar).unwrap() as usize;
+        let notify_bar_phys = gpu_device.read_bar(notify_cap.bar).unwrap() as usize;
+
+        let kernel_offset = petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64() as usize;
+        let common_virt = 0xffff800060000000;
+        let notify_virt = 0xffff800060004000;
+        
+        let mut mm = crate::memory_management::get_memory_manager().lock();
+        let mm = mm.as_mut().expect("MemoryManager not initialized");
+        
+        petroleum::serial::serial_log(format_args!("[graphics] Mapping BARs to virt={:#x}, {:#x}\n", common_virt, notify_virt));
+        
+        mm.map_mmio_region(bar_phys, common_virt, 0x4000).unwrap();
+        mm.map_mmio_region(notify_bar_phys, notify_virt, 0x4000).unwrap();
+
+        let common_virt_ptr = (common_virt + common_cap.offset as usize) as *mut u32;
+        let notify_virt_ptr = (notify_virt + notify_cap.offset as usize) as *mut u32;
+
+        if let Some(mut gpu) = petroleum::virtio::gpu::VirtioGpu::init_virtio_gpu(common_virt_ptr, notify_virt_ptr) {
+            gpu.init_display(1024, 768, 0xfc000000, 1024 * 768 * 4);
+            return;
+        }
     }
 
     // Try to create primary console from petroleum
