@@ -3,7 +3,7 @@ use crate::MEMORY_MAP;
 use crate::heap;
 use core::ffi::c_void;
 use petroleum::common::{EfiSystemTable, write_vga_string};
-use petroleum::page_table::memory_map::MemoryMapDescriptor;
+use petroleum::page_table::{ALLOCATOR as PETROLEUM_ALLOCATOR, MemoryMapDescriptor};
 use petroleum::uefi_helpers::find_heap_start;
 use petroleum::{debug_log_no_alloc, write_serial_bytes};
 
@@ -75,57 +75,59 @@ unsafe impl x86_64::structures::paging::FrameAllocator<x86_64::structures::pagin
 impl UefiInitContext {
     /// Early initialization: serial, VGA, memory maps
     pub fn early_initialization(&mut self) -> PhysAddr {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: early_initialization start\n");
+        petroleum::serial::early_log("DEBUG: early_initialization start");
 
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Entering serial_init\n");
+        petroleum::serial::early_log("DEBUG: Entering serial_init");
 
         // Diagnostic: Direct port write to verify I/O permissions
         unsafe {
             x86_64::instructions::port::Port::<u8>::new(0x3F8).write(b'!');
         }
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Direct write done\n");
+        petroleum::serial::early_log("DEBUG: Direct write done");
 
+        petroleum::serial::early_log("DEBUG: Inside serial_init");
         petroleum::serial::serial_init();
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: serial_init done\n");
+        petroleum::serial::early_log("DEBUG: serial_init done");
 
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main entered\n");
+        petroleum::serial::early_log("Kernel: efi_main entered");
 
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Printing efi_main address\n");
+        petroleum::serial::early_log("DEBUG: Printing efi_main address");
         let mut buf = [0u8; 16];
         let len = petroleum::serial::format_hex_to_buffer(
             crate::boot::uefi_entry::efi_main as u64,
             &mut buf,
             16,
         );
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Kernel: efi_main located at 0x");
+        petroleum::serial::early_log("Kernel: efi_main located at 0x");
+        // Keep manual hex printing for now.
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: efi_main address printed\n");
+        petroleum::serial::early_log("DEBUG: efi_main address printed");
 
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Attempting VGA buffer access 1\n");
+        petroleum::serial::early_log("DEBUG: Attempting VGA buffer access 1");
         unsafe {
             let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
             write_vga_string(vga_buffer, 0, b"Kernel boot (UEFI)", 0x1F00);
             write_vga_string(vga_buffer, 1, b"Early init start", 0x1F00);
         }
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: VGA buffer access 1 successful\n");
+        petroleum::serial::early_log("DEBUG: VGA buffer access 1 successful");
 
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Attempting VGA buffer access 2\n");
+        petroleum::serial::early_log("DEBUG: Attempting VGA buffer access 2");
         unsafe {
             let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
             write_vga_string(vga_buffer, 2, b"Serial init done", 0x1F00);
         }
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: VGA buffer access 2 successful\n");
+        petroleum::serial::early_log("DEBUG: VGA buffer access 2 successful");
 
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"Early setup completed\n");
+        petroleum::serial::early_log("Early setup completed");
 
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Calling setup_kernel_location\n");
+        petroleum::serial::early_log("DEBUG: Calling setup_kernel_location");
 
-        let mut map_buf = [0u8; 16];
-        let map_len =
-            petroleum::serial::format_hex_to_buffer(self.memory_map as u64, &mut map_buf, 16);
+        let mut buf = [0u8; 16];
+        let len =
+            petroleum::serial::format_hex_to_buffer(self.memory_map as u64, &mut buf, 16);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: memory_map ptr: 0x");
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, &map_buf[..map_len]);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
         let kernel_virt_addr = crate::boot::uefi_entry::efi_main as u64;
@@ -151,24 +153,14 @@ impl UefiInitContext {
         self.physical_memory_offset =
             x86_64::VirtAddr::new(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64);
 
-        // CRITICAL: Force reset ALLOCATOR lock and HEAP_INITIALIZED to avoid garbage memory issues
-        unsafe {
-            let alloc_ptr = core::ptr::addr_of!(petroleum::page_table::ALLOCATOR) as *mut u32;
-            core::ptr::write_volatile(alloc_ptr, 0);
-
-            let heap_init_ptr =
-                core::ptr::addr_of!(petroleum::page_table::HEAP_INITIALIZED) as *mut u8;
-            core::ptr::write_volatile(heap_init_ptr, 0);
-
-            petroleum::write_serial_bytes!(
-                0x3F8,
-                0x3FD,
-                b"DEBUG: Forced ALLOCATOR lock and HEAP_INITIALIZED reset\n"
-            );
-        }
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: Starting memory_management_initialization sequence\n"
+        );
 
         // CRITICAL: Initialize ALLOCATOR as early as possible to avoid implicit allocation deadlocks
-        if !HEAP_INITIALIZED.load(core::sync::atomic::Ordering::SeqCst) {
+        if !petroleum::page_table::HEAP_INITIALIZED.load(core::sync::atomic::Ordering::SeqCst) {
             petroleum::write_serial_bytes!(
                 0x3F8,
                 0x3FD,
@@ -176,7 +168,7 @@ impl UefiInitContext {
             );
 
             x86_64::instructions::interrupts::disable();
-            let _allocator = petroleum::page_table::ALLOCATOR.lock();
+            let _allocator = PETROLEUM_ALLOCATOR.lock();
             petroleum::write_serial_bytes!(
                 0x3F8,
                 0x3FD,
@@ -234,7 +226,8 @@ impl UefiInitContext {
         // calling init_frame_allocator which uses Vec (needs the global allocator).
         let boot_heap_ptr =
             unsafe { core::ptr::addr_of_mut!(crate::heap::BOOT_HEAP_BUFFER) as *mut u8 };
-        unsafe { petroleum::init_global_heap(boot_heap_ptr, crate::heap::HEAP_SIZE) };
+        // Initialize the global allocator (petroleum's ALLOCATOR, used by fullerene-kernel)
+        unsafe { PETROLEUM_ALLOCATOR.lock().init(boot_heap_ptr, crate::heap::HEAP_SIZE) };
         petroleum::write_serial_bytes!(
             0x3F8,
             0x3FD,
@@ -246,13 +239,28 @@ impl UefiInitContext {
             .as_ref()
             .expect("Memory map not initialized")
             .clone();
-        debug_log_no_alloc!(
-            "DEBUG: Memory map reference acquired at 0x",
-            memory_map_ref.as_ptr() as usize
-        );
+        
+        crate::heap::init_frame_allocator(memory_map_ref);
+        
+        debug_log_no_alloc!("DEBUG: Memory map reference acquired at 0x", memory_map_ref.as_ptr() as usize);
+        debug_log_no_alloc!("DEBUG: Heap frame allocator initialized\n");
 
-        heap::init_frame_allocator(memory_map_ref);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Heap frame allocator initialized\n");
+        // RESERVE KERNEL MEMORY in the frame allocator to prevent any other allocation (like the heap)
+        // from overlapping with the kernel code and data.
+        let kernel_size = unsafe {
+            petroleum::page_table::pe::calculate_kernel_memory_size(kernel_phys_start)
+        };
+        {
+            let mut fa_guard = crate::heap::FRAME_ALLOCATOR.lock();
+            let frame_allocator = fa_guard
+                .as_mut()
+                .expect("Frame allocator not initialized");
+            let kernel_pages = (kernel_size + 4095) / 4096;
+            frame_allocator
+                .reserve_frames(kernel_phys_start.as_u64(), kernel_pages as usize)
+                .expect("Failed to reserve kernel memory in frame allocator");
+        }
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Kernel memory reserved in frame allocator\n");
 
         let map_addr = self.memory_map as u64;
         let offset_val = self.physical_memory_offset.as_u64();
@@ -320,7 +328,7 @@ impl UefiInitContext {
                     map_pages,
                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
                 )
-                .expect("failed to identity-map memory map buffer");
+                .expect("Failed to map kernel area");
             }
             petroleum::write_serial_bytes!(
                 0x3F8,
@@ -570,6 +578,20 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(
             0x3F8,
             0x3FD,
+            b"DEBUG: [PHASE] Re-initializing ALLOCATOR after world switch...\n"
+        );
+        unsafe {
+            let heap_ptr = core::ptr::addr_of_mut!(crate::heap::BOOT_HEAP_BUFFER) as *mut u8;
+            petroleum::page_table::heap::ALLOCATOR.lock().init(heap_ptr, crate::heap::HEAP_SIZE);
+        }
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [PHASE] ALLOCATOR re-initialized successfully\n"
+        );
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
             b"DEBUG: [PHASE] Kernel CR3 set successfully\n"
         );
 
@@ -595,7 +617,7 @@ impl UefiInitContext {
             heap_phys_start
         };
 
-        let heap_pages = (heap::HEAP_SIZE + 4095) / 4096;
+        let heap_pages = (crate::heap::HEAP_SIZE + 4095) / 4096;
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] Heap pages needed: ");
         let mut pg_buf = [0u8; 16];
         let pg_len = petroleum::serial::format_hex_to_buffer(heap_pages as u64, &mut pg_buf, 16);
@@ -691,58 +713,12 @@ impl UefiInitContext {
         self.virtual_heap_start = self.physical_memory_offset + heap_phys_addr.as_u64();
         write_serial_bytes!(0x3F8, 0x3FD, b"Heap allocated and mapped\n");
 
-        use petroleum::page_table::{ALLOCATOR, HEAP_INITIALIZED};
-
-        let heap_start_for_allocator = self.virtual_heap_start;
-        let heap_size_for_allocator = heap::HEAP_SIZE;
-
-        petroleum::write_serial_bytes!(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: [PHASE] Finalizing global allocator init...\n"
-        );
-        unsafe {
-            x86_64::instructions::interrupts::disable();
-            petroleum::write_serial_bytes!(
-                0x3F8,
-                0x3FD,
-                b"DEBUG: [PHASE] Locking ALLOCATOR for initialization\n"
-            );
-            {
-                let mut allocator = petroleum::page_table::ALLOCATOR.lock();
-                petroleum::write_serial_bytes!(
-                    0x3F8,
-                    0x3FD,
-                    b"DEBUG: [PHASE] ALLOCATOR lock acquired\n"
-                );
-                allocator.init(
-                    heap_start_for_allocator.as_mut_ptr::<u8>(),
-                    heap_size_for_allocator,
-                );
-                petroleum::write_serial_bytes!(
-                    0x3F8,
-                    0x3FD,
-                    b"DEBUG: [PHASE] ALLOCATOR init completed\n"
-                );
-            }
-        }
-
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: HEAP_INITIALIZED store start\n");
-        HEAP_INITIALIZED.store(true, core::sync::atomic::Ordering::SeqCst);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: HEAP_INITIALIZED store done\n");
-
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: set_heap_range start\n");
-        petroleum::common::memory::set_heap_range(
-            heap_start_for_allocator.as_u64() as usize,
-            heap_size_for_allocator,
-        );
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: set_heap_range done\n");
-
         petroleum::write_serial_bytes!(
             0x3F8,
             0x3FD,
             b"DEBUG: memory_management_initialization about to return\n"
         );
+
 
         let res_offset = self.physical_memory_offset;
         let res_phys = heap_phys_addr;

@@ -266,7 +266,6 @@ pub fn init(heap_start: usize, heap_end: usize) {
     let idle_addr = VirtAddr::new(idle_loop as *const () as usize as u64);
     let pid = ProcessId(NEXT_PID.fetch_add(1, Ordering::Relaxed) as u64);
 
-    // Use addr_of_mut! to avoid static_mut_refs lint with MaybeUninit
     unsafe {
         // Initialize static context
         let ctx_ptr = core::ptr::addr_of_mut!(IDLE_CONTEXT).cast::<ProcessContext>();
@@ -284,13 +283,12 @@ pub fn init(heap_start: usize, heap_end: usize) {
         });
 
         // Initialize static process using Box::from_raw on the static context
-        let ctx_box = Box::from_raw(ctx_ptr);
         let proc_ptr = core::ptr::addr_of_mut!(IDLE_PROCESS).cast::<Process>();
         proc_ptr.write(Process {
             id: pid,
             name: "idle",
             state: ProcessState::Running,
-            context: ctx_box,
+            context: Box::from_raw(ctx_ptr),
             page_table_phys_addr: PhysAddr::new(0),
             page_table: None,
             kernel_stack: VirtAddr::new(0),
@@ -301,9 +299,8 @@ pub fn init(heap_start: usize, heap_end: usize) {
             parent_id: None,
         });
 
-        let boxed = Box::from_raw(proc_ptr);
         PROCESS_MANAGER
-            .add(boxed)
+            .add(Box::from_raw(proc_ptr))
             .expect("Failed to add idle process");
     }
     CURRENT_PROCESS.store(1, Ordering::SeqCst);
@@ -534,17 +531,18 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
             .find(|(id, _)| *id == new_pid)
             .map(|(_, p)| p.as_ref() as *const Process);
 
-        if let Some(new_ptr) = new_ptr {
-            let old_ctx = old_ptr.map(|p| p as *mut ProcessContext);
-            let new_ctx = new_ptr as *const ProcessContext;
-            let pt = unsafe { (*new_ptr).page_table_phys_addr };
-            (Some(old_ctx), Some(new_ctx), Some(pt))
+        if let Some(ptr) = new_ptr {
+            // Get pointers to the context field specifically to ensure proper alignment
+            let old_ctx = old_ptr.map(|p| unsafe { (&mut *p).context.as_mut() as *mut ProcessContext });
+            let new_ctx = Some(unsafe { (&*ptr).context.as_ref() as *const ProcessContext });
+            let pt = unsafe { (*ptr).page_table_phys_addr };
+            (old_ctx, new_ctx, Some(pt))
         } else {
             (None, None, None)
         }
     });
 
-    if let (Some(old_ctx), Some(new_ctx), Some(pt)) =
+    if let (Some(old_ctx_ptr), Some(new_ctx_ptr), Some(pt)) =
         (old_context_ptr, new_context_ptr, new_page_table)
     {
         unsafe {
@@ -553,7 +551,11 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
             if new_frame != current_frame {
                 Cr3::write(new_frame, x86_64::registers::control::Cr3Flags::empty());
             }
-            switch_context(old_ctx.map(|p| unsafe { &mut *p }), unsafe { &(*new_ctx) });
+            // Convert raw pointers to references
+            let old_ctx_ref = &mut *old_ctx_ptr;
+            let new_ctx_ref = &*new_ctx_ptr;
+            // Pass the old context as Some(&mut ProcessContext)
+            switch_context(Some(old_ctx_ref), new_ctx_ref);
         }
     }
 }

@@ -355,6 +355,16 @@ pub fn debug_print_hex_no_lock(value: usize) {
     unsafe { write_serial_bytes(COM1_DATA_PORT, COM1_STATUS_PORT, &buf[..len]) };
 }
 
+/// High-level, safe logging function for early-boot (no locking, direct port I/O).
+pub fn early_log(msg: &str) {
+    // Standardizing on the COM1 base addresses for early boot output
+    unsafe {
+        write_serial_bytes(COM1_DATA_PORT, COM1_STATUS_PORT, msg.as_bytes());
+        // Append a newline automatically to keep logs clean and reduce manual formatting
+        write_serial_bytes(COM1_DATA_PORT, COM1_STATUS_PORT, b"\n");
+    }
+}
+
 /// Early-boot non-locking string print
 pub fn debug_print_str_no_lock(s: &str) {
     unsafe { write_serial_bytes(COM1_DATA_PORT, COM1_STATUS_PORT, &s.as_bytes()[..]) };
