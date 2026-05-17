@@ -63,7 +63,7 @@ impl PciConfigSpace {
     }
 
     /// Read a byte from PCI configuration space
-    fn read_config_byte(bus: u8, device: u8, function: u8, offset: u8) -> u8 {
+    pub fn read_config_byte(bus: u8, device: u8, function: u8, offset: u8) -> u8 {
         let address = Self::build_config_address(bus, device, function, offset);
         let mut addr_writer =
             PortWriter::new(crate::hardware::ports::HardwarePorts::PCI_CONFIG_ADDRESS);
@@ -76,7 +76,7 @@ impl PciConfigSpace {
     }
 
     /// Read a word from PCI configuration space
-    fn read_config_word(bus: u8, device: u8, function: u8, offset: u8) -> u16 {
+    pub fn read_config_word(bus: u8, device: u8, function: u8, offset: u8) -> u16 {
         let dword = Self::read_config_dword(bus, device, function, offset);
         let shift = if offset % 4 < 2 { 0 } else { 16 };
         ((dword >> shift) & 0xFFFF) as u16
@@ -206,9 +206,18 @@ impl PciDevice {
             None
         }
     }
+
+    /// Read a BAR from PCI configuration space
+    pub fn read_bar(&self, bar_index: u8) -> Option<u64> {
+        if let Some(dev) = PrivatePciDevice::new(self.bus, self.device, self.function) {
+            dev.read_bar(bar_index)
+        } else {
+            None
+        }
+    }
 }
 
-// Legacy PciDevice implementation for kernel use with configuration space management
+// Private implementation for PciDevice
 struct PrivatePciDevice {
     bus: u8,
     device: u8,
@@ -217,7 +226,6 @@ struct PrivatePciDevice {
 }
 
 impl PrivatePciDevice {
-    /// Create a new PCI device instance
     pub fn new(bus: u8, device: u8, function: u8) -> Option<Self> {
         if let Some(config) = PciConfigSpace::read_from_device(bus, device, function) {
             Some(Self {
@@ -231,7 +239,6 @@ impl PrivatePciDevice {
         }
     }
 
-    /// Convert to public PciDevice
     pub fn to_public(self) -> PciDevice {
         PciDevice {
             bus: self.bus,
@@ -242,6 +249,36 @@ impl PrivatePciDevice {
             device_id: self.config.device_id,
             class_code: self.config.class_code,
             subclass: self.config.subclass,
+        }
+    }
+
+    pub fn read_bar(&self, bar_index: u8) -> Option<u64> {
+        if bar_index > 5 {
+            return None;
+        }
+
+        let offset = 0x10 + (bar_index * 4);
+        let bar_low = PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
+        
+        if bar_low == 0 {
+            return None;
+        }
+
+        if (bar_low & 0x1) != 0 {
+            return None;
+        }
+
+        let is_64bit = (bar_low & 0x6) == 0x4;
+
+        if is_64bit {
+            if bar_index >= 5 {
+                return None;
+            }
+            let high_offset = offset + 4;
+            let bar_high = PciConfigSpace::read_config_dword(self.bus, self.device, self.function, high_offset);
+            Some(((bar_high as u64) << 32) | ((bar_low & 0xFFFFFFF0) as u64))
+        } else {
+            Some((bar_low & 0xFFFFFFF0) as u64)
         }
     }
 
@@ -256,14 +293,12 @@ pub struct PciScanner {
 }
 
 impl PciScanner {
-    /// Create a new PCI scanner
     pub fn new() -> Self {
         Self {
             devices: alloc::vec::Vec::new(),
         }
     }
 
-    /// Scan all PCI buses for devices
     pub fn scan_all_buses(&mut self) -> Result<(), ()> {
         self.devices.clear();
 
@@ -279,28 +314,7 @@ impl PciScanner {
         Ok(())
     }
 
-    /// Get all discovered devices
     pub fn get_devices(&self) -> &[PciDevice] {
         &self.devices
-    }
-
-    /// Find devices by class code
-    pub fn find_devices_by_class(
-        &self,
-        class_code: u8,
-        subclass: u8,
-    ) -> alloc::vec::Vec<&PciDevice> {
-        self.devices
-            .iter()
-            .filter(|device| device.class_code == class_code && device.subclass == subclass)
-            .collect()
-    }
-
-    /// Find devices by vendor ID
-    pub fn find_devices_by_vendor(&self, vendor_id: u16) -> alloc::vec::Vec<&PciDevice> {
-        self.devices
-            .iter()
-            .filter(|device| device.vendor_id == vendor_id)
-            .collect()
     }
 }

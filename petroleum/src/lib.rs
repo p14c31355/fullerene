@@ -74,6 +74,7 @@ pub mod page_table;
 pub mod serial;
 pub mod transition;
 pub mod uefi_helpers;
+pub mod virtio;
 pub use apic::{IoApic, IoApicRedirectionEntry, init_io_apic};
 // Macros with #[macro_export] are automatically available at root, no need to re-export
 pub use common::logging::{SystemError, SystemResult};

@@ -223,44 +223,33 @@ pub fn create_primary_console() -> Option<crate::graphics::framebuffer::UefiFram
         trace!("getting L4 table\n");
         let l4 = unsafe { crate::page_table::active_level_4_table(phys_offset) };
 
-        let flags = PageTableFlags::PRESENT
+        let fb_flags = PageTableFlags::PRESENT
             | PageTableFlags::WRITABLE
-            | PageTableFlags::NO_EXECUTE
-            | PageTableFlags::NO_CACHE;
+            | PageTableFlags::NO_EXECUTE;
 
-        trace!("mapping {} framebuffer pages\n", fb_pages);
+        trace!("mapping {} framebuffer pages with WB-friendly flags\n", fb_pages);
+
         unsafe {
             for i in 0..fb_pages {
-                let v = x86_64::VirtAddr::new(fb_virt + i as u64 * 4096);
-                let p = x86_64::PhysAddr::new(fb_phys + i as u64 * 4096);
-                
-                // Check if page is already mapped to avoid remapping conflicts
-                if !is_page_mapped(l4, v, phys_offset) {
-                    if let Err(e) = crate::page_table::kernel::init::map_page_4k_l1(
-                        l4,
-                        v,
-                        p,
-                        flags,
-                        frame_allocator,
-                        phys_offset,
-                    ) {
-                        trace!(
-                            "mapping FB page {} FAILED at virt=0x{:x}: {:?}\n",
-                            i,
-                            v.as_u64(),
-                            e
-                        );
-                    }
-                } else {
-                    trace!("FB page {} at virt=0x{:x} already mapped, skipping\n", i, v.as_u64());
+                let vaddr = x86_64::VirtAddr::new(fb_virt + i as u64 * 4096);
+                let paddr = x86_64::PhysAddr::new(fb_phys + i as u64 * 4096);
+
+                // 4Kページで確実に再マッピング（上位テーブルのフラグを上書き）
+                if let Err(e) = crate::page_table::kernel::init::map_page_4k_l1(
+                    l4,
+                    vaddr,
+                    paddr,
+                    fb_flags,
+                    frame_allocator,
+                    phys_offset,
+                ) {
+                    trace!("FB mapping failed at page {}: {:?}\n", i, e);
                 }
             }
         }
+
         trace!("FB pages mapped, flushing TLB\n");
-        let cr3_val = x86_64::registers::control::Cr3::read();
-        unsafe {
-            x86_64::registers::control::Cr3::write(cr3_val.0, cr3_val.1);
-        }
+        x86_64::instructions::tlb::flush_all();
 
         // Post-map verification: walk page table for first and last page
         trace!("Verifying page table walk for FB virt=0x{:x}\n", fb_virt);

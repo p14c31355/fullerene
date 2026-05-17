@@ -76,12 +76,14 @@ impl FramebufferInstaller {
     }
 
     fn clear_framebuffer(&self, config: &FullereneFramebufferConfig) {
-        unsafe {
-            ptr::write_bytes(
-                config.address as *mut u8,
-                0x00,
-                (config.height as u64 * config.stride as u64) as usize,
-            );
+        if config.address != 0 {
+            unsafe {
+                ptr::write_bytes(
+                    config.address as *mut u8,
+                    0x00,
+                    (config.height as u64 * config.stride as u64) as usize,
+                );
+            }
         }
     }
 }
@@ -450,12 +452,14 @@ pub fn init_graphics_protocols(
             config.width, config.height, config.address, config.bpp, config.stride
         ));
 
-        unsafe {
-            ptr::write_bytes(
-                config.address as *mut u8,
-                0x00,
-                (config.height as u64 * config.stride as u64) as usize,
-            );
+        if config.address != 0 {
+            unsafe {
+                ptr::write_bytes(
+                    config.address as *mut u8,
+                    0x00,
+                    (config.height as u64 * config.stride as u64) as usize,
+                );
+            }
         }
 
         crate::serial::_print(format_args!("EFI: Framebuffer cleared.\n"));
@@ -481,12 +485,14 @@ pub fn init_graphics_protocols(
             config.width, config.height, config.address, config.bpp, config.stride
         ));
 
-        unsafe {
-            ptr::write_bytes(
-                config.address as *mut u8,
-                0x00,
-                (config.height as u64 * config.stride as u64) as usize,
-            );
+        if config.address != 0 {
+            unsafe {
+                ptr::write_bytes(
+                    config.address as *mut u8,
+                    0x00,
+                    (config.height as u64 * config.stride as u64) as usize,
+                );
+            }
         }
 
         crate::serial::_print(format_args!("Bare-metal: Framebuffer cleared.\n"));
