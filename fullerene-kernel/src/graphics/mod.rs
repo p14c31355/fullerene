@@ -147,7 +147,7 @@ pub fn init_graphics() {
         let notify_virt_ptr = notify_virt as *mut u32;
 
         if let Some(mut gpu) =
-            petroleum::virtio::gpu::VirtioGpu::init_virtio_gpu(common_virt_ptr, notify_virt_ptr, gpu_device.clone(), common_bar)
+            petroleum::virtio::gpu::VirtioGpu::new(common_virt_ptr, notify_virt_ptr, gpu_device.clone(), common_bar)
         {
             let mut pci_cfg_cap = None;
             for cap in &caps {
