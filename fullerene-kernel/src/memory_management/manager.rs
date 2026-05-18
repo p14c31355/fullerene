@@ -5,6 +5,8 @@ use petroleum::initializer::{
     ErrorLogging, FrameAllocator, Initializable, MemoryManager, ProcessMemoryManager,
 };
 use petroleum::mem_debug;
+use petroleum::serial;
+use petroleum::serial::serial_log;
 use petroleum::page_table::{
     BitmapFrameAllocator, BootInfoFrameAllocator, FrameAllocatorExt, MemoryMapDescriptor,
     PageTableHelper, ProcessPageTable,
@@ -87,8 +89,12 @@ impl UnifiedMemoryManager {
         let pages = (size + page_size - 1) / page_size;
 
         // MMIO regions need proper caching attributes: Uncacheable (UC) is safest
-        // UC is achieved by setting PCD (NO_CACHE) without PWT (WRITE_THROUGH)
-        let flags = PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::NO_EXECUTE | PageFlags::NO_CACHE;
+        // UC is achieved by setting PCD (NO_CACHE) + PWT (WRITE_THROUGH) for QEMU VirtIO
+        let flags = PageFlags::PRESENT 
+          | PageFlags::WRITABLE 
+          | PageFlags::NO_EXECUTE 
+          | PageFlags::NO_CACHE 
+          | PageFlags::WRITE_THROUGH;
 
         for i in 0..pages {
             let virt = virtual_addr + i * page_size;
@@ -105,6 +111,13 @@ impl UnifiedMemoryManager {
                 ));
                 return Err(SystemError::MappingFailed);
             }
+        }
+        // Flush TLB to ensure all mappings are visible
+        self.flush_tlb_all()?;
+        
+        // Log page flags for debugging
+        if let Ok(flags) = self.page_table_manager.get_page_flags(virtual_addr) {
+            serial_log(format_args!("[MMIO] virt={:#x} flags={:?}\n", virtual_addr, flags));
         }
         Ok(())
     }

@@ -82,6 +82,9 @@ pub fn init_graphics() {
             }
         }
         
+        // Dump all capabilities for debugging
+        petroleum::virtio::pci::dump_capabilities(&gpu_device);
+
         // ...
         let common_cap = common_cap.expect("Common config not found");
         let notify_cap = notify_cap.expect("Notify config not found");
