@@ -634,26 +634,19 @@ unsafe {
 
     /// Submit a command stored in the command buffer, using the device's response buffer.
     /// `cmd_type` is the VIRTIO_GPU_CMD_* constant, `cmd` points into self.cmd_buf.
-    unsafe fn submit_raw(&mut self, cmd_type: u32, cmd_offset: u32, cmd_len: u32) {
+    unsafe fn submit_raw(&mut self, cmd_offset: u32, cmd_len: u32) {
         if self.desc_table.is_null() || self.avail_ring.is_null() {
             crate::serial::_print(format_args!("[VirtIO-GPU] ERROR: queues not initialized\n"));
             return;
         }
-
-        // Write the command header into the command buffer
-        let hdr = &mut *(self.cmd_buf.add(cmd_offset as usize) as *mut VirtioGpuCtrlHeader);
-        hdr.type_ = cmd_type;
-        hdr.flags = 0;
-        hdr.fence_id = 0;
-        hdr.ctx_id = 0;
-        hdr.padding = 0;
 
         let d0 = self.next_desc;
         let d1 = (self.next_desc + 1) % QUEUE_SIZE;
         self.next_desc = (self.next_desc + 2) % QUEUE_SIZE;
 
         let cmd_phys = self.cmd_buf_phys + cmd_offset as u64;
-        let resp_phys = self.cmd_buf_phys + self.cmd_buf_len as u64 - 64;
+        // Point to a larger response buffer. For now, assume it's at the end of the buffer.
+        let resp_phys = self.cmd_buf_phys + self.cmd_buf_len as u64 - 256;
 
         let e0 = &mut *self.desc_table.add(d0 as usize);
         e0.addr = cmd_phys.to_le();
@@ -663,7 +656,7 @@ unsafe {
 
         let e1 = &mut *self.desc_table.add(d1 as usize);
         e1.addr = resp_phys.to_le();
-        e1.len = 64u32.to_le();
+        e1.len = 256u32.to_le();
         e1.flags = VRING_DESC_F_WRITE.to_le();
         e1.next = 0u16.to_le();
 
@@ -679,15 +672,6 @@ unsafe {
 
         let notify_off = self.get_notify_offset(0);
         let notify_ptr = (self.notify_base as *mut u8).add(notify_off) as *mut u16;
-        crate::serial::_print(format_args!("[VirtIO-GPU] notifying device at {:p} (offset {}), base={:p}, notify_off={}\n", notify_ptr, notify_off, self.notify_base, notify_off));
-        
-        // Log descriptor state
-        crate::serial::_print(format_args!("[VirtIO-GPU] e0: addr={:#x}, len={}, flags={}, next={}\n", e0.addr, e0.len, e0.flags, e0.next));
-        crate::serial::_print(format_args!("[VirtIO-GPU] e1: addr={:#x}, len={}, flags={}, next={}\n", e1.addr, e1.len, e1.flags, e1.next));
-        crate::serial::_print(format_args!("[VirtIO-GPU] avail idx={}, ring[0]={}\n", av.idx, av.ring[0]));
-        
-        // Small delay
-        for _ in 0..10000 { core::hint::spin_loop(); }
         unsafe { write_volatile(notify_ptr, 0); }
     }
 
@@ -699,14 +683,14 @@ unsafe {
                 fence_id: 0,
                 ctx_id: 0,
                 padding: 0,
-            },
+            }.to_le(),
             r: VirtioGpuRect {
                 x: 0,
                 y: 0,
                 width: w,
                 height: h,
             },
-            resource_id: self.resource_id,
+            resource_id: self.resource_id.to_le(),
             padding: 0,
         };
         unsafe {
@@ -718,11 +702,7 @@ unsafe {
         }
         let before = self.read_used_idx();
         unsafe {
-            self.submit_raw(
-                VIRTIO_GPU_CMD_RESOURCE_FLUSH,
-                0,
-                core::mem::size_of::<VirtioGpuResourceFlush>() as u32,
-            );
+            self.submit_raw(0, core::mem::size_of::<VirtioGpuResourceFlush>() as u32);
         }
         self.wait_used(before);
     }
@@ -738,7 +718,7 @@ unsafe {
 
         unsafe {
             let last_used = self.read_used_idx();
-            self.submit_raw(VIRTIO_GPU_CMD_GET_DISPLAY_INFO, cmd_offset, cmd_len);
+            self.submit_raw(cmd_offset, cmd_len);
             
             crate::serial::_print(format_args!("[VirtIO-GPU] Command submitted, waiting for response...\n"));
             self.wait_used(last_used);
@@ -760,10 +740,10 @@ unsafe {
             core::ptr::copy_nonoverlapping(&get_display_info as *const _ as *const u8, self.cmd_buf, core::mem::size_of::<VirtioGpuCtrlHeader>());
         }
         let before = self.read_used_idx();
-        unsafe { self.submit_raw(VIRTIO_GPU_CMD_GET_DISPLAY_INFO, 0, core::mem::size_of::<VirtioGpuCtrlHeader>() as u32); }
+        unsafe { self.submit_raw(0, core::mem::size_of::<VirtioGpuCtrlHeader>() as u32); }
         self.wait_used(before);
 
-        // 2. CTX_CREATE (Required for virgl/3D paths, even for 2D it's safer to have a default context)
+        // 2. CTX_CREATE
         self.resource_id = 1;
         let ctx_create = VirtioGpuCtrlHeader {
                 type_: 0x0200, // VIRTIO_GPU_CMD_CTX_CREATE
@@ -774,7 +754,7 @@ unsafe {
             }.to_le();
         unsafe { core::ptr::copy_nonoverlapping(&ctx_create as *const _ as *const u8, self.cmd_buf, core::mem::size_of::<VirtioGpuCtrlHeader>()); }
         let before = self.read_used_idx();
-        unsafe { self.submit_raw(0x0200, 0, core::mem::size_of::<VirtioGpuCtrlHeader>() as u32); }
+        unsafe { self.submit_raw(0, core::mem::size_of::<VirtioGpuCtrlHeader>() as u32); }
         self.wait_used(before);
 
         // 3. RESOURCE_CREATE_2D
@@ -787,13 +767,13 @@ unsafe {
                 padding: 0,
             },
             resource_id: self.resource_id,
-            format: 1,
+            format: 2, // Use 2 for B8G8R8X8_UNORM
             width: w,
             height: h,
         }.to_le();
         unsafe { core::ptr::copy_nonoverlapping(&create2d as *const _ as *const u8, self.cmd_buf, core::mem::size_of::<VirtioGpuResourceCreate2d>()); }
         let before = self.read_used_idx();
-        unsafe { self.submit_raw(VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, 0, core::mem::size_of::<VirtioGpuResourceCreate2d>() as u32); }
+        unsafe { self.submit_raw(0, core::mem::size_of::<VirtioGpuResourceCreate2d>() as u32); }
         self.wait_used(before);
 
         // 4. ATTACH_BACKING
@@ -815,7 +795,7 @@ unsafe {
         };
         unsafe { core::ptr::copy_nonoverlapping(&attach_cmd as *const _ as *const u8, self.cmd_buf, core::mem::size_of::<AttachCmd>()); }
         let before = self.read_used_idx();
-        unsafe { self.submit_raw(VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, 0, core::mem::size_of::<AttachCmd>() as u32); }
+        unsafe { self.submit_raw(0, core::mem::size_of::<AttachCmd>() as u32); }
         self.wait_used(before);
 
         // 5. SET_SCANOUT
@@ -833,7 +813,7 @@ unsafe {
         };
         unsafe { core::ptr::copy_nonoverlapping(&set_scanout as *const _ as *const u8, self.cmd_buf, core::mem::size_of::<VirtioGpuSetScanout>()); }
         let before = self.read_used_idx();
-        unsafe { self.submit_raw(VIRTIO_GPU_CMD_SET_SCANOUT, 0, core::mem::size_of::<VirtioGpuSetScanout>() as u32); }
+        unsafe { self.submit_raw(0, core::mem::size_of::<VirtioGpuSetScanout>() as u32); }
         self.wait_used(before);
 
         // 6. FLUSH
