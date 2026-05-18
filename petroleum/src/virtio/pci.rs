@@ -30,6 +30,10 @@ pub struct VirtioPciCfgCap {
     pub length: u32,
     /// PCI CFG specific field: data register (at offset 0x14)
     pub pci_cfg_data: [u8; 4],
+    /// For NOTIFY_CFG: multiplier for queue_notify_off
+    pub notify_off_multiplier: u32,
+    /// Position of this capability in PCI configuration space
+    pub cap_pos: u8,
 }
 
 pub const VIRTIO_PCI_CAP_COMMON_CFG: u8 = 1;
@@ -59,6 +63,7 @@ pub fn get_virtio_caps(device: &PciDevice) -> Vec<VirtioPciCfgCap> {
         PciConfigSpace::read_config_byte(device.bus, device.device, device.function, 0x34);
     
     while offset != 0 && offset != 0xFF {
+        let cap_pos = offset;
         let cap_vndr =
             PciConfigSpace::read_config_byte(device.bus, device.device, device.function, offset);
         let cap_next =
@@ -72,6 +77,11 @@ pub fn get_virtio_caps(device: &PciDevice) -> Vec<VirtioPciCfgCap> {
             let cap_length = PciConfigSpace::read_config_dword(device.bus, device.device, device.function, offset + 12);
             let pci_cfg_data = PciConfigSpace::read_config_dword(device.bus, device.device, device.function, offset + 20).to_le_bytes();
             
+            let mut notify_off_multiplier = 0;
+            if cfg_type == VIRTIO_PCI_CAP_NOTIFY_CFG {
+                notify_off_multiplier = PciConfigSpace::read_config_dword(device.bus, device.device, device.function, offset + 16);
+            }
+
             caps.push(VirtioPciCfgCap {
                 cap_vndr,
                 cap_next,
@@ -82,6 +92,8 @@ pub fn get_virtio_caps(device: &PciDevice) -> Vec<VirtioPciCfgCap> {
                 offset: cap_offset,
                 length: cap_length,
                 pci_cfg_data,
+                notify_off_multiplier,
+                cap_pos,
             });
         }
         offset = cap_next;
@@ -99,16 +111,16 @@ pub fn read_virtio_reg_via_pci_cfg(
     let caps = get_virtio_caps(device);
     let cap = caps.iter().find(|c| c.cfg_type == VIRTIO_PCI_CAP_PCI_CFG)?;
 
-    let cfg_base = cap.offset as u8;
+    let cfg_base = cap.cap_pos;
 
-    let addr_low = offset;
-    let addr_high = bar as u32;
+    // 1. Select the BAR and offset to read from
+    PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, cfg_base + 4, bar as u32);
+    PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, cfg_base + 8, offset);
+    PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, cfg_base + 12, width);
 
-    PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, cfg_base, addr_low);
-    PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, cfg_base + 4, addr_high);
-
+    // 2. Read the data from pci_cfg_data (offset 16)
     let data = PciConfigSpace::read_config_dword(
-        device.bus, device.device, device.function, cfg_base + 8
+        device.bus, device.device, device.function, cfg_base + 16
     );
 
     let shift = ((offset & 3) * 8) as u32;
@@ -133,16 +145,16 @@ pub fn write_virtio_reg_via_pci_cfg(
     let caps = get_virtio_caps(device);
     let cap = caps.iter().find(|c| c.cfg_type == VIRTIO_PCI_CAP_PCI_CFG)?;
 
-    let cfg_base = cap.offset as u8;
+    let cfg_base = cap.cap_pos;
 
-    let addr_low = offset;
-    let addr_high = bar as u32;
+    // 1. Select the BAR and offset to write to
+    PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, cfg_base + 4, bar as u32);
+    PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, cfg_base + 8, offset);
+    PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, cfg_base + 12, width);
 
-    PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, cfg_base, addr_low);
-    PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, cfg_base + 4, addr_high);
-
+    // 2. Write the value to pci_cfg_data (offset 16)
     let mut data = PciConfigSpace::read_config_dword(
-        device.bus, device.device, device.function, cfg_base + 8
+        device.bus, device.device, device.function, cfg_base + 16
     );
 
     let shift = ((offset & 3) * 8) as u32;
@@ -156,7 +168,7 @@ pub fn write_virtio_reg_via_pci_cfg(
     let cleared = data & !(mask << shift);
     let new_data = cleared | ((value << shift) & mask);
 
-    PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, cfg_base + 8, new_data);
+    PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, cfg_base + 16, new_data);
     Some(())
 }
 

@@ -277,6 +277,8 @@ fn draw_desktop_on_available_framebuffer() {
         let (w, h) = renderer.get_resolution();
         petroleum::serial::serial_log(format_args!("Drawing desktop: {}x{}\n", w, h));
         crate::graphics::draw_os_desktop(renderer);
+        drop(renderer);
+        crate::graphics::flush_gpu();
     } else {
         petroleum::serial::serial_log(format_args!("PRIMARY_RENDERER is None!\n"));
     }

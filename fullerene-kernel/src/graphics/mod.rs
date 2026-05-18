@@ -10,6 +10,9 @@ use petroleum::virtio::pci::read_virtio_reg_via_pci_cfg;
 /// Global primary framebuffer renderer (also used as text console).
 pub static PRIMARY_RENDERER: Mutex<Option<UefiFramebufferWriter>> = Mutex::new(None);
 
+/// Global VirtIO GPU device.
+pub static VIRTIO_GPU: Mutex<Option<petroleum::virtio::gpu::VirtioGpu>> = Mutex::new(None);
+
 /// Guard flag to prevent double initialization of the graphics subsystem.
 static GRAPHICS_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -140,8 +143,8 @@ pub fn init_graphics() {
         mm.map_mmio_region(bar_info.address as usize, common_virt, bar_info.size as usize).unwrap();
         mm.map_mmio_region(notify_bar_info.address as usize, notify_virt, notify_bar_info.size as usize).unwrap();
 
-        let common_virt_ptr = (common_virt + common_cap.offset as usize) as *mut u32;
-        let notify_virt_ptr = (notify_virt + notify_cap.offset as usize) as *mut u32;
+        let common_virt_ptr = common_virt as *mut u32;
+        let notify_virt_ptr = notify_virt as *mut u32;
 
         if let Some(mut gpu) =
             petroleum::virtio::gpu::VirtioGpu::init_virtio_gpu(common_virt_ptr, notify_virt_ptr, gpu_device.clone(), common_bar)
@@ -201,6 +204,7 @@ pub fn init_graphics() {
                 let renderer = petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer);
                 
                 set_primary_renderer(renderer);
+                *VIRTIO_GPU.lock() = Some(gpu);
                 petroleum::serial::serial_log(format_args!("[graphics] VirtIO-GPU assigned as PRIMARY_RENDERER using UEFI framebuffer config\n"));
                 return;
             } else {
@@ -219,6 +223,7 @@ pub fn init_graphics() {
                 let renderer = petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer);
                 
                 set_primary_renderer(renderer);
+                *VIRTIO_GPU.lock() = Some(gpu);
                 petroleum::serial::serial_log(format_args!("[graphics] VirtIO-GPU assigned as PRIMARY_RENDERER with hardcoded values (no UEFI config)\n"));
                 return;
             }
@@ -262,34 +267,49 @@ pub fn set_primary_renderer(renderer: UefiFramebufferWriter) {
     *PRIMARY_RENDERER.lock() = Some(renderer);
 }
 
+/// Helper to flush the GPU if present.
+pub fn flush_gpu() {
+    let mut gpu = VIRTIO_GPU.lock();
+    if let Some(ref mut gpu) = *gpu {
+        if let Some(ref r) = *PRIMARY_RENDERER.lock() {
+            let info = r.get_info();
+            gpu.flush(info.width, info.height);
+        }
+    }
+}
+
 /// Helper to write to the primary renderer (with VGA fallback).
 pub fn print_to_console(s: &str) {
-    let mut renderer = PRIMARY_RENDERER.lock();
-    if let Some(ref mut r) = *renderer {
-        let _ = r.write_str(s);
-        return;
+    {
+        let mut renderer = PRIMARY_RENDERER.lock();
+        if let Some(ref mut r) = *renderer {
+            let _ = r.write_str(s);
+        } else {
+            // Fallback to VGA text console
+            let mut vga = VGA_CONSOLE.lock();
+            if let Some(ref mut vga) = *vga {
+                let _ = core::fmt::write(vga, format_args!("{}", s));
+            }
+        }
     }
-    drop(renderer);
-    // Fallback to VGA text console
-    let mut vga = VGA_CONSOLE.lock();
-    if let Some(ref mut vga) = *vga {
-        let _ = core::fmt::write(vga, format_args!("{}", s));
-    }
+    flush_gpu();
 }
 
 /// Helper to write formatted text to the primary renderer (with VGA fallback).
 pub fn print_fmt(args: core::fmt::Arguments) {
-    let mut renderer = PRIMARY_RENDERER.lock();
-    if let Some(ref mut r) = *renderer {
-        let _ = core::fmt::write(r, args);
-        return;
+    {
+        let mut renderer = PRIMARY_RENDERER.lock();
+        if let Some(ref mut r) = *renderer {
+            let _ = core::fmt::write(r, args);
+        } else {
+            // Fallback to VGA text console
+            let mut vga = VGA_CONSOLE.lock();
+            if let Some(ref mut vga) = *vga {
+                let _ = core::fmt::write(vga, args);
+            }
+        }
     }
-    drop(renderer);
-    // Fallback to VGA text console
-    let mut vga = VGA_CONSOLE.lock();
-    if let Some(ref mut vga) = *vga {
-        let _ = core::fmt::write(vga, args);
-    }
+    flush_gpu();
 }
 
 /// Internal print helper used by boot and other early stages.

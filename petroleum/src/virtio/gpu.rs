@@ -149,9 +149,13 @@ pub struct VirtioGpu {
     cmd_buf_phys: u64,
     cmd_buf_len: u32,
     notify_off_multiplier: u32,
+    queue_notify_offs: [u16; 2],
     /// BAR to use for Type 5 access to Common Config registers
     common_bar_for_type5: u8,
 }
+
+unsafe impl Send for VirtioGpu {}
+unsafe impl Sync for VirtioGpu {}
 
 #[derive(Debug)]
 pub enum VirtioGpuError {
@@ -232,15 +236,19 @@ impl VirtioGpu {
         self.w8(0x14, s);
     }
 
-    fn dev_features(&self) -> u32 {
-        self.write_common_cfg(0x00, 0, 4).expect("Type5 write failed");
-        let f = self.read_common_cfg(0x04, 4).unwrap_or(0);
-        f
+    fn dev_features(&self) -> u64 {
+        self.w32(0x00, 0); // select features 0-31
+        let f0 = self.r32(0x04);
+        self.w32(0x00, 1); // select features 32-63
+        let f1 = self.r32(0x04);
+        (f1 as u64) << 32 | (f0 as u64)
     }
 
-    fn set_guest_features(&self, v: u32) {
-        self.write_common_cfg(0x08, 0, 4).expect("Type5 write failed");
-        self.write_common_cfg(0x0c, v, 4).expect("Type5 write failed");
+    fn set_guest_features(&self, v: u64) {
+        self.w32(0x08, 0); // select features 0-31
+        self.w32(0x0c, v as u32);
+        self.w32(0x08, 1); // select features 32-63
+        self.w32(0x0c, (v >> 32) as u32);
     }
 
     fn set_queue_select(&self, idx: u16) {
@@ -362,25 +370,13 @@ pub fn init_virtio_gpu(common_virt: *mut u32, notify_virt: *mut u32, device: Pci
         crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: gpu.init() succeeded\n"));
         gpu.set_status(VIRTIO_STATUS_DRIVER_OK as u8); // Final signal
         crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: status set to DRIVER_OK\n"));
-        // Read the notify offset multiplier from the queue_notify_off register (offset 0x1E)
-        // This is a 16-bit value that tells us the offset multiplier for the notification mechanism.
-        unsafe {
-            // Read as 16-bit from offset 0x1E
-            let mut multiplier = gpu.read_common_cfg(0x1E, 2).unwrap_or(1) as u32;
-            // Some devices may return 0, which is invalid. Use fallback.
-            if multiplier == 0 {
-                multiplier = 1;
-            }
-            gpu.notify_off_multiplier = multiplier;
-            crate::serial::_print(format_args!("[VirtIO-GPU] notify_off_multiplier = {}\n", gpu.notify_off_multiplier));
-        }
         Some(gpu)
     } else {
         None
     }
 }
 
-pub fn new(common_virt: *mut u32, notify_virt: *mut u32, device: PciDevice, common_bar: u8) -> Option<Self> {
+pub fn new(common_virt_base: *mut u32, notify_virt_base: *mut u32, device: PciDevice, common_bar: u8) -> Option<Self> {
     // Allocate command buffer from the physical frame allocator so that
     // the physical address is real, not a heap-virtual-to-physical fudge.
     let off = crate::common::memory::get_physical_memory_offset() as u64;
@@ -394,22 +390,26 @@ unsafe {
     core::ptr::write_bytes(cmd_buf, 0, 4096);
 }
 
-    // Find the Type 5 (PCI Configuration Access) capability
+    // Find the capabilities
     let caps = get_virtio_caps(&device);
     let type5_cap = caps.iter().find(|c| c.cfg_type == VIRTIO_PCI_CAP_PCI_CFG)?;
 
-    // Find the Common Config capability and get its BAR (usually 4)
+    // Find the Common Config capability
     let common_cap = caps.iter().find(|c| c.cfg_type == VIRTIO_PCI_CAP_COMMON_CFG)?;
     let common_bar_for_type5 = common_cap.bar;
     // Compute the absolute address of the common config space within the BAR
-    let common_virt_absolute = unsafe { common_virt.add((common_cap.offset as usize / 4)) };
+    let common_virt_absolute = unsafe { (common_virt_base as *mut u8).add(common_cap.offset as usize) } as *mut u32;
+
+    // Find the Notify capability
+    let notify_cap = caps.iter().find(|c| c.cfg_type == VIRTIO_PCI_CAP_NOTIFY_CFG)?;
+    let notify_base = unsafe { (notify_virt_base as *mut u8).add(notify_cap.offset as usize) } as *mut u32;
 
     Some(Self {
         device,
         common_bar,
         type5_bar: type5_cap.bar,
         common_virt_absolute,
-        notify_base: notify_virt,
+        notify_base,
         resource_id: 1,
         desc_table: core::ptr::null_mut(),
         avail_ring: core::ptr::null_mut(),
@@ -418,7 +418,8 @@ unsafe {
         cmd_buf,
         cmd_buf_phys,
         cmd_buf_len: 4096,
-        notify_off_multiplier: 0,
+        notify_off_multiplier: notify_cap.notify_off_multiplier,
+        queue_notify_offs: [0; 2],
         // Store the BAR to use for Type 5 access to Common Config
         common_bar_for_type5,
     })
@@ -442,7 +443,18 @@ unsafe {
         let feats = self.dev_features();
         crate::serial::_print(format_args!("[VirtIO-GPU] Device features: {:#x}\n", feats));
 
-        self.set_guest_features(feats);
+        // We MUST set VIRTIO_F_VERSION_1 (bit 32)
+        // Check if device supports VIRTIO_F_VERSION_1
+        if (feats & (1 << 32)) == 0 {
+            crate::serial::_print(format_args!("[VirtIO-GPU] ERROR: Device does not support VIRTIO_F_VERSION_1!\n"));
+            return Err(VirtioGpuError::DeviceNotReady);
+        }
+
+        // We should only acknowledge features the device supports (feats & guest_candidate_features)
+        // Here we just keep VERSION_1 and maybe others
+        let guest_feats = feats & (1 << 32); 
+        crate::serial::_print(format_args!("[VirtIO-GPU] Setting guest features: {:#x}\n", guest_feats));
+        self.set_guest_features(guest_feats);
 
         for _ in 0..20_000 { core::hint::spin_loop(); }
 
@@ -456,7 +468,8 @@ unsafe {
         crate::serial::_print(format_args!("[VirtIO-GPU] Status after FEATURES_OK: {:#x}\n", status));
 
         if (status & VIRTIO_STATUS_FEATURES_OK as u8) == 0 {
-            crate::serial::_print(format_args!("[VirtIO-GPU] WARNING: FEATURES_OK rejected, but continuing...\n"));
+            crate::serial::_print(format_args!("[VirtIO-GPU] ERROR: FEATURES_OK rejected by device!\n"));
+            return Err(VirtioGpuError::DeviceNotReady);
         }
 
         crate::serial::_print(format_args!("[VirtIO-GPU] init complete, status: {:#x}\n", status));
@@ -483,21 +496,24 @@ unsafe {
         self.used_ring = used;
         self.set_queue_select(idx as u16);
         
-        // Write the queue size to the device. The device will use the value we write,
-        // but may clamp it to a supported maximum. According to VirtIO spec, we write
-        // the desired queue size to 0x18 (queue_size). After writing, we read it back
-        // to verify what the device actually accepted.
-        self.write_queue_size(QUEUE_SIZE);
-        let size = self.r16(0x18);
-        crate::serial::_print(format_args!("[VirtIO-GPU] queue size after write at 0x18: {}\n", size));
+        // Read the queue_notify_off for this queue (offset 0x1E in common config)
+        let notify_off = self.r16(0x1e);
+        if idx < 2 {
+            self.queue_notify_offs[idx as usize] = notify_off;
+        }
+        crate::serial::_print(format_args!("[VirtIO-GPU] queue_notify_off = {}\n", notify_off));
+        
+        // Read maximum queue size supported by device
+        let max_size = self.r16(0x18);
+        crate::serial::_print(format_args!("[VirtIO-GPU] device max queue size = {}\n", max_size));
+        let q_size = if max_size > 0 && max_size < QUEUE_SIZE { max_size } else { QUEUE_SIZE };
+
+        // Write the chosen queue size to the device.
+        self.write_queue_size(q_size);
+        crate::serial::_print(format_args!("[VirtIO-GPU] using queue size = {}\n", q_size));
         
         let num_queues = self.r16(0x12);
         crate::serial::_print(format_args!("[VirtIO-GPU] num_queues = {}\n", num_queues));
-
-        // Use the size that was actually set by the device (size may be clamped)
-        let q_size = if size > 0 { size } else { QUEUE_SIZE };
-        // Re-write the final size to be safe (some devices may require this)
-        self.write_queue_size(q_size);
         
         self.set_queue_msix_vector(0xFFFF); // Disable MSI-X for this queue
         
@@ -568,7 +584,7 @@ unsafe {
 
     /// Calculate the notify offset for a given queue index.
     fn get_notify_offset(&self, queue_idx: u32) -> usize {
-        (queue_idx * self.notify_off_multiplier) as usize
+        (self.queue_notify_offs[queue_idx as usize] as u32 * self.notify_off_multiplier) as usize
     }
 
     /// Submit a command stored in the command buffer, using the device's response buffer.
@@ -620,6 +636,42 @@ unsafe {
         // Small delay
         for _ in 0..10000 { core::hint::spin_loop(); }
         write_volatile(notify_ptr, 0);
+    }
+
+    pub fn flush(&mut self, w: u32, h: u32) {
+        let flush = VirtioGpuResourceFlush {
+            hdr: VirtioGpuCtrlHeader {
+                type_: VIRTIO_GPU_CMD_RESOURCE_FLUSH,
+                flags: 0,
+                fence_id: 0,
+                ctx_id: 0,
+                padding: 0,
+            },
+            r: VirtioGpuRect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            },
+            resource_id: self.resource_id,
+            padding: 0,
+        };
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                &flush as *const VirtioGpuResourceFlush as *const u8,
+                self.cmd_buf,
+                core::mem::size_of::<VirtioGpuResourceFlush>(),
+            );
+        }
+        let before = self.read_used_idx();
+        unsafe {
+            self.submit_raw(
+                VIRTIO_GPU_CMD_RESOURCE_FLUSH,
+                0,
+                core::mem::size_of::<VirtioGpuResourceFlush>() as u32,
+            );
+        }
+        self.wait_used(before);
     }
 
     pub fn init_display(&mut self, w: u32, h: u32, fb: u64, sz: u32) {
@@ -727,39 +779,7 @@ unsafe {
         self.wait_used(before);
 
         // Command 4: flush
-        let flush = VirtioGpuResourceFlush {
-            hdr: VirtioGpuCtrlHeader {
-                type_: VIRTIO_GPU_CMD_RESOURCE_FLUSH,
-                flags: 0,
-                fence_id: 0,
-                ctx_id: 0,
-                padding: 0,
-            },
-            r: VirtioGpuRect {
-                x: 0,
-                y: 0,
-                width: w,
-                height: h,
-            },
-            resource_id: self.resource_id,
-            padding: 0,
-        };
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                &flush as *const VirtioGpuResourceFlush as *const u8,
-                self.cmd_buf,
-                core::mem::size_of::<VirtioGpuResourceFlush>(),
-            );
-        }
-        let before = self.read_used_idx();
-        unsafe {
-            self.submit_raw(
-                VIRTIO_GPU_CMD_RESOURCE_FLUSH,
-                0,
-                core::mem::size_of::<VirtioGpuResourceFlush>() as u32,
-            );
-        }
-        self.wait_used(before);
+        self.flush(w, h);
 
         crate::serial::_print(format_args!("[VirtIO-GPU] init_display done\n"));
     }
