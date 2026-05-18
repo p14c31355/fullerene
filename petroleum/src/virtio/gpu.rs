@@ -5,8 +5,8 @@
 //! VirtioGpu struct is moved, or when submit() returns and its
 //! stack frame (containing the command) is freed.
 
-use crate::hardware::pci::{PciDevice, PciScanner};
-use crate::virtio::pci::{find_virtio_capability, read_virtio_reg_via_pci_cfg, write_virtio_reg_via_pci_cfg};
+use crate::hardware::pci::{PciDevice, PciScanner, PciConfigSpace};
+use crate::virtio::pci::{find_virtio_capability, get_virtio_caps, read_virtio_reg_via_pci_cfg, write_virtio_reg_via_pci_cfg, VIRTIO_PCI_CAP_PCI_CFG, dump_capabilities};
 pub use crate::virtio::pci::{VIRTIO_PCI_CAP_COMMON_CFG, VIRTIO_PCI_CAP_NOTIFY_CFG};
 use core::ptr::{read_volatile, write_volatile};
 
@@ -135,6 +135,8 @@ struct AttachCmd {
 pub struct VirtioGpu {
     device: PciDevice,
     common_bar: u8,
+    type5_bar: u8,
+    common_virt: *mut u32,
     notify_base: *mut u32,
     pub resource_id: u32,
     desc_table: *mut VringDesc,
@@ -158,14 +160,28 @@ pub enum VirtioGpuError {
 }
 
 impl VirtioGpu {
-    /// Read a 32-bit dword from the common config space via Type 5.
+    /// Read a 32-bit dword from the common config space.
+    /// Tries Type 5 access first, falls back to direct memory-mapped access.
     fn read_common_cfg(&self, offset: u32, width: u32) -> Option<u32> {
-        read_virtio_reg_via_pci_cfg(&self.device, self.common_bar, offset, width)
+        // Try Type 5 access via PCI Configuration Access Capability
+        if let Some(val) = read_virtio_reg_via_pci_cfg(&self.device, self.type5_bar, offset, width) {
+            return Some(val);
+        }
+        
+        // Fallback: Use direct memory-mapped access via common_virt
+        self.read_common_via_direct(offset, width)
     }
 
-    /// Write a 32-bit dword to the common config space via Type 5.
+    /// Write a 32-bit dword to the common config space.
+    /// Tries Type 5 access first, falls back to direct memory-mapped access.
     fn write_common_cfg(&self, offset: u32, value: u32, width: u32) -> Option<()> {
-        write_virtio_reg_via_pci_cfg(&self.device, self.common_bar, offset, value, width)
+        // Try Type 5 access via PCI Configuration Access Capability
+        if write_virtio_reg_via_pci_cfg(&self.device, self.type5_bar, offset, value, width).is_some() {
+            return Some(());
+        }
+        
+        // Fallback: Use direct memory-mapped access via common_virt
+        self.write_common_via_direct(offset, value, width)
     }
 
     /// Read a 32-bit dword at the given byte offset (aligned to dword boundary).
@@ -251,20 +267,58 @@ impl VirtioGpu {
         self.write_common_cfg(0x34, (a >> 32) as u32, 4).expect("Type5 write failed");
     }
 
-    pub fn init_virtio_gpu(common_virt: *mut u32, notify_virt: *mut u32, device: PciDevice, common_bar: u8) -> Option<Self> {
-        crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: called\n"));
-        let mut gpu = VirtioGpu::new(notify_virt, device, common_bar);
-        crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: new() completed, calling gpu.init()\n"));
+    /// Read from the common config space via direct memory-mapped access.
+    /// Fallback when Type 5 access fails.
+    fn read_common_via_direct(&self, offset: u32, width: u32) -> Option<u32> {
+        let ptr = unsafe { self.common_virt.offset(offset as isize) };
+        match width {
+            1 => Some(unsafe { core::ptr::read_volatile(ptr as *const u8) as u32 }),
+            2 => Some(unsafe { core::ptr::read_volatile(ptr as *const u16) as u32 }),
+            4 => Some(unsafe { core::ptr::read_volatile(ptr) }),
+            _ => None,
+        }
+    }
 
-        // Test: Read the first few dwords of Common Config before init
-        unsafe {
-            crate::serial::serial_log(format_args!("[VirtIO] Probing Common Config via Type5:\n"));
-            for i in 0..8 {
-                if let Some(val) = read_virtio_reg_via_pci_cfg(&gpu.device, common_bar, i * 4, 4) {
-                    crate::serial::serial_log(format_args!("  offset 0x{:02x} = {:#x}\n", i*4, val));
-                }
+    /// Write to the common config space via direct memory-mapped access.
+    /// Fallback when Type 5 access fails.
+    fn write_common_via_direct(&self, offset: u32, value: u32, width: u32) -> Option<()> {
+        let ptr = unsafe { self.common_virt.offset(offset as isize) };
+        match width {
+            1 => unsafe { core::ptr::write_volatile(ptr as *mut u8, value as u8) },
+            2 => unsafe { core::ptr::write_volatile(ptr as *mut u16, value as u16) },
+            4 => unsafe { core::ptr::write_volatile(ptr, value) },
+            _ => return None,
+        }
+        Some(())
+    }
+
+pub fn init_virtio_gpu(common_virt: *mut u32, notify_virt: *mut u32, device: PciDevice, common_bar: u8) -> Option<Self> {
+    crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: called\n"));
+    
+    // Set PCI Command Register to enable Memory, I/O, and Bus Master (0x0007)
+    // This is necessary for Type 5 PCI Configuration Access to work properly
+    crate::hardware::pci::PciConfigSpace::write_config_dword_raw(
+        device.bus, device.device, device.function, 4, 0x0007
+    );
+    
+    // Small delay to allow the device to process the register write
+    for _ in 0..10000 { core::hint::spin_loop(); }
+    
+    // Dump capabilities to verify Type 5 (PCI Configuration Access) is present
+    crate::virtio::pci::dump_capabilities(&device);
+    
+    let mut gpu = VirtioGpu::new(common_virt, notify_virt, device, common_bar)?;
+    crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: new() completed, calling gpu.init()\n"));
+
+    // Test: Read the first few dwords of Common Config via Type5
+    unsafe {
+        crate::serial::serial_log(format_args!("[VirtIO] Probing Common Config via Type5:\n"));
+        for i in 0..8 {
+            if let Some(val) = read_virtio_reg_via_pci_cfg(&gpu.device, gpu.type5_bar, i * 4, 4) {
+                crate::serial::serial_log(format_args!("  offset 0x{:02x} = {:#x}\n", i*4, val));
             }
         }
+    }
 
         if gpu.init().is_ok() {
             crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: gpu.init() succeeded\n"));
@@ -296,7 +350,7 @@ impl VirtioGpu {
         }
     }
 
-    pub fn new(notify_virt: *mut u32, device: PciDevice, common_bar: u8) -> Self {
+    pub fn new(common_virt: *mut u32, notify_virt: *mut u32, device: PciDevice, common_bar: u8) -> Option<Self> {
         // Allocate command buffer from the physical frame allocator so that
         // the physical address is real, not a heap-virtual-to-physical fudge.
         let off = crate::common::memory::get_physical_memory_offset() as u64;
@@ -310,9 +364,16 @@ impl VirtioGpu {
             core::ptr::write_bytes(cmd_buf, 0, 4096);
         }
 
-        Self {
+        // Find the Type 5 (PCI Configuration Access) capability
+        let caps = get_virtio_caps(&device);
+        let type5_cap = caps.iter().find(|c| c.cfg_type == VIRTIO_PCI_CAP_PCI_CFG)?;
+        let type5_bar = type5_cap.bar;
+
+        Some(Self {
             device,
             common_bar,
+            type5_bar,
+            common_virt,
             notify_base: notify_virt,
             resource_id: 1,
             desc_table: core::ptr::null_mut(),
@@ -323,7 +384,7 @@ impl VirtioGpu {
             cmd_buf_phys,
             cmd_buf_len: 4096,
             notify_off_multiplier: 0,
-        }
+        })
     }
 
     pub fn init(&mut self) -> Result<(), VirtioGpuError> {
