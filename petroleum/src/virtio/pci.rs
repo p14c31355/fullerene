@@ -103,26 +103,23 @@ pub fn read_virtio_reg_via_pci_cfg(
     let caps = get_virtio_caps(device);
     let cap = caps.iter().find(|c| c.cfg_type == VIRTIO_PCI_CAP_PCI_CFG)?;
     
-    // Verify the cap's BAR matches the requested bar
-    if cap.bar != bar {
-        return None;
-    }
-    
     // Ensure the offset is within the capability's length
     if offset as usize >= cap.length as usize {
         return None;
     }
     
     // PCI CFG capability layout:
-    // Offset 0x00: Address register (write target offset here)
+    // Offset 0x00: Address register (write target offset here + BAR)
     // Offset 0x04: Data register (read result from here)
     let cfg_offset = cap.offset as usize;
     
-    // Write the target offset to the address register
+    // Write the target offset + BAR to the address register
+    // The BAR number goes in the upper 8 bits (bits 24-31)
+    let full_value = offset | ((bar as u32) << 24);
     PciConfigSpace::write_config_dword_raw(
         device.bus, device.device, device.function, 
         cfg_offset as u8, 
-        offset
+        full_value
     );
         
     // Read the result from the data register (always 32 bits)
@@ -154,26 +151,23 @@ pub fn write_virtio_reg_via_pci_cfg(
     let caps = get_virtio_caps(device);
     let cap = caps.iter().find(|c| c.cfg_type == VIRTIO_PCI_CAP_PCI_CFG)?;
     
-    // Verify the cap's BAR matches the requested bar
-    if cap.bar != bar {
-        return None;
-    }
-    
     // Ensure the offset is within the capability's length
     if offset as usize >= cap.length as usize {
         return None;
     }
     
     // PCI CFG capability layout:
-    // Offset 0x00: Address register (write target offset here)
+    // Offset 0x00: Address register (write target offset here + BAR)
     // Offset 0x04: Data register (write value here)
     let cfg_offset = cap.offset as usize;
     
-    // Write the target offset to the address register
+    // Write the target offset + BAR to the address register
+    // The BAR number goes in the upper 8 bits (bits 24-31)
+    let full_value = offset | ((bar as u32) << 24);
     PciConfigSpace::write_config_dword_raw(
         device.bus, device.device, device.function, 
         cfg_offset as u8, 
-        offset
+        full_value
     );
     
     // Read the current 32-bit value from the data register
