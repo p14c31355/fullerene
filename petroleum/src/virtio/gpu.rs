@@ -56,6 +56,19 @@ pub struct VirtioGpuCtrlHeader {
     pub padding: u32,
 }
 
+impl VirtioGpuCtrlHeader {
+    pub fn to_le(self) -> Self {
+        Self {
+            type_: self.type_.to_le(),
+            flags: self.flags.to_le(),
+            fence_id: self.fence_id.to_le(),
+            ctx_id: self.ctx_id.to_le(),
+            padding: self.padding.to_le(),
+        }
+    }
+}
+
+pub const VIRTIO_GPU_CMD_GET_DISPLAY_INFO: u32 = 0x0100;
 pub const VIRTIO_GPU_CMD_RESOURCE_CREATE_2D: u32 = 0x0101;
 pub const VIRTIO_GPU_CMD_RESOURCE_FLUSH: u32 = 0x0104;
 pub const VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING: u32 = 0x0106;
@@ -69,6 +82,18 @@ pub struct VirtioGpuResourceCreate2d {
     pub format: u32,
     pub width: u32,
     pub height: u32,
+}
+
+impl VirtioGpuResourceCreate2d {
+    pub fn to_le(self) -> Self {
+        Self {
+            hdr: self.hdr.to_le(),
+            resource_id: self.resource_id.to_le(),
+            format: self.format.to_le(),
+            width: self.width.to_le(),
+            height: self.height.to_le(),
+        }
+    }
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -268,18 +293,30 @@ impl VirtioGpu {
         crate::serial::_print(format_args!("[VirtIO-GPU] set_queue_desc {:#x}\n", a));
         self.write_common_cfg(0x20, a as u32, 4).expect("Type5 write failed");
         self.write_common_cfg(0x24, (a >> 32) as u32, 4).expect("Type5 write failed");
+        
+        let read_low = self.read_common_cfg(0x20, 4).unwrap_or(0);
+        let read_high = self.read_common_cfg(0x24, 4).unwrap_or(0);
+        crate::serial::_print(format_args!("[VirtIO-GPU] Verified queue_desc: wrote {:#x}, read {:#x}:{:#x}\n", a, read_high, read_low));
     }
 
     fn set_queue_avail(&self, a: u64) {
         crate::serial::_print(format_args!("[VirtIO-GPU] set_queue_avail {:#x}\n", a));
         self.write_common_cfg(0x28, a as u32, 4).expect("Type5 write failed");
         self.write_common_cfg(0x2c, (a >> 32) as u32, 4).expect("Type5 write failed");
+        
+        let read_low = self.read_common_cfg(0x28, 4).unwrap_or(0);
+        let read_high = self.read_common_cfg(0x2c, 4).unwrap_or(0);
+        crate::serial::_print(format_args!("[VirtIO-GPU] Verified queue_avail: wrote {:#x}, read {:#x}:{:#x}\n", a, read_high, read_low));
     }
 
     fn set_queue_used(&self, a: u64) {
         crate::serial::_print(format_args!("[VirtIO-GPU] set_queue_used {:#x}\n", a));
         self.write_common_cfg(0x30, a as u32, 4).expect("Type5 write failed");
         self.write_common_cfg(0x34, (a >> 32) as u32, 4).expect("Type5 write failed");
+        
+        let read_low = self.read_common_cfg(0x30, 4).unwrap_or(0);
+        let read_high = self.read_common_cfg(0x34, 4).unwrap_or(0);
+        crate::serial::_print(format_args!("[VirtIO-GPU] Verified queue_used: wrote {:#x}, read {:#x}:{:#x}\n", a, read_high, read_low));
     }
 
 /// Read from the common config space via direct memory-mapped access.
@@ -543,6 +580,10 @@ unsafe {
             .allocate_contiguous_frames(pages)
             .expect("alloc_queue_mem: failed to allocate contiguous frames")
             as u64;
+        
+        // Assert page alignment
+        assert_eq!(phys % 4096, 0, "[VirtIO-GPU] Queue memory not page-aligned!");
+
         let off = crate::common::memory::get_physical_memory_offset() as u64;
         let virt = phys + off;
         // Zero the memory
@@ -615,22 +656,25 @@ unsafe {
         let resp_phys = self.cmd_buf_phys + self.cmd_buf_len as u64 - 64;
 
         let e0 = &mut *self.desc_table.add(d0 as usize);
-        e0.addr = cmd_phys;
-        e0.len = cmd_len;
-        e0.flags = VRING_DESC_F_NEXT;
-        e0.next = d1;
+        e0.addr = cmd_phys.to_le();
+        e0.len = cmd_len.to_le();
+        e0.flags = VRING_DESC_F_NEXT.to_le();
+        e0.next = d1.to_le();
 
         let e1 = &mut *self.desc_table.add(d1 as usize);
-        e1.addr = resp_phys;
-        e1.len = 64;
-        e1.flags = VRING_DESC_F_WRITE;
-        e1.next = 0;
+        e1.addr = resp_phys.to_le();
+        e1.len = 64u32.to_le();
+        e1.flags = VRING_DESC_F_WRITE.to_le();
+        e1.next = 0u16.to_le();
+
+        // Memory barrier: Ensure descriptor entries are visible before updating the avail ring
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
 
         let av = &mut *self.avail_ring;
         let idx = av.idx;
-        av.ring[(idx as usize) % QUEUE_SIZE as usize] = d0;
+        av.ring[(idx as usize) % QUEUE_SIZE as usize] = d0.to_le();
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-        av.idx = idx.wrapping_add(1);
+        av.idx = idx.wrapping_add(1).to_le();
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
         let notify_off = self.get_notify_offset(0);
@@ -683,48 +727,82 @@ unsafe {
         self.wait_used(before);
     }
 
+    pub fn test_minimal_command(&mut self) {
+        crate::serial::_print(format_args!("[VirtIO-GPU] Running minimal command test...\n"));
+        let cmd_offset = 0; // Simple offset for test
+        let cmd_len = core::mem::size_of::<VirtioGpuCtrlHeader>() as u32;
+        
+        unsafe {
+            core::ptr::write_bytes(self.cmd_buf.add(cmd_offset as usize), 0, cmd_len as usize);
+        }
+
+        unsafe {
+            let last_used = self.read_used_idx();
+            self.submit_raw(VIRTIO_GPU_CMD_GET_DISPLAY_INFO, cmd_offset, cmd_len);
+            
+            crate::serial::_print(format_args!("[VirtIO-GPU] Command submitted, waiting for response...\n"));
+            self.wait_used(last_used);
+        }
+    }
+
     pub fn init_display(&mut self, w: u32, h: u32, fb: u64, sz: u32) {
         crate::serial::_print(format_args!("[VirtIO-GPU] init_display {}x{}\n", w, h));
-        self.resource_id = 2; // Try different ID
+        
+        // 1. GET_DISPLAY_INFO
+        let get_display_info = VirtioGpuCtrlHeader {
+            type_: VIRTIO_GPU_CMD_GET_DISPLAY_INFO,
+            flags: 0,
+            fence_id: 0,
+            ctx_id: 0,
+            padding: 0,
+        }.to_le();
+        unsafe {
+            core::ptr::copy_nonoverlapping(&get_display_info as *const _ as *const u8, self.cmd_buf, core::mem::size_of::<VirtioGpuCtrlHeader>());
+        }
+        let before = self.read_used_idx();
+        unsafe { self.submit_raw(VIRTIO_GPU_CMD_GET_DISPLAY_INFO, 0, core::mem::size_of::<VirtioGpuCtrlHeader>() as u32); }
+        self.wait_used(before);
 
-        // Command 1: create 2D resource
+        // 2. CTX_CREATE (Required for virgl/3D paths, even for 2D it's safer to have a default context)
+        self.resource_id = 1;
+        let ctx_create = VirtioGpuCtrlHeader {
+                type_: 0x0200, // VIRTIO_GPU_CMD_CTX_CREATE
+                flags: 0,
+                fence_id: 0,
+                ctx_id: 1,
+                padding: 0,
+            }.to_le();
+        unsafe { core::ptr::copy_nonoverlapping(&ctx_create as *const _ as *const u8, self.cmd_buf, core::mem::size_of::<VirtioGpuCtrlHeader>()); }
+        let before = self.read_used_idx();
+        unsafe { self.submit_raw(0x0200, 0, core::mem::size_of::<VirtioGpuCtrlHeader>() as u32); }
+        self.wait_used(before);
+
+        // 3. RESOURCE_CREATE_2D
         let create2d = VirtioGpuResourceCreate2d {
             hdr: VirtioGpuCtrlHeader {
                 type_: VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
                 flags: 0,
                 fence_id: 0,
-                ctx_id: 0,
+                ctx_id: 1, // Associated with context 1
                 padding: 0,
             },
             resource_id: self.resource_id,
             format: 1,
             width: w,
             height: h,
-        };
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                &create2d as *const VirtioGpuResourceCreate2d as *const u8,
-                self.cmd_buf,
-                core::mem::size_of::<VirtioGpuResourceCreate2d>(),
-            );
-        }
+        }.to_le();
+        unsafe { core::ptr::copy_nonoverlapping(&create2d as *const _ as *const u8, self.cmd_buf, core::mem::size_of::<VirtioGpuResourceCreate2d>()); }
         let before = self.read_used_idx();
-        unsafe {
-            self.submit_raw(
-                VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
-                0,
-                core::mem::size_of::<VirtioGpuResourceCreate2d>() as u32,
-            );
-        }
+        unsafe { self.submit_raw(VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, 0, core::mem::size_of::<VirtioGpuResourceCreate2d>() as u32); }
         self.wait_used(before);
 
-        // Command 2: attach backing
+        // 4. ATTACH_BACKING
         let attach_cmd = AttachCmd {
             hdr: VirtioGpuCtrlHeader {
                 type_: VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
                 flags: 0,
                 fence_id: 0,
-                ctx_id: 0,
+                ctx_id: 1,
                 padding: 0,
             },
             resource_id: self.resource_id,
@@ -735,59 +813,30 @@ unsafe {
                 padding: 0,
             },
         };
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                &attach_cmd as *const AttachCmd as *const u8,
-                self.cmd_buf,
-                core::mem::size_of::<AttachCmd>(),
-            );
-        }
+        unsafe { core::ptr::copy_nonoverlapping(&attach_cmd as *const _ as *const u8, self.cmd_buf, core::mem::size_of::<AttachCmd>()); }
         let before = self.read_used_idx();
-        unsafe {
-            self.submit_raw(
-                VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
-                0,
-                core::mem::size_of::<AttachCmd>() as u32,
-            );
-        }
+        unsafe { self.submit_raw(VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, 0, core::mem::size_of::<AttachCmd>() as u32); }
         self.wait_used(before);
 
-        // Command 3: set scanout
+        // 5. SET_SCANOUT
         let set_scanout = VirtioGpuSetScanout {
             hdr: VirtioGpuCtrlHeader {
                 type_: VIRTIO_GPU_CMD_SET_SCANOUT,
                 flags: 0,
                 fence_id: 0,
-                ctx_id: 0,
+                ctx_id: 1,
                 padding: 0,
             },
-            r: VirtioGpuRect {
-                x: 0,
-                y: 0,
-                width: w,
-                height: h,
-            },
+            r: VirtioGpuRect { x: 0, y: 0, width: w, height: h },
             scanout_id: 0,
             resource_id: self.resource_id,
         };
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                &set_scanout as *const VirtioGpuSetScanout as *const u8,
-                self.cmd_buf,
-                core::mem::size_of::<VirtioGpuSetScanout>(),
-            );
-        }
+        unsafe { core::ptr::copy_nonoverlapping(&set_scanout as *const _ as *const u8, self.cmd_buf, core::mem::size_of::<VirtioGpuSetScanout>()); }
         let before = self.read_used_idx();
-        unsafe {
-            self.submit_raw(
-                VIRTIO_GPU_CMD_SET_SCANOUT,
-                0,
-                core::mem::size_of::<VirtioGpuSetScanout>() as u32,
-            );
-        }
+        unsafe { self.submit_raw(VIRTIO_GPU_CMD_SET_SCANOUT, 0, core::mem::size_of::<VirtioGpuSetScanout>() as u32); }
         self.wait_used(before);
 
-        // Command 4: flush
+        // 6. FLUSH
         self.flush(w, h);
 
         crate::serial::_print(format_args!("[VirtIO-GPU] init_display done\n"));
