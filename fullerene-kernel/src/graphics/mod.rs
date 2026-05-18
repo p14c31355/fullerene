@@ -4,6 +4,9 @@ use petroleum::graphics::text::VgaBuffer;
 use petroleum::graphics::{Console, Renderer, UefiFramebufferWriter};
 use spin::Mutex;
 
+// Import the PCI CFG reading function
+use petroleum::virtio::pci::read_virtio_reg_via_pci_cfg;
+
 /// Global primary framebuffer renderer (also used as text console).
 pub static PRIMARY_RENDERER: Mutex<Option<UefiFramebufferWriter>> = Mutex::new(None);
 
@@ -141,7 +144,7 @@ pub fn init_graphics() {
         let notify_virt_ptr = (notify_virt + notify_cap.offset as usize) as *mut u32;
 
         if let Some(mut gpu) =
-            petroleum::virtio::gpu::VirtioGpu::init_virtio_gpu(common_virt_ptr, notify_virt_ptr)
+            petroleum::virtio::gpu::VirtioGpu::init_virtio_gpu(common_virt_ptr, notify_virt_ptr, gpu_device.clone(), common_bar)
         {
             let mut pci_cfg_cap = None;
             for cap in &caps {
@@ -166,6 +169,18 @@ pub fn init_graphics() {
                     petroleum::serial::serial_log(format_args!("[graphics] Device ID via indirect access: {:#x}\n", dev_id));
                 } else {
                     petroleum::serial::serial_log(format_args!("[graphics] PCI_CFG capability found but BAR {} not accessible\n", bar));
+                }
+
+                // Test: Read some common config registers via Type 5 (PCI_CFG) capability
+                // This is an alternative to direct BAR mapping, which may not work in some environments
+                if let Some(status) = petroleum::virtio::pci::read_virtio_reg_via_pci_cfg(&gpu_device, bar, 0x14, 1) {
+                    petroleum::serial::serial_log(format_args!("[graphics] Device status via Type 5: {:#x}\n", status));
+                }
+                if let Some(features) = petroleum::virtio::pci::read_virtio_reg_via_pci_cfg(&gpu_device, bar, 0x00, 4) {
+                    petroleum::serial::serial_log(format_args!("[graphics] Device features via Type 5: {:#x}\n", features));
+                }
+                if let Some(queue_select) = petroleum::virtio::pci::read_virtio_reg_via_pci_cfg(&gpu_device, bar, 0x16, 2) {
+                    petroleum::serial::serial_log(format_args!("[graphics] Queue select via Type 5: {:#x}\n", queue_select));
                 }
             }
 

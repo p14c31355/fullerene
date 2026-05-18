@@ -121,7 +121,7 @@ impl PciConfigSpace {
             | (offset as u32 & 0xFC)
     }
 
-    fn write_config_dword_raw(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
+    pub(crate) fn write_config_dword_raw(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
         let address = Self::build_config_address(bus, device, function, offset);
         let mut addr_writer =
             PortWriter::new(crate::hardware::ports::HardwarePorts::PCI_CONFIG_ADDRESS);

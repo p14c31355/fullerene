@@ -6,7 +6,7 @@
 //! stack frame (containing the command) is freed.
 
 use crate::hardware::pci::{PciDevice, PciScanner};
-use crate::virtio::pci::find_virtio_capability;
+use crate::virtio::pci::{find_virtio_capability, read_virtio_reg_via_pci_cfg, write_virtio_reg_via_pci_cfg};
 pub use crate::virtio::pci::{VIRTIO_PCI_CAP_COMMON_CFG, VIRTIO_PCI_CAP_NOTIFY_CFG};
 use core::ptr::{read_volatile, write_volatile};
 
@@ -133,7 +133,8 @@ struct AttachCmd {
 // ptr.add(byte_offset >> 2) reads the dword at that byte offset.
 
 pub struct VirtioGpu {
-    cfg: *mut u32,
+    device: PciDevice,
+    common_bar: u8,
     notify_base: *mut u32,
     pub resource_id: u32,
     desc_table: *mut VringDesc,
@@ -157,126 +158,145 @@ pub enum VirtioGpuError {
 }
 
 impl VirtioGpu {
-    /// Read a 32-bit dword at the given byte offset (aligned to dword boundary).
-    /// The common cfg is accessed as u32 array: byte_offset >> 2 gives the dword index.
-    fn r32(&self, bo: usize) -> u32 {
-        unsafe {
-            let ptr = (self.cfg as *mut u8).add(bo) as *mut u32;
-            core::ptr::read_volatile(ptr)
-        }
+    /// Read a 32-bit dword from the common config space via Type 5.
+    fn read_common_cfg(&self, offset: u32, width: u32) -> Option<u32> {
+        read_virtio_reg_via_pci_cfg(&self.device, self.common_bar, offset, width)
     }
+
+    /// Write a 32-bit dword to the common config space via Type 5.
+    fn write_common_cfg(&self, offset: u32, value: u32, width: u32) -> Option<()> {
+        write_virtio_reg_via_pci_cfg(&self.device, self.common_bar, offset, value, width)
+    }
+
+    /// Read a 32-bit dword at the given byte offset (aligned to dword boundary).
+    fn r32(&self, bo: usize) -> u32 {
+        self.read_common_cfg(bo as u32, 4).expect("Type5 read failed")
+    }
+
     /// Write a 32-bit dword at the given byte offset (aligned to dword boundary).
     fn w32(&self, bo: usize, v: u32) {
-        unsafe {
-            let ptr = (self.cfg as *mut u8).add(bo) as *mut u32;
-            core::ptr::write_volatile(ptr, v)
-        }
+        self.write_common_cfg(bo as u32, v, 4).expect("Type5 write failed");
     }
+
     /// Read a 16-bit register at any byte offset (may be misaligned within a dword).
     fn r16(&self, bo: usize) -> u16 {
-        let dword = self.r32(bo & !3);
+        let dword = self.read_common_cfg(bo as u32 & !3, 4).expect("Type5 read failed");
         ((dword >> ((bo & 3) * 8)) & 0xFFFF) as u16
     }
+
     /// Write a 16-bit register at any byte offset within a dword.
     fn w16(&self, bo: usize, v: u16) {
         let aligned = bo & !3;
         let shift = (bo & 3) * 8;
-        let d = self.r32(aligned);
-        self.w32(aligned, (d & !(0xFFFFu32 << shift)) | ((v as u32) << shift));
+        let d = self.read_common_cfg(aligned as u32, 4).expect("Type5 read failed");
+        self.write_common_cfg(aligned as u32, (d & !(0xFFFFu32 << shift)) | ((v as u32) << shift), 4).expect("Type5 write failed");
     }
+
     /// Read an 8-bit register at any byte offset within a dword.
     fn r8(&self, bo: usize) -> u8 {
-        let dword = self.r32(bo & !3);
+        let dword = self.read_common_cfg((bo & !3) as u32, 4).expect("Type5 read failed");
         ((dword >> ((bo & 3) * 8)) & 0xFF) as u8
     }
+
     /// Write an 8-bit register at any byte offset within a dword.
     fn w8(&self, bo: usize, v: u8) {
         let aligned = bo & !3;
         let shift = (bo & 3) * 8;
-        let d = self.r32(aligned);
-        self.w32(aligned, (d & !(0xFFu32 << shift)) | ((v as u32) << shift));
+        let d = self.read_common_cfg(aligned as u32, 4).expect("Type5 read failed");
+        self.write_common_cfg(aligned as u32, (d & !(0xFFu32 << shift)) | ((v as u32) << shift), 4).expect("Type5 write failed");
     }
+
     fn status(&self) -> u8 {
         self.r8(0x14)
     }
+
     fn set_status(&self, s: u8) {
         self.w8(0x14, s);
     }
+
     fn dev_features(&self) -> u32 {
-        self.w32(0x00, 0);
-        self.r32(0x04)
+        self.write_common_cfg(0x00, 0, 4).expect("Type5 write failed");
+        self.read_common_cfg(0x04, 4).expect("Type5 read failed")
     }
+
     fn set_guest_features(&self, v: u32) {
-        self.w32(0x08, 0);
-        self.w32(0x0c, v);
+        self.write_common_cfg(0x08, 0, 4).expect("Type5 write failed");
+        self.write_common_cfg(0x0c, v, 4).expect("Type5 write failed");
     }
+
     fn set_queue_select(&self, idx: u16) {
-        self.w16(0x16, idx);
+        self.write_common_cfg(0x16, idx as u32, 2).expect("Type5 write failed");
     }
+
     fn write_queue_size(&self, size: u16) {
-        self.w16(0x18, size);
+        self.write_common_cfg(0x18, size as u32, 2).expect("Type5 write failed");
     }
+
     fn set_queue_enable(&self, en: bool) {
-        self.w16(0x1c, if en { 1u16 } else { 0u16 });
+        self.write_common_cfg(0x1c, if en { 1u16 } else { 0u16 } as u32, 2).expect("Type5 write failed");
     }
+
     fn set_queue_desc(&self, a: u64) {
-        self.w32(0x20, a as u32);
-        self.w32(0x24, (a >> 32) as u32);
+        self.write_common_cfg(0x20, a as u32, 4).expect("Type5 write failed");
+        self.write_common_cfg(0x24, (a >> 32) as u32, 4).expect("Type5 write failed");
     }
+
     fn set_queue_avail(&self, a: u64) {
-        self.w32(0x28, a as u32);
-        self.w32(0x2c, (a >> 32) as u32);
+        self.write_common_cfg(0x28, a as u32, 4).expect("Type5 write failed");
+        self.write_common_cfg(0x2c, (a >> 32) as u32, 4).expect("Type5 write failed");
     }
+
     fn set_queue_used(&self, a: u64) {
-        self.w32(0x30, a as u32);
-        self.w32(0x34, (a >> 32) as u32);
+        self.write_common_cfg(0x30, a as u32, 4).expect("Type5 write failed");
+        self.write_common_cfg(0x34, (a >> 32) as u32, 4).expect("Type5 write failed");
     }
 
-pub fn init_virtio_gpu(common_virt: *mut u32, notify_virt: *mut u32) -> Option<Self> {
-    crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: called\n"));
-    let mut gpu = VirtioGpu::new(common_virt, notify_virt);
-    crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: new() completed, calling gpu.init()\n"));
+    pub fn init_virtio_gpu(common_virt: *mut u32, notify_virt: *mut u32, device: PciDevice, common_bar: u8) -> Option<Self> {
+        crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: called\n"));
+        let mut gpu = VirtioGpu::new(notify_virt, device, common_bar);
+        crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: new() completed, calling gpu.init()\n"));
 
-    // Test: Read the first few dwords of Common Config before init
-    unsafe {
-        crate::serial::serial_log(format_args!("[VirtIO] Probing Common Config:\n"));
-        for i in 0..8 {
-            let val = core::ptr::read_volatile(common_virt.offset(i as isize));
-            crate::serial::serial_log(format_args!("  offset 0x{:02x} = {:#x}\n", i*4, val));
-        }
-    }
-
-    if gpu.init().is_ok() {
-        crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: gpu.init() succeeded\n"));
-        let desc_sz = QUEUE_SIZE as usize * core::mem::size_of::<VringDesc>();
-        let (dp, dphys) = Self::alloc_queue_mem(desc_sz);
-        let (ap, aphys) = Self::alloc_queue_mem(core::mem::size_of::<VringAvail>());
-        let (up, uphys) = Self::alloc_queue_mem(core::mem::size_of::<VringUsed>());
-        crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: about to setup_queue\n"));
-        gpu.setup_queue(
-            0,
-            dp as *mut VringDesc,
-            dphys,
-            ap as *mut VringAvail,
-            aphys,
-            up as *mut VringUsed,
-            uphys,
-        );
-        crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: setup_queue completed\n"));
-        gpu.set_status(VIRTIO_STATUS_DRIVER_OK as u8); // Final signal
-        crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: status set to DRIVER_OK\n"));
-        // Read the notify offset multiplier after signaling DRIVER_OK
+        // Test: Read the first few dwords of Common Config before init
         unsafe {
-            gpu.notify_off_multiplier = core::ptr::read_volatile(gpu.notify_base as *mut u32);
+            crate::serial::serial_log(format_args!("[VirtIO] Probing Common Config via Type5:\n"));
+            for i in 0..8 {
+                if let Some(val) = read_virtio_reg_via_pci_cfg(&gpu.device, common_bar, i * 4, 4) {
+                    crate::serial::serial_log(format_args!("  offset 0x{:02x} = {:#x}\n", i*4, val));
+                }
+            }
         }
-        crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: notify_off_multiplier read: {}\n", gpu.notify_off_multiplier));
-        Some(gpu)
-    } else {
-        None
-    }
-}
 
-    pub fn new(common_virt: *mut u32, notify_virt: *mut u32) -> Self {
+        if gpu.init().is_ok() {
+            crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: gpu.init() succeeded\n"));
+            let desc_sz = QUEUE_SIZE as usize * core::mem::size_of::<VringDesc>();
+            let (dp, dphys) = Self::alloc_queue_mem(desc_sz);
+            let (ap, aphys) = Self::alloc_queue_mem(core::mem::size_of::<VringAvail>());
+            let (up, uphys) = Self::alloc_queue_mem(core::mem::size_of::<VringUsed>());
+            crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: about to setup_queue\n"));
+            gpu.setup_queue(
+                0,
+                dp as *mut VringDesc,
+                dphys,
+                ap as *mut VringAvail,
+                aphys,
+                up as *mut VringUsed,
+                uphys,
+            );
+            crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: setup_queue completed\n"));
+            gpu.set_status(VIRTIO_STATUS_DRIVER_OK as u8); // Final signal
+            crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: status set to DRIVER_OK\n"));
+            // Read the notify offset multiplier after signaling DRIVER_OK
+            unsafe {
+                gpu.notify_off_multiplier = core::ptr::read_volatile(gpu.notify_base as *mut u32);
+            }
+            crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: notify_off_multiplier read: {}\n", gpu.notify_off_multiplier));
+            Some(gpu)
+        } else {
+            None
+        }
+    }
+
+    pub fn new(notify_virt: *mut u32, device: PciDevice, common_bar: u8) -> Self {
         // Allocate command buffer from the physical frame allocator so that
         // the physical address is real, not a heap-virtual-to-physical fudge.
         let off = crate::common::memory::get_physical_memory_offset() as u64;
@@ -291,7 +311,8 @@ pub fn init_virtio_gpu(common_virt: *mut u32, notify_virt: *mut u32) -> Option<S
         }
 
         Self {
-            cfg: common_virt,
+            device,
+            common_bar,
             notify_base: notify_virt,
             resource_id: 1,
             desc_table: core::ptr::null_mut(),
@@ -342,7 +363,7 @@ pub fn init_virtio_gpu(common_virt: *mut u32, notify_virt: *mut u32) -> Option<S
     }
 
     fn set_queue_msix_vector(&self, vector: u16) {
-        self.w16(0x1a, vector);
+        self.write_common_cfg(0x1a, vector as u32, 2).expect("Type5 write failed");
     }
     
     pub fn setup_queue(
@@ -434,19 +455,13 @@ pub fn init_virtio_gpu(common_virt: *mut u32, notify_virt: *mut u32) -> Option<S
         }
     }
 
-    /// Submit a command stored in the command buffer, using the device's response buffer.
-    /// `cmd_type` is the VIRTIO_GPU_CMD_* constant, `cmd` points into self.cmd_buf.
-    fn get_notify_offset(&self, queue_idx: u16) -> usize {
-        self.set_queue_select(queue_idx);
-        let queue_notify_off = self.r16(0x1e) as usize;
-        
-        // Read the notify_off_multiplier from Common Config (offset 0x00)
-        // This is the correct location according to the VirtIO specification
-        let notify_off_multiplier = self.r32(0x00) as usize;
-        
-        queue_notify_off * notify_off_multiplier
+    /// Calculate the notify offset for a given queue index.
+    fn get_notify_offset(&self, queue_idx: u32) -> usize {
+        (queue_idx * self.notify_off_multiplier) as usize
     }
 
+    /// Submit a command stored in the command buffer, using the device's response buffer.
+    /// `cmd_type` is the VIRTIO_GPU_CMD_* constant, `cmd` points into self.cmd_buf.
     unsafe fn submit_raw(&mut self, cmd_type: u32, cmd_offset: u32, cmd_len: u32) {
         if self.desc_table.is_null() || self.avail_ring.is_null() {
             crate::serial::_print(format_args!("[VirtIO-GPU] ERROR: queues not initialized\n"));
