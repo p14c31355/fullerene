@@ -80,6 +80,7 @@ pub fn get_virtio_caps(device: &PciDevice) -> Vec<VirtioPciCfgCap> {
             let mut notify_off_multiplier = 0;
             if cfg_type == VIRTIO_PCI_CAP_NOTIFY_CFG {
                 notify_off_multiplier = PciConfigSpace::read_config_dword(device.bus, device.device, device.function, offset + 16);
+                crate::serial::_print(format_args!("[PCI] Found NOTIFY_CFG cap at offset={:#x}, multiplier={:#x}\n", offset, notify_off_multiplier));
             }
 
             caps.push(VirtioPciCfgCap {

@@ -182,14 +182,15 @@ impl VirtioGpu {
     /// Tries Type 5 access first, falls back to direct memory-mapped access.
     fn write_common_cfg(&self, offset: u32, value: u32, width: u32) -> Option<()> {
         // Try Type 5 access via PCI Configuration Access Capability
-        if write_virtio_reg_via_pci_cfg(&self.device, self.common_bar_for_type5, offset, value, width).is_some() {
+        if let Some(()) = write_virtio_reg_via_pci_cfg(&self.device, self.common_bar_for_type5, offset, value, width) {
+            crate::serial::_print(format_args!("[VirtIO-GPU] Type5 write offset={:#x} val={:#x} width={}\n", offset, value, width));
             return Some(());
         }
-        
+
         // Fallback: Use direct memory-mapped access via common_virt
+        crate::serial::_print(format_args!("[VirtIO-GPU] Direct write offset={:#x} val={:#x} width={}\n", offset, value, width));
         self.write_common_via_direct(offset, value, width)
     }
-
     /// Read a 32-bit dword at the given byte offset (aligned to dword boundary).
     fn r32(&self, bo: usize) -> u32 {
         self.read_common_cfg(bo as u32, 4).expect("Type5 read failed")
@@ -264,16 +265,19 @@ impl VirtioGpu {
     }
 
     fn set_queue_desc(&self, a: u64) {
+        crate::serial::_print(format_args!("[VirtIO-GPU] set_queue_desc {:#x}\n", a));
         self.write_common_cfg(0x20, a as u32, 4).expect("Type5 write failed");
         self.write_common_cfg(0x24, (a >> 32) as u32, 4).expect("Type5 write failed");
     }
 
     fn set_queue_avail(&self, a: u64) {
+        crate::serial::_print(format_args!("[VirtIO-GPU] set_queue_avail {:#x}\n", a));
         self.write_common_cfg(0x28, a as u32, 4).expect("Type5 write failed");
         self.write_common_cfg(0x2c, (a >> 32) as u32, 4).expect("Type5 write failed");
     }
 
     fn set_queue_used(&self, a: u64) {
+        crate::serial::_print(format_args!("[VirtIO-GPU] set_queue_used {:#x}\n", a));
         self.write_common_cfg(0x30, a as u32, 4).expect("Type5 write failed");
         self.write_common_cfg(0x34, (a >> 32) as u32, 4).expect("Type5 write failed");
     }
@@ -515,7 +519,7 @@ unsafe {
         let num_queues = self.r16(0x12);
         crate::serial::_print(format_args!("[VirtIO-GPU] num_queues = {}\n", num_queues));
         
-        self.set_queue_msix_vector(0xFFFF); // Disable MSI-X for this queue
+        self.set_queue_msix_vector(0); // Enable MSI-X for this queue
         
         self.set_queue_desc(desc_phys);
         self.set_queue_avail(avail_phys);
@@ -631,11 +635,16 @@ unsafe {
 
         let notify_off = self.get_notify_offset(0);
         let notify_ptr = (self.notify_base as *mut u8).add(notify_off) as *mut u16;
-        crate::serial::_print(format_args!("[VirtIO-GPU] notifying device at {:p} (offset {}) for cmd={:#x}\n", notify_ptr, notify_off, cmd_type));
+        crate::serial::_print(format_args!("[VirtIO-GPU] notifying device at {:p} (offset {}), base={:p}, notify_off={}\n", notify_ptr, notify_off, self.notify_base, notify_off));
+        
+        // Log descriptor state
+        crate::serial::_print(format_args!("[VirtIO-GPU] e0: addr={:#x}, len={}, flags={}, next={}\n", e0.addr, e0.len, e0.flags, e0.next));
+        crate::serial::_print(format_args!("[VirtIO-GPU] e1: addr={:#x}, len={}, flags={}, next={}\n", e1.addr, e1.len, e1.flags, e1.next));
+        crate::serial::_print(format_args!("[VirtIO-GPU] avail idx={}, ring[0]={}\n", av.idx, av.ring[0]));
         
         // Small delay
         for _ in 0..10000 { core::hint::spin_loop(); }
-        write_volatile(notify_ptr, 0);
+        unsafe { write_volatile(notify_ptr, 0); }
     }
 
     pub fn flush(&mut self, w: u32, h: u32) {
