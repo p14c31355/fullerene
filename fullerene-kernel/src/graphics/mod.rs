@@ -110,11 +110,6 @@ pub fn init_graphics() {
         let common_virt = 0xffff800060000000;
         let notify_virt = 0xffff800070000000;
 
-use petroleum::page_table::PageTableHelper;
-use petroleum::page_table::constants::get_frame_allocator;
-// ... (existing imports)
-
-// In init_graphics:
         // Enable memory access AND bus mastering
         let mut config = petroleum::hardware::pci::PciConfigSpace::read_from_device(gpu_device.bus, gpu_device.device, gpu_device.function).expect("Failed to read config");
         config.enable_memory_access(gpu_device.bus, gpu_device.device, gpu_device.function);
@@ -136,62 +131,81 @@ use petroleum::page_table::constants::get_frame_allocator;
         let mm = mm.as_mut().expect("MemoryManager not initialized");
         
         let flags = petroleum::page_table::types::Flags::DEVICE_MMIO;
-// Map the full BARs.
-let mut mm = crate::memory_management::get_memory_manager().lock();
-let mm = mm.as_mut().expect("MemoryManager not initialized");
+        mm.map_mmio_region(bar_info.address as usize, common_virt, bar_info.size as usize).unwrap();
+        mm.map_mmio_region(notify_bar_info.address as usize, notify_virt, notify_bar_info.size as usize).unwrap();
 
-mm.map_mmio_region(bar_info.address as usize, common_virt, bar_info.size as usize).unwrap();
-mm.map_mmio_region(notify_bar_info.address as usize, notify_virt, notify_bar_info.size as usize).unwrap();
+        let common_virt_ptr = (common_virt + common_cap.offset as usize) as *mut u32;
+        let notify_virt_ptr = (notify_virt + notify_cap.offset as usize) as *mut u32;
 
-let common_virt_ptr = (common_virt + common_cap.offset as usize) as *mut u32;
-let notify_virt_ptr = (notify_virt + notify_cap.offset as usize) as *mut u32;
+        if let Some(mut gpu) =
+            petroleum::virtio::gpu::VirtioGpu::init_virtio_gpu(common_virt_ptr, notify_virt_ptr)
+        {
+            let mut pci_cfg_cap = None;
+            for cap in &caps {
+                if cap.cfg_type == petroleum::virtio::pci::VIRTIO_PCI_CAP_PCI_CFG {
+                    pci_cfg_cap = Some(cap);
+                }
+            }
 
+            if let Some(cfg_cap) = pci_cfg_cap {
+                // Copy fields from packed struct to avoid alignment issues
+                let bar = cfg_cap.bar;
+                let offset = cfg_cap.offset;
+                petroleum::serial::serial_log(format_args!("[graphics] Found PCI_CFG capability, bar={}, offset={:#x}\n", bar, offset));
+                // Read Device ID at offset 0 via indirect access
+                if let Some(bar_info) = gpu_device.get_bar_info(bar) {
+                    let base = bar_info.address as usize;
+                    let indirect_base = base + offset as usize;
+                    // Write target offset (0x0) to address register
+                    unsafe { core::ptr::write_volatile(indirect_base as *mut u32, 0x0); }
+                    // Read value from data register
+                    let dev_id = unsafe { core::ptr::read_volatile(indirect_base as *mut u32) };
+                    petroleum::serial::serial_log(format_args!("[graphics] Device ID via indirect access: {:#x}\n", dev_id));
+                } else {
+                    petroleum::serial::serial_log(format_args!("[graphics] PCI_CFG capability found but BAR {} not accessible\n", bar));
+                }
+            }
 
-if let Some(mut gpu) =
-    petroleum::virtio::gpu::VirtioGpu::init_virtio_gpu(common_virt_ptr, notify_virt_ptr)
-{
-    let mut pci_cfg_cap = None;
-    for cap in &caps {
-        if cap.cfg_type == petroleum::virtio::pci::VIRTIO_PCI_CAP_PCI_CFG {
-            pci_cfg_cap = Some(cap);
+            // Check if we have a framebuffer configuration from UEFI
+            if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|mutex| mutex.lock().clone()) {
+                // Use the framebuffer configuration from the bootloader
+                gpu.init_display(config.width, config.height, config.address, config.stride * config.height);
+                
+                let fb_info = petroleum::graphics::color::FramebufferInfo {
+                    address: config.address,
+                    width: config.width,
+                    height: config.height,
+                    stride: config.stride,
+                    pixel_format: Some(config.pixel_format),
+                    colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
+                };
+                let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(fb_info);
+                let renderer = petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer);
+                
+                set_primary_renderer(renderer);
+                petroleum::serial::serial_log(format_args!("[graphics] VirtIO-GPU assigned as PRIMARY_RENDERER using UEFI framebuffer config\n"));
+                return;
+            } else {
+                // Fallback to hardcoded values if no framebuffer config available
+                gpu.init_display(1024, 768, 0xfc000000, 1024 * 768 * 4);
+                
+                let fb_info = petroleum::graphics::color::FramebufferInfo {
+                    address: 0xfc000000,
+                    width: 1024,
+                    height: 768,
+                    stride: 1024,
+                    pixel_format: Some(petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor),
+                    colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
+                };
+                let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(fb_info);
+                let renderer = petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer);
+                
+                set_primary_renderer(renderer);
+                petroleum::serial::serial_log(format_args!("[graphics] VirtIO-GPU assigned as PRIMARY_RENDERER with hardcoded values (no UEFI config)\n"));
+                return;
+            }
         }
     }
-
-    if let Some(cfg_cap) = pci_cfg_cap {
-        // Copy fields from packed struct to avoid alignment issues
-        let bar = cfg_cap.bar;
-        let offset = cfg_cap.offset;
-        petroleum::serial::serial_log(format_args!("[graphics] Found PCI_CFG capability, bar={}, offset={:#x}\n", bar, offset));
-        // Read Device ID at offset 0 via indirect access
-        let bar_info = gpu_device.get_bar_info(bar).expect("Failed to get BAR info for PCI_CFG");
-        let base = bar_info.address as usize;
-        let indirect_base = base + offset as usize;
-        // Write target offset (0x0) to address register
-        unsafe { core::ptr::write_volatile(indirect_base as *mut u32, 0x0); }
-        // Read value from data register
-        let dev_id = unsafe { core::ptr::read_volatile(indirect_base as *mut u32) };
-        petroleum::serial::serial_log(format_args!("[graphics] Device ID via indirect access: {:#x}\n", dev_id));
-    }
-
-    // ...
-            gpu.init_display(1024, 768, 0xfc000000, 1024 * 768 * 4);
-            
-            // Create a UefiFramebufferWriter for the GPU
-            let fb_info = petroleum::graphics::color::FramebufferInfo {
-                address: 0xfc000000,
-                width: 1024,
-                height: 768,
-                stride: 1024,
-                pixel_format: Some(petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor),
-                colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
-            };
-            let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(fb_info);
-            let renderer = petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer);
-            
-            set_primary_renderer(renderer);
-            petroleum::serial::serial_log(format_args!("[graphics] VirtIO-GPU assigned as PRIMARY_RENDERER\n"));
-            return;
-        }    }
 
     // Try to create primary console from petroleum
     if let Some(primary_renderer) = petroleum::boot::create_primary_console() {

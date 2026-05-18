@@ -126,7 +126,7 @@ struct AttachCmd {
 //   le16 queue_enable;             0x1c
 //   le16 queue_notify_off;         0x1e
 //   le64 queue_desc;               0x20
-//   le64 queue_avail;              0x28
+//   le64 queue_avail;               0x28
 //   le64 queue_used;               0x30
 // ---------------------------------------------------------------------------
 // The BAR is accessed as *mut u32 with pointer arithmetic:
@@ -145,6 +145,7 @@ pub struct VirtioGpu {
     /// Physical address of the command buffer
     cmd_buf_phys: u64,
     cmd_buf_len: u32,
+    notify_off_multiplier: u32,
 }
 
 #[derive(Debug)]
@@ -232,12 +233,16 @@ impl VirtioGpu {
     }
 
     pub fn init_virtio_gpu(common_virt: *mut u32, notify_virt: *mut u32) -> Option<Self> {
+        crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: called\n"));
         let mut gpu = VirtioGpu::new(common_virt, notify_virt);
+        crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: new() completed, calling gpu.init()\n"));
         if gpu.init().is_ok() {
+            crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: gpu.init() succeeded\n"));
             let desc_sz = QUEUE_SIZE as usize * core::mem::size_of::<VringDesc>();
             let (dp, dphys) = Self::alloc_queue_mem(desc_sz);
             let (ap, aphys) = Self::alloc_queue_mem(core::mem::size_of::<VringAvail>());
             let (up, uphys) = Self::alloc_queue_mem(core::mem::size_of::<VringUsed>());
+            crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: about to setup_queue\n"));
             gpu.setup_queue(
                 0,
                 dp as *mut VringDesc,
@@ -247,7 +252,14 @@ impl VirtioGpu {
                 up as *mut VringUsed,
                 uphys,
             );
+            crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: setup_queue completed\n"));
             gpu.set_status(VIRTIO_STATUS_DRIVER_OK as u8); // Final signal
+            crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: status set to DRIVER_OK\n"));
+            // Read the notify offset multiplier after signaling DRIVER_OK
+            unsafe {
+                gpu.notify_off_multiplier = core::ptr::read_volatile(gpu.notify_base as *mut u32);
+            }
+            crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: notify_off_multiplier read: {}\n", gpu.notify_off_multiplier));
             Some(gpu)
         } else {
             None
@@ -279,29 +291,37 @@ impl VirtioGpu {
             cmd_buf,
             cmd_buf_phys,
             cmd_buf_len: 4096,
+            notify_off_multiplier: 0,
         }
     }
 
     pub fn init(&mut self) -> Result<(), VirtioGpuError> {
-        crate::serial::_print(format_args!("[VirtIO-GPU] Resetting device...\n"));
+        crate::serial::_print(format_args!("[VirtIO-GPU] init: entered\n"));
+        crate::serial::_print(format_args!("[VirtIO-GPU] init: Resetting device...\n"));
         self.set_status(0);
+        crate::serial::_print(format_args!("[VirtIO-GPU] init: status set to 0\n"));
 
-        crate::serial::_print(format_args!("[VirtIO-GPU] Acknowledge/Driver status...\n"));
+        crate::serial::_print(format_args!("[VirtIO-GPU] init: Acknowledge/Driver status...\n"));
         self.set_status(VIRTIO_STATUS_ACKNOWLEDGE as u8);
+        crate::serial::_print(format_args!("[VirtIO-GPU] init: status set to ACKNOWLEDGE\n"));
         self.set_status((VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER) as u8);
+        crate::serial::_print(format_args!("[VirtIO-GPU] init: status set to ACKNOWLEDGE|DRIVER\n"));
 
-        crate::serial::_print(format_args!("[VirtIO-GPU] Negotiating features...\n"));
+        crate::serial::_print(format_args!("[VirtIO-GPU] init: Negotiating features...\n"));
         let feats = self.dev_features();
-        crate::serial::_print(format_args!("[VirtIO-GPU] dev_features: {:#x}\n", feats));
+        crate::serial::_print(format_args!("[VirtIO-GPU] init: dev_features: {:#x}\n", feats));
         self.set_guest_features(feats);
+        crate::serial::_print(format_args!("[VirtIO-GPU] init: guest_features set\n"));
         
-        crate::serial::_print(format_args!("[VirtIO-GPU] Committing features (FEATURES_OK)...\n"));
+        crate::serial::_print(format_args!("[VirtIO-GPU] init: Committing features (FEATURES_OK)...\n"));
         self.set_status(
             (VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK) as u8,
         );
+        crate::serial::_print(format_args!("[VirtIO-GPU] init: status set to ACKNOWLEDGE|DRIVER|FEATURES_OK\n"));
 
         // Verify if FEATURES_OK was accepted
         let status = self.status();
+        crate::serial::_print(format_args!("[VirtIO-GPU] init: read back status: {:#x}\n", status));
         if (status & VIRTIO_STATUS_FEATURES_OK as u8) == 0 {
             crate::serial::_print(format_args!("[VirtIO-GPU] ERROR: FEATURES_OK not set\n"));
             return Err(VirtioGpuError::DeviceNotReady);
@@ -394,7 +414,7 @@ impl VirtioGpu {
                     return;
                 }
                 if i & 0x1FFFF == 0 {
-                    crate::serial::_print(format_args!("[VirtIO-GPU] waiting... index at {:p} is {}\n", idxp, current));
+                    crate::serial::_print(format_args!("[Virtio-GPU] waiting... index at {:p} is {}\n", idxp, current));
                     core::hint::spin_loop();
                 }
             }
@@ -409,7 +429,7 @@ impl VirtioGpu {
     fn get_notify_offset(&self, queue_idx: u16) -> usize {
         self.set_queue_select(queue_idx);
         let queue_notify_off = self.r16(0x1e) as usize;
-        let notify_off_multiplier = self.r32(0x10) as usize;
+        let notify_off_multiplier = self.notify_off_multiplier as usize;
         queue_notify_off * notify_off_multiplier
     }
 

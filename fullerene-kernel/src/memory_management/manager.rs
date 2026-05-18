@@ -86,8 +86,9 @@ impl UnifiedMemoryManager {
         let page_size = self.page_size();
         let pages = (size + page_size - 1) / page_size;
 
-        // MMIO regions are typically mapped as non-executable
-        let flags = PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::NO_EXECUTE;
+        // MMIO regions need proper caching attributes: Uncacheable (UC) is safest
+        // UC is achieved by setting PCD (NO_CACHE) without PWT (WRITE_THROUGH)
+        let flags = PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::NO_EXECUTE | PageFlags::NO_CACHE;
 
         for i in 0..pages {
             let virt = virtual_addr + i * page_size;
