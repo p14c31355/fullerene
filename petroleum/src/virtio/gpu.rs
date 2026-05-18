@@ -39,11 +39,39 @@ pub struct VringAvail {
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct VringUsedElem {
+    pub id: u32,
+    pub len: u32,
+}
+
+#[repr(C)]
 pub struct VringUsed {
     pub flags: u16,
     pub idx: u16,
-    pub ring: [u32; 2048],
+    pub ring: [VringUsedElem; 1024],
     pub avail_event: u16,
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct VirtioGpuTransferToHost2d {
+    pub hdr: VirtioGpuCtrlHeader,
+    pub r: VirtioGpuRect,
+    pub offset: u64,
+    pub resource_id: u32,
+    pub padding: u32,
+}
+
+impl VirtioGpuTransferToHost2d {
+    pub fn to_le(self) -> Self {
+        Self {
+            hdr: self.hdr.to_le(),
+            r: self.r.to_le(),
+            offset: self.offset.to_le(),
+            resource_id: self.resource_id.to_le(),
+            padding: self.padding.to_le(),
+        }
+    }
 }
 
 #[repr(C, packed)]
@@ -102,6 +130,17 @@ pub struct VirtioGpuRect {
     pub y: u32,
     pub width: u32,
     pub height: u32,
+}
+
+impl VirtioGpuRect {
+    pub fn to_le(self) -> Self {
+        Self {
+            x: self.x.to_le(),
+            y: self.y.to_le(),
+            width: self.width.to_le(),
+            height: self.height.to_le(),
+        }
+    }
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -409,8 +448,7 @@ pub fn init_virtio_gpu(common_virt: *mut u32, notify_virt: *mut u32, device: Pci
     // accept FEATURES_OK status.
     if gpu.init().is_ok() {
         crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: gpu.init() succeeded\n"));
-        gpu.set_status(VIRTIO_STATUS_DRIVER_OK as u8); // Final signal
-        crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: status set to DRIVER_OK\n"));
+        gpu.complete_init();
         Some(gpu)
     } else {
         None
@@ -467,56 +505,37 @@ unsafe {
 }
 
         pub fn init(&mut self) -> Result<(), VirtioGpuError> {
-        crate::serial::_print(format_args!("[VirtIO-GPU] init: entered\n"));
+            crate::serial::_print(format_args!("[VirtIO-GPU] init: entered\n"));
 
-        // === 1. Reset ===
-        self.set_status(0);
-        for _ in 0..100_000 { core::hint::spin_loop(); }
-        crate::serial::_print(format_args!("[VirtIO-GPU] After reset, status = {:#x}\n", self.status()));
+            // === 1. Reset ===
+            self.set_status(0);
+            for _ in 0..100_000 { core::hint::spin_loop(); }
 
-        // === 2. Acknowledge + Driver ===
-        self.set_status(VIRTIO_STATUS_ACKNOWLEDGE as u8);
-        self.set_status((VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER) as u8);
-        for _ in 0..20_000 { core::hint::spin_loop(); }
+            // === 2. Acknowledge + Driver ===
+            self.set_status(VIRTIO_STATUS_ACKNOWLEDGE as u8);
+            self.set_status((VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER) as u8);
 
-        // === 3. Feature Negotiation ===
-        crate::serial::_print(format_args!("[VirtIO-GPU] Negotiating features...\n"));
-        let feats = self.dev_features();
-        crate::serial::_print(format_args!("[VirtIO-GPU] Device features: {:#x}\n", feats));
+            // === 3. Feature Negotiation ===
+            let feats = self.dev_features();
+            if (feats & (1 << 32)) == 0 {
+                return Err(VirtioGpuError::DeviceNotReady);
+            }
+            self.set_guest_features(feats & (1 << 32));
 
-        // We MUST set VIRTIO_F_VERSION_1 (bit 32)
-        // Check if device supports VIRTIO_F_VERSION_1
-        if (feats & (1 << 32)) == 0 {
-            crate::serial::_print(format_args!("[VirtIO-GPU] ERROR: Device does not support VIRTIO_F_VERSION_1!\n"));
-            return Err(VirtioGpuError::DeviceNotReady);
+            // === 4. FEATURES_OK ===
+            self.set_status((VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK) as u8);
+            if (self.status() & VIRTIO_STATUS_FEATURES_OK as u8) == 0 {
+                return Err(VirtioGpuError::DeviceNotReady);
+            }
+
+            Ok(())
         }
 
-        // We should only acknowledge features the device supports (feats & guest_candidate_features)
-        // Here we just keep VERSION_1 and maybe others
-        let guest_feats = feats & (1 << 32); 
-        crate::serial::_print(format_args!("[VirtIO-GPU] Setting guest features: {:#x}\n", guest_feats));
-        self.set_guest_features(guest_feats);
-
-        for _ in 0..20_000 { core::hint::spin_loop(); }
-
-        // === 4. FEATURES_OK ===
-        self.set_status(
-            (VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK) as u8,
-        );
-        for _ in 0..50_000 { core::hint::spin_loop(); }
-
-        let status = self.status();
-        crate::serial::_print(format_args!("[VirtIO-GPU] Status after FEATURES_OK: {:#x}\n", status));
-
-        if (status & VIRTIO_STATUS_FEATURES_OK as u8) == 0 {
-            crate::serial::_print(format_args!("[VirtIO-GPU] ERROR: FEATURES_OK rejected by device!\n"));
-            return Err(VirtioGpuError::DeviceNotReady);
+        pub fn complete_init(&mut self) {
+            // === 5. DRIVER_OK ===
+            self.set_status((VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK) as u8);
+            crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: status set to DRIVER_OK\n"));
         }
-
-        crate::serial::_print(format_args!("[VirtIO-GPU] init complete, status: {:#x}\n", status));
-        Ok(())
-    }
-
     fn set_queue_msix_vector(&self, vector: u16) {
         self.write_common_cfg(0x1a, vector as u32, 2).expect("Type5 write failed");
     }
