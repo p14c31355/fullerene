@@ -89,9 +89,11 @@ pub fn get_virtio_caps(device: &PciDevice) -> Vec<VirtioPciCfgCap> {
     caps
 }
 
-/// Read a 32-bit register from the device via PCI Configuration Access Capability (Type 5)
+/// Read a register from the device via PCI Configuration Access Capability (Type 5)
 /// 
 /// This is used when direct BAR mapping is not working (e.g., in QEMU with OVMF).
+/// 
+/// The `width` parameter specifies the data width: 1 (byte), 2 (word), or 4 (dword).
 pub fn read_virtio_reg_via_pci_cfg(
     device: &PciDevice,
     bar: u8,
@@ -123,16 +125,25 @@ pub fn read_virtio_reg_via_pci_cfg(
         offset
     );
         
-    // Read the result from the data register
+    // Read the result from the data register (always 32 bits)
     let val = PciConfigSpace::read_config_dword(
         device.bus, device.device, device.function, 
         (cfg_offset + 4) as u8
     );
-        
-    Some(val)
+    
+    // Extract the requested number of bytes based on the offset and width
+    let shift = ((offset as usize) & 3) * 8;
+    let mask = match width {
+        1 => 0xFFu32,
+        2 => 0xFFFFu32,
+        4 => 0xFFFFFFFFu32,
+        _ => return None, // Invalid width
+    };
+    
+    Some((val >> shift) & mask)
 }
 
-/// Write a 32-bit register to the device via PCI Configuration Access Capability (Type 5)
+/// Write a register to the device via PCI Configuration Access Capability (Type 5)
 pub fn write_virtio_reg_via_pci_cfg(
     device: &PciDevice,
     bar: u8,
@@ -164,11 +175,32 @@ pub fn write_virtio_reg_via_pci_cfg(
         cfg_offset as u8, 
         offset
     );
-    // Write the value to the data register
+    
+    // Read the current 32-bit value from the data register
+    let mut current = PciConfigSpace::read_config_dword(
+        device.bus, device.device, device.function, 
+        (cfg_offset + 4) as u8
+    );
+    
+    // Calculate shift and mask based on the offset and width
+    let shift = ((offset as usize) & 3) * 8;
+    let mask = match width {
+        1 => 0xFFu32,
+        2 => 0xFFFFu32,
+        4 => 0xFFFFFFFFu32,
+        _ => return None, // Invalid width
+    };
+    
+    // Clear the bits we're about to write, then set them
+    let cleared = current & !(mask << shift);
+    let masked_value = (value << shift) & mask;
+    let new_value = cleared | masked_value;
+    
+    // Write the modified value back
     PciConfigSpace::write_config_dword_raw(
         device.bus, device.device, device.function, 
         (cfg_offset + 4) as u8, 
-        value
+        new_value
     );
     Some(())
 }
