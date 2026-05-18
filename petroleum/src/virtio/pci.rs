@@ -1,10 +1,10 @@
 //! Virtio-PCI Capability scanning logic
 
+use alloc::vec::Vec;
 use crate::hardware::pci::{PciConfigSpace, PciDevice};
 
-// We don't need AltPciDevice here. We can just use the public PciDevice.
-
 #[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
 pub struct VirtioPciCap {
     pub cap_vndr: u8,
     pub cap_next: u8,
@@ -22,60 +22,68 @@ pub const VIRTIO_PCI_CAP_ISR_CFG: u8 = 3;
 pub const VIRTIO_PCI_CAP_DEVICE_CFG: u8 = 4;
 
 pub fn find_virtio_capability(device: &PciDevice, cfg_type: u8) -> Option<VirtioPciCap> {
+    get_virtio_caps(device).into_iter().find(|cap| cap.cfg_type == cfg_type)
+}
+
+pub fn get_virtio_caps(device: &PciDevice) -> Vec<VirtioPciCap> {
+    let mut caps = Vec::new();
     let mut offset =
         PciConfigSpace::read_config_byte(device.bus, device.device, device.function, 0x34);
-
-    while offset != 0 {
+    
+    while offset != 0 && offset != 0xFF {
         let cap_vndr =
             PciConfigSpace::read_config_byte(device.bus, device.device, device.function, offset);
-        let cap_next = PciConfigSpace::read_config_byte(
-            device.bus,
-            device.device,
-            device.function,
-            offset + 1,
-        );
+        let cap_next =
+            PciConfigSpace::read_config_byte(device.bus, device.device, device.function, offset + 1);
 
         if cap_vndr == 0x09 {
-            // PCI_CAP_ID_VNDR
-            let cfg_type_found = PciConfigSpace::read_config_byte(
-                device.bus,
-                device.device,
-                device.function,
-                offset + 3,
-            );
-            if cfg_type_found == cfg_type {
-                let bar = PciConfigSpace::read_config_byte(
-                    device.bus,
-                    device.device,
-                    device.function,
-                    offset + 4,
-                );
-                let cap_offset = PciConfigSpace::read_config_dword(
-                    device.bus,
-                    device.device,
-                    device.function,
-                    offset + 8,
-                );
-                let cap_length = PciConfigSpace::read_config_dword(
-                    device.bus,
-                    device.device,
-                    device.function,
-                    offset + 12,
-                );
-
-                return Some(VirtioPciCap {
-                    cap_vndr,
-                    cap_next,
-                    cap_len: 16,
-                    cfg_type: cfg_type_found,
-                    bar,
-                    padding: [0; 3],
-                    offset: cap_offset,
-                    length: cap_length,
-                });
-            }
+            // Vendor-Specific
+            let cfg_type = PciConfigSpace::read_config_byte(device.bus, device.device, device.function, offset + 3);
+            let bar = PciConfigSpace::read_config_byte(device.bus, device.device, device.function, offset + 4);
+            let cap_offset = PciConfigSpace::read_config_dword(device.bus, device.device, device.function, offset + 8);
+            let cap_length = PciConfigSpace::read_config_dword(device.bus, device.device, device.function, offset + 12);
+            
+            caps.push(VirtioPciCap {
+                cap_vndr,
+                cap_next,
+                cap_len: 16,
+                cfg_type,
+                bar,
+                padding: [0; 3],
+                offset: cap_offset,
+                length: cap_length,
+            });
         }
         offset = cap_next;
     }
-    None
+    caps
+}
+
+pub fn dump_capabilities(device: &PciDevice) {
+    let mut offset =
+        PciConfigSpace::read_config_byte(device.bus, device.device, device.function, 0x34);
+    
+    crate::serial::_print(format_args!("[PCI] Dumping capabilities starting at {:#x}\n", offset));
+    
+    while offset != 0 && offset != 0xFF {
+        let cap_id = PciConfigSpace::read_config_byte(device.bus, device.device, device.function, offset);
+        let cap_next = PciConfigSpace::read_config_byte(device.bus, device.device, device.function, offset + 1);
+        
+        crate::serial::_print(format_args!("[PCI] Cap ID: {:#x}, Next: {:#x}, Offset: {:#x}\n", cap_id, cap_next, offset));
+        
+        if cap_id == 0x09 {
+            // Vendor-Specific
+            let cfg_type = PciConfigSpace::read_config_byte(device.bus, device.device, device.function, offset + 3);
+            let bar = PciConfigSpace::read_config_byte(device.bus, device.device, device.function, offset + 4);
+            let cap_offset = PciConfigSpace::read_config_dword(device.bus, device.device, device.function, offset + 8);
+            let cap_len = PciConfigSpace::read_config_dword(device.bus, device.device, device.function, offset + 12);
+            
+            crate::serial::_print(format_args!(
+                "  -> VirtIO VNDR: type={}, bar={}, offset={:#x}, len={:#x}\n",
+                cfg_type, bar, cap_offset, cap_len
+            ));
+        }
+        
+        offset = cap_next;
+    }
 }

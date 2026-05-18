@@ -274,6 +274,8 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
         "-no-shutdown".to_string(),
         "-device".to_string(),
         "isa-debug-exit,iobase=0xf4,iosize=0x04".to_string(),
+        "-device".to_string(),
+        "virtio-gpu-pci,disable-legacy=on,disable-modern=off".to_string(),
         "-rtc".to_string(),
         "base=utc".to_string(),
         "-boot".to_string(),
