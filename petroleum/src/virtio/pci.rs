@@ -20,6 +20,7 @@ pub const VIRTIO_PCI_CAP_COMMON_CFG: u8 = 1;
 pub const VIRTIO_PCI_CAP_NOTIFY_CFG: u8 = 2;
 pub const VIRTIO_PCI_CAP_ISR_CFG: u8 = 3;
 pub const VIRTIO_PCI_CAP_DEVICE_CFG: u8 = 4;
+pub const VIRTIO_PCI_CAP_PCI_CFG: u8 = 5; // VirtIO 1.0+ spec defines this as Type 5, not 6. Wait, check spec again. Actually, it's type 5. Let me check. Ah, it is 5. Wait, the spec says PCI_CFG is type 5. I will add type 5.
 
 pub fn find_virtio_capability(device: &PciDevice, cfg_type: u8) -> Option<VirtioPciCap> {
     get_virtio_caps(device).into_iter().find(|cap| cap.cfg_type == cfg_type)

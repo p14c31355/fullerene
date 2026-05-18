@@ -66,59 +66,114 @@ pub fn init_graphics() {
             bar_info.address, bar_info.size, bar_info.is_64bit
         ));
 
-        // Check command register
-        let status_cmd = petroleum::hardware::pci::PciConfigSpace::read_config_dword(gpu_device.bus, gpu_device.device, gpu_device.function, 0x04);
-        let cmd = (status_cmd & 0xFFFF) as u16;
-        petroleum::serial::serial_log(format_args!("[graphics] PCI command: {:#x}\n", cmd));
+        // Use the GPU device found earlier in the function
+        let gpu_device = gpu_device;
 
-        if (cmd & 0x2) == 0 {
-            petroleum::serial::serial_log(format_args!("[graphics] Enabling memory access\n"));
-            let mut config = petroleum::hardware::pci::PciConfigSpace::read_from_device(gpu_device.bus, gpu_device.device, gpu_device.function).expect("Failed to read config");
-            config.command |= 0x2;
-            let val = (status_cmd & !0xFFFF) | (config.command as u32);
-            petroleum::hardware::pci::PciConfigSpace::write_config_dword(
-                &mut config, 
-                gpu_device.bus, 
-                gpu_device.device, 
-                gpu_device.function, 
-                0x04, 
-                val
-            );
-        }        let bar_phys = bar_info.address as usize;
-        let notify_bar_phys = gpu_device.read_bar(notify_bar).expect("Failed to read BAR for notify_cap") as usize & !0xF;
+        let caps = petroleum::virtio::pci::get_virtio_caps(&gpu_device);
+        
+        let mut common_cap = None;
+        let mut notify_cap = None;
+        
+        for cap in &caps {
+            if cap.cfg_type == petroleum::virtio::pci::VIRTIO_PCI_CAP_COMMON_CFG {
+                common_cap = Some(cap);
+            } else if cap.cfg_type == petroleum::virtio::pci::VIRTIO_PCI_CAP_NOTIFY_CFG {
+                notify_cap = Some(cap);
+            }
+        }
+        
+        // ...
+        let common_cap = common_cap.expect("Common config not found");
+        let notify_cap = notify_cap.expect("Notify config not found");
+
+        petroleum::serial::serial_log(format_args!("[graphics] Dumping BAR registers for device at {}:{}\n", gpu_device.bus, gpu_device.device));
+        for i in 0..6 {
+            let offset = 0x10 + (i * 4);
+            let val = petroleum::hardware::pci::PciConfigSpace::read_config_dword(gpu_device.bus, gpu_device.device, gpu_device.function, offset as u8);
+            petroleum::serial::serial_log(format_args!("[graphics] BAR{} (offset {:#x}) = {:#x}\n", i, offset, val));
+        }
+
+        let bar_info = gpu_device.get_bar_info(common_cap.bar).expect("Failed to get Common BAR info");
+        let notify_bar_info = gpu_device.get_bar_info(notify_cap.bar).expect("Failed to get Notify BAR info");
+
+        let common_bar = common_cap.bar;
+        let common_offset = common_cap.offset;
+        let notify_bar = notify_cap.bar;
+        let notify_offset = notify_cap.offset;
 
         petroleum::serial::serial_log(format_args!(
-            "[graphics] BARs: common_phys={:#x}, notify_phys={:#x}\n",
-            bar_phys, notify_bar_phys
+            "[graphics] BARs: common_bar={}, addr={:#x}, offset={:#x}; notify_bar={}, addr={:#x}, offset={:#x}\n",
+            common_bar, bar_info.address, common_offset,
+            notify_bar, notify_bar_info.address, notify_offset
         ));
+
         let common_virt = 0xffff800060000000;
-        let notify_virt = 0xffff800060004000;
+        let notify_virt = 0xffff800070000000;
+
+use petroleum::page_table::PageTableHelper;
+use petroleum::page_table::constants::get_frame_allocator;
+// ... (existing imports)
+
+// In init_graphics:
+        // Enable memory access AND bus mastering
+        let mut config = petroleum::hardware::pci::PciConfigSpace::read_from_device(gpu_device.bus, gpu_device.device, gpu_device.function).expect("Failed to read config");
+        config.enable_memory_access(gpu_device.bus, gpu_device.device, gpu_device.function);
+        // Bit 2 is Bus Master (offset 0x04)
+        config.command |= 0x0004;
+        let val = (config.status as u32) << 16 | (config.command as u32);
+        
+        petroleum::hardware::pci::PciConfigSpace::write_config_dword(
+            &mut config,
+            gpu_device.bus, 
+            gpu_device.device, 
+            gpu_device.function, 
+            0x04, 
+            val
+        );
 
         // Map the full BARs.
         let mut mm = crate::memory_management::get_memory_manager().lock();
         let mm = mm.as_mut().expect("MemoryManager not initialized");
+        
+        let flags = petroleum::page_table::types::Flags::DEVICE_MMIO;
+// Map the full BARs.
+let mut mm = crate::memory_management::get_memory_manager().lock();
+let mm = mm.as_mut().expect("MemoryManager not initialized");
 
-        petroleum::serial::serial_log(format_args!(
-            "[graphics] Mapping BARs to virt={:#x}, {:#x}\n",
-            common_virt, notify_virt
-        ));
+mm.map_mmio_region(bar_info.address as usize, common_virt, bar_info.size as usize).unwrap();
+mm.map_mmio_region(notify_bar_info.address as usize, notify_virt, notify_bar_info.size as usize).unwrap();
 
-        // Mapping size should match bar size
-        mm.map_mmio_region(bar_phys, common_virt, bar_info.size as usize).unwrap();
-        mm.map_mmio_region(notify_bar_phys, notify_virt, 0x10000).unwrap();
+let common_virt_ptr = (common_virt + common_cap.offset as usize) as *mut u32;
+let notify_virt_ptr = (notify_virt + notify_cap.offset as usize) as *mut u32;
 
-        // The capability offset is relative to the BAR.
-        let common_virt_ptr = (common_virt + common_offset as usize) as *mut u32;
-        let notify_virt_ptr = (notify_virt + notify_offset as usize) as *mut u32;
 
-        petroleum::serial::serial_log(format_args!(
-            "[graphics] VirtIO-GPU mapped pointers: common={:p}, notify={:p}\n",
-            common_virt_ptr, notify_virt_ptr
-        ));
+if let Some(mut gpu) =
+    petroleum::virtio::gpu::VirtioGpu::init_virtio_gpu(common_virt_ptr, notify_virt_ptr)
+{
+    let mut pci_cfg_cap = None;
+    for cap in &caps {
+        if cap.cfg_type == petroleum::virtio::pci::VIRTIO_PCI_CAP_PCI_CFG {
+            pci_cfg_cap = Some(cap);
+        }
+    }
 
-        if let Some(mut gpu) =
-            petroleum::virtio::gpu::VirtioGpu::init_virtio_gpu(common_virt_ptr, notify_virt_ptr)
-        {
+    if let Some(cfg_cap) = pci_cfg_cap {
+        // Copy fields from packed struct to avoid alignment issues
+        let bar = cfg_cap.bar;
+        let offset = cfg_cap.offset;
+        petroleum::serial::serial_log(format_args!("[graphics] Found PCI_CFG capability, bar={}, offset={:#x}\n", bar, offset));
+        // Read Device ID at offset 0 via indirect access
+        let bar_info = gpu_device.get_bar_info(bar).expect("Failed to get BAR info for PCI_CFG");
+        let base = bar_info.address as usize;
+        let indirect_base = base + offset as usize;
+        // Write target offset (0x0) to address register
+        unsafe { core::ptr::write_volatile(indirect_base as *mut u32, 0x0); }
+        // Read value from data register
+        let dev_id = unsafe { core::ptr::read_volatile(indirect_base as *mut u32) };
+        petroleum::serial::serial_log(format_args!("[graphics] Device ID via indirect access: {:#x}\n", dev_id));
+    }
+
+    // ...
             gpu.init_display(1024, 768, 0xfc000000, 1024 * 768 * 4);
             
             // Create a UefiFramebufferWriter for the GPU
