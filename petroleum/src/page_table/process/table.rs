@@ -140,7 +140,30 @@ impl PageTableHelper for ProcessPageTable {
                     return Err(crate::common::logging::SystemError::FrameAllocationFailed);
                 }
                 Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {
-                    return Err(crate::common::logging::SystemError::MappingFailed);
+                    // Split the 2MB huge page into 512 4KB pages, then retry the mapping.
+                    crate::write_serial_bytes!(
+                        0x3F8,
+                        0x3FD,
+                        b"DEBUG: [map_page] ParentEntryHugePage, splitting...\n"
+                    );
+                    split_huge_page_2mb(mapper, virtual_addr, flags, frame_allocator)
+                        .map_err(|_| crate::common::logging::SystemError::MappingFailed)?;
+                    // Unmap the page first if it was pre-filled by the split, then map
+                    let _ = mapper.unmap(page);
+                    // Retry mapping now that the huge page has been split
+                    match mapper.map_to(page, frame, flags, frame_allocator) {
+                        Ok(flush) => {
+                            flush.flush();
+                        }
+                        Err(e) => {
+                            crate::write_serial_bytes!(
+                                0x3F8,
+                                0x3FD,
+                                b"DEBUG: [map_page] Retry failed after split\n"
+                            );
+                            return Err(crate::common::logging::SystemError::MappingFailed);
+                        }
+                    }
                 }
             }
         }
@@ -460,6 +483,95 @@ impl PageTableHelper for ProcessPageTable {
     fn current_page_table(&self) -> usize {
         self.current_page_table
     }
+}
+
+/// Split a 2MB huge page entry into 512 individual 4KB pages.
+///
+/// This is called when `Mapper::map_to` returns `ParentEntryHugePage`,
+/// meaning the virtual address falls within a 2MB huge page mapping.
+/// We allocate a new L1 page table, populate it with 512 entries
+/// corresponding to the original huge page's physical base and flags,
+/// then replace the L2 huge page entry with a pointer to the new L1 table.
+///
+/// # Safety
+///
+/// The caller must ensure that `virtual_addr` is mapped via a 2MB huge page
+/// at the L2 level, and that the mapper's `phys_offset` is valid.
+unsafe fn split_huge_page_2mb(
+    mapper: &mut OffsetPageTable<'static>,
+    virtual_addr: VirtAddr,
+    default_flags: PageTableFlags,
+    frame_allocator: &mut impl FrameAllocator<Size4KiB>,
+) -> Result<(), &'static str> {
+    let phys_offset = mapper.phys_offset();
+
+    // Compute the 2MB-aligned virtual address covering this page
+    let huge_page_virt = VirtAddr::new(virtual_addr.as_u64() & !((2 * 1024 * 1024) - 1));
+
+    // Walk the page tables to find the L2 entry
+    let (l4_frame, _) = x86_64::registers::control::Cr3::read();
+    let l4_virt = phys_offset + l4_frame.start_address().as_u64();
+    let l4 = unsafe { &*(l4_virt.as_ptr::<PageTable>()) };
+
+    let p4 = virtual_addr.p4_index();
+    let p3 = virtual_addr.p3_index();
+    let p2 = virtual_addr.p2_index();
+
+    // L3 table
+    if !l4[p4].flags().contains(PageTableFlags::PRESENT) {
+        return Err("L4 entry not present during huge page split");
+    }
+    let l3_phys = l4[p4].addr();
+    let l3_virt = phys_offset + l3_phys.as_u64();
+    let l3 = unsafe { &*(l3_virt.as_ptr::<PageTable>()) };
+
+    // L2 entry
+    if !l3[p3].flags().contains(PageTableFlags::PRESENT) {
+        return Err("L3 entry not present during huge page split");
+    }
+    let l2_phys = l3[p3].addr();
+    let l2_virt = phys_offset + l2_phys.as_u64();
+    let l2 = unsafe { &mut *(l2_virt.as_mut_ptr::<PageTable>()) };
+
+    if !l2[p2].flags().contains(PageTableFlags::HUGE_PAGE) {
+        return Err("L2 entry is not a huge page during split");
+    }
+
+    // Get the physical base address and flags of the existing huge page
+    let huge_page_phys_base = l2[p2].addr();
+    // Preserve the existing flags, but remove HUGE_PAGE
+    let existing_flags = {
+        let mut f = l2[p2].flags();
+        f.remove(PageTableFlags::HUGE_PAGE);
+        // Ensure PRESENT is set
+        f | PageTableFlags::PRESENT
+    };
+
+    // Allocate and zero a new L1 page table
+    let l1_frame = frame_allocator
+        .allocate_frame()
+        .ok_or("split: alloc L1 failed")?;
+    let l1_phys = l1_frame.start_address();
+    let l1_virt = phys_offset + l1_phys.as_u64();
+    unsafe { core::ptr::write_bytes(l1_virt.as_mut_ptr::<u8>(), 0, 4096); }
+
+    // Populate the L1 table with 512 entries mapping to the original huge page's physical range
+    let l1_table = unsafe { &mut *(l1_virt.as_mut_ptr::<PageTable>()) };
+    for i in 0..512u64 {
+        let page_phys = PhysAddr::new(huge_page_phys_base.as_u64() + i * 4096);
+        l1_table[i as usize].set_addr(page_phys, existing_flags);
+    }
+
+    // Replace the L2 huge page entry with a normal entry pointing to the new L1 table
+    l2[p2].set_addr(l1_phys, default_flags | PageTableFlags::PRESENT);
+
+    // Flush the TLB for the affected 2MB range
+    x86_64::instructions::tlb::flush(huge_page_virt);
+    x86_64::instructions::tlb::flush(VirtAddr::new(
+        huge_page_virt.as_u64() + 2 * 1024 * 1024 - 4096,
+    ));
+
+    Ok(())
 }
 
 fn destroy_page_table_recursive<'a>(
