@@ -167,8 +167,10 @@ impl PciDevice {
     pub fn get_bar_info(&self, index: u8) -> Option<PciBar> {
         let offset = 0x10 + (index * 4);
         let value = PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
-        
-        if value == 0 { return None; }
+
+        if value == 0 {
+            return None;
+        }
 
         let is_io = (value & 0x1) != 0;
         let is_64bit = !is_io && ((value & 0x6) == 0x4);
@@ -193,17 +195,33 @@ impl PciDevice {
 
     pub fn detect_bar_size(&self, bar_index: u8) -> u32 {
         let offset = 0x10 + (bar_index * 4);
-        let original_value = PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
-        
-        PciConfigSpace::write_config_dword_raw(self.bus, self.device, self.function, offset, 0xFFFFFFFF);
-        let size_mask = PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
-        
+        let original_value =
+            PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
+
+        PciConfigSpace::write_config_dword_raw(
+            self.bus,
+            self.device,
+            self.function,
+            offset,
+            0xFFFFFFFF,
+        );
+        let size_mask =
+            PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
+
         // Restore original
-        PciConfigSpace::write_config_dword_raw(self.bus, self.device, self.function, offset, original_value);
-        
-        if (size_mask & 0x1) != 0 { // I/O
+        PciConfigSpace::write_config_dword_raw(
+            self.bus,
+            self.device,
+            self.function,
+            offset,
+            original_value,
+        );
+
+        if (size_mask & 0x1) != 0 {
+            // I/O
             !(size_mask & 0xFFFFFFFC) + 1
-        } else { // Memory
+        } else {
+            // Memory
             !(size_mask & 0xFFFFFFF0) + 1
         }
     }
@@ -222,36 +240,66 @@ impl PciAllocator {
         for device in scanner.get_devices() {
             // 1. Disable Memory Space access (Command bit 1)
             let cmd_offset = 4;
-            let original_command = PciConfigSpace::read_config_word(device.bus, device.device, device.function, cmd_offset);
-            PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, cmd_offset, (original_command & !0x2) as u32);
-            
+            let original_command = PciConfigSpace::read_config_word(
+                device.bus,
+                device.device,
+                device.function,
+                cmd_offset,
+            );
+            PciConfigSpace::write_config_dword_raw(
+                device.bus,
+                device.device,
+                device.function,
+                cmd_offset,
+                (original_command & !0x2) as u32,
+            );
+
             for bar_index in 0..6 {
                 if let Some(mut bar) = device.get_bar_info(bar_index) {
                     if bar.address == 0 && bar.size > 0 {
-                        let aligned_addr = (self.mmio_base + (bar.size as u64 - 1)) & !(bar.size as u64 - 1);
-                        
+                        let aligned_addr =
+                            (self.mmio_base + (bar.size as u64 - 1)) & !(bar.size as u64 - 1);
+
                         let offset = 0x10 + (bar_index * 4);
-                        
+
                         // Write low 32 bits
-                        PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, offset, aligned_addr as u32);
-                        
+                        PciConfigSpace::write_config_dword_raw(
+                            device.bus,
+                            device.device,
+                            device.function,
+                            offset,
+                            aligned_addr as u32,
+                        );
+
                         // If 64-bit, write high 32 bits
                         if bar.is_64bit {
-                            PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, offset + 4, (aligned_addr >> 32) as u32);
+                            PciConfigSpace::write_config_dword_raw(
+                                device.bus,
+                                device.device,
+                                device.function,
+                                offset + 4,
+                                (aligned_addr >> 32) as u32,
+                            );
                         }
-                        
+
                         crate::serial::_print(format_args!(
-                            "[PCI-Allocator] Assigned BAR {} to {:#x} (size={:#x}, 64bit={})\n", 
+                            "[PCI-Allocator] Assigned BAR {} to {:#x} (size={:#x}, 64bit={})\n",
                             bar_index, aligned_addr, bar.size, bar.is_64bit
                         ));
-                        
+
                         self.mmio_base = aligned_addr + bar.size as u64;
                     }
                 }
             }
 
             // 3. Re-enable Memory Space access
-            PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, cmd_offset, original_command as u32);
+            PciConfigSpace::write_config_dword_raw(
+                device.bus,
+                device.device,
+                device.function,
+                cmd_offset,
+                original_command as u32,
+            );
         }
     }
 }
@@ -296,8 +344,9 @@ impl PrivatePciDevice {
         }
 
         let offset = 0x10 + (bar_index * 4);
-        let bar_low = PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
-        
+        let bar_low =
+            PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
+
         if bar_low == 0 {
             return None;
         }
@@ -313,7 +362,12 @@ impl PrivatePciDevice {
                 return None;
             }
             let high_offset = offset + 4;
-            let bar_high = PciConfigSpace::read_config_dword(self.bus, self.device, self.function, high_offset);
+            let bar_high = PciConfigSpace::read_config_dword(
+                self.bus,
+                self.device,
+                self.function,
+                high_offset,
+            );
             Some(((bar_high as u64) << 32) | ((bar_low & 0xFFFFFFF0) as u64))
         } else {
             Some((bar_low & 0xFFFFFFF0) as u64)

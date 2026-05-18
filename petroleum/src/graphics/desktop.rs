@@ -1,7 +1,5 @@
 use super::renderer::Renderer;
-use crate::{
-    Button, COLOR_BLACK, COLOR_DARK_GRAY, COLOR_LIGHT_BLUE, COLOR_TASKBAR,
-};
+use crate::{Button, COLOR_BLACK, COLOR_DARK_GRAY, COLOR_LIGHT_BLUE, COLOR_TASKBAR};
 
 pub fn draw_os_desktop(renderer: &mut dyn Renderer) {
     let mode = if cfg!(target_os = "uefi") {

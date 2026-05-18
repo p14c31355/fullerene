@@ -71,8 +71,18 @@ impl Default for ProcessContext {
             rip: 0,
             segments: [
                 // Use fallback segment selectors if GDT not ready
-                unsafe { crate::gdt::code_selector().as_ref().map(|s| s.0 as u64).unwrap_or(1) }, // cs
-                unsafe { crate::gdt::kernel_data_selector_fallback().as_ref().map(|s| s.0 as u64).unwrap_or(2) }, // ss
+                unsafe {
+                    crate::gdt::code_selector()
+                        .as_ref()
+                        .map(|s| s.0 as u64)
+                        .unwrap_or(1)
+                }, // cs
+                unsafe {
+                    crate::gdt::kernel_data_selector_fallback()
+                        .as_ref()
+                        .map(|s| s.0 as u64)
+                        .unwrap_or(2)
+                }, // ss
                 0,
                 0,
                 0,
@@ -141,13 +151,33 @@ impl Process {
         if self.is_user {
             // For user processes, the context RSP should be the user stack
             self.context.regs[7] = self.user_stack.as_u64(); // rsp
-            self.context.segments[0] = unsafe { crate::gdt::user_code_selector_fallback().as_ref().map(|s| s.0 as u64).unwrap_or(1) }; // cs
-            self.context.segments[1] = unsafe { crate::gdt::user_data_selector_fallback().as_ref().map(|s| s.0 as u64).unwrap_or(2) }; // ss
+            self.context.segments[0] = unsafe {
+                crate::gdt::user_code_selector_fallback()
+                    .as_ref()
+                    .map(|s| s.0 as u64)
+                    .unwrap_or(1)
+            }; // cs
+            self.context.segments[1] = unsafe {
+                crate::gdt::user_data_selector_fallback()
+                    .as_ref()
+                    .map(|s| s.0 as u64)
+                    .unwrap_or(2)
+            }; // ss
         } else {
             // For kernel processes, the context RSP is the kernel stack
             self.context.regs[7] = kernel_stack_top.as_u64(); // rsp
-            self.context.segments[0] = unsafe { crate::gdt::code_selector().as_ref().map(|s| s.0 as u64).unwrap_or(1) }; // cs
-            self.context.segments[1] = unsafe { crate::gdt::kernel_data_selector_fallback().as_ref().map(|s| s.0 as u64).unwrap_or(2) }; // ss
+            self.context.segments[0] = unsafe {
+                crate::gdt::code_selector()
+                    .as_ref()
+                    .map(|s| s.0 as u64)
+                    .unwrap_or(1)
+            }; // cs
+            self.context.segments[1] = unsafe {
+                crate::gdt::kernel_data_selector_fallback()
+                    .as_ref()
+                    .map(|s| s.0 as u64)
+                    .unwrap_or(2)
+            }; // ss
         }
 
         // Set RIP to entry point directly, assuming it's an extern "C" function
@@ -240,12 +270,10 @@ pub static CURRENT_PROCESS: AtomicUsize = AtomicUsize::new(0);
 
 /// Static idle context storage (avoid heap allocation during early init)
 #[allow(static_mut_refs)]
-static mut IDLE_CONTEXT: core::mem::MaybeUninit<ProcessContext> =
-    core::mem::MaybeUninit::uninit();
+static mut IDLE_CONTEXT: core::mem::MaybeUninit<ProcessContext> = core::mem::MaybeUninit::uninit();
 /// Static idle process storage
 #[allow(static_mut_refs)]
-static mut IDLE_PROCESS: core::mem::MaybeUninit<Process> =
-    core::mem::MaybeUninit::uninit();
+static mut IDLE_PROCESS: core::mem::MaybeUninit<Process> = core::mem::MaybeUninit::uninit();
 
 /// Initialize process management system
 pub fn init(heap_start: usize, heap_end: usize) {
@@ -274,9 +302,18 @@ pub fn init(heap_start: usize, heap_end: usize) {
             rflags: 0x0202,
             rip: idle_addr.as_u64(),
             segments: [
-                crate::gdt::code_selector().as_ref().map(|s| s.0 as u64).unwrap_or(1),
-                crate::gdt::kernel_data_selector_fallback().as_ref().map(|s| s.0 as u64).unwrap_or(2),
-                0, 0, 0, 0,
+                crate::gdt::code_selector()
+                    .as_ref()
+                    .map(|s| s.0 as u64)
+                    .unwrap_or(1),
+                crate::gdt::kernel_data_selector_fallback()
+                    .as_ref()
+                    .map(|s| s.0 as u64)
+                    .unwrap_or(2),
+                0,
+                0,
+                0,
+                0,
             ],
             tss: 0,
             is_user: false,
@@ -533,7 +570,8 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
 
         if let Some(ptr) = new_ptr {
             // Get pointers to the context field specifically to ensure proper alignment
-            let old_ctx = old_ptr.map(|p| unsafe { (&mut *p).context.as_mut() as *mut ProcessContext });
+            let old_ctx =
+                old_ptr.map(|p| unsafe { (&mut *p).context.as_mut() as *mut ProcessContext });
             let new_ctx = Some(unsafe { (&*ptr).context.as_ref() as *const ProcessContext });
             let pt = unsafe { (*ptr).page_table_phys_addr };
             (old_ctx, new_ctx, Some(pt))

@@ -80,10 +80,10 @@ pub unsafe fn init_global_heap(ptr: *mut u8, size: usize) {
 
         // Initialize the allocator
         ALLOCATOR.lock().init(ptr, size);
-        
+
         // NOTE: Do NOT call set_heap_range here because this is called before the world switch.
         // The heap range will be set in init_common after the world switch.
-        
+
         // Mark as initialized
         HEAP_INITIALIZED.store(true, Ordering::SeqCst);
     }

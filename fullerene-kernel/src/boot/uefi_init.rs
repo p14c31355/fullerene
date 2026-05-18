@@ -124,8 +124,7 @@ impl UefiInitContext {
         petroleum::serial::early_log("DEBUG: Calling setup_kernel_location");
 
         let mut buf = [0u8; 16];
-        let len =
-            petroleum::serial::format_hex_to_buffer(self.memory_map as u64, &mut buf, 16);
+        let len = petroleum::serial::format_hex_to_buffer(self.memory_map as u64, &mut buf, 16);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: memory_map ptr: 0x");
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
@@ -227,7 +226,11 @@ impl UefiInitContext {
         let boot_heap_ptr =
             unsafe { core::ptr::addr_of_mut!(crate::heap::BOOT_HEAP_BUFFER) as *mut u8 };
         // Initialize the global allocator (petroleum's ALLOCATOR, used by fullerene-kernel)
-        unsafe { PETROLEUM_ALLOCATOR.lock().init(boot_heap_ptr, crate::heap::HEAP_SIZE) };
+        unsafe {
+            PETROLEUM_ALLOCATOR
+                .lock()
+                .init(boot_heap_ptr, crate::heap::HEAP_SIZE)
+        };
         petroleum::write_serial_bytes!(
             0x3F8,
             0x3FD,
@@ -239,28 +242,32 @@ impl UefiInitContext {
             .as_ref()
             .expect("Memory map not initialized")
             .clone();
-        
+
         crate::heap::init_frame_allocator(memory_map_ref);
-        
-        debug_log_no_alloc!("DEBUG: Memory map reference acquired at 0x", memory_map_ref.as_ptr() as usize);
+
+        debug_log_no_alloc!(
+            "DEBUG: Memory map reference acquired at 0x",
+            memory_map_ref.as_ptr() as usize
+        );
         debug_log_no_alloc!("DEBUG: Heap frame allocator initialized\n");
 
         // RESERVE KERNEL MEMORY in the frame allocator to prevent any other allocation (like the heap)
         // from overlapping with the kernel code and data.
-        let kernel_size = unsafe {
-            petroleum::page_table::pe::calculate_kernel_memory_size(kernel_phys_start)
-        };
+        let kernel_size =
+            unsafe { petroleum::page_table::pe::calculate_kernel_memory_size(kernel_phys_start) };
         {
             let mut fa_guard = crate::heap::FRAME_ALLOCATOR.lock();
-            let frame_allocator = fa_guard
-                .as_mut()
-                .expect("Frame allocator not initialized");
+            let frame_allocator = fa_guard.as_mut().expect("Frame allocator not initialized");
             let kernel_pages = (kernel_size + 4095) / 4096;
             frame_allocator
                 .reserve_frames(kernel_phys_start.as_u64(), kernel_pages as usize)
                 .expect("Failed to reserve kernel memory in frame allocator");
         }
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Kernel memory reserved in frame allocator\n");
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: Kernel memory reserved in frame allocator\n"
+        );
 
         let map_addr = self.memory_map as u64;
         let offset_val = self.physical_memory_offset.as_u64();
@@ -582,7 +589,9 @@ impl UefiInitContext {
         );
         unsafe {
             let heap_ptr = core::ptr::addr_of_mut!(crate::heap::BOOT_HEAP_BUFFER) as *mut u8;
-            petroleum::page_table::heap::ALLOCATOR.lock().init(heap_ptr, crate::heap::HEAP_SIZE);
+            petroleum::page_table::heap::ALLOCATOR
+                .lock()
+                .init(heap_ptr, crate::heap::HEAP_SIZE);
         }
         petroleum::write_serial_bytes!(
             0x3F8,
@@ -718,7 +727,6 @@ impl UefiInitContext {
             0x3FD,
             b"DEBUG: memory_management_initialization about to return\n"
         );
-
 
         let res_offset = self.physical_memory_offset;
         let res_phys = heap_phys_addr;

@@ -31,7 +31,11 @@ pub unsafe extern "efiapi" fn efi_main(
 pub unsafe extern "sysv64" fn efi_main_real_logic(
     args_ptr: *const petroleum::assembly::KernelArgs,
 ) -> ! {
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_entry] Entering efi_main_real_logic\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [uefi_entry] Entering efi_main_real_logic\n"
+    );
 
     let captured_args_ptr = args_ptr;
     let args = unsafe { &*captured_args_ptr };
@@ -66,9 +70,17 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
         heap_start_after_stack: VirtAddr::zero(),
     };
 
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_entry] Calling early_initialization\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [uefi_entry] Calling early_initialization\n"
+    );
     let kernel_phys_start = ctx.early_initialization();
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_entry] early_initialization returned\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [uefi_entry] early_initialization returned\n"
+    );
 
     petroleum::write_serial_bytes!(
         0x3F8,
@@ -91,9 +103,17 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_entry] Stack prepared\n");
 
     ctx.setup_allocator(virtual_heap_start);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_entry] Allocator setup completed\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [uefi_entry] Allocator setup completed\n"
+    );
 
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_entry] Performing world switch to kernel\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [uefi_entry] Performing world switch to kernel\n"
+    );
 
     let cr3 = x86_64::registers::control::Cr3::read();
     let l4_frame = cr3.0;

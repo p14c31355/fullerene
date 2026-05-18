@@ -77,9 +77,8 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             Ok(())
         }),
         petroleum::init_step!("process", || {
-            let heap_start = unsafe {
-                core::ptr::addr_of_mut!(crate::heap::BOOT_HEAP_BUFFER) as usize
-            };
+            let heap_start =
+                unsafe { core::ptr::addr_of_mut!(crate::heap::BOOT_HEAP_BUFFER) as usize };
             let heap_end = heap_start + crate::heap::HEAP_SIZE;
             crate::process::init(heap_start, heap_end);
             Ok(())

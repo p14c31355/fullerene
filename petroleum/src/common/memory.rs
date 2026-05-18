@@ -100,19 +100,33 @@ pub fn deallocate_layout(ptr: *mut u8, layout: Layout) {
 
 /// Validate user buffer access
 pub fn validate_user_buffer(ptr: usize, count: usize, allow_kernel: bool) -> SystemResult<()> {
-    if count == 0 { return Ok(()); }
-    if ptr == 0 { return Err(SystemError::InvalidArgument); }
+    if count == 0 {
+        return Ok(());
+    }
+    if ptr == 0 {
+        return Err(SystemError::InvalidArgument);
+    }
     let start = VirtAddr::new(ptr as u64);
-    if !allow_kernel && !is_user_address(start) { return Err(SystemError::InvalidArgument); }
+    if !allow_kernel && !is_user_address(start) {
+        return Err(SystemError::InvalidArgument);
+    }
     if let Some(end_ptr) = ptr.checked_add(count - 1) {
         let end = VirtAddr::new(end_ptr as u64);
-        if !allow_kernel && !is_user_address(end) { return Err(SystemError::InvalidArgument); }
-    } else { return Err(SystemError::InvalidArgument); }
+        if !allow_kernel && !is_user_address(end) {
+            return Err(SystemError::InvalidArgument);
+        }
+    } else {
+        return Err(SystemError::InvalidArgument);
+    }
     Ok(())
 }
 
 pub fn validate_syscall_fd(fd: i32) -> SystemResult<()> {
-    if fd < 0 { Err(SystemError::InvalidArgument) } else { Ok(()) }
+    if fd < 0 {
+        Err(SystemError::InvalidArgument)
+    } else {
+        Ok(())
+    }
 }
 
 pub fn validate_syscall_buffer(ptr: usize, allow_kernel: bool) -> SystemResult<()> {
@@ -120,22 +134,37 @@ pub fn validate_syscall_buffer(ptr: usize, allow_kernel: bool) -> SystemResult<(
 }
 
 pub unsafe fn user_slice(
-    ptr: *const u8, count: usize, allow_kernel: bool,
+    ptr: *const u8,
+    count: usize,
+    allow_kernel: bool,
 ) -> Result<&'static [u8], SystemError> {
     validate_user_buffer(ptr as usize, count, allow_kernel)?;
     Ok(core::slice::from_raw_parts(ptr, count))
 }
 
 pub unsafe fn user_slice_mut(
-    ptr: *mut u8, count: usize, allow_kernel: bool,
+    ptr: *mut u8,
+    count: usize,
+    allow_kernel: bool,
 ) -> Result<&'static mut [u8], SystemError> {
     validate_user_buffer(ptr as usize, count, allow_kernel)?;
     Ok(core::slice::from_raw_parts_mut(ptr, count))
 }
 
 pub fn create_framebuffer_config(
-    address: u64, width: u32, height: u32,
-    pixel_format: super::uefi::EfiGraphicsPixelFormat, bpp: u32, stride: u32,
+    address: u64,
+    width: u32,
+    height: u32,
+    pixel_format: super::uefi::EfiGraphicsPixelFormat,
+    bpp: u32,
+    stride: u32,
 ) -> super::uefi::FullereneFramebufferConfig {
-    super::uefi::FullereneFramebufferConfig { address, width, height, pixel_format, bpp, stride }
+    super::uefi::FullereneFramebufferConfig {
+        address,
+        width,
+        height,
+        pixel_format,
+        bpp,
+        stride,
+    }
 }

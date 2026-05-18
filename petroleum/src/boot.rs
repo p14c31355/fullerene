@@ -88,7 +88,11 @@ unsafe fn debug_page_walk(vaddr: VirtAddr, phys_offset: VirtAddr) {
 
 /// Check if a virtual address is mapped in the page table.
 /// Returns true if the page is present (either as a 4k page, 2MB huge page, or 1GB huge page).
-unsafe fn is_page_mapped(l4: &x86_64::structures::paging::PageTable, vaddr: VirtAddr, phys_offset: VirtAddr) -> bool {
+unsafe fn is_page_mapped(
+    l4: &x86_64::structures::paging::PageTable,
+    vaddr: VirtAddr,
+    phys_offset: VirtAddr,
+) -> bool {
     let l4_idx = vaddr.p4_index();
     let l3_idx = vaddr.p3_index();
     let l2_idx = vaddr.p2_index();
@@ -223,11 +227,13 @@ pub fn create_primary_console() -> Option<crate::graphics::framebuffer::UefiFram
         trace!("getting L4 table\n");
         let l4 = unsafe { crate::page_table::active_level_4_table(phys_offset) };
 
-        let fb_flags = PageTableFlags::PRESENT
-            | PageTableFlags::WRITABLE
-            | PageTableFlags::NO_EXECUTE;
+        let fb_flags =
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
 
-        trace!("mapping {} framebuffer pages with WB-friendly flags\n", fb_pages);
+        trace!(
+            "mapping {} framebuffer pages with WB-friendly flags\n",
+            fb_pages
+        );
 
         unsafe {
             for i in 0..fb_pages {

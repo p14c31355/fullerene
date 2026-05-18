@@ -553,7 +553,9 @@ unsafe fn split_huge_page_2mb(
         .ok_or("split: alloc L1 failed")?;
     let l1_phys = l1_frame.start_address();
     let l1_virt = phys_offset + l1_phys.as_u64();
-    unsafe { core::ptr::write_bytes(l1_virt.as_mut_ptr::<u8>(), 0, 4096); }
+    unsafe {
+        core::ptr::write_bytes(l1_virt.as_mut_ptr::<u8>(), 0, 4096);
+    }
 
     // Populate the L1 table with 512 entries mapping to the original huge page's physical range
     let l1_table = unsafe { &mut *(l1_virt.as_mut_ptr::<PageTable>()) };

@@ -51,7 +51,10 @@ impl UnifiedMemoryManager {
         );
 
         if let Err(e) = &res {
-            petroleum::serial::serial_log(format_args!("[safe_map_page] Failed for virt={:#x}, phys={:#x}: {:?}\n", virtual_addr, physical_addr, e));
+            petroleum::serial::serial_log(format_args!(
+                "[safe_map_page] Failed for virt={:#x}, phys={:#x}: {:?}\n",
+                virtual_addr, physical_addr, e
+            ));
         }
         res
     }
@@ -89,16 +92,21 @@ impl UnifiedMemoryManager {
         for i in 0..pages {
             let virt = virtual_addr + i * page_size;
             let phys = physical_addr + i * page_size;
-            petroleum::serial::serial_log(format_args!("[map_mmio_region] Mapping virt={:#x} to phys={:#x}\n", virt, phys));
+            petroleum::serial::serial_log(format_args!(
+                "[map_mmio_region] Mapping virt={:#x} to phys={:#x}\n",
+                virt, phys
+            ));
 
             if let Err(e) = self.safe_map_page(virt, phys, flags) {
-                petroleum::serial::serial_log(format_args!("[map_mmio_region] Error mapping page at virt={:#x}: {:?}\n", virt, e));
+                petroleum::serial::serial_log(format_args!(
+                    "[map_mmio_region] Error mapping page at virt={:#x}: {:?}\n",
+                    virt, e
+                ));
                 return Err(SystemError::MappingFailed);
             }
         }
         Ok(())
     }
-
 
     /// Create a new unified memory manager
     pub fn new() -> Self {
