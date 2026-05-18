@@ -312,15 +312,15 @@ pub fn init_virtio_gpu(common_virt: *mut u32, notify_virt: *mut u32, device: Pci
     let mut gpu = VirtioGpu::new(common_virt, notify_virt, device, common_bar)?;
     crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: new() completed, calling gpu.init()\n"));
 
-    // Test: Read the first few dwords of Common Config via Type5
-    unsafe {
-        crate::serial::serial_log(format_args!("[VirtIO] Probing Common Config via Type5:\n"));
-        for i in 0..8 {
-            if let Some(val) = read_virtio_reg_via_pci_cfg(&gpu.device, gpu.common_bar_for_type5, i * 4, 4) {
-                crate::serial::serial_log(format_args!("  offset 0x{:02x} = {:#x}\n", i*4, val));
+        // Test: Read the first few dwords of Common Config via Type5
+        unsafe {
+            crate::serial::serial_log(format_args!("[VirtIO] Probing Common Config via Type5:\n"));
+            for i in 0..8 {
+                if let Some(val) = read_virtio_reg_via_pci_cfg(&gpu.device, 4, i * 4, 4) {
+                    crate::serial::serial_log(format_args!("  offset 0x{:02x} = {:#x}\n", i*4, val));
+                }
             }
         }
-    }
 
         if gpu.init().is_ok() {
             crate::serial::_print(format_args!("[VirtIO-GPU] init_virtio_gpu: gpu.init() succeeded\n"));
@@ -400,7 +400,7 @@ pub fn new(common_virt: *mut u32, notify_virt: *mut u32, device: PciDevice, comm
         unsafe {
             crate::serial::serial_log(format_args!("[VirtIO] Type5 Probe Common Config:\n"));
             for i in 0..8 {
-                if let Some(val) = read_virtio_reg_via_pci_cfg(&self.device, self.common_bar_for_type5, i * 4, 4) {
+                if let Some(val) = read_virtio_reg_via_pci_cfg(&self.device, 4, i * 4, 4) {
                     crate::serial::serial_log(format_args!("  offset 0x{:02x} = {:#x}\n", i*4, val));
                 } else {
                     crate::serial::serial_log(format_args!("  offset 0x{:02x} = READ FAILED\n", i*4));

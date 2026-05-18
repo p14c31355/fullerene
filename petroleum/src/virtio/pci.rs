@@ -89,113 +89,94 @@ pub fn get_virtio_caps(device: &PciDevice) -> Vec<VirtioPciCfgCap> {
     caps
 }
 
-/// Read a register from the device via PCI Configuration Access Capability (Type 5)
-/// 
-/// This is used when direct BAR mapping is not working (e.g., in QEMU with OVMF).
-/// 
-/// The `width` parameter specifies the data width: 1 (byte), 2 (word), or 4 (dword).
+/// Read via PCI Configuration Access Capability (Type 5)
 pub fn read_virtio_reg_via_pci_cfg(
     device: &PciDevice,
-    bar: u8,
+    requested_bar: u8,
     offset: u32,
-    width: u32,   // 1, 2, or 4 bytes
+    width: u32,
 ) -> Option<u32> {
     let caps = get_virtio_caps(device);
     let cap = caps.iter().find(|c| c.cfg_type == VIRTIO_PCI_CAP_PCI_CFG)?;
-    
-    // Ensure the offset is within the capability's length
-    if offset as usize >= cap.length as usize {
-        return None;
-    }
-    
-    // PCI CFG capability layout:
-    // Offset 0x00: Address register (write target offset here + BAR)
-    // Offset 0x04: Data register (read result from here)
-    let cfg_offset = cap.offset as usize;
-    
-    // Write the target offset + BAR to the address register
-    // The BAR number goes in the upper 8 bits (bits 24-31)
-    let full_value = offset | ((bar as u32) << 24);
+    let cfg_base = cap.offset as u8;
+
+    let address = ((requested_bar as u64) << 32) | (offset as u64);
+
     PciConfigSpace::write_config_dword_raw(
-        device.bus, device.device, device.function, 
-        cfg_offset as u8, 
-        full_value
+        device.bus, device.device, device.function,
+        cfg_base,
+        (address & 0xFFFFFFFF) as u32
     );
-        
-    // Read the result from the data register (always 32 bits)
+    PciConfigSpace::write_config_dword_raw(
+        device.bus, device.device, device.function,
+        cfg_base + 4,
+        (address >> 32) as u32
+    );
+
     let val = PciConfigSpace::read_config_dword(
-        device.bus, device.device, device.function, 
-        (cfg_offset + 4) as u8
+        device.bus, device.device, device.function,
+        cfg_base + 8
     );
-    
-    // Extract the requested number of bytes based on the offset and width
-    let shift = ((offset as usize) & 3) * 8;
+
+    let shift = ((offset & 3) * 8) as u32;
     let mask = match width {
-        1 => 0xFFu32,
-        2 => 0xFFFFu32,
-        4 => 0xFFFFFFFFu32,
-        _ => return None, // Invalid width
+        1 => 0xFF,
+        2 => 0xFFFF,
+        4 => 0xFFFFFFFF,
+        _ => return None,
     };
-    
+
     Some((val >> shift) & mask)
 }
 
-/// Write a register to the device via PCI Configuration Access Capability (Type 5)
+/// Write via PCI Configuration Access Capability (Type 5)
 pub fn write_virtio_reg_via_pci_cfg(
     device: &PciDevice,
-    bar: u8,
+    requested_bar: u8,
     offset: u32,
     value: u32,
-    width: u32,   // 1, 2, or 4 bytes
+    width: u32,
 ) -> Option<()> {
     let caps = get_virtio_caps(device);
     let cap = caps.iter().find(|c| c.cfg_type == VIRTIO_PCI_CAP_PCI_CFG)?;
-    
-    // Ensure the offset is within the capability's length
-    if offset as usize >= cap.length as usize {
-        return None;
-    }
-    
-    // PCI CFG capability layout:
-    // Offset 0x00: Address register (write target offset here + BAR)
-    // Offset 0x04: Data register (write value here)
-    let cfg_offset = cap.offset as usize;
-    
-    // Write the target offset + BAR to the address register
-    // The BAR number goes in the upper 8 bits (bits 24-31)
-    let full_value = offset | ((bar as u32) << 24);
+
+    let cfg_base = cap.offset as u8;
+
+    let address = ((requested_bar as u64) << 32) | (offset as u64);
+
     PciConfigSpace::write_config_dword_raw(
-        device.bus, device.device, device.function, 
-        cfg_offset as u8, 
-        full_value
+        device.bus, device.device, device.function,
+        cfg_base,
+        (address & 0xFFFFFFFF) as u32
     );
-    
-    // Read the current 32-bit value from the data register
-    let mut current = PciConfigSpace::read_config_dword(
-        device.bus, device.device, device.function, 
-        (cfg_offset + 4) as u8
+    PciConfigSpace::write_config_dword_raw(
+        device.bus, device.device, device.function,
+        cfg_base + 4,
+        (address >> 32) as u32
     );
-    
-    // Calculate shift and mask based on the offset and width
-    let shift = ((offset as usize) & 3) * 8;
+
+    let current = PciConfigSpace::read_config_dword(
+        device.bus, device.device, device.function,
+        cfg_base + 8
+    );
+
+    let shift = ((offset & 3) * 8) as u32;
     let mask = match width {
         1 => 0xFFu32,
         2 => 0xFFFFu32,
         4 => 0xFFFFFFFFu32,
-        _ => return None, // Invalid width
+        _ => return None,
     };
-    
-    // Clear the bits we're about to write, then set them
+
     let cleared = current & !(mask << shift);
-    let masked_value = (value << shift) & mask;
-    let new_value = cleared | masked_value;
-    
-    // Write the modified value back
+    let new_value = cleared | ((value << shift) & mask);
+
     PciConfigSpace::write_config_dword_raw(
-        device.bus, device.device, device.function, 
-        (cfg_offset + 4) as u8, 
+        device.bus, device.device, device.function,
+        cfg_base + 8,
         new_value
     );
+
     Some(())
 }
 
