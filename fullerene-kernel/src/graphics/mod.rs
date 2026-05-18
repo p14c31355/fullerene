@@ -146,10 +146,15 @@ pub fn init_graphics() {
         let common_virt_ptr = common_virt as *mut u32;
         let notify_virt_ptr = notify_virt as *mut u32;
 
-        if let Some(mut gpu) =
-            petroleum::virtio::gpu::VirtioGpu::new(common_virt_ptr, notify_virt_ptr, gpu_device.clone(), common_bar)
+        let gpu_result = petroleum::virtio::gpu::init_virtio_gpu(common_virt_ptr, notify_virt_ptr, gpu_device.clone(), common_bar);
+        if gpu_result.is_none() {
+            petroleum::serial::serial_log(format_args!("[graphics] init_virtio_gpu returned None!\n"));
+        }
+
+        if let Some(mut gpu) = gpu_result
         {
             let mut pci_cfg_cap = None;
+
             for cap in &caps {
                 if cap.cfg_type == petroleum::virtio::pci::VIRTIO_PCI_CAP_PCI_CFG {
                     pci_cfg_cap = Some(cap);
@@ -188,45 +193,37 @@ pub fn init_graphics() {
             }
 
             // Check if we have a framebuffer configuration from UEFI
-            if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|mutex| mutex.lock().clone()) {
-                // Use the framebuffer configuration from the bootloader
-                gpu.init_display(config.width, config.height, config.address, config.stride * config.height);
-                
-                let fb_info = petroleum::graphics::color::FramebufferInfo {
-                    address: config.address,
-                    width: config.width,
-                    height: config.height,
-                    stride: config.stride,
-                    pixel_format: Some(config.pixel_format),
+            let fb_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|mutex| mutex.lock().clone());
+            let fb_info = if let Some(c) = fb_config {
+                petroleum::graphics::color::FramebufferInfo {
+                    address: c.address,
+                    width: c.width,
+                    height: c.height,
+                    stride: c.stride,
+                    pixel_format: Some(c.pixel_format),
                     colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
-                };
-                let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(fb_info);
-                let renderer = petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer);
-                
-                set_primary_renderer(renderer);
-                *VIRTIO_GPU.lock() = Some(gpu);
-                petroleum::serial::serial_log(format_args!("[graphics] VirtIO-GPU assigned as PRIMARY_RENDERER using UEFI framebuffer config\n"));
-                return;
+                }
             } else {
-                // Fallback to hardcoded values if no framebuffer config available
-                gpu.init_display(1024, 768, 0xfc000000, 1024 * 768 * 4);
-                
-                let fb_info = petroleum::graphics::color::FramebufferInfo {
-                    address: 0xfc000000,
+                petroleum::serial::serial_log(format_args!("[graphics] No UEFI config, using fallback for VirtIO-GPU\n"));
+                petroleum::graphics::color::FramebufferInfo {
+                    address: 0x40000000,
                     width: 1024,
                     height: 768,
                     stride: 1024,
                     pixel_format: Some(petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor),
                     colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
-                };
-                let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(fb_info);
-                let renderer = petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer);
-                
-                set_primary_renderer(renderer);
-                *VIRTIO_GPU.lock() = Some(gpu);
-                petroleum::serial::serial_log(format_args!("[graphics] VirtIO-GPU assigned as PRIMARY_RENDERER with hardcoded values (no UEFI config)\n"));
-                return;
-            }
+                }
+            };
+
+            petroleum::serial::serial_log(format_args!("[graphics] Initializing VirtIO-GPU display: {}x{}\n", fb_info.width, fb_info.height));
+            gpu.init_display(fb_info.width, fb_info.height, fb_info.address, fb_info.stride * fb_info.height * 4);
+
+            let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(fb_info);
+            let renderer = petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer);
+
+            set_primary_renderer(renderer);
+            *VIRTIO_GPU.lock() = Some(gpu);
+            petroleum::serial::serial_log(format_args!("[graphics] VirtIO-GPU assigned as PRIMARY_RENDERER using configuration\n"));
         }
     }
 

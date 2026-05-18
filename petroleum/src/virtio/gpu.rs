@@ -27,7 +27,7 @@ pub struct VringDesc {
     pub flags: u16,
     pub next: u16,
 }
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct VringAvail {
     pub flags: u16,
@@ -193,60 +193,54 @@ pub fn init_virtio_gpu(
     common_bar: u8,
 ) -> Option<VirtioGpu> {
     let mut gpu = VirtioGpu::new(common_virt, notify_virt, device, common_bar)?;
-    if gpu.init().is_ok() {
-        gpu.complete_init();
-        Some(gpu)
-    } else {
-        None
+    match gpu.init() {
+        Ok(_) => {
+            gpu.complete_init();
+            Some(gpu)
+        },
+        Err(e) => {
+            crate::serial::_print(format_args!("[VirtIO-GPU] gpu.init() failed with error: {:?}\n", e));
+            None
+        }
     }
 }
 
 impl VirtioGpu {
     fn read_common_cfg(&self, offset: u32, width: u32) -> Option<u32> {
-        if let Some(val) = crate::virtio::pci::read_virtio_reg_via_pci_cfg(&self.device, self.common_bar_for_type5, offset, width) {
-            return Some(val);
-        }
         self.read_common_via_direct(offset, width)
     }
 
     fn write_common_cfg(&self, offset: u32, value: u32, width: u32) -> Option<()> {
-        if let Some(()) = crate::virtio::pci::write_virtio_reg_via_pci_cfg(&self.device, self.common_bar_for_type5, offset, value, width) {
-            return Some(());
-        }
         self.write_common_via_direct(offset, value, width)
     }
 
-    fn r32(&self, bo: usize) -> u32 { self.read_common_cfg(bo as u32, 4).expect("Type5 read failed") }
-    fn w32(&self, bo: usize, v: u32) { self.write_common_cfg(bo as u32, v, 4).expect("Type5 write failed"); }
+    fn r32(&self, bo: usize) -> u32 {
+        unsafe { core::ptr::read_volatile(self.common_virt_absolute.add(bo / 4)) }
+    }
+    fn w32(&self, bo: usize, v: u32) {
+        unsafe { core::ptr::write_volatile(self.common_virt_absolute.add(bo / 4), v); }
+    }
     fn r16(&self, bo: usize) -> u16 {
-        let dword = self.read_common_cfg(bo as u32 & !3, 4).expect("Type5 read failed");
-        ((dword >> ((bo & 3) * 8)) & 0xFFFF) as u16
+        unsafe { core::ptr::read_volatile((self.common_virt_absolute as *mut u8).add(bo) as *const u16) }
     }
     fn w16(&self, bo: usize, v: u16) {
-        let aligned = bo & !3;
-        let shift = (bo & 3) * 8;
-        let d = self.read_common_cfg(aligned as u32, 4).expect("Type5 read failed");
-        self.write_common_cfg(aligned as u32, (d & !(0xFFFFu32 << shift)) | ((v as u32) << shift), 4).expect("Type5 write failed");
+        unsafe { core::ptr::write_volatile((self.common_virt_absolute as *mut u8).add(bo) as *mut u16, v); }
     }
     fn r8(&self, bo: usize) -> u8 {
-        let dword = self.read_common_cfg((bo & !3) as u32, 4).expect("Type5 read failed");
-        ((dword >> ((bo & 3) * 8)) & 0xFF) as u8
+        unsafe { core::ptr::read_volatile((self.common_virt_absolute as *mut u8).add(bo) as *const u8) }
     }
     fn w8(&self, bo: usize, v: u8) {
-        let aligned = bo & !3;
-        let shift = (bo & 3) * 8;
-        let d = self.read_common_cfg(aligned as u32, 4).expect("Type5 write failed");
-        self.write_common_cfg(aligned as u32, (d & !(0xFFu32 << shift)) | ((v as u32) << shift), 4).expect("Type5 write failed");
+        unsafe { core::ptr::write_volatile((self.common_virt_absolute as *mut u8).add(bo) as *mut u8, v); }
     }
 
     fn status(&self) -> u8 { self.r8(0x14) }
     fn set_status(&self, s: u8) { self.w8(0x14, s); }
 
     fn dev_features(&self) -> u64 {
-        self.w32(0x00, 0); 
-        let f0 = self.r32(0x04);
-        self.w32(0x00, 1); 
-        let f1 = self.r32(0x04);
+        self.write_common_via_direct(0x00, 0, 4).expect("Type5 write failed"); 
+        let f0 = self.read_common_via_direct(0x04, 4).expect("Type5 read failed");
+        self.write_common_via_direct(0x00, 1, 4).expect("Type5 write failed"); 
+        let f1 = self.read_common_via_direct(0x04, 4).expect("Type5 read failed");
         (f1 as u64) << 32 | (f0 as u64)
     }
 
@@ -369,12 +363,21 @@ impl VirtioGpu {
         self.avail_ring = avail;
         self.used_ring = used;
         self.set_queue_select(idx as u16);
-        self.queue_notify_offs[idx as usize] = self.r16(0x1e);
+        let max = self.r16(0x18);
+        let notify_off_reg = self.r16(0x1e);
+        crate::serial::_print(format_args!("[VirtIO-GPU] setup_queue: idx={}, max={}, queue_notify_off_reg={}\n", idx, max, notify_off_reg));
+
+        self.queue_notify_offs[idx as usize] = notify_off_reg;
         self.write_queue_size(QUEUE_SIZE);
         self.set_queue_msix_vector(0);
         self.set_queue_desc(desc_phys);
         self.set_queue_avail(avail_phys);
         self.set_queue_used(used_phys);
+        
+        // Verify the write
+        let r_desc_low = self.read_common_cfg(0x20, 4);
+        crate::serial::_print(format_args!("[VirtIO-GPU] Verified setup: wrote desc={:#x}, read={:#?}\n", desc_phys, r_desc_low));
+
         self.set_queue_enable(true);
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         let mut status = self.r8(0x14);
@@ -461,8 +464,10 @@ impl VirtioGpu {
             core::ptr::copy_nonoverlapping(&flush as *const _ as *const u8, self.cmd_buf, core::mem::size_of::<VirtioGpuResourceFlush>());
         }
         let before = self.read_used_idx();
+        crate::serial::_print(format_args!("[VirtIO-GPU] flush: before={}\n", before));
         unsafe { self.submit_raw(0, core::mem::size_of::<VirtioGpuResourceFlush>() as u32); }
         self.wait_used(before);
+        crate::serial::_print(format_args!("[VirtIO-GPU] flush: after={}\n", self.read_used_idx()));
     }
 
     pub fn init_display(&mut self, w: u32, h: u32, fb: u64, sz: u32) {
