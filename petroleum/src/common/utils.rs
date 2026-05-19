@@ -66,6 +66,20 @@ pub fn calculate_pages(size: usize) -> u64 {
     size.div_ceil(4096) as u64
 }
 
+/// Sign-extend a 48-bit virtual address to 64 bits.
+///
+/// On x86_64, virtual addresses are 48-bit sign-extended to 64 bits.
+/// This function performs the sign extension: if bit 47 is 1, the upper 16 bits
+/// are set to 1; otherwise they are set to 0.
+#[inline]
+pub fn sign_extend_virt_addr(addr: u64) -> u64 {
+    if (addr & (1 << 47)) != 0 {
+        addr | 0xFFFF_0000_0000_0000
+    } else {
+        addr & 0x0000_FFFF_FFFF_FFFF
+    }
+}
+
 /// Force reset a Mutex lock state to 0.
 ///
 /// # Safety

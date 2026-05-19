@@ -3,9 +3,9 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::{
     PhysAddr, VirtAddr,
-    registers::control::{Cr3, Cr3Flags},
+    registers::control::Cr3,
     structures::paging::{
-        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
+        FrameAllocator, OffsetPageTable, PageTable, PageTableFlags,
         Size4KiB,
     },
 };

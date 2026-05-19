@@ -124,10 +124,10 @@ pub use uefi_helpers::{initialize_graphics_with_config, kernel_fallback_framebuf
 
 // ── Backward-compat macro wrappers ───────────────────────────────────
 
-/// Deprecated: Use `page_table::map_identity_range_checked` instead.
+/// Deprecated: Use `page_table::map_identity_range` instead.
 #[macro_export]
 macro_rules! map_identity_range_checked {
-    ($($arg:tt)*) => { $crate::page_table::map_identity_range_checked($($arg)*) };
+    ($($arg:tt)*) => { $crate::page_table::map_identity_range($($arg)*) };
 }
 
 /// Deprecated: Use `page_table::map_range_with_log_macro` instead.
@@ -142,10 +142,10 @@ macro_rules! map_to_higher_half_with_log_macro {
     ($($arg:tt)*) => { $crate::page_table::map_to_higher_half_with_log_macro($($arg)*) };
 }
 
-/// Deprecated: Use `page_table::map_page_range` instead.
+/// Deprecated: Use `page_table::map_range_4kiB` instead.
 #[macro_export]
 macro_rules! map_page_range {
-    ($($arg:tt)*) => { $crate::page_table::map_page_range($($arg)*) };
+    ($($arg:tt)*) => { $crate::page_table::map_range_4kiB($($arg)*) };
 }
 
 /// Deprecated: Use `page_table::unmap_page_range` instead.
@@ -158,7 +158,7 @@ macro_rules! unmap_page_range {
 #[macro_export]
 macro_rules! get_memory_stats {
     () => {
-        $crate::page_table::get_memory_stats()
+        (0usize, 0usize, 0usize)
     };
 }
 

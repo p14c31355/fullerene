@@ -7,7 +7,7 @@
 
 use crate::virtio::pci::{get_virtio_caps, VIRTIO_PCI_CAP_COMMON_CFG, VIRTIO_PCI_CAP_NOTIFY_CFG, VIRTIO_PCI_CAP_PCI_CFG};
 use crate::hardware::pci::{PciDevice};
-use core::ptr::{write_volatile};
+// write_volatile removed - unused import
 
 pub const VIRTIO_STATUS_ACKNOWLEDGE: u32 = 1;
 pub const VIRTIO_STATUS_DRIVER: u32 = 2;

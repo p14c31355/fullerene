@@ -3,7 +3,7 @@
 //! These functions handle the special cases for huge page mappings,
 //! including alignment checks and conflict detection.
 
-use crate::page_table::PageTableEntry;
+// Removed unused import: crate::page_table::PageTableEntry
 use crate::page_table::allocator::traits::FrameAllocator;
 use crate::page_table::raw::mapper::{map_huge_1g, map_huge_2m};
 use crate::page_table::raw::walker::WalkError;

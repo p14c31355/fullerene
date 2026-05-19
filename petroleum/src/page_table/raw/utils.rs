@@ -1,6 +1,5 @@
 //! Utility functions for page table operations.
 
-use crate::page_table::PageTableEntry;
 use crate::page_table::types::*;
 use x86_64::structures::paging::Mapper;
 

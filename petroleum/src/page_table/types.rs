@@ -13,8 +13,7 @@ use core::fmt;
 /// Re-export of `MemoryDescriptorValidator` from `memory_map`.
 pub use crate::page_table::memory_map::MemoryDescriptorValidator;
 
-// x86_64 types used by PageTableHelper
-use x86_64::structures::paging::PageTableFlags;
+// x86_64 types used by PageTableHelper - unused, removed
 
 // ── PageTableHelper Trait ──────────────────────────────────────────────
 

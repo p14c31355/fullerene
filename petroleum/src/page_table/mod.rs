@@ -47,11 +47,13 @@ pub use constants::{BootInfoFrameAllocator, HIGHER_HALF_OFFSET as KERNEL_OFFSET}
 /// Re-export of heap globals.
 pub use heap::{ALLOCATOR, HEAP_INITIALIZED};
 
-/// Re-export of backward-compat function aliases.
+/// Re-export of utility functions.
 pub use raw::utils::{
-    get_memory_stats, map_identity_range_checked, map_page_range, map_range_with_huge_pages,
-    map_range_with_log_macro, map_to_higher_half_with_log_macro, unmap_page_range,
+    map_identity_range, map_range_4kiB, map_to_higher_half_with_log, unmap_page_range,
 };
+pub use raw::huge::map_range_with_huge_pages;
+/// Backward-compat aliases for map_range_with_huge_pages and map_to_higher_half_with_log.
+pub use raw::utils::{map_range_with_log_macro, map_to_higher_half_with_log_macro};
 
 /// Re-export of `init` function.
 pub use kernel::init::init;
