@@ -180,22 +180,12 @@ pub fn init_graphics() {
             }
 
             if let Some(cfg_cap) = pci_cfg_cap {
-                // Copy fields from packed struct to avoid alignment issues
+                // NOTE: Do NOT access PCI_CFG capability via BAR indirect writes
+                // (writing to BAR0 = framebuffer @ 0xc0000000 crashes QEMU).
+                // Use read_virtio_reg_via_pci_cfg() which uses PCI I/O ports (0xCF8/0xCFC).
                 let bar = cfg_cap.bar;
                 let offset = cfg_cap.offset;
                 petroleum::serial::serial_log(format_args!("[graphics] Found PCI_CFG capability, bar={}, offset={:#x}\n", bar, offset));
-                // Read Device ID at offset 0 via indirect access
-                if let Some(bar_info) = gpu_device.get_bar_info(bar) {
-                    let base = bar_info.address as usize;
-                    let indirect_base = base + offset as usize;
-                    // Write target offset (0x0) to address register
-                    unsafe { core::ptr::write_volatile(indirect_base as *mut u32, 0x0); }
-                    // Read value from data register
-                    let dev_id = unsafe { core::ptr::read_volatile(indirect_base as *mut u32) };
-                    petroleum::serial::serial_log(format_args!("[graphics] Device ID via indirect access: {:#x}\n", dev_id));
-                } else {
-                    petroleum::serial::serial_log(format_args!("[graphics] PCI_CFG capability found but BAR {} not accessible\n", bar));
-                }
 
                 // Test: Read some common config registers via Type 5 (PCI_CFG) capability
                 // This is an alternative to direct BAR mapping, which may not work in some environments
