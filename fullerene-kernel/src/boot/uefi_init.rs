@@ -36,6 +36,24 @@ pub struct UefiInitContext {
     pub heap_start_after_stack: VirtAddr,
 }
 
+/// Type alias for the generic callback used by petroleum::page_table::init
+#[cfg(target_os = "uefi")]
+type PageTableInitCb = fn(
+    &mut x86_64::structures::paging::OffsetPageTable,
+    &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator,
+);
+
+/// Helper to create a temporary mapper via petroleum::page_table::init.
+/// Reduces repetitive generic type annotations across the initialization sequence.
+#[cfg(target_os = "uefi")]
+unsafe fn create_tmp_mapper(
+    phys_offset: x86_64::VirtAddr,
+    frame_allocator: &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator,
+    kernel_phys: u64,
+) -> x86_64::structures::paging::OffsetPageTable<'static> {
+    petroleum::page_table::init::<_, PageTableInitCb>(phys_offset, frame_allocator, kernel_phys, None)
+}
+
 #[cfg(target_os = "uefi")]
 struct BootFrameAllocator {
     next_frame: u64,
@@ -309,17 +327,10 @@ impl UefiInitContext {
                 .as_mut()
                 .expect("Frame allocator should be ready now");
             let mut mapper = unsafe {
-                petroleum::page_table::init::<
-                    _,
-                    fn(
-                        &mut x86_64::structures::paging::OffsetPageTable,
-                        &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator,
-                    ),
-                >(
+                create_tmp_mapper(
                     self.physical_memory_offset,
                     frame_allocator,
                     kernel_phys_start.as_u64(),
-                    None,
                 )
             };
             petroleum::write_serial_bytes!(
@@ -429,13 +440,7 @@ impl UefiInitContext {
                 b"DEBUG: [uefi_init] Lock acquired, calling init\n"
             );
             let allocator = fa_guard.as_mut().expect("Frame allocator should be ready");
-            petroleum::page_table::init::<
-                _,
-                fn(
-                    &mut x86_64::structures::paging::OffsetPageTable,
-                    &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator,
-                ),
-            >(self.physical_memory_offset, allocator, 0x100000, None)
+            create_tmp_mapper(self.physical_memory_offset, allocator, 0x100000)
         };
         petroleum::write_serial_bytes!(
             0x3F8,
@@ -530,17 +535,10 @@ impl UefiInitContext {
                 b"DEBUG: Mapping TSS stacks using main_mapper\n"
             );
             unsafe {
-                let mut mapper = petroleum::page_table::init::<
-                    _,
-                    fn(
-                        &mut x86_64::structures::paging::OffsetPageTable,
-                        &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator,
-                    ),
-                >(
+                let mut mapper = create_tmp_mapper(
                     self.physical_memory_offset,
                     frame_allocator,
                     kernel_phys_start.as_u64(),
-                    None,
                 );
                 let tss_virt = petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64
                     + tss_phys_addr.as_u64();
@@ -685,17 +683,10 @@ impl UefiInitContext {
                 b"DEBUG: [PHASE] Calling petroleum::page_table::init for heap mapping\n"
             );
             let _mapper = unsafe {
-                petroleum::page_table::init::<
-                    _,
-                    fn(
-                        &mut x86_64::structures::paging::OffsetPageTable,
-                        &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator,
-                    ),
-                >(
+                create_tmp_mapper(
                     self.physical_memory_offset,
                     frame_allocator,
                     kernel_phys_start.as_u64(),
-                    None,
                 )
             };
             petroleum::write_serial_bytes!(
@@ -750,13 +741,7 @@ impl UefiInitContext {
             .expect("Frame allocator not initialized");
 
         let mut mapper = unsafe {
-            petroleum::page_table::init::<
-                _,
-                fn(
-                    &mut x86_64::structures::paging::OffsetPageTable,
-                    &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator,
-                ),
-            >(physical_memory_offset, frame_allocator, 0x100000, None)
+            create_tmp_mapper(physical_memory_offset, frame_allocator, 0x100000)
         };
 
         let stack_flags = x86_64::structures::paging::PageTableFlags::PRESENT
