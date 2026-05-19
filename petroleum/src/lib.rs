@@ -57,6 +57,7 @@ macro_rules! define_alloc_error_handler {
 // Fallback heap start address constant for when no suitable memory is found
 pub const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
 
+pub mod early;
 pub mod apic;
 pub mod assembly;
 pub mod bare_metal_graphics_detection;
@@ -166,6 +167,12 @@ use spin::{Mutex, Once};
 use crate::common::EfiSystemTable;
 use crate::common::uefi::FullereneFramebufferConfig;
 
+// ── RUNTIME GLOBAL STATE ──────────────────────────────────────────────
+// These statics are safe for both early boot and runtime kernel use.
+// They are either:
+//   - Set once during kernel init and never change (PHYSICAL_MEMORY_OFFSET)
+//   - Protected by Mutex/Once and lazily initialised
+
 /// Wrapper for Local APIC address pointer to make it Send/Sync
 #[derive(Clone, Copy)]
 pub struct LocalApicAddress(pub *mut u32);
@@ -245,9 +252,17 @@ pub struct UefiSystemTablePtr(pub *mut EfiSystemTable);
 unsafe impl Send for UefiSystemTablePtr {}
 unsafe impl Sync for UefiSystemTablePtr {}
 
+// ── EARLY-ONLY GLOBAL STATE ──────────────────────────────────────────
+// These statics are only valid DURING the UEFI boot phase (before
+// ExitBootServices is called). After that, the pointers they hold
+// become invalid. The runtime kernel MUST NOT read them.
+
 pub static UEFI_SYSTEM_TABLE: Mutex<Option<UefiSystemTablePtr>> = Mutex::new(None);
 
 /// Helper to initialize UEFI system table
+///
+/// # EARLY ONLY
+/// This MUST only be called during UEFI boot phase, before ExitBootServices.
 pub fn init_uefi_system_table(system_table: *mut EfiSystemTable) {
     let _ = UEFI_SYSTEM_TABLE
         .lock()

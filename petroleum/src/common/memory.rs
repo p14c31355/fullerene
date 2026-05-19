@@ -7,6 +7,11 @@ use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use x86_64::VirtAddr;
 
+// ── RUNTIME GLOBAL STATE ──────────────────────────────────────────────
+// These statics are set once during kernel initialisation and remain valid
+// for the entire kernel lifetime (they live in the BSS which is identity-
+// + higher-half mapped). They are NOT early-only.
+
 /// Heap start address - volatile for bare-metal reliability
 pub static HEAP_START: AtomicUsize = AtomicUsize::new(0);
 
