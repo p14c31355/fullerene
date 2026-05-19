@@ -5,8 +5,8 @@
 //! VirtioGpu struct is moved, or when submit() returns and its
 //! stack frame (containing the command) is freed.
 
-use crate::hardware::pci::{PciDevice};
 use crate::virtio::pci::{get_virtio_caps, VIRTIO_PCI_CAP_COMMON_CFG, VIRTIO_PCI_CAP_NOTIFY_CFG, VIRTIO_PCI_CAP_PCI_CFG};
+use crate::hardware::pci::{PciDevice};
 use core::ptr::{write_volatile};
 
 pub const VIRTIO_STATUS_ACKNOWLEDGE: u32 = 1;
@@ -27,7 +27,7 @@ pub struct VringDesc {
     pub flags: u16,
     pub next: u16,
 }
-#[repr(C, packed)]
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VringAvail {
     pub flags: u16,
@@ -41,8 +41,7 @@ pub struct VringUsedElem {
     pub id: u32,
     pub len: u32,
 }
-
-#[repr(C, packed)]
+#[repr(C)]
 pub struct VringUsed {
     pub flags: u16,
     pub idx: u16,
@@ -59,7 +58,6 @@ pub struct VirtioGpuCtrlHeader {
     pub ctx_id: u32,
     pub padding: u32,
 }
-
 impl VirtioGpuCtrlHeader {
     pub fn to_le(self) -> Self {
         Self {
@@ -87,7 +85,6 @@ pub struct VirtioGpuResourceCreate2d {
     pub width: u32,
     pub height: u32,
 }
-
 impl VirtioGpuResourceCreate2d {
     pub fn to_le(self) -> Self {
         Self {
@@ -108,7 +105,6 @@ pub struct VirtioGpuRect {
     pub width: u32,
     pub height: u32,
 }
-
 impl VirtioGpuRect {
     pub fn to_le(self) -> Self {
         Self {
@@ -128,7 +124,6 @@ pub struct VirtioGpuSetScanout {
     pub scanout_id: u32,
     pub resource_id: u32,
 }
-
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VirtioGpuResourceFlush {
@@ -194,23 +189,22 @@ pub fn init_virtio_gpu(
 ) -> Option<VirtioGpu> {
     let mut gpu = VirtioGpu::new(common_virt_base, notify_virt_base, device, common_bar)?;
     match gpu.init() {
-        Ok(_) => {
-            Some(gpu)
-        },
+        Ok(_) => Some(gpu),
         Err(e) => {
             crate::serial::_print(format_args!("[VirtIO-GPU] gpu.init() failed with error: {:?}\n", e));
-            None
-        }
+            None        }
     }
 }
 
 impl VirtioGpu {
     fn read_common_cfg(&self, offset: u32, width: u32) -> Option<u32> {
-        crate::virtio::pci::read_virtio_reg_via_pci_cfg(&self.device, self.common_bar, offset, width)
+        // Use direct MMIO for reads.
+        self.read_common_via_direct(offset, width)
     }
 
     fn write_common_cfg(&self, offset: u32, value: u32, width: u32) -> Option<()> {
-        crate::virtio::pci::write_virtio_reg_via_pci_cfg(&self.device, self.common_bar, offset, value, width)
+        // Use direct MMIO for writes.
+        self.write_common_via_direct(offset, value, width)
     }
 
     fn r32(&self, bo: usize) -> u32 {
@@ -236,10 +230,16 @@ impl VirtioGpu {
     fn set_status(&self, s: u8) { self.w8(0x14, s); }
 
     fn dev_features(&self) -> u64 {
-        self.w32(0x00, 0); 
-        let f0 = self.r32(0x04);
-        self.w32(0x00, 1); 
-        let f1 = self.r32(0x04);
+        self.w32(0x00, 0);
+        for _ in 0..1000 { core::hint::spin_loop(); }
+        let f0 = crate::virtio::pci::read_virtio_reg_via_pci_cfg(
+            &self.device, self.common_bar_for_type5, 0x04, 4
+        ).unwrap_or(0);
+        self.w32(0x00, 1);
+        for _ in 0..1000 { core::hint::spin_loop(); }
+        let f1 = crate::virtio::pci::read_virtio_reg_via_pci_cfg(
+            &self.device, self.common_bar_for_type5, 0x04, 4
+        ).unwrap_or(0);
         crate::serial::_print(format_args!("[VirtIO-GPU] dev_features: f0={:#010x}, f1={:#010x}\n", f0, f1));
         (f1 as u64) << 32 | (f0 as u64)
     }
@@ -295,10 +295,13 @@ impl VirtioGpu {
         let raw_phys = crate::page_table::constants::get_frame_allocator_mut()
             .allocate_contiguous_frames(1)
             .expect("VirtIO-GPU: failed to allocate command buffer");
-        let cmd_buf_phys = if raw_phys == 0 { 0x200000 } else { raw_phys as u64 };
+        if raw_phys == 0 {
+            panic!("VirtIO-GPU: frame allocator returned physical address 0! This indicates an allocator bug.");
+        }
+        let cmd_buf_phys = raw_phys as u64;
+        crate::serial::_print(format_args!("[VirtIO-GPU] new: cmd_buf_phys={:#x}\n", cmd_buf_phys));
         let off = crate::common::memory::get_physical_memory_offset() as u64;
         let cmd_buf = (cmd_buf_phys + off) as *mut u8;
-        
         unsafe { core::ptr::write_bytes(cmd_buf, 0, 4096); }
 
         let caps = get_virtio_caps(&device);
@@ -310,17 +313,14 @@ impl VirtioGpu {
         
         let n_off = notify_cap.offset;
         let n_mult = notify_cap.notify_off_multiplier;
-        crate::serial::_print(format_args!(
-            "[VirtIO-GPU] new: notify_cap_offset={:#x}, multiplier={}\n", 
-            n_off, n_mult
-        ));
+        crate::serial::_print(format_args!("[VirtIO-GPU] new: notify_cap_offset={:#x}, multiplier={}\n", n_off, n_mult));
 
         Some(Self {
             device,
             common_bar,
             type5_bar: type5_cap.bar,
             common_virt_absolute,
-            notify_bar_base: notify_virt_base as *mut u8, // BAR base
+            notify_bar_base: notify_virt_base as *mut u8,
             notify_cap_offset: n_off,
             resource_id: 1,
             desc_table: core::ptr::null_mut(),
@@ -341,21 +341,15 @@ impl VirtioGpu {
         for _ in 0..100_000 { core::hint::spin_loop(); }
         self.set_status(VIRTIO_STATUS_ACKNOWLEDGE as u8);
         self.set_status((VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER) as u8);
-        
         let feats = self.dev_features();
         crate::serial::_print(format_args!("[VirtIO-GPU] Negotiating features: {:#x}\n", feats));
-        
-        // GPU doesn't strictly need any 2D features enabled to start basic operations in some configurations
-        // but we should negotiate if needed.
-        self.set_guest_features(feats & 0x1); // VIRTIO_F_VERSION_1 only for now
-        
+        let guest_feats = 1u64 << 32; // VIRTIO_F_VERSION_1 only
+        self.set_guest_features(guest_feats);
         self.set_status((VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK) as u8);
-        
         let status = self.status();
         if (status & VIRTIO_STATUS_FEATURES_OK as u8) == 0 {
             return Err(VirtioGpuError::DeviceNotReady);
         }
-        
         Ok(())
     }
 
@@ -366,7 +360,7 @@ impl VirtioGpu {
     fn set_queue_msix_vector(&self, vector: u16) {
         self.write_common_cfg(0x1a, vector as u32, 2).expect("Type5 write failed");
     }
-    
+     
     pub fn setup_queue(
         &mut self,
         idx: u32,
@@ -381,7 +375,6 @@ impl VirtioGpu {
         self.avail_ring = avail;
         self.used_ring = used;
         
-        // 重要: リングをゼロクリア
         unsafe {
             core::ptr::write_bytes(desc, 0, QUEUE_SIZE as usize * core::mem::size_of::<VringDesc>());
             core::ptr::write_bytes(avail as *mut u8, 0, core::mem::size_of::<VringAvail>());
@@ -396,42 +389,57 @@ impl VirtioGpu {
         }
         let actual_size = max_size.min(QUEUE_SIZE);
 
-        crate::serial::_print(format_args!(
-            "[VirtIO-GPU] setup_queue: idx={}, device_max={}, using={}\n", 
-            idx, max_size, actual_size
-        ));
+        crate::serial::_print(format_args!("[VirtIO-GPU] setup_queue: idx={}, device_max={}, using={}\n", idx, max_size, actual_size));
 
         self.queue_notify_offs[idx as usize] = self.r16(0x1e);
-
         self.write_queue_size(actual_size);
         self.set_queue_msix_vector(0);
         self.set_queue_desc(desc_phys);
         self.set_queue_avail(avail_phys);
         self.set_queue_used(used_phys);
-        
+        // IMPORTANT: DRIVER_OK must be set BEFORE queue_enable in some QEMU implementations
+        self.complete_init();
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         self.set_queue_enable(true);
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
-        // ここを追加
-        self.complete_init();
+        // Verify queue_enable took effect
+        let qena_check = self.r16(0x1c);
+        crate::serial::_print(format_args!("[VirtIO-GPU] Queue enable verification: qena={:#x}\n", qena_check));
 
-        crate::serial::_print(format_args!(
-            "[VirtIO-GPU] Queue {} fully enabled + DRIVER_OK. Final status={:#x}\n", 
-            idx, self.status()
-        ));
+        let qsz = self.r16(0x18);
+        let qena = self.r16(0x1c);
+        let qnoff = self.r16(0x1e);
+        let desc_lo = self.r32(0x20);
+        let desc_hi = self.r32(0x24);
+        let driver_lo = self.r32(0x28);
+        let driver_hi = self.r32(0x2c);
+        let device_lo = self.r32(0x30);
+        let device_hi = self.r32(0x34);
+        let qdesc = ((desc_hi as u64) << 32) | desc_lo as u64;
+        let qdriver = ((driver_hi as u64) << 32) | driver_lo as u64;
+        let qdevice = ((device_hi as u64) << 32) | device_lo as u64;
+        crate::serial::_print(format_args!("[VirtIO-GPU] Queue {} verify: qsz={}, qena={:#x}, qnoff={}\n", idx, qsz, qena, qnoff));
+        crate::serial::_print(format_args!("[VirtIO-GPU]   desc={:#x}, avail={:#x}, used={:#x}\n", qdesc, qdriver, qdevice));
+        crate::serial::_print(format_args!("[VirtIO-GPU] Queue {} fully enabled. status={:#x}\n", idx, self.status()));
     }
 
     pub fn alloc_queue_mem(size: usize) -> (*mut u8, u64) {
         let pages = (size + 4095) / 4096;
-        let phys = crate::page_table::constants::get_frame_allocator_mut()
+        let raw = crate::page_table::constants::get_frame_allocator_mut()
             .allocate_contiguous_frames(pages)
-            .expect("VirtIO-GPU: failed to allocate queue memory") as u64;
+            .expect("VirtIO-GPU: failed to allocate queue memory");
+        let phys = raw as u64;
         let off = crate::common::memory::get_physical_memory_offset() as u64;
+        crate::serial::_print(format_args!("[VirtIO-GPU] alloc_queue_mem: phys={:#x}, size={}, raw={:#x}\n", phys, size, raw));
         ( (phys + off) as *mut u8, phys )
     }
 
     fn read_used_idx(&self) -> u16 {
-        if self.used_ring.is_null() { return 0; }
+        if self.used_ring.is_null() {
+            crate::serial::_print(format_args!("[VirtIO-GPU] wait_used: used_ring is null!\n"));
+            return 0;
+        }
         unsafe {
             let idxp = core::ptr::addr_of!((*self.used_ring).idx);
             u16::from_le(core::ptr::read_volatile(idxp))
@@ -439,35 +447,73 @@ impl VirtioGpu {
     }
 
     fn wait_used(&self, last_used_idx: u16) -> bool {
-        if self.used_ring.is_null() { 
+        if self.used_ring.is_null() {
             crate::serial::_print(format_args!("[VirtIO-GPU] wait_used: used_ring is null!\n"));
-            return false; 
+            return false;
         }
-
-        for i in 0..3_000_000 {
+        let dev_status = self.status();
+        if dev_status != 0xf {
+            crate::serial::_print(format_args!("[VirtIO-GPU] WARNING: device status={:#x} before wait\n", dev_status));
+        }
+        for i in 0..30_000_000 {
             let current = self.read_used_idx();
             if current.wrapping_sub(last_used_idx) >= 1 {
-                crate::serial::_print(format_args!("[VirtIO-GPU] wait_used OK! before={}, after={}, spins={}\n", 
-                    last_used_idx, current, i));
+                crate::serial::_print(format_args!("[VirtIO-GPU] wait_used OK! before={}, after={}, spins={}\n", last_used_idx, current, i));
                 return true;
             }
-            // 少し長めにspin（デバイスが遅い場合対策）
+            if i % 1000000 == 0 {
+                // Periodically check device status for faults
+                let s = self.status();
+                crate::serial::_print(format_args!("[VirtIO-GPU] wait_used poll: used_idx={}, status={:#x}\n", current, s));
+            }
             if i % 10000 == 0 {
                 core::hint::spin_loop();
             }
         }
-        crate::serial::_print(format_args!("[VirtIO-GPU] wait_used TIMEOUT! (used_idx still {})\n", self.read_used_idx()));
+        crate::serial::_print(format_args!("[VirtIO-GPU] wait_used TIMEOUT! (used_idx still {}), final status={:#x}\n", 
+            self.read_used_idx(), self.status()));
         false
     }
 
     fn get_notify_offset(&self, queue_idx: u16) -> usize {
         let off = self.queue_notify_offs[queue_idx as usize] as usize;
         let mult = self.notify_off_multiplier as usize;
-        off * mult
+        let offset = off * mult;
+        crate::serial::_print(format_args!("[VirtIO-GPU] get_notify_offset: q={}, off={}, mult={}, res={:#x}\n", queue_idx, off, mult, offset));
+        offset
     }
 
+    fn debug_submit_raw(&self, cmd_phys: u64, resp_phys: u64, d0: u16, d1: u16, ring_idx: usize) {
+        crate::serial::_print(format_args!("[VirtIO-GPU] submit: cmd_phys={:#x}, resp_phys={:#x}, d0={}, d1={}, ring_idx={}\n", cmd_phys, resp_phys, d0, d1, ring_idx));
+        if !self.desc_table.is_null() {
+            let desc0 = unsafe { &*self.desc_table.add(d0 as usize) };
+            let desc1 = unsafe { &*self.desc_table.add(d1 as usize) };
+            crate::serial::_print(format_args!("[VirtIO-GPU] desc0: addr={:#x}, len={}, flags={:#x}, next={}\n", desc0.addr, desc0.len, desc0.flags, desc0.next));
+            crate::serial::_print(format_args!("[VirtIO-GPU] desc1: addr={:#x}, len={}, flags={:#x}, next={}\n", desc1.addr, desc1.len, desc1.flags, desc1.next));
+        }
+        if !self.avail_ring.is_null() {
+            let av = unsafe { &*self.avail_ring };
+            let flags = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(av.flags)) };
+            let idx = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(av.idx)) };
+            let ring_val = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(av.ring[ring_idx])) };
+            crate::serial::_print(format_args!("[VirtIO-GPU] avail: flags={:#x}, idx={}, ring[{}]={}\n", flags, idx, ring_idx, ring_val));
+        }
+    }
+
+    /// Full writeback and invalidate for DMA coherence.
+    /// mfence alone may not flush write-combining buffers or cached guest RAM.
+    /// wbinvd writes back all dirty cache lines and invalidates them,
+    /// ensuring device sees the most recent data via DMA.
+    unsafe fn dma_fence(&self) {
+        if cfg!(target_arch = "x86_64") {
+            core::arch::asm!("wbinvd", options(nostack, nomem));
+        }
+    }
 
     unsafe fn submit_raw(&mut self, cmd_offset: u32, cmd_len: u32) {
+        // Log queue state before submit
+        crate::serial::_print(format_args!("[VirtIO-GPU] submit_raw: next_desc={}, cmd_offset={}, cmd_len={}\n", 
+            self.next_desc, cmd_offset, cmd_len));
         let d0 = self.next_desc;
         let d1 = (self.next_desc + 1) % QUEUE_SIZE;
         self.next_desc = (self.next_desc + 2) % QUEUE_SIZE;
@@ -475,45 +521,50 @@ impl VirtioGpu {
         let cmd_phys = self.cmd_buf_phys + cmd_offset as u64;
         let resp_phys = self.cmd_buf_phys + self.cmd_buf_len as u64 - 256;
 
-        // Descriptor setup
-        let e0 = &mut *self.desc_table.add(d0 as usize);
-        e0.addr = cmd_phys.to_le();
-        e0.len = cmd_len.to_le();
-        e0.flags = VRING_DESC_F_NEXT.to_le();
-        e0.next = d1.to_le();
+        let desc0 = &mut *self.desc_table.add(d0 as usize);
+        desc0.addr = cmd_phys.to_le();
+        desc0.len = cmd_len.to_le();
+        desc0.flags = VRING_DESC_F_NEXT.to_le();
+        desc0.next = d1.to_le();
 
-        let e1 = &mut *self.desc_table.add(d1 as usize);
-        e1.addr = resp_phys.to_le();
-        e1.len = 256u32.to_le();
-        e1.flags = (VRING_DESC_F_WRITE).to_le();  // Here is NEXT no longer needed
-        e1.next = 0;
+        let desc1 = &mut *self.desc_table.add(d1 as usize);
+        desc1.addr = resp_phys.to_le();
+        desc1.len = 256u32.to_le();
+        desc1.flags = (VRING_DESC_F_WRITE).to_le();
+        desc1.next = 0;
 
-        // 重要: 強いバリア
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        self.dma_fence();
 
-        // Avail ring update
         let av = &mut *self.avail_ring;
         let idx = u16::from_le(av.idx);
-
-        // これを追加
-        av.flags = 0u16.to_le();           // 重要
-
+        av.flags = 0u16.to_le();
         let ring_idx = (idx % QUEUE_SIZE) as usize;
-        av.ring[ring_idx] = d0;            // to_le() 不要（u16）
-
+        av.ring[ring_idx] = d0.to_le();
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
         av.idx = idx.wrapping_add(1).to_le();
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
-        // Notify
+        self.debug_submit_raw(cmd_phys, resp_phys, d0, d1, ring_idx);
+
+        // DMA fence: ensure all prior stores reach main memory for device DMA visibility
+        self.dma_fence();
+
+        // Notify: use common BAR base for notify address (same physical BAR, same mapping)
         let notify_off = self.get_notify_offset(0);
-        let notify_ptr = unsafe { 
-            (self.notify_bar_base as *mut u8)
-                .add(self.notify_cap_offset as usize + notify_off) as *mut u16 
+        let notify_ptr = unsafe {
+            (self.common_virt_absolute as *mut u8)
+                .add(self.notify_cap_offset as usize)
+                .add(notify_off) as *mut u32
         };
-
+        let pre_val = unsafe { core::ptr::read_volatile(notify_ptr) };
+        // Modern mode: notify value is le32 queue index (not legacy u16)
+        let notify_val = 0u32.to_le();
+        crate::serial::_print(format_args!("[VirtIO-GPU] notify={:#p}, pre={:#x}, writing le32({})\n", notify_ptr, pre_val, notify_val));
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-        unsafe { core::ptr::write_volatile(notify_ptr, 0u16); }
+        unsafe { core::ptr::write_volatile(notify_ptr, notify_val); }
+        // Post-write barrier
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        let post_val = unsafe { core::ptr::read_volatile(notify_ptr) };
+        crate::serial::_print(format_args!("[VirtIO-GPU] notify post-write readback={:#x}\n", post_val));
     }
 
     pub fn flush(&mut self, w: u32, h: u32) {
@@ -535,14 +586,11 @@ impl VirtioGpu {
 
     pub fn init_display(&mut self, w: u32, h: u32, fb: u64, sz: u32) {
         if self.desc_table.is_null() {
-            crate::serial::_print(format_args!("[VirtIO-GPU] ERROR: Queue not set up! Cannot submit commands.\n"));
+            crate::serial::_print(format_args!("[VirtIO-GPU] ERROR: Queue not set up!\n"));
             return;
         }
 
-        crate::serial::_print(format_args!(
-            "[VirtIO-GPU] === Starting display init. Status={:#x} ===\n", 
-            self.status()
-        ));
+        crate::serial::_print(format_args!("[VirtIO-GPU] === Display init. Status={:#x} ===\n", self.status()));
 
         let get_display_info = VirtioGpuCtrlHeader { type_: VIRTIO_GPU_CMD_GET_DISPLAY_INFO, flags: 0, fence_id: 0, ctx_id: 0, padding: 0 }.to_le();
         unsafe { core::ptr::copy_nonoverlapping(&get_display_info as *const _ as *const u8, self.cmd_buf, core::mem::size_of::<VirtioGpuCtrlHeader>()); }

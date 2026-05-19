@@ -56,8 +56,16 @@ impl BitmapFrameAllocator {
         pages: usize,
     ) -> crate::common::logging::SystemResult<u64> {
         let mut count = 0;
-        let mut start = 0;
-        for i in 0..self.total_frames {
+        // Skip low memory (<16MB) to avoid:
+        //   - IVT/BDA (0x00000-0x00FFF)
+        //   - BIOS/bootloader data (0x05000-0x9FFFF)
+        //   - VGA/ROM regions (0xA0000-0xFFFFF)
+        //   - DMA-safe buffer must be in conventional RAM, not reserved/firmware areas
+        //   - Some QEMU/UEFI configurations leave low memory for legacy compatibility
+        // Using 16MB boundary to ensure we're well above all low-memory regions.
+        const LOW_MEM_SKIP_FRAMES: usize = 16 * 1024 * 1024 / 4096; // 4096 frames = 16MB
+        let mut start = LOW_MEM_SKIP_FRAMES;
+        for i in LOW_MEM_SKIP_FRAMES..self.total_frames {
             if !self.is_frame_available(i) {
                 count = 0;
                 start = i + 1;
