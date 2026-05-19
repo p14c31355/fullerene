@@ -246,7 +246,7 @@ pub fn init_graphics() {
     }
 
     // Try to create primary console from petroleum
-    if let Some(primary_renderer) = petroleum::boot::create_primary_console() {
+    if let Some(primary_renderer) = petroleum::early::framebuffer::create_primary_console() {
         *PRIMARY_RENDERER.lock() = Some(primary_renderer);
         petroleum::debug_log!("Graphics initialized with GOP Framebuffer");
         return;
@@ -254,7 +254,7 @@ pub fn init_graphics() {
 
     // Fallback to VGA
     petroleum::debug_log!("Graphics: GOP failed, falling back to VGA text mode.\n");
-    let mut vga = petroleum::boot::initialize_vga_fallback();
+    let mut vga = petroleum::early::framebuffer::initialize_vga_fallback();
     vga.enable();
     petroleum::graphics::Console::clear(&mut vga);
     

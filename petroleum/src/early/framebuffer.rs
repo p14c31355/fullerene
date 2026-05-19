@@ -115,6 +115,28 @@ pub fn detect_qemu_std_vga() -> Option<FramebufferInfo> {
     None
 }
 
+// ── Re-exports from graphics::setup (VGA mode functions) ─────────────
+// These are boot-phase only. The kernel must not call them after the
+// world switch.
+
+pub use crate::graphics::setup::{
+    setup_vga_mode_13h,
+    setup_cirrus_vga_mode,
+    detect_and_init_vga_graphics,
+    detect_cirrus_vga,
+    init_vga_graphics,
+    init_vga_text_mode,
+};
+
+// ── Re-exports from crate::boot ──────────────────────────────────────
+// Boot-phase framebuffer console creation. After the world switch,
+// the kernel should use its own `graphics::PRIMARY_RENDERER`.
+
+pub use crate::boot::{
+    create_primary_console,
+    initialize_vga_fallback,
+};
+
 /// Initialise the framebuffer using whichever method is available.
 ///
 /// Priority:

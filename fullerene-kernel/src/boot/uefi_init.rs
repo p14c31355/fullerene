@@ -871,7 +871,7 @@ impl UefiInitContext {
                 for i in 0..pages {
                     let v = x86_64::VirtAddr::new(virt + i * 4096);
                     let p = x86_64::PhysAddr::new(phys + i * 4096);
-                    if let Err(e) = petroleum::page_table::kernel::init::map_page_4k_l1(
+                    if let Err(e) = petroleum::early::mapper::map_page_4k_l1(
                         l4,
                         v,
                         p,
@@ -929,7 +929,7 @@ impl UefiInitContext {
                 for i in 0..fb_pages {
                     let v = x86_64::VirtAddr::new(fb_virt + i as u64 * 4096);
                     let p = x86_64::PhysAddr::new(fb_phys + i as u64 * 4096);
-                    if let Err(e) = petroleum::page_table::kernel::init::map_page_4k_l1(
+                    if let Err(e) = petroleum::early::mapper::map_page_4k_l1(
                         l4,
                         v,
                         p,

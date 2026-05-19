@@ -1,4 +1,8 @@
 //! Boot-related utilities for UEFI initialization.
+//!
+//! ⚠️ **DEPRECATED**: Use `petroleum::early::framebuffer` instead.
+//! This module will be removed in a future version.
+//! Boot code should import from `petroleum::early::framebuffer::*`.
 
 use crate::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE;
 use crate::page_table::constants::get_frame_allocator_mut;

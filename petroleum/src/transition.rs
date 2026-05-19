@@ -1,4 +1,8 @@
 //! High-level world switch and kernel transition abstractions.
+//!
+//! ⚠️ **DEPRECATED**: Use `petroleum::early::transition` instead.
+//! This module will be removed in a future version.
+//! All boot code should import from `petroleum::early::transition::*`.
 
 use crate::assembly::{KernelArgs, TransitionArgs, TransitionFrame};
 use crate::page_table::constants::BootInfoFrameAllocator;

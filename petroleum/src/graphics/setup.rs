@@ -55,6 +55,8 @@ macro_rules! set_cursor_registers {
     };
 }
 
+// ⚠️ **DEPRECATED**: Use `petroleum::early::framebuffer::setup_vga_mode_13h` instead.
+
 // Enhanced setup function with better organization
 pub fn setup_vga_mode_13h() {
     log_step!("VGA setup: Starting mode 13h initialization\n");

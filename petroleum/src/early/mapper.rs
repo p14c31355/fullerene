@@ -36,6 +36,15 @@ use x86_64::{
 
 use crate::early::allocator::EarlyFrameAllocator;
 
+// ── Re-export boot-only mapping functions from page_table::kernel::init ──
+// These functions are used during the boot → kernel transition (world switch)
+// and should NOT be called by runtime kernel code.
+pub use crate::page_table::kernel::init::{
+    map_page_4k_l1,
+    init_and_jump,
+    InitAndJumpArgs,
+};
+
 /// Early-boot page table mapper for identity-mapped environments.
 ///
 /// After construction, this mapper operates on the **active** page table
