@@ -159,6 +159,11 @@ pub fn init_graphics() {
             let (avail_virt, avail_phys) = petroleum::virtio::gpu::VirtioGpu::alloc_queue_mem(core::mem::size_of::<petroleum::virtio::gpu::VringAvail>());
             let (used_virt, used_phys)   = petroleum::virtio::gpu::VirtioGpu::alloc_queue_mem(core::mem::size_of::<petroleum::virtio::gpu::VringUsed>());
 
+            petroleum::serial::serial_log(format_args!(
+                "[graphics] Allocated queues: desc_p={:#x}, avail_p={:#x}, used_p={:#x}\n",
+                desc_phys, avail_phys, used_phys
+            ));
+
             let desc = desc_virt as *mut petroleum::virtio::gpu::VringDesc;
             let avail = avail_virt as *mut petroleum::virtio::gpu::VringAvail;
             let used = used_virt as *mut petroleum::virtio::gpu::VringUsed;
