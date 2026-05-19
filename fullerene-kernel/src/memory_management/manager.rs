@@ -89,12 +89,12 @@ impl UnifiedMemoryManager {
         let pages = (size + page_size - 1) / page_size;
 
         // MMIO regions need proper caching attributes: Uncacheable (UC) is safest
-        // UC is achieved by setting PCD (NO_CACHE) + PWT (WRITE_THROUGH) for QEMU VirtIO
+        // UC is achieved by setting PCD (NO_CACHE) + NOT setting PWT for x86.
+        // PCD=1, PWT=1 is not a standard x86 caching mode and may cause issues.
         let flags = PageFlags::PRESENT 
           | PageFlags::WRITABLE 
           | PageFlags::NO_EXECUTE 
-          | PageFlags::NO_CACHE 
-          | PageFlags::WRITE_THROUGH;
+          | PageFlags::NO_CACHE;
 
         for i in 0..pages {
             let virt = virtual_addr + i * page_size;

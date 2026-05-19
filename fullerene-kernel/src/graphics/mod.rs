@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
 use petroleum::graphics::text::VgaBuffer;
@@ -11,7 +12,7 @@ use petroleum::virtio::pci::read_virtio_reg_via_pci_cfg;
 pub static PRIMARY_RENDERER: Mutex<Option<UefiFramebufferWriter>> = Mutex::new(None);
 
 /// Global VirtIO GPU device.
-pub static VIRTIO_GPU: Mutex<Option<petroleum::virtio::gpu::VirtioGpu>> = Mutex::new(None);
+pub static VIRTIO_GPU: Mutex<Option<Box<petroleum::virtio::gpu::VirtioGpu>>> = Mutex::new(None);
 
 /// Guard flag to prevent double initialization of the graphics subsystem.
 static GRAPHICS_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -239,7 +240,7 @@ pub fn init_graphics() {
             let renderer = petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer);
 
             set_primary_renderer(renderer);
-            *VIRTIO_GPU.lock() = Some(gpu);
+            *VIRTIO_GPU.lock() = Some(Box::new(gpu));
             petroleum::serial::serial_log(format_args!("[graphics] VirtIO-GPU assigned as PRIMARY_RENDERER using configuration\n"));
         }
     }
