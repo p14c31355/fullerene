@@ -163,12 +163,6 @@ pub fn init_graphics() {
             let avail = avail_virt as *mut petroleum::virtio::gpu::VringAvail;
             let used = used_virt as *mut petroleum::virtio::gpu::VringUsed;
 
-            unsafe {
-                core::ptr::write_bytes(desc, 0, 1024);
-                core::ptr::write_bytes(avail, 0, 1);
-                core::ptr::write_bytes(used, 0, 1);
-            }
-
             gpu.setup_queue(0, desc, desc_phys, avail, avail_phys, used, used_phys);
 
             let mut pci_cfg_cap = None;
