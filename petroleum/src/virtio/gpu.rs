@@ -17,7 +17,7 @@ pub const VIRTIO_STATUS_FEATURES_OK: u32 = 8;
 pub const VRING_DESC_F_NEXT: u16 = 1;
 pub const VRING_DESC_F_WRITE: u16 = 2;
 
-const QUEUE_SIZE: u16 = 1024;
+const QUEUE_SIZE: u16 = 64;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -207,40 +207,41 @@ pub fn init_virtio_gpu(
 
 impl VirtioGpu {
     fn read_common_cfg(&self, offset: u32, width: u32) -> Option<u32> {
-        self.read_common_via_direct(offset, width)
+        crate::virtio::pci::read_virtio_reg_via_pci_cfg(&self.device, self.common_bar, offset, width)
     }
 
     fn write_common_cfg(&self, offset: u32, value: u32, width: u32) -> Option<()> {
-        self.write_common_via_direct(offset, value, width)
+        crate::virtio::pci::write_virtio_reg_via_pci_cfg(&self.device, self.common_bar, offset, value, width)
     }
 
     fn r32(&self, bo: usize) -> u32 {
-        unsafe { core::ptr::read_volatile(self.common_virt_absolute.add(bo / 4)) }
+        self.read_common_cfg(bo as u32, 4).unwrap_or(0)
     }
     fn w32(&self, bo: usize, v: u32) {
-        unsafe { core::ptr::write_volatile(self.common_virt_absolute.add(bo / 4), v); }
+        self.write_common_cfg(bo as u32, v, 4);
     }
     fn r16(&self, bo: usize) -> u16 {
-        unsafe { core::ptr::read_volatile((self.common_virt_absolute as *mut u8).add(bo) as *const u16) }
+        self.read_common_cfg(bo as u32, 2).unwrap_or(0) as u16
     }
     fn w16(&self, bo: usize, v: u16) {
-        unsafe { core::ptr::write_volatile((self.common_virt_absolute as *mut u8).add(bo) as *mut u16, v); }
+        self.write_common_cfg(bo as u32, v as u32, 2);
     }
     fn r8(&self, bo: usize) -> u8 {
-        unsafe { core::ptr::read_volatile((self.common_virt_absolute as *mut u8).add(bo) as *const u8) }
+        self.read_common_cfg(bo as u32, 1).unwrap_or(0) as u8
     }
     fn w8(&self, bo: usize, v: u8) {
-        unsafe { core::ptr::write_volatile((self.common_virt_absolute as *mut u8).add(bo) as *mut u8, v); }
+        self.write_common_cfg(bo as u32, v as u32, 1);
     }
 
     fn status(&self) -> u8 { self.r8(0x14) }
     fn set_status(&self, s: u8) { self.w8(0x14, s); }
 
     fn dev_features(&self) -> u64 {
-        self.write_common_via_direct(0x00, 0, 4).expect("Type5 write failed"); 
-        let f0 = self.read_common_via_direct(0x04, 4).expect("Type5 read failed");
-        self.write_common_via_direct(0x00, 1, 4).expect("Type5 write failed"); 
-        let f1 = self.read_common_via_direct(0x04, 4).expect("Type5 read failed");
+        self.w32(0x00, 0); 
+        let f0 = self.r32(0x04);
+        self.w32(0x00, 1); 
+        let f1 = self.r32(0x04);
+        crate::serial::_print(format_args!("[VirtIO-GPU] dev_features: f0={:#010x}, f1={:#010x}\n", f0, f1));
         (f1 as u64) << 32 | (f0 as u64)
     }
 
@@ -334,10 +335,19 @@ impl VirtioGpu {
         for _ in 0..100_000 { core::hint::spin_loop(); }
         self.set_status(VIRTIO_STATUS_ACKNOWLEDGE as u8);
         self.set_status((VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER) as u8);
+        
         let feats = self.dev_features();
-        if (feats & (1 << 32)) == 0 { return Err(VirtioGpuError::DeviceNotReady); }
-        self.set_guest_features(feats & (1 << 32));
+        // GPU doesn't strictly need any 2D features enabled to start basic operations in some configurations
+        // but we should negotiate if needed.
+        self.set_guest_features(feats & 0x7); 
+        
         self.set_status((VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK) as u8);
+        
+        let status = self.status();
+        if (status & VIRTIO_STATUS_FEATURES_OK as u8) == 0 {
+            return Err(VirtioGpuError::DeviceNotReady);
+        }
+        
         Ok(())
     }
 
@@ -362,29 +372,29 @@ impl VirtioGpu {
         self.desc_table = desc;
         self.avail_ring = avail;
         self.used_ring = used;
+        
         self.set_queue_select(idx as u16);
-        let max = self.r16(0x18);
-        let notify_off_reg = self.r16(0x1e);
-        crate::serial::_print(format_args!("[VirtIO-GPU] setup_queue: idx={}, max={}, queue_notify_off_reg={}\n", idx, max, notify_off_reg));
+        let max_size = self.r16(0x18);
+        let actual_size = max_size.min(QUEUE_SIZE);
 
-        self.queue_notify_offs[idx as usize] = notify_off_reg;
-        self.write_queue_size(QUEUE_SIZE);
+        crate::serial::_print(format_args!(
+            "[VirtIO-GPU] setup_queue: idx={}, device_max={}, using={}\n", 
+            idx, max_size, actual_size
+        ));
+
+        self.queue_notify_offs[idx as usize] = self.r16(0x1e);
+
+        self.write_queue_size(actual_size);
         self.set_queue_msix_vector(0);
         self.set_queue_desc(desc_phys);
         self.set_queue_avail(avail_phys);
         self.set_queue_used(used_phys);
         
-        // Verify the write
-        let r_desc_low = self.read_common_cfg(0x20, 4);
-        crate::serial::_print(format_args!("[VirtIO-GPU] Verified setup: wrote desc={:#x}, read={:#?}\n", desc_phys, r_desc_low));
-
         self.set_queue_enable(true);
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-        let mut status = self.r8(0x14);
-        status |= VIRTIO_STATUS_FEATURES_OK as u8;
-        self.set_status(status);
-        status |= VIRTIO_STATUS_DRIVER_OK as u8;
-        self.set_status(status);
+
+        crate::serial::_print(format_args!("[VirtIO-GPU] Queue {} enabled (size={}). Status={:#x}\n", 
+            idx, actual_size, self.status()));
     }
 
     pub fn alloc_queue_mem(size: usize) -> (*mut u8, u64) {
@@ -400,20 +410,30 @@ impl VirtioGpu {
         if self.used_ring.is_null() { return 0; }
         unsafe {
             let idxp = core::ptr::addr_of!((*self.used_ring).idx);
-            u16::from_le(core::ptr::read_unaligned(idxp))
+            u16::from_le(core::ptr::read_volatile(idxp))
         }
     }
 
-    fn wait_used(&self, last_used_idx: u16) {
-        if self.used_ring.is_null() { return; }
-        unsafe {
-            let used = &*self.used_ring;
-            for _ in 0..1_000_000 {
-                let current = u16::from_le(core::ptr::read_unaligned(core::ptr::addr_of!(used.idx)));
-                if current.wrapping_sub(last_used_idx) >= 1 { return; }
+    fn wait_used(&self, last_used_idx: u16) -> bool {
+        if self.used_ring.is_null() { 
+            crate::serial::_print(format_args!("[VirtIO-GPU] wait_used: used_ring is null!\n"));
+            return false; 
+        }
+
+        for i in 0..3_000_000 {
+            let current = self.read_used_idx();
+            if current.wrapping_sub(last_used_idx) >= 1 {
+                crate::serial::_print(format_args!("[VirtIO-GPU] wait_used OK! before={}, after={}, spins={}\n", 
+                    last_used_idx, current, i));
+                return true;
+            }
+            // 少し長めにspin（デバイスが遅い場合対策）
+            if i % 10000 == 0 {
                 core::hint::spin_loop();
             }
         }
+        crate::serial::_print(format_args!("[VirtIO-GPU] wait_used TIMEOUT! (used_idx still {})\n", self.read_used_idx()));
+        false
     }
 
     fn get_notify_offset(&self, queue_idx: u32) -> usize {
@@ -424,10 +444,11 @@ impl VirtioGpu {
         let d0 = self.next_desc;
         let d1 = (self.next_desc + 1) % QUEUE_SIZE;
         self.next_desc = (self.next_desc + 2) % QUEUE_SIZE;
-        
+
         let cmd_phys = self.cmd_buf_phys + cmd_offset as u64;
         let resp_phys = self.cmd_buf_phys + self.cmd_buf_len as u64 - 256;
 
+        // Descriptor setup
         let e0 = &mut *self.desc_table.add(d0 as usize);
         e0.addr = cmd_phys.to_le();
         e0.len = cmd_len.to_le();
@@ -437,20 +458,33 @@ impl VirtioGpu {
         let e1 = &mut *self.desc_table.add(d1 as usize);
         e1.addr = resp_phys.to_le();
         e1.len = 256u32.to_le();
-        e1.flags = VRING_DESC_F_WRITE.to_le();
-        e1.next = 0u16.to_le();
+        e1.flags = (VRING_DESC_F_WRITE).to_le();  // Here is NEXT no longer needed
+        e1.next = 0;
 
-        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-
-        let av = &mut *self.avail_ring;
-        let idx = u16::from_le(av.idx);
-        av.ring[(idx as usize) % QUEUE_SIZE as usize] = d0.to_le();
-        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-        av.idx = idx.wrapping_add(1).to_le();
+        // 重要: 強いバリア
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
-        let notify_ptr = (self.notify_bar_base as *mut u8).add(self.notify_cap_offset as usize + self.get_notify_offset(0)) as *mut u16;
-        write_volatile(notify_ptr, 0);
+        // Avail ring update
+        let av = &mut *self.avail_ring;
+        let idx = u16::from_le(av.idx);
+        let ring_idx = (idx % QUEUE_SIZE) as usize;
+        av.ring[ring_idx] = d0.to_le();
+
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        av.idx = (idx.wrapping_add(1)).to_le();
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+        // Notify
+        let notify_off = self.get_notify_offset(0);
+        let notify_ptr = (self.notify_bar_base as *mut u8)
+            .add(self.notify_cap_offset as usize + notify_off) as *mut u16;
+
+        crate::serial::_print(format_args!(
+            "[VirtIO-GPU] submit: desc={}, notify_off={}, ptr={:p}\n", 
+            d0, notify_off, notify_ptr
+        ));
+
+        write_volatile(notify_ptr, 0u16);
     }
 
     pub fn flush(&mut self, w: u32, h: u32) {
@@ -471,6 +505,10 @@ impl VirtioGpu {
     }
 
     pub fn init_display(&mut self, w: u32, h: u32, fb: u64, sz: u32) {
+        if self.desc_table.is_null() {
+            crate::serial::_print(format_args!("[VirtIO-GPU] ERROR: Queue not set up! Cannot submit commands.\n"));
+            return;
+        }
         let get_display_info = VirtioGpuCtrlHeader { type_: VIRTIO_GPU_CMD_GET_DISPLAY_INFO, flags: 0, fence_id: 0, ctx_id: 0, padding: 0 }.to_le();
         unsafe { core::ptr::copy_nonoverlapping(&get_display_info as *const _ as *const u8, self.cmd_buf, core::mem::size_of::<VirtioGpuCtrlHeader>()); }
         let before = self.read_used_idx();

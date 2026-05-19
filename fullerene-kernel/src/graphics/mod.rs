@@ -153,6 +153,24 @@ pub fn init_graphics() {
 
         if let Some(mut gpu) = gpu_result
         {
+            petroleum::serial::serial_log(format_args!("[VirtIO-GPU] Setting up control queue...\n"));
+
+            let (desc_virt, desc_phys) = petroleum::virtio::gpu::VirtioGpu::alloc_queue_mem(1024 * core::mem::size_of::<petroleum::virtio::gpu::VringDesc>());
+            let (avail_virt, avail_phys) = petroleum::virtio::gpu::VirtioGpu::alloc_queue_mem(core::mem::size_of::<petroleum::virtio::gpu::VringAvail>());
+            let (used_virt, used_phys)   = petroleum::virtio::gpu::VirtioGpu::alloc_queue_mem(core::mem::size_of::<petroleum::virtio::gpu::VringUsed>());
+
+            let desc = desc_virt as *mut petroleum::virtio::gpu::VringDesc;
+            let avail = avail_virt as *mut petroleum::virtio::gpu::VringAvail;
+            let used = used_virt as *mut petroleum::virtio::gpu::VringUsed;
+
+            unsafe {
+                core::ptr::write_bytes(desc, 0, 1024);
+                core::ptr::write_bytes(avail, 0, 1);
+                core::ptr::write_bytes(used, 0, 1);
+            }
+
+            gpu.setup_queue(0, desc, desc_phys, avail, avail_phys, used, used_phys);
+
             let mut pci_cfg_cap = None;
 
             for cap in &caps {
