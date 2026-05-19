@@ -288,6 +288,8 @@ impl VirtioGpu {
             4 => unsafe { core::ptr::write_volatile(ptr as *mut u32, value) },
             _ => return None,
         }
+        // Ensure the MMIO write is ordered before subsequent reads
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         Some(())
     }
 
@@ -382,6 +384,10 @@ impl VirtioGpu {
         }
 
         self.set_queue_select(idx as u16);
+        // Flush posted PCI MMIO write: read back queue_select to ensure
+        // the write has reached the device before we read queue_size.
+        let _ = self.r16(0x16);
+        for _ in 0..1000 { core::hint::spin_loop(); }
         let mut max_size = self.r16(0x18);
         if max_size == 0 {
             max_size = QUEUE_SIZE;
@@ -500,14 +506,11 @@ impl VirtioGpu {
         }
     }
 
-    /// Full writeback and invalidate for DMA coherence.
-    /// mfence alone may not flush write-combining buffers or cached guest RAM.
-    /// wbinvd writes back all dirty cache lines and invalidates them,
-    /// ensuring device sees the most recent data via DMA.
-    unsafe fn dma_fence(&self) {
-        if cfg!(target_arch = "x86_64") {
-            core::arch::asm!("wbinvd", options(nostack, nomem));
-        }
+    /// Memory fence for DMA coherence.
+    /// In a KVM guest, wbinvd causes a VM exit and is extremely slow;
+    /// a SeqCst atomic fence is sufficient to order stores before MMIO notify.
+    fn dma_fence(&self) {
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     }
 
     unsafe fn submit_raw(&mut self, cmd_offset: u32, cmd_len: u32) {
@@ -548,10 +551,10 @@ impl VirtioGpu {
         // DMA fence: ensure all prior stores reach main memory for device DMA visibility
         self.dma_fence();
 
-        // Notify: use common BAR base for notify address (same physical BAR, same mapping)
+        // Notify: use the notify BAR base + notify capability offset + queue notify offset
         let notify_off = self.get_notify_offset(0);
         let notify_ptr = unsafe {
-            (self.common_virt_absolute as *mut u8)
+            self.notify_bar_base
                 .add(self.notify_cap_offset as usize)
                 .add(notify_off) as *mut u32
         };
