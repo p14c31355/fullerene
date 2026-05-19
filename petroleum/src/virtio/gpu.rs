@@ -155,7 +155,11 @@ pub struct VirtioGpu {
     common_bar: u8,
     type5_bar: u8,
     common_virt_absolute: *mut u32,
+    /// Base address of the notify BAR (raw BAR start, NOT including notify_cap.offset).
+    /// notify address is computed as: notify_bar_base + notify_cap_offset + queue_notify_off
     notify_bar_base: *mut u8,
+    /// Offset from notify BAR base to the start of the notify register region,
+    /// as specified by VIRTIO_PCI_CAP_NOTIFY_CFG.
     notify_cap_offset: u32,
     pub resource_id: u32,
     desc_table: *mut VringDesc,
@@ -165,6 +169,11 @@ pub struct VirtioGpu {
     cmd_buf: *mut u8,
     cmd_buf_phys: u64,
     cmd_buf_len: u32,
+    /// Separately allocated response buffer (physical address).
+    /// Allocated as its own 4KB page to meet strict alignment requirements.
+    resp_buf: *mut u8,
+    resp_buf_phys: u64,
+    resp_buf_len: u32,
     notify_off_multiplier: u32,
     queue_notify_offs: [u16; 2],
     common_bar_for_type5: u8,
@@ -294,6 +303,9 @@ impl VirtioGpu {
     }
 
     pub fn new(common_virt_base: *mut u32, notify_virt_base: *mut u32, device: PciDevice, common_bar: u8) -> Option<Self> {
+        let off = crate::common::memory::get_physical_memory_offset() as u64;
+
+        // Allocate command buffer (one 4KB page)
         let raw_phys = crate::page_table::constants::get_frame_allocator_mut()
             .allocate_contiguous_frames(1)
             .expect("VirtIO-GPU: failed to allocate command buffer");
@@ -302,15 +314,33 @@ impl VirtioGpu {
         }
         let cmd_buf_phys = raw_phys as u64;
         crate::serial::_print(format_args!("[VirtIO-GPU] new: cmd_buf_phys={:#x}\n", cmd_buf_phys));
-        let off = crate::common::memory::get_physical_memory_offset() as u64;
         let cmd_buf = (cmd_buf_phys + off) as *mut u8;
         unsafe { core::ptr::write_bytes(cmd_buf, 0, 4096); }
+
+        // Allocate a separate page for the response buffer (Issue 4 fix).
+        // This ensures the response buffer is on its own 4KB-aligned page,
+        // satisfying strict alignment expectations some QEMU versions may have.
+        let resp_raw = crate::page_table::constants::get_frame_allocator_mut()
+            .allocate_contiguous_frames(1)
+            .expect("VirtIO-GPU: failed to allocate response buffer");
+        if resp_raw == 0 {
+            panic!("VirtIO-GPU: frame allocator returned physical address 0 for response buffer!");
+        }
+        let resp_buf_phys = resp_raw as u64;
+        crate::serial::_print(format_args!("[VirtIO-GPU] new: resp_buf_phys={:#x}\n", resp_buf_phys));
+        let resp_buf = (resp_buf_phys + off) as *mut u8;
+        unsafe { core::ptr::write_bytes(resp_buf, 0, 4096); }
+        let resp_buf_len = 4096u32;
 
         let caps = get_virtio_caps(&device);
         let type5_cap = caps.iter().find(|c| c.cfg_type == VIRTIO_PCI_CAP_PCI_CFG)?;
         let common_cap = caps.iter().find(|c| c.cfg_type == VIRTIO_PCI_CAP_COMMON_CFG)?;
         let notify_cap = caps.iter().find(|c| c.cfg_type == VIRTIO_PCI_CAP_NOTIFY_CFG)?;
 
+        // common_virt_absolute = common_virt_base + common_cap.offset.
+        // common_virt_base is the raw BAR base (virtual address of the start of the BAR).
+        // common_cap.offset is the offset within the BAR to the common config structure.
+        // This is NOT a double-add: the BAR base and the cap offset are separate quantities.
         let common_virt_absolute = unsafe { (common_virt_base as *mut u8).add(common_cap.offset as usize) } as *mut u32;
         
         let n_off = notify_cap.offset;
@@ -322,6 +352,8 @@ impl VirtioGpu {
             common_bar,
             type5_bar: type5_cap.bar,
             common_virt_absolute,
+            // notify_bar_base is the raw BAR start address (NOT including notify_cap.offset).
+            // The notify address is computed as: notify_bar_base + notify_cap_offset + queue_notify_off
             notify_bar_base: notify_virt_base as *mut u8,
             notify_cap_offset: n_off,
             resource_id: 1,
@@ -332,6 +364,10 @@ impl VirtioGpu {
             cmd_buf,
             cmd_buf_phys,
             cmd_buf_len: 4096,
+            // Separate response buffer on its own page
+            resp_buf,
+            resp_buf_phys,
+            resp_buf_len,
             notify_off_multiplier: n_mult,
             queue_notify_offs: [0; 2],
             common_bar_for_type5: common_cap.bar,
@@ -403,10 +439,11 @@ impl VirtioGpu {
         self.set_queue_desc(desc_phys);
         self.set_queue_avail(avail_phys);
         self.set_queue_used(used_phys);
-        // IMPORTANT: DRIVER_OK must be set BEFORE queue_enable in some QEMU implementations
-        self.complete_init();
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        // Per virtio spec: queues must be configured and enabled BEFORE setting DRIVER_OK.
         self.set_queue_enable(true);
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        // Now that the queue is fully configured, set DRIVER_OK.
+        self.complete_init();
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
         // Verify queue_enable took effect
@@ -522,7 +559,7 @@ impl VirtioGpu {
         self.next_desc = (self.next_desc + 2) % QUEUE_SIZE;
 
         let cmd_phys = self.cmd_buf_phys + cmd_offset as u64;
-        let resp_phys = self.cmd_buf_phys + self.cmd_buf_len as u64 - 256;
+        let resp_phys = self.resp_buf_phys;
 
         let desc0 = &mut *self.desc_table.add(d0 as usize);
         desc0.addr = cmd_phys.to_le();

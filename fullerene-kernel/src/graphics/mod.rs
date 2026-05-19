@@ -232,10 +232,11 @@ pub fn init_graphics() {
             set_primary_renderer(renderer);
             *VIRTIO_GPU.lock() = Some(Box::new(gpu));
             petroleum::serial::serial_log(format_args!("[graphics] VirtIO-GPU assigned as PRIMARY_RENDERER using configuration\n"));
+            return; // Prevent GOP fallback from overwriting the VirtIO-GPU renderer
         }
     }
 
-    // Try to create primary console from petroleum
+    // Try to create primary console from petroleum (only reached if no VirtIO-GPU was found)
     if let Some(primary_renderer) = petroleum::early::framebuffer::create_primary_console() {
         *PRIMARY_RENDERER.lock() = Some(primary_renderer);
         petroleum::debug_log!("Graphics initialized with GOP Framebuffer");

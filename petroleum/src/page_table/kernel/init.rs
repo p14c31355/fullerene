@@ -249,38 +249,41 @@ pub unsafe extern "C" fn init_and_jump(
 
     crate::serial::_print(format_args!("IAJ: Using pre-allocated L4\n"));
 
-    // STEP 1: Identity-map the entire 16GB physical address space using 2MB huge pages.
+    // STEP 1: Identity-map the entire 64GB physical address space using 2MB huge pages.
     // This must be done FIRST so that 4KB mappings can split specific huge pages later.
-    crate::serial::_print(format_args!("IAJ: Mapping identity huge pages (16GB)...\n"));
+    // 64GB = 32768 × 2MB pages. This ensures VirtIO DMA buffers (which can be allocated
+    // anywhere by the frame allocator) are accessible.
+    crate::serial::_print(format_args!("IAJ: Mapping identity huge pages (64GB)...\n"));
+    const IDENTITY_MAP_2MB_PAGES: u64 = 32768; // 64GB / 2MB
     map_range_2mb_huge(
         l4,
         VirtAddr::new(0),
         PhysAddr::new(0),
-        8192, // 16GB / 2MB
+        IDENTITY_MAP_2MB_PAGES,
         flags,
         frame_allocator,
     )
-    .expect("full 16GB huge page identity map failed");
+    .expect("full 64GB huge page identity map failed");
     crate::serial::_print(format_args!("IAJ: Huge page identity mapped\n"));
 
-    // STEP 1b: Map the entire 0-16GB physical range to the higher half using 2MB huge pages.
+    // STEP 1b: Map the entire 0-64GB physical range to the higher half using 2MB huge pages.
     // This MUST be done BEFORE any 4KB splits so that the 4KB functions can properly
     // split the higher-half huge pages.
     // This is CRITICAL: OffsetPageTable (used by map_to etc.) accesses page table
     // structures through phys_offset + table_phys_addr, and page tables can be
-    // allocated at any physical address within 0-16GB by the frame allocator.
+    // allocated at any physical address within 0-64GB by the frame allocator.
     crate::serial::_print(format_args!(
-        "IAJ: Mapping full 16GB to higher half (huge pages)...\n"
+        "IAJ: Mapping full 64GB to higher half (huge pages)...\n"
     ));
     map_range_2mb_huge(
         l4,
         physical_memory_offset,
         PhysAddr::new(0),
-        8192, // 16GB / 2MB
+        IDENTITY_MAP_2MB_PAGES,
         flags,
         frame_allocator,
     )
-    .expect("full 16GB huge page higher-half map failed");
+    .expect("full 64GB huge page higher-half map failed");
     crate::serial::_print(format_args!("IAJ: Full higher-half mapping done\n"));
 
     // STEP 2: Split specific 2MB regions into 4KB pages for fine-grained mappings.
