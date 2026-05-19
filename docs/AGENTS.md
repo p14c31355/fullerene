@@ -1,23 +1,29 @@
-# Fullerene Project Rules for Cline
+# Fullerene Project Rules
 
 ## 1. Overall Policy (Highest Priority)
 - **This project aims for a "safe, readable, and maintainable no_std OS kernel."**
-- Minimize code size and thoroughly eliminate duplication.
+- We absolutely require a loosely coupled code layout from the perspective of the future, starting from the bootloader firing point.
+- The OS operates within a world that changes over time. Therefore, choose loose coupling over time as your paramount principle.
 - Minimize unsafe/asm. Maximize the use of Rust's core/alloc.
 - Always write code that is "easy for later readers to understand."
 
 ## 2. Code Structure and Dependencies
-- Actively utilize **petroleum** (common utilities, UEFI-related, serial output, etc.). Bugs can be fixed immediately.
 - Treat other sub-crates (bellows, fullerene-kernel, etc.) as **binary crates** (appropriately configured in Cargo.toml).
 - Actively utilize external crates other than `uefi` / `bootloader` crates to reduce code.
+- Prefer external crates that preserve explicit ownership, initialization, and no_std boundaries.
 - Use isobemak for ISO creation.
 
 ## 3. Coding Style
-- **Strictly adhere to the DRY principle**: Move duplicate code immediately to `petroleum`.
-- Actively utilize helper functions, macros, generics, and structs to reduce the number of lines.
+- Duplication is acceptable when lifecycle, execution phase, or ownership differ.
+- Prefer explicit ownership transfer over global accessibility.
 - Refactor long, repetitive operations (e.g., consecutive `port.write()` calls) into constants or helper functions.
 - **Do not repeat the same command/operation more than 3 times consecutively** (refactoring is mandatory).
 - Split files appropriately. However, merge redundant `.rs` files.
+- Do not hide initialization order behind globals, macros, or implicit side effects.
+- Prefer capability passing over singleton access.
+- Similar code is not necessarily shared code.
+- Architectural clarity is more important than LOC reduction.
+- Do not abstract across phase boundaries unless ownership and lifecycle are identical.
 
 ## 4. Unsafe / Low-Level Code
 - Use **minimum** asm! macros and unsafe blocks.
