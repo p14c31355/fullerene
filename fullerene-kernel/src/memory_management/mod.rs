@@ -8,9 +8,7 @@ use spin::Mutex;
 use petroleum::common::logging::{SystemError, SystemResult};
 use petroleum::initializer::{FrameAllocator, Initializable, MemoryManager};
 use petroleum::mem_debug;
-use x86_64::structures::paging::{
-    FrameAllocator as X86FrameAllocator, PageTableFlags as PageFlags,
-};
+use x86_64::structures::paging::PageTableFlags as PageFlags;
 
 use petroleum::page_table::process::ProcessPageTable;
 pub mod convenience;

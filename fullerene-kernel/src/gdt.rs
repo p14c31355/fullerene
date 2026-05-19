@@ -104,6 +104,22 @@ pub struct TssStacks {
     pub machine_check: VirtAddr,
 }
 
+impl TssStacks {
+    /// Create a new TssStacks from a base address, allocating sequential IST stacks.
+    pub const fn from_base(base: VirtAddr) -> Self {
+        let sz = GDT_TSS_STACK_SIZE as u64;
+        Self {
+            double_fault: VirtAddr::new(base.as_u64() + sz),
+            timer: VirtAddr::new(base.as_u64() + sz * 2),
+            stack_fault: VirtAddr::new(base.as_u64() + sz * 3),
+            gp_fault: VirtAddr::new(base.as_u64() + sz * 4),
+            page_fault: VirtAddr::new(base.as_u64() + sz * 5),
+            nmi: VirtAddr::new(base.as_u64() + sz * 6),
+            machine_check: VirtAddr::new(base.as_u64() + sz * 7),
+        }
+    }
+}
+
 /// Build GDT with the given TSS and return (code, data, tss, user_data, user_code) selectors.
 ///
 /// The TSS must be `'static` because the GDT holds a reference to it.
@@ -184,27 +200,21 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
 
     debug_log_no_alloc!("GDT: Initializing with heap at ", heap_start.as_u64());
 
-    // Allocate IST stacks contiguously
-    let double_fault_ist = heap_start + GDT_TSS_STACK_SIZE as u64;
-    let timer_ist = double_fault_ist + GDT_TSS_STACK_SIZE as u64;
-    let stack_fault_ist = timer_ist + GDT_TSS_STACK_SIZE as u64;
-    let gp_fault_ist = stack_fault_ist + GDT_TSS_STACK_SIZE as u64;
-    let page_fault_ist = gp_fault_ist + GDT_TSS_STACK_SIZE as u64;
-    let nmi_ist = page_fault_ist + GDT_TSS_STACK_SIZE as u64;
-    let machine_check_ist = nmi_ist + GDT_TSS_STACK_SIZE as u64;
-    let new_heap_start = machine_check_ist + GDT_TSS_STACK_SIZE as u64;
+    // Allocate IST stacks contiguously using the unified helper
+    let stacks = TssStacks::from_base(heap_start);
+    let new_heap_start = stacks.machine_check + GDT_TSS_STACK_SIZE as u64;
 
     debug_log_no_alloc!("GDT: Stack addresses calculated\n");
 
     unsafe {
         let mut tss = TaskStateSegment::new();
-        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = double_fault_ist;
-        tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = timer_ist;
-        tss.interrupt_stack_table[STACK_FAULT_IST_INDEX as usize] = stack_fault_ist;
-        tss.interrupt_stack_table[GP_FAULT_IST_INDEX as usize] = gp_fault_ist;
-        tss.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] = page_fault_ist;
-        tss.interrupt_stack_table[NMI_IST_INDEX as usize] = nmi_ist;
-        tss.interrupt_stack_table[MACHINE_CHECK_IST_INDEX as usize] = machine_check_ist;
+        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stacks.double_fault;
+        tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = stacks.timer;
+        tss.interrupt_stack_table[STACK_FAULT_IST_INDEX as usize] = stacks.stack_fault;
+        tss.interrupt_stack_table[GP_FAULT_IST_INDEX as usize] = stacks.gp_fault;
+        tss.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] = stacks.page_fault;
+        tss.interrupt_stack_table[NMI_IST_INDEX as usize] = stacks.nmi;
+        tss.interrupt_stack_table[MACHINE_CHECK_IST_INDEX as usize] = stacks.machine_check;
         TSS = Some(tss);
     }
 

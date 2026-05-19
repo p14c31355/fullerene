@@ -32,7 +32,6 @@ pub mod init;
 pub mod interrupts;
 pub mod keyboard;
 pub mod loader;
-pub mod memory;
 pub mod memory_management;
 pub mod process;
 pub mod scheduler;

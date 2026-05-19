@@ -17,18 +17,26 @@ struct PeriodicTask {
     task: fn(u64, u64),
 }
 
-lazy_static::lazy_static! {
-    static ref PERIODIC_TASKS: [PeriodicTask; 8] = [
-        PeriodicTask { interval: 1000, last_tick: spin::Mutex::new(0), task: perform_system_health_checks },
-        PeriodicTask { interval: 5000, last_tick: spin::Mutex::new(0), task: perform_stats_logging },
-        PeriodicTask { interval: 2000, last_tick: spin::Mutex::new(0), task: perform_system_maintenance },
-        PeriodicTask { interval: 10000, last_tick: spin::Mutex::new(0), task: perform_memory_capacity_check },
-        PeriodicTask { interval: 100, last_tick: spin::Mutex::new(0), task: perform_process_cleanup_check },
-        PeriodicTask { interval: 30000, last_tick: spin::Mutex::new(0), task: perform_automated_backup },
-        PeriodicTask { interval: 5000, last_tick: spin::Mutex::new(0), task: |t, _| draw_desktop_on_available_framebuffer() },
-        PeriodicTask { interval: 10000, last_tick: spin::Mutex::new(0), task: |_, _| emergency_condition_handler() },
-    ];
+/// Wrapper functions to match `fn(u64, u64)` signature for non-arg tasks
+fn draw_desktop_task(_tick: u64, _iter: u64) {
+    draw_desktop_on_available_framebuffer();
 }
+
+fn emergency_handler_task(_tick: u64, _iter: u64) {
+    emergency_condition_handler();
+}
+
+/// Pre-allocated periodic tasks array (no heap allocation, no lazy_static)
+const PERIODIC_TASKS: [PeriodicTask; 8] = [
+    PeriodicTask { interval: 1000, last_tick: spin::Mutex::new(0), task: perform_system_health_checks },
+    PeriodicTask { interval: 5000, last_tick: spin::Mutex::new(0), task: perform_stats_logging },
+    PeriodicTask { interval: 2000, last_tick: spin::Mutex::new(0), task: perform_system_maintenance },
+    PeriodicTask { interval: 10000, last_tick: spin::Mutex::new(0), task: perform_memory_capacity_check },
+    PeriodicTask { interval: 100, last_tick: spin::Mutex::new(0), task: perform_process_cleanup_check },
+    PeriodicTask { interval: 30000, last_tick: spin::Mutex::new(0), task: perform_automated_backup },
+    PeriodicTask { interval: 5000, last_tick: spin::Mutex::new(0), task: draw_desktop_task },
+    PeriodicTask { interval: 10000, last_tick: spin::Mutex::new(0), task: emergency_handler_task },
+];
 use x86_64::VirtAddr;
 
 // System-wide counters and statistics

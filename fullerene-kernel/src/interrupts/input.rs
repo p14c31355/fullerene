@@ -112,12 +112,8 @@ define_input_interrupt_handler!(mouse_handler, 0x60, |byte: u8| {
 /// Timer interrupt handler (no preemption - scheduler loop handles yielding)
 #[unsafe(no_mangle)]
 pub extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
-    use petroleum::lock_and_modify;
-
-    // Increment global tick counter only
-    lock_and_modify!(super::TICK_COUNTER, counter, {
-        *counter += 1;
-    });
+    // Increment global tick counter (lock-free atomic increment)
+    super::TICK_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
     send_eoi();
 }

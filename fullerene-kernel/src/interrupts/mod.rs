@@ -10,14 +10,11 @@ pub mod idt;
 pub mod input;
 pub mod syscall;
 
-use lazy_static::lazy_static;
-use spin::Mutex;
+use core::sync::atomic::AtomicU64;
 use x86_64::instructions::interrupts;
 
-// Global tick counter for timing
-lazy_static! {
-    pub static ref TICK_COUNTER: Mutex<u64> = Mutex::new(0);
-}
+// Global tick counter for timing (lock-free atomic)
+pub static TICK_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // Re-export public functions and structures
 pub use exceptions::{
