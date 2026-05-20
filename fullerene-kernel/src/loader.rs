@@ -12,6 +12,42 @@ use x86_64::structures::paging::FrameAllocator;
 
 pub const PROGRAM_LOAD_BASE: u64 = 0x400000; // 4MB base address for user programs
 
+/// Guard for switching CR3 (page table base register).
+///
+/// SAFETY: This guard performs an unsafe operation to switch the page table.
+/// It is safe because it always restores the original CR3 in the Drop implementation.
+pub struct CrxSwitchGuard {
+    original_cr3: x86_64::structures::paging::PhysFrame,
+    original_cr3_flags: x86_64::registers::control::Cr3Flags,
+}
+
+impl CrxSwitchGuard {
+    /// Create a new CR3 switch guard.
+    ///
+    /// SAFETY: This function performs an unsafe operation to switch the page table.
+    /// It is safe because we always restore the original CR3 in the Drop implementation.
+    unsafe fn new(page_table: &ProcessPageTable) -> Self {
+        let (original_cr3, original_cr3_flags) =
+            x86_64::registers::control::Cr3::read();
+        let _ = crate::memory_management::switch_to_page_table(page_table);
+        Self {
+            original_cr3,
+            original_cr3_flags,
+        }
+    }
+}
+
+impl Drop for CrxSwitchGuard {
+    fn drop(&mut self) {
+        unsafe {
+            x86_64::registers::control::Cr3::write(
+                self.original_cr3,
+                self.original_cr3_flags,
+            );
+        }
+    }
+}
+
 /// Load a program from raw bytes and create a process for it using goblin
 pub fn load_program(
     image_data: &[u8],
@@ -115,42 +151,7 @@ pub fn load_program(
                         )?;
                     }
 
-                    /// Guard for switching CR3 (page table base register)
-                    ///
-                    /// SAFETY: This guard performs an unsafe operation to switch the page table.
-                    /// It is safe because we always restore the original CR3 in the Drop implementation.
-                    pub struct CrxSwitchGuard {
-                        original_cr3: x86_64::structures::paging::PhysFrame,
-                        original_cr3_flags: x86_64::registers::control::Cr3Flags,
-                    }
-
-                    impl CrxSwitchGuard {
-                        /// Create a new CR3 switch guard.
-                        ///
-                        /// SAFETY: This function performs an unsafe operation to switch the page table.
-                        /// It is safe because we always restore the original CR3 in the Drop implementation.
-                        unsafe fn new(page_table: &ProcessPageTable) -> Self {
-                            let (original_cr3, original_cr3_flags) =
-                                x86_64::registers::control::Cr3::read();
-                            let _ = crate::memory_management::switch_to_page_table(page_table);
-                            Self {
-                                original_cr3,
-                                original_cr3_flags,
-                            }
-                        }
-                    }
-
-                    impl Drop for CrxSwitchGuard {
-                        fn drop(&mut self) {
-                            unsafe {
-                                x86_64::registers::control::Cr3::write(
-                                    self.original_cr3,
-                                    self.original_cr3_flags,
-                                );
-                            }
-                        }
-                    }
-
+                    // Switch to process page table to copy segment data
                     let _cr3_guard = unsafe { CrxSwitchGuard::new(process_page_table) };
 
                     // Copy file data
@@ -221,7 +222,6 @@ petroleum::error_chain!(crate::memory_management::FreeError, LoadError,
 impl From<petroleum::common::logging::SystemError> for LoadError {
     fn from(error: petroleum::common::logging::SystemError) -> Self {
         match error {
-            // Map petrochemical SystemError to kernel SystemError first
             petroleum::common::logging::SystemError::MemOutOfMemory => LoadError::OutOfMemory,
             petroleum::common::logging::SystemError::InvalidArgument => LoadError::InvalidFormat,
             petroleum::common::logging::SystemError::InternalError => LoadError::MappingFailed,

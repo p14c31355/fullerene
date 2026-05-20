@@ -121,8 +121,7 @@ pub fn init() {
     // Future: Set up Task State Segment, kernel stack pointers, etc.
 }
 
-// Helper macro for easier context switching calls
-#[macro_export]
+/// Macro for easier context switching calls (crate-local only)
 macro_rules! switch_to_process {
     ($old:expr, $new:expr) => {
         unsafe { $crate::context_switch::switch_context($old, $new) }

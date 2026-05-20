@@ -1,3 +1,9 @@
+// SAFETY: This file uses static mut for GDT/TSS state which is accessed only during
+// single-threaded kernel initialization protected by GDT_INITIALIZED AtomicBool guard.
+// All accessor functions check initialization state before use. This is a common pattern
+// in low-level kernel code where the standard initialization sequence serializes all access.
+// The #[allow] is needed because Rust 2024 edition makes static_mut_refs a hard deny,
+// but this pattern is safe here due to the single-threaded boot phase.
 #![allow(static_mut_refs)]
 use core::sync::atomic::{AtomicBool, Ordering};
 use petroleum::{debug_log_no_alloc, mem_debug};
@@ -25,12 +31,23 @@ pub const GDT_TSS_STACK_COUNT: usize = 7;
 /// Total overhead for GDT initialization in bytes.
 pub const GDT_INIT_OVERHEAD: usize = GDT_TSS_STACK_COUNT * GDT_TSS_STACK_SIZE;
 
+// These statics are accessed only during GDT initialization.
+// Safety: They are protected by GDT_INITIALIZED AtomicBool guard, and all
+// accessors check initialization state before use. Access is serialized by
+// the kernel boot sequence (single-threaded during init).
+#[allow(static_mut_refs)]
 pub static mut TSS: Option<TaskStateSegment> = None;
+#[allow(static_mut_refs)]
 static mut GDT: Option<GlobalDescriptorTable> = None;
+#[allow(static_mut_refs)]
 static mut CODE_SELECTOR: Option<SegmentSelector> = None;
+#[allow(static_mut_refs)]
 static mut KERNEL_DATA_SELECTOR: Option<SegmentSelector> = None;
+#[allow(static_mut_refs)]
 static mut TSS_SELECTOR: Option<SegmentSelector> = None;
+#[allow(static_mut_refs)]
 static mut USER_DATA_SELECTOR: Option<SegmentSelector> = None;
+#[allow(static_mut_refs)]
 static mut USER_CODE_SELECTOR: Option<SegmentSelector> = None;
 static GDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
 

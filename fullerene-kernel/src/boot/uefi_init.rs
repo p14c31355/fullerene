@@ -12,6 +12,12 @@ use x86_64::{
     structures::paging::{Mapper, PageTableFlags, mapper::MapToError},
 };
 
+/// Helper to write debug messages to serial port (reduces repetitive `write_serial_bytes!` calls).
+#[inline(always)]
+pub(super) fn debug_serial(msg: &[u8]) {
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, msg);
+}
+
 /// Helper struct for UEFI initialization context
 #[cfg(target_os = "uefi")]
 #[repr(C)]
@@ -118,8 +124,8 @@ impl UefiInitContext {
         );
         petroleum::serial::early_log("Kernel: efi_main located at 0x");
         // Keep manual hex printing for now.
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        debug_serial(&buf[..len]);
+        debug_serial(b"\n");
         petroleum::serial::early_log("DEBUG: efi_main address printed");
 
         petroleum::serial::early_log("DEBUG: Attempting VGA buffer access 1");
@@ -143,9 +149,9 @@ impl UefiInitContext {
 
         let mut buf = [0u8; 16];
         let len = petroleum::serial::format_hex_to_buffer(self.memory_map as u64, &mut buf, 16);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: memory_map ptr: 0x");
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        debug_serial(b"DEBUG: memory_map ptr: 0x");
+        debug_serial(&buf[..len]);
+        debug_serial(b"\n");
 
         let kernel_virt_addr = crate::boot::uefi_entry::efi_main as u64;
         let kernel_phys_addr = kernel_virt_addr
@@ -156,7 +162,7 @@ impl UefiInitContext {
             self.memory_map_size,
             kernel_phys_addr,
         );
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: setup_kernel_location returned\n");
+        debug_serial(b"DEBUG: setup_kernel_location returned\n");
         res
     }
 

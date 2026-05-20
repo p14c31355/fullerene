@@ -662,9 +662,8 @@ pub fn get_active_process_count() -> usize {
 pub fn cleanup_terminated_processes() {
     PROCESS_MANAGER.cleanup();
 }
-// Test process module containing the test user process functions
-
-// Test process main function
+// Test process functions (only available in test builds)
+#[cfg(test)]
 pub fn test_process_main() {
     // Use syscall helpers for reduced code duplication
     let message = b"Hello from test user process!\n";
