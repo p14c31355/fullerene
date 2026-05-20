@@ -328,7 +328,7 @@ pub fn init(heap_start: usize, heap_end: usize) {
             id: pid,
             name: "idle",
             state: ProcessState::Running,
-            context: Box::from_raw(ctx_ptr),
+            context: Box::new(unsafe { core::ptr::read(ctx_ptr) }),
             page_table_phys_addr: PhysAddr::new(0),
             page_table: None,
             kernel_stack: VirtAddr::new(0),
