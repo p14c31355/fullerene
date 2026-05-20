@@ -8,7 +8,7 @@ use alloc::{collections::VecDeque, format};
 use core::sync::atomic::Ordering;
 use petroleum::{
     Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats,
-    display_stats_on_available_display, periodic_task, scheduler_log,
+    display_stats_on_available_display, graphics::Renderer, periodic_task, scheduler_log,
 };
 
 struct PeriodicTask {
@@ -270,7 +270,13 @@ fn yield_and_process_system_calls() {
 
 /// Draw the OS desktop on the available framebuffer (UEFI or BIOS)
 fn draw_desktop_on_available_framebuffer() {
-    petroleum::serial::serial_log(format_args!("Skipping desktop draw (backend not implemented)\n"));
+    let mut renderer_lock = crate::graphics::PRIMARY_RENDERER.lock();
+    if let Some(ref mut renderer) = *renderer_lock {
+        petroleum::graphics::draw_os_desktop(renderer);
+        renderer.present();
+    }
+    drop(renderer_lock);
+    crate::graphics::flush_gpu();
 }
 
 /// Main kernel scheduler loop - orchestrates all system functionality
