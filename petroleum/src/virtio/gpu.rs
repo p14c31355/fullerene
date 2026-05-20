@@ -675,17 +675,20 @@ impl VirtioGpu {
         self.wait_used(before);
     }
 
-    pub fn init_display(&mut self, w: u32, h: u32, fb: u64, sz: u32) {
+    pub fn init_display(&mut self, w: u32, h: u32, fb: u64, sz: u32) -> Result<(), VirtioGpuError> {
         if self.desc_table.is_null() {
             crate::serial::_print(format_args!("[VirtIO-GPU] ERROR: Queue not set up!\n"));
-            return;
+            return Err(VirtioGpuError::CommandFailed);
         }
 
         let get_display_info = VirtioGpuCtrlHeader { type_: VIRTIO_GPU_CMD_GET_DISPLAY_INFO, flags: 0, fence_id: 0, ctx_id: 0, padding: 0 }.to_le();
         unsafe { core::ptr::copy_nonoverlapping(&get_display_info as *const _ as *const u8, self.cmd_buf, core::mem::size_of::<VirtioGpuCtrlHeader>()); }
         let before = self.read_used_idx();
         unsafe { self.submit_raw(0, core::mem::size_of::<VirtioGpuCtrlHeader>() as u32); }
-        self.wait_used(before);
+        if !self.wait_used(before) {
+            crate::serial::_print(format_args!("[VirtIO-GPU] ERROR: GET_DISPLAY_INFO timed out\n"));
+            return Err(VirtioGpuError::CommandFailed);
+        }
         
         self.resource_id = 1;
         let create2d = VirtioGpuResourceCreate2d {
@@ -698,7 +701,10 @@ impl VirtioGpu {
         unsafe { core::ptr::copy_nonoverlapping(&create2d as *const _ as *const u8, self.cmd_buf, core::mem::size_of::<VirtioGpuResourceCreate2d>()); }
         let before = self.read_used_idx();
         unsafe { self.submit_raw(0, core::mem::size_of::<VirtioGpuResourceCreate2d>() as u32); }
-        self.wait_used(before);
+        if !self.wait_used(before) {
+            crate::serial::_print(format_args!("[VirtIO-GPU] ERROR: RESOURCE_CREATE_2D timed out\n"));
+            return Err(VirtioGpuError::CommandFailed);
+        }
 
         let attach_cmd = AttachCmd {
             hdr: VirtioGpuCtrlHeader { type_: VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, flags: 0, fence_id: 0, ctx_id: 0, padding: 0 },
@@ -709,7 +715,10 @@ impl VirtioGpu {
         unsafe { core::ptr::copy_nonoverlapping(&attach_cmd as *const _ as *const u8, self.cmd_buf, core::mem::size_of::<AttachCmd>()); }
         let before = self.read_used_idx();
         unsafe { self.submit_raw(0, core::mem::size_of::<AttachCmd>() as u32); }
-        self.wait_used(before);
+        if !self.wait_used(before) {
+            crate::serial::_print(format_args!("[VirtIO-GPU] ERROR: RESOURCE_ATTACH_BACKING timed out\n"));
+            return Err(VirtioGpuError::CommandFailed);
+        }
 
         let set_scanout = VirtioGpuSetScanout {
             hdr: VirtioGpuCtrlHeader { type_: VIRTIO_GPU_CMD_SET_SCANOUT, flags: 0, fence_id: 0, ctx_id: 0, padding: 0 },
@@ -720,7 +729,11 @@ impl VirtioGpu {
         unsafe { core::ptr::copy_nonoverlapping(&set_scanout as *const _ as *const u8, self.cmd_buf, core::mem::size_of::<VirtioGpuSetScanout>()); }
         let before = self.read_used_idx();
         unsafe { self.submit_raw(0, core::mem::size_of::<VirtioGpuSetScanout>() as u32); }
-        self.wait_used(before);
+        if !self.wait_used(before) {
+            crate::serial::_print(format_args!("[VirtIO-GPU] ERROR: SET_SCANOUT timed out\n"));
+            return Err(VirtioGpuError::CommandFailed);
+        }
         self.flush(w, h);
+        Ok(())
     }
 }

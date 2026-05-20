@@ -286,11 +286,11 @@ pub fn scheduler_loop() -> ! {
 
     // Verify the drawing test to diagnose rendering issues
     let test_result = {
-        let backend_lock = crate::graphics::PRIMARY_BACKEND.lock();
+        let backend_lock = crate::graphics::PRIMARY_RENDERER.lock();
         if let Some(ref _renderer) = *backend_lock {
             petroleum::graphics::DrawingTestResult::Pass
         } else {
-            petroleum::graphics::DrawingTestResult::Fail("PRIMARY_BACKEND is None")
+            petroleum::graphics::DrawingTestResult::Fail("PRIMARY_RENDERER is None")
         }
     };
 

@@ -234,19 +234,36 @@ pub fn init_graphics() {
             };
 
             petroleum::serial::serial_log(format_args!("[graphics] Initializing VirtIO-GPU display: {}x{}\n", fb_info.width, fb_info.height));
-            gpu.init_display(fb_info.width, fb_info.height, fb_info.address, fb_info.stride * fb_info.height * 4);
+            match gpu.init_display(fb_info.width, fb_info.height, fb_info.address, fb_info.stride * fb_info.height * 4) {
+                Ok(()) => {
+                    let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(fb_info);
+                    let renderer = petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer);
 
-            let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(fb_info);
-            let renderer = petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer);
-
-            set_primary_renderer(renderer);
-            *VIRTIO_GPU.lock() = Some(Box::new(gpu));
-            petroleum::serial::serial_log(format_args!("[graphics] VirtIO-GPU assigned as PRIMARY_RENDERER using configuration\n"));
-            return; // Prevent GOP fallback from overwriting the VirtIO-GPU renderer
+                    set_primary_renderer(renderer);
+                    *VIRTIO_GPU.lock() = Some(Box::new(gpu));
+                    petroleum::serial::serial_log(format_args!("[graphics] VirtIO-GPU assigned as PRIMARY_RENDERER using configuration\n"));
+                    return; // Prevent GOP fallback from overwriting the VirtIO-GPU renderer
+                }
+                Err(e) => {
+                    petroleum::serial::serial_log(format_args!(
+                        "[graphics] VirtIO-GPU init_display failed: {:?}. Falling back to GOP.\n", e
+                    ));
+                    // gpu is dropped here, VIRTIO_GPU is NOT set.
+                    // MMIO mappings remain but won't interfere with GOP.
+                }
+            }
+        } else {
+            petroleum::serial::serial_log(format_args!(
+                "[graphics] VirtIO-GPU init_virtio_gpu() returned None. Falling back to GOP.\n"
+            ));
         }
+    } else {
+        petroleum::serial::serial_log(format_args!(
+            "[graphics] No VirtIO-GPU device found. Trying GOP.\n"
+        ));
     }
 
-    // Try to create primary console from petroleum (only reached if no VirtIO-GPU was found)
+    // Try to create primary console from petroleum (GOP fallback)
     if let Some(primary_renderer) = petroleum::early::framebuffer::create_primary_console() {
         *PRIMARY_RENDERER.lock() = Some(primary_renderer);
         petroleum::debug_log!("Graphics initialized with GOP Framebuffer");
