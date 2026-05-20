@@ -506,7 +506,7 @@ pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u3
 pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
     let bpp = core::mem::size_of::<T>() as u32;
     let pixels_per_line = (stride / bpp) as usize;
-    let shift_pixels = 8 * pixels_per_line;
+    let shift_pixels = 10 * pixels_per_line;
     let total_pixels = pixels_per_line * height as usize;
 
     let fb_ptr = address as *mut T;
