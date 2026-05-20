@@ -90,14 +90,17 @@ pub fn detect_vga_mode_13h() -> Option<EarlyFramebufferInfo> {
     })
 }
 
-/// Try to detect a QEMU std-vga / Bochs VBE framebuffer via PCI probing.
+/// Try to detect a QEMU std-vga / Bochs VBE framebuffer.
+///
+/// Uses the safe `test_qemu_framebuffer_access()` which validates the address
+/// without performing a direct WC-memory probe (reads on WC memory always
+/// return 0, so probing is meaningless and potentially dangerous).
 ///
 /// Returns a `FramebufferInfo` suitable for a runtime `FramebufferWriter<u32>`.
 pub fn detect_qemu_std_vga() -> Option<FramebufferInfo> {
     for qcfg in crate::QEMU_CONFIGS.iter() {
-        let probe_ptr = qcfg.address as *const u32;
-        unsafe {
-            let _first_pixel = core::ptr::read_volatile(probe_ptr);
+        if !crate::graphics::uefi::test_qemu_framebuffer_access(qcfg.address) {
+            continue;
         }
         crate::serial::_print(format_args!(
             "[early::fb] QEMU std-vga detected at {:#x}: {}x{}x{}\n",

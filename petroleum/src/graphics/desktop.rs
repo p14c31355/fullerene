@@ -11,7 +11,7 @@ pub fn draw_os_desktop(renderer: &mut dyn Renderer) {
 }
 
 fn draw_desktop_internal(renderer: &mut dyn Renderer, _mode: &str) {
-    let bg_color = 32u32; // Dark gray
+    let bg_color = 0x202020u32; // Dark gray
     fill_background(renderer, bg_color);
 
     // Main desktop elements
@@ -41,16 +41,16 @@ fn draw_menu_bar(renderer: &mut dyn Renderer) {
 fn draw_main_window(renderer: &mut dyn Renderer) {
     // draw_border_rect is a macro that uses embedded-graphics.
     // For now, we implement a simple border using rectangles.
-    renderer.draw_rect(50, 80, 200, 100, 255); // Fill
-    renderer.draw_rect(50, 80, 200, 1, 64); // Top
-    renderer.draw_rect(50, 179, 200, 1, 64); // Bottom
-    renderer.draw_rect(50, 80, 1, 100, 64); // Left
-    renderer.draw_rect(249, 80, 1, 100, 64); // Right
+    renderer.draw_rect(50, 80, 200, 100, 0xF0F0F0); // Fill (light gray)
+    renderer.draw_rect(50, 80, 200, 1, 0x404040); // Top border
+    renderer.draw_rect(50, 179, 200, 1, 0x404040); // Bottom border
+    renderer.draw_rect(50, 80, 1, 100, 0x404040); // Left border
+    renderer.draw_rect(249, 80, 1, 100, 0x404040); // Right border
 }
 
 fn draw_icons(renderer: &mut dyn Renderer) {
-    renderer.draw_rect(65, 100, 48, 48, 96);
-    renderer.draw_rect(125, 100, 48, 48, 160);
+    renderer.draw_rect(65, 100, 48, 48, 0x606060);
+    renderer.draw_rect(125, 100, 48, 48, 0xA0A0A0);
 }
 
 fn draw_taskbar_with_buttons(renderer: &mut dyn Renderer) {
@@ -84,14 +84,14 @@ fn draw_app_window(
     title: &str,
 ) {
     // Simplified window shell using Renderer
-    renderer.draw_rect(x as i32, y as i32, width, height, 255); // BG
+    renderer.draw_rect(x as i32, y as i32, width, height, 0xF0F0F0); // BG (light gray)
     renderer.draw_rect(x as i32, y as i32, width, 25, COLOR_DARK_GRAY); // Title bar
     renderer.draw_text(x as i32 + 10, y as i32 + 8, title, COLOR_BLACK);
 }
 
 fn draw_shell_window(renderer: &mut dyn Renderer, x: u32, y: u32, width: u32, height: u32) {
     // Simplified shell window using Renderer
-    renderer.draw_rect(x as i32, y as i32, width, height, 255); // BG
+    renderer.draw_rect(x as i32, y as i32, width, height, 0xF0F0F0); // BG (light gray)
     renderer.draw_rect(x as i32, y as i32, width, 25, COLOR_DARK_GRAY); // Title bar
     renderer.draw_text(x as i32 + 10, y as i32 + 8, "Shell", COLOR_BLACK);
 

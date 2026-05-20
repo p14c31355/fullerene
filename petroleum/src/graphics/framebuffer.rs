@@ -26,6 +26,24 @@ pub trait FramebufferLike:
     DrawTarget<Color = Rgb888, Error = core::convert::Infallible> + Send + Sync
 {
     fn put_pixel(&self, x: u32, y: u32, color: u32);
+    /// Fill a rectangle by writing color to each pixel directly into the framebuffer.
+    /// Default implementation calls put_pixel per pixel; backends should override with
+    /// a bulk-memory fill for performance.
+    fn fill_rect(&self, x: u32, y: u32, width: u32, height: u32, color: u32) {
+        for dy in 0..height {
+            let row = y + dy;
+            if row >= self.get_height() {
+                break;
+            }
+            for dx in 0..width {
+                let col = x + dx;
+                if col >= self.get_width() {
+                    break;
+                }
+                self.put_pixel(col, row, color);
+            }
+        }
+    }
     fn clear_screen(&self);
     fn get_width(&self) -> u32;
     fn get_height(&self) -> u32;
@@ -123,6 +141,13 @@ impl UefiFramebufferWriter {
             UefiFramebufferWriter::Vga8(w) => &w.info,
         }
     }
+
+    pub fn fill_rect(&self, x: u32, y: u32, width: u32, height: u32, color: u32) {
+        match self {
+            UefiFramebufferWriter::Uefi32(w) => w.fill_rect(x, y, width, height, color),
+            UefiFramebufferWriter::Vga8(w) => w.fill_rect(x, y, width, height, color),
+        }
+    }
 }
 
 impl crate::graphics::renderer::Renderer for UefiFramebufferWriter {
@@ -134,11 +159,7 @@ impl crate::graphics::renderer::Renderer for UefiFramebufferWriter {
     }
 
     fn draw_rect(&mut self, x: i32, y: i32, width: u32, height: u32, color: u32) {
-        for dy in 0..height {
-            for dx in 0..width {
-                self.draw_pixel(x + dx as i32, y + dy as i32, color);
-            }
-        }
+        self.fill_rect(x.max(0) as u32, y.max(0) as u32, width, height, color);
     }
 
     fn draw_text(&mut self, x: i32, y: i32, text: &str, color: u32) {
@@ -207,6 +228,10 @@ impl OriginDimensions for UefiFramebuffer {
 impl FramebufferLike for UefiFramebuffer {
     fn put_pixel(&self, x: u32, y: u32, color: u32) {
         delegate_call!(self, put_pixel, x, y, color);
+    }
+
+    fn fill_rect(&self, x: u32, y: u32, width: u32, height: u32, color: u32) {
+        delegate_call!(self, fill_rect, x, y, width, height, color);
     }
 
     fn clear_screen(&self) {
@@ -394,6 +419,30 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
         }
     }
 
+    /// Optimised bulk fill: writes `color` into every pixel of the rectangle
+    /// using aligned `T`-sized stores, one scan line at a time.
+    fn fill_rect(&self, x: u32, y: u32, width: u32, height: u32, color: u32) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        let x_end = x.saturating_add(width).min(self.info.width);
+        let y_end = y.saturating_add(height).min(self.info.height);
+        let pixel_val = T::from_u32(color);
+        let bpp = core::mem::size_of::<T>() as u32;
+        unsafe {
+            for row in y..y_end {
+                let row_base = (self.info.address as usize)
+                    + (row as usize * self.info.stride as usize)
+                    + (x as usize * bpp as usize);
+                let row_ptr = row_base as *mut T;
+                let count = (x_end - x) as usize;
+                for col in 0..count {
+                    core::ptr::write_volatile(row_ptr.add(col), pixel_val);
+                }
+            }
+        }
+    }
+
     fn clear_screen(&self) {
         unsafe {
             clear_buffer_pixels::<T>(
@@ -458,26 +507,30 @@ pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u3
     }
 }
 
-/// Generic framebuffer buffer scroll up operation
+/// Generic framebuffer buffer scroll up operation.
+///
+/// Shifts the entire framebuffer up by 8 scan lines using `T`-sized
+/// volatile accesses (much fewer operations than byte-by-byte).
+/// The last 8 scan lines are filled with `bg_color`.
 pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
-    let bytes_per_pixel = core::mem::size_of::<T>() as u32;
-    let shift_bytes = 8u64 * stride as u64;
-    let fb_ptr = address as *mut u8;
-    let total_bytes = height as u64 * stride as u64;
+    let bpp = core::mem::size_of::<T>() as u32;
+    let pixels_per_line = (stride / bpp) as usize;
+    let shift_pixels = 8 * pixels_per_line;
+    let total_pixels = pixels_per_line * height as usize;
 
-    // Use volatile copy for MMIO
-    for i in 0..(total_bytes - shift_bytes) {
-        let src = fb_ptr.add(shift_bytes as usize + i as usize);
-        let dst = fb_ptr.add(i as usize);
+    let fb_ptr = address as *mut T;
+
+    // Use volatile copy for MMIO (wider T reduces loop count)
+    for i in 0..(total_pixels.saturating_sub(shift_pixels)) {
+        let src = fb_ptr.add(shift_pixels + i);
+        let dst = fb_ptr.add(i);
         core::ptr::write_volatile(dst, core::ptr::read_volatile(src));
     }
 
     // Clear last 8 lines
-    let clear_offset = ((height - 8) as u32 * stride) as usize;
-    let clear_ptr = (address + clear_offset as u64) as *mut T;
-    let elements_per_line = (stride / bytes_per_pixel) as usize;
-    let clear_count = 8 * elements_per_line;
+    let clear_start = (height.saturating_sub(8) as usize) * pixels_per_line;
+    let clear_count = 8 * pixels_per_line;
     for i in 0..clear_count {
-        core::ptr::write_volatile(clear_ptr.add(i), bg_color);
+        core::ptr::write_volatile(fb_ptr.add(clear_start + i), bg_color);
     }
 }

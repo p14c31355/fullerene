@@ -5,9 +5,6 @@ use petroleum::graphics::text::VgaBuffer;
 use petroleum::graphics::{Console, Renderer, UefiFramebufferWriter};
 use spin::Mutex;
 
-// Import the PCI CFG reading function
-use petroleum::virtio::pci::read_virtio_reg_via_pci_cfg;
-
 /// Global primary framebuffer renderer (also used as text console).
 pub static PRIMARY_RENDERER: Mutex<Option<UefiFramebufferWriter>> = Mutex::new(None);
 
@@ -29,14 +26,15 @@ static VGA_CONSOLE: Mutex<Option<VgaBuffer>> = Mutex::new(None);
 /// 2. Fallback GOP detection (QEMU/etc)
 /// 3. Legacy VGA Text Mode (fallback)
 pub fn init_graphics() {
-    // Force reset GRAPHICS_INITIALIZED to handle un-zeroed .bss after world switch.
-    GRAPHICS_INITIALIZED.store(false, Ordering::SeqCst);
+    // Note: .bss is guaranteed zeroed by the bootloader, so GRAPHICS_INITIALIZED
+    // starts as false.  If this function is called more than once the swap will
+    // detect it and return early.
     if GRAPHICS_INITIALIZED.swap(true, Ordering::SeqCst) {
         petroleum::debug_log!("Graphics: Already initialized, skipping\n");
         return;
     }
 
-    if let Some(gpu_device) = {
+    if let Some(ref gpu_device) = {
         let mut scanner = petroleum::hardware::pci::PciScanner::new();
         let _ = scanner.scan_all_buses();
         scanner
@@ -46,16 +44,26 @@ pub fn init_graphics() {
             .cloned()
     } {
         petroleum::debug_log!("VirtIO-GPU: Initializing display\n");
-        let common_cap = petroleum::virtio::pci::find_virtio_capability(
-            &gpu_device,
-            petroleum::virtio::pci::VIRTIO_PCI_CAP_COMMON_CFG,
-        )
-        .expect("Failed to find common capability");
-        let notify_cap = petroleum::virtio::pci::find_virtio_capability(
-            &gpu_device,
-            petroleum::virtio::pci::VIRTIO_PCI_CAP_NOTIFY_CFG,
-        )
-        .expect("Failed to find notify capability");
+
+        // Scan capabilities once
+        let caps = petroleum::virtio::pci::get_virtio_caps(gpu_device);
+        petroleum::virtio::pci::dump_capabilities(gpu_device);
+
+        let mut common_cap = None;
+        let mut notify_cap = None;
+        let mut pci_cfg_cap = None;
+
+        for cap in &caps {
+            match cap.cfg_type {
+                petroleum::virtio::pci::VIRTIO_PCI_CAP_COMMON_CFG => common_cap = Some(cap),
+                petroleum::virtio::pci::VIRTIO_PCI_CAP_NOTIFY_CFG => notify_cap = Some(cap),
+                petroleum::virtio::pci::VIRTIO_PCI_CAP_PCI_CFG => pci_cfg_cap = Some(cap),
+                _ => {}
+            }
+        }
+
+        let common_cap = common_cap.expect("Common config not found");
+        let notify_cap = notify_cap.expect("Notify config not found");
 
         let common_bar = common_cap.bar;
         let common_offset = common_cap.offset;
@@ -67,34 +75,8 @@ pub fn init_graphics() {
             common_bar, common_offset
         ));
 
-        let bar_info = gpu_device.get_bar_info(common_bar).expect("Failed to get BAR info");
-        petroleum::serial::serial_log(format_args!(
-            "[graphics] BAR info: address={:#x}, size={:#x}, is_64bit={}\n",
-            bar_info.address, bar_info.size, bar_info.is_64bit
-        ));
-
-        // Use the GPU device found earlier in the function
-        let gpu_device = gpu_device;
-
-        let caps = petroleum::virtio::pci::get_virtio_caps(&gpu_device);
-        
-        let mut common_cap = None;
-        let mut notify_cap = None;
-        
-        for cap in &caps {
-            if cap.cfg_type == petroleum::virtio::pci::VIRTIO_PCI_CAP_COMMON_CFG {
-                common_cap = Some(cap);
-            } else if cap.cfg_type == petroleum::virtio::pci::VIRTIO_PCI_CAP_NOTIFY_CFG {
-                notify_cap = Some(cap);
-            }
-        }
-        
-        // Dump all capabilities for debugging
-        petroleum::virtio::pci::dump_capabilities(&gpu_device);
-
-        // ...
-        let common_cap = common_cap.expect("Common config not found");
-        let notify_cap = notify_cap.expect("Notify config not found");
+        let bar_info = gpu_device.get_bar_info(common_bar).expect("Failed to get Common BAR info");
+        let notify_bar_info = gpu_device.get_bar_info(notify_bar).expect("Failed to get Notify BAR info");
 
         petroleum::serial::serial_log(format_args!("[graphics] Dumping BAR registers for device at {}:{}\n", gpu_device.bus, gpu_device.device));
         for i in 0..6 {
@@ -102,14 +84,6 @@ pub fn init_graphics() {
             let val = petroleum::hardware::pci::PciConfigSpace::read_config_dword(gpu_device.bus, gpu_device.device, gpu_device.function, offset as u8);
             petroleum::serial::serial_log(format_args!("[graphics] BAR{} (offset {:#x}) = {:#x}\n", i, offset, val));
         }
-
-        let bar_info = gpu_device.get_bar_info(common_cap.bar).expect("Failed to get Common BAR info");
-        let notify_bar_info = gpu_device.get_bar_info(notify_cap.bar).expect("Failed to get Notify BAR info");
-
-        let common_bar = common_cap.bar;
-        let common_offset = common_cap.offset;
-        let notify_bar = notify_cap.bar;
-        let notify_offset = notify_cap.offset;
 
         petroleum::serial::serial_log(format_args!(
             "[graphics] BARs: common_bar={}, addr={:#x}, offset={:#x}; notify_bar={}, addr={:#x}, offset={:#x}\n",
@@ -180,14 +154,6 @@ pub fn init_graphics() {
             let used = used_virt as *mut petroleum::virtio::gpu::VringUsed;
 
             gpu.setup_queue(0, desc, desc_phys, avail, avail_phys, used, used_phys);
-
-            let mut pci_cfg_cap = None;
-
-            for cap in &caps {
-                if cap.cfg_type == petroleum::virtio::pci::VIRTIO_PCI_CAP_PCI_CFG {
-                    pci_cfg_cap = Some(cap);
-                }
-            }
 
             if let Some(cfg_cap) = pci_cfg_cap {
                 // NOTE: Do NOT access PCI_CFG capability via BAR indirect writes

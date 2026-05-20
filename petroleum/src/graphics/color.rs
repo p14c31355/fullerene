@@ -184,6 +184,7 @@ pub struct SimpleFramebufferConfig {
     pub height: usize,
     pub stride: usize, // bytes per row
     pub bytes_per_pixel: usize,
+    pub pixel_format: Option<crate::common::EfiGraphicsPixelFormat>,
 }
 
 /// Get the simple framebuffer instance (creates it from config if needed)
@@ -206,6 +207,9 @@ pub struct SimpleFramebuffer {
     pub height: usize,
     pub stride: usize, // bytes per row
     pub bytes_per_pixel: usize,
+    /// Controls byte ordering: `None` = VGA indexed, `Some(RGB)` → LE bytes [R,G,B,A],
+    /// `Some(BGR)` → LE bytes [B,G,R,A].
+    pub pixel_format: Option<crate::common::EfiGraphicsPixelFormat>,
 }
 
 impl SimpleFramebuffer {
@@ -217,6 +221,7 @@ impl SimpleFramebuffer {
             height: config.height,
             stride: config.stride,
             bytes_per_pixel: config.bytes_per_pixel,
+            pixel_format: config.pixel_format,
         }
     }
 
@@ -250,6 +255,10 @@ impl SimpleFramebuffer {
     }
 
     /// Draw a single pixel (orbclient-style)
+    ///
+    /// `color` is expected as `0x00RRGGBB` (RGB order).  For BGRA framebuffers
+    /// the u32 is written as-is (LE bytes naturally produce B,G,R,A order).
+    /// For RGBA the R and B bytes are swapped.  For VGA 8-bit the low byte is used.
     pub fn draw_pixel(&mut self, x: usize, y: usize, color: u32) {
         if x >= self.width || y >= self.height {
             return;
@@ -267,10 +276,29 @@ impl SimpleFramebuffer {
         }
 
         unsafe {
-            let color_bytes = color.to_le_bytes();
-            for i in 0..self.bytes_per_pixel {
-                if i < color_bytes.len() {
-                    write_volatile(pixel_addr.add(i), color_bytes[i]);
+            match (self.bytes_per_pixel, self.pixel_format) {
+                // 32 bpp BGRA → LE bytes naturally [B, G, R, A] from `0x00RRGGBB`
+                (4, Some(crate::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor))
+                | (4, None) => {
+                    write_volatile(pixel_addr as *mut u32, color);
+                }
+                // 32 bpp RGBA → LE should be [R, G, B, A]; swap R↔B in the u32 value
+                (4, Some(crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor)) => {
+                    let swapped = (color & 0xFF00FF00)
+                        | ((color & 0x00FF0000) >> 16)
+                        | ((color & 0x000000FF) << 16);
+                    write_volatile(pixel_addr as *mut u32, swapped);
+                }
+                // 8 bpp VGA (indexed) – use low byte
+                (1, _) => {
+                    write_volatile(pixel_addr, (color & 0xFF) as u8);
+                }
+                // fallback: byte-by-byte (type-agnostic)
+                _ => {
+                    let color_bytes = color.to_le_bytes();
+                    for i in 0..self.bytes_per_pixel.min(4) {
+                        write_volatile(pixel_addr.add(i), color_bytes[i]);
+                    }
                 }
             }
         }
