@@ -69,7 +69,7 @@ pub extern "C" fn switch_context(
         "mov rax, [rbx + 184]; mov gs, ax",
         "mov rsp, [rbx + 56]", // restore rsp
         "mov rbx, [rbx + 8]", // restore rbx last
-        "mov rax, [rsi + 200]", // is_user
+        "mov rax, [rbx + 200]", // use rbx which still points to new_context
         "test rax, rax",
         "jz 1f",
         // User: push frame for iretq
