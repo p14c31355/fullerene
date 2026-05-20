@@ -492,14 +492,27 @@ impl UefiInitContext {
                 b"DEBUG: WARNING: Falling back to FB config from KernelArgs!\n"
             );
             let args = unsafe { &*self.args_ptr };
-            Some(petroleum::common::uefi::FullereneFramebufferConfig {
+            let config = petroleum::common::uefi::FullereneFramebufferConfig {
                 address: args.fb_address,
                 width: args.fb_width,
                 height: args.fb_height,
                 pixel_format: petroleum::common::uefi::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                 bpp: args.fb_bpp,
                 stride: (args.fb_width * 4), // Assume 32bpp
-            })
+            };
+            // CRITICAL: Save config back to FULLERENE_FRAMEBUFFER_CONFIG so that
+            // map_mmio() and init_graphics() can find it later.
+            petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+                .call_once(|| spin::Mutex::new(Some(config)));
+            petroleum::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: FB config saved to FULLERENE_FRAMEBUFFER_CONFIG from KernelArgs\n"
+            );
+            // Re-read from global to ensure consistency
+            petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+                .get()
+                .and_then(|mutex| *mutex.lock())
         } else {
             framebuffer_config
         };
@@ -901,11 +914,44 @@ impl UefiInitContext {
         };
 
         // Map GOP Framebuffer if available
-        if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+        // First try FULLERENE_FRAMEBUFFER_CONFIG, then fall back to KERNEL_ARGS
+        let fb_config_for_mapping = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
             .get()
             .and_then(|m| m.lock().clone())
             .filter(fb_config_valid)
-        {
+            .or_else(|| {
+                // Try KERNEL_ARGS as fallback
+                let args_ptr = unsafe { petroleum::transition::KERNEL_ARGS };
+                if !args_ptr.is_null() {
+                    let args = unsafe { &*args_ptr };
+                    if args.fb_address >= 0x100000
+                        && args.fb_width > 0
+                        && args.fb_width <= 16384
+                        && args.fb_height > 0
+                        && args.fb_height <= 16384
+                        && (args.fb_bpp == 8 || args.fb_bpp == 16 || args.fb_bpp == 24 || args.fb_bpp == 32)
+                    {
+                        let stride = (args.fb_width as u64 * (args.fb_bpp as u64 / 8)) as u32;
+                        if stride > 0 {
+                            let config = petroleum::common::uefi::FullereneFramebufferConfig {
+                                address: args.fb_address,
+                                width: args.fb_width,
+                                height: args.fb_height,
+                                pixel_format: petroleum::common::uefi::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                                bpp: args.fb_bpp,
+                                stride,
+                            };
+                            // Also save to global for other consumers
+                            let _ = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config)));
+                            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [map_mmio] FB config from KERNEL_ARGS fallback, saved to FULLERENE_FRAMEBUFFER_CONFIG\n");
+                            return Some(config);
+                        }
+                    }
+                }
+                None
+            });
+
+        if let Some(config) = fb_config_for_mapping {
             petroleum::debug_log!("DEBUG: Mapping framebuffer: addr={:#x}, {}x{}, {} BPP\n", config.address, config.width, config.height, config.bpp);
             let fb_phys = config.address;
             let fb_virt = fb_phys + petroleum::common::memory::get_physical_memory_offset() as u64;
