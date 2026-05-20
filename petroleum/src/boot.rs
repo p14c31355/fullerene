@@ -248,17 +248,29 @@ pub fn create_primary_console() -> Option<crate::graphics::framebuffer::UefiFram
             fb_phys, fb_virt, fb_width, fb_height, fb_bpp, fb_stride
         );
         trace!("fb_size={} bytes, fb_pages={}\n", fb_size, fb_pages);
+        
+        // Debugging: Verify stride matches expected bytes-per-line
+        let expected_stride = (fb_width as u64 * (fb_bpp as u64 / 8)) as u32;
+        if fb_stride != expected_stride {
+             trace!("WARNING: fb_stride ({}) != expected_stride ({})\n", fb_stride, expected_stride);
+        }
 
         let frame_allocator = get_frame_allocator_mut();
         let phys_offset = x86_64::VirtAddr::new(PHYSICAL_MEMORY_OFFSET_BASE as u64);
         trace!("getting L4 table\n");
         let l4 = unsafe { crate::page_table::active_level_4_table(phys_offset) };
 
-        let fb_flags =
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+        // Use NO_CACHE (Uncacheable) for the framebuffer to match MTRR/PAT settings
+        // set by UEFI firmware for PCI MMIO regions. Without this flag the pages
+        // would be mapped as Write-Back (WB) and writes would be stuck in the CPU
+        // cache and never reach the device memory.
+        let fb_flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::NO_EXECUTE
+            | PageTableFlags::NO_CACHE;
 
         trace!(
-            "mapping {} framebuffer pages with WB-friendly flags\n",
+            "mapping {} framebuffer pages with UC flags\n",
             fb_pages
         );
 

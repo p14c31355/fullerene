@@ -18,6 +18,18 @@ struct Args {
     /// Timeout for QEMU execution in seconds
     #[arg(long)]
     timeout: Option<u64>,
+
+    /// VGA device type: virtio-gpu, std, qxl, cirrus, none (default: virtio-gpu)
+    #[arg(long, default_value = "virtio-gpu")]
+    vga: String,
+
+    /// Display backend: gtk, sdl, none, curses (default: gtk when not headless)
+    #[arg(long)]
+    display: Option<String>,
+
+    /// Screen resolution in WxH format (e.g., 1024x768). Only effective with virtio-gpu/qxl
+    #[arg(long, default_value = "1024x768")]
+    resolution: String,
 }
 
 fn main() -> io::Result<()> {
@@ -218,38 +230,76 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
     let iso_path_str = iso_path.to_str().expect("ISO path should be valid UTF-8");
 
     let mut qemu_cmd = Command::new("qemu-system-x86_64");
-    let mut qemu_args = vec![
-        "-m".to_string(),
-        "4G".to_string(),
-        "-cpu".to_string(),
-        "qemu64,+smap,-invtsc".to_string(),
-        "-smp".to_string(),
-        "1".to_string(),
-        "-M".to_string(),
-        "q35".to_string(),
-        "-vga".to_string(),
-        "none".to_string(),
+    let mut qemu_args: Vec<String> = vec![
+        "-m".to_string(), "4G".to_string(),
+        "-cpu".to_string(), "qemu64,+smap,-invtsc".to_string(),
+        "-smp".to_string(), "1".to_string(),
+        "-M".to_string(), "q35".to_string(),
     ];
 
-    if args.headless {
-        qemu_args.push("-display".to_string());
-        qemu_args.push("none".to_string());
-    } else {
-        qemu_args.push("-display".to_string());
-        qemu_args.push("gtk,gl=off,window-close=on,zoom-to-fit=on".to_string());
+    // --- VGA device (dynamic) ---
+    match args.vga.as_str() {
+        "virtio-gpu" => {
+            qemu_args.push("-vga".to_string());
+            qemu_args.push("none".to_string());
+            // Parse resolution
+            let res_parts: Vec<&str> = args.resolution.split('x').collect();
+            let (w, h) = if res_parts.len() == 2 {
+                (res_parts[0], res_parts[1])
+            } else {
+                ("1024", "768")
+            };
+            qemu_args.push("-device".to_string());
+            qemu_args.push(format!(
+                "virtio-gpu-pci,disable-legacy=on,disable-modern=off,xres={},yres={}",
+                w, h
+            ));
+        }
+        "std" => {
+            qemu_args.push("-vga".to_string());
+            qemu_args.push("std".to_string());
+        }
+        "qxl" => {
+            qemu_args.push("-vga".to_string());
+            qemu_args.push("qxl".to_string());
+        }
+        "cirrus" => {
+            qemu_args.push("-vga".to_string());
+            qemu_args.push("cirrus".to_string());
+        }
+        "none" => {
+            qemu_args.push("-vga".to_string());
+            qemu_args.push("none".to_string());
+        }
+        other => {
+            log::warn!("Unknown VGA type '{}', falling back to virtio-gpu", other);
+            qemu_args.push("-vga".to_string());
+            qemu_args.push("none".to_string());
+            qemu_args.push("-device".to_string());
+            qemu_args.push("virtio-gpu-pci,disable-legacy=on,disable-modern=off".to_string());
+        }
+    }
+
+    // --- Display backend (dynamic) ---
+    let display = args.display.as_deref().unwrap_or(if args.headless { "none" } else { "gtk" });
+    qemu_args.push("-display".to_string());
+    match display {
+        "gtk" => qemu_args.push("gtk,gl=off,window-close=on,zoom-to-fit=on".to_string()),
+        "sdl" => qemu_args.push("sdl,gl=off".to_string()),
+        "none" => qemu_args.push("none".to_string()),
+        "curses" => qemu_args.push("curses".to_string()),
+        other => {
+            log::warn!("Unknown display backend '{}', using none", other);
+            qemu_args.push("none".to_string());
+        }
     }
 
     qemu_args.extend([
-        "-serial".to_string(),
-        "stdio".to_string(),
-        "-accel".to_string(),
-        "tcg,thread=single".to_string(),
-        "-d".to_string(),
-        "int,cpu_reset,guest_errors,unimp".to_string(),
-        "-D".to_string(),
-        "qemu_log.txt".to_string(),
-        "-monitor".to_string(),
-        "none".to_string(),
+        "-serial".to_string(), "stdio".to_string(),
+        "-accel".to_string(), "tcg,thread=single".to_string(),
+        "-d".to_string(), "int,cpu_reset,guest_errors,unimp".to_string(),
+        "-D".to_string(), "qemu_log.txt".to_string(),
+        "-monitor".to_string(), "none".to_string(),
     ]);
 
     qemu_args.push("-drive".to_string());
@@ -265,14 +315,9 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
     qemu_args.extend([
         "-no-reboot".to_string(),
         "-no-shutdown".to_string(),
-        "-device".to_string(),
-        "isa-debug-exit,iobase=0xf4,iosize=0x04".to_string(),
-        "-device".to_string(),
-        "virtio-vga,disable-legacy=on,disable-modern=off".to_string(),
-        "-rtc".to_string(),
-        "base=utc".to_string(),
-        "-boot".to_string(),
-        "menu=on,order=d".to_string(),
+        "-device".to_string(), "isa-debug-exit,iobase=0xf4,iosize=0x04".to_string(),
+        "-rtc".to_string(), "base=utc".to_string(),
+        "-boot".to_string(), "menu=on,order=d".to_string(),
         "-nodefaults".to_string(),
     ]);
 

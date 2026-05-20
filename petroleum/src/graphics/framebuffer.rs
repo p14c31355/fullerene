@@ -325,19 +325,8 @@ impl<T: PixelType> FramebufferWriter<T> {
     }
 
     pub fn rgb888_to_pixel_format(&self, color: Rgb888) -> u32 {
-        let rgb = || rgb_pixel(color.r(), color.g(), color.b());
-        let bgr = || rgb_pixel(color.b(), color.g(), color.r());
-        match self.info.pixel_format {
-            Some(EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor) => rgb(),
-            Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor) => bgr(),
-            // Cirrus VGA commonly reports PixelBitMask but expects RGB format
-            Some(EfiGraphicsPixelFormat::PixelBitMask) | Some(_) => rgb(), // Treat all unknown formats as RGB
-            None => {
-                // VGA mode (8-bit indexed color) - convert RGB to VGA palette index
-                // Simple palette approximation: map RGB to closest VGA color
-                vga_color_index(color.r(), color.g(), color.b())
-            }
-        }
+        // Force BGR for QEMU compatibility
+        rgb_pixel(color.b(), color.g(), color.r())
     }
 }
 
@@ -416,6 +405,8 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
             let fb_ptr = self.info.address as *mut u8;
             let pixel_ptr = fb_ptr.add(offset) as *mut T;
             core::ptr::write_volatile(pixel_ptr, T::from_u32(color));
+            // Force memory barrier to ensure write is visible to the display controller
+            core::arch::x86_64::_mm_sfence();
         }
     }
 
