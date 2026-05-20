@@ -10,6 +10,13 @@ pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
     heap::init_heap(bs)
 }
 
+// Memory map buffer size (128 KiB)
+const MAP_BUFFER_SIZE: usize = 128 * 1024;
+// Number of pages for kernel args, L4 table, and stack (1 MB)
+const KERNEL_ARGS_PAGES: usize = 256;
+// Standard 4 KiB page size
+const PAGE_SIZE_4K: u64 = 4096;
+
 /// Exits boot services and jumps to the kernel's entry point.
 /// This function is the final step of the bootloader.
 pub fn exit_boot_services_and_jump(
@@ -39,16 +46,16 @@ pub fn exit_boot_services_and_jump(
         petroleum::info_log!("About to setup buffer vars");
     }
     // Pre-allocate buffer before loop to include it in map key
-    let map_buffer_size: usize = 128 * 1024; // 128 KiB
+    let map_buffer_size: usize = MAP_BUFFER_SIZE;
     let alloc_pages = petroleum::common::utils::calculate_pages_for_buffer(map_buffer_size);
 
     // Allocate memory for KernelArgs, L4 table, and initial kernel stack before exiting boot services
-    // We allocate a larger block (e.g., 256 pages = 1MB) to ensure the stack and arguments are far apart.
+    // We allocate a larger block (KERNEL_ARGS_PAGES pages) to ensure the stack and arguments are far apart.
     let mut args_phys_addr: usize = 0;
     let args_alloc_status = (bs.allocate_pages)(
         0usize,
         EfiMemoryType::EfiLoaderData,
-        256,
+        KERNEL_ARGS_PAGES,
         &mut args_phys_addr,
     );
     if EfiStatus::from(args_alloc_status) != EfiStatus::Success {
@@ -187,10 +194,10 @@ pub fn exit_boot_services_and_jump(
                 }
                 // If our fixed buffer is too small, this is a fatal error.
                 let _ = (bs.free_pages)(map_phys_addr, alloc_pages); // Cleanup
-                petroleum::serial::_print(format_args!(
-                    "Error: Memory map size {} exceeds fixed buffer capacity {}\n",
+                petroleum::println!(
+                    "Error: Memory map size {} exceeds fixed buffer capacity {}",
                     map_size, map_buffer_size
-                ));
+                );
                 return Err(BellowsError::InvalidState(
                     "Memory map too large for buffer.",
                 ));
@@ -255,9 +262,7 @@ pub fn exit_boot_services_and_jump(
     // handles high-half relocation and returns the virtual address.
 
     // Setup Page Tables before jumping to kernel
-    petroleum::serial::_print(format_args!(
-        "Reinitializing page tables for kernel jump...\n"
-    ));
+    petroleum::println!("Reinitializing page tables for kernel jump...");
 
     // We only need InitAndJumpArgs for the transition.
     // KernelArgs will be reconstructed or passed via InitAndJumpArgs.
@@ -304,19 +309,19 @@ pub fn exit_boot_services_and_jump(
     let kernel_entry_virt =
         petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64() + kernel_entry_phys;
 
-    petroleum::serial::_print(format_args!(
-        "Jumping to kernel entry point (virt): {:#x}\n",
+    petroleum::println!(
+        "Jumping to kernel entry point (virt): {:#x}",
         kernel_entry_virt
-    ));
+    );
 
-    petroleum::serial::_print(format_args!("Bellows: Calling init_and_jump now...\n"));
+    petroleum::println!("Bellows: Calling init_and_jump now...");
 
     // Stack top must be the higher-half virtual address, not the identity-mapped physical address,
     // because after CR3 switch the new page table only identity-maps 0-256MB.
-    // The kernel's stack area is at args_phys_addr + 1MB (256 pages * 4KB).
+    // The kernel's stack area is at args_phys_addr + (KERNEL_ARGS_PAGES pages).
     let kernel_stack_top = petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64()
         + args_phys_addr as u64
-        + (256 * 4096);
+        + (KERNEL_ARGS_PAGES as u64 * PAGE_SIZE_4K);
 
     // Prepare the KernelArgs structure the kernel expects
     // Place it right after InitAndJumpArgs in the allocated block

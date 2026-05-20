@@ -78,28 +78,42 @@ fn setup_ovmf(workspace_root: &PathBuf) -> io::Result<()> {
     Ok(())
 }
 
+/// Build a UEFI package with cargo, using consistent target and profile settings.
+fn build_uefi_package(
+    workspace_root: &PathBuf,
+    package: &str,
+    features: Option<&str>,
+) -> io::Result<()> {
+    let mut args: Vec<&str> = vec![
+        "+nightly",
+        "build",
+        "-q",
+        "-Zbuild-std=core,alloc",
+        "--package",
+        package,
+        "--target",
+        "x86_64-unknown-uefi",
+        "--profile",
+        "dev",
+    ];
+    if let Some(feats) = features {
+        args.extend(["--features", feats]);
+    }
+    let status = Command::new("cargo")
+        .current_dir(workspace_root)
+        .args(&args)
+        .status()?;
+    if !status.success() {
+        return Err(io::Error::other(format!("{} build failed", package)));
+    }
+    Ok(())
+}
+
 fn create_iso_and_setup(
     workspace_root: &PathBuf,
 ) -> io::Result<(PathBuf, PathBuf, PathBuf, tempfile::NamedTempFile)> {
     // --- 1. Build fullerene-kernel (no_std) ---
-    let status = Command::new("cargo")
-        .current_dir(workspace_root)
-        .args([
-            "+nightly",
-            "build",
-            "-q",
-            "-Zbuild-std=core,alloc",
-            "--package",
-            "fullerene-kernel",
-            "--target",
-            "x86_64-unknown-uefi",
-            "--profile",
-            "dev",
-        ])
-        .status()?;
-    if !status.success() {
-        return Err(io::Error::other("fullerene-kernel build failed"));
-    }
+    build_uefi_package(workspace_root, "fullerene-kernel", None)?;
 
     let target_dir = workspace_root
         .join("target")
@@ -129,26 +143,7 @@ fn create_iso_and_setup(
     }
 
     let bellows_path = target_dir.join("bellows.efi");
-    let status = Command::new("cargo")
-        .current_dir(workspace_root)
-        .args([
-            "+nightly",
-            "build",
-            "-q",
-            "-Zbuild-std=core,alloc",
-            "--features",
-            "debug_loader",
-            "--package",
-            "bellows",
-            "--target",
-            "x86_64-unknown-uefi",
-            "--profile",
-            "dev",
-        ])
-        .status()?;
-    if !status.success() {
-        return Err(io::Error::other("bellows build failed"));
-    }
+    build_uefi_package(workspace_root, "bellows", Some("debug_loader"))?;
 
     // --- 3. Create ISO using isobemak ---
     let iso_path = workspace_root.join("fullerene.iso");
