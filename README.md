@@ -68,10 +68,35 @@ This command:
 2. Creates a FAT image and ISO (`fullerene.iso`) with the bootloader and kernel.
 3. Launches QEMU with:
    - 4GB RAM.
-   - Cirrus VGA with GTK display.
+   - VirtIO-GPU with GTK display (1024x768 default resolution).
    - Serial output to stdout (for logs).
    - OVMF firmware for UEFI booting.
    - Boot from the ISO.
+
+### QEMU Options
+
+Flasks supports dynamic VGA/display configuration via CLI arguments:
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--vga <type>` | `virtio-gpu` | VGA device: `virtio-gpu`, `std`, `qxl`, `cirrus`, `none` |
+| `--display <backend>` | `gtk` | Display backend: `gtk`, `sdl`, `none`, `curses` |
+| `--resolution <WxH>` | `1024x768` | Screen resolution (virtio-gpu/qxl only) |
+
+Examples:
+```bash
+# std-vga (Bochs VBE) for framebuffer debugging
+cargo run --bin flasks -- --vga std
+
+# QXL with SDL backend
+cargo run --bin flasks -- --vga qxl --display sdl
+
+# Headless mode (serial only, no GUI)
+cargo run --bin flasks -- --display none
+
+# Custom resolution with virtio-gpu
+cargo run --bin flasks -- --resolution 1280x720
+```
 
 Expected output:
 - Serial logs from bootloader: Heap init, GOP init, kernel load.
