@@ -1,3 +1,12 @@
+pub mod backend;
+pub use backend::FramebufferBackend;
+
+pub mod gop;
+pub use gop::GopFramebuffer;
+
+pub mod virtio_gpu;
+pub use virtio_gpu::VirtioGpuFramebuffer;
+
 /// Generic border rectangle drawing
 #[macro_export]
 macro_rules! draw_border_rect {

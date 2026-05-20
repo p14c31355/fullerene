@@ -906,6 +906,7 @@ impl UefiInitContext {
             .and_then(|m| m.lock().clone())
             .filter(fb_config_valid)
         {
+            petroleum::debug_log!("DEBUG: Mapping framebuffer: addr={:#x}, {}x{}, {} BPP\n", config.address, config.width, config.height, config.bpp);
             let fb_phys = config.address;
             let fb_virt = fb_phys + petroleum::common::memory::get_physical_memory_offset() as u64;
             let fb_size = (config.width as u64 * config.height as u64 * config.bpp as u64) / 8;

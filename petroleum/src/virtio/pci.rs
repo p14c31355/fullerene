@@ -149,27 +149,15 @@ pub fn write_virtio_reg_via_pci_cfg(
     let cfg_base = cap.cap_pos;
 
     // 1. Select the BAR and offset to write to
+    crate::serial::_print(format_args!("[PCI-CFG-WRITE] bar={}, off={:#x}, val={:#x}, width={}\n", bar, offset, value, width));
     PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, cfg_base + 4, bar as u32);
     PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, cfg_base + 8, offset);
     PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, cfg_base + 12, width);
 
     // 2. Write the value to pci_cfg_data (offset 16)
-    let mut data = PciConfigSpace::read_config_dword(
-        device.bus, device.device, device.function, cfg_base + 16
+    PciConfigSpace::write_config_dword_raw(
+        device.bus, device.device, device.function, cfg_base + 16, value
     );
-
-    let shift = ((offset & 3) * 8) as u32;
-    let mask = match width {
-        1 => 0xFFu32,
-        2 => 0xFFFFu32,
-        4 => 0xFFFFFFFFu32,
-        _ => return None,
-    };
-
-    let cleared = data & !(mask << shift);
-    let new_data = cleared | ((value << shift) & mask);
-
-    PciConfigSpace::write_config_dword_raw(device.bus, device.device, device.function, cfg_base + 16, new_data);
     Some(())
 }
 

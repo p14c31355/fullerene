@@ -246,12 +246,12 @@ pub fn init_virtio_gpu(
 
 impl VirtioGpu {
     fn read_common_cfg(&self, offset: u32, width: u32) -> Option<u32> {
-        // Use direct MMIO for reads.
+        // Direct MMIO access
         self.read_common_via_direct(offset, width)
     }
 
     fn write_common_cfg(&self, offset: u32, value: u32, width: u32) -> Option<()> {
-        // Use direct MMIO for writes.
+        // Direct MMIO access
         self.write_common_via_direct(offset, value, width)
     }
 
@@ -294,33 +294,51 @@ impl VirtioGpu {
         self.w32(0x0c, (v >> 32) as u32);
     }
 
-    fn set_queue_select(&self, idx: u16) { self.write_common_cfg(0x16, idx as u32, 2).expect("Direct write failed"); }
-    fn write_queue_size(&self, size: u16) { self.write_common_cfg(0x18, size as u32, 2).expect("Direct write failed"); }
-    fn set_queue_enable(&self, en: bool) { self.write_common_cfg(0x1c, if en { 1u16 } else { 0u16 } as u32, 2).expect("Direct write failed"); }
+    fn set_queue_select(&self, idx: u16) { 
+        crate::serial::_print(format_args!("[VirtIO-GPU] set_queue_select: {}\n", idx));
+        self.write_common_cfg(0x16, idx as u32, 2).expect("Direct write failed"); 
+    }
+    fn write_queue_size(&self, size: u16) { 
+        crate::serial::_print(format_args!("[VirtIO-GPU] write_queue_size: {}\n", size));
+        self.write_common_cfg(0x18, size as u32, 2).expect("Direct write failed"); 
+    }
+    fn set_queue_enable(&self, en: bool) { 
+        crate::serial::_print(format_args!("[VirtIO-GPU] set_queue_enable: {}\n", en));
+        self.write_common_cfg(0x1c, if en { 1u16 } else { 0u16 } as u32, 2).expect("Direct write failed"); 
+    }
 
     fn set_queue_desc(&self, a: u64) {
+        crate::serial::_print(format_args!("[VirtIO-GPU] set_queue_desc: {:#x}\n", a));
         self.write_common_cfg(0x20, a as u32, 4).expect("Direct write failed");
         self.write_common_cfg(0x24, (a >> 32) as u32, 4).expect("Direct write failed");
     }
 
     fn set_queue_avail(&self, a: u64) {
+        crate::serial::_print(format_args!("[VirtIO-GPU] set_queue_avail: {:#x}\n", a));
         self.write_common_cfg(0x28, a as u32, 4).expect("Direct write failed");
         self.write_common_cfg(0x2c, (a >> 32) as u32, 4).expect("Direct write failed");
     }
 
     fn set_queue_used(&self, a: u64) {
+        crate::serial::_print(format_args!("[VirtIO-GPU] set_queue_used: {:#x}\n", a));
         self.write_common_cfg(0x30, a as u32, 4).expect("Direct write failed");
         self.write_common_cfg(0x34, (a >> 32) as u32, 4).expect("Direct write failed");
     }
 
     fn read_common_via_direct(&self, offset: u32, width: u32) -> Option<u32> {
         let ptr = unsafe { (self.common_virt_absolute as *mut u8).add(offset as usize) };
-        match width {
+        let val = match width {
             1 => Some(unsafe { core::ptr::read_volatile(ptr as *const u8) as u32 }),
             2 => Some(unsafe { core::ptr::read_volatile(ptr as *const u16) as u32 }),
             4 => Some(unsafe { core::ptr::read_volatile(ptr as *const u32) }),
             _ => None,
+        };
+        if let Some(v) = val {
+            if offset != 0x14 { // avoid flooding serial with status polls
+                crate::serial::_print(format_args!("[VirtIO-GPU] read_common: off={:#x}, width={}, val={:#x}\n", offset, width, v));
+            }
         }
+        val
     }
 
     fn write_common_via_direct(&self, offset: u32, value: u32, width: u32) -> Option<()> {
@@ -638,6 +656,7 @@ impl VirtioGpu {
         };
         // Modern mode: notify value is le32 queue index (not legacy u16)
         let notify_val = 0u32.to_le();
+        crate::serial::_print(format_args!("[VirtIO-GPU] NOTIFYING: addr={:#p}, val={:#x}\n", notify_ptr, notify_val));
         unsafe { core::ptr::write_volatile(notify_ptr, notify_val); }
     }
 

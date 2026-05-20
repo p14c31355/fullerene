@@ -147,24 +147,15 @@ fn log_system_stats(stats: &SystemStats) {
     );
 }
 
-/// Display system statistics on the primary console
 fn display_system_stats_on_display(stats: &SystemStats) {
-    use petroleum::graphics::Console as _;
-    let mut renderer = crate::graphics::PRIMARY_RENDERER.lock();
-    if let Some(ref mut console) = *renderer {
-        console.set_cursor(22, 0);
-        console.set_color(0x03); // Cyan (VGA index)
-        let _ = core::fmt::write(
-            console,
-            format_args!(
-                "Processes: {}/{} | Memory: {} KB | Tick: {}\n",
-                stats.active_processes,
-                stats.total_processes,
-                stats.memory_used / 1024,
-                stats.uptime_ticks
-            ),
-        );
-    }
+    // Placeholder for console drawing logic
+    petroleum::serial::_print(format_args!(
+        "Processes: {}/{} | Memory: {} KB | Tick: {}\n",
+        stats.active_processes,
+        stats.total_processes,
+        stats.memory_used / 1024,
+        stats.uptime_ticks
+    ));
 }
 
 /// Get the current system tick count
@@ -279,17 +270,7 @@ fn yield_and_process_system_calls() {
 
 /// Draw the OS desktop on the available framebuffer (UEFI or BIOS)
 fn draw_desktop_on_available_framebuffer() {
-    use petroleum::graphics::Renderer as _;
-    let mut renderer = crate::graphics::PRIMARY_RENDERER.lock();
-    if let Some(ref mut renderer) = *renderer {
-        let (w, h) = renderer.get_resolution();
-        petroleum::serial::serial_log(format_args!("Drawing desktop: {}x{}\n", w, h));
-        crate::graphics::draw_os_desktop(renderer);
-        drop(renderer);
-        crate::graphics::flush_gpu();
-    } else {
-        petroleum::serial::serial_log(format_args!("PRIMARY_RENDERER is None!\n"));
-    }
+    petroleum::serial::serial_log(format_args!("Skipping desktop draw (backend not implemented)\n"));
 }
 
 /// Main kernel scheduler loop - orchestrates all system functionality
@@ -297,32 +278,19 @@ pub fn scheduler_loop() -> ! {
     scheduler_log!("Scheduler loop starting");
 
     log::info!("Scheduler loop started");
-    crate::graphics::print_to_console("Scheduler loop started\n");
+    // Use a simpler approach to console printing that doesn't rely on global renderer state
+    petroleum::serial::_print(format_args!("Scheduler loop started\n"));
 
     // Draw the desktop immediately
     draw_desktop_on_available_framebuffer();
 
-    // Debug: Print renderer address to verify mapping
-    {
-        let renderer_lock = crate::graphics::PRIMARY_RENDERER.lock();
-        if let Some(ref renderer) = *renderer_lock {
-            let info = renderer.get_info();
-            petroleum::serial::serial_log(format_args!(
-                "DEBUG: Renderer FB Virt Addr: {:#x}, Phys Addr: {:#x}, Stride: {}\n",
-                info.address,
-                info.address - petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64,
-                info.stride
-            ));
-        }
-    }
-
     // Verify the drawing test to diagnose rendering issues
     let test_result = {
-        let renderer_lock = crate::graphics::PRIMARY_RENDERER.lock();
-        if let Some(ref renderer) = *renderer_lock {
+        let backend_lock = crate::graphics::PRIMARY_BACKEND.lock();
+        if let Some(ref _renderer) = *backend_lock {
             petroleum::graphics::DrawingTestResult::Pass
         } else {
-            petroleum::graphics::DrawingTestResult::Fail("PRIMARY_RENDERER is None")
+            petroleum::graphics::DrawingTestResult::Fail("PRIMARY_BACKEND is None")
         }
     };
 
