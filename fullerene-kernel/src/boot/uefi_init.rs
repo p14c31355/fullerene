@@ -498,7 +498,7 @@ impl UefiInitContext {
                 height: args.fb_height,
                 pixel_format: petroleum::common::uefi::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                 bpp: args.fb_bpp,
-                stride: (args.fb_width * 4), // Assume 32bpp
+                stride: (args.fb_width * (args.fb_bpp / 8)),
             };
             // CRITICAL: Save config back to FULLERENE_FRAMEBUFFER_CONFIG so that
             // map_mmio() and init_graphics() can find it later.
