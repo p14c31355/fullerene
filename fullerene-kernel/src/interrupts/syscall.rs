@@ -118,7 +118,7 @@ pub fn setup_syscall() {
     mem_debug!("Syscall: KernelGsBase written\n");
 
     let stack_top_addr = unsafe { SYSCALL_STACK_PTR };
-    petroleum::debug_log_no_alloc!("Syscall: initialized. LSTAR: ", entry_addr);
-    petroleum::debug_log_no_alloc!("Syscall: kernel stack: ", stack_top_addr);
+    petroleum::debug_log_no_alloc!("Syscall: initialized. LSTAR: {}", entry_addr);
+    petroleum::debug_log_no_alloc!("Syscall: kernel stack: {}", stack_top_addr);
     mem_debug!("Syscall: setup_syscall done\n");
 }

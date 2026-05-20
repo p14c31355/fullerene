@@ -51,7 +51,14 @@ impl<S: SerialPortOps> SerialPort<S> {
 
     /// Initializes the serial port.
     pub fn init(&mut self) {
-        crate::init_serial_port!(self, 0x80, 0x03, 0x00, 0x03, 0xC7, 0x0B);
+        crate::init_serial_port!(
+            self.ops.line_ctrl_port(),
+            self.ops.data_port(),
+            self.ops.irq_enable_port(),
+            self.ops.fifo_ctrl_port(),
+            self.ops.modem_ctrl_port(),
+            0x80, 0x03, 0x00, 0x03, 0xC7, 0x0B
+        );
     }
 
     /// Writes a single byte to the serial port.
@@ -109,10 +116,41 @@ impl<S: SerialPortOps> fmt::Write for SerialPort<S> {
     }
 }
 
-// Provides a global singleton for the serial port
-// Provides a global singleton for the serial port
-pub static SERIAL_PORT_WRITER: Mutex<SerialPort<Com1Ports>> =
-    Mutex::new(SerialPort::new(Com1Ports));
+// Capability structure for managing serial and UEFI output
+pub struct SerialManager {
+    serial_port: SerialPort<Com1Ports>,
+    uefi_writer: UefiWriter,
+}
+
+impl SerialManager {
+    pub fn new() -> Self {
+        Self {
+            serial_port: SerialPort::new(Com1Ports),
+            uefi_writer: UefiWriter::new(),
+        }
+    }
+
+    pub fn init_serial(&mut self) {
+        self.serial_port.init();
+    }
+
+    pub fn init_uefi(&mut self, con_out: *mut EfiSimpleTextOutput) {
+        self.uefi_writer.init(con_out);
+    }
+
+    pub fn write_serial(&mut self, s: &str) {
+        self.serial_port.write_string(s);
+    }
+
+    pub fn write_uefi(&mut self, s: &str) {
+        self.uefi_writer.write_string(s);
+    }
+}
+
+// Global serial manager instance for kernel-wide access.
+pub static SERIAL_MANAGER: Mutex<Option<SerialManager>> = Mutex::new(None);
+
+// Replaced by line 153 definition
 
 pub struct UefiWriter {
     con_out: *mut EfiSimpleTextOutput,
@@ -143,7 +181,7 @@ impl UefiWriter {
             return Ok(());
         }
 
-        let mut utf16_buf = [0u16; 512]; // 文字列 + null, 余裕持って
+        let mut utf16_buf = [0u16; 512];
         let mut idx = 0;
         for c in s.encode_utf16() {
             if idx < utf16_buf.len() - 1 {
@@ -153,12 +191,11 @@ impl UefiWriter {
                 break;
             }
         }
-        utf16_buf[idx] = 0; // null terminate
+        utf16_buf[idx] = 0;
 
         let status = unsafe { ((*self.con_out).output_string)(self.con_out, utf16_buf.as_ptr()) };
         let efi_status = EfiStatus::from(status);
         if efi_status != EfiStatus::Success {
-            // Fallback to COM1 using direct write to avoid deadlock with SERIAL_PORT_WRITER lock
             unsafe { write_serial_bytes(COM1_DATA_PORT, COM1_STATUS_PORT, s.as_bytes()) };
             return Err(efi_status);
         }
@@ -176,116 +213,62 @@ impl fmt::Write for UefiWriter {
     }
 }
 
-// Global writer instance
+/// Global UEFI writer for panic/error handling in UEFI context.
 pub static UEFI_WRITER: Mutex<UefiWriter> = Mutex::new(UefiWriter::new());
 
+/// Serial logging using a SerialManager (capability-based version).
+pub fn serial_log_with_manager(manager: &mut SerialManager, args: core::fmt::Arguments) {
+    _print_with_manager(manager, args);
+}
+
+/// Serial logging without a SerialManager (uses direct port I/O).
+/// This is the backward-compatible version used by macros and early boot code.
 pub fn serial_log(args: core::fmt::Arguments) {
     _print(args);
 }
 
-/// Writes a single byte to the COM1 serial port (0x3F8).
-pub fn debug_print_byte_to_com1(byte: u8) {
-    SERIAL_PORT_WRITER.lock().write_byte(byte);
+/// Writes a single byte to the COM1 serial port using a SerialManager capability.
+pub fn debug_print_byte_to_com1(manager: &mut SerialManager, byte: u8) {
+    manager.serial_port.write_byte(byte);
 }
 
-/// Writes a string to the COM1 serial port.
-pub fn debug_print_str_to_com1(s: &str) {
-    SERIAL_PORT_WRITER.lock().write_string(s);
+/// Writes a string to the COM1 serial port using a SerialManager capability.
+pub fn debug_print_str_to_com1(manager: &mut SerialManager, s: &str) {
+    manager.write_serial(s);
 }
 
-/// Prints a value as hex or string to COM1 (early debug, no alloc).
-pub trait DebugToHexOrStr {
-    fn debug_print(self);
-}
-
-macro_rules! impl_debug_to_hex {
-    ($($t:ty),*) => {
-        $(
-            impl DebugToHexOrStr for $t {
-                fn debug_print(self) {
-                    let mut writer = SERIAL_PORT_WRITER.lock();
-                    let _ = format_hex(&mut *writer, self as usize);
-                }
-            }
-        )*
-    };
-}
-
-impl_debug_to_hex!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
-
-impl DebugToHexOrStr for &str {
-    fn debug_print(self) {
-        debug_print_str_to_com1(self);
+/// Print using a SerialManager (capability-based version).
+pub fn _print_with_manager(manager: &mut SerialManager, args: fmt::Arguments) {
+    #[cfg(all(not(feature = "std"), not(test)))]
+    {
+        manager.serial_port.write_fmt(args).ok();
     }
 }
 
-pub fn debug_print_hex<T: DebugToHexOrStr>(value: T) {
-    value.debug_print();
-}
-
-/// Helper function to print a value that implements DebugNoLock without requiring the trait to be in scope at the call site.
-pub fn debug_print_no_lock<T: DebugNoLock>(value: T) {
-    value.debug_print_no_lock();
-}
-
-/// Formats a usize as hex to the given writer without allocation.
-pub fn format_hex(writer: &mut impl core::fmt::Write, value: usize) -> core::fmt::Result {
-    write!(writer, "0x")?;
-    if value == 0 {
-        return write!(writer, "0");
-    }
-    let mut temp = value;
-    let mut digits = [0u8; 16];
-    let mut i = 0;
-    while temp > 0 && i < 16 {
-        let digit = (temp % 16) as u8;
-        digits[i] = if digit < 10 {
-            b'0' + digit
-        } else {
-            b'a' + (digit - 10)
-        };
-        temp /= 16;
-        i += 1;
-    }
-    // Reverse the digits slice in place
-    digits[0..i].reverse();
-    // Write the full hex string in one call
-    writer.write_str(core::str::from_utf8(&digits[0..i]).unwrap())
-}
-
+/// Print directly to COM1 serial port without a SerialManager.
+/// Uses direct port I/O for early boot / macro convenience.
 pub fn _print(args: fmt::Arguments) {
     #[cfg(all(not(feature = "std"), not(test)))]
     {
-        (&mut *SERIAL_PORT_WRITER.lock()).write_fmt(args).ok();
-    }
-    #[cfg(any(feature = "std", test))]
-    {
-        // Avoid direct port I/O and std usage in no_std crate to prevent SIGSEGV and compile errors
+        use core::fmt::Write;
+        let mut port = SerialPort::new(Com1Ports);
+        port.write_fmt(args).ok();
     }
 }
 
-/// Initializes the global serial port writer.
-pub fn serial_init() {
+/// Initializes the serial port and returns a SerialManager capability.
+pub fn serial_init() -> SerialManager {
+    let mut manager = SerialManager::new();
+
     unsafe {
         crate::write_serial_bytes(
             COM1_DATA_PORT,
             COM1_STATUS_PORT,
             b"DEBUG: Inside serial_init\n",
         );
-
-        // Force reset Mutex lock state to 0 to handle cases where .bss is not cleared
-        let lock_ptr = core::ptr::addr_of!(SERIAL_PORT_WRITER) as *mut u32;
-        core::ptr::write_volatile(lock_ptr, 0);
-        crate::write_serial_bytes(
-            COM1_DATA_PORT,
-            COM1_STATUS_PORT,
-            b"DEBUG: SERIAL_PORT_WRITER lock reset to 0\n",
-        );
     }
 
-    // Use the lock to initialize the serial port.
-    // During early boot, there is no contention, so this is safe and avoids corrupting the Mutex.
-    SERIAL_PORT_WRITER.lock().init();
+    manager.init_serial();
 
     unsafe {
         crate::write_serial_bytes(
@@ -294,6 +277,8 @@ pub fn serial_init() {
             b"DEBUG: serial_init completed successfully\n",
         );
     }
+
+    manager
 }
 
 /// Formats a u64 value as hex to a byte buffer with limited digits.
@@ -315,7 +300,6 @@ pub fn format_hex_to_buffer(value: u64, buf: &mut [u8], max_digits: usize) -> us
         temp /= 16;
         i += 1;
     }
-    // Reverse
     for j in 0..i {
         buf[j] = digit_buf[i - 1 - j];
     }
@@ -341,26 +325,32 @@ pub fn format_dec_to_buffer(value: usize, buf: &mut [u8]) -> usize {
         temp /= 16;
         i += 1;
     }
-    // Reverse
     for j in 0..i {
         buf[j] = digit_buf[i - 1 - j];
     }
     i
 }
 
-/// Early-boot non-locking hex print
+/// Hex print using a SerialManager (capability-based version).
+pub fn debug_print_hex_no_lock_with_manager(manager: &mut SerialManager, value: usize) {
+    let mut buf = [0u8; 16];
+    let len = format_hex_to_buffer(value as u64, &mut buf, 16);
+    manager.write_serial(core::str::from_utf8(&buf[..len]).unwrap());
+}
+
+/// Hex print without a SerialManager (uses direct port I/O).
 pub fn debug_print_hex_no_lock(value: usize) {
     let mut buf = [0u8; 16];
     let len = format_hex_to_buffer(value as u64, &mut buf, 16);
-    unsafe { write_serial_bytes(COM1_DATA_PORT, COM1_STATUS_PORT, &buf[..len]) };
+    unsafe {
+        write_serial_bytes(COM1_DATA_PORT, COM1_STATUS_PORT, &buf[..len]);
+    }
 }
 
 /// High-level, safe logging function for early-boot (no locking, direct port I/O).
 pub fn early_log(msg: &str) {
-    // Standardizing on the COM1 base addresses for early boot output
     unsafe {
         write_serial_bytes(COM1_DATA_PORT, COM1_STATUS_PORT, msg.as_bytes());
-        // Append a newline automatically to keep logs clean and reduce manual formatting
         write_serial_bytes(COM1_DATA_PORT, COM1_STATUS_PORT, b"\n");
     }
 }
@@ -395,43 +385,14 @@ impl DebugNoLock for &str {
     }
 }
 
+/// Free function that dispatches to the DebugNoLock trait.
+/// This allows macros to call `debug_print_no_lock(value)` without importing the trait.
+pub fn debug_print_no_lock<T: DebugNoLock>(value: T) {
+    value.debug_print_no_lock();
+}
+
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
-    use core::fmt;
-
-    #[test]
-    fn test_format_hex_output() {
-        struct TestWriter {
-            buf: Vec<u8>,
-        }
-
-        impl TestWriter {
-            fn new() -> Self {
-                TestWriter { buf: Vec::new() }
-            }
-        }
-
-        impl fmt::Write for TestWriter {
-            fn write_str(&mut self, s: &str) -> fmt::Result {
-                self.buf.extend_from_slice(s.as_bytes());
-                Ok(())
-            }
-        }
-
-        let mut writer = TestWriter::new();
-        super::format_hex(&mut writer, 0).unwrap();
-        assert_eq!(core::str::from_utf8(&writer.buf).unwrap(), "0x0");
-
-        let mut writer = TestWriter::new();
-        super::format_hex(&mut writer, 255).unwrap();
-        assert_eq!(core::str::from_utf8(&writer.buf).unwrap(), "0xff");
-
-        let mut writer = TestWriter::new();
-        super::format_hex(&mut writer, 4096).unwrap();
-        assert_eq!(core::str::from_utf8(&writer.buf).unwrap(), "0x1000");
-    }
-
     #[test]
     fn test_uefi_writer_new() {
         let writer = super::UefiWriter::new();

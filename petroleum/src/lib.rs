@@ -88,9 +88,9 @@ pub use graphics::uefi::*;
 pub use graphics::*;
 pub use hardware::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 
-pub use serial::SERIAL_PORT_WRITER as SERIAL1;
-pub use serial::{COM1_DATA_PORT, COM1_STATUS_PORT};
-pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps};
+// pub use serial::SERIAL_PORT_WRITER as SERIAL1; // Refactored
+// pub use serial::{COM1_DATA_PORT, COM1_STATUS_PORT}; // Refactored
+// pub use serial::{Com1Ports, SERIAL_PORT_WRITER, SerialPort, SerialPortOps}; // Refactored
 
 // Buffer operation wrappers (used by petroleum internally)
 pub fn clear_line_range<B: TextBufferOperations + ?Sized>(

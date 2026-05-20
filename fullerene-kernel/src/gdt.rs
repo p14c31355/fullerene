@@ -215,7 +215,7 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
         return heap_start;
     }
 
-    debug_log_no_alloc!("GDT: Initializing with heap at ", heap_start.as_u64());
+    debug_log_no_alloc!("GDT: Initializing with heap at {}", heap_start.as_u64());
 
     // Allocate IST stacks contiguously using the unified helper
     let stacks = TssStacks::from_base(heap_start);

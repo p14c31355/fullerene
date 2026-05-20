@@ -200,10 +200,7 @@ impl UefiInitContext {
         }
 
         debug_log_no_alloc!("DEBUG: Starting memory_management_initialization");
-        debug_log_no_alloc!(
-            "DEBUG: Offset value: ",
-            self.physical_memory_offset.as_u64()
-        );
+        debug_log_no_alloc!("DEBUG: Offset value: {}", self.physical_memory_offset.as_u64());
 
         // BREAK CIRCULAR DEPENDENCY:
         // We need the memory map to initialize the frame allocator, but we need a mapper to access the memory map.
@@ -270,7 +267,7 @@ impl UefiInitContext {
         crate::heap::init_frame_allocator(memory_map_ref);
 
         debug_log_no_alloc!(
-            "DEBUG: Memory map reference acquired at 0x",
+            "DEBUG: Memory map reference acquired at 0x{:x}",
             memory_map_ref.as_ptr() as usize
         );
         debug_log_no_alloc!("DEBUG: Heap frame allocator initialized\n");
@@ -373,12 +370,12 @@ impl UefiInitContext {
             debug_log_no_alloc!("DEBUG: Frame allocator lock acquired for TSS");
 
             debug_log_no_alloc!(
-                "DEBUG: Attempting to allocate contiguous frames: ",
+                "DEBUG: Attempting to allocate contiguous frames: {}",
                 tss_stack_pages
             );
             match frame_allocator.allocate_contiguous_frames(tss_stack_pages) {
                 Ok(phys_addr) => {
-                    debug_log_no_alloc!("DEBUG: TSS frames allocated at 0x", phys_addr);
+                    debug_log_no_alloc!("DEBUG: TSS frames allocated at 0x{:x}", phys_addr);
                     PhysAddr::new(phys_addr as u64)
                 }
                 Err(_) => {
@@ -970,10 +967,8 @@ impl UefiInitContext {
         };
         let descriptor_size = self.descriptor_size;
 
-        debug_log_no_alloc!("Base ptr: 0x");
-        debug_log_no_alloc!(base_ptr as u64);
-        debug_log_no_alloc!("Using descriptor size: ");
-        debug_log_no_alloc!(descriptor_size);
+        debug_log_no_alloc!("Base ptr: 0x{:x}", base_ptr as u64);
+        debug_log_no_alloc!("Using descriptor size: {}", descriptor_size);
 
         let raw_map_size = self.memory_map_size;
         let actual_descriptor_bytes = (raw_map_size / descriptor_size) * descriptor_size;
@@ -991,10 +986,7 @@ impl UefiInitContext {
                 let desc = MemoryMapDescriptor::new(desc_ptr, descriptor_size);
 
                 if !petroleum::page_table::MemoryDescriptorValidator::is_valid(&desc) {
-                    debug_log_no_alloc!("Skipping invalid descriptor ");
-                    debug_log_no_alloc!(i);
-                    debug_log_no_alloc!(": type 0x");
-                    debug_log_no_alloc!(desc.type_() as usize);
+                    debug_log_no_alloc!("Skipping invalid descriptor {}: type 0x{:x}", i, desc.type_() as usize);
                     continue;
                 }
 
@@ -1003,7 +995,7 @@ impl UefiInitContext {
             }
 
             debug_log_no_alloc!("Successfully parsed ");
-            debug_log_no_alloc!(count);
+            debug_log_no_alloc!("{}", count);
             debug_log_no_alloc!(" descriptors");
             debug_log_no_alloc!("DEBUG: Attempting to lock MEMORY_MAP for assignment");
 

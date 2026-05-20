@@ -183,6 +183,10 @@ impl HardwarePorts {
     // VGA CRTC register indices
     pub const CURSOR_POS_LOW_REG: u8 = 0x0F;
     pub const CURSOR_POS_HIGH_REG: u8 = 0x0E;
+
+    // Serial port addresses
+    pub const SERIAL_DATA_PORT: u16 = 0x3F8;
+    pub const SERIAL_LINE_STATUS_PORT: u16 = 0x3FD;
 }
 
 // Enhanced macro for writing port sequences with automatic port management

@@ -18,28 +18,17 @@ fn try_allocate_pages(
     let types_to_try = [preferred_type, EfiMemoryType::EfiConventionalMemory];
 
     for mem_type in types_to_try {
-        debug_log_no_alloc!(
-            "Heap: About to call allocate_pages mem_type=",
-            mem_type as usize
-        );
+        debug_log_no_alloc!("Heap: allocate_pages(pages={}, mem_type={}) called", pages, mem_type as usize);
 
         let mut phys_addr_local: usize = 0;
-        debug_log_no_alloc!("Heap: Calling allocate_pages pages=", pages);
-        debug_log_no_alloc!("Heap: Calling allocate_pages mem_type=", mem_type as usize);
-        debug_log_no_alloc!("Heap: Entering allocate_pages call...");
-        // Use AllocateAnyPages (0) for any mem
         let alloc_type = 0usize; // AllocateAnyPages
         let status = (bs.allocate_pages)(
             alloc_type,
             mem_type,
-            pages, // Start with 1 for testing
+            pages,
             &mut phys_addr_local,
         );
-        debug_log_no_alloc!(
-            "Heap: Exited allocate_pages call phys_addr_local=",
-            phys_addr_local
-        );
-        debug_log_no_alloc!("Heap: Exited allocate_pages call raw_status=", status);
+        debug_log_no_alloc!("Heap: allocate_pages status={:x}, phys_addr_local={:x}", status, phys_addr_local);
 
         // Immediate validation: check if phys_addr_local is page-aligned (avoid invalid reads)
         if phys_addr_local != 0 && !phys_addr_local.is_multiple_of(4096) {
@@ -50,7 +39,7 @@ fn try_allocate_pages(
 
         let status_efi = EfiStatus::from(status);
         let status_str = petroleum::common::efi_status_to_str(status_efi);
-        debug_log_no_alloc!("Heap: Status: ", status_str);
+        debug_log_no_alloc!("Heap: Status: {}", status_str);
 
         if status_efi == EfiStatus::InvalidParameter {
             debug_log_no_alloc!("Heap: -> Skipping invalid type.");
@@ -71,7 +60,7 @@ fn try_allocate_pages(
 pub fn init_heap(bs: &EfiBootServices) -> petroleum::common::Result<()> {
     debug_log_no_alloc!("Heap: Allocating pages for heap...");
     let heap_pages = HEAP_SIZE.div_ceil(4096);
-    debug_log_no_alloc!("Heap: Requesting pages=", heap_pages);
+    debug_log_no_alloc!("Heap: Requesting pages={}", heap_pages);
     let heap_phys = try_allocate_pages(bs, heap_pages, EfiMemoryType::EfiLoaderData)?; // 固定
 
     if heap_phys == 0 {
