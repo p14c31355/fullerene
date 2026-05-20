@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["bellows", "flasks", "fullerene-kernel", "petroleum", "toluene"]
+members = ["bellows", "flasks", "fullerene-kernel", "lattice", "petroleum", "toluene"]
 
 [profile.dev]
 panic = "abort"
