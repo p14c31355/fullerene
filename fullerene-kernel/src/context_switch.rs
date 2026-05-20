@@ -30,87 +30,63 @@ pub extern "C" fn switch_context(
         "mov [rdi + 104], r13",
         "mov [rdi + 112], r14",
         "mov [rdi + 120], r15",
-        // Save RIP, RFLAGS
+        // Save RIP (at [rsp]), RFLAGS
         "mov rax, [rsp]",
         "mov [rdi + 128], rax", // rip
         "pushfq",
         "pop rax",
         "mov [rdi + 136], rax", // rflags
-        // Save Segments (segments[0..5])
-        "mov ax, cs",
-        "movzx rax, ax",
-        "mov [rdi + 144], rax",
-        "mov ax, ss",
-        "movzx rax, ax",
-        "mov [rdi + 152], rax",
-        "mov ax, ds",
-        "movzx rax, ax",
-        "mov [rdi + 160], rax",
-        "mov ax, es",
-        "movzx rax, ax",
-        "mov [rdi + 168], rax",
-        "mov ax, fs",
-        "movzx rax, ax",
-        "mov [rdi + 176], rax",
-        "mov ax, gs",
-        "movzx rax, ax",
-        "mov [rdi + 184], rax",
+        // Save Segments
+        "mov ax, cs; movzx rax, ax; mov [rdi + 144], rax",
+        "mov ax, ss; movzx rax, ax; mov [rdi + 152], rax",
+        "mov ax, ds; movzx rax, ax; mov [rdi + 160], rax",
+        "mov ax, es; movzx rax, ax; mov [rdi + 168], rax",
+        "mov ax, fs; movzx rax, ax; mov [rdi + 176], rax",
+        "mov ax, gs; movzx rax, ax; mov [rdi + 184], rax",
         "2:",
-        // Restore: rsi = new_context
-        "mov r15, rsi",
-        "mov rsp, [rsi + 56]", // regs[7] = rsp
+        // Restore new_context (rsi)
+        // Store new_context in a callee-saved register to avoid corruption
+        "mov rbx, rsi", 
         // Restore GPRs
-        "mov rax, [r15 + 0]",
-        "mov rbx, [r15 + 8]",
-        "mov rcx, [r15 + 16]",
-        "mov rdx, [r15 + 24]",
-        "mov rsi, [r15 + 32]",
-        "mov rdi, [r15 + 40]",
-        "mov rbp, [r15 + 48]",
-        "mov r8, [r15 + 64]",
-        "mov r9, [r15 + 72]",
-        "mov r10, [r15 + 80]",
-        "mov r11, [r15 + 88]",
-        "mov r12, [r15 + 96]",
-        "mov r13, [r15 + 104]",
-        "mov r14, [r15 + 112]",
-        "mov r15, [r15 + 120]",
-        // Restore Segments (ds, es, fs, gs)
-        "mov rax, [rsi + 160]",
-        "mov ds, ax",
-        "mov rax, [rsi + 168]",
-        "mov es, ax",
-        "mov rax, [rsi + 176]",
-        "mov fs, ax",
-        "mov rax, [rsi + 184]",
-        "mov gs, ax",
-        // Check is_user (offset 192 + 8 + 8 + 48 = 256? No, let's calculate)
-        // ProcessContext: regs(128) + rflags(8) + rip(8) + segments(48) + tss(8) = 200
-        // is_user is at offset 200.
-        "movzx rax, byte ptr [rsi + 200]",
+        "mov rax, [rbx + 0]",
+        "mov rcx, [rbx + 16]",
+        "mov rdx, [rbx + 24]",
+        "mov rsi, [rbx + 32]",
+        "mov rdi, [rbx + 40]",
+        "mov rbp, [rbx + 48]",
+        "mov r8, [rbx + 64]",
+        "mov r9, [rbx + 72]",
+        "mov r10, [rbx + 80]",
+        "mov r11, [rbx + 88]",
+        "mov r12, [rbx + 96]",
+        "mov r13, [rbx + 104]",
+        "mov r14, [rbx + 112]",
+        "mov r15, [rbx + 120]",
+        // Restore Segments
+        "mov rax, [rbx + 160]; mov ds, ax",
+        "mov rax, [rbx + 168]; mov es, ax",
+        "mov rax, [rbx + 176]; mov fs, ax",
+        "mov rax, [rbx + 184]; mov gs, ax",
+        "mov rsp, [rbx + 56]", // restore rsp
+        "mov rbx, [rbx + 8]", // restore rbx last
+        "mov rax, [rsi + 200]", // is_user
         "test rax, rax",
         "jz 1f",
-        // User mode: iretq frame (SS, RSP, RFLAGS, CS, RIP)
-        "mov rax, [rsi + 152]", // ss
-        "push rax",
-        "mov rax, [rsi + 56]", // rsp
-        "push rax",
-        "mov rax, [rsi + 136]", // rflags
-        "push rax",
-        "mov rax, [rsi + 144]", // cs
-        "push rax",
-        "mov rax, [rsi + 128]", // rip
-        "push rax",
+        // User: push frame for iretq
+        "push qword ptr [rsi + 152]", // ss
+        "push qword ptr [rsi + 56]", // rsp
+        "push qword ptr [rsi + 136]", // rflags
+        "push qword ptr [rsi + 144]", // cs
+        "push qword ptr [rsi + 128]", // rip
         "iretq",
         "1:",
-        // Kernel mode
-        "mov rax, [rsi + 136]", // rflags
-        "push rax",
+        // Kernel: push RFLAGS, popfq, jump RIP
+        "push qword ptr [rsi + 136]",
         "popfq",
-        "mov rax, [rsi + 128]", // rip
-        "jmp rax",
+        "jmp qword ptr [rsi + 128]",
     );
 }
+
 
 /// Initialize context switching system
 ///

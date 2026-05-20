@@ -884,10 +884,23 @@ impl UefiInitContext {
         // Map standard MMIO regions
         let vga_virt_addr = Self::map_standard_mmio_regions();
 
+        // Validate framebuffer config before mapping to prevent mapping garbage pages.
+        let fb_config_valid = |config: &petroleum::common::uefi::FullereneFramebufferConfig| -> bool {
+            config.address >= 0x100000
+                && config.address <= 0x0000_FFFF_FFFF_FFFF
+                && config.width > 0
+                && config.width <= 16384
+                && config.height > 0
+                && config.height <= 16384
+                && (config.bpp == 8 || config.bpp == 16 || config.bpp == 24 || config.bpp == 32)
+                && config.stride > 0
+        };
+
         // Map GOP Framebuffer if available
         if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
             .get()
             .and_then(|m| m.lock().clone())
+            .filter(fb_config_valid)
         {
             let fb_phys = config.address;
             let fb_virt = fb_phys + petroleum::common::memory::get_physical_memory_offset() as u64;

@@ -11,7 +11,7 @@ use x86_64::registers::rflags::RFlags;
 const SYSCALL_STACK_SIZE: usize = 4096;
 
 use core::sync::atomic::{AtomicPtr, Ordering};
-static SYSCALL_KERNEL_STACK: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
+static mut SYSCALL_STACK_PTR: u64 = 0;
 
 /// Kernel CR3 for syscall to access kernel heap
 #[unsafe(no_mangle)]
@@ -33,7 +33,7 @@ pub fn init_syscall_stack() {
     let ptr = unsafe { alloc(layout) };
     mem_debug!("Syscall: stack allocated\n");
     let stack_top = unsafe { ptr.add(SYSCALL_STACK_SIZE) };
-    SYSCALL_KERNEL_STACK.store(stack_top, Ordering::Relaxed);
+    unsafe { SYSCALL_STACK_PTR = stack_top as u64; }
     mem_debug!("Syscall: init_syscall_stack done\n");
 }
 
@@ -113,11 +113,11 @@ pub fn setup_syscall() {
     use x86_64::registers::model_specific::KernelGsBase;
     mem_debug!("Syscall: writing KernelGsBase\n");
     unsafe {
-        KernelGsBase::write(VirtAddr::new(&SYSCALL_KERNEL_STACK as *const _ as u64));
+        KernelGsBase::write(VirtAddr::new(&raw const SYSCALL_STACK_PTR as *const _ as u64));
     }
     mem_debug!("Syscall: KernelGsBase written\n");
 
-    let stack_top_addr = SYSCALL_KERNEL_STACK.load(Ordering::Relaxed) as u64;
+    let stack_top_addr = unsafe { SYSCALL_STACK_PTR };
     petroleum::debug_log_no_alloc!("Syscall: initialized. LSTAR: ", entry_addr);
     petroleum::debug_log_no_alloc!("Syscall: kernel stack: ", stack_top_addr);
     mem_debug!("Syscall: setup_syscall done\n");

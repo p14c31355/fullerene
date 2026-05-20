@@ -194,22 +194,45 @@ pub fn create_primary_console() -> Option<crate::graphics::framebuffer::UefiFram
         trace!("FULLERENE_FRAMEBUFFER_CONFIG already set\n");
     }
 
-    // 1 & 2: Try GOP / Framebuffer
+    // Validate config from FULLERENE_FRAMEBUFFER_CONFIG before using it.
+    // The config may contain garbage if the bootloader's Once/Mutex was corrupted
+    // during the world switch or page table re-initialization.
     trace!("Attempting to get fb_config\n");
-    let config = crate::FULLERENE_FRAMEBUFFER_CONFIG
+    let raw_config = crate::FULLERENE_FRAMEBUFFER_CONFIG
         .get()
         .and_then(|mutex| {
             let lock = mutex.lock();
             *lock
-        })
-        .or_else(|| {
-            trace!("FULLERENE_FRAMEBUFFER_CONFIG empty, trying fallback detection\n");
-            let fb = crate::kernel_fallback_framebuffer_detection();
-            if fb.is_some() {
-                trace!("fallback detection succeeded\n");
-            }
-            fb
         });
+
+    let config = if let Some(cfg) = raw_config {
+        let fb_valid = cfg.address >= 0x100000
+            && cfg.address <= 0x0000_FFFF_FFFF_FFFF
+            && cfg.width > 0
+            && cfg.width <= 16384
+            && cfg.height > 0
+            && cfg.height <= 16384
+            && (cfg.bpp == 8 || cfg.bpp == 16 || cfg.bpp == 24 || cfg.bpp == 32);
+        if fb_valid {
+            trace!("FULLERENE_FRAMEBUFFER_CONFIG validated OK: {:#x} {}x{} bpp={}\n",
+                cfg.address, cfg.width, cfg.height, cfg.bpp);
+            Some(cfg)
+        } else {
+            trace!("FULLERENE_FRAMEBUFFER_CONFIG validation FAILED, trying fallback\n");
+            None
+        }
+    } else {
+        trace!("FULLERENE_FRAMEBUFFER_CONFIG empty, trying fallback detection\n");
+        None
+    };
+
+    let config = config.or_else(|| {
+        let fb = crate::kernel_fallback_framebuffer_detection();
+        if fb.is_some() {
+            trace!("fallback detection succeeded\n");
+        }
+        fb
+    });
 
     if let Some(fb_config) = config {
         let fb_phys = fb_config.address;

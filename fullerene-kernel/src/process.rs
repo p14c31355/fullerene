@@ -145,8 +145,9 @@ impl Process {
 
     /// Initialize process context for first execution
     pub fn init_context(&mut self, kernel_stack_top: VirtAddr) {
-        self.kernel_stack = kernel_stack_top;
-        self.context.is_user = self.is_user;
+        petroleum::mem_debug!("Process: init_context for ");
+        petroleum::mem_debug!(self.name);
+        petroleum::mem_debug!("\n");
 
         if self.is_user {
             // For user processes, the context RSP should be the user stack
@@ -176,9 +177,10 @@ impl Process {
                 .unwrap_or(2); // ss
         }
 
-        // Set RIP to entry point directly, assuming it's an extern "C" function
+        // Set RIP to entry point directly
         self.context.rip = self.entry_point.as_u64();
-        self.context.regs[0] = 0; // rax: For C functions, RAX is return value, init to 0
+        petroleum::mem_debug!("Process: RIP set, RSP set\n");
+        self.context.regs[0] = 0; // rax
         self.context.rflags = 0x202; // Set Interrupt Enable flag
     }
 }
@@ -314,6 +316,11 @@ pub fn init(heap_start: usize, heap_end: usize) {
             tss: 0,
             is_user: false,
         });
+        mem_debug!("Process: idle context RIP: 0x");
+        let mut buf = [0u8; 16];
+        let len = petroleum::serial::format_hex_to_buffer(idle_addr.as_u64(), &mut buf, 16);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
         // Initialize static process using Box::from_raw on the static context
         let proc_ptr = core::ptr::addr_of_mut!(IDLE_PROCESS).cast::<Process>();
@@ -678,7 +685,7 @@ pub fn test_process_main() {
     // Yield twice for demonstration
     petroleum::sleep();
     petroleum::sleep();
-
-    // Exit process
+// Exit process
     petroleum::exit(0);
 }
+

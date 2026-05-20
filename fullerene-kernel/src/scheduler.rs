@@ -341,7 +341,9 @@ pub fn scheduler_loop() -> ! {
 
         process_scheduler_iteration();
         // Cooperative yield to idle process (if available)
-        if crate::process::get_active_process_count() > 0 {
+        let active = crate::process::get_active_process_count();
+        if active > 1 {
+            scheduler_log!("Active processes: {}, yielding...", active);
             crate::process::yield_current();
         } else {
             // No processes to yield to, just pause briefly
