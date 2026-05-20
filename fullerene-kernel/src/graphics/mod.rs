@@ -122,6 +122,9 @@ pub fn init_graphics() {
 
         // Enable memory access AND bus mastering
         let mut config = petroleum::hardware::pci::PciConfigSpace::read_from_device(gpu_device.bus, gpu_device.device, gpu_device.function).expect("Failed to read config");
+        let cmd = config.command;
+        let stat = config.status;
+        petroleum::serial::serial_log(format_args!("[graphics] Pre-enable: Command={:#x}, Status={:#x}\n", cmd, stat));
         config.enable_memory_access(gpu_device.bus, gpu_device.device, gpu_device.function);
         // Bit 2 is Bus Master (offset 0x04)
         config.command |= 0x0004;
@@ -135,6 +138,10 @@ pub fn init_graphics() {
             0x04, 
             val
         );
+        let config_after = petroleum::hardware::pci::PciConfigSpace::read_from_device(gpu_device.bus, gpu_device.device, gpu_device.function).expect("Failed to read config");
+        let cmd_after = config_after.command;
+        let stat_after = config_after.status;
+        petroleum::serial::serial_log(format_args!("[graphics] Post-enable: Command={:#x}, Status={:#x}\n", cmd_after, stat_after));
 
         // Map the full BARs.
         let mut mm = crate::memory_management::get_memory_manager().lock();
@@ -143,8 +150,15 @@ pub fn init_graphics() {
         mm.map_mmio_region(bar_info.address as usize, common_virt, bar_info.size as usize).unwrap();
         mm.map_mmio_region(notify_bar_info.address as usize, notify_virt, notify_bar_info.size as usize).unwrap();
 
-        let common_virt_ptr = common_virt as *mut u32;
-        let notify_virt_ptr = notify_virt as *mut u32;
+        let common_virt_ptr = (common_virt + common_offset as usize) as *mut u32;
+        let notify_virt_ptr = (notify_virt + notify_offset as usize) as *mut u32;
+
+        petroleum::serial::serial_log(format_args!("[graphics] Dumping first 64 bytes of common_virt+offset ({:#p}):\n", common_virt_ptr));
+        for i in 0..16 {
+            let val = unsafe { core::ptr::read_volatile(common_virt_ptr.add(i)) };
+            petroleum::serial::serial_log(format_args!("{:#010x} ", val));
+            if (i + 1) % 4 == 0 { petroleum::serial::serial_log(format_args!("\n")); }
+        }
 
         let gpu_result = petroleum::virtio::gpu::init_virtio_gpu(common_virt_ptr, notify_virt_ptr, gpu_device.clone(), common_bar);
 

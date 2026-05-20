@@ -238,6 +238,10 @@ impl PciAllocator {
 
     pub fn assign_bars(&mut self, scanner: &PciScanner) {
         for device in scanner.get_devices() {
+            crate::serial::_print(format_args!(
+                "[PCI-Allocator] Checking device {:#x}:{:#x} at {}:{}:{}\n",
+                device.vendor_id, device.device_id, device.bus, device.device, device.function
+            ));
             // 1. Disable Memory Space access (Command bit 1)
             let cmd_offset = 4;
             let original_command = PciConfigSpace::read_config_word(
@@ -288,6 +292,11 @@ impl PciAllocator {
                         ));
 
                         self.mmio_base = aligned_addr + bar.size as u64;
+                    } else {
+                        crate::serial::_print(format_args!(
+                            "[PCI-Allocator] BAR {} is already assigned at {:#x}\n",
+                            bar_index, bar.address
+                        ));
                     }
                 }
             }
