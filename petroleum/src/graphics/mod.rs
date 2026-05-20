@@ -37,7 +37,7 @@ macro_rules! draw_window_base {
     ($writer:expr, $x:expr, $y:expr, $width:expr, $height:expr, $title:expr) => {{
         use embedded_graphics::mono_font::{MonoTextStyle, ascii::FONT_6X10};
         use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
-        use embedded_graphics::{prelude::!, text::Text};
+        use embedded_graphics::{prelude::*, text::Text};
 
         let rect = Rectangle::new(Point::new($x as i32, $y as i32), Size::new($width, $height));
         let style = PrimitiveStyleBuilder::new()
