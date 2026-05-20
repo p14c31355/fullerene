@@ -200,7 +200,7 @@ pub fn init_graphics() {
             };
 
             petroleum::serial::serial_log(format_args!("[graphics] Initializing VirtIO-GPU display: {}x{}\n", fb_info.width, fb_info.height));
-            match gpu.init_display(fb_info.width, fb_info.height, fb_info.address, fb_info.stride * fb_info.height * 4) {
+            match gpu.init_display(fb_info.width, fb_info.height, fb_info.address, fb_info.stride * fb_info.height) {
                 Ok(()) => {
                     let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(fb_info);
                     let renderer = petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer);
