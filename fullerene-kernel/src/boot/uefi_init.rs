@@ -756,7 +756,7 @@ impl UefiInitContext {
         );
 
         let stack_phys_start = self.heap_start_after_gdt.as_u64() - physical_memory_offset.as_u64();
-        let stack_pages = (2 * 1024 * 1002) / 4096;
+        let stack_pages = (2 * 1024 * 1024) / 4096;
 
         let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
         let frame_allocator = frame_allocator_guard
