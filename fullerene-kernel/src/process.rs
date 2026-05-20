@@ -340,7 +340,7 @@ pub fn init(heap_start: usize, heap_end: usize) {
         });
 
         PROCESS_MANAGER
-            .add(Box::from_raw(proc_ptr))
+            .add(Box::new(unsafe { core::ptr::read(proc_ptr) }))
             .expect("Failed to add idle process");
     }
     CURRENT_PROCESS.store(1, Ordering::SeqCst);
