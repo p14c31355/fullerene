@@ -44,9 +44,23 @@ pub extern "C" fn switch_context(
         "mov ax, fs; movzx rax, ax; mov [rdi + 176], rax",
         "mov ax, gs; movzx rax, ax; mov [rdi + 184], rax",
         "2:",
-        // Restore new_context (rsi)
-        // Store new_context in a callee-saved register to avoid corruption
-        "mov rbx, rsi", 
+        // Restore: rsi -> rbx (will use as base until last moment)
+        "mov rbx, rsi",
+        // Push all values we need after GPR restore onto stack
+        // This avoids callee-saved register aliasing with GPR restore
+        "mov rax, [rbx + 200]",  // rax = is_user (push to stack)
+        "push rax",
+        "mov rax, [rbx + 136]",  // rax = rflags
+        "push rax",
+        "mov rax, [rbx + 128]",  // rax = rip
+        "push rax",
+        "mov rax, [rbx + 152]",  // rax = ss (for user mode)
+        "push rax",
+        "mov rax, [rbx + 144]",  // rax = cs
+        "push rax",
+        "mov rax, [rbx + 56]",   // rax = rsp (user or kernel)
+        "push rax",
+        // Stack now: saved_rsp, saved_cs, saved_ss, saved_rip, saved_rflags, saved_is_user
         // Restore GPRs
         "mov rax, [rbx + 0]",
         "mov rcx, [rbx + 16]",
@@ -54,36 +68,39 @@ pub extern "C" fn switch_context(
         "mov rsi, [rbx + 32]",
         "mov rdi, [rbx + 40]",
         "mov rbp, [rbx + 48]",
-        "mov r8, [rbx + 64]",
-        "mov r9, [rbx + 72]",
+        "mov r8,  [rbx + 64]",
+        "mov r9,  [rbx + 72]",
         "mov r10, [rbx + 80]",
         "mov r11, [rbx + 88]",
-        "mov r12, [rbx + 96]",
-        "mov r13, [rbx + 104]",
-        "mov r14, [rbx + 112]",
-        "mov r15, [rbx + 120]",
-        // Restore Segments
-        "mov rax, [rbx + 160]; mov ds, ax",
-        "mov rax, [rbx + 168]; mov es, ax",
-        "mov rax, [rbx + 176]; mov fs, ax",
-        "mov rax, [rbx + 184]; mov gs, ax",
-        "mov rsp, [rbx + 56]", // restore rsp
-        "mov rbx, [rbx + 8]", // restore rbx last
-        "mov rax, [rbx + 200]", // use rbx which still points to new_context
-        "test rax, rax",
-        "jz 1f",
-        // User: push frame for iretq
-        "push qword ptr [rsi + 152]", // ss
-        "push qword ptr [rsi + 56]", // rsp
-        "push qword ptr [rsi + 136]", // rflags
-        "push qword ptr [rsi + 144]", // cs
-        "push qword ptr [rsi + 128]", // rip
+        // Restore rbx last (dereference from rbx before clobbering)
+        "mov rbx, [rbx + 8]",
+        // Pop saved context info (order reversed)
+        "pop rax",                // rax = saved_rsp (from rsp position)
+        "pop rcx",                // rcx = saved_cs
+        "pop rdx",                // rdx = saved_ss (user only)
+        "pop r8",                 // r8 = saved_rip
+        "pop r9",                 // r9 = saved_rflags
+        "pop r10",                // r10 = saved_is_user
+        // Check if user mode
+        "test r10, r10",
+        "jz 3f",
+        // --- User mode switch via iretq ---
+        // Stack: empty
+        // Build iretq frame: ss, user_rsp, rflags, cs, rip
+        "push rdx",               // ss (from saved_ss)
+        "push rax",               // rsp (from saved_rsp = user stack)
+        "push r9",                // rflags
+        "push rcx",               // cs
+        "push r8",                // rip
         "iretq",
-        "1:",
-        // Kernel: push RFLAGS, popfq, jump RIP
-        "push qword ptr [rsi + 136]",
-        "popfq",
-        "jmp qword ptr [rsi + 128]",
+        "3:",
+        // --- Kernel mode switch ---
+        // rax = saved_rsp (kernel rsp already restored, value not needed)
+        // r9 = saved_rflags
+        // r8 = saved_rip
+        "push r9",                // push rflags
+        "popfq",                  // restore rflags
+        "jmp r8",                 // jump to rip
     );
 }
 

@@ -27,14 +27,8 @@ impl ApicRaw {
     /// This is safe because the base_addr is validated during initialization
     /// and the offset is a known APIC register offset.
     fn read(&self, offset: u32) -> u32 {
-        let addr = (self.base_addr + offset as u64) as *const u8;
-        unsafe {
-            let mut buf = [0u8; 4];
-            for i in 0..4 {
-                buf[i] = core::ptr::read_volatile(addr.add(i));
-            }
-            u32::from_le_bytes(buf)
-        }
+        let addr = (self.base_addr + offset as u64) as *const u32;
+        unsafe { core::ptr::read_volatile(addr) }
     }
 
     /// Write to APIC register
@@ -43,13 +37,8 @@ impl ApicRaw {
     /// This is safe because the base_addr is validated during initialization
     /// and the offset is a known APIC register offset.
     fn write(&self, offset: u32, value: u32) {
-        let addr = (self.base_addr + offset as u64) as *mut u8;
-        let bytes = value.to_le_bytes();
-        unsafe {
-            for i in 0..4 {
-                core::ptr::write_volatile(addr.add(i), bytes[i]);
-            }
-        }
+        let addr = (self.base_addr + offset as u64) as *mut u32;
+        unsafe { core::ptr::write_volatile(addr, value) }
     }
 }
 

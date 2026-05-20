@@ -325,8 +325,22 @@ impl<T: PixelType> FramebufferWriter<T> {
     }
 
     pub fn rgb888_to_pixel_format(&self, color: Rgb888) -> u32 {
-        // Force BGR for QEMU compatibility
-        rgb_pixel(color.b(), color.g(), color.r())
+        // Use the pixel format from the framebuffer info to determine color ordering
+        if let Some(format) = self.info.pixel_format {
+            match format {
+                crate::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor => {
+                    // BGR format
+                    rgb_pixel(color.b(), color.g(), color.r())
+                }
+                _ => {
+                    // RGB format (default)
+                    rgb_pixel(color.r(), color.g(), color.b())
+                }
+            }
+        } else {
+            // No format specified (e.g. VGA), default to RGB
+            rgb_pixel(color.r(), color.g(), color.b())
+        }
     }
 }
 
