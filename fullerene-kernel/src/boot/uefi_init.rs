@@ -479,24 +479,31 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(
             0x3F8,
             0x3FD,
-            b"DEBUG: Accessing FULLERENE_FRAMEBUFFER_CONFIG...\n"
+            b"DEBUG: Checking if FULLERENE_FRAMEBUFFER_CONFIG is initialized...\n"
         );
         let framebuffer_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
             .get()
-            .and_then(|mutex| {
-                petroleum::write_serial_bytes!(
-                    0x3F8,
-                    0x3FD,
-                    b"DEBUG: Locking framebuffer config mutex...\n"
-                );
-                let lock = mutex.lock();
-                petroleum::write_serial_bytes!(
-                    0x3F8,
-                    0x3FD,
-                    b"DEBUG: Framebuffer config mutex locked\n"
-                );
-                *lock
-            });
+            .and_then(|mutex| *mutex.lock());
+
+        let fb_config = if framebuffer_config.is_none() {
+            petroleum::write_serial_bytes!(
+                0x3F8,
+                0x3FD,
+                b"DEBUG: WARNING: Falling back to FB config from KernelArgs!\n"
+            );
+            let args = unsafe { &*self.args_ptr };
+            Some(petroleum::common::uefi::FullereneFramebufferConfig {
+                address: args.fb_address,
+                width: args.fb_width,
+                height: args.fb_height,
+                pixel_format: petroleum::common::uefi::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                bpp: args.fb_bpp,
+                stride: (args.fb_width * 4), // Assume 32bpp
+            })
+        } else {
+            framebuffer_config
+        };
+
         petroleum::write_serial_bytes!(
             0x3F8,
             0x3FD,
@@ -508,7 +515,7 @@ impl UefiInitContext {
             0x3FD,
             b"DEBUG: About to lock FRAME_ALLOCATOR (line 222)\n"
         );
-        let config = framebuffer_config.as_ref();
+        let config = fb_config.as_ref();
         let (_fb_addr, _fb_size) = if let Some(config) = config {
             let fb_size_bytes =
                 (config.width as usize * config.height as usize * config.bpp as usize) / 8;
@@ -994,9 +1001,7 @@ impl UefiInitContext {
                 count += 1;
             }
 
-            debug_log_no_alloc!("Successfully parsed ");
-            debug_log_no_alloc!("{}", count);
-            debug_log_no_alloc!(" descriptors");
+            debug_log_no_alloc!("Successfully parsed {} descriptors", count);
             debug_log_no_alloc!("DEBUG: Attempting to lock MEMORY_MAP for assignment");
 
             if let Some(mut lock) = crate::heap::MEMORY_MAP.try_lock() {

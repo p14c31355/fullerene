@@ -117,8 +117,8 @@ pub fn init_graphics() {
             notify_bar, notify_bar_info.address, notify_offset
         ));
 
-        let common_virt = 0xffff800060000000;
-        let notify_virt = 0xffff800070000000;
+        let common_virt = 0xffff800060000000u64 as usize;
+        let notify_virt = 0xffff800070000000u64 as usize;
 
         // Enable memory access AND bus mastering
         let mut config = petroleum::hardware::pci::PciConfigSpace::read_from_device(gpu_device.bus, gpu_device.device, gpu_device.function).expect("Failed to read config");
@@ -140,7 +140,6 @@ pub fn init_graphics() {
         let mut mm = crate::memory_management::get_memory_manager().lock();
         let mm = mm.as_mut().expect("MemoryManager not initialized");
         
-        let flags = petroleum::page_table::types::Flags::DEVICE_MMIO;
         mm.map_mmio_region(bar_info.address as usize, common_virt, bar_info.size as usize).unwrap();
         mm.map_mmio_region(notify_bar_info.address as usize, notify_virt, notify_bar_info.size as usize).unwrap();
 
@@ -148,9 +147,6 @@ pub fn init_graphics() {
         let notify_virt_ptr = notify_virt as *mut u32;
 
         let gpu_result = petroleum::virtio::gpu::init_virtio_gpu(common_virt_ptr, notify_virt_ptr, gpu_device.clone(), common_bar);
-        if gpu_result.is_none() {
-            petroleum::serial::serial_log(format_args!("[graphics] init_virtio_gpu returned None!\n"));
-        }
 
         if let Some(mut gpu) = gpu_result
         {
