@@ -1,6 +1,21 @@
 use crate::page_table::constants::{MAX_DESCRIPTOR_PAGES, MAX_SYSTEM_MEMORY};
 use crate::page_table::memory_map::descriptor::{EfiMemoryDescriptor, MemoryMapDescriptor};
-use crate::page_table::types::MemoryDescriptorValidator;
+
+// MemoryDescriptorValidator trait is defined in this file (below); no import needed.
+
+/// Trait for validating UEFI memory descriptors.
+pub trait MemoryDescriptorValidator {
+    /// Check if the descriptor is valid.
+    fn is_valid(&self) -> bool;
+    /// Get the memory type.
+    fn get_type(&self) -> u32;
+    /// Get the physical start address.
+    fn get_physical_start(&self) -> u64;
+    /// Get the number of pages.
+    fn get_page_count(&self) -> u64;
+    /// Check if the memory is available for use.
+    fn is_memory_available(&self) -> bool;
+}
 
 impl MemoryDescriptorValidator for MemoryMapDescriptor {
     fn get_type(&self) -> u32 {
@@ -70,19 +85,19 @@ impl MemoryDescriptorValidator for EfiMemoryDescriptor {
 /// Helper function to validate memory descriptor properties common to both descriptor types
 pub(crate) fn validate_descriptor_common(mem_type: u32, phys: u64, pages: u64) -> bool {
     if mem_type > 15 {
-        crate::debug_log_no_alloc!("Invalid memory type (out of range): 0x", mem_type as usize);
+        crate::debug_log_no_alloc!("Invalid memory type (out of range): 0x{}", mem_type as usize);
         return false;
     }
     // debug_log_validate_macro is not defined in this scope, it was probably a local macro or similar
     // I'll omit it for now to ensure compilation.
 
     if phys % 4096 != 0 {
-        crate::debug_log_no_alloc!("Unaligned physical_start: 0x", phys as usize);
+        crate::debug_log_no_alloc!("Unaligned physical_start: 0x{}", phys as usize);
         return false;
     }
 
     if pages == 0 || pages > MAX_DESCRIPTOR_PAGES {
-        crate::debug_log_no_alloc!("Invalid page count: ", pages as usize);
+        crate::debug_log_no_alloc!("Invalid page count: {}", pages as usize);
         return false;
     }
 
@@ -96,7 +111,7 @@ pub(crate) fn validate_descriptor_common(mem_type: u32, phys: u64, pages: u64) -
     };
 
     if end_addr > MAX_SYSTEM_MEMORY {
-        crate::debug_log_no_alloc!("Memory region too large: end_addr=0x", end_addr as usize);
+        crate::debug_log_no_alloc!("Memory region too large: end_addr=0x{}", end_addr as usize);
         return false;
     }
 
@@ -105,7 +120,7 @@ pub(crate) fn validate_descriptor_common(mem_type: u32, phys: u64, pages: u64) -
 
 pub fn is_valid_memory_descriptor(descriptor: &MemoryMapDescriptor) -> bool {
     if descriptor.descriptor_size < 40 {
-        crate::debug_log_no_alloc!("Descriptor size too small: ", descriptor.descriptor_size);
+        crate::debug_log_no_alloc!("Descriptor size too small: {}", descriptor.descriptor_size);
         return false;
     }
 

@@ -165,8 +165,10 @@ pub const EFI_FILE_INFO_GUID: [u8; 16] = [
 ];
 
 /// GUID for EFI_GRAPHICS_OUTPUT_PROTOCOL (UEFI)
+/// Correct GUID: {9042a9de-23dc-4a38-96fb-7aded080516a}
+/// Memory layout (little-endian): de a9 42 90 dc 23 38 4a 96 fb 7a de d0 80 51 6a
 pub const EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID: [u8; 16] = [
-    0xde, 0xa9, 0x42, 0x90, 0x4c, 0x23, 0x38, 0x4a, 0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a,
+    0xde, 0xa9, 0x42, 0x90, 0xdc, 0x23, 0x38, 0x4a, 0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a,
 ];
 
 /// GUID for EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL (UEFI)
@@ -244,30 +246,31 @@ pub struct EfiBootServices {
     _unused13: usize,                                        // fn13
     _unused14: usize,                                        // fn14
     _unused15: usize,                                        // fn15
-    pub handle_protocol: extern "efiapi" fn(usize, *const u8, *mut *mut c_void) -> usize, // fn16
-    _unused17: usize,                                        // fn17
+    pub handle_protocol: extern "efiapi" fn(usize, *const u8, *mut *mut c_void) -> usize, // UEFI fn16
+    _unused17: usize,                                        // UEFI fn17 (Reserved)
+    _unused18: usize,                                        // UEFI fn18 (RegisterProtocolNotify - unused)
     pub locate_handle:
-        extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut usize) -> usize, // fn18
-    _unused19: usize,                                        // fn19
-    pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize, // fn20
-    _unused21: usize,                                        // fn21
-    _unused22: usize,                                        // fn22
-    _unused23: usize,                                        // fn23
-    _unused24: usize,                                        // fn24
-    pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize, // fn25
-    _unused26: usize,                                        // fn26
-    pub stall: extern "efiapi" fn(usize) -> usize,           // fn27
-    _unused28: usize,                                        // fn28
-    _unused29: usize,                                        // fn29
-    _unused30: usize,                                        // fn30
+        extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut usize) -> usize, // UEFI fn19
+    _unused19: usize,                                        // UEFI fn20 (LocateDevicePath - unused)
+    pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize, // UEFI fn21
+    _unused21: usize,                                        // UEFI fn22 (LoadImage)
+    _unused22: usize,                                        // UEFI fn23 (StartImage)
+    _unused23: usize,                                        // UEFI fn24 (Exit)
+    _unused24: usize,                                        // UEFI fn25 (UnloadImage)
+    pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize, // UEFI fn26
+    _unused26: usize,                                        // UEFI fn27 (GetNextMonotonicCount)
+    pub stall: extern "efiapi" fn(usize) -> usize,           // UEFI fn28
+    _unused28: usize,                                        // UEFI fn29 (SetWatchdogTimer)
+    _unused29: usize,                                        // UEFI fn30 (ConnectController)
+    _unused30: usize,                                        // UEFI fn31 (DisconnectController)
     pub open_protocol:
-        extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, // fn31
-    pub close_protocol: extern "efiapi" fn(usize, *const u8, usize, usize) -> usize, // fn32
-    _unused33: usize,                                        // fn33
-    _unused34: usize,                                        // fn34
+        extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, // UEFI fn32
+    pub close_protocol: extern "efiapi" fn(usize, *const u8, usize, usize) -> usize, // UEFI fn33
+    _unused33: usize,                                        // UEFI fn34 (OpenProtocolInformation)
+    _unused34: usize,                                        // UEFI fn35 (ProtocolsPerHandle)
     pub locate_handle_buffer:
-        extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut *mut usize) -> usize, // fn35
-    pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize, // fn36
+        extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut *mut usize) -> usize, // UEFI fn36
+    pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize, // UEFI fn37
 }
 
 /// Minimal UEFI Simple Text Output Protocol (UEFI)
@@ -336,13 +339,17 @@ pub struct EfiGraphicsOutputProtocolMode {
 }
 
 /// Minimal EFI_GRAPHICS_OUTPUT_MODE_INFORMATION (UEFI)
+/// UEFI spec: EFI_GRAPHICS_OUTPUT_MODE_INFORMATION = 
+///   Version (u32) + HorizontalResolution (u32) + VerticalResolution (u32) +
+///   PixelFormat (u32) + PixelInformation (EFI_PIXEL_BITMASK = 4*u32) +
+///   PixelsPerScanLine (u32)
 #[repr(C)]
 pub struct EfiGraphicsOutputModeInformation {
     _version: u32,
     pub horizontal_resolution: u32,
     pub vertical_resolution: u32,
     pub pixel_format: EfiGraphicsPixelFormat,
-    _pad: [u8; 12],
+    _pixel_information: [u32; 4], // EFI_PIXEL_BITMASK: 16 bytes
     pub pixels_per_scan_line: u32,
 }
 
@@ -478,8 +485,10 @@ pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
             height: mode_info.vertical_resolution,
             pixel_format: mode_info.pixel_format,
             bpp: get_bpp_from_pixel_format(mode_info.pixel_format),
-            stride: mode_info.pixels_per_scan_line
-                * (get_bpp_from_pixel_format(mode_info.pixel_format) / 8),
+            stride: (mode_info.pixels_per_scan_line as u64)
+                .checked_mul(get_bpp_from_pixel_format(mode_info.pixel_format) as u64 / 8)
+                .and_then(|s| u32::try_from(s).ok())
+                .unwrap_or(0),
         })
     } else {
         None

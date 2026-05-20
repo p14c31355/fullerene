@@ -10,18 +10,22 @@ pub mod idt;
 pub mod input;
 pub mod syscall;
 
-use lazy_static::lazy_static;
-use spin::Mutex;
+use core::sync::atomic::AtomicU64;
 use x86_64::instructions::interrupts;
 
-// Global tick counter for timing
-lazy_static! {
-    pub static ref TICK_COUNTER: Mutex<u64> = Mutex::new(0);
-}
+// Global tick counter for timing (lock-free atomic)
+pub static TICK_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // Re-export public functions and structures
-pub use apic::{APIC, init_apic};
-pub use exceptions::{handle_page_fault, page_fault_handler};
+pub use exceptions::{
+    alignment_check_handler, bound_range_exceeded_handler, breakpoint_handler,
+    coprocessor_segment_overrun_handler, debug_handler, device_not_available_handler,
+    divide_error_handler, double_fault_handler, general_protection_fault_handler,
+    hv_injection_exception_handler, invalid_opcode_handler, invalid_tss_handler,
+    machine_check_handler, nmi_handler, overflow_handler, page_fault_handler,
+    security_exception_handler, segment_not_present_handler, stack_segment_fault_handler,
+    virtualization_handler, vmm_communication_exception_handler,
+};
 pub use idt::init;
 pub use input::{KEYBOARD_QUEUE, MOUSE_STATE, keyboard_handler, mouse_handler, timer_handler};
 pub use petroleum::hardware::pic::disable_legacy_pic;

@@ -7,7 +7,12 @@ use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use x86_64::VirtAddr;
 
-/// Heap start address
+// ── RUNTIME GLOBAL STATE ──────────────────────────────────────────────
+// These statics are set once during kernel initialisation and remain valid
+// for the entire kernel lifetime (they live in the BSS which is identity-
+// + higher-half mapped). They are NOT early-only.
+
+/// Heap start address - volatile for bare-metal reliability
 pub static HEAP_START: AtomicUsize = AtomicUsize::new(0);
 
 /// Heap end address (start + size)
@@ -20,6 +25,13 @@ pub static PHYSICAL_MEMORY_OFFSET: AtomicUsize = AtomicUsize::new(0);
 pub fn set_heap_range(start: usize, size: usize) {
     HEAP_START.store(start, Ordering::SeqCst);
     HEAP_END.store(start + size, Ordering::SeqCst);
+}
+
+/// Get the current heap range (start, end)
+pub fn get_heap_range() -> (usize, usize) {
+    let start = HEAP_START.load(Ordering::SeqCst);
+    let end = HEAP_END.load(Ordering::SeqCst);
+    (start, end)
 }
 
 /// Set the physical memory offset for virtual to physical address translation
@@ -42,10 +54,26 @@ pub fn physical_to_virtual(physical_addr: usize) -> usize {
     physical_addr + get_physical_memory_offset()
 }
 
+/// Safely create a slice from a physical address and length.
+///
+/// # Safety
+/// The caller must ensure that the physical memory range is mapped and accessible.
+pub unsafe fn phys_to_slice(phys_addr: usize, len: usize) -> &'static [u8] {
+    let virt_addr = physical_to_virtual(phys_addr);
+    core::slice::from_raw_parts(virt_addr as *const u8, len)
+}
+
+/// Safely create a mutable slice from a physical address and length.
+///
+/// # Safety
+/// The caller must ensure that the physical memory range is mapped and accessible.
+pub unsafe fn phys_to_slice_mut(phys_addr: usize, len: usize) -> &'static mut [u8] {
+    let virt_addr = physical_to_virtual(phys_addr);
+    core::slice::from_raw_parts_mut(virt_addr as *mut u8, len)
+}
+
 /// Check if an address is in user space
 pub fn is_user_address(addr: VirtAddr) -> bool {
-    // User space is typically 0x0000000000000000 to 0x00007FFFFFFFFFFF
-    // Kernel space is 0xFFFF800000000000 and above
     addr.as_u64() < 0x0000800000000000
 }
 
@@ -80,30 +108,24 @@ pub fn validate_user_buffer(ptr: usize, count: usize, allow_kernel: bool) -> Sys
     if count == 0 {
         return Ok(());
     }
-
     if ptr == 0 {
         return Err(SystemError::InvalidArgument);
     }
-
     let start = VirtAddr::new(ptr as u64);
     if !allow_kernel && !is_user_address(start) {
         return Err(SystemError::InvalidArgument);
     }
-
     if let Some(end_ptr) = ptr.checked_add(count - 1) {
         let end = VirtAddr::new(end_ptr as u64);
         if !allow_kernel && !is_user_address(end) {
             return Err(SystemError::InvalidArgument);
         }
     } else {
-        // Overflow in end_ptr calculation
         return Err(SystemError::InvalidArgument);
     }
-
     Ok(())
 }
 
-/// Common syscall argument validation helper
 pub fn validate_syscall_fd(fd: i32) -> SystemResult<()> {
     if fd < 0 {
         Err(SystemError::InvalidArgument)
@@ -116,7 +138,24 @@ pub fn validate_syscall_buffer(ptr: usize, allow_kernel: bool) -> SystemResult<(
     validate_user_buffer(ptr, 1, allow_kernel)
 }
 
-/// Helper function to create framebuffer configuration
+pub unsafe fn user_slice(
+    ptr: *const u8,
+    count: usize,
+    allow_kernel: bool,
+) -> Result<&'static [u8], SystemError> {
+    validate_user_buffer(ptr as usize, count, allow_kernel)?;
+    Ok(core::slice::from_raw_parts(ptr, count))
+}
+
+pub unsafe fn user_slice_mut(
+    ptr: *mut u8,
+    count: usize,
+    allow_kernel: bool,
+) -> Result<&'static mut [u8], SystemError> {
+    validate_user_buffer(ptr as usize, count, allow_kernel)?;
+    Ok(core::slice::from_raw_parts_mut(ptr, count))
+}
+
 pub fn create_framebuffer_config(
     address: u64,
     width: u32,

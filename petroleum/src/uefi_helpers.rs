@@ -2,7 +2,7 @@ use super::*;
 use crate::common::{
     EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
 };
-use crate::page_table::types::MemoryDescriptorValidator;
+use crate::page_table::memory_map::MemoryDescriptorValidator;
 use x86_64::PhysAddr;
 
 /// Helper function to convert u32 to string without heap allocation
@@ -256,7 +256,7 @@ pub fn find_heap_start(descriptors: &[impl MemoryDescriptorValidator]) -> PhysAd
     // This ensures heap is within the identity-mapped range during page table reinitialization
     const HEAP_PAGES: u64 = 256; // approx 1MB for heap + structures
     for (i, desc) in descriptors.iter().enumerate() {
-        crate::debug_log_no_alloc!("find_heap_start: Checking descriptor ", i);
+        crate::debug_log_no_alloc!("find_heap_start: Checking descriptor {}", i);
         let start = desc.get_physical_start();
         if desc.get_type() == crate::common::EfiMemoryType::EfiConventionalMemory as u32
             && desc.get_page_count() >= HEAP_PAGES
@@ -265,7 +265,7 @@ pub fn find_heap_start(descriptors: &[impl MemoryDescriptorValidator]) -> PhysAd
             && crate::common::utils::calculate_region_end(start, desc.get_page_count()) <= 0x4000000
         // ensure entire region fits
         {
-            crate::debug_log_no_alloc!("find_heap_start: Found suitable region at 0x", start);
+            crate::debug_log_no_alloc!("find_heap_start: Found suitable region at 0x{:x}", start);
             return PhysAddr::new(start);
         }
     }

@@ -1,9 +1,13 @@
 //! High-level world switch and kernel transition abstractions.
+//!
+//! ⚠️ **DEPRECATED**: Use `petroleum::early::transition` instead.
+//! This module will be removed in a future version.
+//! All boot code should import from `petroleum::early::transition::*`.
 
 use crate::assembly::{KernelArgs, TransitionArgs, TransitionFrame};
 use crate::page_table::constants::BootInfoFrameAllocator;
 use x86_64::{
-    PhysAddr, VirtAddr,
+    VirtAddr,
     structures::paging::{Mapper, OffsetPageTable, PageTable, PageTableFlags, PhysFrame},
 };
 
@@ -114,8 +118,8 @@ impl KernelTransition for UefiToHigherHalf {
             logic_fn: landing_zone_logic as usize,
         };
         let lz: unsafe extern "sysv64" fn(*const TransitionFrame) -> ! =
-            core::mem::transmute(self.landing_zone);
-        lz(&frame)
+            unsafe { core::mem::transmute(self.landing_zone) };
+        unsafe { lz(&frame) }
     }
 }
 
@@ -158,11 +162,7 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
         }
 
         let l4_phys = args.l4_frame;
-        let sign_extended_offset = if (args.phys_offset & (1 << 47)) != 0 {
-            args.phys_offset | 0xFFFF_0000_0000_0000
-        } else {
-            args.phys_offset & 0x0000_FFFF_FFFF_FFFF
-        };
+        let sign_extended_offset = crate::common::utils::sign_extend_virt_addr(args.phys_offset);
         let local_phys_offset = VirtAddr::new(sign_extended_offset);
         let local_frame_allocator = args.allocator;
 
@@ -184,8 +184,14 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
         };
 
         // Robustness check: Ensure entry point and args are aligned
-        assert!(kernel_entry_virt % 16 == 0, "Kernel entry point must be 16-byte aligned");
-        assert!((actual_kernel_args as usize) % 16 == 0, "KernelArgs must be 16-byte aligned");
+        assert!(
+            kernel_entry_virt % 16 == 0,
+            "Kernel entry point must be 16-byte aligned"
+        );
+        assert!(
+            (actual_kernel_args as usize) % 16 == 0,
+            "KernelArgs must be 16-byte aligned"
+        );
 
         crate::write_serial_bytes!(0x3F8, 0x3FD, b"DBG: entry_virt=0x");
         write_serial_hex(kernel_entry_virt);
@@ -194,23 +200,14 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
         crate::flush_tlb_and_verify!();
 
         let l4_virt_raw = args.phys_offset.wrapping_add(l4_phys);
-        let l4_virt_sign_extended = if (l4_virt_raw & (1 << 47)) != 0 {
-            l4_virt_raw | 0xFFFF_0000_0000_0000
-        } else {
-            l4_virt_raw & 0x0000_FFFF_FFFF_FFFF
-        };
-        let l4_virt = VirtAddr::new(l4_virt_sign_extended);
+        let l4_virt = VirtAddr::new(crate::common::utils::sign_extend_virt_addr(l4_virt_raw));
 
         let mut temp_mapper = OffsetPageTable::new(
             &mut *(l4_virt.as_mut_ptr() as *mut PageTable),
             VirtAddr::new(0),
         );
 
-        let l4_v_sign = if (l4_virt_raw & (1 << 47)) != 0 {
-            l4_virt_raw | 0xFFFF_0000_0000_0000
-        } else {
-            l4_virt_raw & 0x0000_FFFF_FFFF_FFFF
-        };
+        let l4_v_sign = crate::common::utils::sign_extend_virt_addr(l4_virt_raw);
         let _ = temp_mapper.map_to(
             x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(l4_v_sign)),
             x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(l4_phys & 0x000F_FFFF_FFFF_FFFF)),
@@ -220,17 +217,15 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
 
         if actual_kernel_entry == 0 {
             crate::write_serial_bytes!(0x3F8, 0x3FD, b"ERROR: entry is 0!\n");
-            loop { core::hint::spin_loop(); }
+            loop {
+                core::hint::spin_loop();
+            }
         }
 
         // Map KernelArgs at higher half
         let args_phys = actual_kernel_args as u64;
         let args_phys_raw = args_phys.wrapping_sub(local_phys_offset.as_u64());
-        let args_v_sign = if (args_phys & (1 << 47)) != 0 {
-            args_phys | 0xFFFF_0000_0000_0000
-        } else {
-            args_phys & 0x0000_FFFF_FFFF_FFFF
-        };
+        let args_v_sign = crate::common::utils::sign_extend_virt_addr(args_phys);
         let _ = temp_mapper.map_to(
             x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(args_v_sign)),
             x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(args_phys_raw & 0x000F_FFFF_FFFF_FFFF)),
@@ -255,11 +250,7 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
         for i in 0..map_pages {
             let v_addr = map_virt.wrapping_add(i * 4096);
             let p_addr = map_phys.wrapping_add(i * 4096);
-            let v_sign = if (v_addr & (1 << 47)) != 0 {
-                v_addr | 0xFFFF_0000_0000_0000
-            } else {
-                v_addr & 0x0000_FFFF_FFFF_FFFF
-            };
+            let v_sign = crate::common::utils::sign_extend_virt_addr(v_addr);
             let _ = temp_mapper.map_to(
                 x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(v_sign)),
                 x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(p_addr & 0x000F_FFFF_FFFF_FFFF)),
@@ -272,11 +263,7 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
         for page_offset in 0..2048 {
             let v_addr_raw = kernel_virt_start.wrapping_add(page_offset * 2 * 1024 * 1024);
             let p_addr_raw = kernel_phys_start.wrapping_add(page_offset * 2 * 1024 * 1024);
-            let v_addr_sign_extended = if (v_addr_raw & (1 << 47)) != 0 {
-                v_addr_raw | 0xFFFF_0000_0000_0000
-            } else {
-                v_addr_raw & 0x0000_FFFF_FFFF_FFFF
-            };
+            let v_addr_sign_extended = crate::common::utils::sign_extend_virt_addr(v_addr_raw);
             let _ = temp_mapper.map_to(
                 x86_64::structures::paging::Page::<x86_64::structures::paging::Size2MiB>::containing_address(VirtAddr::new(v_addr_sign_extended)),
                 x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size2MiB>::containing_address(x86_64::PhysAddr::new(p_addr_raw)),
@@ -295,11 +282,7 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
         for page_offset in -16i32..16i32 {
             let p_page = entry_phys_base.wrapping_add((page_offset as i64 * 4096) as u64);
             let v_page = p_page.wrapping_add(local_phys_offset.as_u64());
-            let v_sign = if (v_page & (1 << 47)) != 0 {
-                v_page | 0xFFFF_0000_0000_0000
-            } else {
-                v_page & 0x0000_FFFF_FFFF_FFFF
-            };
+            let v_sign = crate::common::utils::sign_extend_virt_addr(v_page);
             let _ = temp_mapper.map_to(
                 x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(v_sign)),
                 x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(p_page & 0x000F_FFFF_FFFF_FFFF)),
@@ -317,11 +300,7 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
                 .wrapping_sub(8 * 1024 * 1024)
                 .wrapping_add(page_offset * 4096);
             let v_page = p_page.wrapping_add(local_phys_offset.as_u64());
-            let v_sign = if (v_page & (1 << 47)) != 0 {
-                v_page | 0xFFFF_0000_0000_0000
-            } else {
-                v_page & 0x0000_FFFF_FFFF_FFFF
-            };
+            let v_sign = crate::common::utils::sign_extend_virt_addr(v_page);
             let _ = temp_mapper.map_to(
                 x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(v_sign)),
                 x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(x86_64::PhysAddr::new(p_page & 0x000F_FFFF_FFFF_FFFF)),
@@ -369,14 +348,38 @@ impl Default for WorldSwitchBuilder {
 }
 
 impl WorldSwitchBuilder {
-    pub fn with_gdt(mut self, gdt: *const ()) -> Self { self.load_gdt = Some(gdt); self }
-    pub fn with_idt(mut self, idt: *const ()) -> Self { self.load_idt = Some(idt); self }
-    pub fn with_page_table(mut self, frame: PhysFrame) -> Self { self.page_table = Some(frame); self }
-    pub fn with_phys_offset(mut self, offset: VirtAddr) -> Self { self.phys_offset = Some(offset); self }
-    pub fn with_stack(mut self, stack: VirtAddr) -> Self { self.stack_top = Some(stack); self }
-    pub fn with_entry(mut self, entry: VirtAddr) -> Self { self.entry_point = Some(entry); self }
-    pub fn with_args(mut self, args: *const KernelArgs) -> Self { self.kernel_args = Some(args); self }
-    pub fn with_allocator(mut self, allocator: *mut BootInfoFrameAllocator) -> Self { self.allocator = Some(allocator); self }
+    pub fn with_gdt(mut self, gdt: *const ()) -> Self {
+        self.load_gdt = Some(gdt);
+        self
+    }
+    pub fn with_idt(mut self, idt: *const ()) -> Self {
+        self.load_idt = Some(idt);
+        self
+    }
+    pub fn with_page_table(mut self, frame: PhysFrame) -> Self {
+        self.page_table = Some(frame);
+        self
+    }
+    pub fn with_phys_offset(mut self, offset: VirtAddr) -> Self {
+        self.phys_offset = Some(offset);
+        self
+    }
+    pub fn with_stack(mut self, stack: VirtAddr) -> Self {
+        self.stack_top = Some(stack);
+        self
+    }
+    pub fn with_entry(mut self, entry: VirtAddr) -> Self {
+        self.entry_point = Some(entry);
+        self
+    }
+    pub fn with_args(mut self, args: *const KernelArgs) -> Self {
+        self.kernel_args = Some(args);
+        self
+    }
+    pub fn with_allocator(mut self, allocator: *mut BootInfoFrameAllocator) -> Self {
+        self.allocator = Some(allocator);
+        self
+    }
 
     pub fn build(self) -> Result<WorldSwitch, &'static str> {
         Ok(WorldSwitch {

@@ -5,6 +5,16 @@
 
 use crate::hardware::ports::PortWriter;
 
+#[derive(Debug, Clone, Copy)]
+pub struct PciBar {
+    pub index: u8,
+    pub address: u64,
+    pub size: u32,
+    pub is_io: bool,
+    pub is_64bit: bool,
+    pub is_prefetchable: bool,
+}
+
 /// PCI Configuration Space Header
 #[repr(packed)]
 #[derive(Debug, Clone, Copy, Default)]
@@ -24,12 +34,10 @@ pub struct PciConfigSpace {
 }
 
 impl PciConfigSpace {
-    /// Create a new PCI config space header
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Read PCI config space from hardware
     pub fn read_from_device(bus: u8, device: u8, function: u8) -> Option<Self> {
         if !Self::device_exists(bus, device, function) {
             return None;
@@ -40,18 +48,15 @@ impl PciConfigSpace {
         Some(config)
     }
 
-    /// Check if a PCI device exists at the given address
     fn device_exists(bus: u8, device: u8, function: u8) -> bool {
         Self::read_config_word(bus, device, function, 0) != 0xFFFF
     }
 
     fn read_config_space(&mut self, bus: u8, device: u8, function: u8) {
-        // Read vendor and device ID
         self.vendor_id = Self::read_config_word(bus, device, function, 0);
         self.device_id = Self::read_config_word(bus, device, function, 2);
         self.command = Self::read_config_word(bus, device, function, 4);
         self.status = Self::read_config_word(bus, device, function, 6);
-
         self.revision_id = Self::read_config_byte(bus, device, function, 8);
         self.prog_if = Self::read_config_byte(bus, device, function, 9);
         self.subclass = Self::read_config_byte(bus, device, function, 10);
@@ -62,8 +67,7 @@ impl PciConfigSpace {
         self.bist = Self::read_config_byte(bus, device, function, 15);
     }
 
-    /// Read a byte from PCI configuration space
-    fn read_config_byte(bus: u8, device: u8, function: u8, offset: u8) -> u8 {
+    pub fn read_config_byte(bus: u8, device: u8, function: u8, offset: u8) -> u8 {
         let address = Self::build_config_address(bus, device, function, offset);
         let mut addr_writer =
             PortWriter::new(crate::hardware::ports::HardwarePorts::PCI_CONFIG_ADDRESS);
@@ -75,14 +79,12 @@ impl PciConfigSpace {
         (dword >> ((offset & 3) * 8)) as u8
     }
 
-    /// Read a word from PCI configuration space
-    fn read_config_word(bus: u8, device: u8, function: u8, offset: u8) -> u16 {
+    pub fn read_config_word(bus: u8, device: u8, function: u8, offset: u8) -> u16 {
         let dword = Self::read_config_dword(bus, device, function, offset);
         let shift = if offset % 4 < 2 { 0 } else { 16 };
         ((dword >> shift) & 0xFFFF) as u16
     }
 
-    /// Read a dword from PCI configuration space
     pub fn read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
         let address = Self::build_config_address(bus, device, function, offset);
         let mut addr_writer =
@@ -94,48 +96,12 @@ impl PciConfigSpace {
         data_reader.read_safe()
     }
 
-    /// Write a byte to PCI configuration space
-    pub fn write_config_byte(
-        &mut self,
-        _bus: u8,
-        _device: u8,
-        _function: u8,
-        offset: u8,
-        value: u8,
-    ) {
-        // Write the byte by reading-modifying-writing the entire 32-bit register
-        let address = Self::build_config_address(_bus, _device, _function, offset);
-        Self::write_config_byte_raw(address, offset, value);
-
-        // Update local copy safely for packed struct
-        match offset {
-            8 => self.revision_id = value,
-            9 => self.prog_if = value,
-            10 => self.subclass = value,
-            11 => self.class_code = value,
-            12 => self.cache_line_size = value,
-            13 => self.latency_timer = value,
-            14 => self.header_type = value,
-            15 => self.bist = value,
-            _ => {} // For other offsets, we don't update the struct
-        }
+    pub fn enable_memory_access(&mut self, bus: u8, device: u8, function: u8) {
+        let command = self.command | 0x06;
+        self.write_config_dword(bus, device, function, 4, command as u32);
+        self.command = command;
     }
 
-    /// Write a word to PCI configuration space
-    pub fn write_config_word(&mut self, bus: u8, device: u8, function: u8, offset: u8, value: u16) {
-        Self::write_config_dword_raw(bus, device, function, offset, value as u32);
-
-        // Update local copy safely for packed struct
-        match offset {
-            0 => self.vendor_id = value,
-            2 => self.device_id = value,
-            4 => self.command = value,
-            6 => self.status = value,
-            _ => {} // For other offsets, we don't update the struct
-        }
-    }
-
-    /// Write a dword to PCI configuration space
     pub fn write_config_dword(
         &mut self,
         bus: u8,
@@ -147,7 +113,6 @@ impl PciConfigSpace {
         Self::write_config_dword_raw(bus, device, function, offset, value);
     }
 
-    /// Build PCI configuration address
     fn build_config_address(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
         0x80000000u32
             | ((bus as u32) << 16)
@@ -156,23 +121,7 @@ impl PciConfigSpace {
             | (offset as u32 & 0xFC)
     }
 
-    fn write_config_byte_raw(address: u32, offset: u8, value: u8) {
-        let mut addr_writer =
-            PortWriter::new(crate::hardware::ports::HardwarePorts::PCI_CONFIG_ADDRESS);
-        let mut data_writer =
-            PortWriter::new(crate::hardware::ports::HardwarePorts::PCI_CONFIG_DATA);
-        let mut data_reader =
-            PortWriter::new(crate::hardware::ports::HardwarePorts::PCI_CONFIG_DATA);
-
-        addr_writer.write_safe(address);
-        let current_dword: u32 = data_reader.read_safe();
-        let byte_offset = (offset & 3) as usize;
-        let mask = !(0xFFu32 << (byte_offset * 8));
-        let new_dword: u32 = (current_dword & mask) | ((value as u32) << (byte_offset * 8));
-        data_writer.write_safe(new_dword);
-    }
-
-    fn write_config_dword_raw(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
+    pub(crate) fn write_config_dword_raw(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
         let address = Self::build_config_address(bus, device, function, offset);
         let mut addr_writer =
             PortWriter::new(crate::hardware::ports::HardwarePorts::PCI_CONFIG_ADDRESS);
@@ -198,17 +147,172 @@ pub struct PciDevice {
 }
 
 impl PciDevice {
-    /// Create a new PCI device instance
     pub fn new(bus: u8, device: u8, function: u8) -> Option<Self> {
-        if let Some(config) = PrivatePciDevice::new(bus, device, function) {
-            Some(config.to_public())
+        if let Some(mut dev) = PrivatePciDevice::new(bus, device, function) {
+            dev.config.enable_memory_access(bus, device, function);
+            Some(dev.to_public())
         } else {
             None
         }
     }
+
+    pub fn read_bar(&self, bar_index: u8) -> Option<u64> {
+        if let Some(dev) = PrivatePciDevice::new(self.bus, self.device, self.function) {
+            dev.read_bar(bar_index)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_bar_info(&self, index: u8) -> Option<PciBar> {
+        let offset = 0x10 + (index * 4);
+        let value = PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
+
+        if value == 0 {
+            return None;
+        }
+
+        let is_io = (value & 0x1) != 0;
+        let is_64bit = !is_io && ((value & 0x6) == 0x4);
+        let is_prefetchable = !is_io && ((value & 0x8) != 0);
+
+        let size = self.detect_bar_size(index);
+        let address = if is_io {
+            (value & 0xFFFFFFFC) as u64
+        } else {
+            (value & 0xFFFFFFF0) as u64
+        };
+
+        Some(PciBar {
+            index,
+            address,
+            size,
+            is_io,
+            is_64bit,
+            is_prefetchable,
+        })
+    }
+
+    pub fn detect_bar_size(&self, bar_index: u8) -> u32 {
+        let offset = 0x10 + (bar_index * 4);
+        let original_value =
+            PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
+
+        PciConfigSpace::write_config_dword_raw(
+            self.bus,
+            self.device,
+            self.function,
+            offset,
+            0xFFFFFFFF,
+        );
+        let size_mask =
+            PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
+
+        // Restore original
+        PciConfigSpace::write_config_dword_raw(
+            self.bus,
+            self.device,
+            self.function,
+            offset,
+            original_value,
+        );
+
+        if (size_mask & 0x1) != 0 {
+            // I/O
+            !(size_mask & 0xFFFFFFFC) + 1
+        } else {
+            // Memory
+            !(size_mask & 0xFFFFFFF0) + 1
+        }
+    }
 }
 
-// Legacy PciDevice implementation for kernel use with configuration space management
+pub struct PciAllocator {
+    pub mmio_base: u64,
+}
+
+impl PciAllocator {
+    pub fn new(mmio_base: u64) -> Self {
+        Self { mmio_base }
+    }
+
+    pub fn assign_bars(&mut self, scanner: &PciScanner) {
+        for device in scanner.get_devices() {
+            crate::serial::_print(format_args!(
+                "[PCI-Allocator] Checking device {:#x}:{:#x} at {}:{}:{}\n",
+                device.vendor_id, device.device_id, device.bus, device.device, device.function
+            ));
+            // 1. Disable Memory Space access (Command bit 1)
+            let cmd_offset = 4;
+            let original_command = PciConfigSpace::read_config_word(
+                device.bus,
+                device.device,
+                device.function,
+                cmd_offset,
+            );
+            PciConfigSpace::write_config_dword_raw(
+                device.bus,
+                device.device,
+                device.function,
+                cmd_offset,
+                (original_command & !0x2) as u32,
+            );
+
+            for bar_index in 0..6 {
+                if let Some(mut bar) = device.get_bar_info(bar_index) {
+                    if bar.address == 0 && bar.size > 0 {
+                        let aligned_addr =
+                            (self.mmio_base + (bar.size as u64 - 1)) & !(bar.size as u64 - 1);
+
+                        let offset = 0x10 + (bar_index * 4);
+
+                        // Write low 32 bits
+                        PciConfigSpace::write_config_dword_raw(
+                            device.bus,
+                            device.device,
+                            device.function,
+                            offset,
+                            aligned_addr as u32,
+                        );
+
+                        // If 64-bit, write high 32 bits
+                        if bar.is_64bit {
+                            PciConfigSpace::write_config_dword_raw(
+                                device.bus,
+                                device.device,
+                                device.function,
+                                offset + 4,
+                                (aligned_addr >> 32) as u32,
+                            );
+                        }
+
+                        crate::serial::_print(format_args!(
+                            "[PCI-Allocator] Assigned BAR {} to {:#x} (size={:#x}, 64bit={})\n",
+                            bar_index, aligned_addr, bar.size, bar.is_64bit
+                        ));
+
+                        self.mmio_base = aligned_addr + bar.size as u64;
+                    } else {
+                        crate::serial::_print(format_args!(
+                            "[PCI-Allocator] BAR {} is already assigned at {:#x}\n",
+                            bar_index, bar.address
+                        ));
+                    }
+                }
+            }
+
+            // 3. Re-enable Memory Space access
+            PciConfigSpace::write_config_dword_raw(
+                device.bus,
+                device.device,
+                device.function,
+                cmd_offset,
+                original_command as u32,
+            );
+        }
+    }
+}
+
 struct PrivatePciDevice {
     bus: u8,
     device: u8,
@@ -217,7 +321,6 @@ struct PrivatePciDevice {
 }
 
 impl PrivatePciDevice {
-    /// Create a new PCI device instance
     pub fn new(bus: u8, device: u8, function: u8) -> Option<Self> {
         if let Some(config) = PciConfigSpace::read_from_device(bus, device, function) {
             Some(Self {
@@ -231,7 +334,6 @@ impl PrivatePciDevice {
         }
     }
 
-    /// Convert to public PciDevice
     pub fn to_public(self) -> PciDevice {
         PciDevice {
             bus: self.bus,
@@ -245,25 +347,58 @@ impl PrivatePciDevice {
         }
     }
 
+    pub fn read_bar(&self, bar_index: u8) -> Option<u64> {
+        if bar_index > 5 {
+            return None;
+        }
+
+        let offset = 0x10 + (bar_index * 4);
+        let bar_low =
+            PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
+
+        if bar_low == 0 {
+            return None;
+        }
+
+        if (bar_low & 0x1) != 0 {
+            return None;
+        }
+
+        let is_64bit = (bar_low & 0x6) == 0x4;
+
+        if is_64bit {
+            if bar_index >= 5 {
+                return None;
+            }
+            let high_offset = offset + 4;
+            let bar_high = PciConfigSpace::read_config_dword(
+                self.bus,
+                self.device,
+                self.function,
+                high_offset,
+            );
+            Some(((bar_high as u64) << 32) | ((bar_low & 0xFFFFFFF0) as u64))
+        } else {
+            Some((bar_low & 0xFFFFFFF0) as u64)
+        }
+    }
+
     fn build_handle(bus: u8, device: u8, function: u8) -> usize {
         ((bus as usize) << 16) | ((device as usize) << 8) | (function as usize)
     }
 }
 
-/// PCI Bus scanner for device discovery
 pub struct PciScanner {
     devices: alloc::vec::Vec<PciDevice>,
 }
 
 impl PciScanner {
-    /// Create a new PCI scanner
     pub fn new() -> Self {
         Self {
             devices: alloc::vec::Vec::new(),
         }
     }
 
-    /// Scan all PCI buses for devices
     pub fn scan_all_buses(&mut self) -> Result<(), ()> {
         self.devices.clear();
 
@@ -279,28 +414,7 @@ impl PciScanner {
         Ok(())
     }
 
-    /// Get all discovered devices
     pub fn get_devices(&self) -> &[PciDevice] {
         &self.devices
-    }
-
-    /// Find devices by class code
-    pub fn find_devices_by_class(
-        &self,
-        class_code: u8,
-        subclass: u8,
-    ) -> alloc::vec::Vec<&PciDevice> {
-        self.devices
-            .iter()
-            .filter(|device| device.class_code == class_code && device.subclass == subclass)
-            .collect()
-    }
-
-    /// Find devices by vendor ID
-    pub fn find_devices_by_vendor(&self, vendor_id: u16) -> alloc::vec::Vec<&PciDevice> {
-        self.devices
-            .iter()
-            .filter(|device| device.vendor_id == vendor_id)
-            .collect()
     }
 }

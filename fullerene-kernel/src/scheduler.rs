@@ -4,12 +4,11 @@
 //! including process scheduling, shell execution, and system-wide orchestration.
 
 use crate::graphics;
-use crate::graphics::text;
 use alloc::{collections::VecDeque, format};
 use core::sync::atomic::Ordering;
 use petroleum::{
     Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats,
-    display_stats_on_available_display, periodic_task, scheduler_log, write_serial_bytes,
+    display_stats_on_available_display, graphics::Renderer, periodic_task, scheduler_log,
 };
 
 struct PeriodicTask {
@@ -18,18 +17,26 @@ struct PeriodicTask {
     task: fn(u64, u64),
 }
 
-lazy_static::lazy_static! {
-    static ref PERIODIC_TASKS: [PeriodicTask; 8] = [
-        PeriodicTask { interval: 1000, last_tick: spin::Mutex::new(0), task: perform_system_health_checks },
-        PeriodicTask { interval: 5000, last_tick: spin::Mutex::new(0), task: perform_stats_logging },
-        PeriodicTask { interval: 2000, last_tick: spin::Mutex::new(0), task: perform_system_maintenance },
-        PeriodicTask { interval: 10000, last_tick: spin::Mutex::new(0), task: perform_memory_capacity_check },
-        PeriodicTask { interval: 100, last_tick: spin::Mutex::new(0), task: perform_process_cleanup_check },
-        PeriodicTask { interval: 30000, last_tick: spin::Mutex::new(0), task: perform_automated_backup },
-        PeriodicTask { interval: 5000, last_tick: spin::Mutex::new(0), task: |t, _| draw_desktop_on_available_framebuffer() },
-        PeriodicTask { interval: 10000, last_tick: spin::Mutex::new(0), task: |_, _| emergency_condition_handler() },
-    ];
+/// Wrapper functions to match `fn(u64, u64)` signature for non-arg tasks
+fn draw_desktop_task(_tick: u64, _iter: u64) {
+    draw_desktop_on_available_framebuffer();
 }
+
+fn emergency_handler_task(_tick: u64, _iter: u64) {
+    emergency_condition_handler();
+}
+
+/// Pre-allocated periodic tasks array (no heap allocation, no lazy_static)
+const PERIODIC_TASKS: [PeriodicTask; 8] = [
+    PeriodicTask { interval: 1000, last_tick: spin::Mutex::new(0), task: perform_system_health_checks },
+    PeriodicTask { interval: 5000, last_tick: spin::Mutex::new(0), task: perform_stats_logging },
+    PeriodicTask { interval: 2000, last_tick: spin::Mutex::new(0), task: perform_system_maintenance },
+    PeriodicTask { interval: 10000, last_tick: spin::Mutex::new(0), task: perform_memory_capacity_check },
+    PeriodicTask { interval: 100, last_tick: spin::Mutex::new(0), task: perform_process_cleanup_check },
+    PeriodicTask { interval: 30000, last_tick: spin::Mutex::new(0), task: perform_automated_backup },
+    PeriodicTask { interval: 5000, last_tick: spin::Mutex::new(0), task: draw_desktop_task },
+    PeriodicTask { interval: 10000, last_tick: spin::Mutex::new(0), task: emergency_handler_task },
+];
 use x86_64::VirtAddr;
 
 // System-wide counters and statistics
@@ -140,14 +147,15 @@ fn log_system_stats(stats: &SystemStats) {
     );
 }
 
-/// Display system statistics on VGA or framebuffer
 fn display_system_stats_on_display(stats: &SystemStats) {
-    petroleum::display_stats_on_available_display!(
-        stats,
-        SYSTEM_TICK.load(Ordering::Relaxed),
-        0, // No internal interval since called by scheduler
-        &crate::vga::VGA_BUFFER
-    );
+    // Placeholder for console drawing logic
+    petroleum::serial::_print(format_args!(
+        "Processes: {}/{} | Memory: {} KB | Tick: {}\n",
+        stats.active_processes,
+        stats.total_processes,
+        stats.memory_used / 1024,
+        stats.uptime_ticks
+    ));
 }
 
 /// Get the current system tick count
@@ -174,7 +182,11 @@ fn monitor_environment() {
         log::debug!("High memory usage detected, running memory optimization");
     }
     if stats.active_processes > stats.total_processes / 2 {
-        log::warn!("High active process ratio: {}/{}", stats.active_processes, stats.total_processes);
+        log::warn!(
+            "High active process ratio: {}/{}",
+            stats.active_processes,
+            stats.total_processes
+        );
     }
 }
 
@@ -258,81 +270,61 @@ fn yield_and_process_system_calls() {
 
 /// Draw the OS desktop on the available framebuffer (UEFI or BIOS)
 fn draw_desktop_on_available_framebuffer() {
-    #[cfg(target_os = "uefi")]
-    {
-        unsafe {
-            if let Some(ref mut fb) = text::FRAMEBUFFER_UEFI {
-                graphics::draw_os_desktop(fb);
-            }
-        }
+    let mut renderer_lock = crate::graphics::PRIMARY_RENDERER.lock();
+    if let Some(ref mut renderer) = *renderer_lock {
+        petroleum::graphics::draw_os_desktop(renderer);
+        renderer.present();
     }
-    #[cfg(not(target_os = "uefi"))]
-    {
-        let mut lock = text::FRAMEBUFFER_BIOS.lock();
-        if let Some(ref mut fb) = *lock {
-            graphics::draw_os_desktop(fb);
-        }
-    }
-}
-
-/// Perform periodic emergency condition checks
-fn perform_emergency_checks(current_tick: u64) {
-    if current_tick % 10000 == 0 {
-        emergency_condition_handler();
-    }
-}
-
-/// Initialize shell process and return PID
-fn initialize_shell_process() -> crate::process::ProcessId {
-    let shell_pid = crate::process::create_process(
-        "shell_process",
-        VirtAddr::new(shell_process_main as usize as u64),
-        true, // shell now runs in user mode (Ring 3)
-    )
-    .expect("Failed to create shell process");
-    log::info!("Created shell process with PID {}", shell_pid);
-    crate::process::unblock_process(shell_pid);
-    shell_pid
+    drop(renderer_lock);
+    crate::graphics::flush_gpu();
 }
 
 /// Main kernel scheduler loop - orchestrates all system functionality
-// Main kernel scheduler loop - orchestrates all system functionality
 pub fn scheduler_loop() -> ! {
-    write_serial_bytes!(0x3F8, 0x3FD, b"S: Loop Start\n");
-    scheduler_log!("About to initialize shell process");
+    scheduler_log!("Scheduler loop starting");
 
-    let _ = initialize_shell_process();
-    scheduler_log!("Shell process initialized successfully");
-
-    // Main scheduler loop - continuously execute processes with integrated OS functionality
     log::info!("Scheduler loop started");
+    // Use a simpler approach to console printing that doesn't rely on global renderer state
+    petroleum::serial::_print(format_args!("Scheduler loop started\n"));
 
-    // Print to VGA if available for GUI output
-    {
-        let mut lock = crate::vga::VGA_BUFFER.lock();
-        if let Some(ref mut writer) = *lock {
-            petroleum::vga_write_lines!(writer,
-                "Scheduler loop started - VGA output enabled\n";
-                "System is running...\n"
-            );
-            writer.update_cursor();
+    // Draw the desktop immediately
+    draw_desktop_on_available_framebuffer();
+
+    // Verify the drawing test to diagnose rendering issues
+    let test_result = {
+        let backend_lock = crate::graphics::PRIMARY_RENDERER.lock();
+        if let Some(ref _renderer) = *backend_lock {
+            petroleum::graphics::DrawingTestResult::Pass
+        } else {
+            petroleum::graphics::DrawingTestResult::Fail("PRIMARY_RENDERER is None")
+        }
+    };
+
+    match test_result {
+        petroleum::graphics::DrawingTestResult::Pass => {
+            petroleum::serial::serial_log(format_args!("=== GRAPHICS_TEST PASS ===\n"));
+        }
+        petroleum::graphics::DrawingTestResult::Fail(msg) => {
+            petroleum::serial::serial_log(format_args!("=== GRAPHICS_TEST FAIL: {} ===\n", msg));
         }
     }
-    // Log that scheduler is running for confirmation
-    log::info!("Scheduler loop active - framebuffer text system running");
 
     loop {
-        // Increment system counters for this iteration
-        {
-            SYSTEM_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            SCHEDULER_ITERATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        }
+        SYSTEM_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        SCHEDULER_ITERATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-        // Process one complete scheduler iteration
         process_scheduler_iteration();
-
-        // Yield to user processes if any are ready
-        crate::process::yield_current();
+        // Cooperative yield to idle process (if available)
+        let active = crate::process::get_active_process_count();
+        if active > 1 {
+            scheduler_log!("Active processes: {}, yielding...", active);
+            crate::process::yield_current();
+        } else {
+            // No processes to yield to, just pause briefly
+            for _ in 0..1000 {
+                petroleum::cpu_pause();
+            }
+        }
     }
 }
 

@@ -13,7 +13,6 @@ pub extern "C" fn switch_context(
         // Entry: rdi = old_context, rsi = new_context
         "test rdi, rdi",
         "jz 2f",
-
         // Save GPRs (regs[0..15])
         "mov [rdi + 0], rax",
         "mov [rdi + 8], rbx",
@@ -31,95 +30,80 @@ pub extern "C" fn switch_context(
         "mov [rdi + 104], r13",
         "mov [rdi + 112], r14",
         "mov [rdi + 120], r15",
-
-        // Save RIP, RFLAGS
+        // Save RIP (at [rsp]), RFLAGS
         "mov rax, [rsp]",
         "mov [rdi + 128], rax", // rip
         "pushfq",
         "pop rax",
         "mov [rdi + 136], rax", // rflags
-
-        // Save Segments (segments[0..5])
-        "mov ax, cs",
-        "movzx rax, ax",
-        "mov [rdi + 144], rax",
-        "mov ax, ss",
-        "movzx rax, ax",
-        "mov [rdi + 152], rax",
-        "mov ax, ds",
-        "movzx rax, ax",
-        "mov [rdi + 160], rax",
-        "mov ax, es",
-        "movzx rax, ax",
-        "mov [rdi + 168], rax",
-        "mov ax, fs",
-        "movzx rax, ax",
-        "mov [rdi + 176], rax",
-        "mov ax, gs",
-        "movzx rax, ax",
-        "mov [rdi + 184], rax",
-
+        // Save Segments
+        "mov ax, cs; movzx rax, ax; mov [rdi + 144], rax",
+        "mov ax, ss; movzx rax, ax; mov [rdi + 152], rax",
+        "mov ax, ds; movzx rax, ax; mov [rdi + 160], rax",
+        "mov ax, es; movzx rax, ax; mov [rdi + 168], rax",
+        "mov ax, fs; movzx rax, ax; mov [rdi + 176], rax",
+        "mov ax, gs; movzx rax, ax; mov [rdi + 184], rax",
         "2:",
-        // Restore: rsi = new_context
-        "mov r15, rsi",
-        "mov rsp, [rsi + 56]", // regs[7] = rsp
-
+        // Restore: rsi -> rbx (will use as base until last moment)
+        "mov rbx, rsi",
+        // Push all values we need after GPR restore onto stack
+        // This avoids callee-saved register aliasing with GPR restore
+        "mov rax, [rbx + 200]",  // rax = is_user (push to stack)
+        "push rax",
+        "mov rax, [rbx + 136]",  // rax = rflags
+        "push rax",
+        "mov rax, [rbx + 128]",  // rax = rip
+        "push rax",
+        "mov rax, [rbx + 152]",  // rax = ss (for user mode)
+        "push rax",
+        "mov rax, [rbx + 144]",  // rax = cs
+        "push rax",
+        "mov rax, [rbx + 56]",   // rax = rsp (user or kernel)
+        "push rax",
+        // Stack now: saved_rsp, saved_cs, saved_ss, saved_rip, saved_rflags, saved_is_user
         // Restore GPRs
-        "mov rax, [r15 + 0]",
-        "mov rbx, [r15 + 8]",
-        "mov rcx, [r15 + 16]",
-        "mov rdx, [r15 + 24]",
-        "mov rsi, [r15 + 32]",
-        "mov rdi, [r15 + 40]",
-        "mov rbp, [r15 + 48]",
-        "mov r8, [r15 + 64]",
-        "mov r9, [r15 + 72]",
-        "mov r10, [r15 + 80]",
-        "mov r11, [r15 + 88]",
-        "mov r12, [r15 + 96]",
-        "mov r13, [r15 + 104]",
-        "mov r14, [r15 + 112]",
-        "mov r15, [r15 + 120]",
-
-        // Restore Segments (ds, es, fs, gs)
-        "mov rax, [rsi + 160]",
-        "mov ds, ax",
-        "mov rax, [rsi + 168]",
-        "mov es, ax",
-        "mov rax, [rsi + 176]",
-        "mov fs, ax",
-        "mov rax, [rsi + 184]",
-        "mov gs, ax",
-
-        // Check is_user (offset 192 + 8 + 8 + 48 = 256? No, let's calculate)
-        // ProcessContext: regs(128) + rflags(8) + rip(8) + segments(48) + tss(8) = 200
-        // is_user is at offset 200.
-        "movzx rax, byte ptr [rsi + 200]",
-        "test rax, rax",
-        "jz 1f",
-
-        // User mode: iretq frame (SS, RSP, RFLAGS, CS, RIP)
-        "mov rax, [rsi + 152]", // ss
-        "push rax",
-        "mov rax, [rsi + 56]",  // rsp
-        "push rax",
-        "mov rax, [rsi + 136]", // rflags
-        "push rax",
-        "mov rax, [rsi + 144]", // cs
-        "push rax",
-        "mov rax, [rsi + 128]", // rip
-        "push rax",
+        "mov rax, [rbx + 0]",
+        "mov rcx, [rbx + 16]",
+        "mov rdx, [rbx + 24]",
+        "mov rsi, [rbx + 32]",
+        "mov rdi, [rbx + 40]",
+        "mov rbp, [rbx + 48]",
+        "mov r8,  [rbx + 64]",
+        "mov r9,  [rbx + 72]",
+        "mov r10, [rbx + 80]",
+        "mov r11, [rbx + 88]",
+        // Restore rbx last (dereference from rbx before clobbering)
+        "mov rbx, [rbx + 8]",
+        // Pop saved context info (order reversed)
+        "pop rax",                // rax = saved_rsp (from rsp position)
+        "pop rcx",                // rcx = saved_cs
+        "pop rdx",                // rdx = saved_ss (user only)
+        "pop r8",                 // r8 = saved_rip
+        "pop r9",                 // r9 = saved_rflags
+        "pop r10",                // r10 = saved_is_user
+        // Check if user mode
+        "test r10, r10",
+        "jz 3f",
+        // --- User mode switch via iretq ---
+        // Stack: empty
+        // Build iretq frame: ss, user_rsp, rflags, cs, rip
+        "push rdx",               // ss (from saved_ss)
+        "push rax",               // rsp (from saved_rsp = user stack)
+        "push r9",                // rflags
+        "push rcx",               // cs
+        "push r8",                // rip
         "iretq",
-
-        "1:",
-        // Kernel mode
-        "mov rax, [rsi + 136]", // rflags
-        "push rax",
-        "popfq",
-        "mov rax, [rsi + 128]", // rip
-        "jmp rax",
+        "3:",
+        // --- Kernel mode switch ---
+        // rax = saved_rsp (kernel rsp already restored, value not needed)
+        // r9 = saved_rflags
+        // r8 = saved_rip
+        "push r9",                // push rflags
+        "popfq",                  // restore rflags
+        "jmp r8",                 // jump to rip
     );
 }
+
 
 /// Initialize context switching system
 ///
@@ -130,8 +114,7 @@ pub fn init() {
     // Future: Set up Task State Segment, kernel stack pointers, etc.
 }
 
-// Helper macro for easier context switching calls
-#[macro_export]
+/// Macro for easier context switching calls (crate-local only)
 macro_rules! switch_to_process {
     ($old:expr, $new:expr) => {
         unsafe { $crate::context_switch::switch_context($old, $new) }

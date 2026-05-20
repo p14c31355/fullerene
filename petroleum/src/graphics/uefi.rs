@@ -7,6 +7,8 @@ use core::ffi::c_void;
 use core::ptr;
 use spin::Mutex;
 
+type EfiUniversalGraphicsAdapterProtocolPtr = isize; // Placeholder for UGA protocol type
+
 /// Protocol locator for UEFI protocols
 struct ProtocolLocator<'a> {
     guid: &'a [u8; 16],
@@ -35,6 +37,28 @@ impl<'a> ProtocolLocator<'a> {
     }
 }
 
+/// Helper to try Universal Graphics Adapter (UGA) protocol
+pub fn init_uga_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
+    let locator = ProtocolLocator::new(&EFI_UNIVERSAL_GRAPHICS_ADAPTER_PROTOCOL_GUID, system_table);
+    let mut uga: *mut EfiUniversalGraphicsAdapterProtocolPtr = ptr::null_mut();
+
+    match locator.locate(&mut uga) {
+        Ok(_) => {
+            crate::serial::_print(format_args!(
+                "UGA protocol found, but UGA implementation incomplete.\n"
+            ));
+            None
+        }
+        Err(status) => {
+            crate::serial::_print(format_args!(
+                "UGA protocol not available (status: {:#x})\n",
+                status as u32
+            ));
+            None
+        }
+    }
+}
+
 /// Framebuffer configuration installer
 struct FramebufferInstaller;
 
@@ -52,12 +76,14 @@ impl FramebufferInstaller {
     }
 
     fn clear_framebuffer(&self, config: &FullereneFramebufferConfig) {
-        unsafe {
-            ptr::write_bytes(
-                config.address as *mut u8,
-                0x00,
-                (config.height as u64 * config.stride as u64) as usize,
-            );
+        if config.address != 0 {
+            unsafe {
+                ptr::write_bytes(
+                    config.address as *mut u8,
+                    0x00,
+                    (config.height as u64 * config.stride as u64) as usize,
+                );
+            }
         }
     }
 }
@@ -68,7 +94,7 @@ pub fn detect_standard_modes(
     modes: &[(u32, u32, u32, u64)],
 ) -> Option<FullereneFramebufferConfig> {
     for (width, height, bpp, addr) in modes.iter() {
-        let expected_fb_size = (*height * *width * bpp / 8) as u64;
+        let expected_fb_size = (*height as u64) * (*width as u64) * (*bpp as u64 / 8);
         crate::serial::_print(format_args!(
             "[BM-GFX] Testing {}x{} mode at {:#x} (size: {}KB)\n",
             width,
@@ -88,7 +114,10 @@ pub fn detect_standard_modes(
                 *height,
                 crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                 *bpp,
-                *width * (*bpp / 8),
+                (*width as u64)
+                    .checked_mul(*bpp as u64 / 8)
+                    .and_then(|s| u32::try_from(s).ok())
+                    .unwrap_or(0),
             ));
         }
     }
@@ -96,28 +125,24 @@ pub fn detect_standard_modes(
 }
 
 /// Test a QEMU framebuffer configuration for accessibility
+///
+/// SAFETY WARNING: This function MUST NOT directly access physical addresses via identity mapping,
+/// because after UEFI exit_boot_services, identity-mapped addresses may point to DRAM (not MMIO).
+/// Writing to DRAM corrupts kernel code/data and causes triple faults.
+/// Instead of probing, we trust the known QEMU framebuffer addresses.
 pub fn test_qemu_framebuffer_access(address: u64) -> bool {
     if address == 0 {
         return false;
     }
-
-    let test_ptr = address as *mut u32;
-    if test_ptr.is_null() {
-        return false;
-    }
-
-    unsafe {
-        let original_value = test_ptr.read_volatile();
-        test_ptr.write_volatile(0x12345678);
-        let readback_value = test_ptr.read_volatile();
-
-        if readback_value == 0x12345678 {
-            test_ptr.write_volatile(original_value);
-            true
-        } else {
-            false
-        }
-    }
+    // Skip unsafe direct memory access. Just trust the address is valid.
+    // QEMU std-vga (q35) typically places framebuffer at 0xFC000000 or 0xFD000000.
+    // If the mapping is wrong, map_page_4k_l1 in map_mmio/init_graphics will fail,
+    // or put_pixel will cause a page fault with clear diagnostics.
+    crate::serial::_print(format_args!(
+        "QEMU framebuffer address {:#x} accepted (direct probe skipped)\n",
+        address
+    ));
+    true
 }
 
 /// Generic helper to test QEMU framebuffer configurations
@@ -156,7 +181,10 @@ pub fn find_working_qemu_config(
                 height,
                 crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
                 bpp,
-                width * (bpp / 8),
+                (width as u64)
+                    .checked_mul(bpp as u64 / 8)
+                    .and_then(|s| u32::try_from(s).ok())
+                    .unwrap_or(0),
             );
 
             crate::serial::_print(format_args!(
@@ -233,12 +261,10 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     match locator.locate(&mut gop) {
         Err(status) => {
             crate::serial::_print(format_args!(
-                "GOP: Failed to locate GOP protocol (status: {:#x}).\n",
+                "GOP: Failed to locate GOP protocol (status: {:#x}). Skipping QEMU fallback, will try PCI enumeration.\n",
                 status as u32
             ));
-
-            crate::serial::_print(format_args!("GOP: Trying alternative GOP detection...\n"));
-            return init_gop_framebuffer_alternative(system_table);
+            return None;
         }
         Ok(_) => {
             crate::serial::_print(format_args!(
@@ -322,13 +348,18 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
         return None;
     }
 
+    let bpp = crate::common::get_bpp_from_pixel_format(info.pixel_format);
+    let stride_bytes = (info.pixels_per_scan_line as u64)
+        .checked_mul((bpp / 8) as u64)
+        .and_then(|s| u32::try_from(s).ok())
+        .unwrap_or(0);
     let config = create_framebuffer_config(
         fb_addr as u64,
         info.horizontal_resolution,
         info.vertical_resolution,
         info.pixel_format,
-        crate::common::get_bpp_from_pixel_format(info.pixel_format),
-        info.pixels_per_scan_line,
+        bpp,
+        stride_bytes,
     );
 
     crate::serial::_print(format_args!(
@@ -398,7 +429,7 @@ pub fn init_graphics_protocols(
     }
 
     crate::serial::_print(format_args!("GOP not available, trying UGA protocol...\n"));
-    if let Some(config) = crate::init_uga_framebuffer(system_table) {
+    if let Some(config) = init_uga_framebuffer(system_table) {
         return Some(config);
     }
 
@@ -421,12 +452,14 @@ pub fn init_graphics_protocols(
             config.width, config.height, config.address, config.bpp, config.stride
         ));
 
-        unsafe {
-            ptr::write_bytes(
-                config.address as *mut u8,
-                0x00,
-                (config.height as u64 * config.stride as u64) as usize,
-            );
+        if config.address != 0 {
+            unsafe {
+                ptr::write_bytes(
+                    config.address as *mut u8,
+                    0x00,
+                    (config.height as u64 * config.stride as u64) as usize,
+                );
+            }
         }
 
         crate::serial::_print(format_args!("EFI: Framebuffer cleared.\n"));
@@ -452,12 +485,14 @@ pub fn init_graphics_protocols(
             config.width, config.height, config.address, config.bpp, config.stride
         ));
 
-        unsafe {
-            ptr::write_bytes(
-                config.address as *mut u8,
-                0x00,
-                (config.height as u64 * config.stride as u64) as usize,
-            );
+        if config.address != 0 {
+            unsafe {
+                ptr::write_bytes(
+                    config.address as *mut u8,
+                    0x00,
+                    (config.height as u64 * config.stride as u64) as usize,
+                );
+            }
         }
 
         crate::serial::_print(format_args!("Bare-metal: Framebuffer cleared.\n"));

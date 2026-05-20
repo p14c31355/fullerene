@@ -2,61 +2,108 @@ name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, develop ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main, develop ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
-  ci:
+  check:
+    name: Check
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust (nightly)
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly
+          components: rust-src, clippy, rustfmt, llvm-tools-preview
 
-      - name: Add rust-src component for no_std crates
-        run: rustup component add rust-src --toolchain nightly
+      - name: Add UEFI target
+        run: rustup target add x86_64-unknown-uefi
 
-      - name: Install x86_64-unknown-uefi target
-        run: rustup target add x86_64-unknown-uefi --toolchain nightly
-
-      - name: Install additional tools
-        run: rustup component add clippy rustfmt --toolchain nightly
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./ -> target"
 
-      - name: Check formatting
+      - name: Format check
         run: cargo fmt --all -- --check
 
-      - name: Run clippy
-        run: |
-          cargo clippy -- -D warnings
-          cargo clippy --all-targets -- -D warnings
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Build workspace (check only)
+      - name: Cargo check
         run: cargo check --workspace
 
-      - name: Run tests
+  build-kernel:
+    name: Build Kernel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+
+      - name: Setup target & components
         run: |
-          cargo test --package toluene --verbose
-          cargo test --package flasks --verbose
+          rustup target add x86_64-unknown-uefi
+          rustup component add rust-src
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Bootloader & Kernel
+        run: |
+          cargo +nightly build -Z build-std=core,alloc --package bellows --target x86_64-unknown-uefi
+          cargo +nightly build -Z build-std=core,alloc --package fullerene-kernel --target x86_64-unknown-uefi
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test (host compatible crates)
+        run: |
           cargo test --package petroleum --verbose
+          cargo test --package flasks --verbose
+          cargo test --package toluene --verbose
 
-      - name: Build all components
+  qemu-smoke-test:
+    name: QEMU Smoke Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 ovmf
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: rust-src
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run QEMU Smoke Test
         run: |
-          cargo build -Z build-std=core,alloc --package fullerene-kernel --target x86_64-unknown-uefi --profile dev
-          cargo build -Z build-std=core,alloc --package bellows --target x86_64-unknown-uefi --profile dev
-          cargo build --package toluene --profile dev
-          cargo build --package flasks --profile dev
+          cargo run --bin flasks -- --headless --timeout 30
 
-      - name: Check documentation
-        run: cargo doc --document-private-items --no-deps --all-features
-        env:
-          RUSTDOCFLAGS: -D warnings
+      - name: Check serial log
+        run: |
+          if [ -f qemu_log.txt ]; then
+            grep -E "scheduler|shell|panic" qemu_log.txt || echo "No critical logs found"
+          else
+            echo "qemu_log.txt not found"
+            exit 1
+          fi

@@ -4,8 +4,9 @@ use embedded_graphics::prelude::*;
 use core::marker::{Send, Sync};
 use core::ptr::{read_volatile, write_volatile};
 
-use crate::FullereneFramebufferConfig;
 use crate::common::{EfiGraphicsPixelFormat, VgaFramebufferConfig};
+#[cfg(target_os = "uefi")]
+use crate::common::uefi::FullereneFramebufferConfig;
 use spin::{Mutex, Once};
 
 // --- FramebufferInfo ---
@@ -20,29 +21,23 @@ pub struct FramebufferInfo {
 }
 
 impl FramebufferInfo {
+    /// Returns the stride in bytes per scan line.
+    /// For UEFI framebuffers, this is `pixels_per_scan_line * bytes_per_pixel`.
+    /// For VGA mode, stride equals width (since bytes_per_pixel == 1).
     pub fn width_or_stride(&self) -> u32 {
-        #[cfg(target_os = "uefi")]
-        {
-            let stride_bytes = self.stride as u64 * self.bytes_per_pixel() as u64;
-            stride_bytes
-                .try_into()
-                .expect("Stride in bytes exceeds u32::MAX")
-        }
-        #[cfg(not(target_os = "uefi"))]
-        {
-            self.width
-        }
+        self.stride
     }
 
+    /// Calculate the byte offset into the framebuffer for pixel at (x, y).
+    ///
+    /// `stride` is always stored in bytes internally:
+    /// - UEFI: initialized as `pixels_per_scan_line * bytes_per_pixel` (see `find_gop_framebuffer`)
+    /// - VGA:  initialized as `width` (since bytes_per_pixel == 1, stride == width in bytes)
+    ///
+    /// Formula: `y * stride_in_bytes + x * bytes_per_pixel`
+    /// This works correctly for both UEFI (32bpp) and VGA (8-bit indexed) modes.
     pub fn calculate_offset(&self, x: u32, y: u32) -> usize {
-        #[cfg(target_os = "uefi")]
-        {
-            ((y as u64 * self.stride as u64 + x as u64) * self.bytes_per_pixel() as u64) as usize
-        }
-        #[cfg(not(target_os = "uefi"))]
-        {
-            ((y * self.width + x) * 1) as usize
-        } // 1 byte per pixel for VGA
+        (y as usize * self.stride as usize) + (x as usize * self.bytes_per_pixel() as usize)
     }
 
     pub fn bytes_per_pixel(&self) -> u32 {
@@ -189,6 +184,7 @@ pub struct SimpleFramebufferConfig {
     pub height: usize,
     pub stride: usize, // bytes per row
     pub bytes_per_pixel: usize,
+    pub pixel_format: Option<crate::common::EfiGraphicsPixelFormat>,
 }
 
 /// Get the simple framebuffer instance (creates it from config if needed)
@@ -211,6 +207,9 @@ pub struct SimpleFramebuffer {
     pub height: usize,
     pub stride: usize, // bytes per row
     pub bytes_per_pixel: usize,
+    /// Controls byte ordering: `None` = VGA indexed, `Some(RGB)` → LE bytes [R,G,B,A],
+    /// `Some(BGR)` → LE bytes [B,G,R,A].
+    pub pixel_format: Option<crate::common::EfiGraphicsPixelFormat>,
 }
 
 impl SimpleFramebuffer {
@@ -222,6 +221,7 @@ impl SimpleFramebuffer {
             height: config.height,
             stride: config.stride,
             bytes_per_pixel: config.bytes_per_pixel,
+            pixel_format: config.pixel_format,
         }
     }
 
@@ -255,6 +255,10 @@ impl SimpleFramebuffer {
     }
 
     /// Draw a single pixel (orbclient-style)
+    ///
+    /// `color` is expected as `0x00RRGGBB` (RGB order).  For BGRA framebuffers
+    /// the u32 is written as-is (LE bytes naturally produce B,G,R,A order).
+    /// For RGBA the R and B bytes are swapped.  For VGA 8-bit the low byte is used.
     pub fn draw_pixel(&mut self, x: usize, y: usize, color: u32) {
         if x >= self.width || y >= self.height {
             return;
@@ -272,10 +276,29 @@ impl SimpleFramebuffer {
         }
 
         unsafe {
-            let color_bytes = color.to_le_bytes();
-            for i in 0..self.bytes_per_pixel {
-                if i < color_bytes.len() {
-                    write_volatile(pixel_addr.add(i), color_bytes[i]);
+            match (self.bytes_per_pixel, self.pixel_format) {
+                // 32 bpp BGRA → LE bytes naturally [B, G, R, A] from `0x00RRGGBB`
+                (4, Some(crate::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor))
+                | (4, None) => {
+                    write_volatile(pixel_addr as *mut u32, color);
+                }
+                // 32 bpp RGBA → LE should be [R, G, B, A]; swap R↔B in the u32 value
+                (4, Some(crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor)) => {
+                    let swapped = (color & 0xFF00FF00)
+                        | ((color & 0x00FF0000) >> 16)
+                        | ((color & 0x000000FF) << 16);
+                    write_volatile(pixel_addr as *mut u32, swapped);
+                }
+                // 8 bpp VGA (indexed) – use low byte
+                (1, _) => {
+                    write_volatile(pixel_addr, (color & 0xFF) as u8);
+                }
+                // fallback: byte-by-byte (type-agnostic)
+                _ => {
+                    let color_bytes = color.to_le_bytes();
+                    for i in 0..self.bytes_per_pixel.min(4) {
+                        write_volatile(pixel_addr.add(i), color_bytes[i]);
+                    }
                 }
             }
         }
@@ -369,6 +392,25 @@ impl Button {
         self.bg_color = bg;
         self.text_color = text_color;
         self
+    }
+
+    /// Draw the button using the generic Renderer trait.
+    pub fn draw(&self, renderer: &mut dyn crate::graphics::renderer::Renderer) {
+        renderer.draw_rect(
+            self.x as i32,
+            self.y as i32,
+            self.width,
+            self.height,
+            self.bg_color,
+        );
+        let text_width = crate::calc_text_width(&self.text);
+        let text_x = self.x as i32 + (self.width as i32 / 2) - (text_width / 2);
+        renderer.draw_text(
+            text_x,
+            self.y as i32 + (self.height as i32 / 2) - 5,
+            &self.text,
+            self.text_color,
+        );
     }
 
     pub fn contains_point(&self, x: u32, y: u32) -> bool {

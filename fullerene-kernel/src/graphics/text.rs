@@ -102,15 +102,6 @@ fn print_to_graphics(args: &fmt::Arguments) {
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     print_to_graphics(&args);
-    #[cfg(not(target_os = "uefi"))]
-    // Also output to VGA text buffer for reliable visibility
-    {
-        let mut lock = crate::vga::VGA_BUFFER.lock();
-        if let Some(ref mut vga_writer) = *lock {
-            vga_writer.write_fmt(args).ok();
-            vga_writer.update_cursor();
-        }
-    }
 }
 
 // Fallback graphics initialization for when framebuffer config is not available

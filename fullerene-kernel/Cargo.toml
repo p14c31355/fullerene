@@ -18,10 +18,6 @@ spin = { version = "0.10.0", default-features = false, features = [
   "mutex",
   "spin_mutex",
 ] }
-lazy_static = { version = "1.5.0", default-features = false, features = [
-  "spin_no_std",
-] }
-
 petroleum = { path = "../petroleum" }
 embedded-graphics = { version = "0.8", default-features = false }
 memoffset = { version = "0.9", default-features = false }

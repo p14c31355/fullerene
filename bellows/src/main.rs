@@ -1,4 +1,11 @@
-// bellows/src/main.rs.
+//! Bellows UEFI bootloader
+//!
+//! This crate implements the UEFI bootloader phase of the Fullerene OS.
+//! It is responsible for:
+//! - Initializing UEFI boot services and graphics
+//! - Loading the kernel ELF binary embedded in the bootloader
+//! - Setting up page tables and jumping to the kernel
+//! - Providing a VGA fallback when GOP is unavailable
 
 #![no_std]
 #![no_main]
@@ -101,14 +108,8 @@ pub unsafe extern "efiapi" fn efi_main(
         panic!("Kernel file is empty.");
     }
 
-    petroleum::println!("Bellows: Kernel file loaded.");
-    petroleum::serial::_print(format_args!(
-        "Kernel file loaded. Size: {}\n",
-        efi_image_size
-    ));
-
-    petroleum::serial::_print(format_args!("Attempting to load EFI image...\n"));
-
+    petroleum::println!("Bellows: Kernel file loaded. Size: {}", efi_image_size);
+    petroleum::println!("Attempting to load EFI image...");
     // Load the kernel and get its entry point.
     let (kernel_phys_start, kernel_entry_phys, entry) = match load_efi_image(
         st,
@@ -116,12 +117,12 @@ pub unsafe extern "efiapi" fn efi_main(
         petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64() as usize,
     ) {
         Ok((phys, phys_entry, e)) => {
-            petroleum::serial::_print(format_args!(
-                "EFI image loaded successfully. Entry point: {:#p}, Phys entry: {:#x}, Phys base: {:#x}\n",
+            petroleum::println!(
+                "EFI image loaded successfully. Entry point: {:#p}, Phys entry: {:#x}, Phys base: {:#x}",
                 e as *const (),
                 phys_entry,
                 phys.as_u64()
-            ));
+            );
             (phys, phys_entry, e)
         }
         Err(err) => {
@@ -129,13 +130,9 @@ pub unsafe extern "efiapi" fn efi_main(
             panic!("Failed to load EFI image.");
         }
     };
-    petroleum::serial::_print(format_args!("Bellows: EFI image loaded.\n"));
-
+    petroleum::println!("Bellows: EFI image loaded.");
     petroleum::println!("Bellows: Kernel loaded from embedded binary.");
-
-    petroleum::serial::_print(format_args!(
-        "Exiting boot services and jumping to kernel...\n"
-    ));
+    petroleum::println!("Exiting boot services and jumping to kernel...");
     // Exit boot services and jump to the kernel.
     petroleum::println!("Bellows: About to exit boot services and jump to kernel."); // Debug print just before the call
     match exit_boot_services_and_jump(
@@ -156,15 +153,22 @@ pub unsafe extern "efiapi" fn efi_main(
 }
 
 fn init_basic_vga_text_mode() {
-    petroleum::serial::_print(format_args!("Basic VGA text mode initialization...\n"));
+    petroleum::println!("Basic VGA text mode initialization...");
 
     // Detect and initialize VGA graphics for Cirrus devices
     petroleum::graphics::detect_and_init_vga_graphics();
 
-    petroleum::serial::_print(format_args!(
-        "Basic VGA text mode initialized as fallback.\n"
-    ));
+    petroleum::println!("Basic VGA text mode initialized as fallback.");
 }
+
+// Standard VGA memory address for legacy VGA framebuffer
+const VGA_MEMORY_ADDRESS: u64 = 0xA0000;
+// VGA fallback resolution width
+const VGA_FALLBACK_WIDTH: u32 = 800;
+// VGA fallback resolution height
+const VGA_FALLBACK_HEIGHT: u32 = 600;
+// VGA fallback bits per pixel
+const VGA_FALLBACK_BPP: u32 = 8;
 
 /// Installs a basic VGA framebuffer configuration for UEFI environments when GOP is not available.
 /// Provides a fallback framebuffer configuration that the kernel can use.
@@ -174,12 +178,12 @@ fn install_vga_framebuffer_config(_st: &EfiSystemTable) {
     // Create an improved VGA-compatible framebuffer config
     // Use higher resolution VGA modes for better compatibility and to prevent logo scattering
     let config = FullereneFramebufferConfig {
-        address: 0xA0000,                                     // Standard VGA memory address
-        width: 800,  // Higher resolution to prevent logo scattering
-        height: 600, // Higher resolution for better display
-        pixel_format: EfiGraphicsPixelFormat::PixelFormatMax, // Special marker for VGA mode
-        bpp: 8,
-        stride: 800, // Match width for VGA modes
+        address: VGA_MEMORY_ADDRESS,
+        width: VGA_FALLBACK_WIDTH,
+        height: VGA_FALLBACK_HEIGHT,
+        pixel_format: EfiGraphicsPixelFormat::PixelFormatMax,
+        bpp: VGA_FALLBACK_BPP,
+        stride: VGA_FALLBACK_WIDTH,
     };
 
     #[cfg(debug_assertions)]
@@ -189,7 +193,9 @@ fn install_vga_framebuffer_config(_st: &EfiSystemTable) {
     ));
 
     // Save to global instead of installing config table to avoid hang
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Bellows: Initializing framebuffer config static...\n");
     petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config)));
+    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Bellows: Framebuffer config static initialized.\n");
 
     petroleum::println!("VGA framebuffer config saved globally successfully.");
 }

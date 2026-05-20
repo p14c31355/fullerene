@@ -29,24 +29,10 @@ macro_rules! unified_logging {
 
 #[macro_export]
 macro_rules! debug_log_no_alloc {
-    ($msg:literal) => {{
-        $crate::write_serial_bytes!(0x3F8, 0x3FD, concat!($msg, "\n").as_bytes());
-    }};
-    ($value:expr) => {{
-        $crate::serial::DebugNoLock::debug_print_no_lock($value);
-        $crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-    }};
-    ($msg:literal, $($value:expr),* $(,)?) => {{
-        $crate::write_serial_bytes!(0x3F8, 0x3FD, $msg.as_bytes());
-        $(
-            $crate::serial::DebugNoLock::debug_print_no_lock($value);
-        )*
-        $crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-    }};
-    ($prefix:literal, $string_var:expr) => {{
-        $crate::write_serial_bytes!(0x3F8, 0x3FD, $prefix.as_bytes());
-        $crate::serial::DebugNoLock::debug_print_no_lock($string_var);
-        $crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+    ($($arg:tt)*) => {{
+        let args = format_args!($($arg)*);
+        $crate::serial::_print(args);
+        $crate::serial::debug_print_str_no_lock("\n");
     }};
 }
 

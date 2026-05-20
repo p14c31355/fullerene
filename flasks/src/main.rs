@@ -10,6 +10,26 @@ struct Args {
     /// Clone the stable version of OVMF (edk2) into flasks/ovmf/edk2
     #[arg(long)]
     clone_ovmf: bool,
+
+    /// Run QEMU in headless mode (no GUI)
+    #[arg(long)]
+    headless: bool,
+
+    /// Timeout for QEMU execution in seconds
+    #[arg(long)]
+    timeout: Option<u64>,
+
+    /// VGA device type: virtio-gpu, std, qxl, cirrus, none (default: virtio-gpu)
+    #[arg(long, default_value = "virtio-gpu")]
+    vga: String,
+
+    /// Display backend: gtk, sdl, none, curses (default: gtk when not headless)
+    #[arg(long)]
+    display: Option<String>,
+
+    /// Screen resolution in WxH format (e.g., 1024x768). Only effective with virtio-gpu/qxl
+    #[arg(long, default_value = "1024x768")]
+    resolution: String,
 }
 
 fn main() -> io::Result<()> {
@@ -26,7 +46,7 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
-    run_qemu(&workspace_root)?;
+    run_qemu(&workspace_root, &args)?;
     Ok(())
 }
 
@@ -70,28 +90,42 @@ fn setup_ovmf(workspace_root: &PathBuf) -> io::Result<()> {
     Ok(())
 }
 
+/// Build a UEFI package with cargo, using consistent target and profile settings.
+fn build_uefi_package(
+    workspace_root: &PathBuf,
+    package: &str,
+    features: Option<&str>,
+) -> io::Result<()> {
+    let mut args: Vec<&str> = vec![
+        "+nightly",
+        "build",
+        "-q",
+        "-Zbuild-std=core,alloc",
+        "--package",
+        package,
+        "--target",
+        "x86_64-unknown-uefi",
+        "--profile",
+        "dev",
+    ];
+    if let Some(feats) = features {
+        args.extend(["--features", feats]);
+    }
+    let status = Command::new("cargo")
+        .current_dir(workspace_root)
+        .args(&args)
+        .status()?;
+    if !status.success() {
+        return Err(io::Error::other(format!("{} build failed", package)));
+    }
+    Ok(())
+}
+
 fn create_iso_and_setup(
     workspace_root: &PathBuf,
 ) -> io::Result<(PathBuf, PathBuf, PathBuf, tempfile::NamedTempFile)> {
     // --- 1. Build fullerene-kernel (no_std) ---
-    let status = Command::new("cargo")
-        .current_dir(workspace_root)
-        .args([
-            "+nightly",
-            "build",
-            "-q",
-            "-Zbuild-std=core,alloc",
-            "--package",
-            "fullerene-kernel",
-            "--target",
-            "x86_64-unknown-uefi",
-            "--profile",
-            "dev",
-        ])
-        .status()?;
-    if !status.success() {
-        return Err(io::Error::other("fullerene-kernel build failed"));
-    }
+    build_uefi_package(workspace_root, "fullerene-kernel", None)?;
 
     let target_dir = workspace_root
         .join("target")
@@ -121,26 +155,7 @@ fn create_iso_and_setup(
     }
 
     let bellows_path = target_dir.join("bellows.efi");
-    let status = Command::new("cargo")
-        .current_dir(workspace_root)
-        .args([
-            "+nightly",
-            "build",
-            "-q",
-            "-Zbuild-std=core,alloc",
-            "--features",
-            "debug_loader",
-            "--package",
-            "bellows",
-            "--target",
-            "x86_64-unknown-uefi",
-            "--profile",
-            "dev",
-        ])
-        .status()?;
-    if !status.success() {
-        return Err(io::Error::other("bellows build failed"));
-    }
+    build_uefi_package(workspace_root, "bellows", Some("debug_loader"))?;
 
     // --- 3. Create ISO using isobemak ---
     let iso_path = workspace_root.join("fullerene.iso");
@@ -196,7 +211,7 @@ fn create_iso_and_setup(
     Ok((iso_path, ovmf_fd_path, ovmf_vars_fd_path, temp_ovmf_vars_fd))
 }
 
-fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {
+fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
     log::info!("Starting QEMU...");
     let (iso_path, ovmf_fd_path, ovmf_vars_fd_path, temp_ovmf_vars_fd) =
         create_iso_and_setup(&workspace_root)?;
@@ -215,45 +230,99 @@ fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {
     let iso_path_str = iso_path.to_str().expect("ISO path should be valid UTF-8");
 
     let mut qemu_cmd = Command::new("qemu-system-x86_64");
-    qemu_cmd.args([
-        "-m",
-        "4G",
-        "-cpu",
-        "qemu64,+smap,-invtsc",
-        "-smp",
-        "1",
-        "-M",
-        "q35",
-        "-vga",
-        "std",
-        "-display",
-        "gtk,gl=off,window-close=on,zoom-to-fit=on",
-        "-serial",
-        "stdio",
-        "-accel",
-        "tcg,thread=single",
-        "-d",
-        "int,cpu_reset,guest_errors,unimp",
-        "-D",
-        "qemu_log.txt",
-        "-monitor",
-        "none",
-        "-drive",
-        &ovmf_fd_drive,
-        "-drive",
-        &ovmf_vars_fd_drive,
-        "-drive",
-        &format!("file={},media=cdrom,if=ide,format=raw", iso_path_str),
-        "-no-reboot",
-        "-no-shutdown",
-        "-device",
-        "isa-debug-exit,iobase=0xf4,iosize=0x04",
-        "-rtc",
-        "base=utc",
-        "-boot",
-        "menu=on,order=d",
-        "-nodefaults",
+    let mut qemu_args: Vec<String> = vec![
+        "-m".to_string(), "4G".to_string(),
+        "-cpu".to_string(), "qemu64,+smap,-invtsc".to_string(),
+        "-smp".to_string(), "1".to_string(),
+        "-M".to_string(), "q35".to_string(),
+    ];
+
+    // --- VGA device (dynamic) ---
+    match args.vga.as_str() {
+        "virtio-gpu" => {
+            qemu_args.push("-vga".to_string());
+            qemu_args.push("none".to_string());
+            // Parse resolution
+            let res_parts: Vec<&str> = args.resolution.split('x').collect();
+            let (w, h) = if res_parts.len() == 2 {
+                (res_parts[0], res_parts[1])
+            } else {
+                ("1024", "768")
+            };
+            qemu_args.push("-device".to_string());
+            qemu_args.push(format!(
+                "virtio-gpu-pci,disable-legacy=on,disable-modern=off,xres={},yres={}",
+                w, h
+            ));
+        }
+        "std" => {
+            qemu_args.push("-vga".to_string());
+            qemu_args.push("std".to_string());
+        }
+        "qxl" => {
+            qemu_args.push("-vga".to_string());
+            qemu_args.push("qxl".to_string());
+        }
+        "cirrus" => {
+            qemu_args.push("-vga".to_string());
+            qemu_args.push("cirrus".to_string());
+        }
+        "none" => {
+            qemu_args.push("-vga".to_string());
+            qemu_args.push("none".to_string());
+        }
+        other => {
+            log::warn!("Unknown VGA type '{}', falling back to virtio-gpu", other);
+            qemu_args.push("-vga".to_string());
+            qemu_args.push("none".to_string());
+            qemu_args.push("-device".to_string());
+            qemu_args.push("virtio-gpu-pci,disable-legacy=on,disable-modern=off".to_string());
+        }
+    }
+
+    // --- Display backend (dynamic) ---
+    let display = args.display.as_deref().unwrap_or(if args.headless { "none" } else { "gtk" });
+    qemu_args.push("-display".to_string());
+    match display {
+        "gtk" => qemu_args.push("gtk,gl=off,window-close=on,zoom-to-fit=on".to_string()),
+        "sdl" => qemu_args.push("sdl,gl=off".to_string()),
+        "none" => qemu_args.push("none".to_string()),
+        "curses" => qemu_args.push("curses".to_string()),
+        other => {
+            log::warn!("Unknown display backend '{}', using none", other);
+            qemu_args.push("none".to_string());
+        }
+    }
+
+    qemu_args.extend([
+        "-serial".to_string(), "stdio".to_string(),
+        "-accel".to_string(), "tcg,thread=single".to_string(),
+        "-d".to_string(), "int,cpu_reset,guest_errors,unimp".to_string(),
+        "-D".to_string(), "qemu_log.txt".to_string(),
+        "-monitor".to_string(), "none".to_string(),
     ]);
+
+    qemu_args.push("-drive".to_string());
+    qemu_args.push(ovmf_fd_drive);
+    qemu_args.push("-drive".to_string());
+    qemu_args.push(ovmf_vars_fd_drive);
+    qemu_args.push("-drive".to_string());
+    qemu_args.push(format!(
+        "file={},media=cdrom,if=ide,format=raw",
+        iso_path_str
+    ));
+
+    qemu_args.extend([
+        "-no-reboot".to_string(),
+        "-no-shutdown".to_string(),
+        "-device".to_string(), "isa-debug-exit,iobase=0xf4,iosize=0x04".to_string(),
+        "-rtc".to_string(), "base=utc".to_string(),
+        "-boot".to_string(), "menu=on,order=d".to_string(),
+        "-nodefaults".to_string(),
+    ]);
+
+    qemu_cmd.args(&qemu_args);
+
     // Keep the temporary file alive until QEMU exits
     let _temp_ovmf_vars_fd_holder = temp_ovmf_vars_fd;
     // LD_PRELOAD is a workaround for specific QEMU/libpthread versions.
@@ -262,10 +331,43 @@ fn run_qemu(workspace_root: &PathBuf) -> io::Result<()> {
         flasks::find_libpthread().expect("libpthread.so.0 not found in common locations")
     });
     qemu_cmd.env("LD_PRELOAD", ld_preload_path);
-    let qemu_status = qemu_cmd.status()?;
 
-    if !qemu_status.success() {
-        return Err(io::Error::other("QEMU execution failed"));
+    let mut child = qemu_cmd.spawn()?;
+
+    if let Some(timeout_secs) = args.timeout {
+        let timeout_duration = std::time::Duration::from_secs(timeout_secs);
+        let timeout_handle = std::thread::spawn(move || {
+            std::thread::sleep(timeout_duration);
+        });
+
+        // We need to wait for either the child to exit or the timeout thread to finish
+        // Since we can't easily "select" on a process, we'll poll the child
+        loop {
+            match child.try_wait()? {
+                Some(status) => {
+                    if !status.success() {
+                        return Err(io::Error::other("QEMU execution failed"));
+                    }
+                    return Ok(());
+                }
+                None => {
+                    if timeout_handle.is_finished() {
+                        log::warn!(
+                            "QEMU timed out after {} seconds. Killing process...",
+                            timeout_secs
+                        );
+                        child.kill()?;
+                        return Err(io::Error::other("QEMU execution timed out"));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+        }
+    } else {
+        let qemu_status = child.wait()?;
+        if !qemu_status.success() {
+            return Err(io::Error::other("QEMU execution failed"));
+        }
     }
 
     Ok(())

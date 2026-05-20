@@ -13,5 +13,5 @@ fullerene.iso
 *.log
 *.img
 *.bin
-qemu_log.txt
+*.txt
 *.vdi

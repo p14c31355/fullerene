@@ -109,28 +109,11 @@ define_input_interrupt_handler!(mouse_handler, 0x60, |byte: u8| {
     });
 });
 
-/// Timer interrupt handler
+/// Timer interrupt handler (no preemption - scheduler loop handles yielding)
 #[unsafe(no_mangle)]
 pub extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
-    use petroleum::lock_and_modify;
-
-    // Increment global tick counter
-    lock_and_modify!(super::TICK_COUNTER, counter, {
-        *counter += 1;
-    });
-
-    // Perform scheduling
-    unsafe {
-        let old_pid = crate::process::current_pid();
-        crate::process::schedule_next();
-        let new_pid = crate::process::current_pid();
-
-        if let (Some(old_pid_val), Some(new_pid_val)) = (old_pid, new_pid) {
-            if old_pid_val != new_pid_val {
-                crate::process::context_switch(old_pid, new_pid_val);
-            }
-        }
-    }
+    // Increment global tick counter (lock-free atomic increment)
+    super::TICK_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
     send_eoi();
 }

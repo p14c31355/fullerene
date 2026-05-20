@@ -7,7 +7,14 @@
 // Note: log crate dependency removed to avoid std pull-in
 // Re-export serial functions for logging
 
-/// Global logger instance using log crate
+/// ── EARLY-ONLY GLOBAL STATE ─────────────────────────────────────────
+// The logger is initialised during boot and its static state (`LOGGER`,
+// `LOGGER_INITIALIZED`) lives in the `.data` / `.bss` sections.
+// After the world-switch (CR3 reload), this state may become stale or
+// inaccessible. The runtime kernel SHOULD use `early::console::EarlyConsole`
+// or `graphics::PRIMARY_RENDERER` for output instead.
+//
+// Global logger instance using log crate
 pub struct FullereneLogger {
     level: log::LevelFilter,
 }
@@ -119,6 +126,9 @@ pub enum SystemError {
 
     // Additional errors from fullerene-kernel
     FsInvalidFileDescriptor = 8,
+
+    // Process management errors
+    TooManyProcesses = 600,
 }
 
 /// Logging trait for system errors with context
