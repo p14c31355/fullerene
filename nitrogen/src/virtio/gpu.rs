@@ -43,7 +43,7 @@ pub struct VringDesc {
 pub struct VringAvail {
     pub flags: u16,
     pub idx: u16,
-    pub ring: [u16; 1024],
+    pub ring: [u16; QUEUE_SIZE as usize],
     pub used_event: u16,
 }
 #[repr(C)]
