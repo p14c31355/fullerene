@@ -6,9 +6,9 @@
 
 ---
 
-Fullerene is a complete operating system kernel written in Rust, targeting x86_64 architecture with UEFI booting. It explores modern systems programming concepts including process scheduling, virtual memory management, filesystem abstraction, and syscall interfaces, all implemented in a safe, no_std environment.
+Fullerene is a complete operating system kernel written in Rust, targeting x86_64 architecture with UEFI booting. It explores modern systems programming concepts including process scheduling, virtual memory management, filesystem abstraction, syscall interfaces, GUI compositing, and event-driven shell interaction, all implemented in a safe, no_std environment.
 
-Fullerene provides a full-featured kernel with multitasking capabilities, running in both QEMU and VirtualBox virtual machines. The system includes a bootloader, kernel scheduler, process management, memory allocation, device drivers, and user-space support scaffolding.
+Fullerene provides a full-featured kernel with multitasking capabilities, running in QEMU virtual machine. The system includes a bootloader, kernel scheduler, process management, memory allocation, device drivers, GUI windowing system, interactive shell, and user-space support scaffolding.
 
 ## Features
 
@@ -20,40 +20,47 @@ Fullerene provides a full-featured kernel with multitasking capabilities, runnin
   - **Scheduler**: Preemptive round-robin scheduler with interrupt-driven task switching
   - **Syscall Interface**: Complete system call implementation for user-kernel communication
   - **Filesystem**: Abstraction layer for file operations (currently in-memory implementation)
-  - **Graphics Support**: VGA text mode and framebuffer graphics with embedded-graphics integration
-  - **Hardware Interfaces**: Keyboard input, serial output, and interrupt handling (APIC/PIC)
-  - **Shell**: Basic command-line interface for process interaction
+  - **GUI Windowing System**: Lattice-based compositor, desktop, window management, and font rendering with cursor blink and terminal surface
+  - **Hardware Interfaces**: Keyboard input, serial output, APIC/PIC interrupt handling, VirtIO-GPU support
+  - **Shell**: Nozzle-based interactive shell with line editing, command history, and extensible built-in commands
 
-- **Common Library (Petroleum)**: Shared no_std utilities for UEFI types, serial logging, memory operations, graphics primitives, and bare-metal hardware detection.
+- **GUI Framework (Lattice)**: A no_std compositing window system providing desktop environment, window manager, scene graph, surface rendering, terminal surface with bitmap font, and cursor support.
 
-- **Build System (Flasks)**: Automated task runner for building, ISO creation (using isobemak crate), and virtualization with optional VirtualBox support.
+- **Event System (Resonance)**: A no_std event-driven framework with dispatcher, event queue, event sources, and typed event handlers for decoupled component communication.
 
-- **Userland placeholder (Toluene)**: Scaffolding for user-space programs in Rust.
+- **Time Management (Chronoline)**: A no_std timer management primitive with deadline tracking, tick-based clock advancement, and sorted timer event queue for scheduler integration.
 
-The system boots from UEFI firmware, initializes all hardware interfaces, and runs a kernel scheduler that manages multiple processes concurrently. User interaction occurs through a shell interface, with full debugging support via serial logging.
+- **Shell Runtime (Nozzle)**: A no_std interactive shell runtime providing line editor with history, command parser, extensible command interface, prompt, and terminal abstraction. Used by the kernel's shell and accessible via both serial and GUI terminal.
+
+- **Common Library (Petroleum)**: Shared no_std utilities for UEFI types, serial logging, memory operations, graphics primitives, bare-metal hardware detection, page table management, and VirtIO device drivers.
+
+- **Build System (Flasks)**: Automated task runner for building bootloader and kernel, ISO creation (using isobemak crate), and QEMU virtualization with configurable VGA and display backends.
+
+- **Userland Placeholder (Toluene)**: Scaffolding for user-space programs in Rust (currently minimal).
+
+The system boots from UEFI firmware, initializes all hardware interfaces, and runs a kernel scheduler that manages multiple processes concurrently. User interaction occurs through a GUI terminal or serial shell interface, with full debugging support via serial logging.
 
 ## Workspace Structure
 
 The project is structured as a Cargo workspace with the following crates:
 
 - **`bellows`**: The UEFI bootloader. Responsible for loading the kernel and setting up the framebuffer configuration.
-- **`fullerene-kernel`**: The core kernel. Handles low-level hardware initialization and enters the main loop.
+- **`fullerene-kernel`**: The core kernel. Handles low-level hardware initialization, process scheduling, and enters the main shell loop.
 - **`flasks`**: The build and task runner. Builds the kernel and bootloader, creates a bootable ISO, and launches QEMU for emulation.
-- **`petroleum`**: A library providing common EFI types, utilities, and serial output macros for no_std environments.
+- **`lattice`**: A no_std GUI framework providing compositing window system, desktop, window manager, scene graph, and terminal surface rendering.
+- **`nozzle`**: A no_std interactive shell runtime with line editor, history, command dispatch, and terminal abstraction.
+- **`resonance`**: A no_std event system with dispatcher, event queue, event sources, and typed event handlers.
+- **`chronoline`**: A no_std timer management primitive for deadline tracking and timer scheduling.
+- **`petroleum`**: A library providing common EFI types, utilities, serial output macros, graphics primitives, page table management, and VirtIO drivers for no_std environments.
 - **`toluene`**: Placeholder for userland components (e.g., user-space binaries). Currently minimal.
-
-Dependencies include `x86_64` for architecture-specific code, `uefi` for bootloader interaction, and custom utilities in `petroleum`.
 
 ## Building and Running
 
 ### Prerequisites
 
-- Rust nightly toolchain (required for `no_std` and UEFI targets): Install via `rustup toolchain install nightly`.
+- Rust nightly toolchain (required for no_std and UEFI targets): Install via `rustup toolchain install nightly`.
 - QEMU: Install on Linux/macOS via package manager (e.g., `apt install qemu-system-x86` on Ubuntu).
-- OVMF (UEFI firmware): Included in `flasks/ovmf/` (RELEASEX64 files). If missing, download from [TianoCore releases](https://github.com/tianocore/edk2/releases).
-- (Optional) VirtualBox: For VirtualBox support, install VirtualBox. A VM named "fullerene-vm" will be created automatically if missing.
-
-The project uses a custom target `x86_64-unknown-uefi` (ensure it's available via `rustup target add x86_64-unknown-uefi`).
+- OVMF (UEFI firmware): Included in `flasks/ovmf/` (RELEASEX64 files). If missing, run with `--clone-ovmf` to copy from system installation or download from [TianoCore releases](https://github.com/tianocore/edk2/releases).
 
 ### Build and Run
 
@@ -64,7 +71,7 @@ cargo run --bin flasks
 ```
 
 This command:
-1. Builds `fullerene-kernel` and `bellows` for the UEFI target.
+1. Builds `fullerene-kernel` and `bellows` for the UEFI target with `x86_64-unknown-uefi`.
 2. Creates a FAT image and ISO (`fullerene.iso`) with the bootloader and kernel.
 3. Launches QEMU with:
    - 4GB RAM.
@@ -82,6 +89,9 @@ Flasks supports dynamic VGA/display configuration via CLI arguments:
 | `--vga <type>` | `virtio-gpu` | VGA device: `virtio-gpu`, `std`, `qxl`, `cirrus`, `none` |
 | `--display <backend>` | `gtk` | Display backend: `gtk`, `sdl`, `none`, `curses` |
 | `--resolution <WxH>` | `1024x768` | Screen resolution (virtio-gpu/qxl only) |
+| `--headless` | false | Run QEMU in headless mode (no GUI) |
+| `--timeout <seconds>` | none | Timeout for QEMU execution in seconds |
+| `--clone-ovmf` | false | Copy OVMF binaries from system installation to project |
 
 Examples:
 ```bash
@@ -96,49 +106,38 @@ cargo run --bin flasks -- --display none
 
 # Custom resolution with virtio-gpu
 cargo run --bin flasks -- --resolution 1280x720
+
+# Run with a timeout
+cargo run --bin flasks -- --timeout 30
 ```
 
 Expected output:
 - Serial logs from bootloader: Heap init, GOP init, kernel load.
-- VGA/graphics framebuffer initialization and basic graphics setup.
-- Shell interface becomes available after scheduler starts running processes.
-- System runs multi-tasking kernel with shell interaction available via serial/graphics.
+- VGA/graphics framebuffer initialization and Lattice compositor startup.
+- Shell interface becomes available after scheduler starts running processes (via GUI terminal or serial).
+- System runs multi-tasking kernel with shell interaction available.
 
 To debug:
 - QEMU logs are written to `qemu_log.txt` (interrupts and other debug info).
 - Use `RUST_LOG=debug cargo run --bin flasks` for more verbose output.
 
-For release builds, edit `flasks/src/main.rs` to use `--profile release` or run `cargo build --release`.
+For release builds, modify `flasks/src/main.rs` to use `--profile release` or run `cargo build --release`.
 
-### VirtualBox Support
+### Manual Build Steps
 
-To run in VirtualBox instead of QEMU:
-
-```bash
-cargo run --bin flasks -- --virtualbox
-```
-
-This requires:
-- A VirtualBox VM named "fullerene-vm" (created automatically if missing).
-- The VM will be configured for UEFI booting with 4GB RAM and appropriate settings.
-- Serial output is available on TCP port 6000 for debugging.
-- Use `--gui` flag for GUI mode instead of headless.
-
-### Manual Build
-
-If you prefer manual steps:
+For manual building without the task runner:
 
 1. Build bootloader:
    ```bash
    cargo +nightly build -Zbuild-std=core,alloc --package bellows --target x86_64-unknown-uefi
    ```
 
-2. Build kernel:
+2. Build kernel (repeat for updated kernel binary):
    ```bash
    cargo +nightly build -Zbuild-std=core,alloc --package fullerene-kernel --target x86_64-unknown-uefi
    ```
 
-3. Create ISO: Modify/use tools like `isobemak` (dependency in flasks) or manual EFI filesystem creation.
+3. Create ISO: The build process copies the kernel binary into the bootloader, then creates a UEFI-bootable ISO using tools like `isobemak`.
 
 4. Run in QEMU:
    ```bash
@@ -147,11 +146,12 @@ If you prefer manual steps:
      -cpu qemu64,+smap,-invtsc \
      -smp 1 \
      -M q35 \
-     -vga cirrus \
+     -vga none \
+     -device virtio-gpu-pci,disable-legacy=on,disable-modern=off,xres=1024,yres=768 \
      -display gtk,gl=off,window-close=on,zoom-to-fit=on \
      -serial stdio \
      -accel tcg,thread=single \
-     -d guest_errors,unimp \
+     -d int,cpu_reset,guest_errors,unimp \
      -D qemu_log.txt \
      -monitor none \
      -drive if=pflash,format=raw,unit=0,readonly=on,file=flasks/ovmf/RELEASEX64_OVMF_CODE.fd \
@@ -170,7 +170,7 @@ If you prefer manual steps:
 - **Toolchain**: Use `rust-toolchain.toml` for pinning nightly.
 - **Panic Policy**: Aborts in dev/release for no_std compatibility.
 - **Memory Allocation**: Uses `linked_list_allocator` for heap management with frame allocation tracking.
-- **Testing**: Run in QEMU as above. For unit tests, add `#[test]` in crates (note no_std limitations).
+- **Testing**: Run unit tests with `cargo test` for libraries (chronoline, resonance, nozzle, lattice, petroleum have tests). For kernel tests, run in QEMU as above.
 - **Debugging**: Use serial output and QEMU logging. For GDB debugging, enable QEMU GDB stub with `-s -S`.
 
 ## TODO / Next Steps
@@ -179,7 +179,7 @@ If you prefer manual steps:
 - Enhance userspace with full process isolation and multiple user programs.
 - Implement advanced memory management (copy-on-write, shared memory, virtual filesystem).
 - Add network stack support and device drivers.
-- Improve graphics and GUI framework.
+- Improve graphics and GUI framework with richer widget set.
 - Performance optimizations and kernel hardening.
 - Add comprehensive test suite and fuzzing.
 
@@ -187,7 +187,7 @@ See issues on GitHub for tracked tasks.
 
 ## Contributing
 
-Bug reports, feature suggestions, and pull requests are welcome! Please see [CONTRIBUTING.md](docs/CONTRIBUTING.md) for guidelines on submitting contributions.
+Bug reports, feature suggestions, and pull requests are welcome. Please see [CONTRIBUTING.md](docs/CONTRIBUTING.md) for guidelines on submitting contributions.
 
 - Fork the repo and create a feature branch.
 - Ensure tests pass and the build runs in QEMU.
