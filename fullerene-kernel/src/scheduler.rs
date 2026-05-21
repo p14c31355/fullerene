@@ -268,15 +268,9 @@ fn yield_and_process_system_calls() {
     }
 }
 
-/// Draw the OS desktop on the available framebuffer (UEFI or BIOS)
+/// Draw the OS desktop using Lattice compositor (or fallback).
 fn draw_desktop_on_available_framebuffer() {
-    let mut renderer_lock = crate::graphics::PRIMARY_RENDERER.lock();
-    if let Some(ref mut renderer) = *renderer_lock {
-        petroleum::graphics::draw_os_desktop(renderer);
-        renderer.present();
-    }
-    drop(renderer_lock);
-    crate::graphics::flush_gpu();
+    crate::gui::render();
 }
 
 /// Main kernel scheduler loop - orchestrates all system functionality

@@ -25,6 +25,7 @@ pub mod boot;
 pub mod context_switch;
 pub mod fs;
 pub mod gdt;
+pub mod gui;
 pub mod graphics;
 pub mod hardware;
 pub mod heap;

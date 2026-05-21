@@ -1,3 +1,6 @@
+extern crate alloc;
+
+use alloc::vec::Vec;
 use crate::window::{Window, WindowId};
 
 /// Drag state machine.

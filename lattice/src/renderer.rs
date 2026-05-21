@@ -1,3 +1,8 @@
+extern crate alloc;
+
+use alloc::vec::Vec;
+use alloc::format;
+use core::iter;
 use crate::compositor::RenderTarget;
 
 /// A software‑only framebuffer that stores pixels in a `Vec<u32>`.
@@ -13,7 +18,7 @@ impl VecFramebuffer {
     pub fn new(width: u32, height: u32) -> Self {
         let len = (width as usize).saturating_mul(height as usize);
         Self {
-            pixels: vec![0u32; len],
+            pixels: iter::repeat(0u32).take(len).collect(),
             width,
             height,
         }

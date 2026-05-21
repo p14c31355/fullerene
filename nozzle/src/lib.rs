@@ -21,6 +21,7 @@ pub mod line_editor;
 pub mod parser;
 pub mod prompt;
 pub mod terminal;
+pub mod terminal_buffer;
 
 use alloc::string::String;
 

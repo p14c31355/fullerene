@@ -95,6 +95,11 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             crate::loader::init();
             Ok(())
         }),
+        petroleum::init_step!("gui", || {
+            crate::gui::init();
+            petroleum::serial::serial_log(format_args!("GUI subsystem initialised\n"));
+            Ok(())
+        }),
     ];
     InitSequence::new(&common_steps).run();
 

@@ -1,3 +1,5 @@
+extern crate alloc;
+
 use crate::cursor::Cursor;
 use crate::scene::Scene;
 use crate::window::WindowId;
@@ -90,6 +92,8 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
+    use core::iter;
     use crate::compositor::{Compositor, RenderTarget};
 
     struct TestTarget {
@@ -105,7 +109,7 @@ mod tests {
 
     impl TestTarget {
         fn new(w: u32, h: u32) -> Self {
-            Self { pixels: vec![0u32; (w * h) as usize], w, h }
+            Self { pixels: iter::repeat(0u32).take((w * h) as usize).collect(), w, h }
         }
     }
 

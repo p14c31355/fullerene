@@ -20,16 +20,21 @@ pub fn shell_main() {
 
     petroleum::debug_log!("Shell main started");
 
-    // Create a kernel-backed terminal
-    let mut term = KernelTerminal;
-
-    // Build the shell instance.  We start with only the default builtins.
-    // Kernel-specific commands (uptime, ps, etc.) can be added later via
-    // `nozzle::define_commands!` and passed to `Shell::new`.
-    let commands = nozzle::default_commands();
-    let mut shell = Shell::new(&mut term, commands);
-    shell.set_prompt("fullerene> ");
-    shell.run();
+    // Try to use the Lattice-backed GUI terminal first
+    if crate::gui::GUI.lock().is_some() {
+        let mut term = crate::gui::LatticeTerminal;
+        let commands = nozzle::default_commands();
+        let mut shell = Shell::new(&mut term, commands);
+        shell.set_prompt("fullerene> ");
+        shell.run();
+    } else {
+        // Fallback to kernel syscall terminal
+        let mut term = KernelTerminal;
+        let commands = nozzle::default_commands();
+        let mut shell = Shell::new(&mut term, commands);
+        shell.set_prompt("fullerene> ");
+        shell.run();
+    }
 }
 
 // ── Kernel terminal ─────────────────────────────────────────────────
