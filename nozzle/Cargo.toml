@@ -1,0 +1,11 @@
+[package]
+name = "nozzle"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[lib]
+name = "nozzle"
+path = "src/lib.rs"
+crate-type = ["lib"]

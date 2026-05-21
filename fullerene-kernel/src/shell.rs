@@ -1,249 +1,63 @@
-//! Basic shell/command line interface for Fullerene OS
+//! Shell/command line interface for Fullerene OS
 //!
-//! This module provides a simple command-line interface that allows users
-//! to interact with the operating system through text commands.
+//! Thin wrapper around the [`nozzle`] shell runtime.  Provides a
+//! `KernelTerminal` that bridges the abstract `nozzle::Terminal`
+//! trait to the kernel’s raw syscall I/O.
 
-use crate::keyboard;
 use crate::scheduler::get_system_tick;
 use crate::syscall::kernel_syscall;
-use alloc::{format, vec::Vec};
-use petroleum::{define_commands, print};
+use alloc::format;
 
-/// Shell prompt
-const PROMPT: &str = "fullerene> ";
-
-/// Command function type
-type CommandFn = fn(&[&str]) -> i32;
-
-/// Command entry
-#[derive(Debug)]
-struct CommandEntry {
-    name: &'static str,
-    description: &'static str,
-    function: CommandFn,
-}
-
-/// Write to stdout via kernel syscall (shell runs in kernel mode)
-fn user_print(s: &str) {
-    kernel_syscall(4, 1, s.as_ptr() as u64, s.len() as u64);
-}
-
-static COMMANDS: &[CommandEntry] = define_commands!(
-    CommandEntry,
-    ("help", "Show available commands", help_command),
-    ("ps", "Show process list", not_implemented_command),
-    ("top", "Show top processes", not_implemented_command),
-    ("free", "Show memory usage", not_implemented_command),
-    ("uptime", "Show system uptime", uptime_command),
-    ("date", "Show current date/time", date_command),
-    ("history", "Show command history", history_command),
-    ("echo", "Print text", echo_command),
-    ("clear", "Clear screen", clear_command),
-    ("uname", "Show system information", uname_command),
-    (
-        "kill",
-        "Kill a process (usage: kill <pid>)",
-        not_implemented_command
-    ),
-    ("exit", "Exit shell", exit_command)
-);
-
-// Shell main loop
-pub fn shell_main() {
-    petroleum::debug_log!("Shell main started");
-    petroleum::shell_response!("Welcome to Fullerene OS Shell\n");
-    petroleum::shell_response!("Type 'help' for available commands.\n\n");
-
-    loop {
-        // Print prompt
-        user_print("fullerene> ");
-
-        // Read line from keyboard
-        petroleum::debug_log!("About to read line from keyboard");
-        let mut input_buffer = [0u8; 256];
-        match read_line(&mut input_buffer) {
-            Ok(len) => {
-                petroleum::debug_log!("read_line returned len: {}", len);
-                let line = &input_buffer[..len];
-
-                // Convert to string and process
-                match core::str::from_utf8(line) {
-                    Ok(line_str) => {
-                        petroleum::debug_log!("Processed line: '{}'", line_str);
-                        if !process_command(line_str.trim()) {
-                            break; // Exit shell
-                        }
-                    }
-                    Err(_) => {
-                        print!("Invalid UTF-8 input\n");
-                    }
-                }
-            }
-            Err(_) => {
-                print!("Input error\n");
-            }
-        }
-    }
-
-    user_print("Shell exited.\n");
-}
-
-// Read a line with echo and editing
-fn read_line(buffer: &mut [u8]) -> Result<usize, &'static str> {
-    let mut pos = 0;
-    let max_len = buffer.len();
-
-    while pos < max_len {
-        let mut byte = [0u8; 1];
-        let res = kernel_syscall(3, 0, byte.as_mut_ptr() as u64, 1);
-        if res > 0 {
-            let ch = byte[0];
-            match ch {
-                b'\n' | b'\r' => {
-                    // Enter - finish line
-                    user_print("\n");
-                    break;
-                }
-                0x08 => {
-                    // Backspace
-                    if pos > 0 {
-                        pos -= 1;
-                        // Echo backspace
-                        user_print("\x08 \x08");
-                    }
-                }
-                0x1B => {
-                    // Escape sequences - skip for now
-                    continue;
-                }
-                ch if ch.is_ascii() && !ch.is_ascii_control() => {
-                    // Printable character
-                    buffer[pos] = ch;
-                    pos += 1;
-
-                    // Echo character
-                    user_print(&format!("{}", ch as char));
-                }
-                _ => {} // Ignore other characters
-            }
-        }
-
-        // Improved polling: yield multiple times to reduce CPU usage
-        for _ in 0..10 {
-            kernel_syscall(22, 0, 0, 0); // Yield
-        }
-    }
-
-    Ok(pos)
-}
-
-// Process a command line
-fn process_command(line: &str) -> bool {
-    if line.is_empty() {
-        return true;
-    }
-
-    // Split into arguments
-    let args: Vec<&str> = line.split_whitespace().collect();
-
-    if args.is_empty() {
-        return true;
-    }
-
-    let command_name = args[0];
-
-    // Find and execute command
-    for cmd in COMMANDS {
-        if cmd.name == command_name {
-            let exit_code = (cmd.function)(&args);
-            if command_name == "exit" || exit_code != 0 {
-                return false; // Exit shell
-            }
-            return true;
-        }
-    }
-
-    print!("Unknown command: {}\n", command_name);
-    print!("Type 'help' for available commands.\n");
-    true
-}
-
-fn not_implemented_command(args: &[&str]) -> i32 {
-    user_print(&format!("{}: Not implemented\n", args[0]));
-    0
-}
-
-fn help_command(_args: &[&str]) -> i32 {
-    print!("Available commands:\n");
-    for cmd in COMMANDS {
-        print!("  {:10} - {}\n", cmd.name, cmd.description);
-    }
-    0
-}
-
-fn echo_command(args: &[&str]) -> i32 {
-    if args.len() < 2 {
-        print!("\n");
-    } else {
-        for arg in &args[1..] {
-            print!("{} ", arg);
-        }
-        print!("\n");
-    }
-    0
-}
-
-petroleum::simple_command_fn!(clear_command, "\x1b[2J\x1b[H");
-petroleum::simple_command_fn!(uname_command, "Fullerene OS 0.1.0 x86_64\n");
-
-fn uptime_command(_args: &[&str]) -> i32 {
-    let ticks = get_system_tick();
-    let s = ticks / 1000;
-    print!(
-        "Uptime: {:02}:{:02}:{:02} ({} ticks)\n",
-        s / 3600,
-        (s % 3600) / 60,
-        s % 60,
-        ticks
-    );
-    0
-}
-
-fn date_command(_args: &[&str]) -> i32 {
-    print!(
-        "Current date/time: System tick: {}\n(RTC integration pending)\n",
-        get_system_tick()
-    );
-    0
-}
-
-fn history_command(_args: &[&str]) -> i32 {
-    print!("Command history: (Not implemented)\nUse 'help' for available commands.\n");
-    0
-}
-
-fn exit_command(_args: &[&str]) -> i32 {
-    print!("Exiting shell...\n");
-    1
-}
-
-// Helper to print to stdout (since we can't use println! in kernel)
-// fn print implementation removed in favor of petroleum::print macro
-
-// Initialize shell module
+/// Initialize the shell subsystem (formerly keyboard init, etc.)
 pub fn init() {
-    // Nothing to initialize for basic shell
     crate::keyboard::init();
     petroleum::serial::serial_log(format_args!("Shell/CLI initialized\n"));
 }
 
-// Test functions
-#[cfg(test)]
-mod tests {
+/// Main shell entry point — called from the scheduler as a kernel process.
+pub fn shell_main() {
+    use nozzle::Shell;
 
-    #[test]
-    fn test_command_parsing() {
-        // Basic tests would go here
-        // For now, we trust the runtime behavior
+    petroleum::debug_log!("Shell main started");
+
+    // Create a kernel-backed terminal
+    let mut term = KernelTerminal;
+
+    // Build the shell instance.  We start with only the default builtins.
+    // Kernel-specific commands (uptime, ps, etc.) can be added later via
+    // `nozzle::define_commands!` and passed to `Shell::new`.
+    let commands = nozzle::default_commands();
+    let mut shell = Shell::new(&mut term, commands);
+    shell.set_prompt("fullerene> ");
+    shell.run();
+}
+
+// ── Kernel terminal ─────────────────────────────────────────────────
+
+/// A [`nozzle::Terminal`] that reads/writes through the kernel’s
+/// raw syscall interface (usable from kernel-space processes).
+struct KernelTerminal;
+
+impl nozzle::Terminal for KernelTerminal {
+    fn write_str(&mut self, s: &str) {
+        // Syscall 4 = write, fd 1 = stdout
+        kernel_syscall(4, 1, s.as_ptr() as u64, s.len() as u64);
+    }
+
+    fn read_byte(&mut self) -> Option<u8> {
+        // Block until a byte is available (yielding to other processes).
+        loop {
+            let mut byte = 0u8;
+            let res = kernel_syscall(3, 0, &mut byte as *mut u8 as u64, 1);
+            if res > 0 {
+                return Some(byte);
+            }
+            // Yield to other processes and retry
+            kernel_syscall(22, 0, 0, 0);
+        }
+    }
+
+    fn input_available(&self) -> bool {
+        crate::keyboard::input_available()
     }
 }
