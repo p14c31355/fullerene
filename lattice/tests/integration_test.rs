@@ -29,7 +29,7 @@ fn test_full_pipeline() {
     Compositor::composite(&mut fb, W, H, wm.windows(), 0x808080, None);
 
     // Background pixel (should be gray)
-    assert_eq!(fb[0], 0x808080, "top‑left should be background");
+    assert_eq!(fb[0], 0x808080, "top-left should be background");
 
     // Red-only region: (15, 15) — inside red window, outside blue
     let red_only_idx = (15 * W + 15) as usize;
