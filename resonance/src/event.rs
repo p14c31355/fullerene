@@ -1,4 +1,56 @@
 // ---------------------------------------------------------------------------
+// Target – event routing target
+// ---------------------------------------------------------------------------
+
+/// Identifies the target subsystem or window for an event.
+///
+/// This allows the dispatcher or handlers to route events to the correct
+/// recipient without each handler inspecting every event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Target {
+    /// Route to the currently focused window.
+    FocusedWindow,
+    /// Route to a specific window by ID.
+    Window(u64),
+    /// Route to the shell / terminal subsystem.
+    Shell,
+    /// Route to the window manager / compositor.
+    WindowManager,
+    /// Route to the system (power, configuration).
+    System,
+    /// No specific target — broadcast to all handlers.
+    None,
+}
+
+// ---------------------------------------------------------------------------
+// EventEnvelope – event with routing metadata
+// ---------------------------------------------------------------------------
+
+/// An event wrapped with routing information.
+///
+/// `target` allows the dispatcher or handlers to route events efficiently
+/// to the correct subsystem without broadcasting.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventEnvelope {
+    pub target: Target,
+    pub event: Event,
+}
+
+impl EventEnvelope {
+    pub fn new(target: Target, event: Event) -> Self {
+        Self { target, event }
+    }
+
+    /// Create a broadcast event (no specific target).
+    pub fn broadcast(event: Event) -> Self {
+        Self {
+            target: Target::None,
+            event,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Event – top-level event enum
 // ---------------------------------------------------------------------------
 

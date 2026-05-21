@@ -309,14 +309,23 @@ pub fn scheduler_loop() -> ! {
 
         let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
 
-        // Advance ChronoLine timers (cursor blink, etc.)
+        // 1. Poll hardware state → Resonance events
+        crate::gui::poll_mouse_state();
+
+        // 2. Advance ChronoLine timers (cursor blink, etc.)
         crate::gui::chrono_tick(current_tick);
 
-        // Process Resonance events
+        // 3. Process all queued Resonance events (routes to handlers)
         crate::gui::process_events();
 
+        // 4. Run periodic system tasks (stats, health checks, etc.)
         process_scheduler_iteration();
-        // Cooperative yield to idle process (if available)
+
+        // 5. Render the desktop every iteration for smooth mouse tracking
+        //    (rendering is fast since it only blits existing surfaces)
+        crate::gui::render();
+
+        // 6. Cooperative yield to idle process (if available)
         let active = crate::process::get_active_process_count();
         if active > 1 {
             scheduler_log!("Active processes: {}, yielding...", active);

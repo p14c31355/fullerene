@@ -50,6 +50,19 @@ impl Deadline {
 }
 
 // ---------------------------------------------------------------------------
+// TimerMode – timer firing mode
+// ---------------------------------------------------------------------------
+
+/// How a timer behaves after expiring.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TimerMode {
+    /// Fire once and be removed.
+    OneShot,
+    /// Automatically re‑register with the same interval after firing.
+    Repeating { interval_ticks: u64 },
+}
+
+// ---------------------------------------------------------------------------
 // TimerId – timer identifier
 // ---------------------------------------------------------------------------
 
@@ -65,10 +78,28 @@ pub struct TimerId(pub u64);
 ///
 /// Holds no callback; the scheduler calls `pop_expired()` and dispatches
 /// the event on its own.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+///
+/// Sorting only considers `deadline` and `id` (not `mode`), so timers with
+/// different modes but identical deadline/id are treated the same for ordering.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Timer {
     pub deadline: Deadline,
     pub id: TimerId,
+    pub mode: TimerMode,
+}
+
+impl PartialOrd for Timer {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Timer {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.deadline
+            .cmp(&other.deadline)
+            .then_with(|| self.id.cmp(&other.id))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -104,11 +135,18 @@ impl ChronoLine {
         }
     }
 
-    /// Registers a timer event.
+    /// Registers a timer event with `OneShot` mode (default for backward compat).
     ///
     /// After insertion the list is sorted by deadline (full sort in v1).
     pub fn register(&mut self, deadline: Deadline, id: TimerId) {
-        let timer = Timer { deadline, id };
+        self.register_with_mode(deadline, id, TimerMode::OneShot);
+    }
+
+    /// Registers a timer event with an explicit [`TimerMode`].
+    ///
+    /// After insertion the list is sorted by deadline (full sort in v1).
+    pub fn register_with_mode(&mut self, deadline: Deadline, id: TimerId, mode: TimerMode) {
+        let timer = Timer { deadline, id, mode };
         let index = self.timers.binary_search(&timer).unwrap_or_else(|e| e);
         self.timers.insert(index, timer);
     }
@@ -136,13 +174,25 @@ impl ChronoLine {
     ///
     /// Because timers are sorted by deadline, only the first element needs
     /// to be checked.
+    ///
+    /// **For repeating timers:** the timer is automatically re‑registered
+    /// with its interval before being returned. This means the caller does
+    /// NOT need to manually re‑register cursor blink / periodic timers.
     pub fn pop_expired(&mut self) -> Option<Timer> {
         if self
             .timers
             .first()
             .is_some_and(|t| t.deadline.ticks() <= self.now)
         {
-            Some(self.pop_front_expired())
+            let timer = self.pop_front_expired();
+
+            // Re‑register repeating timers before returning
+            if let TimerMode::Repeating { interval_ticks } = timer.mode {
+                let new_deadline = Deadline::new(self.now.saturating_add(interval_ticks));
+                self.register_with_mode(new_deadline, timer.id, timer.mode);
+            }
+
+            Some(timer)
         } else {
             None
         }
@@ -151,10 +201,6 @@ impl ChronoLine {
     // ── private helpers ──────────────────────────────────────
 
     /// Remove and return the front timer.
-    ///
-    /// Extracted as a private helper so that the internal data structure
-    /// can be changed (e.g. to `BinaryHeap` or a timer wheel) without
-    /// touching callers.
     fn pop_front_expired(&mut self) -> Timer {
         self.timers.remove(0)
     }
@@ -309,10 +355,12 @@ mod tests {
         let t1 = Timer {
             deadline: Deadline(100),
             id: TimerId(1),
+            mode: TimerMode::OneShot,
         };
         let t2 = Timer {
             deadline: Deadline(50),
             id: TimerId(2),
+            mode: TimerMode::OneShot,
         };
 
         // Deadline(50) < Deadline(100) → t2 < t1
@@ -342,5 +390,68 @@ mod tests {
         assert_eq!(cl.pop_expired().unwrap().id, TimerId(1));
         assert_eq!(cl.pop_expired().unwrap().id, TimerId(3));
         assert!(cl.is_empty());
+    }
+
+    #[test]
+    fn test_repeating_timer() {
+        let mut cl = ChronoLine::new();
+        let interval = 10;
+
+        // Register a repeating timer
+        cl.register_with_mode(
+            Deadline::new(10),
+            TimerId(1),
+            TimerMode::Repeating { interval_ticks: interval },
+        );
+        assert_eq!(cl.len(), 1);
+
+        // Expire at t=10 → should fire and re‑register
+        cl.tick(10);
+        let expired = cl.pop_expired().unwrap();
+        assert_eq!(expired.id, TimerId(1));
+        assert_eq!(cl.len(), 1); // still 1 because it re‑registered
+
+        // Tick past next deadline (20)
+        cl.tick(20);
+        let expired = cl.pop_expired().unwrap();
+        assert_eq!(expired.id, TimerId(1));
+        assert_eq!(cl.len(), 1); // still repeating
+
+        // Cancel
+        assert!(cl.cancel(TimerId(1)));
+        assert!(cl.is_empty());
+    }
+
+    #[test]
+    fn test_repeating_oneshot_mixed() {
+        let mut cl = ChronoLine::new();
+
+        cl.register_with_mode(
+            Deadline::new(10),
+            TimerId(1),
+            TimerMode::Repeating { interval_ticks: 10 },
+        );
+        cl.register(Deadline::new(15), TimerId(2)); // OneShot (default)
+
+        cl.tick(20);
+
+        // Should pop TimerId(1) first (deadline 10)
+        let t1 = cl.pop_expired().unwrap();
+        assert_eq!(t1.id, TimerId(1));
+
+        // Should pop TimerId(2) next (deadline 15)
+        let t2 = cl.pop_expired().unwrap();
+        assert_eq!(t2.id, TimerId(2));
+
+        // TimerId(1) should have re‑registered, so it should still be in the list
+        assert_eq!(cl.len(), 1);
+        // next deadline is now + interval = 20 + 10 = 30
+        assert_eq!(cl.next_deadline(), Some(Deadline(30)));
+
+        // Advance to expire it again
+        cl.tick(30);
+        let t1_again = cl.pop_expired().unwrap();
+        assert_eq!(t1_again.id, TimerId(1));
+        assert_eq!(cl.len(), 1);
     }
 }
