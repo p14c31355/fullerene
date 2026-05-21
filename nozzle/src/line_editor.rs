@@ -11,14 +11,13 @@ use crate::terminal::Terminal;
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::vec::Vec;
 
 const HISTORY_MAX: usize = 128;
 
 /// Line editor state
 pub struct LineEditor {
     /// Current input buffer
-    buffer: Vec<u8>,
+    buffer: alloc::vec::Vec<u8>,
     /// Cursor position within the buffer
     cursor: usize,
     /// Command history (most recent at front)
@@ -40,7 +39,7 @@ impl LineEditor {
     /// Create a new line editor with a specific maximum line length.
     pub fn with_capacity(max_len: usize) -> Self {
         Self {
-            buffer: Vec::with_capacity(max_len),
+            buffer: alloc::vec::Vec::with_capacity(max_len),
             cursor: 0,
             history: VecDeque::with_capacity(HISTORY_MAX),
             browsing: None,
@@ -117,19 +116,16 @@ impl LineEditor {
             // Append at end
             self.buffer.push(ch);
             self.cursor = self.buffer.len();
-            term.write_str(core::str::from_utf8(&[ch]).unwrap_or("?"));
+            let buf = [ch];
+            term.write_str(core::str::from_utf8(&buf).unwrap_or("?"));
         } else {
             self.buffer.insert(self.cursor, ch);
             self.cursor += 1;
-            // Redraw from cursor: erase tail, write new tail, reposition
-            let tail_len = self.buffer.len() - self.cursor;
-            let tail = self.buffer[self.cursor..].to_vec();
-            // Erase old tail
-            for _ in 0..tail_len - 0 {
-                // Don't erase — just overwrite
-            }
-            let tail_str = core::str::from_utf8(&tail).unwrap_or("?");
-            term.write_str(tail_str);
+
+            // Redraw from cursor: write inserted char + remaining tail, then reposition
+            let tail = &self.buffer[self.cursor..];
+            let s = core::str::from_utf8(tail).unwrap_or("?");
+            term.write_str(s);
             for _ in 0..tail.len() {
                 term.write_str("\x08");
             }
@@ -144,20 +140,22 @@ impl LineEditor {
         self.cursor -= 1;
         self.buffer.remove(self.cursor);
 
-        // Redraw: clear tail, rewrite tail, reposition
-        let tail_len = self.buffer.len() - self.cursor;
-        let tail = self.buffer[self.cursor..].to_vec();
-        // Overwrite displayed tail with spaces
+        // Move terminal cursor back to deletion point
+        term.write_str("\x08");
+
+        // Redraw from cursor, leaving a space to erase the old last char
+        let tail = &self.buffer[self.cursor..];
+        let tail_len = tail.len();
         for _ in 0..tail_len + 1 {
             term.write_str(" ");
         }
         for _ in 0..tail_len + 1 {
             term.write_str("\x08");
         }
-        // Write new tail
-        let tail_str = core::str::from_utf8(&tail).unwrap_or("?");
+
+        let tail_str = core::str::from_utf8(tail).unwrap_or("?");
         term.write_str(tail_str);
-        for _ in 0..tail.len() {
+        for _ in 0..tail_len {
             term.write_str("\x08");
         }
     }
@@ -169,8 +167,8 @@ impl LineEditor {
         }
         self.buffer.remove(self.cursor);
 
-        let tail_len = self.buffer.len() - self.cursor;
-        let tail = self.buffer[self.cursor..].to_vec();
+        let tail = &self.buffer[self.cursor..];
+        let tail_len = tail.len();
         // Overwrite displayed tail with spaces, then rewrite
         for _ in 0..tail_len + 1 {
             term.write_str(" ");
@@ -178,9 +176,9 @@ impl LineEditor {
         for _ in 0..tail_len + 1 {
             term.write_str("\x08");
         }
-        let tail_str = core::str::from_utf8(&tail).unwrap_or("?");
+        let tail_str = core::str::from_utf8(tail).unwrap_or("?");
         term.write_str(tail_str);
-        for _ in 0..tail.len() {
+        for _ in 0..tail_len {
             term.write_str("\x08");
         }
     }
@@ -311,14 +309,26 @@ impl LineEditor {
 
     // ── escape sequences ────────────────────────────────────────────
 
+    /// Read a byte from the terminal with a small retry loop.
+    /// Returns `None` only after several attempts, reducing the chance of
+    /// losing leading bytes of an escape sequence over slow/serial links.
+    fn read_byte_retry(&self, term: &mut dyn Terminal) -> Option<u8> {
+        for _ in 0..3 {
+            if let Some(b) = term.read_byte() {
+                return Some(b);
+            }
+        }
+        None
+    }
+
     fn handle_escape(&mut self, term: &mut dyn Terminal) {
-        let bracket = match term.read_byte() {
+        let bracket = match self.read_byte_retry(term) {
             Some(b'[') => b'[',
             Some(b'O') => b'O',
             _ => return,
         };
 
-        let code = match term.read_byte() {
+        let code = match self.read_byte_retry(term) {
             Some(c) => c,
             None => return,
         };
@@ -331,7 +341,7 @@ impl LineEditor {
             (b'[', b'H') | (b'O', b'H') => self.do_home(term),
             (b'[', b'F') | (b'O', b'F') => self.do_end(term),
             (b'[', b'3') => {
-                if term.read_byte() == Some(b'~') {
+                if self.read_byte_retry(term) == Some(b'~') {
                     self.do_delete(term);
                 }
             }

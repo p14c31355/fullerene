@@ -23,7 +23,6 @@ pub mod prompt;
 pub mod terminal;
 
 use alloc::string::String;
-use alloc::vec::Vec;
 
 pub use exec::{Command, CommandContext, NamedCommand};
 pub use terminal::Terminal;
@@ -106,31 +105,9 @@ impl<'a> Shell<'a> {
     }
 }
 
-/// Convenience function: build and run a shell with default builtins.
-///
-/// `extra_commands` must be a static slice (use `&define_commands!(...)`).
-pub fn run_shell(
-    terminal: &mut dyn Terminal,
-    extra_commands: &'static [&'static dyn Command],
-) {
-    merge_and_run(terminal, default_commands(), extra_commands)
-}
-
-/// Internal helper: merge two static command slices, leak, and run.
-fn merge_and_run(
-    terminal: &mut dyn Terminal,
-    defaults: &'static [&'static dyn Command],
-    extra: &'static [&'static dyn Command],
-) {
-    let mut all: Vec<&'static dyn Command> = Vec::new();
-    all.extend_from_slice(defaults);
-    all.extend_from_slice(extra);
-    let leaked: &'static [&'static dyn Command] = alloc::boxed::Box::leak(all.into_boxed_slice());
-    let mut shell = Shell::new(terminal, leaked);
-    shell.run();
-}
-
 /// Create the default command list (excluding `help`, which is handled by `dispatch`).
+///
+/// Returns a `&'static` slice suitable for passing to [`Shell::new`].
 pub fn default_commands() -> &'static [&'static dyn Command] {
     use crate::builtins;
     define_commands!(

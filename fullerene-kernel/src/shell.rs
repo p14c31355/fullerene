@@ -45,17 +45,15 @@ impl nozzle::Terminal for KernelTerminal {
     }
 
     fn read_byte(&mut self) -> Option<u8> {
-        // Syscall 3 = read, fd 0 = stdin
-        let mut byte = 0u8;
-        let res = kernel_syscall(3, 0, &mut byte as *mut u8 as u64, 1);
-        if res > 0 {
-            Some(byte)
-        } else {
-            // Yield and retry next time
-            for _ in 0..10 {
-                kernel_syscall(22, 0, 0, 0); // Yield
+        // Block until a byte is available (yielding to other processes).
+        loop {
+            let mut byte = 0u8;
+            let res = kernel_syscall(3, 0, &mut byte as *mut u8 as u64, 1);
+            if res > 0 {
+                return Some(byte);
             }
-            None
+            // Yield to other processes and retry
+            kernel_syscall(22, 0, 0, 0);
         }
     }
 
