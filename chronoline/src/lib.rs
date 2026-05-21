@@ -100,8 +100,9 @@ impl ChronoLine {
     ///
     /// After insertion the list is sorted by deadline (full sort in v1).
     pub fn register(&mut self, deadline: Deadline, id: TimerId) {
-        self.timers.push(Timer { deadline, id });
-        self.timers.sort();
+        let timer = Timer { deadline, id };
+        let index = self.timers.binary_search(&timer).unwrap_or_else(|e| e);
+        self.timers.insert(index, timer);
     }
 
     /// Advances the internal clock to `now`.
