@@ -67,8 +67,8 @@ impl EventQueue {
     }
 
     /// Drains all events from the queue and returns them as a `Vec`.
-    pub fn drain_all(&mut self) -> alloc::vec::Vec<Event> {
-        self.queue.drain(..).collect()
+    pub fn drain_all(&mut self) -> alloc::collections::vec_deque::Drain<'_, Event> {
+        self.queue.drain(..)
     }
 
     /// Clears all events from the queue.
