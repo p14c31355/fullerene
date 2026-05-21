@@ -95,8 +95,8 @@ impl Compositor {
         // Source (surface) bounds
         let src_x_start = 0i32.max(-window.x);
         let src_y_start = 0i32.max(-window.y);
-        let src_x_end = (src.width() as i32).min((fb_width as i32).saturating_sub(window.x));
-        let src_y_end = (src.height() as i32).min((fb_height as i32).saturating_sub(window.y));
+        let src_x_end = (src.width() as i64).min((fb_width as i64).saturating_sub(window.x as i64)).max(0) as i32;
+        let src_y_end = (src.height() as i64).min((fb_height as i64).saturating_sub(window.y as i64)).max(0) as i32;
 
         if src_x_start >= src_x_end || src_y_start >= src_y_end {
             return; // completely clipped away
