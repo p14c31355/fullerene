@@ -24,5 +24,5 @@ pub trait EventHandler {
     ///
     /// The event is passed by shared reference — events are **immutable**
     /// throughout their lifecycle.
-    fn handle(&mut self, event: &Event);
+    fn handle(&mut self, event: &Event) -> bool;
 }
