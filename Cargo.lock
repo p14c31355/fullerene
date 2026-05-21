@@ -372,6 +372,7 @@ dependencies = [
  "linked_list_allocator",
  "log",
  "memoffset",
+ "nitrogen",
  "nozzle",
  "paste",
  "pc-keyboard",
@@ -576,6 +577,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3c8dda44ff03a2f238717214da50f65d5a53b45cd213a7370424ffdb6fae815"
 
 [[package]]
+name = "nitrogen"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "spin",
+ "x86_64",
+]
+
+[[package]]
 name = "nozzle"
 version = "0.1.0"
 
@@ -626,6 +636,7 @@ dependencies = [
  "heapless",
  "linked_list_allocator",
  "log",
+ "nitrogen",
  "once_cell",
  "paste",
  "spin",

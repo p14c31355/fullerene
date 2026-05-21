@@ -1,0 +1,20 @@
+[package]
+name = "nitrogen"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+x86_64 = { version = "0.15.2", default-features = false, features = [
+  "instructions",
+] }
+spin = { version = "0.10.0", default-features = false, features = [
+  "once",
+  "spin_mutex",
+] }
+log = { version = "0.4.29", default-features = false }
+
+[lib]
+name = "nitrogen"
+path = "src/lib.rs"
+crate-type = ["lib"]
