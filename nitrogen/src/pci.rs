@@ -122,6 +122,19 @@ impl PciConfigSpace {
         Self::write_config_dword_raw(bus, device, function, offset, value);
     }
 
+    /// Write a raw WORD to PCI configuration space.
+    ///
+    /// Uses the existing dword at the aligned address, modifies only the
+    /// relevant 16-bit half, and writes it back. This avoids corrupting the
+    /// other half of the dword (e.g. the Status register when writing Command).
+    pub fn write_config_word_raw(bus: u8, device: u8, function: u8, offset: u8, value: u16) {
+        let aligned = offset & !3;
+        let shift = if offset % 4 < 2 { 0 } else { 16 };
+        let existing = Self::read_config_dword(bus, device, function, aligned);
+        let masked = existing & !(0xFFFFu32 << shift);
+        Self::write_config_dword_raw(bus, device, function, aligned, masked | ((value as u32) << shift));
+    }
+
     /// Write a raw DWORD to PCI configuration space.
     ///
     /// This is a low-level mechanism. Use `write_config_dword` on `PciConfigSpace`
@@ -182,7 +195,8 @@ impl PciDevice {
         let offset = 0x10 + (index * 4);
         let value = PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
 
-        if value == 0 {
+        let size = self.detect_bar_size(index);
+        if size == 0 {
             return None;
         }
 
@@ -190,12 +204,17 @@ impl PciDevice {
         let is_64bit = !is_io && ((value & 0x6) == 0x4);
         let is_prefetchable = !is_io && ((value & 0x8) != 0);
 
-        let size = self.detect_bar_size(index);
-        let address = if is_io {
+        let mut address = if is_io {
             (value & 0xFFFFFFFC) as u64
         } else {
             (value & 0xFFFFFFF0) as u64
         };
+
+        if is_64bit && index < 5 {
+            let high_value =
+                PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset + 4);
+            address |= (high_value as u64) << 32;
+        }
 
         Some(PciBar {
             index,
@@ -212,6 +231,11 @@ impl PciDevice {
         let original_value =
             PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
 
+        // Disable memory and I/O decoding while probing to avoid address conflicts.
+        let cmd =
+            PciConfigSpace::read_config_word(self.bus, self.device, self.function, 4);
+        PciConfigSpace::write_config_word_raw(self.bus, self.device, self.function, 4, cmd & !0x3);
+
         PciConfigSpace::write_config_dword_raw(
             self.bus,
             self.device,
@@ -222,7 +246,7 @@ impl PciDevice {
         let size_mask =
             PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
 
-        // Restore original
+        // Restore BAR value and re-enable decoding
         PciConfigSpace::write_config_dword_raw(
             self.bus,
             self.device,
@@ -230,6 +254,11 @@ impl PciDevice {
             offset,
             original_value,
         );
+        PciConfigSpace::write_config_word_raw(self.bus, self.device, self.function, 4, cmd);
+
+        if size_mask == 0 || size_mask == 0xFFFFFFFF {
+            return 0;
+        }
 
         if (size_mask & 0x1) != 0 {
             // I/O
