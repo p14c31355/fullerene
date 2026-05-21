@@ -75,7 +75,7 @@ pub fn render(params: RenderParams<'_>) {
         // Draw glyph pixels
         for gy in 0..glyph_h {
             for gx in 0..glyph_w {
-                if font::get_glyph_pixel(cell.ch, gy, gx) {
+                if font::glyph(cell.ch).pixel(gy, gx) {
                     surface.set_pixel(dx + gx, dy + gy, cell.fg);
                 }
             }

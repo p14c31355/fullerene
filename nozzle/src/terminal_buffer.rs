@@ -18,11 +18,37 @@
 //! `Cell` stores separate foreground / background colours.  The parser
 //! or shell can set them; the renderer uses them.
 
-#![allow(dead_code)]
-
 extern crate alloc;
 
 use alloc::vec::Vec;
+
+/// Foreground / background colour pair for terminal styling.
+///
+/// Kept separate from [`Cell`] because `TextStyle` represents the
+/// *current* colour state of the terminal, while `Cell` stores the
+/// colours of an already‑written cell.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextStyle {
+    /// Foreground colour (0xRRGGBB).
+    pub fg: u32,
+    /// Background colour (0xRRGGBB).
+    pub bg: u32,
+}
+
+impl TextStyle {
+    pub const fn new(fg: u32, bg: u32) -> Self {
+        Self { fg, bg }
+    }
+}
+
+impl Default for TextStyle {
+    fn default() -> Self {
+        Self {
+            fg: 0xCCCCCC,  // light gray
+            bg: 0x000000,  // black
+        }
+    }
+}
 
 /// A single terminal cell.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -57,10 +83,8 @@ pub struct TerminalBuffer {
     cursor_col: u32,
     /// Cursor row (0 = top).
     cursor_row: u32,
-    /// Current foreground colour.
-    fg: u32,
-    /// Current background colour.
-    bg: u32,
+    /// Current text style (foreground / background).
+    style: TextStyle,
 }
 
 impl TerminalBuffer {
@@ -75,8 +99,7 @@ impl TerminalBuffer {
             rows,
             cursor_col: 0,
             cursor_row: 0,
-            fg: 0xCCCCCC,
-            bg: 0x000000,
+            style: TextStyle::default(),
         }
     }
 
@@ -86,23 +109,34 @@ impl TerminalBuffer {
     pub fn rows(&self) -> u32 { self.rows }
     pub fn cursor_col(&self) -> u32 { self.cursor_col }
     pub fn cursor_row(&self) -> u32 { self.cursor_row }
-    pub fn fg(&self) -> u32 { self.fg }
-    pub fn bg(&self) -> u32 { self.bg }
+    pub fn fg(&self) -> u32 { self.style.fg }
+    pub fn bg(&self) -> u32 { self.style.bg }
+    pub fn style(&self) -> TextStyle { self.style }
 
     /// Flat slice of all cells (row‑major).
     pub fn cells(&self) -> &[Cell] {
         &self.cells
     }
 
-    /// Mutable flat slice of all cells (row‑major).
-    pub fn cells_mut(&mut self) -> &mut [Cell] {
-        &mut self.cells
+    /// Mutable access to a single cell at `(col, row)`.
+    ///
+    /// Returns `None` if the coordinates are out of bounds.
+    /// This is the **only** way for external code to mutate cells —
+    /// prefer this over exposing the full mutable slice.
+    pub fn cell_mut(&mut self, col: u32, row: u32) -> Option<&mut Cell> {
+        if col < self.cols && row < self.rows {
+            let idx = row as usize * self.cols as usize + col as usize;
+            self.cells.get_mut(idx)
+        } else {
+            None
+        }
     }
 
     // ── colour ───────────────────────────────────────────────
 
-    pub fn set_fg(&mut self, color: u32) { self.fg = color; }
-    pub fn set_bg(&mut self, color: u32) { self.bg = color; }
+    pub fn set_fg(&mut self, color: u32) { self.style.fg = color; }
+    pub fn set_bg(&mut self, color: u32) { self.style.bg = color; }
+    pub fn set_style(&mut self, style: TextStyle) { self.style = style; }
 
     // ── cursor ───────────────────────────────────────────────
 
@@ -117,7 +151,7 @@ impl TerminalBuffer {
     pub fn put_char(&mut self, ch: u8) {
         let idx = self.cursor_row as usize * self.cols as usize + self.cursor_col as usize;
         if idx < self.cells.len() {
-            self.cells[idx] = Cell { ch, fg: self.fg, bg: self.bg };
+            self.cells[idx] = Cell { ch, fg: self.style.fg, bg: self.style.bg };
         }
         self.cursor_col += 1;
         if self.cursor_col >= self.cols {
@@ -183,7 +217,7 @@ impl TerminalBuffer {
         }
         // Shift rows up
         let src_start = row_len;
-        let copy_count = self.cells.len() - row_len;
+        let _copy_count = self.cells.len() - row_len;
         self.cells.copy_within(src_start.., 0);
         // Clear bottom row
         let bottom_start = self.cells.len() - row_len;

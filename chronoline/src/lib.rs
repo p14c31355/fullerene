@@ -3,7 +3,6 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use core::cmp::Ordering;
 
 // ---------------------------------------------------------------------------
 // ClockSource – clock source abstraction
@@ -13,6 +12,15 @@ use core::cmp::Ordering;
 pub trait ClockSource {
     /// Returns the current tick count.
     fn now_ticks(&self) -> u64;
+
+    /// Creates a `Deadline` that fires `delta` ticks from the current time.
+    ///
+    /// This is the preferred way to create deadlines — it keeps deadline
+    /// generation close to the clock, making TSC / APIC deadline integration
+    /// more natural.
+    fn deadline_after(&self, delta: u64) -> Deadline {
+        Deadline::new(self.now_ticks().saturating_add(delta))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -105,7 +113,19 @@ impl ChronoLine {
         self.timers.insert(index, timer);
     }
 
+    /// Advances the internal clock by `delta` ticks.
+    ///
+    /// This is the preferred way to update the clock from a scheduler
+    /// that maintains its own monotonic counter — it avoids the risk of
+    /// stale or non‑monotonic absolute ticks.
+    pub fn advance(&mut self, delta: u64) {
+        self.now = self.now.saturating_add(delta);
+    }
+
     /// Advances the internal clock to `now`.
+    ///
+    /// Prefer [`advance`](Self::advance) for scheduler use; `tick` is
+    /// kept for cases where an absolute clock source is unavoidable.
     pub fn tick(&mut self, now: u64) {
         if now > self.now {
             self.now = now;
@@ -122,10 +142,21 @@ impl ChronoLine {
             .first()
             .is_some_and(|t| t.deadline.ticks() <= self.now)
         {
-            Some(self.timers.remove(0))
+            Some(self.pop_front_expired())
         } else {
             None
         }
+    }
+
+    // ── private helpers ──────────────────────────────────────
+
+    /// Remove and return the front timer.
+    ///
+    /// Extracted as a private helper so that the internal data structure
+    /// can be changed (e.g. to `BinaryHeap` or a timer wheel) without
+    /// touching callers.
+    fn pop_front_expired(&mut self) -> Timer {
+        self.timers.remove(0)
     }
 
     /// Returns `true` if at least one timer has expired (without removing it).

@@ -15,66 +15,68 @@ pub const GLYPH_COUNT: usize = 96;
 /// Font bitmap: index = `(char as usize) - 0x20`.
 pub static FONT_DATA: [u8; GLYPH_COUNT * GLYPH_BYTES] = build_font();
 
+// ── Glyph accessor — the primary API ─────────────────────────
+
+/// A single glyph — a borrowed reference into the font bitmap.
+///
+/// Prefer this over the free‑standing `get_glyph_pixel()` function;
+/// it avoids redundant index calculations across repeated calls for
+/// the same character.
+pub struct Glyph<'a> {
+    rows: &'a [u8],
+}
+
+impl Glyph<'_> {
+    /// Get a single pixel from this glyph.
+    #[inline]
+    pub fn pixel(&self, row: u32, col: u32) -> bool {
+        let byte = self.rows[row as usize];
+        byte & (0x80 >> col) != 0
+    }
+}
+
+/// Look up a glyph for a printable ASCII character.
+///
+/// Character codes outside 0x20–0x7E are clamped to the space glyph.
+#[inline]
+pub fn glyph(ch: u8) -> Glyph<'static> {
+    let idx = (ch.wrapping_sub(0x20) as usize).min(GLYPH_COUNT - 1);
+    let start = idx * GLYPH_BYTES;
+    Glyph {
+        rows: &FONT_DATA[start..start + GLYPH_BYTES],
+    }
+}
+
 /// Get a single pixel from the font glyph for character `ch`.
+///
+/// This is a convenience wrapper around `glyph(ch).pixel(row, col)`.
+/// For repeated pixel queries on the same character, prefer caching
+/// the `Glyph` value.
 #[inline]
 pub fn get_glyph_pixel(ch: u8, row: u32, col: u32) -> bool {
-    let idx = (ch.wrapping_sub(0x20) as usize).min(GLYPH_COUNT - 1);
-    let byte = FONT_DATA[idx * GLYPH_BYTES + row as usize];
-    byte & (0x80 >> col) != 0
+    glyph(ch).pixel(row, col)
 }
 
-// ── DSL ─────────────────────────────────────────────────────
+// ── Glyph generator ──────────────────────────────────────────
 
-macro_rules! bits {
-    ($s:literal) => {{
-        const fn parse(s: &str) -> u8 {
-            let bytes = s.as_bytes();
-            let mut v = 0u8;
-            let mut i = 0;
-            while i < 8 {
-                v <<= 1;
-                if i < bytes.len() && bytes[i] == b'#' { v |= 1; }
-                i += 1;
-            }
-            v
+/// Build a 16‑row glyph from two half‑row masks.
+///
+/// When `top` is `true` the first 8 rows are filled (`0xFF`);
+/// when `bottom` is `true` the last 8 rows are filled.
+///
+/// This replaces hand‑defined constants like `GLYPH_HALF_TOP` /
+/// `GLYPH_HALF_BOT` with a generator, reducing dead‑data risk.
+const fn fill_rows(top: bool, bottom: bool) -> [u8; 16] {
+    let mut data = [0u8; 16];
+    let mut i = 0;
+    while i < 16 {
+        if (top && i < 8) || (bottom && i >= 8) {
+            data[i] = 0xFF;
         }
-        parse($s)
-    }};
+        i += 1;
+    }
+    data
 }
-
-macro_rules! glyph {
-    ($($l:literal),+ $(,)?) => { [ $(bits!($l)),+ ] };
-}
-
-// ── Base hand‑defined glyphs ─────────────────────────────────
-
-const GLYPH_SPACE: [u8; 16] = glyph![
-    "........" , "........" , "........" , "........" ,
-    "........" , "........" , "........" , "........" ,
-    "........" , "........" , "........" , "........" ,
-    "........" , "........" , "........" , "........" ,
-];
-
-const GLYPH_FULL: [u8; 16] = glyph![
-    "########" , "########" , "########" , "########" ,
-    "########" , "########" , "########" , "########" ,
-    "########" , "########" , "########" , "########" ,
-    "########" , "########" , "########" , "########" ,
-];
-
-const GLYPH_HALF_TOP: [u8; 16] = glyph![
-    "########" , "########" , "########" , "########" ,
-    "########" , "########" , "########" , "########" ,
-    "........" , "........" , "........" , "........" ,
-    "........" , "........" , "........" , "........" ,
-];
-
-const GLYPH_HALF_BOT: [u8; 16] = glyph![
-    "........" , "........" , "........" , "........" ,
-    "........" , "........" , "........" , "........" ,
-    "########" , "########" , "########" , "########" ,
-    "########" , "########" , "########" , "########" ,
-];
 
 // ── Algorithmic glyph builder ────────────────────────────────
 
@@ -98,19 +100,22 @@ const fn build_font() -> [u8; 1536] {
 }
 
 /// Generate a single glyph by index (0 = 0x20).
+///
+/// Uses `fill_rows` instead of named constants, keeping the
+/// glyph data close to its generation logic.
 const fn build_glyph(idx: usize) -> [u8; 16] {
     match idx {
         // 0x20 SPACE
-        0 => GLYPH_SPACE,
+        0 => fill_rows(false, false),
         // 0x7F DEL (inverse space)
-        95 => GLYPH_FULL,
+        95 => fill_rows(true, true),
         // Digits 0x30-0x39 use top‑half block
-        16..=25 => GLYPH_HALF_TOP,
+        16..=25 => fill_rows(true, false),
         // Uppercase A-Z 0x41-0x5A use full block
-        33..=58 => GLYPH_FULL,
+        33..=58 => fill_rows(true, true),
         // Lowercase a-z 0x61-0x7A use bottom‑half block
-        65..=90 => GLYPH_HALF_BOT,
+        65..=90 => fill_rows(false, true),
         // Everything else: space
-        _ => GLYPH_SPACE,
+        _ => fill_rows(false, false),
     }
 }
