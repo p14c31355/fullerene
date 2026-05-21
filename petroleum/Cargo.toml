@@ -33,6 +33,7 @@ bitfield = "0.19"
 addr2line = { version = "0.26.1", default-features = false }
 gimli = { version = "0.33.0", default-features = false }
 goblin = { version = "0.10.5", default-features = false, features = ["pe32", "pe64"] }
+nitrogen = { path = "../nitrogen" }
 
 [lib]
 name = "petroleum"

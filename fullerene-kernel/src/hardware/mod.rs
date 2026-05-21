@@ -3,12 +3,12 @@
 //! This module provides unified hardware abstraction for the Fullerene kernel,
 //! including device management, port operations, and hardware interfaces.
 //!
-//! PCI and port I/O operations are now consolidated in the petroleum crate.
+//! PCI, port I/O, and interrupt-controller operations now live in the **nitrogen**
+//! crate (pure hardware mechanism). This module re-exports them for convenience
+//! while keeping the higher-level device-manager policy here.
 
 pub mod device_manager;
 
-// Re-export commonly used types
-pub use device_manager::{DeviceInfo, DeviceManager, init_device_manager, register_device};
-pub use petroleum::HardwarePorts;
-pub use petroleum::hardware::ports::VgaRegisterWriter;
-pub use petroleum::hardware::{PciConfigSpace, PciDevice, PciScanner};
+// Re-export hardware mechanism types from nitrogen.
+pub use nitrogen::port::{HardwarePorts, VgaRegisterWriter};
+pub use nitrogen::pci::{PciConfigSpace, PciDevice, PciScanner};

@@ -76,7 +76,7 @@ pub mod serial;
 pub mod transition;
 pub mod uefi_helpers;
 pub mod virtio;
-pub use apic::{IoApic, IoApicRedirectionEntry, init_io_apic};
+pub use apic::{IoApic, IoApicRedirectionEntry, configure_io_apic_for_legacy_irqs, init_io_apic};
 // Macros with #[macro_export] are automatically available at root, no need to re-export
 pub use common::logging::{SystemError, SystemResult};
 pub use common::memory::*;
