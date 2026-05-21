@@ -21,7 +21,7 @@ impl VecFramebuffer {
 
     /// Export the pixels as a [PPM P6](https://netpbm.sourceforge.net/doc/ppm.html) file.
     pub fn to_ppm_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(self.pixels.len() * 3 + 64);
+        let mut buf = Vec::with_capacity(self.pixels.len().saturating_mul(3).saturating_add(64));
         buf.extend_from_slice(format!("P6\n{} {}\n255\n", self.width, self.height).as_bytes());
 
         for &pixel in &self.pixels {
