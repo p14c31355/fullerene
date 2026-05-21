@@ -756,7 +756,7 @@ impl VirtioGpu {
 
         let desc1 = &mut *self.desc_table.add(d1 as usize);
         desc1.addr = resp_phys.to_le();
-        desc1.len = 256u32.to_le();
+        desc1.len = self.resp_buf_len.to_le();
         desc1.flags = VRING_DESC_F_WRITE.to_le();
         desc1.next = 0;
 
