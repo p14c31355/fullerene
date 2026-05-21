@@ -56,7 +56,7 @@ pub struct VringUsedElem {
 pub struct VringUsed {
     pub flags: u16,
     pub idx: u16,
-    pub ring: [VringUsedElem; 1024],
+    pub ring: [VringUsedElem; QUEUE_SIZE as usize],
     pub avail_event: u16,
 }
 
