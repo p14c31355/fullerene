@@ -27,7 +27,7 @@ use crate::queue::EventQueue;
 /// source → EventQueue → Dispatcher → EventHandler
 /// ```
 pub struct Dispatcher {
-    handlers: Vec<Box<dyn EventHandler>>,
+    handlers: Vec<Box<dyn EventHandler + Send>>,
 }
 
 impl Dispatcher {
@@ -48,7 +48,7 @@ impl Dispatcher {
     /// Registers an event handler.
     ///
     /// Handlers are called **in registration order** for each event.
-    pub fn register(&mut self, handler: Box<dyn EventHandler>) {
+    pub fn register(&mut self, handler: Box<dyn EventHandler + Send>) {
         self.handlers.push(handler);
     }
 

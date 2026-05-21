@@ -6,11 +6,13 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use chronoline::{ChronoLine, Deadline, TimerId};
 use lattice::compositor::{Compositor, RenderTarget};
 use lattice::desktop::Desktop;
 use lattice::terminal_surface::{self, Cell as LatticeCell};
 use lattice::window::WindowId;
 use nozzle::terminal_buffer::TerminalBuffer;
+use resonance::{Dispatcher, Event, EventHandler, EventQueue};
 use petroleum::graphics::Renderer;
 use spin::Mutex;
 
@@ -27,9 +29,15 @@ const TERM_WIN_H: u32 = TERM_ROWS * 16;
 /// Desktop background colour.
 const BG_COLOR: u32 = 0x1a1a2e;
 
+/// Cursor blink interval in ticks (~500ms).
+const CURSOR_BLINK_INTERVAL: u64 = 500;
+
+/// Timer ID for cursor blink.
+const CURSOR_TIMER_ID: TimerId = TimerId(1);
+
 // ── Global state ─────────────────────────────────────────────
 
-/// Global GUI state, lazily initialised.
+/// Global GUI state.
 pub static GUI: Mutex<Option<GuiState>> = Mutex::new(None);
 
 /// The full GUI state.
@@ -37,6 +45,9 @@ pub struct GuiState {
     pub desktop: Desktop,
     pub term_window: WindowId,
     pub term_buf: TerminalBuffer,
+    pub dispatcher: Dispatcher,
+    pub event_queue: EventQueue,
+    pub chrono: ChronoLine,
     pub cursor_visible: bool,
 }
 
@@ -45,12 +56,49 @@ pub fn init() {
     let mut desktop = Desktop::new(BG_COLOR);
     let term_window = desktop.create_window(40, 30, TERM_WIN_W, TERM_WIN_H, 0x000000);
     let term_buf = TerminalBuffer::new(TERM_COLS, TERM_ROWS);
+    let mut dispatcher = Dispatcher::new();
+    let event_queue = EventQueue::new();
+    let mut chrono = ChronoLine::new();
+
+    // Register repeating cursor blink timer
+    chrono.register(Deadline::new(CURSOR_BLINK_INTERVAL), CURSOR_TIMER_ID);
+
     *GUI.lock() = Some(GuiState {
         desktop,
         term_window,
         term_buf,
+        dispatcher,
+        event_queue,
+        chrono,
         cursor_visible: true,
     });
+}
+
+/// Advance the ChronoLine clock and process expired timers.
+///
+/// Called from the scheduler loop every tick.
+pub fn chrono_tick(now: u64) {
+    let mut gui = GUI.lock();
+    let gui = match gui.as_mut() {
+        Some(g) => g,
+        None => return,
+    };
+
+    gui.chrono.tick(now);
+
+    while let Some(timer) = gui.chrono.pop_expired() {
+        match timer.id {
+            CURSOR_TIMER_ID => {
+                gui.cursor_visible = !gui.cursor_visible;
+                // Re‑register for next blink
+                gui.chrono.register(
+                    Deadline::new(now.saturating_add(CURSOR_BLINK_INTERVAL)),
+                    CURSOR_TIMER_ID,
+                );
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Render the desktop onto the primary framebuffer using Lattice compositor.
@@ -85,7 +133,12 @@ pub fn render() {
     Compositor::render(&scene, &mut target);
     drop(gui_lock);
 
-    // Flush GPU if present
+    // Signal present & flush GPU
+    let mut renderer_lock = crate::graphics::PRIMARY_RENDERER.lock();
+    if let Some(ref mut renderer) = *renderer_lock {
+        renderer.present();
+    }
+    drop(renderer_lock);
     crate::graphics::flush_gpu();
 }
 
@@ -112,35 +165,44 @@ fn render_terminal(gui: &mut GuiState) {
     });
 }
 
-/// Toggle cursor visibility (called by ChronoLine timer).
-pub fn toggle_cursor() {
+/// Push a key event into the Resonance event queue.
+pub fn push_key_event(event: Event) {
     let mut gui = GUI.lock();
     if let Some(ref mut g) = *gui {
-        g.cursor_visible = !g.cursor_visible;
+        // Push to Resonance queue – handlers will process on next dispatch
+        g.event_queue.push(event);
+    }
+}
+
+/// Process pending Resonance events (called from scheduler).
+pub fn process_events() {
+    let mut gui = GUI.lock();
+    if let Some(ref mut g) = *gui {
+        g.dispatcher.dispatch_queue(&mut g.event_queue);
     }
 }
 
 // ── Framebuffer access ───────────────────────────────────────
 
 /// Get a mutable slice of the framebuffer pixels and its dimensions.
+/// Also returns a `MutexGuard` that must be kept alive while the slice is used.
 fn get_framebuffer_slice() -> Option<(&'static mut [u32], u32, u32)> {
     let renderer_lock = crate::graphics::PRIMARY_RENDERER.lock();
     let renderer = renderer_lock.as_ref()?;
     let info = renderer.get_info();
 
-    let phys_offset = petroleum::common::memory::get_physical_memory_offset() as u64;
-    let fb_virt = (info.address as u64) + phys_offset;
+    // `info.address` is a physical address that is identity‑mapped in the kernel's
+    // page table.  We use it directly — adding `phys_offset` would produce an
+    // invalid address because the framebuffer is NOT mapped in the higher half.
+    let fb_ptr = info.address as *mut u32;
     let fb_len = (info.width as usize) * (info.height as usize);
 
-    // Safety: framebuffer is mapped at this virtual address
-    let fb_pixels = unsafe { core::slice::from_raw_parts_mut(fb_virt as *mut u32, fb_len) };
-
+    let fb_pixels = unsafe { core::slice::from_raw_parts_mut(fb_ptr, fb_len) };
     Some((fb_pixels, info.width, info.height))
 }
 
 // ── Fallback rendering ───────────────────────────────────────
 
-/// Fallback: use petroleum's built-in desktop renderer.
 fn render_fallback() {
     let mut renderer_lock = crate::graphics::PRIMARY_RENDERER.lock();
     if let Some(ref mut renderer) = *renderer_lock {

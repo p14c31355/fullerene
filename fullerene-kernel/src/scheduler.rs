@@ -307,6 +307,14 @@ pub fn scheduler_loop() -> ! {
         SYSTEM_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         SCHEDULER_ITERATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
+        let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
+
+        // Advance ChronoLine timers (cursor blink, etc.)
+        crate::gui::chrono_tick(current_tick);
+
+        // Process Resonance events
+        crate::gui::process_events();
+
         process_scheduler_iteration();
         // Cooperative yield to idle process (if available)
         let active = crate::process::get_active_process_count();
