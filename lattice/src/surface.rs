@@ -93,8 +93,8 @@ impl Surface {
         // Destination clipping
         let src_start_x = 0i32.max(-dx);
         let src_start_y = 0i32.max(-dy);
-        let src_end_x = src_w.min((self.width as i32) - dx);
-        let src_end_y = src_h.min((self.height as i32) - dy);
+        let src_end_x = src_w.min((self.width as i32).saturating_sub(dx));
+        let src_end_y = src_h.min((self.height as i32).saturating_sub(dy));
 
         if src_start_x >= src_end_x || src_start_y >= src_end_y {
             return;
