@@ -32,9 +32,7 @@ impl Compositor {
         let framebuffer = target.buffer();
 
         // 1. Clear to background colour
-        for pixel in framebuffer.iter_mut() {
-            *pixel = scene.bg_color;
-        }
+        framebuffer.fill(scene.bg_color);
 
         // 2. Draw windows back to front
         for window in scene.windows {
@@ -51,9 +49,9 @@ impl Compositor {
 
     /// Draw the software cursor sprite.
     fn draw_cursor(framebuffer: &mut [u32], fb_width: u32, fb_height: u32, cursor: &Cursor) {
-        let (pixels, cw, ch) = Cursor::shape();
-        let cw = cw as i32;
-        let ch = ch as i32;
+        let pixels = Cursor::shape();
+        let cw = Cursor::SIZE as i32;
+        let ch = Cursor::SIZE as i32;
 
         let dst_x = cursor.x - Cursor::HOTSPOT_X;
         let dst_y = cursor.y - Cursor::HOTSPOT_Y;

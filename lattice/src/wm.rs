@@ -133,13 +133,11 @@ impl WindowManager {
             return;
         };
 
-        // Raise the clicked window to the top.
+        // Raise the clicked window to the top (now guaranteed to be last element).
         self.raise_to_top(hit);
 
         // Record the grab offset so the window doesn't jump.
-        let offset = self.windows.iter().rev().find(|w| w.id == hit).map(|w| {
-            (x - w.x, y - w.y)
-        });
+        let offset = self.windows.last().map(|w| (x - w.x, y - w.y));
 
         if let Some((ox, oy)) = offset {
             self.drag = DragState::Moving {

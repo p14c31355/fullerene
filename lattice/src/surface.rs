@@ -76,9 +76,7 @@ impl Surface {
         for row in y_range {
             let start = row as usize * (self.width as usize) + x_range.start as usize;
             let end = row as usize * (self.width as usize) + x_range.end as usize;
-            for px in &mut self.pixels[start..end] {
-                *px = color;
-            }
+            self.pixels[start..end].fill(color);
         }
     }
 
