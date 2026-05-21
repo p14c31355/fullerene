@@ -57,22 +57,10 @@ pub struct TimerId(pub u64);
 ///
 /// Holds no callback; the scheduler calls `pop_expired()` and dispatches
 /// the event on its own.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Timer {
     pub deadline: Deadline,
     pub id: TimerId,
-}
-
-impl Ord for Timer {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.deadline.cmp(&other.deadline)
-    }
-}
-
-impl PartialOrd for Timer {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
 }
 
 // ---------------------------------------------------------------------------
