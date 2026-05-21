@@ -71,8 +71,8 @@ impl Surface {
 
     /// Fill an axis‑aligned rectangle with `color`.
     pub fn fill_rect(&mut self, x: u32, y: u32, w: u32, h: u32, color: u32) {
-        let x_range = clamp_range(x, x + w, self.width);
-        let y_range = clamp_range(y, y + h, self.height);
+        let x_range = clamp_range(x, x.saturating_add(w), self.width);
+        let y_range = clamp_range(y, y.saturating_add(h), self.height);
         for row in y_range {
             let start = row as usize * (self.width as usize) + x_range.start as usize;
             let end = row as usize * (self.width as usize) + x_range.end as usize;
