@@ -24,5 +24,8 @@ pub trait EventHandler {
     ///
     /// The event is passed by shared reference — events are **immutable**
     /// throughout their lifecycle.
+    ///
+    /// Returns `true` if the event was consumed and propagation should stop.
+    /// Returns `false` to allow the event to continue to the next handler.
     fn handle(&mut self, event: &Event) -> bool;
 }

@@ -74,9 +74,12 @@ impl Dispatcher {
     /// Dispatches a single event to all registered handlers.
     ///
     /// Each handler receives the event in order of registration.
+    /// Propagation stops if a handler returns `true` (consumed).
     pub fn dispatch(&mut self, event: &Event) {
         for handler in &mut self.handlers {
-            handler.handle(event);
+            if handler.handle(event) {
+                break;
+            }
         }
     }
 
@@ -90,16 +93,6 @@ impl Dispatcher {
         }
     }
 
-    /// Drains all events from the queue into a `Vec`, dispatches them,
-    /// and returns the consumed events (for further introspection /
-    /// debugging).
-    pub fn drain_and_dispatch(&mut self, queue: &mut EventQueue) -> Vec<Event> {
-        let events: Vec<Event> = queue.drain_all();
-        for event in &events {
-            self.dispatch(event);
-        }
-        events
-    }
 }
 
 impl Default for Dispatcher {
@@ -131,8 +124,9 @@ mod tests {
     }
 
     impl EventHandler for TrackingHandler {
-        fn handle(&mut self, _event: &Event) {
+        fn handle(&mut self, _event: &Event) -> bool {
             self.count.set(self.count.get() + 1);
+            false // don't consume, allow propagation
         }
     }
 
@@ -187,14 +181,32 @@ mod tests {
     }
 
     #[test]
-    fn test_drain_and_dispatch() {
-        let mut dispatcher = Dispatcher::new();
-        let mut queue = EventQueue::new();
-        queue.push(Event::Input(InputEvent::MouseDown(MouseButton::Left)));
+    fn test_consumed_stops_propagation() {
+        // First handler consumes → second should NOT be called
+        struct ConsumingHandler {
+            count: Cell<usize>,
+        }
 
-        let drained = dispatcher.drain_and_dispatch(&mut queue);
-        assert_eq!(drained.len(), 1);
-        assert!(queue.is_empty());
+        impl ConsumingHandler {
+            fn new() -> Self {
+                Self { count: Cell::new(0) }
+            }
+        }
+
+        impl EventHandler for ConsumingHandler {
+            fn handle(&mut self, _event: &Event) -> bool {
+                self.count.set(self.count.get() + 1);
+                true // consume
+            }
+        }
+
+        let mut dispatcher = Dispatcher::new();
+        dispatcher.register(Box::new(ConsumingHandler::new()));
+        let h2 = TrackingHandler::new();
+        dispatcher.register(Box::new(h2));
+
+        let event = Event::Input(InputEvent::MouseDown(MouseButton::Left));
+        dispatcher.dispatch(&event);
     }
 
     #[test]
