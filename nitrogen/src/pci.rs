@@ -122,7 +122,11 @@ impl PciConfigSpace {
         Self::write_config_dword_raw(bus, device, function, offset, value);
     }
 
-    pub(crate) fn write_config_dword_raw(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
+    /// Write a raw DWORD to PCI configuration space.
+    ///
+    /// This is a low-level mechanism. Use `write_config_dword` on `PciConfigSpace`
+    /// when you need to update the cached header fields as well.
+    pub fn write_config_dword_raw(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
         let address = Self::build_config_address(bus, device, function, offset);
         let mut addr_writer =
             PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_ADDRESS);
@@ -149,12 +153,21 @@ pub struct PciDevice {
 
 impl PciDevice {
     pub fn new(bus: u8, device: u8, function: u8) -> Option<Self> {
-        if let Some(mut dev) = PrivatePciDevice::new(bus, device, function) {
-            dev.config.enable_memory_access(bus, device, function);
+        if let Some(dev) = PrivatePciDevice::new(bus, device, function) {
             Some(dev.to_public())
         } else {
             None
         }
+    }
+
+    /// Enable memory-space access and bus-mastering for this device.
+    /// The caller should invoke this once after obtaining a `PciDevice`
+    /// and before performing MMIO or DMA operations.
+    pub fn enable_memory_access(&self) {
+        let cmd = PciConfigSpace::read_config_word(self.bus, self.device, self.function, 4);
+        PciConfigSpace::write_config_dword_raw(
+            self.bus, self.device, self.function, 4, (cmd | 0x06) as u32,
+        );
     }
 
     pub fn read_bar(&self, bar_index: u8) -> Option<u64> {
@@ -224,92 +237,6 @@ impl PciDevice {
         } else {
             // Memory
             !(size_mask & 0xFFFFFFF0) + 1
-        }
-    }
-}
-
-pub struct PciAllocator {
-    pub mmio_base: u64,
-}
-
-impl PciAllocator {
-    pub fn new(mmio_base: u64) -> Self {
-        Self { mmio_base }
-    }
-
-    pub fn assign_bars(&mut self, scanner: &PciScanner) {
-        for device in scanner.get_devices() {
-            log::info!(
-                "[PCI-Allocator] Checking device {:#x}:{:#x} at {}:{}:{}",
-                device.vendor_id, device.device_id, device.bus, device.device, device.function
-            );
-            // 1. Disable Memory Space access (Command bit 1)
-            let cmd_offset = 4;
-            let original_command = PciConfigSpace::read_config_word(
-                device.bus,
-                device.device,
-                device.function,
-                cmd_offset,
-            );
-            PciConfigSpace::write_config_dword_raw(
-                device.bus,
-                device.device,
-                device.function,
-                cmd_offset,
-                (original_command & !0x2) as u32,
-            );
-
-            for bar_index in 0..6 {
-                if let Some(mut bar) = device.get_bar_info(bar_index) {
-                    if bar.address == 0 && bar.size > 0 {
-                        let aligned_addr =
-                            (self.mmio_base + (bar.size as u64 - 1)) & !(bar.size as u64 - 1);
-
-                        let offset = 0x10 + (bar_index * 4);
-
-                        // Write low 32 bits
-                        PciConfigSpace::write_config_dword_raw(
-                            device.bus,
-                            device.device,
-                            device.function,
-                            offset,
-                            aligned_addr as u32,
-                        );
-
-                        // If 64-bit, write high 32 bits
-                        if bar.is_64bit {
-                            PciConfigSpace::write_config_dword_raw(
-                                device.bus,
-                                device.device,
-                                device.function,
-                                offset + 4,
-                                (aligned_addr >> 32) as u32,
-                            );
-                        }
-
-                        log::info!(
-                            "[PCI-Allocator] Assigned BAR {} to {:#x} (size={:#x}, 64bit={})",
-                            bar_index, aligned_addr, bar.size, bar.is_64bit
-                        );
-
-                        self.mmio_base = aligned_addr + bar.size as u64;
-                    } else {
-                        log::info!(
-                            "[PCI-Allocator] BAR {} is already assigned at {:#x}",
-                            bar_index, bar.address
-                        );
-                    }
-                }
-            }
-
-            // 3. Re-enable Memory Space access
-            PciConfigSpace::write_config_dword_raw(
-                device.bus,
-                device.device,
-                device.function,
-                cmd_offset,
-                original_command as u32,
-            );
         }
     }
 }

@@ -158,30 +158,8 @@ pub fn find_io_apic_base() -> u64 {
     0xFEC00000
 }
 
-/// Configure I/O APIC for legacy IRQs
-pub fn configure_io_apic_for_legacy_irqs(io_apic: &mut IoApic, local_apic_id: u8) {
-    // Configure keyboard (IRQ 1) -> vector 33
-    let keyboard_rte =
-        IoApicRedirectionEntry::new(33, 0, false, false, false, false, local_apic_id);
-    io_apic.write_rte(1, keyboard_rte);
-
-    // Configure mouse (IRQ 12) -> vector 44
-    let mouse_rte = IoApicRedirectionEntry::new(44, 0, false, false, false, false, local_apic_id);
-    io_apic.write_rte(12, mouse_rte);
-
-    // Note: Other IRQs can be configured similarly as needed
-}
-
 /// Get local APIC ID from the LAPIC
 pub unsafe fn get_local_apic_id(lapic_base: u64) -> u8 {
     let lapic_id_reg = (lapic_base + 0x20) as *const u32;
     (read_volatile(lapic_id_reg) >> 24) as u8
-}
-
-/// Initialize I/O APIC for legacy interrupts
-pub fn init_io_apic(lapic_base: u64, io_apic_base: u64) {
-    let local_apic_id = unsafe { get_local_apic_id(lapic_base) };
-    let mut io_apic = IoApic::new(io_apic_base);
-
-    configure_io_apic_for_legacy_irqs(&mut io_apic, local_apic_id);
 }

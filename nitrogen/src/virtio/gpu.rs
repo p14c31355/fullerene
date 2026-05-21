@@ -23,6 +23,13 @@ pub const VRING_DESC_F_WRITE: u16 = 2;
 
 const QUEUE_SIZE: u16 = 64;
 
+/// Max spin-loop iterations for waiting on a VirtIO used-ring update.
+///
+/// Roughly 30 million iterations ≈ 1–2 s on a modern ~2 GHz CPU
+/// running under KVM. This is a best-effort timeout; real deployments
+/// should consider a time-based mechanism.
+const WAIT_USED_TIMEOUT_LOOPS: u32 = 30_000_000;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VringDesc {

@@ -38,21 +38,10 @@ impl<T> PortWriter<T> {
 
 /// Generic helper for processing I/O port sequences with automatic type safety
 pub trait PortOperations {
-    fn write_multiple<T: Copy + x86_64::instructions::port::PortWrite>(
-        &mut self,
-        configs: &[(u8, T)],
-    );
     fn write_sequence_u8(&mut self, index_port: u16, data_port: u16, configs: &[(u8, u8)]);
 }
 
 impl PortOperations for () {
-    fn write_multiple<T: Copy + x86_64::instructions::port::PortWrite>(
-        &mut self,
-        _configs: &[(u8, T)],
-    ) {
-        // Global implementation for sequence operations
-    }
-
     fn write_sequence_u8(&mut self, index_port: u16, data_port: u16, configs: &[(u8, u8)]) {
         let mut idx_writer = PortWriter::new(index_port);
         let mut data_writer = PortWriter::new(data_port);
