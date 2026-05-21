@@ -37,7 +37,7 @@ impl Deadline {
 
     /// Creates a `Deadline` that fires `delta` ticks from the clock's current time.
     pub fn from_now(clock: &impl ClockSource, delta: u64) -> Self {
-        Self(clock.now_ticks() + delta)
+        Self(clock.now_ticks().saturating_add(delta))
     }
 }
 
