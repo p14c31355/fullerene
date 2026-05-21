@@ -3,13 +3,14 @@ use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
 use petroleum::graphics::text::VgaBuffer;
 use petroleum::graphics::{Console, Renderer, UefiFramebufferWriter};
+use petroleum::virtio::gpu::VirtioGpu;
 use spin::Mutex;
 
 /// Global primary framebuffer renderer (also used as text console).
 pub static PRIMARY_RENDERER: Mutex<Option<UefiFramebufferWriter>> = Mutex::new(None);
 
 /// Global VirtIO GPU device.
-pub static VIRTIO_GPU: Mutex<Option<Box<petroleum::virtio::gpu::VirtioGpu>>> = Mutex::new(None);
+pub static VIRTIO_GPU: Mutex<Option<Box<VirtioGpu>>> = Mutex::new(None);
 
 /// Guard flag to prevent double initialization of the graphics subsystem.
 static GRAPHICS_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -134,15 +135,48 @@ pub fn init_graphics() {
             if (i + 1) % 4 == 0 { petroleum::serial::serial_log(format_args!("\n")); }
         }
 
-        let gpu_result = petroleum::virtio::gpu::init_virtio_gpu(common_virt_ptr, notify_virt_ptr, gpu_device.clone(), common_bar);
+        use petroleum::page_table::constants::get_frame_allocator_mut;
+        let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+
+        // Allocate command buffer (1 page)
+        let cmd_raw = get_frame_allocator_mut()
+            .allocate_contiguous_frames(1)
+            .expect("VirtIO-GPU: failed to allocate cmd buffer");
+        let cmd_buf_phys = cmd_raw as u64;
+        let cmd_buf = (cmd_buf_phys + off) as *mut u8;
+        unsafe { core::ptr::write_bytes(cmd_buf, 0, 4096); }
+
+        // Allocate response buffer (1 page)
+        let resp_raw = get_frame_allocator_mut()
+            .allocate_contiguous_frames(1)
+            .expect("VirtIO-GPU: failed to allocate resp buffer");
+        let resp_buf_phys = resp_raw as u64;
+        let resp_buf = (resp_buf_phys + off) as *mut u8;
+        unsafe { core::ptr::write_bytes(resp_buf, 0, 4096); }
+
+        let gpu_result = petroleum::virtio::gpu::init_virtio_gpu(
+            common_virt_ptr, notify_virt_ptr, gpu_device.clone(), common_bar,
+            cmd_buf, cmd_buf_phys, 4096,
+            resp_buf, resp_buf_phys, 4096,
+        );
 
         if let Some(mut gpu) = gpu_result
         {
             petroleum::serial::serial_log(format_args!("[VirtIO-GPU] Setting up control queue...\n"));
 
-            let (desc_virt, desc_phys) = petroleum::virtio::gpu::VirtioGpu::alloc_queue_mem(1024 * core::mem::size_of::<petroleum::virtio::gpu::VringDesc>());
-            let (avail_virt, avail_phys) = petroleum::virtio::gpu::VirtioGpu::alloc_queue_mem(core::mem::size_of::<petroleum::virtio::gpu::VringAvail>());
-            let (used_virt, used_phys)   = petroleum::virtio::gpu::VirtioGpu::alloc_queue_mem(core::mem::size_of::<petroleum::virtio::gpu::VringUsed>());
+            // Queue memory: allocated by caller (nitrogen is allocator-agnostic)
+            let alloc_qmem = |size: usize| -> (*mut u8, u64) {
+                let pages = (size + 4095) / 4096;
+                let raw = get_frame_allocator_mut()
+                    .allocate_contiguous_frames(pages)
+                    .expect("VirtIO-GPU: failed to allocate queue memory");
+                let phys = raw as u64;
+                ((phys + off) as *mut u8, phys)
+            };
+
+            let (desc_virt, desc_phys) = alloc_qmem(1024 * core::mem::size_of::<petroleum::virtio::gpu::VringDesc>());
+            let (avail_virt, avail_phys) = alloc_qmem(core::mem::size_of::<petroleum::virtio::gpu::VringAvail>());
+            let (used_virt, used_phys)   = alloc_qmem(core::mem::size_of::<petroleum::virtio::gpu::VringUsed>());
 
             petroleum::serial::serial_log(format_args!(
                 "[graphics] Allocated queues: desc_p={:#x}, avail_p={:#x}, used_p={:#x}\n",
