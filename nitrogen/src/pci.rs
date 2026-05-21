@@ -107,7 +107,7 @@ impl PciConfigSpace {
 
     pub fn enable_memory_access(&mut self, bus: u8, device: u8, function: u8) {
         let command = self.command | 0x06;
-        self.write_config_dword(bus, device, function, 4, command as u32);
+        Self::write_config_word_raw(bus, device, function, 4, command);
         self.command = command;
     }
 
