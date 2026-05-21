@@ -17,7 +17,7 @@ pub struct PciBar {
 }
 
 /// PCI Configuration Space Header
-#[repr(packed)]
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PciConfigSpace {
     pub vendor_id: u16,
