@@ -227,7 +227,6 @@ pub struct VirtioGpu {
 }
 
 unsafe impl Send for VirtioGpu {}
-unsafe impl Sync for VirtioGpu {}
 
 #[derive(Debug)]
 pub enum VirtioGpuError {
