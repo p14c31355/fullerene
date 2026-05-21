@@ -107,7 +107,9 @@ impl ChronoLine {
 
     /// Advances the internal clock to `now`.
     pub fn tick(&mut self, now: u64) {
-        self.now = now;
+        if now > self.now {
+            self.now = now;
+        }
     }
 
     /// Pops the next expired timer, if any.
