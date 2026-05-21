@@ -22,22 +22,22 @@ impl Cursor {
     /// Generate the cursor pixel data as a small arrow shape.
     ///
     /// Returns `(pixels, width, height)`.
-    /// The arrow points up-left, with the hotspot at (1, 1).
+    /// The arrow points up-right, with the hotspot at (0, 0).
+    ///
+    /// All non‑zero pixels are solid white.
+    /// Zero (0x00000000) = transparent (not drawn).
     pub fn shape() -> (Vec<u32>, u32, u32) {
         let w = Self::SIZE as usize;
         let h = Self::SIZE as usize;
         let mut pixels = vec![0u32; w * h];
 
-        for y in 0..h {
-            for x in 0..w {
-                // Arrow pattern: upper‑left triangle
-                if x <= y && x < h - y {
-                    // Outline (black)
-                    if x == y || x == 0 || y == 0 || y == Self::SIZE as usize - 1 {
-                        pixels[y * w + x] = 0x000000;
-                    } else {
-                        pixels[y * w + x] = 0xFFFFFF;
-                    }
+        // Arrow pointing up-right: filled triangle where each row y has
+        // (y+1) columns filled, truncated to the triangle of height 12.
+        let arrow_h = 12usize;
+        for y in 0..arrow_h {
+            for x in 0..=y {
+                if x < w && y < h {
+                    pixels[y * w + x] = 0xFFFFFF;
                 }
             }
         }

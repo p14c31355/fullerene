@@ -1,43 +1,48 @@
 use crate::cursor::Cursor;
+use crate::scene::Scene;
 use crate::window::Window;
 
-/// Compositor state.
+/// A minimal pixel target — just a buffer + dimensions.
 ///
-/// Currently stateless — just the pipeline.
-/// Later we will add invalidation regions, damage tracking, etc.
+/// The compositor writes pixels here and does **not** own presentation
+/// timing, vsync, or swapchain logic.  Those belong in the kernel/runtime.
+pub trait RenderTarget {
+    fn buffer(&mut self) -> &mut [u32];
+    fn dimensions(&self) -> (u32, u32);
+}
+
+/// Compositor — stateless, pure rendering.
+///
+/// The compositor accepts a `Scene` snapshot and a `RenderTarget`.
+/// It does NOT own or manage:
+/// - window state (WM's job)
+/// - cursor position (input layer's job)
+/// - presentation timing (kernel's job)
 pub struct Compositor;
 
 impl Compositor {
-    /// Composite all windows onto the framebuffer.
-    ///
-    /// This is the **only** place where pixel data enters the framebuffer.
-    /// The compositor does NOT touch input logic, window management, or
-    /// any other state.
+    /// Composite `scene` onto `target`.
     ///
     /// Rendering order (bottom → top):
-    /// 1. Background fill (`bg_color`)
+    /// 1. Background fill (`scene.bg_color`)
     /// 2. Each window in z‑order (back to front)
-    /// 3. Software cursor
-    pub fn composite(
-        framebuffer: &mut [u32],
-        fb_width: u32,
-        fb_height: u32,
-        windows: &[Window],
-        bg_color: u32,
-        cursor: Option<&Cursor>,
-    ) {
+    /// 3. Software cursor (if visible)
+    pub fn render(scene: &Scene<'_>, target: &mut dyn RenderTarget) {
+        let (fb_width, fb_height) = target.dimensions();
+        let framebuffer = target.buffer();
+
         // 1. Clear to background colour
         for pixel in framebuffer.iter_mut() {
-            *pixel = bg_color;
+            *pixel = scene.bg_color;
         }
 
         // 2. Draw windows back to front
-        for window in windows {
+        for window in scene.windows {
             Self::draw_window(framebuffer, fb_width, fb_height, window);
         }
 
         // 3. Draw software cursor
-        if let Some(cursor) = cursor {
+        if let Some(cursor) = scene.cursor {
             if cursor.visible {
                 Self::draw_cursor(framebuffer, fb_width, fb_height, cursor);
             }
