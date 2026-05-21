@@ -165,8 +165,8 @@ impl PciDevice {
     /// and before performing MMIO or DMA operations.
     pub fn enable_memory_access(&self) {
         let cmd = PciConfigSpace::read_config_word(self.bus, self.device, self.function, 4);
-        PciConfigSpace::write_config_dword_raw(
-            self.bus, self.device, self.function, 4, (cmd | 0x06) as u32,
+        PciConfigSpace::write_config_word_raw(
+            self.bus, self.device, self.function, 4, cmd | 0x06,
         );
     }
 
