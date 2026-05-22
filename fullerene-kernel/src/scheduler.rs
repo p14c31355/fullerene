@@ -128,8 +128,8 @@ fn check_process_count() {
 
 /// Check and drain keyboard buffer if needed
 fn check_keyboard_buffer() {
-    if crate::keyboard::input_available() {
-        let drained = crate::keyboard::drain_line_buffer(&mut []);
+    if nitrogen::ps2::keyboard::input_available() {
+        let drained = nitrogen::ps2::keyboard::drain_line_buffer(&mut []);
         if drained > 256 {
             log::debug!("Drained {} bytes from keyboard buffer", drained);
         }

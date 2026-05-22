@@ -13,9 +13,9 @@ mod tests {
 
     #[test]
     fn test_syscall_numbers() {
-        assert_eq!(SyscallNumber::Exit as u64, 1);
-        assert_eq!(SyscallNumber::Write as u64, 4);
-        assert_eq!(SyscallNumber::Read as u64, 3);
+        assert_eq!(petroleum::SyscallNumber::Exit as u64, 1);
+        assert_eq!(petroleum::SyscallNumber::Write as u64, 4);
+        assert_eq!(petroleum::SyscallNumber::Read as u64, 3);
     }
 
     #[test]

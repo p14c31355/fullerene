@@ -92,12 +92,12 @@ pub fn load_program(
                     }
 
                     // Validate that the virtual address range is in user space
-                    use crate::memory_management::{is_user_address, map_user_page};
+                    use crate::memory_management::map_user_page;
 
                     let start_addr = x86_64::VirtAddr::new(vaddr);
                     let end_addr = x86_64::VirtAddr::new(vaddr + mem_size as u64 - 1);
 
-                    if !is_user_address(start_addr) || !is_user_address(end_addr) {
+                    if !petroleum::is_user_address(start_addr) || !petroleum::is_user_address(end_addr) {
                         return Err(LoadError::UnsupportedArchitecture);
                     }
 

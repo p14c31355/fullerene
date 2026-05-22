@@ -28,7 +28,6 @@ pub use exceptions::{
 };
 pub use idt::init;
 pub use input::{MOUSE_STATE, keyboard_handler, mouse_handler, timer_handler};
-pub use petroleum::hardware::pic::disable_legacy_pic;
 pub use syscall::setup_syscall;
 
 /// Send End-Of-Interrupt to APIC

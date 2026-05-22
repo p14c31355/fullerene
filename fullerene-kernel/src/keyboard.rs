@@ -4,7 +4,7 @@
 //! The actual driver logic (scancode-to-ASCII conversion, modifier tracking,
 //! input buffering) lives in `nitrogen::ps2::keyboard`.
 
-pub use nitrogen::ps2::keyboard::*;
+use nitrogen::ps2::keyboard::*;
 
 /// Legacy alias for backwards compatibility.
 ///

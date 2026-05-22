@@ -467,10 +467,10 @@ impl nozzle::Terminal for LatticeTerminal {
     }
 
     fn read_byte(&mut self) -> Option<u8> {
-        crate::keyboard::read_char()
+        nitrogen::ps2::keyboard::read_char()
     }
 
     fn input_available(&self) -> bool {
-        crate::keyboard::input_available()
+        nitrogen::ps2::keyboard::input_available()
     }
 }

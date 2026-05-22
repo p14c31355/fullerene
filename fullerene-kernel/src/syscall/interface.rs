@@ -1,5 +1,4 @@
-// Re-export SyscallNumber from petroleum
-pub use petroleum::SyscallNumber;
+use petroleum::SyscallNumber;
 
 use alloc::string::String;
 use alloc::vec::Vec;

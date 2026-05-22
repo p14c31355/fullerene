@@ -10,7 +10,7 @@ use alloc::format;
 
 /// Initialize the shell subsystem (formerly keyboard init, etc.)
 pub fn init() {
-    crate::keyboard::init();
+    nitrogen::ps2::keyboard::init_keyboard();
     petroleum::serial::serial_log(format_args!("Shell/CLI initialized\n"));
 }
 
@@ -63,6 +63,6 @@ impl nozzle::Terminal for KernelTerminal {
     }
 
     fn input_available(&self) -> bool {
-        crate::keyboard::input_available()
+        nitrogen::ps2::keyboard::input_available()
     }
 }

@@ -350,8 +350,3 @@ pub fn _print(args: core::fmt::Arguments) {
     print_fmt(args);
 }
 
-// Re-export desktop drawing
-pub use petroleum::graphics::draw_os_desktop;
-
-// Re-export color conversion utility
-pub use petroleum::graphics::color::u32_to_rgb888;

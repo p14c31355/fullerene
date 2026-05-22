@@ -2,7 +2,7 @@
 //!
 //! Uses the declarative mapper for concise, safe initial mappings.
 
-use crate::memory_management::KERNEL_OFFSET;
+use petroleum::page_table::KERNEL_OFFSET;
 use petroleum::page_table::allocator::bitmap::BitmapFrameAllocator;
 use petroleum::page_table::allocator::traits::FrameAllocatorExt;
 use petroleum::page_table::kernel::mapper::{MapError, Mapper};

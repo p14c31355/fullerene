@@ -9,6 +9,3 @@
 
 pub mod device_manager;
 
-// Re-export hardware mechanism types from nitrogen.
-pub use nitrogen::port::{HardwarePorts, VgaRegisterWriter};
-pub use nitrogen::pci::{PciConfigSpace, PciDevice, PciScanner};
