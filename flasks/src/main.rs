@@ -300,6 +300,8 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
         "-d".to_string(), "int,cpu_reset,guest_errors,unimp".to_string(),
         "-D".to_string(), "qemu_log.txt".to_string(),
         "-monitor".to_string(), "none".to_string(),
+        "-device".to_string(), "usb-ehci,id=ehci".to_string(),
+        "-device".to_string(), "usb-mouse,bus=ehci.0".to_string(),
     ]);
 
     qemu_args.push("-drive".to_string());
