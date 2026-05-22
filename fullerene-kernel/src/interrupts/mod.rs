@@ -27,7 +27,7 @@ pub use exceptions::{
     virtualization_handler, vmm_communication_exception_handler,
 };
 pub use idt::init;
-pub use input::{KEYBOARD_QUEUE, MOUSE_STATE, keyboard_handler, mouse_handler, timer_handler};
+pub use input::{MOUSE_STATE, keyboard_handler, mouse_handler, timer_handler};
 pub use petroleum::hardware::pic::disable_legacy_pic;
 pub use syscall::setup_syscall;
 

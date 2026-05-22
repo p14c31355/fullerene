@@ -7,25 +7,6 @@ use petroleum::port_read_u8;
 use spin::Mutex;
 use x86_64::structures::idt::InterruptStackFrame;
 
-/// Keyboard queue structure
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct KeyboardQueue {
-    pub buffer: [u8; 256],
-    pub head: usize,
-    pub tail: usize,
-}
-
-impl KeyboardQueue {
-    pub const fn new() -> Self {
-        KeyboardQueue {
-            buffer: [0; 256],
-            head: 0,
-            tail: 0,
-        }
-    }
-}
-
 /// Accumulated mouse state (absolute position + current buttons).
 ///
 /// Updated by [`poll_mouse_state`] in `gui.rs` using deltas from the
@@ -50,7 +31,6 @@ impl MouseState {
 }
 
 /// Global input device state
-pub static KEYBOARD_QUEUE: Mutex<KeyboardQueue> = Mutex::new(KeyboardQueue::new());
 pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState::new());
 
 /// Macro to create input device interrupt handlers
@@ -66,22 +46,12 @@ macro_rules! define_input_interrupt_handler {
 }
 
 // Keyboard interrupt handler
+//
+// Reads one byte from the PS/2 data port and feeds it to the Nitrogen
+// PS/2 keyboard driver for scancode processing.  The driver handles
+// scancode-to-ASCII conversion, modifier keys, and input buffering.
 define_input_interrupt_handler!(keyboard_handler, 0x60, |scancode: u8| {
-    use petroleum::lock_and_modify;
-
-    // Enqueue scancode to keyboard queue
-    lock_and_modify!(KEYBOARD_QUEUE, queue, {
-        let tail = queue.tail;
-        queue.buffer[tail] = scancode;
-        queue.tail = (queue.tail + 1) % queue.buffer.len();
-        if queue.tail == queue.head {
-            // Queue full, drop oldest
-            queue.head = (queue.head + 1) % queue.buffer.len();
-        }
-    });
-
-    // Call keyboard driver to handle scancode
-    crate::keyboard::handle_keyboard_scancode(scancode);
+    nitrogen::ps2::keyboard::handle_keyboard_scancode(scancode);
 });
 
 // Mouse interrupt handler
