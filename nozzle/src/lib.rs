@@ -26,10 +26,10 @@ pub mod terminal_buffer;
 use alloc::string::String;
 
 pub use exec::{Command, CommandContext, NamedCommand};
-pub use terminal::Terminal;
 pub use line_editor::LineEditor;
 pub use parser::ParsedCommand;
 pub use prompt::Prompt;
+pub use terminal::Terminal;
 
 /// Default shell prompt
 pub const DEFAULT_PROMPT: &str = "nozzle> ";
@@ -99,8 +99,10 @@ impl<'a> Shell<'a> {
 
     fn show_welcome(&mut self) {
         if !self.welcome_shown {
-            self.terminal.write_str("Nozzle shell — interactive OS runtime\n");
-            self.terminal.write_str("Type 'help' for available commands.\n\n");
+            self.terminal
+                .write_str("Nozzle shell — interactive OS runtime\n");
+            self.terminal
+                .write_str("Type 'help' for available commands.\n\n");
             self.welcome_shown = true;
         }
     }
@@ -112,9 +114,9 @@ impl<'a> Shell<'a> {
 pub fn default_commands() -> &'static [&'static dyn Command] {
     use crate::builtins;
     define_commands!(
-        ("clear", "Clear the screen",        builtins::cmd_clear),
-        ("echo",  "Print text",              builtins::cmd_echo),
-        ("exit",  "Exit the shell",          builtins::cmd_exit),
+        ("clear", "Clear the screen", builtins::cmd_clear),
+        ("echo", "Print text", builtins::cmd_echo),
+        ("exit", "Exit the shell", builtins::cmd_exit),
         ("uname", "Show system information", builtins::cmd_uname),
     )
 }

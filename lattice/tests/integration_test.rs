@@ -68,10 +68,7 @@ fn test_full_pipeline() {
     Compositor::render(&scene, &mut target);
 
     let old_red_idx = (15 * W + 15) as usize;
-    assert_eq!(
-        target.pixels[old_red_idx], 0x808080,
-        "old red → background"
-    );
+    assert_eq!(target.pixels[old_red_idx], 0x808080, "old red → background");
 
     let new_red_idx = (100 * W + 200) as usize;
     assert_eq!(target.pixels[new_red_idx], 0x0000FF, "new red position");

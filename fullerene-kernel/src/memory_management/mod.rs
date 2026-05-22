@@ -159,7 +159,6 @@ pub fn map_user_page(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

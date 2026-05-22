@@ -24,11 +24,8 @@ use lattice::desktop::Desktop;
 use lattice::terminal_surface::{self, Cell as LatticeCell};
 use lattice::window::WindowId;
 use nozzle::terminal_buffer::TerminalBuffer;
-use resonance::{
-    Dispatcher, Event, EventHandler, EventQueue,
-    InputEvent, KeyCode, MouseButton,
-};
 use petroleum::graphics::Renderer;
+use resonance::{Dispatcher, Event, EventHandler, EventQueue, InputEvent, KeyCode, MouseButton};
 use spin::Mutex;
 
 // ── Constants ────────────────────────────────────────────────
@@ -81,7 +78,9 @@ pub fn init() {
     chrono.register_with_mode(
         Deadline::new(CURSOR_BLINK_INTERVAL),
         CURSOR_TIMER_ID,
-        TimerMode::Repeating { interval_ticks: CURSOR_BLINK_INTERVAL },
+        TimerMode::Repeating {
+            interval_ticks: CURSOR_BLINK_INTERVAL,
+        },
     );
 
     // Register event handlers
@@ -120,7 +119,8 @@ impl EventHandler for WmEventHandler {
             }
             Event::Input(InputEvent::MouseDown(_btn)) => {
                 // Trigger mouse_down at the current cursor position
-                gui.desktop.set_cursor(gui.desktop.cursor.x, gui.desktop.cursor.y);
+                gui.desktop
+                    .set_cursor(gui.desktop.cursor.x, gui.desktop.cursor.y);
                 gui.desktop.mouse_down();
                 true
             }
@@ -149,7 +149,8 @@ impl EventHandler for TerminalInputHandler {
             Event::Input(InputEvent::KeyDown(key)) => {
                 // Convert to ASCII and write to terminal buffer
                 if let Some(ascii) = keycode_to_ascii(*key) {
-                    gui.term_buf.put_str(core::str::from_utf8(&[ascii]).unwrap_or(""));
+                    gui.term_buf
+                        .put_str(core::str::from_utf8(&[ascii]).unwrap_or(""));
                     true
                 } else {
                     false
@@ -242,30 +243,37 @@ pub fn poll_mouse_state() {
     drop(mouse);
 
     // Always send mouse move (cursor position tracked by interrupt handler)
-    gui.event_queue.push(Event::Input(InputEvent::MouseMove { x: cx, y: cy }));
+    gui.event_queue
+        .push(Event::Input(InputEvent::MouseMove { x: cx, y: cy }));
 
     // Edge detection for button state changes
     let prev = gui.prev_mouse_buttons;
 
     // Left button (bit 0)
     if (buttons & 0x01) != 0 && (prev & 0x01) == 0 {
-        gui.event_queue.push(Event::Input(InputEvent::MouseDown(MouseButton::Left)));
+        gui.event_queue
+            .push(Event::Input(InputEvent::MouseDown(MouseButton::Left)));
     } else if (buttons & 0x01) == 0 && (prev & 0x01) != 0 {
-        gui.event_queue.push(Event::Input(InputEvent::MouseUp(MouseButton::Left)));
+        gui.event_queue
+            .push(Event::Input(InputEvent::MouseUp(MouseButton::Left)));
     }
 
     // Right button (bit 1)
     if (buttons & 0x02) != 0 && (prev & 0x02) == 0 {
-        gui.event_queue.push(Event::Input(InputEvent::MouseDown(MouseButton::Right)));
+        gui.event_queue
+            .push(Event::Input(InputEvent::MouseDown(MouseButton::Right)));
     } else if (buttons & 0x02) == 0 && (prev & 0x02) != 0 {
-        gui.event_queue.push(Event::Input(InputEvent::MouseUp(MouseButton::Right)));
+        gui.event_queue
+            .push(Event::Input(InputEvent::MouseUp(MouseButton::Right)));
     }
 
     // Middle button (bit 2)
     if (buttons & 0x04) != 0 && (prev & 0x04) == 0 {
-        gui.event_queue.push(Event::Input(InputEvent::MouseDown(MouseButton::Middle)));
+        gui.event_queue
+            .push(Event::Input(InputEvent::MouseDown(MouseButton::Middle)));
     } else if (buttons & 0x04) == 0 && (prev & 0x04) != 0 {
-        gui.event_queue.push(Event::Input(InputEvent::MouseUp(MouseButton::Middle)));
+        gui.event_queue
+            .push(Event::Input(InputEvent::MouseUp(MouseButton::Middle)));
     }
 
     gui.prev_mouse_buttons = buttons;
@@ -367,16 +375,27 @@ pub fn render() {
 
 /// Render the terminal buffer onto the terminal window's surface.
 fn render_terminal(gui: &mut GuiState) {
-    let window = match gui.desktop.wm.windows_mut().iter_mut().find(|w| w.id == gui.term_window) {
+    let window = match gui
+        .desktop
+        .wm
+        .windows_mut()
+        .iter_mut()
+        .find(|w| w.id == gui.term_window)
+    {
         Some(w) => w,
         None => return,
     };
 
-    let cells: Vec<LatticeCell> = gui.term_buf.cells().iter().map(|c| LatticeCell {
-        ch: c.ch,
-        fg: c.fg,
-        bg: c.bg,
-    }).collect();
+    let cells: Vec<LatticeCell> = gui
+        .term_buf
+        .cells()
+        .iter()
+        .map(|c| LatticeCell {
+            ch: c.ch,
+            fg: c.fg,
+            bg: c.bg,
+        })
+        .collect();
 
     terminal_surface::render(terminal_surface::RenderParams {
         surface: &mut window.surface,

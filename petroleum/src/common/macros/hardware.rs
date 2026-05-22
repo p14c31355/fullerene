@@ -73,8 +73,12 @@ macro_rules! init_serial_port {
         unsafe {
             use nitrogen::port::HardwarePorts;
 
-            $crate::write_serial_bytes(HardwarePorts::SERIAL_DATA_PORT, HardwarePorts::SERIAL_LINE_STATUS_PORT, b"DEBUG: init_serial_port start\n");
-            
+            $crate::write_serial_bytes(
+                HardwarePorts::SERIAL_DATA_PORT,
+                HardwarePorts::SERIAL_LINE_STATUS_PORT,
+                b"DEBUG: init_serial_port start\n",
+            );
+
             $line_ctrl_port.write($dlab);
             $data_port.write($divisor_low);
             $irq_enable_port.write($irq);
@@ -82,7 +86,11 @@ macro_rules! init_serial_port {
             $fifo_ctrl_port.write($fifo);
             $modem_ctrl_port.write($modem);
 
-            $crate::write_serial_bytes(HardwarePorts::SERIAL_DATA_PORT, HardwarePorts::SERIAL_LINE_STATUS_PORT, b"DEBUG: init_serial_port end\n");
+            $crate::write_serial_bytes(
+                HardwarePorts::SERIAL_DATA_PORT,
+                HardwarePorts::SERIAL_LINE_STATUS_PORT,
+                b"DEBUG: init_serial_port end\n",
+            );
         }
     }};
 }

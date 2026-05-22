@@ -44,8 +44,8 @@ impl TextStyle {
 impl Default for TextStyle {
     fn default() -> Self {
         Self {
-            fg: 0xCCCCCC,  // light gray
-            bg: 0x000000,  // black
+            fg: 0xCCCCCC, // light gray
+            bg: 0x000000, // black
         }
     }
 }
@@ -65,8 +65,8 @@ impl Default for Cell {
     fn default() -> Self {
         Self {
             ch: b' ',
-            fg: 0xCCCCCC,  // light gray
-            bg: 0x000000,  // black
+            fg: 0xCCCCCC, // light gray
+            bg: 0x000000, // black
         }
     }
 }
@@ -105,13 +105,27 @@ impl TerminalBuffer {
 
     // ── accessors ────────────────────────────────────────────
 
-    pub fn cols(&self) -> u32 { self.cols }
-    pub fn rows(&self) -> u32 { self.rows }
-    pub fn cursor_col(&self) -> u32 { self.cursor_col }
-    pub fn cursor_row(&self) -> u32 { self.cursor_row }
-    pub fn fg(&self) -> u32 { self.style.fg }
-    pub fn bg(&self) -> u32 { self.style.bg }
-    pub fn style(&self) -> TextStyle { self.style }
+    pub fn cols(&self) -> u32 {
+        self.cols
+    }
+    pub fn rows(&self) -> u32 {
+        self.rows
+    }
+    pub fn cursor_col(&self) -> u32 {
+        self.cursor_col
+    }
+    pub fn cursor_row(&self) -> u32 {
+        self.cursor_row
+    }
+    pub fn fg(&self) -> u32 {
+        self.style.fg
+    }
+    pub fn bg(&self) -> u32 {
+        self.style.bg
+    }
+    pub fn style(&self) -> TextStyle {
+        self.style
+    }
 
     /// Flat slice of all cells (row‑major).
     pub fn cells(&self) -> &[Cell] {
@@ -134,9 +148,15 @@ impl TerminalBuffer {
 
     // ── colour ───────────────────────────────────────────────
 
-    pub fn set_fg(&mut self, color: u32) { self.style.fg = color; }
-    pub fn set_bg(&mut self, color: u32) { self.style.bg = color; }
-    pub fn set_style(&mut self, style: TextStyle) { self.style = style; }
+    pub fn set_fg(&mut self, color: u32) {
+        self.style.fg = color;
+    }
+    pub fn set_bg(&mut self, color: u32) {
+        self.style.bg = color;
+    }
+    pub fn set_style(&mut self, style: TextStyle) {
+        self.style = style;
+    }
 
     // ── cursor ───────────────────────────────────────────────
 
@@ -151,7 +171,11 @@ impl TerminalBuffer {
     pub fn put_char(&mut self, ch: u8) {
         let idx = self.cursor_row as usize * self.cols as usize + self.cursor_col as usize;
         if idx < self.cells.len() {
-            self.cells[idx] = Cell { ch, fg: self.style.fg, bg: self.style.bg };
+            self.cells[idx] = Cell {
+                ch,
+                fg: self.style.fg,
+                bg: self.style.bg,
+            };
         }
         self.cursor_col += 1;
         if self.cursor_col >= self.cols {
@@ -164,10 +188,10 @@ impl TerminalBuffer {
         for &b in s.as_bytes() {
             match b {
                 b'\n' => self.newline(),
-                0x08  => self.backspace(),   // backspace
+                0x08 => self.backspace(), // backspace
                 b'\r' => self.cursor_col = 0,
-                ch    if ch >= 0x20 => self.put_char(ch),
-                _    => {}                    // ignore other control chars
+                ch if ch >= 0x20 => self.put_char(ch),
+                _ => {} // ignore other control chars
             }
         }
     }

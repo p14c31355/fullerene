@@ -23,7 +23,11 @@ impl PciAllocator {
         for device in devices {
             log::info!(
                 "[PCI-Allocator] Checking device {:#x}:{:#x} at {}:{}:{}",
-                device.vendor_id, device.device_id, device.bus, device.device, device.function
+                device.vendor_id,
+                device.device_id,
+                device.bus,
+                device.device,
+                device.function
             );
             // 1. Disable Memory Space access (Command bit 1)
             let cmd_offset = 4;
@@ -69,14 +73,18 @@ impl PciAllocator {
 
                         log::info!(
                             "[PCI-Allocator] Assigned BAR {} to {:#x} (size={:#x}, 64bit={})",
-                            bar_index, aligned_addr, bar.size, bar.is_64bit
+                            bar_index,
+                            aligned_addr,
+                            bar.size,
+                            bar.is_64bit
                         );
 
                         self.mmio_base = aligned_addr + bar.size as u64;
                     } else {
                         log::info!(
                             "[PCI-Allocator] BAR {} is already assigned at {:#x}",
-                            bar_index, bar.address
+                            bar_index,
+                            bar.address
                         );
                     }
                 }

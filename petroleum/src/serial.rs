@@ -57,7 +57,12 @@ impl<S: SerialPortOps> SerialPort<S> {
             self.ops.irq_enable_port(),
             self.ops.fifo_ctrl_port(),
             self.ops.modem_ctrl_port(),
-            0x80, 0x03, 0x00, 0x03, 0xC7, 0x0B
+            0x80,
+            0x03,
+            0x00,
+            0x03,
+            0xC7,
+            0x0B
         );
     }
 

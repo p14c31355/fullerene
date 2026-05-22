@@ -57,11 +57,11 @@ macro_rules! define_alloc_error_handler {
 // Fallback heap start address constant for when no suitable memory is found
 pub const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
 
-pub mod early;
 pub mod apic;
 pub mod assembly;
 pub mod bare_metal_graphics_detection;
 pub mod bare_metal_pci;
+pub mod early;
 #[macro_use]
 pub mod common;
 pub mod boot;
@@ -76,8 +76,8 @@ pub mod serial;
 pub mod transition;
 pub mod uefi_helpers;
 pub mod virtio;
-pub use nitrogen::ioapic::{IoApic, IoApicRedirectionEntry};
 pub use apic::{configure_io_apic_for_legacy_irqs, init_io_apic};
+pub use nitrogen::ioapic::{IoApic, IoApicRedirectionEntry};
 // Macros with #[macro_export] are automatically available at root, no need to re-export
 pub use common::logging::{SystemError, SystemResult};
 pub use common::memory::*;

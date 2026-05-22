@@ -83,10 +83,7 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
                     Ok(())
                 }
                 Err(e) => {
-                    petroleum::serial::serial_log(format_args!(
-                        "PS/2 mouse init failed: {}\n",
-                        e
-                    ));
+                    petroleum::serial::serial_log(format_args!("PS/2 mouse init failed: {}\n", e));
                     // Non-fatal: continue without mouse
                     Ok(())
                 }

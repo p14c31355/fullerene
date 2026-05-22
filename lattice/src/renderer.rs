@@ -1,9 +1,9 @@
 extern crate alloc;
 
-use alloc::vec::Vec;
-use alloc::format;
-use core::iter;
 use crate::compositor::RenderTarget;
+use alloc::format;
+use alloc::vec::Vec;
+use core::iter;
 
 /// A software‑only framebuffer that stores pixels in a `Vec<u32>`.
 ///

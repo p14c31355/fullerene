@@ -92,9 +92,9 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compositor::{Compositor, RenderTarget};
     use alloc::vec::Vec;
     use core::iter;
-    use crate::compositor::{Compositor, RenderTarget};
 
     struct TestTarget {
         pixels: Vec<u32>,
@@ -103,13 +103,21 @@ mod tests {
     }
 
     impl RenderTarget for TestTarget {
-        fn buffer(&mut self) -> &mut [u32] { &mut self.pixels }
-        fn dimensions(&self) -> (u32, u32) { (self.w, self.h) }
+        fn buffer(&mut self) -> &mut [u32] {
+            &mut self.pixels
+        }
+        fn dimensions(&self) -> (u32, u32) {
+            (self.w, self.h)
+        }
     }
 
     impl TestTarget {
         fn new(w: u32, h: u32) -> Self {
-            Self { pixels: iter::repeat(0u32).take((w * h) as usize).collect(), w, h }
+            Self {
+                pixels: iter::repeat(0u32).take((w * h) as usize).collect(),
+                w,
+                h,
+            }
         }
     }
 

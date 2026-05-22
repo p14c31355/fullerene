@@ -45,7 +45,14 @@ pub struct RenderParams<'a> {
 /// Each cell occupies `font::GLYPH_WIDTH × font::GLYPH_HEIGHT` pixels.
 /// The surface is filled cell‑by‑cell from the top‑left.
 pub fn render(params: RenderParams<'_>) {
-    let RenderParams { surface, cells, cols, cursor_col, cursor_row, cursor_visible } = params;
+    let RenderParams {
+        surface,
+        cells,
+        cols,
+        cursor_col,
+        cursor_row,
+        cursor_visible,
+    } = params;
 
     let rows = if cols > 0 {
         (cells.len() as u32).div_ceil(cols)
@@ -59,7 +66,9 @@ pub fn render(params: RenderParams<'_>) {
     for (i, cell) in cells.iter().enumerate() {
         let col = (i as u32) % cols;
         let row = (i as u32) / cols;
-        if row >= rows { break; }
+        if row >= rows {
+            break;
+        }
 
         let dx = col * glyph_w;
         let dy = row * glyph_h;

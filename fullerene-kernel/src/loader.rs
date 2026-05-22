@@ -27,8 +27,7 @@ impl CrxSwitchGuard {
     /// SAFETY: This function performs an unsafe operation to switch the page table.
     /// It is safe because we always restore the original CR3 in the Drop implementation.
     unsafe fn new(page_table: &ProcessPageTable) -> Self {
-        let (original_cr3, original_cr3_flags) =
-            x86_64::registers::control::Cr3::read();
+        let (original_cr3, original_cr3_flags) = x86_64::registers::control::Cr3::read();
         let _ = crate::memory_management::switch_to_page_table(page_table);
         Self {
             original_cr3,
@@ -40,10 +39,7 @@ impl CrxSwitchGuard {
 impl Drop for CrxSwitchGuard {
     fn drop(&mut self) {
         unsafe {
-            x86_64::registers::control::Cr3::write(
-                self.original_cr3,
-                self.original_cr3_flags,
-            );
+            x86_64::registers::control::Cr3::write(self.original_cr3, self.original_cr3_flags);
         }
     }
 }
@@ -97,7 +93,9 @@ pub fn load_program(
                     let start_addr = x86_64::VirtAddr::new(vaddr);
                     let end_addr = x86_64::VirtAddr::new(vaddr + mem_size as u64 - 1);
 
-                    if !petroleum::is_user_address(start_addr) || !petroleum::is_user_address(end_addr) {
+                    if !petroleum::is_user_address(start_addr)
+                        || !petroleum::is_user_address(end_addr)
+                    {
                         return Err(LoadError::UnsupportedArchitecture);
                     }
 

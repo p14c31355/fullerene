@@ -1,6 +1,6 @@
 use crate::graphics::backend::FramebufferBackend;
-use crate::graphics::framebuffer::FramebufferWriter;
 use crate::graphics::color::FramebufferInfo;
+use crate::graphics::framebuffer::FramebufferWriter;
 
 pub struct GopFramebuffer {
     info: FramebufferInfo,
@@ -15,15 +15,19 @@ impl GopFramebuffer {
 }
 
 impl FramebufferBackend for GopFramebuffer {
-    fn width(&self) -> usize { self.info.width as usize }
-    fn height(&self) -> usize { self.info.height as usize }
-    fn pitch(&self) -> usize { self.info.stride as usize }
-    
+    fn width(&self) -> usize {
+        self.info.width as usize
+    }
+    fn height(&self) -> usize {
+        self.info.height as usize
+    }
+    fn pitch(&self) -> usize {
+        self.info.stride as usize
+    }
+
     fn buffer_mut(&mut self) -> &mut [u8] {
         let total_size = (self.info.stride as usize) * (self.info.height as usize) * 4;
-        unsafe {
-            core::slice::from_raw_parts_mut(self.info.address as *mut u8, total_size)
-        }
+        unsafe { core::slice::from_raw_parts_mut(self.info.address as *mut u8, total_size) }
     }
 
     fn flush(&mut self) {

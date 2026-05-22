@@ -196,7 +196,8 @@ pub fn exit_boot_services_and_jump(
                 let _ = (bs.free_pages)(map_phys_addr, alloc_pages); // Cleanup
                 petroleum::println!(
                     "Error: Memory map size {} exceeds fixed buffer capacity {}",
-                    map_size, map_buffer_size
+                    map_size,
+                    map_buffer_size
                 );
                 return Err(BellowsError::InvalidState(
                     "Memory map too large for buffer.",

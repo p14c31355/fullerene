@@ -65,11 +65,7 @@ macro_rules! define_commands {
 
 /// Dispatch a command line against a command list.
 /// Returns `true` to continue, `false` to exit.
-pub fn dispatch(
-    commands: &[&dyn Command],
-    terminal: &mut dyn Terminal,
-    line: &str,
-) -> bool {
+pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return true;
@@ -90,7 +86,10 @@ pub fn dispatch(
 
     for &cmd in commands {
         if cmd.name() == cmd_name {
-            let mut ctx = CommandContext { terminal, args: &args };
+            let mut ctx = CommandContext {
+                terminal,
+                args: &args,
+            };
             return cmd.execute(&mut ctx);
         }
     }

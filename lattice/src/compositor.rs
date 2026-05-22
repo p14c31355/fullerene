@@ -81,7 +81,8 @@ impl Compositor {
 
             // Blend: only copy non‑transparent (black = outline is fine, white = fill)
             for (s, d) in src_row.iter().zip(dst_row.iter_mut()) {
-                if *s != 0 {  // non‑transparent pixel
+                if *s != 0 {
+                    // non‑transparent pixel
                     *d = *s;
                 }
             }
@@ -95,8 +96,12 @@ impl Compositor {
         // Source (surface) bounds
         let src_x_start = 0i32.max(-window.x);
         let src_y_start = 0i32.max(-window.y);
-        let src_x_end = (src.width() as i64).min((fb_width as i64).saturating_sub(window.x as i64)).max(0) as i32;
-        let src_y_end = (src.height() as i64).min((fb_height as i64).saturating_sub(window.y as i64)).max(0) as i32;
+        let src_x_end = (src.width() as i64)
+            .min((fb_width as i64).saturating_sub(window.x as i64))
+            .max(0) as i32;
+        let src_y_end = (src.height() as i64)
+            .min((fb_height as i64).saturating_sub(window.y as i64))
+            .max(0) as i32;
 
         if src_x_start >= src_x_end || src_y_start >= src_y_end {
             return; // completely clipped away

@@ -2,8 +2,8 @@
 //!
 //! This module provides APIC initialization and management functions.
 
-use nitrogen::pic::disable_legacy_pic;
 use nitrogen::apic::{ApicFlags, ApicOffsets, IO_APIC_BASE};
+use nitrogen::pic::disable_legacy_pic;
 use petroleum::common::utils::reset_mutex_lock;
 use petroleum::init_io_apic;
 use spin::Mutex;

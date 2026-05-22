@@ -2,14 +2,14 @@
 
 extern crate alloc;
 
-mod event;
-mod queue;
-mod handler;
-mod source;
 mod dispatcher;
+mod event;
+mod handler;
+mod queue;
+mod source;
 
-pub use event::*;
-pub use queue::*;
-pub use handler::*;
-pub use source::*;
 pub use dispatcher::*;
+pub use event::*;
+pub use handler::*;
+pub use queue::*;
+pub use source::*;

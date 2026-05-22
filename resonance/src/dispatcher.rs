@@ -1,8 +1,8 @@
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use crate::event::Event;
 use crate::handler::EventHandler;
 use crate::queue::EventQueue;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 // ---------------------------------------------------------------------------
 // Dispatcher – routes events from the queue to registered handlers
@@ -92,7 +92,6 @@ impl Dispatcher {
             self.dispatch(&event);
         }
     }
-
 }
 
 impl Default for Dispatcher {
@@ -189,7 +188,9 @@ mod tests {
 
         impl ConsumingHandler {
             fn new() -> Self {
-                Self { count: Cell::new(0) }
+                Self {
+                    count: Cell::new(0),
+                }
             }
         }
 

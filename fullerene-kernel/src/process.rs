@@ -685,7 +685,6 @@ pub fn test_process_main() {
     // Yield twice for demonstration
     petroleum::sleep();
     petroleum::sleep();
-// Exit process
+    // Exit process
     petroleum::exit(0);
 }
-

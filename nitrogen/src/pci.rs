@@ -78,10 +78,8 @@ impl PciConfigSpace {
 
     pub fn read_config_byte(bus: u8, device: u8, function: u8, offset: u8) -> u8 {
         let address = Self::build_config_address(bus, device, function, offset);
-        let mut addr_writer =
-            PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_ADDRESS);
-        let mut data_reader =
-            PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_DATA);
+        let mut addr_writer = PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_ADDRESS);
+        let mut data_reader = PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_DATA);
 
         addr_writer.write_safe(address);
         let dword: u32 = data_reader.read_safe();
@@ -96,10 +94,8 @@ impl PciConfigSpace {
 
     pub fn read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
         let address = Self::build_config_address(bus, device, function, offset);
-        let mut addr_writer =
-            PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_ADDRESS);
-        let mut data_reader =
-            PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_DATA);
+        let mut addr_writer = PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_ADDRESS);
+        let mut data_reader = PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_DATA);
 
         addr_writer.write_safe(address);
         data_reader.read_safe()
@@ -132,7 +128,13 @@ impl PciConfigSpace {
         let shift = if offset % 4 < 2 { 0 } else { 16 };
         let existing = Self::read_config_dword(bus, device, function, aligned);
         let masked = existing & !(0xFFFFu32 << shift);
-        Self::write_config_dword_raw(bus, device, function, aligned, masked | ((value as u32) << shift));
+        Self::write_config_dword_raw(
+            bus,
+            device,
+            function,
+            aligned,
+            masked | ((value as u32) << shift),
+        );
     }
 
     /// Write a raw DWORD to PCI configuration space.
@@ -141,10 +143,8 @@ impl PciConfigSpace {
     /// when you need to update the cached header fields as well.
     pub fn write_config_dword_raw(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
         let address = Self::build_config_address(bus, device, function, offset);
-        let mut addr_writer =
-            PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_ADDRESS);
-        let mut data_writer =
-            PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_DATA);
+        let mut addr_writer = PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_ADDRESS);
+        let mut data_writer = PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_DATA);
 
         addr_writer.write_safe(address);
         data_writer.write_safe(value);
@@ -178,9 +178,7 @@ impl PciDevice {
     /// and before performing MMIO or DMA operations.
     pub fn enable_memory_access(&self) {
         let cmd = PciConfigSpace::read_config_word(self.bus, self.device, self.function, 4);
-        PciConfigSpace::write_config_word_raw(
-            self.bus, self.device, self.function, 4, cmd | 0x06,
-        );
+        PciConfigSpace::write_config_word_raw(self.bus, self.device, self.function, 4, cmd | 0x06);
     }
 
     pub fn read_bar(&self, bar_index: u8) -> Option<u64> {
@@ -232,8 +230,7 @@ impl PciDevice {
             PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
 
         // Disable memory and I/O decoding while probing to avoid address conflicts.
-        let cmd =
-            PciConfigSpace::read_config_word(self.bus, self.device, self.function, 4);
+        let cmd = PciConfigSpace::read_config_word(self.bus, self.device, self.function, 4);
         PciConfigSpace::write_config_word_raw(self.bus, self.device, self.function, 4, cmd & !0x3);
 
         PciConfigSpace::write_config_dword_raw(

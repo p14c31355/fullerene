@@ -1,5 +1,5 @@
-use alloc::collections::VecDeque;
 use crate::event::Event;
+use alloc::collections::VecDeque;
 
 // ---------------------------------------------------------------------------
 // EventQueue – single-queue v0 implementation

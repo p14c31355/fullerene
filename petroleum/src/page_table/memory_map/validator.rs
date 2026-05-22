@@ -85,7 +85,10 @@ impl MemoryDescriptorValidator for EfiMemoryDescriptor {
 /// Helper function to validate memory descriptor properties common to both descriptor types
 pub(crate) fn validate_descriptor_common(mem_type: u32, phys: u64, pages: u64) -> bool {
     if mem_type > 15 {
-        crate::debug_log_no_alloc!("Invalid memory type (out of range): 0x{}", mem_type as usize);
+        crate::debug_log_no_alloc!(
+            "Invalid memory type (out of range): 0x{}",
+            mem_type as usize
+        );
         return false;
     }
     // debug_log_validate_macro is not defined in this scope, it was probably a local macro or similar

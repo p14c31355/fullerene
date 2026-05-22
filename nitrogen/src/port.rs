@@ -65,8 +65,7 @@ macro_rules! port_write {
 #[macro_export]
 macro_rules! port_read_u8 {
     ($port_addr:expr) => {{
-        let mut reader: $crate::port::PortWriter<u8> =
-            $crate::port::PortWriter::new($port_addr);
+        let mut reader: $crate::port::PortWriter<u8> = $crate::port::PortWriter::new($port_addr);
         reader.read_safe()
     }};
 }

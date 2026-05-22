@@ -263,9 +263,7 @@ mod tests {
 
     impl FakeClock {
         pub fn new() -> Self {
-            Self {
-                now: Cell::new(0),
-            }
+            Self { now: Cell::new(0) }
         }
 
         #[allow(dead_code)]
@@ -401,7 +399,9 @@ mod tests {
         cl.register_with_mode(
             Deadline::new(10),
             TimerId(1),
-            TimerMode::Repeating { interval_ticks: interval },
+            TimerMode::Repeating {
+                interval_ticks: interval,
+            },
         );
         assert_eq!(cl.len(), 1);
 

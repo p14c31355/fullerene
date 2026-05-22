@@ -20,10 +20,10 @@
 
 extern crate alloc;
 
-pub mod port;
-pub mod pci;
-pub mod pic;
 pub mod apic;
 pub mod ioapic;
+pub mod pci;
+pub mod pic;
+pub mod port;
 pub mod ps2;
 pub mod virtio;

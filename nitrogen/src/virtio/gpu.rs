@@ -8,10 +8,10 @@
 //! Design principle: Nitrogen provides the register-level programming; the
 //! caller owns all memory management policy.
 
-use crate::virtio::cap::{
-    get_virtio_caps, VIRTIO_PCI_CAP_COMMON_CFG, VIRTIO_PCI_CAP_NOTIFY_CFG, VIRTIO_PCI_CAP_PCI_CFG,
-};
 use crate::pci::PciDevice;
+use crate::virtio::cap::{
+    VIRTIO_PCI_CAP_COMMON_CFG, VIRTIO_PCI_CAP_NOTIFY_CFG, VIRTIO_PCI_CAP_PCI_CFG, get_virtio_caps,
+};
 
 pub const VIRTIO_STATUS_ACKNOWLEDGE: u32 = 1;
 pub const VIRTIO_STATUS_DRIVER: u32 = 2;
@@ -430,8 +430,12 @@ impl VirtioGpu {
     ) -> Option<Self> {
         let caps = get_virtio_caps(&device);
         let type5_cap = caps.iter().find(|c| c.cfg_type == VIRTIO_PCI_CAP_PCI_CFG)?;
-        let common_cap = caps.iter().find(|c| c.cfg_type == VIRTIO_PCI_CAP_COMMON_CFG)?;
-        let notify_cap = caps.iter().find(|c| c.cfg_type == VIRTIO_PCI_CAP_NOTIFY_CFG)?;
+        let common_cap = caps
+            .iter()
+            .find(|c| c.cfg_type == VIRTIO_PCI_CAP_COMMON_CFG)?;
+        let notify_cap = caps
+            .iter()
+            .find(|c| c.cfg_type == VIRTIO_PCI_CAP_NOTIFY_CFG)?;
 
         // common_virt_absolute = common_virt_base + common_cap.offset
         let common_virt_absolute =
@@ -484,9 +488,7 @@ impl VirtioGpu {
 
         // Write the FEATURES_OK bit
         self.set_status(
-            (VIRTIO_STATUS_ACKNOWLEDGE
-                | VIRTIO_STATUS_DRIVER
-                | VIRTIO_STATUS_FEATURES_OK) as u8,
+            (VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK) as u8,
         );
 
         // The device must report back that features were accepted.
@@ -532,16 +534,8 @@ impl VirtioGpu {
                 0,
                 QUEUE_SIZE as usize * core::mem::size_of::<VringDesc>(),
             );
-            core::ptr::write_bytes(
-                avail as *mut u8,
-                0,
-                core::mem::size_of::<VringAvail>(),
-            );
-            core::ptr::write_bytes(
-                used as *mut u8,
-                0,
-                core::mem::size_of::<VringUsed>(),
-            );
+            core::ptr::write_bytes(avail as *mut u8, 0, core::mem::size_of::<VringAvail>());
+            core::ptr::write_bytes(used as *mut u8, 0, core::mem::size_of::<VringUsed>());
         }
 
         self.set_queue_select(idx as u16);
@@ -827,13 +821,7 @@ impl VirtioGpu {
         self.wait_used(before);
     }
 
-    pub fn init_display(
-        &mut self,
-        w: u32,
-        h: u32,
-        fb: u64,
-        sz: u32,
-    ) -> Result<(), VirtioGpuError> {
+    pub fn init_display(&mut self, w: u32, h: u32, fb: u64, sz: u32) -> Result<(), VirtioGpuError> {
         if self.desc_table.is_null() {
             log::info!("[VirtIO-GPU] ERROR: Queue not set up!");
             return Err(VirtioGpuError::CommandFailed);

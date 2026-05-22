@@ -20,9 +20,9 @@
 //! The bootloader passes a `FullereneFramebufferConfig` to the kernel,
 //! and the kernel creates its own renderer from that config.
 
+use crate::common::EfiGraphicsPixelFormat;
 use crate::common::uefi::FullereneFramebufferConfig;
 use crate::graphics::color::{ColorScheme, FramebufferInfo};
-use crate::common::EfiGraphicsPixelFormat;
 
 /// Result of early framebuffer detection.
 pub struct EarlyFramebufferInfo {
@@ -56,9 +56,7 @@ pub unsafe fn detect_uefi_gop(
             Some(config)
         }
         None => {
-            crate::serial::_print(format_args!(
-                "[early::fb] GOP detection failed\n"
-            ));
+            crate::serial::_print(format_args!("[early::fb] GOP detection failed\n"));
             None
         }
     }
@@ -123,22 +121,15 @@ pub fn detect_qemu_std_vga() -> Option<FramebufferInfo> {
 // world switch.
 
 pub use crate::graphics::setup::{
-    setup_vga_mode_13h,
-    setup_cirrus_vga_mode,
-    detect_and_init_vga_graphics,
-    detect_cirrus_vga,
-    init_vga_graphics,
-    init_vga_text_mode,
+    detect_and_init_vga_graphics, detect_cirrus_vga, init_vga_graphics, init_vga_text_mode,
+    setup_cirrus_vga_mode, setup_vga_mode_13h,
 };
 
 // ── Re-exports from crate::boot ──────────────────────────────────────
 // Boot-phase framebuffer console creation. After the world switch,
 // the kernel should use its own `graphics::PRIMARY_RENDERER`.
 
-pub use crate::boot::{
-    create_primary_console,
-    initialize_vga_fallback,
-};
+pub use crate::boot::{create_primary_console, initialize_vga_fallback};
 
 /// Initialise the framebuffer using whichever method is available.
 ///
@@ -171,7 +162,8 @@ pub unsafe fn init_early_framebuffer(
             address: qemu_info.address,
             width: qemu_info.width,
             height: qemu_info.height,
-            pixel_format: qemu_info.pixel_format
+            pixel_format: qemu_info
+                .pixel_format
                 .unwrap_or(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor),
             bpp: 32,
             stride: qemu_info.stride,

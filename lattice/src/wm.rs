@@ -1,7 +1,7 @@
 extern crate alloc;
 
-use alloc::vec::Vec;
 use crate::window::{Window, WindowId};
+use alloc::vec::Vec;
 
 /// Drag state machine.
 ///
@@ -74,7 +74,14 @@ impl WindowManager {
     // ── window lifecycle ─────────────────────────────────────
 
     /// Create a new window and push it to the top of the z‑order.
-    pub fn create_window(&mut self, x: i32, y: i32, width: u32, height: u32, color: u32) -> WindowId {
+    pub fn create_window(
+        &mut self,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        color: u32,
+    ) -> WindowId {
         let id = WindowId(self.next_id);
         self.next_id += 1;
 
@@ -154,7 +161,11 @@ impl WindowManager {
     /// Called on mouse move.
     pub fn on_mouse_move(&mut self, x: i32, y: i32) {
         match self.drag {
-            DragState::Moving { window, offset_x, offset_y } => {
+            DragState::Moving {
+                window,
+                offset_x,
+                offset_y,
+            } => {
                 if let Some(w) = self.windows.iter_mut().find(|w| w.id == window) {
                     w.x = x - offset_x;
                     w.y = y - offset_y;
