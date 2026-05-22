@@ -1,6 +1,6 @@
 //! PCI - re-export from nitrogen + policy-level PciAllocator.
 
-pub use nitrogen::pci::*;
+use nitrogen::pci::*;
 
 /// Policy-level PCI BAR allocator.
 ///

@@ -76,7 +76,8 @@ pub mod serial;
 pub mod transition;
 pub mod uefi_helpers;
 pub mod virtio;
-pub use apic::{IoApic, IoApicRedirectionEntry, configure_io_apic_for_legacy_irqs, init_io_apic};
+pub use nitrogen::ioapic::{IoApic, IoApicRedirectionEntry};
+pub use apic::{configure_io_apic_for_legacy_irqs, init_io_apic};
 // Macros with #[macro_export] are automatically available at root, no need to re-export
 pub use common::logging::{SystemError, SystemResult};
 pub use common::memory::*;
@@ -86,7 +87,7 @@ pub use common::{check_memory_initialized, set_memory_initialized};
 // These are the canonical implementations — do NOT re-define them here.
 pub use graphics::uefi::*;
 pub use graphics::*;
-pub use hardware::ports::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
+pub use nitrogen::port::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 
 // pub use serial::SERIAL_PORT_WRITER as SERIAL1; // Refactored
 // pub use serial::{COM1_DATA_PORT, COM1_STATUS_PORT}; // Refactored

@@ -71,7 +71,7 @@ macro_rules! volatile_ops {
 macro_rules! init_serial_port {
     ($line_ctrl_port:expr, $data_port:expr, $irq_enable_port:expr, $fifo_ctrl_port:expr, $modem_ctrl_port:expr, $dlab:expr, $divisor_low:expr, $irq:expr, $line_ctrl:expr, $fifo:expr, $modem:expr) => {{
         unsafe {
-            use $crate::hardware::ports::HardwarePorts;
+            use nitrogen::port::HardwarePorts;
 
             $crate::write_serial_bytes(HardwarePorts::SERIAL_DATA_PORT, HardwarePorts::SERIAL_LINE_STATUS_PORT, b"DEBUG: init_serial_port start\n");
             

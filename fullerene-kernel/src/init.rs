@@ -61,7 +61,7 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     let common_steps = [
         petroleum::init_step!("PCI BARs", || {
             petroleum::serial::serial_log(format_args!("Initializing PCI BARs...\n"));
-            let mut scanner = petroleum::hardware::pci::PciScanner::new();
+            let mut scanner = nitrogen::pci::PciScanner::new();
             if scanner.scan_all_buses().is_ok() {
                 let mut allocator = petroleum::hardware::pci::PciAllocator::new(0x40000000);
                 allocator.assign_bars(scanner.get_devices());

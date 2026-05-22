@@ -6,7 +6,7 @@
 //!
 //! NOTE: Eventually these should move to `fullerene-kernel` or the caller.
 
-pub use nitrogen::ioapic::{IoApic, IoApicRedirectionEntry};
+use nitrogen::ioapic::{IoApic, IoApicRedirectionEntry};
 
 /// Configure I/O APIC for legacy IRQs
 pub fn configure_io_apic_for_legacy_irqs(io_apic: &mut IoApic, local_apic_id: u8) {

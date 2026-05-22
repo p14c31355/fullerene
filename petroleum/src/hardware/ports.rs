@@ -4,13 +4,11 @@
 //! compatibility with existing petroleum consumers.
 
 // Re-export types from nitrogen (NOT macros – those are defined locally)
-pub use nitrogen::port::{
+use nitrogen::port::{
     HardwarePorts, MsrHelper, PortOperations, PortSequenceWriter, PortWriter, RegisterConfig,
     VgaPortOps, VgaRegisterWriter, write_vga_attribute_register,
 };
 
-pub use nitrogen::port::convenience as convenience;
-pub use nitrogen::port::pci as pci_mod;
 
 // ── Macros ───────────────────────────────────────────────────────────
 // These are defined locally so that `$crate` resolves to `petroleum`
@@ -20,7 +18,7 @@ pub use nitrogen::port::pci as pci_mod;
 #[macro_export]
 macro_rules! port_write {
     ($port_addr:expr, $value:expr) => {{
-        let mut writer = $crate::hardware::ports::PortWriter::new($port_addr);
+        let mut writer = nitrogen::port::PortWriter::new($port_addr);
         writer.write_safe($value);
     }};
 }
@@ -29,8 +27,8 @@ macro_rules! port_write {
 #[macro_export]
 macro_rules! port_read_u8 {
     ($port_addr:expr) => {{
-        let mut reader: $crate::hardware::ports::PortWriter<u8> =
-            $crate::hardware::ports::PortWriter::new($port_addr);
+        let mut reader: nitrogen::port::PortWriter<u8> =
+            nitrogen::port::PortWriter::new($port_addr);
         reader.read_safe()
     }};
 }
@@ -47,7 +45,7 @@ macro_rules! port_read {
 macro_rules! write_port_sequence {
     ($($config:expr, $index_port:expr, $data_port:expr);*$(;)?) => {{
         $(
-            let mut vga_ports = $crate::hardware::ports::VgaPortOps::new($index_port, $data_port);
+            let mut vga_ports = nitrogen::port::VgaPortOps::new($index_port, $data_port);
             vga_ports.write_sequence($config);
         )*
     }};
@@ -57,7 +55,7 @@ macro_rules! write_port_sequence {
 #[macro_export]
 macro_rules! write_vga_register {
     ($index_port:expr, $data_port:expr, $index:expr, $data:expr) => {{
-        let mut vga_ports = $crate::hardware::ports::VgaPortOps::new($index_port, $data_port);
+        let mut vga_ports = nitrogen::port::VgaPortOps::new($index_port, $data_port);
         vga_ports.write_register($index, $data);
     }};
 }

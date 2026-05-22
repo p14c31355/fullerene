@@ -6,8 +6,3 @@
 pub mod ports;
 pub mod pci;
 pub mod pic;
-
-pub use self::ports::*;
-pub use self::pci::*;
-pub use self::pic::*;
-pub use nitrogen::apic::{ApicFlags, ApicOffsets, IO_APIC_BASE};

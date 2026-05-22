@@ -1,5 +1,5 @@
 use crate::graphics::backend::FramebufferBackend;
-use crate::virtio::gpu::VirtioGpu;
+use nitrogen::virtio::gpu::VirtioGpu;
 use alloc::boxed::Box;
 
 pub struct VirtioGpuFramebuffer {

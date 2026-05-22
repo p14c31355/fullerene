@@ -3,7 +3,7 @@ use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
 use petroleum::graphics::text::VgaBuffer;
 use petroleum::graphics::{Console, Renderer, UefiFramebufferWriter};
-use petroleum::virtio::gpu::VirtioGpu;
+use nitrogen::virtio::gpu::VirtioGpu;
 use spin::Mutex;
 
 /// Global primary framebuffer renderer (also used as text console).
@@ -36,7 +36,7 @@ pub fn init_graphics() {
     }
 
     if let Some(ref gpu_device) = {
-        let mut scanner = petroleum::hardware::pci::PciScanner::new();
+        let mut scanner = nitrogen::pci::PciScanner::new();
         let _ = scanner.scan_all_buses();
         scanner
             .get_devices()
@@ -82,7 +82,7 @@ pub fn init_graphics() {
         petroleum::serial::serial_log(format_args!("[graphics] Dumping BAR registers for device at {}:{}\n", gpu_device.bus, gpu_device.device));
         for i in 0..6 {
             let offset = 0x10 + (i * 4);
-            let val = petroleum::hardware::pci::PciConfigSpace::read_config_dword(gpu_device.bus, gpu_device.device, gpu_device.function, offset as u8);
+            let val = nitrogen::pci::PciConfigSpace::read_config_dword(gpu_device.bus, gpu_device.device, gpu_device.function, offset as u8);
             petroleum::serial::serial_log(format_args!("[graphics] BAR{} (offset {:#x}) = {:#x}\n", i, offset, val));
         }
 
@@ -96,7 +96,7 @@ pub fn init_graphics() {
         let notify_virt = 0xffff800070000000u64 as usize;
 
         // Enable memory access AND bus mastering
-        let mut config = petroleum::hardware::pci::PciConfigSpace::read_from_device(gpu_device.bus, gpu_device.device, gpu_device.function).expect("Failed to read config");
+        let mut config = nitrogen::pci::PciConfigSpace::read_from_device(gpu_device.bus, gpu_device.device, gpu_device.function).expect("Failed to read config");
         let cmd = config.command;
         let stat = config.status;
         petroleum::serial::serial_log(format_args!("[graphics] Pre-enable: Command={:#x}, Status={:#x}\n", cmd, stat));
@@ -105,7 +105,7 @@ pub fn init_graphics() {
         config.command |= 0x0004;
         let val = (config.status as u32) << 16 | (config.command as u32);
         
-        petroleum::hardware::pci::PciConfigSpace::write_config_dword(
+        nitrogen::pci::PciConfigSpace::write_config_dword(
             &mut config,
             gpu_device.bus, 
             gpu_device.device, 
@@ -113,7 +113,7 @@ pub fn init_graphics() {
             0x04, 
             val
         );
-        let config_after = petroleum::hardware::pci::PciConfigSpace::read_from_device(gpu_device.bus, gpu_device.device, gpu_device.function).expect("Failed to read config");
+        let config_after = nitrogen::pci::PciConfigSpace::read_from_device(gpu_device.bus, gpu_device.device, gpu_device.function).expect("Failed to read config");
         let cmd_after = config_after.command;
         let stat_after = config_after.status;
         petroleum::serial::serial_log(format_args!("[graphics] Post-enable: Command={:#x}, Status={:#x}\n", cmd_after, stat_after));
@@ -154,7 +154,7 @@ pub fn init_graphics() {
         let resp_buf = (resp_buf_phys + off) as *mut u8;
         unsafe { core::ptr::write_bytes(resp_buf, 0, 4096); }
 
-        let gpu_result = petroleum::virtio::gpu::init_virtio_gpu(
+        let gpu_result = nitrogen::virtio::gpu::init_virtio_gpu(
             common_virt_ptr, notify_virt_ptr, gpu_device.clone(), common_bar,
             cmd_buf, cmd_buf_phys, 4096,
             resp_buf, resp_buf_phys, 4096,
@@ -174,18 +174,18 @@ pub fn init_graphics() {
                 ((phys + off) as *mut u8, phys)
             };
 
-            let (desc_virt, desc_phys) = alloc_qmem(1024 * core::mem::size_of::<petroleum::virtio::gpu::VringDesc>());
-            let (avail_virt, avail_phys) = alloc_qmem(core::mem::size_of::<petroleum::virtio::gpu::VringAvail>());
-            let (used_virt, used_phys)   = alloc_qmem(core::mem::size_of::<petroleum::virtio::gpu::VringUsed>());
+            let (desc_virt, desc_phys) = alloc_qmem(1024 * core::mem::size_of::<nitrogen::virtio::gpu::VringDesc>());
+            let (avail_virt, avail_phys) = alloc_qmem(core::mem::size_of::<nitrogen::virtio::gpu::VringAvail>());
+            let (used_virt, used_phys)   = alloc_qmem(core::mem::size_of::<nitrogen::virtio::gpu::VringUsed>());
 
             petroleum::serial::serial_log(format_args!(
                 "[graphics] Allocated queues: desc_p={:#x}, avail_p={:#x}, used_p={:#x}\n",
                 desc_phys, avail_phys, used_phys
             ));
 
-            let desc = desc_virt as *mut petroleum::virtio::gpu::VringDesc;
-            let avail = avail_virt as *mut petroleum::virtio::gpu::VringAvail;
-            let used = used_virt as *mut petroleum::virtio::gpu::VringUsed;
+            let desc = desc_virt as *mut nitrogen::virtio::gpu::VringDesc;
+            let avail = avail_virt as *mut nitrogen::virtio::gpu::VringAvail;
+            let used = used_virt as *mut nitrogen::virtio::gpu::VringUsed;
 
             gpu.setup_queue(0, desc, desc_phys, avail, avail_phys, used, used_phys);
 
