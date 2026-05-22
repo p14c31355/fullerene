@@ -5,4 +5,3 @@
 
 pub mod ports;
 pub mod pci;
-pub mod pic;

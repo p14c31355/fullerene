@@ -3,13 +3,6 @@
 //! Types delegated to `nitrogen`; macros kept here for `$crate` path
 //! compatibility with existing petroleum consumers.
 
-// Re-export types from nitrogen (NOT macros – those are defined locally)
-use nitrogen::port::{
-    HardwarePorts, MsrHelper, PortOperations, PortSequenceWriter, PortWriter, RegisterConfig,
-    VgaPortOps, VgaRegisterWriter, write_vga_attribute_register,
-};
-
-
 // ── Macros ───────────────────────────────────────────────────────────
 // These are defined locally so that `$crate` resolves to `petroleum`
 // (not `nitrogen`), preserving compatibility with existing callers.
