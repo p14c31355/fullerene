@@ -211,11 +211,13 @@ fn keycode_to_ascii(key: KeyCode) -> Option<u8> {
 
 /// Poll hardware mouse state and inject Resonance events.
 ///
-/// Called from the scheduler loop. Reads the PS/2 mouse state
-/// maintained by the interrupt handler and generates MouseMove /
-/// MouseDown / MouseUp events with edge detection.
+/// Called from the scheduler loop. Reads the PS/2 mouse state from the
+/// Nitrogen driver (which processes packets in the interrupt handler)
+/// and accumulates deltas into the kernel's absolute-position state.
+/// Generates MouseMove / MouseDown / MouseUp events with edge detection.
 pub fn poll_mouse_state() {
     use crate::interrupts::input::MOUSE_STATE;
+    use nitrogen::ps2::mouse::latest_state;
 
     let mut gui = GUI.lock();
     let gui = match gui.as_mut() {
@@ -223,6 +225,16 @@ pub fn poll_mouse_state() {
         None => return,
     };
 
+    // Sync the ps2-mouse delta state into the accumulated absolute position.
+    {
+        let ps2_state = latest_state();
+        let mut mouse = MOUSE_STATE.lock();
+        mouse.x = mouse.x.wrapping_add(ps2_state.get_x());
+        mouse.y = mouse.y.wrapping_add(ps2_state.get_y());
+        mouse.buttons = nitrogen::ps2::mouse::mouse_buttons();
+    }
+
+    // ── Re-read the now-updated MOUSE_STATE ──────────────────────
     let mouse = MOUSE_STATE.lock();
     let cx = mouse.x as i32;
     let cy = mouse.y as i32;

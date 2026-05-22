@@ -25,4 +25,5 @@ pub mod pci;
 pub mod pic;
 pub mod apic;
 pub mod ioapic;
+pub mod ps2;
 pub mod virtio;

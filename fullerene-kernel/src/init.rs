@@ -76,6 +76,22 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             crate::interrupts::init();
             Ok(())
         }),
+        petroleum::init_step!("PS2 Mouse", || {
+            match nitrogen::ps2::mouse::init_mouse() {
+                Ok(()) => {
+                    petroleum::serial::serial_log(format_args!("PS/2 mouse initialised\n"));
+                    Ok(())
+                }
+                Err(e) => {
+                    petroleum::serial::serial_log(format_args!(
+                        "PS/2 mouse init failed: {}\n",
+                        e
+                    ));
+                    // Non-fatal: continue without mouse
+                    Ok(())
+                }
+            }
+        }),
         petroleum::init_step!("process", || {
             let heap_start =
                 unsafe { core::ptr::addr_of_mut!(crate::heap::BOOT_HEAP_BUFFER) as usize };

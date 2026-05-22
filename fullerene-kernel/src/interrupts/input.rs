@@ -26,15 +26,17 @@ impl KeyboardQueue {
     }
 }
 
-/// Mouse state structure
+/// Accumulated mouse state (absolute position + current buttons).
+///
+/// Updated by [`poll_mouse_state`] in `gui.rs` using deltas from the
+/// Nitrogen PS/2 mouse driver.  The interrupt handler no longer
+/// performs manual packet processing.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct MouseState {
     pub x: i16,
     pub y: i16,
     pub buttons: u8,
-    pub packet: [u8; 3],
-    pub packet_idx: usize,
 }
 
 impl MouseState {
@@ -43,8 +45,6 @@ impl MouseState {
             x: 0,
             y: 0,
             buttons: 0,
-            packet: [0; 3],
-            packet_idx: 0,
         }
     }
 }
@@ -85,28 +85,12 @@ define_input_interrupt_handler!(keyboard_handler, 0x60, |scancode: u8| {
 });
 
 // Mouse interrupt handler
+//
+// Reads one byte from the PS/2 data port and feeds it to the Nitrogen
+// PS/2 mouse driver for packet processing.  No manual packet parsing
+// is performed here – the driver handles that with proper validation.
 define_input_interrupt_handler!(mouse_handler, 0x60, |byte: u8| {
-    use petroleum::lock_and_modify;
-
-    lock_and_modify!(MOUSE_STATE, mouse, {
-        let current_idx = mouse.packet_idx;
-        mouse.packet[current_idx] = byte;
-        mouse.packet_idx += 1;
-
-        if mouse.packet_idx == 3 {
-            // Full packet received, process
-            let status = mouse.packet[0];
-            let dx = mouse.packet[1] as i8 as i16;
-            let dy = mouse.packet[2] as i8 as i16;
-
-            mouse.x = mouse.x.wrapping_add(dx);
-            mouse.y = mouse.y.wrapping_add(dy);
-            mouse.buttons = status & 0x07;
-
-            mouse.packet_idx = 0;
-            mouse.packet = [0; 3];
-        }
-    });
+    nitrogen::ps2::mouse::handle_mouse_data(byte);
 });
 
 /// Timer interrupt handler (no preemption - scheduler loop handles yielding)

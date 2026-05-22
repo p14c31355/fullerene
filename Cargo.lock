@@ -99,7 +99,7 @@ dependencies = [
  "log",
  "petroleum",
  "spin",
- "x86_64",
+ "x86_64 0.15.4",
 ]
 
 [[package]]
@@ -381,7 +381,7 @@ dependencies = [
  "spin",
  "static_assertions",
  "volatile 0.6.1",
- "x86_64",
+ "x86_64 0.15.4",
 ]
 
 [[package]]
@@ -581,8 +581,9 @@ name = "nitrogen"
 version = "0.1.0"
 dependencies = [
  "log",
+ "ps2-mouse",
  "spin",
- "x86_64",
+ "x86_64 0.15.4",
 ]
 
 [[package]]
@@ -643,7 +644,7 @@ dependencies = [
  "static_assertions",
  "toluene",
  "volatile 0.6.1",
- "x86_64",
+ "x86_64 0.15.4",
 ]
 
 [[package]]
@@ -674,6 +675,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "ps2-mouse"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7a1ea62fa77d411155c765d1ba9d0286b8af83a93cda6109c295a2bde1e04a0"
+dependencies = [
+ "bitflags 1.3.2",
+ "x86_64 0.14.13",
 ]
 
 [[package]]
@@ -1112,6 +1123,18 @@ name = "wit-bindgen"
 version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f17a85883d4e6d00e8a97c586de764dabcc06133f7f1d55dce5cdc070ad7fe59"
+
+[[package]]
+name = "x86_64"
+version = "0.14.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c101112411baafbb4bf8d33e4c4a80ab5b02d74d2612331c61e8192fc9710491"
+dependencies = [
+ "bit_field",
+ "bitflags 2.11.1",
+ "rustversion",
+ "volatile 0.4.6",
+]
 
 [[package]]
 name = "x86_64"
