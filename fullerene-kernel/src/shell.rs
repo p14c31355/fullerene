@@ -20,9 +20,9 @@ pub fn shell_main() {
 
     petroleum::debug_log!("Shell main started");
 
-    // Try to use the Lattice-backed GUI terminal first
-    if crate::gui::GUI.lock().is_some() {
-        let mut term = crate::gui::LatticeTerminal;
+    // Try to use the Lattice-backed GUI terminal via Solvent runtime first
+    if solvent::is_initialized() {
+        let mut term = solvent::LatticeTerminal;
         let commands = nozzle::default_commands();
         let mut shell = Shell::new(&mut term, commands);
         shell.set_prompt("fullerene> ");

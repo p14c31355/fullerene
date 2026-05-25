@@ -341,23 +341,14 @@ pub fn scheduler_loop() -> ! {
 
         let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
 
-        // 1. Poll hardware state → Resonance events
-        crate::gui::poll_mouse_state();
+        // 1-5. Run the full runtime tick (input polling, timers, events, rendering)
+        //      All GUI/compositor logic is now owned by Solvent runtime.
+        crate::gui::runtime_tick(current_tick);
 
-        // 2. Advance ChronoLine timers (cursor blink, etc.)
-        crate::gui::chrono_tick(current_tick);
-
-        // 3. Process all queued Resonance events (routes to handlers)
-        crate::gui::process_events();
-
-        // 4. Run periodic system tasks (stats, health checks, etc.)
+        // 6. Run periodic system tasks (stats, health checks, etc.)
         process_scheduler_iteration();
 
-        // 5. Render the desktop every iteration for smooth mouse tracking
-        //    (rendering is fast since it only blits existing surfaces)
-        crate::gui::render();
-
-        // 6. Cooperative yield to idle process (if available)
+        // 7. Cooperative yield to idle process (if available)
         let active = crate::process::get_active_process_count();
         if active > 1 {
             scheduler_log!("Active processes: {}, yielding...", active);
