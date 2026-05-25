@@ -18,16 +18,12 @@ struct PeriodicTask {
 }
 
 /// Wrapper functions to match `fn(u64, u64)` signature for non-arg tasks
-fn draw_desktop_task(_tick: u64, _iter: u64) {
-    draw_desktop_on_available_framebuffer();
-}
-
 fn emergency_handler_task(_tick: u64, _iter: u64) {
     emergency_condition_handler();
 }
 
 /// Pre-allocated periodic tasks array (no heap allocation, no lazy_static)
-const PERIODIC_TASKS: [PeriodicTask; 8] = [
+const PERIODIC_TASKS: [PeriodicTask; 7] = [
     PeriodicTask {
         interval: 1000,
         last_tick: spin::Mutex::new(0),
@@ -58,11 +54,10 @@ const PERIODIC_TASKS: [PeriodicTask; 8] = [
         last_tick: spin::Mutex::new(0),
         task: perform_automated_backup,
     },
-    PeriodicTask {
-        interval: 5000,
-        last_tick: spin::Mutex::new(0),
-        task: draw_desktop_task,
-    },
+    // draw_desktop_task REMOVED — rendering is now owned by Solvent runtime_tick
+    // with frame pacing (FRAME_TIMER_ID).  Calling gui::render() from a periodic
+    // task would bypass frame pacing and cause full‑framebuffer clears at the
+    // periodic rate, contributing to flicker.
     PeriodicTask {
         interval: 10000,
         last_tick: spin::Mutex::new(0),
@@ -336,10 +331,12 @@ pub fn scheduler_loop() -> ! {
         // 6. Run periodic system tasks (stats, health checks, etc.)
         process_scheduler_iteration();
 
-        // 7. Pause briefly (no yield to shell — shell blocks forever polling stdin
-        //    and never yields back, which would starve the scheduler loop).
-        //    TODO: teach shell to yield periodically or use preemptive scheduling.
-        for _ in 0..1000 {
+        // 7. Pause to limit scheduler tick rate (~5 ms per tick ≈ 200 Hz).
+        //    cpu_pause() is ~20 ns → 250k iterations ≈ 5 ms.
+        //    Input polling runs every tick; rendering is independently paced
+        //    by FRAME_TIMER_ID so it stays at ~2 ticks ≈ 25 fps.
+        //    TODO: replace with a proper HPET/APIC‑timer sleep.
+        for _ in 0..250_000 {
             petroleum::cpu_pause();
         }
     }

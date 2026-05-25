@@ -63,8 +63,8 @@ const TERM_WIN_H: u32 = TERM_ROWS * 16;
 /// Desktop background colour.
 const BG_COLOR: u32 = 0x1a1a2e;
 
-/// Cursor blink interval in ticks (~500ms).
-const CURSOR_BLINK_INTERVAL: u64 = 500;
+/// Cursor blink interval in scheduler ticks (~500 ms at ~200 Hz).
+const CURSOR_BLINK_INTERVAL: u64 = 100;
 
 /// Timer ID for cursor blink.
 const CURSOR_TIMER_ID: TimerId = TimerId(1);
@@ -73,18 +73,38 @@ const CURSOR_TIMER_ID: TimerId = TimerId(1);
 ///
 /// PS/2 mouse deltas are typically ±1–3 units per packet, which results
 /// in unnoticeable cursor movement at 1:1 mapping.  Multiply by this
-/// factor to get usable pixel displacement.
-const MOUSE_SENSITIVITY: i16 = 4;
+/// factor to get usable pixel displacement (1×12=12 px to 3×12=36 px/tick).
+const MOUSE_SENSITIVITY: i16 = 12;
 
-/// Minimum ticks between rendered frames.
+/// Minimum ticks between rendered frames (8 ticks at ~200 Hz ≈ 25 fps).
 ///
 /// Prevents the compositor from running at near‑CPU‑speed (clearing and
 /// redrawing the entire framebuffer every scheduler iteration).  Raising
 /// this value reduces flicker at the cost of frame rate.
-const FRAME_INTERVAL_TICKS: u64 = 16;
+const FRAME_INTERVAL_TICKS: u64 = 8;
 
 /// Timer ID for frame pacing.
 const FRAME_TIMER_ID: TimerId = TimerId(2);
+
+/// Maximum framebuffer size supported for double‑buffering.
+///
+/// 1280×800 = 1 024 000 pixels.  The back‑buffer lives in BSS so it
+/// costs zero heap and incurs no allocator pressure.
+const MAX_FB_PIXELS: usize = 1280 * 800;
+
+// ── Static back‑buffer (BSS, zero heap pressure) ──────────────
+
+/// Off‑screen back‑buffer for double‑buffering.
+///
+/// The compositor renders here first, then a single fast `copy_from_slice`
+/// transfers the completed frame to the scan‑out framebuffer.  This avoids
+/// exposing intermediate states (e.g. the background‑fill stage) to the
+/// display controller, which is the root cause of visible flicker.
+///
+/// Stored in BSS (zero‑initialised by the bootloader) so it never touches
+/// the kernel heap.  The `Mutex` guard protects against concurrent access
+/// from interrupt handlers.
+static BACK_BUFFER: Mutex<[u32; MAX_FB_PIXELS]> = Mutex::new([0u32; MAX_FB_PIXELS]);
 
 // ── Runtime state ────────────────────────────────────────────
 
@@ -109,11 +129,14 @@ pub struct RuntimeState {
     pub cursor_visible: bool,
     /// Whether a new frame is due for rendering (set by the frame‑pacing timer).
     pub frame_due: bool,
+    /// Number of valid pixels in [`BACK_BUFFER`] (= fb_width × fb_height).
+    pub back_len: usize,
 }
 
 /// Initialise the Solvent runtime subsystem.
 ///
-/// Creates the desktop, terminal window, event dispatcher, and timer infrastructure.
+/// Creates the desktop, terminal window, event dispatcher, and timer
+/// infrastructure.  The back‑buffer is already allocated in BSS.
 pub fn init() {
     let mut desktop = Desktop::new(BG_COLOR);
     let term_window = desktop.create_window(40, 30, TERM_WIN_W, TERM_WIN_H, 0x000000);
@@ -152,6 +175,7 @@ pub fn init() {
         chrono,
         cursor_visible: true,
         frame_due: true,
+        back_len: 0,
     });
 }
 
@@ -279,7 +303,11 @@ pub struct MouseState {
 
 /// Global mouse state used by the kernel interrupt handler.
 /// Initialised at screen centre to match the Desktop cursor start position.
-pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState { x: 512, y: 384, buttons: 0 });
+pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState {
+    x: 512,
+    y: 384,
+    buttons: 0,
+});
 
 /// Poll hardware mouse state and inject Resonance events.
 ///
@@ -289,20 +317,18 @@ pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState { x: 512, y: 3
 /// Generates MouseMove / MouseDown / MouseUp events with edge detection.
 pub fn poll_mouse_state() {
     // Read latest PS/2 mouse data and accumulate into absolute position.
-    let _ = {
+    {
         let ps2_state = nitrogen::ps2::mouse::consume_state();
         let dx = ps2_state.get_x();
         let dy = ps2_state.get_y();
         let btn = nitrogen::ps2::mouse::mouse_buttons();
 
-        // Drop the LATEST_STATE lock before taking MOUSE_STATE.
         let mut mouse = MOUSE_STATE.lock();
         mouse.x = mouse.x.wrapping_add(dx.wrapping_mul(MOUSE_SENSITIVITY));
         // PS/2 convention: +Y = up;  screen convention: +Y = down.  Negate.
         mouse.y = mouse.y.wrapping_add(dy.wrapping_mul(MOUSE_SENSITIVITY).wrapping_neg());
         mouse.buttons = btn;
-        (dx, dy, btn)
-    };
+    }
 
     // Always push MouseMove so the compositor draws the cursor at its tracked
     // position, even when no PS/2 packets have arrived yet.
@@ -421,8 +447,13 @@ impl RenderTarget for FramebufferTarget<'_> {
 
 /// Render the desktop onto the primary framebuffer using Lattice compositor.
 ///
-/// The `framebuffer_fn` parameter is a closure that provides access to the
-/// kernel's framebuffer slice, avoiding direct dependency on kernel internals.
+/// Uses the static [`BACK_BUFFER`] for double‑buffering: the compositor draws
+/// into the off‑screen buffer first, then a single `copy_from_slice` transfers
+/// the completed frame to the scan‑out framebuffer.  The display controller
+/// never sees intermediate states (e.g. the background‑fill stage), which is
+/// the root cause of visible flickering.
+///
+/// `framebuffer_fn` provides access to the kernel's framebuffer slice.
 pub fn render<F>(framebuffer_fn: F)
 where
     F: FnOnce() -> Option<(&'static mut [u32], u32, u32)>,
@@ -446,14 +477,32 @@ where
         None => return,
     };
 
-    // Composite via Lattice
-    let mut target = FramebufferTarget {
-        pixels: fb_pixels,
-        width: fb_width,
-        height: fb_height,
-    };
-    let scene = rt.desktop.scene();
-    Compositor::render(&scene, &mut target);
+    let fb_len = (fb_width as usize) * (fb_height as usize);
+    if fb_len > MAX_FB_PIXELS {
+        // Framebuffer too large for the static back‑buffer — skip rendering.
+        return;
+    }
+
+    // Update the back‑buffer length so the blit stage uses the correct slice.
+    rt.back_len = fb_len;
+
+    // ── 1. Composite into the BSS back‑buffer ───────────────
+    {
+        let mut back = BACK_BUFFER.lock();
+        let mut back_target = FramebufferTarget {
+            pixels: &mut back[..fb_len],
+            width: fb_width,
+            height: fb_height,
+        };
+        let scene = rt.desktop.scene();
+        Compositor::render(&scene, &mut back_target);
+    }
+
+    // ── 2. Blit the finished frame to the scan‑out framebuffer ──
+    {
+        let back = BACK_BUFFER.lock();
+        fb_pixels[..fb_len].copy_from_slice(&back[..fb_len]);
+    }
 }
 
 /// Render the terminal buffer onto the terminal window's surface.
@@ -518,9 +567,9 @@ impl nozzle::Terminal for LatticeTerminal {
 ///
 /// This is the main orchestrator function that:
 /// 1. Polls hardware input → Resonance events
-/// 2. Advances timers (cursor blink, etc.)
+/// 2. Advances timers (cursor blink, frame pacing)
 /// 3. Processes queued events
-/// 4. Renders the desktop
+/// 4. Renders the desktop (only when the frame‑pacing timer fires)
 ///
 /// The `framebuffer_fn` provides framebuffer access without coupling
 /// Solvent to kernel-specific framebuffer management.
@@ -540,8 +589,6 @@ where
     process_events();
 
     // 4. Render the desktop — only when the frame‑pacing timer fires.
-    //    This prevents full‑framebuffer clears at near‑CPU‑speed,
-    //    which is the primary cause of shell flickering.
     {
         let mut rt = RUNTIME.lock();
         let do_render = rt.as_ref().map_or(false, |r| r.frame_due);
