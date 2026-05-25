@@ -69,6 +69,23 @@ const CURSOR_BLINK_INTERVAL: u64 = 500;
 /// Timer ID for cursor blink.
 const CURSOR_TIMER_ID: TimerId = TimerId(1);
 
+/// Mouse delta sensitivity multiplier.
+///
+/// PS/2 mouse deltas are typically ±1–3 units per packet, which results
+/// in unnoticeable cursor movement at 1:1 mapping.  Multiply by this
+/// factor to get usable pixel displacement.
+const MOUSE_SENSITIVITY: i16 = 4;
+
+/// Minimum ticks between rendered frames.
+///
+/// Prevents the compositor from running at near‑CPU‑speed (clearing and
+/// redrawing the entire framebuffer every scheduler iteration).  Raising
+/// this value reduces flicker at the cost of frame rate.
+const FRAME_INTERVAL_TICKS: u64 = 16;
+
+/// Timer ID for frame pacing.
+const FRAME_TIMER_ID: TimerId = TimerId(2);
+
 // ── Runtime state ────────────────────────────────────────────
 
 /// Global runtime state (desktop, terminal, timers).
@@ -90,6 +107,8 @@ pub struct RuntimeState {
     pub term_buf: TerminalBuffer,
     pub chrono: ChronoLine,
     pub cursor_visible: bool,
+    /// Whether a new frame is due for rendering (set by the frame‑pacing timer).
+    pub frame_due: bool,
 }
 
 /// Initialise the Solvent runtime subsystem.
@@ -117,12 +136,22 @@ pub fn init() {
 
     *EVENT_QUEUE.lock() = Some(EventQueue::new());
     *DISPATCHER.lock() = Some(dispatcher);
+    // Register frame-pacing repeating timer so we don't re-render at CPU speed.
+    chrono.register_with_mode(
+        Deadline::new(FRAME_INTERVAL_TICKS),
+        FRAME_TIMER_ID,
+        TimerMode::Repeating {
+            interval_ticks: FRAME_INTERVAL_TICKS,
+        },
+    );
+
     *RUNTIME.lock() = Some(RuntimeState {
         desktop,
         term_window,
         term_buf,
         chrono,
         cursor_visible: true,
+        frame_due: true,
     });
 }
 
@@ -260,7 +289,7 @@ pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState { x: 512, y: 3
 /// Generates MouseMove / MouseDown / MouseUp events with edge detection.
 pub fn poll_mouse_state() {
     // Read latest PS/2 mouse data and accumulate into absolute position.
-    let (dx, dy, btn) = {
+    let _ = {
         let ps2_state = nitrogen::ps2::mouse::consume_state();
         let dx = ps2_state.get_x();
         let dy = ps2_state.get_y();
@@ -268,8 +297,9 @@ pub fn poll_mouse_state() {
 
         // Drop the LATEST_STATE lock before taking MOUSE_STATE.
         let mut mouse = MOUSE_STATE.lock();
-        mouse.x = mouse.x.wrapping_add(dx);
-        mouse.y = mouse.y.wrapping_add(dy);
+        mouse.x = mouse.x.wrapping_add(dx.wrapping_mul(MOUSE_SENSITIVITY));
+        // PS/2 convention: +Y = up;  screen convention: +Y = down.  Negate.
+        mouse.y = mouse.y.wrapping_add(dy.wrapping_mul(MOUSE_SENSITIVITY).wrapping_neg());
         mouse.buttons = btn;
         (dx, dy, btn)
     };
@@ -337,6 +367,9 @@ pub fn chrono_tick(now: u64) {
         match timer.id {
             CURSOR_TIMER_ID => {
                 rt.cursor_visible = !rt.cursor_visible;
+            }
+            FRAME_TIMER_ID => {
+                rt.frame_due = true;
             }
             _ => {}
         }
@@ -506,8 +539,20 @@ where
     //    Handlers (WmEventHandler) acquire RUNTIME themselves.
     process_events();
 
-    // 4. Render the desktop
-    render(framebuffer_fn);
+    // 4. Render the desktop — only when the frame‑pacing timer fires.
+    //    This prevents full‑framebuffer clears at near‑CPU‑speed,
+    //    which is the primary cause of shell flickering.
+    {
+        let mut rt = RUNTIME.lock();
+        let do_render = rt.as_ref().map_or(false, |r| r.frame_due);
+        if do_render {
+            rt.as_mut().map(|r| r.frame_due = false);
+        }
+        drop(rt);
+        if do_render {
+            render(framebuffer_fn);
+        }
+    }
 }
 
 // ── Terminal buffer access (for kernel shell integration) ────
