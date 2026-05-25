@@ -258,8 +258,6 @@ fn process_scheduler_iteration() {
             (task.task)(current_tick, iteration_count);
         }
     }
-
-    yield_and_process_system_calls();
 }
 
 // Autmoated backup function moved to use in stats_task
@@ -288,16 +286,6 @@ fn perform_memory_capacity_check(_tick: u64, _iter: u64) {
 /// Periodically clean up terminated processes
 fn perform_process_cleanup_check(_tick: u64, _iter: u64) {
     crate::process::cleanup_terminated_processes();
-}
-
-/// Yield control and process system calls
-fn yield_and_process_system_calls() {
-    crate::syscall::kernel_syscall(22, 0, 0, 0); // Yield syscall
-
-    // Allow I/O operations with brief pauses
-    for _ in 0..50 {
-        petroleum::cpu_pause();
-    }
 }
 
 /// Draw the OS desktop using Lattice compositor (or fallback).
@@ -348,16 +336,11 @@ pub fn scheduler_loop() -> ! {
         // 6. Run periodic system tasks (stats, health checks, etc.)
         process_scheduler_iteration();
 
-        // 7. Cooperative yield to idle process (if available)
-        let active = crate::process::get_active_process_count();
-        if active > 1 {
-            scheduler_log!("Active processes: {}, yielding...", active);
-            crate::process::yield_current();
-        } else {
-            // No processes to yield to, just pause briefly
-            for _ in 0..1000 {
-                petroleum::cpu_pause();
-            }
+        // 7. Pause briefly (no yield to shell — shell blocks forever polling stdin
+        //    and never yields back, which would starve the scheduler loop).
+        //    TODO: teach shell to yield periodically or use preemptive scheduling.
+        for _ in 0..1000 {
+            petroleum::cpu_pause();
         }
     }
 }
@@ -386,7 +369,7 @@ petroleum::health_check!(
 
 petroleum::health_check!(
     check_emergency_process_count,
-    { crate::process::get_active_process_count() > MAX_PROCESSES_EMERGENCY },
+    crate::process::get_active_process_count() > MAX_PROCESSES_EMERGENCY,
     error,
     "EMERGENCY: Too many active processes!",
     {

@@ -255,7 +255,7 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
         "-smp".to_string(),
         "1".to_string(),
         "-M".to_string(),
-        "q35".to_string(),
+        "q35,usb=off".to_string(),
     ];
 
     // --- VGA device (dynamic) ---
@@ -302,13 +302,16 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
     }
 
     // --- Display backend (dynamic) ---
+    // Default to SDL because GTK creates a USB tablet that captures all
+    // mouse events and prevents PS/2 i8042 AUX port from receiving data.
+    // SDL routes mouse events through PS/2 by default.
     let display = args
         .display
         .as_deref()
-        .unwrap_or(if args.headless { "none" } else { "gtk" });
+        .unwrap_or(if args.headless { "none" } else { "sdl" });
     qemu_args.push("-display".to_string());
     match display {
-        "gtk" => qemu_args.push("gtk,gl=off,window-close=on,zoom-to-fit=on".to_string()),
+        "gtk" => qemu_args.push("gtk,gl=off,window-close=on,zoom-to-fit=on,grab-on-hover=on".to_string()),
         "sdl" => qemu_args.push("sdl,gl=off".to_string()),
         "none" => qemu_args.push("none".to_string()),
         "curses" => qemu_args.push("curses".to_string()),
@@ -329,10 +332,6 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
         "qemu_log.txt".to_string(),
         "-monitor".to_string(),
         "none".to_string(),
-        "-device".to_string(),
-        "usb-ehci,id=ehci".to_string(),
-        "-device".to_string(),
-        "usb-mouse,bus=ehci.0".to_string(),
     ]);
 
     qemu_args.push("-drive".to_string());
@@ -354,7 +353,6 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
         "base=utc".to_string(),
         "-boot".to_string(),
         "menu=on,order=d".to_string(),
-        "-nodefaults".to_string(),
     ]);
 
     qemu_cmd.args(&qemu_args);

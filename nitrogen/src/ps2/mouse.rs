@@ -51,10 +51,18 @@ pub fn init_mouse() -> Result<(), &'static str> {
         *LATEST_STATE.lock() = state;
     });
 
-    mouse.init()?;
-
-    *MOUSE.lock() = Some(mouse);
-    Ok(())
+    log::info!("[nitrogen] PS/2 mouse: calling init()...");
+    match mouse.init() {
+        Ok(()) => {
+            log::info!("[nitrogen] PS/2 mouse: init() succeeded, mouse now in streaming mode");
+            *MOUSE.lock() = Some(mouse);
+            Ok(())
+        }
+        Err(e) => {
+            log::error!("[nitrogen] PS/2 mouse: init() FAILED: {}", e);
+            Err(e)
+        }
+    }
 }
 
 /// Feed a byte from the PS/2 data port (0x60) to the mouse driver.
@@ -86,9 +94,31 @@ pub fn handle_mouse_data(byte: u8) {
 /// Return the most recently completed mouse state.
 ///
 /// The state includes button flags and the accumulated X/Y delta for the
-/// latest packet.
+/// latest packet.  **Does NOT reset** the internal deltas — call
+/// [`consume_state`] instead if you need to drain the accumulator.
 pub fn latest_state() -> Ps2MouseState {
     *LATEST_STATE.lock()
+}
+
+/// Return the most recently completed mouse state **and reset** the
+/// internal delta accumulators to zero.
+///
+/// This is the preferred function for polling loops: it prevents the
+/// same packet delta from being applied multiple times, and avoids
+/// losing deltas from intermediate packets when multiple packets are
+/// completed between polls.
+///
+/// Interrupts are disabled during the read‑modify‑write to avoid a
+/// deadlock between this function and the `on_complete` callback that
+/// the PS/2 interrupt handler invokes (both try to lock `LATEST_STATE`).
+pub fn consume_state() -> Ps2MouseState {
+    x86_64::instructions::interrupts::disable();
+    let mut state = LATEST_STATE.lock();
+    let out = *state;
+    *state = Ps2MouseState::new();
+    drop(state);
+    x86_64::instructions::interrupts::enable();
+    out
 }
 
 /// Get the current mouse button flags as a raw byte.

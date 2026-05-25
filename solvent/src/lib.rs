@@ -71,20 +71,25 @@ const CURSOR_TIMER_ID: TimerId = TimerId(1);
 
 // ── Runtime state ────────────────────────────────────────────
 
-/// Global runtime state.
+/// Global runtime state (desktop, terminal, timers).
 static RUNTIME: Mutex<Option<RuntimeState>> = Mutex::new(None);
+
+/// Event queue and dispatcher — separate from RUNTIME to avoid deadlock.
+/// Handlers access RUNTIME, so dispatch must NOT hold the RUNTIME lock.
+/// Wrapped in Option because EventQueue/Dispatcher have non‑const `new`.
+static EVENT_QUEUE: Mutex<Option<EventQueue>> = Mutex::new(None);
+static DISPATCHER: Mutex<Option<Dispatcher>> = Mutex::new(None);
+
+/// Previous mouse button state for edge detection.
+static PREV_MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
 
 /// The full runtime state, owned by Solvent.
 pub struct RuntimeState {
     pub desktop: Desktop,
     pub term_window: WindowId,
     pub term_buf: TerminalBuffer,
-    pub dispatcher: Dispatcher,
-    pub event_queue: EventQueue,
     pub chrono: ChronoLine,
     pub cursor_visible: bool,
-    /// Previous mouse button state for edge detection.
-    pub prev_mouse_buttons: u8,
 }
 
 /// Initialise the Solvent runtime subsystem.
@@ -95,7 +100,6 @@ pub fn init() {
     let term_window = desktop.create_window(40, 30, TERM_WIN_W, TERM_WIN_H, 0x000000);
     let term_buf = TerminalBuffer::new(TERM_COLS, TERM_ROWS);
     let mut dispatcher = Dispatcher::new();
-    let event_queue = EventQueue::new();
     let mut chrono = ChronoLine::new();
 
     // Register repeating cursor blink timer using TimerMode::Repeating
@@ -111,15 +115,14 @@ pub fn init() {
     dispatcher.register(Box::new(WmEventHandler));
     dispatcher.register(Box::new(TerminalInputHandler));
 
+    *EVENT_QUEUE.lock() = Some(EventQueue::new());
+    *DISPATCHER.lock() = Some(dispatcher);
     *RUNTIME.lock() = Some(RuntimeState {
         desktop,
         term_window,
         term_buf,
-        dispatcher,
-        event_queue,
         chrono,
         cursor_visible: true,
-        prev_mouse_buttons: 0,
     });
 }
 
@@ -246,7 +249,8 @@ pub struct MouseState {
 }
 
 /// Global mouse state used by the kernel interrupt handler.
-pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState { x: 0, y: 0, buttons: 0 });
+/// Initialised at screen centre to match the Desktop cursor start position.
+pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState { x: 512, y: 384, buttons: 0 });
 
 /// Poll hardware mouse state and inject Resonance events.
 ///
@@ -255,65 +259,64 @@ pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState { x: 0, y: 0, 
 /// and accumulates deltas into the absolute-position state.
 /// Generates MouseMove / MouseDown / MouseUp events with edge detection.
 pub fn poll_mouse_state() {
-    use nitrogen::ps2::mouse::latest_state;
+    // Read latest PS/2 mouse data and accumulate into absolute position.
+    let (dx, dy, btn) = {
+        let ps2_state = nitrogen::ps2::mouse::consume_state();
+        let dx = ps2_state.get_x();
+        let dy = ps2_state.get_y();
+        let btn = nitrogen::ps2::mouse::mouse_buttons();
 
-    let mut rt = RUNTIME.lock();
-    let rt = match rt.as_mut() {
-        Some(r) => r,
-        None => return,
+        // Drop the LATEST_STATE lock before taking MOUSE_STATE.
+        let mut mouse = MOUSE_STATE.lock();
+        mouse.x = mouse.x.wrapping_add(dx);
+        mouse.y = mouse.y.wrapping_add(dy);
+        mouse.buttons = btn;
+        (dx, dy, btn)
     };
 
-    // Sync the ps2-mouse delta state into the accumulated absolute position.
+    // Always push MouseMove so the compositor draws the cursor at its tracked
+    // position, even when no PS/2 packets have arrived yet.
     {
-        let ps2_state = latest_state();
-        let mut mouse = MOUSE_STATE.lock();
-        mouse.x = mouse.x.wrapping_add(ps2_state.get_x());
-        mouse.y = mouse.y.wrapping_add(ps2_state.get_y());
-        mouse.buttons = nitrogen::ps2::mouse::mouse_buttons();
+        let mouse = MOUSE_STATE.lock();
+        let cx = mouse.x as i32;
+        let cy = mouse.y as i32;
+        let buttons = mouse.buttons;
+        drop(mouse);
+
+        if let Some(ref mut queue) = *EVENT_QUEUE.lock() {
+            queue.push(Event::Input(InputEvent::MouseMove { x: cx, y: cy }));
+        }
+
+        // Edge detection for button state changes
+        let mut prev_btn = PREV_MOUSE_BUTTONS.lock();
+        let prev = *prev_btn;
+        if buttons != prev {
+            let mut eq_lock = EVENT_QUEUE.lock();
+            if let Some(ref mut queue) = *eq_lock {
+                // Left button (bit 0)
+                if (buttons & 0x01) != 0 && (prev & 0x01) == 0 {
+                    queue.push(Event::Input(InputEvent::MouseDown(MouseButton::Left)));
+                } else if (buttons & 0x01) == 0 && (prev & 0x01) != 0 {
+                    queue.push(Event::Input(InputEvent::MouseUp(MouseButton::Left)));
+                }
+
+                // Right button (bit 1)
+                if (buttons & 0x02) != 0 && (prev & 0x02) == 0 {
+                    queue.push(Event::Input(InputEvent::MouseDown(MouseButton::Right)));
+                } else if (buttons & 0x02) == 0 && (prev & 0x02) != 0 {
+                    queue.push(Event::Input(InputEvent::MouseUp(MouseButton::Right)));
+                }
+
+                // Middle button (bit 2)
+                if (buttons & 0x04) != 0 && (prev & 0x04) == 0 {
+                    queue.push(Event::Input(InputEvent::MouseDown(MouseButton::Middle)));
+                } else if (buttons & 0x04) == 0 && (prev & 0x04) != 0 {
+                    queue.push(Event::Input(InputEvent::MouseUp(MouseButton::Middle)));
+                }
+            }
+        }
+        *prev_btn = buttons;
     }
-
-    // Re-read the now-updated MOUSE_STATE
-    let mouse = MOUSE_STATE.lock();
-    let cx = mouse.x as i32;
-    let cy = mouse.y as i32;
-    let buttons = mouse.buttons;
-    drop(mouse);
-
-    // Always send mouse move
-    rt.event_queue
-        .push(Event::Input(InputEvent::MouseMove { x: cx, y: cy }));
-
-    // Edge detection for button state changes
-    let prev = rt.prev_mouse_buttons;
-
-    // Left button (bit 0)
-    if (buttons & 0x01) != 0 && (prev & 0x01) == 0 {
-        rt.event_queue
-            .push(Event::Input(InputEvent::MouseDown(MouseButton::Left)));
-    } else if (buttons & 0x01) == 0 && (prev & 0x01) != 0 {
-        rt.event_queue
-            .push(Event::Input(InputEvent::MouseUp(MouseButton::Left)));
-    }
-
-    // Right button (bit 1)
-    if (buttons & 0x02) != 0 && (prev & 0x02) == 0 {
-        rt.event_queue
-            .push(Event::Input(InputEvent::MouseDown(MouseButton::Right)));
-    } else if (buttons & 0x02) == 0 && (prev & 0x02) != 0 {
-        rt.event_queue
-            .push(Event::Input(InputEvent::MouseUp(MouseButton::Right)));
-    }
-
-    // Middle button (bit 2)
-    if (buttons & 0x04) != 0 && (prev & 0x04) == 0 {
-        rt.event_queue
-            .push(Event::Input(InputEvent::MouseDown(MouseButton::Middle)));
-    } else if (buttons & 0x04) == 0 && (prev & 0x04) != 0 {
-        rt.event_queue
-            .push(Event::Input(InputEvent::MouseUp(MouseButton::Middle)));
-    }
-
-    rt.prev_mouse_buttons = buttons;
 }
 
 // ── ChronoLine tick ──────────────────────────────────────────
@@ -344,17 +347,24 @@ pub fn chrono_tick(now: u64) {
 
 /// Push a key event into the Resonance event queue.
 pub fn push_key_event(event: Event) {
-    let mut rt = RUNTIME.lock();
-    if let Some(ref mut r) = *rt {
-        r.event_queue.push(event);
+    if let Some(ref mut queue) = *EVENT_QUEUE.lock() {
+        queue.push(event);
     }
 }
 
 /// Process pending Resonance events (called from runtime loop).
+///
+/// **IMPORTANT**: This function does NOT hold the RUNTIME lock while
+/// dispatching events. Handlers acquire RUNTIME themselves.  If we held
+/// RUNTIME here, spin::Mutex would deadlock because handlers try to lock
+/// RUNTIME too (single‑core, no preemption).
 pub fn process_events() {
-    let mut rt = RUNTIME.lock();
-    if let Some(ref mut r) = *rt {
-        r.dispatcher.dispatch_queue(&mut r.event_queue);
+    let mut disp_lock = DISPATCHER.lock();
+    let mut queue_lock = EVENT_QUEUE.lock();
+    if let Some(ref mut dispatcher) = *disp_lock {
+        if let Some(ref mut queue) = *queue_lock {
+            dispatcher.dispatch_queue(queue);
+        }
     }
 }
 
@@ -485,13 +495,15 @@ pub fn runtime_tick<F>(now: u64, framebuffer_fn: F)
 where
     F: FnOnce() -> Option<(&'static mut [u32], u32, u32)>,
 {
-    // 1. Poll hardware state → Resonance events
+    // 1. Poll hardware state → Resonance events (does NOT hold RUNTIME)
     poll_mouse_state();
 
     // 2. Advance ChronoLine timers
     chrono_tick(now);
 
     // 3. Process all queued Resonance events
+    //    IMPORTANT: process_events must NOT be called while holding RUNTIME.
+    //    Handlers (WmEventHandler) acquire RUNTIME themselves.
     process_events();
 
     // 4. Render the desktop

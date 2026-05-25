@@ -27,8 +27,10 @@ impl Desktop {
     /// Create a new desktop with a given background colour.
     /// The cursor starts off‑screen (hidden by default).
     pub fn new(bg_color: u32) -> Self {
-        let mut cursor = Cursor::new(0, 0);
-        cursor.visible = false;
+        // Position cursor at center of a typical 1024×768 screen so it is
+        // visible immediately. visible=true ensures the compositor draws it.
+        let mut cursor = Cursor::new(512, 384);
+        cursor.visible = true;
         Self {
             wm: WindowManager::new(),
             cursor,
