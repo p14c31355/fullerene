@@ -203,6 +203,7 @@ fn create_iso_and_setup(
                 grub_cfg_content: Some(grub_cfg_content(&kernel_path)),
             }),
         },
+        layout_profile: isobemak::IsoLayoutProfile::ventoy_compat(),
     };
     let (_iso_output_path, _temp_fat_holder, _iso_file, _logical_fat_size) =
         build_iso(&iso_path, &image, true)?; // Set to true for isohybrid UEFI boot
