@@ -37,7 +37,7 @@ fn test_full_pipeline() {
     assert_eq!(target.pixels[0], 0x808080, "top‑left background");
 
     let red_only_idx = (15 * W + 15) as usize;
-    assert_eq!(target.pixels[red_only_idx], 0x0000FF, "red region");
+    assert_eq!(target.pixels[red_only_idx], 0x000066, "red region (dimmed)");
 
     let overlap_idx = (80 * W + 80) as usize;
     assert_eq!(target.pixels[overlap_idx], 0xFF0000, "overlap → blue (top)");

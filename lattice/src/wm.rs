@@ -78,7 +78,10 @@ impl WindowManager {
     fn create_with_id(&mut self, id: WindowId, x: i32, y: i32, width: u32, height: u32, color: u32) -> WindowId {
         let mut window = Window::new(id, x, y, width, height, color);
         if let Some(prev) = self.focused {
-            if let Some(w) = self.windows.iter_mut().find(|w| w.id == prev) { w.focused = false; }
+            if let Some(w) = self.windows.iter_mut().find(|w| w.id == prev) {
+                w.focused = false;
+                self.dirty_rects.push(window_dirty_rect(w));
+            }
         }
         window.focused = true;
         self.focused = Some(id);
@@ -92,7 +95,10 @@ impl WindowManager {
         self.next_id += 1;
         let mut window = Window::new_with_title(id, x, y, width, height, color, title);
         if let Some(prev) = self.focused {
-            if let Some(w) = self.windows.iter_mut().find(|w| w.id == prev) { w.focused = false; }
+            if let Some(w) = self.windows.iter_mut().find(|w| w.id == prev) {
+                w.focused = false;
+                self.dirty_rects.push(window_dirty_rect(w));
+            }
         }
         window.focused = true;
         self.focused = Some(id);
@@ -113,7 +119,10 @@ impl WindowManager {
             let new_id = { self.windows.last().map(|w| w.id) };
             if let Some(nid) = new_id {
                 self.focused = Some(nid);
-                if let Some(w) = self.windows.iter_mut().find(|w| w.id == nid) { w.focused = true; }
+                if let Some(w) = self.windows.iter_mut().find(|w| w.id == nid) {
+                    w.focused = true;
+                    self.dirty_rects.push(window_dirty_rect(w));
+                }
             } else { self.focused = None; }
         }
         removed
@@ -121,11 +130,17 @@ impl WindowManager {
 
     pub fn raise_to_top(&mut self, id: WindowId) {
         let Some(idx) = self.windows.iter().position(|w| w.id == id) else { return };
+        // Record the previous focus before removing the window
+        let prev_focus = self.focused;
         let mut window = self.windows.remove(idx);
         window.focused = true;
-        if let Some(prev) = self.focused {
+        // Mark the previously-focused window as unfocused and dirty
+        if let Some(prev) = prev_focus {
             if prev != id {
-                if let Some(w) = self.windows.iter_mut().find(|w| w.id == prev) { w.focused = false; }
+                if let Some(w) = self.windows.iter_mut().find(|w| w.id == prev) {
+                    w.focused = false;
+                    self.dirty_rects.push(window_dirty_rect(w));
+                }
             }
         }
         self.focused = Some(id);
@@ -169,7 +184,10 @@ impl WindowManager {
             return;
         }
         self.focused = None;
-        for w in &mut self.windows { w.focused = false; }
+        for w in &mut self.windows {
+            w.focused = false;
+            self.dirty_rects.push(window_dirty_rect(w));
+        }
         self.drag = DragState::None;
     }
 

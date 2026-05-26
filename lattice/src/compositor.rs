@@ -92,12 +92,14 @@ impl Compositor {
         let (fb_width, fb_height) = target.dimensions();
         let framebuffer = target.buffer();
 
-        // When there are no dirty rects nothing changed — skip rendering entirely.
-        if scene.dirty_rects.is_empty() {
-            return (0, 0, 0, 0);
-        }
-        let mut merged = scene.dirty_rects[0];
-        for r in &scene.dirty_rects[1..] { merged.merge(r); }
+        // When there are no dirty rects, render the full framebuffer.
+        let merged = if scene.dirty_rects.is_empty() {
+            DirtyRect::full(fb_width, fb_height)
+        } else {
+            let mut m = scene.dirty_rects[0];
+            for r in &scene.dirty_rects[1..] { m.merge(r); }
+            m
+        };
         let dx = merged.x;
         let dy = merged.y;
         let dw = merged.width.min(fb_width.saturating_sub(merged.x));
@@ -268,7 +270,19 @@ impl Compositor {
             for sc in sxs..sxe {
                 let dc = wdx + sc;
                 if dc < cx as i32 || dc >= cex { continue; }
-                fb[db + dc as usize] = sp[sb + sc as usize];
+                let color = sp[sb + sc as usize];
+                if win.focused {
+                    fb[db + dc as usize] = color;
+                } else {
+                    // Dim unfocused windows to ~40 % luminance
+                    let r = ((color >> 16) & 0xFF) as u32;
+                    let g = ((color >> 8) & 0xFF) as u32;
+                    let b = (color & 0xFF) as u32;
+                    let dim_r = (r * 2) / 5;
+                    let dim_g = (g * 2) / 5;
+                    let dim_b = (b * 2) / 5;
+                    fb[db + dc as usize] = (dim_r << 16) | (dim_g << 8) | dim_b;
+                }
             }
         }
     }
