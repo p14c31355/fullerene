@@ -95,7 +95,7 @@
 - [ ] ANSI escape sequence
 - [ ] Color display
 - [ ] selection/copy
-- [ ] Terminal buffer
+- [x] Terminal buffer
 ## Commands
 - [ ] ls
 - [ ] cat
@@ -106,11 +106,6 @@
 - [ ] clear improvement
 ---
 # Font System
-## Current Font Cleanup
-- [ ] font.rs Readability Improvement
-- [ ] ASCII Art Notation Introduction
-- [ ] glyph macro implementation
-- [ ] Font Generation Automation
 ## Future Font Pipeline
 - [ ] PSF loader
 - [ ] BDF importer
@@ -124,7 +119,7 @@
 - [ ] cooperative multitasking
 - [ ] preemptive multitasking
 - [ ] async runtime
-- [ ] timer subsystem
+- [x] timer subsystem
 ## Memory
 - [ ] heap statistics
 - [ ] slab allocator
@@ -136,7 +131,7 @@
 - [ ] panic screen
 - [ ] stack trace
 - [ ] logging subsystem
-- [ ] serial logger
+- [x] serial logger
 - [ ] kernel tracing
 
 ---

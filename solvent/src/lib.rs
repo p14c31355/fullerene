@@ -143,7 +143,7 @@ pub struct RuntimeState {
 /// infrastructure.  The back‑buffer is already allocated in BSS.
 pub fn init() {
     let mut desktop = Desktop::new(BG_COLOR);
-    let term_window = desktop.create_window(40, 30, TERM_WIN_W, TERM_WIN_H, 0x000000);
+    let term_window = desktop.wm.create_titled_window(40, 30, TERM_WIN_W, TERM_WIN_H, 0x000000, "Terminal");
     let term_buf = TerminalBuffer::new(TERM_COLS, TERM_ROWS);
     let mut dispatcher = Dispatcher::new();
     let mut chrono = ChronoLine::new();

@@ -25,10 +25,9 @@ pub struct Desktop {
 
 impl Desktop {
     /// Create a new desktop with a given background colour.
-    /// The cursor starts off‑screen (hidden by default).
+    ///
+    /// The cursor starts at screen centre and is visible by default.
     pub fn new(bg_color: u32) -> Self {
-        // Position cursor at center of a typical 1024×768 screen so it is
-        // visible immediately. visible=true ensures the compositor draws it.
         let mut cursor = Cursor::new(512, 384);
         cursor.visible = true;
         Self {
@@ -146,19 +145,20 @@ mod tests {
     #[test]
     fn test_desktop_mouse_drag() {
         let mut dt = Desktop::new(0x202020);
-        let id = dt.create_window(10, 10, 100, 100, 0xFF0000);
+        // Create a titled window so drag via title bar works
+        let id = dt.wm.create_titled_window(10, 10, 100, 100, 0xFF0000, "Test");
 
-        // Click at (15, 15) → inside window
-        dt.set_cursor(15, 15);
+        // Click title bar at (50, 20) — y=20 is inside title bar (10..30)
+        dt.set_cursor(50, 20);
         dt.mouse_down();
 
-        // Drag to (50, 50) → window moves by (35, 35)
-        dt.mouse_move(50, 50);
+        // Drag to (100, 50)
+        dt.mouse_move(100, 50);
 
         let win = dt.wm.windows().iter().find(|w| w.id == id).unwrap();
-        // offset from click (15-10=5, 15-10=5), new pos = (50-5, 50-5) = (45, 45)
-        assert_eq!(win.x, 45);
-        assert_eq!(win.y, 45);
+        // offset = (50-10, 20-10) = (40, 10), new pos = (100-40, 50-10) = (60, 40)
+        assert_eq!(win.x, 60);
+        assert_eq!(win.y, 40);
 
         dt.mouse_up();
     }
