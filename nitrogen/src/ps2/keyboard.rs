@@ -164,10 +164,11 @@ pub fn get_keyboard_status() -> KeyboardModifiers { *MODIFIERS.lock() }
 
 pub fn drain_line_buffer(buffer: &mut [u8]) -> usize {
     let mut sb = INPUT_STRING_BUFFER.lock();
-    let bytes = sb.as_bytes();
-    let n = bytes.len().min(buffer.len());
-    buffer[..n].copy_from_slice(&bytes[..n]);
-    sb.clear();
+    let n = sb.len().min(buffer.len());
+    if n > 0 {
+        buffer[..n].copy_from_slice(&sb.as_bytes()[..n]);
+        sb.drain(..n);
+    }
     n
 }
 
