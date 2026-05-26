@@ -201,7 +201,6 @@ impl ChronoLine {
     // ── private helpers ──────────────────────────────────────
 
     /// Remove and return the front timer.
-    /// Remove and return the front timer.
     fn pop_front_expired(&mut self) -> Timer {
         // If sorting order is reversed, this can be self.timers.pop()
         self.timers.remove(0)
