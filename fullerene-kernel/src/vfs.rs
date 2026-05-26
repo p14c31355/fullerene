@@ -144,11 +144,14 @@ impl Tmpfs {
         if path.is_empty() || path == "/" {
             return None;
         }
-        let last_slash = path.rfind('/')?;
-        let parent_path = if last_slash == 0 { "/" } else { &path[..last_slash] };
-        let name = String::from(&path[last_slash + 1..]);
-        let parent_ino = self.lookup(parent_path)?;
-        Some((parent_ino, name))
+        if let Some(last_slash) = path.rfind('/') {
+            let parent_path = if last_slash == 0 { "/" } else { &path[..last_slash] };
+            let name = String::from(&path[last_slash + 1..]);
+            let parent_ino = self.lookup(parent_path)?;
+            Some((parent_ino, name))
+        } else {
+            Some((1, String::from(path)))
+        }
     }
 
     fn open(&mut self, path: &str, flags: u32) -> Option<FileDescriptor> {
