@@ -244,7 +244,8 @@ impl Compositor {
                 // Semi‑transparent blending
                 let bg = fb[idx];
                 let sa = ((s >> 24) & 0xFF) as u32;
-                if sa == 0 { fb[idx] = s; continue; }
+                if sa == 0 { continue; }
+                if sa == 255 { fb[idx] = s; continue; }
                 let ia = 255 - sa;
                 let r = (((s>>16)&0xFF)*sa + ((bg>>16)&0xFF)*ia)/255;
                 let g = (((s>>8)&0xFF)*sa  + ((bg>>8)&0xFF)*ia)/255;
