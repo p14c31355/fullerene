@@ -95,10 +95,10 @@ const MAX_FB_PIXELS: usize = 1920 * 1080;
 
 /// Off‑screen back‑buffer for double‑buffering.
 ///
-/// The compositor renders here first, then a single fast `copy_from_slice`
-/// transfers the completed frame to the scan‑out framebuffer.  This avoids
-/// exposing intermediate states (e.g. the background‑fill stage) to the
-/// display controller, which is the root cause of visible flicker.
+/// The compositor renders here first, then only the changed region is
+/// copied to the scan‑out framebuffer.  This avoids exposing intermediate
+/// states (e.g. the background‑fill stage) to the display controller,
+/// which is the root cause of visible flickering.
 ///
 /// Stored in BSS (zero‑initialised by the bootloader) so it never touches
 /// the kernel heap.  The `Mutex` guard protects against concurrent access
@@ -452,11 +452,11 @@ impl RenderTarget for FramebufferTarget<'_> {
 
 /// Render the desktop onto the primary framebuffer using Lattice compositor.
 ///
-/// Uses the static [`BACK_BUFFER`] for double‑buffering: the compositor draws
-/// into the off‑screen buffer first, then a single `copy_from_slice` transfers
-/// the completed frame to the scan‑out framebuffer.  The display controller
-/// never sees intermediate states (e.g. the background‑fill stage), which is
-/// the root cause of visible flickering.
+/// Uses the static [`BACK_BUFFER`] for double‑buffering with partial blit:
+/// the compositor returns the bounding box of the changed region, and only
+/// that region is copied to the scan‑out framebuffer.  This reduces the
+/// per‑frame memory bandwidth from ~8 MiB (1920×1080) to a few KiB for
+/// small updates (e.g. terminal typing).
 ///
 /// `framebuffer_fn` provides access to the kernel's framebuffer slice.
 pub fn render<F>(framebuffer_fn: F)
@@ -475,6 +475,9 @@ where
     // Re-render terminal buffer onto the window's surface
     render_terminal(rt);
 
+    // Update taskbar entries before building the scene
+    rt.desktop.update_taskbar();
+
     // Get framebuffer memory via the caller-provided closure
     let fb_result = framebuffer_fn();
     let (fb_pixels, fb_width, fb_height) = match fb_result {
@@ -492,7 +495,7 @@ where
     rt.back_len = fb_len;
 
     // ── 1. Composite into the BSS back‑buffer ───────────────
-    {
+    let (bx, by, bw, bh) = {
         let mut back = BACK_BUFFER.lock();
         let mut back_target = FramebufferTarget {
             pixels: &mut back[..fb_len],
@@ -500,13 +503,23 @@ where
             height: fb_height,
         };
         let scene = rt.desktop.scene();
-        Compositor::render(&scene, &mut back_target);
-    }
+        Compositor::render(&scene, &mut back_target)
+    };
 
-    // ── 2. Blit the finished frame to the scan‑out framebuffer ──
-    {
+    // ── 2. Partial blit only the changed region ──────────
+    if bw > 0 && bh > 0 {
         let back = BACK_BUFFER.lock();
-        fb_pixels[..fb_len].copy_from_slice(&back[..fb_len]);
+        let fb_w = fb_width as usize;
+        let b_w = bw as usize;
+        for row in 0..bh {
+            let src_off = ((by + row) as usize) * fb_w + (bx as usize);
+            let dst_off = ((by + row) as usize) * fb_w + (bx as usize);
+            let len = b_w.min(fb_len.saturating_sub(dst_off));
+            if len > 0 {
+                fb_pixels[dst_off..dst_off + len]
+                    .copy_from_slice(&back[src_off..src_off + len]);
+            }
+        }
     }
 }
 

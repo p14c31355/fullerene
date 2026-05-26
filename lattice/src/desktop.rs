@@ -7,8 +7,8 @@ use crate::wm::WindowManager;
 
 /// Desktop session — pure state, no rendering.
 ///
-/// `Desktop` is a **façade** that owns the `WindowManager` and `Cursor`.
-/// It does NOT touch the compositor or framebuffer.
+/// `Desktop` is a **façade** that owns the `WindowManager`, `Cursor`,
+/// and `Taskbar`.  It does NOT touch the compositor or framebuffer.
 ///
 /// To render, the kernel/runtime calls `desktop.scene()` and passes the
 /// resulting `Scene` to the compositor:
@@ -21,6 +21,7 @@ pub struct Desktop {
     pub wm: WindowManager,
     pub cursor: Cursor,
     bg_color: u32,
+    pub taskbar: crate::taskbar::Taskbar,
 }
 
 impl Desktop {
@@ -34,6 +35,7 @@ impl Desktop {
             wm: WindowManager::new(),
             cursor,
             bg_color,
+            taskbar: crate::taskbar::Taskbar::new(),
         }
     }
 
@@ -80,6 +82,11 @@ impl Desktop {
         self.cursor.visible = true;
     }
 
+    /// Update the taskbar entries from the current window list.
+    pub fn update_taskbar(&mut self) {
+        self.taskbar.update_from_windows(self.wm.windows());
+    }
+
     // ── scene snapshot ──────────────────────────────────────
 
     /// Build an immutable snapshot for the compositor.
@@ -87,6 +94,7 @@ impl Desktop {
     /// This is the **only** bridge between state and rendering.
     pub fn scene(&self) -> Scene<'_> {
         Scene::new(self.wm.windows(), Some(&self.cursor), self.bg_color)
+            .with_taskbar(&self.taskbar)
     }
 }
 
@@ -134,11 +142,13 @@ mod tests {
         let mut dt = Desktop::new(0x202020);
         dt.create_window(0, 0, 100, 100, 0xFF0000);
 
-        let mut target = TestTarget::new(20, 20);
+        // Use a 200×200 target so the 28-pixel taskbar at the bottom
+        // does not clobber the pixel at (0,0).
+        let mut target = TestTarget::new(200, 200);
         let scene = dt.scene();
         Compositor::render(&scene, &mut target);
 
-        // Top‑left of the window should be red
+        // Top‑left corner of the window should be red.
         assert_eq!(target.pixels[0], 0xFF0000);
     }
 

@@ -53,7 +53,7 @@
 - [x] Resizing Function
 ## Desktop
 - [ ] Desktop Layer
-- [ ] Taskbar
+- [x] Taskbar
 - [ ] System Menu
 - [ ] Clock Widget
 - [ ] Mouse Right-Click Menu
@@ -90,10 +90,10 @@
 - [ ] Pipe
 - [ ] Standard input/output abstraction
 ## Terminal Rendering
-- [ ] Caret blink localization
-- [ ] Scroll support
-- [ ] ANSI escape sequence
-- [ ] Color display
+- [x] Caret blink localization
+- [x] Scroll support
+- [x] ANSI escape sequence
+- [x] Color display
 - [ ] selection/copy
 - [x] Terminal buffer
 ## Commands

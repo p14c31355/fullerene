@@ -49,7 +49,11 @@ pub fn notify_frame_presented(now_tick: u64) {
 pub fn current_fps_x100() -> u64 { CURRENT_FPS_X100.load(Ordering::Relaxed) }
 
 impl Compositor {
-    pub fn render(scene: &Scene<'_>, target: &mut dyn RenderTarget) {
+    /// Render the scene into the target.
+    ///
+    /// Returns the bounding box that was actually drawn (clipped dirty rect),
+    /// so the caller can perform a partial blit instead of a full framebuffer copy.
+    pub fn render(scene: &Scene<'_>, target: &mut dyn RenderTarget) -> (u32, u32, u32, u32) {
         let (fb_width, fb_height) = target.dimensions();
         let framebuffer = target.buffer();
 
@@ -62,7 +66,9 @@ impl Compositor {
              merged.width.min(fb_width.saturating_sub(merged.x)),
              merged.height.min(fb_height.saturating_sub(merged.y)))
         };
-        if dw == 0 || dh == 0 { return; }
+        if dw == 0 || dh == 0 {
+            return (0, 0, 0, 0);
+        }
 
         let fb_w = fb_width as usize;
         for row in dy..dy + dh {
@@ -80,6 +86,21 @@ impl Compositor {
 
         // Draw debug overlay
         Self::draw_debug_overlay(framebuffer, fb_width, fb_height);
+
+        // Draw taskbar (always visible, overlay at bottom)
+        if let Some(tb) = scene.taskbar {
+            let bar_y = fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT);
+            let bar_rect = crate::scene::DirtyRect::new(0, bar_y, fb_width, crate::taskbar::TASKBAR_HEIGHT);
+            let clip = crate::scene::DirtyRect::new(dx, dy, dw, dh);
+            if bar_rect.intersects(&clip) {
+                tb.render(framebuffer, fb_width, fb_height);
+            }
+        }
+
+        // Return the drawn bounding box for partial blit.
+        let max_x = (dx + dw).min(fb_width);
+        let max_y = (dy + dh).min(fb_height);
+        (dx, dy, max_x - dx, max_y - dy)
     }
 
     fn draw_debug_overlay(fb: &mut [u32], fbw: u32, _fbh: u32) {
@@ -136,10 +157,6 @@ impl Compositor {
                 fb[idx] = (r<<16)|(g<<8)|b;
             }
         }
-    }
-
-    fn draw_cursor(fb: &mut [u32], fbw: u32, fbh: u32, cur: &Cursor) {
-        Self::draw_cursor_clipped(fb, fbw, fbh, cur, 0, 0, fbw, fbh);
     }
 
     fn draw_window_clipped(fb: &mut [u32], fbw: u32, fbh: u32, win: &Window,
@@ -266,9 +283,5 @@ impl Compositor {
                 }
             }
         }
-    }
-
-    fn draw_window(fb: &mut [u32], fbw: u32, fbh: u32, win: &Window) {
-        Self::draw_window_clipped(fb, fbw, fbh, win, 0, 0, fbw, fbh);
     }
 }
