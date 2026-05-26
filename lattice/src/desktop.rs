@@ -40,6 +40,13 @@ pub struct Desktop {
     // ── Clock state ────────────────────────────────────────
     /// Current clock text "HH:MM:SS".
     pub clock_text: alloc::string::String,
+
+    // ── Cursor tracking for dirty-rect optimisation ───────
+    /// Previous cursor position (tracked to invalidate cursor area only).
+    prev_cursor_x: i32,
+    prev_cursor_y: i32,
+    /// Whether the cursor moved since last frame.
+    cursor_moved: bool,
 }
 
 impl Desktop {
@@ -59,6 +66,9 @@ impl Desktop {
             menu_is_system: false,
             menu_overlays_cache: alloc::vec::Vec::new(),
             clock_text: alloc::string::String::new(),
+            prev_cursor_x: 512,
+            prev_cursor_y: 384,
+            cursor_moved: false,
         }
     }
 
@@ -122,6 +132,12 @@ impl Desktop {
 
     /// Move mouse (drag if button held).
     pub fn mouse_move(&mut self, x: i32, y: i32) {
+        // Track cursor movement for dirty-rect optimisation.
+        if self.cursor.x != x || self.cursor.y != y {
+            self.cursor_moved = true;
+            self.prev_cursor_x = self.cursor.x;
+            self.prev_cursor_y = self.cursor.y;
+        }
         self.set_cursor(x, y);
         if self.active_menu.is_none() {
             self.wm.on_mouse_move(x, y);
@@ -158,6 +174,33 @@ impl Desktop {
     /// compositor receives the correct dirty regions.
     pub fn prepare_frame(&mut self) {
         self.dirty_cache = self.wm.consume_dirty_rects();
+
+        // If the cursor moved, add dirty rects for the old and new
+        // cursor positions (32×32 pixels each) so only the cursor
+        // area is redrawn, not the entire screen.
+        if self.cursor_moved {
+            let cur_sz = crate::cursor::Cursor::SIZE as i32;
+            let old_x = self.prev_cursor_x - crate::cursor::Cursor::HOTSPOT_X;
+            let old_y = self.prev_cursor_y - crate::cursor::Cursor::HOTSPOT_Y;
+            let new_x = self.cursor.x - crate::cursor::Cursor::HOTSPOT_X;
+            let new_y = self.cursor.y - crate::cursor::Cursor::HOTSPOT_Y;
+
+            self.dirty_cache.push(DirtyRect::new(
+                old_x.max(0) as u32,
+                old_y.max(0) as u32,
+                cur_sz as u32,
+                cur_sz as u32,
+            ));
+            if old_x != new_x || old_y != new_y {
+                self.dirty_cache.push(DirtyRect::new(
+                    new_x.max(0) as u32,
+                    new_y.max(0) as u32,
+                    cur_sz as u32,
+                    cur_sz as u32,
+                ));
+            }
+            self.cursor_moved = false;
+        }
 
         // Generate menu overlay rects into the cache so scene() can
         // safely reference them without dangling pointers.

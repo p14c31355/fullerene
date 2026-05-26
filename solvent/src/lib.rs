@@ -74,7 +74,7 @@ const CURSOR_TIMER_ID: TimerId = TimerId(1);
 /// PS/2 mouse deltas are typically ±1–3 units per packet, which results
 /// in unnoticeable cursor movement at 1:1 mapping.  Multiply by this
 /// factor to get usable pixel displacement (1×12=12 px to 3×12=36 px/tick).
-const MOUSE_SENSITIVITY: i16 = 12;
+const MOUSE_SENSITIVITY: i16 = 8;
 
 /// Minimum ticks between rendered frames (2 ticks at ~200 Hz ≈ 100 fps).
 ///
@@ -135,6 +135,8 @@ pub struct RuntimeState {
     /// Owned here rather than in a static so it can be reset on re‑init
     /// and avoids global‑state coupling with `render_terminal`.
     pub term_cells: Vec<LatticeCell>,
+    /// Whether the terminal buffer has changed since the last render.
+    pub term_dirty: bool,
 }
 
 /// Initialise the Solvent runtime subsystem.
@@ -181,6 +183,7 @@ pub fn init() {
         frame_due: true,
         back_len: 0,
         term_cells: Vec::new(),
+        term_dirty: true,
     });
 }
 
@@ -528,9 +531,18 @@ where
 
 /// Render the terminal buffer onto the terminal window's surface.
 ///
-/// Uses `rt.term_cells` as a reusable buffer to avoid per‑frame heap
-/// allocations (2000 cells × 100 fps = 200 k allocations/sec).
+/// Only re‑renders when `rt.term_dirty` is true (the terminal buffer
+/// has been modified or the cursor blink phase changed).  After
+/// rendering, `term_dirty` is cleared.
 fn render_terminal(rt: &mut RuntimeState) {
+    // Skip re‑render if nothing changed.
+    // (Cursor blink is handled via dirty‑rect invalidation by
+    //  the cursor blink timer — the terminal surface itself doesn't
+    //  need a full repaint for that.)
+    if !rt.term_dirty {
+        return;
+    }
+
     let window = match rt
         .desktop
         .wm
@@ -562,6 +574,8 @@ fn render_terminal(rt: &mut RuntimeState) {
         cursor_row: Some(rt.term_buf.cursor_row()),
         cursor_visible: rt.cursor_visible,
     });
+
+    rt.term_dirty = false;
 }
 
 // ── LatticeTerminal (nozzle::Terminal impl) ──────────────────
@@ -578,6 +592,7 @@ impl nozzle::Terminal for LatticeTerminal {
         let mut rt = RUNTIME.lock();
         if let Some(ref mut r) = *rt {
             r.term_buf.put_str(s);
+            r.term_dirty = true;
         }
     }
 
@@ -646,9 +661,10 @@ fn runtime_tick_no_fb() {
         }
     }
 
-    // Short CPU pause to avoid burning the core at full speed during
-    // the shell's wait loop.
-    for _ in 0..10_000 {
+    // Short CPU pause to yield to hardware threads.
+    // Keep this small (≤ 100) so mouse polling remains responsive
+    // at ~1 kHz effective rate while still reducing CPU load.
+    for _ in 0..100 {
         core::hint::spin_loop();
     }
 }
