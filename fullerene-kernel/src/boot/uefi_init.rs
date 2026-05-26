@@ -57,7 +57,12 @@ unsafe fn create_tmp_mapper(
     frame_allocator: &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator,
     kernel_phys: u64,
 ) -> x86_64::structures::paging::OffsetPageTable<'static> {
-    petroleum::page_table::init::<_, PageTableInitCb>(phys_offset, frame_allocator, kernel_phys, None)
+    petroleum::page_table::init::<_, PageTableInitCb>(
+        phys_offset,
+        frame_allocator,
+        kernel_phys,
+        None,
+    )
 }
 
 #[cfg(target_os = "uefi")]
@@ -200,7 +205,10 @@ impl UefiInitContext {
         }
 
         debug_log_no_alloc!("DEBUG: Starting memory_management_initialization");
-        debug_log_no_alloc!("DEBUG: Offset value: {}", self.physical_memory_offset.as_u64());
+        debug_log_no_alloc!(
+            "DEBUG: Offset value: {}",
+            self.physical_memory_offset.as_u64()
+        );
 
         // BREAK CIRCULAR DEPENDENCY:
         // We need the memory map to initialize the frame allocator, but we need a mapper to access the memory map.
@@ -502,8 +510,7 @@ impl UefiInitContext {
             };
             // CRITICAL: Save config back to FULLERENE_FRAMEBUFFER_CONFIG so that
             // map_mmio() and init_graphics() can find it later.
-            petroleum::FULLERENE_FRAMEBUFFER_CONFIG
-                .call_once(|| spin::Mutex::new(Some(config)));
+            petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config)));
             petroleum::write_serial_bytes!(
                 0x3F8,
                 0x3FD,
@@ -763,9 +770,8 @@ impl UefiInitContext {
             .as_mut()
             .expect("Frame allocator not initialized");
 
-        let mut mapper = unsafe {
-            create_tmp_mapper(physical_memory_offset, frame_allocator, 0x100000)
-        };
+        let mut mapper =
+            unsafe { create_tmp_mapper(physical_memory_offset, frame_allocator, 0x100000) };
 
         let stack_flags = x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE
@@ -902,16 +908,17 @@ impl UefiInitContext {
         let vga_virt_addr = Self::map_standard_mmio_regions();
 
         // Validate framebuffer config before mapping to prevent mapping garbage pages.
-        let fb_config_valid = |config: &petroleum::common::uefi::FullereneFramebufferConfig| -> bool {
-            config.address >= 0x100000
-                && config.address <= 0x0000_FFFF_FFFF_FFFF
-                && config.width > 0
-                && config.width <= 16384
-                && config.height > 0
-                && config.height <= 16384
-                && (config.bpp == 8 || config.bpp == 16 || config.bpp == 24 || config.bpp == 32)
-                && config.stride > 0
-        };
+        let fb_config_valid =
+            |config: &petroleum::common::uefi::FullereneFramebufferConfig| -> bool {
+                config.address >= 0x100000
+                    && config.address <= 0x0000_FFFF_FFFF_FFFF
+                    && config.width > 0
+                    && config.width <= 16384
+                    && config.height > 0
+                    && config.height <= 16384
+                    && (config.bpp == 8 || config.bpp == 16 || config.bpp == 24 || config.bpp == 32)
+                    && config.stride > 0
+            };
 
         // Map GOP Framebuffer if available
         // First try FULLERENE_FRAMEBUFFER_CONFIG, then fall back to KERNEL_ARGS
@@ -952,7 +959,13 @@ impl UefiInitContext {
             });
 
         if let Some(config) = fb_config_for_mapping {
-            petroleum::debug_log!("DEBUG: Mapping framebuffer: addr={:#x}, {}x{}, {} BPP\n", config.address, config.width, config.height, config.bpp);
+            petroleum::debug_log!(
+                "DEBUG: Mapping framebuffer: addr={:#x}, {}x{}, {} BPP\n",
+                config.address,
+                config.width,
+                config.height,
+                config.bpp
+            );
             let fb_phys = config.address;
             let fb_virt = fb_phys + petroleum::common::memory::get_physical_memory_offset() as u64;
             let fb_size = (config.width as u64 * config.height as u64 * config.bpp as u64) / 8;
@@ -1040,7 +1053,11 @@ impl UefiInitContext {
                 let desc = MemoryMapDescriptor::new(desc_ptr, descriptor_size);
 
                 if !petroleum::page_table::MemoryDescriptorValidator::is_valid(&desc) {
-                    debug_log_no_alloc!("Skipping invalid descriptor {}: type 0x{:x}", i, desc.type_() as usize);
+                    debug_log_no_alloc!(
+                        "Skipping invalid descriptor {}: type 0x{:x}",
+                        i,
+                        desc.type_() as usize
+                    );
                     continue;
                 }
 

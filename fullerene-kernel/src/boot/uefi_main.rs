@@ -129,11 +129,7 @@ fn kernel_main_higher_half(
     crate::interrupts::apic::init_apic();
     log::info!("APIC initialized");
 
-    // 3. Initialize keyboard input driver
-    crate::keyboard::init();
-    log::info!("Keyboard initialized");
-
-    // 4. Enable interrupts and enter scheduler loop
+    // 3. Enable interrupts and enter scheduler loop
     log::info!("Enabling interrupts and starting scheduler...");
     debug_serial(b"Entering scheduler_loop\n");
     x86_64::instructions::interrupts::enable();

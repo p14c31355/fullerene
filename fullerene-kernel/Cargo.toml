@@ -19,6 +19,9 @@ spin = { version = "0.10.0", default-features = false, features = [
   "spin_mutex",
 ] }
 petroleum = { path = "../petroleum" }
+nitrogen = { path = "../nitrogen" }
+nozzle = { path = "../nozzle" }
+solvent = { path = "../solvent" }
 embedded-graphics = { version = "0.8", default-features = false }
 memoffset = { version = "0.9", default-features = false }
 linked_list_allocator = { version = "0.10.6", default-features = false, features = [

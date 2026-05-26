@@ -4,10 +4,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::{
     PhysAddr, VirtAddr,
     registers::control::Cr3,
-    structures::paging::{
-        FrameAllocator, OffsetPageTable, PageTable, PageTableFlags,
-        Size4KiB,
-    },
+    structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PageTableFlags, Size4KiB},
 };
 
 static PAGE_TABLE_INITIALIZED: AtomicBool = AtomicBool::new(false);

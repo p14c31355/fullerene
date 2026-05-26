@@ -43,10 +43,10 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_entry] Args dereferenced\n");
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [uefi_entry] FB Address: 0x");
     let mut fb_addr_buf = [0u8; 16];
-    let fb_addr_len = petroleum::serial::format_hex_to_buffer(args.fb_address as u64, &mut fb_addr_buf, 16);
+    let fb_addr_len =
+        petroleum::serial::format_hex_to_buffer(args.fb_address as u64, &mut fb_addr_buf, 16);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, &fb_addr_buf[..fb_addr_len]);
     petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
-
 
     let system_table_virt = (args.system_table as u64
         + petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64())

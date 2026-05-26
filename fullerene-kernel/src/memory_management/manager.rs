@@ -5,12 +5,12 @@ use petroleum::initializer::{
     ErrorLogging, FrameAllocator, Initializable, MemoryManager, ProcessMemoryManager,
 };
 use petroleum::mem_debug;
-use petroleum::serial;
-use petroleum::serial::serial_log;
 use petroleum::page_table::{
     BitmapFrameAllocator, BootInfoFrameAllocator, FrameAllocatorExt, MemoryMapDescriptor,
     PageTableHelper, ProcessPageTable,
 };
+use petroleum::serial;
+use petroleum::serial::serial_log;
 use x86_64::{
     PhysAddr,
     structures::paging::{
@@ -91,10 +91,8 @@ impl UnifiedMemoryManager {
         // MMIO regions need proper caching attributes: Uncacheable (UC) is safest
         // UC is achieved by setting PCD (NO_CACHE) + NOT setting PWT for x86.
         // PCD=1, PWT=1 is not a standard x86 caching mode and may cause issues.
-        let flags = PageFlags::PRESENT 
-          | PageFlags::WRITABLE 
-          | PageFlags::NO_EXECUTE 
-          | PageFlags::NO_CACHE;
+        let flags =
+            PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::NO_EXECUTE | PageFlags::NO_CACHE;
 
         for i in 0..pages {
             let virt = virtual_addr + i * page_size;
@@ -114,10 +112,13 @@ impl UnifiedMemoryManager {
         }
         // Flush TLB to ensure all mappings are visible
         self.flush_tlb_all()?;
-        
+
         // Log page flags for debugging
         if let Ok(flags) = self.page_table_manager.get_page_flags(virtual_addr) {
-            serial_log(format_args!("[MMIO] virt={:#x} flags={:?}\n", virtual_addr, flags));
+            serial_log(format_args!(
+                "[MMIO] virt={:#x} flags={:?}\n",
+                virtual_addr, flags
+            ));
         }
         Ok(())
     }

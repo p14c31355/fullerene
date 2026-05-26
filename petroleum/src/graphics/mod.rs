@@ -87,9 +87,9 @@ pub mod uefi;
 pub use constants::*;
 
 // Re-exports for public API
-pub use crate::hardware::ports::{HardwarePorts, PortWriter, VgaPortOps};
 pub use color::*;
 pub use console::Console;
+pub use nitrogen::port::{HardwarePorts, PortWriter, VgaPortOps};
 pub use renderer::Renderer;
 // VGA graphics modes
 pub use setup::{

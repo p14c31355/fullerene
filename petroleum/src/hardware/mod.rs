@@ -1,7 +1,7 @@
-pub mod apic;
-pub mod pci;
-pub mod pic;
-pub mod ports;
+//! Hardware Abstraction Layer
+//!
+//! Sub-modules are thin re-exports from the `nitrogen` crate.
+//! The canonical hardware-mechanism code lives in `nitrogen`.
 
-pub use apic::{ApicFlags, ApicOffsets, IO_APIC_BASE};
-pub use pci::{PciConfigSpace, PciDevice, PciScanner};
+pub mod pci;
+pub mod ports;

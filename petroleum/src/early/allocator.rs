@@ -32,9 +32,7 @@ use crate::page_table::allocator::bitmap::BitmapFrameAllocator;
 use crate::page_table::allocator::traits::FrameAllocatorExt;
 use crate::page_table::memory_map::MemoryDescriptorValidator;
 use x86_64::structures::paging::{
-    FrameAllocator as X86FrameAllocatorTrait,
-    PhysFrame as X86PhysFrame,
-    Size4KiB,
+    FrameAllocator as X86FrameAllocatorTrait, PhysFrame as X86PhysFrame, Size4KiB,
 };
 
 /// Boot-phase frame allocator.

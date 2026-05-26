@@ -1,0 +1,26 @@
+[package]
+name = "solvent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+x86_64 = { version = "0.15.4", default-features = false, features = [
+  "instructions",
+] }
+spin = { version = "0.10.0", default-features = false, features = [
+  "once",
+  "mutex",
+  "spin_mutex",
+] }
+petroleum = { path = "../petroleum" }
+nitrogen = { path = "../nitrogen" }
+nozzle = { path = "../nozzle" }
+lattice = { path = "../lattice" }
+resonance = { path = "../resonance" }
+chronoline = { path = "../chronoline" }
+log = { version = "0.4.29", default-features = false }
+
+[lib]
+name = "solvent"
+path = "src/lib.rs"

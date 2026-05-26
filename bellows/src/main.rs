@@ -193,9 +193,17 @@ fn install_vga_framebuffer_config(_st: &EfiSystemTable) {
     ));
 
     // Save to global instead of installing config table to avoid hang
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Bellows: Initializing framebuffer config static...\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: Bellows: Initializing framebuffer config static...\n"
+    );
     petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config)));
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: Bellows: Framebuffer config static initialized.\n");
+    petroleum::write_serial_bytes!(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: Bellows: Framebuffer config static initialized.\n"
+    );
 
     petroleum::println!("VGA framebuffer config saved globally successfully.");
 }

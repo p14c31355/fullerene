@@ -29,8 +29,7 @@
 use x86_64::{
     PhysAddr, VirtAddr,
     structures::paging::{
-        Mapper, OffsetPageTable, Page,
-        PageTable, PageTableFlags, PhysFrame, Size4KiB,
+        Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
     },
 };
 
@@ -39,11 +38,7 @@ use crate::early::allocator::EarlyFrameAllocator;
 // ── Re-export boot-only mapping functions from page_table::kernel::init ──
 // These functions are used during the boot → kernel transition (world switch)
 // and should NOT be called by runtime kernel code.
-pub use crate::page_table::kernel::init::{
-    map_page_4k_l1,
-    init_and_jump,
-    InitAndJumpArgs,
-};
+pub use crate::page_table::kernel::init::{InitAndJumpArgs, init_and_jump, map_page_4k_l1};
 
 /// Early-boot page table mapper for identity-mapped environments.
 ///

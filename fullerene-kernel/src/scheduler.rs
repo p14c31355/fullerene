@@ -18,24 +18,51 @@ struct PeriodicTask {
 }
 
 /// Wrapper functions to match `fn(u64, u64)` signature for non-arg tasks
-fn draw_desktop_task(_tick: u64, _iter: u64) {
-    draw_desktop_on_available_framebuffer();
-}
-
 fn emergency_handler_task(_tick: u64, _iter: u64) {
     emergency_condition_handler();
 }
 
 /// Pre-allocated periodic tasks array (no heap allocation, no lazy_static)
-const PERIODIC_TASKS: [PeriodicTask; 8] = [
-    PeriodicTask { interval: 1000, last_tick: spin::Mutex::new(0), task: perform_system_health_checks },
-    PeriodicTask { interval: 5000, last_tick: spin::Mutex::new(0), task: perform_stats_logging },
-    PeriodicTask { interval: 2000, last_tick: spin::Mutex::new(0), task: perform_system_maintenance },
-    PeriodicTask { interval: 10000, last_tick: spin::Mutex::new(0), task: perform_memory_capacity_check },
-    PeriodicTask { interval: 100, last_tick: spin::Mutex::new(0), task: perform_process_cleanup_check },
-    PeriodicTask { interval: 30000, last_tick: spin::Mutex::new(0), task: perform_automated_backup },
-    PeriodicTask { interval: 5000, last_tick: spin::Mutex::new(0), task: draw_desktop_task },
-    PeriodicTask { interval: 10000, last_tick: spin::Mutex::new(0), task: emergency_handler_task },
+const PERIODIC_TASKS: [PeriodicTask; 7] = [
+    PeriodicTask {
+        interval: 1000,
+        last_tick: spin::Mutex::new(0),
+        task: perform_system_health_checks,
+    },
+    PeriodicTask {
+        interval: 5000,
+        last_tick: spin::Mutex::new(0),
+        task: perform_stats_logging,
+    },
+    PeriodicTask {
+        interval: 2000,
+        last_tick: spin::Mutex::new(0),
+        task: perform_system_maintenance,
+    },
+    PeriodicTask {
+        interval: 10000,
+        last_tick: spin::Mutex::new(0),
+        task: perform_memory_capacity_check,
+    },
+    PeriodicTask {
+        interval: 100,
+        last_tick: spin::Mutex::new(0),
+        task: perform_process_cleanup_check,
+    },
+    PeriodicTask {
+        interval: 30000,
+        last_tick: spin::Mutex::new(0),
+        task: perform_automated_backup,
+    },
+    // draw_desktop_task REMOVED — rendering is now owned by Solvent runtime_tick
+    // with frame pacing (FRAME_TIMER_ID).  Calling gui::render() from a periodic
+    // task would bypass frame pacing and cause full‑framebuffer clears at the
+    // periodic rate, contributing to flicker.
+    PeriodicTask {
+        interval: 10000,
+        last_tick: spin::Mutex::new(0),
+        task: emergency_handler_task,
+    },
 ];
 use x86_64::VirtAddr;
 
@@ -128,8 +155,8 @@ fn check_process_count() {
 
 /// Check and drain keyboard buffer if needed
 fn check_keyboard_buffer() {
-    if crate::keyboard::input_available() {
-        let drained = crate::keyboard::drain_line_buffer(&mut []);
+    if nitrogen::ps2::keyboard::input_available() {
+        let drained = nitrogen::ps2::keyboard::drain_line_buffer(&mut []);
         if drained > 256 {
             log::debug!("Drained {} bytes from keyboard buffer", drained);
         }
@@ -226,8 +253,6 @@ fn process_scheduler_iteration() {
             (task.task)(current_tick, iteration_count);
         }
     }
-
-    yield_and_process_system_calls();
 }
 
 // Autmoated backup function moved to use in stats_task
@@ -258,25 +283,9 @@ fn perform_process_cleanup_check(_tick: u64, _iter: u64) {
     crate::process::cleanup_terminated_processes();
 }
 
-/// Yield control and process system calls
-fn yield_and_process_system_calls() {
-    crate::syscall::kernel_syscall(22, 0, 0, 0); // Yield syscall
-
-    // Allow I/O operations with brief pauses
-    for _ in 0..50 {
-        petroleum::cpu_pause();
-    }
-}
-
-/// Draw the OS desktop on the available framebuffer (UEFI or BIOS)
+/// Draw the OS desktop using Lattice compositor (or fallback).
 fn draw_desktop_on_available_framebuffer() {
-    let mut renderer_lock = crate::graphics::PRIMARY_RENDERER.lock();
-    if let Some(ref mut renderer) = *renderer_lock {
-        petroleum::graphics::draw_os_desktop(renderer);
-        renderer.present();
-    }
-    drop(renderer_lock);
-    crate::graphics::flush_gpu();
+    crate::gui::render();
 }
 
 /// Main kernel scheduler loop - orchestrates all system functionality
@@ -309,23 +318,20 @@ pub fn scheduler_loop() -> ! {
         }
     }
 
-    loop {
-        SYSTEM_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        SCHEDULER_ITERATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    // Inject the kernel's framebuffer renderer into Solvent so that
+    // runtime_tick_no_fb() (called from the shell's read_byte yield loop)
+    // can paint the terminal buffer, cursor, and desktop onto the screen.
+    crate::gui::set_render_fn(crate::gui::render);
 
-        process_scheduler_iteration();
-        // Cooperative yield to idle process (if available)
-        let active = crate::process::get_active_process_count();
-        if active > 1 {
-            scheduler_log!("Active processes: {}, yielding...", active);
-            crate::process::yield_current();
-        } else {
-            // No processes to yield to, just pause briefly
-            for _ in 0..1000 {
-                petroleum::cpu_pause();
-            }
-        }
-    }
+    // The shell is NOT a separate process — it runs cooperatively inside the
+    // scheduler loop.  When the shell blocks waiting for keyboard input, its
+    // LatticeTerminal::read_byte() services the entire runtime (mouse polling,
+    // timer advancement, event processing, rendering) via runtime_tick_no_fb().
+    // This means the shell IS the scheduler loop.
+    crate::shell::shell_main();
+
+    // shell_main exits (via "exit" command) → halt the system.
+    petroleum::halt_loop();
 }
 
 /// Handle emergency system conditions (OOM, process limits, etc.)
@@ -352,7 +358,7 @@ petroleum::health_check!(
 
 petroleum::health_check!(
     check_emergency_process_count,
-    { crate::process::get_active_process_count() > MAX_PROCESSES_EMERGENCY },
+    crate::process::get_active_process_count() > MAX_PROCESSES_EMERGENCY,
     error,
     "EMERGENCY: Too many active processes!",
     {

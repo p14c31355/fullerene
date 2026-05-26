@@ -2,8 +2,8 @@ use super::registers::{
     ATTRIBUTE_CONFIG, ATTRIBUTE_TEXT_CONFIG, CRTC_CONFIG, CRTC_TEXT_CONFIG, GRAPHICS_CONFIG,
     GRAPHICS_TEXT_CONFIG, SEQUENCER_CONFIG, SEQUENCER_TEXT_CONFIG,
 };
-use crate::hardware::ports::{HardwarePorts, PortWriter, VgaPortOps};
 use crate::{write_port_sequence, write_vga_register};
+use nitrogen::port::{HardwarePorts, PortWriter, VgaPortOps};
 
 /// Macro to reduce repetitive RGB value writing in palette setup
 #[macro_export]
@@ -136,7 +136,7 @@ pub fn setup_vga_text_mode() {
     setup_misc_output();
 
     // Unlock CRTC registers
-    let crtc_unlock = crate::hardware::ports::RegisterConfig {
+    let crtc_unlock = nitrogen::port::RegisterConfig {
         index: 0x11,
         value: 0x0E,
     };

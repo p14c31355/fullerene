@@ -33,7 +33,9 @@ pub fn init_syscall_stack() {
     let ptr = unsafe { alloc(layout) };
     mem_debug!("Syscall: stack allocated\n");
     let stack_top = unsafe { ptr.add(SYSCALL_STACK_SIZE) };
-    unsafe { SYSCALL_STACK_PTR = stack_top as u64; }
+    unsafe {
+        SYSCALL_STACK_PTR = stack_top as u64;
+    }
     mem_debug!("Syscall: init_syscall_stack done\n");
 }
 
@@ -113,7 +115,9 @@ pub fn setup_syscall() {
     use x86_64::registers::model_specific::KernelGsBase;
     mem_debug!("Syscall: writing KernelGsBase\n");
     unsafe {
-        KernelGsBase::write(VirtAddr::new(&raw const SYSCALL_STACK_PTR as *const _ as u64));
+        KernelGsBase::write(VirtAddr::new(
+            &raw const SYSCALL_STACK_PTR as *const _ as u64,
+        ));
     }
     mem_debug!("Syscall: KernelGsBase written\n");
 

@@ -61,10 +61,10 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     let common_steps = [
         petroleum::init_step!("PCI BARs", || {
             petroleum::serial::serial_log(format_args!("Initializing PCI BARs...\n"));
-            let mut scanner = petroleum::hardware::pci::PciScanner::new();
+            let mut scanner = nitrogen::pci::PciScanner::new();
             if scanner.scan_all_buses().is_ok() {
                 let mut allocator = petroleum::hardware::pci::PciAllocator::new(0x40000000);
-                allocator.assign_bars(&scanner);
+                allocator.assign_bars(scanner.get_devices());
             }
             Ok(())
         }),
@@ -74,6 +74,24 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
         }),
         petroleum::init_step!("Interrupts", || {
             crate::interrupts::init();
+            Ok(())
+        }),
+        petroleum::init_step!("PS2 Mouse", || {
+            match nitrogen::ps2::mouse::init_mouse() {
+                Ok(()) => {
+                    petroleum::serial::serial_log(format_args!("PS/2 mouse initialised\n"));
+                    Ok(())
+                }
+                Err(e) => {
+                    petroleum::serial::serial_log(format_args!("PS/2 mouse init failed: {}\n", e));
+                    // Non-fatal: continue without mouse
+                    Ok(())
+                }
+            }
+        }),
+        petroleum::init_step!("PS2 Keyboard", || {
+            nitrogen::ps2::keyboard::init_keyboard();
+            petroleum::serial::serial_log(format_args!("PS/2 keyboard initialised\n"));
             Ok(())
         }),
         petroleum::init_step!("process", || {
@@ -93,6 +111,11 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
         }),
         petroleum::init_step!("loader", || {
             crate::loader::init();
+            Ok(())
+        }),
+        petroleum::init_step!("gui", || {
+            crate::gui::init();
+            petroleum::serial::serial_log(format_args!("GUI subsystem initialised\n"));
             Ok(())
         }),
     ];

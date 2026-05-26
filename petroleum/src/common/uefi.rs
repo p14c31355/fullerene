@@ -247,27 +247,27 @@ pub struct EfiBootServices {
     _unused14: usize,                                        // fn14
     _unused15: usize,                                        // fn15
     pub handle_protocol: extern "efiapi" fn(usize, *const u8, *mut *mut c_void) -> usize, // UEFI fn16
-    _unused17: usize,                                        // UEFI fn17 (Reserved)
-    _unused18: usize,                                        // UEFI fn18 (RegisterProtocolNotify - unused)
+    _unused17: usize, // UEFI fn17 (Reserved)
+    _unused18: usize, // UEFI fn18 (RegisterProtocolNotify - unused)
     pub locate_handle:
         extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut usize) -> usize, // UEFI fn19
-    _unused19: usize,                                        // UEFI fn20 (LocateDevicePath - unused)
+    _unused19: usize, // UEFI fn20 (LocateDevicePath - unused)
     pub install_configuration_table: extern "efiapi" fn(*const u8, *mut c_void) -> usize, // UEFI fn21
-    _unused21: usize,                                        // UEFI fn22 (LoadImage)
-    _unused22: usize,                                        // UEFI fn23 (StartImage)
-    _unused23: usize,                                        // UEFI fn24 (Exit)
-    _unused24: usize,                                        // UEFI fn25 (UnloadImage)
+    _unused21: usize, // UEFI fn22 (LoadImage)
+    _unused22: usize, // UEFI fn23 (StartImage)
+    _unused23: usize, // UEFI fn24 (Exit)
+    _unused24: usize, // UEFI fn25 (UnloadImage)
     pub exit_boot_services: extern "efiapi" fn(usize, usize) -> usize, // UEFI fn26
-    _unused26: usize,                                        // UEFI fn27 (GetNextMonotonicCount)
-    pub stall: extern "efiapi" fn(usize) -> usize,           // UEFI fn28
-    _unused28: usize,                                        // UEFI fn29 (SetWatchdogTimer)
-    _unused29: usize,                                        // UEFI fn30 (ConnectController)
-    _unused30: usize,                                        // UEFI fn31 (DisconnectController)
+    _unused26: usize, // UEFI fn27 (GetNextMonotonicCount)
+    pub stall: extern "efiapi" fn(usize) -> usize, // UEFI fn28
+    _unused28: usize, // UEFI fn29 (SetWatchdogTimer)
+    _unused29: usize, // UEFI fn30 (ConnectController)
+    _unused30: usize, // UEFI fn31 (DisconnectController)
     pub open_protocol:
         extern "efiapi" fn(usize, *const u8, *mut *mut c_void, usize, usize, u32) -> usize, // UEFI fn32
     pub close_protocol: extern "efiapi" fn(usize, *const u8, usize, usize) -> usize, // UEFI fn33
-    _unused33: usize,                                        // UEFI fn34 (OpenProtocolInformation)
-    _unused34: usize,                                        // UEFI fn35 (ProtocolsPerHandle)
+    _unused33: usize, // UEFI fn34 (OpenProtocolInformation)
+    _unused34: usize, // UEFI fn35 (ProtocolsPerHandle)
     pub locate_handle_buffer:
         extern "efiapi" fn(u32, *const u8, *mut c_void, *mut usize, *mut *mut usize) -> usize, // UEFI fn36
     pub locate_protocol: extern "efiapi" fn(*const u8, *mut c_void, *mut *mut c_void) -> usize, // UEFI fn37
@@ -339,7 +339,7 @@ pub struct EfiGraphicsOutputProtocolMode {
 }
 
 /// Minimal EFI_GRAPHICS_OUTPUT_MODE_INFORMATION (UEFI)
-/// UEFI spec: EFI_GRAPHICS_OUTPUT_MODE_INFORMATION = 
+/// UEFI spec: EFI_GRAPHICS_OUTPUT_MODE_INFORMATION =
 ///   Version (u32) + HorizontalResolution (u32) + VerticalResolution (u32) +
 ///   PixelFormat (u32) + PixelInformation (EFI_PIXEL_BITMASK = 4*u32) +
 ///   PixelsPerScanLine (u32)

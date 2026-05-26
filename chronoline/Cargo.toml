@@ -1,0 +1,13 @@
+[package]
+name = "chronoline"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+[features]
+default = []

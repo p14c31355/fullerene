@@ -1,47 +1,500 @@
 # Fullerene Project Rules
 
-## 1. Overall Policy (Highest Priority)
-- **This project aims for a "safe, readable, and maintainable no_std OS kernel."**
-- We absolutely require a loosely coupled code layout from the perspective of the future, starting from the bootloader firing point.
-- The OS operates within a world that changes over time. Therefore, choose loose coupling over time as your paramount principle.
-- Minimize unsafe/asm. Maximize the use of Rust's core/alloc.
-- Always write code that is "easy for later readers to understand."
+## 1. Overall Philosophy (Highest Priority)
 
-## 2. Code Structure and Dependencies
-- Treat other sub-crates (bellows, fullerene-kernel, etc.) as **binary crates** (appropriately configured in Cargo.toml).
-- Actively utilize external crates other than `uefi` / `bootloader` crates to reduce code.
-- Prefer external crates that preserve explicit ownership, initialization, and no_std boundaries.
-- Use isobemak for ISO creation.
+- **Fullerene aims to be a safe, readable, maintainable, loosely-coupled no_std operating system.**
+- The project must prioritize long-term architectural clarity over short-term convenience.
+- The OS exists in an evolving world of changing hardware, firmware, runtime models, and subsystem requirements.
+- Therefore:
 
-## 3. Coding Style
-- Duplication is acceptable when lifecycle, execution phase, or ownership differ.
-- Prefer explicit ownership transfer over global accessibility.
-- Refactor long, repetitive operations (e.g., consecutive `port.write()` calls) into constants or helper functions.
-- **Do not repeat the same command/operation more than 3 times consecutively** (refactoring is mandatory).
-- Split files appropriately. However, merge redundant `.rs` files.
-- Do not hide initialization order behind globals, macros, or implicit side effects.
-- Prefer capability passing over singleton access.
-- Similar code is not necessarily shared code.
-- Architectural clarity is more important than LOC reduction.
-- Do not abstract across phase boundaries unless ownership and lifecycle are identical.
+```text
+Prefer loose coupling over time.
+```
 
-## 4. Unsafe / Low-Level Code
-- Use **minimum** asm! macros and unsafe blocks.
-- Implement with safe Rust + core libraries whenever possible.
-- When using unsafe, clearly explain "why it's necessary" and "the basis for safety" with comments.
+- Minimize unsafe and asm usage.
+- Maximize use of Rust core/alloc ecosystems.
+- Prefer explicit ownership and lifecycle management.
+- Code should always remain understandable to future maintainers.
 
-## 5. Testing and Verification Flow
-- Always verify functionality with `cargo run -q -p flasks` after changes.
+---
 
-- Prioritize testing with QEMU.
+# 2. Workspace Architecture Philosophy
 
-## 6. Documentation and Comments
-- Always include doc comments for important functions and structures.
-- Update docs/ when the architecture changes.
-- Be specific with TODOs.
+The Fullerene workspace is no longer a single monolithic kernel.
 
-## 7. Prohibited Actions
-- Do not add new dependencies to existing bootloader/UEFI crates.
-- Avoid unnecessary code duplication.
-- Avoid long magic numbers/hardcode (prioritize constants).
-- The grep command is prohibited from use due to the risk of task termination.
+Each crate represents:
+
+```text
+an architectural subsystem boundary
+```
+
+not merely a compilation unit.
+
+Architectural clarity is more important than minimizing LOC.
+
+Similar code is not necessarily shared code.
+
+Duplication is acceptable when:
+- ownership differs
+- lifecycle differs
+- execution phase differs
+- synchronization domain differs
+
+---
+
+# 3. Global Dependency Direction Rules
+
+The workspace should roughly follow this dependency direction:
+
+```text
+Fullerene Kernel
+    ↓
+Nitrogen (drivers)
+    ↓
+Solvent (runtime/orchestration)
+    ↓
+Resonance / ChronoLine
+    ↓
+Lattice / Nozzle
+```
+
+Lower layers must never depend on higher-level policy layers.
+
+Examples:
+
+- Nitrogen must not depend on Lattice.
+- Nitrogen must not depend on Nozzle.
+- Resonance must not depend on GUI concepts.
+- ChronoLine must not own scheduler policy.
+- Kernel must not directly own desktop logic.
+
+Avoid dependency inversion caused by convenience.
+
+---
+
+# 4. Crate Responsibilities
+
+## Fullerene Kernel
+
+The kernel owns:
+- memory management
+- interrupts
+- scheduler primitives
+- low-level runtime initialization
+- hardware resource ownership
+- architecture bootstrap
+
+The kernel should NOT own:
+- GUI logic
+- shell logic
+- compositor policy
+- event routing policy
+- desktop state
+
+Kernel code should remain thin.
+
+Preferred direction:
+
+```text
+kernel = primitive foundation
+```
+
+not:
+
+```text
+kernel = entire operating system state
+```
+
+---
+
+## Nitrogen (Drivers)
+
+Nitrogen is the hardware mechanism layer.
+
+Nitrogen owns:
+- MMIO
+- DMA
+- IRQ interaction
+- hardware initialization
+- device state machines
+- framebuffer/device access
+
+Nitrogen does NOT own:
+- GUI policy
+- shell policy
+- compositor logic
+- event propagation policy
+- desktop logic
+
+Unsafe code should be localized primarily inside Nitrogen.
+
+Preferred philosophy:
+
+```text
+drivers expose mechanisms
+higher layers decide policy
+```
+
+Nitrogen should prefer safe abstractions over leaking raw hardware interfaces upward.
+
+---
+
+## Solvent (Runtime)
+
+Solvent is the orchestration/runtime layer.
+
+Solvent owns:
+- runtime coordination
+- subsystem bootstrap
+- event loop orchestration
+- service ownership
+- subsystem wiring
+- frame/update pacing
+
+Solvent should NOT become:
+- a GUI framework
+- a driver layer
+- a scheduler implementation
+- a global state dumping ground
+
+Solvent primarily answers:
+
+```text
+who runs what
+who owns what
+who talks to what
+```
+
+---
+
+## Resonance (Events)
+
+Resonance is the immutable event propagation layer.
+
+Resonance owns:
+- event definitions
+- event queues
+- dispatch/routing
+- propagation flow
+
+Resonance should prefer:
+- immutable events
+- replayable event streams
+- deterministic behavior
+- explicit ownership
+
+Resonance must NOT become:
+- a GUI framework
+- a scheduler
+- a rendering system
+- a global mutable state container
+
+Prefer replayable deterministic event flows.
+
+---
+
+## ChronoLine (Timers)
+
+ChronoLine is the time management subsystem.
+
+ChronoLine owns:
+- clocks
+- timer queues
+- deadlines
+- timeout tracking
+- repeating timer primitives
+
+ChronoLine should NOT own:
+- task scheduling policy
+- async runtimes
+- rendering policy
+- GUI logic
+
+Preferred philosophy:
+
+```text
+ChronoLine manages time primitives.
+Other systems decide what time means.
+```
+
+---
+
+## Lattice (Window Manager / Compositor)
+
+Lattice owns:
+- desktop state
+- scene management
+- compositor logic
+- focus management
+- redraw invalidation
+- window management
+- cursor composition
+
+Lattice should NOT own:
+- raw hardware access
+- timer hardware
+- shell parsing
+- filesystem logic
+
+Preferred rendering style:
+- explicit rendering passes
+- immutable scene snapshots
+- headless renderability
+- deterministic composition
+
+Prefer:
+- dirty rect rendering
+- replayable GUI tests
+- snapshot testing
+
+---
+
+## Nozzle (Shell)
+
+Nozzle is the interactive shell subsystem.
+
+Nozzle owns:
+- command parsing
+- shell state
+- prompt rendering
+- line editing
+- builtin command execution
+- terminal interaction flow
+
+Nozzle should NOT own:
+- framebuffer rendering
+- GUI composition
+- device access
+- scheduler policy
+
+Prefer terminal abstraction over direct framebuffer coupling.
+
+Preferred direction:
+
+```text
+Nozzle produces text interaction.
+Terminal systems decide how it is rendered.
+```
+
+---
+
+## Isobemak
+
+Isobemak is the boot image engineering and packaging system.
+
+Isobemak owns:
+- ISO9660 image generation
+- El Torito support
+- hybrid GPT layouts
+- FAT32 ESP generation
+- UEFI boot image construction
+- boot metadata layout
+
+Isobemak should prioritize:
+- standards correctness
+- compatibility
+- deterministic image generation
+- explicit binary layout handling
+
+Prefer correctness over cleverness.
+
+---
+
+## Flasks
+
+Flasks is the development runtime/runner tool.
+
+Flasks owns:
+- build orchestration
+- QEMU execution
+- debug profiles
+- test launch configuration
+- development workflows
+
+Flasks should support:
+- rapid iteration
+- compatibility testing
+- multiple machine profiles
+- reproducible debugging
+
+---
+
+# 5. Ownership and State Rules
+
+Prefer:
+
+```text
+explicit ownership transfer
+```
+
+over:
+
+```text
+global singleton access
+```
+
+Avoid hidden initialization order.
+
+Do not hide lifecycle dependencies behind:
+- globals
+- macros
+- implicit side effects
+- hidden static initialization
+
+Prefer capability passing.
+
+Subsystem state should be owned locally whenever possible.
+
+---
+
+# 6. Unsafe and Low-Level Code Policy
+
+- Minimize unsafe usage.
+- Minimize asm! usage.
+- Prefer safe Rust whenever possible.
+- Unsafe blocks must explain:
+  - why unsafe is necessary
+  - what guarantees make it safe
+
+Unsafe code should be localized near hardware boundaries.
+
+Preferred philosophy:
+
+```text
+unsafe should be isolated
+safe APIs should propagate upward
+```
+
+---
+
+# 7. Testing Philosophy
+
+Always verify runtime behavior with:
+
+```bash
+cargo run -q -p flasks -- --vga std
+```
+
+QEMU testing remains important.
+
+However, the project should increasingly prefer:
+- headless subsystem tests
+- replayable event tests
+- deterministic rendering tests
+- snapshot testing
+- non-interactive GUI validation
+
+Prefer architectures that allow:
+
+```text
+same input
+→ same state
+→ same frame output
+```
+
+The system should become progressively more simulation-friendly over time.
+
+---
+
+# 8. Rendering and Event Design Philosophy
+
+Prefer immutable/event-driven architectures.
+
+Recommended flow:
+
+```text
+hardware input
+    ↓
+Nitrogen
+    ↓
+Resonance events
+    ↓
+Lattice / Nozzle
+    ↓
+render output
+```
+
+Avoid tightly coupling:
+- drivers and GUI
+- rendering and input acquisition
+- timers and scheduler policy
+
+Prefer deterministic replayability.
+
+---
+
+# 9. Documentation Rules
+
+- Important structures/functions require doc comments.
+- Update docs/ whenever architecture changes.
+- TODOs must be concrete and actionable.
+- Architectural changes should document ownership implications.
+
+---
+
+# 10. Coding Style Rules
+
+- Refactor repetitive operations into helpers/constants.
+- Avoid repeating identical operations more than 3 times.
+- Split files appropriately.
+- Merge redundant files.
+- Avoid giant god-modules.
+- Avoid phase-boundary abstractions unless ownership/lifecycle are identical.
+- Prefer readability over clever abstractions.
+
+Long-term maintainability is more important than temporary elegance.
+
+---
+
+# 11. External Crates
+
+- External crates are encouraged when they reduce complexity.
+- Prefer crates that preserve:
+  - explicit ownership
+  - no_std compatibility
+  - initialization clarity
+  - architectural transparency
+
+Do not add unnecessary bootloader/UEFI framework dependencies.
+
+Use Isobemak for ISO generation.
+
+---
+
+# 12. Prohibited Actions
+
+- Do not tightly couple subsystem layers.
+- Do not leak GUI logic into low-level drivers.
+- Do not introduce unnecessary global state.
+- Do not hide ownership.
+- Avoid unexplained unsafe.
+- Avoid large magic constants.
+- Avoid architecture-obscuring abstractions.
+- Avoid dependency shortcuts that violate subsystem direction.
+- Do not use grep due to task termination risk.
+
+---
+
+# 13. Long-Term Architectural Goal
+
+Fullerene should evolve toward:
+
+```text
+small core primitives
++
+loosely coupled subsystem crates
++
+deterministic event-driven orchestration
++
+safe hardware abstraction
+```
+
+The project should remain:
+- understandable
+- debuggable
+- replayable
+- testable
+- evolvable over time
+
+Architectural clarity is the highest long-term priority.
+

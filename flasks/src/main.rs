@@ -121,6 +121,19 @@ fn build_uefi_package(
     Ok(())
 }
 
+fn grub_cfg_content(_kernel_path: &PathBuf) -> String {
+    // The ISO image always copies the kernel to /EFI/BOOT/KERNEL.EFI,
+    // so the GRUB configuration must match this fixed path.
+    r#"set default="0"
+set timeout="5"
+
+menuentry "Fullerene OS" {
+    chainloader /EFI/BOOT/KERNEL.EFI
+}
+"#
+    .to_string()
+}
+
 fn create_iso_and_setup(
     workspace_root: &PathBuf,
 ) -> io::Result<(PathBuf, PathBuf, PathBuf, tempfile::NamedTempFile)> {
@@ -160,36 +173,35 @@ fn create_iso_and_setup(
     // --- 3. Create ISO using isobemak ---
     let iso_path = workspace_root.join("fullerene.iso");
 
-    // Create dummy file for BIOS boot catalog path required by BiosBootInfo struct
-    let dummy_boot_catalog_path = workspace_root.join("dummy_boot_catalog.bin");
-    std::fs::File::create(&dummy_boot_catalog_path)?;
-
     let image = IsoImage {
         volume_id: None,
         files: vec![
             IsoImageFile {
                 source: kernel_path.clone(),
-                destination: "EFI\\BOOT\\KERNEL.EFI".to_string(),
+                destination: "EFI/BOOT/KERNEL.EFI".to_string(),
             },
             IsoImageFile {
                 source: bellows_path.clone(),
-                destination: "EFI\\BOOT\\BOOTX64.EFI".to_string(),
+                destination: "EFI/BOOT/BOOTX64.EFI".to_string(),
             },
         ],
         boot_info: BootInfo {
             bios_boot: Some(BiosBootInfo {
-                boot_catalog: dummy_boot_catalog_path.clone(),
                 boot_image: bellows_path.clone(),
-                destination_in_iso: "EFI\\BOOT\\BOOTX64.EFI".to_string(),
+                destination_in_iso: "EFI/BOOT/BOOTX64.EFI".to_string(),
             }),
             uefi_boot: Some(UefiBootInfo {
                 boot_image: bellows_path.clone(),
                 kernel_image: kernel_path.clone(),
-                destination_in_iso: "EFI\\BOOT\\BOOTX64.EFI".to_string(),
+                destination_in_iso: "EFI/BOOT/BOOTX64.EFI".to_string(),
+                additional_efi_boot_files: Vec::new(),
+                grub_cfg_content: Some(grub_cfg_content(&kernel_path)),
             }),
         },
+        layout_profile: isobemak::IsoLayoutProfile::ventoy_compat(),
     };
-    build_iso(&iso_path, &image, true)?; // Set to true for isohybrid UEFI boot
+    let (_iso_output_path, _temp_fat_holder, _iso_file, _logical_fat_size) =
+        build_iso(&iso_path, &image, true)?; // Set to true for isohybrid UEFI boot
 
     let ovmf_fd_path = workspace_root
         .join("flasks")
@@ -231,10 +243,14 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
 
     let mut qemu_cmd = Command::new("qemu-system-x86_64");
     let mut qemu_args: Vec<String> = vec![
-        "-m".to_string(), "4G".to_string(),
-        "-cpu".to_string(), "qemu64,+smap,-invtsc".to_string(),
-        "-smp".to_string(), "1".to_string(),
-        "-M".to_string(), "q35".to_string(),
+        "-m".to_string(),
+        "4G".to_string(),
+        "-cpu".to_string(),
+        "qemu64,+smap,-invtsc".to_string(),
+        "-smp".to_string(),
+        "1".to_string(),
+        "-M".to_string(),
+        "q35,usb=off".to_string(),
     ];
 
     // --- VGA device (dynamic) ---
@@ -281,10 +297,16 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
     }
 
     // --- Display backend (dynamic) ---
-    let display = args.display.as_deref().unwrap_or(if args.headless { "none" } else { "gtk" });
+    // Default to SDL because GTK creates a USB tablet that captures all
+    // mouse events and prevents PS/2 i8042 AUX port from receiving data.
+    // SDL routes mouse events through PS/2 by default.
+    let display = args
+        .display
+        .as_deref()
+        .unwrap_or(if args.headless { "none" } else { "sdl" });
     qemu_args.push("-display".to_string());
     match display {
-        "gtk" => qemu_args.push("gtk,gl=off,window-close=on,zoom-to-fit=on".to_string()),
+        "gtk" => qemu_args.push("gtk,gl=off,window-close=on,zoom-to-fit=on,grab-on-hover=on".to_string()),
         "sdl" => qemu_args.push("sdl,gl=off".to_string()),
         "none" => qemu_args.push("none".to_string()),
         "curses" => qemu_args.push("curses".to_string()),
@@ -295,11 +317,16 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
     }
 
     qemu_args.extend([
-        "-serial".to_string(), "stdio".to_string(),
-        "-accel".to_string(), "tcg,thread=single".to_string(),
-        "-d".to_string(), "int,cpu_reset,guest_errors,unimp".to_string(),
-        "-D".to_string(), "qemu_log.txt".to_string(),
-        "-monitor".to_string(), "none".to_string(),
+        "-serial".to_string(),
+        "stdio".to_string(),
+        "-accel".to_string(),
+        "tcg,thread=single".to_string(),
+        "-d".to_string(),
+        "int,cpu_reset,guest_errors,unimp".to_string(),
+        "-D".to_string(),
+        "qemu_log.txt".to_string(),
+        "-monitor".to_string(),
+        "none".to_string(),
     ]);
 
     qemu_args.push("-drive".to_string());
@@ -315,10 +342,12 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
     qemu_args.extend([
         "-no-reboot".to_string(),
         "-no-shutdown".to_string(),
-        "-device".to_string(), "isa-debug-exit,iobase=0xf4,iosize=0x04".to_string(),
-        "-rtc".to_string(), "base=utc".to_string(),
-        "-boot".to_string(), "menu=on,order=d".to_string(),
-        "-nodefaults".to_string(),
+        "-device".to_string(),
+        "isa-debug-exit,iobase=0xf4,iosize=0x04".to_string(),
+        "-rtc".to_string(),
+        "base=utc".to_string(),
+        "-boot".to_string(),
+        "menu=on,order=d".to_string(),
     ]);
 
     qemu_cmd.args(&qemu_args);

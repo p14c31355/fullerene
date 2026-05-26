@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["bellows", "flasks", "fullerene-kernel", "petroleum", "toluene"]
+members = ["bellows", "chronoline", "flasks", "fullerene-kernel", "lattice", "nitrogen", "nozzle", "petroleum", "resonance", "solvent", "toluene"]
 
 [profile.dev]
 panic = "abort"
@@ -14,5 +14,5 @@ codegen-units = 1
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["p14c31355"]

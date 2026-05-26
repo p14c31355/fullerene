@@ -18,17 +18,24 @@ fn try_allocate_pages(
     let types_to_try = [preferred_type, EfiMemoryType::EfiConventionalMemory];
 
     for mem_type in types_to_try {
-        debug_log_no_alloc!("Heap: allocate_pages(pages={}, mem_type={}) called", pages, mem_type as usize);
+        debug_log_no_alloc!(
+            "Heap: allocate_pages(pages={}, mem_type={}) called",
+            pages,
+            mem_type as usize
+        );
 
         let mut phys_addr_local: usize = 0;
         let alloc_type = 0usize; // AllocateAnyPages
-        let status = (bs.allocate_pages)(
-            alloc_type,
-            mem_type,
-            pages,
-            &mut phys_addr_local,
+        let status = (bs.allocate_pages)(alloc_type, mem_type, pages, &mut phys_addr_local);
+        // UEFI spec: phys_addr_local is only valid when status == EFI_SUCCESS (0).
+        if status != 0 {
+            continue;
+        }
+        debug_log_no_alloc!(
+            "Heap: allocate_pages status={:x}, phys_addr_local={:x}",
+            status,
+            phys_addr_local
         );
-        debug_log_no_alloc!("Heap: allocate_pages status={:x}, phys_addr_local={:x}", status, phys_addr_local);
 
         // Immediate validation: check if phys_addr_local is page-aligned (avoid invalid reads)
         if phys_addr_local != 0 && !phys_addr_local.is_multiple_of(4096) {

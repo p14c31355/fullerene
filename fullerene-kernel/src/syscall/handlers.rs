@@ -193,7 +193,7 @@ fn syscall_read(fd: core::ffi::c_int, buffer: *mut u8, count: usize) -> SyscallR
     if fd == 0 {
         // Single-byte reads: get one char from raw input buffer
         if count == 1 {
-            if let Some(ch) = crate::keyboard::read_char() {
+            if let Some(ch) = nitrogen::ps2::keyboard::read_char() {
                 data[0] = ch;
                 Ok(1)
             } else {
@@ -201,7 +201,7 @@ fn syscall_read(fd: core::ffi::c_int, buffer: *mut u8, count: usize) -> SyscallR
             }
         } else {
             // Multi-byte reads: drain line buffer
-            let bytes_read = crate::keyboard::drain_line_buffer(data);
+            let bytes_read = nitrogen::ps2::keyboard::drain_line_buffer(data);
             Ok(bytes_read as u64)
         }
     } else {

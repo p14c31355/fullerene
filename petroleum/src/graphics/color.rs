@@ -4,9 +4,9 @@ use embedded_graphics::prelude::*;
 use core::marker::{Send, Sync};
 use core::ptr::{read_volatile, write_volatile};
 
-use crate::common::{EfiGraphicsPixelFormat, VgaFramebufferConfig};
 #[cfg(target_os = "uefi")]
 use crate::common::uefi::FullereneFramebufferConfig;
+use crate::common::{EfiGraphicsPixelFormat, VgaFramebufferConfig};
 use spin::{Mutex, Once};
 
 // --- FramebufferInfo ---

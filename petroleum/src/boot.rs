@@ -198,12 +198,10 @@ pub fn create_primary_console() -> Option<crate::graphics::framebuffer::UefiFram
     // The config may contain garbage if the bootloader's Once/Mutex was corrupted
     // during the world switch or page table re-initialization.
     trace!("Attempting to get fb_config\n");
-    let raw_config = crate::FULLERENE_FRAMEBUFFER_CONFIG
-        .get()
-        .and_then(|mutex| {
-            let lock = mutex.lock();
-            *lock
-        });
+    let raw_config = crate::FULLERENE_FRAMEBUFFER_CONFIG.get().and_then(|mutex| {
+        let lock = mutex.lock();
+        *lock
+    });
 
     let config = if let Some(cfg) = raw_config {
         let fb_valid = cfg.address >= 0x100000
@@ -214,8 +212,10 @@ pub fn create_primary_console() -> Option<crate::graphics::framebuffer::UefiFram
             && cfg.height <= 16384
             && (cfg.bpp == 8 || cfg.bpp == 16 || cfg.bpp == 24 || cfg.bpp == 32);
         if fb_valid {
-            trace!("FULLERENE_FRAMEBUFFER_CONFIG validated OK: {:#x} {}x{} bpp={}\n",
-                cfg.address, cfg.width, cfg.height, cfg.bpp);
+            trace!(
+                "FULLERENE_FRAMEBUFFER_CONFIG validated OK: {:#x} {}x{} bpp={}\n",
+                cfg.address, cfg.width, cfg.height, cfg.bpp
+            );
             Some(cfg)
         } else {
             trace!("FULLERENE_FRAMEBUFFER_CONFIG validation FAILED, trying fallback\n");
@@ -248,11 +248,14 @@ pub fn create_primary_console() -> Option<crate::graphics::framebuffer::UefiFram
             fb_phys, fb_virt, fb_width, fb_height, fb_bpp, fb_stride
         );
         trace!("fb_size={} bytes, fb_pages={}\n", fb_size, fb_pages);
-        
+
         // Debugging: Verify stride matches expected bytes-per-line
         let expected_stride = (fb_width as u64 * (fb_bpp as u64 / 8)) as u32;
         if fb_stride != expected_stride {
-             trace!("WARNING: fb_stride ({}) != expected_stride ({})\n", fb_stride, expected_stride);
+            trace!(
+                "WARNING: fb_stride ({}) != expected_stride ({})\n",
+                fb_stride, expected_stride
+            );
         }
 
         let frame_allocator = get_frame_allocator_mut();
@@ -269,10 +272,7 @@ pub fn create_primary_console() -> Option<crate::graphics::framebuffer::UefiFram
             | PageTableFlags::NO_EXECUTE
             | PageTableFlags::NO_CACHE;
 
-        trace!(
-            "mapping {} framebuffer pages with UC flags\n",
-            fb_pages
-        );
+        trace!("mapping {} framebuffer pages with UC flags\n", fb_pages);
 
         unsafe {
             for i in 0..fb_pages {

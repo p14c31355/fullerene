@@ -11,13 +11,13 @@ use petroleum::mem_debug;
 use x86_64::structures::paging::PageTableFlags as PageFlags;
 
 use petroleum::page_table::process::ProcessPageTable;
+use petroleum::page_table::types::PageTableHelper;
 pub mod convenience;
 pub mod kernel_space;
 pub mod manager;
 pub mod process_memory;
 
 pub use manager::UnifiedMemoryManager;
-pub use petroleum::page_table::*;
 pub use process_memory::*;
 
 // Memory management error types
@@ -158,9 +158,6 @@ pub fn map_user_page(
         Err(SystemError::InternalError)
     }
 }
-
-// Re-export functions for easier access
-pub use petroleum::{is_user_address, validate_user_buffer};
 
 #[cfg(test)]
 mod tests {

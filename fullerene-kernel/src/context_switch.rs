@@ -48,17 +48,17 @@ pub extern "C" fn switch_context(
         "mov rbx, rsi",
         // Push all values we need after GPR restore onto stack
         // This avoids callee-saved register aliasing with GPR restore
-        "mov rax, [rbx + 200]",  // rax = is_user (push to stack)
+        "mov rax, [rbx + 200]", // rax = is_user (push to stack)
         "push rax",
-        "mov rax, [rbx + 136]",  // rax = rflags
+        "mov rax, [rbx + 136]", // rax = rflags
         "push rax",
-        "mov rax, [rbx + 128]",  // rax = rip
+        "mov rax, [rbx + 128]", // rax = rip
         "push rax",
-        "mov rax, [rbx + 152]",  // rax = ss (for user mode)
+        "mov rax, [rbx + 152]", // rax = ss (for user mode)
         "push rax",
-        "mov rax, [rbx + 144]",  // rax = cs
+        "mov rax, [rbx + 144]", // rax = cs
         "push rax",
-        "mov rax, [rbx + 56]",   // rax = rsp (user or kernel)
+        "mov rax, [rbx + 56]", // rax = rsp (user or kernel)
         "push rax",
         // Stack now: saved_rsp, saved_cs, saved_ss, saved_rip, saved_rflags, saved_is_user
         // Restore GPRs
@@ -75,35 +75,34 @@ pub extern "C" fn switch_context(
         // Restore rbx last (dereference from rbx before clobbering)
         "mov rbx, [rbx + 8]",
         // Pop saved context info (order reversed)
-        "pop rax",                // rax = saved_rsp (from rsp position)
-        "pop rcx",                // rcx = saved_cs
-        "pop rdx",                // rdx = saved_ss (user only)
-        "pop r8",                 // r8 = saved_rip
-        "pop r9",                 // r9 = saved_rflags
-        "pop r10",                // r10 = saved_is_user
+        "pop rax", // rax = saved_rsp (from rsp position)
+        "pop rcx", // rcx = saved_cs
+        "pop rdx", // rdx = saved_ss (user only)
+        "pop r8",  // r8 = saved_rip
+        "pop r9",  // r9 = saved_rflags
+        "pop r10", // r10 = saved_is_user
         // Check if user mode
         "test r10, r10",
         "jz 3f",
         // --- User mode switch via iretq ---
         // Stack: empty
         // Build iretq frame: ss, user_rsp, rflags, cs, rip
-        "push rdx",               // ss (from saved_ss)
-        "push rax",               // rsp (from saved_rsp = user stack)
-        "push r9",                // rflags
-        "push rcx",               // cs
-        "push r8",                // rip
+        "push rdx", // ss (from saved_ss)
+        "push rax", // rsp (from saved_rsp = user stack)
+        "push r9",  // rflags
+        "push rcx", // cs
+        "push r8",  // rip
         "iretq",
         "3:",
         // --- Kernel mode switch ---
         // rax = saved_rsp (kernel rsp already restored, value not needed)
         // r9 = saved_rflags
         // r8 = saved_rip
-        "push r9",                // push rflags
-        "popfq",                  // restore rflags
-        "jmp r8",                 // jump to rip
+        "push r9", // push rflags
+        "popfq",   // restore rflags
+        "jmp r8",  // jump to rip
     );
 }
-
 
 /// Initialize context switching system
 ///
