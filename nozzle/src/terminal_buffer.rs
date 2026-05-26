@@ -292,12 +292,12 @@ impl TerminalBuffer {
             b'B' => {
                 // Cursor down (default 1)
                 let n = if ni > 0 { nums[0].max(1) } else { 1 };
-                self.cursor_row = (self.cursor_row + n).min(self.rows.saturating_sub(1));
+                self.cursor_row = self.cursor_row.saturating_add(n).min(self.rows.saturating_sub(1));
             }
             b'C' => {
                 // Cursor forward (default 1)
                 let n = if ni > 0 { nums[0].max(1) } else { 1 };
-                self.cursor_col = (self.cursor_col + n).min(self.cols.saturating_sub(1));
+                self.cursor_col = self.cursor_col.saturating_add(n).min(self.cols.saturating_sub(1));
             }
             b'D' => {
                 // Cursor back (default 1)
