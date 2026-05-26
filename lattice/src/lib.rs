@@ -9,6 +9,7 @@ pub mod font;
 pub mod renderer;
 pub mod scene;
 pub mod surface;
+pub mod taskbar;
 pub mod terminal_surface;
 pub mod window;
 pub mod wm;
