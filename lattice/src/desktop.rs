@@ -155,7 +155,7 @@ impl Desktop {
     /// compositor knows to redraw the window area in the next frame.
     pub fn invalidate_window(&mut self, id: WindowId) {
         if let Some(w) = self.wm.windows().iter().find(|w| w.id == id) {
-            self.dirty_cache.push(crate::wm::window_dirty_rect(w));
+            self.wm.dirty_rects.push(crate::wm::window_dirty_rect(w));
         }
     }
 
