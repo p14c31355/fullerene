@@ -24,7 +24,7 @@ use solvent;
 pub use solvent::{
     LatticeTerminal, MOUSE_STATE, MouseState,
     chrono_tick, is_initialized, poll_mouse_state,
-    process_events, push_key_event, write_terminal,
+    process_events, push_key_event, set_render_fn, write_terminal,
 };
 
 /// Initialise the GUI subsystem via Solvent runtime.

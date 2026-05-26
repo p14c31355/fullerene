@@ -76,12 +76,11 @@ const CURSOR_TIMER_ID: TimerId = TimerId(1);
 /// factor to get usable pixel displacement (1×12=12 px to 3×12=36 px/tick).
 const MOUSE_SENSITIVITY: i16 = 12;
 
-/// Minimum ticks between rendered frames (8 ticks at ~200 Hz ≈ 25 fps).
+/// Minimum ticks between rendered frames (2 ticks at ~200 Hz ≈ 100 fps).
 ///
-/// Prevents the compositor from running at near‑CPU‑speed (clearing and
-/// redrawing the entire framebuffer every scheduler iteration).  Raising
-/// this value reduces flicker at the cost of frame rate.
-const FRAME_INTERVAL_TICKS: u64 = 8;
+/// With double‑buffering the compositor's intermediate states are never
+/// visible, so we can render at high frequency without flicker.
+const FRAME_INTERVAL_TICKS: u64 = 2;
 
 /// Timer ID for frame pacing.
 const FRAME_TIMER_ID: TimerId = TimerId(2);
@@ -542,6 +541,10 @@ fn render_terminal(rt: &mut RuntimeState) {
 // ── LatticeTerminal (nozzle::Terminal impl) ──────────────────
 
 /// A [`nozzle::Terminal`] that writes to the Lattice‑backed terminal buffer.
+///
+/// `read_byte()` does NOT spin‑block: while waiting for keyboard input it
+/// services the runtime (poll input, advance timers, process events, render)
+/// so the desktop stays responsive and the scheduler loop keeps running.
 pub struct LatticeTerminal;
 
 impl nozzle::Terminal for LatticeTerminal {
@@ -553,11 +556,80 @@ impl nozzle::Terminal for LatticeTerminal {
     }
 
     fn read_byte(&mut self) -> Option<u8> {
+        // Poll non‑blocking first.
+        let ch = nitrogen::ps2::keyboard::read_char();
+        if ch.is_some() {
+            return ch;
+        }
+
+        // No keystroke ready — run one full runtime tick so the desktop,
+        // mouse, and event loop stay alive while the shell waits.
+        //
+        // We use a dummy framebuffer closure because we are not in the
+        // scheduler loop at this point; the real framebuffer is provided
+        // by the kernel when `runtime_tick` calls `render`.
+        runtime_tick_no_fb();
+
+        // Try again after the tick (the PS/2 interrupt handler may have
+        // pushed new bytes during the tick).
         nitrogen::ps2::keyboard::read_char()
     }
 
     fn input_available(&self) -> bool {
         nitrogen::ps2::keyboard::input_available()
+    }
+}
+
+/// Monotonically‑increasing tick counter for use in the shell yield path.
+static YIELD_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Framebuffer‑render function pointer injected by the kernel before
+/// entering the shell loop.  When set, `runtime_tick_no_fb` can produce
+/// visible output (terminal text, cursor position) even while the shell
+/// is blocked waiting for keyboard input.
+static RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
+
+/// Register a render‑to‑framebuffer callback for use during shell yield.
+///
+/// Called once by the kernel before the shell loop starts.  Without this
+/// the terminal buffer is updated but never painted to the screen.
+pub fn set_render_fn(f: fn()) {
+    *RENDER_FN.lock() = Some(f);
+}
+
+/// Internal helper: run one full iteration of the runtime logic.
+///
+/// Uses its own monotonically‑increasing tick counter so that ChronoLine
+/// timers (cursor blink, frame pacing) advance even while the shell waits
+/// for keyboard input.  When a frame is due (`frame_due == true`) and a
+/// render callback has been registered, it also blits the scene to the
+/// scan‑out framebuffer.
+fn runtime_tick_no_fb() {
+    let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    poll_mouse_state();
+    chrono_tick(now);
+    process_events();
+
+    // Render only when the frame‑pacing timer has fired and a kernel
+    // callback is available (set via `set_render_fn` before shell entry).
+    let do_render = {
+        let rt = RUNTIME.lock();
+        rt.as_ref().map_or(false, |r| r.frame_due)
+    };
+    if do_render {
+        {
+            let mut rt = RUNTIME.lock();
+            rt.as_mut().map(|r| r.frame_due = false);
+        }
+        if let Some(render_fn) = *RENDER_FN.lock() {
+            render_fn();
+        }
+    }
+
+    // Short CPU pause to avoid burning the core at full speed during
+    // the shell's wait loop.
+    for _ in 0..10_000 {
+        core::hint::spin_loop();
     }
 }
 

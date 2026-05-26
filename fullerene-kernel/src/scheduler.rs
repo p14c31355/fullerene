@@ -318,28 +318,20 @@ pub fn scheduler_loop() -> ! {
         }
     }
 
-    loop {
-        SYSTEM_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        SCHEDULER_ITERATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    // Inject the kernel's framebuffer renderer into Solvent so that
+    // runtime_tick_no_fb() (called from the shell's read_byte yield loop)
+    // can paint the terminal buffer, cursor, and desktop onto the screen.
+    crate::gui::set_render_fn(crate::gui::render);
 
-        let current_tick = SYSTEM_TICK.load(Ordering::Relaxed);
+    // The shell is NOT a separate process — it runs cooperatively inside the
+    // scheduler loop.  When the shell blocks waiting for keyboard input, its
+    // LatticeTerminal::read_byte() services the entire runtime (mouse polling,
+    // timer advancement, event processing, rendering) via runtime_tick_no_fb().
+    // This means the shell IS the scheduler loop.
+    crate::shell::shell_main();
 
-        // 1-5. Run the full runtime tick (input polling, timers, events, rendering)
-        //      All GUI/compositor logic is now owned by Solvent runtime.
-        crate::gui::runtime_tick(current_tick);
-
-        // 6. Run periodic system tasks (stats, health checks, etc.)
-        process_scheduler_iteration();
-
-        // 7. Pause to limit scheduler tick rate (~5 ms per tick ≈ 200 Hz).
-        //    cpu_pause() is ~20 ns → 250k iterations ≈ 5 ms.
-        //    Input polling runs every tick; rendering is independently paced
-        //    by FRAME_TIMER_ID so it stays at ~2 ticks ≈ 25 fps.
-        //    TODO: replace with a proper HPET/APIC‑timer sleep.
-        for _ in 0..250_000 {
-            petroleum::cpu_pause();
-        }
-    }
+    // shell_main exits (via "exit" command) → halt the system.
+    petroleum::halt_loop();
 }
 
 /// Handle emergency system conditions (OOM, process limits, etc.)
