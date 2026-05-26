@@ -59,7 +59,7 @@ impl LineEditor {
 
         loop {
             match term.read_byte() {
-                None => continue, // no data yet
+                None => return None, // end of input (EOF)
                 Some(b'\n') | Some(b'\r') => {
                     // Enter — finish line
                     term.write_str("\n");

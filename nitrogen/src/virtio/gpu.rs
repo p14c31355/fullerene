@@ -789,6 +789,9 @@ impl VirtioGpu {
     }
 
     pub fn flush(&mut self, w: u32, h: u32) {
+        if self.desc_table.is_null() || self.cmd_buf.is_null() {
+            return;
+        }
         let flush = VirtioGpuResourceFlush {
             hdr: VirtioGpuCtrlHeader {
                 type_: VIRTIO_GPU_CMD_RESOURCE_FLUSH,
