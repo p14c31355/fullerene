@@ -255,15 +255,7 @@ impl Tmpfs {
     fn unlink(&mut self, path: &str) -> Result<(), &'static str> {
         let (parent_ino, name) = self.lookup_parent(path).ok_or("not found")?;
         let child_ino = self.lookup_child(parent_ino, &name).ok_or("not found")?;
-        // Refuse to unlink a non‑empty directory.
-        let child = self.inodes.get(&child_ino).ok_or("not found")?;
-        if child.kind == InodeType::Directory && !child.children.is_empty() {
-            // Collect all descendant inodes and remove them to prevent leaks.
-            let descendants = self.collect_descendants(child_ino);
-            for dino in descendants {
-                self.inodes.remove(&dino);
-            }
-        }
+        // Refuse to unlink a non‑empty directory.\n        let child = self.inodes.get(&child_ino).ok_or("not found")?;\n        if child.kind == InodeType::Directory && !child.children.is_empty() {\n            return Err("directory not empty");\n        }
         if let Some(parent) = self.inodes.get_mut(&parent_ino) {
             parent.children.retain(|&c| c != child_ino);
         }
