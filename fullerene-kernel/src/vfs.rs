@@ -142,12 +142,17 @@ impl Tmpfs {
         Some(desc)
     }
 
-    fn read(&self, fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
-        let desc = self.fds.get(&fd).ok_or("bad fd")?;
+    fn read(&mut self, fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
+        let desc = self.fds.get_mut(&fd).ok_or("bad fd")?;
         let ino = self.inodes.get(&desc.ino).ok_or("inode not found")?;
+        // Guard against offset beyond EOF (e.g. after truncation).
+        if desc.offset >= ino.data.len() {
+            return Ok(0);
+        }
         let data = &ino.data[desc.offset..];
         let n = data.len().min(buf.len());
         buf[..n].copy_from_slice(&data[..n]);
+        desc.offset += n;
         Ok(n)
     }
 

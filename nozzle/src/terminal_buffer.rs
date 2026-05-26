@@ -269,53 +269,62 @@ impl TerminalBuffer {
 
     /// Execute a single CSI (Control Sequence Introducer) command.
     fn handle_csi(&mut self, final_byte: u8, params: &[u8]) {
-        // Parse semicolon-separated numeric parameters
+        // Parse semicolon-separated numeric parameters.
+        // Empty or missing parameters default to 0 for SGR,
+        // but cursor commands use 1 as default.
         let param_str = core::str::from_utf8(params).unwrap_or("");
-        let mut nums: [u32; 4] = [1, 1, 1, 1];
+        let mut nums: [u32; 4] = [0; 4];
         let mut ni = 0;
-        for part in param_str.split(';') {
-            if ni >= 4 { break; }
-            nums[ni] = part.parse::<u32>().unwrap_or(1).max(1);
-            ni += 1;
+        if !param_str.is_empty() {
+            for part in param_str.split(';') {
+                if ni >= 4 { break; }
+                nums[ni] = part.parse::<u32>().unwrap_or(0);
+                ni += 1;
+            }
         }
 
         match final_byte {
             b'A' => {
-                // Cursor up
-                let n = nums[0];
+                // Cursor up (default 1)
+                let n = if ni > 0 { nums[0].max(1) } else { 1 };
                 self.cursor_row = self.cursor_row.saturating_sub(n);
             }
             b'B' => {
-                // Cursor down
-                let n = nums[0];
+                // Cursor down (default 1)
+                let n = if ni > 0 { nums[0].max(1) } else { 1 };
                 self.cursor_row = (self.cursor_row + n).min(self.rows.saturating_sub(1));
             }
             b'C' => {
-                // Cursor forward
-                let n = nums[0];
+                // Cursor forward (default 1)
+                let n = if ni > 0 { nums[0].max(1) } else { 1 };
                 self.cursor_col = (self.cursor_col + n).min(self.cols.saturating_sub(1));
             }
             b'D' => {
-                // Cursor back
-                let n = nums[0];
+                // Cursor back (default 1)
+                let n = if ni > 0 { nums[0].max(1) } else { 1 };
                 self.cursor_col = self.cursor_col.saturating_sub(n);
             }
             b'H' => {
                 // Cursor position (row;col, 1-based, default 1)
-                let row = nums[0].saturating_sub(1).min(self.rows.saturating_sub(1));
-                let col = nums[1].saturating_sub(1).min(self.cols.saturating_sub(1));
-                self.cursor_row = row;
-                self.cursor_col = col;
+                let row = if ni > 0 { nums[0].saturating_sub(1) } else { 0 };
+                let col = if ni > 1 { nums[1].saturating_sub(1) } else { 0 };
+                self.cursor_row = row.min(self.rows.saturating_sub(1));
+                self.cursor_col = col.min(self.cols.saturating_sub(1));
             }
             b'J' => {
-                // Erase in display — only 2 (entire screen) supported
-                if nums[0] == 2 {
+                // Erase in display (default 0)
+                let mode = if ni > 0 { nums[0] } else { 0 };
+                if mode == 2 {
                     self.clear();
                 }
             }
             b'm' => {
-                // SGR — Select Graphic Rendition
-                self.handle_sgr(&nums[..ni.max(1)]);
+                // SGR — Select Graphic Rendition (default 0 = reset)
+                if ni == 0 {
+                    self.handle_sgr(&[0]);
+                } else {
+                    self.handle_sgr(&nums[..ni]);
+                }
             }
             _ => {} // Unknown — silently ignore
         }

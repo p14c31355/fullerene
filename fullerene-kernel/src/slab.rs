@@ -170,28 +170,6 @@ impl SlabCache {
 /// Global slab caches, initialized lazily.
 static SLABS: Mutex<Option<[SlabCache; NUM_CACHES]>> = Mutex::new(None);
 
-fn get_slabs() -> &'static mut [SlabCache; NUM_CACHES] {
-    let mut guard = SLABS.lock();
-    if guard.is_none() {
-        *guard = Some([
-            SlabCache::new(16),
-            SlabCache::new(32),
-            SlabCache::new(64),
-            SlabCache::new(128),
-            SlabCache::new(256),
-            SlabCache::new(512),
-            SlabCache::new(1024),
-            SlabCache::new(2048),
-            SlabCache::new(4096),
-        ]);
-    }
-    // SAFETY: we hold the lock and just ensured Some.
-    unsafe {
-        let ptr = guard.as_mut().unwrap_unchecked() as *mut [SlabCache; NUM_CACHES];
-        &mut *ptr
-    }
-}
-
 fn size_to_class(size: usize) -> usize {
     for (i, &s) in CACHE_SIZES.iter().enumerate() {
         if size <= s { return i; }
@@ -201,18 +179,59 @@ fn size_to_class(size: usize) -> usize {
 
 // ── Public API ────────────────────────────────────────────────────
 
+/// Allocate a fixed-size object from the slab allocator.
+///
+/// `size` is rounded up to the next power‑of‑two slab size (16…4096).
+/// Returns a virtual address, or `None` if out of memory.
 pub fn alloc(size: usize) -> Option<usize> {
     let idx = size_to_class(size);
-    get_slabs()[idx].alloc()
+    let mut guard = SLABS.lock();
+    let slabs = guard.get_or_insert_with(|| [
+        SlabCache::new(16),
+        SlabCache::new(32),
+        SlabCache::new(64),
+        SlabCache::new(128),
+        SlabCache::new(256),
+        SlabCache::new(512),
+        SlabCache::new(1024),
+        SlabCache::new(2048),
+        SlabCache::new(4096),
+    ]);
+    slabs[idx].alloc()
 }
 
+/// Free a previously slab‑allocated object.
+///
+/// # Safety
+///
+/// `addr` must have been returned by [`alloc`] and must not have been
+/// freed already.  `size` must match the original allocation size.
 pub unsafe fn free(addr: usize, size: usize) {
     let idx = size_to_class(size);
-    get_slabs()[idx].free(addr);
+    let mut guard = SLABS.lock();
+    let slabs = guard.get_or_insert_with(|| [
+        SlabCache::new(16),
+        SlabCache::new(32),
+        SlabCache::new(64),
+        SlabCache::new(128),
+        SlabCache::new(256),
+        SlabCache::new(512),
+        SlabCache::new(1024),
+        SlabCache::new(2048),
+        SlabCache::new(4096),
+    ]);
+    slabs[idx].free(addr);
 }
 
+/// Return fully‑free slab pages to the frame allocator.
+///
+/// Call periodically (e.g. from the scheduler maintenance task) to
+/// prevent fragmentation.
 pub fn reap() {
-    for cache in get_slabs().iter_mut() {
-        cache.reap();
+    let mut guard = SLABS.lock();
+    if let Some(ref mut slabs) = *guard {
+        for cache in slabs.iter_mut() {
+            cache.reap();
+        }
     }
 }
