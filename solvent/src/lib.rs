@@ -562,23 +562,17 @@ impl nozzle::Terminal for LatticeTerminal {
     }
 
     fn read_byte(&mut self) -> Option<u8> {
-        // Poll non‑blocking first.
-        let ch = nitrogen::ps2::keyboard::read_char();
-        if ch.is_some() {
-            return ch;
+        // Loop until a keystroke is available, servicing the runtime on each
+        // iteration so the desktop stays alive (mouse updates, cursor blink,
+        // event processing, rendering).  Never returns `None` — the caller
+        // (line editor) treats `None` as EOF, which would cause an infinite
+        // prompt-redraw loop.
+        loop {
+            if let Some(ch) = nitrogen::ps2::keyboard::read_char() {
+                return Some(ch);
+            }
+            runtime_tick_no_fb();
         }
-
-        // No keystroke ready — run one full runtime tick so the desktop,
-        // mouse, and event loop stay alive while the shell waits.
-        //
-        // We use a dummy framebuffer closure because we are not in the
-        // scheduler loop at this point; the real framebuffer is provided
-        // by the kernel when `runtime_tick` calls `render`.
-        runtime_tick_no_fb();
-
-        // Try again after the tick (the PS/2 interrupt handler may have
-        // pushed new bytes during the tick).
-        nitrogen::ps2::keyboard::read_char()
     }
 
     fn input_available(&self) -> bool {
