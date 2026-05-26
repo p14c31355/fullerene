@@ -29,6 +29,15 @@ pub struct Desktop {
     /// Cached dirty rects consumed from WM before building a scene.
     dirty_cache: alloc::vec::Vec<DirtyRect>,
 
+    /// Whether the next frame should redraw the entire screen.
+    ///
+    /// Set to `true` on construction so the very first frame initialises
+    /// the whole framebuffer with the desktop background colour.  Without
+    /// this the compositor only draws the terminal window and cursor
+    /// dirty rects, leaving the rest of the screen uninitialised (which
+    /// manifests as a "paint‑by‑mouse" effect).
+    needs_full_redraw: bool,
+
     // ── Menu state ────────────────────────────────────────
     /// The currently visible popup menu (system menu or context menu).
     pub active_menu: Option<PopupMenu>,
@@ -69,6 +78,7 @@ impl Desktop {
             prev_cursor_x: 512,
             prev_cursor_y: 384,
             cursor_moved: false,
+            needs_full_redraw: true,
         }
     }
 
@@ -182,8 +192,18 @@ impl Desktop {
     ///
     /// Must be called **before** [`scene`] on each frame, so that the
     /// compositor receives the correct dirty regions.
-    pub fn prepare_frame(&mut self) {
+    ///
+    /// `fb_width` / `fb_height` are needed so that the very first frame
+    /// can push a full‑screen dirty rect (see [`needs_full_redraw`]).
+    pub fn prepare_frame(&mut self, fb_width: u32, fb_height: u32) {
         self.dirty_cache = self.wm.consume_dirty_rects();
+
+        // First frame: invalidate the entire screen so the compositor
+        // fills every pixel with the desktop background colour.
+        if self.needs_full_redraw {
+            self.dirty_cache.push(DirtyRect::full(fb_width, fb_height));
+            self.needs_full_redraw = false;
+        }
 
         // If the cursor moved, add dirty rects for the old and new
         // cursor positions (32×32 pixels each) so only the cursor
@@ -290,7 +310,7 @@ mod tests {
 
         // Use a 200×200 target so the 28-pixel taskbar at the bottom
         // does not clobber the pixel at (0,0).
-        dt.prepare_frame();
+        dt.prepare_frame(200, 200);
         let mut target = TestTarget::new(200, 200);
         let scene = dt.scene();
         Compositor::render(&scene, &mut target);

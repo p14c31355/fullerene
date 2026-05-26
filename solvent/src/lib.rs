@@ -483,15 +483,17 @@ where
     // Update taskbar entries before building the scene
     rt.desktop.update_taskbar();
 
-    // Consume dirty rects from the window manager
-    rt.desktop.prepare_frame();
-
     // Get framebuffer memory via the caller-provided closure
     let fb_result = framebuffer_fn();
     let (fb_pixels, fb_width, fb_height) = match fb_result {
         Some(t) => t,
         None => return,
     };
+
+    // Consume dirty rects from the window manager.
+    // Must be called AFTER we know fb_width/fb_height so the first-frame
+    // full-screen dirty rect can be sized correctly.
+    rt.desktop.prepare_frame(fb_width, fb_height);
 
     let fb_len = (fb_width as usize) * (fb_height as usize);
     if fb_len > MAX_FB_PIXELS {
