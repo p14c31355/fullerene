@@ -350,7 +350,7 @@ impl Compositor {
             for c in 0..14i32 {
                 let da = close_y + r;
                 let dxa = close_x + c;
-                if da>=cey||dxa>=cex||da>=fh||dxa>=fw { continue; }
+                if da < cy as i32 || da >= cey || dxa < cx as i32 || dxa >= cex || da >= fh || dxa >= fw { continue; }
                 fb[(da as usize)*(fbw as usize)+dxa as usize] = COLOR_DANGER;
             }
         }
