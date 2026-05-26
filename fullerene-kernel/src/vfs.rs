@@ -176,6 +176,9 @@ impl Tmpfs {
     }
 
     fn create(&mut self, path: &str, kind: InodeType) -> Option<u64> {
+        if self.lookup(path).is_some() {
+            return None;
+        }
         let (parent_ino, name) = self.lookup_parent(path)?;
         let ino = self.next_ino;
         self.next_ino = ino + 1;
