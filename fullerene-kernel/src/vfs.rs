@@ -104,22 +104,42 @@ impl Tmpfs {
 
     /// Resolve a path into an inode number, traversing directories.
     fn lookup(&self, path: &str) -> Option<u64> {
-        self.lookup_impl(path, 0)
+        self.lookup_from(path, 1, 0)
     }
 
-    /// Internal lookup with recursion depth guard for symlink loops.
+    /// Internal lookup with configurable starting inode and recursion
+    /// depth guard for symlink loops.
+    ///
+    /// `start_ino` is the inode to begin path resolution from (root = 1).
+    /// For absolute paths this is always the root; for relative symlink
+    /// targets it is the parent directory of the symlink.
+    ///
     /// `depth` must be ≤ [`MAX_SYMLINK_DEPTH`].
-    fn lookup_impl(&self, path: &str, depth: u32) -> Option<u64> {
+    fn lookup_from(&self, path: &str, start_ino: u64, depth: u32) -> Option<u64> {
         if depth > MAX_SYMLINK_DEPTH {
             return None; // symlink loop detected
         }
-        if path.is_empty() || path == "/" {
-            return Some(1);
+        // Empty path relative to start_ino = start_ino itself
+        if path.is_empty() {
+            return Some(start_ino);
         }
-        let components: Vec<&str> = path.trim_start_matches('/').split('/')
+        // Absolute path → always start from root
+        let (effective_start, trimmed) = if path.starts_with('/') {
+            (1u64, path.trim_start_matches('/'))
+        } else {
+            (start_ino, path)
+        };
+        if trimmed.is_empty() {
+            return Some(effective_start);
+        }
+        let components: Vec<&str> = trimmed.split('/')
             .filter(|c| !c.is_empty()).collect();
-        let mut current = 1u64; // root
+        if components.is_empty() {
+            return Some(effective_start);
+        }
+        let mut current = effective_start;
         for (idx, comp) in components.iter().enumerate() {
+            let parent_ino = current;
             let ino = self.inodes.get(&current)?;
             let child = ino.children.iter()
                 .find(|&&c| self.inodes.get(&c).map_or(false, |i| i.name.as_str() == *comp))?;
@@ -132,7 +152,10 @@ impl Tmpfs {
                     new_path.push('/');
                     new_path.push_str(trailing);
                 }
-                return self.lookup_impl(&new_path, depth + 1);
+                // Resolve relative symlinks from the parent directory
+                // of the link, absolute symlinks from the root.
+                let resolve_start = if target.starts_with('/') { 1 } else { parent_ino };
+                return self.lookup_from(&new_path, resolve_start, depth + 1);
             }
         }
         Some(current)
