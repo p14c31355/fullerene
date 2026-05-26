@@ -210,10 +210,7 @@ impl TerminalBuffer {
     pub fn backspace(&mut self) {
         if self.cursor_col > 0 {
             self.cursor_col -= 1;
-            let idx = self.cursor_row as usize * self.cols as usize + self.cursor_col as usize;
-            if idx < self.cells.len() {
-                self.cells[idx] = Cell::default();
-            }
+        } else if self.cursor_row > 0 {
         } else if self.cursor_row > 0 {
             // Move to end of previous row
             self.cursor_row -= 1;
