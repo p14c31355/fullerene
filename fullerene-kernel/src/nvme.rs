@@ -131,11 +131,11 @@ impl NvmeController {
             core::hint::spin_loop();
         }
 
-        // Allocate queue memory (4 pages: 2 for ASQ, 2 for ACQ)
+        // Allocate queue memory (2 pages: 1 for ASQ, 1 for ACQ)
         let q_phys = {
             let mut mgr = crate::memory_management::get_memory_manager().lock();
             let m = mgr.as_mut()?;
-            m.allocate_contiguous_frames(4).ok()? as u64
+            m.allocate_contiguous_frames(2).ok()? as u64
         };
         ctrl.queue_phys = q_phys;
         let q_virt = petroleum::common::memory::physical_to_virtual(q_phys as usize) as *mut u8;
