@@ -42,7 +42,7 @@ unsafe fn waker_clone(raw: *const ()) -> RawWaker {
 }
 
 unsafe fn waker_wake(raw: *const ()) {
-    let w = &*(raw as *const ProcessWaker);
+    let w = Box::from_raw(raw as *mut ProcessWaker);
     w.woken.store(true, Ordering::Release);
     process::unblock_process(ProcessId(w.pid));
 }
