@@ -211,9 +211,9 @@ impl AhciController {
         let cmd_table = phys_to_virt_mut::<CommandTable>(cmd_table_phys);
 
         unsafe {
-            ptr::write_bytes(cmd_list, 0, 4096);
-            ptr::write_bytes(fis, 0, 4096);
-            ptr::write_bytes(cmd_table, 0, 4096);
+            ptr::write_bytes(cmd_list as *mut u8, 0, 4096);
+            ptr::write_bytes(fis as *mut u8, 0, 4096);
+            ptr::write_bytes(cmd_table as *mut u8, 0, 4096);
         }
 
         // Set command list and FIS base
