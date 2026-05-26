@@ -130,6 +130,11 @@ pub struct RuntimeState {
     pub frame_due: bool,
     /// Number of valid pixels in [`BACK_BUFFER`] (= fb_width × fb_height).
     pub back_len: usize,
+    /// Reusable cell buffer for the terminal surface renderer.
+    ///
+    /// Owned here rather than in a static so it can be reset on re‑init
+    /// and avoids global‑state coupling with `render_terminal`.
+    pub term_cells: Vec<LatticeCell>,
 }
 
 /// Initialise the Solvent runtime subsystem.
@@ -175,6 +180,7 @@ pub fn init() {
         cursor_visible: true,
         frame_due: true,
         back_len: 0,
+        term_cells: Vec::new(),
     });
 }
 
@@ -506,8 +512,8 @@ where
 
 /// Render the terminal buffer onto the terminal window's surface.
 ///
-/// Uses a static pre‑allocated cell buffer to avoid per‑frame heap
-/// allocations in the render loop (2000 cells × 100 fps = 200 k allocations/sec).
+/// Uses `rt.term_cells` as a reusable buffer to avoid per‑frame heap
+/// allocations (2000 cells × 100 fps = 200 k allocations/sec).
 fn render_terminal(rt: &mut RuntimeState) {
     let window = match rt
         .desktop
@@ -520,23 +526,21 @@ fn render_terminal(rt: &mut RuntimeState) {
         None => return,
     };
 
-    let term_cells = rt.term_buf.cells();
-    let total = (rt.term_buf.cols() * rt.term_buf.rows()) as usize;
+    let term_buf = &rt.term_buf;
+    let total = (term_buf.cols() * term_buf.rows()) as usize;
 
-    static CELLS: Mutex<Vec<LatticeCell>> = Mutex::new(Vec::new());
-    let mut cells = CELLS.lock();
-    if cells.len() != total {
-        cells.resize(total, LatticeCell { ch: b' ', fg: 0, bg: 0 });
+    if rt.term_cells.len() != total {
+        rt.term_cells.resize(total, LatticeCell { ch: b' ', fg: 0, bg: 0 });
     }
-    for (i, c) in term_cells.iter().enumerate() {
-        if i < cells.len() {
-            cells[i] = LatticeCell { ch: c.ch, fg: c.fg, bg: c.bg };
+    for (i, c) in term_buf.cells().iter().enumerate() {
+        if i < rt.term_cells.len() {
+            rt.term_cells[i] = LatticeCell { ch: c.ch, fg: c.fg, bg: c.bg };
         }
     }
 
     terminal_surface::render(terminal_surface::RenderParams {
         surface: &mut window.surface,
-        cells: &cells,
+        cells: &rt.term_cells,
         cols: rt.term_buf.cols(),
         cursor_col: Some(rt.term_buf.cursor_col()),
         cursor_row: Some(rt.term_buf.cursor_row()),

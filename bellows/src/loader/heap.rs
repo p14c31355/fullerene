@@ -27,6 +27,10 @@ fn try_allocate_pages(
         let mut phys_addr_local: usize = 0;
         let alloc_type = 0usize; // AllocateAnyPages
         let status = (bs.allocate_pages)(alloc_type, mem_type, pages, &mut phys_addr_local);
+        // UEFI spec: phys_addr_local is only valid when status == EFI_SUCCESS (0).
+        if status != 0 {
+            continue;
+        }
         debug_log_no_alloc!(
             "Heap: allocate_pages status={:x}, phys_addr_local={:x}",
             status,

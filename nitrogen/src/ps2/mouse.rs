@@ -120,18 +120,12 @@ pub fn latest_state() -> Ps2MouseState {
 /// deadlock between this function and the `on_complete` callback that
 /// the PS/2 interrupt handler invokes (both try to lock `LATEST_STATE`).
 pub fn consume_state() -> Ps2MouseState {
-    let interrupts_enabled = x86_64::instructions::interrupts::are_enabled();
-    if interrupts_enabled {
-        x86_64::instructions::interrupts::disable();
-    }
-    let mut state = LATEST_STATE.lock();
-    let out = *state;
-    *state = Ps2MouseState::new();
-    drop(state);
-    if interrupts_enabled {
-        x86_64::instructions::interrupts::enable();
-    }
-    out
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut state = LATEST_STATE.lock();
+        let out = *state;
+        *state = Ps2MouseState::new();
+        out
+    })
 }
 
 /// Get the current mouse button flags as a raw byte.

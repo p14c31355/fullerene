@@ -122,11 +122,11 @@ impl LineEditor {
             self.buffer.insert(self.cursor, ch);
             self.cursor += 1;
 
-            // Redraw from cursor: write inserted char + remaining tail, then reposition
-            let tail = &self.buffer[self.cursor..];
+            // Redraw from the insertion point (including the new character) and reposition
+            let tail = &self.buffer[self.cursor - 1..];
             let s = core::str::from_utf8(tail).unwrap_or("?");
             term.write_str(s);
-            for _ in 0..tail.len() {
+            for _ in 0..tail.len() - 1 {
                 term.write_str("\x08");
             }
         }
@@ -309,13 +309,18 @@ impl LineEditor {
 
     // ── escape sequences ────────────────────────────────────────────
 
-    /// Read a byte from the terminal with a small retry loop.
-    /// Returns `None` only after several attempts, reducing the chance of
-    /// losing leading bytes of an escape sequence over slow/serial links.
+    /// Non‑blocking read with a short spin‑wait for escape sequence bytes.
+    ///
+    /// Avoids blocking on a standalone ESC key by only calling `read_byte()`
+    /// when `input_available()` indicates data is ready.  The spin loop
+    /// covers the gap between ESC and its sequence (typically <1 ms).
     fn read_byte_retry(&self, term: &mut dyn Terminal) -> Option<u8> {
-        for _ in 0..3 {
-            if let Some(b) = term.read_byte() {
-                return Some(b);
+        for _ in 0..100 {
+            if term.input_available() {
+                return term.read_byte();
+            }
+            for _ in 0..1000 {
+                core::hint::spin_loop();
             }
         }
         None

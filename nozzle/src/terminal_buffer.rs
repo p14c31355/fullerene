@@ -210,7 +210,10 @@ impl TerminalBuffer {
     pub fn backspace(&mut self) {
         if self.cursor_col > 0 {
             self.cursor_col -= 1;
-        } else if self.cursor_row > 0 {
+            let idx = self.cursor_row as usize * self.cols as usize + self.cursor_col as usize;
+            if idx < self.cells.len() {
+                self.cells[idx] = Cell::default();
+            }
         } else if self.cursor_row > 0 {
             // Move to end of previous row
             self.cursor_row -= 1;
@@ -218,10 +221,15 @@ impl TerminalBuffer {
         }
     }
 
-    /// Clear the screen (fills all cells with default).
+    /// Clear the screen (fills all cells using the current style's background).
     pub fn clear(&mut self) {
+        let blank = Cell {
+            ch: b' ',
+            fg: self.style.fg,
+            bg: self.style.bg,
+        };
         for cell in &mut self.cells {
-            *cell = Cell::default();
+            *cell = blank;
         }
         self.cursor_col = 0;
         self.cursor_row = 0;
@@ -240,10 +248,15 @@ impl TerminalBuffer {
         let src_start = row_len;
         let _copy_count = self.cells.len() - row_len;
         self.cells.copy_within(src_start.., 0);
-        // Clear bottom row
+        // Clear bottom row using the current style's background
         let bottom_start = self.cells.len() - row_len;
+        let blank = Cell {
+            ch: b' ',
+            fg: self.style.fg,
+            bg: self.style.bg,
+        };
         for cell in &mut self.cells[bottom_start..] {
-            *cell = Cell::default();
+            *cell = blank;
         }
     }
 }
