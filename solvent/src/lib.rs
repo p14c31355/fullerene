@@ -89,7 +89,7 @@ const FRAME_TIMER_ID: TimerId = TimerId(2);
 ///
 /// 1280×800 = 1 024 000 pixels.  The back‑buffer lives in BSS so it
 /// costs zero heap and incurs no allocator pressure.
-const MAX_FB_PIXELS: usize = 1280 * 800;
+const MAX_FB_PIXELS: usize = 1920 * 1080;
 
 // ── Static back‑buffer (BSS, zero heap pressure) ──────────────
 
