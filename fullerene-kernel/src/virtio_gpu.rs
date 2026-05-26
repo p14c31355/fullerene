@@ -43,9 +43,9 @@ pub fn init(common_virt: u64, notify_virt: u64, fb_addr: u64, fb_w: u32, fb_h: u
     // Allocate command/response buffers (1 page each)
     let off = petroleum::common::memory::get_physical_memory_offset() as u64;
     let fa = petroleum::page_table::constants::get_frame_allocator_mut();
-    let cmd_phys = fa.allocate_contiguous_frames(1).expect("virtio-gpu: cmd alloc") as u64;
+    let cmd_phys = fa.allocate_contiguous_frames(1).ok()? as u64;
     let cmd_buf = (cmd_phys + off) as *mut u8;
-    let resp_phys = fa.allocate_contiguous_frames(1).expect("virtio-gpu: resp alloc") as u64;
+    let resp_phys = fa.allocate_contiguous_frames(1).ok()? as u64;
     let resp_buf = (resp_phys + off) as *mut u8;
     unsafe {
         core::ptr::write_bytes(cmd_buf, 0, 4096);
