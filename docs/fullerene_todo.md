@@ -117,41 +117,41 @@
 # Kernel / Runtime
 ## Tasking
 - [x] scheduler
-- [ ] cooperative multitasking
+- [x] cooperative multitasking
 - [x] preemptive multitasking
-- [ ] async runtime
+- [x] async runtime
 - [x] timer subsystem
 ## Memory
-- [ ] heap statistics
-- [ ] slab allocator
-- [ ] virtual memory
-- [ ] userspace address space
-- [ ] page fault handler
+- [x] heap statistics
+- [x] slab allocator
+- [x] virtual memory
+- [x] userspace address space
+- [x] page fault handler
 
 ## Diagnostics
-- [ ] panic screen
-- [ ] stack trace
+- [x] panic screen
+- [x] stack trace
 - [x] logging subsystem
 - [x] serial logger
-- [ ] kernel tracing
+- [x] kernel tracing
 
 ---
 
 # Drivers
 
 ## Graphics
-- [ ] VirtIO-GPU stabilization
+- [x] VirtIO-GPU stabilization
 - [x] double buffering
 - [ ] hardware cursor
 - [ ] vsync
 
 ## Storage
-- [ ] AHCI
-- [ ] NVMe
+- [x] AHCI
+- [x] NVMe
 - [ ] block cache
 
 ## Filesystem
-- [ ] VFS
+- [x] VFS
 - [ ] tmpfs
 - [ ] FAT32
 - [ ] initramfs

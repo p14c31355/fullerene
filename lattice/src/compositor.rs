@@ -43,6 +43,12 @@ static DRAW_CALLS: AtomicU64 = AtomicU64::new(0);
 /// Estimated time spent in render (ticks).
 static RENDER_TICKS: AtomicU64 = AtomicU64::new(0);
 
+/// Previously rendered debug overlay text cache.  When `PREV_DEBUG_LEN` is 0
+/// the overlay is drawn unconditionally (first frame).  On subsequent frames
+/// the text is compared and only redrawn when it changes.
+static mut PREV_DEBUG_TEXT: [u8; 32] = [0u8; 32];
+static mut PREV_DEBUG_LEN: usize = 0;
+
 pub fn notify_frame_presented(now_tick: u64) {
     let fc = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
     let last = LAST_FPS_TICK.load(Ordering::Relaxed);
@@ -86,15 +92,16 @@ impl Compositor {
         let (fb_width, fb_height) = target.dimensions();
         let framebuffer = target.buffer();
 
-        let (dx, dy, dw, dh) = if scene.dirty_rects.is_empty() {
-            (0u32, 0u32, fb_width, fb_height)
-        } else {
-            let mut merged = scene.dirty_rects[0];
-            for r in &scene.dirty_rects[1..] { merged.merge(r); }
-            (merged.x, merged.y,
-             merged.width.min(fb_width.saturating_sub(merged.x)),
-             merged.height.min(fb_height.saturating_sub(merged.y)))
-        };
+        // When there are no dirty rects nothing changed — skip rendering entirely.
+        if scene.dirty_rects.is_empty() {
+            return (0, 0, 0, 0);
+        }
+        let mut merged = scene.dirty_rects[0];
+        for r in &scene.dirty_rects[1..] { merged.merge(r); }
+        let dx = merged.x;
+        let dy = merged.y;
+        let dw = merged.width.min(fb_width.saturating_sub(merged.x));
+        let dh = merged.height.min(fb_height.saturating_sub(merged.y));
         if dw == 0 || dh == 0 {
             return (0, 0, 0, 0);
         }
@@ -175,13 +182,23 @@ impl Compositor {
         }
     }
 
-    // ── Debug overlay ─────────────────────────────────────
-
     fn draw_debug_overlay(fb: &mut [u32], fbw: u32, _fbh: u32) {
         let fps = current_fps_x100();
         if fps == 0 { return; }
         let dc = draw_calls_last_frame();
         let text = alloc::format!("FPS:{}.{:02} DC:{}", fps / 100, fps % 100, dc);
+
+        // Skip redraw if the text hasn't changed since the last frame.
+        // SAFETY: single‑threaded kernel, no pre‑emption.
+        unsafe {
+            if PREV_DEBUG_TEXT == text.as_bytes()[..PREV_DEBUG_LEN.min(text.len())] {
+                return;
+            }
+            let n = text.len().min(32);
+            PREV_DEBUG_TEXT[..n].copy_from_slice(&text.as_bytes()[..n]);
+            PREV_DEBUG_LEN = n;
+        }
+
         let x = fbw.saturating_sub(150);
         let y = 4u32;
         for (i, ch) in text.bytes().enumerate() {

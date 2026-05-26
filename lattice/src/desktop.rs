@@ -149,6 +149,16 @@ impl Desktop {
         self.wm.on_mouse_up();
     }
 
+    /// Invalidate the dirty rect for a specific window (by id).
+    ///
+    /// Called from Solvent when the terminal buffer changes so that the
+    /// compositor knows to redraw the window area in the next frame.
+    pub fn invalidate_window(&mut self, id: WindowId) {
+        if let Some(w) = self.wm.windows().iter().find(|w| w.id == id) {
+            self.dirty_cache.push(crate::wm::window_dirty_rect(w));
+        }
+    }
+
     /// Hide the cursor.
     pub fn hide_cursor(&mut self) {
         self.cursor.visible = false;

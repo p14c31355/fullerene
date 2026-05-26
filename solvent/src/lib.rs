@@ -475,8 +475,10 @@ where
         }
     };
 
-    // Re-render terminal buffer onto the window's surface
-    render_terminal(rt);
+    // Re-render terminal buffer onto the window's surface.
+    // If the terminal changed, propagate a dirty rect through the desktop
+    // so the compositor knows to redraw the window region.
+    render_terminal(rt, rt.term_window);
 
     // Update taskbar entries before building the scene
     rt.desktop.update_taskbar();
@@ -534,7 +536,7 @@ where
 /// Only re‑renders when `rt.term_dirty` is true (the terminal buffer
 /// has been modified or the cursor blink phase changed).  After
 /// rendering, `term_dirty` is cleared.
-fn render_terminal(rt: &mut RuntimeState) {
+fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
     // Skip re‑render if nothing changed.
     // (Cursor blink is handled via dirty‑rect invalidation by
     //  the cursor blink timer — the terminal surface itself doesn't
@@ -548,7 +550,7 @@ fn render_terminal(rt: &mut RuntimeState) {
         .wm
         .windows_mut()
         .iter_mut()
-        .find(|w| w.id == rt.term_window)
+        .find(|w| w.id == term_window)
     {
         Some(w) => w,
         None => return,
@@ -574,6 +576,10 @@ fn render_terminal(rt: &mut RuntimeState) {
         cursor_row: Some(rt.term_buf.cursor_row()),
         cursor_visible: rt.cursor_visible,
     });
+
+    // Propagate the terminal window dirty rect through the desktop so
+    // the compositor includes the window area in the next partial blit.
+    rt.desktop.invalidate_window(term_window);
 
     rt.term_dirty = false;
 }

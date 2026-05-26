@@ -42,7 +42,7 @@ const TITLE_BAR_H: u32 = 20;
 const BORDER: u32 = 2;
 
 /// Build a dirty rect for the full decorated area of a window.
-fn window_dirty_rect(w: &Window) -> DirtyRect {
+pub(crate) fn window_dirty_rect(w: &Window) -> DirtyRect {
     let x0 = w.x.saturating_sub(BORDER as i32).max(0) as u32;
     let y0 = w.y.saturating_sub(BORDER as i32).max(0) as u32;
     let ww = w.width + BORDER * 2;
