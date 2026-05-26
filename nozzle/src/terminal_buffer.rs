@@ -273,11 +273,11 @@ impl TerminalBuffer {
         // Empty or missing parameters default to 0 for SGR,
         // but cursor commands use 1 as default.
         let param_str = core::str::from_utf8(params).unwrap_or("");
-        let mut nums: [u32; 4] = [0; 4];
+        let mut nums: [u32; 8] = [0; 8];
         let mut ni = 0;
         if !param_str.is_empty() {
             for part in param_str.split(';') {
-                if ni >= 4 { break; }
+                if ni >= 8 { break; }
                 nums[ni] = part.parse::<u32>().unwrap_or(0);
                 ni += 1;
             }
