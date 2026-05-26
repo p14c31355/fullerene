@@ -196,13 +196,9 @@ pub fn glyph_for_codepoint(cp: u32) -> Glyph<'static> {
         return ascii_glyph(b' ');
     }
 
-    // Try PSF2 font (only maps 0x20–0x7E for now)
-    // In the future, PSF2 Unicode table lookups go here.
-    if let Some(ref psf) = *PSF_FONT.lock() {
-        if cp <= 0x7E {
-            return psf_glyph(psf, cp as u8);
-        }
-    }
+    // PSF2 Unicode table lookups for codepoints > 0x7E go here.
+    // Currently not implemented; unicode fallback handles non‑ASCII.
+    let _ = PSF_FONT.lock();
 
     // Unicode fallback chain
     match cp {

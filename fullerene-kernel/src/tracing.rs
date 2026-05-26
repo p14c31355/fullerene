@@ -69,21 +69,23 @@ pub fn record(tick: u64, category: &str, message: &str) {
 /// The returned `Vec` is a snapshot — safe to hold across interrupt
 /// boundaries because it owns its data.
 pub fn snapshot() -> alloc::vec::Vec<TraceEvent> {
-    unsafe {
-        let head = TRACE_HEAD.load(Ordering::Relaxed);
-        if head == 0 {
-            return alloc::vec::Vec::new();
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        unsafe {
+            let head = TRACE_HEAD.load(Ordering::Relaxed);
+            if head == 0 {
+                return alloc::vec::Vec::new();
+            }
+            let mut result = alloc::vec::Vec::new();
+            if head <= TRACE_CAPACITY {
+                result.extend_from_slice(&TRACE_BUFFER[..head]);
+            } else {
+                let start = head % TRACE_CAPACITY;
+                result.extend_from_slice(&TRACE_BUFFER[start..]);
+                result.extend_from_slice(&TRACE_BUFFER[..start]);
+            }
+            result
         }
-        let mut result = alloc::vec::Vec::new();
-        if head <= TRACE_CAPACITY {
-            result.extend_from_slice(&TRACE_BUFFER[..head]);
-        } else {
-            let start = head % TRACE_CAPACITY;
-            result.extend_from_slice(&TRACE_BUFFER[start..]);
-            result.extend_from_slice(&TRACE_BUFFER[..start]);
-        }
-        result
-    }
+    })
 }
 
 /// Clear all trace events.

@@ -106,24 +106,23 @@ pub fn spawn<F>(future: F) -> Result<TaskHandle, petroleum::common::logging::Sys
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    // Create the process in Blocked state so it cannot be scheduled
-    // before the future pointer is stored (avoids a race with preemption).
-    let pid = process::create_process(
-        "async-task",
-        VirtAddr::new(task_entry::<F> as *const () as u64),
-        false, // kernel process
-    )?;
-    process::PROCESS_MANAGER.with_process(ProcessId(pid.0 as u64), |p| {
-        p.state = ProcessState::Blocked;
-    });
-
-    // Store the future pointer via user_stack, then unblock the process.
+    // Prepare the future pointer before creating the process so that
+    // the entire creation + initialisation is atomic (interrupts off).
     let boxed: Box<dyn Future<Output = ()> + Send> = Box::new(future);
     let raw = Box::into_raw(Box::new(boxed));
-    process::PROCESS_MANAGER.with_process(ProcessId(pid.0 as u64), |p| {
-        p.user_stack = VirtAddr::new(raw as u64);
-        p.state = ProcessState::Ready;
-    });
+
+    let pid = x86_64::instructions::interrupts::without_interrupts(|| -> Result<_, petroleum::common::logging::SystemError> {
+        let p = process::create_process(
+            "async-task",
+            VirtAddr::new(task_entry::<F> as *const () as u64),
+            false,
+        )?;
+        process::PROCESS_MANAGER.with_process(ProcessId(p.0 as u64), |pr| {
+            pr.user_stack = VirtAddr::new(raw as u64);
+            pr.state = ProcessState::Ready;
+        });
+        Ok(p)
+    })?;
 
     Ok(TaskHandle { pid: pid.0 as u64 })
 }
