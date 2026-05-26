@@ -359,9 +359,9 @@ impl Compositor {
             let dxa = close_x + 3 + o;
             let da1 = close_y + 3 + o;
             let da2 = close_y + 10 - o;
-            if dxa<cex&&dxa<fw {
-                if da1<cey&&da1<fh { fb[(da1 as usize)*(fbw as usize)+dxa as usize]=0xFFFFFF; }
-                if da2<cey&&da2<fh { fb[(da2 as usize)*(fbw as usize)+dxa as usize]=0xFFFFFF; }
+            if dxa >= cx as i32 && dxa < cex && dxa < fw {
+                if da1 >= cy as i32 && da1 < cey && da1 < fh { fb[(da1 as usize)*(fbw as usize)+dxa as usize]=0xFFFFFF; }
+                if da2 >= cy as i32 && da2 < cey && da2 < fh { fb[(da2 as usize)*(fbw as usize)+dxa as usize]=0xFFFFFF; }
             }
         }
 
