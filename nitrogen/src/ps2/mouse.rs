@@ -132,5 +132,13 @@ pub fn consume_state() -> Ps2MouseState {
 /// The value is extracted from the raw PS/2 status byte of the most
 /// recently completed packet.
 pub fn mouse_buttons() -> u8 {
-    *LATEST_STATUS.lock()
+    let interrupts_enabled = x86_64::instructions::interrupts::are_enabled();
+    if interrupts_enabled {
+        x86_64::instructions::interrupts::disable();
+    }
+    let status = *LATEST_STATUS.lock();
+    if interrupts_enabled {
+        x86_64::instructions::interrupts::enable();
+    }
+    status
 }
