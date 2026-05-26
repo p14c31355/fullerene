@@ -191,11 +191,12 @@ impl Compositor {
         // Skip redraw if the text hasn't changed since the last frame.
         // SAFETY: single‑threaded kernel, no pre‑emption.
         unsafe {
-            if PREV_DEBUG_TEXT == text.as_bytes()[..PREV_DEBUG_LEN.min(text.len())] {
+            let new_bytes = text.as_bytes();
+            if PREV_DEBUG_LEN == new_bytes.len() && PREV_DEBUG_TEXT[..PREV_DEBUG_LEN] == *new_bytes {
                 return;
             }
-            let n = text.len().min(32);
-            PREV_DEBUG_TEXT[..n].copy_from_slice(&text.as_bytes()[..n]);
+            let n = new_bytes.len().min(32);
+            PREV_DEBUG_TEXT[..n].copy_from_slice(&new_bytes[..n]);
             PREV_DEBUG_LEN = n;
         }
 
