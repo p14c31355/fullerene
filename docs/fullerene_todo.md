@@ -21,36 +21,36 @@
 # Graphics / Compositor
 
 ## Rendering Architecture
-- [ ] Introduction of dirty rect
-- [ ] Partial Redraw
+- [x] Introduction of dirty rect
+- [x] Partial Redraw
 - [ ] Deprecation of Fullscreen Redraw
-- [ ] Compositor Responsibilities Reorganization
+- [x] Compositor Responsibilities Reorganization
 - [ ] Framebuffer Copy Optimization
 - [ ] Draw Call Profiling
 
 ## Layer System
-- [ ] Cursor-Specific Layer
+- [x] Cursor-Specific Layer
 - [ ] Window Layer Separation
 - [ ] Overlay Layer
-- [ ] Z-order Management
+- [x] Z-order Management
 - [ ] Invalidate Range Management
 ## Visual Improvements
-- [ ] Title Bar
-- [ ] Semi-transparent Cursor
-- [ ] Shadow Drawing
+- [x] Title Bar
+- [x] Semi-transparent Cursor
+- [x] Shadow Drawing
 - [ ] UI Padding Adjustment
-- [ ] Theme Color Support
-- [ ] FPS/debug Overlay
+- [x] Theme Color Support
+- [x] FPS/debug Overlay
 
 ---
 # Window System
 ## Window Management
-- [ ] Window Drag
-- [ ] Window Focus
-- [ ] Active Window Highlight
-- [ ] Multiple Windows
-- [ ] Window Close Function
-- [ ] Resizing Function
+- [x] Window Drag
+- [x] Window Focus
+- [x] Active Window Highlight
+- [x] Multiple Windows
+- [x] Window Close Function
+- [x] Resizing Function
 ## Desktop
 - [ ] Desktop Layer
 - [ ] Taskbar
@@ -63,21 +63,21 @@
 ## Mouse
 - [x] Mouse Cursor Display
 - [x] Mouse Movement
-- [ ] Left Click
-- [ ] Right-click
-- [ ] Drag event
+- [x] Left Click
+- [x] Right-click
+- [x] Drag event
 - [ ] Double-click
 - [ ] Wheel support
 ## Keyboard
-- [ ] Modifier key support
-- [ ] Key repeat
+- [x] Modifier key support
+- [x] Key repeat
 - [ ] Keymap abstraction
 - [ ] Japanese layout support
 ## Event Architecture
-- [ ] Event queue
-- [ ] Event dispatcher
+- [x] Event queue
+- [x] Event dispatcher
 - [ ] Window event routing
-- [ ] Timer event
+- [x] Timer event
 - [ ] Input abstraction
 
 ---
@@ -85,8 +85,8 @@
 ## Shell Core
 - [x] Command input
 - [x] Basic builtin command
-- [ ] Command history
-- [ ] TAB completion
+- [x] Command history
+- [x] TAB completion
 - [ ] Pipe
 - [ ] Standard input/output abstraction
 ## Terminal Rendering
@@ -97,13 +97,14 @@
 - [ ] selection/copy
 - [x] Terminal buffer
 ## Commands
-- [ ] ls
-- [ ] cat
-- [ ] pwd
-- [ ] meminfo
-- [ ] dmesg
-- [ ] ps
-- [ ] clear improvement
+- [x] ls
+- [x] cat
+- [x] pwd
+- [x] meminfo
+- [x] dmesg
+- [x] ps
+- [x] clear improvement
+- [x] version / hexdump commands
 ---
 # Font System
 ## Future Font Pipeline
@@ -115,9 +116,9 @@
 ---
 # Kernel / Runtime
 ## Tasking
-- [ ] scheduler
+- [x] scheduler
 - [ ] cooperative multitasking
-- [ ] preemptive multitasking
+- [x] preemptive multitasking
 - [ ] async runtime
 - [x] timer subsystem
 ## Memory
@@ -130,7 +131,7 @@
 ## Diagnostics
 - [ ] panic screen
 - [ ] stack trace
-- [ ] logging subsystem
+- [x] logging subsystem
 - [x] serial logger
 - [ ] kernel tracing
 
@@ -140,7 +141,7 @@
 
 ## Graphics
 - [ ] VirtIO-GPU stabilization
-- [ ] double buffering
+- [x] double buffering
 - [ ] hardware cursor
 - [ ] vsync
 

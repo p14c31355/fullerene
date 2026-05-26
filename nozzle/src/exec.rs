@@ -120,3 +120,17 @@ pub fn list_commands(commands: &[&dyn Command], terminal: &mut dyn Terminal) {
         terminal.write_str("\n");
     }
 }
+
+/// Get TAB completion candidates for a partial command line.
+pub fn get_completions(prefix: &str) -> alloc::vec::Vec<alloc::string::String> {
+    let word = prefix.trim().split_whitespace().next().unwrap_or("");
+    let lower = word.to_lowercase();
+    let mut matches = alloc::vec::Vec::new();
+    let cmds = crate::default_commands();
+    for cmd in cmds.iter() {
+        if cmd.name().starts_with(&lower) {
+            matches.push(alloc::string::String::from(cmd.name()));
+        }
+    }
+    matches
+}
