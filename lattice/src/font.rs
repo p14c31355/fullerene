@@ -279,9 +279,7 @@ fn psf_glyph(psf: &PsfFont, ch: u8) -> Glyph<'static> {
     let start = idx * gb;
     let end = (start + gb).min(psf.bitmap.len());
 
-    // SAFETY: The PSF bitmap lives as long as the kernel (`'static`).
-    let rows: &'static [u8] =
-        unsafe { core::slice::from_raw_parts(psf.bitmap.as_ptr().add(start), end - start) };
+    let rows: &'static [u8] = &psf.bitmap[start..end];
 
     Glyph { rows }
 }
