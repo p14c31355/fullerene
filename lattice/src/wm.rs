@@ -30,7 +30,7 @@ pub struct WindowManager {
     drag: DragState,
     resize_handle: u32,
     /// Accumulated dirty rectangles since last `consume_dirty_rects`.
-    dirty_rects: Vec<DirtyRect>,
+    pub(crate) dirty_rects: Vec<DirtyRect>,
 }
 
 const RESIZE_HANDLE_SIZE: u32 = 16;
