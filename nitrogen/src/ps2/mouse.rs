@@ -97,7 +97,15 @@ pub fn handle_mouse_data(byte: u8) {
 /// latest packet.  **Does NOT reset** the internal deltas — call
 /// [`consume_state`] instead if you need to drain the accumulator.
 pub fn latest_state() -> Ps2MouseState {
-    *LATEST_STATE.lock()
+    let interrupts_enabled = x86_64::instructions::interrupts::are_enabled();
+    if interrupts_enabled {
+        x86_64::instructions::interrupts::disable();
+    }
+    let state = *LATEST_STATE.lock();
+    if interrupts_enabled {
+        x86_64::instructions::interrupts::enable();
+    }
+    state
 }
 
 /// Return the most recently completed mouse state **and reset** the
