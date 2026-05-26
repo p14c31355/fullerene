@@ -121,22 +121,17 @@ fn build_uefi_package(
     Ok(())
 }
 
-fn grub_cfg_content(kernel_path: &PathBuf) -> String {
-    // Use the kernel path's file stem as the filename to chainload
-    let kernel_filename = kernel_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("KERNEL.EFI");
-    format!(
-        r#"set default="0"
+fn grub_cfg_content(_kernel_path: &PathBuf) -> String {
+    // The ISO image always copies the kernel to /EFI/BOOT/KERNEL.EFI,
+    // so the GRUB configuration must match this fixed path.
+    r#"set default="0"
 set timeout="5"
 
-menuentry "Fullerene OS" {{
-    chainloader /EFI/BOOT/{}
-}}
-"#,
-        kernel_filename
-    )
+menuentry "Fullerene OS" {
+    chainloader /EFI/BOOT/KERNEL.EFI
+}
+"#
+    .to_string()
 }
 
 fn create_iso_and_setup(

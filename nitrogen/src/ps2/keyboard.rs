@@ -179,7 +179,7 @@ fn handle_key_press(scancode: u8, modifiers: &mut KeyboardModifiers) {
                 let mut str_buffer = INPUT_STRING_BUFFER.lock();
                 if ascii == 0x08 {
                     str_buffer.pop();
-                } else {
+                } else if str_buffer.len() < 256 {
                     str_buffer.push(ascii as char);
                 }
             }

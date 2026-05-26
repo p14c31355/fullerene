@@ -505,6 +505,9 @@ where
 }
 
 /// Render the terminal buffer onto the terminal window's surface.
+///
+/// Uses a static pre‑allocated cell buffer to avoid per‑frame heap
+/// allocations in the render loop (2000 cells × 100 fps = 200 k allocations/sec).
 fn render_terminal(rt: &mut RuntimeState) {
     let window = match rt
         .desktop
@@ -517,16 +520,19 @@ fn render_terminal(rt: &mut RuntimeState) {
         None => return,
     };
 
-    let cells: Vec<LatticeCell> = rt
-        .term_buf
-        .cells()
-        .iter()
-        .map(|c| LatticeCell {
-            ch: c.ch,
-            fg: c.fg,
-            bg: c.bg,
-        })
-        .collect();
+    let term_cells = rt.term_buf.cells();
+    let total = (rt.term_buf.cols() * rt.term_buf.rows()) as usize;
+
+    static CELLS: Mutex<Vec<LatticeCell>> = Mutex::new(Vec::new());
+    let mut cells = CELLS.lock();
+    if cells.len() != total {
+        cells.resize(total, LatticeCell { ch: b' ', fg: 0, bg: 0 });
+    }
+    for (i, c) in term_cells.iter().enumerate() {
+        if i < cells.len() {
+            cells[i] = LatticeCell { ch: c.ch, fg: c.fg, bg: c.bg };
+        }
+    }
 
     terminal_surface::render(terminal_surface::RenderParams {
         surface: &mut window.surface,

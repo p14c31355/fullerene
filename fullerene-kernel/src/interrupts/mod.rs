@@ -27,7 +27,7 @@ pub use exceptions::{
     virtualization_handler, vmm_communication_exception_handler,
 };
 pub use idt::init;
-pub use input::{MOUSE_STATE, keyboard_handler, mouse_handler, timer_handler};
+pub use input::{keyboard_handler, mouse_handler, timer_handler};
 pub use syscall::setup_syscall;
 
 /// Send End-Of-Interrupt to APIC

@@ -4,34 +4,7 @@
 
 use super::apic::send_eoi;
 use petroleum::port_read_u8;
-use spin::Mutex;
 use x86_64::structures::idt::InterruptStackFrame;
-
-/// Accumulated mouse state (absolute position + current buttons).
-///
-/// Updated by [`poll_mouse_state`] in `gui.rs` using deltas from the
-/// Nitrogen PS/2 mouse driver.  The interrupt handler no longer
-/// performs manual packet processing.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct MouseState {
-    pub x: i16,
-    pub y: i16,
-    pub buttons: u8,
-}
-
-impl MouseState {
-    pub const fn new() -> Self {
-        MouseState {
-            x: 0,
-            y: 0,
-            buttons: 0,
-        }
-    }
-}
-
-/// Global input device state
-pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState::new());
 
 /// Macro to create input device interrupt handlers
 macro_rules! define_input_interrupt_handler {
