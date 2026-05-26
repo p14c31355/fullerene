@@ -80,7 +80,7 @@ impl LineEditor {
             term.write_str(&s);
             // Move cursor back to end by counting remaining chars
             let remaining = self.buffer.len().saturating_sub(self.cursor);
-            for _ in 0..remaining { term.write_str("\x08"); }
+            for _ in 0..remaining { term.write_str("\\x1b[D"); }
         }
     }
 
