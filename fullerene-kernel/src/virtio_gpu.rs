@@ -15,6 +15,47 @@ use nitrogen::pci::{PciConfigSpace, PciDevice, PciScanner};
 use nitrogen::virtio::gpu;
 use nitrogen::virtio::gpu::VirtioGpu;
 
+/// RAII guard that frees a contiguous frame allocation on drop.
+///
+/// Call [`Self::forget`] to prevent deallocation when the frame is
+/// still in use (e.g. handed off to hardware).
+struct ContiguousFrameGuard {
+    phys: u64,
+    pages: usize,
+}
+
+impl ContiguousFrameGuard {
+    /// Allocate `pages` contiguous frames. Returns `None` on OOM.
+    fn allocate(pages: usize) -> Option<Self> {
+        let phys = petroleum::page_table::constants::get_frame_allocator_mut()
+            .allocate_contiguous_frames(pages)
+            .ok()? as u64;
+        Some(Self { phys, pages })
+    }
+
+    fn phys(&self) -> u64 {
+        self.phys
+    }
+
+    /// Disarm the guard, returning ownership of the underlying
+    /// physical frames so the caller is responsible for freeing them.
+    fn forget(mut self) -> u64 {
+        let phys = self.phys;
+        // Prevent Drop from freeing the frames
+        self.pages = 0;
+        phys
+    }
+}
+
+impl Drop for ContiguousFrameGuard {
+    fn drop(&mut self) {
+        if self.pages > 0 {
+            petroleum::page_table::constants::get_frame_allocator_mut()
+                .free_contiguous_frames(self.phys, self.pages);
+        }
+    }
+}
+
 /// Probe PCI for a VirtIO-GPU device and initialise it.
 ///
 /// Returns `Some(VirtioGpu)` on success, `None` if no device is found
@@ -40,12 +81,14 @@ pub fn init(common_virt: u64, notify_virt: u64, fb_addr: u64, fb_w: u32, fb_h: u
     let common_virt_ptr = (common_virt + common_cap.offset as u64) as *mut u32;
     let notify_virt_ptr = (notify_virt + notify_cap.offset as u64) as *mut u32;
 
-    // Allocate command/response buffers (1 page each)
+    // Allocate command/response buffers (1 page each) with RAII guards.
+    // If any allocation fails, previously-allocated guards will auto-free.
     let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-    let fa = petroleum::page_table::constants::get_frame_allocator_mut();
-    let cmd_phys = fa.allocate_contiguous_frames(1).ok()? as u64;
+    let cmd_guard = ContiguousFrameGuard::allocate(1)?;
+    let cmd_phys = cmd_guard.phys();
     let cmd_buf = (cmd_phys + off) as *mut u8;
-    let resp_phys = fa.allocate_contiguous_frames(1).ok()? as u64;
+    let resp_guard = ContiguousFrameGuard::allocate(1)?;
+    let resp_phys = resp_guard.phys();
     let resp_buf = (resp_phys + off) as *mut u8;
     unsafe {
         core::ptr::write_bytes(cmd_buf, 0, 4096);
@@ -63,15 +106,26 @@ pub fn init(common_virt: u64, notify_virt: u64, fb_addr: u64, fb_w: u32, fb_h: u
 
     let mut gpu = gpu_result?;
 
-    // Queue memory — fail gracefully instead of panicking on OOM.
-    let desc_phys = fa.allocate_contiguous_frames(1).ok()? as u64;
+    // Queue memory — allocate with RAII guards.
+    let desc_guard = ContiguousFrameGuard::allocate(1)?;
+    let desc_phys = desc_guard.phys();
     let desc_virt = (desc_phys + off) as *mut gpu::VringDesc;
-    let avail_phys = fa.allocate_contiguous_frames(1).ok()? as u64;
+    let avail_guard = ContiguousFrameGuard::allocate(1)?;
+    let avail_phys = avail_guard.phys();
     let avail_virt = (avail_phys + off) as *mut gpu::VringAvail;
-    let used_phys = fa.allocate_contiguous_frames(1).ok()? as u64;
+    let used_guard = ContiguousFrameGuard::allocate(1)?;
+    let used_phys = used_guard.phys();
     let used_virt = (used_phys + off) as *mut gpu::VringUsed;
 
     gpu.setup_queue(0, desc_virt, desc_phys, avail_virt, avail_phys, used_virt, used_phys);
+
+    // All allocations succeeded — disarm guards so frames persist after
+    // we return. The GPU device (and its queue) own these buffers now.
+    cmd_guard.forget();
+    resp_guard.forget();
+    desc_guard.forget();
+    avail_guard.forget();
+    used_guard.forget();
 
     // Negotiate display
     let fb_size = fb_stride * fb_h;
