@@ -165,9 +165,9 @@ pub fn block_on<F: Future>(mut future: F) -> F::Output {
     let pid = process::current_pid()
         .map(|p| p.0 as u64)
         .unwrap_or(0);
+    let waker = create_waker(pid);
+    let mut cx = Context::from_waker(&waker);
     loop {
-        let waker = create_waker(pid);
-        let mut cx = Context::from_waker(&waker);
         match future.as_mut().poll(&mut cx) {
             Poll::Ready(out) => return out,
             Poll::Pending => {
