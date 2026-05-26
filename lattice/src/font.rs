@@ -128,8 +128,7 @@ pub fn load_psf2(data: &'static [u8]) -> Result<(), &'static str> {
         return Err("PSF2 data truncated (bitmap exceeds data)");
     }
 
-    let bitmap: &'static [u8] =
-        unsafe { core::slice::from_raw_parts(data.as_ptr().add(bitmap_start), bitmap_size) };
+    let bitmap: &'static [u8] = &data[bitmap_start..bitmap_end];
 
     *PSF_FONT.lock() = Some(PsfFont {
         bitmap,
