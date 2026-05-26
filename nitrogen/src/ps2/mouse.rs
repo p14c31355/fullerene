@@ -49,8 +49,8 @@ pub fn init_mouse() -> Result<(), &'static str> {
     // Install the completion callback so LATEST_STATE is always up to date.
     mouse.set_on_complete(|state| {
         *LATEST_STATE.lock() = state;
+        *PACKET_IDX.lock() = 0;
     });
-
     log::info!("[nitrogen] PS/2 mouse: calling init()...");
     match mouse.init() {
         Ok(()) => {
