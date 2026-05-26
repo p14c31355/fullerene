@@ -23,22 +23,22 @@
 ## Rendering Architecture
 - [x] Introduction of dirty rect
 - [x] Partial Redraw
-- [ ] Deprecation of Fullscreen Redraw
+- [x] Deprecation of Fullscreen Redraw
 - [x] Compositor Responsibilities Reorganization
 - [x] Framebuffer Copy Optimization
-- [ ] Draw Call Profiling
+- [x] Draw Call Profiling
 
 ## Layer System
 - [x] Cursor-Specific Layer
-- [ ] Window Layer Separation
-- [ ] Overlay Layer
+- [x] Window Layer Separation
+- [x] Overlay Layer
 - [x] Z-order Management
 - [x] Invalidate Range Management
 ## Visual Improvements
 - [x] Title Bar
 - [x] Semi-transparent Cursor
 - [x] Shadow Drawing
-- [ ] UI Padding Adjustment
+- [x] UI Padding Adjustment
 - [x] Theme Color Support
 - [x] FPS/debug Overlay
 
@@ -52,11 +52,11 @@
 - [x] Window Close Function
 - [x] Resizing Function
 ## Desktop
-- [ ] Desktop Layer
+- [x] Desktop Layer
 - [x] Taskbar
-- [ ] System Menu
-- [ ] Clock Widget
-- [ ] Mouse Right-Click Menu
+- [x] System Menu
+- [x] Clock Widget
+- [x] Mouse Right-Click Menu
 
 ---
 # Input System
@@ -66,19 +66,19 @@
 - [x] Left Click
 - [x] Right-click
 - [x] Drag event
-- [ ] Double-click
-- [ ] Wheel support
+- [x] Double-click
+- [x] Wheel support
 ## Keyboard
 - [x] Modifier key support
 - [x] Key repeat
-- [ ] Keymap abstraction
-- [ ] Japanese layout support
+- [x] Keymap abstraction
+- [x] Japanese layout support
 ## Event Architecture
 - [x] Event queue
 - [x] Event dispatcher
-- [ ] Window event routing
+- [x] Window event routing
 - [x] Timer event
-- [ ] Input abstraction
+- [x] Input abstraction
 
 ---
 # Terminal / Shell
@@ -94,7 +94,7 @@
 - [x] Scroll support
 - [x] ANSI escape sequence
 - [x] Color display
-- [ ] selection/copy
+- [x] selection/copy
 - [x] Terminal buffer
 ## Commands
 - [x] ls
@@ -111,8 +111,8 @@
 - [x] PSF loader
 - [ ] BDF importer
 - [ ] build.rs font compiler
-- [ ] Unicode Foundation
-- [ ] fallback font
+- [x] Unicode Foundation
+- [x] fallback font
 ---
 # Kernel / Runtime
 ## Tasking

@@ -20,6 +20,7 @@ pub mod exec;
 pub mod line_editor;
 pub mod parser;
 pub mod prompt;
+pub mod selection;
 pub mod terminal;
 pub mod terminal_buffer;
 

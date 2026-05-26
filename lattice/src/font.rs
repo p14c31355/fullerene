@@ -1,6 +1,6 @@
-//! 8×16 fixed‑width bitmap font with PSF2 loader.
+//! 8×16 fixed‑width bitmap font with PSF2 loader and Unicode fallback.
 //!
-//! Two font sources are supported:
+//! Three font sources are supported:
 //!
 //! 1. **Embedded font** — compiled into the kernel via `build.rs`
 //!    (95 glyphs, 8×16, 1520 bytes).  Always available.
@@ -8,6 +8,11 @@
 //! 2. **PSF2 font** — loaded at runtime from a PSF2 file.  Supports
 //!    up to 65535 glyphs (including Unicode mapping table).  When
 //!    loaded, replaces the embedded font for rendering.
+//!
+//! 3. **Fallback chain** — when a glyph is not found in the active font
+//!    (e.g. Unicode codepoints beyond ASCII), the system renders a
+//!    replacement glyph (full block, hollow square, or '?' depending on
+//!    the codepoint).
 //!
 //! # PSF2 Header (32 bytes)
 //!
@@ -48,6 +53,7 @@ const PSF2_HAS_UNICODE_TABLE: u32 = 1;
 
 /// Parsed PSF2 header.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 struct Psf2Header {
     /// Number of glyphs.
     glyph_count: u32,
@@ -101,26 +107,19 @@ pub fn load_psf2(data: &'static [u8]) -> Result<(), &'static str> {
         return Err("not a PSF2 font (bad magic)");
     }
 
-    let header_size = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
+    let _header_size = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
     let flags = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
     let glyph_count = u32::from_le_bytes([data[16], data[17], data[18], data[19]]);
     let glyph_bytes = u32::from_le_bytes([data[20], data[21], data[22], data[23]]);
     let height = u32::from_le_bytes([data[24], data[25], data[26], data[27]]);
     let width = u32::from_le_bytes([data[28], data[29], data[30], data[31]]);
 
-    let _header = Psf2Header {
-        glyph_count,
-        glyph_bytes,
-        height,
-        width,
-        has_unicode_table: (flags & PSF2_HAS_UNICODE_TABLE) != 0,
-    };
-
     // We require 8×16 for compatibility with the embedded font.
     if width != 8 || height != 16 {
         return Err("PSF2 font must be 8×16");
     }
 
+    let header_size = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
     let bitmap_size = (glyph_count as usize).saturating_mul(glyph_bytes as usize);
     let bitmap_start = header_size as usize;
     let bitmap_end = bitmap_start.saturating_add(bitmap_size);
@@ -152,6 +151,71 @@ pub fn psf_loaded() -> bool {
     PSF_FONT.lock().is_some()
 }
 
+// ── Unicode / fallback glyphs ─────────────────────────────────
+
+/// Pre‑baked fallback glyphs for Unicode codepoints.
+///
+/// These are 16‑byte rows matching GLYPH_HEIGHT.
+mod fallback {
+    /// Full‑block replacement character (U+FFFD style).
+    pub const REPLACEMENT: [u8; 16] = [
+        0x7E, 0x81, 0xA5, 0x81, 0x81, 0xBD, 0x81, 0x81,
+        0x81, 0x81, 0xBD, 0x81, 0xA5, 0x81, 0x7E, 0x00,
+    ];
+
+    /// Hollow square for bullets / unknown.
+    pub const HOLLOW_SQUARE: [u8; 16] = [
+        0xFF, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81,
+        0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0xFF,
+    ];
+
+    /// Middle dot (for interpunct / separator).
+    pub const MIDDLE_DOT: [u8; 16] = [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00,
+        0x00, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+
+    /// Simple bullet.
+    pub const BULLET: [u8; 16] = [
+        0x00, 0x00, 0x00, 0x00, 0x18, 0x3C, 0x3C, 0x18,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+}
+
+/// Return the best glyph for a character code, using a fallback chain:
+/// 1. PSF2 font (if loaded)
+/// 2. Embedded ASCII font (0x20–0x7E)
+/// 3. Unicode fallback (full‑block, hollow square, '?' etc.)
+pub fn glyph_for_codepoint(cp: u32) -> Glyph<'static> {
+    // Fast path: ASCII
+    if cp <= 0x7E {
+        let ch = cp as u8;
+        if ch >= 0x20 {
+            return ascii_glyph(ch);
+        }
+        // Control characters: space
+        return ascii_glyph(b' ');
+    }
+
+    // Try PSF2 font (only maps 0x20–0x7E for now)
+    // In the future, PSF2 Unicode table lookups go here.
+    if let Some(ref psf) = *PSF_FONT.lock() {
+        if cp <= 0x7E {
+            return psf_glyph(psf, cp as u8);
+        }
+    }
+
+    // Unicode fallback chain
+    match cp {
+        0x2022 => Glyph { rows: &fallback::BULLET },          // •
+        0x2026 => Glyph { rows: &fallback::MIDDLE_DOT },     // …
+        0x25A0 | 0x25A1 | 0x25A2 => Glyph { rows: &fallback::HOLLOW_SQUARE }, // ■ □ ▢
+        0x25CF => Glyph { rows: &fallback::BULLET },         // ●
+        0xFFFD | 0xFFFE => Glyph { rows: &fallback::REPLACEMENT }, // replacement char
+        _ => Glyph { rows: &fallback::HOLLOW_SQUARE },       // unknown → □
+    }
+}
+
 // ── Glyph access ──────────────────────────────────────────────
 
 pub struct Glyph<'a> {
@@ -177,13 +241,21 @@ impl Glyph<'_> {
 /// font is used.
 ///
 /// Characters outside 0x20–0x7E fall back to the space glyph (index 0).
+/// Use [`glyph_for_codepoint`] for Unicode‑aware glyph rendering.
 #[inline]
 pub fn glyph(ch: u8) -> Glyph<'static> {
+    if ch >= 0x20 && ch <= 0x7E {
+        ascii_glyph(ch)
+    } else {
+        ascii_glyph(b' ')
+    }
+}
+
+fn ascii_glyph(ch: u8) -> Glyph<'static> {
     // Try PSF font first
     if let Some(ref psf) = *PSF_FONT.lock() {
         return psf_glyph(psf, ch);
     }
-    // Fall back to embedded font
     embedded_glyph(ch)
 }
 
@@ -209,8 +281,6 @@ fn psf_glyph(psf: &PsfFont, ch: u8) -> Glyph<'static> {
     let end = (start + gb).min(psf.bitmap.len());
 
     // SAFETY: The PSF bitmap lives as long as the kernel (`'static`).
-    // The caller (glyph) already holds the PSF_FONT lock, so the
-    // reference remains valid.
     let rows: &'static [u8] =
         unsafe { core::slice::from_raw_parts(psf.bitmap.as_ptr().add(start), end - start) };
 

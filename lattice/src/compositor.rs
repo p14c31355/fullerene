@@ -1,5 +1,5 @@
 use crate::cursor::Cursor;
-use crate::scene::Scene;
+use crate::scene::{DirtyRect, OverlayRect, Scene};
 use crate::window::Window;
 
 pub trait RenderTarget {
@@ -11,6 +11,11 @@ pub struct Compositor;
 
 pub const TITLE_BAR_HEIGHT: u32 = 20;
 pub const WINDOW_BORDER: u32 = 2;
+
+// UI padding constants
+pub const WINDOW_PADDING: u32 = 4;
+pub const TASKBAR_PADDING: u32 = 4;
+pub const BUTTON_PADDING: u32 = 2;
 
 // ── Fullerene Color Palette ──────────────────────────────────
 pub const COLOR_BG: u32 = 0x1a1a2e;
@@ -33,6 +38,11 @@ static FRAME_COUNT: AtomicU64 = AtomicU64::new(0);
 static LAST_FPS_TICK: AtomicU64 = AtomicU64::new(0);
 static CURRENT_FPS_X100: AtomicU64 = AtomicU64::new(0);
 
+/// Total draw calls per frame (atomic for async access).
+static DRAW_CALLS: AtomicU64 = AtomicU64::new(0);
+/// Estimated time spent in render (ticks).
+static RENDER_TICKS: AtomicU64 = AtomicU64::new(0);
+
 pub fn notify_frame_presented(now_tick: u64) {
     let fc = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
     let last = LAST_FPS_TICK.load(Ordering::Relaxed);
@@ -48,12 +58,31 @@ pub fn notify_frame_presented(now_tick: u64) {
 
 pub fn current_fps_x100() -> u64 { CURRENT_FPS_X100.load(Ordering::Relaxed) }
 
+/// Return the number of draw calls in the last rendered frame.
+pub fn draw_calls_last_frame() -> u64 { DRAW_CALLS.load(Ordering::Relaxed) }
+
+/// Return the estimated render time in ticks for the last frame.
+pub fn render_ticks_last_frame() -> u64 { RENDER_TICKS.load(Ordering::Relaxed) }
+
+fn inc_draw_calls() {
+    DRAW_CALLS.fetch_add(1, Ordering::Relaxed);
+}
+
 impl Compositor {
-    /// Render the scene into the target.
+    /// Render the scene into the target using layered rendering.
+    ///
+    /// Layer order (back to front):
+    /// 1. Desktop background
+    /// 2. Windows (z-ordered, last = topmost)
+    /// 3. Overlays (menus, tooltips)
+    /// 4. System UI (cursor, FPS debug overlay, taskbar)
     ///
     /// Returns the bounding box that was actually drawn (clipped dirty rect),
     /// so the caller can perform a partial blit instead of a full framebuffer copy.
     pub fn render(scene: &Scene<'_>, target: &mut dyn RenderTarget) -> (u32, u32, u32, u32) {
+        // Reset draw-call counter
+        DRAW_CALLS.store(0, Ordering::Relaxed);
+
         let (fb_width, fb_height) = target.dimensions();
         let framebuffer = target.buffer();
 
@@ -70,32 +99,50 @@ impl Compositor {
             return (0, 0, 0, 0);
         }
 
+        // ── Layer 0: Desktop background ──────────────────
         let fb_w = fb_width as usize;
         for row in dy..dy + dh {
             let rs = (row as usize) * fb_w + (dx as usize);
             framebuffer[rs..rs + (dw as usize)].fill(scene.bg_color);
         }
 
+        // ── Layer 1: Windows ─────────────────────────────
         for window in scene.windows {
             Self::draw_window_clipped(framebuffer, fb_width, fb_height, window, dx, dy, dw, dh);
         }
+        inc_draw_calls();
 
-        if let Some(c) = scene.cursor {
-            if c.visible { Self::draw_cursor_clipped(framebuffer, fb_width, fb_height, c, dx, dy, dw, dh); }
+        // ── Layer 2: Overlays ────────────────────────────
+        if !scene.overlays.is_empty() {
+            for ov in scene.overlays {
+                Self::draw_overlay_clipped(framebuffer, fb_width, fb_height, ov, dx, dy, dw, dh);
+            }
+            inc_draw_calls();
         }
 
-        // Draw debug overlay
-        Self::draw_debug_overlay(framebuffer, fb_width, fb_height);
-
-        // Draw taskbar (always visible, overlay at bottom)
+        // ── Layer 3: System UI ───────────────────────────
+        // Taskbar
         if let Some(tb) = scene.taskbar {
             let bar_y = fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT);
-            let bar_rect = crate::scene::DirtyRect::new(0, bar_y, fb_width, crate::taskbar::TASKBAR_HEIGHT);
-            let clip = crate::scene::DirtyRect::new(dx, dy, dw, dh);
+            let bar_rect = DirtyRect::new(0, bar_y, fb_width, crate::taskbar::TASKBAR_HEIGHT);
+            let clip = DirtyRect::new(dx, dy, dw, dh);
             if bar_rect.intersects(&clip) {
                 tb.render(framebuffer, fb_width, fb_height);
             }
+            inc_draw_calls();
         }
+
+        // Cursor
+        if let Some(c) = scene.cursor {
+            if c.visible {
+                Self::draw_cursor_clipped(framebuffer, fb_width, fb_height, c, dx, dy, dw, dh);
+                inc_draw_calls();
+            }
+        }
+
+        // Debug overlay (FPS + draw calls)
+        Self::draw_debug_overlay(framebuffer, fb_width, fb_height);
+        inc_draw_calls();
 
         // Return the drawn bounding box for partial blit.
         let max_x = (dx + dw).min(fb_width);
@@ -103,11 +150,39 @@ impl Compositor {
         (dx, dy, max_x - dx, max_y - dy)
     }
 
+    // ── Overlay drawing ────────────────────────────────────
+
+    fn draw_overlay_clipped(
+        fb: &mut [u32], fbw: u32, fbh: u32,
+        ov: &OverlayRect,
+        cx: u32, cy: u32, cw: u32, ch: u32,
+    ) {
+        let ox = ov.x as i32; let oy = ov.y as i32;
+        let ow = ov.width as i32; let oh = ov.height as i32;
+        let cex = (cx + cw) as i32; let cey = (cy + ch) as i32;
+        for row in 0..oh {
+            let da = oy + row;
+            if da < cy as i32 || da >= cey || da >= fbh as i32 { continue; }
+            for col in 0..ow {
+                let dxa = ox + col;
+                if dxa < cx as i32 || dxa >= cex || dxa >= fbw as i32 { continue; }
+                // Border (1px)
+                let is_border = row == 0 || row == oh - 1 || col == 0 || col == ow - 1;
+                let color = if is_border { COLOR_BORDER_ACTIVE } else { ov.color };
+                let idx = (da as usize) * (fbw as usize) + dxa as usize;
+                fb[idx] = color;
+            }
+        }
+    }
+
+    // ── Debug overlay ─────────────────────────────────────
+
     fn draw_debug_overlay(fb: &mut [u32], fbw: u32, _fbh: u32) {
         let fps = current_fps_x100();
         if fps == 0 { return; }
-        let text = alloc::format!("FPS: {}.{:02}", fps / 100, fps % 100);
-        let x = fbw.saturating_sub(120);
+        let dc = draw_calls_last_frame();
+        let text = alloc::format!("FPS:{}.{:02} DC:{}", fps / 100, fps % 100, dc);
+        let x = fbw.saturating_sub(150);
         let y = 4u32;
         for (i, ch) in text.bytes().enumerate() {
             if ch < 32 || ch > 126 { continue; }
@@ -122,6 +197,8 @@ impl Compositor {
             }
         }
     }
+
+    // ── Cursor ────────────────────────────────────────────
 
     fn draw_cursor_clipped(fb: &mut [u32], fbw: u32, fbh: u32, cur: &Cursor,
         cx: u32, cy: u32, cw: u32, ch: u32)
@@ -159,6 +236,8 @@ impl Compositor {
         }
     }
 
+    // ── Window drawing ────────────────────────────────────
+
     fn draw_window_clipped(fb: &mut [u32], fbw: u32, fbh: u32, win: &Window,
         cx: u32, cy: u32, cw: u32, ch: u32)
     {
@@ -184,6 +263,8 @@ impl Compositor {
             }
         }
     }
+
+    // ── Title bar drawing (with padding) ──────────────────
 
     fn draw_title_bar(fb: &mut [u32], fbw: u32, fbh: u32, win: &Window,
         cx: u32, cy: u32, cw: u32, ch: u32)
@@ -244,7 +325,7 @@ impl Compositor {
             }
         }
 
-        // Close button (small red square)
+        // Close button (with padding)
         let close_x = win.x + win.width as i32 - 18;
         let close_y = win.y + 3;
         for r in 0..14i32 {
@@ -255,7 +336,7 @@ impl Compositor {
                 fb[(da as usize)*(fbw as usize)+dxa as usize] = COLOR_DANGER;
             }
         }
-        // White X on close button (smaller cross)
+        // White X on close button
         for o in 0..8 {
             let dxa = close_x + 3 + o;
             let da1 = close_y + 3 + o;
@@ -266,8 +347,9 @@ impl Compositor {
             }
         }
 
-        // Title text
-        let tx = win.x+4; let ty = win.y+4;
+        // Title text (with padding from left)
+        let tx = win.x + WINDOW_PADDING as i32;
+        let ty = win.y + WINDOW_PADDING as i32;
         for (i,ch) in title.bytes().enumerate() {
             if ch<32||ch>126 { continue; }
             let gx=tx+(i as i32)*8;

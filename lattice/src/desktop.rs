@@ -1,6 +1,7 @@
 extern crate alloc;
 
 use crate::cursor::Cursor;
+use crate::menu::PopupMenu;
 use crate::scene::{DirtyRect, Scene};
 use crate::window::WindowId;
 use crate::wm::WindowManager;
@@ -8,12 +9,12 @@ use crate::wm::WindowManager;
 /// Desktop session — pure state, no rendering.
 ///
 /// `Desktop` is a **façade** that owns the `WindowManager`, `Cursor`,
-/// and `Taskbar`.  It does NOT touch the compositor or framebuffer.
+/// `Taskbar`, menus, and clock.  It does NOT touch the compositor or
+/// framebuffer.
 ///
 /// To render, the kernel/runtime calls:
 /// 1. `desktop.prepare_frame()` — consumes dirty rects from WM
 /// 2. `desktop.scene()` — builds the compositor snapshot
-/// 3. `compositor.render(&scene, &mut target)` — renders the frame
 ///
 /// ```ignore
 /// desktop.prepare_frame();
@@ -27,6 +28,18 @@ pub struct Desktop {
     pub taskbar: crate::taskbar::Taskbar,
     /// Cached dirty rects consumed from WM before building a scene.
     dirty_cache: alloc::vec::Vec<DirtyRect>,
+
+    // ── Menu state ────────────────────────────────────────
+    /// The currently visible popup menu (system menu or context menu).
+    pub active_menu: Option<PopupMenu>,
+    /// Whether the system menu was triggered (vs context menu).
+    pub menu_is_system: bool,
+    /// Cached overlay rectangles for the active menu (populated in prepare_frame).
+    menu_overlays_cache: alloc::vec::Vec<crate::scene::OverlayRect>,
+
+    // ── Clock state ────────────────────────────────────────
+    /// Current clock text "HH:MM:SS".
+    pub clock_text: alloc::string::String,
 }
 
 impl Desktop {
@@ -42,6 +55,10 @@ impl Desktop {
             bg_color,
             taskbar: crate::taskbar::Taskbar::new(),
             dirty_cache: alloc::vec::Vec::new(),
+            active_menu: None,
+            menu_is_system: false,
+            menu_overlays_cache: alloc::vec::Vec::new(),
+            clock_text: alloc::string::String::new(),
         }
     }
 
@@ -64,13 +81,51 @@ impl Desktop {
 
     /// Press mouse button at current cursor position.
     pub fn mouse_down(&mut self) {
+        // If a menu is open, check if click hits it
+        if let Some(ref menu) = self.active_menu {
+            let cx = self.cursor.x;
+            let cy = self.cursor.y;
+            if let Some(_idx) = menu.hit_test(cx, cy) {
+                // Menu item clicked — handle action
+                // (action dispatch is done by Solvent via process_menu_action)
+                self.active_menu = None;
+                return;
+            }
+            // Click outside menu — dismiss
+            self.active_menu = None;
+            return;
+        }
         self.wm.on_mouse_down(self.cursor.x, self.cursor.y);
+    }
+
+    /// Show the system menu (triggered from taskbar).
+    pub fn show_system_menu(&mut self) {
+        let items = crate::menu::system_menu_items();
+        let bar_y = 800u32.saturating_sub(crate::taskbar::TASKBAR_HEIGHT); // approximate
+        self.active_menu = Some(PopupMenu::new(4, bar_y.saturating_sub(items.len() as u32 * crate::menu::ITEM_HEIGHT + 4), items));
+        self.menu_is_system = true;
+    }
+
+    /// Show the context menu (right‑click on desktop).
+    pub fn show_context_menu(&mut self, x: i32, y: i32) {
+        let items = crate::menu::desktop_context_menu();
+        let mx = (x as u32).min(1024);
+        let my = (y as u32).min(768);
+        self.active_menu = Some(PopupMenu::new(mx, my, items));
+        self.menu_is_system = false;
+    }
+
+    /// Dismiss the active menu.
+    pub fn dismiss_menu(&mut self) {
+        self.active_menu = None;
     }
 
     /// Move mouse (drag if button held).
     pub fn mouse_move(&mut self, x: i32, y: i32) {
         self.set_cursor(x, y);
-        self.wm.on_mouse_move(x, y);
+        if self.active_menu.is_none() {
+            self.wm.on_mouse_move(x, y);
+        }
     }
 
     /// Release mouse button.
@@ -91,6 +146,8 @@ impl Desktop {
     /// Update the taskbar entries from the current window list.
     pub fn update_taskbar(&mut self) {
         self.taskbar.update_from_windows(self.wm.windows());
+        // Update clock text on taskbar
+        self.taskbar.clock_text = self.clock_text.clone();
     }
 
     // ── frame preparation ───────────────────────────────────
@@ -101,6 +158,19 @@ impl Desktop {
     /// compositor receives the correct dirty regions.
     pub fn prepare_frame(&mut self) {
         self.dirty_cache = self.wm.consume_dirty_rects();
+
+        // Generate menu overlay rects into the cache so scene() can
+        // safely reference them without dangling pointers.
+        self.menu_overlays_cache.clear();
+        if let Some(ref menu) = self.active_menu {
+            self.dirty_cache.push(DirtyRect::new(
+                menu.x,
+                menu.y,
+                menu.width,
+                menu.height,
+            ));
+            self.menu_overlays_cache = menu.to_overlays();
+        }
     }
 
     // ── scene snapshot ──────────────────────────────────────
@@ -115,6 +185,8 @@ impl Desktop {
             bg_color: self.bg_color,
             dirty_rects: &self.dirty_cache,
             taskbar: Some(&self.taskbar),
+            overlays: &self.menu_overlays_cache,
+            layered: true,
         }
     }
 }
@@ -193,5 +265,31 @@ mod tests {
         assert_eq!(win.y, 40);
 
         dt.mouse_up();
+    }
+
+    #[test]
+    fn test_system_menu() {
+        let mut dt = Desktop::new(0x202020);
+        dt.show_system_menu();
+        assert!(dt.active_menu.is_some());
+        let menu = dt.active_menu.as_ref().unwrap();
+        assert!(menu.items.len() >= 3);
+        // Click outside dismisses
+        dt.set_cursor(999, 999);
+        dt.mouse_down();
+        assert!(dt.active_menu.is_none());
+    }
+
+    #[test]
+    fn test_context_menu() {
+        let mut dt = Desktop::new(0x202020);
+        dt.show_context_menu(100, 200);
+        assert!(dt.active_menu.is_some());
+        let menu = dt.active_menu.as_ref().unwrap();
+        assert!(menu.items.len() >= 2);
+        // Click on first item
+        dt.set_cursor(menu.x as i32 + 4, menu.y as i32 + crate::menu::MENU_BORDER as i32 + 4);
+        dt.mouse_down();
+        assert!(dt.active_menu.is_none()); // dismissed after click
     }
 }
