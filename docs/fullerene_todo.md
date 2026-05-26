@@ -152,7 +152,7 @@
 
 ## Filesystem
 - [x] VFS
-- [ ] tmpfs
+- [x] tmpfs
 - [ ] FAT32
 - [ ] initramfs
 
