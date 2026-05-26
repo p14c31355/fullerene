@@ -193,6 +193,9 @@ pub fn process_key_repeat() {
     if let Some(ascii) = scancode_to_ascii(sc, &mods) {
         let mut buf = INPUT_BUFFER.lock();
         if buf.len() < 256 { buf.push_back(ascii); }
+        let mut sb = INPUT_STRING_BUFFER.lock();
+        if ascii == 0x08 { sb.pop(); }
+        else if sb.len() < 256 { sb.push(ascii as char); }
     }
 }
 
