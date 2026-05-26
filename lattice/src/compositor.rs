@@ -188,16 +188,7 @@ impl Compositor {
         let dc = draw_calls_last_frame();
         let text = alloc::format!("FPS:{}.{:02} DC:{}", fps / 100, fps % 100, dc);
 
-        // Cache the debug text but always redraw because the compositor
-        // clears the merged dirty rect background in Layer 0 — skipping
-        // the redraw would leave a blank rectangle over the dirty region.
-        // SAFETY: single‑threaded kernel, no pre‑emption.
-        unsafe {
-            let new_bytes = text.as_bytes();
-            let n = new_bytes.len().min(32);
-            PREV_DEBUG_TEXT[..n].copy_from_slice(&new_bytes[..n]);
-            PREV_DEBUG_LEN = n;
-        }
+        // Always redraw because the compositor clears the merged dirty rect\n        // background in Layer 0 — skipping the redraw would leave a blank\n        // rectangle over the dirty region.
 
         let x = fbw.saturating_sub(150);
         let y = 4u32;
