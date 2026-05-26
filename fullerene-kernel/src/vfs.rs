@@ -171,6 +171,10 @@ impl Tmpfs {
     fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, &'static str> {
         let desc = self.fds.get_mut(&fd).ok_or("bad fd")?;
         let ino = self.inodes.get_mut(&desc.ino).ok_or("inode not found")?;
+        // Refuse to write to directories — only regular files are writable.
+        if ino.kind != InodeType::File {
+            return Err("not a file");
+        }
         let off = desc.offset;
         if off + data.len() > ino.data.len() {
             ino.data.resize(off + data.len(), 0);

@@ -160,13 +160,24 @@ impl AhciController {
 
         let mut ctrl = Self { device, hba_mmio: hba_virt, hba_phys, num_ports: 0 };
 
-        // Enable AHCI and reset HBA
+        // Enable AHCI and reset HBA.
+        // Per the AHCI spec §3.1.7: set GHC.AE, set GHC.HR, then poll
+        // GHC.HR until hardware clears it.  Manually writing 0 to HR
+        // may interfere with the reset state machine.
         let ghc = ctrl.r32(HBA_GHC);
-        ctrl.w32(HBA_GHC, ghc | GHC_AE); // AHCI Enable
+        ctrl.w32(HBA_GHC, ghc | GHC_AE);   // AHCI Enable
         ctrl.w32(HBA_GHC, ghc | GHC_AE | GHC_HR); // HBA Reset
-        for _ in 0..1_000_000 { core::hint::spin_loop(); }
-        ctrl.w32(HBA_GHC, ghc | GHC_AE); // Clear reset
-        for _ in 0..100_000 { core::hint::spin_loop(); }
+        let mut reset_ok = false;
+        for _ in 0..1_000_000 {
+            if (ctrl.r32(HBA_GHC) & GHC_HR) == 0 {
+                reset_ok = true;
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        if !reset_ok {
+            log::warn!("AHCI: HBA reset timed out");
+        }
 
         let pi = ctrl.r32(HBA_PI); // Ports Implemented
         ctrl.num_ports = pi.count_ones() as u32;

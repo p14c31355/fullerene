@@ -64,27 +64,25 @@ pub fn record(tick: u64, category: &str, message: &str) {
     }
 }
 
-/// Return a slice of the most recent trace events, ordered oldest-first.
+/// Return all trace events in chronological order as an owned vector.
 ///
-/// Because the ring buffer may have wrapped, this reconstructs the
-/// correct order from the current head position.
-pub fn snapshot() -> &'static [TraceEvent] {
-    // SAFETY: single-threaded kernel, no concurrent mutation during snapshot.
+/// The returned `Vec` is a snapshot — safe to hold across interrupt
+/// boundaries because it owns its data.
+pub fn snapshot() -> alloc::vec::Vec<TraceEvent> {
     unsafe {
         let head = TRACE_HEAD.load(Ordering::Relaxed);
         if head == 0 {
-            return &[];
+            return alloc::vec::Vec::new();
         }
-        let total = head.min(TRACE_CAPACITY);
-        // Return the most recent `total` events.
+        let mut result = alloc::vec::Vec::new();
         if head <= TRACE_CAPACITY {
-            &TRACE_BUFFER[..total]
+            result.extend_from_slice(&TRACE_BUFFER[..head]);
         } else {
-            // Buffer has wrapped — events are in two segments.
-            // For simplicity we return only the contiguous segment from
-            // the wrap point to the current head.
-            &TRACE_BUFFER[head % TRACE_CAPACITY..]
+            let start = head % TRACE_CAPACITY;
+            result.extend_from_slice(&TRACE_BUFFER[start..]);
+            result.extend_from_slice(&TRACE_BUFFER[..start]);
         }
+        result
     }
 }
 

@@ -188,13 +188,12 @@ impl Compositor {
         let dc = draw_calls_last_frame();
         let text = alloc::format!("FPS:{}.{:02} DC:{}", fps / 100, fps % 100, dc);
 
-        // Skip redraw if the text hasn't changed since the last frame.
+        // Cache the debug text but always redraw because the compositor
+        // clears the merged dirty rect background in Layer 0 — skipping
+        // the redraw would leave a blank rectangle over the dirty region.
         // SAFETY: single‑threaded kernel, no pre‑emption.
         unsafe {
             let new_bytes = text.as_bytes();
-            if PREV_DEBUG_LEN == new_bytes.len() && PREV_DEBUG_TEXT[..PREV_DEBUG_LEN] == *new_bytes {
-                return;
-            }
             let n = new_bytes.len().min(32);
             PREV_DEBUG_TEXT[..n].copy_from_slice(&new_bytes[..n]);
             PREV_DEBUG_LEN = n;

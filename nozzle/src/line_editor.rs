@@ -57,12 +57,15 @@ impl LineEditor {
 
     fn do_tab_complete(&mut self, term: &mut dyn Terminal) {
         let line = String::from_utf8_lossy(&self.buffer).to_string();
-        let completions = crate::exec::get_completions(&line);
+        // Extract only the current word prefix (before cursor), up to the
+        // last space, so completions are scoped to the current argument.
+        let word_start = line[..self.cursor].rfind(' ').map(|i| i + 1).unwrap_or(0);
+        let prefix = &line[word_start..self.cursor];
+        let completions = crate::exec::get_completions(prefix);
         if completions.is_empty() { return; }
         if completions.len() == 1 {
             // Replace current word with completion
-            let word_start = line.rfind(' ').map(|i| i + 1).unwrap_or(0);
-            let prefix = &line[word_start..];
+            let prefix = &line[word_start..self.cursor];
             let completion = &completions[0];
             let suffix = &completion[prefix.len()..];
             for &ch in suffix.as_bytes() { self.do_insert(ch, term); }
