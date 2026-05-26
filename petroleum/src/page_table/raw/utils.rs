@@ -278,8 +278,16 @@ pub fn unmap_page_range(
 }
 
 #[deprecated(note = "memory stats not available in new API")]
+/// Returns (used_bytes, total_bytes, free_bytes) from the global kernel heap.
+///
+/// Uses the `linked_list_allocator::LockedHeap` API which exposes `used()`,
+/// `free()`, and `size()` via the inner `Heap` after locking.
 pub fn get_memory_stats() -> (usize, usize, usize) {
-    (0, 0, 0)
+    let allocator = crate::page_table::ALLOCATOR.lock();
+    let used = allocator.used();
+    let total = allocator.size();
+    let free = total.saturating_sub(used);
+    (used, total, free)
 }
 
 #[deprecated(note = "use huge::map_range_with_huge_pages")]

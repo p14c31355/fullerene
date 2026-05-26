@@ -4,4 +4,5 @@
 //! using the underlying port I/O primitives available in Nitrogen.
 
 pub mod keyboard;
+pub mod keymap;
 pub mod mouse;

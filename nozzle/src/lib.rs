@@ -20,6 +20,7 @@ pub mod exec;
 pub mod line_editor;
 pub mod parser;
 pub mod prompt;
+pub mod selection;
 pub mod terminal;
 pub mod terminal_buffer;
 
@@ -118,5 +119,13 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ("echo", "Print text", builtins::cmd_echo),
         ("exit", "Exit the shell", builtins::cmd_exit),
         ("uname", "Show system information", builtins::cmd_uname),
+        ("ls", "List files", builtins::cmd_ls),
+        ("cat", "Print file contents", builtins::cmd_cat),
+        ("pwd", "Print working directory", builtins::cmd_pwd),
+        ("meminfo", "Show memory information", builtins::cmd_meminfo),
+        ("dmesg", "Show kernel messages", builtins::cmd_dmesg),
+        ("ps", "List processes", builtins::cmd_ps),
+        ("hexdump", "Hex dump of text", builtins::cmd_hexdump),
+        ("version", "Show version info", builtins::cmd_version),
     )
 }

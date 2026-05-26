@@ -13,7 +13,13 @@
 //! A downstream renderer (e.g. Lattice's `terminal_surface`) consumes
 //! `cells()` and paints glyphs.
 //!
-//! # ANSI colour
+//! # ANSI escape sequences
+//!
+//! `put_str()` parses CSI sequences inline:
+//! - SGR (`m`)  — set foreground / background colour, reset
+//! - CUP (`H`)  — cursor position
+//! - CUU/CUD/CUF/CUB (`A`/`B`/`C`/`D`) — cursor movement
+//! - ED (`J`)   — erase in display
 //!
 //! `Cell` stores separate foreground / background colours.  The parser
 //! or shell can set them; the renderer uses them.
@@ -184,15 +190,263 @@ impl TerminalBuffer {
     }
 
     /// Write a string at the cursor position.
+    ///
+    /// Supports ANSI escape sequences:
+    /// - `\x1b[0m`           — reset style
+    /// - `\x1b[30m`–`\x1b[37m`  — set foreground (standard)
+    /// - `\x1b[90m`–`\x1b[97m`  — set foreground (bright)
+    /// - `\x1b[40m`–`\x1b[47m`  — set background (standard)
+    /// - `\x1b[100m`–`\x1b[107m` — set background (bright)
+    /// - `\x1b[<n>A`          — cursor up
+    /// - `\x1b[<n>B`          — cursor down
+    /// - `\x1b[<n>C`          — cursor forward
+    /// - `\x1b[<n>D`          — cursor back
+    /// - `\x1b[2J`            — clear screen
+    /// - `\x1b[H` / `\x1b[;H`  — cursor home
     pub fn put_str(&mut self, s: &str) {
+        #[derive(PartialEq)]
+        enum AnsiState { Normal, Esc, Csi }
+        let mut state = AnsiState::Normal;
+        let mut param_buf: [u8; 8] = [0; 8];
+        let mut param_len: usize = 0;
+
         for &b in s.as_bytes() {
-            match b {
-                b'\n' => self.newline(),
-                0x08 => self.backspace(), // backspace
-                b'\r' => self.cursor_col = 0,
-                ch if ch >= 0x20 => self.put_char(ch),
-                _ => {} // ignore other control chars
+            match state {
+                AnsiState::Normal => {
+                    if b == 0x1B {
+                        state = AnsiState::Esc;
+                    } else {
+                        self.put_byte(b);
+                    }
+                }
+                AnsiState::Esc => {
+                    if b == b'[' {
+                        state = AnsiState::Csi;
+                        param_len = 0;
+                    } else {
+                        // Unknown escape — emit both bytes as-is
+                        self.put_byte(0x1B);
+                        self.put_byte(b);
+                        state = AnsiState::Normal;
+                    }
+                }
+                AnsiState::Csi => {
+                    if (0x30..=0x3F).contains(&b) {
+                        if param_len < param_buf.len() {
+                            param_buf[param_len] = b;
+                            param_len += 1;
+                        }
+                    } else {
+                        // Final byte — execute CSI command
+                        self.handle_csi(b, &param_buf[..param_len]);
+                        state = AnsiState::Normal;
+                    }
+                }
             }
+        }
+        // Flush unterminated sequence as literal text
+        match state {
+            AnsiState::Esc => { self.put_byte(0x1B); }
+            AnsiState::Csi => {
+                self.put_byte(0x1B);
+                self.put_byte(b'[');
+                for &pb in &param_buf[..param_len] { self.put_byte(pb); }
+            }
+            AnsiState::Normal => {}
+        }
+    }
+
+    /// Write a single raw byte (no ANSI processing).
+    fn put_byte(&mut self, b: u8) {
+        match b {
+            b'\n' => self.newline(),
+            0x08 => self.backspace(),
+            b'\r' => self.cursor_col = 0,
+            ch if ch >= 0x20 => self.put_char(ch),
+            _ => {}
+        }
+    }
+
+    /// Execute a single CSI (Control Sequence Introducer) command.
+    fn handle_csi(&mut self, final_byte: u8, params: &[u8]) {
+        // Parse semicolon-separated numeric parameters.
+        // Empty or missing parameters default to 0 for SGR,
+        // but cursor commands use 1 as default.
+        let param_str = core::str::from_utf8(params).unwrap_or("");
+        let mut nums: [u32; 8] = [0; 8];
+        let mut ni = 0;
+        if !param_str.is_empty() {
+            for part in param_str.split(';') {
+                if ni >= 8 { break; }
+                nums[ni] = part.parse::<u32>().unwrap_or(0);
+                ni += 1;
+            }
+        }
+
+        match final_byte {
+            b'A' => {
+                // Cursor up (default 1)
+                let n = if ni > 0 { nums[0].max(1) } else { 1 };
+                self.cursor_row = self.cursor_row.saturating_sub(n);
+            }
+            b'B' => {
+                // Cursor down (default 1)
+                let n = if ni > 0 { nums[0].max(1) } else { 1 };
+                self.cursor_row = self.cursor_row.saturating_add(n).min(self.rows.saturating_sub(1));
+            }
+            b'C' => {
+                // Cursor forward (default 1)
+                let n = if ni > 0 { nums[0].max(1) } else { 1 };
+                self.cursor_col = self.cursor_col.saturating_add(n).min(self.cols.saturating_sub(1));
+            }
+            b'D' => {
+                // Cursor back (default 1)
+                let n = if ni > 0 { nums[0].max(1) } else { 1 };
+                self.cursor_col = self.cursor_col.saturating_sub(n);
+            }
+            b'H' => {
+                // Cursor position (row;col, 1-based, default 1)
+                let row = if ni > 0 { nums[0].saturating_sub(1) } else { 0 };
+                let col = if ni > 1 { nums[1].saturating_sub(1) } else { 0 };
+                self.cursor_row = row.min(self.rows.saturating_sub(1));
+                self.cursor_col = col.min(self.cols.saturating_sub(1));
+            }
+            b'J' => {
+                // Erase in display (default 0)
+                let mode = if ni > 0 { nums[0] } else { 0 };
+                if mode == 2 {
+                    self.clear();
+                }
+            }
+            b'm' => {
+                // SGR — Select Graphic Rendition (default 0 = reset)
+                if ni == 0 {
+                    self.handle_sgr(&[0]);
+                } else {
+                    self.handle_sgr(&nums[..ni]);
+                }
+            }
+            _ => {} // Unknown — silently ignore
+        }
+    }
+
+    /// Map standard ANSI colour (30–37 / 40–47) → 0xRRGGBB.
+    fn ansi_color(code: u32) -> u32 {
+        match code {
+            30 => 0x000000, // Black
+            31 => 0xCC0000, // Red
+            32 => 0x00CC00, // Green
+            33 => 0xCCCC00, // Yellow
+            34 => 0x0000CC, // Blue
+            35 => 0xCC00CC, // Magenta
+            36 => 0x00CCCC, // Cyan
+            37 => 0xCCCCCC, // White
+            _ => 0xCCCCCC,
+        }
+    }
+
+    /// Map bright ANSI colour (90–97 / 100–107) → 0xRRGGBB.
+    fn ansi_bright_color(code: u32) -> u32 {
+        match code {
+            0 => 0x555555, // Bright Black (gray)
+            1 => 0xFF5555, // Bright Red
+            2 => 0x55FF55, // Bright Green
+            3 => 0xFFFF55, // Bright Yellow
+            4 => 0x5555FF, // Bright Blue
+            5 => 0xFF55FF, // Bright Magenta
+            6 => 0x55FFFF, // Bright Cyan
+            7 => 0xFFFFFF, // Bright White
+            _ => 0xFFFFFF,
+        }
+    }
+
+    /// Map 256-colour palette index → 0xRRGGBB.
+    fn ansi_256_color(idx: u8) -> u32 {
+        match idx {
+            0..=15 => Self::ansi_standard_256(idx),
+            16..=231 => {
+                // 6×6×6 colour cube
+                let v = idx - 16;
+                let r = (v / 36) % 6;
+                let g = (v / 6) % 6;
+                let b = v % 6;
+                let scale = |c: u8| if c == 0 { 0 } else { (c * 40 + 55) as u32 };
+                (scale(r) << 16) | (scale(g) << 8) | scale(b)
+            }
+            232..=255 => {
+                // Grayscale ramp
+                let l = (idx - 232) as u32 * 10 + 8;
+                (l << 16) | (l << 8) | l
+            }
+        }
+    }
+
+    /// Standard 16 ANSI colours (0–15).
+    fn ansi_standard_256(idx: u8) -> u32 {
+        match idx {
+            0 => 0x000000, 1 => 0xCC0000, 2 => 0x00CC00, 3 => 0xCCCC00,
+            4 => 0x0000CC, 5 => 0xCC00CC, 6 => 0x00CCCC, 7 => 0xCCCCCC,
+            8 => 0x555555, 9 => 0xFF5555, 10 => 0x55FF55, 11 => 0xFFFF55,
+            12 => 0x5555FF, 13 => 0xFF55FF, 14 => 0x55FFFF, 15 => 0xFFFFFF,
+            _ => 0xCCCCCC,
+        }
+    }
+
+    /// Apply SGR (Select Graphic Rendition) parameters.
+    fn handle_sgr(&mut self, codes: &[u32]) {
+        let mut i = 0;
+        while i < codes.len() {
+            let c = codes[i];
+            match c {
+                0 => {
+                    // Reset
+                    self.style = TextStyle::default();
+                }
+                1 => {
+                    // Bold — use bright version of current fg
+                    // (simplified: no-op for now)
+                }
+                30..=37 => {
+                    self.style.fg = Self::ansi_color(c);
+                }
+                38 => {
+                    // Extended foreground: 38;5;<n> or 38;2;<r>;<g>;<b>
+                    if i + 2 < codes.len() && codes[i + 1] == 5 {
+                        self.style.fg = Self::ansi_256_color(codes[i + 2] as u8);
+                        i += 2;
+                    } else if i + 4 < codes.len() && codes[i + 1] == 2 {
+                        self.style.fg =
+                            ((codes[i + 2] & 0xFF) << 16)
+                            | ((codes[i + 3] & 0xFF) << 8)
+                            | (codes[i + 4] & 0xFF);
+                        i += 4;
+                    }
+                }
+                40..=47 => {
+                    self.style.bg = Self::ansi_color(c - 10);
+                }
+                48 => {
+                    // Extended background
+                    if i + 2 < codes.len() && codes[i + 1] == 5 {
+                        self.style.bg = Self::ansi_256_color(codes[i + 2] as u8);
+                        i += 2;
+                    } else if i + 4 < codes.len() && codes[i + 1] == 2 {
+                        self.style.bg =
+                            ((codes[i + 2] & 0xFF) << 16)
+                            | ((codes[i + 3] & 0xFF) << 8)
+                            | (codes[i + 4] & 0xFF);
+                        i += 4;
+                    }
+                }
+                90..=97 => {
+                    self.style.fg = Self::ansi_bright_color(c - 90);
+                }
+                100..=107 => {
+                    self.style.bg = Self::ansi_bright_color(c - 100);
+                }
+                _ => {}
+            }
+            i += 1;
         }
     }
 

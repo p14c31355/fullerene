@@ -6,7 +6,8 @@ extern crate alloc;
 
 /// Macro to define panic handler using petroleum's serial output.
 /// Use this in binary crates (kernel, bootloader).
-/// Prints panic location (file, line, column) and optional message to serial.
+/// Prints panic location (file, line, column), a stack backtrace (RBP chain),
+/// and (with `vga_panic` feature) a red panic screen via VGA text-mode buffer.
 #[macro_export]
 macro_rules! define_panic_handler {
     () => {
@@ -14,29 +15,83 @@ macro_rules! define_panic_handler {
         #[panic_handler]
         fn panic(info: &core::panic::PanicInfo) -> ! {
             use core::fmt::Write;
-            // Print location info (file:line:col) to serial
+
+            // ── 1. Serial output (always) ───────────────────────
+            $crate::serial::_print(format_args!("\n========== KERNEL PANIC ==========\n"));
             if let Some(loc) = info.location() {
                 $crate::serial::_print(format_args!(
-                    "PANIC at {}:{}:{}\n",
+                    "  at {}:{}:{}\n",
                     loc.file(),
                     loc.line(),
                     loc.column()
                 ));
             }
-            // Print the panic message — PanicInfo implements Display
-            $crate::serial::_print(format_args!("PANIC: {}\n", info));
-            // VGA text mode panic output (optional)
+            $crate::serial::_print(format_args!("  {}\n", info));
+            $crate::serial::_print(format_args!("====================================\n"));
+
+            // ── 2. Stack backtrace (RBP chain) ────────────────
+            $crate::serial::_print(format_args!("\nStack backtrace:\n"));
+            unsafe {
+                let mut rbp: usize;
+                core::arch::asm!("mov {}, rbp", out(reg) rbp);
+                for frame_idx in 0..32 {
+                    if rbp == 0 || rbp < 0x1000 {
+                        break;
+                    }
+                    let rip = *(rbp as *const usize).add(1);
+                    if rip == 0 || rip < 0x1000 {
+                        break;
+                    }
+                    $crate::serial::_print(format_args!(
+                        "  #{:<2} rbp=0x{:016x} rip=0x{:016x}\n",
+                        frame_idx, rbp, rip
+                    ));
+                    rbp = *(rbp as *const usize);
+                }
+            }
+
+            // ── 3. VGA panic screen (optional feature) ──────────
             #[cfg(feature = "vga_panic")]
             {
-                let vga_buffer = 0xb8000 as *mut u16;
-                let panic_msg = "KERNEL PANIC";
-                for (i, &byte) in panic_msg.bytes().enumerate() {
-                    {
-                        vga_buffer.add(i).write_volatile(byte as u16 | 0x4F00u16);
+                let vga = 0xb8000 as *mut u16;
+                // Clear screen: 80×25 red background with white text
+                for i in 0..(80 * 25) {
+                    unsafe { vga.add(i).write_volatile(0x4F20u16) }; // red bg, space
+                }
+                // Print panic header
+                let header = b"*** KERNEL PANIC ***";
+                for (i, &b) in header.iter().enumerate() {
+                    unsafe { vga.add(i).write_volatile(b as u16 | 0x4F00u16) };
+                }
+                // Print file:line
+                if let Some(loc) = info.location() {
+                    use core::fmt::Write as _;
+                    let mut line_buf = heapless::String::<128>::new();
+                    let _ = write!(line_buf, "{}:{}", loc.file(), loc.line());
+                    for (i, b) in line_buf.bytes().enumerate() {
+                        let off = 80 * 2 + i;
+                        if off < 80 * 25 {
+                            unsafe { vga.add(off).write_volatile(b as u16 | 0x4F00u16) };
+                        }
+                    }
+                }
+                // Print message (truncated, stack-allocated to avoid OOM re-panic)
+                use core::fmt::Write as _;
+                let mut msg_buf = heapless::String::<128>::new();
+                let _ = write!(msg_buf, "{}", info);
+                for (i, b) in msg_buf.bytes().enumerate() {
+                    let off = 80 * 3 + i;
+                    if off < 80 * 25 {
+                        let ch = if b < 0x20 || b > 0x7e { b' ' } else { b };
+                        unsafe { vga.add(off).write_volatile(ch as u16 | 0x4F00u16) };
                     }
                 }
             }
-            loop {}
+
+            // ── 4. Halt forever ─────────────────────────────────
+            loop {
+                unsafe { core::arch::asm!("hlt", options(nomem, nostack)) };
+            }
         }
     };
 }
