@@ -231,7 +231,7 @@ impl TerminalBuffer {
                     }
                 }
                 AnsiState::Csi => {
-                    if b.is_ascii_digit() || b == b';' {
+                    if (0x30..=0x3F).contains(&b) {
                         if param_len < param_buf.len() {
                             param_buf[param_len] = b;
                             param_len += 1;
