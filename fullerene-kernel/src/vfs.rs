@@ -18,6 +18,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
 
+/// Maximum depth for symbolic link resolution to prevent infinite loops.
+const MAX_SYMLINK_DEPTH: u32 = 8;
+
 // ── Inode types ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +104,15 @@ impl Tmpfs {
 
     /// Resolve a path into an inode number, traversing directories.
     fn lookup(&self, path: &str) -> Option<u64> {
+        self.lookup_impl(path, 0)
+    }
+
+    /// Internal lookup with recursion depth guard for symlink loops.
+    /// `depth` must be ≤ [`MAX_SYMLINK_DEPTH`].
+    fn lookup_impl(&self, path: &str, depth: u32) -> Option<u64> {
+        if depth > MAX_SYMLINK_DEPTH {
+            return None; // symlink loop detected
+        }
         if path.is_empty() || path == "/" {
             return Some(1);
         }
@@ -112,9 +124,9 @@ impl Tmpfs {
             let child = ino.children.iter()
                 .find(|&&c| self.inodes.get(&c).map_or(false, |i| i.name.as_str() == comp))?;
             current = *child;
-            // Follow symlinks
+            // Follow symlinks with depth guard
             if let Some(ref target) = self.inodes.get(&current)?.target {
-                return self.lookup(target);
+                return self.lookup_impl(target, depth + 1);
             }
         }
         Some(current)

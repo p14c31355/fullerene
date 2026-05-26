@@ -75,9 +75,11 @@ macro_rules! define_panic_handler {
                         }
                     }
                 }
-                // Print message (truncated)
-                let msg = alloc::format!("{}", info);
-                for (i, b) in msg.bytes().enumerate().take(80 * 2) {
+                // Print message (truncated, stack-allocated to avoid OOM re-panic)
+                use core::fmt::Write as _;
+                let mut msg_buf = heapless::String::<128>::new();
+                let _ = write!(msg_buf, "{}", info);
+                for (i, b) in msg_buf.bytes().enumerate() {
                     let off = 80 * 3 + i;
                     if off < 80 * 25 {
                         let ch = if b < 0x20 || b > 0x7e { b' ' } else { b };

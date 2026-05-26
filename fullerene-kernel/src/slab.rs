@@ -42,17 +42,17 @@ struct SlabPage {
 impl SlabPage {
     /// Create a new slab page for objects of `obj_size`.
     fn new(obj_size: usize) -> Option<Self> {
-        let phys = {
-            let mut mgr = memory_management::get_memory_manager().lock();
-            mgr.as_mut()?.allocate_frame().ok()?
-        };
+        let mut mgr_guard = memory_management::get_memory_manager().lock();
+        let m = mgr_guard.as_mut()?;
+        let phys = m.allocate_frame().ok()?;
         let virt = petroleum::common::memory::physical_to_virtual(phys);
-        {
-            let mut mgr = memory_management::get_memory_manager().lock();
-            let m = mgr.as_mut()?;
-            m.safe_map_page(virt, phys,
-                PageTableFlags::PRESENT | PageTableFlags::WRITABLE).ok()?;
+        // If mapping fails, free the frame to avoid a leak.
+        if m.safe_map_page(virt, phys,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE).is_err() {
+            let _ = m.free_frame(phys);
+            return None;
         }
+        drop(mgr_guard);
 
         let capacity = 4096 / obj_size;
         let mut this = Self {
