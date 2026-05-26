@@ -106,20 +106,23 @@ pub fn spawn<F>(future: F) -> Result<TaskHandle, petroleum::common::logging::Sys
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    // We need a type‑erased entry point.  We use a generic entry function
-    // and stash the future pointer via ProcessManager's with_process.
+    // Create the process in Blocked state so it cannot be scheduled
+    // before the future pointer is stored (avoids a race with preemption).
     let pid = process::create_process(
         "async-task",
         VirtAddr::new(task_entry::<F> as *const () as u64),
         false, // kernel process
     )?;
+    process::PROCESS_MANAGER.with_process(ProcessId(pid.0 as u64), |p| {
+        p.state = ProcessState::Blocked;
+    });
 
-    // Store the future pointer through the process's user_stack field
-    // (unused for kernel processes).
+    // Store the future pointer via user_stack, then unblock the process.
     let boxed: Box<dyn Future<Output = ()> + Send> = Box::new(future);
     let raw = Box::into_raw(Box::new(boxed));
     process::PROCESS_MANAGER.with_process(ProcessId(pid.0 as u64), |p| {
         p.user_stack = VirtAddr::new(raw as u64);
+        p.state = ProcessState::Ready;
     });
 
     Ok(TaskHandle { pid: pid.0 as u64 })
@@ -157,21 +160,22 @@ extern "C" fn task_entry<F: Future<Output = ()> + Send + 'static>() {
 
 /// Run a future to completion on the current kernel thread.
 ///
-/// Spins polling the future; yields cooperatively via `cpu_pause()`
-/// between polls.  Suitable only for trivial / short‑lived futures
-/// in kernel context.
+/// Cooperatively blocks instead of busy-spinning when the future
+/// returns `Poll::Pending`, so other tasks can use the CPU.
 pub fn block_on<F: Future>(mut future: F) -> F::Output {
     let mut future = unsafe { Pin::new_unchecked(&mut future) };
     let pid = process::current_pid()
         .map(|p| p.0 as u64)
         .unwrap_or(0);
-    let waker = create_waker(pid);
-    let mut cx = Context::from_waker(&waker);
     loop {
+        let waker = create_waker(pid);
+        let mut cx = Context::from_waker(&waker);
         match future.as_mut().poll(&mut cx) {
             Poll::Ready(out) => return out,
             Poll::Pending => {
-                petroleum::cpu_pause();
+                // Cooperatively block so other tasks can run
+                // instead of busy-spinning.
+                process::block_current();
             }
         }
     }

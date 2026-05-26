@@ -119,14 +119,20 @@ impl Tmpfs {
         let components: Vec<&str> = path.trim_start_matches('/').split('/')
             .filter(|c| !c.is_empty()).collect();
         let mut current = 1u64; // root
-        for comp in components {
+        for (idx, comp) in components.iter().enumerate() {
             let ino = self.inodes.get(&current)?;
             let child = ino.children.iter()
-                .find(|&&c| self.inodes.get(&c).map_or(false, |i| i.name.as_str() == comp))?;
+                .find(|&&c| self.inodes.get(&c).map_or(false, |i| i.name.as_str() == *comp))?;
             current = *child;
-            // Follow symlinks with depth guard
+            // Follow symlinks with depth guard, but re‑append the
+            // remaining path components so intermediate symlinks work.
             if let Some(ref target) = self.inodes.get(&current)?.target {
-                return self.lookup_impl(target, depth + 1);
+                let mut new_path = target.clone();
+                for trailing in &components[idx + 1..] {
+                    new_path.push('/');
+                    new_path.push_str(trailing);
+                }
+                return self.lookup_impl(&new_path, depth + 1);
             }
         }
         Some(current)
@@ -196,6 +202,12 @@ impl Tmpfs {
             return None;
         }
         let (parent_ino, name) = self.lookup_parent(path)?;
+        // Ensure the parent is a directory.
+        let parent = self.inodes.get(&parent_ino)?;
+        if parent.kind != InodeType::Directory {
+            return None;
+        }
+        drop(parent);
         let ino = self.next_ino;
         self.next_ino = ino + 1;
         let inode = Inode::new(ino, &name, kind, parent_ino);
@@ -229,9 +241,29 @@ impl Tmpfs {
         Ok(entries)
     }
 
+    /// Recursively collect all descendant inode numbers of a directory.
+    fn collect_descendants(&self, dir_ino: u64) -> Vec<u64> {
+        let mut result = Vec::new();
+        let Some(inode) = self.inodes.get(&dir_ino) else { return result };
+        for &c in &inode.children {
+            result.push(c);
+            result.extend(self.collect_descendants(c));
+        }
+        result
+    }
+
     fn unlink(&mut self, path: &str) -> Result<(), &'static str> {
         let (parent_ino, name) = self.lookup_parent(path).ok_or("not found")?;
         let child_ino = self.lookup_child(parent_ino, &name).ok_or("not found")?;
+        // Refuse to unlink a non‑empty directory.
+        let child = self.inodes.get(&child_ino).ok_or("not found")?;
+        if child.kind == InodeType::Directory && !child.children.is_empty() {
+            // Collect all descendant inodes and remove them to prevent leaks.
+            let descendants = self.collect_descendants(child_ino);
+            for dino in descendants {
+                self.inodes.remove(&dino);
+            }
+        }
         if let Some(parent) = self.inodes.get_mut(&parent_ino) {
             parent.children.retain(|&c| c != child_ino);
         }
@@ -290,16 +322,15 @@ pub fn readdir(path: &str) -> Result<Vec<VNode>, &'static str> {
 }
 
 pub fn create(path: &str) -> Result<FileDescriptor, &'static str> {
-    let fs = vfs().lock();
-    let fs = fs.as_ref().ok_or("vfs not init")?;
-    // Create a regular file if none exists, then open it
+    let mut guard = vfs().lock();
+    let fs = guard.as_mut().ok_or("vfs not init")?;
+    // Create a regular file if none exists, then open it.
+    // Single lock acquisition avoids race conditions.
     let ino = fs.lookup(path);
     if ino.is_none() {
-        drop(fs);
-        vfs().lock().as_mut().unwrap().create(path, InodeType::File).ok_or("create failed")?;
+        fs.create(path, InodeType::File).ok_or("create failed")?;
     }
-    vfs().lock().as_mut().ok_or("vfs not init")?
-        .open(path, 0).ok_or("open failed after create")
+    fs.open(path, 0).ok_or("open failed after create")
 }
 
 pub fn mkdir(path: &str) -> Result<(), &'static str> {

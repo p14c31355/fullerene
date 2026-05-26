@@ -63,12 +63,12 @@ pub fn init(common_virt: u64, notify_virt: u64, fb_addr: u64, fb_w: u32, fb_h: u
 
     let mut gpu = gpu_result?;
 
-    // Queue memory
-    let desc_phys = fa.allocate_contiguous_frames(1).expect("virtio-gpu: desc") as u64;
+    // Queue memory — fail gracefully instead of panicking on OOM.
+    let desc_phys = fa.allocate_contiguous_frames(1).ok()? as u64;
     let desc_virt = (desc_phys + off) as *mut gpu::VringDesc;
-    let avail_phys = fa.allocate_contiguous_frames(1).expect("virtio-gpu: avail") as u64;
+    let avail_phys = fa.allocate_contiguous_frames(1).ok()? as u64;
     let avail_virt = (avail_phys + off) as *mut gpu::VringAvail;
-    let used_phys = fa.allocate_contiguous_frames(1).expect("virtio-gpu: used") as u64;
+    let used_phys = fa.allocate_contiguous_frames(1).ok()? as u64;
     let used_virt = (used_phys + off) as *mut gpu::VringUsed;
 
     gpu.setup_queue(0, desc_virt, desc_phys, avail_virt, avail_phys, used_virt, used_phys);
