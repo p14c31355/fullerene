@@ -164,7 +164,6 @@ pub fn list_commands(commands: &[&dyn Command], terminal: &mut dyn Terminal) {
 }
 
 /// Get TAB completion candidates for a partial command line.
-/// Get TAB completion candidates for a partial command line.
 pub fn get_completions(prefix: &str) -> alloc::vec::Vec<alloc::string::String> {
     if prefix.contains(' ') {
         return alloc::vec::Vec::new();
