@@ -16,4 +16,18 @@ pub trait Terminal {
     fn input_available(&self) -> bool {
         false
     }
+
+    /// Feed a string as stdin (e.g. from a pipe).
+    ///
+    /// The next call to [`read_byte`] should consume from this buffer
+    /// before polling the real input source.
+    fn set_stdin(&mut self, _data: alloc::string::String) {}
+
+    /// Collect stdout accumulated since the last call.
+    ///
+    /// Used by the pipe dispatcher to capture a command's output.
+    /// Returns `None` if no output was produced.
+    fn take_stdout(&mut self) -> Option<alloc::string::String> {
+        None
+    }
 }

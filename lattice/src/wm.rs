@@ -1,5 +1,6 @@
 extern crate alloc;
 
+use crate::scene::DirtyRect;
 use crate::window::{Window, WindowId};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -28,21 +29,45 @@ pub struct WindowManager {
     next_id: u64,
     drag: DragState,
     resize_handle: u32,
+    /// Accumulated dirty rectangles since last `consume_dirty_rects`.
+    dirty_rects: Vec<DirtyRect>,
 }
 
 const RESIZE_HANDLE_SIZE: u32 = 16;
 const MIN_WINDOW_W: u32 = 80;
 const MIN_WINDOW_H: u32 = 40;
 
+/// TITLE_BAR_HEIGHT from compositor — kept in sync manually.
+const TITLE_BAR_H: u32 = 20;
+const BORDER: u32 = 2;
+
+/// Build a dirty rect for the full decorated area of a window.
+fn window_dirty_rect(w: &Window) -> DirtyRect {
+    let x0 = w.x.saturating_sub(BORDER as i32).max(0) as u32;
+    let y0 = w.y.saturating_sub(BORDER as i32).max(0) as u32;
+    let ww = w.width + BORDER * 2;
+    let wh = w.height + TITLE_BAR_H + BORDER * 2;
+    DirtyRect::new(x0, y0, ww, wh)
+}
+
 impl WindowManager {
     pub fn new() -> Self {
-        Self { windows: Vec::new(), focused: None, next_id: 1, drag: DragState::None, resize_handle: RESIZE_HANDLE_SIZE }
+        Self { windows: Vec::new(), focused: None, next_id: 1, drag: DragState::None, resize_handle: RESIZE_HANDLE_SIZE, dirty_rects: Vec::new() }
     }
 
     pub fn windows(&self) -> &[Window] { &self.windows }
     pub fn windows_mut(&mut self) -> &mut [Window] { &mut self.windows }
     pub fn drag_state(&self) -> &DragState { &self.drag }
     pub fn focused(&self) -> Option<WindowId> { self.focused }
+
+    // ── dirty rects ─────────────────────────────────────────
+
+    /// Consume all accumulated dirty rects and clear the internal list.
+    pub fn consume_dirty_rects(&mut self) -> Vec<DirtyRect> {
+        let mut out = Vec::new();
+        core::mem::swap(&mut out, &mut self.dirty_rects);
+        out
+    }
 
     pub fn create_window(&mut self, x: i32, y: i32, width: u32, height: u32, color: u32) -> WindowId {
         let id = WindowId(self.next_id);
@@ -57,6 +82,7 @@ impl WindowManager {
         }
         window.focused = true;
         self.focused = Some(id);
+        self.dirty_rects.push(window_dirty_rect(&window));
         self.windows.push(window);
         id
     }
@@ -70,11 +96,16 @@ impl WindowManager {
         }
         window.focused = true;
         self.focused = Some(id);
+        self.dirty_rects.push(window_dirty_rect(&window));
         self.windows.push(window);
         id
     }
 
     pub fn remove_window(&mut self, id: WindowId) -> bool {
+        // Capture dirty rect before removing the window.
+        if let Some(w) = self.windows.iter().find(|w| w.id == id) {
+            self.dirty_rects.push(window_dirty_rect(w));
+        }
         let len_before = self.windows.len();
         self.windows.retain(|w| w.id != id);
         let removed = self.windows.len() != len_before;
@@ -98,6 +129,7 @@ impl WindowManager {
             }
         }
         self.focused = Some(id);
+        self.dirty_rects.push(window_dirty_rect(&window));
         self.windows.push(window);
     }
 
@@ -144,17 +176,43 @@ impl WindowManager {
     pub fn on_mouse_move(&mut self, x: i32, y: i32) {
         match self.drag {
             DragState::Moving { window, offset_x, offset_y } => {
+                // Capture dirty rect BEFORE mutating the window.
+                let dirty_before = {
+                    self.windows.iter()
+                        .find(|w| w.id == window)
+                        .map(window_dirty_rect)
+                };
                 if let Some(w) = self.windows.iter_mut().find(|w| w.id == window) {
                     w.x = x - offset_x; w.y = y - offset_y;
                 }
+                let dirty_after = {
+                    self.windows.iter()
+                        .find(|w| w.id == window)
+                        .map(window_dirty_rect)
+                };
+                if let Some(r) = dirty_before { self.dirty_rects.push(r); }
+                if let Some(r) = dirty_after  { self.dirty_rects.push(r); }
             }
             DragState::Resizing { window, orig_x, orig_y, .. } => {
+                // Capture dirty rect BEFORE mutating the window.
+                let dirty_before = {
+                    self.windows.iter()
+                        .find(|w| w.id == window)
+                        .map(window_dirty_rect)
+                };
                 if let Some(w) = self.windows.iter_mut().find(|w| w.id == window) {
                     let nw = ((x - orig_x) as u32).max(MIN_WINDOW_W);
                     let nh = ((y - orig_y) as u32).max(MIN_WINDOW_H);
                     w.width = nw; w.height = nh;
                     w.surface = crate::surface::Surface::new(nw, nh, w.surface.get_pixel(0, 0).unwrap_or(0));
                 }
+                let dirty_after = {
+                    self.windows.iter()
+                        .find(|w| w.id == window)
+                        .map(window_dirty_rect)
+                };
+                if let Some(r) = dirty_before { self.dirty_rects.push(r); }
+                if let Some(r) = dirty_after  { self.dirty_rects.push(r); }
             }
             DragState::None => {}
         }
@@ -252,5 +310,13 @@ mod tests {
         wm.on_mouse_down(10, 10);
         assert_eq!(wm.focused, Some(WindowId(1)));
         assert!(!wm.windows.iter().find(|w| w.id == WindowId(2)).unwrap().focused);
+    }
+    #[test]
+    fn test_dirty_rects_accumulated() {
+        let mut wm = WindowManager::new();
+        wm.create_window(10, 10, 100, 100, 0xFF0000);
+        let rects = wm.consume_dirty_rects();
+        assert!(!rects.is_empty());
+        assert!(wm.consume_dirty_rects().is_empty());
     }
 }

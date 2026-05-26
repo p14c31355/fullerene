@@ -2,6 +2,7 @@
 //!
 //! Defines the `Command` trait and the dispatch/listing functions.
 
+use crate::parser::Pipeline;
 use crate::terminal::Terminal;
 
 /// Context provided to every command execution
@@ -64,6 +65,9 @@ macro_rules! define_commands {
 }
 
 /// Dispatch a command line against a command list.
+///
+/// Supports pipe (`|`) chaining: outputs from earlier commands are
+/// collected and fed as input to the next command via `set_stdin`.
 /// Returns `true` to continue, `false` to exit.
 pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &str) -> bool {
     let trimmed = line.trim();
@@ -71,32 +75,70 @@ pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &s
         return true;
     }
 
-    let args: alloc::vec::Vec<&str> = trimmed.split_whitespace().collect();
-    if args.is_empty() {
+    let pipeline = Pipeline::parse(trimmed);
+    if pipeline.commands.is_empty() {
         return true;
     }
 
-    let cmd_name = args[0];
-
     // Built-in `help` command uses the dynamic command list.
-    if cmd_name == "help" {
+    if pipeline.commands.len() == 1 && pipeline.commands[0].name == "help" {
         list_commands(commands, terminal);
         return true;
     }
 
-    for &cmd in commands {
-        if cmd.name() == cmd_name {
-            let mut ctx = CommandContext {
-                terminal,
-                args: &args,
-            };
-            return cmd.execute(&mut ctx);
+    // Execute commands in the pipeline, feeding stdout of one
+    // as stdin of the next.
+    let mut pipe_buffer: Option<alloc::string::String> = None;
+
+    for cmd in &pipeline.commands {
+        let cmd_name = cmd.name.as_str();
+
+        let found = commands.iter().find(|c| c.name() == cmd_name);
+
+        match found {
+            Some(&matched) => {
+                // Build argument list (name + args).
+                let mut args: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
+                args.push(cmd_name);
+                for a in &cmd.args {
+                    args.push(a.as_str());
+                }
+
+                // Set stdin if we have piped data from the previous command.
+                if let Some(ref input) = pipe_buffer.take() {
+                    terminal.set_stdin(alloc::string::String::from(input.as_str()));
+                }
+
+                let mut ctx = CommandContext {
+                    terminal,
+                    args: &args,
+                };
+                let continue_shell = matched.execute(&mut ctx);
+
+                // Collect stdout for the next pipe stage.
+                pipe_buffer = terminal.take_stdout();
+
+                if !continue_shell {
+                    return false;
+                }
+            }
+            None => {
+                terminal.write_str("Unknown command: ");
+                terminal.write_str(cmd_name);
+                terminal.write_str("\nType 'help' for available commands.\n");
+                return true;
+            }
         }
     }
 
-    terminal.write_str("Unknown command: ");
-    terminal.write_str(cmd_name);
-    terminal.write_str("\nType 'help' for available commands.\n");
+    // Flush the final output to the terminal.
+    if let Some(output) = pipe_buffer {
+        if !output.is_empty() {
+            terminal.write_str(&output);
+            terminal.write_str("\n");
+        }
+    }
+
     true
 }
 

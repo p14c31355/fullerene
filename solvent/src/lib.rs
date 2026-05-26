@@ -478,6 +478,9 @@ where
     // Update taskbar entries before building the scene
     rt.desktop.update_taskbar();
 
+    // Consume dirty rects from the window manager
+    rt.desktop.prepare_frame();
+
     // Get framebuffer memory via the caller-provided closure
     let fb_result = framebuffer_fn();
     let (fb_pixels, fb_width, fb_height) = match fb_result {

@@ -1,7 +1,7 @@
 extern crate alloc;
 
 use crate::cursor::Cursor;
-use crate::scene::Scene;
+use crate::scene::{DirtyRect, Scene};
 use crate::window::WindowId;
 use crate::wm::WindowManager;
 
@@ -10,10 +10,13 @@ use crate::wm::WindowManager;
 /// `Desktop` is a **façade** that owns the `WindowManager`, `Cursor`,
 /// and `Taskbar`.  It does NOT touch the compositor or framebuffer.
 ///
-/// To render, the kernel/runtime calls `desktop.scene()` and passes the
-/// resulting `Scene` to the compositor:
+/// To render, the kernel/runtime calls:
+/// 1. `desktop.prepare_frame()` — consumes dirty rects from WM
+/// 2. `desktop.scene()` — builds the compositor snapshot
+/// 3. `compositor.render(&scene, &mut target)` — renders the frame
 ///
 /// ```ignore
+/// desktop.prepare_frame();
 /// let scene = desktop.scene();
 /// compositor.render(&scene, &mut target);
 /// ```
@@ -22,6 +25,8 @@ pub struct Desktop {
     pub cursor: Cursor,
     bg_color: u32,
     pub taskbar: crate::taskbar::Taskbar,
+    /// Cached dirty rects consumed from WM before building a scene.
+    dirty_cache: alloc::vec::Vec<DirtyRect>,
 }
 
 impl Desktop {
@@ -36,6 +41,7 @@ impl Desktop {
             cursor,
             bg_color,
             taskbar: crate::taskbar::Taskbar::new(),
+            dirty_cache: alloc::vec::Vec::new(),
         }
     }
 
@@ -87,14 +93,29 @@ impl Desktop {
         self.taskbar.update_from_windows(self.wm.windows());
     }
 
+    // ── frame preparation ───────────────────────────────────
+
+    /// Consume dirty rects from the window manager and cache them.
+    ///
+    /// Must be called **before** [`scene`] on each frame, so that the
+    /// compositor receives the correct dirty regions.
+    pub fn prepare_frame(&mut self) {
+        self.dirty_cache = self.wm.consume_dirty_rects();
+    }
+
     // ── scene snapshot ──────────────────────────────────────
 
     /// Build an immutable snapshot for the compositor.
     ///
-    /// This is the **only** bridge between state and rendering.
+    /// Call [`prepare_frame`] first to populate the dirty rects.
     pub fn scene(&self) -> Scene<'_> {
-        Scene::new(self.wm.windows(), Some(&self.cursor), self.bg_color)
-            .with_taskbar(&self.taskbar)
+        Scene {
+            windows: self.wm.windows(),
+            cursor: Some(&self.cursor),
+            bg_color: self.bg_color,
+            dirty_rects: &self.dirty_cache,
+            taskbar: Some(&self.taskbar),
+        }
     }
 }
 
@@ -144,6 +165,7 @@ mod tests {
 
         // Use a 200×200 target so the 28-pixel taskbar at the bottom
         // does not clobber the pixel at (0,0).
+        dt.prepare_frame();
         let mut target = TestTarget::new(200, 200);
         let scene = dt.scene();
         Compositor::render(&scene, &mut target);

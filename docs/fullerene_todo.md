@@ -25,7 +25,7 @@
 - [x] Partial Redraw
 - [ ] Deprecation of Fullscreen Redraw
 - [x] Compositor Responsibilities Reorganization
-- [ ] Framebuffer Copy Optimization
+- [x] Framebuffer Copy Optimization
 - [ ] Draw Call Profiling
 
 ## Layer System
@@ -33,7 +33,7 @@
 - [ ] Window Layer Separation
 - [ ] Overlay Layer
 - [x] Z-order Management
-- [ ] Invalidate Range Management
+- [x] Invalidate Range Management
 ## Visual Improvements
 - [x] Title Bar
 - [x] Semi-transparent Cursor
@@ -87,8 +87,8 @@
 - [x] Basic builtin command
 - [x] Command history
 - [x] TAB completion
-- [ ] Pipe
-- [ ] Standard input/output abstraction
+- [x] Pipe
+- [x] Standard input/output abstraction
 ## Terminal Rendering
 - [x] Caret blink localization
 - [x] Scroll support
@@ -108,7 +108,7 @@
 ---
 # Font System
 ## Future Font Pipeline
-- [ ] PSF loader
+- [x] PSF loader
 - [ ] BDF importer
 - [ ] build.rs font compiler
 - [ ] Unicode Foundation

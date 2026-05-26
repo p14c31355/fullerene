@@ -1,12 +1,51 @@
 //! Simple command-line parser for Nozzle
 //!
 //! Splits input into command name and arguments.
-//! Currently supports whitespace splitting; quoting support can be added later.
+//! Supports pipe (`|`) chaining and basic quoting.
 
 use alloc::fmt;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
+
+/// A pipeline of commands connected by `|`.
+///
+/// Example: `ls | grep foo | wc -l` produces three [`ParsedCommand`]s.
+#[derive(Debug, Clone)]
+pub struct Pipeline {
+    pub commands: Vec<ParsedCommand>,
+}
+
+impl Pipeline {
+    /// Parse a line that may contain pipes.
+    ///
+    /// The input should already be trimmed of leading/trailing whitespace.
+    pub fn parse(line: &str) -> Self {
+        let commands: Vec<ParsedCommand> = line
+            .split('|')
+            .map(|s| ParsedCommand::parse(s.trim()))
+            .filter(|c| !c.name.is_empty())
+            .collect();
+        Self { commands }
+    }
+
+    /// `true` when the pipeline has exactly one command (no pipe).
+    pub fn is_simple(&self) -> bool {
+        self.commands.len() <= 1
+    }
+}
+
+impl fmt::Display for Pipeline {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, cmd) in self.commands.iter().enumerate() {
+            if i > 0 {
+                write!(f, " | ")?;
+            }
+            write!(f, "{}", cmd)?;
+        }
+        Ok(())
+    }
+}
 
 /// A parsed command
 #[derive(Debug, Clone)]
