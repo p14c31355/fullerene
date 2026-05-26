@@ -4,6 +4,8 @@
 
 ![](docs/assets/fullerene_202605210700_desktop.png)
 
+[development_history](docs/assets)
+
 ---
 
 Fullerene is a complete operating system kernel written in Rust, targeting x86_64 architecture with UEFI booting. It explores modern systems programming concepts including process scheduling, virtual memory management, filesystem abstraction, syscall interfaces, GUI compositing, and event-driven shell interaction, all implemented in a safe, no_std environment.
