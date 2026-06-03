@@ -16,6 +16,8 @@ pub unsafe extern "C" fn efi_main_stage2(
     args_ptr: *const petroleum::assembly::KernelArgs,
     physical_memory_offset: VirtAddr,
 ) -> ! {
+    // VGA debug: first thing the kernel does
+    petroleum::vga_debug::vga_puts(23, 0, b"KRN:start");
     unsafe {
         core::arch::asm!(
             "mov dx, 0x3f8",

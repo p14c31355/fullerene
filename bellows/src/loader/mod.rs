@@ -307,8 +307,11 @@ pub fn exit_boot_services_and_jump(
     );
 
     // Calculate kernel entry virtual address (higher half)
-    let kernel_entry_virt =
+        let kernel_entry_virt =
         petroleum::page_table::constants::HIGHER_HALF_OFFSET.as_u64() + kernel_entry_phys;
+
+    // VGA debug: indicate we're about to jump
+    petroleum::vga_debug::vga_puts(21, 0, b"BLW:jmp kernel");
 
     petroleum::println!(
         "Jumping to kernel entry point (virt): {:#x}",

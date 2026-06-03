@@ -128,6 +128,7 @@ pub mod hardware;
 pub mod initializer;
 pub mod page_table;
 pub mod serial;
+pub mod vga_debug;
 pub mod transition;
 pub mod uefi_helpers;
 pub mod virtio;

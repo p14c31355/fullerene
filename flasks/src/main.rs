@@ -1,6 +1,6 @@
 // fullerene/flasks/src/main.rs
 use clap::Parser;
-use isobemak::{BiosBootInfo, BootInfo, IsoImage, IsoImageFile, UefiBootInfo, build_iso};
+use isobemak::{BootInfo, IsoImage, IsoImageFile, UefiBootInfo, build_iso};
 use std::{env, io, path::PathBuf, process::Command};
 
 use env_logger;
@@ -186,10 +186,7 @@ fn create_iso_and_setup(
             },
         ],
         boot_info: BootInfo {
-            bios_boot: Some(BiosBootInfo {
-                boot_image: bellows_path.clone(),
-                destination_in_iso: "EFI/BOOT/BOOTX64.EFI".to_string(),
-            }),
+            bios_boot: None,
             uefi_boot: Some(UefiBootInfo {
                 boot_image: bellows_path.clone(),
                 kernel_image: kernel_path.clone(),
@@ -198,7 +195,7 @@ fn create_iso_and_setup(
                 grub_cfg_content: Some(grub_cfg_content(&kernel_path)),
             }),
         },
-        layout_profile: isobemak::IsoLayoutProfile::ventoy_compat(),
+        layout_profile: isobemak::IsoLayoutProfile::hardware(),
     };
     let (_iso_output_path, _temp_fat_holder, _iso_file, _logical_fat_size) =
         build_iso(&iso_path, &image, true)?; // Set to true for isohybrid UEFI boot
