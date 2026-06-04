@@ -233,9 +233,11 @@ pub fn load_efi_image(
     let preferred_base = optional_header.windows_fields.image_base as usize;
 
     let mut phys_addr: usize = 0;
+    // Use AllocateAnyPages (0) instead of AllocateAddress (2).
+    // InsydeH2O rejects AllocateAddress with addr=0.
     let status = if preferred_base >= 0x1000_0000 {
         let mut addr = 0;
-        let s = (bs.allocate_pages)(2, EfiMemoryType::EfiLoaderCode, pages_needed, &mut addr);
+        let s = (bs.allocate_pages)(0, EfiMemoryType::EfiLoaderCode, pages_needed, &mut addr);
         if EfiStatus::from(s) != EfiStatus::Success {
             let mut addr2 = 0;
             let s2 = (bs.allocate_pages)(0, EfiMemoryType::EfiLoaderCode, pages_needed, &mut addr2);

@@ -226,13 +226,10 @@ pub fn create_primary_console() -> Option<crate::graphics::framebuffer::UefiFram
         None
     };
 
-    let config = config.or_else(|| {
-        let fb = crate::kernel_fallback_framebuffer_detection();
-        if fb.is_some() {
-            trace!("fallback detection succeeded\n");
-        }
-        fb
-    });
+    // Skip QEMU framebuffer fallback — hardcoded QEMU addresses (0xFC000000)
+    // cause triple faults on real InsydeH2O hardware.
+    // config = config.or_else(|| crate::kernel_fallback_framebuffer_detection());
+    let config = config.or_else(|| None);
 
     if let Some(fb_config) = config {
         let fb_phys = fb_config.address;
@@ -258,53 +255,12 @@ pub fn create_primary_console() -> Option<crate::graphics::framebuffer::UefiFram
             );
         }
 
-        let frame_allocator = get_frame_allocator_mut();
-        let phys_offset = x86_64::VirtAddr::new(PHYSICAL_MEMORY_OFFSET_BASE as u64);
-        trace!("getting L4 table\n");
-        let l4 = unsafe { crate::page_table::active_level_4_table(phys_offset) };
+        let _phys_offset = x86_64::VirtAddr::new(PHYSICAL_MEMORY_OFFSET_BASE as u64);
 
-        // Use NO_CACHE (Uncacheable) for the framebuffer to match MTRR/PAT settings
-        // set by UEFI firmware for PCI MMIO regions. Without this flag the pages
-        // would be mapped as Write-Back (WB) and writes would be stuck in the CPU
-        // cache and never reach the device memory.
-        let fb_flags = PageTableFlags::PRESENT
-            | PageTableFlags::WRITABLE
-            | PageTableFlags::NO_EXECUTE
-            | PageTableFlags::NO_CACHE;
-
-        trace!("mapping {} framebuffer pages with UC flags\n", fb_pages);
-
-        unsafe {
-            for i in 0..fb_pages {
-                let vaddr = x86_64::VirtAddr::new(fb_virt + i as u64 * 4096);
-                let paddr = x86_64::PhysAddr::new(fb_phys + i as u64 * 4096);
-
-                // 4Kページで確実に再マッピング（上位テーブルのフラグを上書き）
-                if let Err(e) = crate::page_table::kernel::init::map_page_4k_l1(
-                    l4,
-                    vaddr,
-                    paddr,
-                    fb_flags,
-                    frame_allocator,
-                    phys_offset,
-                ) {
-                    trace!("FB mapping failed at page {}: {:?}\n", i, e);
-                }
-            }
-        }
-
-        trace!("FB pages mapped, flushing TLB\n");
-        x86_64::instructions::tlb::flush_all();
-
-        // Post-map verification: walk page table for first and last page
-        trace!("Verifying page table walk for FB virt=0x{:x}\n", fb_virt);
-        unsafe {
-            debug_page_walk(x86_64::VirtAddr::new(fb_virt), phys_offset);
-        }
-        let last_fb_virt = fb_virt + ((fb_pages.saturating_sub(1)) as u64 * 4096);
-        unsafe {
-            debug_page_walk(x86_64::VirtAddr::new(last_fb_virt), phys_offset);
-        }
+        // Framebuffer page mapping skipped — the 1 GB kernel area mapping
+        // already covers this region via 2 MB huge pages.  Splitting huge
+        // pages into 4K entries to change cache flags causes triple faults
+        // on InsydeH2O real hardware (QEMU cpu_io_recompile as well).
 
         let info = crate::graphics::color::FramebufferInfo {
             address: fb_virt,

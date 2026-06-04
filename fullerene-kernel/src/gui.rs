@@ -30,6 +30,7 @@ pub use solvent::{
 /// Initialise the GUI subsystem via Solvent runtime.
 pub fn init() {
     solvent::init();
+    petroleum::serial::serial_log(format_args!("solvent::init() completed\n"));
 }
 
 /// Render the desktop onto the primary framebuffer.
