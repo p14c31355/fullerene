@@ -121,6 +121,7 @@ pub fn find_free_virtual_address(size: u64) -> Option<usize> {
     while candidate + aligned_size <= SEARCH_END {
         // Check if this range is free
         let mut all_free = true;
+        let mut advanced_after_collision = false;
         for page_offset in 0..pages_needed {
             let check_addr = candidate + (page_offset * PAGE_SIZE);
             if let Some(virt) = CanonicalVirtAddr::new(check_addr) {
@@ -128,6 +129,7 @@ pub fn find_free_virtual_address(size: u64) -> Option<usize> {
                     all_free = false;
                     // Skip to next page after this mapped one
                     candidate = check_addr + PAGE_SIZE;
+                    advanced_after_collision = true;
                     break;
                 }
             } else {
@@ -140,8 +142,13 @@ pub fn find_free_virtual_address(size: u64) -> Option<usize> {
             return Some(candidate as usize);
         }
 
-        // Move to next aligned boundary
-        candidate = (candidate + PAGE_SIZE) & !(PAGE_SIZE - 1);
+        // Move to next aligned boundary only if we didn't already advance
+        if advanced_after_collision {
+            // Already moved candidate forward, continue search immediately
+            continue;
+        } else {
+            candidate = (candidate + PAGE_SIZE) & !(PAGE_SIZE - 1);
+        }
     }
 
     None

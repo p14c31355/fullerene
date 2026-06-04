@@ -1,5 +1,4 @@
 use crate::memory_management::process_memory::ProcessMemoryManagerImpl;
-use heapless::Vec;
 use petroleum::common::logging::{SystemError, SystemResult};
 use petroleum::graphics::framebuffer_mapper::{CacheMode, FramebufferMapper};
 use petroleum::initializer::{
@@ -22,7 +21,7 @@ const MAX_PROCESS_MANAGERS: usize = 16;
 pub struct UnifiedMemoryManager {
     pub(crate) page_table_manager: ProcessPageTable,
     pub(crate) kernel_pml4_phys: usize,
-    pub(crate) process_managers: Vec<Option<ProcessMemoryManagerImpl>, MAX_PROCESS_MANAGERS>,
+    pub(crate) process_managers: alloc::vec::Vec<Option<ProcessMemoryManagerImpl>>,
     pub(crate) current_process: usize,
     pub(crate) initialized: bool,
 }
@@ -63,6 +62,17 @@ impl UnifiedMemoryManager {
         Ok(())
     }
 
+    /// Unmap a page without freeing the underlying physical frame.
+    /// Used for device-backed memory (MMIO/framebuffer) that should not be returned to RAM allocator.
+    pub fn safe_unmap_page_no_free(&mut self, virtual_addr: usize) -> SystemResult<()> {
+        if !self.initialized {
+            return Err(SystemError::InternalError);
+        }
+        // Only remove the page table entry, don't free the physical frame
+        let _ = self.page_table_manager.unmap_page(virtual_addr);
+        Ok(())
+    }
+
     /// Legacy MMIO mapping — delegates to [`FramebufferMapper::map_framebuffer`].
     pub fn map_mmio_region(
         &mut self,
@@ -99,14 +109,14 @@ impl UnifiedMemoryManager {
             | PageFlags::NO_EXECUTE;
         let page_size = self.page_size();
         let pages = (size + page_size - 1) / page_size;
-        let mut mapped_pages: Vec<usize, 512> = Vec::new();
+        let mut mapped_pages: alloc::vec::Vec<usize> = alloc::vec::Vec::new();
         for i in 0..pages {
             let v = virt_addr + (i * page_size) as u64;
             let p = phys_addr + (i * page_size) as u64;
             if self.safe_map_page(v as usize, p as usize, flags).is_err() {
-                // Rollback: unmap all successfully mapped pages
+                // Rollback: unmap all successfully mapped pages without freeing frames
                 for &mapped_v in &mapped_pages {
-                    let _ = self.safe_unmap_page(mapped_v);
+                    let _ = self.safe_unmap_page_no_free(mapped_v);
                 }
                 let _ = self.flush_tlb_all();
                 return false;
@@ -129,7 +139,7 @@ impl UnifiedMemoryManager {
         Self {
             page_table_manager: ProcessPageTable::new(),
             kernel_pml4_phys: 0,
-            process_managers: Vec::new(),
+            process_managers: alloc::vec::Vec::new(),
             current_process: 0,
             initialized: false,
         }
@@ -264,7 +274,8 @@ impl FramebufferMapper for UnifiedMemoryManager {
     fn unmap_framebuffer(&mut self, virt_addr: u64, size: usize) {
         let pages = (size + 4095) / 4096;
         for i in 0..pages {
-            let _ = self.safe_unmap_page((virt_addr + (i * 4096) as u64) as usize);
+            // Use non-freeing unmap for device-backed memory
+            let _ = self.safe_unmap_page_no_free((virt_addr + (i * 4096) as u64) as usize);
         }
     }
 }
@@ -385,9 +396,10 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
             &mut self.page_table_manager,
             petroleum::page_table::constants::get_frame_allocator_mut(),
         )?;
-        self.process_managers
-            .push(Some(process_manager))
-            .map_err(|_| SystemError::TooManyProcesses)?;
+        if self.process_managers.len() >= MAX_PROCESS_MANAGERS {
+            return Err(SystemError::TooManyProcesses);
+        }
+        self.process_managers.push(Some(process_manager));
         mem_debug!("UMM: Created address space for process\n");
         Ok(())
     }
