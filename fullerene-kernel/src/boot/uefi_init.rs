@@ -952,7 +952,14 @@ impl UefiInitContext {
             );
         }
 
-        // ── 2. Framebuffer ──────────────────────────────────
+        // ── 2. Framebuffer: validate config but do NOT 4K-map ─
+        // InsydeH2O real hardware sets MTRR=WC on the framebuffer PCI MMIO
+        // region.  Mapping it with NO_CACHE (UC) creates a PAT/MTRR conflict
+        // → #GP triple fault.  QEMU tolerates the mismatch.
+        //
+        // The framebuffer is already covered by the 2 MB huge-page higher-half
+        // mapping (WB).  MTRR overrides cacheability to WC, which is *faster*
+        // than UC for framebuffer writes and avoids the conflict.
         let fb_config_valid =
             |config: &petroleum::common::uefi::FullereneFramebufferConfig| -> bool {
                 config.address >= 0x100000
@@ -998,31 +1005,11 @@ impl UefiInitContext {
                 None
             });
 
-        if let Some(config) = fb_config {
-            let fb_phys = config.address;
-            let fb_virt = fb_phys + phys_offset_val;
-            let fb_size = (config.width as u64 * config.height as u64 * config.bpp as u64) / 8;
-            let fb_pages = (fb_size + 4095) / 4096;
-            let fb_flags = PageTableFlags::PRESENT
-                | PageTableFlags::WRITABLE
-                | PageTableFlags::NO_EXECUTE
-                | PageTableFlags::NO_CACHE;
-
-            let frame_allocator = petroleum::page_table::constants::get_frame_allocator_mut();
-            let l4 = unsafe { petroleum::page_table::active_level_4_table(physical_memory_offset) };
-
-            unsafe {
-                for i in 0..fb_pages {
-                    let v = x86_64::VirtAddr::new(fb_virt + i * 4096);
-                    let p = x86_64::PhysAddr::new(fb_phys + i * 4096);
-                    let _ = petroleum::early::mapper::map_page_4k_l1(
-                        l4, v, p, fb_flags, frame_allocator, physical_memory_offset,
-                    );
-                }
-            }
+        if let Some(config) = &fb_config {
+            let fb_virt = config.address + phys_offset_val;
             petroleum::debug_log!(
-                "DEBUG: [map_mmio] Framebuffer {} pages mapped at virt={:#x}\n",
-                fb_pages, fb_virt
+                "DEBUG: [map_mmio] Framebuffer at phys={:#x} virt={:#x}, relying on huge-page WB mapping (MTRR→WC)\n",
+                config.address, fb_virt
             );
         }
 
