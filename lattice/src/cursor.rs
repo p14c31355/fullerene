@@ -15,7 +15,7 @@ impl Cursor {
     pub const HOTSPOT_X: i32 = 1;
     pub const HOTSPOT_Y: i32 = 1;
 
-    /// Pre‑rendered arrow bitmap (white triangle, zero = transparent).
+    /// Pre‑rendered arrow bitmap (opaque white triangle, zero = transparent).
     ///
     /// Generated once at compile time via `generate_shape()`.
     pub const SHAPE_PIXELS: [u32; (Self::SIZE as usize) * (Self::SIZE as usize)] = generate_shape();
@@ -37,7 +37,7 @@ impl Cursor {
 
 /// const fn that builds a 16×16 white arrow bitmap.
 ///
-/// Zero values are transparent; `0xFFFFFF` is white.
+/// Zero values are transparent; `0xFFFFFFFF` is opaque white.
 const fn generate_shape() -> [u32; 256] {
     let mut pixels = [0u32; 256];
     let w = 16usize;
@@ -47,7 +47,7 @@ const fn generate_shape() -> [u32; 256] {
     while y < arrow_h {
         let mut x = 0;
         while x <= y {
-            pixels[y * w + x] = 0xFFFFFF;
+            pixels[y * w + x] = 0xFFFFFFFF;
             x += 1;
         }
         y += 1;

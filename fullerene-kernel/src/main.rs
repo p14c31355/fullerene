@@ -3,11 +3,6 @@
 #![feature(abi_x86_interrupt)]
 #![feature(alloc_error_handler)]
 
-use petroleum::{
-    debug_log, draw_border_rect, draw_filled_rect, info_log, mem_debug, periodic_task,
-    scheduler_log, warn_log,
-};
-
 extern crate alloc;
 
 // Define panic and alloc error handlers using petroleum's macros
@@ -21,6 +16,7 @@ pub const VGA_BUFFER_ADDRESS: usize = 0xb8000;
 pub use heap::MEMORY_MAP;
 
 // Module declarations
+pub mod ahci;
 pub mod boot;
 pub mod context_switch;
 pub mod fs;
@@ -34,13 +30,12 @@ pub mod interrupts;
 pub mod keyboard;
 pub mod loader;
 pub mod memory_management;
+pub mod nvme;
 pub mod process;
 pub mod scheduler;
-pub mod slab;
 pub mod shell;
+pub mod slab;
 pub mod syscall;
-pub mod ahci;
-pub mod nvme;
 pub mod task;
 pub mod tracing;
 pub mod vfs;

@@ -4,9 +4,7 @@
 //! `KernelTerminal` that bridges the abstract `nozzle::Terminal`
 //! trait to the kernel’s raw syscall I/O.
 
-use crate::scheduler::get_system_tick;
 use crate::syscall::kernel_syscall;
-use alloc::format;
 
 /// Initialize the shell subsystem (formerly keyboard init, etc.)
 pub fn init() {

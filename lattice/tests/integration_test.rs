@@ -11,12 +11,22 @@ struct TestTarget {
 }
 
 impl RenderTarget for TestTarget {
-    fn buffer(&mut self) -> &mut [u32] { &mut self.pixels }
-    fn dimensions(&self) -> (u32, u32) { (self.w, self.h) }
+    fn buffer(&mut self) -> &mut [u32] {
+        &mut self.pixels
+    }
+    fn dimensions(&self) -> (u32, u32) {
+        (self.w, self.h)
+    }
 }
 
 impl TestTarget {
-    fn new(w: u32, h: u32) -> Self { Self { pixels: vec![0u32; (w * h) as usize], w, h } }
+    fn new(w: u32, h: u32) -> Self {
+        Self {
+            pixels: vec![0u32; (w * h) as usize],
+            w,
+            h,
+        }
+    }
 }
 
 /// Full‑pipeline integration test.
@@ -27,7 +37,7 @@ fn test_full_pipeline() {
     let mut target = TestTarget::new(W, H);
 
     let mut wm = WindowManager::new();
-    let _red_id = wm.create_window(10, 10, 100, 100, 0x0000FF);   // id=1
+    let _red_id = wm.create_window(10, 10, 100, 100, 0x0000FF); // id=1
     let _blue_id = wm.create_window(60, 60, 100, 100, 0xFF0000); // id=2 (top)
 
     // ── Step 1: Composite without cursor ────────────────────
@@ -37,7 +47,7 @@ fn test_full_pipeline() {
     assert_eq!(target.pixels[0], 0x808080, "top‑left background");
 
     let red_only_idx = (15 * W + 15) as usize;
-    assert_eq!(target.pixels[red_only_idx], 0x0000FF, "red region");
+    assert_eq!(target.pixels[red_only_idx], 0x000066, "red region (dimmed)");
 
     let overlap_idx = (80 * W + 80) as usize;
     assert_eq!(target.pixels[overlap_idx], 0xFF0000, "overlap → blue (top)");

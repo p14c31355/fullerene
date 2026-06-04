@@ -1,8 +1,5 @@
 //! Context switching implementation for Fullerene OS
 
-use crate::process::ProcessContext;
-use memoffset::offset_of;
-
 /// Save current process context and switch to next
 #[unsafe(naked)]
 pub extern "C" fn switch_context(

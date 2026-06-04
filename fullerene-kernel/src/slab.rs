@@ -13,9 +13,9 @@
 //! - When a page becomes entirely free it is returned to the frame allocator.
 
 use alloc::vec::Vec;
+use petroleum::initializer::FrameAllocator;
 use spin::Mutex;
 use x86_64::structures::paging::PageTableFlags;
-use petroleum::initializer::FrameAllocator;
 
 use crate::memory_management;
 
@@ -47,8 +47,13 @@ impl SlabPage {
         let phys = m.allocate_frame().ok()?;
         let virt = petroleum::common::memory::physical_to_virtual(phys);
         // If mapping fails, free the frame to avoid a leak.
-        if m.safe_map_page(virt, phys,
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE).is_err() {
+        if m.safe_map_page(
+            virt,
+            phys,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+        )
+        .is_err()
+        {
             let _ = m.free_frame(phys);
             return None;
         }
@@ -69,7 +74,11 @@ impl SlabPage {
             let offset = i * obj_size;
             unsafe {
                 let ptr = (virt + offset) as *mut usize;
-                ptr.write(if i + 1 < capacity { (i + 1) * obj_size } else { usize::MAX });
+                ptr.write(if i + 1 < capacity {
+                    (i + 1) * obj_size
+                } else {
+                    usize::MAX
+                });
             }
         }
         this.free_head = 0;
@@ -124,7 +133,11 @@ struct SlabCache {
 
 impl SlabCache {
     const fn new(obj_size: usize) -> Self {
-        Self { obj_size, pages: Vec::new(), partial_hint: 0 }
+        Self {
+            obj_size,
+            pages: Vec::new(),
+            partial_hint: 0,
+        }
     }
 
     fn alloc(&mut self) -> Option<usize> {
@@ -172,7 +185,9 @@ static SLABS: Mutex<Option<[SlabCache; NUM_CACHES]>> = Mutex::new(None);
 
 fn size_to_class(size: usize) -> usize {
     for (i, &s) in CACHE_SIZES.iter().enumerate() {
-        if size <= s { return i; }
+        if size <= s {
+            return i;
+        }
     }
     NUM_CACHES - 1
 }
@@ -186,17 +201,19 @@ fn size_to_class(size: usize) -> usize {
 pub fn alloc(size: usize) -> Option<usize> {
     let idx = size_to_class(size);
     let mut guard = SLABS.lock();
-    let slabs = guard.get_or_insert_with(|| [
-        SlabCache::new(16),
-        SlabCache::new(32),
-        SlabCache::new(64),
-        SlabCache::new(128),
-        SlabCache::new(256),
-        SlabCache::new(512),
-        SlabCache::new(1024),
-        SlabCache::new(2048),
-        SlabCache::new(4096),
-    ]);
+    let slabs = guard.get_or_insert_with(|| {
+        [
+            SlabCache::new(16),
+            SlabCache::new(32),
+            SlabCache::new(64),
+            SlabCache::new(128),
+            SlabCache::new(256),
+            SlabCache::new(512),
+            SlabCache::new(1024),
+            SlabCache::new(2048),
+            SlabCache::new(4096),
+        ]
+    });
     slabs[idx].alloc()
 }
 
@@ -209,17 +226,19 @@ pub fn alloc(size: usize) -> Option<usize> {
 pub unsafe fn free(addr: usize, size: usize) {
     let idx = size_to_class(size);
     let mut guard = SLABS.lock();
-    let slabs = guard.get_or_insert_with(|| [
-        SlabCache::new(16),
-        SlabCache::new(32),
-        SlabCache::new(64),
-        SlabCache::new(128),
-        SlabCache::new(256),
-        SlabCache::new(512),
-        SlabCache::new(1024),
-        SlabCache::new(2048),
-        SlabCache::new(4096),
-    ]);
+    let slabs = guard.get_or_insert_with(|| {
+        [
+            SlabCache::new(16),
+            SlabCache::new(32),
+            SlabCache::new(64),
+            SlabCache::new(128),
+            SlabCache::new(256),
+            SlabCache::new(512),
+            SlabCache::new(1024),
+            SlabCache::new(2048),
+            SlabCache::new(4096),
+        ]
+    });
     slabs[idx].free(addr);
 }
 

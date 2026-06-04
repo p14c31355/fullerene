@@ -122,7 +122,11 @@ impl Desktop {
     pub fn show_system_menu(&mut self) {
         let items = crate::menu::system_menu_items();
         let bar_y = 800u32.saturating_sub(crate::taskbar::TASKBAR_HEIGHT); // approximate
-        self.active_menu = Some(PopupMenu::new(4, bar_y.saturating_sub(items.len() as u32 * crate::menu::ITEM_HEIGHT + 4), items));
+        self.active_menu = Some(PopupMenu::new(
+            4,
+            bar_y.saturating_sub(items.len() as u32 * crate::menu::ITEM_HEIGHT + 4),
+            items,
+        ));
         self.menu_is_system = true;
     }
 
@@ -236,12 +240,8 @@ impl Desktop {
         // safely reference them without dangling pointers.
         self.menu_overlays_cache.clear();
         if let Some(ref menu) = self.active_menu {
-            self.dirty_cache.push(DirtyRect::new(
-                menu.x,
-                menu.y,
-                menu.width,
-                menu.height,
-            ));
+            self.dirty_cache
+                .push(DirtyRect::new(menu.x, menu.y, menu.width, menu.height));
             self.menu_overlays_cache = menu.to_overlays();
         }
     }
@@ -323,7 +323,9 @@ mod tests {
     fn test_desktop_mouse_drag() {
         let mut dt = Desktop::new(0x202020);
         // Create a titled window so drag via title bar works
-        let id = dt.wm.create_titled_window(10, 10, 100, 100, 0xFF0000, "Test");
+        let id = dt
+            .wm
+            .create_titled_window(10, 10, 100, 100, 0xFF0000, "Test");
 
         // Click title bar at (50, 20) — y=20 is inside title bar (10..30)
         dt.set_cursor(50, 20);
@@ -361,7 +363,10 @@ mod tests {
         let menu = dt.active_menu.as_ref().unwrap();
         assert!(menu.items.len() >= 2);
         // Click on first item
-        dt.set_cursor(menu.x as i32 + 4, menu.y as i32 + crate::menu::MENU_BORDER as i32 + 4);
+        dt.set_cursor(
+            menu.x as i32 + 4,
+            menu.y as i32 + crate::menu::MENU_BORDER as i32 + 4,
+        );
         dt.mouse_down();
         assert!(dt.active_menu.is_none()); // dismissed after click
     }

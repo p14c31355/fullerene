@@ -2,8 +2,8 @@ use alloc::boxed::Box;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
 use nitrogen::virtio::gpu::VirtioGpu;
+use petroleum::graphics::UefiFramebufferWriter;
 use petroleum::graphics::text::VgaBuffer;
-use petroleum::graphics::{Console, Renderer, UefiFramebufferWriter};
 use spin::Mutex;
 
 /// Global primary framebuffer renderer (also used as text console).

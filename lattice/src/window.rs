@@ -1,5 +1,5 @@
-use alloc::string::String;
 use crate::surface::Surface;
+use alloc::string::String;
 
 /// Opaque identifier for a window.
 ///
@@ -94,10 +94,7 @@ impl Window {
             return false;
         }
         let title_h = crate::compositor::TITLE_BAR_HEIGHT as i32;
-        px >= self.x
-            && py >= self.y
-            && px < self.x + self.width as i32
-            && py < self.y + title_h
+        px >= self.x && py >= self.y && px < self.x + self.width as i32 && py < self.y + title_h
     }
 
     /// Total decorated width (client area + borders).

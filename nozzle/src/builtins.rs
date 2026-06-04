@@ -62,13 +62,15 @@ pub fn cmd_pwd(ctx: &mut CommandContext) -> bool {
 
 /// `meminfo` — display memory information (stub)
 pub fn cmd_meminfo(ctx: &mut CommandContext) -> bool {
-    ctx.terminal.write_str("Memory info not available from userland\n");
+    ctx.terminal
+        .write_str("Memory info not available from userland\n");
     true
 }
 
 /// `dmesg` — display kernel message buffer (stub)
 pub fn cmd_dmesg(ctx: &mut CommandContext) -> bool {
-    ctx.terminal.write_str("[dmesg] kernel ring buffer not yet implemented\n");
+    ctx.terminal
+        .write_str("[dmesg] kernel ring buffer not yet implemented\n");
     true
 }
 
@@ -100,6 +102,7 @@ pub fn cmd_hexdump(ctx: &mut CommandContext) -> bool {
 pub fn cmd_version(ctx: &mut CommandContext) -> bool {
     ctx.terminal.write_str("Fullerene 0.2.0\n");
     ctx.terminal.write_str("Built: 2026-05-26\n");
-    ctx.terminal.write_str("Components: Lattice, Nozzle, Solvent, ChronoLine, Resonance\n");
+    ctx.terminal
+        .write_str("Components: Lattice, Nozzle, Solvent, ChronoLine, Resonance\n");
     true
 }

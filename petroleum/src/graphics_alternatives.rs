@@ -595,30 +595,53 @@ pub mod graphics_alternatives {
                 device.vendor_id, device.device_id, device.bus, device.device, device.function
             ));
 
-            // For QXL device, attempt framebuffer detection
-            if device.vendor_id == 0x1b36 && device.device_id == 0x0100 {
-                _print(format_args!(
-                    "[BM-GFX] Detected QXL device, attempting bare-metal framebuffer detection\n"
-                ));
-
-                // Create a mock handle for QXL device (in real implementation, this would be the actual EFI handle)
-                let mock_handle = 0x1000; // Placeholder handle
-                let mock_device = PciDevice {
-                    handle: mock_handle,
-                    vendor_id: device.vendor_id,
-                    device_id: device.device_id,
-                    class_code: device.class_code,
-                    subclass: device.subclass,
-                    bus: device.bus,
-                    device: device.device,
-                    function: device.function,
-                };
-
-                if let Some(fb_info) = probe_qxl_framebuffer(&mock_device, bs) {
+            // Attempt framebuffer detection for known device types.
+            // Use the device's actual handle from PCI enumeration, never a mock handle.
+            match (device.vendor_id, device.device_id) {
+                (0x1af4, id) if id >= 0x1050 => {
+                    // virtio-gpu
                     _print(format_args!(
-                        "[BM-GFX] QXL bare-metal framebuffer detection successful!\n"
+                        "[BM-GFX] Detected virtio-gpu, attempting framebuffer detection\n"
                     ));
-                    return Some(fb_info);
+                    if let Some(fb_info) = probe_linear_framebuffer(device, bs) {
+                        return Some(fb_info);
+                    }
+                }
+                (0x1b36, 0x0100) => {
+                    // QXL
+                    _print(format_args!(
+                        "[BM-GFX] Detected QXL device, attempting framebuffer detection\n"
+                    ));
+                    if let Some(fb_info) = probe_qxl_framebuffer(device, bs) {
+                        return Some(fb_info);
+                    }
+                }
+                (0x1234, 0x1111) | (0x1234, 0x1112) => {
+                    // QEMU std VGA / Bochs VBE
+                    _print(format_args!(
+                        "[BM-GFX] Detected std VGA device, attempting framebuffer detection\n"
+                    ));
+                    if let Some(fb_info) = probe_linear_framebuffer(device, bs) {
+                        return Some(fb_info);
+                    }
+                }
+                (0x1013, _) => {
+                    // Cirrus Logic VGA
+                    _print(format_args!(
+                        "[BM-GFX] Detected Cirrus Logic VGA, skipping (no linear framebuffer)\n"
+                    ));
+                }
+                (0x15ad, 0x0405) => {
+                    // VMware SVGA II
+                    _print(format_args!(
+                        "[BM-GFX] Detected VMware SVGA, not yet implemented\n"
+                    ));
+                }
+                _ => {
+                    _print(format_args!(
+                        "[BM-GFX] Unknown graphics device ({:04x}:{:04x}), skipping\n",
+                        device.vendor_id, device.device_id
+                    ));
                 }
             }
         }
@@ -629,38 +652,37 @@ pub mod graphics_alternatives {
         None
     }
 
-    /// Enumerate PCI devices using bare-metal detection (simplified for QXL)
+    /// Enumerate PCI devices using direct PCI configuration space reads.
+    /// This is used as a last-resort fallback when UEFI protocols are unavailable.
+    /// On real hardware (e.g. InsydeH2O), this must NOT return fake/mock devices.
     fn enumerate_bare_metal_pci_devices() -> Option<Vec<PciDevice>> {
-        // In a real implementation, this would perform direct PCI configuration space reads
-        // For now, we'll simulate the detection based on the log output
-
         _print(format_args!(
-            "[BM-GFX] Simulating bare-metal PCI enumeration for QXL device\n"
+            "[BM-GFX] Performing bare-metal PCI enumeration...\n"
         ));
 
-        // Based on the log: "Found 1 graphics devices via direct PCI enumeration"
-        // and "Probing device 1b36:0100 at 00:01:00"
-        let mut devices = Vec::new();
+        // Use actual direct PCI enumeration via port I/O.
+        // This only works when UEFI has not locked I/O ports and
+        // the PCI config space is accessible in the conventional way.
+        let all_devices = crate::bare_metal_pci::enumerate_all_pci_devices();
 
-        let qxl_device = PciDevice {
-            handle: 0x1000,    // Mock handle
-            vendor_id: 0x1b36, // QEMU QXL vendor ID
-            device_id: 0x0100, // QXL device ID
-            class_code: 0x03,  // Display controller
-            subclass: 0x00,    // VGA compatible controller
-            bus: 0x00,
-            device: 0x01,
-            function: 0x00,
-        };
+        // Filter to graphics devices only (class code 0x03)
+        let graphics_devices: Vec<PciDevice> = all_devices
+            .into_iter()
+            .filter(|dev| dev.class_code == 0x03)
+            .collect();
 
-        devices.push(qxl_device);
-
-        _print(format_args!(
-            "[BM-GFX] Enumerated {} bare-metal PCI devices\n",
-            devices.len()
-        ));
-
-        Some(devices)
+        if graphics_devices.is_empty() {
+            _print(format_args!(
+                "[BM-GFX] No graphics devices found via bare-metal PCI enumeration\n"
+            ));
+            None
+        } else {
+            _print(format_args!(
+                "[BM-GFX] Found {} graphics devices via bare-metal PCI enumeration\n",
+                graphics_devices.len()
+            ));
+            Some(graphics_devices)
+        }
     }
 
     /// Try to validate framebuffer access at the given address

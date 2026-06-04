@@ -400,6 +400,8 @@ pub unsafe extern "C" fn init_and_jump(
     STORED_OFFSET = Some(physical_memory_offset);
     STORED_L4_PTR = Some(l4_ptr);
 
+    // VGA debug: about to switch CR3
+    crate::vga_debug::vga_puts(22, 0, b"IAJ:sw cr3");
     crate::serial::_print(format_args!("IAJ: mappings done, switching CR3...\n"));
     unsafe {
         x86_64::registers::control::Cr3::write(

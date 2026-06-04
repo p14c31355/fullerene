@@ -84,10 +84,42 @@ pub enum MouseButton {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum KeyCode {
     // Alphanumeric
-    A, B, C, D, E, F, G, H, I, J, K, L, M,
-    N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
-    Digit0, Digit1, Digit2, Digit3, Digit4,
-    Digit5, Digit6, Digit7, Digit8, Digit9,
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+    G,
+    H,
+    I,
+    J,
+    K,
+    L,
+    M,
+    N,
+    O,
+    P,
+    Q,
+    R,
+    S,
+    T,
+    U,
+    V,
+    W,
+    X,
+    Y,
+    Z,
+    Digit0,
+    Digit1,
+    Digit2,
+    Digit3,
+    Digit4,
+    Digit5,
+    Digit6,
+    Digit7,
+    Digit8,
+    Digit9,
 
     // Modifiers
     Shift,
@@ -96,13 +128,33 @@ pub enum KeyCode {
     Meta,
 
     // Navigation
-    Enter, Tab, Space, Backspace, Escape,
-    Up, Down, Left, Right,
-    Home, End, PageUp, PageDown,
+    Enter,
+    Tab,
+    Space,
+    Backspace,
+    Escape,
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+    PageUp,
+    PageDown,
 
     // Function keys
-    F1, F2, F3, F4, F5, F6,
-    F7, F8, F9, F10, F11, F12,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
 
     /// Catch-all for unhandled keys.
     Unknown(u32),
@@ -111,13 +163,19 @@ pub enum KeyCode {
 /// Input events (mouse, keyboard, etc.).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputEvent {
-    MouseMove { x: i32, y: i32 },
+    MouseMove {
+        x: i32,
+        y: i32,
+    },
     MouseDown(MouseButton),
     MouseUp(MouseButton),
     /// Mouse double-click (detected by timing logic in the input source).
     MouseDoubleClick(MouseButton),
     /// Mouse wheel scroll with delta.
-    MouseWheel { dx: i32, dy: i32 },
+    MouseWheel {
+        dx: i32,
+        dy: i32,
+    },
     KeyDown(KeyCode),
     KeyUp(KeyCode),
 }

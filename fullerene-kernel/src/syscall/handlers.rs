@@ -6,7 +6,6 @@ use core::alloc::Layout;
 use core::sync::atomic::Ordering;
 use petroleum::{
     common::memory::{user_slice, user_slice_mut},
-    page_table::PageTableHelper,
     write_serial_bytes,
 };
 use x86_64::{PhysAddr, VirtAddr};

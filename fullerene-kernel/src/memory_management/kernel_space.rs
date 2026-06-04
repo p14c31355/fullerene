@@ -93,6 +93,63 @@ pub fn map_framebuffer(
 
 /// Find a free virtual address region (backward-compat stub).
 pub fn find_free_virtual_address(size: u64) -> Option<usize> {
-    // TODO: implement proper free VA search
+    use petroleum::page_table::constants::HIGHER_HALF_OFFSET;
+    use petroleum::page_table::raw::utils::is_mapped;
+    use petroleum::page_table::types::{CanonicalVirtAddr, PageTable};
+
+    // Search region: kernel dynamic allocations start above the direct-mapped region
+    // Start search at a safe offset in the higher half
+    const SEARCH_START: u64 = 0xFFFF_8800_0000_0000;
+    const SEARCH_END: u64 = 0xFFFF_9000_0000_0000;
+    const PAGE_SIZE: u64 = 4096;
+
+    let pages_needed = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    let aligned_size = pages_needed * PAGE_SIZE;
+
+    // Get the current page table root
+    let cr3 = unsafe {
+        let (frame, _) = x86_64::registers::control::Cr3::read();
+        frame.start_address().as_u64()
+    };
+
+    // Convert physical address to virtual for accessing page table
+    let root_virt = HIGHER_HALF_OFFSET.as_u64() + cr3;
+    let root = unsafe { &*(root_virt as *const PageTable) };
+
+    let mut candidate = SEARCH_START;
+
+    while candidate + aligned_size <= SEARCH_END {
+        // Check if this range is free
+        let mut all_free = true;
+        let mut advanced_after_collision = false;
+        for page_offset in 0..pages_needed {
+            let check_addr = candidate + (page_offset * PAGE_SIZE);
+            if let Some(virt) = CanonicalVirtAddr::new(check_addr) {
+                if is_mapped(root, virt) {
+                    all_free = false;
+                    // Skip to next page after this mapped one
+                    candidate = check_addr + PAGE_SIZE;
+                    advanced_after_collision = true;
+                    break;
+                }
+            } else {
+                all_free = false;
+                break;
+            }
+        }
+
+        if all_free {
+            return Some(candidate as usize);
+        }
+
+        // Move to next aligned boundary only if we didn't already advance
+        if advanced_after_collision {
+            // Already moved candidate forward, continue search immediately
+            continue;
+        } else {
+            candidate = (candidate + PAGE_SIZE) & !(PAGE_SIZE - 1);
+        }
+    }
+
     None
 }

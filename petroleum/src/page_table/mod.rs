@@ -1,7 +1,4 @@
 //! Page table management module.
-//!
-//! Provides types and functions for x86_64 page table manipulation,
-//! including a unified walker, huge page support, and process page tables.
 
 pub mod allocator;
 pub mod constants;
@@ -16,60 +13,26 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
-pub use types::*;
-
-// ── Re-exports for backward compatibility ─────────────────────────────
-
-/// Old name for `PageTableEntry`.
-pub use types::PageTableEntry as Pte;
-
-/// Re-export of `BitmapFrameAllocator`.
 pub use allocator::bitmap::BitmapFrameAllocator;
-
-/// Re-export of `FrameAllocatorExt` trait.
 pub use allocator::traits::FrameAllocatorExt;
-
-/// Re-export of kernel init types and functions.
-pub use kernel::init::{InitAndJumpArgs, active_level_4_table, init_and_jump};
-
-/// Re-export of `KernelMapper` (now `Mapper`).
-pub use kernel::mapper::Mapper as KernelMapper;
-
-/// Re-export of process page table.
-pub use process::table::ProcessPageTable;
-
-/// Re-export of memory map types.
-pub use memory_map::MemoryMapDescriptor;
-
-/// Re-export of constants.
 pub use constants::{BootInfoFrameAllocator, HIGHER_HALF_OFFSET as KERNEL_OFFSET};
-
-/// Re-export of heap globals.
 pub use heap::{ALLOCATOR, HEAP_INITIALIZED};
-
-pub use raw::huge::map_range_with_huge_pages;
-/// Re-export of utility functions.
-pub use raw::utils::{
-    map_identity_range, map_range_4kiB, map_to_higher_half_with_log, unmap_page_range,
-};
-/// Backward-compat aliases for map_range_with_huge_pages and map_to_higher_half_with_log.
-pub use raw::utils::{map_range_with_log_macro, map_to_higher_half_with_log_macro};
-
-/// Re-export of `init` function.
 pub use kernel::init::init;
-
-// ── Additional backward-compat stubs ──────────────────────────────────
-
-/// Deprecated: Use `memory_map::MemoryMapDescriptor` instead.
+pub use kernel::init::{InitAndJumpArgs, active_level_4_table, init_and_jump};
+pub use kernel::mapper::Mapper as KernelMapper;
+pub use memory_map::MemoryMapDescriptor;
+pub use process::table::ProcessPageTable;
+pub use raw::huge::map_range_with_huge_pages;
+pub use raw::utils::{
+    map_identity_range, map_range_4kiB, map_range_with_log_macro, map_to_higher_half_with_log,
+    map_to_higher_half_with_log_macro, unmap_page_range,
+};
+pub use types::PageTableEntry as Pte;
+pub use types::*;
 pub type EfiMemoryDescriptor = memory_map::MemoryMapDescriptor;
 
-/// Deprecated: No-op.
 pub fn init_kernel_mapper() {}
-
-/// Deprecated: Returns None.
 pub fn find_free_virtual_address(_size: u64) -> Option<u64> {
     None
 }
-
-/// Deprecated: No-op.
 pub fn dump_page_table_walk(_root: &types::PageTable, _virt: types::CanonicalVirtAddr) {}

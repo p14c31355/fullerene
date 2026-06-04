@@ -66,14 +66,7 @@ macro_rules! bit_ops {
 }
 
 #[macro_export]
-macro_rules! command_args {
-    () => {
-        &[]
-    };
-    ($($arg:expr),* $(,)?) => {
-        &[$($arg.to_string()),*]
-    };
-}
+macro_rules! command_args { () => { &[] }; ($($arg:expr),* $(,)?) => { &[$($arg.to_string()),*] }; }
 
 #[macro_export]
 macro_rules! ensure_initialized {
@@ -169,12 +162,8 @@ macro_rules! static_str {
 
 #[macro_export]
 macro_rules! scheduler_log {
-    ($msg:literal) => {
-        log::info!("Scheduler: {}", $msg);
-    };
-    ($msg:literal, $($arg:tt)*) => {
-        log::info!("Scheduler: {}", format_args!($msg, $($arg)*));
-    };
+    ($msg:literal) => { log::info!("Scheduler: {}", $msg); };
+    ($msg:literal, $($arg:tt)*) => { log::info!("Scheduler: {}", format_args!($msg, $($arg)*)); };
 }
 
 #[macro_export]
@@ -236,7 +225,6 @@ macro_rules! health_check {
 macro_rules! periodic_fs_log {
     ($filename:expr, $interval_ticks:expr, $current_tick:expr, $($stats_expr:tt)*) => {{
         static LAST_LOG_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
-
         petroleum::check_periodic!(LAST_LOG_TICK, $interval_ticks, $current_tick, {
             let log_content = alloc::format!($($stats_expr)*);
             log::info!("{}", log_content);
@@ -247,11 +235,7 @@ macro_rules! periodic_fs_log {
 #[macro_export]
 macro_rules! maintenance_tasks {
     ($current_tick:expr, $(($interval:expr, $fn_call:expr)),* $(,)?) => {
-        $(
-            petroleum::periodic_task!($current_tick, $interval, {
-                $fn_call
-            });
-        )*
+        $( petroleum::periodic_task!($current_tick, $interval, { $fn_call }); )*
     };
 }
 
@@ -282,15 +266,7 @@ macro_rules! error_variant_map {
 #[macro_export]
 macro_rules! error_chain {
     ($src:ty, $dst:ty, $( $pat:pat => $result:expr ),* $(,)?) => {
-        impl From<$src> for $dst {
-            fn from(error: $src) -> Self {
-                match error {
-                    $(
-                        $pat => $result,
-                    )*
-                }
-            }
-        }
+        impl From<$src> for $dst { fn from(error: $src) -> Self { match error { $( $pat => $result, )* } } }
     };
 }
 
@@ -307,18 +283,14 @@ macro_rules! check_uefi_status {
 #[macro_export]
 macro_rules! pause {
     () => {
-        unsafe {
-            core::arch::asm!("pause", options(nomem, nostack, preserves_flags));
-        }
+        $crate::cpu_pause();
     };
 }
 
 #[macro_export]
 macro_rules! halt {
     () => {
-        unsafe {
-            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
-        }
+        $crate::cpu_halt();
     };
 }
 
@@ -368,16 +340,9 @@ macro_rules! init_system_component {
 #[macro_export]
 macro_rules! define_periodic_task {
     ($name:ident, $interval:expr, $task_fn:expr) => {
-        fn $name(tick: u64, iter: u64) {
-            $task_fn(tick, iter);
-        }
-
+        fn $name(tick: u64, iter: u64) { $task_fn(tick, iter); }
         lazy_static::lazy_static! {
-            static ref $name: PeriodicTask = PeriodicTask {
-                interval: $interval,
-                last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
-                task: $name,
-            };
+            static ref $name: PeriodicTask = PeriodicTask { interval: $interval, last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)), task: $name };
         }
     };
 }
@@ -387,38 +352,20 @@ macro_rules! define_periodic_tasks {
     ($task_ty:ident, $(($interval:expr, $task_fn:ident, $desc:expr)),* $(,)?) => {
         lazy_static::lazy_static! {
             static ref PERIODIC_TASKS: [$task_ty; count!($($task_fn),*)] = [
-                $(
-                    $task_ty {
-                        interval: $interval,
-                        last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)),
-                        task: $task_fn,
-                        description: $desc,
-                    }
-                ),*
+                $($task_ty { interval: $interval, last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)), task: $task_fn, description: $desc },)*
             ];
         }
     };
 }
 
 #[macro_export]
-macro_rules! count {
-    () => { 0 };
-    ($head:expr $(, $tail:expr)*) => { 1 + count!($($tail),*) };
-}
+macro_rules! count { () => { 0 }; ($head:expr $(, $tail:expr)*) => { 1 + count!($($tail),*) }; }
 
 #[macro_export]
 macro_rules! define_vbox_settings {
     ($vm_name:expr, $(($args:expr, $failure_msg:expr)),* $(,)?) => {{
-        $(
-            let status = ::std::process::Command::new("VBoxManage")
-                .arg("modifyvm")
-                .arg($vm_name)
-                .args($args)
-                .status()?;
-            if !status.success() {
-                return Err(::std::io::Error::new(::std::io::ErrorKind::Other, $failure_msg));
-            }
-        )*
+        $( let status = ::std::process::Command::new("VBoxManage").arg("modifyvm").arg($vm_name).args($args).status()?;
+           if !status.success() { return Err(::std::io::Error::new(::std::io::ErrorKind::Other, $failure_msg)); } )*
         Ok(()) as ::std::io::Result<()>
     }};
 }
@@ -427,18 +374,13 @@ macro_rules! define_vbox_settings {
 macro_rules! build_package {
     ($package:expr, $target:expr, [$($features:expr),* $(,)?]) => {{
         let mut args = vec!["+nightly", "build", "-q", "-Zbuild-std=core,alloc"];
-        $(
-            args.push($features);
-        )*
+        $( args.push($features); )*
         args.extend_from_slice(&["--package", $package, "--target", $target, "--profile", "dev"]);
-
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")?;
+        let parent_dir = std::path::Path::new(&manifest_dir).parent().unwrap();
         let status = std::process::Command::new("cargo")
-            .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap().parent().unwrap())
-            .args(&args)
-            .status()?;
-        if !status.success() {
-            return Err(std::io::Error::other(concat!($package, " build failed")));
-        }
+            .current_dir(parent_dir).args(&args).status()?;
+        if !status.success() { return Err(std::io::Error::other(concat!($package, " build failed"))); }
         Ok(())
     }};
 }
@@ -446,14 +388,7 @@ macro_rules! build_package {
 #[macro_export]
 macro_rules! create_iso_files {
     ($(($source:expr, $dest:expr)),* $(,)?) => {
-        vec![
-            $(
-                isobemak::IsoImageFile {
-                    source: $source.clone(),
-                    destination: $dest.to_string(),
-                }
-            ),*
-        ]
+        vec![ $( isobemak::IsoImageFile { source: $source.clone(), destination: $dest.to_string() }, )* ]
     };
 }
 

@@ -7,6 +7,10 @@ pub const BOOT_CODE_START: u64 = 0x100000;
 
 pub const TEMP_LOW_VA: u64 = 0x1000;
 pub const VGA_MEMORY_START: u64 = 0xb8000;
+/// Dedicated virtual address for VGA text buffer, placed just after
+/// the 1 GB kernel direct-map area so that 4K mappings never split
+/// a huge page (which causes triple faults on InsydeH2O bare metal).
+pub const VGA_VIRT_ADDR: u64 = 0xFFFF_8000_4000_0000;
 pub const VGA_MEMORY_END: u64 = 0xb8fa0;
 
 pub const MAX_DESCRIPTOR_PAGES: u64 = 134_217_728; // 512 GiB / 4096

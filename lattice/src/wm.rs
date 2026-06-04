@@ -52,13 +52,28 @@ pub(crate) fn window_dirty_rect(w: &Window) -> DirtyRect {
 
 impl WindowManager {
     pub fn new() -> Self {
-        Self { windows: Vec::new(), focused: None, next_id: 1, drag: DragState::None, resize_handle: RESIZE_HANDLE_SIZE, dirty_rects: Vec::new() }
+        Self {
+            windows: Vec::new(),
+            focused: None,
+            next_id: 1,
+            drag: DragState::None,
+            resize_handle: RESIZE_HANDLE_SIZE,
+            dirty_rects: Vec::new(),
+        }
     }
 
-    pub fn windows(&self) -> &[Window] { &self.windows }
-    pub fn windows_mut(&mut self) -> &mut [Window] { &mut self.windows }
-    pub fn drag_state(&self) -> &DragState { &self.drag }
-    pub fn focused(&self) -> Option<WindowId> { self.focused }
+    pub fn windows(&self) -> &[Window] {
+        &self.windows
+    }
+    pub fn windows_mut(&mut self) -> &mut [Window] {
+        &mut self.windows
+    }
+    pub fn drag_state(&self) -> &DragState {
+        &self.drag
+    }
+    pub fn focused(&self) -> Option<WindowId> {
+        self.focused
+    }
 
     // ── dirty rects ─────────────────────────────────────────
 
@@ -69,16 +84,34 @@ impl WindowManager {
         out
     }
 
-    pub fn create_window(&mut self, x: i32, y: i32, width: u32, height: u32, color: u32) -> WindowId {
+    pub fn create_window(
+        &mut self,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        color: u32,
+    ) -> WindowId {
         let id = WindowId(self.next_id);
         self.next_id += 1;
         self.create_with_id(id, x, y, width, height, color)
     }
 
-    fn create_with_id(&mut self, id: WindowId, x: i32, y: i32, width: u32, height: u32, color: u32) -> WindowId {
+    fn create_with_id(
+        &mut self,
+        id: WindowId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        color: u32,
+    ) -> WindowId {
         let mut window = Window::new(id, x, y, width, height, color);
         if let Some(prev) = self.focused {
-            if let Some(w) = self.windows.iter_mut().find(|w| w.id == prev) { w.focused = false; }
+            if let Some(w) = self.windows.iter_mut().find(|w| w.id == prev) {
+                w.focused = false;
+                self.dirty_rects.push(window_dirty_rect(w));
+            }
         }
         window.focused = true;
         self.focused = Some(id);
@@ -87,12 +120,23 @@ impl WindowManager {
         id
     }
 
-    pub fn create_titled_window(&mut self, x: i32, y: i32, width: u32, height: u32, color: u32, title: impl Into<String>) -> WindowId {
+    pub fn create_titled_window(
+        &mut self,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        color: u32,
+        title: impl Into<String>,
+    ) -> WindowId {
         let id = WindowId(self.next_id);
         self.next_id += 1;
         let mut window = Window::new_with_title(id, x, y, width, height, color, title);
         if let Some(prev) = self.focused {
-            if let Some(w) = self.windows.iter_mut().find(|w| w.id == prev) { w.focused = false; }
+            if let Some(w) = self.windows.iter_mut().find(|w| w.id == prev) {
+                w.focused = false;
+                self.dirty_rects.push(window_dirty_rect(w));
+            }
         }
         window.focused = true;
         self.focused = Some(id);
@@ -113,19 +157,32 @@ impl WindowManager {
             let new_id = { self.windows.last().map(|w| w.id) };
             if let Some(nid) = new_id {
                 self.focused = Some(nid);
-                if let Some(w) = self.windows.iter_mut().find(|w| w.id == nid) { w.focused = true; }
-            } else { self.focused = None; }
+                if let Some(w) = self.windows.iter_mut().find(|w| w.id == nid) {
+                    w.focused = true;
+                    self.dirty_rects.push(window_dirty_rect(w));
+                }
+            } else {
+                self.focused = None;
+            }
         }
         removed
     }
 
     pub fn raise_to_top(&mut self, id: WindowId) {
-        let Some(idx) = self.windows.iter().position(|w| w.id == id) else { return };
+        let Some(idx) = self.windows.iter().position(|w| w.id == id) else {
+            return;
+        };
+        // Record the previous focus before removing the window
+        let prev_focus = self.focused;
         let mut window = self.windows.remove(idx);
         window.focused = true;
-        if let Some(prev) = self.focused {
+        // Mark the previously-focused window as unfocused and dirty
+        if let Some(prev) = prev_focus {
             if prev != id {
-                if let Some(w) = self.windows.iter_mut().find(|w| w.id == prev) { w.focused = false; }
+                if let Some(w) = self.windows.iter_mut().find(|w| w.id == prev) {
+                    w.focused = false;
+                    self.dirty_rects.push(window_dirty_rect(w));
+                }
             }
         }
         self.focused = Some(id);
@@ -134,22 +191,39 @@ impl WindowManager {
     }
 
     pub fn window_at(&self, x: i32, y: i32) -> Option<WindowId> {
-        self.windows.iter().rev().find(|w| w.contains(x, y) || w.contains_title_bar(x, y)).map(|w| w.id)
+        self.windows
+            .iter()
+            .rev()
+            .find(|w| w.contains(x, y) || w.contains_title_bar(x, y))
+            .map(|w| w.id)
     }
 
     pub fn resize_handle_at(&self, x: i32, y: i32) -> Option<WindowId> {
-        self.windows.iter().rev().find(|w| {
-            let rw = w.x + w.width as i32;
-            let rh = w.y + w.height as i32;
-            x >= rw - self.resize_handle as i32 && x < rw && y >= rh - self.resize_handle as i32 && y < rh
-        }).map(|w| w.id)
+        self.windows
+            .iter()
+            .rev()
+            .find(|w| {
+                let rw = w.x + w.width as i32;
+                let rh = w.y + w.height as i32;
+                x >= rw - self.resize_handle as i32
+                    && x < rw
+                    && y >= rh - self.resize_handle as i32
+                    && y < rh
+            })
+            .map(|w| w.id)
     }
 
     pub fn on_mouse_down(&mut self, x: i32, y: i32) {
         if let Some(hit) = self.resize_handle_at(x, y) {
             self.raise_to_top(hit);
             if let Some(w) = self.windows.iter().find(|win| win.id == hit) {
-                self.drag = DragState::Resizing { window: hit, orig_x: w.x, orig_y: w.y, orig_width: w.width, orig_height: w.height };
+                self.drag = DragState::Resizing {
+                    window: hit,
+                    orig_x: w.x,
+                    orig_y: w.y,
+                    orig_width: w.width,
+                    orig_height: w.height,
+                };
             }
             return;
         }
@@ -158,7 +232,11 @@ impl WindowManager {
                 let id = window.id;
                 self.raise_to_top(id);
                 if let Some(w) = self.windows.iter().find(|win| win.id == id) {
-                    self.drag = DragState::Moving { window: id, offset_x: x - w.x, offset_y: y - w.y };
+                    self.drag = DragState::Moving {
+                        window: id,
+                        offset_x: x - w.x,
+                        offset_y: y - w.y,
+                    };
                 }
                 return;
             }
@@ -169,56 +247,88 @@ impl WindowManager {
             return;
         }
         self.focused = None;
-        for w in &mut self.windows { w.focused = false; }
+        for w in &mut self.windows {
+            w.focused = false;
+            self.dirty_rects.push(window_dirty_rect(w));
+        }
         self.drag = DragState::None;
     }
 
     pub fn on_mouse_move(&mut self, x: i32, y: i32) {
         match self.drag {
-            DragState::Moving { window, offset_x, offset_y } => {
+            DragState::Moving {
+                window,
+                offset_x,
+                offset_y,
+            } => {
                 // Capture dirty rect BEFORE mutating the window.
                 let dirty_before = {
-                    self.windows.iter()
+                    self.windows
+                        .iter()
                         .find(|w| w.id == window)
                         .map(window_dirty_rect)
                 };
                 if let Some(w) = self.windows.iter_mut().find(|w| w.id == window) {
-                    w.x = x - offset_x; w.y = y - offset_y;
+                    w.x = x - offset_x;
+                    w.y = y - offset_y;
                 }
                 let dirty_after = {
-                    self.windows.iter()
+                    self.windows
+                        .iter()
                         .find(|w| w.id == window)
                         .map(window_dirty_rect)
                 };
-                if let Some(r) = dirty_before { self.dirty_rects.push(r); }
-                if let Some(r) = dirty_after  { self.dirty_rects.push(r); }
+                if let Some(r) = dirty_before {
+                    self.dirty_rects.push(r);
+                }
+                if let Some(r) = dirty_after {
+                    self.dirty_rects.push(r);
+                }
             }
-            DragState::Resizing { window, orig_x, orig_y, .. } => {
+            DragState::Resizing {
+                window,
+                orig_x,
+                orig_y,
+                ..
+            } => {
                 // Capture dirty rect BEFORE mutating the window.
                 let dirty_before = {
-                    self.windows.iter()
+                    self.windows
+                        .iter()
                         .find(|w| w.id == window)
                         .map(window_dirty_rect)
                 };
                 if let Some(w) = self.windows.iter_mut().find(|w| w.id == window) {
                     let nw = ((x - orig_x) as u32).max(MIN_WINDOW_W);
                     let nh = ((y - orig_y) as u32).max(MIN_WINDOW_H);
-                    w.width = nw; w.height = nh;
-                    w.surface = crate::surface::Surface::new(nw, nh, w.surface.get_pixel(0, 0).unwrap_or(0));
+                    w.width = nw;
+                    w.height = nh;
+                    w.surface = crate::surface::Surface::new(
+                        nw,
+                        nh,
+                        w.surface.get_pixel(0, 0).unwrap_or(0),
+                    );
                 }
                 let dirty_after = {
-                    self.windows.iter()
+                    self.windows
+                        .iter()
                         .find(|w| w.id == window)
                         .map(window_dirty_rect)
                 };
-                if let Some(r) = dirty_before { self.dirty_rects.push(r); }
-                if let Some(r) = dirty_after  { self.dirty_rects.push(r); }
+                if let Some(r) = dirty_before {
+                    self.dirty_rects.push(r);
+                }
+                if let Some(r) = dirty_after {
+                    self.dirty_rects.push(r);
+                }
             }
             DragState::None => {}
         }
     }
 
-    pub fn on_mouse_up(&mut self) { self.drag = DragState::None; }
+    pub fn on_mouse_up(&mut self) {
+        self.drag = DragState::None;
+    }
 }
 
 #[cfg(test)]
@@ -273,10 +383,30 @@ mod tests {
         let mut wm = WindowManager::new();
         wm.create_window(0, 0, 100, 100, 0xFF0000);
         wm.on_mouse_down(95, 95);
-        assert!(matches!(wm.drag, DragState::Resizing { window: WindowId(1), .. }));
+        assert!(matches!(
+            wm.drag,
+            DragState::Resizing {
+                window: WindowId(1),
+                ..
+            }
+        ));
         wm.on_mouse_move(150, 150);
-        assert_eq!(wm.windows.iter().find(|w| w.id == WindowId(1)).unwrap().width, 150);
-        assert_eq!(wm.windows.iter().find(|w| w.id == WindowId(1)).unwrap().height, 150);
+        assert_eq!(
+            wm.windows
+                .iter()
+                .find(|w| w.id == WindowId(1))
+                .unwrap()
+                .width,
+            150
+        );
+        assert_eq!(
+            wm.windows
+                .iter()
+                .find(|w| w.id == WindowId(1))
+                .unwrap()
+                .height,
+            150
+        );
         wm.on_mouse_up();
         assert!(matches!(wm.drag, DragState::None));
     }
@@ -295,7 +425,13 @@ mod tests {
         wm.create_titled_window(10, 10, 100, 100, 0xFF0000, "Test");
         // y=20 is inside title bar (y=10..30, TITLE_BAR_HEIGHT=20)
         wm.on_mouse_down(50, 20);
-        assert!(matches!(wm.drag, DragState::Moving { window: WindowId(1), .. }));
+        assert!(matches!(
+            wm.drag,
+            DragState::Moving {
+                window: WindowId(1),
+                ..
+            }
+        ));
         wm.on_mouse_move(100, 50);
         let w = wm.windows.iter().find(|w| w.id == WindowId(1)).unwrap();
         // offset=(50-10,20-10)=(40,10), new=(100-40,50-10)=(60,40)
@@ -309,7 +445,13 @@ mod tests {
         assert_eq!(wm.focused, Some(WindowId(2)));
         wm.on_mouse_down(10, 10);
         assert_eq!(wm.focused, Some(WindowId(1)));
-        assert!(!wm.windows.iter().find(|w| w.id == WindowId(2)).unwrap().focused);
+        assert!(
+            !wm.windows
+                .iter()
+                .find(|w| w.id == WindowId(2))
+                .unwrap()
+                .focused
+        );
     }
     #[test]
     fn test_dirty_rects_accumulated() {

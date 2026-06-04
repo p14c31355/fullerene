@@ -1,5 +1,3 @@
-use petroleum::SyscallNumber;
-
 use alloc::string::String;
 use alloc::vec::Vec;
 use x86_64::VirtAddr;

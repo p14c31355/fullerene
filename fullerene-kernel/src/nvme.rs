@@ -9,25 +9,25 @@
 
 use alloc::vec::Vec;
 use core::ptr;
-use nitrogen::pci::{PciConfigSpace, PciDevice};
+use nitrogen::pci::PciDevice;
 use petroleum::initializer::FrameAllocator;
 use spin::Mutex;
 
 static CONTROLLERS: Mutex<Vec<NvmeController>> = Mutex::new(Vec::new());
 
 // ── Controller registers (offset from BAR0) ─────────────────────
-const NVME_CAP: usize  = 0x00; // Controller Capabilities
-const NVME_VS: usize   = 0x08; // Version
+const NVME_CAP: usize = 0x00; // Controller Capabilities
+const NVME_VS: usize = 0x08; // Version
 const NVME_INTMS: usize = 0x0C; // Interrupt Mask Set
 const NVME_INTMC: usize = 0x10; // Interrupt Mask Clear
-const NVME_CC: usize   = 0x14; // Controller Configuration
+const NVME_CC: usize = 0x14; // Controller Configuration
 const NVME_CSTS: usize = 0x1C; // Controller Status
-const NVME_AQA: usize  = 0x24; // Admin Queue Attributes
-const NVME_ASQ: usize  = 0x28; // Admin Submission Queue Base
-const NVME_ACQ: usize  = 0x30; // Admin Completion Queue Base
+const NVME_AQA: usize = 0x24; // Admin Queue Attributes
+const NVME_ASQ: usize = 0x28; // Admin Submission Queue Base
+const NVME_ACQ: usize = 0x30; // Admin Completion Queue Base
 
 // ── CC bits ──────────────────────────────────────────────────────
-const CC_EN: u32 = 1 << 0;      // Enable
+const CC_EN: u32 = 1 << 0; // Enable
 const CC_IOCQES: u32 = 4 << 20; // I/O Completion Queue Entry Size (2^4 = 16)
 const CC_IOSQES: u32 = 6 << 16; // I/O Submission Queue Entry Size (2^6 = 64)
 
@@ -59,7 +59,7 @@ struct SqEntry {
 // ── Completion Queue Entry (16 bytes) ───────────────────────────
 #[repr(C)]
 struct CqEntry {
-    dw0: u32,  // Command Specific
+    dw0: u32, // Command Specific
     rsvd: u32,
     sq_head: u16,
     sq_id: u16,
@@ -98,7 +98,9 @@ unsafe impl Sync for NvmeController {}
 impl NvmeController {
     pub fn init(device: PciDevice) -> Option<Self> {
         let bar0 = device.get_bar_info(0)?;
-        if bar0.is_io { return None; }
+        if bar0.is_io {
+            return None;
+        }
         let bar0_phys = bar0.address;
         let bar0_virt =
             petroleum::common::memory::physical_to_virtual(bar0_phys as usize) as *mut u32;
@@ -107,7 +109,8 @@ impl NvmeController {
         {
             let mut mgr = crate::memory_management::get_memory_manager().lock();
             let m = mgr.as_mut()?;
-            m.map_mmio_region(bar0_phys as usize, bar0_virt as usize, bar0.size as usize).ok()?;
+            m.map_mmio_region(bar0_phys as usize, bar0_virt as usize, bar0.size as usize)
+                .ok()?;
         }
 
         let mut ctrl = Self {
@@ -127,7 +130,9 @@ impl NvmeController {
         // Disable controller if running
         ctrl.w32(NVME_CC, 0);
         for _ in 0..1_000_000 {
-            if (ctrl.r32(NVME_CSTS) & CSTS_RDY) == 0 { break; }
+            if (ctrl.r32(NVME_CSTS) & CSTS_RDY) == 0 {
+                break;
+            }
             core::hint::spin_loop();
         }
 
@@ -139,7 +144,9 @@ impl NvmeController {
         };
         ctrl.queue_phys = q_phys;
         let q_virt = petroleum::common::memory::physical_to_virtual(q_phys as usize) as *mut u8;
-        unsafe { ptr::write_bytes(q_virt, 0, 8192); }
+        unsafe {
+            ptr::write_bytes(q_virt, 0, 8192);
+        }
 
         ctrl.asq = q_virt as *mut SqEntry;
         ctrl.asq_phys = q_phys;
@@ -147,8 +154,10 @@ impl NvmeController {
         ctrl.acq_phys = q_phys + 4096;
 
         // Configure admin queues
-        ctrl.w32(NVME_AQA, ((ADMIN_QUEUE_DEPTH - 1) as u32)
-            | (((ADMIN_QUEUE_DEPTH - 1) as u32) << 16));
+        ctrl.w32(
+            NVME_AQA,
+            ((ADMIN_QUEUE_DEPTH - 1) as u32) | (((ADMIN_QUEUE_DEPTH - 1) as u32) << 16),
+        );
         ctrl.w32(NVME_ASQ, ctrl.asq_phys as u32);
         ctrl.w32(NVME_ASQ + 4, (ctrl.asq_phys >> 32) as u32);
         ctrl.w32(NVME_ACQ, ctrl.acq_phys as u32);
@@ -157,7 +166,9 @@ impl NvmeController {
         // Enable controller
         ctrl.w32(NVME_CC, CC_EN | CC_IOCQES | CC_IOSQES);
         for _ in 0..1_000_000 {
-            if (ctrl.r32(NVME_CSTS) & CSTS_RDY) != 0 { break; }
+            if (ctrl.r32(NVME_CSTS) & CSTS_RDY) != 0 {
+                break;
+            }
             core::hint::spin_loop();
         }
         if (ctrl.r32(NVME_CSTS) & CSTS_RDY) == 0 {
@@ -176,7 +187,9 @@ impl NvmeController {
         unsafe { ptr::read_volatile(self.mmio.add(off / 4)) }
     }
     fn w32(&self, off: usize, v: u32) {
-        unsafe { ptr::write_volatile(self.mmio.add(off / 4), v); }
+        unsafe {
+            ptr::write_volatile(self.mmio.add(off / 4), v);
+        }
     }
 }
 
@@ -187,7 +200,11 @@ pub fn init() {
     for dev in scanner.get_devices() {
         // NVMe: class 0x01 (mass storage), subclass 0x08
         if dev.class_code == 0x01 && dev.subclass == 0x08 {
-            log::info!("NVMe: found device {:#06x}:{:#06x}", dev.vendor_id, dev.device_id);
+            log::info!(
+                "NVMe: found device {:#06x}:{:#06x}",
+                dev.vendor_id,
+                dev.device_id
+            );
             dev.enable_memory_access();
             if let Some(ctrl) = NvmeController::init(dev.clone()) {
                 CONTROLLERS.lock().push(ctrl);

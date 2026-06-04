@@ -3,13 +3,9 @@
 //! This module provides the main kernel scheduler that orchestrates all system functionality,
 //! including process scheduling, shell execution, and system-wide orchestration.
 
-use crate::graphics;
 use alloc::{collections::VecDeque, format};
 use core::sync::atomic::Ordering;
-use petroleum::{
-    Color, ColorCode, ScreenChar, TextBufferOperations, common::SystemStats,
-    display_stats_on_available_display, graphics::Renderer, periodic_task, scheduler_log,
-};
+use petroleum::{common::SystemStats, scheduler_log};
 
 struct PeriodicTask {
     interval: u64,
@@ -64,7 +60,6 @@ const PERIODIC_TASKS: [PeriodicTask; 7] = [
         task: emergency_handler_task,
     },
 ];
-use x86_64::VirtAddr;
 
 // System-wide counters and statistics
 static SYSTEM_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
