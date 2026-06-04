@@ -68,8 +68,9 @@ pub unsafe extern "C" fn efi_main_stage2(
     let _vga_virt_addr = crate::boot::uefi_init::UefiInitContext::map_mmio();
     debug_serial(b"DEBUG: [uefi_main] MMIO mapping completed before init_common\n");
 
-    // VGA debug: write after MMIO is set up
-    petroleum::vga_debug::vga_puts(23, 0, b"KRN:start");
+    // NOTE: vga_puts (identity address 0xB8000) removed — after CR3 switch
+    // identity VGA access can cause QEMU iothread lock re-entrancy.
+    // Use only debug_serial for post-world-switch logging.
 
     // Common initialization for both UEFI and BIOS with correct physical memory offset
     debug_serial(b"DEBUG: [uefi_main] About to call init_common\n");

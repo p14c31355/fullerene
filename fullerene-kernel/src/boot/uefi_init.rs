@@ -902,12 +902,21 @@ impl UefiInitContext {
     /// from heap::FRAME_ALLOCATOR to constants::FRAME_ALLOCATOR, which involves
     /// OffsetPageTable::new calls that may corrupt stack values. The global
     /// PHYSICAL_MEMORY_OFFSET is set before any of these calls and remains correct.
+    /// Log framebuffer config availability and return VGA virtual address.
+    ///
+    /// IMPORTANT: Does NOT perform any 4KB page table mappings here.
+    ///   - VGA text buffer: not needed (vga_puts removed from post-world-switch path)
+    ///   - APIC/IOAPIC: mapped later by init_apic() via kernel-space allocator
+    ///   - Framebuffer: already covered by higher-half 1GB huge pages
+    ///
+    /// Mapping MMIO regions via 4KB splits here was causing QEMU iothread
+    /// re-entrancy (struct page table allocations landing on framebuffer MMIO)
+    /// and InsydeH2O #GP triple faults.
     #[cfg(target_os = "uefi")]
     pub fn map_mmio() -> usize {
-        // Map standard MMIO regions
-        let vga_virt_addr = Self::map_standard_mmio_regions();
+        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [map_mmio] Entry (no-op mode)\n");
 
-        // Validate framebuffer config before mapping to prevent mapping garbage pages.
+        // Validate and log framebuffer config availability
         let fb_config_valid =
             |config: &petroleum::common::uefi::FullereneFramebufferConfig| -> bool {
                 config.address >= 0x100000
@@ -920,22 +929,17 @@ impl UefiInitContext {
                     && config.stride > 0
             };
 
-        // Map GOP Framebuffer if available
-        // First try FULLERENE_FRAMEBUFFER_CONFIG, then fall back to KERNEL_ARGS
-        let fb_config_for_mapping = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+        let _fb_config_for_mapping = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
             .get()
             .and_then(|m| m.lock().clone())
             .filter(fb_config_valid)
             .or_else(|| {
-                // Try KERNEL_ARGS as fallback
                 let args_ptr = unsafe { petroleum::transition::KERNEL_ARGS };
                 if !args_ptr.is_null() {
                     let args = unsafe { &*args_ptr };
                     if args.fb_address >= 0x100000
-                        && args.fb_width > 0
-                        && args.fb_width <= 16384
-                        && args.fb_height > 0
-                        && args.fb_height <= 16384
+                        && args.fb_width > 0 && args.fb_width <= 16384
+                        && args.fb_height > 0 && args.fb_height <= 16384
                         && (args.fb_bpp == 8 || args.fb_bpp == 16 || args.fb_bpp == 24 || args.fb_bpp == 32)
                     {
                         let stride = (args.fb_width as u64 * (args.fb_bpp as u64 / 8)) as u32;
@@ -948,72 +952,24 @@ impl UefiInitContext {
                                 bpp: args.fb_bpp,
                                 stride,
                             };
-                            // Also save to global for other consumers
                             let _ = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config)));
-                            petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [map_mmio] FB config from KERNEL_ARGS fallback, saved to FULLERENE_FRAMEBUFFER_CONFIG\n");
-                            return Some(config);
+                            return petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+                                .get()
+                                .and_then(|m| *m.lock());
                         }
                     }
                 }
                 None
             });
 
-        if let Some(config) = fb_config_for_mapping {
-            petroleum::debug_log!(
-                "DEBUG: Mapping framebuffer: addr={:#x}, {}x{}, {} BPP\n",
-                config.address,
-                config.width,
-                config.height,
-                config.bpp
-            );
-            let fb_phys = config.address;
-            let fb_virt = fb_phys + petroleum::common::memory::get_physical_memory_offset() as u64;
-            let fb_size = (config.width as u64 * config.height as u64 * config.bpp as u64) / 8;
-            let fb_pages = (fb_size + 4095) / 4096;
+        petroleum::write_serial_bytes!(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [map_mmio] Framebuffer config validated (no 4K mappings performed)\n"
+        );
 
-            // Use NO_CACHE (Uncacheable) for the framebuffer to match MTRR settings
-            // set by UEFI firmware for PCI MMIO regions. MTRR/PAT type mismatch would
-            // cause #GP on access.
-            let fb_flags = PageTableFlags::PRESENT
-                | PageTableFlags::WRITABLE
-                | PageTableFlags::NO_EXECUTE
-                | PageTableFlags::NO_CACHE;
-
-            let frame_allocator = petroleum::page_table::constants::get_frame_allocator_mut();
-            let phys_offset = x86_64::VirtAddr::new(
-                petroleum::common::memory::get_physical_memory_offset() as u64,
-            );
-            let l4 = unsafe { petroleum::page_table::active_level_4_table(phys_offset) };
-
-            unsafe {
-                for i in 0..fb_pages {
-                    let v = x86_64::VirtAddr::new(fb_virt + i as u64 * 4096);
-                    let p = x86_64::PhysAddr::new(fb_phys + i as u64 * 4096);
-                    if let Err(e) = petroleum::early::mapper::map_page_4k_l1(
-                        l4,
-                        v,
-                        p,
-                        fb_flags,
-                        frame_allocator,
-                        phys_offset,
-                    ) {
-                        petroleum::debug_log!(
-                            "Framebuffer page {} map failed: {:?}, skipping\n",
-                            i,
-                            e
-                        );
-                    }
-                }
-            }
-        }
-
-        // Flush TLB by reloading CR3
-        let cr3_val = x86_64::registers::control::Cr3::read();
-        unsafe {
-            x86_64::registers::control::Cr3::write(cr3_val.0, cr3_val.1);
-        }
-
-        vga_virt_addr
+        // Return 0 as VGA virt addr — no longer needed
+        0
     }
 
     #[cfg(target_os = "uefi")]
