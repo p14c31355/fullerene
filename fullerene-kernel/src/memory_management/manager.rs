@@ -99,12 +99,19 @@ impl UnifiedMemoryManager {
             | PageFlags::NO_EXECUTE;
         let page_size = self.page_size();
         let pages = (size + page_size - 1) / page_size;
+        let mut mapped_pages = Vec::new();
         for i in 0..pages {
             let v = virt_addr + (i * page_size) as u64;
             let p = phys_addr + (i * page_size) as u64;
             if self.safe_map_page(v as usize, p as usize, flags).is_err() {
+                // Rollback: unmap all successfully mapped pages
+                for &mapped_v in &mapped_pages {
+                    let _ = self.safe_unmap_page(mapped_v);
+                }
+                let _ = self.flush_tlb_all();
                 return false;
             }
+            mapped_pages.push(v as usize);
         }
         let _ = self.flush_tlb_all();
         true

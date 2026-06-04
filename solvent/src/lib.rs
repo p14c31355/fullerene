@@ -291,7 +291,10 @@ pub fn chrono_tick(now: u64) {
     rt.chrono.tick(now);
     while let Some(timer) = rt.chrono.pop_expired() {
         match timer.id {
-            CURSOR_TIMER_ID => rt.cursor_visible = !rt.cursor_visible,
+            CURSOR_TIMER_ID => {
+                rt.cursor_visible = !rt.cursor_visible;
+                rt.term_dirty = true;
+            }
             FRAME_TIMER_ID => rt.frame_due = true,
             _ => {}
         }
@@ -508,5 +511,6 @@ where
 pub fn write_terminal(s: &str) {
     if let Some(ref mut r) = *RUNTIME.lock() {
         r.term_buf.put_str(s);
+        r.term_dirty = true;
     }
 }

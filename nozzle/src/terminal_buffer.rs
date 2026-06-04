@@ -362,7 +362,12 @@ impl TerminalBuffer {
     pub fn scroll(&mut self) {
         let row_len = self.cols as usize;
         if self.cells.len() <= row_len {
-            self.cells.fill(Cell::default());
+            let blank = Cell {
+                ch: b' ',
+                fg: self.style.fg,
+                bg: self.style.bg,
+            };
+            self.cells.fill(blank);
             return;
         }
         self.cells.copy_within(row_len.., 0);

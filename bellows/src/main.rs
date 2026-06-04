@@ -120,11 +120,11 @@ fn install_vga_framebuffer_config(_st: &EfiSystemTable) {
     petroleum::println!("Installing VGA framebuffer config for UEFI...");
     let config = FullereneFramebufferConfig {
         address: 0xA0000,
-        width: 800,
-        height: 600,
+        width: 320,
+        height: 200,
         pixel_format: EfiGraphicsPixelFormat::PixelFormatMax,
         bpp: 8,
-        stride: 800,
+        stride: 320,
     };
     petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config)));
     petroleum::println!("VGA framebuffer config saved globally successfully.");

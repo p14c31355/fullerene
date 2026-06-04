@@ -376,8 +376,10 @@ macro_rules! build_package {
         let mut args = vec!["+nightly", "build", "-q", "-Zbuild-std=core,alloc"];
         $( args.push($features); )*
         args.extend_from_slice(&["--package", $package, "--target", $target, "--profile", "dev"]);
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")?;
+        let parent_dir = std::path::Path::new(&manifest_dir).parent().unwrap();
         let status = std::process::Command::new("cargo")
-            .current_dir(std::env::var("CARGO_MANIFEST_DIR").unwrap().parent().unwrap()).args(&args).status()?;
+            .current_dir(parent_dir).args(&args).status()?;
         if !status.success() { return Err(std::io::Error::other(concat!($package, " build failed"))); }
         Ok(())
     }};

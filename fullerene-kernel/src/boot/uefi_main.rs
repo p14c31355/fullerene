@@ -16,8 +16,6 @@ pub unsafe extern "C" fn efi_main_stage2(
     args_ptr: *const petroleum::assembly::KernelArgs,
     physical_memory_offset: VirtAddr,
 ) -> ! {
-    // VGA debug: first thing the kernel does
-    petroleum::vga_debug::vga_puts(23, 0, b"KRN:start");
     unsafe {
         core::arch::asm!(
             "mov dx, 0x3f8",
@@ -69,6 +67,9 @@ pub unsafe extern "C" fn efi_main_stage2(
     debug_serial(b"DEBUG: [uefi_main] Mapping MMIO regions before init_common\n");
     let _vga_virt_addr = crate::boot::uefi_init::UefiInitContext::map_mmio();
     debug_serial(b"DEBUG: [uefi_main] MMIO mapping completed before init_common\n");
+
+    // VGA debug: write after MMIO is set up
+    petroleum::vga_debug::vga_puts(23, 0, b"KRN:start");
 
     // Common initialization for both UEFI and BIOS with correct physical memory offset
     debug_serial(b"DEBUG: [uefi_main] About to call init_common\n");
