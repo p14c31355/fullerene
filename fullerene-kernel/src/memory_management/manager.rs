@@ -99,7 +99,7 @@ impl UnifiedMemoryManager {
             | PageFlags::NO_EXECUTE;
         let page_size = self.page_size();
         let pages = (size + page_size - 1) / page_size;
-        let mut mapped_pages = Vec::new();
+        let mut mapped_pages: Vec<usize, 512> = Vec::new();
         for i in 0..pages {
             let v = virt_addr + (i * page_size) as u64;
             let p = phys_addr + (i * page_size) as u64;

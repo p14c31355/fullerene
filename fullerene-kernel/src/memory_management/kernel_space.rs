@@ -123,7 +123,7 @@ pub fn find_free_virtual_address(size: u64) -> Option<usize> {
         let mut all_free = true;
         for page_offset in 0..pages_needed {
             let check_addr = candidate + (page_offset * PAGE_SIZE);
-            if let Ok(virt) = CanonicalVirtAddr::new(check_addr) {
+            if let Some(virt) = CanonicalVirtAddr::new(check_addr) {
                 if is_mapped(root, virt) {
                     all_free = false;
                     // Skip to next page after this mapped one
