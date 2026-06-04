@@ -263,7 +263,7 @@ pub fn exit_boot_services_and_jump(
     // handles high-half relocation and returns the virtual address.
 
     // Setup Page Tables before jumping to kernel
-    petroleum::println!("Reinitializing page tables for kernel jump...");
+    // (No UEFI con_out calls after exit_boot_services — InsydeH2O crashes on them)
 
     // We only need InitAndJumpArgs for the transition.
     // KernelArgs will be reconstructed or passed via InitAndJumpArgs.
@@ -312,13 +312,6 @@ pub fn exit_boot_services_and_jump(
 
     // VGA debug: indicate we're about to jump
     petroleum::vga_debug::vga_puts(21, 0, b"BLW:jmp kernel");
-
-    petroleum::println!(
-        "Jumping to kernel entry point (virt): {:#x}",
-        kernel_entry_virt
-    );
-
-    petroleum::println!("Bellows: Calling init_and_jump now...");
 
     // Stack top must be the higher-half virtual address, not the identity-mapped physical address,
     // because after CR3 switch the new page table only identity-maps 0-256MB.
