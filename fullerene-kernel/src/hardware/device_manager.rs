@@ -275,7 +275,7 @@ mod tests {
         }
     }
 
-    impl ErrorLogging for MockDevice {
+    impl petroleum::initializer::ErrorLogging for MockDevice {
         fn log_error(&self, error: &SystemError, context: &'static str) {
             petroleum::log_error!(error, context);
         }
