@@ -8,27 +8,82 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum KeyCode {
     // Alphanumeric
-    A, B, C, D, E, F, G, H, I, J, K, L, M,
-    N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
-    Digit0, Digit1, Digit2, Digit3, Digit4,
-    Digit5, Digit6, Digit7, Digit8, Digit9,
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+    G,
+    H,
+    I,
+    J,
+    K,
+    L,
+    M,
+    N,
+    O,
+    P,
+    Q,
+    R,
+    S,
+    T,
+    U,
+    V,
+    W,
+    X,
+    Y,
+    Z,
+    Digit0,
+    Digit1,
+    Digit2,
+    Digit3,
+    Digit4,
+    Digit5,
+    Digit6,
+    Digit7,
+    Digit8,
+    Digit9,
 
     // Modifiers
-    LShift, RShift,
-    LCtrl, RCtrl,
-    LAlt, RAlt,
+    LShift,
+    RShift,
+    LCtrl,
+    RCtrl,
+    LAlt,
+    RAlt,
 
     // Navigation
-    Enter, Tab, Space, Backspace, Escape,
-    Up, Down, Left, Right,
-    Home, End, PageUp, PageDown,
+    Enter,
+    Tab,
+    Space,
+    Backspace,
+    Escape,
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+    PageUp,
+    PageDown,
 
     // Function keys
-    F1, F2, F3, F4, F5, F6,
-    F7, F8, F9, F10, F11, F12,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
 
     // Japanese layout special keys
-    Kana,  // 半角/全角 or ひらがな
+    Kana,     // 半角/全角 or ひらがな
     Muhenkan, // 無変換
     Henkan,   // 変換
     Katakana, // カタカナ
@@ -65,12 +120,24 @@ impl Modifiers {
     pub const ALT: u8 = 0x04;
     pub const META: u8 = 0x08;
 
-    pub fn shift(&self) -> bool { self.bits & Self::SHIFT != 0 }
-    pub fn ctrl(&self) -> bool { self.bits & Self::CTRL != 0 }
-    pub fn alt(&self) -> bool { self.bits & Self::ALT != 0 }
-    pub fn meta(&self) -> bool { self.bits & Self::META != 0 }
+    pub fn shift(&self) -> bool {
+        self.bits & Self::SHIFT != 0
+    }
+    pub fn ctrl(&self) -> bool {
+        self.bits & Self::CTRL != 0
+    }
+    pub fn alt(&self) -> bool {
+        self.bits & Self::ALT != 0
+    }
+    pub fn meta(&self) -> bool {
+        self.bits & Self::META != 0
+    }
     pub fn set(&mut self, mask: u8, on: bool) {
-        if on { self.bits |= mask; } else { self.bits &= !mask; }
+        if on {
+            self.bits |= mask;
+        } else {
+            self.bits &= !mask;
+        }
     }
 }
 
@@ -83,7 +150,10 @@ pub struct Keymap {
 impl Keymap {
     /// Create a new keymap with the given layout.
     pub fn new(layout: Layout) -> Self {
-        Self { layout, scancode_set: ScancodeSet::Set1 }
+        Self {
+            layout,
+            scancode_set: ScancodeSet::Set1,
+        }
     }
 
     /// Change the layout at runtime.
@@ -118,32 +188,188 @@ impl Keymap {
             KeyCode::Backspace => Some(0x08),
             KeyCode::Tab => Some(b'\t'),
             KeyCode::Escape => Some(0x1B),
-            KeyCode::A => if ctrl { Some(0x01) } else { Some(if upper { b'A' } else { b'a' }) },
-            KeyCode::B => if ctrl { Some(0x02) } else { Some(if upper { b'B' } else { b'b' }) },
-            KeyCode::C => if ctrl { Some(0x03) } else { Some(if upper { b'C' } else { b'c' }) },
-            KeyCode::D => if ctrl { Some(0x04) } else { Some(if upper { b'D' } else { b'd' }) },
-            KeyCode::E => if ctrl { Some(0x05) } else { Some(if upper { b'E' } else { b'e' }) },
-            KeyCode::F => if ctrl { Some(0x06) } else { Some(if upper { b'F' } else { b'f' }) },
-            KeyCode::G => if ctrl { Some(0x07) } else { Some(if upper { b'G' } else { b'g' }) },
-            KeyCode::H => if ctrl { Some(0x08) } else { Some(if upper { b'H' } else { b'h' }) },
-            KeyCode::I => if ctrl { Some(0x09) } else { Some(if upper { b'I' } else { b'i' }) },
-            KeyCode::J => if ctrl { Some(0x0A) } else { Some(if upper { b'J' } else { b'j' }) },
-            KeyCode::K => if ctrl { Some(0x0B) } else { Some(if upper { b'K' } else { b'k' }) },
-            KeyCode::L => if ctrl { Some(0x0C) } else { Some(if upper { b'L' } else { b'l' }) },
-            KeyCode::M => if ctrl { Some(0x0D) } else { Some(if upper { b'M' } else { b'm' }) },
-            KeyCode::N => if ctrl { Some(0x0E) } else { Some(if upper { b'N' } else { b'n' }) },
-            KeyCode::O => if ctrl { Some(0x0F) } else { Some(if upper { b'O' } else { b'o' }) },
-            KeyCode::P => if ctrl { Some(0x10) } else { Some(if upper { b'P' } else { b'p' }) },
-            KeyCode::Q => if ctrl { Some(0x11) } else { Some(if upper { b'Q' } else { b'q' }) },
-            KeyCode::R => if ctrl { Some(0x12) } else { Some(if upper { b'R' } else { b'r' }) },
-            KeyCode::S => if ctrl { Some(0x13) } else { Some(if upper { b'S' } else { b's' }) },
-            KeyCode::T => if ctrl { Some(0x14) } else { Some(if upper { b'T' } else { b't' }) },
-            KeyCode::U => if ctrl { Some(0x15) } else { Some(if upper { b'U' } else { b'u' }) },
-            KeyCode::V => if ctrl { Some(0x16) } else { Some(if upper { b'V' } else { b'v' }) },
-            KeyCode::W => if ctrl { Some(0x17) } else { Some(if upper { b'W' } else { b'w' }) },
-            KeyCode::X => if ctrl { Some(0x18) } else { Some(if upper { b'X' } else { b'x' }) },
-            KeyCode::Y => if ctrl { Some(0x19) } else { Some(if upper { b'Y' } else { b'y' }) },
-            KeyCode::Z => if ctrl { Some(0x1A) } else { Some(if upper { b'Z' } else { b'z' }) },
+            KeyCode::A => {
+                if ctrl {
+                    Some(0x01)
+                } else {
+                    Some(if upper { b'A' } else { b'a' })
+                }
+            }
+            KeyCode::B => {
+                if ctrl {
+                    Some(0x02)
+                } else {
+                    Some(if upper { b'B' } else { b'b' })
+                }
+            }
+            KeyCode::C => {
+                if ctrl {
+                    Some(0x03)
+                } else {
+                    Some(if upper { b'C' } else { b'c' })
+                }
+            }
+            KeyCode::D => {
+                if ctrl {
+                    Some(0x04)
+                } else {
+                    Some(if upper { b'D' } else { b'd' })
+                }
+            }
+            KeyCode::E => {
+                if ctrl {
+                    Some(0x05)
+                } else {
+                    Some(if upper { b'E' } else { b'e' })
+                }
+            }
+            KeyCode::F => {
+                if ctrl {
+                    Some(0x06)
+                } else {
+                    Some(if upper { b'F' } else { b'f' })
+                }
+            }
+            KeyCode::G => {
+                if ctrl {
+                    Some(0x07)
+                } else {
+                    Some(if upper { b'G' } else { b'g' })
+                }
+            }
+            KeyCode::H => {
+                if ctrl {
+                    Some(0x08)
+                } else {
+                    Some(if upper { b'H' } else { b'h' })
+                }
+            }
+            KeyCode::I => {
+                if ctrl {
+                    Some(0x09)
+                } else {
+                    Some(if upper { b'I' } else { b'i' })
+                }
+            }
+            KeyCode::J => {
+                if ctrl {
+                    Some(0x0A)
+                } else {
+                    Some(if upper { b'J' } else { b'j' })
+                }
+            }
+            KeyCode::K => {
+                if ctrl {
+                    Some(0x0B)
+                } else {
+                    Some(if upper { b'K' } else { b'k' })
+                }
+            }
+            KeyCode::L => {
+                if ctrl {
+                    Some(0x0C)
+                } else {
+                    Some(if upper { b'L' } else { b'l' })
+                }
+            }
+            KeyCode::M => {
+                if ctrl {
+                    Some(0x0D)
+                } else {
+                    Some(if upper { b'M' } else { b'm' })
+                }
+            }
+            KeyCode::N => {
+                if ctrl {
+                    Some(0x0E)
+                } else {
+                    Some(if upper { b'N' } else { b'n' })
+                }
+            }
+            KeyCode::O => {
+                if ctrl {
+                    Some(0x0F)
+                } else {
+                    Some(if upper { b'O' } else { b'o' })
+                }
+            }
+            KeyCode::P => {
+                if ctrl {
+                    Some(0x10)
+                } else {
+                    Some(if upper { b'P' } else { b'p' })
+                }
+            }
+            KeyCode::Q => {
+                if ctrl {
+                    Some(0x11)
+                } else {
+                    Some(if upper { b'Q' } else { b'q' })
+                }
+            }
+            KeyCode::R => {
+                if ctrl {
+                    Some(0x12)
+                } else {
+                    Some(if upper { b'R' } else { b'r' })
+                }
+            }
+            KeyCode::S => {
+                if ctrl {
+                    Some(0x13)
+                } else {
+                    Some(if upper { b'S' } else { b's' })
+                }
+            }
+            KeyCode::T => {
+                if ctrl {
+                    Some(0x14)
+                } else {
+                    Some(if upper { b'T' } else { b't' })
+                }
+            }
+            KeyCode::U => {
+                if ctrl {
+                    Some(0x15)
+                } else {
+                    Some(if upper { b'U' } else { b'u' })
+                }
+            }
+            KeyCode::V => {
+                if ctrl {
+                    Some(0x16)
+                } else {
+                    Some(if upper { b'V' } else { b'v' })
+                }
+            }
+            KeyCode::W => {
+                if ctrl {
+                    Some(0x17)
+                } else {
+                    Some(if upper { b'W' } else { b'w' })
+                }
+            }
+            KeyCode::X => {
+                if ctrl {
+                    Some(0x18)
+                } else {
+                    Some(if upper { b'X' } else { b'x' })
+                }
+            }
+            KeyCode::Y => {
+                if ctrl {
+                    Some(0x19)
+                } else {
+                    Some(if upper { b'Y' } else { b'y' })
+                }
+            }
+            KeyCode::Z => {
+                if ctrl {
+                    Some(0x1A)
+                } else {
+                    Some(if upper { b'Z' } else { b'z' })
+                }
+            }
             KeyCode::Digit0 => Some(if upper { b')' } else { b'0' }),
             KeyCode::Digit1 => Some(if upper { b'!' } else { b'1' }),
             KeyCode::Digit2 => Some(if upper { b'@' } else { b'2' }),
@@ -252,7 +478,7 @@ impl Keymap {
 
     fn jp_set1_keycode(scancode: u8, _shifted: bool) -> Option<KeyCode> {
         match scancode {
-            0x29 => Some(KeyCode::Kana),    // 半角/全角
+            0x29 => Some(KeyCode::Kana),     // 半角/全角
             0x73 => Some(KeyCode::Muhenkan), // 無変換
             0x7B => Some(KeyCode::Henkan),   // 変換
             0x79 => Some(KeyCode::Katakana), // ひらがな/カタカナ

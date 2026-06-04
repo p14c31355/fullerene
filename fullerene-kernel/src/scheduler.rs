@@ -5,9 +5,7 @@
 
 use alloc::{collections::VecDeque, format};
 use core::sync::atomic::Ordering;
-use petroleum::{
-    common::SystemStats, scheduler_log,
-};
+use petroleum::{common::SystemStats, scheduler_log};
 
 struct PeriodicTask {
     interval: u64,

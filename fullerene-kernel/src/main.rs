@@ -16,6 +16,7 @@ pub const VGA_BUFFER_ADDRESS: usize = 0xb8000;
 pub use heap::MEMORY_MAP;
 
 // Module declarations
+pub mod ahci;
 pub mod boot;
 pub mod context_switch;
 pub mod fs;
@@ -29,13 +30,12 @@ pub mod interrupts;
 pub mod keyboard;
 pub mod loader;
 pub mod memory_management;
+pub mod nvme;
 pub mod process;
 pub mod scheduler;
-pub mod slab;
 pub mod shell;
+pub mod slab;
 pub mod syscall;
-pub mod ahci;
-pub mod nvme;
 pub mod task;
 pub mod tracing;
 pub mod vfs;

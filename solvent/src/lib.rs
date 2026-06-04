@@ -66,7 +66,9 @@ pub struct RuntimeState {
 
 pub fn init() {
     let mut desktop = Desktop::new(BG_COLOR);
-    let term_window = desktop.wm.create_titled_window(40, 30, TERM_WIN_W, TERM_WIN_H, 0x000000, "Terminal");
+    let term_window = desktop
+        .wm
+        .create_titled_window(40, 30, TERM_WIN_W, TERM_WIN_H, 0x000000, "Terminal");
     let term_buf = TerminalBuffer::new(TERM_COLS, TERM_ROWS);
     let mut dispatcher = Dispatcher::new();
     let mut chrono = ChronoLine::new();
@@ -74,7 +76,9 @@ pub fn init() {
     chrono.register_with_mode(
         Deadline::new(CURSOR_BLINK_INTERVAL),
         CURSOR_TIMER_ID,
-        TimerMode::Repeating { interval_ticks: CURSOR_BLINK_INTERVAL },
+        TimerMode::Repeating {
+            interval_ticks: CURSOR_BLINK_INTERVAL,
+        },
     );
 
     dispatcher.register(Box::new(WmEventHandler));
@@ -86,13 +90,21 @@ pub fn init() {
     chrono.register_with_mode(
         Deadline::new(FRAME_INTERVAL_TICKS),
         FRAME_TIMER_ID,
-        TimerMode::Repeating { interval_ticks: FRAME_INTERVAL_TICKS },
+        TimerMode::Repeating {
+            interval_ticks: FRAME_INTERVAL_TICKS,
+        },
     );
 
     *RUNTIME.lock() = Some(RuntimeState {
-        desktop, term_window, term_buf, chrono,
-        cursor_visible: true, frame_due: true, back_len: 0,
-        term_cells: Vec::new(), term_dirty: true,
+        desktop,
+        term_window,
+        term_buf,
+        chrono,
+        cursor_visible: true,
+        frame_due: true,
+        back_len: 0,
+        term_cells: Vec::new(),
+        term_dirty: true,
     });
 }
 
@@ -117,7 +129,8 @@ impl EventHandler for WmEventHandler {
                 true
             }
             Event::Input(InputEvent::MouseDown(_btn)) => {
-                rt.desktop.set_cursor(rt.desktop.cursor.x, rt.desktop.cursor.y);
+                rt.desktop
+                    .set_cursor(rt.desktop.cursor.x, rt.desktop.cursor.y);
                 rt.desktop.mouse_down();
                 true
             }
@@ -142,9 +155,12 @@ impl EventHandler for TerminalInputHandler {
         match event {
             Event::Input(InputEvent::KeyDown(key)) => {
                 if let Some(ascii) = keycode_to_ascii(*key) {
-                    rt.term_buf.put_str(core::str::from_utf8(&[ascii]).unwrap_or(""));
+                    rt.term_buf
+                        .put_str(core::str::from_utf8(&[ascii]).unwrap_or(""));
                     true
-                } else { false }
+                } else {
+                    false
+                }
             }
             _ => false,
         }
@@ -154,15 +170,46 @@ impl EventHandler for TerminalInputHandler {
 fn keycode_to_ascii(key: KeyCode) -> Option<u8> {
     use KeyCode::*;
     Some(match key {
-        Enter => b'\n', Space => b' ', Backspace => 0x08, Tab => b'\t',
-        A => b'a', B => b'b', C => b'c', D => b'd', E => b'e', F => b'f',
-        G => b'g', H => b'h', I => b'i', J => b'j', K => b'k', L => b'l',
-        M => b'm', N => b'n', O => b'o', P => b'p', Q => b'q', R => b'r',
-        S => b's', T => b't', U => b'u', V => b'v', W => b'w', X => b'x',
-        Y => b'y', Z => b'z',
-        Digit0 => b'0', Digit1 => b'1', Digit2 => b'2', Digit3 => b'3',
-        Digit4 => b'4', Digit5 => b'5', Digit6 => b'6', Digit7 => b'7',
-        Digit8 => b'8', Digit9 => b'9',
+        Enter => b'\n',
+        Space => b' ',
+        Backspace => 0x08,
+        Tab => b'\t',
+        A => b'a',
+        B => b'b',
+        C => b'c',
+        D => b'd',
+        E => b'e',
+        F => b'f',
+        G => b'g',
+        H => b'h',
+        I => b'i',
+        J => b'j',
+        K => b'k',
+        L => b'l',
+        M => b'm',
+        N => b'n',
+        O => b'o',
+        P => b'p',
+        Q => b'q',
+        R => b'r',
+        S => b's',
+        T => b't',
+        U => b'u',
+        V => b'v',
+        W => b'w',
+        X => b'x',
+        Y => b'y',
+        Z => b'z',
+        Digit0 => b'0',
+        Digit1 => b'1',
+        Digit2 => b'2',
+        Digit3 => b'3',
+        Digit4 => b'4',
+        Digit5 => b'5',
+        Digit6 => b'6',
+        Digit7 => b'7',
+        Digit8 => b'8',
+        Digit9 => b'9',
         _ => return None,
     })
 }
@@ -177,7 +224,11 @@ pub struct MouseState {
     pub buttons: u8,
 }
 
-pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState { x: 512, y: 384, buttons: 0 });
+pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState {
+    x: 512,
+    y: 384,
+    buttons: 0,
+});
 
 macro_rules! mouse_edge {
     ($queue:expr, $buttons:expr, $prev:expr, $bit:expr, $btn:ident) => {
@@ -198,7 +249,9 @@ pub fn poll_mouse_state() {
 
         let mut mouse = MOUSE_STATE.lock();
         mouse.x = mouse.x.wrapping_add(dx.wrapping_mul(MOUSE_SENSITIVITY));
-        mouse.y = mouse.y.wrapping_add(dy.wrapping_mul(MOUSE_SENSITIVITY).wrapping_neg());
+        mouse.y = mouse
+            .y
+            .wrapping_add(dy.wrapping_mul(MOUSE_SENSITIVITY).wrapping_neg());
         mouse.buttons = btn;
     }
 
@@ -272,8 +325,12 @@ struct FramebufferTarget<'a> {
 }
 
 impl RenderTarget for FramebufferTarget<'_> {
-    fn buffer(&mut self) -> &mut [u32] { self.pixels }
-    fn dimensions(&self) -> (u32, u32) { (self.width, self.height) }
+    fn buffer(&mut self) -> &mut [u32] {
+        self.pixels
+    }
+    fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
 }
 
 pub fn render<F>(framebuffer_fn: F)
@@ -290,19 +347,24 @@ where
     rt.desktop.update_taskbar();
 
     let (fb_pixels, fb_width, fb_height) = match framebuffer_fn() {
-        Some(t) => t, None => return,
+        Some(t) => t,
+        None => return,
     };
 
     rt.desktop.prepare_frame(fb_width, fb_height);
 
     let fb_len = (fb_width as usize) * (fb_height as usize);
-    if fb_len > MAX_FB_PIXELS { return; }
+    if fb_len > MAX_FB_PIXELS {
+        return;
+    }
     rt.back_len = fb_len;
 
     let (bx, by, bw, bh) = {
         let mut back = BACK_BUFFER.lock();
         let mut back_target = FramebufferTarget {
-            pixels: &mut back[..fb_len], width: fb_width, height: fb_height,
+            pixels: &mut back[..fb_len],
+            width: fb_width,
+            height: fb_height,
         };
         let scene = rt.desktop.scene();
         Compositor::render(&scene, &mut back_target)
@@ -323,21 +385,41 @@ where
 }
 
 fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
-    if !rt.term_dirty { return; }
+    if !rt.term_dirty {
+        return;
+    }
 
-    let window = match rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == term_window) {
-        Some(w) => w, None => return,
+    let window = match rt
+        .desktop
+        .wm
+        .windows_mut()
+        .iter_mut()
+        .find(|w| w.id == term_window)
+    {
+        Some(w) => w,
+        None => return,
     };
 
     let term_buf = &rt.term_buf;
     let total = (term_buf.cols() * term_buf.rows()) as usize;
 
     if rt.term_cells.len() != total {
-        rt.term_cells.resize(total, LatticeCell { ch: b' ', fg: 0, bg: 0 });
+        rt.term_cells.resize(
+            total,
+            LatticeCell {
+                ch: b' ',
+                fg: 0,
+                bg: 0,
+            },
+        );
     }
     for (i, c) in term_buf.cells().iter().enumerate() {
         if i < rt.term_cells.len() {
-            rt.term_cells[i] = LatticeCell { ch: c.ch, fg: c.fg, bg: c.bg };
+            rt.term_cells[i] = LatticeCell {
+                ch: c.ch,
+                fg: c.fg,
+                bg: c.bg,
+            };
         }
     }
 
@@ -401,7 +483,9 @@ fn runtime_tick_no_fb() {
             render_fn();
         }
     }
-    for _ in 0..100 { core::hint::spin_loop(); }
+    for _ in 0..100 {
+        core::hint::spin_loop();
+    }
 }
 
 // ── Runtime tick (main loop step) ────────────────────────────

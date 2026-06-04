@@ -25,8 +25,15 @@ pub struct KeyboardModifiers {
 }
 
 static MODIFIERS: Mutex<KeyboardModifiers> = Mutex::new(KeyboardModifiers {
-    lshift: false, rshift: false, lctrl: false, rctrl: false,
-    lalt: false, ralt: false, caps_lock: false, num_lock: false, scroll_lock: false,
+    lshift: false,
+    rshift: false,
+    lctrl: false,
+    rctrl: false,
+    lalt: false,
+    ralt: false,
+    caps_lock: false,
+    num_lock: false,
+    scroll_lock: false,
 });
 
 /// Extended scancode flag
@@ -46,7 +53,13 @@ struct KeyRepeatState {
 }
 
 impl KeyRepeatState {
-    const fn new() -> Self { Self { last_scancode: 0, press_tick: 0, repeating: false } }
+    const fn new() -> Self {
+        Self {
+            last_scancode: 0,
+            press_tick: 0,
+            repeating: false,
+        }
+    }
 }
 
 // Scancode set 1 tables
@@ -57,47 +70,95 @@ const ASDF_BASE: &[u8] = b"asdfghjkl";
 const ZXCV_BASE: &[u8] = b"zxcvbnm";
 
 const PUNCTUATION: &[(u8, u8, u8)] = &[
-    (0x0C, b'-', b'_'), (0x0D, b'=', b'+'), (0x1A, b'[', b'{'), (0x1B, b']', b'}'),
-    (0x27, b';', b':'), (0x28, b'\'', b'"'), (0x29, b'`', b'~'), (0x2B, b'\\', b'|'),
-    (0x33, b',', b'<'), (0x34, b'.', b'>'), (0x35, b'/', b'?'),
+    (0x0C, b'-', b'_'),
+    (0x0D, b'=', b'+'),
+    (0x1A, b'[', b'{'),
+    (0x1B, b']', b'}'),
+    (0x27, b';', b':'),
+    (0x28, b'\'', b'"'),
+    (0x29, b'`', b'~'),
+    (0x2B, b'\\', b'|'),
+    (0x33, b',', b'<'),
+    (0x34, b'.', b'>'),
+    (0x35, b'/', b'?'),
 ];
 
 const SPECIAL_KEYS: &[(u8, u8)] = &[
-    (0x1C, b'\n'), (0x0E, 0x08), (0x0F, b'\t'), (0x01, 27), (0x39, b' '),
+    (0x1C, b'\n'),
+    (0x0E, 0x08),
+    (0x0F, b'\t'),
+    (0x01, 27),
+    (0x39, b' '),
 ];
 
 fn process_alphabetic(base: u8, modifiers: &KeyboardModifiers) -> u8 {
     let shift_pressed = modifiers.lshift || modifiers.rshift;
     let ctrl_pressed = modifiers.lctrl || modifiers.rctrl;
     let mut ch = base;
-    if shift_pressed ^ modifiers.caps_lock { ch = ch.to_ascii_uppercase(); }
-    if ctrl_pressed { ch &= 0x1F; }
+    if shift_pressed ^ modifiers.caps_lock {
+        ch = ch.to_ascii_uppercase();
+    }
+    if ctrl_pressed {
+        ch &= 0x1F;
+    }
     ch
 }
 
 fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> {
     let shift = modifiers.lshift || modifiers.rshift;
     match scancode {
-        0x02..=0x0B => Some(if shift { NUMBERS_SHIFT[(scancode - 0x02) as usize] } else { NUMBERS_BASE[(scancode - 0x02) as usize] }),
-        0x10..=0x19 => Some(process_alphabetic(QWERTY_BASE[(scancode - 0x10) as usize], modifiers)),
-        0x1E..=0x26 => Some(process_alphabetic(ASDF_BASE[(scancode - 0x1E) as usize], modifiers)),
-        0x2C..=0x32 => Some(process_alphabetic(ZXCV_BASE[(scancode - 0x2C) as usize], modifiers)),
-        _ => PUNCTUATION.iter().find(|&&(c, _, _)| c == scancode).map(|&(_, b, s)| if shift { s } else { b })
-            .or_else(|| SPECIAL_KEYS.iter().find(|&&(c, _)| c == scancode).map(|&(_, a)| a)),
+        0x02..=0x0B => Some(if shift {
+            NUMBERS_SHIFT[(scancode - 0x02) as usize]
+        } else {
+            NUMBERS_BASE[(scancode - 0x02) as usize]
+        }),
+        0x10..=0x19 => Some(process_alphabetic(
+            QWERTY_BASE[(scancode - 0x10) as usize],
+            modifiers,
+        )),
+        0x1E..=0x26 => Some(process_alphabetic(
+            ASDF_BASE[(scancode - 0x1E) as usize],
+            modifiers,
+        )),
+        0x2C..=0x32 => Some(process_alphabetic(
+            ZXCV_BASE[(scancode - 0x2C) as usize],
+            modifiers,
+        )),
+        _ => PUNCTUATION
+            .iter()
+            .find(|&&(c, _, _)| c == scancode)
+            .map(|&(_, b, s)| if shift { s } else { b })
+            .or_else(|| {
+                SPECIAL_KEYS
+                    .iter()
+                    .find(|&&(c, _)| c == scancode)
+                    .map(|&(_, a)| a)
+            }),
     }
 }
 
 pub fn handle_keyboard_scancode(scancode: u8) {
     let mut ext = EXTENDED_SCANCODE.lock();
-    if scancode == 0xE0 { *ext = true; return; }
-    let is_ext = *ext; *ext = false; drop(ext);
+    if scancode == 0xE0 {
+        *ext = true;
+        return;
+    }
+    let is_ext = *ext;
+    *ext = false;
+    drop(ext);
     let mut mods = MODIFIERS.lock();
 
     if is_ext {
-        if scancode & 0x80 != 0 { handle_ext_release(scancode & 0x7F, &mut mods); }
-        else { handle_ext_press(scancode, &mut mods); }
-    } else if scancode & 0x80 != 0 { handle_release(scancode & 0x7F, &mut mods); }
-    else { handle_press(scancode, &mut mods); }
+        if scancode & 0x80 != 0 {
+            handle_ext_release(scancode & 0x7F, &mut mods);
+        } else {
+            handle_ext_press(scancode, &mut mods);
+        }
+    } else if scancode & 0x80 != 0 {
+        handle_release(scancode & 0x7F, &mut mods);
+    } else {
+        handle_press(scancode, &mut mods);
+    }
 }
 
 fn handle_press(scancode: u8, mods: &mut KeyboardModifiers) {
@@ -113,10 +174,15 @@ fn handle_press(scancode: u8, mods: &mut KeyboardModifiers) {
             track_repeat(scancode);
             if let Some(ascii) = scancode_to_ascii(scancode, mods) {
                 let mut buf = INPUT_BUFFER.lock();
-                if buf.len() < 256 { buf.push_back(ascii); }
+                if buf.len() < 256 {
+                    buf.push_back(ascii);
+                }
                 let mut sb = INPUT_STRING_BUFFER.lock();
-                if ascii == 0x08 { sb.pop(); }
-                else if sb.len() < 256 { sb.push(ascii as char); }
+                if ascii == 0x08 {
+                    sb.pop();
+                } else if sb.len() < 256 {
+                    sb.push(ascii as char);
+                }
             }
         }
     }
@@ -134,15 +200,25 @@ fn handle_release(scancode: u8, mods: &mut KeyboardModifiers) {
 }
 
 fn handle_ext_press(scancode: u8, mods: &mut KeyboardModifiers) {
-    match scancode { 0x1D => mods.rctrl = true, 0x38 => mods.ralt = true, _ => {} }
+    match scancode {
+        0x1D => mods.rctrl = true,
+        0x38 => mods.ralt = true,
+        _ => {}
+    }
 }
 
 fn handle_ext_release(scancode: u8, mods: &mut KeyboardModifiers) {
-    match scancode { 0x1D => mods.rctrl = false, 0x38 => mods.ralt = false, _ => {} }
+    match scancode {
+        0x1D => mods.rctrl = false,
+        0x38 => mods.ralt = false,
+        _ => {}
+    }
 }
 
 fn track_repeat(scancode: u8) {
-    if matches!(scancode, 0x3A | 0x45 | 0x46) { return; }
+    if matches!(scancode, 0x3A | 0x45 | 0x46) {
+        return;
+    }
     let mut r = KEY_REPEAT.lock();
     r.last_scancode = scancode;
     r.press_tick = SYS_TICK.load(core::sync::atomic::Ordering::Relaxed);
@@ -151,16 +227,28 @@ fn track_repeat(scancode: u8) {
 
 fn clear_repeat(scancode: u8) {
     let mut r = KEY_REPEAT.lock();
-    if r.last_scancode == scancode { r.last_scancode = 0; r.repeating = false; }
+    if r.last_scancode == scancode {
+        r.last_scancode = 0;
+        r.repeating = false;
+    }
 }
 
-pub fn read_char() -> Option<u8> { INPUT_BUFFER.lock().pop_front() }
+pub fn read_char() -> Option<u8> {
+    INPUT_BUFFER.lock().pop_front()
+}
 
-pub fn input_available() -> bool { !INPUT_BUFFER.lock().is_empty() }
+pub fn input_available() -> bool {
+    !INPUT_BUFFER.lock().is_empty()
+}
 
-pub fn flush_input() { INPUT_BUFFER.lock().clear(); INPUT_STRING_BUFFER.lock().clear(); }
+pub fn flush_input() {
+    INPUT_BUFFER.lock().clear();
+    INPUT_STRING_BUFFER.lock().clear();
+}
 
-pub fn get_keyboard_status() -> KeyboardModifiers { *MODIFIERS.lock() }
+pub fn get_keyboard_status() -> KeyboardModifiers {
+    *MODIFIERS.lock()
+}
 
 pub fn drain_line_buffer(buffer: &mut [u8]) -> usize {
     let mut sb = INPUT_STRING_BUFFER.lock();
@@ -181,21 +269,34 @@ pub fn keyboard_tick(now: u64) {
 pub fn process_key_repeat() {
     let now = SYS_TICK.load(core::sync::atomic::Ordering::Relaxed);
     let mut r = KEY_REPEAT.lock();
-    if r.last_scancode == 0 { return; }
+    if r.last_scancode == 0 {
+        return;
+    }
     let elapsed = now.saturating_sub(r.press_tick);
-    if !r.repeating && elapsed < KEY_REPEAT_DELAY_MS { return; }
-    if r.repeating && elapsed < KEY_REPEAT_RATE_MS { return; }
-    if !r.repeating { r.repeating = true; }
+    if !r.repeating && elapsed < KEY_REPEAT_DELAY_MS {
+        return;
+    }
+    if r.repeating && elapsed < KEY_REPEAT_RATE_MS {
+        return;
+    }
+    if !r.repeating {
+        r.repeating = true;
+    }
     r.press_tick = now;
     let sc = r.last_scancode;
     drop(r);
     let mods = MODIFIERS.lock();
     if let Some(ascii) = scancode_to_ascii(sc, &mods) {
         let mut buf = INPUT_BUFFER.lock();
-        if buf.len() < 256 { buf.push_back(ascii); }
+        if buf.len() < 256 {
+            buf.push_back(ascii);
+        }
         let mut sb = INPUT_STRING_BUFFER.lock();
-        if ascii == 0x08 { sb.pop(); }
-        else if sb.len() < 256 { sb.push(ascii as char); }
+        if ascii == 0x08 {
+            sb.pop();
+        } else if sb.len() < 256 {
+            sb.push(ascii as char);
+        }
     }
 }
 

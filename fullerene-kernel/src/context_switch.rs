@@ -1,6 +1,5 @@
 //! Context switching implementation for Fullerene OS
 
-
 /// Save current process context and switch to next
 #[unsafe(naked)]
 pub extern "C" fn switch_context(

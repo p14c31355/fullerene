@@ -303,7 +303,9 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
         .unwrap_or(if args.headless { "none" } else { "sdl" });
     qemu_args.push("-display".to_string());
     match display {
-        "gtk" => qemu_args.push("gtk,gl=off,window-close=on,zoom-to-fit=on,grab-on-hover=on".to_string()),
+        "gtk" => {
+            qemu_args.push("gtk,gl=off,window-close=on,zoom-to-fit=on,grab-on-hover=on".to_string())
+        }
         "sdl" => qemu_args.push("sdl,gl=off".to_string()),
         "none" => qemu_args.push("none".to_string()),
         "curses" => qemu_args.push("curses".to_string()),

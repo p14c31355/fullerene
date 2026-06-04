@@ -99,7 +99,12 @@ impl Tmpfs {
         let root = Inode::new(1, "", InodeType::Directory, 0);
         let mut inodes = BTreeMap::new();
         inodes.insert(1, root);
-        Self { inodes, next_ino: 2, fds: BTreeMap::new(), next_fd: 0 }
+        Self {
+            inodes,
+            next_ino: 2,
+            fds: BTreeMap::new(),
+            next_fd: 0,
+        }
     }
 
     /// Resolve a path into an inode number, traversing directories.
@@ -132,8 +137,7 @@ impl Tmpfs {
         if trimmed.is_empty() {
             return Some(effective_start);
         }
-        let components: Vec<&str> = trimmed.split('/')
-            .filter(|c| !c.is_empty()).collect();
+        let components: Vec<&str> = trimmed.split('/').filter(|c| !c.is_empty()).collect();
         if components.is_empty() {
             return Some(effective_start);
         }
@@ -141,8 +145,11 @@ impl Tmpfs {
         for (idx, comp) in components.iter().enumerate() {
             let parent_ino = current;
             let ino = self.inodes.get(&current)?;
-            let child = ino.children.iter()
-                .find(|&&c| self.inodes.get(&c).map_or(false, |i| i.name.as_str() == *comp))?;
+            let child = ino.children.iter().find(|&&c| {
+                self.inodes
+                    .get(&c)
+                    .map_or(false, |i| i.name.as_str() == *comp)
+            })?;
             current = *child;
             // Follow symlinks with depth guard, but re‑append the
             // remaining path components so intermediate symlinks work.
@@ -154,7 +161,11 @@ impl Tmpfs {
                 }
                 // Resolve relative symlinks from the parent directory
                 // of the link, absolute symlinks from the root.
-                let resolve_start = if target.starts_with('/') { 1 } else { parent_ino };
+                let resolve_start = if target.starts_with('/') {
+                    1
+                } else {
+                    parent_ino
+                };
                 return self.lookup_from(&new_path, resolve_start, depth + 1);
             }
         }
@@ -168,7 +179,11 @@ impl Tmpfs {
             return None;
         }
         if let Some(last_slash) = path.rfind('/') {
-            let parent_path = if last_slash == 0 { "/" } else { &path[..last_slash] };
+            let parent_path = if last_slash == 0 {
+                "/"
+            } else {
+                &path[..last_slash]
+            };
             let name = String::from(&path[last_slash + 1..]);
             let parent_ino = self.lookup(parent_path)?;
             Some((parent_ino, name))
@@ -181,7 +196,12 @@ impl Tmpfs {
         let ino = self.lookup(path)?;
         let fd = self.next_fd;
         self.next_fd += 1;
-        let desc = FileDescriptor { fd, ino, offset: 0, flags };
+        let desc = FileDescriptor {
+            fd,
+            ino,
+            offset: 0,
+            flags,
+        };
         self.fds.insert(fd, desc.clone());
         Some(desc)
     }
@@ -246,8 +266,14 @@ impl Tmpfs {
 
     fn lookup_child(&self, parent_ino: u64, name: &str) -> Option<u64> {
         let parent = self.inodes.get(&parent_ino)?;
-        parent.children.iter()
-            .find(|&&c| self.inodes.get(&c).map_or(false, |i| i.name.as_str() == name))
+        parent
+            .children
+            .iter()
+            .find(|&&c| {
+                self.inodes
+                    .get(&c)
+                    .map_or(false, |i| i.name.as_str() == name)
+            })
             .copied()
     }
 
@@ -270,7 +296,9 @@ impl Tmpfs {
     /// Recursively collect all descendant inode numbers of a directory.
     fn collect_descendants(&self, dir_ino: u64) -> Vec<u64> {
         let mut result = Vec::new();
-        let Some(inode) = self.inodes.get(&dir_ino) else { return result };
+        let Some(inode) = self.inodes.get(&dir_ino) else {
+            return result;
+        };
         for &c in &inode.children {
             result.push(c);
             result.extend(self.collect_descendants(c));
@@ -320,8 +348,12 @@ pub fn mount(_device: &str, _mount_point: &str, _fs_type: &str) -> Result<(), &'
 }
 
 pub fn open(path: &str, flags: u32) -> Result<FileDescriptor, &'static str> {
-    vfs().lock().as_mut().ok_or("vfs not init")?
-        .open(path, flags).ok_or("not found")
+    vfs()
+        .lock()
+        .as_mut()
+        .ok_or("vfs not init")?
+        .open(path, flags)
+        .ok_or("not found")
 }
 
 pub fn read(fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
@@ -359,9 +391,12 @@ pub fn mkdir(path: &str) -> Result<(), &'static str> {
     let mut guard = vfs().lock();
     let fs = guard.as_mut().ok_or("vfs not init")?;
     // Check if path is root
-    if path == "/" { return Ok(()); }
+    if path == "/" {
+        return Ok(());
+    }
     let (_, _) = fs.lookup_parent(path).ok_or("invalid path")?;
-    fs.create(path, InodeType::Directory).ok_or("mkdir failed")?;
+    fs.create(path, InodeType::Directory)
+        .ok_or("mkdir failed")?;
     Ok(())
 }
 

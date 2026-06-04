@@ -5,20 +5,16 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 const ANSI_COLORS: [u32; 8] = [
-    0x000000, 0xCC0000, 0x00CC00, 0xCCCC00,
-    0x0000CC, 0xCC00CC, 0x00CCCC, 0xCCCCCC,
+    0x000000, 0xCC0000, 0x00CC00, 0xCCCC00, 0x0000CC, 0xCC00CC, 0x00CCCC, 0xCCCCCC,
 ];
 
 const ANSI_BRIGHT_COLORS: [u32; 8] = [
-    0x555555, 0xFF5555, 0x55FF55, 0xFFFF55,
-    0x5555FF, 0xFF55FF, 0x55FFFF, 0xFFFFFF,
+    0x555555, 0xFF5555, 0x55FF55, 0xFFFF55, 0x5555FF, 0xFF55FF, 0x55FFFF, 0xFFFFFF,
 ];
 
 const ANSI_STANDARD_256: [u32; 16] = [
-    0x000000, 0xCC0000, 0x00CC00, 0xCCCC00,
-    0x0000CC, 0xCC00CC, 0x00CCCC, 0xCCCCCC,
-    0x555555, 0xFF5555, 0x55FF55, 0xFFFF55,
-    0x5555FF, 0xFF55FF, 0x55FFFF, 0xFFFFFF,
+    0x000000, 0xCC0000, 0x00CC00, 0xCCCC00, 0x0000CC, 0xCC00CC, 0x00CCCC, 0xCCCCCC, 0x555555,
+    0xFF5555, 0x55FF55, 0xFFFF55, 0x5555FF, 0xFF55FF, 0x55FFFF, 0xFFFFFF,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -83,14 +79,30 @@ impl TerminalBuffer {
         }
     }
 
-    pub fn cols(&self) -> u32 { self.cols }
-    pub fn rows(&self) -> u32 { self.rows }
-    pub fn cursor_col(&self) -> u32 { self.cursor_col }
-    pub fn cursor_row(&self) -> u32 { self.cursor_row }
-    pub fn fg(&self) -> u32 { self.style.fg }
-    pub fn bg(&self) -> u32 { self.style.bg }
-    pub fn style(&self) -> TextStyle { self.style }
-    pub fn cells(&self) -> &[Cell] { &self.cells }
+    pub fn cols(&self) -> u32 {
+        self.cols
+    }
+    pub fn rows(&self) -> u32 {
+        self.rows
+    }
+    pub fn cursor_col(&self) -> u32 {
+        self.cursor_col
+    }
+    pub fn cursor_row(&self) -> u32 {
+        self.cursor_row
+    }
+    pub fn fg(&self) -> u32 {
+        self.style.fg
+    }
+    pub fn bg(&self) -> u32 {
+        self.style.bg
+    }
+    pub fn style(&self) -> TextStyle {
+        self.style
+    }
+    pub fn cells(&self) -> &[Cell] {
+        &self.cells
+    }
 
     pub fn cell_mut(&mut self, col: u32, row: u32) -> Option<&mut Cell> {
         if col < self.cols && row < self.rows {
@@ -101,9 +113,15 @@ impl TerminalBuffer {
         }
     }
 
-    pub fn set_fg(&mut self, color: u32) { self.style.fg = color; }
-    pub fn set_bg(&mut self, color: u32) { self.style.bg = color; }
-    pub fn set_style(&mut self, style: TextStyle) { self.style = style; }
+    pub fn set_fg(&mut self, color: u32) {
+        self.style.fg = color;
+    }
+    pub fn set_bg(&mut self, color: u32) {
+        self.style.bg = color;
+    }
+    pub fn set_style(&mut self, style: TextStyle) {
+        self.style = style;
+    }
 
     pub fn set_cursor(&mut self, col: u32, row: u32) {
         self.cursor_col = col.min(self.cols.saturating_sub(1));
@@ -127,7 +145,11 @@ impl TerminalBuffer {
 
     pub fn put_str(&mut self, s: &str) {
         #[derive(PartialEq)]
-        enum AnsiState { Normal, Esc, Csi }
+        enum AnsiState {
+            Normal,
+            Esc,
+            Csi,
+        }
         let mut state = AnsiState::Normal;
         let mut param_buf: [u8; 8] = [0; 8];
         let mut param_len: usize = 0;
@@ -165,11 +187,15 @@ impl TerminalBuffer {
             }
         }
         match state {
-            AnsiState::Esc => { self.put_byte(0x1B); }
+            AnsiState::Esc => {
+                self.put_byte(0x1B);
+            }
             AnsiState::Csi => {
                 self.put_byte(0x1B);
                 self.put_byte(b'[');
-                for &pb in &param_buf[..param_len] { self.put_byte(pb); }
+                for &pb in &param_buf[..param_len] {
+                    self.put_byte(pb);
+                }
             }
             AnsiState::Normal => {}
         }
@@ -191,7 +217,9 @@ impl TerminalBuffer {
         let mut ni = 0;
         if !param_str.is_empty() {
             for part in param_str.split(';') {
-                if ni >= 8 { break; }
+                if ni >= 8 {
+                    break;
+                }
                 nums[ni] = part.parse::<u32>().unwrap_or(0);
                 ni += 1;
             }
@@ -204,11 +232,17 @@ impl TerminalBuffer {
             }
             b'B' => {
                 let n = if ni > 0 { nums[0].max(1) } else { 1 };
-                self.cursor_row = self.cursor_row.saturating_add(n).min(self.rows.saturating_sub(1));
+                self.cursor_row = self
+                    .cursor_row
+                    .saturating_add(n)
+                    .min(self.rows.saturating_sub(1));
             }
             b'C' => {
                 let n = if ni > 0 { nums[0].max(1) } else { 1 };
-                self.cursor_col = self.cursor_col.saturating_add(n).min(self.cols.saturating_sub(1));
+                self.cursor_col = self
+                    .cursor_col
+                    .saturating_add(n)
+                    .min(self.cols.saturating_sub(1));
             }
             b'D' => {
                 let n = if ni > 0 { nums[0].max(1) } else { 1 };
@@ -264,8 +298,7 @@ impl TerminalBuffer {
                         self.style.fg = Self::ansi_256_color(codes[i + 2] as u8);
                         i += 2;
                     } else if i + 4 < codes.len() && codes[i + 1] == 2 {
-                        self.style.fg =
-                            ((codes[i + 2] & 0xFF) << 16)
+                        self.style.fg = ((codes[i + 2] & 0xFF) << 16)
                             | ((codes[i + 3] & 0xFF) << 8)
                             | (codes[i + 4] & 0xFF);
                         i += 4;
@@ -277,8 +310,7 @@ impl TerminalBuffer {
                         self.style.bg = Self::ansi_256_color(codes[i + 2] as u8);
                         i += 2;
                     } else if i + 4 < codes.len() && codes[i + 1] == 2 {
-                        self.style.bg =
-                            ((codes[i + 2] & 0xFF) << 16)
+                        self.style.bg = ((codes[i + 2] & 0xFF) << 16)
                             | ((codes[i + 3] & 0xFF) << 8)
                             | (codes[i + 4] & 0xFF);
                         i += 4;

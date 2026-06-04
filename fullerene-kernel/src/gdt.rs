@@ -152,23 +152,25 @@ pub unsafe fn build_gdt(
     SegmentSelector,
     SegmentSelector,
     SegmentSelector,
-) { unsafe {
-    let mut gdt = GlobalDescriptorTable::new();
-    let code_selector = gdt.append(Descriptor::kernel_code_segment());
-    let data_selector = gdt.append(Descriptor::kernel_data_segment());
-    let user_data_selector = gdt.append(Descriptor::user_data_segment());
-    let user_code_selector = gdt.append(Descriptor::user_code_segment());
-    let tss_static: &'static TaskStateSegment = core::mem::transmute(tss);
-    let tss_selector = gdt.append(Descriptor::tss_segment(tss_static));
-    (
-        gdt,
-        code_selector,
-        data_selector,
-        tss_selector,
-        user_data_selector,
-        user_code_selector,
-    )
-}}
+) {
+    unsafe {
+        let mut gdt = GlobalDescriptorTable::new();
+        let code_selector = gdt.append(Descriptor::kernel_code_segment());
+        let data_selector = gdt.append(Descriptor::kernel_data_segment());
+        let user_data_selector = gdt.append(Descriptor::user_data_segment());
+        let user_code_selector = gdt.append(Descriptor::user_code_segment());
+        let tss_static: &'static TaskStateSegment = core::mem::transmute(tss);
+        let tss_selector = gdt.append(Descriptor::tss_segment(tss_static));
+        (
+            gdt,
+            code_selector,
+            data_selector,
+            tss_selector,
+            user_data_selector,
+            user_code_selector,
+        )
+    }
+}
 
 /// Store built GDT and selectors into global state.
 pub unsafe fn store_gdt(

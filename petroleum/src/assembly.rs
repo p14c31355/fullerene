@@ -40,7 +40,11 @@ impl TransitionFrame {
 pub unsafe fn setup_segments() {
     core::arch::asm!(
         "mov ax, 0x10",
-        "mov ds, ax", "mov es, ax", "mov fs, ax", "mov gs, ax", "mov ss, ax",
+        "mov ds, ax",
+        "mov es, ax",
+        "mov fs, ax",
+        "mov gs, ax",
+        "mov ss, ax",
         options(preserves_flags)
     );
 }
@@ -48,7 +52,11 @@ pub unsafe fn setup_segments() {
 #[unsafe(no_mangle)]
 #[inline(never)]
 pub unsafe extern "C" fn jump_to_kernel_with_stack(
-    stack_top: u64, args_ptr: *const (), entry: usize, l4_phys: u64, phys_offset: u64,
+    stack_top: u64,
+    args_ptr: *const (),
+    entry: usize,
+    l4_phys: u64,
+    phys_offset: u64,
 ) -> ! {
     core::arch::asm!(
         "mov rdi, {0}", "mov rsi, {1}", "mov rdx, {2}", "mov rcx, {3}", "mov r8, {4}",
@@ -87,7 +95,11 @@ pub unsafe extern "sysv64" fn landing_zone(_frame: *const TransitionFrame) {
 
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub unsafe extern "C" fn jump_to_kernel(entry: usize, args: *const KernelArgs, phys_offset: u64) -> ! {
+pub unsafe extern "C" fn jump_to_kernel(
+    entry: usize,
+    args: *const KernelArgs,
+    phys_offset: u64,
+) -> ! {
     prepare_for_kernel_jump();
     core::arch::asm!(
         "jmp {entry}", entry = in(reg) entry, in("rdi") args, in("rsi") phys_offset, options(noreturn)

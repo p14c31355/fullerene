@@ -55,12 +55,7 @@ pub trait FramebufferMapper {
     ///
     /// Returns `Some(virt_addr)` on success, or `None` if the mapping
     /// could not be created (OOM, address conflict, etc.).
-    fn map_framebuffer(
-        &mut self,
-        phys_addr: u64,
-        size: usize,
-        cache: CacheMode,
-    ) -> Option<u64>;
+    fn map_framebuffer(&mut self, phys_addr: u64, size: usize, cache: CacheMode) -> Option<u64>;
 
     /// Unmap a region previously returned by [`map_framebuffer`].
     ///

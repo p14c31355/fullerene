@@ -22,8 +22,7 @@ use solvent;
 
 // Re-export solvent types used by other kernel modules
 pub use solvent::{
-    LatticeTerminal, MOUSE_STATE, MouseState,
-    chrono_tick, is_initialized, poll_mouse_state,
+    LatticeTerminal, MOUSE_STATE, MouseState, chrono_tick, is_initialized, poll_mouse_state,
     process_events, push_key_event, set_render_fn, write_terminal,
 };
 

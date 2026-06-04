@@ -51,13 +51,12 @@ impl Taskbar {
     }
 
     /// Update entries from window list.
-    pub fn update_from_windows(
-        &mut self,
-        windows: &[crate::window::Window],
-    ) {
+    pub fn update_from_windows(&mut self, windows: &[crate::window::Window]) {
         self.entries.clear();
         for w in windows.iter().rev() {
-            let title = w.title.as_ref()
+            let title = w
+                .title
+                .as_ref()
                 .map(|t| t.clone())
                 .unwrap_or_else(|| alloc::string::String::from("Window"));
             self.entries.push(TaskbarEntry {
@@ -78,7 +77,9 @@ impl Taskbar {
         // Fill bar background
         for row in 0..TASKBAR_HEIGHT {
             let y = bar_y + row;
-            if y >= fb_height { break; }
+            if y >= fb_height {
+                break;
+            }
             let row_start = (y as usize) * fb_w;
             fb[row_start..row_start + fb_w].fill(TASKBAR_BG);
         }
@@ -90,8 +91,14 @@ impl Taskbar {
         let btn_y = bar_y + 3;
 
         for entry in &self.entries {
-            if btn_x + btn_w > fb_width { break; }
-            let bg = if entry.focused { TASKBAR_ACTIVE_BG } else { TASKBAR_INACTIVE_BG };
+            if btn_x + btn_w > fb_width {
+                break;
+            }
+            let bg = if entry.focused {
+                TASKBAR_ACTIVE_BG
+            } else {
+                TASKBAR_INACTIVE_BG
+            };
             // Button background
             for row in 0..btn_h {
                 let y = btn_y + row;
@@ -107,13 +114,19 @@ impl Taskbar {
             let tx = btn_x + 4;
             let ty = btn_y + 3;
             for (i, ch) in label.bytes().enumerate() {
-                if ch < 32 || ch > 126 { continue; }
+                if ch < 32 || ch > 126 {
+                    continue;
+                }
                 for row in 0..12 {
                     let y = ty + row;
-                    if y >= fb_height { continue; }
+                    if y >= fb_height {
+                        continue;
+                    }
                     for col in 0..8 {
                         let x = tx + (i as u32) * 8 + col;
-                        if x >= fb_width { continue; }
+                        if x >= fb_width {
+                            continue;
+                        }
                         if crate::font::get_glyph_pixel(ch, row, col) {
                             fb[(y as usize) * fb_w + x as usize] = TASKBAR_TEXT;
                         }
@@ -129,7 +142,9 @@ impl Taskbar {
             let clock_x = fb_width.saturating_sub(clock_len + 8);
             let clock_y = btn_y + 3;
             for (i, ch) in self.clock_text.bytes().enumerate() {
-                if ch < 32 || ch > 126 { continue; }
+                if ch < 32 || ch > 126 {
+                    continue;
+                }
                 for row in 0..12 {
                     for col in 0..8 {
                         let x = clock_x + (i as u32) * 8 + col;

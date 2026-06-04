@@ -16,7 +16,11 @@ macro_rules! save_sysv64_registers {
 
 #[macro_export]
 macro_rules! bitmap_chunk_bit {
-    ($frame:expr) => {{ let chunk_index = $frame / 64; let bit_index = $frame % 64; (chunk_index, bit_index) }};
+    ($frame:expr) => {{
+        let chunk_index = $frame / 64;
+        let bit_index = $frame % 64;
+        (chunk_index, bit_index)
+    }};
 }
 
 #[macro_export]
@@ -25,25 +29,39 @@ macro_rules! bit_ops {
         $field = ($field & !($mask << $shift)) | (($value as u32 & $mask) << $shift);
     };
     (set_bool_bit, $field:expr, $bit:expr, $value:expr) => {
-        if $value { $field |= 1 << $bit; } else { $field &= !(1 << $bit); }
+        if $value {
+            $field |= 1 << $bit;
+        } else {
+            $field &= !(1 << $bit);
+        }
     };
     (bitmap_set_free, $bitmap:expr, $frame:expr) => {
         if let Some(ref mut bitmap) = $bitmap {
             let (chunk_index, bit_index) = bitmap_chunk_bit!($frame);
-            if chunk_index < bitmap.len() { bitmap[chunk_index] &= !(1 << bit_index); }
+            if chunk_index < bitmap.len() {
+                bitmap[chunk_index] &= !(1 << bit_index);
+            }
         }
     };
     (bitmap_set_used, $bitmap:expr, $frame:expr) => {
         if let Some(ref mut bitmap) = $bitmap {
             let (chunk_index, bit_index) = bitmap_chunk_bit!($frame);
-            if chunk_index < bitmap.len() { bitmap[chunk_index] |= 1 << bit_index; }
+            if chunk_index < bitmap.len() {
+                bitmap[chunk_index] |= 1 << bit_index;
+            }
         }
     };
     (bitmap_is_free, $bitmap:expr, $frame:expr) => {
         if let Some(ref bitmap) = $bitmap {
             let (chunk_index, bit_index) = bitmap_chunk_bit!($frame);
-            if chunk_index < bitmap.len() { (bitmap[chunk_index] & (1 << bit_index)) == 0 } else { false }
-        } else { false }
+            if chunk_index < bitmap.len() {
+                (bitmap[chunk_index] & (1 << bit_index)) == 0
+            } else {
+                false
+            }
+        } else {
+            false
+        }
     };
 }
 
@@ -52,28 +70,48 @@ macro_rules! command_args { () => { &[] }; ($($arg:expr),* $(,)?) => { &[$($arg.
 
 #[macro_export]
 macro_rules! ensure_initialized {
-    ($self:expr) => { if !$self.initialized { return Err($crate::common::logging::SystemError::InternalError); } };
+    ($self:expr) => {
+        if !$self.initialized {
+            return Err($crate::common::logging::SystemError::InternalError);
+        }
+    };
 }
 
 #[macro_export]
-macro_rules! calc_offset_addr { ($base:expr, $i:expr) => { $base + ($i * 4096) }; }
+macro_rules! calc_offset_addr {
+    ($base:expr, $i:expr) => {
+        $base + ($i * 4096)
+    };
+}
 
 #[macro_export]
 macro_rules! lock_and_modify {
-    ($lock:expr, $var:ident, $code:block) => {{ let mut $var = $lock.lock(); $code }};
+    ($lock:expr, $var:ident, $code:block) => {{
+        let mut $var = $lock.lock();
+        $code
+    }};
 }
 
 #[macro_export]
 macro_rules! lock_and_read {
-    ($lock:expr, $var:ident, $val:expr) => {{ let $var = $lock.lock(); $val }};
+    ($lock:expr, $var:ident, $val:expr) => {{
+        let $var = $lock.lock();
+        $val
+    }};
 }
 
 #[macro_export]
 macro_rules! init_component {
     ($component:expr, $name:expr) => {{
         match $component.init() {
-            Ok(()) => { log::info!(concat!($name, " initialized successfully")); Ok(()) }
-            Err(e) => { log::error!("Failed to initialize {}: {:?}", $name, e); Err(e) }
+            Ok(()) => {
+                log::info!(concat!($name, " initialized successfully"));
+                Ok(())
+            }
+            Err(e) => {
+                log::error!("Failed to initialize {}: {:?}", $name, e);
+                Err(e)
+            }
         }
     }};
 }
@@ -81,26 +119,46 @@ macro_rules! init_component {
 #[macro_export]
 macro_rules! ensure_with_msg {
     ($condition:expr, $error:expr, $msg:expr) => {
-        if !$condition { $crate::log_error!($error, $msg); return Err(*$error); }
+        if !$condition {
+            $crate::log_error!($error, $msg);
+            return Err(*$error);
+        }
     };
 }
 
 #[macro_export]
 macro_rules! option_to_result {
     ($option:expr, $error:expr) => {
-        match $option { Some(value) => Ok(value), None => { $crate::log_error!($error, "Option was None"); Err(*$error) } }
+        match $option {
+            Some(value) => Ok(value),
+            None => {
+                $crate::log_error!($error, "Option was None");
+                Err(*$error)
+            }
+        }
     };
 }
 
 #[macro_export]
 macro_rules! try_or_log {
     ($expr:expr, $context:expr) => {
-        match $expr { Ok(value) => value, Err(e) => { $crate::log_error!(e, $context); return Err(e); } }
+        match $expr {
+            Ok(value) => value,
+            Err(e) => {
+                $crate::log_error!(e, $context);
+                return Err(e);
+            }
+        }
     };
 }
 
 #[macro_export]
-macro_rules! static_str { ($s:expr) => {{ const S: &str = $s; S }}; }
+macro_rules! static_str {
+    ($s:expr) => {{
+        const S: &str = $s;
+        S
+    }};
+}
 
 #[macro_export]
 macro_rules! scheduler_log {
@@ -118,30 +176,48 @@ macro_rules! init_boot_step {
 }
 
 #[macro_export]
-macro_rules! init_step { ($name:expr, $func:expr) => { ($name, $func as fn() -> Result<(), &'static str>) }; }
+macro_rules! init_step {
+    ($name:expr, $func:expr) => {
+        ($name, $func as fn() -> Result<(), &'static str>)
+    };
+}
 
 #[macro_export]
 macro_rules! read_unaligned {
-    ($ptr:expr, $offset:expr, $ty:ty) => { unsafe { core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) } };
+    ($ptr:expr, $offset:expr, $ty:ty) => {
+        unsafe { core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) }
+    };
 }
 
 #[macro_export]
 macro_rules! check_periodic {
     ($last_tick:expr, $interval:expr, $current_tick:expr, $block:block) => {{
         let mut last = $last_tick.lock();
-        if $current_tick - *last >= $interval { *last = $current_tick; $block; }
+        if $current_tick - *last >= $interval {
+            *last = $current_tick;
+            $block;
+        }
     }};
 }
 
 #[macro_export]
 macro_rules! periodic_task {
-    ($current_tick:expr, $interval:expr, $block:block) => { if $current_tick % $interval == 0 { $block; } };
+    ($current_tick:expr, $interval:expr, $block:block) => {
+        if $current_tick % $interval == 0 {
+            $block;
+        }
+    };
 }
 
 #[macro_export]
 macro_rules! health_check {
     ($fn_name:ident, $threshold_expr:expr, $log_level:ident, $msg:expr, $body:block) => {
-        fn $fn_name() { if $threshold_expr { log::$log_level!($msg); $body } }
+        fn $fn_name() {
+            if $threshold_expr {
+                log::$log_level!($msg);
+                $body
+            }
+        }
     };
 }
 
@@ -165,13 +241,25 @@ macro_rules! maintenance_tasks {
 
 #[macro_export]
 macro_rules! impl_error_from {
-    ($src:ty, $dst:ty, $map_fn:expr) => { impl From<$src> for $dst { fn from(error: $src) -> Self { ($map_fn)(error) } } };
+    ($src:ty, $dst:ty, $map_fn:expr) => {
+        impl From<$src> for $dst {
+            fn from(error: $src) -> Self {
+                ($map_fn)(error)
+            }
+        }
+    };
 }
 
 #[macro_export]
 macro_rules! error_variant_map {
     ($src:ty, $dst:ty, $pat:pat => $result:expr) => {
-        impl From<$src> for $dst { fn from(error: $src) -> Self { match error { $pat => $result } } }
+        impl From<$src> for $dst {
+            fn from(error: $src) -> Self {
+                match error {
+                    $pat => $result,
+                }
+            }
+        }
     };
 }
 
@@ -185,18 +273,25 @@ macro_rules! error_chain {
 #[macro_export]
 macro_rules! check_uefi_status {
     ($status:expr, $log_msg:expr, $err:expr) => {
-        if EfiStatus::from($status) != EfiStatus::Success { log::error!($log_msg); return Err($err); }
+        if EfiStatus::from($status) != EfiStatus::Success {
+            log::error!($log_msg);
+            return Err($err);
+        }
     };
 }
 
 #[macro_export]
 macro_rules! pause {
-    () => { $crate::cpu_pause(); };
+    () => {
+        $crate::cpu_pause();
+    };
 }
 
 #[macro_export]
 macro_rules! halt {
-    () => { $crate::cpu_halt(); };
+    () => {
+        $crate::cpu_halt();
+    };
 }
 
 #[macro_export]
@@ -205,16 +300,26 @@ macro_rules! init_with_log {
         debug_log!(concat!($name, " initializing"));
         match $init_fn() {
             Ok(_) => debug_log!(concat!($name, " initialized successfully")),
-            Err(e) => { error_log!(concat!($name, " initialization failed: {:?}"), e); panic!("{} initialization failed", $name); }
+            Err(e) => {
+                error_log!(concat!($name, " initialization failed: {:?}"), e);
+                panic!("{} initialization failed", $name);
+            }
         }
     }};
 }
 
 #[macro_export]
 macro_rules! ensure {
-    ($condition:expr, $error_ty:ty, $error_val:expr) => { if !$condition { return Err(<$error_ty>::$error_val as $error_ty); } };
+    ($condition:expr, $error_ty:ty, $error_val:expr) => {
+        if !$condition {
+            return Err(<$error_ty>::$error_val as $error_ty);
+        }
+    };
     ($condition:expr, $error_ty:ty, $error_val:expr, $msg:expr) => {
-        if !$condition { error_log!($msg); return Err(<$error_ty>::$error_val as $error_ty); }
+        if !$condition {
+            error_log!($msg);
+            return Err(<$error_ty>::$error_val as $error_ty);
+        }
     };
 }
 
@@ -224,7 +329,10 @@ macro_rules! init_system_component {
         petroleum::println!(concat!($name, " initializing..."));
         match $init_expr {
             Ok(_) => petroleum::println!(concat!($name, " initialized successfully")),
-            Err(e) => { petroleum::println!(concat!($name, " initialization failed: {:?}"), e); return Err(e); }
+            Err(e) => {
+                petroleum::println!(concat!($name, " initialization failed: {:?}"), e);
+                return Err(e);
+            }
         }
     }};
 }
@@ -284,5 +392,13 @@ macro_rules! create_iso_files {
 
 #[macro_export]
 macro_rules! bootloader_expect {
-    ($expr:expr, $msg:expr) => { match $expr { Ok(val) => val, Err(e) => { petroleum::println!(concat!($msg, ": {:?}"), e); panic!($msg); } } };
+    ($expr:expr, $msg:expr) => {
+        match $expr {
+            Ok(val) => val,
+            Err(e) => {
+                petroleum::println!(concat!($msg, ": {:?}"), e);
+                panic!($msg);
+            }
+        }
+    };
 }

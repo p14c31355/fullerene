@@ -33,9 +33,17 @@ impl TraceEvent {
         let mut message = [0u8; 32];
         let cat_bytes = cat.as_bytes();
         let msg_bytes = msg.as_bytes();
-        for i in 0..cat_bytes.len().min(8) { category[i] = cat_bytes[i]; }
-        for i in 0..msg_bytes.len().min(32) { message[i] = msg_bytes[i]; }
-        Self { tick, category, message }
+        for i in 0..cat_bytes.len().min(8) {
+            category[i] = cat_bytes[i];
+        }
+        for i in 0..msg_bytes.len().min(32) {
+            message[i] = msg_bytes[i];
+        }
+        Self {
+            tick,
+            category,
+            message,
+        }
     }
 }
 
@@ -69,22 +77,20 @@ pub fn record(tick: u64, category: &str, message: &str) {
 /// The returned `Vec` is a snapshot — safe to hold across interrupt
 /// boundaries because it owns its data.
 pub fn snapshot() -> alloc::vec::Vec<TraceEvent> {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        unsafe {
-            let head = TRACE_HEAD.load(Ordering::Relaxed);
-            if head == 0 {
-                return alloc::vec::Vec::new();
-            }
-            let mut result = alloc::vec::Vec::new();
-            if head <= TRACE_CAPACITY {
-                result.extend_from_slice(&TRACE_BUFFER[..head]);
-            } else {
-                let start = head % TRACE_CAPACITY;
-                result.extend_from_slice(&TRACE_BUFFER[start..]);
-                result.extend_from_slice(&TRACE_BUFFER[..start]);
-            }
-            result
+    x86_64::instructions::interrupts::without_interrupts(|| unsafe {
+        let head = TRACE_HEAD.load(Ordering::Relaxed);
+        if head == 0 {
+            return alloc::vec::Vec::new();
         }
+        let mut result = alloc::vec::Vec::new();
+        if head <= TRACE_CAPACITY {
+            result.extend_from_slice(&TRACE_BUFFER[..head]);
+        } else {
+            let start = head % TRACE_CAPACITY;
+            result.extend_from_slice(&TRACE_BUFFER[start..]);
+            result.extend_from_slice(&TRACE_BUFFER[..start]);
+        }
+        result
     })
 }
 

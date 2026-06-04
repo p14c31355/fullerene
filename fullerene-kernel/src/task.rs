@@ -32,30 +32,38 @@ struct ProcessWaker {
     woken: AtomicBool,
 }
 
-unsafe fn waker_clone(raw: *const ()) -> RawWaker { unsafe {
-    let w = &*(raw as *const ProcessWaker);
-    let boxed = Box::new(ProcessWaker {
-        pid: w.pid,
-        woken: AtomicBool::new(w.woken.load(Ordering::Relaxed)),
-    });
-    RawWaker::new(Box::into_raw(boxed) as *const (), &WAKER_VTABLE)
-}}
+unsafe fn waker_clone(raw: *const ()) -> RawWaker {
+    unsafe {
+        let w = &*(raw as *const ProcessWaker);
+        let boxed = Box::new(ProcessWaker {
+            pid: w.pid,
+            woken: AtomicBool::new(w.woken.load(Ordering::Relaxed)),
+        });
+        RawWaker::new(Box::into_raw(boxed) as *const (), &WAKER_VTABLE)
+    }
+}
 
-unsafe fn waker_wake(raw: *const ()) { unsafe {
-    let w = Box::from_raw(raw as *mut ProcessWaker);
-    w.woken.store(true, Ordering::Release);
-    process::unblock_process(ProcessId(w.pid));
-}}
+unsafe fn waker_wake(raw: *const ()) {
+    unsafe {
+        let w = Box::from_raw(raw as *mut ProcessWaker);
+        w.woken.store(true, Ordering::Release);
+        process::unblock_process(ProcessId(w.pid));
+    }
+}
 
-unsafe fn waker_wake_by_ref(raw: *const ()) { unsafe {
-    let w = &*(raw as *const ProcessWaker);
-    w.woken.store(true, Ordering::Release);
-    process::unblock_process(ProcessId(w.pid));
-}}
+unsafe fn waker_wake_by_ref(raw: *const ()) {
+    unsafe {
+        let w = &*(raw as *const ProcessWaker);
+        w.woken.store(true, Ordering::Release);
+        process::unblock_process(ProcessId(w.pid));
+    }
+}
 
-unsafe fn waker_drop(raw: *const ()) { unsafe {
-    drop(Box::from_raw(raw as *mut ProcessWaker));
-}}
+unsafe fn waker_drop(raw: *const ()) {
+    unsafe {
+        drop(Box::from_raw(raw as *mut ProcessWaker));
+    }
+}
 
 static WAKER_VTABLE: RawWakerVTable =
     RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
@@ -83,10 +91,9 @@ impl TaskHandle {
     /// scheduler and is woken when the task's waker fires.
     pub fn join(self) {
         loop {
-            let terminated = process::PROCESS_MANAGER
-                .with_process(ProcessId(self.pid), |p| {
-                    matches!(p.state, ProcessState::Terminated)
-                });
+            let terminated = process::PROCESS_MANAGER.with_process(ProcessId(self.pid), |p| {
+                matches!(p.state, ProcessState::Terminated)
+            });
             if terminated.unwrap_or(true) {
                 return;
             }
@@ -111,18 +118,20 @@ where
     let boxed: Box<dyn Future<Output = ()> + Send> = Box::new(future);
     let raw = Box::into_raw(Box::new(boxed));
 
-    let pid = x86_64::instructions::interrupts::without_interrupts(|| -> Result<_, petroleum::common::logging::SystemError> {
-        let p = process::create_process(
-            "async-task",
-            VirtAddr::new(task_entry::<F> as *const () as u64),
-            false,
-        )?;
-        process::PROCESS_MANAGER.with_process(ProcessId(p.0 as u64), |pr| {
-            pr.user_stack = VirtAddr::new(raw as u64);
-            pr.state = ProcessState::Ready;
-        });
-        Ok(p)
-    })?;
+    let pid = x86_64::instructions::interrupts::without_interrupts(
+        || -> Result<_, petroleum::common::logging::SystemError> {
+            let p = process::create_process(
+                "async-task",
+                VirtAddr::new(task_entry::<F> as *const () as u64),
+                false,
+            )?;
+            process::PROCESS_MANAGER.with_process(ProcessId(p.0 as u64), |pr| {
+                pr.user_stack = VirtAddr::new(raw as u64);
+                pr.state = ProcessState::Ready;
+            });
+            Ok(p)
+        },
+    )?;
 
     Ok(TaskHandle { pid: pid.0 as u64 })
 }
@@ -163,9 +172,7 @@ extern "C" fn task_entry<F: Future<Output = ()> + Send + 'static>() {
 /// returns `Poll::Pending`, so other tasks can use the CPU.
 pub fn block_on<F: Future>(mut future: F) -> F::Output {
     let mut future = unsafe { Pin::new_unchecked(&mut future) };
-    let pid = process::current_pid()
-        .map(|p| p.0 as u64)
-        .unwrap_or(0);
+    let pid = process::current_pid().map(|p| p.0 as u64).unwrap_or(0);
     loop {
         let waker = create_waker(pid);
         let mut cx = Context::from_waker(&waker);

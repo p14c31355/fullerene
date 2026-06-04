@@ -7,8 +7,8 @@ use petroleum::initializer::{
 };
 use petroleum::mem_debug;
 use petroleum::page_table::{
-    BitmapFrameAllocator, BootInfoFrameAllocator, FrameAllocatorExt,
-    PageTableHelper, ProcessPageTable,
+    BitmapFrameAllocator, BootInfoFrameAllocator, FrameAllocatorExt, PageTableHelper,
+    ProcessPageTable,
 };
 use x86_64::{
     PhysAddr,
@@ -148,9 +148,8 @@ impl UnifiedMemoryManager {
         }
         mem_debug!("UMM: Frame allocator transferred\n");
 
-        let phys_offset = x86_64::VirtAddr::new(
-            petroleum::common::memory::get_physical_memory_offset() as u64,
-        );
+        let phys_offset =
+            x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
         let kernel_virt: u64;
         unsafe {
             core::arch::asm!("lea {}, [rip]", out(reg) kernel_virt);
@@ -170,9 +169,8 @@ impl UnifiedMemoryManager {
         mem_debug!("UMM: Kernel memory reserved\n");
 
         mem_debug!("UMM: Mapping physical memory direct map\n");
-        let phys_offset_virt = x86_64::VirtAddr::new(
-            petroleum::common::memory::get_physical_memory_offset() as u64,
-        );
+        let phys_offset_virt =
+            x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
         let frame_alloc = petroleum::page_table::constants::get_frame_allocator_mut();
 
         for descriptor in memory_map {
@@ -188,9 +186,8 @@ impl UnifiedMemoryManager {
                 let phys = (phys_addr + (i * page_size as u64)) as usize;
                 let virt_addr = x86_64::VirtAddr::new(virt as u64);
                 let phys_addr_val = x86_64::PhysAddr::new(phys as u64);
-                let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(
-                    virt_addr,
-                );
+                let page =
+                    x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt_addr);
                 let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(
                     phys_addr_val,
                 );
@@ -204,9 +201,8 @@ impl UnifiedMemoryManager {
                 match unsafe { mapper.map_to(page, frame, flags, frame_alloc) } {
                     Ok(flush) => flush.flush(),
                     Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage)
-                    | Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(
-                        _,
-                    )) => {}
+                    | Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                    }
                     Err(_) => return Err(SystemError::MappingFailed),
                 }
             }
@@ -248,9 +244,9 @@ impl FramebufferMapper for UnifiedMemoryManager {
             return None;
         }
         let pages = (size + 4095) / 4096;
-        let virt_base =
-            crate::memory_management::kernel_space::find_free_virtual_address((pages * 4096) as u64)
-                ? as u64;
+        let virt_base = crate::memory_management::kernel_space::find_free_virtual_address(
+            (pages * 4096) as u64,
+        )? as u64;
         if self.map_framebuffer_region(phys_addr, virt_base, size, cache) {
             Some(virt_base)
         } else {
@@ -345,9 +341,7 @@ impl MemoryManager for UnifiedMemoryManager {
             return Err(SystemError::InternalError);
         }
         for i in 0..count {
-            let _ = self
-                .page_table_manager
-                .unmap_page(virtual_addr + i * 4096);
+            let _ = self.page_table_manager.unmap_page(virtual_addr + i * 4096);
         }
         Ok(())
     }
@@ -528,8 +522,7 @@ impl PageTableHelper for UnifiedMemoryManager {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-        self.page_table_manager
-            .set_page_flags(virtual_addr, flags)
+        self.page_table_manager.set_page_flags(virtual_addr, flags)
     }
     fn get_page_flags(&self, virtual_addr: usize) -> SystemResult<PageFlags> {
         if !self.initialized {

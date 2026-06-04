@@ -21,7 +21,9 @@ impl Write for RawSerialWriter {
 }
 
 #[inline(always)]
-fn raw_serial_fmt(args: core::fmt::Arguments<'_>) { let _ = RawSerialWriter.write_fmt(args); }
+fn raw_serial_fmt(args: core::fmt::Arguments<'_>) {
+    let _ = RawSerialWriter.write_fmt(args);
+}
 
 macro_rules! raw_log {
     ($($arg:tt)*) => { raw_serial_fmt(format_args!($($arg)*)); };
@@ -30,19 +32,35 @@ macro_rules! raw_log {
 // ── Helpers ────────────────────────────────────────────────────
 
 #[inline(always)]
-fn is_user_mode(frame: &InterruptStackFrame) -> bool { frame.code_segment.0 & 3 == 3 }
+fn is_user_mode(frame: &InterruptStackFrame) -> bool {
+    frame.code_segment.0 & 3 == 3
+}
 
 fn exception_name(vector: u8) -> &'static str {
     match vector {
-        0 => "Divide-by-zero", 1 => "Debug", 2 => "Non-maskable Interrupt",
-        3 => "Breakpoint", 4 => "Overflow", 5 => "Bound Range Exceeded",
-        6 => "Invalid Opcode", 7 => "Device Not Available", 8 => "Double Fault",
-        10 => "Invalid TSS", 11 => "Segment Not Present", 12 => "Stack-Segment Fault",
-        13 => "General Protection Fault", 14 => "Page Fault",
-        16 => "x87 FPU Error", 17 => "Alignment Check", 18 => "Machine Check",
-        19 => "SIMD FP Exception", 20 => "Virtualization Exception",
-        21 => "Control Protection Exception", 28 => "Hypervisor Injection Exception",
-        29 => "VMM Communication Exception", 30 => "Security Exception",
+        0 => "Divide-by-zero",
+        1 => "Debug",
+        2 => "Non-maskable Interrupt",
+        3 => "Breakpoint",
+        4 => "Overflow",
+        5 => "Bound Range Exceeded",
+        6 => "Invalid Opcode",
+        7 => "Device Not Available",
+        8 => "Double Fault",
+        10 => "Invalid TSS",
+        11 => "Segment Not Present",
+        12 => "Stack-Segment Fault",
+        13 => "General Protection Fault",
+        14 => "Page Fault",
+        16 => "x87 FPU Error",
+        17 => "Alignment Check",
+        18 => "Machine Check",
+        19 => "SIMD FP Exception",
+        20 => "Virtualization Exception",
+        21 => "Control Protection Exception",
+        28 => "Hypervisor Injection Exception",
+        29 => "VMM Communication Exception",
+        30 => "Security Exception",
         _ => "Unknown",
     }
 }
@@ -51,12 +69,21 @@ fn exception_name(vector: u8) -> &'static str {
 
 fn safe_halt() -> ! {
     raw_log!("--- System halted ---\n");
-    loop { x86_64::instructions::interrupts::disable(); x86_64::instructions::hlt(); }
+    loop {
+        x86_64::instructions::interrupts::disable();
+        x86_64::instructions::hlt();
+    }
 }
 
 fn kernel_fault_halt(frame: &InterruptStackFrame, name: &str, extra: &str) -> ! {
-    raw_log!("\n=== KERNEL EXCEPTION: {} ===\n  RIP={:#x} RSP={:#x} CS={:#x}\n  Extra: {}\n",
-        name, frame.instruction_pointer.as_u64(), frame.stack_pointer.as_u64(), frame.code_segment.0, extra);
+    raw_log!(
+        "\n=== KERNEL EXCEPTION: {} ===\n  RIP={:#x} RSP={:#x} CS={:#x}\n  Extra: {}\n",
+        name,
+        frame.instruction_pointer.as_u64(),
+        frame.stack_pointer.as_u64(),
+        frame.code_segment.0,
+        extra
+    );
     let mut collector = petroleum::debug::BacktraceCollector::new();
     collector.capture();
     raw_log!("Backtrace:\n");
@@ -71,7 +98,9 @@ fn kernel_fault_halt(frame: &InterruptStackFrame, name: &str, extra: &str) -> ! 
 static mut SCHEDULE_TRAMPOLINE: Option<x86_64::VirtAddr> = None;
 
 pub(crate) unsafe fn set_schedule_trampoline(addr: x86_64::VirtAddr) {
-    unsafe { SCHEDULE_TRAMPOLINE = Some(addr); }
+    unsafe {
+        SCHEDULE_TRAMPOLINE = Some(addr);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -81,14 +110,18 @@ pub extern "C" fn exception_recovery_trampoline() -> ! {
     crate::process::schedule_next();
     let new_pid = crate::process::current_pid().expect("schedule_next failed after exception");
     raw_log!("Switching to process {}\n", new_pid);
-    unsafe { crate::process::context_switch(None, new_pid); }
+    unsafe {
+        crate::process::context_switch(None, new_pid);
+    }
     safe_halt()
 }
 
 fn terminate_and_recover(frame: &mut InterruptStackFrame, reason: &str) {
     raw_log!("EXCEPTION: {} - terminating process\n", reason);
     let current_pid = crate::process::CURRENT_PROCESS.load(core::sync::atomic::Ordering::Relaxed);
-    if current_pid == 0 { safe_halt(); }
+    if current_pid == 0 {
+        safe_halt();
+    }
     let pid = crate::process::ProcessId(current_pid as u64);
     crate::process::PROCESS_MANAGER.with_process(pid, |p| {
         p.state = crate::process::ProcessState::Terminated;
@@ -97,11 +130,16 @@ fn terminate_and_recover(frame: &mut InterruptStackFrame, reason: &str) {
     unsafe {
         if let Some(tramp) = SCHEDULE_TRAMPOLINE {
             let new_frame = InterruptStackFrameValue::new(
-                tramp, crate::gdt::kernel_code_selector(), frame.cpu_flags,
-                frame.stack_pointer, crate::gdt::kernel_data_selector(),
+                tramp,
+                crate::gdt::kernel_code_selector(),
+                frame.cpu_flags,
+                frame.stack_pointer,
+                crate::gdt::kernel_data_selector(),
             );
             frame.as_mut().write(new_frame);
-        } else { safe_halt(); }
+        } else {
+            safe_halt();
+        }
     }
 }
 
@@ -113,9 +151,15 @@ macro_rules! define_no_err_handler {
         pub extern "x86-interrupt" fn $name(mut frame: InterruptStackFrame) {
             let exc_name = exception_name($vector);
             if is_user_mode(&frame) {
-                raw_log!("EXC {} at user RIP={:#x}\n", exc_name, frame.instruction_pointer.as_u64());
+                raw_log!(
+                    "EXC {} at user RIP={:#x}\n",
+                    exc_name,
+                    frame.instruction_pointer.as_u64()
+                );
                 terminate_and_recover(&mut frame, exc_name);
-            } else { kernel_fault_halt(&frame, exc_name, ""); }
+            } else {
+                kernel_fault_halt(&frame, exc_name, "");
+            }
         }
     };
 }
@@ -126,7 +170,12 @@ macro_rules! define_err_handler {
         pub extern "x86-interrupt" fn $name(mut frame: InterruptStackFrame, error_code: u64) {
             let exc_name = exception_name($vector);
             if is_user_mode(&frame) {
-                raw_log!("EXC {} err={:#x} at user RIP={:#x}\n", exc_name, error_code, frame.instruction_pointer.as_u64());
+                raw_log!(
+                    "EXC {} err={:#x} at user RIP={:#x}\n",
+                    exc_name,
+                    error_code,
+                    frame.instruction_pointer.as_u64()
+                );
                 terminate_and_recover(&mut frame, exc_name);
             } else {
                 raw_log!("  Error code: {:#x}\n", error_code);
@@ -169,16 +218,26 @@ pub extern "x86-interrupt" fn breakpoint_handler(_frame: InterruptStackFrame) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "x86-interrupt" fn double_fault_handler(frame: InterruptStackFrame, _error_code: u64) -> ! {
-    raw_log!("\n=== DOUBLE FAULT === RIP={:#x} RSP={:#x} CS={:#x}\n",
-        frame.instruction_pointer.as_u64(), frame.stack_pointer.as_u64(), frame.code_segment.0);
+pub extern "x86-interrupt" fn double_fault_handler(
+    frame: InterruptStackFrame,
+    _error_code: u64,
+) -> ! {
+    raw_log!(
+        "\n=== DOUBLE FAULT === RIP={:#x} RSP={:#x} CS={:#x}\n",
+        frame.instruction_pointer.as_u64(),
+        frame.stack_pointer.as_u64(),
+        frame.code_segment.0
+    );
     if is_user_mode(&frame) {
         let pid = crate::process::CURRENT_PROCESS.load(core::sync::atomic::Ordering::Relaxed);
         if pid != 0 {
-            crate::process::PROCESS_MANAGER.with_process(crate::process::ProcessId(pid as u64), |p| {
-                p.state = crate::process::ProcessState::Terminated;
-                p.exit_code = Some(1);
-            });
+            crate::process::PROCESS_MANAGER.with_process(
+                crate::process::ProcessId(pid as u64),
+                |p| {
+                    p.state = crate::process::ProcessState::Terminated;
+                    p.exit_code = Some(1);
+                },
+            );
             crate::process::cleanup_terminated_processes();
         }
     }
@@ -186,13 +245,19 @@ pub extern "x86-interrupt" fn double_fault_handler(frame: InterruptStackFrame, _
 }
 
 #[unsafe(no_mangle)]
-pub extern "x86-interrupt" fn page_fault_handler(mut frame: InterruptStackFrame, error_code: PageFaultErrorCode) {
+pub extern "x86-interrupt" fn page_fault_handler(
+    mut frame: InterruptStackFrame,
+    error_code: PageFaultErrorCode,
+) {
     let fault_addr = match Cr2::read() {
         Ok(a) => a,
         Err(_) => {
             raw_log!("PF: CR2 invalid\n");
-            if is_user_mode(&frame) { terminate_and_recover(&mut frame, "PF(invalid CR2)"); }
-            else { kernel_fault_halt(&frame, "Page Fault", "CR2 invalid"); }
+            if is_user_mode(&frame) {
+                terminate_and_recover(&mut frame, "PF(invalid CR2)");
+            } else {
+                kernel_fault_halt(&frame, "Page Fault", "CR2 invalid");
+            }
             return;
         }
     };
@@ -201,10 +266,13 @@ pub extern "x86-interrupt" fn page_fault_handler(mut frame: InterruptStackFrame,
     let is_write = error_code.intersects(PageFaultErrorCode::CAUSED_BY_WRITE);
     let is_user = error_code.intersects(PageFaultErrorCode::USER_MODE);
 
-    raw_log!("PF @ {:#x}: {} {} {}\n", fault_addr.as_u64(),
+    raw_log!(
+        "PF @ {:#x}: {} {} {}\n",
+        fault_addr.as_u64(),
         if is_present { "prot" } else { "np" },
         if is_write { "W" } else { "R" },
-        if is_user { "(user)" } else { "(kernel)" });
+        if is_user { "(user)" } else { "(kernel)" }
+    );
 
     if !is_user {
         raw_log!("  Fault addr: {:#x}\n", fault_addr.as_u64());
@@ -212,6 +280,8 @@ pub extern "x86-interrupt" fn page_fault_handler(mut frame: InterruptStackFrame,
     } else {
         if petroleum::common::memory::is_user_address(fault_addr) || is_present {
             terminate_and_recover(&mut frame, "Page Fault(user)");
-        } else { terminate_and_recover(&mut frame, "Page Fault(invalid addr)"); }
+        } else {
+            terminate_and_recover(&mut frame, "Page Fault(invalid addr)");
+        }
     }
 }
