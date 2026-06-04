@@ -902,21 +902,57 @@ impl UefiInitContext {
     /// from heap::FRAME_ALLOCATOR to constants::FRAME_ALLOCATOR, which involves
     /// OffsetPageTable::new calls that may corrupt stack values. The global
     /// PHYSICAL_MEMORY_OFFSET is set before any of these calls and remains correct.
-    /// Log framebuffer config availability and return VGA virtual address.
     ///
-    /// IMPORTANT: Does NOT perform any 4KB page table mappings here.
-    ///   - VGA text buffer: not needed (vga_puts removed from post-world-switch path)
-    ///   - APIC/IOAPIC: mapped later by init_apic() via kernel-space allocator
-    ///   - Framebuffer: already covered by higher-half 1GB huge pages
+    /// Maps:
+    ///   - APIC / IOAPIC: 4KB NO_CACHE (needed for interrupt handling)
+    ///   - Framebuffer:   4KB NO_CACHE (needed on real hardware where MTRR
+    ///                    enforces UC/WC; huge page WB access would #GP)
+    ///   - VGA text buffer: skipped (vga_puts removed)
     ///
-    /// Mapping MMIO regions via 4KB splits here was causing QEMU iothread
-    /// re-entrancy (struct page table allocations landing on framebuffer MMIO)
-    /// and InsydeH2O #GP triple faults.
+    /// L3 1GB huge page splits are now safe thanks to the L3 split logic in
+    /// petroleum::page_table::kernel::init::map_page_4k_l1.
     #[cfg(target_os = "uefi")]
     pub fn map_mmio() -> usize {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [map_mmio] Entry (no-op mode)\n");
+        // ── 1. APIC / IOAPIC ────────────────────────────────
+        let phys_offset_val = petroleum::common::memory::get_physical_memory_offset() as u64;
+        let physical_memory_offset = x86_64::VirtAddr::new(phys_offset_val);
 
-        // Validate and log framebuffer config availability
+        let lapic_virt = 0xfee00000u64 + physical_memory_offset.as_u64();
+        // Initialize LOCAL_APIC_ADDRESS early — init_apic() depends on it.
+        unsafe {
+            petroleum::common::utils::reset_mutex_lock(&petroleum::LOCAL_APIC_ADDRESS);
+        }
+        *petroleum::LOCAL_APIC_ADDRESS.lock() = petroleum::LocalApicAddress(lapic_virt as *mut u32);
+
+        let frame_allocator = petroleum::page_table::constants::get_frame_allocator_mut();
+        let l4 = unsafe { petroleum::page_table::active_level_4_table(physical_memory_offset) };
+
+        let mmio_flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::NO_EXECUTE
+            | PageTableFlags::NO_CACHE;
+
+        let apic_regions: &[(u64, u64, &str, PageTableFlags)] = &[
+            (0xfee00000, 1, "LAPIC", mmio_flags),
+            (0xfec00000, 1, "IOAPIC", mmio_flags),
+        ];
+        for (phys, pages, name, flags) in apic_regions {
+            let virt = phys + physical_memory_offset.as_u64();
+            unsafe {
+                for i in 0..*pages {
+                    let v = x86_64::VirtAddr::new(virt + i * 4096);
+                    let p = x86_64::PhysAddr::new(phys + i * 4096);
+                    let _ = petroleum::early::mapper::map_page_4k_l1(
+                        l4, v, p, *flags, frame_allocator, physical_memory_offset,
+                    );
+                }
+            }
+            petroleum::debug_log!(
+                "DEBUG: [map_mmio] {} mapped at virt={:#x}\n", name, virt
+            );
+        }
+
+        // ── 2. Framebuffer ──────────────────────────────────
         let fb_config_valid =
             |config: &petroleum::common::uefi::FullereneFramebufferConfig| -> bool {
                 config.address >= 0x100000
@@ -929,7 +965,7 @@ impl UefiInitContext {
                     && config.stride > 0
             };
 
-        let _fb_config_for_mapping = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+        let fb_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
             .get()
             .and_then(|m| m.lock().clone())
             .filter(fb_config_valid)
@@ -962,13 +998,34 @@ impl UefiInitContext {
                 None
             });
 
-        petroleum::write_serial_bytes!(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: [map_mmio] Framebuffer config validated (no 4K mappings performed)\n"
-        );
+        if let Some(config) = fb_config {
+            let fb_phys = config.address;
+            let fb_virt = fb_phys + phys_offset_val;
+            let fb_size = (config.width as u64 * config.height as u64 * config.bpp as u64) / 8;
+            let fb_pages = (fb_size + 4095) / 4096;
+            let fb_flags = PageTableFlags::PRESENT
+                | PageTableFlags::WRITABLE
+                | PageTableFlags::NO_EXECUTE
+                | PageTableFlags::NO_CACHE;
 
-        // Return 0 as VGA virt addr — no longer needed
+            let frame_allocator = petroleum::page_table::constants::get_frame_allocator_mut();
+            let l4 = unsafe { petroleum::page_table::active_level_4_table(physical_memory_offset) };
+
+            unsafe {
+                for i in 0..fb_pages {
+                    let v = x86_64::VirtAddr::new(fb_virt + i * 4096);
+                    let p = x86_64::PhysAddr::new(fb_phys + i * 4096);
+                    let _ = petroleum::early::mapper::map_page_4k_l1(
+                        l4, v, p, fb_flags, frame_allocator, physical_memory_offset,
+                    );
+                }
+            }
+            petroleum::debug_log!(
+                "DEBUG: [map_mmio] Framebuffer {} pages mapped at virt={:#x}\n",
+                fb_pages, fb_virt
+            );
+        }
+
         0
     }
 
