@@ -141,6 +141,7 @@ pub use common::syscall::*;
 pub use common::{check_memory_initialized, set_memory_initialized};
 // Re-export UEFI graphics protocol detection functions from graphics::uefi module.
 // These are the canonical implementations — do NOT re-define them here.
+pub use graphics::framebuffer_mapper::{CacheMode, FramebufferMapper};
 pub use graphics::uefi::*;
 pub use graphics::*;
 pub use nitrogen::port::{MsrHelper, PortOperations, PortWriter, RegisterConfig};

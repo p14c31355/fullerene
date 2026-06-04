@@ -77,6 +77,7 @@ pub mod console;
 pub mod constants;
 pub mod desktop;
 pub mod framebuffer;
+pub mod framebuffer_mapper;
 pub mod registers;
 pub mod renderer;
 pub mod setup;
