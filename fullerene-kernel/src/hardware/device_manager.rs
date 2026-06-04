@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use log;
 use spin::Mutex;
 
-use petroleum::initializer::{ErrorLogging, HardwareDevice, Initializable};
+use petroleum::initializer::{HardwareDevice, Initializable};
 use petroleum::{SystemError, SystemResult};
 
 /// Device information structure

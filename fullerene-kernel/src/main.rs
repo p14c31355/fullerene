@@ -3,11 +3,6 @@
 #![feature(abi_x86_interrupt)]
 #![feature(alloc_error_handler)]
 
-use petroleum::{
-    debug_log, draw_border_rect, draw_filled_rect, info_log, mem_debug, periodic_task,
-    scheduler_log, warn_log,
-};
-
 extern crate alloc;
 
 // Define panic and alloc error handlers using petroleum's macros

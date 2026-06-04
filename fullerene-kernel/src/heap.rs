@@ -9,7 +9,7 @@ pub const HEAP_SIZE: usize = 4 * 1024 * 1024; // 4MB heap
 pub const KERNEL_STACK_SIZE: usize = 4096 * 64; // 256KB
 
 use petroleum::page_table::MemoryDescriptorValidator;
-use petroleum::page_table::memory_map::{EfiMemoryDescriptor, MemoryMapDescriptor};
+use petroleum::page_table::memory_map::MemoryMapDescriptor;
 use spin::Mutex;
 
 /// Global frame allocator

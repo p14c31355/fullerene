@@ -152,7 +152,7 @@ pub unsafe fn build_gdt(
     SegmentSelector,
     SegmentSelector,
     SegmentSelector,
-) {
+) { unsafe {
     let mut gdt = GlobalDescriptorTable::new();
     let code_selector = gdt.append(Descriptor::kernel_code_segment());
     let data_selector = gdt.append(Descriptor::kernel_data_segment());
@@ -168,7 +168,7 @@ pub unsafe fn build_gdt(
         user_data_selector,
         user_code_selector,
     )
-}
+}}
 
 /// Store built GDT and selectors into global state.
 pub unsafe fn store_gdt(

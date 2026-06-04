@@ -92,7 +92,7 @@ pub fn map_framebuffer(
 }
 
 /// Find a free virtual address region (backward-compat stub).
-pub fn find_free_virtual_address(size: u64) -> Option<usize> {
+pub fn find_free_virtual_address(_size: u64) -> Option<usize> {
     // TODO: implement proper free VA search
     None
 }

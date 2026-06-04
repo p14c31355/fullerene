@@ -32,30 +32,30 @@ struct ProcessWaker {
     woken: AtomicBool,
 }
 
-unsafe fn waker_clone(raw: *const ()) -> RawWaker {
+unsafe fn waker_clone(raw: *const ()) -> RawWaker { unsafe {
     let w = &*(raw as *const ProcessWaker);
     let boxed = Box::new(ProcessWaker {
         pid: w.pid,
         woken: AtomicBool::new(w.woken.load(Ordering::Relaxed)),
     });
     RawWaker::new(Box::into_raw(boxed) as *const (), &WAKER_VTABLE)
-}
+}}
 
-unsafe fn waker_wake(raw: *const ()) {
+unsafe fn waker_wake(raw: *const ()) { unsafe {
     let w = Box::from_raw(raw as *mut ProcessWaker);
     w.woken.store(true, Ordering::Release);
     process::unblock_process(ProcessId(w.pid));
-}
+}}
 
-unsafe fn waker_wake_by_ref(raw: *const ()) {
+unsafe fn waker_wake_by_ref(raw: *const ()) { unsafe {
     let w = &*(raw as *const ProcessWaker);
     w.woken.store(true, Ordering::Release);
     process::unblock_process(ProcessId(w.pid));
-}
+}}
 
-unsafe fn waker_drop(raw: *const ()) {
+unsafe fn waker_drop(raw: *const ()) { unsafe {
     drop(Box::from_raw(raw as *mut ProcessWaker));
-}
+}}
 
 static WAKER_VTABLE: RawWakerVTable =
     RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);

@@ -7,11 +7,9 @@ use petroleum::initializer::{
 };
 use petroleum::mem_debug;
 use petroleum::page_table::{
-    BitmapFrameAllocator, BootInfoFrameAllocator, FrameAllocatorExt, MemoryMapDescriptor,
+    BitmapFrameAllocator, BootInfoFrameAllocator, FrameAllocatorExt,
     PageTableHelper, ProcessPageTable,
 };
-use petroleum::serial;
-use petroleum::serial::serial_log;
 use x86_64::{
     PhysAddr,
     structures::paging::{

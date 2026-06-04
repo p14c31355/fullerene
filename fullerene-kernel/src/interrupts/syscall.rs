@@ -10,7 +10,6 @@ use x86_64::registers::rflags::RFlags;
 /// Static kernel stack for syscall to prevent page fault vulnerabilities
 const SYSCALL_STACK_SIZE: usize = 4096;
 
-use core::sync::atomic::{AtomicPtr, Ordering};
 static mut SYSCALL_STACK_PTR: u64 = 0;
 
 /// Kernel CR3 for syscall to access kernel heap
@@ -86,7 +85,7 @@ pub fn setup_syscall() {
     mem_debug!("Syscall: EFER written\n");
 
     // Set LSTAR MSR to syscall entry point
-    let entry_addr = syscall_entry as u64;
+    let entry_addr = syscall_entry as *const () as u64;
     mem_debug!("Syscall: writing LSTAR\n");
     unsafe {
         Msr::new(0xC0000082).write(entry_addr);

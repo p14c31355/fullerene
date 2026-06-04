@@ -9,7 +9,7 @@
 
 use alloc::vec::Vec;
 use core::ptr;
-use nitrogen::pci::{PciConfigSpace, PciDevice};
+use nitrogen::pci::PciDevice;
 use petroleum::initializer::FrameAllocator;
 use spin::Mutex;
 
