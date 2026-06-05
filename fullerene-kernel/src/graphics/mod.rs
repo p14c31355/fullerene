@@ -297,59 +297,94 @@ pub fn init_graphics() {
             let fb_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
                 .get()
                 .and_then(|mutex| mutex.lock().clone());
-            let fb_info = if let Some(c) = fb_config {
-                petroleum::graphics::color::FramebufferInfo {
-                    address: c.address,
-                    width: c.width,
-                    height: c.height,
-                    stride: c.stride,
-                    pixel_format: Some(c.pixel_format),
-                    colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
-                }
-            } else {
-                petroleum::serial::serial_log(format_args!(
-                    "[graphics] No UEFI config, using fallback for VirtIO-GPU\n"
-                ));
-                petroleum::graphics::color::FramebufferInfo {
-                    address: 0x40000000,
-                    width: 1024,
-                    height: 768,
-                    stride: 1024,
-                    pixel_format: Some(petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor),
-                    colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
-                }
-            };
+
+            // Separate physical (for GPU) and virtual (for CPU) framebuffer addresses.
+            // Using the physical address directly on real hardware causes page faults
+            // because the higher-half kernel only has the physical→virtual identity
+            // mapping available when bootloader page tables are still active.
+            let (fb_phys, fb_width, fb_height, fb_stride, fb_pixel_format) =
+                if let Some(ref c) = fb_config {
+                    (c.address, c.width, c.height, c.stride, Some(c.pixel_format))
+                } else {
+                    petroleum::serial::serial_log(format_args!(
+                        "[graphics] No UEFI config, using fallback for VirtIO-GPU\n"
+                    ));
+                    (
+                        0x40000000u64,
+                        1024u32,
+                        768u32,
+                        1024u32,
+                        Some(petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor),
+                    )
+                };
+
+            // Map physical framebuffer into higher-half virtual address space
+            // so the CPU can write pixels through FramebufferWriter.
+            let fb_virt = fb_phys + off;
+            let fb_byte_size = (fb_stride as u64) * (fb_height as u64);
 
             petroleum::serial::serial_log(format_args!(
-                "[graphics] Initializing VirtIO-GPU display: {}x{}\n",
-                fb_info.width, fb_info.height
+                "[graphics] Mapping FB: phys={:#x} virt={:#x} size={}\n",
+                fb_phys, fb_virt, fb_byte_size
             ));
-            match gpu.init_display(
-                fb_info.width,
-                fb_info.height,
-                fb_info.address,
-                fb_info.stride * fb_info.height,
-            ) {
-                Ok(()) => {
-                    let writer =
-                        petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(fb_info);
-                    let renderer =
-                        petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer);
 
-                    set_primary_renderer(renderer);
-                    *VIRTIO_GPU.lock() = Some(Box::new(gpu));
-                    petroleum::serial::serial_log(format_args!(
-                        "[graphics] VirtIO-GPU assigned as PRIMARY_RENDERER using configuration\n"
-                    ));
-                    return; // Prevent GOP fallback from overwriting the VirtIO-GPU renderer
-                }
-                Err(e) => {
-                    petroleum::serial::serial_log(format_args!(
-                        "[graphics] VirtIO-GPU init_display failed: {:?}. Falling back to GOP.\n",
-                        e
-                    ));
-                    // gpu is dropped here, VIRTIO_GPU is NOT set.
-                    // MMIO mappings remain but won't interfere with GOP.
+            let fb_mapped = {
+                let mut mm = crate::memory_management::get_memory_manager().lock();
+                let mm = mm.as_mut().expect("MemoryManager not initialized");
+                mm.map_mmio_region(
+                    fb_phys as usize,
+                    fb_virt as usize,
+                    fb_byte_size as usize,
+                )
+                .is_ok()
+            };
+
+            if !fb_mapped {
+                petroleum::serial::serial_log(format_args!(
+                    "[graphics] FB mapping failed, falling back to GOP\n"
+                ));
+                // gpu is dropped here; fall through to GOP fallback path below.
+            } else {
+                let fb_info = petroleum::graphics::color::FramebufferInfo {
+                    address: fb_virt,
+                    width: fb_width,
+                    height: fb_height,
+                    stride: fb_stride,
+                    pixel_format: fb_pixel_format,
+                    colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
+                };
+
+                petroleum::serial::serial_log(format_args!(
+                    "[graphics] Initializing VirtIO-GPU display: {}x{}\n",
+                    fb_info.width, fb_info.height
+                ));
+                match gpu.init_display(
+                    fb_info.width,
+                    fb_info.height,
+                    fb_phys,
+                    fb_info.stride * fb_info.height,
+                ) {
+                    Ok(()) => {
+                        let writer =
+                            petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(fb_info);
+                        let renderer =
+                            petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer);
+
+                        set_primary_renderer(renderer);
+                        *VIRTIO_GPU.lock() = Some(Box::new(gpu));
+                        petroleum::serial::serial_log(format_args!(
+                            "[graphics] VirtIO-GPU assigned as PRIMARY_RENDERER using configuration\n"
+                        ));
+                        return; // Prevent GOP fallback from overwriting the VirtIO-GPU renderer
+                    }
+                    Err(e) => {
+                        petroleum::serial::serial_log(format_args!(
+                            "[graphics] VirtIO-GPU init_display failed: {:?}. Falling back to GOP.\n",
+                            e
+                        ));
+                        // gpu is dropped here, VIRTIO_GPU is NOT set.
+                        // MMIO mappings remain but won't interfere with GOP.
+                    }
                 }
             }
         } else {

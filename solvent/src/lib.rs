@@ -39,7 +39,10 @@ const CURSOR_TIMER_ID: TimerId = TimerId(1);
 const MOUSE_SENSITIVITY: i16 = 8;
 const FRAME_INTERVAL_TICKS: u64 = 2;
 const FRAME_TIMER_ID: TimerId = TimerId(2);
-const MAX_FB_PIXELS: usize = 1920 * 1080;
+/// Maximum framebuffer size covering 4K (3840×2160).  BSS static buffer;
+/// if a display exceeds this the compositor will skip rendering and log
+/// a warning instead of overflowing the back-buffer.
+const MAX_FB_PIXELS: usize = 3840 * 2160;
 
 // ── Static back‑buffer (BSS, zero heap pressure) ──────────────
 
