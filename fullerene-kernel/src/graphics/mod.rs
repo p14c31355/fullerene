@@ -328,30 +328,39 @@ pub fn init_graphics() {
                 fb_phys, fb_virt, fb_byte_size
             ));
 
-            let fb_mapped = {
+            let fb_virt_mapped = {
                 let mut mm = crate::memory_management::get_memory_manager().lock();
                 let mm = mm.as_mut().expect("MemoryManager not initialized");
 
                 // Use WriteCombining for the framebuffer: on InsydeH2O the MTRR
                 // is set to UC for PCI MMIO, but PAT with PWT=1 gives WC which
                 // is safe for framebuffer writes and won't #GP.
+                //
+                // map_framebuffer() allocates a fresh virtual address and maps
+                // the physical framebuffer with WC cache flags there.  We MUST
+                // use the returned address — fb_virt points to the old WB
+                // huge-page mapping which conflicts with MTRR UC.
                 use petroleum::graphics::framebuffer_mapper::{CacheMode, FramebufferMapper};
                 mm.map_framebuffer(
                     fb_phys,
                     fb_byte_size as usize,
                     CacheMode::WriteCombining,
                 )
-                .is_some()
             };
 
-            if !fb_mapped {
+            if fb_virt_mapped.is_none() {
                 petroleum::serial::serial_log(format_args!(
                     "[graphics] FB mapping (WC) failed, falling back to GOP\n"
                 ));
                 // gpu is dropped here; fall through to GOP fallback path below.
             } else {
+                let fb_virt_wc = fb_virt_mapped.unwrap();
+                petroleum::serial::serial_log(format_args!(
+                    "[graphics] FB mapped for WC at virt={:#x} (phys={:#x})\n",
+                    fb_virt_wc, fb_phys
+                ));
                 let fb_info = petroleum::graphics::color::FramebufferInfo {
-                    address: fb_virt,
+                    address: fb_virt_wc,
                     width: fb_width,
                     height: fb_height,
                     stride: fb_stride,
@@ -403,11 +412,38 @@ pub fn init_graphics() {
         ));
     }
 
-    // Try to create primary console from petroleum (GOP fallback)
-    if let Some(primary_renderer) = petroleum::early::framebuffer::create_primary_console() {
-        *PRIMARY_RENDERER.lock() = Some(primary_renderer);
-        petroleum::debug_log!("Graphics initialized with GOP Framebuffer");
-        return;
+    // Try GOP fallback via UMM's map_framebuffer (handles huge-page split).
+    if let Some(fb_config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+        .get()
+        .and_then(|mutex| mutex.lock().clone())
+    {
+        let fb_phys = fb_config.address;
+        let fb_size = (fb_config.stride as u64 * fb_config.height as u64) as usize;
+        petroleum::debug_log!("[graphics] GOP fallback: phys={:#x} size={}\n", fb_phys, fb_size);
+
+        use petroleum::graphics::framebuffer_mapper::{CacheMode, FramebufferMapper};
+        if let Some(fb_virt_wc) = {
+            let mut mm = crate::memory_management::get_memory_manager().lock();
+            let mm = mm.as_mut().expect("MemoryManager not initialized");
+            mm.map_framebuffer(fb_phys, fb_size, CacheMode::WriteCombining)
+        } {
+            let fb_info = petroleum::graphics::color::FramebufferInfo {
+                address: fb_virt_wc,
+                width: fb_config.width,
+                height: fb_config.height,
+                stride: fb_config.stride,
+                pixel_format: Some(fb_config.pixel_format),
+                colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
+            };
+
+            let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(fb_info);
+            let renderer =
+                petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer);
+            *PRIMARY_RENDERER.lock() = Some(renderer);
+            petroleum::debug_log!("Graphics initialized with GOP Framebuffer (via UMM WC map)");
+            return;
+        }
+        petroleum::debug_log!("[graphics] GOP fallback: map_framebuffer failed\n");
     }
 
     // Fallback to VGA
