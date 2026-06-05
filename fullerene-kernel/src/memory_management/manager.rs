@@ -66,13 +66,16 @@ impl UnifiedMemoryManager {
                 // 512 4KB pages before we can overlay MMIO mappings with
                 // different cache attributes (UC/WC).
                 //
-                // Strategy: read the 2MB phys frame from the huge page entry,
-                // allocate a new 4KB page table, fill it with 512 4KB entries
-                // pointing to consecutive 4KB chunks of the same 2MB region,
-                // then replace the PDPT entry with the new page table.
+                // Page table walk for x86-64 4-level paging:
+                //   P4 (PML4) → P3 (PDPT) → P2 (PD) → P1 (PT) → 4KB page
                 //
-                // We use current_pml4 (snapshot before the mutable mapper borrow)
-                // to walk the page tables.
+                // The 2MB huge-page flag (PS=1) lives on the P2 (Page Directory)
+                // entry, NOT on the P3 (PDPT) entry.  A P3 HUGE_PAGE would be a
+                // 1GB huge page, which the kernel area mapping does NOT use.
+                //
+                // Strategy: walk P4→P3→P2, read the 2MB phys frame from the P2
+                // entry, allocate a 4KB P1 page table with 512 4KB entries,
+                // then replace the P2 entry to point at the new P1 table.
                 let l4_table = unsafe {
                     &*((current_pml4 as u64 + off)
                         as *const x86_64::structures::paging::page_table::PageTable)
@@ -80,40 +83,62 @@ impl UnifiedMemoryManager {
 
                 let p4_idx = virt.p4_index();
                 let p3_idx = virt.p3_index();
-                let _p2_idx = virt.p2_index();
+                let p2_idx = virt.p2_index();
+                let p1_idx = virt.p1_index();
 
                 // Walk: P4 → P3
                 let p4_entry = &l4_table[p4_idx];
                 if p4_entry.is_unused() {
                     return Err(SystemError::MappingFailed);
                 }
+                let p3_phys = p4_entry.addr().as_u64();
                 let p3_table = unsafe {
-                    &*((p4_entry.addr().as_u64() + off)
+                    &*((p3_phys + off)
                         as *const x86_64::structures::paging::page_table::PageTable)
                 };
 
-                // Walk: P3 → P2 (huge page entry)
+                // Walk: P3 → P2
                 let p3_entry = &p3_table[p3_idx];
-                if !p3_entry.flags().contains(PageFlags::HUGE_PAGE) {
+                if p3_entry.is_unused() || p3_entry.flags().contains(PageFlags::HUGE_PAGE) {
+                    // P3 has HUGE_PAGE → 1GB page, which won't happen for our
+                    // kernel area mapping
+                    return Err(SystemError::MappingFailed);
+                }
+                let p2_phys = p3_entry.addr().as_u64();
+                let p2_table = unsafe {
+                    &*((p2_phys + off)
+                        as *const x86_64::structures::paging::page_table::PageTable)
+                };
+
+                // P2 entry: the actual 2MB huge-page descriptor
+                let p2_entry = &p2_table[p2_idx];
+                if !p2_entry.flags().contains(PageFlags::HUGE_PAGE) {
+                    // Not a huge page — something is inconsistent
                     return Err(SystemError::MappingFailed);
                 }
 
-                let huge_phys = p3_entry.addr();
-                let huge_flags = p3_entry.flags();
+                let huge_phys = p2_entry.addr(); // 2MB-aligned physical base
+                let huge_flags = p2_entry.flags();
 
-                // Allocate a new page table for the 512 4KB entries
-                let split_table_frame = frame_alloc
+                // Allocate a new P1 page table for the 512 4KB entries
+                let p1_frame = frame_alloc
                     .allocate_frame()
                     .ok_or(SystemError::FrameAllocationFailed)?;
-                let split_table_phys = split_table_frame.start_address().as_u64();
-                let split_table = unsafe {
-                    &mut *((split_table_phys + off)
+                let p1_phys = p1_frame.start_address().as_u64();
+                let p1_table = unsafe {
+                    &mut *((p1_phys + off)
                         as *mut x86_64::structures::paging::page_table::PageTable)
                 };
-                split_table.zero();
+                p1_table.zero();
 
-                // Fill 512 entries, each pointing to a 4KB slice
+                // Fill 512 P1 entries, each pointing to a 4KB slice of the
+                // 2MB physical range, EXCEPT the target entry — leave it
+                // NOT_PRESENT so the subsequent mapper.map_to can install
+                // the new UC/WC flags without triggering PageAlreadyMapped.
                 for i in 0..512 {
+                    if i as u16 == p1_idx.into() {
+                        continue;
+                    }
                     let sub_phys = x86_64::PhysAddr::new(
                         huge_phys.as_u64() + (i * 4096),
                     );
@@ -124,27 +149,30 @@ impl UnifiedMemoryManager {
                     let sub_flags = huge_flags
                         & !PageFlags::HUGE_PAGE
                         & !PageFlags::GLOBAL;
-                    split_table[i as usize]
+                    p1_table[i as usize]
                         .set_addr(sub_frame.start_address(), sub_flags);
                 }
 
-                // Replace the P3 entry: point to the new 4KB table.
-                // The P3 table is allocated from a frame (p4_entry.addr()) so we
-                // use an unsafe mutable pointer cast to write the new P3 entry.
-                let new_p3_flags = huge_flags & !PageFlags::HUGE_PAGE & !PageFlags::GLOBAL;
-                let p3_table_mut = unsafe {
-                    &mut *((p4_entry.addr().as_u64() + off)
+                // Replace the P2 entry: point to the new P1 table instead of
+                // the 2MB huge frame
+                let new_p2_flags = huge_flags
+                    & !PageFlags::HUGE_PAGE
+                    & !PageFlags::GLOBAL;
+                let p2_table_mut = unsafe {
+                    &mut *((p2_phys + off)
                         as *mut x86_64::structures::paging::page_table::PageTable)
                 };
-                p3_table_mut[p3_idx].set_addr(
-                    split_table_frame.start_address(),
-                    new_p3_flags,
+                p2_table_mut[p2_idx].set_addr(
+                    p1_frame.start_address(),
+                    new_p2_flags,
                 );
 
                 // Flush TLB for the 2MB range
                 x86_64::instructions::tlb::flush_all();
 
-                // Now retry the 4KB mapping
+                // Now retry the 4KB mapping over the freshly-split range.
+                // The target P1 entry was left NOT_PRESENT so mapper.map_to
+                // can install the new flags without PageAlreadyMapped.
                 match unsafe { mapper.map_to(page, frame, flags, frame_alloc) } {
                     Ok(flush) => {
                         flush.flush();
@@ -152,7 +180,7 @@ impl UnifiedMemoryManager {
                     }
                     Err(e) => {
                         petroleum::serial::serial_log(format_args!(
-                            "[safe_map_page] Retry after split failed virt={:#x}: {:?}\n",
+                            "[safe_map_page] Retry after 2MB split failed virt={:#x}: {:?}\n",
                             virtual_addr, e
                         ));
                         Err(SystemError::MappingFailed)
