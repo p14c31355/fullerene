@@ -331,17 +331,22 @@ pub fn init_graphics() {
             let fb_mapped = {
                 let mut mm = crate::memory_management::get_memory_manager().lock();
                 let mm = mm.as_mut().expect("MemoryManager not initialized");
-                mm.map_mmio_region(
-                    fb_phys as usize,
-                    fb_virt as usize,
+
+                // Use WriteCombining for the framebuffer: on InsydeH2O the MTRR
+                // is set to UC for PCI MMIO, but PAT with PWT=1 gives WC which
+                // is safe for framebuffer writes and won't #GP.
+                use petroleum::graphics::framebuffer_mapper::{CacheMode, FramebufferMapper};
+                mm.map_framebuffer(
+                    fb_phys,
                     fb_byte_size as usize,
+                    CacheMode::WriteCombining,
                 )
-                .is_ok()
+                .is_some()
             };
 
             if !fb_mapped {
                 petroleum::serial::serial_log(format_args!(
-                    "[graphics] FB mapping failed, falling back to GOP\n"
+                    "[graphics] FB mapping (WC) failed, falling back to GOP\n"
                 ));
                 // gpu is dropped here; fall through to GOP fallback path below.
             } else {

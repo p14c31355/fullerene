@@ -786,6 +786,13 @@ impl VirtioGpu {
         unsafe {
             core::ptr::write_volatile(notify_ptr, notify_val);
         }
+        // MMIO read-back fence: InsydeH2O (and some KVM/QEMU configs) may
+        // buffer PCIe posted writes.  A volatile read from the common config
+        // forces the write to be flushed to the device before we start
+        // polling the used ring.
+        unsafe {
+            core::ptr::read_volatile(self.common_virt_absolute);
+        }
     }
 
     pub fn flush(&mut self, w: u32, h: u32) {

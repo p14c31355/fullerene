@@ -36,20 +36,141 @@ impl UnifiedMemoryManager {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
+        // Snapshot current page table root BEFORE creating mapper,
+        // which borrows self.page_table_manager.mapper mutably.
+        let current_pml4 = self.page_table_manager.current_page_table();
+        let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+        let virt = x86_64::VirtAddr::new(virtual_addr as u64);
+        let phys = x86_64::PhysAddr::new(physical_addr as u64);
+        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt);
+        let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys);
+        let frame_alloc = petroleum::page_table::constants::get_frame_allocator_mut();
+
+        // Unmap any existing 4KB page first
         let _ = self.page_table_manager.unmap_page(virtual_addr);
-        let res = self.page_table_manager.map_page(
-            virtual_addr,
-            physical_addr,
-            flags,
-            petroleum::page_table::constants::get_frame_allocator_mut(),
-        );
-        if let Err(e) = &res {
-            petroleum::serial::serial_log(format_args!(
-                "[safe_map_page] Failed virt={:#x} phys={:#x}: {:?}\n",
-                virtual_addr, physical_addr, e
-            ));
+
+        let mapper = self
+            .page_table_manager
+            .mapper
+            .as_mut()
+            .ok_or(SystemError::InternalError)?;
+
+        match unsafe { mapper.map_to(page, frame, flags, frame_alloc) } {
+            Ok(flush) => {
+                flush.flush();
+                Ok(())
+            }
+            Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {
+                // The virtual address is covered by a 2MB huge page (from the
+                // kernel area WB mapping).  We must split the huge page into
+                // 512 4KB pages before we can overlay MMIO mappings with
+                // different cache attributes (UC/WC).
+                //
+                // Strategy: read the 2MB phys frame from the huge page entry,
+                // allocate a new 4KB page table, fill it with 512 4KB entries
+                // pointing to consecutive 4KB chunks of the same 2MB region,
+                // then replace the PDPT entry with the new page table.
+                //
+                // We use current_pml4 (snapshot before the mutable mapper borrow)
+                // to walk the page tables.
+                let l4_table = unsafe {
+                    &*((current_pml4 as u64 + off)
+                        as *const x86_64::structures::paging::page_table::PageTable)
+                };
+
+                let p4_idx = virt.p4_index();
+                let p3_idx = virt.p3_index();
+                let _p2_idx = virt.p2_index();
+
+                // Walk: P4 → P3
+                let p4_entry = &l4_table[p4_idx];
+                if p4_entry.is_unused() {
+                    return Err(SystemError::MappingFailed);
+                }
+                let p3_table = unsafe {
+                    &*((p4_entry.addr().as_u64() + off)
+                        as *const x86_64::structures::paging::page_table::PageTable)
+                };
+
+                // Walk: P3 → P2 (huge page entry)
+                let p3_entry = &p3_table[p3_idx];
+                if !p3_entry.flags().contains(PageFlags::HUGE_PAGE) {
+                    return Err(SystemError::MappingFailed);
+                }
+
+                let huge_phys = p3_entry.addr();
+                let huge_flags = p3_entry.flags();
+
+                // Allocate a new page table for the 512 4KB entries
+                let split_table_frame = frame_alloc
+                    .allocate_frame()
+                    .ok_or(SystemError::FrameAllocationFailed)?;
+                let split_table_phys = split_table_frame.start_address().as_u64();
+                let split_table = unsafe {
+                    &mut *((split_table_phys + off)
+                        as *mut x86_64::structures::paging::page_table::PageTable)
+                };
+                split_table.zero();
+
+                // Fill 512 entries, each pointing to a 4KB slice
+                for i in 0..512 {
+                    let sub_phys = x86_64::PhysAddr::new(
+                        huge_phys.as_u64() + (i * 4096),
+                    );
+                    let sub_frame =
+                        x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(
+                            sub_phys,
+                        );
+                    let sub_flags = huge_flags
+                        & !PageFlags::HUGE_PAGE
+                        & !PageFlags::GLOBAL;
+                    split_table[i as usize]
+                        .set_addr(sub_frame.start_address(), sub_flags);
+                }
+
+                // Replace the P3 entry: point to the new 4KB table.
+                // The P3 table is allocated from a frame (p4_entry.addr()) so we
+                // use an unsafe mutable pointer cast to write the new P3 entry.
+                let new_p3_flags = huge_flags & !PageFlags::HUGE_PAGE & !PageFlags::GLOBAL;
+                let p3_table_mut = unsafe {
+                    &mut *((p4_entry.addr().as_u64() + off)
+                        as *mut x86_64::structures::paging::page_table::PageTable)
+                };
+                p3_table_mut[p3_idx].set_addr(
+                    split_table_frame.start_address(),
+                    new_p3_flags,
+                );
+
+                // Flush TLB for the 2MB range
+                x86_64::instructions::tlb::flush_all();
+
+                // Now retry the 4KB mapping
+                match unsafe { mapper.map_to(page, frame, flags, frame_alloc) } {
+                    Ok(flush) => {
+                        flush.flush();
+                        Ok(())
+                    }
+                    Err(e) => {
+                        petroleum::serial::serial_log(format_args!(
+                            "[safe_map_page] Retry after split failed virt={:#x}: {:?}\n",
+                            virtual_addr, e
+                        ));
+                        Err(SystemError::MappingFailed)
+                    }
+                }
+            }
+            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                // Already mapped — acceptable for MMIO regions
+                Ok(())
+            }
+            Err(e) => {
+                petroleum::serial::serial_log(format_args!(
+                    "[safe_map_page] Failed virt={:#x} phys={:#x}: {:?}\n",
+                    virtual_addr, physical_addr, e
+                ));
+                Err(SystemError::MappingFailed)
+            }
         }
-        res
     }
 
     pub fn safe_unmap_page(&mut self, virtual_addr: usize) -> SystemResult<()> {
@@ -129,8 +250,14 @@ impl UnifiedMemoryManager {
 
     fn cache_flags(mode: CacheMode) -> PageFlags {
         match mode {
+            // Uncached: PCD=1 (NO_CACHE) + PWT=0 → UC- (or UC if MTRR says UC)
             CacheMode::Uncached => PageFlags::NO_CACHE,
-            CacheMode::WriteCombining => PageFlags::empty(),
+            // WriteCombining: PCD=0 + PWT=1 (WRITE_THROUGH) → WC via PAT default
+            // (PAT reset-default PA1 = 0b001 = WC).  Combined with MTRR UC on
+            // PCI MMIO frames, the effective type is WC — safe for framebuffer
+            // and won't #GP on InsydeH2O.
+            CacheMode::WriteCombining => PageFlags::WRITE_THROUGH,
+            // WriteBack: both PCD/PWT=0 → WB via PAT default
             CacheMode::WriteBack => PageFlags::empty(),
         }
     }

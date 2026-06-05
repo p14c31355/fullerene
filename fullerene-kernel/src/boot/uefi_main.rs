@@ -69,6 +69,20 @@ pub unsafe extern "C" fn efi_main_stage2(
     crate::boot::uefi_init::UefiInitContext::map_mmio();
     debug_serial(b"DEBUG: [uefi_main] MMIO init complete (no 4KB mappings)\n");
 
+    // CRITICAL: On InsydeH2O firmware, VirtIO-GPU init_display() can trigger
+    // MSI/MSI-X interrupts as soon as SET_SCANOUT completes. If the APIC LVTs
+    // are unmasked and no handler is registered, the CPU receives a spurious
+    // interrupt that may escalate to a triple fault.
+    //
+    // We pre-initialise the APIC hardware (mask all LVTs, disable legacy PIC,
+    // enable APIC) BEFORE init_common so that any DMA/MSI interrupt from the
+    // GPU is safely suppressed during graphics initialisation.  The full APIC
+    // setup (IO APIC routing, syscall handlers) is done later in
+    // kernel_main_higher_half as before.
+    debug_serial(b"DEBUG: [uefi_main] Pre-initialising APIC (mask LVTs) before init_common\n");
+    crate::interrupts::apic::init_apic_hw_only();
+    debug_serial(b"DEBUG: [uefi_main] APIC hw-only init complete\n");
+
     // NOTE: vga_puts (identity address 0xB8000) removed — after CR3 switch
     // identity VGA access can cause QEMU iothread lock re-entrancy.
     // Framebuffer diagnostic writes also removed — huge-page WB mapping

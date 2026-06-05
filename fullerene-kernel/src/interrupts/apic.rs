@@ -72,6 +72,68 @@ pub fn send_eoi() {
     }
 }
 
+/// Hardware-only APIC initialisation (called BEFORE IDT/ISRs are ready).
+///
+/// Masks all Local APIC LVT entries, disables the legacy PIC, and enables
+/// the Local APIC in software so that MSI/MSI-X interrupts from PCI devices
+/// (e.g. VirtIO-GPU after SET_SCANOUT) are safely suppressed.  This function
+/// does NOT configure the timer or IO APIC; those are set up later by
+/// [`init_apic`].
+pub fn init_apic_hw_only() {
+    petroleum::serial::serial_log(format_args!("[init_apic_hw_only] Masking APIC LVTs early\n"));
+
+    unsafe {
+        reset_mutex_lock(&petroleum::LOCAL_APIC_ADDRESS);
+    }
+
+    let base_addr = {
+        let lapic_addr_lock = petroleum::LOCAL_APIC_ADDRESS.lock();
+        let ptr = lapic_addr_lock.0;
+        if !ptr.is_null() {
+            ptr as u64
+        } else {
+            // Fallback: query MSR and compute virtual address
+            let phys = get_apic_base().unwrap_or(0xFEE00000);
+            phys + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64
+        }
+    };
+
+    if base_addr < 0xFFFF_8000_0000_0000 || (base_addr & 0xFFF) != 0 {
+        petroleum::serial::serial_log(format_args!(
+            "[init_apic_hw_only] Invalid APIC base {:#x}, skipping\n", base_addr
+        ));
+        return;
+    }
+
+    disable_legacy_pic();
+    petroleum::serial::serial_log(format_args!("[init_apic_hw_only] Legacy PIC disabled\n"));
+
+    let apic = ApicRaw { base_addr };
+
+    // Enable software APIC (spurious vector)
+    let spurious = apic.read(ApicOffsets::SPURIOUS_VECTOR);
+    apic.write(
+        ApicOffsets::SPURIOUS_VECTOR,
+        spurious | ApicFlags::SW_ENABLE | 0xFF,
+    );
+
+    // Mask ALL LVT entries — any unmasked entry could trigger a spurious
+    // interrupt while the IDT handlers are not yet registered.
+    let lvt_mask: u32 = 1 << 16;
+    apic.write(ApicOffsets::LVT_LINT0, lvt_mask);
+    apic.write(ApicOffsets::LVT_LINT1, lvt_mask);
+    apic.write(ApicOffsets::LVT_ERROR, lvt_mask);
+    apic.write(ApicOffsets::LVT_PERF_COUNT, lvt_mask);
+    apic.write(ApicOffsets::LVT_THERMAL, lvt_mask);
+    apic.write(ApicOffsets::LVT_TIMER, lvt_mask | 0x10000); // masked + one-shot
+    apic.write(ApicOffsets::TMRDIV, 0x3);
+    apic.write(ApicOffsets::TMRINITCNT, 0); // Stop the timer entirely
+
+    petroleum::serial::serial_log(format_args!(
+        "[init_apic_hw_only] All LVTs masked, APIC enabled (timer stopped)\n"
+    ));
+}
+
 /// Initialize APIC
 ///
 /// # Safety
