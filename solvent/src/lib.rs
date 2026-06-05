@@ -39,12 +39,12 @@ const CURSOR_TIMER_ID: TimerId = TimerId(1);
 const MOUSE_SENSITIVITY: i16 = 8;
 const FRAME_INTERVAL_TICKS: u64 = 2;
 const FRAME_TIMER_ID: TimerId = TimerId(2);
-/// Maximum framebuffer size covering 4K (3840×2160).  BSS static buffer;
-/// if a display exceeds this the compositor will skip rendering and log
-/// a warning instead of overflowing the back-buffer.
+
+/// Maximum framebuffer size covering 4K (3840×2160). BSS static buffer;
+/// displays exceeding this will skip rendering to avoid overflowing.
 const MAX_FB_PIXELS: usize = 3840 * 2160;
 
-// ── Static back‑buffer (BSS, zero heap pressure) ──────────────
+// ── Static back‑buffer (BSS) ─────────────────────────────────
 
 static BACK_BUFFER: Mutex<[u32; MAX_FB_PIXELS]> = Mutex::new([0u32; MAX_FB_PIXELS]);
 
