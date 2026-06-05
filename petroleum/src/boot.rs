@@ -255,12 +255,29 @@ pub fn create_primary_console() -> Option<crate::graphics::framebuffer::UefiFram
             );
         }
 
-        let _phys_offset = x86_64::VirtAddr::new(PHYSICAL_MEMORY_OFFSET_BASE as u64);
+        let phys_offset = x86_64::VirtAddr::new(PHYSICAL_MEMORY_OFFSET_BASE as u64);
 
-        // Framebuffer page mapping skipped — the 1 GB kernel area mapping
-        // already covers this region via 2 MB huge pages.  Splitting huge
-        // pages into 4K entries to change cache flags causes triple faults
-        // on InsydeH2O real hardware (QEMU cpu_io_recompile as well).
+        // Map framebuffer with WC (Write-Combining) via 4KB pages.
+        // InsydeH2O MTRR=UC on PCI MMIO → WB huge page access causes #GP.
+        // WC (PWT=1) matches UEFI GOP behaviour and avoids the conflict.
+        // At this point UMM has already set up full physical memory mappings,
+        // so frame allocations for page tables are safe.
+        let fb_flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::NO_EXECUTE
+            | PageTableFlags::WRITE_THROUGH;
+        unsafe {
+            let frame_allocator = get_frame_allocator_mut();
+            let l4 = crate::page_table::active_level_4_table(phys_offset);
+            for i in 0..fb_pages {
+                let v = x86_64::VirtAddr::new(fb_virt + i as u64 * 4096);
+                let p = x86_64::PhysAddr::new(fb_phys + i as u64 * 4096);
+                let _ = crate::early::mapper::map_page_4k_l1(
+                    l4, v, p, fb_flags, frame_allocator, phys_offset,
+                );
+            }
+        }
+        x86_64::instructions::tlb::flush_all();
 
         let info = crate::graphics::color::FramebufferInfo {
             address: fb_virt,

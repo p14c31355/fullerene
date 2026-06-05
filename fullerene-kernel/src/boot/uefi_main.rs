@@ -65,11 +65,15 @@ pub unsafe extern "C" fn efi_main_stage2(
     // This must happen AFTER memory manager init (which sets up the frame allocator)
     // but BEFORE any code that touches MMIO regions.
     debug_serial(b"DEBUG: [uefi_main] Mapping MMIO regions before init_common\n");
-    let _vga_virt_addr = crate::boot::uefi_init::UefiInitContext::map_mmio();
-    debug_serial(b"DEBUG: [uefi_main] MMIO mapping completed before init_common\n");
+    // Initialize LOCAL_APIC_ADDRESS and validate FB config (no 4KB mappings).
+    crate::boot::uefi_init::UefiInitContext::map_mmio();
+    debug_serial(b"DEBUG: [uefi_main] MMIO init complete (no 4KB mappings)\n");
 
     // NOTE: vga_puts (identity address 0xB8000) removed — after CR3 switch
     // identity VGA access can cause QEMU iothread lock re-entrancy.
+    // Framebuffer diagnostic writes also removed — huge-page WB mapping
+    // conflicts with InsydeH2O MTRR=UC on PCI MMIO → #GP triple fault.
+    // init_graphics() creates proper WC/UC mappings later.
     // Use only debug_serial for post-world-switch logging.
 
     // Common initialization for both UEFI and BIOS with correct physical memory offset
