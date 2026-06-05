@@ -343,13 +343,18 @@ pub fn init_graphics() {
 
     // ── Path 3: VGA text mode ─────────────────────────────────
     petroleum::debug_log!("Graphics: Falling back to VGA text mode.\n");
-    let mut vga = petroleum::early::framebuffer::initialize_vga_fallback();
+    // VGA_MEMORY_START (0xB8000) is a physical address.  The kernel
+    // runs in the higher half so we must use the virtual address
+    // (phys + offset).  The MMIO region was mapped by uefi_init.
+    let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+    let vga_virt = petroleum::page_table::constants::VGA_MEMORY_START + off;
+    let mut vga = petroleum::graphics::text::VgaBuffer::with_address(vga_virt as usize);
     vga.enable();
     petroleum::graphics::Console::clear(&mut vga);
     let vga_writer = petroleum::graphics::framebuffer::UefiFramebufferWriter::Vga8(
         petroleum::graphics::framebuffer::FramebufferWriter::<u8>::new(
             petroleum::graphics::color::FramebufferInfo {
-                address: petroleum::page_table::constants::VGA_MEMORY_START as u64,
+                address: vga_virt,
                 width: 80,
                 height: 25,
                 stride: 80,
