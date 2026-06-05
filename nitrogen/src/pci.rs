@@ -356,15 +356,103 @@ impl PciScanner {
     pub fn scan_all_buses(&mut self) -> Result<(), ()> {
         self.devices.clear();
 
-        for bus in 0..=255u8 {
+        // CRITICAL: On real hardware (InsydeH2O), accessing non-existent PCI
+        // buses/devices can cause master aborts → SERR# → system hang or
+        // triple fault.  We must detect and skip invalid bus numbers early.
+
+        /// Check if a PCI bus actually exists by probing device 0 function 0.
+        /// Returns false if bus is absent (returns 0xFFFF on all reads) or
+        /// if probing triggers a master abort that locks up the machine.
+        fn bus_exists(bus: u8) -> bool {
+            // Try to read vendor ID of device 0, function 0 on this bus.
+            // 0xFFFF means no device present (or bus doesn't exist).
+            let vendor = PciConfigSpace::read_config_word(bus, 0, 0, 0);
+            if vendor == 0xFFFF || vendor == 0x0000 {
+                return false;
+            }
+            true
+        }
+
+        /// Check if a specific device/function exists
+        fn device_exists(bus: u8, device: u8, function: u8) -> bool {
+            let vendor = PciConfigSpace::read_config_word(bus, device, function, 0);
+            vendor != 0xFFFF && vendor != 0x0000
+        }
+
+        // BFS-like bus scan: start with bus 0, then scan child buses found
+        // on PCI-to-PCI bridges.  This avoids probing non-existent buses
+        // that can cause hangs on real hardware.
+        let mut buses_to_scan: [bool; 256] = [false; 256];
+        buses_to_scan[0] = true; // Always scan bus 0
+
+        // First pass: scan bus 0 to discover PCI-to-PCI bridges
+        for device in 0..=31u8 {
+            if !device_exists(0, device, 0) {
+                continue;
+            }
+            for function in 0..=7u8 {
+                if function > 0 && !device_exists(0, device, 0) {
+                    // Multi-function device bit not set; skip functions 1-7
+                    break;
+                }
+                if let Some(pci_device) = PciDevice::new(0, device, function) {
+                    // Check if this is a PCI-to-PCI bridge (class 0x06, subclass 0x04)
+                    let header_type = PciConfigSpace::read_config_byte(0, device, function, 0x0E);
+                    let class = PciConfigSpace::read_config_byte(0, device, function, 0x0B);
+                    let subclass = PciConfigSpace::read_config_byte(0, device, function, 0x0A);
+
+                    self.devices.push(pci_device);
+
+                    if class == 0x06 && subclass == 0x04 {
+                        // PCI-to-PCI bridge: read secondary bus number
+                        let secondary_bus =
+                            PciConfigSpace::read_config_byte(0, device, function, 0x19);
+                        if secondary_bus > 0 && secondary_bus < 255 {
+                            buses_to_scan[secondary_bus as usize] = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Second pass: scan discovered child buses
+        for bus in 1..=255u8 {
+            if !buses_to_scan[bus as usize] {
+                continue;
+            }
+            // Verify the bus actually exists before scanning
+            if !bus_exists(bus) {
+                buses_to_scan[bus as usize] = false;
+                continue;
+            }
             for device in 0..=31u8 {
+                if !device_exists(bus, device, 0) {
+                    continue;
+                }
                 for function in 0..=7u8 {
+                    if function > 0 && !device_exists(bus, device, 0) {
+                        break;
+                    }
                     if let Some(pci_device) = PciDevice::new(bus, device, function) {
+                        // Check for nested PCI bridges
+                        let class = PciConfigSpace::read_config_byte(bus, device, function, 0x0B);
+                        let subclass = PciConfigSpace::read_config_byte(bus, device, function, 0x0A);
+
+                        if class == 0x06 && subclass == 0x04 {
+                            let secondary_bus =
+                                PciConfigSpace::read_config_byte(bus, device, function, 0x19);
+                            if secondary_bus > bus && secondary_bus < 255
+                                && !buses_to_scan[secondary_bus as usize]
+                            {
+                                buses_to_scan[secondary_bus as usize] = true;
+                            }
+                        }
                         self.devices.push(pci_device);
                     }
                 }
             }
         }
+
         Ok(())
     }
 

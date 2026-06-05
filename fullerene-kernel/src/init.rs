@@ -59,6 +59,10 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     }
 
     let common_steps = [
+        petroleum::init_step!("Interrupts", || {
+            crate::interrupts::init();
+            Ok(())
+        }),
         petroleum::init_step!("PCI BARs", || {
             petroleum::serial::serial_log(format_args!("Initializing PCI BARs...\n"));
             let mut scanner = nitrogen::pci::PciScanner::new();
@@ -70,10 +74,6 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
         }),
         petroleum::init_step!("Graphics", || {
             crate::graphics::init_graphics();
-            Ok(())
-        }),
-        petroleum::init_step!("Interrupts", || {
-            crate::interrupts::init();
             Ok(())
         }),
         petroleum::init_step!("PS2 Mouse", || {

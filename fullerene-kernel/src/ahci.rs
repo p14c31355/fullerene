@@ -171,11 +171,14 @@ impl AhciController {
         // Per the AHCI spec §3.1.7: set GHC.AE, set GHC.HR, then poll
         // GHC.HR until hardware clears it.  Manually writing 0 to HR
         // may interfere with the reset state machine.
+        //
+        // SAFETY: On real hardware (InsydeH2O), the HBA reset may take
+        // longer than usual.  We use a bounded poll loop to avoid hanging.
         let ghc = ctrl.r32(HBA_GHC);
         ctrl.w32(HBA_GHC, ghc | GHC_AE); // AHCI Enable
         ctrl.w32(HBA_GHC, ghc | GHC_AE | GHC_HR); // HBA Reset
         let mut reset_ok = false;
-        for _ in 0..1_000_000 {
+        for _ in 0..2_000_000 {
             if (ctrl.r32(HBA_GHC) & GHC_HR) == 0 {
                 reset_ok = true;
                 break;
@@ -183,15 +186,28 @@ impl AhciController {
             core::hint::spin_loop();
         }
         if !reset_ok {
-            log::warn!("AHCI: HBA reset timed out");
+            log::warn!("AHCI: HBA reset timed out — controller may be unresponsive");
+            // Don't abort: some controllers work even if reset doesn't complete cleanly.
+            // Clear HR manually as a fallback.
+            ctrl.w32(HBA_GHC, ctrl.r32(HBA_GHC) & !GHC_HR);
         }
 
         let pi = ctrl.r32(HBA_PI); // Ports Implemented
         ctrl.num_ports = pi.count_ones() as u32;
 
-        // Initialise each implemented port
+        // CRITICAL: On InsydeH2O, not all ports reported by PI may actually
+        // have working PHY.  Verify SStatus before attempting init_port.
         for i in 0..32 {
             if (pi >> i) & 1 == 0 {
+                continue;
+            }
+            // Quick pre-check: read SStatus to see if PHY is ready
+            let port_base = 0x100 + (i as usize) * 0x80;
+            let port_mmio = unsafe { ctrl.hba_mmio.add(port_base / 4) };
+            let ssts = unsafe { core::ptr::read_volatile(port_mmio.add(PXSSTS / 4)) };
+            let det = ssts & SSTS_DET_MASK;
+            if det != SSTS_DET_PHY_OK {
+                log::info!("AHCI port {}: no PHY (SSTS={:#x}), skipping init", i, ssts);
                 continue;
             }
             ctrl.init_port(i);
