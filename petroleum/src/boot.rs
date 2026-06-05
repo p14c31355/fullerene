@@ -257,14 +257,15 @@ pub fn create_primary_console() -> Option<crate::graphics::framebuffer::UefiFram
 
         let phys_offset = x86_64::VirtAddr::new(PHYSICAL_MEMORY_OFFSET_BASE as u64);
 
-        // Map framebuffer with WC (Write-Combining) via 4KB pages.
-        // InsydeH2O MTRR=UC on PCI MMIO → WB huge page access causes #GP.
-        // WC (PWT=1) matches UEFI GOP behaviour and avoids the conflict.
-        // At this point UMM has already set up full physical memory mappings,
+        // UC (Uncacheable): PCD=1, PWT=1 → PAT entry 3 → true UC.
+        // WC MTRR + UC page table → effective = UC. Writes are immediate.
+        // NO_CACHE + WRITE_THROUGH together give both PCD and PWT.
+        // At this point UMM has initialized full physical memory mappings,
         // so frame allocations for page tables are safe.
         let fb_flags = PageTableFlags::PRESENT
             | PageTableFlags::WRITABLE
             | PageTableFlags::NO_EXECUTE
+            | PageTableFlags::NO_CACHE
             | PageTableFlags::WRITE_THROUGH;
         unsafe {
             let frame_allocator = get_frame_allocator_mut();
