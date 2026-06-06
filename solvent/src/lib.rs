@@ -479,10 +479,12 @@ fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
             if let Some(extend_fn) = *HEAP_EXTEND_FN.lock() {
                 if extend_fn(additional).is_err() {
                     // Extension failed — keep old size, don't risk OOM.
-                    // Still re-render with old size.
+                    return;
                 } else {
                     HEAP_EXTEND_RESERVE.fetch_add(additional, core::sync::atomic::Ordering::Relaxed);
                 }
+            } else {
+                return;
             }
         }
 
