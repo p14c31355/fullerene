@@ -323,8 +323,6 @@ pub fn init_graphics() {
         // because map_page_4k_l1 cannot safely split the 2MB/1GB huge page.
         // We rely on the existing identity mapping (WB via PAT/MTRR).
         let mapped_ok = true;
-        let fb_ptr = fb_virt as *mut u32;
-        let stride_px = fb_config.stride as usize / 4;
 
         if mapped_ok {
             if fb_config.bpp == 8 {
