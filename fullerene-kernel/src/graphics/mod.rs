@@ -284,7 +284,11 @@ pub fn init_graphics() {
         ));
     }
 
-    // ── Path 2: GOP framebuffer (safe_map_page WC overlay) ────
+    // ── Path 2: GOP / VGA mode 13h framebuffer ────────────────
+    // Both 32bpp GOP and 8bpp VGA mode 13h linear framebuffers
+    // are supported here.  The GUI subsystem (solvent) will skip
+    // rendering if the framebuffer is too small or 8bpp, but the
+    // kernel console text output will work.
     if let Some(fb_config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
         .get()
         .and_then(|mutex| mutex.lock().clone())
@@ -323,59 +327,82 @@ pub fn init_graphics() {
         drop(mm);
 
         if mapped_ok {
-            let fb_info = petroleum::graphics::color::FramebufferInfo {
-                address: fb_virt,
-                width: fb_config.width,
-                height: fb_config.height,
-                stride: fb_config.stride,
-                pixel_format: Some(fb_config.pixel_format),
-                colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
-            };
-            // Select writer based on bpp: VGA mode 13h is 8bpp, GOP is 32bpp.
-            let renderer = if fb_config.bpp == 8 {
-                let writer =
-                    petroleum::graphics::framebuffer::FramebufferWriter::<u8>::new(fb_info);
-                petroleum::graphics::framebuffer::UefiFramebufferWriter::Vga8(writer)
+            if fb_config.bpp == 8 {
+                // VGA mode 13h — reinitialize the DAC palette.
+                // ExitBootServices may have reset it to all-black.
+                petroleum::debug_log!(
+                    "[graphics] 8bpp VGA mode 13h — reinit palette & fill\n"
+                );
+                // Re-run mode-13h setup (sets palette + registers)
+                petroleum::graphics::setup::setup_vga_mode_13h();
+                // Fill the framebuffer with a diagnostic pattern
+                let fb_slice = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        fb_virt as *mut u8,
+                        fb_size,
+                    )
+                };
+                for y in 0..fb_config.height.min(200) as usize {
+                    for x in 0..fb_config.width.min(320) as usize {
+                        let color: u8 = match y / 40 {
+                            0 => 0x04, // red
+                            1 => 0x02, // green
+                            2 => 0x01, // blue
+                            3 => 0x0E, // yellow
+                            _ => 0x0F, // white
+                        };
+                        fb_slice[y * fb_config.stride as usize + x] = color;
+                    }
+                }
+                // Also try VGA text mode (0xB8000) as fallback
+                petroleum::graphics::setup::setup_vga_text_mode();
+                // Fall through to Path 3 for text console
             } else {
+                let fb_info = petroleum::graphics::color::FramebufferInfo {
+                    address: fb_virt,
+                    width: fb_config.width,
+                    height: fb_config.height,
+                    stride: fb_config.stride,
+                    pixel_format: Some(fb_config.pixel_format),
+                    colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
+                };
                 let writer =
                     petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(fb_info);
-                petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer)
-            };
-            *PRIMARY_RENDERER.lock() = Some(renderer);
-            petroleum::debug_log!(
-                "Graphics: GOP Framebuffer WC map OK (bpp={})\n",
-                fb_config.bpp
-            );
-            return;
+                let renderer =
+                    petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer);
+                *PRIMARY_RENDERER.lock() = Some(renderer);
+                petroleum::debug_log!("Graphics: GOP Framebuffer WC map OK (32bpp)\n");
+                return;
+            }
         }
         petroleum::debug_log!("[graphics] GOP WC map failed\n");
     }
 
-    // ── Path 3: VGA text mode ─────────────────────────────────
+    // ── Path 3: VGA text mode (0xB8000 character buffer) ─────
+    // Fallback when no framebuffer config exists at all.
     petroleum::debug_log!("Graphics: Falling back to VGA text mode.\n");
-    // VGA_MEMORY_START (0xB8000) is a physical address.  The kernel
-    // runs in the higher half so we must use the virtual address
-    // (phys + offset).  The MMIO region was mapped by uefi_init.
     let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-    let vga_virt = petroleum::page_table::constants::VGA_MEMORY_START + off;
+    let vga_phys = petroleum::page_table::constants::VGA_MEMORY_START;
+    let vga_virt = vga_phys + off;
+
+    // Split WB huge-page and map VGA text buffer as UC.
+    let vga_flags = x86_64::structures::paging::PageTableFlags::NO_CACHE
+        | x86_64::structures::paging::PageTableFlags::PRESENT
+        | x86_64::structures::paging::PageTableFlags::WRITABLE
+        | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+    {
+        let mut mm = crate::memory_management::get_memory_manager().lock();
+        let mm = mm.as_mut().expect("MemoryManager not initialized");
+        let _ = mm.safe_map_page(vga_virt as usize, vga_phys as usize, vga_flags);
+    }
+
     let mut vga = petroleum::graphics::text::VgaBuffer::with_address(vga_virt as usize);
     vga.enable();
     petroleum::graphics::Console::clear(&mut vga);
-    let vga_writer = petroleum::graphics::framebuffer::UefiFramebufferWriter::Vga8(
-        petroleum::graphics::framebuffer::FramebufferWriter::<u8>::new(
-            petroleum::graphics::color::FramebufferInfo {
-                address: vga_virt,
-                width: 80,
-                height: 25,
-                stride: 80,
-                pixel_format: None,
-                colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
-            },
-        ),
-    );
+    use core::fmt::Write;
+    let _ = write!(vga, "fullerene kernel — VGA text mode\n");
     *VGA_CONSOLE.lock() = Some(vga);
-    *PRIMARY_RENDERER.lock() = Some(vga_writer);
-    petroleum::debug_log!("Graphics: VGA console set as PRIMARY_RENDERER.\n");
+    petroleum::debug_log!("Graphics: VGA text console ready, GUI disabled.\n");
 }
 
 /// Set the primary framebuffer renderer (also used as text console).

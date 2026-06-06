@@ -36,169 +36,27 @@ impl UnifiedMemoryManager {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-        // Snapshot current page table root BEFORE creating mapper,
-        // which borrows self.page_table_manager.mapper mutably.
-        let current_pml4 = self.page_table_manager.current_page_table();
         let off = petroleum::common::memory::get_physical_memory_offset() as u64;
         let virt = x86_64::VirtAddr::new(virtual_addr as u64);
         let phys = x86_64::PhysAddr::new(physical_addr as u64);
-        let page = x86_64::structures::paging::Page::<Size4KiB>::containing_address(virt);
-        let frame = x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(phys);
+
+        // petroleum::page_table::kernel::init::map_page_4k_l1 already
+        // implements correct 2MB huge-page splitting (P2→P1).  Use it
+        // instead of the OffsetPageTable mapper which cannot handle
+        // ParentEntryHugePage at all.
+        let l4_virt = self.page_table_manager.current_page_table() as u64 + off;
+        let l4 = unsafe { &mut *(l4_virt as *mut x86_64::structures::paging::page_table::PageTable) };
         let frame_alloc = petroleum::page_table::constants::get_frame_allocator_mut();
+        let phys_offset = x86_64::VirtAddr::new(off);
 
-        // Unmap any existing 4KB page first
-        let _ = self.page_table_manager.unmap_page(virtual_addr);
-
-        let mapper = self
-            .page_table_manager
-            .mapper
-            .as_mut()
-            .ok_or(SystemError::InternalError)?;
-
-        match unsafe { mapper.map_to(page, frame, flags, frame_alloc) } {
-            Ok(flush) => {
-                flush.flush();
-                Ok(())
-            }
-            Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {
-                // The virtual address is covered by a 2MB huge page (from the
-                // kernel area WB mapping).  We must split the huge page into
-                // 512 4KB pages before we can overlay MMIO mappings with
-                // different cache attributes (UC/WC).
-                //
-                // Page table walk for x86-64 4-level paging:
-                //   P4 (PML4) → P3 (PDPT) → P2 (PD) → P1 (PT) → 4KB page
-                //
-                // The 2MB huge-page flag (PS=1) lives on the P2 (Page Directory)
-                // entry, NOT on the P3 (PDPT) entry.  A P3 HUGE_PAGE would be a
-                // 1GB huge page, which the kernel area mapping does NOT use.
-                //
-                // Strategy: walk P4→P3→P2, read the 2MB phys frame from the P2
-                // entry, allocate a 4KB P1 page table with 512 4KB entries,
-                // then replace the P2 entry to point at the new P1 table.
-                let l4_table = unsafe {
-                    &*((current_pml4 as u64 + off)
-                        as *const x86_64::structures::paging::page_table::PageTable)
-                };
-
-                let p4_idx = virt.p4_index();
-                let p3_idx = virt.p3_index();
-                let p2_idx = virt.p2_index();
-                let p1_idx = virt.p1_index();
-
-                // Walk: P4 → P3
-                let p4_entry = &l4_table[p4_idx];
-                if p4_entry.is_unused() {
-                    return Err(SystemError::MappingFailed);
-                }
-                let p3_phys = p4_entry.addr().as_u64();
-                let p3_table = unsafe {
-                    &*((p3_phys + off)
-                        as *const x86_64::structures::paging::page_table::PageTable)
-                };
-
-                // Walk: P3 → P2
-                let p3_entry = &p3_table[p3_idx];
-                if p3_entry.is_unused() || p3_entry.flags().contains(PageFlags::HUGE_PAGE) {
-                    // P3 has HUGE_PAGE → 1GB page, which won't happen for our
-                    // kernel area mapping
-                    return Err(SystemError::MappingFailed);
-                }
-                let p2_phys = p3_entry.addr().as_u64();
-                let p2_table = unsafe {
-                    &*((p2_phys + off)
-                        as *const x86_64::structures::paging::page_table::PageTable)
-                };
-
-                // P2 entry: the actual 2MB huge-page descriptor
-                let p2_entry = &p2_table[p2_idx];
-                if !p2_entry.flags().contains(PageFlags::HUGE_PAGE) {
-                    // Not a huge page — something is inconsistent
-                    return Err(SystemError::MappingFailed);
-                }
-
-                let huge_phys = p2_entry.addr(); // 2MB-aligned physical base
-                let huge_flags = p2_entry.flags();
-
-                // Allocate a new P1 page table for the 512 4KB entries
-                let p1_frame = frame_alloc
-                    .allocate_frame()
-                    .ok_or(SystemError::FrameAllocationFailed)?;
-                let p1_phys = p1_frame.start_address().as_u64();
-                let p1_table = unsafe {
-                    &mut *((p1_phys + off)
-                        as *mut x86_64::structures::paging::page_table::PageTable)
-                };
-                p1_table.zero();
-
-                // Fill 512 P1 entries, each pointing to a 4KB slice of the
-                // 2MB physical range, EXCEPT the target entry — leave it
-                // NOT_PRESENT so the subsequent mapper.map_to can install
-                // the new UC/WC flags without triggering PageAlreadyMapped.
-                for i in 0..512 {
-                    if i as u16 == p1_idx.into() {
-                        continue;
-                    }
-                    let sub_phys = x86_64::PhysAddr::new(
-                        huge_phys.as_u64() + (i * 4096),
-                    );
-                    let sub_frame =
-                        x86_64::structures::paging::PhysFrame::<Size4KiB>::containing_address(
-                            sub_phys,
-                        );
-                    let sub_flags = huge_flags
-                        & !PageFlags::HUGE_PAGE
-                        & !PageFlags::GLOBAL;
-                    p1_table[i as usize]
-                        .set_addr(sub_frame.start_address(), sub_flags);
-                }
-
-                // Replace the P2 entry: point to the new P1 table instead of
-                // the 2MB huge frame
-                let new_p2_flags = huge_flags
-                    & !PageFlags::HUGE_PAGE
-                    & !PageFlags::GLOBAL;
-                let p2_table_mut = unsafe {
-                    &mut *((p2_phys + off)
-                        as *mut x86_64::structures::paging::page_table::PageTable)
-                };
-                p2_table_mut[p2_idx].set_addr(
-                    p1_frame.start_address(),
-                    new_p2_flags,
-                );
-
-                // Flush TLB for the 2MB range
-                x86_64::instructions::tlb::flush_all();
-
-                // Now retry the 4KB mapping over the freshly-split range.
-                // The target P1 entry was left NOT_PRESENT so mapper.map_to
-                // can install the new flags without PageAlreadyMapped.
-                match unsafe { mapper.map_to(page, frame, flags, frame_alloc) } {
-                    Ok(flush) => {
-                        flush.flush();
-                        Ok(())
-                    }
-                    Err(e) => {
-                        petroleum::serial::serial_log(format_args!(
-                            "[safe_map_page] Retry after 2MB split failed virt={:#x}: {:?}\n",
-                            virtual_addr, e
-                        ));
-                        Err(SystemError::MappingFailed)
-                    }
-                }
-            }
-            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                // Already mapped — acceptable for MMIO regions
-                Ok(())
-            }
-            Err(e) => {
-                petroleum::serial::serial_log(format_args!(
-                    "[safe_map_page] Failed virt={:#x} phys={:#x}: {:?}\n",
-                    virtual_addr, physical_addr, e
-                ));
-                Err(SystemError::MappingFailed)
-            }
+        unsafe {
+            petroleum::page_table::kernel::init::map_page_4k_l1(
+                l4, virt, phys, flags, frame_alloc, phys_offset,
+            )
         }
+        .map_err(|_| SystemError::MappingFailed)?;
+
+        Ok(())
     }
 
     pub fn safe_unmap_page(&mut self, virtual_addr: usize) -> SystemResult<()> {
