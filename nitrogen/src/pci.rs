@@ -456,7 +456,6 @@ impl PciScanner {
                             let secondary_bus =
                                 PciConfigSpace::read_config_byte(bus, device, function, 0x19);
                             if secondary_bus > bus
-                                && secondary_bus < 255
                                 && !buses_to_scan[secondary_bus as usize]
                             {
                                 buses_to_scan[secondary_bus as usize] = true;
