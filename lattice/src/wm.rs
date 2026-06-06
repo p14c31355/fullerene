@@ -378,28 +378,27 @@ impl WindowManager {
     }
 
     /// Toggle maximize for a window.
+    ///
+    /// The window is moved to 0,0 and expanded to fill the work area.
+    /// Surface is **not** resized — the compositor clips the surface
+    /// at its native size.  The caller (render loop) should adjust the
+    /// terminal grid (cols × rows) to match the new window dimensions
+    /// and recreate the surface only for the grid, not for the full
+    /// window.  This avoids OOM on small heaps (e.g. 4 MiB kernel heap).
     pub fn toggle_maximize(&mut self, id: WindowId, work_width: u32, work_height: u32) -> bool {
         let Some(w) = self.windows.iter_mut().find(|w| w.id == id) else {
             return false;
         };
         match w.maximized {
             false => {
-                // Save current geometry and maximize
                 w.restore_rect = Some((w.x, w.y, w.width, w.height));
                 w.x = 0;
                 w.y = 0;
                 w.width = work_width;
                 w.height = work_height;
                 w.maximized = true;
-                // Recreate surface at new size
-                w.surface = Surface::new(
-                    work_width,
-                    work_height,
-                    w.surface.get_pixel(0, 0).unwrap_or(0),
-                );
             }
             true => {
-                // Restore saved geometry
                 if let Some((rx, ry, rw, rh)) = w.restore_rect.take() {
                     w.x = rx;
                     w.y = ry;
@@ -407,11 +406,6 @@ impl WindowManager {
                     w.height = rh;
                 }
                 w.maximized = false;
-                w.surface = Surface::new(
-                    w.width,
-                    w.height,
-                    w.surface.get_pixel(0, 0).unwrap_or(0),
-                );
             }
         }
         self.dirty_rects.push(window_dirty_rect(w));

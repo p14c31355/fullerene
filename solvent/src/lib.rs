@@ -152,6 +152,9 @@ impl EventHandler for WmEventHandler {
                     .set_cursor(rt.desktop.cursor.x, rt.desktop.cursor.y);
                 let (fw, fh) = *FB_DIMS.lock();
                 rt.desktop.mouse_down(fw, fh);
+                // Force terminal redraw after any title-bar action that
+                // might have resized/moved the terminal window
+                rt.term_dirty = true;
                 true
             }
             Event::Input(InputEvent::MouseUp(_btn)) => {
@@ -425,6 +428,13 @@ fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
         Some(w) => w,
         None => return,
     };
+
+    // Note: we intentionally do NOT resize surface or TerminalBuffer when
+    // window dimensions change (e.g. after maximize).  The compositor clips
+    // the surface to the window rectangle, so the terminal is drawn at its
+    // original size in the top-left corner of the maximized window.
+    // Resizing the surface would require a large allocation (~3 MiB for a
+    // full-screen terminal) which OOMs on the current 4 MiB kernel heap.
 
     let term_buf = &rt.term_buf;
     let total = (term_buf.cols() * term_buf.rows()) as usize;

@@ -124,6 +124,19 @@ impl Desktop {
             return;
         }
 
+        // Check taskbar clicks first — restore minimized windows or focus.
+        if let Some(tb_id) = self.taskbar_window_at(self.cursor.x, self.cursor.y, fb_height) {
+            // Find the window. If minimized, restore it. Otherwise just focus.
+            if let Some(w) = self.wm.windows().iter().find(|w| w.id == tb_id) {
+                if w.minimized {
+                    self.wm.restore_window(tb_id);
+                } else {
+                    self.wm.raise_to_top(tb_id);
+                }
+            }
+            return;
+        }
+
         // Check title bar buttons first (topmost window with title bar hit)
         for window in self.wm.windows().iter().rev() {
             if window.minimized {
@@ -172,6 +185,33 @@ impl Desktop {
     /// Dismiss the active menu.
     pub fn dismiss_menu(&mut self) {
         self.active_menu = None;
+    }
+
+    /// Check if a point (fb pixel coords) hits a taskbar button.
+    ///
+    /// Returns the `WindowId` of the taskbar entry whose button
+    /// contains the point, or `None`.
+    pub fn taskbar_window_at(&self, px: i32, py: i32, fb_height: u32) -> Option<WindowId> {
+        let bar_y = fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT);
+        if (py as u32) < bar_y {
+            return None;
+        }
+        // Simple linear scan matching the taskbar render layout.
+        let btn_w = 120u32;
+        let btn_h = crate::taskbar::TASKBAR_HEIGHT - 6;
+        let btn_y = bar_y + 3;
+        if (py as u32) < btn_y || (py as u32) >= btn_y + btn_h {
+            return None;
+        }
+        let mut btn_x = 4i32;
+        for entry in self.taskbar.entries.iter() {
+            let bx_end = btn_x + btn_w as i32;
+            if px >= btn_x && px < bx_end {
+                return Some(entry.id);
+            }
+            btn_x = bx_end + 4;
+        }
+        None
     }
 
     /// Move mouse (drag if button held).
