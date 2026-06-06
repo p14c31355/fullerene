@@ -44,10 +44,16 @@ pub fn exec_shell_command(input: &str) -> alloc::string::String {
 
 // ── Constants ────────────────────────────────────────────────
 
-const TERM_COLS: u32 = 80;
-const TERM_ROWS: u32 = 25;
-const TERM_WIN_W: u32 = TERM_COLS * 8;
-const TERM_WIN_H: u32 = TERM_ROWS * 16;
+/// Default terminal columns.
+const DEFAULT_COLS: u32 = 80;
+/// Default terminal rows.
+const DEFAULT_ROWS: u32 = 25;
+/// Glyph width in pixels (from lattice::font::GLYPH_WIDTH).
+const GLYPH_W: u32 = 8;
+/// Glyph height in pixels (from lattice::font::GLYPH_HEIGHT).
+const GLYPH_H: u32 = 16;
+const TERM_WIN_W: u32 = DEFAULT_COLS * GLYPH_W;
+const TERM_WIN_H: u32 = DEFAULT_ROWS * GLYPH_H;
 const BG_COLOR: u32 = 0x1a1a2e;
 const CURSOR_BLINK_INTERVAL: u64 = 100;
 const CURSOR_TIMER_ID: TimerId = TimerId(1);
@@ -58,6 +64,24 @@ const FRAME_TIMER_ID: TimerId = TimerId(2);
 /// Maximum framebuffer size covering 4K (3840×2160). BSS static buffer;
 /// displays exceeding this will skip rendering to avoid overflowing.
 const MAX_FB_PIXELS: usize = 3840 * 2160;
+
+/// Callback to extend the kernel heap.
+///
+/// Set by the kernel before any rendering.  The function receives the
+/// number of additional bytes requested and returns `Ok(())` on success.
+pub static HEAP_EXTEND_FN: Mutex<Option<fn(additional: usize) -> Result<(), ()>>> =
+    Mutex::new(None);
+
+/// Total bytes that have been successfully allocated via `HEAP_EXTEND_FN`.
+/// Used by `render_terminal` to estimate whether the current heap can
+/// satisfy a terminal surface resize without calling extend again.
+pub static HEAP_EXTEND_RESERVE: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+/// Register the kernel heap extension callback.
+pub fn set_heap_extend_fn(f: fn(usize) -> Result<(), ()>) {
+    *HEAP_EXTEND_FN.lock() = Some(f);
+}
 
 // ── Static back‑buffer (BSS) ─────────────────────────────────
 
@@ -88,7 +112,7 @@ pub fn init() {
     let term_window = desktop
         .wm
         .create_titled_window(40, 30, TERM_WIN_W, TERM_WIN_H, 0x000000, "Terminal");
-    let term_buf = TerminalBuffer::new(TERM_COLS, TERM_ROWS);
+    let term_buf = TerminalBuffer::new(DEFAULT_COLS, DEFAULT_ROWS);
     let mut dispatcher = Dispatcher::new();
     let mut chrono = ChronoLine::new();
 
@@ -431,13 +455,85 @@ fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
         None => return,
     };
 
-    // Note: we intentionally do NOT resize surface or TerminalBuffer when
-    // window dimensions change (e.g. after maximize).  The compositor clips
-    // the surface to the window rectangle, so the terminal is drawn at its
-    // original size in the top-left corner of the maximized window.
-    // Resizing the surface would require a large allocation (~3 MiB for a
-    // full-screen terminal) which OOMs on the current 4 MiB kernel heap.
+    // ── Dynamic terminal resize ──────────────────────────────
+    // Compute the terminal grid size that fits the current window.
+    let new_cols = (window.width / GLYPH_W).max(1);
+    let new_rows = (window.height / GLYPH_H).max(1);
 
+    let cur_cols = rt.term_buf.cols();
+    let cur_rows = rt.term_buf.rows();
+
+    if new_cols != cur_cols || new_rows != cur_rows {
+        // Estimate required memory for the new surface + buffer.
+        // Surface: new_cols*GLYPH_W × new_rows*GLYPH_H pixels × 4 bytes.
+        let new_surface_pixels = (new_cols * new_rows * GLYPH_W * GLYPH_H) as usize;
+        // TerminalBuffer cells: Cell is 12 bytes each.
+        let new_buf_cells = (new_cols * new_rows) as usize * 12;
+        let needed = (new_surface_pixels * 4).saturating_add(new_buf_cells);
+
+        // Try to extend the kernel heap if needed.
+        if needed > HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed) {
+            let additional = needed
+                .saturating_sub(HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed))
+                .next_multiple_of(4096);
+            if let Some(extend_fn) = *HEAP_EXTEND_FN.lock() {
+                if extend_fn(additional).is_err() {
+                    // Extension failed — keep old size, don't risk OOM.
+                    // Still re-render with old size.
+                } else {
+                    HEAP_EXTEND_RESERVE.fetch_add(additional, core::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+
+        // Allocate new TerminalBuffer and Surface.
+        let new_buf = TerminalBuffer::new(new_cols, new_rows);
+        let old_buf = core::mem::replace(&mut rt.term_buf, new_buf);
+        // Try to transfer any visible content from old buffer to new.
+        // We do this by copying cells that fit in both grids.
+        {
+            let src_cells = old_buf.cells();
+            let src_cols = cur_cols as usize;
+            let copy_rows = (cur_rows as usize).min(new_rows as usize);
+            let copy_cols = (cur_cols as usize).min(new_cols as usize);
+            for row in 0..copy_rows {
+                for col in 0..copy_cols {
+                    let src_idx = row * src_cols + col;
+                    if src_idx < src_cells.len() {
+                        let c = src_cells[src_idx];
+                        // Use raw byte write so we don't trigger ANSI parsing
+                        if let Some(dst) = rt.term_buf.cell_mut(col as u32, row as u32) {
+                            *dst = nozzle::terminal_buffer::Cell {
+                                ch: c.ch,
+                                fg: c.fg,
+                                bg: c.bg,
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        let _ = old_buf; // drop old buffer
+
+        window.surface = lattice::surface::Surface::new(
+            new_cols * GLYPH_W,
+            new_rows * GLYPH_H,
+            window.surface.get_pixel(0, 0).unwrap_or(0x000000),
+        );
+
+        // Rebuild term_cells to match new size.
+        rt.term_cells.clear();
+        rt.term_cells.resize(
+            (new_cols * new_rows) as usize,
+            LatticeCell {
+                ch: b' ',
+                fg: 0,
+                bg: 0,
+            },
+        );
+    }
+
+    // Always sync term_cells from current term_buf
     let term_buf = &rt.term_buf;
     let total = (term_buf.cols() * term_buf.rows()) as usize;
 

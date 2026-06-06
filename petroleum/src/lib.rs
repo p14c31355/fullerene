@@ -144,7 +144,11 @@ pub fn clear_line_range<B: TextBufferOperations + ?Sized>(
 pub use page_table::allocator::{BitmapFrameAllocator, bitmap};
 #[cfg(not(feature = "std"))]
 pub use page_table::heap::ALLOCATOR;
+pub use page_table::heap::HeapStats;
 pub use page_table::heap::allocate_heap_from_map;
+pub use page_table::heap::extend_global_heap;
+pub use page_table::heap::heap_stats;
+pub use page_table::heap::heap_top;
 pub use page_table::heap::init_global_heap;
 pub use uefi_helpers::{initialize_graphics_with_config, kernel_fallback_framebuffer_detection};
 
