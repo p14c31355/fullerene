@@ -20,19 +20,29 @@ pub struct Surface {
 }
 
 impl Surface {
-    /// Maximum surface area in pixels, to guard against accidental
-    /// OOM allocations (e.g. from an errant maximize toggle).
-    const MAX_AREA: usize = 1024 * 1024; // ~4 MB per surface
+    /// Maximum surface area in pixels (covers 4K: 3840×2160 + margin).
+    /// Beyond this, the allocation is refused with a zero-area surface
+    /// to prevent OOM panics from accidental giant allocations.
+    const MAX_AREA: usize = 4096 * 2160; // ~35 MB — 4K UHD + 256px margin
 
     /// Create a new surface filled with `color`.
+    ///
+    /// If `width * height` exceeds [`MAX_AREA`], the surface is created
+    /// with 0×0 dimensions as a safety measure (avoids ALLOC ERROR).
     pub fn new(width: u32, height: u32, color: u32) -> Self {
-        let len = (width as usize).saturating_mul(height as usize);
-        // Clamp to reasonable size — prevents ALLOC ERROR crashes
-        let safe_len = len.min(Self::MAX_AREA);
+        let area = (width as usize).saturating_mul(height as usize);
+        if area > Self::MAX_AREA {
+            // Refuse to allocate beyond 4K — return an empty surface.
+            return Self {
+                width: 0,
+                height: 0,
+                pixels: Vec::new(),
+            };
+        }
         Self {
-            width: width.min(1024),
-            height: height.min(1024),
-            pixels: iter::repeat(color).take(safe_len).collect(),
+            width,
+            height,
+            pixels: iter::repeat(color).take(area).collect(),
         }
     }
 
