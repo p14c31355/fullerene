@@ -125,6 +125,10 @@ impl Compositor {
 
         // ── Layer 1: Windows ─────────────────────────────
         for window in scene.windows {
+            // Skip minimized windows
+            if window.minimized {
+                continue;
+            }
             Self::draw_window_clipped(framebuffer, fb_width, fb_height, window, dx, dy, dw, dh);
         }
         inc_draw_calls();
@@ -457,7 +461,9 @@ impl Compositor {
             }
         }
 
-        // Close button (with padding)
+        // ── Title bar buttons (close / maximize / minimize) ──
+
+        // Close button (rightmost, red)
         let close_x = win.x + win.width as i32 - 18;
         let close_y = win.y + 3;
         for r in 0..14i32 {
@@ -488,6 +494,68 @@ impl Compositor {
                 if da2 >= cy as i32 && da2 < cey && da2 < fh {
                     fb[(da2 as usize) * (fbw as usize) + dxa as usize] = 0xFFFFFF;
                 }
+            }
+        }
+
+        // Maximize button (green, between minimize and close)
+        let max_x = win.x + win.width as i32 - 38;
+        let max_y = win.y + 3;
+        for r in 0..14i32 {
+            for c in 0..14i32 {
+                let da = max_y + r;
+                let dxa = max_x + c;
+                if da < cy as i32
+                    || da >= cey
+                    || dxa < cx as i32
+                    || dxa >= cex
+                    || da >= fh
+                    || dxa >= fw
+                {
+                    continue;
+                }
+                fb[(da as usize) * (fbw as usize) + dxa as usize] = 0x338833;
+            }
+        }
+        // Maximize icon: a small centred square
+        for r in 3..11 {
+            for c in 3..11 {
+                let da = max_y + r;
+                let dxa = max_x + c;
+                if da < cy as i32 || da >= cey || dxa < cx as i32 || dxa >= cex || da >= fh || dxa >= fw {
+                    continue;
+                }
+                let on_edge = r == 3 || r == 10 || c == 3 || c == 10;
+                if on_edge {
+                    fb[(da as usize) * (fbw as usize) + dxa as usize] = 0xFFFFFF;
+                }
+            }
+        }
+
+        // Minimize button (amber, next to maximize)
+        let min_x = win.x + win.width as i32 - 58;
+        let min_y = win.y + 3;
+        for r in 0..14i32 {
+            for c in 0..14i32 {
+                let da = min_y + r;
+                let dxa = min_x + c;
+                if da < cy as i32
+                    || da >= cey
+                    || dxa < cx as i32
+                    || dxa >= cex
+                    || da >= fh
+                    || dxa >= fw
+                {
+                    continue;
+                }
+                fb[(da as usize) * (fbw as usize) + dxa as usize] = COLOR_ACCENT;
+            }
+        }
+        // Minimize icon: a small horizontal line at the bottom
+        for c in 3..11 {
+            let da = min_y + 10;
+            let dxa = min_x + c;
+            if da >= cy as i32 && da < cey && dxa >= cx as i32 && dxa < cex && da < fh && dxa < fw {
+                fb[(da as usize) * (fbw as usize) + dxa as usize] = 0xFFFFFF;
             }
         }
 

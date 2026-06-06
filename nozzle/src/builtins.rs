@@ -1,4 +1,7 @@
 //! Built-in shell commands for Nozzle
+//!
+//! Each command receives a `CommandContext` with the terminal and arguments.
+//! Return `true` to continue the shell, `false` to exit.
 
 use crate::exec::CommandContext;
 use alloc::format;
@@ -32,54 +35,63 @@ pub fn cmd_exit(ctx: &mut CommandContext) -> bool {
 
 /// `uname` — show system information
 pub fn cmd_uname(ctx: &mut CommandContext) -> bool {
-    ctx.terminal.write_str("Fullerene (Nozzle) 0.2.0 x86_64\n");
+    ctx.terminal.write_str("Fullerene (Nozzle) 0.3.0 x86_64\n");
     true
 }
 
-/// `ls` — list files (stub)
-pub fn cmd_ls(_ctx: &mut CommandContext) -> bool {
-    _ctx.terminal.write_str("(no filesystem mounted)\n");
+/// `ls` — list files in current directory
+///
+/// This command dispatches to the kernel-provided filesystem list function
+/// set via `set_fs_list_fn`.  When no filesystem is mounted, a stub message
+/// is shown.
+pub fn cmd_ls(ctx: &mut CommandContext) -> bool {
+    crate::fs_hooks::list_directory(ctx);
     true
 }
 
-/// `cat` — print file contents (stub)
+/// `cat` — print file contents
 pub fn cmd_cat(ctx: &mut CommandContext) -> bool {
     if ctx.args.len() < 2 {
         ctx.terminal.write_str("Usage: cat <file>\n");
         return true;
     }
-    ctx.terminal.write_str("(no filesystem mounted: ");
-    ctx.terminal.write_str(ctx.args[1]);
-    ctx.terminal.write_str(")\n");
+    crate::fs_hooks::read_file(ctx, ctx.args[1]);
     true
 }
 
 /// `pwd` — print working directory
 pub fn cmd_pwd(ctx: &mut CommandContext) -> bool {
-    ctx.terminal.write_str("/\n");
+    crate::fs_hooks::print_working_directory(ctx);
     true
 }
 
-/// `meminfo` — display memory information (stub)
-pub fn cmd_meminfo(ctx: &mut CommandContext) -> bool {
-    ctx.terminal
-        .write_str("Memory info not available from userland\n");
+/// `mem` — display memory information (replaces `meminfo` stub)
+///
+/// Dispatches to the kernel-provided `SYS_INFO_FN` hook.
+pub fn cmd_mem(ctx: &mut CommandContext) -> bool {
+    crate::sys_hooks::call_sys_info_hook(ctx, "mem");
     true
 }
 
-/// `dmesg` — display kernel message buffer (stub)
+/// `tasks` — list processes (replaces `ps` stub)
+///
+/// Dispatches to the kernel-provided `SYS_INFO_FN` hook.
+pub fn cmd_tasks(ctx: &mut CommandContext) -> bool {
+    crate::sys_hooks::call_sys_info_hook(ctx, "tasks");
+    true
+}
+
+/// `windows` — list all windows on the desktop
+///
+/// Dispatches to the kernel-provided `SYS_INFO_FN` hook.
+pub fn cmd_windows(ctx: &mut CommandContext) -> bool {
+    crate::sys_hooks::call_sys_info_hook(ctx, "windows");
+    true
+}
+
+/// `dmesg` — display kernel message buffer
 pub fn cmd_dmesg(ctx: &mut CommandContext) -> bool {
-    ctx.terminal
-        .write_str("[dmesg] kernel ring buffer not yet implemented\n");
-    true
-}
-
-/// `ps` — list processes (stub)
-pub fn cmd_ps(ctx: &mut CommandContext) -> bool {
-    ctx.terminal.write_str("  PID STATE    NAME\n");
-    ctx.terminal.write_str("  --- -----    ----\n");
-    ctx.terminal.write_str("    0 RUNNING  kernel\n");
-    ctx.terminal.write_str("    1 RUNNING  shell\n");
+    crate::sys_hooks::call_sys_info_hook(ctx, "dmesg");
     true
 }
 
@@ -100,9 +112,27 @@ pub fn cmd_hexdump(ctx: &mut CommandContext) -> bool {
 
 /// `version` — show fullerene version
 pub fn cmd_version(ctx: &mut CommandContext) -> bool {
-    ctx.terminal.write_str("Fullerene 0.2.0\n");
-    ctx.terminal.write_str("Built: 2026-05-26\n");
+    ctx.terminal.write_str("Fullerene 0.3.0\n");
+    ctx.terminal.write_str("Built: 2026-06-06\n");
     ctx.terminal
         .write_str("Components: Lattice, Nozzle, Solvent, ChronoLine, Resonance\n");
+    true
+}
+
+/// `reboot` — reboot the system
+///
+/// Dispatches to the kernel-provided system control hook.
+pub fn cmd_reboot(ctx: &mut CommandContext) -> bool {
+    ctx.terminal.write_str("Rebooting...\n");
+    crate::sys_hooks::call_sys_control_hook("reboot");
+    true
+}
+
+/// `shutdown` — shutdown the system
+///
+/// Dispatches to the kernel-provided system control hook.
+pub fn cmd_shutdown(ctx: &mut CommandContext) -> bool {
+    ctx.terminal.write_str("Shutting down...\n");
+    crate::sys_hooks::call_sys_control_hook("shutdown");
     true
 }

@@ -82,6 +82,12 @@ impl Desktop {
         }
     }
 
+    /// Return the usable work area (screen minus taskbar).
+    pub fn work_area(&self, fb_width: u32, fb_height: u32) -> (u32, u32) {
+        let bar_h = crate::taskbar::TASKBAR_HEIGHT;
+        (fb_width, fb_height.saturating_sub(bar_h))
+    }
+
     // ── convenience delegates ───────────────────────────────
 
     pub fn create_window(&mut self, x: i32, y: i32, w: u32, h: u32, color: u32) -> WindowId {
@@ -100,7 +106,9 @@ impl Desktop {
     }
 
     /// Press mouse button at current cursor position.
-    pub fn mouse_down(&mut self) {
+    ///
+    /// `fb_width` / `fb_height` are required for maximize toggle.
+    pub fn mouse_down(&mut self, fb_width: u32, fb_height: u32) {
         // If a menu is open, check if click hits it
         if let Some(ref menu) = self.active_menu {
             let cx = self.cursor.x;
@@ -115,6 +123,28 @@ impl Desktop {
             self.active_menu = None;
             return;
         }
+
+        // Check title bar buttons first (topmost window with title bar hit)
+        for window in self.wm.windows().iter().rev() {
+            if window.minimized {
+                continue;
+            }
+            let id = window.id;
+            if window.hit_close_button(self.cursor.x, self.cursor.y) {
+                self.wm.close_window(id);
+                return;
+            }
+            if window.hit_minimize_button(self.cursor.x, self.cursor.y) {
+                self.wm.minimize_window(id);
+                return;
+            }
+            if window.hit_maximize_button(self.cursor.x, self.cursor.y) {
+                let (ww, wh) = self.work_area(fb_width, fb_height);
+                self.wm.toggle_maximize(id, ww, wh);
+                return;
+            }
+        }
+
         self.wm.on_mouse_down(self.cursor.x, self.cursor.y);
     }
 
@@ -329,7 +359,7 @@ mod tests {
 
         // Click title bar at (50, 20) — y=20 is inside title bar (10..30)
         dt.set_cursor(50, 20);
-        dt.mouse_down();
+        dt.mouse_down(1024, 768);
 
         // Drag to (100, 50)
         dt.mouse_move(100, 50);
@@ -351,7 +381,7 @@ mod tests {
         assert!(menu.items.len() >= 3);
         // Click outside dismisses
         dt.set_cursor(999, 999);
-        dt.mouse_down();
+        dt.mouse_down(1024, 768);
         assert!(dt.active_menu.is_none());
     }
 
@@ -367,7 +397,7 @@ mod tests {
             menu.x as i32 + 4,
             menu.y as i32 + crate::menu::MENU_BORDER as i32 + 4,
         );
-        dt.mouse_down();
+        dt.mouse_down(1024, 768);
         assert!(dt.active_menu.is_none()); // dismissed after click
     }
 }

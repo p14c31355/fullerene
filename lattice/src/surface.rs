@@ -20,13 +20,19 @@ pub struct Surface {
 }
 
 impl Surface {
+    /// Maximum surface area in pixels, to guard against accidental
+    /// OOM allocations (e.g. from an errant maximize toggle).
+    const MAX_AREA: usize = 1024 * 1024; // ~4 MB per surface
+
     /// Create a new surface filled with `color`.
     pub fn new(width: u32, height: u32, color: u32) -> Self {
         let len = (width as usize).saturating_mul(height as usize);
+        // Clamp to reasonable size — prevents ALLOC ERROR crashes
+        let safe_len = len.min(Self::MAX_AREA);
         Self {
-            width,
-            height,
-            pixels: iter::repeat(color).take(len).collect(),
+            width: width.min(1024),
+            height: height.min(1024),
+            pixels: iter::repeat(color).take(safe_len).collect(),
         }
     }
 

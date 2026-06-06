@@ -27,6 +27,21 @@ use nozzle::terminal_buffer::TerminalBuffer;
 use resonance::{Dispatcher, Event, EventHandler, EventQueue, InputEvent, KeyCode, MouseButton};
 use spin::Mutex;
 
+/// Global shell command function pointer, set by the kernel.
+pub static SHELL_CMD: Mutex<Option<fn(&str) -> alloc::string::String>> = Mutex::new(None);
+
+pub fn set_shell_command_handler(f: fn(&str) -> alloc::string::String) {
+    *SHELL_CMD.lock() = Some(f);
+}
+
+pub fn exec_shell_command(input: &str) -> alloc::string::String {
+    if let Some(f) = *SHELL_CMD.lock() {
+        f(input)
+    } else {
+        alloc::string::String::from("(no shell)\n")
+    }
+}
+
 // ── Constants ────────────────────────────────────────────────
 
 const TERM_COLS: u32 = 80;
@@ -54,6 +69,7 @@ static RUNTIME: Mutex<Option<RuntimeState>> = Mutex::new(None);
 static EVENT_QUEUE: Mutex<Option<EventQueue>> = Mutex::new(None);
 static DISPATCHER: Mutex<Option<Dispatcher>> = Mutex::new(None);
 static PREV_MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
+static FB_DIMS: Mutex<(u32, u32)> = Mutex::new((1024, 768));
 
 pub struct RuntimeState {
     pub desktop: Desktop,
@@ -134,7 +150,8 @@ impl EventHandler for WmEventHandler {
             Event::Input(InputEvent::MouseDown(_btn)) => {
                 rt.desktop
                     .set_cursor(rt.desktop.cursor.x, rt.desktop.cursor.y);
-                rt.desktop.mouse_down();
+                let (fw, fh) = *FB_DIMS.lock();
+                rt.desktop.mouse_down(fw, fh);
                 true
             }
             Event::Input(InputEvent::MouseUp(_btn)) => {
@@ -356,6 +373,9 @@ where
         Some(t) => t,
         None => return,
     };
+
+    // Cache FB dimensions for maximize toggle
+    *FB_DIMS.lock() = (fb_width, fb_height);
 
     rt.desktop.prepare_frame(fb_width, fb_height);
 
