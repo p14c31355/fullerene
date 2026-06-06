@@ -33,17 +33,80 @@ static LATEST_STATUS: Mutex<u8> = Mutex::new(0);
 /// packet starts.  The underlying ps2-mouse crate's field is private.
 static PACKET_IDX: Mutex<u8> = Mutex::new(0);
 
+/// Check if the PS/2 mouse port is present by reading the controller
+/// configuration byte.  Returns `true` if the mouse clock is enabled
+/// (bit 5 = 0 in the config byte), indicating a mouse may be attached.
+fn mouse_port_present() -> bool {
+    use x86_64::instructions::port::Port;
+
+    // Wait for the PS/2 controller to be ready for a command
+    let mut status_port: Port<u8> = Port::new(0x64);
+    let mut data_port: Port<u8> = Port::new(0x60);
+
+    // Wait for input buffer to be empty (bit 1 = 0)
+    for _ in 0..100_000 {
+        let status: u8 = unsafe { status_port.read() };
+        if status & 0x02 == 0 {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+
+    // Send "Read Configuration Byte" command (0x20)
+    unsafe { status_port.write(0x20u8) };
+
+    // Wait for output buffer to be full (bit 0 = 1)
+    let mut config_byte: Option<u8> = None;
+    for _ in 0..100_000 {
+        let status: u8 = unsafe { status_port.read() };
+        if status & 0x01 != 0 {
+            config_byte = Some(unsafe { data_port.read() });
+            break;
+        }
+        core::hint::spin_loop();
+    }
+
+    // Bit 5 = 1 means mouse clock is disabled (no mouse port)
+    match config_byte {
+        Some(cfg) => {
+            let mouse_disabled = (cfg & 0x20) != 0;
+            log::info!(
+                "[nitrogen] PS/2 controller config byte: {:#04x}, mouse_clock_disabled={}",
+                cfg, mouse_disabled
+            );
+            !mouse_disabled
+        }
+        None => {
+            log::warn!("[nitrogen] PS/2 controller: failed to read config byte");
+            false
+        }
+    }
+}
+
 /// Initialise the PS/2 mouse.
 ///
 /// This sends the necessary commands to the PS/2 controller to enable the
 /// mouse in streaming mode with default settings.  Must be called **once**
 /// before any mouse interrupts are enabled.
 ///
+/// On real hardware (InsydeH2O), the PS/2 mouse port may not be present.
+/// We check the controller configuration byte first and skip initialization
+/// if the mouse clock is disabled.  This prevents hangs caused by probing
+/// a non-existent device.
+///
 /// # Errors
 ///
 /// Returns an error string if any PS/2 controller command fails (e.g. the
-/// mouse does not respond).
+/// mouse does not respond) or if the mouse port is not present.
 pub fn init_mouse() -> Result<(), &'static str> {
+    // Safety check: verify the mouse port exists before attempting init.
+    // On many modern laptops (including InsydeH2O-based systems), the PS/2
+    // mouse port may be absent.  Probing it anyway can hang the system.
+    if !mouse_port_present() {
+        log::info!("[nitrogen] PS/2 mouse port not present — skipping init");
+        return Err("Mouse port not present");
+    }
+
     let mut mouse = Ps2MouseInner::new();
 
     // Install the completion callback so LATEST_STATE is always up to date.

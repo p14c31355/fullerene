@@ -36,20 +36,27 @@ impl UnifiedMemoryManager {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-        let _ = self.page_table_manager.unmap_page(virtual_addr);
-        let res = self.page_table_manager.map_page(
-            virtual_addr,
-            physical_addr,
-            flags,
-            petroleum::page_table::constants::get_frame_allocator_mut(),
-        );
-        if let Err(e) = &res {
-            petroleum::serial::serial_log(format_args!(
-                "[safe_map_page] Failed virt={:#x} phys={:#x}: {:?}\n",
-                virtual_addr, physical_addr, e
-            ));
+        let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+        let virt = x86_64::VirtAddr::new(virtual_addr as u64);
+        let phys = x86_64::PhysAddr::new(physical_addr as u64);
+
+        // petroleum::page_table::kernel::init::map_page_4k_l1 already
+        // implements correct 2MB huge-page splitting (P2→P1).  Use it
+        // instead of the OffsetPageTable mapper which cannot handle
+        // ParentEntryHugePage at all.
+        let l4_virt = self.page_table_manager.current_page_table() as u64 + off;
+        let l4 = unsafe { &mut *(l4_virt as *mut x86_64::structures::paging::page_table::PageTable) };
+        let frame_alloc = petroleum::page_table::constants::get_frame_allocator_mut();
+        let phys_offset = x86_64::VirtAddr::new(off);
+
+        unsafe {
+            petroleum::page_table::kernel::init::map_page_4k_l1(
+                l4, virt, phys, flags, frame_alloc, phys_offset,
+            )
         }
-        res
+        .map_err(|_| SystemError::MappingFailed)?;
+
+        Ok(())
     }
 
     pub fn safe_unmap_page(&mut self, virtual_addr: usize) -> SystemResult<()> {
@@ -129,8 +136,14 @@ impl UnifiedMemoryManager {
 
     fn cache_flags(mode: CacheMode) -> PageFlags {
         match mode {
+            // Uncached: PCD=1 (NO_CACHE) + PWT=0 → UC- (or UC if MTRR says UC)
             CacheMode::Uncached => PageFlags::NO_CACHE,
-            CacheMode::WriteCombining => PageFlags::empty(),
+            // WriteCombining: PCD=0 + PWT=1 (WRITE_THROUGH) → WC via PAT default
+            // (PAT reset-default PA1 = 0b001 = WC).  Combined with MTRR UC on
+            // PCI MMIO frames, the effective type is WC — safe for framebuffer
+            // and won't #GP on InsydeH2O.
+            CacheMode::WriteCombining => PageFlags::WRITE_THROUGH,
+            // WriteBack: both PCD/PWT=0 → WB via PAT default
             CacheMode::WriteBack => PageFlags::empty(),
         }
     }

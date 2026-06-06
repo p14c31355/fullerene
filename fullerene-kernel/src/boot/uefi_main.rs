@@ -65,11 +65,30 @@ pub unsafe extern "C" fn efi_main_stage2(
     // This must happen AFTER memory manager init (which sets up the frame allocator)
     // but BEFORE any code that touches MMIO regions.
     debug_serial(b"DEBUG: [uefi_main] Mapping MMIO regions before init_common\n");
-    let _vga_virt_addr = crate::boot::uefi_init::UefiInitContext::map_mmio();
-    debug_serial(b"DEBUG: [uefi_main] MMIO mapping completed before init_common\n");
+    // Initialize LOCAL_APIC_ADDRESS and validate FB config (no 4KB mappings).
+    crate::boot::uefi_init::UefiInitContext::map_mmio();
+    debug_serial(b"DEBUG: [uefi_main] MMIO init complete (no 4KB mappings)\n");
 
-    // VGA debug: write after MMIO is set up
-    petroleum::vga_debug::vga_puts(23, 0, b"KRN:start");
+    // CRITICAL: On InsydeH2O firmware, VirtIO-GPU init_display() can trigger
+    // MSI/MSI-X interrupts as soon as SET_SCANOUT completes. If the APIC LVTs
+    // are unmasked and no handler is registered, the CPU receives a spurious
+    // interrupt that may escalate to a triple fault.
+    //
+    // We pre-initialise the APIC hardware (mask all LVTs, disable legacy PIC,
+    // enable APIC) BEFORE init_common so that any DMA/MSI interrupt from the
+    // GPU is safely suppressed during graphics initialisation.  The full APIC
+    // setup (IO APIC routing, syscall handlers) is done later in
+    // kernel_main_higher_half as before.
+    debug_serial(b"DEBUG: [uefi_main] Pre-initialising APIC (mask LVTs) before init_common\n");
+    crate::interrupts::apic::init_apic_hw_only();
+    debug_serial(b"DEBUG: [uefi_main] APIC hw-only init complete\n");
+
+    // NOTE: vga_puts (identity address 0xB8000) removed — after CR3 switch
+    // identity VGA access can cause QEMU iothread lock re-entrancy.
+    // Framebuffer diagnostic writes also removed — huge-page WB mapping
+    // conflicts with InsydeH2O MTRR=UC on PCI MMIO → #GP triple fault.
+    // init_graphics() creates proper WC/UC mappings later.
+    // Use only debug_serial for post-world-switch logging.
 
     // Common initialization for both UEFI and BIOS with correct physical memory offset
     debug_serial(b"DEBUG: [uefi_main] About to call init_common\n");

@@ -237,30 +237,53 @@ pub fn create_primary_console() -> Option<crate::graphics::framebuffer::UefiFram
         let fb_height = fb_config.height;
         let fb_bpp = fb_config.bpp;
         let fb_stride = fb_config.stride;
-        let fb_size = (fb_width as u64 * fb_height as u64 * fb_bpp as u64) / 8;
-        let fb_pages = ((fb_size + 4095) / 4096) as usize;
+
+        // Use stride (not width) to calculate the real framebuffer byte size.
+        // On real hardware pixels_per_scan_line > horizontal_resolution is
+        // common (e.g. 2560→2688), and only mapping width×height pages would
+        // leave trailing scan-line padding unmapped → page fault → triple fault.
+        let fb_byte_size = (fb_stride as u64) * (fb_height as u64);
+        let fb_pages = ((fb_byte_size + 4095) / 4096) as usize;
         let fb_virt = fb_phys + PHYSICAL_MEMORY_OFFSET_BASE as u64;
         trace!(
             "fb_config: phys=0x{:x}, virt=0x{:x}, {}x{} bpp={} stride={}\n",
             fb_phys, fb_virt, fb_width, fb_height, fb_bpp, fb_stride
         );
-        trace!("fb_size={} bytes, fb_pages={}\n", fb_size, fb_pages);
+        trace!("fb_byte_size={} bytes, fb_pages={}\n", fb_byte_size, fb_pages);
 
         // Debugging: Verify stride matches expected bytes-per-line
         let expected_stride = (fb_width as u64 * (fb_bpp as u64 / 8)) as u32;
         if fb_stride != expected_stride {
             trace!(
-                "WARNING: fb_stride ({}) != expected_stride ({})\n",
+                "WARNING: fb_stride ({}) != expected_stride ({}) — using stride for page mapping\n",
                 fb_stride, expected_stride
             );
         }
 
-        let _phys_offset = x86_64::VirtAddr::new(PHYSICAL_MEMORY_OFFSET_BASE as u64);
+        let phys_offset = x86_64::VirtAddr::new(PHYSICAL_MEMORY_OFFSET_BASE as u64);
 
-        // Framebuffer page mapping skipped — the 1 GB kernel area mapping
-        // already covers this region via 2 MB huge pages.  Splitting huge
-        // pages into 4K entries to change cache flags causes triple faults
-        // on InsydeH2O real hardware (QEMU cpu_io_recompile as well).
+        // UC (Uncacheable): PCD=1, PWT=1 → PAT entry 3 → true UC.
+        // WC MTRR + UC page table → effective = UC. Writes are immediate.
+        // NO_CACHE + WRITE_THROUGH together give both PCD and PWT.
+        // At this point UMM has initialized full physical memory mappings,
+        // so frame allocations for page tables are safe.
+        let fb_flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::NO_EXECUTE
+            | PageTableFlags::NO_CACHE
+            | PageTableFlags::WRITE_THROUGH;
+        unsafe {
+            let frame_allocator = get_frame_allocator_mut();
+            let l4 = crate::page_table::active_level_4_table(phys_offset);
+            for i in 0..fb_pages {
+                let v = x86_64::VirtAddr::new(fb_virt + i as u64 * 4096);
+                let p = x86_64::PhysAddr::new(fb_phys + i as u64 * 4096);
+                let _ = crate::early::mapper::map_page_4k_l1(
+                    l4, v, p, fb_flags, frame_allocator, phys_offset,
+                );
+            }
+        }
+        x86_64::instructions::tlb::flush_all();
 
         let info = crate::graphics::color::FramebufferInfo {
             address: fb_virt,

@@ -41,6 +41,38 @@ pub unsafe fn map_page_4k_l1(
         &mut *((l4[l4_idx].addr().as_u64() + phys_offset.as_u64()) as *mut PageTable)
     };
 
+    // ── L3 1GB huge page split ──────────────────────────────────────
+    // When the L3 entry is a 1GB huge page, its .addr() is the physical
+    // base of a 1GB region — NOT a pointer to an L2 table.  Treating it
+    // as an L2 table dereferences arbitrary MMIO / physical memory,
+    // causing:
+    //   QEMU: qemu_mutex_lock_iothread_impl assertion (re-entrant MMIO)
+    //   InsydeH2O: #GP on invalid page-table walk
+    //
+    // Split: allocate an L2 table, fill it with 512 × 2MB huge pages,
+    // then let the existing L2→4KB split logic handle the rest.
+    if l3[l3_idx].flags().contains(PageTableFlags::HUGE_PAGE) {
+        let huge_phys_base = l3[l3_idx].addr().as_u64();
+        let orig_flags = l3[l3_idx].flags();
+        let frame = frame_allocator
+            .allocate_frame()
+            .ok_or("4k: alloc L2 for 1GB split failed")?;
+        let l2_phys = frame.start_address();
+        let l2_ptr = (l2_phys.as_u64() + phys_offset.as_u64()) as *mut PageTable;
+        core::ptr::write_bytes(l2_ptr as *mut u8, 0, 4096);
+        let l2_ref = &mut *l2_ptr;
+        for j in 0..512u64 {
+            l2_ref[j as usize].set_addr(
+                PhysAddr::new(huge_phys_base + j * 0x20_0000),
+                orig_flags | PageTableFlags::PRESENT | PageTableFlags::HUGE_PAGE,
+            );
+        }
+        // Update L3 entry: point to real L2 table, clear HUGE_PAGE but keep other bits
+        let mut new_flags = orig_flags;
+        new_flags.remove(PageTableFlags::HUGE_PAGE);
+        l3[l3_idx].set_addr(l2_phys, new_flags | PageTableFlags::PRESENT);
+    }
+
     let l2 = if l3[l3_idx].is_unused() {
         let frame = frame_allocator
             .allocate_frame()
