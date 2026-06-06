@@ -142,6 +142,18 @@ pub unsafe fn extend_kernel_heap(additional: usize) -> Result<(), ()> {
     // contiguous. `linked_list_allocator::extend` extends the heap at
     // `top()`, so if this is the first call, `top()` points to the end
     // of the initial 4 MiB, which must equal `extend_ptr`.
+    let expected_addr = if *used == 0 {
+        // First call: heap_top should be at the end of BOOT_HEAP_BUFFER
+        unsafe { core::ptr::addr_of!(BOOT_HEAP_BUFFER.0).add(HEAP_SIZE) as usize }
+    } else {
+        // Subsequent calls: heap_top should be at HEAP_EXTEND_BUFFER + already used bytes
+        unsafe { core::ptr::addr_of!(HEAP_EXTEND_BUFFER.0).add(*used) as usize }
+    };
+    debug_assert_eq!(
+        petroleum::heap_top() as usize,
+        expected_addr,
+        "Gap exists between BOOT_HEAP_BUFFER and HEAP_EXTEND_BUFFER that could corrupt the allocator"
+    );
     unsafe {
         petroleum::extend_global_heap(bytes);
     }
