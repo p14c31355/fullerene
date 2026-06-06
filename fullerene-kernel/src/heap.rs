@@ -170,7 +170,7 @@ use crate::memory_management::manager::UnifiedMemoryManager;
 fn rollback_frames(mgr: &mut UnifiedMemoryManager, used: usize, count: usize) {
     for j in 0..count {
         let virt = unsafe {
-            core::ptr::addr_of!(HEAP_EXTEND_BUFFER.0).add(used + j * 4096) as usize
+            (core::ptr::addr_of!(HEAP_EXTEND_BUFFER.0) as *const u8).add(used + j * 4096) as usize
         };
         if let Ok(phys) = mgr.translate_address(virt) {
             let _ = mgr.safe_unmap_page(virt);
