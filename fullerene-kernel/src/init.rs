@@ -50,10 +50,10 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     #[cfg(target_os = "uefi")]
     {
         // UEFI: ALLOCATOR was already initialized in memory_management_initialization()
-        // using init_global_heap(BOOT_HEAP_BUFFER). Just re-establish set_heap_range
-        // which may have stale values after the world switch.
+        // using TOTAL_HEAP_BUFFER. Just re-establish set_heap_range which may have
+        // stale values after the world switch.
         unsafe {
-            let heap_ptr = core::ptr::addr_of_mut!(crate::heap::BOOT_HEAP_BUFFER) as *mut u8;
+            let heap_ptr = core::ptr::addr_of_mut!(crate::heap::TOTAL_HEAP_BUFFER) as *mut u8;
             petroleum::common::memory::set_heap_range(heap_ptr as usize, crate::heap::HEAP_SIZE);
         }
     }
@@ -105,7 +105,7 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
         }),
         petroleum::init_step!("process", || {
             let heap_start =
-                unsafe { core::ptr::addr_of_mut!(crate::heap::BOOT_HEAP_BUFFER) as usize };
+                unsafe { core::ptr::addr_of_mut!(crate::heap::TOTAL_HEAP_BUFFER) as usize };
             let heap_end = heap_start + crate::heap::HEAP_SIZE;
             crate::process::init(heap_start, heap_end);
             Ok(())
