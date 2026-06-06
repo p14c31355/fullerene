@@ -187,6 +187,11 @@ pub fn shell_main() {
 
     petroleum::debug_log!("Shell main started");
 
+    // Ensure hooks are registered before the shell runs.
+    // (shell::init() may not have been called at this point,
+    //  so register hooks here as a safety net.)
+    register_nozzle_hooks();
+
     // Try to use the Lattice-backed GUI terminal via Solvent runtime first
     if solvent::is_initialized() {
         let mut term = solvent::LatticeTerminal;

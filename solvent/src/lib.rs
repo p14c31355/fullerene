@@ -51,7 +51,7 @@ const TERM_WIN_H: u32 = TERM_ROWS * 16;
 const BG_COLOR: u32 = 0x1a1a2e;
 const CURSOR_BLINK_INTERVAL: u64 = 100;
 const CURSOR_TIMER_ID: TimerId = TimerId(1);
-const MOUSE_SENSITIVITY: i16 = 8;
+const MOUSE_SENSITIVITY: i16 = 6;
 const FRAME_INTERVAL_TICKS: u64 = 1;
 const FRAME_TIMER_ID: TimerId = TimerId(2);
 
@@ -145,6 +145,8 @@ impl EventHandler for WmEventHandler {
         match event {
             Event::Input(InputEvent::MouseMove { x, y }) => {
                 rt.desktop.mouse_move(*x, *y);
+                // Force a frame on every mouse move for responsive cursor.
+                rt.frame_due = true;
                 true
             }
             Event::Input(InputEvent::MouseDown(_btn)) => {
