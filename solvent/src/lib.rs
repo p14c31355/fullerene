@@ -141,6 +141,9 @@ pub struct RuntimeState {
 
     /// Tick of last render while shell overlay is active (rate‑limiting).
     pub last_overlay_render_tick: u64,
+
+    /// Whether the clock text changed since the last compositor pass.
+    pub clock_changed: bool,
 }
 
 pub fn init() {
@@ -188,6 +191,7 @@ pub fn init() {
         shell_state: ShellState::Desktop,
         last_super_press: 0,
         last_overlay_render_tick: 0,
+        clock_changed: false,
     });
 }
 
@@ -758,7 +762,11 @@ pub fn update_clock() {
 
     let mut rt = RUNTIME.lock();
     if let Some(ref mut r) = *rt {
-        r.desktop.clock_text = time_str.clone();
+        let old = &r.desktop.clock_text;
+        if *old != time_str {
+            r.clock_changed = true;
+            r.desktop.clock_text = time_str.clone();
+        }
     }
     *CLOCK_STRING.lock() = time_str;
 }
@@ -816,46 +824,59 @@ where
     }
     rt.back_len = fb_len;
 
-    {
-        let mut back = BACK_BUFFER.lock();
-        let mut back_target = FramebufferTarget {
-            pixels: &mut back[..fb_len],
-            width: fb_width,
-            height: fb_height,
-        };
-        let scene = rt.desktop.scene();
-        let (bx, by, bw, bh) = Compositor::render(&scene, &mut back_target);
+    // ── Skip compositor when nothing changed ──────────────────
+    // In Desktop mode the FRAME_TIMER fires every tick and calls
+    // render(), but if no window has moved and the clock text is stale
+    // the compositor has no work to do.  Cursor redraws are already
+    // handled by the lightweight render_cursor_only() in event handlers,
+    // so we can skip the heavy compositor pass entirely.
+    let has_dirty = rt.desktop.has_pending_dirty_rects();
+    let clock_dirty = rt.clock_changed;
 
-        if bw > 0 && bh > 0 {
-            let fb_w = fb_width as usize;
-            let b_w = bw as usize;
+    if has_dirty || clock_dirty {
+        rt.clock_changed = false;
 
-            // Copy composited desktop to framebuffer
-            for row in 0..bh {
-                let off = ((by + row) as usize) * fb_w + (bx as usize);
-                let len = b_w.min(fb_len.saturating_sub(off));
-                if len > 0 {
-                    fb_pixels[off..off + len].copy_from_slice(&back[off..off + len]);
+        {
+            let mut back = BACK_BUFFER.lock();
+            let mut back_target = FramebufferTarget {
+                pixels: &mut back[..fb_len],
+                width: fb_width,
+                height: fb_height,
+            };
+            let scene = rt.desktop.scene();
+            let (bx, by, bw, bh) = Compositor::render(&scene, &mut back_target);
+
+            if bw > 0 && bh > 0 {
+                let fb_w = fb_width as usize;
+                let b_w = bw as usize;
+
+                // Copy composited desktop to framebuffer
+                for row in 0..bh {
+                    let off = ((by + row) as usize) * fb_w + (bx as usize);
+                    let len = b_w.min(fb_len.saturating_sub(off));
+                    if len > 0 {
+                        fb_pixels[off..off + len].copy_from_slice(&back[off..off + len]);
+                    }
                 }
             }
         }
-    }
 
-    // ── Shell overlay rendering (post‑compositor, onto fb_pixels) ──────
-    match rt.shell_state {
-        ShellState::TaskOverview => {
-            render_task_overview(fb_pixels, fb_width, fb_height, rt.desktop.wm.windows());
+        // ── Shell overlay rendering (post‑compositor, onto fb_pixels) ──────
+        match rt.shell_state {
+            ShellState::TaskOverview => {
+                render_task_overview(fb_pixels, fb_width, fb_height, rt.desktop.wm.windows());
+            }
+            ShellState::AppGrid => {
+                render_app_grid(fb_pixels, fb_width, fb_height);
+            }
+            ShellState::TimeZoneSelector => {
+                let current_offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
+                lattice::shell_overlay::render_timezone_selector(
+                    fb_pixels, fb_width, fb_height, current_offset,
+                );
+            }
+            ShellState::Desktop => {}
         }
-        ShellState::AppGrid => {
-            render_app_grid(fb_pixels, fb_width, fb_height);
-        }
-        ShellState::TimeZoneSelector => {
-            let current_offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
-            lattice::shell_overlay::render_timezone_selector(
-                fb_pixels, fb_width, fb_height, current_offset,
-            );
-        }
-        ShellState::Desktop => {}
     }
 
     // ── Cursor overlay (drawn after everything else) ──────

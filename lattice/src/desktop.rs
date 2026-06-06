@@ -270,6 +270,15 @@ impl Desktop {
 
     // ── frame preparation ───────────────────────────────────
 
+    /// Returns `true` when the cached dirty-rect list is non-empty,
+    /// i.e. the compositor has at least one region to repaint.
+    ///
+    /// Call after [`prepare_frame`] to decide whether a full compositor
+    /// pass is required.
+    pub fn has_pending_dirty_rects(&self) -> bool {
+        !self.dirty_cache.is_empty()
+    }
+
     /// Consume dirty rects from the window manager and cache them.
     ///
     /// Must be called **before** [`scene`] on each frame, so that the
