@@ -136,7 +136,7 @@ pub unsafe fn extend_kernel_heap(additional: usize) -> Result<(), ()> {
 
     // Extend the global heap.
     let extend_ptr = unsafe {
-        core::ptr::addr_of!(HEAP_EXTEND_BUFFER.0).add(*used) as *mut u8
+        (core::ptr::addr_of_mut!(HEAP_EXTEND_BUFFER.0) as *mut u8).add(*used)
     };
     // The region from `BOOT_HEAP_BUFFER` end to `extend_ptr` should be
     // contiguous. `linked_list_allocator::extend` extends the heap at
