@@ -115,7 +115,7 @@ pub unsafe fn extend_kernel_heap(additional: usize) -> Result<(), ()> {
             }
         };
         let virt = unsafe {
-            core::ptr::addr_of!(HEAP_EXTEND_BUFFER.0).add(*used + i * 4096)
+            (core::ptr::addr_of!(HEAP_EXTEND_BUFFER.0) as *const u8).add(*used + i * 4096)
         } as usize;
 
         if mgr
