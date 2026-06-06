@@ -161,6 +161,14 @@ impl Desktop {
         self.wm.on_mouse_down(self.cursor.x, self.cursor.y);
     }
 
+    /// Force a full-screen redraw on the next frame.
+    ///
+    /// Useful when overlay modes (TaskOverview / AppGrid) need every frame
+    /// to be fully recomposited rather than incremental dirty-rect updates.
+    pub fn force_full_redraw(&mut self) {
+        self.needs_full_redraw = true;
+    }
+
     /// Show the system menu (triggered from taskbar).
     pub fn show_system_menu(&mut self) {
         let items = crate::menu::system_menu_items();

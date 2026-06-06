@@ -106,10 +106,8 @@ fn bcd_to_bin(bcd: u8) -> u8 {
 ///
 /// Returns `Some((year, month, day, hour, minute, second))` on success.
 fn read_cmos_time() -> Option<(u16, u8, u8, u8, u8, u8)> {
-    // Wait for update-in-progress flag to clear
+    // Wait for update-in-progress flag to clear before reading
     while cmos_read(0x0A) & 0x80 != 0 {}
-    // Wait for data available
-    while cmos_read(0x0A) & 0x80 == 0 {}
 
     let status_b = cmos_read(0x0B);
     let use_bcd = status_b & 0x04 == 0;
@@ -147,19 +145,21 @@ fn read_cmos_time() -> Option<(u16, u8, u8, u8, u8, u8)> {
         year_raw = bcd_to_bin(year_raw);
     }
 
-    // Century from register 0x32 (if available, else assume 2000+)
+    // Century from register 0x32 (if available).
+    // Register 0x32 typically holds the century as 2-digit BCD (e.g. 0x20 for 20xx).
+    // The century value IS the full century representation, so e.g. 20 × 100 + 26 = 2026.
+    // Do NOT add an additional 2000 offset when the century register is present.
     let century = cmos_read(0x32);
     let full_year = if century != 0 {
-        if use_bcd {
-            2000 + bcd_to_bin(century) as u16 * 100 + year_raw as u16
-        } else {
-            2000 + century as u16 * 100 + year_raw as u16
-        }
+        let c = if use_bcd { bcd_to_bin(century) as u16 } else { century as u16 };
+        c * 100 + year_raw as u16
     } else {
-        2000 + year_raw as u16
+        // No century register — assume 2000+ as fallback
+        2000u16 + year_raw as u16
     };
 
-    // Basic sanity check
+    // Return raw UTC.  Timezone offset is applied in solvent::update_clock()
+    // so the user can change it at runtime via the AppGrid.
     if month == 0 || month > 12 || day == 0 || day > 31 || hour > 23 || minute > 59 || second > 59 {
         return None;
     }

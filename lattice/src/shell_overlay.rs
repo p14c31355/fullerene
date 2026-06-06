@@ -17,6 +17,7 @@ pub enum ShellState {
     Desktop,
     TaskOverview,
     AppGrid,
+    TimeZoneSelector,
 }
 
 /// Render the Task Overview overlay on top of the current framebuffer.
@@ -229,6 +230,105 @@ pub fn render_app_grid(
 
     // Label
     render_label(fb, fbw, fbh, "Applications", fbw / 2 - 54, 10);
+}
+
+/// Render the timezone selector overlay.
+pub fn render_timezone_selector(
+    fb: &mut [u32],
+    fbw: u32,
+    fbh: u32,
+    current_offset: i8,
+) {
+    let fb_w = fbw as usize;
+
+    // ── Semi‑transparent black backdrop ──────────────────
+    for row in 0..fbh {
+        let off = (row as usize) * fb_w;
+        for col in 0..fbw as usize {
+            let bg = fb[off + col];
+            let r = ((bg >> 16) & 0xFF) as u32;
+            let g = ((bg >> 8) & 0xFF) as u32;
+            let b = (bg & 0xFF) as u32;
+            let r2 = (r * 2) / 5;
+            let g2 = (g * 2) / 5;
+            let b2 = (b * 2) / 5;
+            fb[off + col] = (r2 << 16) | (g2 << 8) | b2;
+        }
+    }
+
+    // ── Timezone entries ─────────────────────────────────
+    let timezones: &[(&str, i8)] = &[
+        ("UTC-12:00", -12),
+        ("UTC-08:00  PST", -8),
+        ("UTC-05:00  EST", -5),
+        ("UTC+00:00  GMT", 0),
+        ("UTC+01:00  CET", 1),
+        ("UTC+03:00  MSK", 3),
+        ("UTC+05:30  IST", 5),
+        ("UTC+08:00  CST", 8),
+        ("UTC+09:00  JST", 9),
+        ("UTC+10:00  AEST", 10),
+        ("UTC+12:00  NZST", 12),
+    ];
+
+    let entry_h = 24u32;
+    let pad = 6u32;
+    let start_y = 40u32;
+    let max_label_chars = 16u32;  // "UTC-12:00  PST" = 14 chars
+    let entry_w = max_label_chars * 8 + 16;  // 8px per char + padding
+
+    for (i, (label, offset)) in timezones.iter().enumerate() {
+        let ex = (fbw - entry_w) / 2;
+        let ey = start_y + (i as u32) * (entry_h + pad);
+
+        if ey + entry_h > fbh {
+            continue;
+        }
+
+        // Highlight current timezone
+        let bg_color = if *offset == current_offset {
+            crate::compositor::COLOR_ACTIVE
+        } else {
+            0x333344u32
+        };
+
+        // Entry background
+        for row in 0..entry_h {
+            let py = ey + row;
+            let rs = (py as usize) * fb_w + (ex as usize);
+            fb[rs..rs + entry_w as usize].fill(bg_color);
+        }
+
+        // Entry label
+        let lx = ex + 4;
+        let ly = ey + 6;
+        for (j, ch) in label.bytes().enumerate() {
+            if ch < 32 || ch > 126 {
+                continue;
+            }
+            for gry in 0..12 {
+                let py = ly + gry;
+                if py >= fbh {
+                    continue;
+                }
+                for grx in 0..8 {
+                    let px = lx + (j as u32) * 8 + grx;
+                    if px >= fbw {
+                        continue;
+                    }
+                    if crate::font::get_glyph_pixel(ch, gry, grx) {
+                        let idx = (py as usize) * fb_w + px as usize;
+                        if idx < fb.len() {
+                            fb[idx] = COLOR_TEXT;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Title
+    render_label(fb, fbw, fbh, "Select Timezone", fbw / 2 - 60, 10);
 }
 
 /// Render a text label centred horizontally.

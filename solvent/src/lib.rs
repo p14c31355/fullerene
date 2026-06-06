@@ -206,8 +206,71 @@ impl EventHandler for WmEventHandler {
         // In shell overlay modes, route mouse events to overlay handling.
         if rt.shell_state != ShellState::Desktop {
             match event {
+                Event::Input(InputEvent::MouseDown(_)) if rt.shell_state == ShellState::TimeZoneSelector => {
+                    // In timezone selector: determine which entry was clicked
+                    let mouse = MOUSE_STATE.lock();
+                    let cx = mouse.x as i32;
+                    let cy = mouse.y as i32;
+                    drop(mouse);
+                    let (fw, _fh) = *FB_DIMS.lock();
+
+                    // Timezone entry layout (must match render_timezone_selector)
+                    let timezones: &[i8] = &[-12, -8, -5, 0, 1, 3, 5, 8, 9, 10, 12];
+                    let entry_h = 24i32;
+                    let pad = 6i32;
+                    let start_y = 40i32;
+                    let max_label_chars = 16i32;
+                    let entry_w = max_label_chars * 8 + 16;
+                    let ex = ((fw as i32) - entry_w) / 2;
+
+                    for (i, offset) in timezones.iter().enumerate() {
+                        let ey = start_y + (i as i32) * (entry_h + pad);
+                        if cy >= ey && cy < ey + entry_h && cx >= ex && cx < ex + entry_w {
+                            TIMEZONE_OFFSET_HOURS.store(*offset, core::sync::atomic::Ordering::Relaxed);
+                            rt.shell_state = ShellState::Desktop;
+                            rt.frame_due = true;
+                            return true;
+                        }
+                    }
+                    // Click outside entries → back to AppGrid
+                    rt.shell_state = ShellState::AppGrid;
+                    rt.frame_due = true;
+                    return true;
+                }
+                Event::Input(InputEvent::MouseDown(_)) if rt.shell_state == ShellState::AppGrid => {
+                    // Check if Settings icon was clicked
+                    let mouse = MOUSE_STATE.lock();
+                    let cx = mouse.x as i32;
+                    let cy = mouse.y as i32;
+                    drop(mouse);
+
+                    // AppGrid layout (must match render_app_grid)
+                    let icon_size = 64i32;
+                    let pad = 24i32;
+                    let label_h = 18i32;
+                    let columns = 1024i32 / (icon_size + pad); // fb_width default
+                    let start_y = 60i32;
+
+                    // "Settings" is index 2 in the apps array
+                    let idx = 2i32;
+                    let col = idx % columns;
+                    let row = idx / columns;
+                    let ax = pad + col * (icon_size + pad);
+                    let ay = start_y + row * (icon_size + label_h + pad);
+
+                    if cx >= ax && cx < ax + icon_size && cy >= ay && cy < ay + icon_size + label_h {
+                        rt.shell_state = ShellState::TimeZoneSelector;
+                        rt.frame_due = true;
+                        return true;
+                    }
+
+                    // Click on other app icons or outside → back to Desktop
+                    rt.shell_state = ShellState::Desktop;
+                    rt.frame_due = true;
+                    return true;
+                }
                 Event::Input(InputEvent::MouseDown(_)) => {
-                    // Clicking anywhere in overlay returns to desktop.
+                    // Generic click in any other overlay → back to Desktop
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
                     return true;
@@ -303,6 +366,11 @@ impl EventHandler for ShellEventHandler {
                     }
                     ShellState::AppGrid => {
                         // Super again → back to Desktop
+                        rt.shell_state = ShellState::Desktop;
+                        rt.frame_due = true;
+                    }
+                    ShellState::TimeZoneSelector => {
+                        // Super in timezone selector → back to Desktop
                         rt.shell_state = ShellState::Desktop;
                         rt.frame_due = true;
                     }
@@ -588,12 +656,68 @@ pub fn process_events() {
 
 /// Update the taskbar clock from the wall‑clock callback.
 /// Format: "YYYY MMDD HHMM" (e.g. "2026 0606 2200").
+/// Current timezone offset in hours (UTC + offset = local time).
+pub static TIMEZONE_OFFSET_HOURS: core::sync::atomic::AtomicI8 = core::sync::atomic::AtomicI8::new(9);
+
 pub fn update_clock() {
+    let offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
+
     let time_str = if let Some(get_time) = *WALL_CLOCK_FN.lock() {
-        if let Some((year, month, day, hour, minute, _second)) = get_time() {
+        if let Some((year, month, day, mut hour, minute, _second)) = get_time() {
+            // Apply timezone offset
+            let mut local_hour = hour as i16 + offset as i16;
+            let mut local_day = day as i16;
+            let mut local_month = month as i16;
+            let mut local_year = year as i16;
+
+            while local_hour < 0 {
+                local_hour += 24;
+                local_day -= 1;
+            }
+            while local_hour >= 24 {
+                local_hour -= 24;
+                local_day += 1;
+            }
+
+            // Handle day overflow — simple month-length table
+            let days_in_month = match local_month {
+                1 | 3 | 5 | 7 | 8 | 10 | 12 => 31i16,
+                4 | 6 | 9 | 11 => 30i16,
+                2 => {
+                    let leap = (local_year % 4 == 0 && local_year % 100 != 0) || (local_year % 400 == 0);
+                    if leap { 29 } else { 28 }
+                }
+                _ => 31,
+            };
+
+            if local_day > days_in_month {
+                local_day = 1;
+                local_month += 1;
+                if local_month > 12 {
+                    local_month = 1;
+                    local_year += 1;
+                }
+            } else if local_day < 1 {
+                local_month -= 1;
+                if local_month < 1 {
+                    local_month = 12;
+                    local_year -= 1;
+                }
+                let prev_days = match local_month {
+                    1 | 3 | 5 | 7 | 8 | 10 | 12 => 31i16,
+                    4 | 6 | 9 | 11 => 30i16,
+                    2 => {
+                        let leap = (local_year % 4 == 0 && local_year % 100 != 0) || (local_year % 400 == 0);
+                        if leap { 29 } else { 28 }
+                    }
+                    _ => 31,
+                };
+                local_day = prev_days + local_day;
+            }
+
             format!(
                 "{} {:02}{:02} {:02}{:02}",
-                year, month, day, hour, minute
+                local_year as u16, local_month as u8, local_day as u8, local_hour as u8, minute
             )
         } else {
             String::from("---- ---- ----")
@@ -635,6 +759,13 @@ where
         Some(r) => r,
         None => return,
     };
+
+    // When shell overlay is active, force full redraw so the compositor
+    // repaints the clean desktop under the overlay every frame,
+    // avoiding overlay‑on‑overlay accumulation.
+    if rt.shell_state != ShellState::Desktop {
+        rt.desktop.force_full_redraw();
+    }
 
     render_terminal(rt, rt.term_window);
     rt.desktop.update_taskbar();
@@ -687,6 +818,12 @@ where
         }
         ShellState::AppGrid => {
             render_app_grid(fb_pixels, fb_width, fb_height);
+        }
+        ShellState::TimeZoneSelector => {
+            let current_offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
+            lattice::shell_overlay::render_timezone_selector(
+                fb_pixels, fb_width, fb_height, current_offset,
+            );
         }
         ShellState::Desktop => {}
     }
