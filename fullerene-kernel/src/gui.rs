@@ -28,6 +28,12 @@ pub use solvent::{
 
 /// Initialise the GUI subsystem via Solvent runtime.
 pub fn init() {
+    // Register the kernel heap extension callback so that solvent can
+    // request dynamic heap expansion when resizing terminal surfaces.
+    solvent::set_heap_extend_fn(|additional| unsafe {
+        crate::heap::extend_kernel_heap(additional)
+    });
+
     solvent::init();
     petroleum::serial::serial_log(format_args!("solvent::init() completed\n"));
 }

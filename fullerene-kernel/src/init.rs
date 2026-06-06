@@ -76,6 +76,15 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             crate::graphics::init_graphics();
             Ok(())
         }),
+        petroleum::init_step!("PS2 Controller", || {
+            let devices = nitrogen::ps2::init_ps2_controller();
+            petroleum::serial::serial_log(format_args!(
+                "PS/2 controller initialized (keyboard={}, mouse={})\n",
+                devices & 1 != 0,
+                devices & 2 != 0
+            ));
+            Ok(())
+        }),
         petroleum::init_step!("PS2 Mouse", || {
             match nitrogen::ps2::mouse::init_mouse() {
                 Ok(()) => {

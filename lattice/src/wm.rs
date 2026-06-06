@@ -1,6 +1,7 @@
 extern crate alloc;
 
 use crate::scene::DirtyRect;
+use crate::surface::Surface;
 use crate::window::{Window, WindowId};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -328,6 +329,97 @@ impl WindowManager {
 
     pub fn on_mouse_up(&mut self) {
         self.drag = DragState::None;
+    }
+
+    // ── Window actions ─────────────────────────────────────
+
+    /// Minimize a window (hide it).  Focus moves to the next visible window.
+    pub fn minimize_window(&mut self, id: WindowId) -> bool {
+        let Some(w) = self.windows.iter_mut().find(|w| w.id == id) else {
+            return false;
+        };
+        if w.minimized {
+            return false;
+        }
+        w.minimized = true;
+        w.focused = false;
+        self.dirty_rects.push(window_dirty_rect(w));
+
+        // Move focus to the last visible window.
+        if self.focused == Some(id) {
+            let new_focus = self
+                .windows
+                .iter()
+                .rev()
+                .find(|w| !w.minimized && w.id != id)
+                .map(|w| w.id);
+            self.focused = new_focus;
+            if let Some(nid) = new_focus {
+                if let Some(w) = self.windows.iter_mut().find(|w| w.id == nid) {
+                    w.focused = true;
+                    self.dirty_rects.push(window_dirty_rect(w));
+                }
+            }
+        }
+        true
+    }
+
+    /// Restore a minimized window.
+    pub fn restore_window(&mut self, id: WindowId) -> bool {
+        let Some(w) = self.windows.iter_mut().find(|w| w.id == id) else {
+            return false;
+        };
+        if !w.minimized {
+            return false;
+        }
+        w.minimized = false;
+        self.raise_to_top(id);
+        true
+    }
+
+    /// Toggle maximize for a window.
+    ///
+    /// The window is moved to 0,0 and expanded to fill the work area.
+    /// Surface is **not** resized — the compositor clips the surface
+    /// at its native size.  The caller (render loop) should adjust the
+    /// terminal grid (cols × rows) to match the new window dimensions
+    /// and recreate the surface only for the grid, not for the full
+    /// window.  This avoids OOM on small heaps (e.g. 4 MiB kernel heap).
+    pub fn toggle_maximize(&mut self, id: WindowId, work_width: u32, work_height: u32) -> bool {
+        let Some(w) = self.windows.iter_mut().find(|w| w.id == id) else {
+            return false;
+        };
+        match w.maximized {
+            false => {
+                w.restore_rect = Some((w.x, w.y, w.width, w.height));
+                w.x = 0;
+                w.y = 0;
+                w.width = work_width;
+                w.height = work_height;
+                w.maximized = true;
+            }
+            true => {
+                if let Some((rx, ry, rw, rh)) = w.restore_rect.take() {
+                    w.x = rx;
+                    w.y = ry;
+                    w.width = rw;
+                    w.height = rh;
+                }
+                w.maximized = false;
+            }
+        }
+        self.dirty_rects.push(window_dirty_rect(w));
+        true
+    }
+
+    /// Close (remove) a window.
+    pub fn close_window(&mut self, id: WindowId) -> bool {
+        self.remove_window(id)
+    }
+
+    /// Get a list of window IDs in Z-order (bottom to top).
+    pub fn z_order(&self) -> alloc::vec::Vec<WindowId> {
+        self.windows.iter().map(|w| w.id).collect()
     }
 }
 

@@ -27,6 +27,8 @@ pub const TASKBAR_INACTIVE_BG: u32 = 0x333344;
 /// A single taskbar entry (represents a window).
 #[derive(Debug, Clone)]
 pub struct TaskbarEntry {
+    /// Window ID for click-to-restore / click-to-focus.
+    pub id: crate::window::WindowId,
     /// Window title (truncated to fit button).
     pub title: alloc::string::String,
     /// Whether the window has focus.
@@ -60,6 +62,7 @@ impl Taskbar {
                 .map(|t| t.clone())
                 .unwrap_or_else(|| alloc::string::String::from("Window"));
             self.entries.push(TaskbarEntry {
+                id: w.id,
                 title,
                 focused: w.focused,
             });

@@ -86,6 +86,57 @@ impl FramebufferInstaller {
             }
         }
     }
+
+    /// Clear the framebuffer to a neutral gray (#808080).
+    fn clear_framebuffer_gray(&self, config: &FullereneFramebufferConfig) {
+        if config.address != 0 && config.bpp == 32 {
+            const GRAY: u32 = 0x00808080u32;
+            let pixel_count = (config.height as usize) * (config.stride as usize / 4);
+            unsafe {
+                let ptr = config.address as *mut u32;
+                for i in 0..pixel_count {
+                    ptr.add(i).write_volatile(GRAY);
+                }
+            }
+            crate::serial::_print(format_args!(
+                "FramebufferInstaller: cleared to gray ({}x{})\n",
+                config.width, config.height
+            ));
+        }
+    }
+
+    /// Simple 5x7 block-character for GOP boot screen (no fonts available).
+    unsafe fn draw_block_char(
+        &self,
+        fb: *mut u32,
+        stride_pixels: usize,
+        ox: isize,
+        oy: isize,
+        ch: u8,
+        color: u32,
+        w: isize,
+        h: isize,
+    ) {
+        // 5x7 bitmap for C, 6, 0 (monospaced)
+        let glyph: [u8; 7] = match ch {
+            b'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10001, 0b01110, 0b00000],
+            b'6' => [0b01110, 0b10001, 0b10000, 0b11110, 0b10001, 0b01110, 0b00000],
+            b'0' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110, 0b00000],
+            _ => [0u8; 7],
+        };
+        for row in 0..7usize {
+            for col in 0..5usize {
+                if (glyph[row] >> (4 - col)) & 1 != 0 {
+                    let px = ox + col as isize;
+                    let py = oy + row as isize;
+                    if px >= 0 && px < w && py >= 0 && py < h {
+                        let idx = (py as usize) * stride_pixels + (px as usize);
+                        fb.add(idx).write_volatile(color);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Generic helper for detecting standard framebuffer modes
@@ -295,31 +346,14 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
         current_mode, max_mode
     ));
 
-    let mode_setter = GopModeSetter::new(gop);
-    let target_modes = [
-        current_mode as u32,
-        0,
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-        7,
-        8,
-        9,
-        10,
-        11,
-        12,
-        13,
-        14,
-        15,
-    ];
-
-    if mode_setter.try_modes(&target_modes, max_mode_u32).is_err() {
-        crate::serial::_print(format_args!("GOP: Failed to set any graphics mode.\n"));
-        return None;
-    }
+    // InsydeH2O workaround: Do NOT call SetMode().
+    // On some firmware (InsydeH2O), SetMode() changes frame_buffer_base
+    // and/or invalidates pixels_per_scan_line, causing "backlight only"
+    // (no actual display output). We keep the current mode as-is.
+    crate::serial::_print(format_args!(
+        "GOP: Skipping SetMode() — using current mode {} as-is (InsydeH2O workaround).\n",
+        current_mode
+    ));
 
     let mode_ref = unsafe { &*gop_ref.mode };
     if mode_ref.info.is_null() {
@@ -342,6 +376,17 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
         "GOP: Resolution: {}x{}, stride: {}\n",
         info.horizontal_resolution, info.vertical_resolution, info.pixels_per_scan_line
     ));
+    crate::serial::_print(format_args!(
+        "GOP: pixel_format = {:?} (0=RGB, 1=BGR, 2=BitMask, 3=BltOnly)\n",
+        info.pixel_format
+    ));
+    if info.pixel_format == crate::common::EfiGraphicsPixelFormat::PixelBitMask {
+        let pi = info.pixel_information;
+        crate::serial::_print(format_args!(
+            "GOP: PixelBitMask: R={:#010x} G={:#010x} B={:#010x} Res={:#010x}\n",
+            pi[0], pi[1], pi[2], pi[3]
+        ));
+    }
 
     if fb_addr == 0 || fb_size == 0 {
         crate::serial::_print(format_args!("GOP: Invalid framebuffer.\n"));
@@ -362,6 +407,14 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
         stride_bytes,
     );
 
+    let calculated_fb_size = (stride_bytes as u64) * (info.vertical_resolution as u64);
+    crate::serial::_print(format_args!(
+        "GOP: fb_size from GOP={} bytes, calculated=stride*height={} bytes, match={}\n",
+        fb_size,
+        calculated_fb_size,
+        fb_size as u64 == calculated_fb_size
+    ));
+
     crate::serial::_print(format_args!(
         "GOP: Framebuffer ready: {}x{} @ {:#x}, {} BPP, stride {}\n",
         config.width, config.height, config.address, config.bpp, config.stride
@@ -370,7 +423,8 @@ pub fn init_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFr
     let installer = FramebufferInstaller::new();
     match installer.install(config) {
         Ok(_) => {
-            let _ = installer.clear_framebuffer(&config);
+            // Clear framebuffer to a neutral gray before handing off to the kernel.
+            installer.clear_framebuffer_gray(&config);
             crate::serial::_print(format_args!(
                 "GOP: Configuration table installed successfully.\n"
             ));

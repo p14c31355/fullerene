@@ -111,3 +111,91 @@ pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> PhysAdd
 
     aligned_start
 }
+
+/// Extend the global heap by `additional` bytes.
+///
+/// # Safety
+///
+/// The caller must ensure the memory region from `ALLOCATOR.lock().top()`
+/// to `ALLOCATOR.lock().top() + additional` is a valid, free, mapped
+/// memory region with `'static` lifetime.
+///
+/// # Panics
+///
+/// Panics if the heap has not been initialized.
+pub unsafe fn extend_global_heap(additional: usize) {
+    #[cfg(all(not(feature = "std"), not(test)))]
+    {
+        let mut alloc = ALLOCATOR.lock();
+        let old_top = alloc.top() as usize;
+        alloc.extend(additional);
+        // Update the tracked heap range so page-fault detection still works.
+        let new_top = alloc.top() as usize;
+        drop(alloc);
+        crate::common::memory::set_heap_range(
+            crate::common::memory::HEAP_START.load(core::sync::atomic::Ordering::SeqCst),
+            new_top - crate::common::memory::HEAP_START.load(core::sync::atomic::Ordering::SeqCst),
+        );
+
+        // Debug output
+        let mut buf = [0u8; 16];
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [extend_global_heap] old_top=0x");
+        let len = crate::serial::format_hex_to_buffer(old_top as u64, &mut buf, 16);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b" new_top=0x");
+        let len = crate::serial::format_hex_to_buffer(new_top as u64, &mut buf, 16);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+    }
+
+    #[cfg(any(feature = "std", test))]
+    {
+        let _ = additional;
+    }
+}
+
+/// Return the current top address of the global heap.
+///
+/// Returns the pointer just past the end of the usable heap.
+pub fn heap_top() -> *mut u8 {
+    #[cfg(all(not(feature = "std"), not(test)))]
+    {
+        ALLOCATOR.lock().top()
+    }
+    #[cfg(any(feature = "std", test))]
+    {
+        core::ptr::null_mut()
+    }
+}
+
+/// Heap usage statistics.
+#[derive(Debug, Clone, Copy)]
+pub struct HeapStats {
+    /// Total usable size of the heap in bytes.
+    pub total: usize,
+    /// Currently allocated (used) bytes.
+    pub used: usize,
+    /// Currently free bytes.
+    pub free: usize,
+}
+
+/// Query the current heap usage.
+pub fn heap_stats() -> HeapStats {
+    #[cfg(all(not(feature = "std"), not(test)))]
+    {
+        let alloc = ALLOCATOR.lock();
+        HeapStats {
+            total: alloc.size(),
+            used: alloc.used(),
+            free: alloc.free(),
+        }
+    }
+    #[cfg(any(feature = "std", test))]
+    {
+        HeapStats {
+            total: 0,
+            used: 0,
+            free: 0,
+        }
+    }
+}

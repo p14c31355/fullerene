@@ -349,7 +349,9 @@ pub struct EfiGraphicsOutputModeInformation {
     pub horizontal_resolution: u32,
     pub vertical_resolution: u32,
     pub pixel_format: EfiGraphicsPixelFormat,
-    _pixel_information: [u32; 4], // EFI_PIXEL_BITMASK: 16 bytes
+    /// EFI_PIXEL_BITMASK: [RedMask, GreenMask, BlueMask, ReservedMask]
+    /// Valid only when pixel_format == PixelBitMask.
+    pub pixel_information: [u32; 4],
     pub pixels_per_scan_line: u32,
 }
 

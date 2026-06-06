@@ -35,7 +35,7 @@ fn main() {
 
     // ── Frame 2: Raise red to top & drag it ────────────────
     desktop.set_cursor(200, 120);
-    desktop.mouse_down(); // raises red to top, begin drag
+    desktop.mouse_down(640, 480); // raises red to top, begin drag
     desktop.mouse_move(300, 150);
     desktop.mouse_up();
 

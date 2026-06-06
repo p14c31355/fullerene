@@ -18,6 +18,9 @@ impl WindowId {
 /// - `title` — optional title bar text (None → no title bar drawn)
 /// - `focused` — whether this window has keyboard/mouse focus
 ///   (affects title bar / border colour)
+/// - `minimized` — window is hidden (not drawn)
+/// - `maximized` — window fills the work area
+/// - `restore_rect` — saved geometry before maximize
 /// - `shadow_surface` — optional pre‑rendered shadow surface for drop shadows
 pub struct Window {
     pub id: WindowId,
@@ -31,6 +34,12 @@ pub struct Window {
     pub title: Option<String>,
     /// Whether this window currently has input focus.
     pub focused: bool,
+    /// Whether the window is minimized (hidden).
+    pub minimized: bool,
+    /// Whether the window is maximized (fills work area).
+    pub maximized: bool,
+    /// Saved geometry before maximize, so it can be restored.
+    pub restore_rect: Option<(i32, i32, u32, u32)>,
     /// Optional drop‑shadow surface drawn behind the window.
     pub shadow_surface: Option<Surface>,
 }
@@ -47,6 +56,9 @@ impl Window {
             surface: Surface::new(width, height, color),
             title: None,
             focused: false,
+            minimized: false,
+            maximized: false,
+            restore_rect: None,
             shadow_surface: None,
         }
     }
@@ -70,6 +82,9 @@ impl Window {
             surface: Surface::new(width, height, color),
             title: Some(title.into()),
             focused: false,
+            minimized: false,
+            maximized: false,
+            restore_rect: None,
             shadow_surface: None,
         }
     }
@@ -113,5 +128,35 @@ impl Window {
         } else {
             self.height
         }
+    }
+
+    /// Hit-test the close button (top-right corner of title bar).
+    pub fn hit_close_button(&self, px: i32, py: i32) -> bool {
+        if self.title.is_none() || self.minimized {
+            return false;
+        }
+        let bx = self.x + self.width as i32 - 18;
+        let by = self.y + 3;
+        px >= bx && px < bx + 14 && py >= by && py < by + 14
+    }
+
+    /// Hit-test the minimize button (leftmost title bar button).
+    pub fn hit_minimize_button(&self, px: i32, py: i32) -> bool {
+        if self.title.is_none() || self.minimized {
+            return false;
+        }
+        let bx = self.x + self.width as i32 - 58;
+        let by = self.y + 3;
+        px >= bx && px < bx + 14 && py >= by && py < by + 14
+    }
+
+    /// Hit-test the maximize button (middle title bar button).
+    pub fn hit_maximize_button(&self, px: i32, py: i32) -> bool {
+        if self.title.is_none() || self.minimized {
+            return false;
+        }
+        let bx = self.x + self.width as i32 - 38;
+        let by = self.y + 3;
+        px >= bx && px < bx + 14 && py >= by && py < by + 14
     }
 }

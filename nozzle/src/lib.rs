@@ -17,10 +17,12 @@ extern crate alloc;
 
 pub mod builtins;
 pub mod exec;
+pub mod fs_hooks;
 pub mod line_editor;
 pub mod parser;
 pub mod prompt;
 pub mod selection;
+pub mod sys_hooks;
 pub mod terminal;
 pub mod terminal_buffer;
 
@@ -122,10 +124,13 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ("ls", "List files", builtins::cmd_ls),
         ("cat", "Print file contents", builtins::cmd_cat),
         ("pwd", "Print working directory", builtins::cmd_pwd),
-        ("meminfo", "Show memory information", builtins::cmd_meminfo),
+        ("mem", "Show memory information", builtins::cmd_mem),
+        ("tasks", "List processes", builtins::cmd_tasks),
+        ("windows", "List windows", builtins::cmd_windows),
         ("dmesg", "Show kernel messages", builtins::cmd_dmesg),
-        ("ps", "List processes", builtins::cmd_ps),
         ("hexdump", "Hex dump of text", builtins::cmd_hexdump),
         ("version", "Show version info", builtins::cmd_version),
+        ("reboot", "Reboot the system", builtins::cmd_reboot),
+        ("shutdown", "Shutdown the system", builtins::cmd_shutdown),
     )
 }
