@@ -316,29 +316,15 @@ pub fn init_graphics() {
             fb_phys, fb_virt, fb_size
         );
 
-        let pages = (fb_size + 4095) / 4096;
-        let fb_flags = x86_64::structures::paging::PageTableFlags::WRITE_THROUGH
-            | x86_64::structures::paging::PageTableFlags::PRESENT
-            | x86_64::structures::paging::PageTableFlags::WRITABLE
-            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-
-        let mut mm = crate::memory_management::get_memory_manager().lock();
-        let mm = mm.as_mut().expect("MemoryManager not initialized");
-        let mut mapped_ok = true;
-        for i in 0..pages {
-            if mm
-                .safe_map_page(
-                    (fb_virt + (i * 4096) as u64) as usize,
-                    (fb_phys + (i * 4096) as u64) as usize,
-                    fb_flags,
-                )
-                .is_err()
-            {
-                mapped_ok = false;
-                break;
-            }
-        }
-        drop(mm);
+        // Do NOT call safe_map_page for WC remap on real hardware.
+        // The boot-phase 1GB huge-page WB mapping is already live and
+        // working (confirmed by pre-map write test + GOP pattern test).
+        // safe_map_page's 4KB WC overlay breaks the mapping on InsydeH2O
+        // because map_page_4k_l1 cannot safely split the 2MB/1GB huge page.
+        // We rely on the existing identity mapping (WB via PAT/MTRR).
+        let mapped_ok = true;
+        let fb_ptr = fb_virt as *mut u32;
+        let stride_px = fb_config.stride as usize / 4;
 
         if mapped_ok {
             if fb_config.bpp == 8 {

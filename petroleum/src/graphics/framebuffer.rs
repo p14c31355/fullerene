@@ -325,20 +325,31 @@ impl<T: PixelType> FramebufferWriter<T> {
     }
 
     pub fn rgb888_to_pixel_format(&self, color: Rgb888) -> u32 {
-        // Use the pixel format from the framebuffer info to determine color ordering
+        // Map Rgb888 to the u32 value that produces correct bytes in
+        // little-endian framebuffer memory for the given pixel format.
+        //
+        // rgb_pixel(r,g,b) = (r<<16)|(g<<8)|b
+        //   → LE memory: [b, g, r, 0]
+        //   → BGR hardware (byte0=B): B=b, G=g, R=r  ✓
+        //
+        // rgb_pixel(b,g,r) = (b<<16)|(g<<8)|r
+        //   → LE memory: [r, g, b, 0]
+        //   → RGB hardware (byte0=R): R=r, G=g, B=b  ✓
         if let Some(format) = self.info.pixel_format {
             match format {
-                crate::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor => {
-                    // BGR format
-                    rgb_pixel(color.b(), color.g(), color.r())
-                }
-                _ => {
-                    // RGB format (default)
+                // BGR format: byte0=Blue, byte1=Green, byte2=Red
+                crate::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
+                // PixelBitMask on Intel GOP is almost always BGR byte order.
+                | crate::common::EfiGraphicsPixelFormat::PixelBitMask => {
                     rgb_pixel(color.r(), color.g(), color.b())
+                }
+                // RGB format: byte0=Red, byte1=Green, byte2=Blue
+                _ => {
+                    rgb_pixel(color.b(), color.g(), color.r())
                 }
             }
         } else {
-            // No format specified (e.g. VGA), default to RGB
+            // No format specified (e.g. VGA), assume BGR (most common on UEFI)
             rgb_pixel(color.r(), color.g(), color.b())
         }
     }
