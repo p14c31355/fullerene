@@ -158,7 +158,7 @@ fn register_nozzle_hooks() {
             // Bochs: port 0xB004 with "Shutdown" string
             unsafe {
                 let shutdown_str = b"Shutdown";
-                let mut port = x86_64::instructions::port::PortWriteOnly::<u8>::new(0x8900);
+                let mut port = x86_64::instructions::port::PortWriteOnly::<u8>::new(0xB004);
                 for &byte in shutdown_str {
                     port.write(byte);
                 }
