@@ -53,6 +53,7 @@ pub unsafe fn map_page_4k_l1(
     // then let the existing L2→4KB split logic handle the rest.
     if l3[l3_idx].flags().contains(PageTableFlags::HUGE_PAGE) {
         let huge_phys_base = l3[l3_idx].addr().as_u64();
+        let orig_flags = l3[l3_idx].flags();
         let frame = frame_allocator
             .allocate_frame()
             .ok_or("4k: alloc L2 for 1GB split failed")?;
@@ -63,11 +64,13 @@ pub unsafe fn map_page_4k_l1(
         for j in 0..512u64 {
             l2_ref[j as usize].set_addr(
                 PhysAddr::new(huge_phys_base + j * 0x20_0000),
-                flags | PageTableFlags::PRESENT | PageTableFlags::HUGE_PAGE,
+                orig_flags | PageTableFlags::PRESENT | PageTableFlags::HUGE_PAGE,
             );
         }
-        // Update L3 entry: point to real L2 table, clear HUGE_PAGE
-        l3[l3_idx].set_addr(l2_phys, flags | PageTableFlags::PRESENT);
+        // Update L3 entry: point to real L2 table, clear HUGE_PAGE but keep other bits
+        let mut new_flags = orig_flags;
+        new_flags.remove(PageTableFlags::HUGE_PAGE);
+        l3[l3_idx].set_addr(l2_phys, new_flags | PageTableFlags::PRESENT);
     }
 
     let l2 = if l3[l3_idx].is_unused() {

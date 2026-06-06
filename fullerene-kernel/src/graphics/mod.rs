@@ -139,13 +139,25 @@ pub fn init_graphics() {
             let off = petroleum::common::memory::get_physical_memory_offset() as u64;
 
             // Allocate command/response buffers
-            let cmd_raw = get_frame_allocator_mut()
-                .allocate_contiguous_frames(1)
-                .expect("VirtIO-GPU: failed to allocate cmd buffer");
+            let cmd_raw = match get_frame_allocator_mut().allocate_contiguous_frames(1) {
+                Ok(frame) => frame,
+                Err(_) => {
+                    petroleum::serial::serial_log(format_args!(
+                        "[graphics] Failed to allocate cmd buffer, falling back to GOP\n"
+                    ));
+                    continue;
+                }
+            };
             let cmd_buf = (cmd_raw as u64 + off) as *mut u8;
-            let resp_raw = get_frame_allocator_mut()
-                .allocate_contiguous_frames(1)
-                .expect("VirtIO-GPU: failed to allocate resp buffer");
+            let resp_raw = match get_frame_allocator_mut().allocate_contiguous_frames(1) {
+                Ok(frame) => frame,
+                Err(_) => {
+                    petroleum::serial::serial_log(format_args!(
+                        "[graphics] Failed to allocate resp buffer, falling back to GOP\n"
+                    ));
+                    continue;
+                }
+            };
             let resp_buf = (resp_raw as u64 + off) as *mut u8;
             unsafe {
                 core::ptr::write_bytes(cmd_buf, 0, 4096);

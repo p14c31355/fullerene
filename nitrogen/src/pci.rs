@@ -391,9 +391,15 @@ impl PciScanner {
                 continue;
             }
             for function in 0..=7u8 {
-                if function > 0 && !device_exists(0, device, 0) {
-                    // Multi-function device bit not set; skip functions 1-7
-                    break;
+                if function > 0 {
+                    let header_type_fn0 = PciConfigSpace::read_config_byte(0, device, 0, 0x0E);
+                    if (header_type_fn0 & 0x80) == 0 {
+                        // Multi-function bit not set; skip functions 1-7
+                        break;
+                    }
+                }
+                if !device_exists(0, device, function) {
+                    continue;
                 }
                 if let Some(pci_device) = PciDevice::new(0, device, function) {
                     // Check if this is a PCI-to-PCI bridge (class 0x06, subclass 0x04)
@@ -430,18 +436,27 @@ impl PciScanner {
                     continue;
                 }
                 for function in 0..=7u8 {
-                    if function > 0 && !device_exists(bus, device, 0) {
-                        break;
+                    if function > 0 {
+                        let header_type = PciConfigSpace::read_config_byte(bus, device, 0, 0x0E);
+                        if (header_type & 0x80) == 0 {
+                            break;
+                        }
+                    }
+                    if !device_exists(bus, device, function) {
+                        continue;
                     }
                     if let Some(pci_device) = PciDevice::new(bus, device, function) {
                         // Check for nested PCI bridges
-                        let class = PciConfigSpace::read_config_byte(bus, device, function, 0x0B);
-                        let subclass = PciConfigSpace::read_config_byte(bus, device, function, 0x0A);
+                        let class =
+                            PciConfigSpace::read_config_byte(bus, device, function, 0x0B);
+                        let subclass =
+                            PciConfigSpace::read_config_byte(bus, device, function, 0x0A);
 
                         if class == 0x06 && subclass == 0x04 {
                             let secondary_bus =
                                 PciConfigSpace::read_config_byte(bus, device, function, 0x19);
-                            if secondary_bus > bus && secondary_bus < 255
+                            if secondary_bus > bus
+                                && secondary_bus < 255
                                 && !buses_to_scan[secondary_bus as usize]
                             {
                                 buses_to_scan[secondary_bus as usize] = true;

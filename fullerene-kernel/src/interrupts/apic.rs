@@ -125,7 +125,7 @@ pub fn init_apic_hw_only() {
     apic.write(ApicOffsets::LVT_ERROR, lvt_mask);
     apic.write(ApicOffsets::LVT_PERF_COUNT, lvt_mask);
     apic.write(ApicOffsets::LVT_THERMAL, lvt_mask);
-    apic.write(ApicOffsets::LVT_TIMER, lvt_mask | 0x10000); // masked + one-shot
+    apic.write(ApicOffsets::LVT_TIMER, lvt_mask); // masked + one-shot
     apic.write(ApicOffsets::TMRDIV, 0x3);
     apic.write(ApicOffsets::TMRINITCNT, 0); // Stop the timer entirely
 
@@ -209,11 +209,11 @@ pub fn init_apic() {
 
     petroleum::serial::serial_log(format_args!("APIC LVT entries masked.\n"));
 
-    // Configure timer LVT: one-shot mode initially to prevent runaway interrupts.
-    // The timer will be reprogrammed later if periodic mode is needed.
+    // Configure timer LVT: one-shot mode, MASKED initially to prevent early firing.
+    // The timer will be unmasked later when the scheduler/IDT is ready.
     apic.write(
         ApicOffsets::LVT_TIMER,
-        TIMER_INTERRUPT_INDEX | ApicFlags::TIMER_ONESHOT,
+        TIMER_INTERRUPT_INDEX | ApicFlags::TIMER_ONESHOT | ApicFlags::TIMER_MASKED,
     );
     apic.write(ApicOffsets::TMRDIV, 0x3); // Divide by 16
 
@@ -240,7 +240,7 @@ pub fn init_apic() {
         IO_APIC_BASE + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64;
 
     if io_apic_virt_base >= 0xFFFF_8000_0000_0000
-        && io_apic_virt_base < 0xFFFF_FFFF_FFFF_FFFF
+        && io_apic_virt_base < 0xFFFF_FFFF_FFFF_F000
     {
         petroleum::serial::serial_log(format_args!(
             "Initializing I/O APIC at virt={:#x}\n", io_apic_virt_base
