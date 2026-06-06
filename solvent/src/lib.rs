@@ -52,7 +52,7 @@ const BG_COLOR: u32 = 0x1a1a2e;
 const CURSOR_BLINK_INTERVAL: u64 = 100;
 const CURSOR_TIMER_ID: TimerId = TimerId(1);
 const MOUSE_SENSITIVITY: i16 = 8;
-const FRAME_INTERVAL_TICKS: u64 = 2;
+const FRAME_INTERVAL_TICKS: u64 = 1;
 const FRAME_TIMER_ID: TimerId = TimerId(2);
 
 /// Maximum framebuffer size covering 4K (3840×2160). BSS static buffer;
@@ -518,9 +518,6 @@ fn runtime_tick_no_fb() {
         if let Some(render_fn) = *RENDER_FN.lock() {
             render_fn();
         }
-    }
-    for _ in 0..100 {
-        core::hint::spin_loop();
     }
 }
 
