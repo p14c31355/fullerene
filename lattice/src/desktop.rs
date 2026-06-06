@@ -192,15 +192,15 @@ impl Desktop {
     /// Returns the `WindowId` of the taskbar entry whose button
     /// contains the point, or `None`.
     pub fn taskbar_window_at(&self, px: i32, py: i32, fb_height: u32) -> Option<WindowId> {
-        let bar_y = fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT);
-        if (py as u32) < bar_y {
+        let bar_y = fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT) as i32;
+        if py < bar_y {
             return None;
         }
         // Simple linear scan matching the taskbar render layout.
-        let btn_w = 120u32;
-        let btn_h = crate::taskbar::TASKBAR_HEIGHT - 6;
+        let btn_w = 120i32;
+        let btn_h = (crate::taskbar::TASKBAR_HEIGHT - 6) as i32;
         let btn_y = bar_y + 3;
-        if (py as u32) < btn_y || (py as u32) >= btn_y + btn_h {
+        if py < btn_y || py >= btn_y + btn_h {
             return None;
         }
         let mut btn_x = 4i32;
