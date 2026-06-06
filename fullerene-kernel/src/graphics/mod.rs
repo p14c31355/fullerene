@@ -131,164 +131,166 @@ pub fn init_graphics() {
                 .is_ok()
         };
 
-        if bars_ok {
-            let common_virt_ptr = (common_virt + common_offset as usize) as *mut u32;
-            let notify_virt_ptr = (notify_virt + notify_offset as usize) as *mut u32;
+        'virtio: {
+            if bars_ok {
+                let common_virt_ptr = (common_virt + common_offset as usize) as *mut u32;
+                let notify_virt_ptr = (notify_virt + notify_offset as usize) as *mut u32;
 
-            use petroleum::page_table::constants::get_frame_allocator_mut;
-            let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+                use petroleum::page_table::constants::get_frame_allocator_mut;
+                let off = petroleum::common::memory::get_physical_memory_offset() as u64;
 
-            // Allocate command/response buffers
-            let cmd_raw = match get_frame_allocator_mut().allocate_contiguous_frames(1) {
-                Ok(frame) => frame,
-                Err(_) => {
-                    petroleum::serial::serial_log(format_args!(
-                        "[graphics] Failed to allocate cmd buffer, falling back to GOP\n"
-                    ));
-                    continue;
-                }
-            };
-            let cmd_buf = (cmd_raw as u64 + off) as *mut u8;
-            let resp_raw = match get_frame_allocator_mut().allocate_contiguous_frames(1) {
-                Ok(frame) => frame,
-                Err(_) => {
-                    petroleum::serial::serial_log(format_args!(
-                        "[graphics] Failed to allocate resp buffer, falling back to GOP\n"
-                    ));
-                    continue;
-                }
-            };
-            let resp_buf = (resp_raw as u64 + off) as *mut u8;
-            unsafe {
-                core::ptr::write_bytes(cmd_buf, 0, 4096);
-                core::ptr::write_bytes(resp_buf, 0, 4096);
-            }
-
-            let gpu_result = nitrogen::virtio::gpu::init_virtio_gpu(
-                common_virt_ptr,
-                notify_virt_ptr,
-                gpu_device.clone(),
-                common_bar,
-                cmd_buf,
-                cmd_raw as u64,
-                4096,
-                resp_buf,
-                resp_raw as u64,
-                4096,
-            );
-
-            if let Some(mut gpu) = gpu_result {
-                let alloc_qmem = |size: usize| -> (*mut u8, u64) {
-                    let pages = (size + 4095) / 4096;
-                    let raw = get_frame_allocator_mut()
-                        .allocate_contiguous_frames(pages)
-                        .expect("VirtIO-GPU: failed to allocate queue memory");
-                    let phys = raw as u64;
-                    ((phys + off) as *mut u8, phys)
-                };
-                let (desc_virt, desc_phys) =
-                    alloc_qmem(1024 * core::mem::size_of::<nitrogen::virtio::gpu::VringDesc>());
-                let (avail_virt, avail_phys) =
-                    alloc_qmem(core::mem::size_of::<nitrogen::virtio::gpu::VringAvail>());
-                let (used_virt, used_phys) =
-                    alloc_qmem(core::mem::size_of::<nitrogen::virtio::gpu::VringUsed>());
-                let desc = desc_virt as *mut nitrogen::virtio::gpu::VringDesc;
-                let avail = avail_virt as *mut nitrogen::virtio::gpu::VringAvail;
-                let used = used_virt as *mut nitrogen::virtio::gpu::VringUsed;
-                gpu.setup_queue(0, desc, desc_phys, avail, avail_phys, used, used_phys);
-
-                let fb_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
-                    .get()
-                    .and_then(|mutex| mutex.lock().clone());
-                let (fb_phys, fb_width, fb_height, fb_stride, fb_pixel_format) =
-                    if let Some(ref c) = fb_config {
-                        (c.address, c.width, c.height, c.stride, Some(c.pixel_format))
-                    } else {
-                        (
-                            0x40000000u64, 1024u32, 768u32, 1024u32,
-                            Some(petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor),
-                        )
-                    };
-
-                let fb_virt = fb_phys + off;
-                let fb_byte_size = (fb_stride as u64) * (fb_height as u64);
-                let pages = (fb_byte_size as usize + 4095) / 4096;
-                let fb_wc_flags = x86_64::structures::paging::PageTableFlags::WRITE_THROUGH
-                    | x86_64::structures::paging::PageTableFlags::PRESENT
-                    | x86_64::structures::paging::PageTableFlags::WRITABLE
-                    | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-
-                // Use safe_map_page to split huge-page WB and overlay WC
-                let fb_mapped = {
-                    let mut mm = crate::memory_management::get_memory_manager().lock();
-                    let mm = mm.as_mut().expect("MemoryManager not initialized");
-                    let mut ok = true;
-                    for i in 0..pages {
-                        if mm
-                            .safe_map_page(
-                                (fb_virt + (i * 4096) as u64) as usize,
-                                (fb_phys + (i * 4096) as u64) as usize,
-                                fb_wc_flags,
-                            )
-                            .is_err()
-                        {
-                            ok = false;
-                            break;
-                        }
+                // Allocate command/response buffers
+                let cmd_raw = match get_frame_allocator_mut().allocate_contiguous_frames(1) {
+                    Ok(frame) => frame,
+                    Err(_) => {
+                        petroleum::serial::serial_log(format_args!(
+                            "[graphics] Failed to allocate cmd buffer, falling back to GOP\n"
+                        ));
+                        break 'virtio;
                     }
-                    ok
                 };
+                let cmd_buf = (cmd_raw as u64 + off) as *mut u8;
+                let resp_raw = match get_frame_allocator_mut().allocate_contiguous_frames(1) {
+                    Ok(frame) => frame,
+                    Err(_) => {
+                        petroleum::serial::serial_log(format_args!(
+                            "[graphics] Failed to allocate resp buffer, falling back to GOP\n"
+                        ));
+                        break 'virtio;
+                    }
+                };
+                let resp_buf = (resp_raw as u64 + off) as *mut u8;
+                unsafe {
+                    core::ptr::write_bytes(cmd_buf, 0, 4096);
+                    core::ptr::write_bytes(resp_buf, 0, 4096);
+                }
 
-                if fb_mapped {
-                    let fb_info = petroleum::graphics::color::FramebufferInfo {
-                        address: fb_virt,
-                        width: fb_width,
-                        height: fb_height,
-                        stride: fb_stride,
-                        pixel_format: fb_pixel_format,
-                        colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
+                let gpu_result = nitrogen::virtio::gpu::init_virtio_gpu(
+                    common_virt_ptr,
+                    notify_virt_ptr,
+                    gpu_device.clone(),
+                    common_bar,
+                    cmd_buf,
+                    cmd_raw as u64,
+                    4096,
+                    resp_buf,
+                    resp_raw as u64,
+                    4096,
+                );
+
+                if let Some(mut gpu) = gpu_result {
+                    let alloc_qmem = |size: usize| -> (*mut u8, u64) {
+                        let pages = (size + 4095) / 4096;
+                        let raw = get_frame_allocator_mut()
+                            .allocate_contiguous_frames(pages)
+                            .expect("VirtIO-GPU: failed to allocate queue memory");
+                        let phys = raw as u64;
+                        ((phys + off) as *mut u8, phys)
                     };
-                    match gpu.init_display(
-                        fb_info.width,
-                        fb_info.height,
-                        fb_phys,
-                        fb_info.stride * fb_info.height,
-                    ) {
-                        Ok(()) => {
-                            let writer =
-                                petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(
-                                    fb_info,
-                                );
-                            let renderer =
-                                petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(
-                                    writer,
-                                );
-                            set_primary_renderer(renderer);
-                            *VIRTIO_GPU.lock() = Some(Box::new(gpu));
-                            petroleum::debug_log!("Graphics: VirtIO-GPU PRIMARY_RENDERER\n");
-                            return;
+                    let (desc_virt, desc_phys) =
+                        alloc_qmem(1024 * core::mem::size_of::<nitrogen::virtio::gpu::VringDesc>());
+                    let (avail_virt, avail_phys) =
+                        alloc_qmem(core::mem::size_of::<nitrogen::virtio::gpu::VringAvail>());
+                    let (used_virt, used_phys) =
+                        alloc_qmem(core::mem::size_of::<nitrogen::virtio::gpu::VringUsed>());
+                    let desc = desc_virt as *mut nitrogen::virtio::gpu::VringDesc;
+                    let avail = avail_virt as *mut nitrogen::virtio::gpu::VringAvail;
+                    let used = used_virt as *mut nitrogen::virtio::gpu::VringUsed;
+                    gpu.setup_queue(0, desc, desc_phys, avail, avail_phys, used, used_phys);
+
+                    let fb_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+                        .get()
+                        .and_then(|mutex| mutex.lock().clone());
+                    let (fb_phys, fb_width, fb_height, fb_stride, fb_pixel_format) =
+                        if let Some(ref c) = fb_config {
+                            (c.address, c.width, c.height, c.stride, Some(c.pixel_format))
+                        } else {
+                            (
+                                0x40000000u64, 1024u32, 768u32, 1024u32,
+                                Some(petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor),
+                            )
+                        };
+
+                    let fb_virt = fb_phys + off;
+                    let fb_byte_size = (fb_stride as u64) * (fb_height as u64);
+                    let pages = (fb_byte_size as usize + 4095) / 4096;
+                    let fb_wc_flags = x86_64::structures::paging::PageTableFlags::WRITE_THROUGH
+                        | x86_64::structures::paging::PageTableFlags::PRESENT
+                        | x86_64::structures::paging::PageTableFlags::WRITABLE
+                        | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+
+                    // Use safe_map_page to split huge-page WB and overlay WC
+                    let fb_mapped = {
+                        let mut mm = crate::memory_management::get_memory_manager().lock();
+                        let mm = mm.as_mut().expect("MemoryManager not initialized");
+                        let mut ok = true;
+                        for i in 0..pages {
+                            if mm
+                                .safe_map_page(
+                                    (fb_virt + (i * 4096) as u64) as usize,
+                                    (fb_phys + (i * 4096) as u64) as usize,
+                                    fb_wc_flags,
+                                )
+                                .is_err()
+                            {
+                                ok = false;
+                                break;
+                            }
                         }
-                        Err(e) => {
-                            petroleum::serial::serial_log(format_args!(
-                                "[graphics] VirtIO-GPU init_display failed: {:?}, GOP fallback.\n",
-                                e
-                            ));
+                        ok
+                    };
+
+                    if fb_mapped {
+                        let fb_info = petroleum::graphics::color::FramebufferInfo {
+                            address: fb_virt,
+                            width: fb_width,
+                            height: fb_height,
+                            stride: fb_stride,
+                            pixel_format: fb_pixel_format,
+                            colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
+                        };
+                        match gpu.init_display(
+                            fb_info.width,
+                            fb_info.height,
+                            fb_phys,
+                            fb_info.stride * fb_info.height,
+                        ) {
+                            Ok(()) => {
+                                let writer =
+                                    petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(
+                                        fb_info,
+                                    );
+                                let renderer =
+                                    petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(
+                                        writer,
+                                    );
+                                set_primary_renderer(renderer);
+                                *VIRTIO_GPU.lock() = Some(Box::new(gpu));
+                                petroleum::debug_log!("Graphics: VirtIO-GPU PRIMARY_RENDERER\n");
+                                return;
+                            }
+                            Err(e) => {
+                                petroleum::serial::serial_log(format_args!(
+                                    "[graphics] VirtIO-GPU init_display failed: {:?}, GOP fallback.\n",
+                                    e
+                                ));
+                            }
                         }
+                    } else {
+                        petroleum::serial::serial_log(format_args!(
+                            "[graphics] FB WC map failed, GOP fallback.\n"
+                        ));
                     }
                 } else {
                     petroleum::serial::serial_log(format_args!(
-                        "[graphics] FB WC map failed, GOP fallback.\n"
+                        "[graphics] VirtIO-GPU init_virtio_gpu returned None, GOP fallback.\n"
                     ));
                 }
             } else {
                 petroleum::serial::serial_log(format_args!(
-                    "[graphics] VirtIO-GPU init_virtio_gpu returned None, GOP fallback.\n"
+                    "[graphics] VirtIO-GPU BAR map failed, GOP fallback.\n"
                 ));
             }
-        } else {
-            petroleum::serial::serial_log(format_args!(
-                "[graphics] VirtIO-GPU BAR map failed, GOP fallback.\n"
-            ));
         }
     } else {
         petroleum::serial::serial_log(format_args!(
