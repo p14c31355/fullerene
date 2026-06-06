@@ -17,10 +17,13 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 use chronoline::{ChronoLine, Deadline, TimerId, TimerMode};
 use lattice::compositor::{Compositor, RenderTarget};
 use lattice::desktop::Desktop;
+use lattice::shell_overlay::{ShellState, render_app_grid, render_task_overview};
 use lattice::terminal_surface::{self, Cell as LatticeCell};
 use lattice::window::WindowId;
 use nozzle::terminal_buffer::TerminalBuffer;
@@ -65,6 +68,9 @@ const FRAME_TIMER_ID: TimerId = TimerId(2);
 /// displays exceeding this will skip rendering to avoid overflowing.
 const MAX_FB_PIXELS: usize = 3840 * 2160;
 
+/// Super key double‑tap window (in ticks).  ~300ms at 1 tick/ms.
+const SUPER_DOUBLE_TAP_TICKS: u64 = 300;
+
 /// Callback to extend the kernel heap.
 ///
 /// Set by the kernel before any rendering.  The function receives the
@@ -82,6 +88,28 @@ pub static HEAP_EXTEND_RESERVE: core::sync::atomic::AtomicUsize =
 pub fn set_heap_extend_fn(f: fn(usize) -> Result<(), ()>) {
     *HEAP_EXTEND_FN.lock() = Some(f);
 }
+
+/// Callback to get wall‑clock time from UEFI (or RTC fallback).
+///
+/// Returns `Option<(year, month, day, hour, minute, second)>`.
+pub static WALL_CLOCK_FN: Mutex<Option<fn() -> Option<(u16, u8, u8, u8, u8, u8)>>> =
+    Mutex::new(None);
+
+/// Register the wall‑clock callback.
+pub fn set_wall_clock_fn(f: fn() -> Option<(u16, u8, u8, u8, u8, u8)>) {
+    *WALL_CLOCK_FN.lock() = Some(f);
+}
+
+/// Latest wall‑clock string (updated each frame).
+static CLOCK_STRING: Mutex<String> = Mutex::new(String::new());
+
+/// Get a copy of the current clock string.
+pub fn clock_string() -> String {
+    CLOCK_STRING.lock().clone()
+}
+
+/// Tick counter for double‑tap detection (shared with the runtime).
+pub static GLOBAL_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 // ── Static back‑buffer (BSS) ─────────────────────────────────
 
@@ -105,6 +133,11 @@ pub struct RuntimeState {
     pub back_len: usize,
     pub term_cells: Vec<LatticeCell>,
     pub term_dirty: bool,
+
+    // ── Shell overlay state ─────────────────────────────
+    /// Current shell UI state.
+    pub shell_state: ShellState,
+    pub last_super_press: u64,
 }
 
 pub fn init() {
@@ -126,6 +159,7 @@ pub fn init() {
 
     dispatcher.register(Box::new(WmEventHandler));
     dispatcher.register(Box::new(TerminalInputHandler));
+    dispatcher.register(Box::new(ShellEventHandler));
 
     *EVENT_QUEUE.lock() = Some(EventQueue::new());
     *DISPATCHER.lock() = Some(dispatcher);
@@ -148,6 +182,8 @@ pub fn init() {
         back_len: 0,
         term_cells: Vec::new(),
         term_dirty: true,
+        shell_state: ShellState::Desktop,
+        last_super_press: 0,
     });
 }
 
@@ -166,6 +202,20 @@ impl EventHandler for WmEventHandler {
             Some(r) => r,
             None => return false,
         };
+
+        // In shell overlay modes, route mouse events to overlay handling.
+        if rt.shell_state != ShellState::Desktop {
+            match event {
+                Event::Input(InputEvent::MouseDown(_)) => {
+                    // Clicking anywhere in overlay returns to desktop.
+                    rt.shell_state = ShellState::Desktop;
+                    rt.frame_due = true;
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+
         match event {
             Event::Input(InputEvent::MouseMove { x, y }) => {
                 rt.desktop.mouse_move(*x, *y);
@@ -201,6 +251,12 @@ impl EventHandler for TerminalInputHandler {
             Some(r) => r,
             None => return false,
         };
+
+        // Don't forward key events to terminal when shell overlay is active.
+        if rt.shell_state != ShellState::Desktop {
+            return false;
+        }
+
         match event {
             Event::Input(InputEvent::KeyDown(key)) => {
                 if let Some(ascii) = keycode_to_ascii(*key) {
@@ -213,6 +269,56 @@ impl EventHandler for TerminalInputHandler {
             }
             _ => false,
         }
+    }
+}
+
+/// Shell event handler — manages Super key double‑tap and Esc transitions.
+struct ShellEventHandler;
+
+impl EventHandler for ShellEventHandler {
+    fn handle(&mut self, event: &Event) -> bool {
+        let mut rt = RUNTIME.lock();
+        let rt = match rt.as_mut() {
+            Some(r) => r,
+            None => return false,
+        };
+
+        match event {
+            Event::Input(InputEvent::KeyDown(KeyCode::SuperLeft))
+            | Event::Input(InputEvent::KeyDown(KeyCode::SuperRight)) => {
+                let now = GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
+                let _since_last = now.saturating_sub(rt.last_super_press);
+                rt.last_super_press = now;
+
+                match rt.shell_state {
+                    ShellState::Desktop => {
+                        rt.shell_state = ShellState::TaskOverview;
+                        rt.frame_due = true;
+                    }
+                    ShellState::TaskOverview => {
+                        if _since_last < SUPER_DOUBLE_TAP_TICKS {
+                            rt.shell_state = ShellState::AppGrid;
+                            rt.frame_due = true;
+                        }
+                    }
+                    ShellState::AppGrid => {
+                        // Super again → back to Desktop
+                        rt.shell_state = ShellState::Desktop;
+                        rt.frame_due = true;
+                    }
+                }
+                return true;
+            }
+            Event::Input(InputEvent::KeyDown(KeyCode::Escape)) => {
+                if rt.shell_state != ShellState::Desktop {
+                    rt.shell_state = ShellState::Desktop;
+                    rt.frame_due = true;
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        false
     }
 }
 
@@ -329,6 +435,116 @@ pub fn poll_mouse_state() {
     }
 }
 
+// ── Keyboard polling (raw PS/2 → Resonance events) ──────────
+
+/// Poll raw PS/2 key events and push them into the Resonance event queue.
+/// Call from runtime_tick before process_events.
+pub fn poll_keyboard() {
+    while nitrogen::ps2::keyboard::raw_key_available() {
+        let (scancode, pressed) = match nitrogen::ps2::keyboard::pop_raw_key() {
+            Some(k) => k,
+            None => break,
+        };
+
+        // Map scancode to resonance KeyCode
+        let key = scancode_to_resonance_keycode(scancode);
+        let event = if pressed {
+            Event::Input(InputEvent::KeyDown(key))
+        } else {
+            Event::Input(InputEvent::KeyUp(key))
+        };
+
+        if let Some(ref mut queue) = *EVENT_QUEUE.lock() {
+            queue.push(event);
+        }
+    }
+}
+
+/// Map a raw PS/2 scancode (with 0x80 bit for extended) to Resonance KeyCode.
+fn scancode_to_resonance_keycode(scancode: u8) -> KeyCode {
+    let extended = scancode & 0x80 != 0;
+    let base = scancode & 0x7F;
+
+    if extended {
+        match base {
+            0x1D => return KeyCode::Ctrl,      // RCtrl as Ctrl
+            0x38 => return KeyCode::Alt,        // RAlt as Alt
+            0x5B => return KeyCode::SuperLeft,
+            0x5C => return KeyCode::SuperRight,
+            _ => {}
+        }
+    }
+
+    match base {
+        0x01 => KeyCode::Escape,
+        0x02 => KeyCode::Digit1,
+        0x03 => KeyCode::Digit2,
+        0x04 => KeyCode::Digit3,
+        0x05 => KeyCode::Digit4,
+        0x06 => KeyCode::Digit5,
+        0x07 => KeyCode::Digit6,
+        0x08 => KeyCode::Digit7,
+        0x09 => KeyCode::Digit8,
+        0x0A => KeyCode::Digit9,
+        0x0B => KeyCode::Digit0,
+        0x0E => KeyCode::Backspace,
+        0x0F => KeyCode::Tab,
+        0x10 => KeyCode::Q,
+        0x11 => KeyCode::W,
+        0x12 => KeyCode::E,
+        0x13 => KeyCode::R,
+        0x14 => KeyCode::T,
+        0x15 => KeyCode::Y,
+        0x16 => KeyCode::U,
+        0x17 => KeyCode::I,
+        0x18 => KeyCode::O,
+        0x19 => KeyCode::P,
+        0x1C => KeyCode::Enter,
+        0x1D => KeyCode::Ctrl,
+        0x1E => KeyCode::A,
+        0x1F => KeyCode::S,
+        0x20 => KeyCode::D,
+        0x21 => KeyCode::F,
+        0x22 => KeyCode::G,
+        0x23 => KeyCode::H,
+        0x24 => KeyCode::J,
+        0x25 => KeyCode::K,
+        0x26 => KeyCode::L,
+        0x2A => KeyCode::Shift,
+        0x2C => KeyCode::Z,
+        0x2D => KeyCode::X,
+        0x2E => KeyCode::C,
+        0x2F => KeyCode::V,
+        0x30 => KeyCode::B,
+        0x31 => KeyCode::N,
+        0x32 => KeyCode::M,
+        0x36 => KeyCode::Shift,
+        0x38 => KeyCode::Alt,
+        0x39 => KeyCode::Space,
+        0x3B => KeyCode::F1,
+        0x3C => KeyCode::F2,
+        0x3D => KeyCode::F3,
+        0x3E => KeyCode::F4,
+        0x3F => KeyCode::F5,
+        0x40 => KeyCode::F6,
+        0x41 => KeyCode::F7,
+        0x42 => KeyCode::F8,
+        0x43 => KeyCode::F9,
+        0x44 => KeyCode::F10,
+        0x47 => KeyCode::Home,
+        0x48 => KeyCode::Up,
+        0x49 => KeyCode::PageUp,
+        0x4B => KeyCode::Left,
+        0x4D => KeyCode::Right,
+        0x4F => KeyCode::End,
+        0x50 => KeyCode::Down,
+        0x51 => KeyCode::PageDown,
+        0x57 => KeyCode::F11,
+        0x58 => KeyCode::F12,
+        _ => KeyCode::Unknown(base as u32),
+    }
+}
+
 // ── ChronoLine tick ──────────────────────────────────────────
 
 pub fn chrono_tick(now: u64) {
@@ -366,6 +582,31 @@ pub fn process_events() {
             dispatcher.dispatch_queue(queue);
         }
     }
+}
+
+// ── Clock update ─────────────────────────────────────────────
+
+/// Update the taskbar clock from the wall‑clock callback.
+/// Format: "YYYY MMDD HHMM" (e.g. "2026 0606 2200").
+pub fn update_clock() {
+    let time_str = if let Some(get_time) = *WALL_CLOCK_FN.lock() {
+        if let Some((year, month, day, hour, minute, _second)) = get_time() {
+            format!(
+                "{} {:02}{:02} {:02}{:02}",
+                year, month, day, hour, minute
+            )
+        } else {
+            String::from("---- ---- ----")
+        }
+    } else {
+        String::from("---- ---- ----")
+    };
+
+    let mut rt = RUNTIME.lock();
+    if let Some(ref mut r) = *rt {
+        r.desktop.clock_text = time_str.clone();
+    }
+    *CLOCK_STRING.lock() = time_str;
 }
 
 // ── Rendering ────────────────────────────────────────────────
@@ -414,7 +655,7 @@ where
     }
     rt.back_len = fb_len;
 
-    let (bx, by, bw, bh) = {
+    {
         let mut back = BACK_BUFFER.lock();
         let mut back_target = FramebufferTarget {
             pixels: &mut back[..fb_len],
@@ -422,20 +663,32 @@ where
             height: fb_height,
         };
         let scene = rt.desktop.scene();
-        Compositor::render(&scene, &mut back_target)
-    };
+        let (bx, by, bw, bh) = Compositor::render(&scene, &mut back_target);
 
-    if bw > 0 && bh > 0 {
-        let back = BACK_BUFFER.lock();
-        let fb_w = fb_width as usize;
-        let b_w = bw as usize;
-        for row in 0..bh {
-            let off = ((by + row) as usize) * fb_w + (bx as usize);
-            let len = b_w.min(fb_len.saturating_sub(off));
-            if len > 0 {
-                fb_pixels[off..off + len].copy_from_slice(&back[off..off + len]);
+        if bw > 0 && bh > 0 {
+            let fb_w = fb_width as usize;
+            let b_w = bw as usize;
+
+            // Copy composited desktop to framebuffer
+            for row in 0..bh {
+                let off = ((by + row) as usize) * fb_w + (bx as usize);
+                let len = b_w.min(fb_len.saturating_sub(off));
+                if len > 0 {
+                    fb_pixels[off..off + len].copy_from_slice(&back[off..off + len]);
+                }
             }
         }
+    }
+
+    // ── Shell overlay rendering (post‑compositor, onto fb_pixels) ──────
+    match rt.shell_state {
+        ShellState::TaskOverview => {
+            render_task_overview(fb_pixels, fb_width, fb_height, rt.desktop.wm.windows());
+        }
+        ShellState::AppGrid => {
+            render_app_grid(fb_pixels, fb_width, fb_height);
+        }
+        ShellState::Desktop => {}
     }
 }
 
@@ -503,7 +756,6 @@ fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
                     let src_idx = row * src_cols + col;
                     if src_idx < src_cells.len() {
                         let c = src_cells[src_idx];
-                        // Use raw byte write so we don't trigger ANSI parsing
                         if let Some(dst) = rt.term_buf.cell_mut(col as u32, row as u32) {
                             *dst = nozzle::terminal_buffer::Cell {
                                 ch: c.ch,
@@ -608,7 +860,10 @@ pub fn set_render_fn(f: fn()) {
 
 fn runtime_tick_no_fb() {
     let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
     poll_mouse_state();
+    poll_keyboard();
+    update_clock();
     chrono_tick(now);
     process_events();
 
@@ -627,7 +882,10 @@ pub fn runtime_tick<F>(now: u64, framebuffer_fn: F)
 where
     F: FnOnce() -> Option<(&'static mut [u32], u32, u32)>,
 {
+    GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
     poll_mouse_state();
+    poll_keyboard();
+    update_clock();
     chrono_tick(now);
     process_events();
 

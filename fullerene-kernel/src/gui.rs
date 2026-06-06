@@ -34,6 +34,9 @@ pub fn init() {
         crate::heap::extend_kernel_heap(additional)
     });
 
+    // Register the wall-clock callback (CMOS RTC).
+    solvent::set_wall_clock_fn(read_cmos_time);
+
     solvent::init();
     petroleum::serial::serial_log(format_args!("solvent::init() completed\n"));
 }
@@ -82,4 +85,84 @@ fn get_framebuffer_slice() -> Option<(&'static mut [u32], u32, u32)> {
 
     let fb_pixels = unsafe { core::slice::from_raw_parts_mut(fb_ptr, fb_len) };
     Some((fb_pixels, info.width, info.height))
+}
+
+// ── Wall clock (CMOS RTC) ────────────────────────────────────
+
+/// Read a CMOS register.
+fn cmos_read(reg: u8) -> u8 {
+    unsafe {
+        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x70).write(reg);
+        x86_64::instructions::port::PortReadOnly::<u8>::new(0x71).read()
+    }
+}
+
+/// Convert a BCD value to binary if the RTC is in BCD mode.
+fn bcd_to_bin(bcd: u8) -> u8 {
+    (bcd & 0x0F) + ((bcd >> 4) * 10)
+}
+
+/// Read wall-clock time from the CMOS RTC.
+///
+/// Returns `Some((year, month, day, hour, minute, second))` on success.
+fn read_cmos_time() -> Option<(u16, u8, u8, u8, u8, u8)> {
+    // Wait for update-in-progress flag to clear
+    while cmos_read(0x0A) & 0x80 != 0 {}
+    // Wait for data available
+    while cmos_read(0x0A) & 0x80 == 0 {}
+
+    let status_b = cmos_read(0x0B);
+    let use_bcd = status_b & 0x04 == 0;
+
+    let mut second = cmos_read(0x00);
+    let mut minute = cmos_read(0x02);
+    let mut hour = cmos_read(0x04);
+    let mut day = cmos_read(0x07);
+    let mut month = cmos_read(0x08);
+    let mut year_raw = cmos_read(0x09);
+
+    // Check if 12-hour mode (status B bit 1)
+    if status_b & 0x02 != 0 {
+        // 12-hour mode: bit 7 = PM
+        let pm = hour & 0x80 != 0;
+        hour &= 0x7F;
+        if use_bcd {
+            hour = bcd_to_bin(hour);
+        }
+        if pm && hour != 12 {
+            hour += 12;
+        }
+        if !pm && hour == 12 {
+            hour = 0;
+        }
+    } else if use_bcd {
+        hour = bcd_to_bin(hour);
+    }
+
+    if use_bcd {
+        second = bcd_to_bin(second);
+        minute = bcd_to_bin(minute);
+        day = bcd_to_bin(day);
+        month = bcd_to_bin(month);
+        year_raw = bcd_to_bin(year_raw);
+    }
+
+    // Century from register 0x32 (if available, else assume 2000+)
+    let century = cmos_read(0x32);
+    let full_year = if century != 0 {
+        if use_bcd {
+            2000 + bcd_to_bin(century) as u16 * 100 + year_raw as u16
+        } else {
+            2000 + century as u16 * 100 + year_raw as u16
+        }
+    } else {
+        2000 + year_raw as u16
+    };
+
+    // Basic sanity check
+    if month == 0 || month > 12 || day == 0 || day > 31 || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+
+    Some((full_year, month, day, hour, minute, second))
 }

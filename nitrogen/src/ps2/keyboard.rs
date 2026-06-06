@@ -1,7 +1,7 @@
 //! PS/2 Keyboard Driver
 //!
 //! Scancode set 1 to ASCII conversion with input buffering, modifier tracking,
-//! and key repeat support.
+//! key repeat support, and Super (Windows) key handling.
 
 use alloc::collections::VecDeque;
 use alloc::string::String;
@@ -9,6 +9,10 @@ use spin::Mutex;
 
 static INPUT_BUFFER: Mutex<VecDeque<u8>> = Mutex::new(VecDeque::new());
 static INPUT_STRING_BUFFER: Mutex<String> = Mutex::new(String::new());
+
+/// Raw key event buffer for non-ASCII key events (e.g. Super, arrows).
+/// Each entry is a (scancode, pressed) tuple.
+pub static RAW_KEY_QUEUE: Mutex<VecDeque<(u8, bool)>> = Mutex::new(VecDeque::new());
 
 /// Keyboard modifiers state
 #[derive(Debug, Clone, Copy, Default)]
@@ -19,6 +23,8 @@ pub struct KeyboardModifiers {
     pub rctrl: bool,
     pub lalt: bool,
     pub ralt: bool,
+    pub lsuper: bool,
+    pub rsuper: bool,
     pub caps_lock: bool,
     pub num_lock: bool,
     pub scroll_lock: bool,
@@ -31,6 +37,8 @@ static MODIFIERS: Mutex<KeyboardModifiers> = Mutex::new(KeyboardModifiers {
     rctrl: false,
     lalt: false,
     ralt: false,
+    lsuper: false,
+    rsuper: false,
     caps_lock: false,
     num_lock: false,
     scroll_lock: false,
@@ -44,6 +52,9 @@ static KEY_REPEAT: Mutex<KeyRepeatState> = Mutex::new(KeyRepeatState::new());
 const KEY_REPEAT_DELAY_MS: u64 = 500;
 const KEY_REPEAT_RATE_MS: u64 = 33;
 static SYS_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Last pressed scancode for shell-level double-tap detection.
+pub static LAST_SUPER_SCANCODE: Mutex<Option<(u8, u64)>> = Mutex::new(None);
 
 #[derive(Debug, Clone, Copy)]
 struct KeyRepeatState {
@@ -91,6 +102,10 @@ const SPECIAL_KEYS: &[(u8, u8)] = &[
     (0x39, b' '),
 ];
 
+/// Super key scancodes (Set 1, extended prefix 0xE0)
+pub const SC_LSUPER: u8 = 0x5B;
+pub const SC_RSUPER: u8 = 0x5C;
+
 fn process_alphabetic(base: u8, modifiers: &KeyboardModifiers) -> u8 {
     let shift_pressed = modifiers.lshift || modifiers.rshift;
     let ctrl_pressed = modifiers.lctrl || modifiers.rctrl;
@@ -137,6 +152,17 @@ fn scancode_to_ascii(scancode: u8, modifiers: &KeyboardModifiers) -> Option<u8> 
     }
 }
 
+/// Check if a scancode is a Super (Windows) key.
+pub fn is_super_scancode(scancode: u8, extended: bool) -> bool {
+    extended && (scancode == SC_LSUPER || scancode == SC_RSUPER)
+}
+
+/// Check if the Super modifier is currently held.
+pub fn super_held() -> bool {
+    let mods = MODIFIERS.lock();
+    mods.lsuper || mods.rsuper
+}
+
 pub fn handle_keyboard_scancode(scancode: u8) {
     let mut ext = EXTENDED_SCANCODE.lock();
     if scancode == 0xE0 {
@@ -146,18 +172,29 @@ pub fn handle_keyboard_scancode(scancode: u8) {
     let is_ext = *ext;
     *ext = false;
     drop(ext);
+
+    // Always push raw key events for non‑ASCII handling (shell, etc.)
+    let pressed = scancode & 0x80 == 0;
+    let base = scancode & 0x7F;
+    {
+        let mut raw = RAW_KEY_QUEUE.lock();
+        if raw.len() < 64 {
+            raw.push_back((if is_ext { base | 0x80 } else { base }, pressed));
+        }
+    }
+
     let mut mods = MODIFIERS.lock();
 
     if is_ext {
-        if scancode & 0x80 != 0 {
-            handle_ext_release(scancode & 0x7F, &mut mods);
+        if pressed {
+            handle_ext_press(base, &mut mods);
         } else {
-            handle_ext_press(scancode, &mut mods);
+            handle_ext_release(base, &mut mods);
         }
-    } else if scancode & 0x80 != 0 {
-        handle_release(scancode & 0x7F, &mut mods);
+    } else if pressed {
+        handle_press(base, &mut mods);
     } else {
-        handle_press(scancode, &mut mods);
+        handle_release(base, &mut mods);
     }
 }
 
@@ -203,6 +240,8 @@ fn handle_ext_press(scancode: u8, mods: &mut KeyboardModifiers) {
     match scancode {
         0x1D => mods.rctrl = true,
         0x38 => mods.ralt = true,
+        SC_LSUPER => mods.lsuper = true,
+        SC_RSUPER => mods.rsuper = true,
         _ => {}
     }
 }
@@ -211,6 +250,8 @@ fn handle_ext_release(scancode: u8, mods: &mut KeyboardModifiers) {
     match scancode {
         0x1D => mods.rctrl = false,
         0x38 => mods.ralt = false,
+        SC_LSUPER => mods.lsuper = false,
+        SC_RSUPER => mods.rsuper = false,
         _ => {}
     }
 }
@@ -237,13 +278,23 @@ pub fn read_char() -> Option<u8> {
     INPUT_BUFFER.lock().pop_front()
 }
 
+/// Pop a raw key event (scancode, pressed) from the queue.
+pub fn pop_raw_key() -> Option<(u8, bool)> {
+    RAW_KEY_QUEUE.lock().pop_front()
+}
+
 pub fn input_available() -> bool {
     !INPUT_BUFFER.lock().is_empty()
+}
+
+pub fn raw_key_available() -> bool {
+    !RAW_KEY_QUEUE.lock().is_empty()
 }
 
 pub fn flush_input() {
     INPUT_BUFFER.lock().clear();
     INPUT_STRING_BUFFER.lock().clear();
+    RAW_KEY_QUEUE.lock().clear();
 }
 
 pub fn get_keyboard_status() -> KeyboardModifiers {

@@ -52,6 +52,8 @@ pub enum KeyCode {
     RCtrl,
     LAlt,
     RAlt,
+    LSuper,
+    RSuper,
 
     // Navigation
     Enter,

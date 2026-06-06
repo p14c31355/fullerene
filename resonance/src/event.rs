@@ -126,6 +126,8 @@ pub enum KeyCode {
     Ctrl,
     Alt,
     Meta,
+    SuperLeft,
+    SuperRight,
 
     // Navigation
     Enter,
