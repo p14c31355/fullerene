@@ -138,6 +138,9 @@ pub struct RuntimeState {
     /// Current shell UI state.
     pub shell_state: ShellState,
     pub last_super_press: u64,
+
+    /// Tick of last render while shell overlay is active (rate‑limiting).
+    pub last_overlay_render_tick: u64,
 }
 
 pub fn init() {
@@ -184,6 +187,7 @@ pub fn init() {
         term_dirty: true,
         shell_state: ShellState::Desktop,
         last_super_press: 0,
+        last_overlay_render_tick: 0,
     });
 }
 
@@ -206,6 +210,17 @@ impl EventHandler for WmEventHandler {
         // In shell overlay modes, route mouse events to overlay handling.
         if rt.shell_state != ShellState::Desktop {
             match event {
+                // In overlay mode, only move the cursor — do NOT trigger a
+                // full render.  The cached framebuffer (LAST_FB) already
+                // contains the overlay.  We erase the old cursor position and
+                // draw the new one directly.
+                Event::Input(InputEvent::MouseMove { x, y }) => {
+                    let prev_x = rt.desktop.cursor.x;
+                    let prev_y = rt.desktop.cursor.y;
+                    rt.desktop.set_cursor(*x, *y);
+                    render_cursor_only(prev_x, prev_y, *x, *y);
+                    return true;
+                }
                 Event::Input(InputEvent::MouseDown(_)) if rt.shell_state == ShellState::TimeZoneSelector => {
                     // In timezone selector: determine which entry was clicked
                     let mouse = MOUSE_STATE.lock();
@@ -281,9 +296,16 @@ impl EventHandler for WmEventHandler {
 
         match event {
             Event::Input(InputEvent::MouseMove { x, y }) => {
+                let prev_x = rt.desktop.cursor.x;
+                let prev_y = rt.desktop.cursor.y;
                 rt.desktop.mouse_move(*x, *y);
-                // Force a frame on every mouse move for responsive cursor.
-                rt.frame_due = true;
+                // Lightweight cursor update (same as overlay modes).
+                // render() calls save_cursor_backing() BEFORE draw_cursor_on_fb(),
+                // so the backing store always captures clean pixels under the
+                // cursor.  Calling render_cursor_only() here restores the old
+                // position and draws at the new one, keeping the framebuffer
+                // consistent until the next scheduled render().
+                render_cursor_only(prev_x, prev_y, rt.desktop.cursor.x, rt.desktop.cursor.y);
                 true
             }
             Event::Input(InputEvent::MouseDown(_btn)) => {
@@ -350,7 +372,6 @@ impl EventHandler for ShellEventHandler {
             Event::Input(InputEvent::KeyDown(KeyCode::SuperLeft))
             | Event::Input(InputEvent::KeyDown(KeyCode::SuperRight)) => {
                 let now = GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
-                let _since_last = now.saturating_sub(rt.last_super_press);
                 rt.last_super_press = now;
 
                 match rt.shell_state {
@@ -359,18 +380,14 @@ impl EventHandler for ShellEventHandler {
                         rt.frame_due = true;
                     }
                     ShellState::TaskOverview => {
-                        if _since_last < SUPER_DOUBLE_TAP_TICKS {
-                            rt.shell_state = ShellState::AppGrid;
-                            rt.frame_due = true;
-                        }
+                        rt.shell_state = ShellState::AppGrid;
+                        rt.frame_due = true;
                     }
                     ShellState::AppGrid => {
-                        // Super again → back to Desktop
                         rt.shell_state = ShellState::Desktop;
                         rt.frame_due = true;
                     }
                     ShellState::TimeZoneSelector => {
-                        // Super in timezone selector → back to Desktop
                         rt.shell_state = ShellState::Desktop;
                         rt.frame_due = true;
                     }
@@ -471,22 +488,28 @@ pub fn poll_mouse_state() {
         let btn = nitrogen::ps2::mouse::mouse_buttons();
 
         let mut mouse = MOUSE_STATE.lock();
+        let old_x = mouse.x;
+        let old_y = mouse.y;
         mouse.x = mouse.x.wrapping_add(dx.wrapping_mul(MOUSE_SENSITIVITY));
         mouse.y = mouse
             .y
             .wrapping_add(dy.wrapping_mul(MOUSE_SENSITIVITY).wrapping_neg());
         mouse.buttons = btn;
-    }
 
-    {
-        let mouse = MOUSE_STATE.lock();
         let cx = mouse.x as i32;
         let cy = mouse.y as i32;
         let buttons = mouse.buttons;
+        let moved = old_x != mouse.x || old_y != mouse.y;
         drop(mouse);
 
-        if let Some(ref mut queue) = *EVENT_QUEUE.lock() {
-            queue.push(Event::Input(InputEvent::MouseMove { x: cx, y: cy }));
+        // Only push MouseMove if the position actually changed.
+        // Otherwise stale events accumulate in the queue and cause
+        // render storms when the shell overlay event handler sets
+        // frame_due on every single one.
+        if moved {
+            if let Some(ref mut queue) = *EVENT_QUEUE.lock() {
+                queue.push(Event::Input(InputEvent::MouseMove { x: cx, y: cy }));
+            }
         }
 
         let mut prev_btn = PREV_MOUSE_BUTTONS.lock();
@@ -628,7 +651,14 @@ pub fn chrono_tick(now: u64) {
                 rt.cursor_visible = !rt.cursor_visible;
                 rt.term_dirty = true;
             }
-            FRAME_TIMER_ID => rt.frame_due = true,
+            FRAME_TIMER_ID => {
+                // Only auto-frame when on Desktop — shell overlays render
+                // exclusively when shell_state changes (handlers set frame_due
+                // explicitly on transition).
+                if rt.shell_state == ShellState::Desktop {
+                    rt.frame_due = true;
+                }
+            }
             _ => {}
         }
     }
@@ -827,6 +857,180 @@ where
         }
         ShellState::Desktop => {}
     }
+
+    // ── Cursor overlay (drawn after everything else) ──────
+    // The compositor draws the cursor inside the back‑buffer, but
+    // shell overlays overwrite that area.  Redraw the cursor directly
+    // onto fb_pixels so it is always visible regardless of shell state.
+    //
+    // Also cache the framebuffer pointer so render_cursor_only()
+    // can do lightweight cursor updates without a full render.
+    unsafe {
+        LAST_FB_PTR = fb_pixels.as_mut_ptr();
+        LAST_FB_DIMS = (fb_width, fb_height);
+    }
+    let cursor = &rt.desktop.cursor;
+    if cursor.visible {
+        // Save backing store for future cursor-only redraws
+        save_cursor_backing(fb_pixels, fb_width, fb_height, cursor.x, cursor.y);
+        draw_cursor_on_fb(fb_pixels, fb_width, fb_height, cursor.x, cursor.y);
+    }
+}
+
+/// Save the pixels under the current cursor for `render_cursor_only`.
+fn save_cursor_backing(fb: &[u32], fbw: u32, fbh: u32, cx: i32, cy: i32) {
+    use lattice::cursor::Cursor;
+    let sz = Cursor::SIZE as i32;
+    let dst_x = cx - Cursor::HOTSPOT_X;
+    let dst_y = cy - Cursor::HOTSPOT_Y;
+    let fb_w = fbw as usize;
+    let fb_len = fb.len();
+
+    for row in 0..sz {
+        let dy = dst_y + row;
+        if dy < 0 || dy >= fbh as i32 { continue; }
+        for col in 0..sz {
+            let dx = dst_x + col;
+            if dx < 0 || dx >= fbw as i32 { continue; }
+            let idx = (dy as usize) * fb_w + dx as usize;
+            if idx < fb_len {
+                unsafe {
+                    CURSOR_BACKING[(row as usize) * (sz as usize) + col as usize] = fb[idx];
+                }
+            }
+        }
+    }
+    unsafe {
+        CURSOR_SAVED_X = dst_x;
+        CURSOR_SAVED_Y = dst_y;
+    }
+}
+
+/// Draw the cursor shape directly onto a framebuffer.
+fn draw_cursor_on_fb(fb: &mut [u32], fbw: u32, fbh: u32, cx: i32, cy: i32) {
+    use lattice::cursor::Cursor;
+    let pixels = Cursor::shape();
+    let sz = Cursor::SIZE as i32;
+    let dst_x = cx - Cursor::HOTSPOT_X;
+    let dst_y = cy - Cursor::HOTSPOT_Y;
+    let fb_w = fbw as usize;
+    let fb_len = fb.len();
+
+    for row in 0..sz {
+        let dy = dst_y + row;
+        if dy < 0 || dy >= fbh as i32 {
+            continue;
+        }
+        for col in 0..sz {
+            let dx = dst_x + col;
+            if dx < 0 || dx >= fbw as i32 {
+                continue;
+            }
+            let s = pixels[(row as usize) * (sz as usize) + col as usize];
+            if s & 0xFF000000 == 0 {
+                continue;
+            }
+            let idx = (dy as usize) * fb_w + dx as usize;
+            if idx < fb_len {
+                fb[idx] = s;
+            }
+        }
+    }
+}
+
+/// Lightweight cursor-only redraw — no compositor, no overlay re‑render.
+///
+/// Restores the pixels under the old cursor position from `CURSOR_BACKING`,
+/// saves the pixels under the new position, and draws the cursor shape.
+fn render_cursor_only(prev_x: i32, prev_y: i32, new_x: i32, new_y: i32) {
+    let fb_ptr = unsafe { LAST_FB_PTR };
+    if fb_ptr.is_null() {
+        return;
+    }
+    let (fbw, fbh) = unsafe { LAST_FB_DIMS };
+    if fbw == 0 || fbh == 0 {
+        return;
+    }
+    let fb_len = (fbw as usize) * (fbh as usize);
+    let fb = unsafe { core::slice::from_raw_parts_mut(fb_ptr, fb_len) };
+
+    use lattice::cursor::Cursor;
+    let sz = Cursor::SIZE as i32;
+    let fb_w = fbw as usize;
+
+    // 1. Restore old cursor position from backing store
+    let old_dst_x = prev_x - Cursor::HOTSPOT_X;
+    let old_dst_y = prev_y - Cursor::HOTSPOT_Y;
+    let saved_x = unsafe { CURSOR_SAVED_X };
+    let saved_y = unsafe { CURSOR_SAVED_Y };
+    if saved_x >= 0 && saved_y >= 0 {
+        for row in 0..sz {
+            let dy = saved_y + row;
+            if dy < 0 || dy >= fbh as i32 {
+                continue;
+            }
+            for col in 0..sz {
+                let dx = saved_x + col;
+                if dx < 0 || dx >= fbw as i32 {
+                    continue;
+                }
+                let idx = (dy as usize) * fb_w + dx as usize;
+                if idx < fb_len {
+                    let backing = unsafe { CURSOR_BACKING[(row as usize) * (sz as usize) + col as usize] };
+                    fb[idx] = backing;
+                }
+            }
+        }
+    }
+
+    // 2. Save new cursor position backing
+    let new_dst_x = new_x - Cursor::HOTSPOT_X;
+    let new_dst_y = new_y - Cursor::HOTSPOT_Y;
+    for row in 0..sz {
+        let dy = new_dst_y + row;
+        if dy < 0 || dy >= fbh as i32 {
+            continue;
+        }
+        for col in 0..sz {
+            let dx = new_dst_x + col;
+            if dx < 0 || dx >= fbw as i32 {
+                continue;
+            }
+            let idx = (dy as usize) * fb_w + dx as usize;
+            if idx < fb_len {
+                unsafe {
+                    CURSOR_BACKING[(row as usize) * (sz as usize) + col as usize] = fb[idx];
+                }
+            }
+        }
+    }
+    unsafe {
+        CURSOR_SAVED_X = new_dst_x;
+        CURSOR_SAVED_Y = new_dst_y;
+    }
+
+    // 3. Draw cursor at new position
+    let pixels = Cursor::shape();
+    for row in 0..sz {
+        let dy = new_dst_y + row;
+        if dy < 0 || dy >= fbh as i32 {
+            continue;
+        }
+        for col in 0..sz {
+            let dx = new_dst_x + col;
+            if dx < 0 || dx >= fbw as i32 {
+                continue;
+            }
+            let s = pixels[(row as usize) * (sz as usize) + col as usize];
+            if s & 0xFF000000 == 0 {
+                continue;
+            }
+            let idx = (dy as usize) * fb_w + dx as usize;
+            if idx < fb_len {
+                fb[idx] = s;
+            }
+        }
+    }
 }
 
 fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
@@ -990,6 +1194,16 @@ impl nozzle::Terminal for LatticeTerminal {
 
 static YIELD_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
+
+/// Cached framebuffer for cursor‑only redraws (lightweight, no compositor).
+/// `static mut` is acceptable here because the kernel is single‑threaded.
+static mut LAST_FB_PTR: *mut u32 = core::ptr::null_mut();
+static mut LAST_FB_DIMS: (u32, u32) = (0, 0);
+
+/// Saved 16×16 pixel region under the cursor, restored on cursor move.
+static mut CURSOR_BACKING: [u32; 256] = [0u32; 256];
+static mut CURSOR_SAVED_X: i32 = -100;
+static mut CURSOR_SAVED_Y: i32 = -100;
 
 pub fn set_render_fn(f: fn()) {
     *RENDER_FN.lock() = Some(f);
