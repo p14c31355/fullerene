@@ -26,9 +26,9 @@ static BADAPPLE_RLE: &[u8] = include_bytes!("badapple.rle");
 /// PCM audio: 22 050 Hz, mono, signed 16‑bit little‑endian.
 static BADAPPLE_PCM: &[u8] = include_bytes!("badapple.pcm");
 
-const PCM_SAMPLE_RATE: u32 = 48000;
+const PCM_SAMPLE_RATE: u32 = 22050;
 const PCM_BYTES_PER_SAMPLE: u32 = 2;
-const PCM_BYTES_PER_SEC: u32 = PCM_SAMPLE_RATE * PCM_BYTES_PER_SAMPLE; // 96000
+const PCM_BYTES_PER_SEC: u32 = PCM_SAMPLE_RATE * PCM_BYTES_PER_SAMPLE; // 44100
 
 const RLE_MAGIC: &[u8; 4] = b"BARL";
 const RLE_HDR_SIZE: usize = 16;
