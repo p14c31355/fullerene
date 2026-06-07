@@ -267,7 +267,7 @@ impl EventHandler for WmEventHandler {
                     let icon_size = 64i32;
                     let pad = 24i32;
                     let label_h = 18i32;
-                    let columns = 1024i32 / (icon_size + pad); // fb_width default
+                    let columns = ((fw as i32) / (icon_size + pad)).max(1);
                     let start_y = 60i32;
 
                     // "Settings" is index 2 in the apps array
