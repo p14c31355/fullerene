@@ -175,7 +175,7 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
     // Wait if CORB is full (next WP would equal RP)
     for _ in 0..1000 {
         let wp = r16(mmio, CORBWP) as usize;
-        let rp = r8(mmio, CORBRP) as usize;
+        let rp = r16(mmio, CORBRP) as usize & 0xFF;
         if (wp + 1) % CORB_ENTRIES != rp { break }
         core::hint::spin_loop();
     }
