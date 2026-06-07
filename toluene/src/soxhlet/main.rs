@@ -19,7 +19,7 @@ const RLE_MAGIC: &[u8; 4] = b"BARL";
 const RLE_VERSION: u32 = 1;
 
 /// Audio: mono 48 kHz 16‑bit signed PCM
-const AUDIO_SAMPLE_RATE: u32 = 22050;
+const AUDIO_SAMPLE_RATE: u32 = 48000;
 
 #[derive(Parser)]
 struct Args {

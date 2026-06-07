@@ -2,58 +2,40 @@
 //!
 //! Provides PC speaker beep and Intel HD Audio (HDA) streaming playback.
 //!
-//! # Architecture
-//!
 //! ```text
 //! PC Speaker (PIT mode 3 → square wave)
 //! HDA controller (PCI class 0x04, subclass 0x03)
-//!   → SD1 (first output stream) configured via MMIO registers
+//!   → SD configured via MMIO registers
 //!   → BDL with 2 entries → circular DMA buffer
 //!   → LPIB polling for playback progress
 //! ```
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use nitrogen::pci::PciDevice;
 use spin::Mutex;
 
 // ── PC Speaker ─────────────────────────────────────────────────
 
-pub fn pc_speaker_beep(frequency_hz: u32, duration_ms: u32) {
-    if frequency_hz == 0 {
-        return;
-    }
-    pc_speaker_on(frequency_hz);
-    unsafe {
-        for _ in 0..duration_ms * 1000 {
-            core::hint::spin_loop();
-        }
-    }
-    pc_speaker_off();
-}
-
 pub fn pc_speaker_on(frequency_hz: u32) {
-    if frequency_hz == 0 {
-        pc_speaker_off();
-        return;
-    }
+    if frequency_hz == 0 { pc_speaker_off(); return; }
+    let divisor = (1_193_182u32 / frequency_hz).min(65535) as u16;
     unsafe {
-        let divisor = (1_193_182u32 / frequency_hz).min(65535) as u16;
         x86_64::instructions::port::PortWriteOnly::<u8>::new(0x43).write(0xB6);
         x86_64::instructions::port::PortWriteOnly::<u8>::new(0x42).write(divisor as u8);
-        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x42).write((divisor >> 8) as u8);
-        let tmp = x86_64::instructions::port::PortReadOnly::<u8>::new(0x61).read();
-        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61).write(tmp | 0x03);
+        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x42).write((divisor>>8) as u8);
+        let t = x86_64::instructions::port::PortReadOnly::<u8>::new(0x61).read();
+        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61).write(t|0x03);
     }
 }
 
 pub fn pc_speaker_off() {
     unsafe {
-        let tmp = x86_64::instructions::port::PortReadOnly::<u8>::new(0x61).read();
-        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61).write(tmp & !0x03);
+        let t = x86_64::instructions::port::PortReadOnly::<u8>::new(0x61).read();
+        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61).write(t&!0x03);
     }
 }
 
-// ── HDA MMIO Register offsets ───────────────────────────────────
+// ── HDA Registers ──────────────────────────────────────────────
 
 const GCAP: usize     = 0x0000;
 const GCTL: usize     = 0x0008;
@@ -73,371 +55,225 @@ const RIRBSIZE: usize = 0x005E;
 
 const SD_BASE: usize = 0x0080;
 const SD_SIZE: usize = 0x0020;
-const SD0_CTL: usize  = SD_BASE + 0x00;
-const SD0_STS: usize  = SD_BASE + 0x03;
-const SD0_LPIB: usize = SD_BASE + 0x04;
-const SD0_CBL: usize  = SD_BASE + 0x08;
-const SD0_LVI: usize  = SD_BASE + 0x0C;
-const SD0_FMT: usize  = SD_BASE + 0x12;
-const SD0_BDPL: usize = SD_BASE + 0x18;
-const SD0_BDPU: usize = SD_BASE + 0x1C;
-
-// SD1 = second stream (we use first output stream)
-const SD1_CTL: usize  = SD_BASE + SD_SIZE + 0x00;
-const SD1_STS: usize  = SD_BASE + SD_SIZE + 0x03;
-const SD1_LPIB: usize = SD_BASE + SD_SIZE + 0x04;
-const SD1_CBL: usize  = SD_BASE + SD_SIZE + 0x08;
-const SD1_LVI: usize  = SD_BASE + SD_SIZE + 0x0C;
-const SD1_FMT: usize  = SD_BASE + SD_SIZE + 0x12;
-const SD1_BDPL: usize = SD_BASE + SD_SIZE + 0x18;
-const SD1_BDPU: usize = SD_BASE + SD_SIZE + 0x1C;
-
-// ── BDL entry ───────────────────────────────────────────────────
+const SD_CTL: usize  = 0x00;
+const SD_STS: usize  = 0x03;
+const SD_LPIB: usize = 0x04;
+const SD_CBL: usize  = 0x08;
+const SD_LVI: usize  = 0x0C;
+const SD_FMT: usize  = 0x12;
+const SD_BDPL: usize = 0x18;
+const SD_BDPU: usize = 0x1C;
 
 #[repr(C)]
-struct BdlEntry {
-    addr_lo: u32,
-    addr_hi: u32,
-    length: u32,
-    flags: u32, // bit 0: IOC (interrupt on completion)
-}
+struct BdlEntry { addr_lo: u32, addr_hi: u32, length: u32, flags: u32 }
 
-const DMA_BUF_SIZE: u32 = 16384; // 16 KB circular DMA buffer (~370 ms at 22 kHz mono)
-const BDL_ENTRIES: u32 = 2;      // ring with 2 entries
+const DMA_BUF_SIZE: u32 = 32768;  // 32 KB → ~340 ms at 48kHz
+const BDL_ENTRIES: u32 = 2;
 
-// ── Global HDA state ────────────────────────────────────────────
-
-static HDA_MMIO_BASE: Mutex<usize> = Mutex::new(0);
+static HDA_PHYS: Mutex<u64> = Mutex::new(0);
 static HDA_READY: AtomicBool = AtomicBool::new(false);
-/// Physical address of DMA buffer
-static HDA_DMA_PHYS: Mutex<u64> = Mutex::new(0);
-/// Virtual address of DMA buffer (stored as usize for Sync)
-static HDA_DMA_VIRT: Mutex<usize> = Mutex::new(0);
+static HDA_VIRT: Mutex<usize> = Mutex::new(0);
+static HDA_DMA: Mutex<usize> = Mutex::new(0);
+static HDA_AUDIO_OFF: Mutex<u32> = Mutex::new(0);
+static HDA_AUDIO_SZ: Mutex<u32> = Mutex::new(0);
+static HDA_HALF: Mutex<u32> = Mutex::new(0);
+static HDA_SD: Mutex<usize> = Mutex::new(0);
+/// Last LPIB value we've written past (used to avoid double‑write)
+static HDA_LAST_LPIB: AtomicU64 = AtomicU64::new(u64::MAX);
 
-// ── MMIO helpers ────────────────────────────────────────────────
-
-unsafe fn read32(mmio: *mut u8, offset: usize) -> u32 {
-    core::ptr::read_volatile(mmio.add(offset) as *const u32)
-}
-
-unsafe fn write32(mmio: *mut u8, offset: usize, value: u32) {
-    core::ptr::write_volatile(mmio.add(offset) as *mut u32, value);
-}
-
-unsafe fn read16(mmio: *mut u8, offset: usize) -> u16 {
-    core::ptr::read_volatile(mmio.add(offset) as *const u16)
-}
-
-unsafe fn write16(mmio: *mut u8, offset: usize, value: u16) {
-    core::ptr::write_volatile(mmio.add(offset) as *mut u16, value);
-}
-
-unsafe fn read8(mmio: *mut u8, offset: usize) -> u8 {
-    core::ptr::read_volatile(mmio.add(offset))
-}
-
-unsafe fn write8(mmio: *mut u8, offset: usize, value: u8) {
-    core::ptr::write_volatile(mmio.add(offset), value);
-}
+unsafe fn r32(m: *mut u8, o: usize) -> u32 { core::ptr::read_volatile(m.add(o) as *const u32) }
+unsafe fn w32(m: *mut u8, o: usize, v: u32) { core::ptr::write_volatile(m.add(o) as *mut u32, v); }
+unsafe fn r16(m: *mut u8, o: usize) -> u16 { core::ptr::read_volatile(m.add(o) as *const u16) }
+unsafe fn w16(m: *mut u8, o: usize, v: u16) { core::ptr::write_volatile(m.add(o) as *mut u16, v); }
+unsafe fn r8(m: *mut u8, o: usize) -> u8 { core::ptr::read_volatile(m.add(o)) }
+unsafe fn w8(m: *mut u8, o: usize, v: u8) { core::ptr::write_volatile(m.add(o), v); }
 
 // ── Init ────────────────────────────────────────────────────────
 
 pub fn init() {
-    let hda = match probe_hda() {
-        Some(h) => h,
-        None => {
-            log::info!("Sound: No HDA controller (PC speaker only)");
-            return;
-        }
-    };
-
-    log::info!("Sound: HDA at {:02x}:{:02x}.{}, MMIO=0x{:x}",
-        hda.bus, hda.device, hda.function, hda.mmio_base);
-
-    // Map BAR0 (16K)
-    let hda_virt = 0xFFFF8000_80000000usize;
-    {
-        let mut mm = crate::memory_management::get_memory_manager().lock();
-        let mm = mm.as_mut().expect("MemoryManager not initialised");
-        let flags = x86_64::structures::paging::PageTableFlags::NO_CACHE
-            | x86_64::structures::paging::PageTableFlags::PRESENT
-            | x86_64::structures::paging::PageTableFlags::WRITABLE
-            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-        let phys = hda.mmio_base as usize;
-        for i in 0..4 {
-            if mm.safe_map_page(hda_virt + i * 4096, phys + i * 4096, flags).is_err() {
-                log::error!("Sound: HDA MMIO map page {} failed", i);
-                return;
-            }
-        }
+    if let Some(h) = probe_hda() {
+        log::info!("Sound: HDA at {:02x}:{:02x}.{}, MMIO=0x{:x}", h.bus, h.device, h.function, h.mmio);
+        *HDA_PHYS.lock() = h.mmio;
+    } else {
+        log::info!("Sound: No HDA (PC speaker only)");
     }
-    *HDA_MMIO_BASE.lock() = hda_virt;
-
-    // Reset controller
-    unsafe {
-        let mmio = hda_virt as *mut u8;
-
-        write32(mmio, GCTL, 0); // clear CRST
-        for _ in 0..1000 { core::hint::spin_loop(); }
-
-        write32(mmio, GCTL, 1); // set CRST
-        for _ in 0..10000 {
-            if read32(mmio, GCTL) & 1 != 0 { break; }
-        }
-
-        write16(mmio, STATESTS, 0x000F); // clear state-change bits
-        write32(mmio, INTCTL, 0);
-
-        let gcap = read32(mmio, GCAP);
-        log::info!("Sound: HDA GCAP=0x{:x}", gcap);
-    }
-
-    // Allocate DMA buffer (physically contiguous)
-    let dma_pages = (DMA_BUF_SIZE as usize + 4095) / 4096;
-    let dma_phys = {
-        let fa = petroleum::page_table::constants::get_frame_allocator_mut();
-        match fa.allocate_contiguous_frames(dma_pages) {
-            Ok(addr) => addr,
-            Err(_) => {
-                log::error!("Sound: HDA DMA buffer allocation failed");
-                return;
-            }
-        }
-    };
-    let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-    let dma_virt = (dma_phys + off) as *mut u8;
-
-    // Clear DMA buffer
-    unsafe { core::ptr::write_bytes(dma_virt, 0, DMA_BUF_SIZE as usize); }
-
-    *HDA_DMA_PHYS.lock() = dma_phys;
-    *HDA_DMA_VIRT.lock() = dma_virt as usize;
-
-    // Place BDL at the start of DMA buffer; audio follows immediately
-    let bdl_phys = dma_phys;
-    let bdl_virt = dma_virt;
-    let bdl_entry_size = core::mem::size_of::<BdlEntry>() as u64;
-    let bdl_total = bdl_entry_size * BDL_ENTRIES as u64;
-    let audio_phys = dma_phys + bdl_total;
-    let audio_offset = bdl_total as u32;
-    let audio_size = DMA_BUF_SIZE - audio_offset;
-    let half = audio_size / 2;
-
-    unsafe {
-        let bdl = bdl_virt as *mut BdlEntry;
-        (*bdl.add(0)).addr_lo = audio_phys as u32;
-        (*bdl.add(0)).addr_hi = (audio_phys >> 32) as u32;
-        (*bdl.add(0)).length = half;
-        (*bdl.add(0)).flags = 1; // IOC
-
-        (*bdl.add(1)).addr_lo = (audio_phys + half as u64) as u32;
-        (*bdl.add(1)).addr_hi = ((audio_phys + half as u64) >> 32) as u32;
-        (*bdl.add(1)).length = half;
-        (*bdl.add(1)).flags = 1; // IOC
-    }
-
-    // Configure SD1 (first output stream)
-    unsafe {
-        let mmio = hda_virt as *mut u8;
-
-        // Stop and reset SD1
-        write8(mmio, SD1_CTL, 0); // clear RUN
-        write8(mmio, SD1_CTL, 1); // set SRST
-        for _ in 0..1000 { core::hint::spin_loop(); }
-        write8(mmio, SD1_CTL, 0); // clear SRST
-        for _ in 0..1000 { core::hint::spin_loop(); }
-
-        // Clear stream status
-        write8(mmio, SD1_STS, 0xFF);
-
-        // Stream format: 16-bit, mono
-        let fmt: u16 = (1u16 << 4) | 0;
-        write16(mmio, SD1_FMT, fmt);
-
-        // Cyclic Buffer Length
-        write32(mmio, SD1_CBL, audio_size);
-
-        // Last Valid Index = 1
-        write16(mmio, SD1_LVI, BDL_ENTRIES as u16 - 1);
-
-        // BDL pointer
-        write32(mmio, SD1_BDPL, bdl_phys as u32);
-        write32(mmio, SD1_BDPU, (bdl_phys >> 32) as u32);
-
-        // Start stream: set RUN (bit 1)
-        write8(mmio, SD1_CTL, 2);
-
-        log::info!("Sound: HDA stream SD1 started ({} byte buffer)", audio_size);
-    }
-
-    HDA_READY.store(true, Ordering::Release);
-    log::info!("Sound: HDA ready for playback");
 }
 
-// ── HDA Controller probe ────────────────────────────────────────
+struct HdaInfo { bus: u8, device: u8, function: u8, mmio: u64 }
 
-pub struct HdaController {
-    pub bus: u8,
-    pub device: u8,
-    pub function: u8,
-    pub mmio_base: u64,
-}
-
-fn probe_hda() -> Option<HdaController> {
-    for bus in 0..=0u8 {
-        for dev in 0..=31u8 {
-            if let Some(device) = PciDevice::new(bus, dev, 0) {
-                if device.class_code == 0x04 && device.subclass == 0x03 {
-                    if let Some(bar0) = device.read_bar(0) {
-                        return Some(HdaController {
-                            bus,
-                            device: dev,
-                            function: 0,
-                            mmio_base: bar0,
-                        });
-                    }
-                }
-            }
-        }
+fn probe_hda() -> Option<HdaInfo> {
+    for d in 0..=31u8 {
+        let Some(dev) = PciDevice::new(0, d, 0) else { continue };
+        if dev.class_code != 0x04 || dev.subclass != 0x03 { continue }
+        let bar0 = dev.read_bar(0)?;
+        dev.enable_memory_access();
+        use nitrogen::pci::PciConfigSpace;
+        let Some(mut cfg) = PciConfigSpace::read_from_device(0, d, 0) else { continue };
+        cfg.command |= 0x0004; // bus mastering
+        let v = (cfg.status as u32) << 16 | (cfg.command as u32);
+        PciConfigSpace::write_config_dword(&mut cfg, 0, d, 0, 0x04, v);
+        return Some(HdaInfo { bus:0, device:d, function:0, mmio:bar0 });
     }
     None
 }
 
-// ═══════════════════════════════════════════════════════════════
-// PCM playback API
-// ═══════════════════════════════════════════════════════════════
+// ── Deferred init ───────────────────────────────────────────────
 
-/// Stream a PCM buffer via HDA, blocking until all data has been
-/// consumed by the DMA engine.
-///
-/// `pcm_data`: raw s16le mono samples at 22 050 Hz.
-pub fn hda_play_pcm(pcm_data: &[u8]) {
-    if !HDA_READY.load(Ordering::Acquire) {
-        return;
+fn hda_init() {
+    if HDA_READY.load(Ordering::Acquire) { return }
+    let phys = *HDA_PHYS.lock();
+    if phys == 0 { return }
+
+    let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+    let virt = (phys + off) as usize;
+    *HDA_VIRT.lock() = virt;
+
+    // Sanity
+    let gctest = unsafe { r32(virt as *mut u8, GCAP) };
+    if gctest == 0 || gctest == 0xFFFF_FFFF {
+        log::warn!("Sound: HDA GCAP invalid, disabling");
+        *HDA_PHYS.lock() = 0; return;
     }
+    log::info!("Sound: HDA GCAP=0x{:x}", gctest);
 
-    let mmio_base = *HDA_MMIO_BASE.lock();
-    if mmio_base == 0 {
-        return;
-    }
-
-    let dma_virt = *HDA_DMA_VIRT.lock() as *mut u8;
-    if dma_virt.is_null() {
-        return;
-    }
-
-    // Offset where audio starts in DMA buffer (after BDL entries)
-    let audio_offset = (core::mem::size_of::<BdlEntry>() * BDL_ENTRIES as usize) as u32;
-    let audio_size = DMA_BUF_SIZE - audio_offset;
-    let half = audio_size / 2;
-
-    let mmio = mmio_base as *mut u8;
-    let mut src_offset: usize = 0;
-    let total = pcm_data.len();
-
-    while src_offset < total {
-        let lpib = unsafe { read32(mmio, SD1_LPIB) };
-
-        let (write_offset, write_max) = if lpib < half {
-            (half, half)
-        } else {
-            (0, half)
-        };
-
-        let chunk = write_max as usize;
-        let remaining = total - src_offset;
-        let to_copy = chunk.min(remaining);
-
-        if to_copy == 0 {
-            break;
-        }
-
-        unsafe {
-            let dst = dma_virt.add((audio_offset + write_offset) as usize);
-            let src = pcm_data.as_ptr().add(src_offset);
-            core::ptr::copy_nonoverlapping(src, dst, to_copy);
-            if to_copy < chunk {
-                core::ptr::write_bytes(dst.add(to_copy), 0, chunk - to_copy);
-            }
-        }
-
-        src_offset += to_copy;
-
-        // Wait for DMA to move past the half we just filled
-        loop {
-            let new_lpib = unsafe { read32(mmio, SD1_LPIB) };
-            let in_first = new_lpib < half;
-            let filled_second = write_offset >= half;
-            if filled_second && in_first {
-                break;
-            }
-            if !filled_second && !in_first {
-                break;
-            }
-            core::hint::spin_loop();
-        }
-    }
-
-    // Drain silence
+    // Reset
     unsafe {
-        let dst = dma_virt.add(audio_offset as usize);
-        core::ptr::write_bytes(dst, 0, audio_size as usize);
+        let m = virt as *mut u8;
+        w32(m, GCTL, 0);
+        for _ in 0..2000 { core::hint::spin_loop(); }
+        w32(m, GCTL, 1);
+        for _ in 0..20000 { if r32(m, GCTL)&1 != 0 { break } }
+        w16(m, STATESTS, 0x000F);
+        w32(m, INTCTL, 0);
+
+        let gcap = r32(m, GCAP);
+        let iss = ((gcap>>8)&0xF) as usize;
+        let oss = ((gcap>>12)&0xF) as usize;
+        log::info!("Sound: ISS={} OSS={}", iss, oss);
+        if oss == 0 { log::warn!("Sound: no output streams"); return }
+        *HDA_SD.lock() = SD_BASE + iss * SD_SIZE;
     }
-    for _ in 0..10000000 {
+
+    // DMA buffer
+    let pages = (DMA_BUF_SIZE as usize + 4095) / 4096;
+    let dma_phys = match petroleum::page_table::constants::get_frame_allocator_mut()
+        .allocate_contiguous_frames(pages)
+    { Ok(a) => a, Err(_) => { log::error!("Sound: DMA alloc fail"); return } };
+    let dma_virt = (dma_phys + off) as *mut u8;
+    unsafe { core::ptr::write_bytes(dma_virt, 0, DMA_BUF_SIZE as usize); }
+    *HDA_DMA.lock() = dma_virt as usize;
+
+    let bdl_sz = (core::mem::size_of::<BdlEntry>() * BDL_ENTRIES as usize) as u64;
+    let audio_phys = dma_phys + bdl_sz;
+    let audio_off = bdl_sz as u32;
+    let audio_sz = DMA_BUF_SIZE - audio_off;
+    let half = audio_sz / 2;
+    *HDA_AUDIO_OFF.lock() = audio_off;
+    *HDA_AUDIO_SZ.lock() = audio_sz;
+    *HDA_HALF.lock() = half;
+
+    unsafe {
+        let bdl = dma_virt as *mut BdlEntry;
+        (*bdl.add(0)) = BdlEntry { addr_lo:audio_phys as u32, addr_hi:(audio_phys>>32) as u32, length:half, flags:1 };
+        (*bdl.add(1)) = BdlEntry { addr_lo:(audio_phys+half as u64) as u32, addr_hi:((audio_phys+half as u64)>>32) as u32, length:half, flags:1 };
+    }
+
+    // Configure SD
+    unsafe {
+        let m = virt as *mut u8;
+        let sd = *HDA_SD.lock();
+
+        // Reset stream
+        let ctl = r8(m, sd + SD_CTL);
+        w8(m, sd + SD_CTL, ctl & !0x02); // clear RUN
+        w8(m, sd + SD_CTL, 0x01); // SRST
+        for _ in 0..2000 { core::hint::spin_loop(); }
+        w8(m, sd + SD_CTL, 0x00); // clear SRST
+        for _ in 0..2000 { core::hint::spin_loop(); }
+        w8(m, sd + SD_STS, 0xFF);
+
+        // Format: 16-bit mono, 48 kHz base
+        w16(m, sd + SD_FMT, (1u16<<4) | 0);
+        w32(m, sd + SD_CBL, audio_sz);
+        w16(m, sd + SD_LVI, BDL_ENTRIES as u16 - 1);
+        w32(m, sd + SD_BDPL, dma_phys as u32);
+        w32(m, sd + SD_BDPU, (dma_phys >> 32) as u32);
+
+        // Stream tag = 1, RUN
+        let ctl_val: u32 = (1u32 << 20) | 0x02; // tag=1, RUN
+        w32(m, sd + SD_CTL, ctl_val);
+
+        log::info!("Sound: HDA stream started ({} B audio)", audio_sz);
+    }
+
+    HDA_READY.store(true, Ordering::Release);
+}
+
+// ── Public API ──────────────────────────────────────────────────
+
+pub fn hda_available() -> bool { *HDA_PHYS.lock() != 0 }
+
+/// Feed PCM samples to HDA.  Non‑blocking.  Writes at most one
+/// half‑buffer of data, then returns.  Call `hda_poll()` before
+/// each call to wait until space is available.
+pub fn hda_feed_samples(samples: &[u8]) -> usize {
+    hda_init();
+    if !HDA_READY.load(Ordering::Acquire) { return 0 }
+
+    let virt = *HDA_VIRT.lock();
+    if virt == 0 { return 0 }
+    let mmio = virt as *mut u8;
+    let dma = *HDA_DMA.lock() as *mut u8;
+    let audio_off = *HDA_AUDIO_OFF.lock();
+    let half = *HDA_HALF.lock();
+    let sd = *HDA_SD.lock();
+
+    let lpib = unsafe { r32(mmio, sd + SD_LPIB) };
+    let last = HDA_LAST_LPIB.load(Ordering::Relaxed) as u32;
+
+    // Determine which half DMA is currently reading.
+    // We write to the OTHER half.
+    let dma_in_first = lpib < half;
+    let (write_off, write_max) = if dma_in_first { (half, half) } else { (0, half) };
+
+    // Avoid writing to the same half twice: only write if
+    // LPIB has moved since last write, or if no write has happened yet.
+    if last == write_off { return 0 } // same half as last write, not yet consumed
+
+    let to_write = samples.len().min(write_max as usize);
+    if to_write == 0 { return 0 }
+
+    unsafe {
+        let dst = dma.add((audio_off + write_off) as usize);
+        core::ptr::copy_nonoverlapping(samples.as_ptr(), dst, to_write);
+        if to_write < write_max as usize {
+            core::ptr::write_bytes(dst.add(to_write), 0, write_max as usize - to_write);
+        }
+    }
+
+    // Mark which half we just wrote
+    HDA_LAST_LPIB.store(write_off as u64, Ordering::Relaxed);
+    to_write
+}
+
+/// Block until the DMA has consumed at least `bytes` worth
+/// of audio data.  Call before `hda_feed_samples` if you need to
+/// guarantee buffer space.
+pub fn hda_poll() {
+    if !HDA_READY.load(Ordering::Acquire) { return }
+    let virt = *HDA_VIRT.lock();
+    if virt == 0 { return }
+    let mmio = virt as *mut u8;
+    let half = *HDA_HALF.lock();
+    let sd = *HDA_SD.lock();
+    let last = HDA_LAST_LPIB.load(Ordering::Relaxed) as u32;
+
+    // Spin until LPIB moves into the OTHER half
+    loop {
+        let lpib = unsafe { r32(mmio, sd + SD_LPIB) };
+        let dma_in_first = lpib < half;
+        let last_in_first = last < half;
+        if dma_in_first != last_in_first { break } // DMA crossed the boundary
         core::hint::spin_loop();
     }
-}
-
-/// Check if HDA is available.
-pub fn hda_available() -> bool {
-    HDA_READY.load(Ordering::Acquire)
-}
-
-/// Feed raw PCM bytes into the HDA DMA ring buffer.
-///
-/// Returns the number of bytes actually queued (may be 0 if buffer is full).
-/// This function is non‑blocking and should be called periodically
-/// (e.g. once per video frame) to keep the DMA fed.
-pub fn hda_feed_samples(samples: &[u8]) -> usize {
-    if !HDA_READY.load(Ordering::Acquire) {
-        return 0;
-    }
-    let mmio_base = *HDA_MMIO_BASE.lock();
-    if mmio_base == 0 {
-        return 0;
-    }
-    let dma_virt = *HDA_DMA_VIRT.lock() as *mut u8;
-    if dma_virt.is_null() {
-        return 0;
-    }
-
-    let audio_offset = (core::mem::size_of::<BdlEntry>() * BDL_ENTRIES as usize) as u32;
-    let audio_size = DMA_BUF_SIZE - audio_offset;
-    let half = audio_size / 2;
-
-    let mmio = mmio_base as *mut u8;
-    let lpib = unsafe { read32(mmio, SD1_LPIB) };
-
-    // LPIB is relative to the start of the cyclic buffer (audio region).
-    // Determine which half is free:
-    let (write_offset, write_max) = if lpib < half {
-        (half, half)
-    } else {
-        (0, half)
-    };
-
-    let to_copy = samples.len().min(write_max as usize);
-    if to_copy == 0 {
-        return 0;
-    }
-
-    unsafe {
-        let dst = dma_virt.add((audio_offset + write_offset) as usize);
-        core::ptr::copy_nonoverlapping(samples.as_ptr(), dst, to_copy);
-        if to_copy < write_max as usize {
-            core::ptr::write_bytes(dst.add(to_copy), 0, write_max as usize - to_copy);
-        }
-    }
-
-    to_copy
 }
