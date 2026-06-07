@@ -50,6 +50,12 @@ pub struct Desktop {
     /// Current clock text "HH:MM:SS".
     pub clock_text: alloc::string::String,
 
+    // ── Desktop icons (Xfce-style) ─────────────────────
+    pub desktop_icons: crate::desktop_icons::DesktopIconLayer,
+
+    // ── Top panel (GNOME-style) ─────────────────────────
+    pub top_panel: crate::top_panel::TopPanel,
+
     // ── Cursor tracking for dirty-rect optimisation ───────
     /// Previous cursor position (tracked to invalidate cursor area only).
     prev_cursor_x: i32,
@@ -75,6 +81,8 @@ impl Desktop {
             menu_is_system: false,
             menu_overlays_cache: alloc::vec::Vec::new(),
             clock_text: alloc::string::String::new(),
+            desktop_icons: crate::desktop_icons::DesktopIconLayer::new(),
+            top_panel: crate::top_panel::TopPanel::new(),
             prev_cursor_x: 512,
             prev_cursor_y: 384,
             cursor_moved: false,

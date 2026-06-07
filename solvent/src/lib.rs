@@ -755,6 +755,7 @@ pub fn update_clock() {
         if *old != time_str {
             r.clock_changed = true;
             r.desktop.clock_text = time_str.clone();
+            r.desktop.top_panel.clock_text = time_str.clone();
         }
     }
     *CLOCK_STRING.lock() = time_str;
@@ -866,6 +867,15 @@ where
             }
             ShellState::Desktop => {}
         }
+
+        // ── GNOME-style Top Panel (drawn after compositor on fb_pixels) ───
+        rt.desktop.top_panel.render(fb_pixels, fb_width, fb_height);
+
+        // ── Xfce-style Desktop Icons (drawn on fb_pixels background) ──
+        rt.desktop.desktop_icons.render(
+            fb_pixels, fb_width, fb_height,
+            0, 0, fb_width, fb_height,
+        );
     }
 
     // ── Cursor overlay (drawn after everything else) ──────
@@ -1261,5 +1271,15 @@ pub fn write_terminal(s: &str) {
     if let Some(ref mut r) = *RUNTIME.lock() {
         r.term_buf.put_str(s);
         r.term_dirty = true;
+    }
+}
+
+/// Trigger a full desktop redraw on the next render pass.
+/// Used by external subsystems (e.g. BadApple) to restore the
+/// desktop after direct framebuffer manipulation.
+pub fn force_desktop_redraw() {
+    if let Some(ref mut r) = *RUNTIME.lock() {
+        r.desktop.force_full_redraw();
+        r.frame_due = true;
     }
 }

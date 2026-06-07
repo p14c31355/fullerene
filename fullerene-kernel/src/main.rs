@@ -17,6 +17,8 @@ pub use heap::MEMORY_MAP;
 
 // Module declarations
 pub mod ahci;
+pub mod app_runner;
+pub mod badapple;
 pub mod boot;
 pub mod context_switch;
 pub mod fs;
@@ -33,8 +35,9 @@ pub mod memory_management;
 pub mod nvme;
 pub mod process;
 pub mod scheduler;
-pub mod shell;
-pub mod slab;
+    pub mod shell;
+    pub mod slab;
+    pub mod sound;
 pub mod syscall;
 pub mod task;
 pub mod tracing;

@@ -122,9 +122,30 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             crate::loader::init();
             Ok(())
         }),
+        petroleum::init_step!("device_manager", || {
+            crate::hardware::device_manager::init_device_manager()
+                .map_err(|_| "Failed to initialize device manager")?;
+            petroleum::serial::serial_log(format_args!("Device manager initialised\n"));
+            Ok(())
+        }),
         petroleum::init_step!("gui", || {
             crate::gui::init();
             petroleum::serial::serial_log(format_args!("GUI subsystem initialised\n"));
+            Ok(())
+        }),
+        petroleum::init_step!("task_manager", || {
+            crate::task::init_task_manager();
+            petroleum::serial::serial_log(format_args!("Task manager initialised\n"));
+            Ok(())
+        }),
+        petroleum::init_step!("app_runner", || {
+            crate::app_runner::init();
+            petroleum::serial::serial_log(format_args!("App runner initialised\n"));
+            Ok(())
+        }),
+        petroleum::init_step!("sound", || {
+            crate::sound::init();
+            petroleum::serial::serial_log(format_args!("Sound subsystem initialised\n"));
             Ok(())
         }),
     ];
