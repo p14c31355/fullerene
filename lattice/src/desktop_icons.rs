@@ -138,12 +138,12 @@ impl DesktopIconLayer {
                 }
                 for gry in 0..12 {
                     let py = label_y + gry;
-                    if py < 0 || py >= fb_height as i32 {
+                    if py < 0 || py >= fb_height as i32 || py < clip_y as i32 || py >= cey {
                         continue;
                     }
                     for grx in 0..8 {
                         let px = label_x + (ci as i32) * 8 + grx;
-                        if px < 0 || px >= fb_width as i32 {
+                        if px < 0 || px >= fb_width as i32 || px < clip_x as i32 || px >= cex {
                             continue;
                         }
                         if crate::font::get_glyph_pixel(ch, gry as u32, grx as u32) {

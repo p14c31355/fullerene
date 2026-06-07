@@ -183,7 +183,13 @@ pub fn list_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
 
 /// Check if a path exists.
 pub fn exists(path: &str) -> bool {
-    vfs::open(path, 0).is_ok()
+    match vfs::open(path, 0) {
+        Ok(fd_info) => {
+            let _ = vfs::close(fd_info.fd);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// Mount a filesystem (currently only tmpfs is supported).
@@ -198,15 +204,21 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
     let mut fd = open_file(path)?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 512];
-    loop {
-        let n = read_file(&mut fd, &mut chunk)?;
-        if n == 0 {
-            break;
+    let result = loop {
+        match read_file(&mut fd, &mut chunk) {
+            Ok(n) => {
+                if n == 0 {
+                    break Ok(buf);
+                }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            Err(e) => {
+                break Err(e);
+            }
         }
-        buf.extend_from_slice(&chunk[..n]);
-    }
+    };
     let _ = close_file(fd);
-    Ok(buf)
+    result
 }
 
 /// Write an entire file from bytes.

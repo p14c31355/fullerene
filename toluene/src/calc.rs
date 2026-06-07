@@ -12,8 +12,12 @@ extern crate alloc;
 /// Returns `None` on parse error or division by zero.
 pub fn evaluate(expr: &str) -> Option<i64> {
     let tokens = tokenize(expr)?;
-    let (result, _) = parse_expr(&tokens, 0)?;
-    Some(result)
+    let (result, index) = parse_expr(&tokens, 0)?;
+    if index == tokens.len() {
+        Some(result)
+    } else {
+        None
+    }
 }
 
 /// Token types.
@@ -44,7 +48,10 @@ fn tokenize(expr: &str) -> Option<alloc::vec::Vec<Token>> {
             b'0'..=b'9' => {
                 let mut val: i64 = 0;
                 while i < bytes.len() && bytes[i].is_ascii_digit() {
-                    val = val * 10 + (bytes[i] - b'0') as i64;
+                    val = match val.checked_mul(10).and_then(|v| v.checked_add((bytes[i] - b'0') as i64)) {
+                        Some(v) => v,
+                        None => return None, // Overflow
+                    };
                     i += 1;
                 }
                 tokens.push(Token::Num(val));
@@ -87,12 +94,12 @@ fn parse_expr(tokens: &[Token], pos: usize) -> Option<(i64, usize)> {
         match tokens[pos] {
             Token::Plus => {
                 let (right, new_pos) = parse_term(tokens, pos + 1)?;
-                left += right;
+                left = left.checked_add(right)?;
                 pos = new_pos;
             }
             Token::Minus => {
                 let (right, new_pos) = parse_term(tokens, pos + 1)?;
-                left -= right;
+                left = left.checked_sub(right)?;
                 pos = new_pos;
             }
             _ => break,
@@ -109,7 +116,7 @@ fn parse_term(tokens: &[Token], pos: usize) -> Option<(i64, usize)> {
         match tokens[pos] {
             Token::Mul => {
                 let (right, new_pos) = parse_factor(tokens, pos + 1)?;
-                left *= right;
+                left = left.checked_mul(right)?;
                 pos = new_pos;
             }
             Token::Div => {
@@ -117,7 +124,7 @@ fn parse_term(tokens: &[Token], pos: usize) -> Option<(i64, usize)> {
                 if right == 0 {
                     return None;
                 }
-                left /= right;
+                left = left.checked_div(right)?;
                 pos = new_pos;
             }
             _ => break,
@@ -135,7 +142,7 @@ fn parse_factor(tokens: &[Token], pos: usize) -> Option<(i64, usize)> {
         Token::Num(n) => Some((n, pos + 1)),
         Token::Minus => {
             let (val, new_pos) = parse_factor(tokens, pos + 1)?;
-            Some((-val, new_pos))
+            Some((val.checked_neg()?, new_pos))
         }
         Token::LParen => {
             let (val, new_pos) = parse_expr(tokens, pos + 1)?;

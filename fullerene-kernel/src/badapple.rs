@@ -76,14 +76,26 @@ fn draw_rle_frame(
     rle_frame_h: u16,
     rle_data: &[u8],
 ) {
+    if fb_stride == 0 || fb_height == 0 {
+        return;
+    }
+
     let fw = rle_frame_w as usize;
     let fh = rle_frame_h as usize;
+
+    if fw > fb_stride || fh > fb_height {
+        return;
+    }
+
     let ox = if fb_stride > fw { (fb_stride - fw) / 2 } else { 0 };
     let oy = if fb_height > fh { (fb_height - fh) / 2 } else { 0 };
 
     // Fill frame area with black
     for y in 0..fh {
         let row = (oy + y) * fb_stride + ox;
+        if row + fw > fb.len() {
+            continue;
+        }
         for x in 0..fw {
             fb[row + x] = 0xFF000000;
         }
@@ -135,6 +147,11 @@ pub fn play_badapple() {
     let rle_w = u16::from_le_bytes([data[12], data[13]]);
     let rle_h = u16::from_le_bytes([data[14], data[15]]);
 
+    if frame_count == 0 {
+        log::error!("Bad Apple: frame count is zero");
+        return;
+    }
+
     let n_frames = frame_count as usize;
     let table_start = RLE_HDR_SIZE;
     let table_end = table_start.saturating_add(n_frames * 4);
@@ -175,7 +192,19 @@ pub fn play_badapple() {
     };
     // drop lock before long loop
 
+    if fb_ptr.is_null() || fb_stride_pixels == 0 || fb_height == 0 {
+        log::error!("Bad Apple: invalid framebuffer parameters");
+        return;
+    }
+
     let fb_len = fb_stride_pixels * fb_height;
+    let rle_w_usize = rle_w as usize;
+    let rle_h_usize = rle_h as usize;
+    if rle_w_usize > fb_stride_pixels || rle_h_usize > fb_height {
+        log::error!("Bad Apple: RLE frame size exceeds framebuffer dimensions");
+        return;
+    }
+
     let fb = unsafe { core::slice::from_raw_parts_mut(fb_ptr, fb_len) };
 
     // Clear screen to black and flush

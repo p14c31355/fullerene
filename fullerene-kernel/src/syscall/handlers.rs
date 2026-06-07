@@ -2,13 +2,20 @@ use super::interface::{SyscallError, SyscallResult, copy_user_string};
 use crate::process;
 use crate::process::{NEXT_PID, Process, ProcessState};
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::Ordering;
 use petroleum::{
     common::memory::{user_slice, user_slice_mut},
     write_serial_bytes,
 };
+use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
+
+// Global FD table mapping integer FDs to FileDesc
+static FD_TABLE: Mutex<BTreeMap<i32, crate::fs::FileDesc>> = Mutex::new(BTreeMap::new());
+static NEXT_FD: Mutex<i32> = Mutex::new(3); // Start after stdin/stdout/stderr
 
 // POSIX-style open flags
 const O_RDONLY: i32 = 0;
@@ -205,12 +212,14 @@ fn syscall_read(fd: core::ffi::c_int, buffer: *mut u8, count: usize) -> SyscallR
         }
     } else {
         // Attempt to read from the file descriptor using fs module
-        match crate::fs::read_entire_file(&alloc::format!("fd:{}", fd)) {
-            Ok(_data) => {
-                // Cannot map old i32 fd to new FileDesc; fall back to Err
-                Err(SyscallError::BadFileDescriptor)
+        let mut fd_table = FD_TABLE.lock();
+        if let Some(file_desc) = fd_table.get_mut(&fd) {
+            match crate::fs::read_file(file_desc, data) {
+                Ok(n) => Ok(n as u64),
+                Err(_) => Err(SyscallError::BadFileDescriptor),
             }
-            Err(_) => Err(SyscallError::BadFileDescriptor),
+        } else {
+            Err(SyscallError::BadFileDescriptor)
         }
     }
 }
@@ -259,7 +268,14 @@ fn syscall_open(filename: *const u8, flags: core::ffi::c_int, _mode: u32) -> Sys
 
     if read_only {
         match crate::fs::open_file(&filename_str) {
-            Ok(fd) => Ok(fd.fd as u64),
+            Ok(file_desc) => {
+                let mut fd_table = FD_TABLE.lock();
+                let mut next_fd = NEXT_FD.lock();
+                let fd = *next_fd;
+                *next_fd += 1;
+                fd_table.insert(fd, file_desc);
+                Ok(fd as u64)
+            }
             Err(crate::fs::FsError::FileNotFound) => Err(SyscallError::FileNotFound),
             Err(_) => Err(SyscallError::PermissionDenied),
         }
@@ -274,10 +290,21 @@ fn syscall_close(fd: core::ffi::c_int) -> SyscallResult {
         return Err(SyscallError::InvalidArgument);
     }
 
+    // Standard streams cannot be closed
+    if fd <= 2 {
+        return Err(SyscallError::InvalidArgument);
+    }
+
     // Attempt to close the file descriptor using fs module
-    // Old API used i32; new fs::close_file takes FileDesc.
-    // For now, fail gracefully.
-    Err(SyscallError::InvalidArgument)
+    let mut fd_table = FD_TABLE.lock();
+    if let Some(file_desc) = fd_table.remove(&fd) {
+        match crate::fs::close_file(file_desc) {
+            Ok(_) => Ok(0),
+            Err(_) => Err(SyscallError::BadFileDescriptor),
+        }
+    } else {
+        Err(SyscallError::BadFileDescriptor)
+    }
 }
 
 /// Wait system call

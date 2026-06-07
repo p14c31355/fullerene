@@ -57,10 +57,10 @@ pub fn launch(name: &str) -> Result<u64, AppError> {
     // Check built-in apps
     for app in APPS.iter() {
         if app.name == name {
-            if app.binary.is_empty() {
-                return Err(AppError::NotYetAvailable);
+            if !app.binary.is_empty() {
+                return launch_binary(app.name, app.binary);
             }
-            return launch_binary(app.name, app.binary);
+            // Skip to VFS lookup if binary is empty
         }
     }
 
@@ -70,7 +70,11 @@ pub fn launch(name: &str) -> Result<u64, AppError> {
         if data.is_empty() {
             return Err(AppError::NotYetAvailable);
         }
-        let pid = crate::loader::load_program(&data, "vfs-app")
+        // Leak the name string to get a &'static str, as required by load_program/create_process.
+        // This is intentional: process names are kernel-lifetime objects.
+        let static_name: &'static str =
+            Box::leak(alloc::string::String::from(name).into_boxed_str());
+        let pid = crate::loader::load_program(&data, static_name)
             .map_err(|_| AppError::LoadFailed)?;
         log::info!("Launched VFS app '{}' as PID {}", name, pid.0);
         return Ok(pid.0);

@@ -55,14 +55,28 @@ pub fn render_wallpaper(
     clip_w: u32,
     clip_h: u32,
 ) {
+    // Normalize and clamp clip bounds
+    if fb_width == 0 || fb_height == 0 {
+        return;
+    }
+
+    let clipped_x0 = clip_x.min(fb_width);
+    let clipped_y0 = clip_y.min(fb_height);
+    let clipped_x1 = (clip_x.saturating_add(clip_w)).min(fb_width);
+    let clipped_y1 = (clip_y.saturating_add(clip_h)).min(fb_height);
+
+    if clipped_x0 >= clipped_x1 || clipped_y0 >= clipped_y1 {
+        return;
+    }
+
     let mode = *WALLPAPER_MODE.lock();
     let colors = theme::current_colors();
     let fb_w = fb_width as usize;
     let fb_h = fb_height as usize;
-    let cx = clip_x;
-    let cy = clip_y;
-    let cw = clip_w;
-    let ch = clip_h;
+    let cx = clipped_x0;
+    let cy = clipped_y0;
+    let cw = clipped_x1 - clipped_x0;
+    let ch = clipped_y1 - clipped_y0;
 
     match mode {
         WallpaperMode::SolidColor => {

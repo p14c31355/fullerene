@@ -180,19 +180,18 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
         core::hint::spin_loop();
     }
 
-    // Record RIRBWP before sending verb — response will appear at this position
-    let rirb_wp_before = r16(mmio, RIRBWP) & 0xFF;
-
-    // Write verb to CORB
+    // Write verb to CORB at (wp + 1) % CORB_ENTRIES
     let wp = r16(mmio, CORBWP) as usize;
-    core::ptr::write_volatile(corb.add(wp), cmd);
-    w16(mmio, CORBWP, ((wp + 1) % CORB_ENTRIES) as u16);
+    let next_wp = (wp + 1) % CORB_ENTRIES;
+    core::ptr::write_volatile(corb.add(next_wp), cmd);
+    w16(mmio, CORBWP, next_wp as u16);
 
-    // Wait for RIRBWP to advance (controller wrote response at rirb_wp_before)
+    // Wait for RIRBWP to advance
+    let rirb_wp_before = r16(mmio, RIRBWP) & 0xFF;
     for _ in 0..50_000 {
         let rirb_wp = r16(mmio, RIRBWP) & 0xFF;
         if rirb_wp != rirb_wp_before {
-            let resp = core::ptr::read_volatile(rirb.add(rirb_wp_before as usize));
+            let resp = core::ptr::read_volatile(rirb.add(rirb_wp as usize));
             if (resp >> 63) & 1 == 0 {
                 // Solicited response: bits [63:32] are the response
                 return (resp >> 32) as u32;
@@ -212,8 +211,8 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
     // 1. Root → AFG
     let sub = corb_send_verb(mmio, codec, 0, VERB_GET_PARAM, PARAM_SUBORDINATE_COUNT as u16);
     if sub == 0xFFFF_FFFF { return None; }
-    let start = ((sub >> 24) & 0xFF) as u8;
-    let count = ((sub >> 8) & 0xFF) as u8;
+    let start = ((sub >> 16) & 0xFF) as u8;
+    let count = (sub & 0xFF) as u8;
     if count == 0 { return None; }
     let end = start + count - 1;
     log::info!("Sound: root children {}-{}", start, end);
@@ -233,8 +232,8 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
     // 2. AFG → widgets
     let sub = corb_send_verb(mmio, codec, afg, VERB_GET_PARAM, PARAM_SUBORDINATE_COUNT as u16);
     if sub == 0xFFFF_FFFF { return None; }
-    let start = ((sub >> 24) & 0xFF) as u8;
-    let count = ((sub >> 8) & 0xFF) as u8;
+    let start = ((sub >> 16) & 0xFF) as u8;
+    let count = (sub & 0xFF) as u8;
     if count == 0 { return None; }
     let end = start + count - 1;
     log::info!("Sound: AFG children {}-{}", start, end);
