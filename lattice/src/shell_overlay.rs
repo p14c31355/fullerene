@@ -229,7 +229,7 @@ pub fn render_app_grid(
     }
 
     // Label
-    render_label(fb, fbw, fbh, "Applications", fbw / 2 - 54, 10);
+    render_label(fb, fbw, fbh, "Applications", (fbw / 2).saturating_sub(54), 10);
 }
 
 /// Render the timezone selector overlay.
