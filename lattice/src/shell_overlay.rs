@@ -328,7 +328,7 @@ pub fn render_timezone_selector(
     }
 
     // Title
-    render_label(fb, fbw, fbh, "Select Timezone", fbw / 2 - 60, 10);
+    render_label(fb, fbw, fbh, "Select Timezone", (fbw / 2).saturating_sub(60), 10);
 }
 
 /// Render a text label centred horizontally.
