@@ -253,7 +253,6 @@ impl Tmpfs {
         if parent.kind != InodeType::Directory {
             return None;
         }
-        drop(parent);
         let ino = self.next_ino;
         self.next_ino = ino + 1;
         let inode = Inode::new(ino, &name, kind, parent_ino);
@@ -373,6 +372,10 @@ pub fn close(fd: u32) -> Result<(), &'static str> {
 
 pub fn readdir(path: &str) -> Result<Vec<VNode>, &'static str> {
     vfs().lock().as_mut().ok_or("vfs not init")?.readdir(path)
+}
+
+pub fn seek(fd: u32, pos: usize) -> Result<(), &'static str> {
+    vfs().lock().as_mut().ok_or("vfs not init")?.seek(fd, pos)
 }
 
 pub fn create(path: &str) -> Result<FileDescriptor, &'static str> {

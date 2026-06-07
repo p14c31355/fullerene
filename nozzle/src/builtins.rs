@@ -136,3 +136,71 @@ pub fn cmd_shutdown(ctx: &mut CommandContext) -> bool {
     crate::sys_hooks::call_sys_control_hook("shutdown");
     true
 }
+
+/// `calc` — simple arithmetic calculator
+pub fn cmd_calc(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 2 {
+        ctx.terminal.write_str("Usage: calc <expression>\n");
+        ctx.terminal.write_str("Example: calc (2+3)*4\n");
+        return true;
+    }
+    // Join all args into one expression string (unused for now as sys_info_hook handles usage)
+    crate::sys_hooks::call_sys_info_hook(ctx, "calc");
+    true
+}
+
+/// `run` — launch an external application
+pub fn cmd_run(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 2 {
+        ctx.terminal.write_str("Usage: run <app_name>\n");
+        crate::sys_hooks::call_sys_info_hook(ctx, "run");
+        return true;
+    }
+    crate::sys_hooks::call_sys_info_hook(ctx, "run");
+    true
+}
+
+/// `taskmon` — detailed task/process monitor
+pub fn cmd_taskmon(ctx: &mut CommandContext) -> bool {
+    crate::sys_hooks::call_sys_info_hook(ctx, "taskmon");
+    true
+}
+
+/// `devices` — list registered hardware devices
+pub fn cmd_devices(ctx: &mut CommandContext) -> bool {
+    crate::sys_hooks::call_sys_info_hook(ctx, "devices");
+    true
+}
+
+/// `theme` — show or change the desktop theme
+pub fn cmd_theme(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() >= 2 {
+        // Route to sys control hook for actual theme change
+        let cmd = alloc::format!("theme {}", ctx.args[1]);
+        crate::sys_hooks::call_sys_control_hook(&cmd);
+        // Force desktop redraw via info hook
+        crate::sys_hooks::call_sys_info_hook(ctx, "theme");
+        return true;
+    }
+    crate::sys_hooks::call_sys_info_hook(ctx, "theme");
+    true
+}
+
+/// `wallpaper` — show or change the desktop wallpaper
+pub fn cmd_wallpaper(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() >= 2 {
+        let cmd = alloc::format!("wallpaper {}", ctx.args[1]);
+        crate::sys_hooks::call_sys_control_hook(&cmd);
+        crate::sys_hooks::call_sys_info_hook(ctx, "wallpaper");
+        return true;
+    }
+    crate::sys_hooks::call_sys_info_hook(ctx, "wallpaper");
+    true
+}
+
+/// `badapple` — play Bad Apple!! on PC speaker with framebuffer animation
+pub fn cmd_badapple(ctx: &mut CommandContext) -> bool {
+    ctx.terminal.write_str("Bad Apple!! playing... (press any key to stop)\n");
+    crate::sys_hooks::call_sys_info_hook(ctx, "badapple");
+    true
+}

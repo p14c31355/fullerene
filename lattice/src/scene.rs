@@ -72,6 +72,9 @@ pub struct Scene<'a> {
     /// Overlay elements to draw above windows but below system UI.
     pub overlays: &'a [OverlayRect],
 
+    /// Desktop icons (drawn on the background layer, behind windows).
+    pub desktop_icons: Option<&'a crate::desktop_icons::DesktopIconLayer>,
+
     /// Whether to use layer-based rendering order.
     pub layered: bool,
 }
@@ -95,6 +98,7 @@ impl<'a> Scene<'a> {
             dirty_rects: &[],
             taskbar: None,
             overlays: &[],
+            desktop_icons: None,
             layered: false,
         }
     }
@@ -112,6 +116,7 @@ impl<'a> Scene<'a> {
             dirty_rects,
             taskbar: None,
             overlays: &[],
+            desktop_icons: None,
             layered: false,
         }
     }

@@ -247,7 +247,7 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
         "-smp".to_string(),
         "1".to_string(),
         "-M".to_string(),
-        "q35,usb=off".to_string(),
+        "q35,usb=off,pcspk-audiodev=speaker".to_string(),
     ];
 
     // --- VGA device (dynamic) ---
@@ -347,6 +347,16 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
         "base=utc".to_string(),
         "-boot".to_string(),
         "menu=on,order=d".to_string(),
+        // ── PC Speaker audio (audiodev for PulseAudio) ───
+        "-audiodev".to_string(),
+        "pa,id=speaker,out.mixing-engine=off".to_string(),
+        // ── HD Audio device (Intel HDA) ───
+        "-audiodev".to_string(),
+        "pa,id=hda,timer-period=1000,out.mixing-engine=off".to_string(),
+        "-device".to_string(),
+        "intel-hda,debug=0".to_string(),
+        "-device".to_string(),
+        "hda-duplex,audiodev=hda".to_string(),
     ]);
 
     qemu_cmd.args(&qemu_args);

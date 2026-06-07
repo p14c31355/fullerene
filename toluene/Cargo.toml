@@ -23,4 +23,9 @@ binary = []
 test = []
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 petroleum = { path = "../petroleum" }
+
+[[bin]]
+name = "soxhlet"
+path = "src/soxhlet/main.rs"

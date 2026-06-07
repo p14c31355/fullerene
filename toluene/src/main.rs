@@ -5,6 +5,8 @@
 
 use petroleum::common::syscall::{exit, getpid, sleep, write};
 
+petroleum::define_panic_handler!();
+
 /// Helper macro to safely write bytes to a file descriptor, ignoring errors.
 macro_rules! safe_print {
     ($fd:expr, $msg:expr) => {
