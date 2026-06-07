@@ -85,6 +85,12 @@ impl WindowManager {
         out
     }
 
+    /// Returns `true` if there are pending dirty rectangles that need
+    /// compositing.
+    pub fn has_dirty_rects(&self) -> bool {
+        !self.dirty_rects.is_empty()
+    }
+
     pub fn create_window(
         &mut self,
         x: i32,

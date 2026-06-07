@@ -161,6 +161,14 @@ impl Desktop {
         self.wm.on_mouse_down(self.cursor.x, self.cursor.y);
     }
 
+    /// Force a full-screen redraw on the next frame.
+    ///
+    /// Useful when overlay modes (TaskOverview / AppGrid) need every frame
+    /// to be fully recomposited rather than incremental dirty-rect updates.
+    pub fn force_full_redraw(&mut self) {
+        self.needs_full_redraw = true;
+    }
+
     /// Show the system menu (triggered from taskbar).
     pub fn show_system_menu(&mut self) {
         let items = crate::menu::system_menu_items();
@@ -261,6 +269,15 @@ impl Desktop {
     }
 
     // ── frame preparation ───────────────────────────────────
+
+    /// Returns `true` when the cached dirty-rect list is non-empty,
+    /// i.e. the compositor has at least one region to repaint.
+    ///
+    /// Call after [`prepare_frame`] to decide whether a full compositor
+    /// pass is required.
+    pub fn has_pending_dirty_rects(&self) -> bool {
+        !self.dirty_cache.is_empty()
+    }
 
     /// Consume dirty rects from the window manager and cache them.
     ///

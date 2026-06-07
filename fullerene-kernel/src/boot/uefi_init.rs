@@ -250,10 +250,10 @@ impl UefiInitContext {
         self.init_memory_map();
         debug_log_no_alloc!("DEBUG: init_memory_map returned");
 
-        // CRITICAL: Initialize global heap allocator with static BOOT_HEAP_BUFFER BEFORE
+        // CRITICAL: Initialize global heap allocator with static TOTAL_HEAP_BUFFER BEFORE
         // calling init_frame_allocator which uses Vec (needs the global allocator).
         let boot_heap_ptr =
-            unsafe { core::ptr::addr_of_mut!(crate::heap::BOOT_HEAP_BUFFER) as *mut u8 };
+            unsafe { core::ptr::addr_of_mut!(crate::heap::TOTAL_HEAP_BUFFER) as *mut u8 };
         // Initialize the global allocator (petroleum's ALLOCATOR, used by fullerene-kernel)
         unsafe {
             PETROLEUM_ALLOCATOR
@@ -602,26 +602,16 @@ impl UefiInitContext {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
         crate::interrupts::syscall::set_kernel_cr3(kernel_cr3.0.start_address().as_u64());
+        // NOTE: Do NOT re-initialize ALLOCATOR here.  It is already initialized
+        // in this function above and active allocations exist (e.g. Vec used
+        // by init_frame_allocator).  A second init() would discard the
+        // allocator's metadata and cause "Freed node aliases existing hole"
+        // panics on subsequent free() calls.  TOTAL_HEAP_BUFFER is a static;
+        // its virtual address does not change across the CR3 switch.
         petroleum::write_serial_bytes!(
             0x3F8,
             0x3FD,
-            b"DEBUG: [PHASE] Re-initializing ALLOCATOR after world switch...\n"
-        );
-        unsafe {
-            let heap_ptr = core::ptr::addr_of_mut!(crate::heap::BOOT_HEAP_BUFFER) as *mut u8;
-            petroleum::page_table::heap::ALLOCATOR
-                .lock()
-                .init(heap_ptr, crate::heap::HEAP_SIZE);
-        }
-        petroleum::write_serial_bytes!(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: [PHASE] ALLOCATOR re-initialized successfully\n"
-        );
-        petroleum::write_serial_bytes!(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: [PHASE] Kernel CR3 set successfully\n"
+            b"DEBUG: [PHASE] Kernel CR3 set successfully (ALLOCATOR preserved)\n"
         );
 
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [PHASE] About to find heap start\n");
@@ -803,22 +793,13 @@ impl UefiInitContext {
 
     #[cfg(target_os = "uefi")]
     pub fn setup_allocator(&mut self, virtual_heap_start: VirtAddr) {
-        if petroleum::page_table::HEAP_INITIALIZED.load(core::sync::atomic::Ordering::SeqCst) {
-            return;
-        }
-
-        let kernel_overhead =
-            (self.heap_start_after_stack.as_u64() - virtual_heap_start.as_u64()) as usize;
-        let heap_size_remaining = heap::HEAP_SIZE - kernel_overhead;
-
-        use petroleum::page_table::ALLOCATOR;
-        unsafe {
-            let mut allocator = ALLOCATOR.lock();
-            allocator.init(
-                self.heap_start_after_stack.as_mut_ptr::<u8>(),
-                heap_size_remaining,
-            );
-        }
+        // ALLOCATOR is already initialized with TOTAL_HEAP_BUFFER in
+        // memory_management_initialization and re-initialized after
+        // the world switch.  init_common later re-establishes
+        // set_heap_range with TOTAL_HEAP_BUFFER.  Re-initializing
+        // with a different base (heap_start_after_stack) would cause
+        // HEAP_START / top() mismatch and overflow in extend_global_heap.
+        let _ = virtual_heap_start;
     }
 
     /// Map standard MMIO regions (APIC, IOAPIC, VGA text buffer).

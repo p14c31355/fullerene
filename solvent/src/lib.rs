@@ -17,10 +17,13 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 use chronoline::{ChronoLine, Deadline, TimerId, TimerMode};
 use lattice::compositor::{Compositor, RenderTarget};
 use lattice::desktop::Desktop;
+use lattice::shell_overlay::{ShellState, render_app_grid, render_task_overview};
 use lattice::terminal_surface::{self, Cell as LatticeCell};
 use lattice::window::WindowId;
 use nozzle::terminal_buffer::TerminalBuffer;
@@ -83,6 +86,28 @@ pub fn set_heap_extend_fn(f: fn(usize) -> Result<(), ()>) {
     *HEAP_EXTEND_FN.lock() = Some(f);
 }
 
+/// Callback to get wall‑clock time from UEFI (or RTC fallback).
+///
+/// Returns `Option<(year, month, day, hour, minute, second)>`.
+pub static WALL_CLOCK_FN: Mutex<Option<fn() -> Option<(u16, u8, u8, u8, u8, u8)>>> =
+    Mutex::new(None);
+
+/// Register the wall‑clock callback.
+pub fn set_wall_clock_fn(f: fn() -> Option<(u16, u8, u8, u8, u8, u8)>) {
+    *WALL_CLOCK_FN.lock() = Some(f);
+}
+
+/// Latest wall‑clock string (updated each frame).
+static CLOCK_STRING: Mutex<String> = Mutex::new(String::new());
+
+/// Get a copy of the current clock string.
+pub fn clock_string() -> String {
+    CLOCK_STRING.lock().clone()
+}
+
+/// Tick counter for double‑tap detection (shared with the runtime).
+pub static GLOBAL_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 // ── Static back‑buffer (BSS) ─────────────────────────────────
 
 static BACK_BUFFER: Mutex<[u32; MAX_FB_PIXELS]> = Mutex::new([0u32; MAX_FB_PIXELS]);
@@ -105,6 +130,13 @@ pub struct RuntimeState {
     pub back_len: usize,
     pub term_cells: Vec<LatticeCell>,
     pub term_dirty: bool,
+
+    // ── Shell overlay state ─────────────────────────────
+    /// Current shell UI state.
+    pub shell_state: ShellState,
+
+    /// Whether the clock text changed since the last compositor pass.
+    pub clock_changed: bool,
 }
 
 pub fn init() {
@@ -126,6 +158,7 @@ pub fn init() {
 
     dispatcher.register(Box::new(WmEventHandler));
     dispatcher.register(Box::new(TerminalInputHandler));
+    dispatcher.register(Box::new(ShellEventHandler));
 
     *EVENT_QUEUE.lock() = Some(EventQueue::new());
     *DISPATCHER.lock() = Some(dispatcher);
@@ -148,6 +181,8 @@ pub fn init() {
         back_len: 0,
         term_cells: Vec::new(),
         term_dirty: true,
+        shell_state: ShellState::Desktop,
+        clock_changed: false,
     });
 }
 
@@ -166,11 +201,107 @@ impl EventHandler for WmEventHandler {
             Some(r) => r,
             None => return false,
         };
+
+        // In shell overlay modes, route mouse events to overlay handling.
+        if rt.shell_state != ShellState::Desktop {
+            match event {
+                // In overlay mode, only move the cursor — do NOT trigger a
+                // full render.  The cached framebuffer (LAST_FB) already
+                // contains the overlay.  We erase the old cursor position and
+                // draw the new one directly.
+                Event::Input(InputEvent::MouseMove { x, y }) => {
+                    let prev_x = rt.desktop.cursor.x;
+                    let prev_y = rt.desktop.cursor.y;
+                    rt.desktop.set_cursor(*x, *y);
+                    render_cursor_only(prev_x, prev_y, *x, *y);
+                    return true;
+                }
+                Event::Input(InputEvent::MouseDown(_)) if rt.shell_state == ShellState::TimeZoneSelector => {
+                    // In timezone selector: determine which entry was clicked
+                    let mouse = MOUSE_STATE.lock();
+                    let cx = mouse.x as i32;
+                    let cy = mouse.y as i32;
+                    drop(mouse);
+                    let (fw, _fh) = *FB_DIMS.lock();
+
+                    // Timezone entry layout (must match render_timezone_selector)
+                    let timezones: &[i8] = &[-12, -8, -5, 0, 1, 3, 5, 8, 9, 10, 12];
+                    let entry_h = 24i32;
+                    let pad = 6i32;
+                    let start_y = 40i32;
+                    let max_label_chars = 16i32;
+                    let entry_w = max_label_chars * 8 + 16;
+                    let ex = ((fw as i32) - entry_w) / 2;
+
+                    for (i, offset) in timezones.iter().enumerate() {
+                        let ey = start_y + (i as i32) * (entry_h + pad);
+                        if cy >= ey && cy < ey + entry_h && cx >= ex && cx < ex + entry_w {
+                            TIMEZONE_OFFSET_HOURS.store(*offset, core::sync::atomic::Ordering::Relaxed);
+                            rt.shell_state = ShellState::Desktop;
+                            rt.frame_due = true;
+                            return true;
+                        }
+                    }
+                    // Click outside entries → back to AppGrid
+                    rt.shell_state = ShellState::AppGrid;
+                    rt.frame_due = true;
+                    return true;
+                }
+                Event::Input(InputEvent::MouseDown(_)) if rt.shell_state == ShellState::AppGrid => {
+                    // Check if Settings icon was clicked
+                    let mouse = MOUSE_STATE.lock();
+                    let cx = mouse.x as i32;
+                    let cy = mouse.y as i32;
+                    drop(mouse);
+                    let (fw, _fh) = *FB_DIMS.lock();
+
+                    // AppGrid layout (must match render_app_grid)
+                    let icon_size = 64i32;
+                    let pad = 24i32;
+                    let label_h = 18i32;
+                    let columns = ((fw as i32) / (icon_size + pad)).max(1);
+                    let start_y = 60i32;
+
+                    // "Settings" is index 2 in the apps array
+                    let idx = 2i32;
+                    let col = idx % columns;
+                    let row = idx / columns;
+                    let ax = pad + col * (icon_size + pad);
+                    let ay = start_y + row * (icon_size + label_h + pad);
+
+                    if cx >= ax && cx < ax + icon_size && cy >= ay && cy < ay + icon_size + label_h {
+                        rt.shell_state = ShellState::TimeZoneSelector;
+                        rt.frame_due = true;
+                        return true;
+                    }
+
+                    // Click on other app icons or outside → back to Desktop
+                    rt.shell_state = ShellState::Desktop;
+                    rt.frame_due = true;
+                    return true;
+                }
+                Event::Input(InputEvent::MouseDown(_)) => {
+                    // Generic click in any other overlay → back to Desktop
+                    rt.shell_state = ShellState::Desktop;
+                    rt.frame_due = true;
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+
         match event {
             Event::Input(InputEvent::MouseMove { x, y }) => {
+                let prev_x = rt.desktop.cursor.x;
+                let prev_y = rt.desktop.cursor.y;
                 rt.desktop.mouse_move(*x, *y);
-                // Force a frame on every mouse move for responsive cursor.
-                rt.frame_due = true;
+                // Lightweight cursor update (same as overlay modes).
+                // render() calls save_cursor_backing() BEFORE draw_cursor_on_fb(),
+                // so the backing store always captures clean pixels under the
+                // cursor.  Calling render_cursor_only() here restores the old
+                // position and draws at the new one, keeping the framebuffer
+                // consistent until the next scheduled render().
+                render_cursor_only(prev_x, prev_y, rt.desktop.cursor.x, rt.desktop.cursor.y);
                 true
             }
             Event::Input(InputEvent::MouseDown(_btn)) => {
@@ -201,6 +332,12 @@ impl EventHandler for TerminalInputHandler {
             Some(r) => r,
             None => return false,
         };
+
+        // Don't forward key events to terminal when shell overlay is active.
+        if rt.shell_state != ShellState::Desktop {
+            return false;
+        }
+
         match event {
             Event::Input(InputEvent::KeyDown(key)) => {
                 if let Some(ascii) = keycode_to_ascii(*key) {
@@ -213,6 +350,53 @@ impl EventHandler for TerminalInputHandler {
             }
             _ => false,
         }
+    }
+}
+
+/// Shell event handler — manages Super key double‑tap and Esc transitions.
+struct ShellEventHandler;
+
+impl EventHandler for ShellEventHandler {
+    fn handle(&mut self, event: &Event) -> bool {
+        let mut rt = RUNTIME.lock();
+        let rt = match rt.as_mut() {
+            Some(r) => r,
+            None => return false,
+        };
+
+        match event {
+            Event::Input(InputEvent::KeyDown(KeyCode::SuperLeft))
+            | Event::Input(InputEvent::KeyDown(KeyCode::SuperRight)) => {
+                match rt.shell_state {
+                    ShellState::Desktop => {
+                        rt.shell_state = ShellState::TaskOverview;
+                        rt.frame_due = true;
+                    }
+                    ShellState::TaskOverview => {
+                        rt.shell_state = ShellState::AppGrid;
+                        rt.frame_due = true;
+                    }
+                    ShellState::AppGrid => {
+                        rt.shell_state = ShellState::Desktop;
+                        rt.frame_due = true;
+                    }
+                    ShellState::TimeZoneSelector => {
+                        rt.shell_state = ShellState::Desktop;
+                        rt.frame_due = true;
+                    }
+                }
+                return true;
+            }
+            Event::Input(InputEvent::KeyDown(KeyCode::Escape)) => {
+                if rt.shell_state != ShellState::Desktop {
+                    rt.shell_state = ShellState::Desktop;
+                    rt.frame_due = true;
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        false
     }
 }
 
@@ -297,22 +481,28 @@ pub fn poll_mouse_state() {
         let btn = nitrogen::ps2::mouse::mouse_buttons();
 
         let mut mouse = MOUSE_STATE.lock();
+        let old_x = mouse.x;
+        let old_y = mouse.y;
         mouse.x = mouse.x.wrapping_add(dx.wrapping_mul(MOUSE_SENSITIVITY));
         mouse.y = mouse
             .y
             .wrapping_add(dy.wrapping_mul(MOUSE_SENSITIVITY).wrapping_neg());
         mouse.buttons = btn;
-    }
 
-    {
-        let mouse = MOUSE_STATE.lock();
         let cx = mouse.x as i32;
         let cy = mouse.y as i32;
         let buttons = mouse.buttons;
+        let moved = old_x != mouse.x || old_y != mouse.y;
         drop(mouse);
 
-        if let Some(ref mut queue) = *EVENT_QUEUE.lock() {
-            queue.push(Event::Input(InputEvent::MouseMove { x: cx, y: cy }));
+        // Only push MouseMove if the position actually changed.
+        // Otherwise stale events accumulate in the queue and cause
+        // render storms when the shell overlay event handler sets
+        // frame_due on every single one.
+        if moved {
+            if let Some(ref mut queue) = *EVENT_QUEUE.lock() {
+                queue.push(Event::Input(InputEvent::MouseMove { x: cx, y: cy }));
+            }
         }
 
         let mut prev_btn = PREV_MOUSE_BUTTONS.lock();
@@ -326,6 +516,116 @@ pub fn poll_mouse_state() {
             }
         }
         *prev_btn = buttons;
+    }
+}
+
+// ── Keyboard polling (raw PS/2 → Resonance events) ──────────
+
+/// Poll raw PS/2 key events and push them into the Resonance event queue.
+/// Call from runtime_tick before process_events.
+pub fn poll_keyboard() {
+    while nitrogen::ps2::keyboard::raw_key_available() {
+        let (scancode, pressed) = match nitrogen::ps2::keyboard::pop_raw_key() {
+            Some(k) => k,
+            None => break,
+        };
+
+        // Map scancode to resonance KeyCode
+        let key = scancode_to_resonance_keycode(scancode);
+        let event = if pressed {
+            Event::Input(InputEvent::KeyDown(key))
+        } else {
+            Event::Input(InputEvent::KeyUp(key))
+        };
+
+        if let Some(ref mut queue) = *EVENT_QUEUE.lock() {
+            queue.push(event);
+        }
+    }
+}
+
+/// Map a raw PS/2 scancode (with 0x80 bit for extended) to Resonance KeyCode.
+fn scancode_to_resonance_keycode(scancode: u8) -> KeyCode {
+    let extended = scancode & 0x80 != 0;
+    let base = scancode & 0x7F;
+
+    if extended {
+        match base {
+            0x1D => return KeyCode::Ctrl,      // RCtrl as Ctrl
+            0x38 => return KeyCode::Alt,        // RAlt as Alt
+            0x5B => return KeyCode::SuperLeft,
+            0x5C => return KeyCode::SuperRight,
+            _ => {}
+        }
+    }
+
+    match base {
+        0x01 => KeyCode::Escape,
+        0x02 => KeyCode::Digit1,
+        0x03 => KeyCode::Digit2,
+        0x04 => KeyCode::Digit3,
+        0x05 => KeyCode::Digit4,
+        0x06 => KeyCode::Digit5,
+        0x07 => KeyCode::Digit6,
+        0x08 => KeyCode::Digit7,
+        0x09 => KeyCode::Digit8,
+        0x0A => KeyCode::Digit9,
+        0x0B => KeyCode::Digit0,
+        0x0E => KeyCode::Backspace,
+        0x0F => KeyCode::Tab,
+        0x10 => KeyCode::Q,
+        0x11 => KeyCode::W,
+        0x12 => KeyCode::E,
+        0x13 => KeyCode::R,
+        0x14 => KeyCode::T,
+        0x15 => KeyCode::Y,
+        0x16 => KeyCode::U,
+        0x17 => KeyCode::I,
+        0x18 => KeyCode::O,
+        0x19 => KeyCode::P,
+        0x1C => KeyCode::Enter,
+        0x1D => KeyCode::Ctrl,
+        0x1E => KeyCode::A,
+        0x1F => KeyCode::S,
+        0x20 => KeyCode::D,
+        0x21 => KeyCode::F,
+        0x22 => KeyCode::G,
+        0x23 => KeyCode::H,
+        0x24 => KeyCode::J,
+        0x25 => KeyCode::K,
+        0x26 => KeyCode::L,
+        0x2A => KeyCode::Shift,
+        0x2C => KeyCode::Z,
+        0x2D => KeyCode::X,
+        0x2E => KeyCode::C,
+        0x2F => KeyCode::V,
+        0x30 => KeyCode::B,
+        0x31 => KeyCode::N,
+        0x32 => KeyCode::M,
+        0x36 => KeyCode::Shift,
+        0x38 => KeyCode::Alt,
+        0x39 => KeyCode::Space,
+        0x3B => KeyCode::F1,
+        0x3C => KeyCode::F2,
+        0x3D => KeyCode::F3,
+        0x3E => KeyCode::F4,
+        0x3F => KeyCode::F5,
+        0x40 => KeyCode::F6,
+        0x41 => KeyCode::F7,
+        0x42 => KeyCode::F8,
+        0x43 => KeyCode::F9,
+        0x44 => KeyCode::F10,
+        0x47 => KeyCode::Home,
+        0x48 => KeyCode::Up,
+        0x49 => KeyCode::PageUp,
+        0x4B => KeyCode::Left,
+        0x4D => KeyCode::Right,
+        0x4F => KeyCode::End,
+        0x50 => KeyCode::Down,
+        0x51 => KeyCode::PageDown,
+        0x57 => KeyCode::F11,
+        0x58 => KeyCode::F12,
+        _ => KeyCode::Unknown(base as u32),
     }
 }
 
@@ -344,7 +644,14 @@ pub fn chrono_tick(now: u64) {
                 rt.cursor_visible = !rt.cursor_visible;
                 rt.term_dirty = true;
             }
-            FRAME_TIMER_ID => rt.frame_due = true,
+            FRAME_TIMER_ID => {
+                // Only auto-frame when on Desktop — shell overlays render
+                // exclusively when shell_state changes (handlers set frame_due
+                // explicitly on transition).
+                if rt.shell_state == ShellState::Desktop {
+                    rt.frame_due = true;
+                }
+            }
             _ => {}
         }
     }
@@ -366,6 +673,91 @@ pub fn process_events() {
             dispatcher.dispatch_queue(queue);
         }
     }
+}
+
+// ── Clock update ─────────────────────────────────────────────
+
+/// Update the taskbar clock from the wall‑clock callback.
+/// Format: "YYYY MMDD HHMM" (e.g. "2026 0606 2200").
+/// Current timezone offset in hours (UTC + offset = local time).
+pub static TIMEZONE_OFFSET_HOURS: core::sync::atomic::AtomicI8 = core::sync::atomic::AtomicI8::new(9);
+
+pub fn update_clock() {
+    let offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
+
+    let time_str = if let Some(get_time) = *WALL_CLOCK_FN.lock() {
+        if let Some((year, month, day, mut hour, minute, _second)) = get_time() {
+            // Apply timezone offset
+            let mut local_hour = hour as i16 + offset as i16;
+            let mut local_day = day as i16;
+            let mut local_month = month as i16;
+            let mut local_year = year as i16;
+
+            while local_hour < 0 {
+                local_hour += 24;
+                local_day -= 1;
+            }
+            while local_hour >= 24 {
+                local_hour -= 24;
+                local_day += 1;
+            }
+
+            // Handle day overflow — simple month-length table
+            let days_in_month = match local_month {
+                1 | 3 | 5 | 7 | 8 | 10 | 12 => 31i16,
+                4 | 6 | 9 | 11 => 30i16,
+                2 => {
+                    let leap = (local_year % 4 == 0 && local_year % 100 != 0) || (local_year % 400 == 0);
+                    if leap { 29 } else { 28 }
+                }
+                _ => 31,
+            };
+
+            if local_day > days_in_month {
+                local_day = 1;
+                local_month += 1;
+                if local_month > 12 {
+                    local_month = 1;
+                    local_year += 1;
+                }
+            } else if local_day < 1 {
+                local_month -= 1;
+                if local_month < 1 {
+                    local_month = 12;
+                    local_year -= 1;
+                }
+                let prev_days = match local_month {
+                    1 | 3 | 5 | 7 | 8 | 10 | 12 => 31i16,
+                    4 | 6 | 9 | 11 => 30i16,
+                    2 => {
+                        let leap = (local_year % 4 == 0 && local_year % 100 != 0) || (local_year % 400 == 0);
+                        if leap { 29 } else { 28 }
+                    }
+                    _ => 31,
+                };
+                local_day = prev_days + local_day;
+            }
+
+            format!(
+                "{} {:02}{:02} {:02}{:02}",
+                local_year as u16, local_month as u8, local_day as u8, local_hour as u8, minute
+            )
+        } else {
+            String::from("---- ---- ----")
+        }
+    } else {
+        String::from("---- ---- ----")
+    };
+
+    let mut rt = RUNTIME.lock();
+    if let Some(ref mut r) = *rt {
+        let old = &r.desktop.clock_text;
+        if *old != time_str {
+            r.clock_changed = true;
+            r.desktop.clock_text = time_str.clone();
+        }
+    }
+    *CLOCK_STRING.lock() = time_str;
 }
 
 // ── Rendering ────────────────────────────────────────────────
@@ -395,6 +787,13 @@ where
         None => return,
     };
 
+    // When shell overlay is active, force full redraw so the compositor
+    // repaints the clean desktop under the overlay every frame,
+    // avoiding overlay‑on‑overlay accumulation.
+    if rt.shell_state != ShellState::Desktop {
+        rt.desktop.force_full_redraw();
+    }
+
     render_terminal(rt, rt.term_window);
     rt.desktop.update_taskbar();
 
@@ -414,26 +813,231 @@ where
     }
     rt.back_len = fb_len;
 
-    let (bx, by, bw, bh) = {
-        let mut back = BACK_BUFFER.lock();
-        let mut back_target = FramebufferTarget {
-            pixels: &mut back[..fb_len],
-            width: fb_width,
-            height: fb_height,
-        };
-        let scene = rt.desktop.scene();
-        Compositor::render(&scene, &mut back_target)
-    };
+    // ── Skip compositor when nothing changed ──────────────────
+    // In Desktop mode the FRAME_TIMER fires every tick and calls
+    // render(), but if no window has moved and the clock text is stale
+    // the compositor has no work to do.  Cursor redraws are already
+    // handled by the lightweight render_cursor_only() in event handlers,
+    // so we can skip the heavy compositor pass entirely.
+    let has_dirty = rt.desktop.has_pending_dirty_rects();
+    let clock_dirty = rt.clock_changed;
 
-    if bw > 0 && bh > 0 {
-        let back = BACK_BUFFER.lock();
-        let fb_w = fb_width as usize;
-        let b_w = bw as usize;
-        for row in 0..bh {
-            let off = ((by + row) as usize) * fb_w + (bx as usize);
-            let len = b_w.min(fb_len.saturating_sub(off));
-            if len > 0 {
-                fb_pixels[off..off + len].copy_from_slice(&back[off..off + len]);
+    if has_dirty || clock_dirty {
+        rt.clock_changed = false;
+
+        {
+            let mut back = BACK_BUFFER.lock();
+            let mut back_target = FramebufferTarget {
+                pixels: &mut back[..fb_len],
+                width: fb_width,
+                height: fb_height,
+            };
+            let scene = rt.desktop.scene();
+            let (bx, by, bw, bh) = Compositor::render(&scene, &mut back_target);
+
+            if bw > 0 && bh > 0 {
+                let fb_w = fb_width as usize;
+                let b_w = bw as usize;
+
+                // Copy composited desktop to framebuffer
+                for row in 0..bh {
+                    let off = ((by + row) as usize) * fb_w + (bx as usize);
+                    let len = b_w.min(fb_len.saturating_sub(off));
+                    if len > 0 {
+                        fb_pixels[off..off + len].copy_from_slice(&back[off..off + len]);
+                    }
+                }
+            }
+        }
+
+        // ── Shell overlay rendering (post‑compositor, onto fb_pixels) ──────
+        match rt.shell_state {
+            ShellState::TaskOverview => {
+                render_task_overview(fb_pixels, fb_width, fb_height, rt.desktop.wm.windows());
+            }
+            ShellState::AppGrid => {
+                render_app_grid(fb_pixels, fb_width, fb_height);
+            }
+            ShellState::TimeZoneSelector => {
+                let current_offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
+                lattice::shell_overlay::render_timezone_selector(
+                    fb_pixels, fb_width, fb_height, current_offset,
+                );
+            }
+            ShellState::Desktop => {}
+        }
+    }
+
+    // ── Cursor overlay (drawn after everything else) ──────
+    // The compositor draws the cursor inside the back‑buffer, but
+    // shell overlays overwrite that area.  Redraw the cursor directly
+    // onto fb_pixels so it is always visible regardless of shell state.
+    //
+    // Also cache the framebuffer pointer so render_cursor_only()
+    // can do lightweight cursor updates without a full render.
+    unsafe {
+        LAST_FB_PTR = fb_pixels.as_mut_ptr();
+        LAST_FB_DIMS = (fb_width, fb_height);
+    }
+    let cursor = &rt.desktop.cursor;
+    if cursor.visible {
+        // Save backing store for future cursor-only redraws
+        save_cursor_backing(fb_pixels, fb_width, fb_height, cursor.x, cursor.y);
+        draw_cursor_on_fb(fb_pixels, fb_width, fb_height, cursor.x, cursor.y);
+    }
+}
+
+/// Save the pixels under the current cursor for `render_cursor_only`.
+fn save_cursor_backing(fb: &[u32], fbw: u32, fbh: u32, cx: i32, cy: i32) {
+    use lattice::cursor::Cursor;
+    let sz = Cursor::SIZE as i32;
+    let dst_x = cx - Cursor::HOTSPOT_X;
+    let dst_y = cy - Cursor::HOTSPOT_Y;
+    let fb_w = fbw as usize;
+    let fb_len = fb.len();
+
+    for row in 0..sz {
+        let dy = dst_y + row;
+        if dy < 0 || dy >= fbh as i32 { continue; }
+        for col in 0..sz {
+            let dx = dst_x + col;
+            if dx < 0 || dx >= fbw as i32 { continue; }
+            let idx = (dy as usize) * fb_w + dx as usize;
+            if idx < fb_len {
+                unsafe {
+                    CURSOR_BACKING[(row as usize) * (sz as usize) + col as usize] = fb[idx];
+                }
+            }
+        }
+    }
+    unsafe {
+        CURSOR_SAVED_X = dst_x;
+        CURSOR_SAVED_Y = dst_y;
+    }
+}
+
+/// Draw the cursor shape directly onto a framebuffer.
+fn draw_cursor_on_fb(fb: &mut [u32], fbw: u32, fbh: u32, cx: i32, cy: i32) {
+    use lattice::cursor::Cursor;
+    let pixels = Cursor::shape();
+    let sz = Cursor::SIZE as i32;
+    let dst_x = cx - Cursor::HOTSPOT_X;
+    let dst_y = cy - Cursor::HOTSPOT_Y;
+    let fb_w = fbw as usize;
+    let fb_len = fb.len();
+
+    for row in 0..sz {
+        let dy = dst_y + row;
+        if dy < 0 || dy >= fbh as i32 {
+            continue;
+        }
+        for col in 0..sz {
+            let dx = dst_x + col;
+            if dx < 0 || dx >= fbw as i32 {
+                continue;
+            }
+            let s = pixels[(row as usize) * (sz as usize) + col as usize];
+            if s & 0xFF000000 == 0 {
+                continue;
+            }
+            let idx = (dy as usize) * fb_w + dx as usize;
+            if idx < fb_len {
+                fb[idx] = s;
+            }
+        }
+    }
+}
+
+/// Lightweight cursor-only redraw — no compositor, no overlay re‑render.
+///
+/// Restores the pixels under the old cursor position from `CURSOR_BACKING`,
+/// saves the pixels under the new position, and draws the cursor shape.
+fn render_cursor_only(prev_x: i32, prev_y: i32, new_x: i32, new_y: i32) {
+    let fb_ptr = unsafe { LAST_FB_PTR };
+    if fb_ptr.is_null() {
+        return;
+    }
+    let (fbw, fbh) = unsafe { LAST_FB_DIMS };
+    if fbw == 0 || fbh == 0 {
+        return;
+    }
+    let fb_len = (fbw as usize) * (fbh as usize);
+    let fb = unsafe { core::slice::from_raw_parts_mut(fb_ptr, fb_len) };
+
+    use lattice::cursor::Cursor;
+    let sz = Cursor::SIZE as i32;
+    let fb_w = fbw as usize;
+
+    // 1. Restore old cursor position from backing store
+    let old_dst_x = prev_x - Cursor::HOTSPOT_X;
+    let old_dst_y = prev_y - Cursor::HOTSPOT_Y;
+    let saved_x = unsafe { CURSOR_SAVED_X };
+    let saved_y = unsafe { CURSOR_SAVED_Y };
+    if saved_x >= 0 && saved_y >= 0 {
+        for row in 0..sz {
+            let dy = saved_y + row;
+            if dy < 0 || dy >= fbh as i32 {
+                continue;
+            }
+            for col in 0..sz {
+                let dx = saved_x + col;
+                if dx < 0 || dx >= fbw as i32 {
+                    continue;
+                }
+                let idx = (dy as usize) * fb_w + dx as usize;
+                if idx < fb_len {
+                    let backing = unsafe { CURSOR_BACKING[(row as usize) * (sz as usize) + col as usize] };
+                    fb[idx] = backing;
+                }
+            }
+        }
+    }
+
+    // 2. Save new cursor position backing
+    let new_dst_x = new_x - Cursor::HOTSPOT_X;
+    let new_dst_y = new_y - Cursor::HOTSPOT_Y;
+    for row in 0..sz {
+        let dy = new_dst_y + row;
+        if dy < 0 || dy >= fbh as i32 {
+            continue;
+        }
+        for col in 0..sz {
+            let dx = new_dst_x + col;
+            if dx < 0 || dx >= fbw as i32 {
+                continue;
+            }
+            let idx = (dy as usize) * fb_w + dx as usize;
+            if idx < fb_len {
+                unsafe {
+                    CURSOR_BACKING[(row as usize) * (sz as usize) + col as usize] = fb[idx];
+                }
+            }
+        }
+    }
+    unsafe {
+        CURSOR_SAVED_X = new_dst_x;
+        CURSOR_SAVED_Y = new_dst_y;
+    }
+
+    // 3. Draw cursor at new position
+    let pixels = Cursor::shape();
+    for row in 0..sz {
+        let dy = new_dst_y + row;
+        if dy < 0 || dy >= fbh as i32 {
+            continue;
+        }
+        for col in 0..sz {
+            let dx = new_dst_x + col;
+            if dx < 0 || dx >= fbw as i32 {
+                continue;
+            }
+            let s = pixels[(row as usize) * (sz as usize) + col as usize];
+            if s & 0xFF000000 == 0 {
+                continue;
+            }
+            let idx = (dy as usize) * fb_w + dx as usize;
+            if idx < fb_len {
+                fb[idx] = s;
             }
         }
     }
@@ -503,7 +1107,6 @@ fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
                     let src_idx = row * src_cols + col;
                     if src_idx < src_cells.len() {
                         let c = src_cells[src_idx];
-                        // Use raw byte write so we don't trigger ANSI parsing
                         if let Some(dst) = rt.term_buf.cell_mut(col as u32, row as u32) {
                             *dst = nozzle::terminal_buffer::Cell {
                                 ch: c.ch,
@@ -602,13 +1205,26 @@ impl nozzle::Terminal for LatticeTerminal {
 static YIELD_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
 
+/// Cached framebuffer for cursor‑only redraws (lightweight, no compositor).
+/// `static mut` is acceptable here because the kernel is single‑threaded.
+static mut LAST_FB_PTR: *mut u32 = core::ptr::null_mut();
+static mut LAST_FB_DIMS: (u32, u32) = (0, 0);
+
+/// Saved 16×16 pixel region under the cursor, restored on cursor move.
+static mut CURSOR_BACKING: [u32; 256] = [0u32; 256];
+static mut CURSOR_SAVED_X: i32 = -100;
+static mut CURSOR_SAVED_Y: i32 = -100;
+
 pub fn set_render_fn(f: fn()) {
     *RENDER_FN.lock() = Some(f);
 }
 
 fn runtime_tick_no_fb() {
     let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
     poll_mouse_state();
+    poll_keyboard();
+    update_clock();
     chrono_tick(now);
     process_events();
 
@@ -627,7 +1243,10 @@ pub fn runtime_tick<F>(now: u64, framebuffer_fn: F)
 where
     F: FnOnce() -> Option<(&'static mut [u32], u32, u32)>,
 {
+    GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
     poll_mouse_state();
+    poll_keyboard();
+    update_clock();
     chrono_tick(now);
     process_events();
 
