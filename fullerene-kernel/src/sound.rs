@@ -29,6 +29,9 @@ use nitrogen::pci::PciDevice;
 
 /// Play a simple beep using the PC speaker (PIT channel 2).
 ///
+/// This is a **blocking** convenience wrapper: it turns the speaker on,
+/// busy-waits for `duration_ms` milliseconds, then turns it off.
+///
 /// # Safety
 ///
 /// Direct I/O port writes.  Caller must ensure single-threaded access.
@@ -36,28 +39,44 @@ pub fn pc_speaker_beep(frequency_hz: u32, duration_ms: u32) {
     if frequency_hz == 0 {
         return;
     }
-
+    pc_speaker_on(frequency_hz);
     unsafe {
-        // PIT frequency divisor
-        let divisor = (1_193_182u32 / frequency_hz).min(65535) as u16;
-
-        // Set PIT channel 2 to mode 3 (square wave generator)
-        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x43).write(0xB6);
-        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x42).write(divisor as u8);
-        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x42).write((divisor >> 8) as u8);
-
-        // Enable PC speaker (bit 0 and bit 1 of port 0x61)
-        let tmp = x86_64::instructions::port::PortReadOnly::<u8>::new(0x61).read();
-        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61).write(tmp | 0x03);
-
-        // Wait for the duration
         for _ in 0..duration_ms * 1000 {
             core::hint::spin_loop();
         }
+    }
+    pc_speaker_off();
+}
 
-        // Disable PC speaker
-        let tmp2 = x86_64::instructions::port::PortReadOnly::<u8>::new(0x61).read();
-        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61).write(tmp2 & !0x03);
+/// Turn on the PC speaker at the given frequency (non‑blocking).
+///
+/// Configures PIT channel 2 in mode 3 (square wave) and enables
+/// the speaker output.  Call [`pc_speaker_off`] to silence it.
+///
+/// Pass `0` to immediately turn the speaker off (same as `pc_speaker_off`).
+pub fn pc_speaker_on(frequency_hz: u32) {
+    if frequency_hz == 0 {
+        pc_speaker_off();
+        return;
+    }
+    unsafe {
+        let divisor = (1_193_182u32 / frequency_hz).min(65535) as u16;
+        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x43).write(0xB6);
+        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x42).write(divisor as u8);
+        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x42).write((divisor >> 8) as u8);
+        let tmp = x86_64::instructions::port::PortReadOnly::<u8>::new(0x61).read();
+        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61).write(tmp | 0x03);
+    }
+}
+
+/// Turn off the PC speaker (non‑blocking).
+///
+/// Disables the speaker gate without touching the PIT, so a subsequent
+/// [`pc_speaker_on`] can resume quickly.
+pub fn pc_speaker_off() {
+    unsafe {
+        let tmp = x86_64::instructions::port::PortReadOnly::<u8>::new(0x61).read();
+        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61).write(tmp & !0x03);
     }
 }
 
