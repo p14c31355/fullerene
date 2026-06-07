@@ -144,14 +144,7 @@ pub fn cmd_calc(ctx: &mut CommandContext) -> bool {
         ctx.terminal.write_str("Example: calc (2+3)*4\n");
         return true;
     }
-    // Join all args into one expression string
-    let mut expr = alloc::string::String::new();
-    for (i, arg) in ctx.args.iter().enumerate() {
-        if i == 0 {
-            continue;
-        }
-        expr.push_str(arg);
-    }
+    // Join all args into one expression string (unused for now as sys_info_hook handles usage)
     crate::sys_hooks::call_sys_info_hook(ctx, "calc");
     true
 }
