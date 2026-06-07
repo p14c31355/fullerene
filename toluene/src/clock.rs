@@ -16,8 +16,8 @@ pub struct Time {
 
 impl Time {
     /// Format time as "YYYY MMDD HHMM" (compact form used by taskbar).
-    pub fn format_compact(&self) -> [u8; 13] {
-        let mut buf = [b' '; 13];
+    pub fn format_compact(&self) -> [u8; 14] {
+        let mut buf = [b' '; 14];
         Self::write_u16(&mut buf[0..4], self.year);
         buf[4] = b' ';
         Self::write_u8_pad(&mut buf[5..7], self.month);
