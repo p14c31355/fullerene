@@ -278,7 +278,7 @@ pub fn render_timezone_selector(
     let entry_w = max_label_chars * 8 + 16;  // 8px per char + padding
 
     for (i, (label, offset)) in timezones.iter().enumerate() {
-        let ex = (fbw - entry_w) / 2;
+        let ex = fbw.saturating_sub(entry_w) / 2;
         let ey = start_y + (i as u32) * (entry_h + pad);
 
         if ey + entry_h > fbh {
