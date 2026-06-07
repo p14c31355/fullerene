@@ -1,258 +1,44 @@
-//! Bad Apple!! — PC speaker playback with framebuffer animation.
+//! Bad Apple!! — shadow-art video + HDA PCM audio playback
 //!
-//! Implements the `badapple` shell command that plays the full
-//! Bad Apple melody through the PC speaker while rendering a
-//! shadow-art animation on the primary framebuffer.
+//! Embeds 160×120 1‑bit RLE‑compressed frames and 22 050 Hz mono
+//! s16le PCM via `include_bytes!`, renders frames to the framebuffer
+//! while streaming audio through the Intel HD Audio controller.
 //!
-//! # Usage
+//! # RLE file format (`.rle`)
 //!
 //! ```text
-//! fullerene> badapple
+//! Offset  Size  Description
+//! 0       4     Magic: "BARL"
+//! 4       4     Version: u32 LE
+//! 8       4     Frame count: u32 LE
+//! 12      2     Width: u16 LE
+//! 14      2     Height: u16 LE
+//! 16      N*4   Frame table: [compressed_size: u32 LE] × N
+//! …       …     RLE data: [u16 LE run_len][u8 fill] …
 //! ```
-//!
-//! The animation runs for the duration of the melody.  Press any key
-//! to abort early.
 
+use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
-// ── Note structure ──────────────────────────────────────────────
+/// All RLE-compressed frames.
+static BADAPPLE_RLE: &[u8] = include_bytes!("badapple.rle");
 
-/// A single note: frequency in Hz (0 = rest) and duration in ms.
-struct Note {
-    freq_hz: u32,
-    duration_ms: u32,
-}
+/// PCM audio: 22 050 Hz, mono, signed 16‑bit little‑endian.
+static BADAPPLE_PCM: &[u8] = include_bytes!("badapple.pcm");
 
-impl Note {
-    const fn new(freq_hz: u32, duration_ms: u32) -> Self {
-        Self {
-            freq_hz,
-            duration_ms,
-        }
-    }
-}
+const PCM_SAMPLE_RATE: u32 = 22050;
+const PCM_BYTES_PER_SAMPLE: u32 = 2;
+const PCM_BYTES_PER_SEC: u32 = PCM_SAMPLE_RATE * PCM_BYTES_PER_SAMPLE; // 44100
 
-// ── Helper aliases for readability ──────────────────────────────
-const R: u32 = 0; // rest
-#[allow(unused)]
-const C4: u32 = 262;
-const D4: u32 = 294;
-const E4: u32 = 330;
-const F4: u32 = 349;
-const G4: u32 = 392;
-const A4: u32 = 440;
-const B4: u32 = 494;
-const C5: u32 = 523;
-const D5: u32 = 587;
-const E5: u32 = 659;
-const F5: u32 = 698;
-const G5: u32 = 784;
-const A5: u32 = 880;
+const RLE_MAGIC: &[u8; 4] = b"BARL";
+const RLE_HDR_SIZE: usize = 16;
 
-// ── Note durations (ms) — calibrated for ~138 BPM ───────────────
-const S: u32 = 110; // sixteenth
-const E: u32 = 220; // eighth
-const Q: u32 = 440; // quarter
-const H: u32 = 880; // half
-const W: u32 = 1760; // whole
+// ── Spin-loop calibration ──────────────────────────────────
 
-/// Full Bad Apple melody.
-///
-/// Transcribed from the iconic Touhou arrangement (ZUN → Alstroemeria
-/// Records).  The melody is the main vocal line, transposed to a
-/// 2‑octave range suitable for the PC speaker (C4–A5, 262–880 Hz).
-///
-/// Structure:
-///   Intro / Verse 1 → Pre‑Chorus → Chorus 1 →
-///   Verse 2 → Pre‑Chorus → Chorus 2 →
-///   Bridge → Final Chorus → Outro
-#[rustfmt::skip]
-const MELODY: &[Note] = &[
-    // ════════════════════════════════════════════════════════════
-    // Section 1: Intro / Verse 1
-    // ════════════════════════════════════════════════════════════
-    Note::new(G4, E), Note::new(G4, E), Note::new(G4, Q),
-    Note::new(E4, E), Note::new(D4, E), Note::new(E4, Q),
-    Note::new(D4, E), Note::new(C4, E), Note::new(D4, Q), Note::new(R, S),
-
-    Note::new(E4, E), Note::new(E4, E), Note::new(D4, E),
-    Note::new(C4, E), Note::new(D4, Q), Note::new(E4, E),
-    Note::new(D4, E), Note::new(C4, Q), Note::new(R, S),
-
-    Note::new(G4, E), Note::new(A4, E), Note::new(G4, Q),
-    Note::new(E4, E), Note::new(D4, E), Note::new(E4, Q),
-    Note::new(D4, E), Note::new(C4, E), Note::new(D4, H), Note::new(R, E),
-
-    Note::new(E4, E), Note::new(F4, E), Note::new(G4, Q),
-    Note::new(A4, E), Note::new(G4, E), Note::new(F4, E),
-    Note::new(G4, Q), Note::new(R, S),
-
-    // ════════════════════════════════════════════════════════════
-    // Section 2: Pre‑Chorus 1
-    // ════════════════════════════════════════════════════════════
-    Note::new(C5, E), Note::new(B4, E), Note::new(A4, Q),
-    Note::new(G4, E), Note::new(F4, E), Note::new(G4, Q),
-    Note::new(E4, E), Note::new(D4, Q), Note::new(R, S),
-
-    Note::new(C5, E), Note::new(B4, E), Note::new(A4, Q),
-    Note::new(G4, E), Note::new(A4, E), Note::new(B4, E),
-    Note::new(C5, H), Note::new(R, E),
-
-    // ════════════════════════════════════════════════════════════
-    // Section 3: Chorus 1
-    // ════════════════════════════════════════════════════════════
-    Note::new(D5, E), Note::new(C5, E), Note::new(B4, E),
-    Note::new(A4, Q), Note::new(G4, E), Note::new(A4, E),
-    Note::new(B4, E), Note::new(C5, Q), Note::new(R, S),
-
-    Note::new(D5, E), Note::new(C5, E), Note::new(B4, E),
-    Note::new(A4, Q), Note::new(G4, E), Note::new(A4, E),
-    Note::new(B4, E), Note::new(G4, H), Note::new(R, E),
-
-    Note::new(D5, E), Note::new(C5, E), Note::new(B4, E),
-    Note::new(A4, Q), Note::new(G4, E), Note::new(A4, E),
-    Note::new(B4, E), Note::new(C5, Q), Note::new(R, S),
-
-    Note::new(D5, E), Note::new(C5, E), Note::new(B4, E),
-    Note::new(E5, Q), Note::new(D5, E), Note::new(C5, E),
-    Note::new(B4, E), Note::new(A4, H), Note::new(R, E),
-
-    // ════════════════════════════════════════════════════════════
-    // Section 4: Verse 2 (reprise)
-    // ════════════════════════════════════════════════════════════
-    Note::new(G4, E), Note::new(G4, E), Note::new(G4, Q),
-    Note::new(E4, E), Note::new(D4, E), Note::new(E4, Q),
-    Note::new(D4, E), Note::new(C4, E), Note::new(D4, Q), Note::new(R, S),
-
-    Note::new(E4, E), Note::new(E4, E), Note::new(D4, E),
-    Note::new(C4, E), Note::new(D4, Q), Note::new(E4, E),
-    Note::new(D4, E), Note::new(C4, Q), Note::new(R, S),
-
-    Note::new(G4, E), Note::new(A4, E), Note::new(G4, Q),
-    Note::new(E4, E), Note::new(D4, E), Note::new(E4, Q),
-    Note::new(D4, E), Note::new(C4, E), Note::new(D4, H), Note::new(R, E),
-
-    Note::new(E4, E), Note::new(F4, E), Note::new(G4, Q),
-    Note::new(A4, E), Note::new(G4, E), Note::new(F4, E),
-    Note::new(G4, Q), Note::new(R, S),
-
-    // ════════════════════════════════════════════════════════════
-    // Section 5: Pre‑Chorus 2
-    // ════════════════════════════════════════════════════════════
-    Note::new(C5, E), Note::new(B4, E), Note::new(A4, Q),
-    Note::new(G4, E), Note::new(F4, E), Note::new(G4, Q),
-    Note::new(E4, E), Note::new(D4, Q), Note::new(R, S),
-
-    Note::new(C5, E), Note::new(B4, E), Note::new(A4, Q),
-    Note::new(G4, E), Note::new(A4, E), Note::new(B4, E),
-    Note::new(C5, H), Note::new(R, E),
-
-    // ════════════════════════════════════════════════════════════
-    // Section 6: Chorus 2 — raised intensity
-    // ════════════════════════════════════════════════════════════
-    Note::new(E5, E), Note::new(D5, E), Note::new(C5, E),
-    Note::new(B4, Q), Note::new(A4, E), Note::new(B4, E),
-    Note::new(C5, E), Note::new(D5, Q), Note::new(R, S),
-
-    Note::new(E5, E), Note::new(D5, E), Note::new(C5, E),
-    Note::new(B4, Q), Note::new(A4, E), Note::new(B4, E),
-    Note::new(C5, E), Note::new(D5, Q), Note::new(R, S),
-
-    Note::new(G5, E), Note::new(F5, E), Note::new(E5, E),
-    Note::new(D5, Q), Note::new(C5, E), Note::new(B4, E),
-    Note::new(C5, H), Note::new(R, Q),
-
-    // ════════════════════════════════════════════════════════════
-    // Section 7: Bridge / Interlude
-    // ════════════════════════════════════════════════════════════
-    Note::new(G5, E), Note::new(A5, E), Note::new(G5, Q),
-    Note::new(F5, E), Note::new(E5, Q), Note::new(D5, E),
-    Note::new(C5, Q), Note::new(R, S),
-
-    Note::new(G5, E), Note::new(A5, E), Note::new(G5, Q),
-    Note::new(F5, E), Note::new(E5, E), Note::new(D5, E),
-    Note::new(E5, H), Note::new(R, E),
-
-    Note::new(D5, E), Note::new(C5, E), Note::new(B4, E),
-    Note::new(A4, Q), Note::new(G4, Q), Note::new(F4, Q),
-    Note::new(E4, H), Note::new(R, E),
-
-    // ════════════════════════════════════════════════════════════
-    // Section 8: Final Chorus
-    // ════════════════════════════════════════════════════════════
-    Note::new(E5, S), Note::new(D5, S), Note::new(C5, S),
-    Note::new(D5, Q), Note::new(C5, S), Note::new(B4, S),
-    Note::new(A4, Q), Note::new(G4, E), Note::new(A4, E),
-    Note::new(B4, S), Note::new(C5, Q), Note::new(R, S),
-
-    Note::new(E5, S), Note::new(D5, S), Note::new(C5, S),
-    Note::new(D5, Q), Note::new(C5, S), Note::new(B4, S),
-    Note::new(A4, Q), Note::new(G4, E), Note::new(A4, E),
-    Note::new(B4, S), Note::new(G4, H), Note::new(R, E),
-
-    Note::new(G5, E), Note::new(F5, E), Note::new(E5, E),
-    Note::new(D5, Q), Note::new(C5, E), Note::new(B4, E),
-    Note::new(A4, Q), Note::new(G4, E), Note::new(F4, E),
-    Note::new(G4, H), Note::new(R, Q),
-
-    // ════════════════════════════════════════════════════════════
-    // Section 9: Outro — winding down
-    // ════════════════════════════════════════════════════════════
-    Note::new(C5, Q), Note::new(B4, E), Note::new(A4, Q),
-    Note::new(G4, E), Note::new(F4, Q), Note::new(D4, Q),
-    Note::new(R, S),
-
-    Note::new(C4, Q), Note::new(D4, Q), Note::new(E4, Q),
-    Note::new(F4, Q), Note::new(G4, H), Note::new(A4, H),
-    Note::new(R, W),
-
-    // ── Final cadence ──────────────────────────────────────────
-    Note::new(C5, H), Note::new(R, Q),
-    Note::new(C5, E), Note::new(B4, E), Note::new(A4, H),
-    Note::new(R, W),
-];
-
-/// Compute the total duration of the melody in milliseconds.
-const fn total_duration_ms() -> u32 {
-    let mut total = 0u32;
-    let mut i = 0;
-    while i < MELODY.len() {
-        total += MELODY[i].duration_ms;
-        i += 1;
-    }
-    total
-}
-
-// ── Section mapping ─────────────────────────────────────────────
-
-/// Map a note index to a song section for animation variation.
-const fn get_section(note_idx: usize) -> u32 {
-    match note_idx {
-        0..=31 => 0,    // Intro / Verse 1
-        32..=49 => 1,   // Pre-Chorus 1
-        50..=81 => 2,   // Chorus 1
-        82..=113 => 3,  // Verse 2
-        114..=131 => 4, // Pre-Chorus 2
-        132..=158 => 5, // Chorus 2 (raised)
-        159..=181 => 6, // Bridge
-        182..=210 => 7, // Final Chorus
-        _ => 8,         // Outro
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Spin-loop calibration
-// ═══════════════════════════════════════════════════════════════
-
-/// Calibrate the busy-wait spin loop against the APIC timer tick counter.
-///
-/// Returns the number of `spin_loop()` iterations equivalent to 1 ms
-/// on the current hardware.  Falls back to a conservative default if
-/// the tick counter is not advancing.
 fn calibrate_spin_loop() -> u64 {
-    const TEST_SPINS: u64 = 3_000_000; // ~2 s on typical hardware
+    const TEST_SPINS: u64 = 3_000_000;   // ~2 s on typical hardware
     const DEFAULT_ITERS_PER_MS: u64 = 1500;
-    const TICK_DURATION_MS: u64 = 160; // APIC div=16, init=1M, bus≈100 MHz
+    const TICK_DURATION_MS: u64 = 160;    // APIC div=16, init=1M, bus≈100 MHz
 
     let start_tick = crate::interrupts::TICK_COUNTER.load(Ordering::Relaxed);
     for _ in 0..TEST_SPINS {
@@ -270,388 +56,205 @@ fn calibrate_spin_loop() -> u64 {
     TEST_SPINS / ms_elapsed.max(1)
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Fixed-point trigonometry
-// ═══════════════════════════════════════════════════════════════
+fn delay_ms(spins_per_ms: u64, ms: u64) {
+    let spins = ms * spins_per_ms;
+    for _ in 0..spins {
+        core::hint::spin_loop();
+    }
+}
 
-/// 12.4 fixed-point π constant (≈ 3.1416 × 16 = 50.265 → 50).
-const PI_FP: i32 = 50;
-/// 12.4 fixed-point 2π.
-const TWO_PI_FP: i32 = 100;
+// ── Frame rendering ────────────────────────────────────────
 
-/// Approximate sine using Bhaskara I's formula in integer arithmetic.
+/// Decode one RLE frame and draw it to the framebuffer.
 ///
-/// `x` is the phase in 12.4 fixed-point (0 … 100 = 0 … 2π).
-/// Returns sin(x) as 12‑bit signed fixed‑point (−4096 … +4096).
-#[inline]
-fn approx_sin(x: i32) -> i32 {
-    let mut x = x % TWO_PI_FP;
-    if x > PI_FP {
-        x -= TWO_PI_FP;
-    } else if x < -PI_FP {
-        x += TWO_PI_FP;
-    }
-
-    let sign = if x < 0 { -1i32 } else { 1i32 };
-    let x_abs = x.abs();
-    let pi_minus_x = PI_FP - x_abs;
-    let numerator = 16 * x_abs * pi_minus_x;
-    let denom = 12500 - 4 * x_abs * pi_minus_x;
-    if denom == 0 {
-        return 0;
-    }
-    sign * (numerator * 4096) / denom
-}
-
-/// Map an arbitrary `phase` counter to a sine value (−4096..+4096)
-/// with cycle length `period`.
-#[inline]
-fn spi_sin(phase: u32, period: u32) -> i32 {
-    if period == 0 {
-        return 0;
-    }
-    approx_sin(((phase % period) as i32 * 100) / period as i32)
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Figure definition — articulated human silhouette
-// ═══════════════════════════════════════════════════════════════
-
-/// A body part: a circle at (cx, cy) with given radius.
-///
-/// All coordinates are in figure-local space — origin at the
-/// figure centre, y-up positive, in unscaled pixel units.
-#[derive(Clone, Copy)]
-struct BodyCircle {
-    cx: i32,
-    cy: i32,
-    radius: i32,
-}
-
-/// Compute the set of body-part circles and the four arm segments
-/// for the current animation frame.
-///
-/// Returns:
-/// - `circles`: head, neck, torso, shoulder joints, elbow joints, hand joints
-/// - `arm_segments`: (shoulder→elbow, elbow→hand) × 2 arms, as ((x1,y1),(x2,y2))
-/// - `arm_thickness`: pixel thickness of arm line segments
-fn compute_figure(anim_t: u32, section: u32) -> (heapless::Vec<BodyCircle, 24>, heapless::Vec<((i32, i32), (i32, i32)), 4>, i32) {
-    let mut circles: heapless::Vec<BodyCircle, 24> = heapless::Vec::new();
-    let mut arms: heapless::Vec<((i32, i32), (i32, i32)), 4> = heapless::Vec::new();
-
-    // ── Amplitude varies by section ───────────────────────
-    let (arm_swing, body_sway) = match section {
-        0 | 3 => (3000i32, 800i32),   // Verse: gentle
-        1 | 4 => (5500, 1500),        // Pre-chorus: building
-        2 | 5 | 7 => (7500, 2000),    // Chorus: energetic
-        6 => (2000, 600),             // Bridge: subdued
-        _ => (4000, 1000),            // Outro: winding down
-    };
-
-    // ── Body sway ─────────────────────────────────────────
-    let sway = spi_sin(anim_t / 10, 600) * body_sway / 4096;
-
-    // ── Head ──────────────────────────────────────────────
-    let head_y = 70 + sway / 4;
-    let head_r = 17;
-    circles.push(BodyCircle { cx: 0, cy: head_y, radius: head_r }).ok();
-
-    // ── Neck ──────────────────────────────────────────────
-    circles.push(BodyCircle { cx: 0, cy: 52, radius: 6 }).ok();
-
-    // ── Torso (three overlapping circles) ─────────────────
-    circles.push(BodyCircle { cx: sway / 3, cy: 35, radius: 20 }).ok();
-    circles.push(BodyCircle { cx: sway / 4, cy: 10, radius: 16 }).ok();
-    circles.push(BodyCircle { cx: sway / 5, cy: -15, radius: 14 }).ok();
-
-    // ── Shoulder joints ───────────────────────────────────
-    let shoulder_l_x = -22 + sway / 3;
-    let shoulder_r_x = 22 + sway / 3;
-    let shoulder_y = 40;
-    circles.push(BodyCircle { cx: shoulder_l_x, cy: shoulder_y, radius: 8 }).ok();
-    circles.push(BodyCircle { cx: shoulder_r_x, cy: shoulder_y, radius: 8 }).ok();
-
-    // ── Left arm ──────────────────────────────────────────
-    let la_upper = spi_sin(anim_t / 6, 380) * arm_swing / 4096;
-    let la_lower = spi_sin(anim_t / 5, 340) * arm_swing / 4096;
-
-    let lelx = shoulder_l_x + (25 + la_upper / 256);
-    let lely = shoulder_y + (-10 + la_upper / 200);
-    let lhdx = lelx + (20 + la_lower / 300);
-    let lhdy = lely + (-20 + la_lower / 200);
-
-    circles.push(BodyCircle { cx: lelx, cy: lely, radius: 6 }).ok();
-    circles.push(BodyCircle { cx: lhdx, cy: lhdy, radius: 5 }).ok();
-    arms.push(((shoulder_l_x, shoulder_y), (lelx, lely))).ok();
-    arms.push(((lelx, lely), (lhdx, lhdy))).ok();
-
-    // ── Right arm ─────────────────────────────────────────
-    let ra_upper = spi_sin(anim_t / 7, 410) * arm_swing / 4096;
-    let ra_lower = spi_sin(anim_t / 5, 370) * arm_swing / 4096;
-
-    let relx = shoulder_r_x + (-25 + ra_upper / 256);
-    let rely = shoulder_y + (-10 - ra_upper / 200);
-    let rhdx = relx + (-20 + ra_lower / 300);
-    let rhdy = rely + (-20 - ra_lower / 200);
-
-    circles.push(BodyCircle { cx: relx, cy: rely, radius: 6 }).ok();
-    circles.push(BodyCircle { cx: rhdx, cy: rhdy, radius: 5 }).ok();
-    arms.push(((shoulder_r_x, shoulder_y), (relx, rely))).ok();
-    arms.push(((relx, rely), (rhdx, rhdy))).ok();
-
-    (circles, arms, 6)
-}
-
-/// Test whether a pixel (in figure-local coordinates) lies inside
-/// the silhouette defined by the body circles and arm segments.
-#[inline]
-fn pixel_in_figure(
-    px: i32,
-    py: i32,
-    circles: &[BodyCircle],
-    arm_segments: &[((i32, i32), (i32, i32))],
-    arm_thickness: i32,
-) -> bool {
-    // Check body-part circles
-    for c in circles {
-        let dx = px - c.cx;
-        let dy = py - c.cy;
-        if dx * dx + dy * dy < c.radius * c.radius {
-            return true;
-        }
-    }
-
-    // Check arm line segments using perpendicular distance
-    let thick_sq = (arm_thickness * arm_thickness) as i64;
-    for &((x1, y1), (x2, y2)) in arm_segments {
-        let seg_dx = (x2 - x1) as i64;
-        let seg_dy = (y2 - y1) as i64;
-        let seg_len_sq = seg_dx * seg_dx + seg_dy * seg_dy;
-        if seg_len_sq == 0 {
-            continue;
-        }
-        let dot = (px as i64 - x1 as i64) * seg_dx + (py as i64 - y1 as i64) * seg_dy;
-
-        if dot <= 0 {
-            // Closest to start point
-            let ddx = px as i64 - x1 as i64;
-            let ddy = py as i64 - y1 as i64;
-            if ddx * ddx + ddy * ddy < thick_sq {
-                return true;
-            }
-        } else if dot >= seg_len_sq {
-            // Closest to end point
-            let ddx = px as i64 - x2 as i64;
-            let ddy = py as i64 - y2 as i64;
-            if ddx * ddx + ddy * ddy < thick_sq {
-                return true;
-            }
-        } else {
-            // Perpendicular distance from infinite line
-            let cross = (px as i64 - x1 as i64) * seg_dy - (py as i64 - y1 as i64) * seg_dx;
-            if cross * cross < thick_sq * seg_len_sq {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Frame rendering
-// ═══════════════════════════════════════════════════════════════
-
-/// Draw a single animation frame onto the framebuffer.
-///
-/// Renders:
-/// 1. A concentric-wave background (expanding ripples from centre).
-/// 2. An articulated human silhouette (shadow-puppet effect)
-///    by inverting pixels inside the figure.
-fn draw_frame(
+/// `fb_stride`: number of u32 pixels per scanline (stride in bytes / 4).
+fn draw_rle_frame(
     fb: &mut [u32],
-    fb_width: usize,
+    fb_stride: usize,
     fb_height: usize,
-    anim_t: u32,
-    section: u32,
+    rle_frame_w: u16,
+    rle_frame_h: u16,
+    rle_data: &[u8],
 ) {
-    let cx = (fb_width / 2) as i32;
-    let cy = (fb_height / 2) as i32;
+    let fw = rle_frame_w as usize;
+    let fh = rle_frame_h as usize;
+    let ox = if fb_stride > fw { (fb_stride - fw) / 2 } else { 0 };
+    let oy = if fb_height > fh { (fb_height - fh) / 2 } else { 0 };
 
-    // ── Build figure geometry ─────────────────────────────
-    let (circles, arm_segments, arm_thickness) = compute_figure(anim_t, section);
+    // Fill frame area with black
+    for y in 0..fh {
+        let row = (oy + y) * fb_stride + ox;
+        for x in 0..fw {
+            fb[row + x] = 0xFF000000;
+        }
+    }
 
-    // ── Determine figure bounding box for early skip ──────
-    let fig_half_w: i32 = 60;
-    let fig_half_h: i32 = 100;
-    let fbx0 = (cx - fig_half_w).max(0) as usize;
-    let fbx1 = (cx + fig_half_w).min(fb_width as i32 - 1).max(0) as usize;
-    let fby0 = (cy - fig_half_h).max(0) as usize;
-    let fby1 = (cy + fig_half_h).min(fb_height as i32 - 1).max(0) as usize;
+    // Walk RLE runs and paint white pixels
+    let mut pos: usize = 0;
+    let mut cursor: usize = 0;
 
-    let ripple_phase = (anim_t / 8) as i32;
+    while cursor + 3 <= rle_data.len() && pos < fw * fh {
+        let run_len = u16::from_le_bytes([rle_data[cursor], rle_data[cursor + 1]]) as usize;
+        let fill = rle_data[cursor + 2];
+        cursor += 3;
 
-    for y in 0..fb_height {
-        let row_off = y * fb_width;
-        let dy = y as i32 - cy;
-        let in_fig_y = y >= fby0 && y <= fby1;
+        let run_len = run_len.min(fw * fh - pos);
 
-        for x in 0..fb_width {
-            let idx = row_off + x;
-            let dx = x as i32 - cx;
-
-            // ── Concentric wave background ────────────────
-            let dist = ((dx * dx + dy * dy) as u32 / 600) as i32;
-            let wave = spi_sin((dist + ripple_phase) as u32, 80);
-            let bg: u32 = if wave > 0 { 0xFFFFFFFF } else { 0xFF000000 };
-            fb[idx] = bg;
-
-            // ── Figure silhouette (invert pixels inside) ──
-            if in_fig_y && x >= fbx0 && x <= fbx1 {
-                let fx = x as i32 - cx;
-                let fy = y as i32 - cy;
-                if pixel_in_figure(fx, fy, &circles, &arm_segments, arm_thickness) {
-                    fb[idx] = !fb[idx];
-                }
+        if fill == 0xFF {
+            let mut rem = run_len;
+            let mut p = pos;
+            while rem > 0 {
+                let y = p / fw;
+                let x = p % fw;
+                fb[(oy + y) * fb_stride + ox + x] = 0xFFFFFFFF;
+                p += 1;
+                rem -= 1;
             }
         }
+        pos += run_len;
     }
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Main playback
-// ═══════════════════════════════════════════════════════════════
+// ── Main playback ──────────────────────────────────────────
 
-/// Play the full Bad Apple melody on PC speaker while animating
-/// the framebuffer with a shadow-puppet effect.
-///
-/// # How it works
-///
-/// 1. Calibrates a busy-wait spin loop against the APIC tick counter.
-/// 2. Fills the screen with black, then enters the playback loop.
-/// 3. Each iteration advances note playback, updates the PC speaker,
-///    and renders one animation frame.
-/// 4. Frame delay uses the calibrated spin-loop for consistent fps.
-/// 5. On exit (end of melody or user abort), restores the desktop.
 pub fn play_badapple() {
     log::info!("Bad Apple playback started");
 
-    // ── Get framebuffer ────────────────────────────────────
-    let fb_info = {
-        let renderer_lock = crate::graphics::PRIMARY_RENDERER.lock();
-        renderer_lock.as_ref().map(|r| {
-            let info = r.get_info();
-            (info.address as *mut u32, info.width as usize, info.height as usize)
-        })
-    };
+    // ── Parse RLE header ──────────────────────────────────
+    let data = BADAPPLE_RLE;
+    if data.len() < RLE_HDR_SIZE || &data[0..4] != RLE_MAGIC {
+        log::error!("Bad Apple: invalid RLE data");
+        return;
+    }
+    let version = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+    if version != 1 {
+        log::error!("Bad Apple: unsupported RLE version {}", version);
+        return;
+    }
+    let frame_count = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
+    let rle_w = u16::from_le_bytes([data[12], data[13]]);
+    let rle_h = u16::from_le_bytes([data[14], data[15]]);
 
-    if fb_info.is_none() {
-        log::error!("Bad Apple: no framebuffer available");
+    let n_frames = frame_count as usize;
+    let table_start = RLE_HDR_SIZE;
+    let table_end = table_start.saturating_add(n_frames * 4);
+    if data.len() < table_end {
+        log::error!("Bad Apple: RLE data truncated at frame table");
         return;
     }
 
-    let (fb_ptr, fb_width, fb_height) = fb_info.unwrap();
-    let fb_len = fb_width * fb_height;
+    // Build frame offset table (alloc::vec on heap, not stack)
+    let mut frame_offsets = Vec::with_capacity(n_frames);
+    let mut offset: u64 = table_end as u64;
+    for i in 0..n_frames {
+        let compressed_size = u32::from_le_bytes([
+            data[table_start + i * 4],
+            data[table_start + i * 4 + 1],
+            data[table_start + i * 4 + 2],
+            data[table_start + i * 4 + 3],
+        ]);
+        frame_offsets.push(offset);
+        offset = offset.saturating_add(compressed_size as u64);
+    }
 
-    let song_length_ms = total_duration_ms();
-    log::info!(
-        "Bad Apple: {}x{} framebuffer, {} notes, {:.1} s melody",
-        fb_width,
-        fb_height,
-        MELODY.len(),
-        song_length_ms as f64 / 1000.0
-    );
+    // ── Acquire framebuffer ───────────────────────────────
+    let (fb_ptr, fb_stride_pixels, fb_height) = {
+        let renderer_lock = crate::graphics::PRIMARY_RENDERER.lock();
+        let guard = renderer_lock;
+        let r = match guard.as_ref() {
+            Some(r) => r,
+            None => {
+                log::error!("Bad Apple: no primary renderer");
+                return;
+            }
+        };
+        let info = r.get_info();
+        // For 32 bpp: pixel stride = byte stride / 4
+        let stride_px = (info.stride as usize) / 4;
+        (info.address as *mut u32, stride_px, info.height as usize)
+    };
+    // drop lock before long loop
 
-    // ── Timing calibration ─────────────────────────────────
-    let iters_per_ms = calibrate_spin_loop();
-    const TARGET_FPS: u64 = 12;
-    const FRAME_MS: u64 = 1000 / TARGET_FPS; // ~83 ms → 12 fps
-    let frame_spins = FRAME_MS * iters_per_ms;
-
-    log::info!(
-        "Bad Apple: {} iters/ms, target {} fps ({} spins/frame)",
-        iters_per_ms,
-        TARGET_FPS,
-        frame_spins
-    );
-
-    // ── Playback state ────────────────────────────────────
-    let mut elapsed_ms: u64 = 0;
-    let mut cursor: usize = 0;
-    let mut note_start_ms: u64 = 0;
-    // Start the first note
-    crate::sound::pc_speaker_on(MELODY[0].freq_hz);
-    let mut prev_freq: u32 = MELODY[0].freq_hz;
-
-    // ── Prepare framebuffer ────────────────────────────────
+    let fb_len = fb_stride_pixels * fb_height;
     let fb = unsafe { core::slice::from_raw_parts_mut(fb_ptr, fb_len) };
-    // Fill with black to start clean
+
+    // Clear screen to black and flush
     for pixel in fb.iter_mut() {
         *pixel = 0xFF000000;
     }
+    crate::graphics::flush_gpu();
 
-    // ── Main playback / animation loop ────────────────────
-    while elapsed_ms < song_length_ms as u64 {
-        // ── Abort on keypress ─────────────────────────────
+    let spins_per_ms = calibrate_spin_loop();
+    let use_hda = crate::sound::hda_available();
+
+    let pcm_total = BADAPPLE_PCM.len();
+    let song_duration_ms = (pcm_total as u64 * 1000) / PCM_BYTES_PER_SEC as u64;
+    let frame_interval_ms: u64 = song_duration_ms / (n_frames as u64).max(1);
+    let pcm_bytes_per_frame = pcm_total / n_frames;
+
+    log::info!(
+        "Bad Apple: fb {}x{} (stride {} px), {} frames, {}x{} px rle, {:.1}s, {}ms/f, {} PCM B/f, HDA={}, {} spin/ms",
+        fb_stride_pixels, fb_height, fb_stride_pixels,
+        n_frames, rle_w, rle_h,
+        song_duration_ms as f64 / 1000.0,
+        frame_interval_ms,
+        pcm_bytes_per_frame,
+        use_hda,
+        spins_per_ms,
+    );
+
+    let mut frame_idx: usize = 0;
+    let mut pcm_offset: usize = 0;
+
+    while frame_idx < n_frames {
         if nitrogen::ps2::keyboard::input_available() {
             log::info!("Bad Apple aborted by user");
             while nitrogen::ps2::keyboard::read_char().is_some() {}
             break;
         }
 
-        // ── Advance note cursor if current note expired ───
-        let mut note_changed = false;
-        loop {
-            if cursor >= MELODY.len() {
-                break;
-            }
-            let cur_dur = MELODY[cursor].duration_ms as u64;
-            if elapsed_ms < note_start_ms + cur_dur {
-                break;
-            }
-            note_start_ms += cur_dur;
-            cursor += 1;
-            note_changed = true;
-        }
-
-        // ── Update speaker (only on note change) ──────────
-        if cursor >= MELODY.len() {
-            if prev_freq != 0 {
-                crate::sound::pc_speaker_off();
-                prev_freq = 0;
-            }
-        } else if note_changed {
-            let freq = MELODY[cursor].freq_hz;
-            if freq != prev_freq {
-                if freq == 0 {
-                    crate::sound::pc_speaker_off();
-                } else {
-                    crate::sound::pc_speaker_on(freq);
-                }
-                prev_freq = freq;
+        // Draw frame
+        if frame_idx < frame_offsets.len() {
+            let off = frame_offsets[frame_idx] as usize;
+            let next_off = if frame_idx + 1 < frame_offsets.len() {
+                frame_offsets[frame_idx + 1] as usize
+            } else {
+                data.len()
+            };
+            if off < data.len() && next_off <= data.len() {
+                draw_rle_frame(fb, fb_stride_pixels, fb_height, rle_w, rle_h, &data[off..next_off]);
+                crate::graphics::flush_gpu();
             }
         }
 
-        // ── Determine current section for animation ───────
-        let section = get_section(cursor.min(MELODY.len().saturating_sub(1)));
-
-        // ── Draw animation frame ──────────────────────────
-        draw_frame(fb, fb_width, fb_height, elapsed_ms as u32, section);
-
-        // ── Frame delay (calibrated busy-wait) ────────────
-        for _ in 0..frame_spins {
-            core::hint::spin_loop();
+        // Feed PCM
+        if use_hda {
+            let feed_start = pcm_offset;
+            let feed_end = (feed_start + pcm_bytes_per_frame).min(pcm_total);
+            if feed_end > feed_start {
+                crate::sound::hda_feed_samples(&BADAPPLE_PCM[feed_start..feed_end]);
+                pcm_offset = feed_end;
+            }
         }
 
-        elapsed_ms += FRAME_MS;
+        frame_idx += 1;
+        delay_ms(spins_per_ms, frame_interval_ms);
+        core::hint::spin_loop();
     }
 
-    // ── Cleanup ───────────────────────────────────────────
-    crate::sound::pc_speaker_off();
-    solvent::force_desktop_redraw();
+    // Drain silence (1 s worth)
+    if use_hda {
+        let silence = [0u8; 4096];
+        for _ in 0..10 {
+            crate::sound::hda_feed_samples(&silence);
+            delay_ms(spins_per_ms, 100);
+        }
+    }
 
+    solvent::force_desktop_redraw();
     log::info!(
-        "Bad Apple playback finished ({} s elapsed)",
-        elapsed_ms as f64 / 1000.0
+        "Bad Apple playback finished ({} frames, {:.1}s)",
+        frame_idx,
+        frame_idx as f64 * frame_interval_ms as f64 / 1000.0,
     );
 }

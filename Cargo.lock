@@ -958,6 +958,7 @@ dependencies = [
 name = "toluene"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "petroleum",
 ]
 
