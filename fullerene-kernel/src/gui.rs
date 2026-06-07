@@ -107,7 +107,10 @@ fn bcd_to_bin(bcd: u8) -> u8 {
 /// Returns `Some((year, month, day, hour, minute, second))` on success.
 fn read_cmos_time() -> Option<(u16, u8, u8, u8, u8, u8)> {
     // Wait for update-in-progress flag to clear before reading
-    while cmos_read(0x0A) & 0x80 != 0 {}
+    let mut timeout = 0;
+    while (cmos_read(0x0A) & 0x80 != 0) && timeout < 10000 {
+        timeout += 1;
+    }
 
     let status_b = cmos_read(0x0B);
     let use_bcd = status_b & 0x04 == 0;
