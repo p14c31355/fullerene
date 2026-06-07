@@ -8,6 +8,14 @@ use petroleum::page_table::BootInfoFrameAllocator;
 pub const HEAP_SIZE: usize = 4 * 1024 * 1024; // 4MB heap
 pub const KERNEL_STACK_SIZE: usize = 4096 * 64; // 256KB
 
+/// Maximum additional heap that can be requested via `extend_kernel_heap`.
+/// 32 MiB is sufficient for terminal surfaces even at 4K resolution
+/// (the framebuffer itself lives in GPU memory, not kernel heap).
+const HEAP_EXTEND_MAX: usize = 32 * 1024 * 1024; // 32 MiB
+
+/// Total heap size: initial 4 MiB + extendable 32 MiB.
+pub const HEAP_TOTAL: usize = HEAP_SIZE + HEAP_EXTEND_MAX; // 36 MiB
+
 use petroleum::initializer::FrameAllocator;
 use petroleum::page_table::MemoryDescriptorValidator;
 use petroleum::page_table::PageTableHelper;
@@ -23,17 +31,6 @@ pub static MEMORY_MAP: Mutex<Option<&'static [MemoryMapDescriptor]>> = Mutex::ne
 /// Buffer for memory map descriptors to avoid heap allocation during init
 pub const MAX_DESCRIPTORS: usize = 2048;
 
-/// Maximum additional heap that can be requested via `extend_kernel_heap`.
-/// 32 MiB is sufficient for terminal surfaces even at 4K resolution
-/// (the framebuffer itself lives in GPU memory, not kernel heap).
-const HEAP_EXTEND_MAX: usize = 32 * 1024 * 1024; // 32 MiB
-
-/// Total heap size: initial 4 MiB + extendable 32 MiB, in a single
-/// contiguous static buffer so that `linked_list_allocator::Heap::extend()`
-/// always operates on a guaranteed-contiguous region regardless of linker
-/// placement order.
-const HEAP_TOTAL: usize = HEAP_SIZE + HEAP_EXTEND_MAX; // 36 MiB
-
 /// Single contiguous static buffer for the global allocator.
 ///
 /// The first [`HEAP_SIZE`] bytes serve as the initial heap (replaces the old
@@ -41,7 +38,7 @@ const HEAP_TOTAL: usize = HEAP_SIZE + HEAP_EXTEND_MAX; // 36 MiB
 /// for dynamic heap expansion (replaces the old `HEAP_EXTEND_BUFFER`).
 ///
 /// Placed in `.data` to ensure it is page‑mapped at boot by OVMF.
-/// 36 MiB is within OVMF's safe handling limits.
+/// 36 MiB is within OVMF's safe handling limits.
 #[repr(align(4096))]
 pub struct TotalHeapBuffer(pub(crate) [u8; HEAP_TOTAL]);
 

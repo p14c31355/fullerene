@@ -122,22 +122,27 @@ fn read_cmos_time() -> Option<(u16, u8, u8, u8, u8, u8)> {
     let mut month = cmos_read(0x08);
     let mut year_raw = cmos_read(0x09);
 
-    // Check if 12-hour mode (status B bit 1)
-    if status_b & 0x02 != 0 {
-        // 12-hour mode: bit 7 = PM
-        let pm = hour & 0x80 != 0;
-        hour &= 0x7F;
-        if use_bcd {
-            hour = bcd_to_bin(hour);
-        }
+    // Handle hour format: status B bit 1 SET means 24-hour mode, CLEAR means 12-hour
+    // In 12-hour mode, bit 7 of hour indicates PM
+    let is_12hour = status_b & 0x02 == 0;
+    let pm = is_12hour && (hour & 0x80 != 0);
+
+    // Clear PM bit before BCD decode
+    hour &= 0x7F;
+
+    // Decode BCD if needed
+    if use_bcd {
+        hour = bcd_to_bin(hour);
+    }
+
+    // Convert 12-hour to 24-hour if needed
+    if is_12hour {
         if pm && hour != 12 {
             hour += 12;
         }
         if !pm && hour == 12 {
             hour = 0;
         }
-    } else if use_bcd {
-        hour = bcd_to_bin(hour);
     }
 
     if use_bcd {

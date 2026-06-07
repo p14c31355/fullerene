@@ -472,6 +472,8 @@ impl Keymap {
             0x53 => None, // Delete
             0x57 => Some(KeyCode::F11),
             0x58 => Some(KeyCode::F12),
+            0x5B => Some(KeyCode::LSuper),
+            0x5C => Some(KeyCode::RSuper),
             _ => None,
         }
     }
@@ -484,6 +486,8 @@ impl Keymap {
             0x73 => Some(KeyCode::Muhenkan), // 無変換
             0x7B => Some(KeyCode::Henkan),   // 変換
             0x79 => Some(KeyCode::Katakana), // ひらがな/カタカナ
+            0x5B => Some(KeyCode::LSuper),
+            0x5C => Some(KeyCode::RSuper),
             _ => Self::us_set1_keycode(scancode, _shifted),
         }
     }

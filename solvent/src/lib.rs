@@ -68,9 +68,6 @@ const FRAME_TIMER_ID: TimerId = TimerId(2);
 /// displays exceeding this will skip rendering to avoid overflowing.
 const MAX_FB_PIXELS: usize = 3840 * 2160;
 
-/// Super key double‑tap window (in ticks).  ~300ms at 1 tick/ms.
-const SUPER_DOUBLE_TAP_TICKS: u64 = 300;
-
 /// Callback to extend the kernel heap.
 ///
 /// Set by the kernel before any rendering.  The function receives the
@@ -137,10 +134,6 @@ pub struct RuntimeState {
     // ── Shell overlay state ─────────────────────────────
     /// Current shell UI state.
     pub shell_state: ShellState,
-    pub last_super_press: u64,
-
-    /// Tick of last render while shell overlay is active (rate‑limiting).
-    pub last_overlay_render_tick: u64,
 
     /// Whether the clock text changed since the last compositor pass.
     pub clock_changed: bool,
@@ -189,8 +182,6 @@ pub fn init() {
         term_cells: Vec::new(),
         term_dirty: true,
         shell_state: ShellState::Desktop,
-        last_super_press: 0,
-        last_overlay_render_tick: 0,
         clock_changed: false,
     });
 }
@@ -262,6 +253,7 @@ impl EventHandler for WmEventHandler {
                     let cx = mouse.x as i32;
                     let cy = mouse.y as i32;
                     drop(mouse);
+                    let (fw, _fh) = *FB_DIMS.lock();
 
                     // AppGrid layout (must match render_app_grid)
                     let icon_size = 64i32;
@@ -375,9 +367,6 @@ impl EventHandler for ShellEventHandler {
         match event {
             Event::Input(InputEvent::KeyDown(KeyCode::SuperLeft))
             | Event::Input(InputEvent::KeyDown(KeyCode::SuperRight)) => {
-                let now = GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
-                rt.last_super_press = now;
-
                 match rt.shell_state {
                     ShellState::Desktop => {
                         rt.shell_state = ShellState::TaskOverview;

@@ -31,6 +31,12 @@ pub fn render_task_overview(
     windows: &[Window],
 ) {
     let fb_w = fbw as usize;
+    let fb_h = fbh as usize;
+
+    // Validate framebuffer dimensions
+    if fb.len() < fb_w * fb_h {
+        return;
+    }
 
     // ── Semi‑transparent black backdrop ──────────────────
     // Blend 60% opaque black over the entire framebuffer.
@@ -132,6 +138,12 @@ pub fn render_app_grid(
     fbh: u32,
 ) {
     let fb_w = fbw as usize;
+    let fb_h = fbh as usize;
+
+    // Validate framebuffer dimensions
+    if fb.len() < fb_w * fb_h {
+        return;
+    }
 
     // ── Semi‑transparent black backdrop ──────────────────
     for row in 0..fbh {
@@ -240,6 +252,12 @@ pub fn render_timezone_selector(
     current_offset: i8,
 ) {
     let fb_w = fbw as usize;
+    let fb_h = fbh as usize;
+
+    // Validate framebuffer dimensions
+    if fb.len() < fb_w * fb_h {
+        return;
+    }
 
     // ── Semi‑transparent black backdrop ──────────────────
     for row in 0..fbh {
@@ -296,7 +314,11 @@ pub fn render_timezone_selector(
         for row in 0..entry_h {
             let py = ey + row;
             let rs = (py as usize) * fb_w + (ex as usize);
-            fb[rs..rs + entry_w as usize].fill(bg_color);
+            let start = rs;
+            let end = start.saturating_add(entry_w as usize).min(fb.len());
+            if start < end {
+                fb[start..end].fill(bg_color);
+            }
         }
 
         // Entry label
