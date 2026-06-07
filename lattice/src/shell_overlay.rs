@@ -122,7 +122,7 @@ pub fn render_task_overview(
     }
 
     // ── "Activities" label at top ──────────────────────────
-    render_label(fb, fbw, fbh, "Task Overview", fbw / 2 - 52, 10);
+    render_label(fb, fbw, fbh, "Task Overview", (fbw / 2).saturating_sub(52), 10);
 }
 
 /// Render the App Grid overlay.
