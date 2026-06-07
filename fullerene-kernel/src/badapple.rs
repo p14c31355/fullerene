@@ -267,7 +267,7 @@ fn calibrate_spin_loop() -> u64 {
     }
 
     let ms_elapsed = ticks_elapsed * TICK_DURATION_MS;
-    TEST_SPINS * 1000 / ms_elapsed.max(1)
+    TEST_SPINS / ms_elapsed.max(1)
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -421,30 +421,37 @@ fn pixel_in_figure(
         }
     }
 
-    // Check arm line segments
-    let thick_sq = arm_thickness * arm_thickness;
+    // Check arm line segments using perpendicular distance
+    let thick_sq = (arm_thickness * arm_thickness) as i64;
     for &((x1, y1), (x2, y2)) in arm_segments {
-        let seg_dx = x2 - x1;
-        let seg_dy = y2 - y1;
+        let seg_dx = (x2 - x1) as i64;
+        let seg_dy = (y2 - y1) as i64;
         let seg_len_sq = seg_dx * seg_dx + seg_dy * seg_dy;
         if seg_len_sq == 0 {
             continue;
         }
-        let dot = (px - x1) * seg_dx + (py - y1) * seg_dy;
-        // Clamp t to [0, seg_len_sq] using integer arithmetic
-        let t = if dot <= 0 {
-            0
+        let dot = (px as i64 - x1 as i64) * seg_dx + (py as i64 - y1 as i64) * seg_dy;
+
+        if dot <= 0 {
+            // Closest to start point
+            let ddx = px as i64 - x1 as i64;
+            let ddy = py as i64 - y1 as i64;
+            if ddx * ddx + ddy * ddy < thick_sq {
+                return true;
+            }
         } else if dot >= seg_len_sq {
-            seg_len_sq
+            // Closest to end point
+            let ddx = px as i64 - x2 as i64;
+            let ddy = py as i64 - y2 as i64;
+            if ddx * ddx + ddy * ddy < thick_sq {
+                return true;
+            }
         } else {
-            dot
-        };
-        let proj_x = x1 * seg_len_sq + seg_dx * t;
-        let proj_y = y1 * seg_len_sq + seg_dy * t;
-        let ddx = px * seg_len_sq - proj_x;
-        let ddy = py * seg_len_sq - proj_y;
-        if ddx * ddx + ddy * ddy < thick_sq * seg_len_sq * seg_len_sq {
-            return true;
+            // Perpendicular distance from infinite line
+            let cross = (px as i64 - x1 as i64) * seg_dy - (py as i64 - y1 as i64) * seg_dx;
+            if cross * cross < thick_sq * seg_len_sq {
+                return true;
+            }
         }
     }
 
